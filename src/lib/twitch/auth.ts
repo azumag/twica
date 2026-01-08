@@ -10,6 +10,7 @@ export interface TwitchUser {
   display_name: string
   profile_image_url: string
   email?: string
+  broadcaster_type: string // 'affiliate' | 'partner' | ''
 }
 
 export interface TwitchTokens {
@@ -20,27 +21,22 @@ export interface TwitchTokens {
   scope: string[]
 }
 
-// Scopes needed for the app
-export const STREAMER_SCOPES = [
+// All users get the same scopes - streamer features are enabled based on broadcaster_type
+export const AUTH_SCOPES = [
   'user:read:email',
   'channel:read:redemptions',
   'channel:manage:redemptions',
 ].join(' ')
 
-export const USER_SCOPES = [
-  'user:read:email',
-].join(' ')
-
 export function getTwitchAuthUrl(
   redirectUri: string,
-  scopes: string,
   state: string
 ): string {
   const params = new URLSearchParams({
     client_id: process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: scopes,
+    scope: AUTH_SCOPES,
     state: state,
   })
 

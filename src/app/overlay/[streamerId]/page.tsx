@@ -9,6 +9,13 @@ interface GachaResult {
   userTwitchUsername: string;
 }
 
+interface SparklePosition {
+  left: string;
+  top: string;
+  animationDelay: string;
+  animationDuration: string;
+}
+
 const RARITY_COLORS = {
   common: "from-gray-400 to-gray-600",
   rare: "from-blue-400 to-blue-600",
@@ -23,12 +30,23 @@ const RARITY_GLOW = {
   legendary: "shadow-yellow-500/50",
 };
 
+// Generate sparkle positions outside of render
+function generateSparklePositions(): SparklePosition[] {
+  return [...Array(20)].map(() => ({
+    left: `${Math.random() * 100}%`,
+    top: `${Math.random() * 100}%`,
+    animationDelay: `${Math.random() * 2}s`,
+    animationDuration: `${1 + Math.random()}s`,
+  }));
+}
+
 export default function OverlayPage() {
   const params = useParams();
   const streamerId = params.streamerId as string;
   const [result, setResult] = useState<GachaResult | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
   const [showCard, setShowCard] = useState(false);
+  const [sparklePositions, setSparklePositions] = useState<SparklePosition[]>([]);
 
   // Demo function for testing
   const triggerDemo = useCallback(async () => {
@@ -50,6 +68,8 @@ export default function OverlayPage() {
 
       if (response.ok) {
         const data = await response.json();
+        // Generate sparkle positions when we get a result
+        setSparklePositions(generateSparklePositions());
         setResult(data);
 
         // Animation timing
@@ -85,11 +105,14 @@ export default function OverlayPage() {
     return () => window.removeEventListener("message", handleMessage);
   }, [streamerId, triggerDemo]);
 
-  // Check URL for demo param
+  // Check URL for demo param - use setTimeout to avoid triggering during render
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get("demo") === "true") {
-      triggerDemo();
+      const timeoutId = setTimeout(() => {
+        triggerDemo();
+      }, 0);
+      return () => clearTimeout(timeoutId);
     }
   }, [triggerDemo]);
 
@@ -168,16 +191,11 @@ export default function OverlayPage() {
         {/* Sparkle Effects for Legendary */}
         {result.card.rarity === "legendary" && (
           <div className="pointer-events-none absolute inset-0">
-            {[...Array(20)].map((_, i) => (
+            {sparklePositions.map((pos, i) => (
               <div
                 key={i}
                 className="absolute animate-ping"
-                style={{
-                  left: `${Math.random() * 100}%`,
-                  top: `${Math.random() * 100}%`,
-                  animationDelay: `${Math.random() * 2}s`,
-                  animationDuration: `${1 + Math.random()}s`,
-                }}
+                style={pos}
               >
                 ✨
               </div>

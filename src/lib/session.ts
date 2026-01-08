@@ -1,11 +1,11 @@
 import { cookies } from 'next/headers'
 
 export interface Session {
-  role: 'streamer' | 'user'
   twitchUserId: string
   twitchUsername: string
   twitchDisplayName: string
   twitchProfileImageUrl: string
+  broadcasterType: string // 'affiliate' | 'partner' | ''
   accessToken: string
   refreshToken: string
   expiresAt: number
@@ -25,6 +25,11 @@ export async function getSession(): Promise<Session | null> {
   } catch {
     return null
   }
+}
+
+export function canUseStreamerFeatures(session: Session | null): boolean {
+  if (!session) return false
+  return session.broadcasterType === 'affiliate' || session.broadcasterType === 'partner'
 }
 
 export async function clearSession(): Promise<void> {

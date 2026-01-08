@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession } from "@/lib/session";
+import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 
 export async function PUT(
@@ -8,7 +8,7 @@ export async function PUT(
 ) {
   const session = await getSession();
 
-  if (!session || session.role !== "streamer") {
+  if (!session || !canUseStreamerFeatures(session)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -65,7 +65,7 @@ export async function DELETE(
 ) {
   const session = await getSession();
 
-  if (!session || session.role !== "streamer") {
+  if (!session || !canUseStreamerFeatures(session)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

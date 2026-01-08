@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession } from "@/lib/session";
+import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 
 export async function POST(request: NextRequest) {
   const session = await getSession();
 
-  if (!session || session.role !== "streamer") {
+  if (!session || !canUseStreamerFeatures(session)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

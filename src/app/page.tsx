@@ -13,10 +13,10 @@ export default async function Home() {
             <div className="flex items-center gap-4">
               <span className="text-white">{session.twitchDisplayName}</span>
               <Link
-                href={session.role === 'streamer' ? '/dashboard' : '/collection'}
+                href="/dashboard"
                 className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
               >
-                {session.role === 'streamer' ? 'ダッシュボード' : 'コレクション'}
+                ダッシュボード
               </Link>
               <Link
                 href="/api/auth/logout"
@@ -26,14 +26,12 @@ export default async function Home() {
               </Link>
             </div>
           ) : (
-            <div className="flex items-center gap-4">
-              <Link
-                href="/api/auth/twitch/login?role=user"
-                className="rounded-lg border border-white/30 px-4 py-2 text-white hover:bg-white/10"
-              >
-                ログイン
-              </Link>
-            </div>
+            <Link
+              href="/api/auth/twitch/login"
+              className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
+            >
+              ログイン
+            </Link>
           )}
         </nav>
       </header>
@@ -53,26 +51,17 @@ export default async function Home() {
             配信者オリジナルのトレーディングカードを集められるサービスです
           </p>
 
-          <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
+          {!session && (
             <Link
-              href="/api/auth/twitch/login?role=streamer"
-              className="flex items-center gap-2 rounded-xl bg-purple-600 px-8 py-4 text-lg font-semibold text-white shadow-lg transition hover:bg-purple-700 hover:shadow-xl"
+              href="/api/auth/twitch/login"
+              className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-8 py-4 text-lg font-semibold text-white shadow-lg transition hover:bg-purple-700 hover:shadow-xl"
             >
               <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z" />
               </svg>
-              配信者として登録
+              Twitchでログイン
             </Link>
-            <Link
-              href="/api/auth/twitch/login?role=user"
-              className="flex items-center gap-2 rounded-xl border-2 border-white/30 bg-white/10 px-8 py-4 text-lg font-semibold text-white backdrop-blur transition hover:bg-white/20"
-            >
-              <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z" />
-              </svg>
-              視聴者としてログイン
-            </Link>
-          </div>
+          )}
         </div>
 
         <div className="mt-24 grid gap-8 md:grid-cols-3">
@@ -103,6 +92,14 @@ export default async function Home() {
               ガチャ演出が配信に表示され、視聴者と一緒に結果を楽しめる
             </p>
           </div>
+        </div>
+
+        {/* Info for streamers */}
+        <div className="mx-auto mt-16 max-w-2xl rounded-2xl bg-white/10 p-8 text-center backdrop-blur">
+          <h3 className="mb-4 text-xl font-bold text-white">配信者の方へ</h3>
+          <p className="text-purple-200">
+            Twitchアフィリエイト・パートナーの方は、ログイン後に配信者向け機能（カード管理、チャネルポイント設定など）をご利用いただけます。
+          </p>
         </div>
       </main>
 
