@@ -70,11 +70,20 @@ export default function CardManager({
       // Handle file upload if a file is selected
       if (fileInputRef.current?.files?.[0]) {
         const file = fileInputRef.current.files[0];
-        const newBlob = await upload(file.name, file, {
-          access: 'public',
-          handleUploadUrl: '/api/upload',
+        const formDataUpload = new FormData();
+        formDataUpload.append("file", file);
+
+        const uploadResponse = await fetch("/api/upload", {
+          method: "POST",
+          body: formDataUpload,
         });
-        finalImageUrl = newBlob.url;
+
+        if (!uploadResponse.ok) {
+          throw new Error("Failed to upload image");
+        }
+
+        const blob = await uploadResponse.json();
+        finalImageUrl = blob.url;
       }
       const endpoint = editingCard
         ? `/api/cards/${editingCard.id}`
