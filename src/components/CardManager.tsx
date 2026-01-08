@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import type { Card, Rarity } from "@/types/database";
+import { upload } from "@vercel/blob/client";
 
 interface CardManagerProps {
   streamerId: string;
@@ -22,6 +23,7 @@ export default function CardManager({
   const [cards, setCards] = useState<Card[]>(initialCards);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [formData, setFormData] = useState({
     name: "",
     description: "",
@@ -41,6 +43,9 @@ export default function CardManager({
     });
     setEditingCard(null);
     setShowForm(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   const handleEdit = (card: Card) => {
@@ -60,6 +65,17 @@ export default function CardManager({
     setSaving(true);
 
     try {
+      let finalImageUrl = formData.imageUrl;
+
+      // Handle file upload if a file is selected
+      if (fileInputRef.current?.files?.[0]) {
+        const file = fileInputRef.current.files[0];
+        const newBlob = await upload(file.name, file, {
+          access: 'public',
+          handleUploadUrl: '/api/upload',
+        });
+        finalImageUrl = newBlob.url;
+      }
       const endpoint = editingCard
         ? `/api/cards/${editingCard.id}`
         : "/api/cards";
@@ -72,7 +88,7 @@ export default function CardManager({
           streamerId,
           name: formData.name,
           description: formData.description,
-          imageUrl: formData.imageUrl,
+          imageUrl: finalImageUrl,
           rarity: formData.rarity,
           dropRate: formData.dropRate,
         }),
@@ -151,16 +167,25 @@ export default function CardManager({
             </div>
             <div>
               <label className="mb-1 block text-sm text-gray-300">
-                画像URL
+                画像 (ファイルまたはURL)
               </label>
-              <input
-                type="url"
-                value={formData.imageUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, imageUrl: e.target.value })
-                }
-                className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
-              />
+              <div className="space-y-2">
+                <input
+                  type="file"
+                  accept="image/*"
+                  ref={fileInputRef}
+                  className="w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-purple-700"
+                />
+                <input
+                  type="url"
+                  placeholder="または画像URLを入力"
+                  value={formData.imageUrl}
+                  onChange={(e) =>
+                    setFormData({ ...formData, imageUrl: e.target.value })
+                  }
+                  className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                />
+              </div>
             </div>
             <div>
               <label className="mb-1 block text-sm text-gray-300">
