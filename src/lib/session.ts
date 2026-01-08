@@ -16,13 +16,15 @@ export async function getSession(): Promise<Session | null> {
   const sessionCookie = cookieStore.get('twica_session')?.value
 
   if (!sessionCookie) {
+    console.log('[Session] No twica_session cookie found');
     return null
   }
 
   try {
     const session = JSON.parse(sessionCookie) as Session
     return session
-  } catch {
+  } catch (error) {
+    console.error('[Session] Failed to parse session cookie:', error);
     return null
   }
 }
