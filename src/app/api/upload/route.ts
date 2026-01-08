@@ -3,6 +3,12 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // Try to get session at the very beginning
+  const session = await getSession();
+  const cookieHeader = request.headers.get('cookie') || 'none';
+
+  console.log(`[Upload API] Initial check - Session: ${session ? session.twitchUserId : 'null'}, Cookie header: ${cookieHeader.substring(0, 30)}...`);
+
   const body = (await request.json()) as HandleUploadBody;
 
   try {
@@ -10,10 +16,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       body,
       request,
       onBeforeGenerateToken: async (pathname) => {
-        // Authenticate user
-        const session = await getSession();
+        // Use the session we fetched at the start
         if (!session) {
-          console.error('[Upload API] User not authenticated');
+          console.error('[Upload API] User not authenticated in callback');
           throw new Error('Not authenticated');
         }
 
