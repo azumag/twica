@@ -9,15 +9,15 @@ export async function POST(request: Request): Promise<NextResponse> {
     const jsonResponse = await handleUpload({
       body,
       request,
-      onBeforeGenerateToken: async (
-        pathname,
-        /* clientPayload */
-      ) => {
+      onBeforeGenerateToken: async (pathname) => {
         // Authenticate user
         const session = await getSession();
         if (!session) {
+          console.error('[Upload API] User not authenticated');
           throw new Error('Not authenticated');
         }
+
+        console.log(`[Upload API] Generating token for ${pathname} (User: ${session.twitchUserId})`);
 
         return {
           allowedContentTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
@@ -27,23 +27,16 @@ export async function POST(request: Request): Promise<NextResponse> {
         };
       },
       onUploadCompleted: async ({ blob, tokenPayload }) => {
-        // Get notified of completed uploads
-        console.log('blob upload completed', blob, tokenPayload);
-
-        try {
-          // const { userId } = JSON.parse(tokenPayload);
-          // Update user's profile picture or something here if needed
-        } catch (error) {
-          throw new Error('Could not parse tokenPayload');
-        }
+        console.log('[Upload API] Upload completed:', blob.url, tokenPayload);
       },
     });
 
     return NextResponse.json(jsonResponse);
   } catch (error) {
+    console.error('[Upload API] Error:', error);
     return NextResponse.json(
       { error: (error as Error).message },
-      { status: 400 }, // The client will also get this error
+      { status: 400 },
     );
   }
 }
