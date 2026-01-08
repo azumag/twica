@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import type { Card } from "@/types/database";
 
@@ -44,17 +44,91 @@ export default function OverlayPage() {
   const params = useParams();
   const streamerId = params.streamerId as string;
   const [result, setResult] = useState<GachaResult | null>(null);
-  const [isAnimating, setIsAnimating] = useState(false);
   const [showCard, setShowCard] = useState(false);
   const [sparklePositions, setSparklePositions] = useState<SparklePosition[]>([]);
+  const [connected, setConnected] = useState(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const animationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Display gacha result with animation
+  const displayResult = useCallback((data: GachaResult) => {
+    // Clear any existing animation
+    if (animationTimeoutRef.current) {
+      clearTimeout(animationTimeoutRef.current);
+    }
+
+    // Generate sparkle positions
+    setSparklePositions(generateSparklePositions());
+    setResult(data);
+    setShowCard(false);
+
+    // Show card after brief delay
+    animationTimeoutRef.current = setTimeout(() => {
+      setShowCard(true);
+
+      // Hide after display
+      animationTimeoutRef.current = setTimeout(() => {
+        setShowCard(false);
+        animationTimeoutRef.current = setTimeout(() => {
+          setResult(null);
+        }, 500);
+      }, 6000);
+    }, 100);
+  }, []);
+
+  // Connect to SSE for real-time events
+  useEffect(() => {
+    const connectSSE = () => {
+      const eventSource = new EventSource(`/api/events/${streamerId}`);
+      eventSourceRef.current = eventSource;
+
+      eventSource.onopen = () => {
+        console.log("SSE connected");
+        setConnected(true);
+      };
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log("SSE message:", data);
+
+          if (data.type === "gacha" && data.card) {
+            displayResult({
+              card: data.card,
+              userTwitchUsername: data.userTwitchUsername,
+            });
+          } else if (data.type === "connected") {
+            console.log("SSE connection confirmed");
+          }
+        } catch (error) {
+          console.error("SSE parse error:", error);
+        }
+      };
+
+      eventSource.onerror = (error) => {
+        console.error("SSE error:", error);
+        setConnected(false);
+        eventSource.close();
+
+        // Reconnect after delay
+        setTimeout(connectSSE, 3000);
+      };
+    };
+
+    connectSSE();
+
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+      if (animationTimeoutRef.current) {
+        clearTimeout(animationTimeoutRef.current);
+      }
+    };
+  }, [streamerId, displayResult]);
 
   // Demo function for testing
   const triggerDemo = useCallback(async () => {
-    if (isAnimating) return;
-
-    setIsAnimating(true);
-    setShowCard(false);
-
     try {
       const response = await fetch("/api/gacha", {
         method: "POST",
@@ -68,50 +142,20 @@ export default function OverlayPage() {
 
       if (response.ok) {
         const data = await response.json();
-        // Generate sparkle positions when we get a result
-        setSparklePositions(generateSparklePositions());
-        setResult(data);
-
-        // Animation timing
-        setTimeout(() => {
-          setShowCard(true);
-        }, 1000);
-
-        // Hide after display
-        setTimeout(() => {
-          setShowCard(false);
-          setTimeout(() => {
-            setIsAnimating(false);
-            setResult(null);
-          }, 500);
-        }, 6000);
+        displayResult(data);
       }
     } catch (error) {
       console.error("Demo gacha error:", error);
-      setIsAnimating(false);
     }
-  }, [streamerId, isAnimating]);
+  }, [streamerId, displayResult]);
 
-  // Listen for gacha events via polling or websocket
-  // For MVP, we'll use a simple approach with URL params for manual trigger
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data.type === "gacha" && event.data.streamerId === streamerId) {
-        triggerDemo();
-      }
-    };
-
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, [streamerId, triggerDemo]);
-
-  // Check URL for demo param - use setTimeout to avoid triggering during render
+  // Check URL for demo param
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get("demo") === "true") {
       const timeoutId = setTimeout(() => {
         triggerDemo();
-      }, 0);
+      }, 500);
       return () => clearTimeout(timeoutId);
     }
   }, [triggerDemo]);
@@ -119,6 +163,16 @@ export default function OverlayPage() {
   if (!result) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-transparent">
+        {/* Connection status indicator */}
+        <div className="fixed left-4 top-4 flex items-center gap-2 rounded bg-black/50 px-3 py-1 text-xs text-white opacity-50">
+          <div
+            className={`h-2 w-2 rounded-full ${
+              connected ? "bg-green-500" : "bg-red-500"
+            }`}
+          />
+          {connected ? "接続中" : "再接続中..."}
+        </div>
+
         {/* Hidden trigger for demo */}
         <button
           onClick={triggerDemo}
