@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import type { Card, Streamer } from "@/types/database";
+import type { Card, Streamer, GachaHistory } from "@/types/database";
 import CardManager from "@/components/CardManager";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CopyButton from "@/components/CopyButton";
@@ -10,6 +10,10 @@ import CopyButton from "@/components/CopyButton";
 interface CardWithDetails extends Card {
   streamer: Streamer;
   count: number;
+}
+
+interface GachaHistoryWithCard extends GachaHistory {
+  cards: Card;
 }
 
 async function getStreamerData(twitchUserId: string) {
@@ -76,6 +80,21 @@ async function getUserCards(twitchUserId: string): Promise<CardWithDetails[]> {
   return Array.from(cardMap.values());
 }
 
+async function getRecentGachaHistory(): Promise<GachaHistoryWithCard[]> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: history } = await supabaseAdmin
+    .from("gacha_history")
+    .select(`
+      *,
+      cards (*)
+    `)
+    .order("redeemed_at", { ascending: false })
+    .limit(10);
+
+  return (history || []) as unknown as GachaHistoryWithCard[];
+}
+
 const RARITY_ORDER = ["legendary", "epic", "rare", "common"];
 const RARITY_COLORS = {
   common: "bg-gray-500",
@@ -94,6 +113,7 @@ export default async function DashboardPage() {
   const isStreamer = canUseStreamerFeatures(session);
   const streamerData = isStreamer ? await getStreamerData(session.twitchUserId) : null;
   const userCards = await getUserCards(session.twitchUserId);
+  const recentGacha = await getRecentGachaHistory();
 
   // Sort cards by rarity
   userCards.sort((a, b) => {
@@ -213,6 +233,50 @@ export default async function DashboardPage() {
           </div>
         )}
 
+        {/* Global Recent Wins Section */}
+        <section className="mb-12">
+          <h2 className="mb-6 text-2xl font-semibold text-white">最近の獲得情報</h2>
+          <div className="overflow-hidden rounded-xl bg-gray-800">
+            <div className="divide-y divide-gray-700">
+              {recentGacha.length === 0 ? (
+                <div className="p-6 text-center text-gray-400">
+                  まだ獲得情報はありません。
+                </div>
+              ) : (
+                recentGacha.map((entry) => (
+                  <div key={entry.id} className="flex items-center gap-4 p-4">
+                    <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-gray-700">
+                      {entry.cards.image_url ? (
+                        <img
+                          src={entry.cards.image_url}
+                          alt={entry.cards.name}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-xl">
+                          🎴
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white">
+                        <span className="text-purple-400 font-bold">{entry.user_twitch_username}</span> が
+                        <span className="text-white font-bold ml-1">{entry.cards.name}</span> を獲得しました！
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {new Date(entry.redeemed_at).toLocaleString('ja-JP')}
+                      </p>
+                    </div>
+                    <div className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[entry.cards.rarity]}`}>
+                      {entry.cards.rarity}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </section>
+
         {/* Collection Section */}
         <section>
           <h2 className="mb-6 text-2xl font-semibold text-white">マイコレクション</h2>
@@ -302,13 +366,17 @@ export default async function DashboardPage() {
                         <div className="mb-1 flex items-center justify-between">
                           <h4 className="font-semibold text-white">{card.name}</h4>
                           <span
-                            className={`rounded-full px-2 py-0.5 text-xs text-white ${
-                              RARITY_COLORS[card.rarity]
-                            }`}
+                            className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[card.rarity]
+                              }`}
                           >
                             {card.rarity}
                           </span>
                         </div>
+                        {card.description && (
+                          <p className="mb-2 text-xs text-gray-400 line-clamp-2">
+                            {card.description}
+                          </p>
+                        )}
                         {card.count > 1 && (
                           <div className="text-sm text-gray-400">
                             x{card.count}
