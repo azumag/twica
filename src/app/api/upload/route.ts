@@ -4,9 +4,12 @@ import { getSession } from '@/lib/session';
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
+    const cookieHeader = request.headers.get('cookie');
+    console.log(`[Upload API] Incoming request - Cookie header length: ${cookieHeader?.length || 0}`);
+
     const session = await getSession();
     if (!session) {
-      console.error('[Upload API] User not authenticated');
+      console.error('[Upload API] User not authenticated. Cookies present:', !!cookieHeader);
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
