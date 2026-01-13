@@ -11,7 +11,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const session = await getSession();
     if (!session) {
       console.error('[Upload API] User not authenticated. Cookies present:', !!cookieHeader);
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+      // Debug info for the client
+      const debugInfo = {
+        cookieHeaderLength: cookieHeader?.length || 0,
+        hasSessionCookie: cookieHeader?.includes('twica_session'),
+        allHeaders: Array.from(request.headers.entries()).map(([k, v]) => `${k}: ${v.length > 50 ? v.substring(0, 50) + '...' : v}`), // Don't dump full sensitive values
+        cookiesSeenByNext: (await cookies()).getAll().map(c => ({ name: c.name, size: c.value.length })),
+      };
+
+      return NextResponse.json({
+        error: 'Not authenticated',
+        debug: debugInfo
+      }, { status: 401 });
     }
 
     const formData = await request.formData();
