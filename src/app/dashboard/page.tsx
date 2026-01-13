@@ -6,6 +6,7 @@ import type { Card, Streamer, GachaHistory } from "@/types/database";
 import CardManager from "@/components/CardManager";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CopyButton from "@/components/CopyButton";
+import DevelopmentNotice from "@/components/DevelopmentNotice";
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -144,6 +145,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-900">
+      <DevelopmentNotice />
       <header className="border-b border-gray-800 bg-gray-900/95 backdrop-blur">
         <div className="container mx-auto flex items-center justify-between px-4 py-4">
           <Link href="/" className="text-2xl font-bold text-white">

@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { getSession } from "@/lib/session";
+import DevelopmentNotice from "@/components/DevelopmentNotice";
 
 export default async function Home() {
   const session = await getSession();
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-purple-900 via-purple-800 to-indigo-900">
+      <DevelopmentNotice />
       <header className="container mx-auto px-4 py-6">
         <nav className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-white">TwiCa</h1>
