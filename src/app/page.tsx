@@ -53,7 +53,14 @@ export default async function Home() {
             配信者オリジナルのトレーディングカードを集められるサービスです
           </p>
 
-          {!session && (
+          {session ? (
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-8 py-4 text-lg font-semibold text-white shadow-lg transition hover:bg-purple-700 hover:shadow-xl"
+            >
+              ダッシュボードへ移動
+            </Link>
+          ) : (
             <Link
               href="/api/auth/twitch/login"
               className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-8 py-4 text-lg font-semibold text-white shadow-lg transition hover:bg-purple-700 hover:shadow-xl"

@@ -80,6 +80,12 @@ export default function CardManager({
         });
 
         if (!uploadResponse.ok) {
+          try {
+            const errorData = await uploadResponse.json();
+            console.error("Upload failed details:", errorData);
+          } catch (e) {
+            console.error("Upload failed, could not parse JSON error:", e);
+          }
           throw new Error("Failed to upload image");
         }
 
