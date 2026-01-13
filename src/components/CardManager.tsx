@@ -76,7 +76,6 @@ export default function CardManager({
         const uploadResponse = await fetch("/api/upload", {
           method: "POST",
           body: formDataUpload,
-          credentials: "include",
         });
 
         if (!uploadResponse.ok) {
