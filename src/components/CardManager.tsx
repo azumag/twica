@@ -2,7 +2,6 @@
 
 import { useState, useRef } from "react";
 import type { Card, Rarity } from "@/types/database";
-import { upload } from "@vercel/blob/client";
 
 interface CardManagerProps {
   streamerId: string;
@@ -128,16 +127,29 @@ export default function CardManager({
   const handleDelete = async (cardId: string) => {
     if (!confirm("このカードを削除しますか？")) return;
 
+    const originalCards = cards;
     try {
+      // Optimistic update: remove from UI immediately
+      setCards(cards.filter((c) => c.id !== cardId));
+
       const response = await fetch(`/api/cards/${cardId}`, {
         method: "DELETE",
       });
 
-      if (response.ok) {
-        setCards(cards.filter((c) => c.id !== cardId));
+      if (!response.ok) {
+        // Revert on failure
+        setCards(originalCards);
+        const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+        const errorMessage = errorData.error || "カード削除に失敗しました";
+        alert(`削除失敗: ${errorMessage}`);
+        console.error("Delete failed:", errorData);
       }
+      // Success: no alert needed as optimistic update already provides feedback
     } catch (error) {
+      // Revert on network error
+      setCards(originalCards);
       console.error("Failed to delete card:", error);
+      alert("ネットワークエラーが発生しました。削除をキャンセルしました。");
     }
   };
 
