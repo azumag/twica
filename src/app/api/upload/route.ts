@@ -1,29 +1,15 @@
-import { put } from '@vercel/blob';
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { getSession } from '@/lib/session';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
+
+const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
+const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const cookieHeader = request.headers.get('cookie');
-    console.log(`[Upload API] Incoming request - Cookie header length: ${cookieHeader?.length || 0}`);
-
     const session = await getSession();
     if (!session) {
-      console.error('[Upload API] User not authenticated. Cookies present:', !!cookieHeader);
-
-      // Debug info for the client
-      const debugInfo = {
-        cookieHeaderLength: cookieHeader?.length || 0,
-        hasSessionCookie: cookieHeader?.includes('twica_session'),
-        allHeaders: Array.from(request.headers.entries()).map(([k, v]) => `${k}: ${v.length > 50 ? v.substring(0, 50) + '...' : v}`), // Don't dump full sensitive values
-        cookiesSeenByNext: (await cookies()).getAll().map(c => ({ name: c.name, size: c.value.length })),
-      };
-
-      return NextResponse.json({
-        error: 'Not authenticated',
-        debug: debugInfo
-      }, { status: 401 });
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
     const formData = await request.formData();
@@ -33,20 +19,39 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
 
-    console.log(`[Upload API] Uploading ${file.name} for user ${session.twitchUserId}`);
+    // ファイルサイズチェック
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json({ error: 'ファイルサイズは2MB以下にしてください' }, { status: 400 });
+    }
 
-    const blob = await put(file.name, file, {
-      access: 'public',
-    });
+    // ファイルタイプチェック
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      return NextResponse.json({ error: '画像ファイル（JPEG, PNG, GIF, WebP）のみ対応しています' }, { status: 400 });
+    }
 
-    console.log(`[Upload API] Upload successful: ${blob.url}`);
+    const supabase = getSupabaseAdmin();
+    const ext = file.name.split('.').pop();
+    const fileName = `${session.twitchUserId}-${Date.now()}.${ext}`;
 
-    return NextResponse.json(blob);
+    const { data, error } = await supabase.storage
+      .from('card-images')
+      .upload(fileName, file, {
+        contentType: file.type,
+        upsert: false,
+      });
+
+    if (error) {
+      console.error('[Upload API] Supabase upload error:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('card-images')
+      .getPublicUrl(data.path);
+
+    return NextResponse.json({ url: publicUrl });
   } catch (error) {
     console.error('[Upload API] Error:', error);
-    return NextResponse.json(
-      { error: (error as Error).message },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }

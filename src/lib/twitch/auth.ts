@@ -1,4 +1,4 @@
-// Twitch OAuth utilities
+import { getEnvVar } from '@/lib/env-validation'
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
 const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token'
@@ -21,7 +21,6 @@ export interface TwitchTokens {
   scope: string[]
 }
 
-// All users get the same scopes - streamer features are enabled based on broadcaster_type
 export const AUTH_SCOPES = [
   'user:read:email',
   'channel:read:redemptions',
@@ -32,8 +31,9 @@ export function getTwitchAuthUrl(
   redirectUri: string,
   state: string
 ): string {
+  const clientId = getEnvVar('NEXT_PUBLIC_TWITCH_CLIENT_ID', true)!
   const params = new URLSearchParams({
-    client_id: process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
+    client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
     scope: AUTH_SCOPES,
@@ -47,14 +47,17 @@ export async function exchangeCodeForTokens(
   code: string,
   redirectUri: string
 ): Promise<TwitchTokens> {
+  const clientId = getEnvVar('TWITCH_CLIENT_ID', true)!
+  const clientSecret = getEnvVar('TWITCH_CLIENT_SECRET', true)!
+
   const response = await fetch(TWITCH_TOKEN_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({
-      client_id: process.env.TWITCH_CLIENT_ID!,
-      client_secret: process.env.TWITCH_CLIENT_SECRET!,
+      client_id: clientId,
+      client_secret: clientSecret,
       code: code,
       grant_type: 'authorization_code',
       redirect_uri: redirectUri,
@@ -62,22 +65,26 @@ export async function exchangeCodeForTokens(
   })
 
   if (!response.ok) {
-    throw new Error('Failed to exchange code for tokens')
+    const errorBody = await response.text()
+    throw new Error(`Failed to exchange code for tokens: ${response.status} ${response.statusText} - ${errorBody}`)
   }
 
   return response.json()
 }
 
 export async function getTwitchUser(accessToken: string): Promise<TwitchUser> {
+  const clientId = getEnvVar('TWITCH_CLIENT_ID', true)!
+
   const response = await fetch(`${TWITCH_API_URL}/users`, {
     headers: {
       'Authorization': `Bearer ${accessToken}`,
-      'Client-Id': process.env.TWITCH_CLIENT_ID!,
+      'Client-Id': clientId,
     },
   })
 
   if (!response.ok) {
-    throw new Error('Failed to get Twitch user')
+    const errorBody = await response.text()
+    throw new Error(`Failed to get Twitch user: ${response.status} ${response.statusText} - ${errorBody}`)
   }
 
   const data = await response.json()
@@ -87,21 +94,25 @@ export async function getTwitchUser(accessToken: string): Promise<TwitchUser> {
 export async function refreshTwitchToken(
   refreshToken: string
 ): Promise<TwitchTokens> {
+  const clientId = getEnvVar('TWITCH_CLIENT_ID', true)!
+  const clientSecret = getEnvVar('TWITCH_CLIENT_SECRET', true)!
+
   const response = await fetch(TWITCH_TOKEN_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({
-      client_id: process.env.TWITCH_CLIENT_ID!,
-      client_secret: process.env.TWITCH_CLIENT_SECRET!,
+      client_id: clientId,
+      client_secret: clientSecret,
       refresh_token: refreshToken,
       grant_type: 'refresh_token',
     }),
   })
 
   if (!response.ok) {
-    throw new Error('Failed to refresh token')
+    const errorBody = await response.text()
+    throw new Error(`Failed to refresh token: ${response.status} ${response.statusText} - ${errorBody}`)
   }
 
   return response.json()

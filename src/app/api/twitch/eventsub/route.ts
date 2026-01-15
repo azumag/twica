@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import crypto from "crypto";
+import { selectWeightedCard } from "@/lib/gacha";
+import { TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
 
 // Twitch EventSub message types
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
@@ -97,7 +99,7 @@ export async function POST(request: NextRequest) {
     console.log("EventSub notification:", subscriptionType, event);
 
     // Handle channel point redemption
-    if (subscriptionType === "channel.channel_points_custom_reward_redemption.add") {
+    if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
       await handleRedemption(event);
     }
 
@@ -147,17 +149,11 @@ async function handleRedemption(event: {
       return;
     }
 
-    // Weighted random selection based on drop_rate
-    const totalWeight = cards.reduce((sum, card) => sum + (card.drop_rate || 1), 0);
-    let random = Math.random() * totalWeight;
-    let selectedCard = cards[0];
+    const selectedCard = selectWeightedCard(cards);
 
-    for (const card of cards) {
-      random -= card.drop_rate || 1;
-      if (random <= 0) {
-        selectedCard = card;
-        break;
-      }
+    if (!selectedCard) {
+      console.log("Failed to select card");
+      return;
     }
 
     // Ensure user exists

@@ -1,22 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
-
-// Weighted random selection based on drop rates
-function selectCard(cards: { id: string; drop_rate: number }[]): string | null {
-  if (cards.length === 0) return null;
-
-  const totalRate = cards.reduce((sum, card) => sum + card.drop_rate, 0);
-  let random = Math.random() * totalRate;
-
-  for (const card of cards) {
-    random -= card.drop_rate;
-    if (random <= 0) {
-      return card.id;
-    }
-  }
-
-  return cards[cards.length - 1].id;
-}
+import { selectWeightedCard } from "@/lib/gacha";
 
 export async function POST(request: NextRequest) {
   try {
@@ -46,9 +30,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Select a card based on drop rates
-    const selectedCardId = selectCard(cards);
+    const selectedCard = selectWeightedCard(cards);
 
-    if (!selectedCardId) {
+    if (!selectedCard) {
       return NextResponse.json(
         { error: "Failed to select card" },
         { status: 500 }
@@ -59,7 +43,7 @@ export async function POST(request: NextRequest) {
     const { data: card, error: cardError } = await supabaseAdmin
       .from("cards")
       .select("*")
-      .eq("id", selectedCardId)
+      .eq("id", selectedCard.id)
       .single();
 
     if (cardError || !card) {
@@ -73,7 +57,7 @@ export async function POST(request: NextRequest) {
     await supabaseAdmin.from("gacha_history").insert({
       user_twitch_id: userTwitchId,
       user_twitch_username: userTwitchUsername,
-      card_id: selectedCardId,
+      card_id: selectedCard.id,
       streamer_id: streamerId,
     });
 
@@ -87,7 +71,7 @@ export async function POST(request: NextRequest) {
     if (user) {
       await supabaseAdmin.from("user_cards").insert({
         user_id: user.id,
-        card_id: selectedCardId,
+        card_id: selectedCard.id,
       });
     }
 

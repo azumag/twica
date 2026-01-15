@@ -11,13 +11,13 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${error}`
+      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(error)}`
     )
   }
 
   if (!code || !state) {
     return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=missing_params`
+      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent('missing_params')}`
     )
   }
 
@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
 
   if (!storedState || state !== storedState) {
     return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=invalid_state`
+      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent('invalid_state')}`
     )
   }
 
@@ -93,8 +93,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
   } catch (err) {
     console.error('Auth error:', err)
+    const errorMessage = err instanceof Error ? err.message : 'auth_failed'
     return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=auth_failed`
+      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(errorMessage)}`
     )
   }
 }

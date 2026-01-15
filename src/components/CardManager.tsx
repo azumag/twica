@@ -184,7 +184,9 @@ export default function CardManager({
               </label>
               <input
                 type="text"
+                name="name"
                 required
+                placeholder="カード名"
                 value={formData.name}
                 onChange={(e) =>
                   setFormData({ ...formData, name: e.target.value })
@@ -199,12 +201,14 @@ export default function CardManager({
               <div className="space-y-2">
                 <input
                   type="file"
+                  name="image"
                   accept="image/*"
                   ref={fileInputRef}
                   className="w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-purple-700"
                 />
                 <input
                   type="url"
+                  name="imageUrl"
                   placeholder="または画像URLを入力"
                   value={formData.imageUrl}
                   onChange={(e) =>
@@ -219,6 +223,7 @@ export default function CardManager({
                 レアリティ
               </label>
               <select
+                name="rarity"
                 value={formData.rarity}
                 onChange={(e) =>
                   setFormData({ ...formData, rarity: e.target.value as Rarity })
@@ -238,6 +243,7 @@ export default function CardManager({
               </label>
               <input
                 type="range"
+                name="dropRate"
                 min="0"
                 max="1"
                 step="0.01"
@@ -254,6 +260,7 @@ export default function CardManager({
             <div className="md:col-span-2">
               <label className="mb-1 block text-sm text-gray-300">説明</label>
               <textarea
+                name="description"
                 value={formData.description}
                 onChange={(e) =>
                   setFormData({ ...formData, description: e.target.value })
