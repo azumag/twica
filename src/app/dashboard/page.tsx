@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { getStreamerData, getUserCards, getRecentGachaHistory } from "@/lib/dashboard-data";
 import type { Card, Streamer, GachaHistory } from "@/types/database";
 import CardManager from "@/components/CardManager";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
@@ -17,92 +17,7 @@ interface GachaHistoryWithCard extends GachaHistory {
   cards: Card;
 }
 
-async function getStreamerData(twitchUserId: string) {
-  const supabaseAdmin = getSupabaseAdmin();
-  const { data: streamer } = await supabaseAdmin
-    .from("streamers")
-    .select("*")
-    .eq("twitch_user_id", twitchUserId)
-    .single();
-
-  if (!streamer) return null;
-
-  const { data: cards } = await supabaseAdmin
-    .from("cards")
-    .select("*")
-    .eq("streamer_id", streamer.id)
-    .order("created_at", { ascending: false });
-
-  return { streamer, cards: cards || [] };
-}
-
-async function getUserCards(twitchUserId: string): Promise<CardWithDetails[]> {
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: user } = await supabaseAdmin
-    .from("users")
-    .select("id")
-    .eq("twitch_user_id", twitchUserId)
-    .single();
-
-  if (!user) return [];
-
-  const { data: userCards } = await supabaseAdmin
-    .from("user_cards")
-    .select(`
-      card_id,
-      cards (
-        *,
-        streamers (*)
-      )
-    `)
-    .eq("user_id", user.id);
-
-  if (!userCards) return [];
-
-  const cardMap = new Map<string, CardWithDetails>();
-
-  for (const uc of userCards) {
-    const card = uc.cards as unknown as Card & { streamers: Streamer };
-    if (!card) continue;
-
-    const existing = cardMap.get(card.id);
-    if (existing) {
-      existing.count++;
-    } else {
-      cardMap.set(card.id, {
-        ...card,
-        streamer: card.streamers,
-        count: 1,
-      });
-    }
-  }
-
-  return Array.from(cardMap.values());
-}
-
-async function getRecentGachaHistory(): Promise<GachaHistoryWithCard[]> {
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: history } = await supabaseAdmin
-    .from("gacha_history")
-    .select(`
-      *,
-      cards (*)
-    `)
-    .order("redeemed_at", { ascending: false })
-    .limit(10);
-
-  return (history || []) as unknown as GachaHistoryWithCard[];
-}
-
-const RARITY_ORDER = ["legendary", "epic", "rare", "common"];
-const RARITY_COLORS = {
-  common: "bg-gray-500",
-  rare: "bg-blue-500",
-  epic: "bg-purple-500",
-  legendary: "bg-yellow-500",
-};
+import { CardGrid, GachaHistoryList } from "@/components/DashboardComponents";
 
 export default async function DashboardPage() {
   const session = await getSession();
