@@ -1,8 +1,6 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-
-const API_URL = 'http://localhost:3000/api/upload';
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
 const SESSION_COOKIE_PLACEHOLDER = '// TODO: Add valid session cookie here';
 
 async function runTests() {
@@ -312,7 +310,7 @@ function makeRequest(options, body) {
         try {
           const parsedBody = JSON.parse(data);
           resolve({ statusCode: res.statusCode, body: parsedBody });
-        } catch (e) {
+        } catch {
           resolve({ statusCode: res.statusCode, body: data });
         }
       });
@@ -331,7 +329,7 @@ function isValidUrl(string) {
   try {
     const url = new URL(string);
     return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch (_) {
+  } catch {
     return false;
   }
 }

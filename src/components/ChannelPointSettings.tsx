@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 interface TwitchReward {
   id: string;
@@ -41,11 +41,6 @@ export default function ChannelPointSettings({
   const [eventSubStatus, setEventSubStatus] = useState<"none" | "pending" | "active" | "error">("none");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
 
-  useEffect(() => {
-    fetchRewards();
-    fetchEventSubStatus();
-  }, []);
-
   const fetchRewards = async () => {
     setLoading(true);
     setError("");
@@ -72,7 +67,7 @@ export default function ChannelPointSettings({
     }
   };
 
-  const fetchEventSubStatus = async () => {
+  const fetchEventSubStatus = useCallback(async () => {
     try {
       const response = await fetch("/api/twitch/eventsub/subscribe");
       if (response.ok) {
@@ -97,7 +92,12 @@ export default function ChannelPointSettings({
     } catch {
       console.error("Failed to fetch EventSub status");
     }
-  };
+  }, [currentRewardId]);
+
+  useEffect(() => {
+    fetchRewards();
+    fetchEventSubStatus();
+  }, [fetchEventSubStatus]);
 
   const handleCreateReward = async () => {
     setCreating(true);

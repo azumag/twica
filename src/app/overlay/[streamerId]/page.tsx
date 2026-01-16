@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
+import Image from "next/image";
 import type { Card } from "@/types/database";
 
 interface GachaResult {
@@ -209,9 +210,11 @@ export default function OverlayPage() {
             {/* Card Image */}
             <div className="relative aspect-[3/4] overflow-hidden rounded-lg bg-gray-800">
               {result.card.image_url ? (
-                <img
+                <Image
                   src={result.card.image_url}
                   alt={result.card.name}
+                  width={300}
+                  height={400}
                   className="h-full w-full object-cover"
                 />
               ) : (

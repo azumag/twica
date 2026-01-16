@@ -6,7 +6,7 @@
  * このスクリプトは、画像アップロードテスト用に有効なセッションクッキーを取得する方法をガイドします。
  */
 
-const http = require('http');
+import http from 'http';
 
 console.log(`
 ============================================================
@@ -80,13 +80,13 @@ const checkServer = () => {
           console.log('\n✓ サーバーは稼働しています');
           console.log('  まだ認証されていません。上記の手順に従って認証してください。');
         }
-      } catch (e) {
+      } catch {
         console.log('\n✓ サーバーは稼働しています');
       }
     });
   });
 
-  req.on('error', (error) => {
+  req.on('error', () => {
     console.log('\n✗ サーバーに接続できません');
     console.log('  「npm run dev」コマンドで開発サーバーを起動してください。');
   });

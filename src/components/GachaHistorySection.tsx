@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import type { GachaHistory, Card } from "@/types/database";
 
 interface GachaHistoryWithCard extends GachaHistory {
@@ -55,9 +56,11 @@ export default function GachaHistorySection({
               <div key={entry.id} className="flex items-center gap-4 p-4">
                 <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-gray-700">
                   {entry.cards.image_url ? (
-                    <img
+                    <Image
                       src={entry.cards.image_url}
                       alt={entry.cards.name}
+                      width={48}
+                      height={48}
                       className="h-full w-full object-cover"
                     />
                   ) : (

@@ -4,7 +4,7 @@ import Image from "next/image";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData, getUserCards, getRecentGachaHistory } from "@/lib/dashboard-data";
 import { RARITY_ORDER } from "@/lib/constants";
-import type { Card, Streamer, GachaHistory } from "@/types/database";
+import type { Card, Streamer } from "@/types/database";
 import CardManager from "@/components/CardManager";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CopyButton from "@/components/CopyButton";
@@ -13,10 +13,6 @@ import DevelopmentNotice from "@/components/DevelopmentNotice";
 interface CardWithDetails extends Card {
   streamer: Streamer;
   count: number;
-}
-
-interface GachaHistoryWithCard extends GachaHistory {
-  cards: Card;
 }
 
 export default async function DashboardPage() {
