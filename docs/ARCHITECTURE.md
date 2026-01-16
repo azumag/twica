@@ -479,26 +479,29 @@ npm run dev
 
 ---
 
-## Issue #12: CI環境変数の問題と解決策
+## CI環境変数検証の修正
 
 ### 問題
-CIビルド時に必要な環境変数が不足しており、ビルドが失敗している
+CIビルド時に環境変数の検証が失敗し、ビルドが成功しない
 
 ### 現象
-- `.github/workflows/ci.yml` で一部の環境変数のみが設定されている
-- `env-validation.ts` で環境変数のバリデーションが実行され、CIビルド時に失敗
-- エラーメッセージ: `Missing required environment variables: NEXT_PUBLIC_TWITCH_CLIENT_ID, TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, TWITCH_EVENTSUB_SECRET, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY`
+- `src/lib/env-validation.ts` で環境変数のバリデーションが実行される
+- CI環境（`process.env.CI`）では検証をスキップするはずだが、動作していない
+- 現在の実装は `process.env.NODE_ENV !== 'test'` のみチェックしている
+- GitHub Actions CIでは `NODE_ENV` が設定されていないため、検証が実行されてしまう
 
 ### 解決策
-`src/lib/env-validation.ts` を更新して、CI環境でのバリデーションをスキップする
+`src/lib/env-validation.ts` を更新して、CI環境でのバリデーションを適切にスキップする
 
 ### 設計内容
 
-1. **`src/lib/env-validation.ts` を更新**
-   - `validateEnvVars()` の実行をCI環境でスキップ
-   - `CI` 環境変数または `NODE_ENV === 'test'` の場合にスキップ
+1. **`src/lib/env-validation.ts` の検証ロジックを更新**
+   - 現在: `if (!valid && process.env.NODE_ENV !== 'test')`
+   - 修正: `if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI)`
+   - CI環境変数 `process.env.CI` が設定されている場合も検証をスキップ
 
 2. **理由**
+   - GitHub Actionsでは `CI` 環境変数が自動的に `true` に設定される
    - CIビルドでは実際のAPI接続が不要（静的解析、型チェックのみ）
    - CI workflowですべての必要な環境変数にダミー値を設定済み
    - 本番環境ではVercelの環境変数設定が使用される
@@ -507,51 +510,7 @@ CIビルド時に必要な環境変数が不足しており、ビルドが失敗
 - [ ] CIが成功する
 - [ ] ビルドが正常に完了する
 - [ ] すべてのテストとLintがパスする
-
----
-
-## Issue #11: カードアップロード容量制限の実装
-
-### 問題
-カード画像の容量制限が実装されていない
-
-### 現象
-- Vercel Blobの容量が1GBしかないため、約200ユーザーまでの想定
-- ユーザーが大きな画像をアップロードすると容量がすぐに満杯になる
-- 画像サイズの検証がクライアントサイドで行われていない
-
-### 解決策
-画像アップロード時にサイズと形式の検証を追加する
-
-### 設計内容
-
-1. **`src/lib/upload-validation.ts` を新規作成**
-   - 画像サイズ検証（最大1MB）
-   - 画像形式検証（JPEG/PNGのみ）
-   - 検証結果を返す関数
-
-2. **フロントエンドコンポーネントの更新**
-   - 画像選択時にクライアントサイドで検証
-   - サーバーサイドでも検証
-
-3. **`/api/upload` ルートの更新**
-   - サーバーサイドで画像サイズと形式を検証
-   - 不正なファイルの場合は400エラーを返す
-
-4. **制限値**
-   - 最大サイズ: 1MB (1,048,576 bytes)
-   - 許可形式: image/jpeg, image/png
-
-5. **理由**
-   - Vercel Blobの容量制限（1GB）を考慮
-   - ユーザーあたりの平均カード画像サイズを想定
-   - Webページの表示速度向上のため
-
-### 受け入れ基準
-- [ ] 1MB以上の画像がアップロードできない
-- [ ] JPEG/PNG以外の画像がアップロードできない
-- [ ] 適切なエラーメッセージが表示される
-- [ ] クライアントサイドとサーバーサイド両方で検証される
+- [ ] 環境変数の検証がCI環境で正しくスキップされる
 
 ---
 
@@ -559,5 +518,4 @@ CIビルド時に必要な環境変数が不足しており、ビルドが失敗
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-17 | CI環境変数の設計追加（Issue #12対応） |
-| 2026-01-17 | カードアップロード容量制限の設計追加（Issue #11対応） |
+| 2026-01-17 | CI環境変数検証の修正設計追加 |

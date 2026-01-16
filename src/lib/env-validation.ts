@@ -42,6 +42,6 @@ export function getEnvVar(name: string, required: boolean = false): string | und
 }
 
 const { valid, missing } = validateEnvVars()
-if (!valid && process.env.NODE_ENV !== 'test') {
+if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI) {
   throw new Error(`Missing required environment variables: ${missing.join(', ')}`)
 }
