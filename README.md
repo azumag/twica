@@ -80,8 +80,14 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 ## Deployment (Vercel)
 
 1. Connect GitHub repository to Vercel
-2. Configure environment variables
+2. Configure environment variables in Vercel dashboard
 3. Automatic CI/CD on push to main
+
+### CI/CD
+
+- GitHub Actions runs on push to main and pull requests
+- Build uses dummy environment variables for CI (no external API calls)
+- Vercel automatically deploys on merge to main
 
 ## Recent Changes
 

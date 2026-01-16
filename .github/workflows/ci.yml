@@ -31,7 +31,12 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID }}
+          NEXT_PUBLIC_SUPABASE_URL: ''
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ''
+          NEXT_PUBLIC_TWITCH_CLIENT_ID: ''
           NEXT_PUBLIC_APP_URL: http://localhost:3000
+          TWITCH_CLIENT_ID: dummy_client_id
+          TWITCH_CLIENT_SECRET: dummy_client_secret
+          TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
+          SUPABASE_SERVICE_ROLE_KEY: dummy_service_role_key
+          BLOB_READ_WRITE_TOKEN: dummy_blob_token
