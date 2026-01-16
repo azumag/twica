@@ -1,4 +1,4 @@
-import { RARITY_ORDER, RARITY_COLORS } from "@/lib/constants";
+import { RARITY_COLORS } from "@/lib/constants";
 import Image from "next/image";
 
 interface CardWithDetails {

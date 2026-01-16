@@ -19,8 +19,6 @@ interface GachaHistoryWithCard extends GachaHistory {
   cards: Card;
 }
 
-import { CardGrid, GachaHistoryList } from "@/components/DashboardComponents";
-
 export default async function DashboardPage() {
   const session = await getSession();
 
