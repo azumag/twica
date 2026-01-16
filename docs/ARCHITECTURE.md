@@ -19,6 +19,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - カードの有効/無効切り替え
 - カード画像はVercel Blob Storageに保存
 - レアリティ: コモン、レア、エピック、レジェンダリー
+- カード画像サイズ制限: 最大1MB
 
 ### ガチャ機能
 - チャンネルポイントを使用したガチャシステム
@@ -78,6 +79,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [ ] カードを編集できる
 - [ ] カードを削除できる
 - [ ] カード画像をアップロードできる
+- [ ] カード画像サイズが1MB以下である
 - [ ] カードの有効/無効を切り替えられる
 - [ ] ドロップ率を設定できる（合計1.0以下）
 
@@ -172,10 +174,11 @@ graph TD
 
 #### 画像アップロードフロー
 1. 配信者が画像を選択
-2. `/api/upload`でアップロードトークンをリクエスト
-3. クライアントからVercel Blobに直接アップロード
-4. 画像URLを返却
-5. カード登録時にURLを使用
+2. フロントエンドで画像サイズと形式を検証（最大1MB）
+3. `/api/upload`でアップロードトークンをリクエスト
+4. クライアントからVercel Blobに直接アップロード
+5. 画像URLを返却
+6. カード登録時にURLを使用
 
 ### データベース設計
 
@@ -270,6 +273,7 @@ src/
 │   ├── logger.ts
 │   ├── session.ts
 │   ├── dashboard-data.ts
+│   ├── upload-validation.ts
 │   ├── supabase/
 │   │   ├── index.ts
 │   │   └── admin.ts
@@ -294,6 +298,7 @@ src/
 **トレードオフ**:
 - Supabase Storageに比べて機能が限定
 - 移行コストが高い
+- 容量制限: 1GB（約200ユーザー相当）
 
 ### 2. ガチャ確率: 重み付き vs 固定確率
 
@@ -398,7 +403,7 @@ src/
 
 ### 入力検証
 - ユーザー入力のバリデーション
-- ファイルアップロードの制限（サイズ、形式）
+- ファイルアップロードの制限（サイズ1MB以下、形式JPEG/PNG）
 
 ---
 
@@ -485,28 +490,17 @@ CIビルド時に必要な環境変数が不足しており、ビルドが失敗
 - エラーメッセージ: `Missing required environment variables: NEXT_PUBLIC_TWITCH_CLIENT_ID, TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, TWITCH_EVENTSUB_SECRET, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY`
 
 ### 解決策
-CI workflowですべての必要な環境変数にダミー値を設定する
+`src/lib/env-validation.ts` を更新して、CI環境でのバリデーションをスキップする
 
 ### 設計内容
 
-1. **`.github/workflows/ci.yml` を更新**
-   - Build stepですべての必要な環境変数にダミー値を設定
-   - GitHub Secretsではなく、ダミー値を直接設定（CIでは実際の接続が不要なため）
+1. **`src/lib/env-validation.ts` を更新**
+   - `validateEnvVars()` の実行をCI環境でスキップ
+   - `CI` 環境変数または `NODE_ENV === 'test'` の場合にスキップ
 
-2. **ダミー値の設定**
-   - `TWITCH_CLIENT_ID`: `dummy_client_id`
-   - `TWITCH_CLIENT_SECRET`: `dummy_client_secret`
-   - `TWITCH_EVENTSUB_SECRET`: `dummy_eventsub_secret`
-   - `SUPABASE_SERVICE_ROLE_KEY`: `dummy_service_role_key`
-   - `BLOB_READ_WRITE_TOKEN`: `dummy_blob_token`
-   - `NEXT_PUBLIC_SUPABASE_URL`: 既存値（空文字でも可）
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`: 既存値（空文字でも可）
-   - `NEXT_PUBLIC_TWITCH_CLIENT_ID`: 既存値（空文字でも可）
-   - `NEXT_PUBLIC_APP_URL`: `http://localhost:3000`
-
-3. **理由**
+2. **理由**
    - CIビルドでは実際のAPI接続が不要（静的解析、型チェックのみ）
-   - テストでは環境変数のバリデーションがスキップされる（`NODE_ENV === 'test'`）
+   - CI workflowですべての必要な環境変数にダミー値を設定済み
    - 本番環境ではVercelの環境変数設定が使用される
 
 ### 受け入れ基準
@@ -516,8 +510,54 @@ CI workflowですべての必要な環境変数にダミー値を設定する
 
 ---
 
+## Issue #11: カードアップロード容量制限の実装
+
+### 問題
+カード画像の容量制限が実装されていない
+
+### 現象
+- Vercel Blobの容量が1GBしかないため、約200ユーザーまでの想定
+- ユーザーが大きな画像をアップロードすると容量がすぐに満杯になる
+- 画像サイズの検証がクライアントサイドで行われていない
+
+### 解決策
+画像アップロード時にサイズと形式の検証を追加する
+
+### 設計内容
+
+1. **`src/lib/upload-validation.ts` を新規作成**
+   - 画像サイズ検証（最大1MB）
+   - 画像形式検証（JPEG/PNGのみ）
+   - 検証結果を返す関数
+
+2. **フロントエンドコンポーネントの更新**
+   - 画像選択時にクライアントサイドで検証
+   - サーバーサイドでも検証
+
+3. **`/api/upload` ルートの更新**
+   - サーバーサイドで画像サイズと形式を検証
+   - 不正なファイルの場合は400エラーを返す
+
+4. **制限値**
+   - 最大サイズ: 1MB (1,048,576 bytes)
+   - 許可形式: image/jpeg, image/png
+
+5. **理由**
+   - Vercel Blobの容量制限（1GB）を考慮
+   - ユーザーあたりの平均カード画像サイズを想定
+   - Webページの表示速度向上のため
+
+### 受け入れ基準
+- [ ] 1MB以上の画像がアップロードできない
+- [ ] JPEG/PNG以外の画像がアップロードできない
+- [ ] 適切なエラーメッセージが表示される
+- [ ] クライアントサイドとサーバーサイド両方で検証される
+
+---
+
 ## 更新履歴
 
 | 日付 | 変更内容 |
 |:---|:---|
 | 2026-01-17 | CI環境変数の設計追加（Issue #12対応） |
+| 2026-01-17 | カードアップロード容量制限の設計追加（Issue #11対応） |

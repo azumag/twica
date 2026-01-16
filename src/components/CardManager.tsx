@@ -5,6 +5,7 @@ import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { validateUpload, getUploadErrorMessage, UPLOAD_CONFIG } from "@/lib/upload-validation";
 
 interface CardManagerProps {
   streamerId: string;
@@ -27,6 +28,7 @@ export default function CardManager({
     dropRate: 0.25,
   });
   const [saving, setSaving] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const resetForm = () => {
     setFormData({
@@ -38,8 +40,20 @@ export default function CardManager({
     });
     setEditingCard(null);
     setShowForm(false);
+    setUploadError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    setUploadError(null);
+    if (file) {
+      const validation = validateUpload(file);
+      if (!validation.valid) {
+        setUploadError(getUploadErrorMessage(validation.error!, validation.maxSize));
+      }
     }
   };
 
@@ -65,6 +79,14 @@ export default function CardManager({
       // Handle file upload if a file is selected
       if (fileInputRef.current?.files?.[0]) {
         const file = fileInputRef.current.files[0];
+        
+        const validation = validateUpload(file);
+        if (!validation.valid) {
+          setUploadError(getUploadErrorMessage(validation.error!, validation.maxSize));
+          setSaving(false);
+          return;
+        }
+
         const formDataUpload = new FormData();
         formDataUpload.append("file", file);
 
@@ -191,7 +213,7 @@ const response = await fetch(`/api/cards/${cardId}`, {
                 className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
               />
             </div>
-            <div>
+              <div>
               <label className="mb-1 block text-sm text-gray-300">
                 画像 (ファイルまたはURL)
               </label>
@@ -201,8 +223,15 @@ const response = await fetch(`/api/cards/${cardId}`, {
                   name="image"
                   accept="image/*"
                   ref={fileInputRef}
+                  onChange={handleFileChange}
                   className="w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-purple-700"
                 />
+                {uploadError && (
+                  <p className="text-sm text-red-400">{uploadError}</p>
+                )}
+                <p className="text-xs text-gray-500">
+                  対応形式: JPEG, PNG | 最大サイズ: {(UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1)}MB
+                </p>
                 <input
                   type="url"
                   name="imageUrl"

@@ -62,6 +62,7 @@ src/
 | `NEXT_PUBLIC_TWITCH_CLIENT_ID` | Yes | Public Twitch Client ID |
 | `NEXT_PUBLIC_APP_URL` | Yes | Application URL |
 | `BLOB_READ_WRITE_TOKEN` | Yes | Vercel Blob storage token |
+| `TWITCH_EVENTSUB_SECRET` | Yes | Twitch EventSub webhook secret |
 
 ## Getting Started
 
@@ -91,6 +92,9 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
+- CI environment variable validation fixed (skip in CI environment)
+- Card image upload size limit validation added (max 1MB, JPEG/PNG only)
+- Architecture documentation updated with issue resolutions
 - XSS vulnerability fix (callback route error parameter encoding)
 - Session expiry validation added
 - Improved error handling in Twitch auth
