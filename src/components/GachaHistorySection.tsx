@@ -37,6 +37,10 @@ export default function GachaHistorySection({
 
       if (response.ok) {
         setHistory(history.filter((h: GachaHistoryWithCard) => h.id !== historyId));
+      } else if (response.status === 429) {
+        const errorData = await response.json();
+        alert(`操作失敗: ${errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。"}`);
+        logger.error("Rate limit exceeded:", errorData);
       }
     } catch (error) {
       logger.error("Failed to delete gacha history:", error);

@@ -92,6 +92,8 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
+- Rate limiting implementation design added (Issue #13)
+- Terms of Service page implemented and issue #8 closed
 - CI Supabase Realtime environment variables fixed (dummy values for build)
 - Architecture documentation updated with CI fix design
 - CI environment variable validation fixed (skip in CI environment)

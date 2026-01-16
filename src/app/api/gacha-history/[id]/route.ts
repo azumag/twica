@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
+import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 
 interface DeleteRequestBody {
   userId: string;
@@ -15,6 +16,23 @@ export async function DELETE(
     const session = await getSession();
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const identifier = await getRateLimitIdentifier(request, session.twitchUserId);
+    const rateLimitResult = await checkRateLimit(rateLimits.gachaHistoryDelete, identifier);
+
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+        {
+          status: 429,
+          headers: {
+            "X-RateLimit-Limit": String(rateLimitResult.limit),
+            "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+            "X-RateLimit-Reset": String(rateLimitResult.reset),
+          },
+        }
+      );
     }
 
     const { id } = await params;

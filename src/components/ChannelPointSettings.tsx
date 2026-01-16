@@ -55,6 +55,13 @@ export default function ChannelPointSettings({
         return;
       }
 
+      if (response.status === 429) {
+        const errorData = await response.json();
+        setError(errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。");
+        setLoading(false);
+        return;
+      }
+
       if (!response.ok) {
         throw new Error("Failed to fetch rewards");
       }
@@ -115,6 +122,9 @@ export default function ChannelPointSettings({
         setSelectedRewardId(newReward.id);
         setSelectedRewardName(newReward.title);
         setMessage("報酬を作成しました");
+      } else if (response.status === 429) {
+        const errorData = await response.json();
+        setMessage(errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。");
       } else {
         setMessage("報酬の作成に失敗しました");
       }
@@ -141,6 +151,12 @@ export default function ChannelPointSettings({
         }),
       });
 
+      if (settingsResponse.status === 429) {
+        const errorData = await settingsResponse.json();
+        setMessage(errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。");
+        return;
+      }
+
       if (!settingsResponse.ok) {
         setMessage("設定の保存に失敗しました");
         return;
@@ -160,6 +176,9 @@ export default function ChannelPointSettings({
         setEventSubStatus("pending");
         // Refresh status
         await fetchEventSubStatus();
+      } else if (eventSubResponse.status === 429) {
+        const errorData = await eventSubResponse.json();
+        setMessage(errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。");
       } else {
         const errorData = await eventSubResponse.json();
         logger.error("EventSub error:", errorData);

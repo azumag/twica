@@ -1,8 +1,27 @@
 import { NextResponse } from 'next/server'
 import { getTwitchAuthUrl } from '@/lib/twitch/auth'
 import { cookies } from 'next/headers'
+import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 
-export async function GET() {
+export async function GET(request: Request) {
+  const ip = getClientIp(request);
+  const identifier = `ip:${ip}`;
+  const rateLimitResult = await checkRateLimit(rateLimits.authLogin, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+      {
+        status: 429,
+        headers: {
+          'X-RateLimit-Limit': String(rateLimitResult.limit),
+          'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+          'X-RateLimit-Reset': String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
   const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`
 
   // Generate state for CSRF protection

@@ -6,13 +6,12 @@ import { TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { logger } from "@/lib/logger";
 import { broadcastGachaResult } from "@/lib/realtime";
+import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 
-// Twitch EventSub message types
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
 
-// Verify Twitch signature
 function verifyTwitchSignature(
   messageId: string,
   timestamp: string,
@@ -20,7 +19,7 @@ function verifyTwitchSignature(
   signature: string
 ): boolean {
   const secret = process.env.TWITCH_EVENTSUB_SECRET;
-  if (!secret) return false;
+  if (!secret || !signature) return false;
 
   const message = messageId + timestamp + body;
   const expectedSignature = "sha256=" + crypto
@@ -28,29 +27,67 @@ function verifyTwitchSignature(
     .update(message)
     .digest("hex");
 
-  return crypto.timingSafeEqual(
-    Buffer.from(expectedSignature),
-    Buffer.from(signature)
-  );
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(expectedSignature),
+      Buffer.from(signature)
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function POST(request: NextRequest) {
   const body = await request.text();
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch (e) {
+    logger.error("Invalid JSON in request body", { error: e });
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
 
   const messageId = request.headers.get("twitch-eventsub-message-id") || "";
   const timestamp = request.headers.get("twitch-eventsub-message-timestamp") || "";
   const messageType = request.headers.get("twitch-eventsub-message-type") || "";
   const signature = request.headers.get("twitch-eventsub-message-signature") || "";
 
-  // Verify signature
   if (!verifyTwitchSignature(messageId, timestamp, body, signature)) {
     logger.error("Invalid Twitch signature");
     return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
   }
 
-  const data = JSON.parse(body);
+  if (messageType !== MESSAGE_TYPE_NOTIFICATION) {
+    const ip = getClientIp(request);
+    const identifier = `ip:${ip}`;
+    const rateLimitResult = await checkRateLimit(rateLimits.eventsub, identifier);
 
-  // Handle verification challenge
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: "Too many requests" },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': String(rateLimitResult.limit),
+            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+            'X-RateLimit-Reset': String(rateLimitResult.reset),
+          },
+        }
+      );
+    }
+  }
+
+  if (messageType === MESSAGE_TYPE_NOTIFICATION) {
+    const subscriptionType = data.subscription.type;
+    const event = data.event;
+
+    if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
+      await handleRedemption(messageId, event);
+    }
+
+    return NextResponse.json({ received: true });
+  }
+
   if (messageType === MESSAGE_TYPE_VERIFICATION) {
     return new NextResponse(data.challenge, {
       status: 200,
@@ -58,23 +95,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // Handle revocation
   if (messageType === MESSAGE_TYPE_REVOCATION) {
-    return NextResponse.json({ received: true });
-  }
-
-  // Handle notification
-  if (messageType === MESSAGE_TYPE_NOTIFICATION) {
-    const subscriptionType = data.subscription.type;
-    const event = data.event;
-
-    // Handle channel point redemption with idempotency check
-    if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
-      await handleRedemption(messageId, event);
-
-      return NextResponse.json({ received: true });
-    }
-
     return NextResponse.json({ received: true });
   }
 

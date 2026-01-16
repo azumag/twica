@@ -96,6 +96,12 @@ export default function CardManager({
         });
 
         if (!uploadResponse.ok) {
+          if (uploadResponse.status === 429) {
+            const errorData = await uploadResponse.json();
+            setUploadError(errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。");
+            setSaving(false);
+            return;
+          }
           try {
             const errorData = await uploadResponse.json();
             logger.error("Upload failed details:", errorData);
@@ -134,6 +140,9 @@ export default function CardManager({
           setCards([updatedCard, ...cards]);
         }
         resetForm();
+      } else if (response.status === 429) {
+        const errorData = await response.json();
+        setUploadError(errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。");
       }
     } catch (error) {
       logger.error("Failed to save card:", error);
@@ -156,12 +165,18 @@ const response = await fetch(`/api/cards/${cardId}`, {
         });
 
       if (!response.ok) {
-        // Revert on failure
-        setCards(originalCards);
-        const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-        const errorMessage = errorData.error || "カード削除に失敗しました";
-        alert(`削除失敗: ${errorMessage}`);
-        logger.error("Delete failed:", errorData);
+        if (response.status === 429) {
+          const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+          const errorMessage = errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。";
+          alert(`操作失敗: ${errorMessage}`);
+          logger.error("Rate limit exceeded:", errorData);
+        } else {
+          setCards(originalCards);
+          const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+          const errorMessage = errorData.error || "カード削除に失敗しました";
+          alert(`削除失敗: ${errorMessage}`);
+          logger.error("Delete failed:", errorData);
+        }
       }
       // Success: no alert needed as optimistic update already provides feedback
     } catch (error) {

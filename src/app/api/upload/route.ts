@@ -4,10 +4,32 @@ import { put } from '@vercel/blob';
 import { getSession } from '@/lib/session';
 import { logger } from '@/lib/logger';
 import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
+import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  const session = await getSession();
+
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.upload, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      {
+        error: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
+        retryAfter: rateLimitResult.reset,
+      },
+      {
+        status: 429,
+        headers: {
+          'X-RateLimit-Limit': String(rateLimitResult.limit),
+          'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+          'X-RateLimit-Reset': String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
   try {
-    const session = await getSession();
     if (!session) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }

@@ -2,10 +2,29 @@ import { NextRequest, NextResponse } from "next/server";
 import { GachaService } from "@/lib/services/gacha";
 import { handleApiError } from "@/lib/error-handler";
 import { getSession } from "@/lib/session";
+import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession();
+
+    const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+    const rateLimitResult = await checkRateLimit(rateLimits.gacha, identifier);
+
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': String(rateLimitResult.limit),
+            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+            'X-RateLimit-Reset': String(rateLimitResult.reset),
+          },
+        }
+      );
+    }
+
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

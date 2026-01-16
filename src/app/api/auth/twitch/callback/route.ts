@@ -4,8 +4,19 @@ import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 import { COOKIE_NAMES } from '@/lib/constants'
+import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 
 export async function GET(request: NextRequest) {
+  const ip = getClientIp(request);
+  const identifier = `ip:${ip}`;
+  const rateLimitResult = await checkRateLimit(rateLimits.authCallback, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.redirect(
+      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent('リクエストが多すぎます。しばらく待ってから再試行してください。')}`
+    );
+  }
+
   const searchParams = request.nextUrl.searchParams
   const code = searchParams.get('code')
   const state = searchParams.get('state')
