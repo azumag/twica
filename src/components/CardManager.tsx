@@ -127,9 +127,10 @@ export default function CardManager({
       // Optimistic update: remove from UI immediately
       setCards(cards.filter((c) => c.id !== cardId));
 
-      const response = await fetch(`/api/cards/${cardId}`, {
-        method: "DELETE",
-      });
+const response = await fetch(`/api/cards/${cardId}`, {
+          method: "DELETE",
+          credentials: "include",
+        });
 
       if (!response.ok) {
         // Revert on failure
