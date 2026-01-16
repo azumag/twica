@@ -17,17 +17,13 @@ export async function getSession(): Promise<Session | null> {
   const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
 
   if (!sessionCookie) {
-    console.log('[Session] No twica_session cookie found. All cookies:', cookieStore.getAll().map(c => c.name));
     return null
   }
-
-  console.log('[Session] Found session cookie, length:', sessionCookie.length);
 
   try {
     const session = JSON.parse(sessionCookie) as Session
 
     if (session.expiresAt && Date.now() > session.expiresAt) {
-      console.log('[Session] Session expired at:', new Date(session.expiresAt).toISOString());
       return null
     }
 
