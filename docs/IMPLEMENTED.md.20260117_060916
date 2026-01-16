@@ -1,0 +1,158 @@
+# 実装記録
+
+## 日付
+
+2026-01-17
+
+## レビュー対応修正（7回目）
+
+### 修正履歴
+
+以下のレビュー問題を修正しました。
+
+---
+
+### 1. #1 レート制限を削除（サーバーーレス環境で機能しないため）
+
+**対象ファイル:** `src/app/api/twitch/eventsub/route.ts`
+
+**問題:** Map を使用したレート制限は、Vercelのサーバーーレス環境では機能しません。各リクエストでコールドスタートのたびにメモリがリセットされます。
+
+**修正内容:** レート制限コードを削除しました。代わりに、Twitch署名検証が十分なセキュリティを提供します。
+
+**削除したコード:**
+```typescript
+// Rate limiting
+const RATE_LIMIT_WINDOW = 60000;
+const MAX_REQUESTS_PER_WINDOW = 100;
+const requestCounts = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(ip: string): boolean { ... }
+```
+
+**理由:**
+- Vercel KV/Redis が導入されていない
+- サーバーーレス環境ではメモリベースのレート制限が無効
+- Twitch署名検証により、正規のリクエストのみが処理される
+- 将来的にVercel KVが導入された場合、再実装が可能
+
+---
+
+### 2. #2 ガチャ選択の精度問題を修正
+
+**対象ファイル:** `src/lib/gacha.ts`
+
+**問題:** 各アイテムの重みを個別に丸めると、合計が正確でなくなる可能性がありました。特に小さいドロップ率（例：0.0001）の場合、丸めにより0になる可能性がありました。
+
+**修正内容:** 推奨されたアプローチを採用し、ループ内で丸める方式に変更しました。
+
+**変更前:**
+```typescript
+const scaledItems = items.map(item => ({
+  ...item,
+  scaledWeight: Math.round((item.drop_rate || 0) * 10000)
+}))
+const totalWeight = scaledItems.reduce((sum, item) => sum + item.scaledWeight, 0)
+// ...
+```
+
+**変更後:**
+```typescript
+const totalWeightInt = items.reduce((sum, item) => {
+  return sum + Math.round((item.drop_rate || 0) * 10000)
+}, 0)
+
+if (totalWeightInt === 0) return null
+
+const random = Math.floor(Math.random() * totalWeightInt)
+let cumulative = 0
+
+for (const item of items) {
+  cumulative += Math.round((item.drop_rate || 0) * 10000)
+  if (random < cumulative) {
+    return item
+  }
+}
+```
+
+**利点:**
+- 各アイテムの丸め誤差が累積しない
+- 合計が常に正確に維持される
+- 小さなドロップ率でも正しく選択される
+
+---
+
+### 3. #3 セッション期限検証を実装
+
+**対象ファイル:** `src/lib/session.ts`, `src/app/api/auth/twitch/callback/route.ts`
+
+**問題:** Cookieの `maxAge` は設定されていましたが、セッション自体に有効期限がなく、30日が経過した後も有効なJSONとして解析できればセッションが使用できました。
+
+**修正内容:** セッションに `expiresAt` フィールドを追加し、検証を実装しました。
+
+**変更 - session.ts:**
+```typescript
+export interface Session {
+  // 既存のフィールド...
+  expiresAt: number // Unix timestamp (milliseconds)
+}
+
+export async function getSession(): Promise<Session | null> {
+  // ...
+  try {
+    const session = JSON.parse(sessionCookie) as Session
+
+    if (session.expiresAt && Date.now() > session.expiresAt) {
+      await clearSession();
+      return null;
+    }
+
+    return session
+  } catch (error) {
+    // ...
+  }
+}
+```
+
+**変更 - callback/route.ts:**
+```typescript
+const SESSION_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
+const sessionData = JSON.stringify({
+  twitchUserId: twitchUser.id,
+  twitchUsername: twitchUser.login,
+  twitchDisplayName: twitchUser.display_name,
+  twitchProfileImageUrl: twitchUser.profile_image_url,
+  broadcasterType: twitchUser.broadcaster_type,
+  expiresAt: Date.now() + SESSION_DURATION,
+})
+```
+
+---
+
+## 変更ファイル一覧
+
+| ファイル | 変更内容 |
+|:---|:---|
+| `src/app/api/twitch/eventsub/route.ts` | サーバーーレス環境で機能しないレート制限コードを削除 |
+| `src/lib/gacha.ts` | 精度問題を修正（ループ内で丸める方式に変更） |
+| `src/lib/session.ts` | expiresAt フィールドを追加、期限検証を実装 |
+| `src/app/api/auth/twitch/callback/route.ts` | セッション作成時に expiresAt を設定 |
+| `docs/ARCHITECTURE.md` | セキュリティ項目にTwitch署名検証を追加、更新履歴に追加 |
+
+## テスト結果
+
+| テストカテゴリ | 結果 |
+|:---|:---:|
+| ユニットテスト | 28件全てパス |
+| Lint | パス |
+| Type Check | パス |
+| ビルド | 成功 |
+
+## 影響範囲
+
+| 項目 | 影響 |
+|:---|:---|
+| レート制限 | 削除（Vercel KV未導入のため） |
+| ガチャ確率計算 | 精度向上 - 丸め誤差が排除 |
+| セッション管理 | セキュリティ向上 - 有効期限が検証される |
+| 設計書 | 正確性向上 - Twitch署名検証を明記 |

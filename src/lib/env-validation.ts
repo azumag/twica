@@ -13,6 +13,7 @@ export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_SUPABASE_URL', required: true },
   { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', required: true },
   { name: 'SUPABASE_SERVICE_ROLE_KEY', required: true },
+  { name: 'BLOB_READ_WRITE_TOKEN', required: true },
 ]
 
 export function validateEnvVars(): { valid: boolean; missing: string[] } {
@@ -41,6 +42,6 @@ export function getEnvVar(name: string, required: boolean = false): string | und
 }
 
 const { valid, missing } = validateEnvVars()
-if (!valid) {
+if (!valid && process.env.NODE_ENV !== 'test') {
   throw new Error(`Missing required environment variables: ${missing.join(', ')}`)
 }

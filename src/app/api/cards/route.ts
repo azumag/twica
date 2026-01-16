@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { validateDropRateSum } from "@/lib/validations";
+import { logger } from "@/lib/logger";
 
 export async function POST(request: NextRequest) {
   const session = await getSession();
@@ -14,6 +16,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { streamerId, name, description, imageUrl, rarity, dropRate } = body;
 
+    if (typeof dropRate !== "number" || dropRate < 0 || dropRate > 1) {
+      return NextResponse.json(
+        { error: "Drop rate must be a number between 0 and 1" },
+        { status: 400 }
+      );
+    }
+
     // Verify streamer owns this streamer profile
     const { data: streamer } = await supabaseAdmin
       .from("streamers")
@@ -24,6 +33,19 @@ export async function POST(request: NextRequest) {
 
     if (!streamer) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    // Validate drop rate sum
+    const dropRateValidation = await validateDropRateSum(
+      supabaseAdmin,
+      streamerId,
+      dropRate
+    );
+    if (!dropRateValidation.valid) {
+      return NextResponse.json(
+        { error: dropRateValidation.error },
+        { status: 400 }
+      );
     }
 
     const { data: card, error } = await supabaseAdmin
@@ -40,18 +62,19 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      console.error("Database error:", error);
+      logger.error("Database error:", error);
       return NextResponse.json({ error: "Failed to create card" }, { status: 500 });
     }
 
     return NextResponse.json(card);
   } catch (error) {
-    console.error("Error creating card:", error);
+    logger.error("Error creating card:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 export async function GET(request: NextRequest) {
+  const session = await getSession();
   const { searchParams } = new URL(request.url);
   const streamerId = searchParams.get("streamerId");
 
@@ -60,6 +83,17 @@ export async function GET(request: NextRequest) {
   }
 
   const supabaseAdmin = getSupabaseAdmin();
+  const { data: streamer, error: streamerError } = await supabaseAdmin
+    .from("streamers")
+    .select("id")
+    .eq("id", streamerId)
+    .eq("twitch_user_id", session?.twitchUserId)
+    .single();
+
+  if (streamerError || !streamer) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   const { data: cards, error } = await supabaseAdmin
     .from("cards")
     .select("*")
@@ -68,7 +102,7 @@ export async function GET(request: NextRequest) {
     .order("created_at", { ascending: false });
 
   if (error) {
-    console.error("Database error:", error);
+    logger.error("Database error:", error);
     return NextResponse.json({ error: "Failed to fetch cards" }, { status: 500 });
   }
 

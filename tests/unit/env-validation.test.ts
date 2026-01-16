@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest'
 
 describe('requiredEnvVars', () => {
   it('contains NEXT_PUBLIC_APP_URL', async () => {
@@ -35,6 +35,10 @@ describe('requiredEnvVars', () => {
 describe('validateEnvVars', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  beforeAll(() => {
+    process.env.BLOB_READ_WRITE_TOKEN = 'test-token'
   })
 
   it('returns valid: true when all required vars are set', async () => {

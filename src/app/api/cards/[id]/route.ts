@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { validateDropRateSum } from "@/lib/validations";
+import { logger } from "@/lib/logger";
 
 export async function PUT(
   request: NextRequest,
@@ -19,6 +21,13 @@ export async function PUT(
     const body = await request.json();
     const { name, description, imageUrl, rarity, dropRate } = body;
 
+    if (typeof dropRate !== "number" || dropRate < 0 || dropRate > 1) {
+      return NextResponse.json(
+        { error: "Drop rate must be a number between 0 and 1" },
+        { status: 400 }
+      );
+    }
+
     // Verify ownership
     const { data: card } = await supabaseAdmin
       .from("cards")
@@ -32,6 +41,20 @@ export async function PUT(
 
     if (!card || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    // Validate drop rate sum
+    const dropRateValidation = await validateDropRateSum(
+      supabaseAdmin,
+      card.streamer_id,
+      dropRate,
+      id
+    );
+    if (!dropRateValidation.valid) {
+      return NextResponse.json(
+        { error: dropRateValidation.error },
+        { status: 400 }
+      );
     }
 
     const { data: updatedCard, error } = await supabaseAdmin
@@ -48,13 +71,13 @@ export async function PUT(
       .single();
 
     if (error) {
-      console.error("Database error:", error);
+      logger.error("Database error:", error);
       return NextResponse.json({ error: "Failed to update card" }, { status: 500 });
     }
 
     return NextResponse.json(updatedCard);
   } catch (error) {
-    console.error("Error updating card:", error);
+    logger.error("Error updating card:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -95,13 +118,13 @@ export async function DELETE(
       .eq("id", id);
 
     if (error) {
-      console.error("Database error:", error);
+      logger.error("Database error:", error);
       return NextResponse.json({ error: "Failed to delete card" }, { status: 500 });
     }
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("Error deleting card:", error);
+    logger.error("Error deleting card:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

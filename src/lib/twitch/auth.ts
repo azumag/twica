@@ -1,4 +1,5 @@
 import { getEnvVar } from '@/lib/env-validation'
+import { logger } from '@/lib/logger'
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
 const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token'
@@ -66,7 +67,8 @@ export async function exchangeCodeForTokens(
 
   if (!response.ok) {
     const errorBody = await response.text()
-    throw new Error(`Failed to exchange code for tokens: ${response.status} ${response.statusText} - ${errorBody}`)
+    logger.error('Token exchange failed:', { status: response.status, errorBody })
+    throw new Error('Authentication failed')
   }
 
   return response.json()
@@ -84,7 +86,8 @@ export async function getTwitchUser(accessToken: string): Promise<TwitchUser> {
 
   if (!response.ok) {
     const errorBody = await response.text()
-    throw new Error(`Failed to get Twitch user: ${response.status} ${response.statusText} - ${errorBody}`)
+    logger.error('Failed to get Twitch user:', { status: response.status, errorBody })
+    throw new Error('Failed to get user information')
   }
 
   const data = await response.json()
@@ -112,7 +115,8 @@ export async function refreshTwitchToken(
 
   if (!response.ok) {
     const errorBody = await response.text()
-    throw new Error(`Failed to refresh token: ${response.status} ${response.statusText} - ${errorBody}`)
+    logger.error('Token refresh failed:', { status: response.status, errorBody })
+    throw new Error('Failed to refresh authentication token')
   }
 
   return response.json()

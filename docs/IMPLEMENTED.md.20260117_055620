@@ -1,0 +1,99 @@
+# 実装記録
+
+## 日付
+
+2026-01-17
+
+## レビュー対応修正（4回目）
+
+### 設計書の問題を修正
+
+設計書 (docs/ARCHITECTURE.md) に以下の問題を検出し、修正しました。
+
+---
+
+### 1. GACHA_HISTORY テーブルのリレーション設計を修正
+
+**問題:**
+- `GACHA_HISTORY` テーブルが `user_twitch_id` (TEXT) のみを使用
+- `USERS.id` (UUID) を参照しておらず、RLSポリシーが困難
+
+**修正内容:**
+- `GACHA_HISTORY` テーブルに `user_id UUID FK` を追加
+- `user_twitch_id` と `user_twitch_username` はキャッシュとして保持
+
+**変更前 (設計書):**
+```sql
+GACHA_HISTORY {
+    UUID id PK
+    TEXT user_twitch_id
+    TEXT user_twitch_username
+    UUID card_id FK
+    UUID streamer_id FK
+    TIMESTAMPTZ redeemed_at
+}
+```
+
+**変更後 (設計書):**
+```sql
+GACHA_HISTORY {
+    UUID id PK
+    UUID user_id FK          -- USERS.id を参照
+    TEXT user_twitch_id      -- キャッシュ用
+    TEXT user_twitch_username -- キャッシュ用
+    UUID card_id FK
+    UUID streamer_id FK
+    TIMESTAMPTZ redeemed_at
+}
+```
+
+---
+
+### 2. drop_rate の DECIMAL 精度を定義
+
+**問題:**
+- 設計書で `DECIMAL drop_rate` と精度が未定義
+- プラットフォームによって異なる精度で解釈される可能性
+
+**修正内容:**
+- `DECIMAL(5, 4)` を指定 (0.0000 ~ 0.9999 まで4桁の精度)
+
+**変更前 (設計書):**
+```sql
+DECIMAL drop_rate
+```
+
+**変更後 (設計書):**
+```sql
+DECIMAL(5, 4) drop_rate
+```
+
+**備考:**
+- 実際のマイグレーションファイル (supabase/migrations/00001_initial_schema.sql) では既に `DECIMAL(5,4)` が定義されていた
+- 設計書のみを修正して整合性を確保
+
+---
+
+### 3. 設計書の更新履歴を追加
+
+**追加したエントリ:**
+```
+| 2026-01-17 | GACHA_HISTORYテーブルにuser_id FKを追加、drop_rateのDECIMAL精度をDECIMAL(5,4)に定義 |
+```
+
+---
+
+## 変更ファイル一覧
+
+| ファイル | 変更内容 |
+|:---|:---|
+| `docs/ARCHITECTURE.md` | GACHA_HISTORYにuser_id FKを追加、drop_rateの精度をDECIMAL(5,4)に定義、更新履歴に追加 |
+
+## 影響範囲
+
+| 項目 | 影響 |
+|:---|:---|
+| データ整合性 | 向上 - USERSテーブルとの外部キー制約により参照整合性を保証 |
+| RLSポリシー | 改善 - user_id FKにより「視聴者は自分の履歴のみ閲覧」の実装が容易に |
+| クエリ性能 | 向上 - UUID型でのJOINはTEXT型より高速 |
+| 確率的計算 | 向上 - DECIMAL精度の定義により丸め誤差が予測可能に |

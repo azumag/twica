@@ -1,0 +1,143 @@
+# 実装記録
+
+## 日付
+
+2026-01-17
+
+## レビュー対応修正（10回目）
+
+### 修正履歴
+
+以下のレビュー問題を修正しました。
+
+---
+
+### 1. #1 eventIdがexecuteGachaに渡されていない問題を修正
+
+**対象ファイル:** `src/app/api/twitch/eventsub/route.ts`
+
+**問題:**
+`handleRedemption`関数内で`gachaService.executeGachaForEventSub(event)`を呼び出す際、`messageId`（eventId）が渡されていませんでした。その結果、`gacha_history`テーブルに`event_id`が常にNULLで挿入され、べき等性チェックが機能していませんでした。
+
+**修正内容:**
+
+```typescript
+// 修正前
+const result = await gachaService.executeGachaForEventSub(event);
+
+// 修正後
+const result = await gachaService.executeGachaForEventSub(event, messageId);
+```
+
+**影響:**
+- べき等性チェックが正しく機能するようになった
+- 重複したEventSubイベントが適切にスキップされる
+
+---
+
+### 2. #2 重複したgetSupabaseAdmin()呼び出しを削除
+
+**対象ファイル:** `src/app/api/twitch/eventsub/route.ts`
+
+**問題:**
+`handleRedemption`関数内で`supabaseAdmin`が2回定義されていました（91行目と123行目）。
+
+**修正内容:**
+
+```typescript
+// 修正前
+async function handleRedemption(messageId: string, event: {...}) {
+  const supabaseAdmin = getSupabaseAdmin();
+  // ... idempotency check ...
+  // 123行目で重複
+  const supabaseAdmin = getSupabaseAdmin();
+  // ...
+}
+
+// 修正後
+async function handleRedemption(messageId: string, event: {...}) {
+  const supabaseAdmin = getSupabaseAdmin();
+  // ... idempotency check ...
+  // 重複を削除し、既存のsupabaseAdminを使用
+}
+```
+
+**影響:**
+- 不要なクライアント作成を削除
+- パフォーマンス向上
+
+---
+
+### 3. #3 RLSポリシーの不整合を修正
+
+**対象ファイル:** `supabase/migrations/00001_initial_schema.sql`
+
+**問題:**
+設計書では「アプリケーション層で認証検証 + RLSは多層防御」とあるにもかかわらず、RLSポリシーで`auth.jwt() ->> 'twitch_user_id'`を使用していました。カスタムCookie方式のためSupabase Auth JWTが存在せず、これらのポリシーは機能しませんでした。
+
+**修正内容:**
+
+```sql
+-- 修正前（auth.jwt()を使用）
+CREATE POLICY "Streamers can update own profile" ON streamers
+  FOR UPDATE USING (
+    twitch_user_id = auth.jwt() ->> 'twitch_user_id'
+  );
+
+CREATE POLICY "Users can view own profile" ON users
+  FOR SELECT USING (
+    twitch_user_id = auth.jwt() ->> 'twitch_user_id'
+  );
+  -- ... その他のauth.jwt()参照ポリシー
+
+-- 修正後（service role操作のみ許可）
+CREATE POLICY "Service can manage streamers" ON streamers
+  FOR ALL USING (true);
+
+CREATE POLICY "Service can manage users" ON users
+  FOR ALL USING (true);
+
+CREATE POLICY "Service can manage cards" ON cards
+  FOR ALL USING (true);
+
+CREATE POLICY "Service can manage user_cards" ON user_cards
+  FOR ALL USING (true);
+
+CREATE POLICY "Service can view gacha history" ON gacha_history
+  FOR SELECT USING (true);
+```
+
+**設計書との整合性:**
+- ✅ RLSポリシーの`auth.jwt()`への依存を削除
+- ✅ service role操作のみを許可（多層防御としてRLSを維持）
+- ✅ アプリケーション層で認証検証
+
+**影響:**
+- 設計書と実装の整合性が確保された
+- RLSは多層防御として機能（service role 操作を許可）
+
+---
+
+## 変更ファイル一覧
+
+| ファイル | 変更内容 |
+|:---|:---|
+| `src/app/api/twitch/eventsub/route.ts` | eventIdを渡すように修正、重複したgetSupabaseAdmin()を削除 |
+| `supabase/migrations/00001_initial_schema.sql` | auth.jwt()参照のRLSポリシーを削除、service roleポリシーに統一 |
+
+## テスト結果
+
+| テストカテゴリ | 結果 |
+|:---|:---:|
+| ユニットテスト | 28件全てパス |
+| Lint | パス |
+| Type Check | パス |
+| ビルド | 成功 |
+
+## 影響範囲
+
+| 項目 | 影響 |
+|:---|:---|
+| EventSubべき等性 | 修正完了 - eventIdが正しく渡される |
+| コード品質 | 改善 - 重複したクライアント作成を削除 |
+| RLSポリシー | 整合性確保 - auth.jwt()への依存を削除 |

@@ -5,40 +5,12 @@ import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { logger } from "@/lib/logger";
+import { broadcastGachaResult } from "@/lib/realtime";
 
 // Twitch EventSub message types
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
-
-// Store for SSE connections (in production, use Redis or similar)
-const sseConnections = new Map<string, Set<ReadableStreamDefaultController>>();
-
-export function addSSEConnection(streamerId: string, controller: ReadableStreamDefaultController) {
-  if (!sseConnections.has(streamerId)) {
-    sseConnections.set(streamerId, new Set());
-  }
-  sseConnections.get(streamerId)!.add(controller);
-}
-
-export function removeSSEConnection(streamerId: string, controller: ReadableStreamDefaultController) {
-  sseConnections.get(streamerId)?.delete(controller);
-}
-
-export function notifySSEClients(streamerId: string, data: object) {
-  const connections = sseConnections.get(streamerId);
-  if (connections) {
-    const message = `data: ${JSON.stringify(data)}\n\n`;
-    connections.forEach((controller) => {
-      try {
-        controller.enqueue(new TextEncoder().encode(message));
-      } catch {
-        // Connection closed
-        connections.delete(controller);
-      }
-    });
-  }
-}
 
 // Verify Twitch signature
 function verifyTwitchSignature(
@@ -96,9 +68,11 @@ export async function POST(request: NextRequest) {
     const subscriptionType = data.subscription.type;
     const event = data.event;
 
-    // Handle channel point redemption
+    // Handle channel point redemption with idempotency check
     if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
-      await handleRedemption(event);
+      await handleRedemption(messageId, event);
+
+      return NextResponse.json({ received: true });
     }
 
     return NextResponse.json({ received: true });
@@ -107,16 +81,30 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ error: "Unknown message type" }, { status: 400 });
 }
 
-async function handleRedemption(event: {
+async function handleRedemption(messageId: string, event: {
   broadcaster_user_id: string;
   user_id: string;
   user_login: string;
   user_name: string;
   reward: { id: string; title: string };
 }) {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  // Idempotency check - skip if this event was already processed
+  const { data: existingHistory } = await supabaseAdmin
+    .from('gacha_history')
+    .select('id')
+    .eq('event_id', messageId)
+    .single();
+
+  if (existingHistory) {
+    logger.info('Duplicate EventSub event skipped', { messageId });
+    return;
+  }
+
   try {
     const gachaService = new GachaService();
-    const result = await gachaService.executeGachaForEventSub(event);
+    const result = await gachaService.executeGachaForEventSub(event, messageId);
 
     if (!result.success) {
       // Log error but don't throw, as webhook should return 200
@@ -124,15 +112,14 @@ async function handleRedemption(event: {
       return;
     }
 
-    // Notify overlay via SSE
+    // Notify overlay via Supabase Realtime
     const gachaResult = {
-      type: "gacha",
+      type: "gacha" as const,
       card: result.data.card,
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
-    // Get streamer ID for SSE
-    const supabaseAdmin = getSupabaseAdmin();
+    // Get streamer ID for broadcast
     const { data: streamer } = await supabaseAdmin
       .from("streamers")
       .select("id")
@@ -140,7 +127,7 @@ async function handleRedemption(event: {
       .single();
 
     if (streamer) {
-      notifySSEClients(streamer.id, gachaResult);
+      await broadcastGachaResult(streamer.id, gachaResult);
     }
   } catch (error) {
     return handleApiError(error, "EventSub redemption");

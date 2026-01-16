@@ -8,9 +8,7 @@ export interface Session {
   twitchDisplayName: string
   twitchProfileImageUrl: string
   broadcasterType: string // 'affiliate' | 'partner' | ''
-  accessToken: string
-  refreshToken: string
-  expiresAt: number
+  expiresAt: number // Unix timestamp (milliseconds)
 }
 
 export async function getSession(): Promise<Session | null> {
@@ -25,7 +23,8 @@ export async function getSession(): Promise<Session | null> {
     const session = JSON.parse(sessionCookie) as Session
 
     if (session.expiresAt && Date.now() > session.expiresAt) {
-      return null
+      await clearSession();
+      return null;
     }
 
     return session

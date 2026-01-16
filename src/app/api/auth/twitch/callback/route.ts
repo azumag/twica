@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
+import { logger } from '@/lib/logger'
+import { COOKIE_NAMES } from '@/lib/constants'
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
@@ -66,24 +68,23 @@ export async function GET(request: NextRequest) {
         })
     }
 
-    // Set session cookie with tokens and user info
+    // Set session cookie with user info only (no tokens - Supabase Auth handles tokens)
+    const SESSION_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
     const sessionData = JSON.stringify({
       twitchUserId: twitchUser.id,
       twitchUsername: twitchUser.login,
       twitchDisplayName: twitchUser.display_name,
       twitchProfileImageUrl: twitchUser.profile_image_url,
       broadcasterType: twitchUser.broadcaster_type,
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      expiresAt: Date.now() + tokens.expires_in * 1000,
+      expiresAt: Date.now() + SESSION_DURATION,
     })
 
-    cookieStore.set('twica_session', sessionData, {
+    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 30, // 30 days
+      maxAge: 60 * 60 * 24 * 7, // 7 days
     })
 
     // Clear state cookie
@@ -92,7 +93,7 @@ export async function GET(request: NextRequest) {
     // Always redirect to dashboard
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
   } catch (err) {
-    console.error('Auth error:', err)
+    logger.error('Auth error:', err)
     const errorMessage = err instanceof Error ? err.message : 'auth_failed'
     return NextResponse.redirect(
       `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(errorMessage)}`

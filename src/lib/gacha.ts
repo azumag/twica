@@ -6,16 +6,23 @@ export interface WeightedCard {
 export function selectWeightedCard<T extends WeightedCard>(items: T[]): T | null {
   if (items.length === 0) return null
 
-  const totalWeight = items.reduce((sum, item) => sum + (item.drop_rate || 1), 0)
-  let random = Math.random() * totalWeight
+  const totalWeightInt = items.reduce((sum, item) => {
+    return sum + Math.round((item.drop_rate || 0) * 10000)
+  }, 0)
+
+  if (totalWeightInt === 0) {
+    return null
+  }
+
+  const random = Math.floor(Math.random() * totalWeightInt)
+  let cumulative = 0
 
   for (const item of items) {
-    const weight = item.drop_rate || 1
-    random -= weight
-    if (random <= 0) {
+    cumulative += Math.round((item.drop_rate || 0) * 10000)
+    if (random < cumulative) {
       return item
     }
   }
 
-  return items[items.length - 1]
+  return null
 }

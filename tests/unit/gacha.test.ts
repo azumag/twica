@@ -59,4 +59,32 @@ describe('selectWeightedCard', () => {
     const result = selectWeightedCard(cards)
     expect(result).not.toBeNull()
   })
+
+  it('selects cards with equal probability when drop rates are equal', () => {
+    const cards: WeightedCard[] = [
+      { id: 'card1', drop_rate: 0.25 },
+      { id: 'card2', drop_rate: 0.25 },
+      { id: 'card3', drop_rate: 0.25 },
+      { id: 'card4', drop_rate: 0.25 }
+    ]
+
+    const results: Record<string, number> = {}
+    const iterations = 10000
+
+    for (let i = 0; i < iterations; i++) {
+      const result = selectWeightedCard(cards)
+      if (result) {
+        results[result.id] = (results[result.id] || 0) + 1
+      }
+    }
+
+    expect(results['card1']).toBeGreaterThan(2000)
+    expect(results['card2']).toBeGreaterThan(2000)
+    expect(results['card3']).toBeGreaterThan(2000)
+    expect(results['card4']).toBeGreaterThan(2000)
+    expect(results['card1']).toBeLessThan(3000)
+    expect(results['card2']).toBeLessThan(3000)
+    expect(results['card3']).toBeLessThan(3000)
+    expect(results['card4']).toBeLessThan(3000)
+  })
 })

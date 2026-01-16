@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Image from "next/image";
 import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
+import { subscribeToGachaResults } from "@/lib/realtime";
 
 interface GachaResult {
   card: Card;
@@ -48,9 +49,8 @@ export default function OverlayPage() {
   const [result, setResult] = useState<GachaResult | null>(null);
   const [showCard, setShowCard] = useState(false);
   const [sparklePositions, setSparklePositions] = useState<SparklePosition[]>([]);
-  const [connected, setConnected] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
   const animationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   // Display gacha result with animation
   const displayResult = useCallback((data: GachaResult) => {
@@ -78,45 +78,22 @@ export default function OverlayPage() {
     }, 100);
   }, []);
 
-  // Connect to SSE for real-time events
+  // Connect to Supabase Realtime for real-time events
   useEffect(() => {
-    const connectSSE = () => {
-      const eventSource = new EventSource(`/api/events/${streamerId}`);
-      eventSourceRef.current = eventSource;
+    const cleanup = subscribeToGachaResults(streamerId, (payload) => {
+      if (payload.type === 'gacha' && payload.card) {
+        displayResult({
+          card: payload.card as unknown as Card,
+          userTwitchUsername: payload.userTwitchUsername,
+        });
+      }
+    });
 
-      eventSource.onopen = () => {
-        setConnected(true);
-      };
-
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === "gacha" && data.card) {
-            displayResult({
-              card: data.card,
-              userTwitchUsername: data.userTwitchUsername,
-            });
-          }
-        } catch (error) {
-          logger.error("SSE parse error:", error);
-        }
-      };
-
-      eventSource.onerror = (error) => {
-        logger.error("SSE error:", error);
-        setConnected(false);
-        eventSource.close();
-
-        // Reconnect after delay
-        setTimeout(connectSSE, 3000);
-      };
-    };
-
-    connectSSE();
+    cleanupRef.current = cleanup;
 
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
+      if (cleanupRef.current) {
+        cleanupRef.current();
       }
       if (animationTimeoutRef.current) {
         clearTimeout(animationTimeoutRef.current);
@@ -132,8 +109,6 @@ export default function OverlayPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           streamerId,
-          userTwitchId: "demo_user",
-          userTwitchUsername: "DemoUser",
         }),
       });
 
@@ -160,16 +135,6 @@ export default function OverlayPage() {
   if (!result) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-transparent">
-        {/* Connection status indicator */}
-        <div className="fixed left-4 top-4 flex items-center gap-2 rounded bg-black/50 px-3 py-1 text-xs text-white opacity-50">
-          <div
-            className={`h-2 w-2 rounded-full ${
-              connected ? "bg-green-500" : "bg-red-500"
-            }`}
-          />
-          {connected ? "接続中" : "再接続中..."}
-        </div>
-
         {/* Hidden trigger for demo */}
         <button
           onClick={triggerDemo}

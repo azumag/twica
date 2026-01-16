@@ -12,7 +12,7 @@ export interface GachaResult {
 export class GachaService {
   private supabase = getSupabaseAdmin()
 
-  async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string): Promise<Result<GachaResult>> {
+  async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string, eventId?: string): Promise<Result<GachaResult>> {
     try {
       // Get active cards for this streamer
       const { data: cards, error: cardsError } = await this.supabase
@@ -36,37 +36,64 @@ export class GachaService {
         return err('Failed to select card')
       }
 
-      // Record gacha history
+      // Record gacha history (with idempotency using upsert)
       const { error: historyError } = await this.supabase
         .from('gacha_history')
-        .insert({
+        .upsert({
+          event_id: eventId || null,
           user_twitch_id: userTwitchId,
           user_twitch_username: userTwitchUsername,
           card_id: selectedCard.id,
           streamer_id: streamerId,
+        }, {
+          onConflict: 'event_id',
+          ignoreDuplicates: true,
         })
 
       if (historyError) {
         return err(`Failed to record history: ${historyError.message}`)
       }
 
-      // Check if user exists, if so add to their collection
-      const { data: user } = await this.supabase
+      // Check if user exists, if not create user
+      let { data: user } = await this.supabase
         .from('users')
         .select('id')
         .eq('twitch_user_id', userTwitchId)
         .single()
 
+      if (!user) {
+        const { data: newUser, error: createError } = await this.supabase
+          .from('users')
+          .upsert({
+            twitch_user_id: userTwitchId,
+            twitch_username: userTwitchUsername,
+          }, {
+            onConflict: 'twitch_user_id',
+            ignoreDuplicates: true,
+          })
+          .select('id')
+          .single()
+
+        if (createError) {
+          logger.warn('Failed to create user:', createError.message)
+        } else {
+          user = newUser
+        }
+      }
+
       if (user) {
         const { error: collectionError } = await this.supabase
           .from('user_cards')
-          .insert({
+          .upsert({
             user_id: user.id,
             card_id: selectedCard.id,
+            obtained_at: new Date().toISOString(),
+          }, {
+            onConflict: 'user_id, card_id',
+            ignoreDuplicates: true,
           })
 
         if (collectionError) {
-          // Log but don't fail the gacha
           logger.warn('Failed to add to collection:', collectionError.message)
         }
       }
@@ -87,10 +114,10 @@ export class GachaService {
       user_login: string
       user_name: string
       reward: { id: string }
-    }
+    },
+    eventId?: string
   ): Promise<Result<{ card: Card; userTwitchUsername: string }>> {
     try {
-      // Get streamer info
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
         .select('id, channel_point_reward_id')
@@ -101,46 +128,11 @@ export class GachaService {
         return err('Streamer not found')
       }
 
-      // Check if this is the configured reward
       if (streamer.channel_point_reward_id !== event.reward.id) {
         return err('Reward ID mismatch')
       }
 
-      // Execute gacha
-      const result = await this.executeGacha(streamer.id, event.user_id, event.user_name)
-
-      if (!result.success) {
-        return result
-      }
-
-      // Ensure user exists in DB
-      await this.supabase
-        .from('users')
-        .upsert({
-          twitch_user_id: event.user_id,
-          twitch_username: event.user_login,
-          twitch_display_name: event.user_name,
-        }, {
-          onConflict: 'twitch_user_id',
-        })
-
-      // Get user ID and add to collection
-      const { data: user } = await this.supabase
-        .from('users')
-        .select('id')
-        .eq('twitch_user_id', event.user_id)
-        .single()
-
-      if (user) {
-        await this.supabase
-          .from('user_cards')
-          .insert({
-            user_id: user.id,
-            card_id: result.data.card.id,
-          })
-      }
-
-      return ok(result.data)
+      return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }

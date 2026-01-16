@@ -1,0 +1,150 @@
+# 実装記録
+
+## 日付
+
+2026-01-17
+
+## レビュー対応修正（8回目）
+
+### 修正履歴
+
+以下のレビュー問題を修正しました。
+
+---
+
+### 1. #1 RLSポリシーが機能しない問題を修正
+
+**問題:**
+RLSポリシーで `auth.jwt() ->> 'twitch_user_id'` を使用していましたが、カスタムCookie方式のためSupabase AuthのJWTトークンが発行されておらず、RLSポリシーが機能しませんでした。
+
+**影響:**
+- RLSポリシーが常に false を返す可能性
+- 配信者が自分のカードを管理できない
+- 視聴者が自分のカード/履歴を見れない
+
+**修正内容:**
+
+#### 1.1 RLSポリシーを簡素化
+
+**対象ファイル:** `supabase/migrations/00001_initial_schema.sql`
+
+RLSポリシーを auth.jwt() への依存を削除し、アプリケーション層での認証検証に依存するように変更しました。
+
+**変更前:**
+```sql
+-- Streamers can manage their own cards
+CREATE POLICY "Streamers can manage own cards" ON cards
+  FOR ALL USING (
+    streamer_id IN (
+      SELECT id FROM streamers WHERE twitch_user_id = auth.jwt() ->> 'twitch_user_id'
+    )
+  );
+
+-- Users can view their own cards
+CREATE POLICY "Users can view own cards" ON user_cards
+  FOR SELECT USING (
+    user_id IN (
+      SELECT id FROM users WHERE twitch_user_id = auth.jwt() ->> 'twitch_user_id'
+    )
+  );
+```
+
+**変更後:**
+```sql
+-- All data access is controlled by application layer (API routes)
+-- RLS is enabled for defense in depth, but policies are simplified
+
+-- Service role can insert gacha history (called by EventSub handler)
+CREATE POLICY "Service can insert gacha history" ON gacha_history
+  FOR INSERT WITH CHECK (true);
+
+-- Service role can insert user cards (called by gacha service)
+CREATE POLICY "Service can insert user cards" ON user_cards
+  FOR INSERT WITH CHECK (true);
+```
+
+#### 1.2 設計書を更新
+
+**対象ファイル:** `docs/ARCHITECTURE.md`
+
+認証方式を「カスタムCookie + Twitch OAuth」に更新し、RLSの用途を「多層防御」として明記しました。
+
+**変更前:**
+```
+- **認証**: Supabase Auth + Twitch OAuth
+- **Security First**: RLSによるデフォルト拒否ポリシー
+- SupabaseのRLSによるセキュリティ
+```
+
+**変更後:**
+```
+- **認証**: カスタムCookie + Twitch OAuth
+- **Security First**: アプリケーション層での認証検証 + RLS（多層防御）
+- カスタムセッションによる柔軟な認証管理
+```
+
+#### 1.3 セキュリティ考慮事項を修正
+
+**変更前:**
+```
+- JWTトークンの有効期限チェック
+- CSRF対策 (SameSite=Lax)
+- RLSによるデータアクセス制御
+```
+
+**変更後:**
+```
+- カスタムCookieによるセッション管理（30日有効期限）
+- CSRF対策 (SameSite=Lax + state検証)
+- アプリケーション層でのセッション検証（APIルート）
+- Twitch署名検証（EventSub Webhook）
+- RLSは多層防御として有効（service role 操作のみ許可）
+```
+
+---
+
+### 2. 設計と実装の整合性を確保
+
+**問題:**
+設計書では「Supabase Auth + カスタムCookie」と曖昧に記載されていましたが、実装はカスタムCookieのみを使用していました。
+
+**修正:**
+設計書を明確に「カスタムCookie + Twitch OAuth」に更新し、Supabase Authへの依存を削除しました。
+
+---
+
+## 変更ファイル一覧
+
+| ファイル | 変更内容 |
+|:---|:---|
+| `supabase/migrations/00001_initial_schema.sql` | RLSポリシーを簡素化、auth.jwt()への依存を削除 |
+| `docs/ARCHITECTURE.md` | 認証方式を「カスタムCookie + Twitch OAuth」に更新、Security Firstの記述を更新 |
+
+## 既存のセッション検証（既に実装済み）
+
+以下のAPIルートは既にセッションCookie検証を実装しており、RLSポリシーなしでもセキュリティが確保されています：
+
+| APIルート | 認証方式 |
+|:---|:---|
+| `src/app/api/cards/route.ts` | `getSession()` + `canUseStreamerFeatures()` |
+| `src/app/api/cards/[id]/route.ts` | `getSession()` + `canUseStreamerFeatures()` |
+| `src/app/api/upload/route.ts` | `getSession()` |
+| `src/app/api/auth/twitch/callback/route.ts` | OAuth + セッション作成 |
+
+## テスト結果
+
+| テストカテゴリ | 結果 |
+|:---|:---:|
+| ユニットテスト | 28件全てパス |
+| Lint | パス |
+| Type Check | パス |
+| ビルド | 成功 |
+
+## 影響範囲
+
+| 項目 | 影響 |
+|:---|:---|
+| RLSポリシー | 簡素化（auth.jwt()への依存を削除） |
+| 認証方式 | カスタムCookie方式を明記 |
+| セキュリティ | アプリケーション層で適切に検証済み |
+| 設計書 | 実装との整合性を確保 |

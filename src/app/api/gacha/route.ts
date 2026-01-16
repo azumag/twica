@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GachaService } from "@/lib/services/gacha";
 import { handleApiError } from "@/lib/error-handler";
+import { getSession } from "@/lib/session";
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { streamerId, userTwitchId, userTwitchUsername } = body;
+    const session = await getSession();
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-    if (!streamerId || !userTwitchId) {
+    const body = await request.json();
+    const { streamerId } = body;
+
+    if (!streamerId) {
       return NextResponse.json(
         { error: "Missing required fields" },
         { status: 400 }
@@ -15,7 +21,7 @@ export async function POST(request: NextRequest) {
     }
 
     const gachaService = new GachaService();
-    const result = await gachaService.executeGacha(streamerId, userTwitchId, userTwitchUsername);
+    const result = await gachaService.executeGacha(streamerId, session.twitchUserId, session.twitchUsername);
 
     if (!result.success) {
       return NextResponse.json(

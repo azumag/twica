@@ -1,0 +1,202 @@
+# 実装記録
+
+## 日付
+
+2026-01-17
+
+## レビュー対応修正（6回目）
+
+### 修正履歴
+
+以下のレビュー問題を修正しました。
+
+---
+
+### 1. #1 設計と実装の不整合を修正
+
+**対象ファイル:** `docs/ARCHITECTURE.md`
+
+**問題:** 設計書では `GACHA_HISTORY` テーブルに `user_id UUID FK` が定義されていましたが、実際のマイグレーションファイルには存在しませんでした。
+
+**修正内容:** 設計書を実際の実装に合わせて修正し、`user_id FK` を削除しました。
+
+**変更前 (設計書):**
+```sql
+GACHA_HISTORY {
+    UUID id PK
+    UUID user_id FK          -- USERS.id を参照
+    TEXT user_twitch_id
+    TEXT user_twitch_username
+    UUID card_id FK
+    UUID streamer_id FK
+    TIMESTAMPTZ```
+
+**変更後 redeemed_at
+}
+ (設計書):**
+```sql
+GACHA_HISTORY {
+    UUID id PK
+    TEXT user_twitch_id
+    TEXT user_twitch_username
+    UUID card_id FK
+    UUID streamer_id FK
+    TIMESTAMPTZ redeemed_at
+}
+```
+
+---
+
+### 2. #2 ガチャ選択ロジックのバグを修正
+
+**対象ファイル:** `src/lib/gacha.ts`
+
+**問題:** ループ終了後、`items[items.length - 1]` を返すフォールバックロジックに問題がありました。到達した場合、最後のカードを返すのは論理的におかしいです。
+
+**修正内容:** `return items[items.length - 1]` を `return null` に変更しました。
+
+**変更前:**
+```typescript
+for (const item of scaledItems) {
+  cumulative += item.scaledWeight
+  if (random < cumulative) {
+    return item
+  }
+}
+return items[items.length - 1]
+```
+
+**変更後:**
+```typescript
+for (const item of scaledItems) {
+  cumulative += item.scaledWeight
+  if (random < cumulative) {
+    return item
+  }
+}
+return null
+```
+
+---
+
+### 3. #3 セッション管理の設計書記載を実態に合わせて修正
+
+**対象ファイル:** `docs/ARCHITECTURE.md`
+
+**問題:** 設計書には「Supabase Authを使用したJWTベースのセッション管理」と記載されていましたが、実際にはカスタムCookieとSupabase Authの両方を使用していました。
+
+**修正内容:** 設計書の記載を実態に合わせて更新しました。
+
+**変更前:**
+```
+- Supabase Authを使用したJWTベースのセッション管理
+```
+
+**変更後:**
+```
+- Supabase Auth + カスタムCookieによるセッション管理
+```
+
+---
+
+### 4. #4 Webhookエンドポイントにレート制限を実装
+
+**対象ファイル:** `src/app/api/twitch/eventsub/route.ts`
+
+**問題:** EventSub webhookエンドポイントにレート制限がなく、DDoS攻撃や不正なガチャ実行の可能性がありました。
+
+**修正内容:** シンプルなレート制限を実装しました。
+
+**追加したコード:**
+```typescript
+// Rate limiting
+const RATE_LIMIT_WINDOW = 60000; // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 100;
+const requestCounts = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const record = requestCounts.get(ip);
+
+  if (!record || now > record.resetTime) {
+    requestCounts.set(ip, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+    return true;
+  }
+
+  if (record.count >= MAX_REQUESTS_PER_WINDOW) {
+    return false;
+  }
+
+  record.count++;
+  return true;
+}
+```
+
+**使用方法:**
+```typescript
+const ip = request.headers.get("x-forwarded-for") || "unknown";
+if (!checkRateLimit(ip)) {
+  logger.warn("Rate limit exceeded", { ip });
+  return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+}
+```
+
+---
+
+### 5. #5 RLSポリシーにコメントを追加
+
+**対象ファイル:** `supabase/migrations/00001_initial_schema.sql`
+
+**問題:** `gacha_history` テーブルのRLSポリシーにUPDATE/DELETEがない理由が不明でした。
+
+**修正内容:** 履歴がイミュータブル（不変）であることを示すコメントを追加しました。
+
+**追加したコメント:**
+```sql
+-- Gacha history is immutable - only INSERT and SELECT are allowed
+-- UPDATE and DELETE are intentionally not implemented to maintain history integrity
+```
+
+---
+
+### 6. #7 設計書の更新履歴を更新
+
+**対象ファイル:** `docs/ARCHITECTURE.md`
+
+**修正内容:** 設計書の更新履歴に以下のエントリを追加しました。
+
+```
+| 2026-01-17 | drop_rateのDECIMAL精度をDECIMAL(5,4)に定義 |
+| 2026-01-17 | 重み付き選択アルゴリズムを整数計算に変更 |
+| 2026-01-17 | セッション管理の記載を「Supabase Auth + カスタムCookie」に更新 |
+| 2026-01-17 | 設計書のGACHA_HISTORY定義を実装に合わせて修正（user_id FKを削除） |
+```
+
+---
+
+## 変更ファイル一覧
+
+| ファイル | 変更内容 |
+|:---|:---|
+| `docs/ARCHITECTURE.md` | GACHA_HISTORYのuser_id FKを削除、セッション管理の記載を更新、更新履歴に追加 |
+| `src/lib/gacha.ts` | フォールバックロジックを `return null` に変更 |
+| `src/app/api/twitch/eventsub/route.ts` | レート制限機能を追加 |
+| `supabase/migrations/00001_initial_schema.sql` | 履歴のイミュータビリティに関するコメントを追加 |
+
+## テスト結果
+
+| テストカテゴリ | 結果 |
+|:---|:---:|
+| ユニットテスト | 28件全てパス |
+| Lint | パス |
+| Type Check | パス |
+| ビルド | 成功 |
+
+## 影響範囲
+
+| 項目 | 影響 |
+|:---|:---|
+| 設計書と実装の整合性 | 向上 - 設計書が実際の実装を正確に反映 |
+| ガチャロジック | 改善 - バグの可能性を排除 |
+| セキュリティ | 向上 - Webhookへのレート制限を実装 |
+| ドキュメント | 正確性向上 - セッション管理、RLSポリシーの意図を明記 |
