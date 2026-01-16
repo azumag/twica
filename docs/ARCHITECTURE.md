@@ -514,8 +514,260 @@ CIビルド時に環境変数の検証が失敗し、ビルドが成功しない
 
 ---
 
+## Issue #8: 利用規約 (Terms of Service)
+
+### 問題
+利用規約ページが存在しない
+
+### 現象
+- `/tos` ページが存在しない
+- ユーザーが利用規約を閲覧できない
+- 法的コンプライアンスの観点から利用規約の提示が必要
+
+### 解決策
+利用規約ページを実装する
+
+### 設計内容
+
+1. **`src/app/tos/page.tsx` を新規作成**
+   - 利用規約を表示する静的ページ
+   - マークダウンまたはHTML形式で規約内容を表示
+   - レスポンシブデザイン対応
+   - ナビゲーションからのリンクを追加
+
+2. **利用規約の内容**
+   - サービスの概要
+   - ユーザーの責任と義務
+   - 利用制限
+   - 知的財産権
+   - 免責事項
+   - 変更と終了
+   - お問い合わせ先
+
+3. **ナビゲーション更新**
+   - `src/app/layout.tsx` またはナビゲーションコンポーネントに「利用規約」リンクを追加
+   - フッターに「利用規約」リンクを追加
+
+4. **今後の拡張性**
+   - 将来的にはデータベースに規約内容を保存し、管理画面から更新可能にする
+   - ユーザーによる同意確認機能の追加
+
+### 受け入れ基準
+- [ ] `/tos` ページにアクセスできる
+- [ ] 利用規約の内容が正しく表示される
+- [ ] ナビゲーションまたはフッターから利用規約にリンクされている
+- [ ] レスポンシブデザインで正しく表示される
+- [ ] ページがSEOに適した構造になっている
+
+---
+
+## CIビルド失敗の修正: Supabase Realtime環境変数の不備
+
+### 問題
+
+CIビルド時にSupabase Realtimeモジュールの初期化で環境変数の不足によりビルドが失敗している。
+
+**エラー内容**:
+```
+Error: Missing Supabase environment variables for realtime
+    at module evaluation (.next/server/chunks/[root-of-the-server]__e6ba679a._.js:1:4396)
+    at instantiateModule (.next/server/chunks/[turbopack]_runtime.js:740:9)
+```
+
+**発生箇所**: `/api/twitch/eventsub/route.ts` -> `src/lib/realtime.ts`
+
+### 現象
+
+1. `.github/workflows/ci.yml` では以下の環境変数が空文字で設定されている:
+   ```yaml
+   env:
+     NEXT_PUBLIC_SUPABASE_URL: ''
+     NEXT_PUBLIC_SUPABASE_ANON_KEY: ''
+     NEXT_PUBLIC_TWITCH_CLIENT_ID: ''
+   ```
+
+2. `src/lib/realtime.ts` は以下の問題がある:
+   - `broadcastGachaResult` 関数（line 44-55）で `supabaseRealtime.channel()` を直接使用
+   - `subscribeToGachaResults` 関数（line 57-72）でも `supabaseRealtime.channel()` を直接使用
+   - これらの関数は `getSupabaseRealtimeClient()` を呼ばずに `supabaseRealtime` を使用している
+   - ビルド時にSupabaseモジュールのモジュール評価が行われ、環境変数チェックが実行される
+
+3. CIビルド時の環境変数が空文字の場合:
+   - `process.env.NEXT_PUBLIC_SUPABASE_URL` は `''`
+   - `process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY` は `''`
+   - これらはfalsy値なのでチェックに失敗する
+   - CI環境であっても、空文字のチェックでは `process.env.CI` のチェック前にエラーになる
+
+### 解決策
+
+**方針**:
+CI環境でもビルドが成功するように、以下の2点を修正する
+
+1. **`.github/workflows/ci.yml` の環境変数を修正**
+   - 空文字ではなくダミー値を設定する
+   - 他の環境変数と同様に適切なダミー値を提供する
+
+2. **`src/lib/realtime.ts` の関数を修正**
+   - 各関数内で `getSupabaseRealtimeClient()` を呼ぶように修正
+   - 初期化されていない場合に適切に処理する
+
+### 設計内容
+
+#### 1. `.github/workflows/ci.yml` の修正
+
+```yaml
+- name: Build
+  run: npm run build
+  env:
+    NEXT_PUBLIC_SUPABASE_URL: https://dummy.supabase.co
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: dummy_anon_key
+    NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
+    NEXT_PUBLIC_APP_URL: http://localhost:3000
+    TWITCH_CLIENT_ID: dummy_client_id
+    TWITCH_CLIENT_SECRET: dummy_client_secret
+    TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
+    SUPABASE_SERVICE_ROLE_KEY: dummy_service_role_key
+    BLOB_READ_WRITE_TOKEN: dummy_blob_token
+```
+
+**変更点**:
+- `NEXT_PUBLIC_SUPABASE_URL`: `''` → `https://dummy.supabase.co`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`: `''` → `dummy_anon_key`
+- `NEXT_PUBLIC_TWITCH_CLIENT_ID`: `''` → `dummy_client_id`
+
+**理由**:
+- Next.jsのビルドプロセスでは、`NEXT_PUBLIC_*` プレフィックスの環境変数がクライアントサイドコードに埋め込まれる
+- 空文字ではSupabaseクライアントの初期化に失敗する
+- ダミー値であっても、有効なフォーマットである必要がある
+- CI環境では実際のSupabase接続は不要（ビルドのみ実行）
+
+#### 2. `src/lib/realtime.ts` の修正
+
+**現在の問題**:
+```typescript
+export async function broadcastGachaResult(
+  streamerId: string,
+  payload: GachaBroadcastPayload
+): Promise<void> {
+  const channel = supabaseRealtime.channel(`gacha:${streamerId}`)  // supabaseRealtimeはnullの可能性
+  await channel.send({
+    type: 'broadcast',
+    event: 'gacha_result',
+    payload,
+  })
+}
+```
+
+**修正後**:
+```typescript
+export async function broadcastGachaResult(
+  streamerId: string,
+  payload: GachaBroadcastPayload
+): Promise<void> {
+  const client = getSupabaseRealtimeClient()
+  const channel = client.channel(`gacha:${streamerId}`)
+  
+  await channel.send({
+    type: 'broadcast',
+    event: 'gacha_result',
+    payload,
+  })
+}
+
+export function subscribeToGachaResults(
+  streamerId: string,
+  callback: (payload: GachaBroadcastPayload) => void
+): () => void {
+  const client = getSupabaseRealtimeClient()
+  const channel = client.channel(`gacha:${streamerId}`)
+  
+  channel
+    .on('broadcast', { event: 'gacha_result' }, (payload) => {
+      callback(payload.payload as GachaBroadcastPayload)
+    })
+    .subscribe()
+
+  return () => {
+    client.removeChannel(channel)
+  }
+}
+```
+
+**変更点**:
+- 各関数の先頭で `getSupabaseRealtimeClient()` を呼び出す
+- 直接 `supabaseRealtime` グローバル変数を使用しない
+- 返されたクライアントインスタンスを使用する
+
+**理由**:
+- `getSupabaseRealtimeClient()` 内で環境変数チェックと初期化を行う
+- CI環境（`process.env.CI`）またはテスト環境（`process.env.NODE_ENV === 'test'`）であれば適切なエラーハンドリングが可能
+- クライアントが初期化されるまで遅延初期化する
+- 実行時にのみSupabase接続が必要（ビルド時には不要）
+
+#### 3. `src/lib/realtime.ts` の CI環境対応の追加
+
+`getSupabaseRealtimeClient()` 関数にCI環境特有の処理を追加:
+
+```typescript
+function getSupabaseRealtimeClient(): SupabaseClient {
+  if (supabaseRealtime) {
+    return supabaseRealtime
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+  if (!supabaseUrl || !supabaseKey) {
+    if (process.env.CI || process.env.NODE_ENV === 'test') {
+      throw new Error('Realtime not available in CI/test environment')
+    } else {
+      throw new Error('Missing Supabase environment variables for realtime')
+    }
+  }
+
+  supabaseRealtime = createClient(supabaseUrl, supabaseKey, {
+    realtime: {
+      params: {
+        eventsPerSecond: 10,
+      },
+    },
+  })
+
+  return supabaseRealtime
+}
+```
+
+### 受け入れ基準
+
+- [ ] CIビルドが成功する
+- [ ] ビルドが正常に完了する
+- [ ] すべてのテストとLintがパスする
+- [ ] CI環境でSupabase Realtimeモジュールの初期化エラーが発生しない
+- [ ] `broadcastGachaResult` 関数が正しく動作する
+- [ ] `subscribeToGachaResults` 関数が正しく動作する
+- [ ] 本番環境でRealtime通信が正常に動作する
+
+### テスト計画
+
+1. **CIビルドテスト**:
+   - GitHub ActionsでCIビルドを実行
+   - ビルドが成功することを確認
+
+2. **ユニットテスト**:
+   - `broadcastGachaResult` 関数のテスト
+   - `subscribeToGachaResults` 関数のテスト
+   - CI環境でのエラーハンドリングのテスト
+
+3. **統合テスト**:
+   - 本番環境でガチャ結果のブロードキャストが動作することを確認
+   - オーバーレイがガチャ結果を受信して表示することを確認
+
+---
+
 ## 更新履歴
 
 | 日付 | 変更内容 |
 |:---|:---|
+| 2026-01-17 | CIビルド失敗の修正設計追加（Supabase Realtime環境変数の不備） |
+| 2026-01-17 | 利用規約の設計追加（Issue #8対応） |
 | 2026-01-17 | CI環境変数検証の修正設計追加 |
