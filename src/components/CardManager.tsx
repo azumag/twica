@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
 
@@ -299,11 +300,13 @@ export default function CardManager({
               >
                 <div className="aspect-[3/4] bg-gray-600">
                   {card.image_url ? (
-                    <img
-                      src={card.image_url}
-                      alt={card.name}
-                      className="h-full w-full object-cover"
-                    />
+          <Image
+            src={card.image_url || "/placeholder.png"}
+            alt={card.name}
+            width={200}
+            height={200}
+            className="w-full h-48 object-cover rounded mb-2"
+          />
                   ) : (
                     <div className="flex h-full items-center justify-center text-gray-500">
                       No Image

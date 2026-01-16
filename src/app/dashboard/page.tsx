@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData, getUserCards, getRecentGachaHistory } from "@/lib/dashboard-data";
 import { RARITY_ORDER } from "@/lib/constants";
@@ -68,15 +69,17 @@ export default async function DashboardPage() {
             TwiCa
           </Link>
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              {session.twitchProfileImageUrl && (
-                <img
-                  src={session.twitchProfileImageUrl}
-                  alt={session.twitchDisplayName}
-                  className="h-8 w-8 rounded-full"
-                />
-              )}
-              <span className="text-white">{session.twitchDisplayName}</span>
+             <div className="flex items-center gap-2">
+               {session.twitchProfileImageUrl && (
+                 <Image
+                   src={session.twitchProfileImageUrl}
+                   alt={session.twitchDisplayName}
+                   width={32}
+                   height={32}
+                   className="h-8 w-8 rounded-full"
+                 />
+               )}
+               <span className="text-white">{session.twitchDisplayName}</span>
               {isStreamer && (
                 <span className="rounded bg-purple-600 px-2 py-0.5 text-xs text-white">
                   {session.broadcasterType}
@@ -163,19 +166,21 @@ export default async function DashboardPage() {
               ) : (
                 recentGacha.map((entry) => (
                   <div key={entry.id} className="flex items-center gap-4 p-4">
-                    <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-gray-700">
-                      {entry.cards.image_url ? (
-                        <img
-                          src={entry.cards.image_url}
-                          alt={entry.cards.name}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-xl">
-                          🎴
-                        </div>
-                      )}
-                    </div>
+                     <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-gray-700">
+                       {entry.cards.image_url ? (
+                         <Image
+                           src={entry.cards.image_url}
+                           alt={entry.cards.name}
+                           width={48}
+                           height={48}
+                           className="h-full w-full object-cover"
+                         />
+                       ) : (
+                         <div className="flex h-full items-center justify-center text-xl">
+                           🎴
+                         </div>
+                       )}
+                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-white">
                         <span className="text-purple-400 font-bold">{entry.user_twitch_username}</span> が
@@ -245,17 +250,19 @@ export default async function DashboardPage() {
           ) : (
             Object.values(cardsByStreamer).map(({ streamer, cards }) => (
               <div key={streamer.id} className="mb-8">
-                <div className="mb-4 flex items-center gap-3">
-                  {streamer.twitch_profile_image_url && (
-                    <img
-                      src={streamer.twitch_profile_image_url}
-                      alt={streamer.twitch_display_name}
-                      className="h-10 w-10 rounded-full"
-                    />
-                  )}
-                  <h3 className="text-xl font-semibold text-white">
-                    {streamer.twitch_display_name}
-                  </h3>
+                 <div className="mb-4 flex items-center gap-3">
+                   {streamer.twitch_profile_image_url && (
+                     <Image
+                       src={streamer.twitch_profile_image_url}
+                       alt={streamer.twitch_display_name}
+                       width={40}
+                       height={40}
+                       className="h-10 w-10 rounded-full"
+                     />
+                   )}
+                   <h3 className="text-xl font-semibold text-white">
+                     {streamer.twitch_display_name}
+                   </h3>
                   <span className="text-sm text-gray-400">
                     ({cards.length} 種類)
                   </span>
@@ -267,19 +274,21 @@ export default async function DashboardPage() {
                       key={card.id}
                       className="group relative overflow-hidden rounded-lg bg-gray-800"
                     >
-                      <div className="aspect-[3/4] bg-gray-700">
-                        {card.image_url ? (
-                          <img
-                            src={card.image_url}
-                            alt={card.name}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full items-center justify-center text-4xl">
-                            🎴
-                          </div>
-                        )}
-                      </div>
+                       <div className="aspect-[3/4] bg-gray-700">
+                         {card.image_url ? (
+                           <Image
+                             src={card.image_url}
+                             alt={card.name}
+                             width={200}
+                             height={300}
+                             className="h-full w-full object-cover"
+                           />
+                         ) : (
+                           <div className="flex h-full items-center justify-center text-4xl">
+                             🎴
+                           </div>
+                         )}
+                       </div>
                       <div className="p-3">
                         <div className="mb-1 flex items-center justify-between">
                           <h4 className="font-semibold text-white">{card.name}</h4>
