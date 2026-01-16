@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData, getUserCards, getRecentGachaHistory } from "@/lib/dashboard-data";
+import { RARITY_ORDER } from "@/lib/constants";
 import type { Card, Streamer, GachaHistory } from "@/types/database";
 import CardManager from "@/components/CardManager";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
@@ -184,7 +185,7 @@ export default async function DashboardPage() {
                         {new Date(entry.redeemed_at).toLocaleString('ja-JP')}
                       </p>
                     </div>
-                    <div className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[entry.cards.rarity]}`}>
+                     <div className={`rounded-full px-2 py-0.5 text-xs text-white bg-yellow-500`}>
                       {entry.cards.rarity}
                     </div>
                   </div>
@@ -282,9 +283,8 @@ export default async function DashboardPage() {
                       <div className="p-3">
                         <div className="mb-1 flex items-center justify-between">
                           <h4 className="font-semibold text-white">{card.name}</h4>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[card.rarity]
-                              }`}
+                           <span
+                            className={`rounded-full px-2 py-0.5 text-xs text-white bg-yellow-500`}
                           >
                             {card.rarity}
                           </span>

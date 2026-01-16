@@ -2,18 +2,12 @@
 
 import { useState, useRef } from "react";
 import type { Card, Rarity } from "@/types/database";
+import { RARITIES } from "@/lib/constants";
 
 interface CardManagerProps {
   streamerId: string;
   initialCards: Card[];
 }
-
-const RARITIES: { value: Rarity; label: string; color: string }[] = [
-  { value: "common", label: "コモン", color: "bg-gray-500" },
-  { value: "rare", label: "レア", color: "bg-blue-500" },
-  { value: "epic", label: "エピック", color: "bg-purple-500" },
-  { value: "legendary", label: "レジェンダリー", color: "bg-yellow-500" },
-];
 
 export default function CardManager({
   streamerId,

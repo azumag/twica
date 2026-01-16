@@ -1,13 +1,5 @@
-import { RARITIES } from "@/lib/constants";
+import { RARITY_ORDER, RARITY_COLORS } from "@/lib/constants";
 import Image from "next/image";
-
-const RARITY_ORDER = ["legendary", "epic", "rare", "common"];
-const RARITY_COLORS = {
-  legendary: "bg-yellow-500",
-  epic: "bg-purple-500",
-  rare: "bg-blue-500",
-  common: "bg-gray-500",
-};
 
 interface CardWithDetails {
   id: string;
