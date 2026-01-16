@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Image from "next/image";
 import type { GachaHistory, Card } from "@/types/database";
+import { logger } from "@/lib/logger";
 
 interface GachaHistoryWithCard extends GachaHistory {
   cards: Card;
@@ -38,7 +39,7 @@ export default function GachaHistorySection({
         setHistory(history.filter((h: GachaHistoryWithCard) => h.id !== historyId));
       }
     } catch (error) {
-      console.error("Failed to delete gacha history:", error);
+      logger.error("Failed to delete gacha history:", error);
     }
   };
 

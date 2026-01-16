@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers'
 import { BROADCASTER_TYPE, COOKIE_NAMES } from './constants'
+import { logger } from './logger'
 
 export interface Session {
   twitchUserId: string
@@ -29,7 +30,7 @@ export async function getSession(): Promise<Session | null> {
 
     return session
   } catch (error) {
-    console.error('[Session] Failed to parse session cookie:', error);
+    logger.error('[Session] Failed to parse session cookie:', error);
     return null
   }
 }

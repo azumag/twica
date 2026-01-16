@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { logger } from "@/lib/logger";
 
 interface TwitchReward {
   id: string;
@@ -89,9 +90,9 @@ export default function ChannelPointSettings({
           setEventSubStatus("none");
         }
       }
-    } catch {
-      console.error("Failed to fetch EventSub status");
-    }
+      } catch {
+        logger.error("Failed to fetch EventSub status");
+      }
   }, [currentRewardId]);
 
   useEffect(() => {
@@ -161,7 +162,7 @@ export default function ChannelPointSettings({
         await fetchEventSubStatus();
       } else {
         const errorData = await eventSubResponse.json();
-        console.error("EventSub error:", errorData);
+        logger.error("EventSub error:", errorData);
         setMessage("設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。");
         setEventSubStatus("error");
       }

@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import crypto from "crypto";
-import { selectWeightedCard } from "@/lib/gacha";
+import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
+import { handleApiError } from "@/lib/error-handler";
+import { logger } from "@/lib/logger";
 
 // Twitch EventSub message types
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
@@ -70,7 +72,7 @@ export async function POST(request: NextRequest) {
 
   // Verify signature
   if (!verifyTwitchSignature(messageId, timestamp, body, signature)) {
-    console.error("Invalid Twitch signature");
+    logger.error("Invalid Twitch signature");
     return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
   }
 
@@ -78,7 +80,6 @@ export async function POST(request: NextRequest) {
 
   // Handle verification challenge
   if (messageType === MESSAGE_TYPE_VERIFICATION) {
-    console.log("EventSub verification challenge received");
     return new NextResponse(data.challenge, {
       status: 200,
       headers: { "Content-Type": "text/plain" },
@@ -87,16 +88,13 @@ export async function POST(request: NextRequest) {
 
   // Handle revocation
   if (messageType === MESSAGE_TYPE_REVOCATION) {
-    console.log("EventSub subscription revoked:", data.subscription);
     return NextResponse.json({ received: true });
   }
 
   // Handle notification
   if (messageType === MESSAGE_TYPE_NOTIFICATION) {
-    const event = data.event;
     const subscriptionType = data.subscription.type;
-
-    console.log("EventSub notification:", subscriptionType, event);
+    const event = data.event;
 
     // Handle channel point redemption
     if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
@@ -116,97 +114,35 @@ async function handleRedemption(event: {
   user_name: string;
   reward: { id: string; title: string };
 }) {
-  const supabaseAdmin = getSupabaseAdmin();
-
   try {
-    // Find streamer by twitch_user_id and matching reward_id
-    const { data: streamer } = await supabaseAdmin
-      .from("streamers")
-      .select("id, channel_point_reward_id")
-      .eq("twitch_user_id", event.broadcaster_user_id)
-      .single();
+    const gachaService = new GachaService();
+    const result = await gachaService.executeGachaForEventSub(event);
 
-    if (!streamer) {
-      console.log("Streamer not found for broadcaster:", event.broadcaster_user_id);
+    if (!result.success) {
+      // Log error but don't throw, as webhook should return 200
+      logger.error("Gacha failed:", result.error);
       return;
     }
-
-    // Check if this is the configured reward
-    if (streamer.channel_point_reward_id !== event.reward.id) {
-      console.log("Reward ID mismatch, ignoring redemption");
-      return;
-    }
-
-    // Get random card for this streamer
-    const { data: cards } = await supabaseAdmin
-      .from("cards")
-      .select("*")
-      .eq("streamer_id", streamer.id)
-      .eq("is_active", true);
-
-    if (!cards || cards.length === 0) {
-      console.log("No active cards for streamer");
-      return;
-    }
-
-    const selectedCard = selectWeightedCard(cards);
-
-    if (!selectedCard) {
-      console.log("Failed to select card");
-      return;
-    }
-
-    // Ensure user exists
-    await supabaseAdmin
-      .from("users")
-      .upsert({
-        twitch_user_id: event.user_id,
-        twitch_username: event.user_login,
-        twitch_display_name: event.user_name,
-      }, {
-        onConflict: "twitch_user_id",
-      });
-
-    // Get user ID
-    const { data: user } = await supabaseAdmin
-      .from("users")
-      .select("id")
-      .eq("twitch_user_id", event.user_id)
-      .single();
-
-    if (!user) {
-      console.error("Failed to get/create user");
-      return;
-    }
-
-    // Add card to user's collection
-    await supabaseAdmin
-      .from("user_cards")
-      .insert({
-        user_id: user.id,
-        card_id: selectedCard.id,
-      });
-
-    // Record gacha history
-    await supabaseAdmin
-      .from("gacha_history")
-      .insert({
-        user_id: user.id,
-        card_id: selectedCard.id,
-        streamer_id: streamer.id,
-      });
 
     // Notify overlay via SSE
     const gachaResult = {
       type: "gacha",
-      card: selectedCard,
-      userTwitchUsername: event.user_name,
+      card: result.data.card,
+      userTwitchUsername: result.data.userTwitchUsername,
     };
 
-    notifySSEClients(streamer.id, gachaResult);
+    // Get streamer ID for SSE
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data: streamer } = await supabaseAdmin
+      .from("streamers")
+      .select("id")
+      .eq("twitch_user_id", event.broadcaster_user_id)
+      .single();
 
-    console.log(`Gacha result: ${event.user_name} got ${selectedCard.name} (${selectedCard.rarity})`);
+    if (streamer) {
+      notifySSEClients(streamer.id, gachaResult);
+    }
   } catch (error) {
-    console.error("Error handling redemption:", error);
+    return handleApiError(error, "EventSub redemption");
   }
 }

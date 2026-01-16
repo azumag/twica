@@ -4,6 +4,7 @@ import { useState, useRef } from "react";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import { logger } from "@/lib/logger";
 
 interface CardManagerProps {
   streamerId: string;
@@ -75,9 +76,9 @@ export default function CardManager({
         if (!uploadResponse.ok) {
           try {
             const errorData = await uploadResponse.json();
-            console.error("Upload failed details:", errorData);
+            logger.error("Upload failed details:", errorData);
           } catch (e) {
-            console.error("Upload failed, could not parse JSON error:", e);
+            logger.error("Upload failed, could not parse JSON error:", e);
           }
           throw new Error("Failed to upload image");
         }
@@ -113,7 +114,7 @@ export default function CardManager({
         resetForm();
       }
     } catch (error) {
-      console.error("Failed to save card:", error);
+      logger.error("Failed to save card:", error);
     } finally {
       setSaving(false);
     }
@@ -138,13 +139,13 @@ const response = await fetch(`/api/cards/${cardId}`, {
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
         const errorMessage = errorData.error || "カード削除に失敗しました";
         alert(`削除失敗: ${errorMessage}`);
-        console.error("Delete failed:", errorData);
+        logger.error("Delete failed:", errorData);
       }
       // Success: no alert needed as optimistic update already provides feedback
     } catch (error) {
       // Revert on network error
       setCards(originalCards);
-      console.error("Failed to delete card:", error);
+      logger.error("Failed to delete card:", error);
       alert("ネットワークエラーが発生しました。削除をキャンセルしました。");
     }
   };

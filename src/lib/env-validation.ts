@@ -9,6 +9,7 @@ export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_TWITCH_CLIENT_ID', required: true },
   { name: 'TWITCH_CLIENT_ID', required: true },
   { name: 'TWITCH_CLIENT_SECRET', required: true },
+  { name: 'TWITCH_EVENTSUB_SECRET', required: true },
   { name: 'NEXT_PUBLIC_SUPABASE_URL', required: true },
   { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', required: true },
   { name: 'SUPABASE_SERVICE_ROLE_KEY', required: true },
@@ -39,9 +40,7 @@ export function getEnvVar(name: string, required: boolean = false): string | und
   return value
 }
 
-if (process.env.NODE_ENV === 'development') {
-  const { valid, missing } = validateEnvVars()
-  if (!valid) {
-    console.warn('[Env] Missing required environment variables:', missing.join(', '))
-  }
+const { valid, missing } = validateEnvVars()
+if (!valid) {
+  throw new Error(`Missing required environment variables: ${missing.join(', ')}`)
 }

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
 import type { Card } from "@/types/database";
+import { logger } from "@/lib/logger";
 
 interface GachaResult {
   card: Card;
@@ -84,30 +85,25 @@ export default function OverlayPage() {
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
-        console.log("SSE connected");
         setConnected(true);
       };
 
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log("SSE message:", data);
-
           if (data.type === "gacha" && data.card) {
             displayResult({
               card: data.card,
               userTwitchUsername: data.userTwitchUsername,
             });
-          } else if (data.type === "connected") {
-            console.log("SSE connection confirmed");
           }
         } catch (error) {
-          console.error("SSE parse error:", error);
+          logger.error("SSE parse error:", error);
         }
       };
 
       eventSource.onerror = (error) => {
-        console.error("SSE error:", error);
+        logger.error("SSE error:", error);
         setConnected(false);
         eventSource.close();
 
@@ -145,9 +141,9 @@ export default function OverlayPage() {
         const data = await response.json();
         displayResult(data);
       }
-    } catch (error) {
-      console.error("Demo gacha error:", error);
-    }
+      } catch (error) {
+        logger.error("Demo gacha error:", error);
+      }
   }, [streamerId, displayResult]);
 
   // Check URL for demo param

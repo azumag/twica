@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { logger } from "@/lib/logger";
 
 interface CopyButtonProps {
   text: string;
@@ -14,9 +15,9 @@ export default function CopyButton({ text }: CopyButtonProps) {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      console.error("Failed to copy");
-    }
+      } catch {
+        logger.error("Failed to copy");
+      }
   };
 
   return (
