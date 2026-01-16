@@ -2,56 +2,36 @@
 
 ## 実装日
 
-2026-01-17
+2026-01-17 07:00
 
-## レビュー対応
+## 実装内容
 
-Issue #11: カードアップロード容量制限の実装に関するレビュー修正
+Issue #12: CI環境変数検証の修正
 
-## 対応したレビュー項目
+## 対応内容
 
-### 1. セキュリティ上の問題: MIMEタイプと拡張子の両方を検証 (高)
-
-**ファイル**: `src/lib/upload-validation.ts`
+### ファイル: `src/lib/env-validation.ts:45`
 
 **変更内容**:
-- MIMEタイプに加えて拡張子検証を追加
-- `getFileExtension()`関数を追加してファイル名から拡張子を取得
-- `validateFileType()`関数を追加してMIMEタイプと拡張子の整合性を検証
-- `TYPE_TO_EXTENSIONS`マッピングを追加してJPEG/PNGのみを許可
+- CI環境での環境変数バリデーションをスキップ하도록修正
+- 条件式に `&& !process.env.CI` を追加
 
 ```typescript
-const TYPE_TO_EXTENSIONS: Record<string, string[]> = {
-  'image/jpeg': ['jpg', 'jpeg'],
-  'image/png': ['png'],
-};
+// 変更前
+if (!valid && process.env.NODE_ENV !== 'test') {
+
+// 変更後
+if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI) {
 ```
 
-### 2. UXの不整合: エラー表示を統一 (中)
+## 背景
 
-**ファイル**: `src/components/CardManager.tsx:85`
-
-**変更内容**:
-- `handleSubmit`内の検証失敗時に`alert()`を使用していた箇所を`setUploadError()`に変更
-- ファイル選択時とフォーム送信時のエラー表示が統一された
-
-### 3. file.nameのnull/undefinedチェック (中)
-
-**ファイル**: `src/app/api/upload/route.ts:26-28`
-
-**変更内容**:
-- `file.name`がnull、空文字、または空白のみの場合に400エラーを返す検証を追加
-- 型アサーション`(file as File)`を削除し、nullチェック後に`file`を直接使用
-
-```typescript
-if (!file || !file.name || file.name.trim() === '') {
-  return NextResponse.json({ error: 'ファイル名が空です' }, { status: 400 });
-}
-```
+- GitHub Actions CIでは `CI` 環境変数が自動的に `true` に設定される
+- CIビルドでは実際のAPI接続が不要（静的解析、型チェックのみ）
+- 現在の実装では `NODE_ENV !== 'test'` のみをチェックしていたため、CI環境で検証が実行されていた
 
 ## 検証結果
 
 - [x] コードの型チェックが通る
-- [x] セキュリティ要件（MIME + 拡張子検証）が満たされる
-- [x] UXが一貫している（すべてuploadErrorステートを使用）
-- [x] file.nameのnullチェックが実装されている
+- [x] CI環境で環境変数検証が正しくスキップされる
+- [x] テスト環境では引き続き検証が実行される

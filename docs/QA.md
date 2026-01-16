@@ -2,22 +2,22 @@
 
 ## QA Date
 
-2026-01-17 06:58:23
+2026-01-17 07:03:31
 
 ## 実装内容
 
-Issue #11: カードアップロード容量制限の実装
+Issue #12: CI fails: Missing required environment variables in GitHub Actions
 
 ## 受け入れ基準チェック
 
-### カードアップロード容量制限
+### CI環境変数検証の修正
 
 | 基準 | 状態 | 詳細 |
 |:---|:---:|:---|
-| 1MB以上の画像がアップロードできない | ✅ | src/lib/upload-validation.ts:2 でMAX_FILE_SIZEを1MBに設定 |
-| JPEG/PNG以外の画像がアップロードできない | ✅ | src/lib/upload-validation.ts:3 でALLOWED_TYPESを['image/jpeg', 'image/png']に設定 |
-| 適切なエラーメッセージが表示される | ✅ | src/lib/upload-validation.ts:73-85 で日本語のエラーメッセージを定義 |
-| クライアントサイドとサーバーサイド両方で検証される | ✅ | CardManager.tsx:49-58 (クライアント), /api/upload/route.ts:18-24 (サーバー) |
+| CIが成功する | ✅ | ユニットテスト、Lint、Buildがすべてパス |
+| ビルドが正常に完了する | ✅ | next buildが成功し、16ルートが生成 |
+| すべてのテストとLintがパスする | ✅ | 28件のユニットテスト、Lintエラーなし |
+| 環境変数の検証がCI環境で正しくスキップされる | ✅ | src/lib/env-validation.ts:45 でprocess.env.CIチェックを追加 |
 
 ## 詳細なQA結果
 
@@ -33,33 +33,47 @@ Issue #11: カードアップロード容量制限の実装
 
 ✅ **パス**: ESLintエラーなし
 
-### Type Check
+### Build
 
-✅ **パス**: TypeScript型エラーなし
+✅ **パス**: Next.jsビルド成功
+- 16ルートが正常に生成
+- TypeScriptコンパイル成功
+- Prerendered: 1 static page
+- Dynamic: 15 server-rendered pages
 
 ### 実装確認
 
-#### 1. src/lib/upload-validation.ts (新規作成)
+#### 1. src/lib/env-validation.ts (修正)
 
 **確認事項**:
-- 画像サイズ検証（最大1MB）: ✅ `MAX_FILE_SIZE: 1 * 1024 * 1024`
-- 画像形式検証（JPEG/PNGのみ）: ✅ `ALLOWED_TYPES: ['image/jpeg', 'image/png']`
-- 検証結果を返す関数: ✅ `validateUpload()` 関数を実装
-- エラーメッセージ関数: ✅ `getUploadErrorMessage()` 関数を実装
+- CI環境変数チェックの追加: ✅ `if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI)`
+  - 元のコード: `if (!valid && process.env.NODE_ENV !== 'test')`
+  - 修正後: `process.env.CI` のチェックを追加
+  - GitHub Actions CIでは自動的に `CI=true` が設定されるため、これで正しく検証がスキップされる
+- テスト環境での検証スキップ: ✅ `process.env.NODE_ENV !== 'test'` を維持
+- その他の検証ロジック: ✅ 変更なし
 
-#### 2. フロントエンドコンポーネント (CardManager.tsx)
-
-**確認事項**:
-- 画像選択時にクライアントサイドで検証: ✅ `handleFileChange()` 関数 (L49-58)
-- サーバーサイドでも検証: ✅ `handleSubmit()` 関数 (L83-88)
-- エラーメッセージの表示: ✅ `uploadError` 状態を利用してエラーを表示 (L229-231)
-- UIでの制限値表示: ✅ 最大サイズと許可形式をUIに表示 (L232-234)
-
-#### 3. /api/upload ルート (src/app/api/upload/route.ts)
+#### 2. .github/workflows/ci.yml (修正済み)
 
 **確認事項**:
-- サーバーサイドで画像サイズと形式を検証: ✅ `validateUpload()` 関数を呼び出し (L18)
-- 不正なファイルの場合は400エラーを返す: ✅ `{ status: 400 }` を返却 (L20-23)
+- すべての必要な環境変数にダミー値を設定: ✅
+  - NEXT_PUBLIC_SUPABASE_URL: ''
+  - NEXT_PUBLIC_SUPABASE_ANON_KEY: ''
+  - NEXT_PUBLIC_TWITCH_CLIENT_ID: ''
+  - NEXT_PUBLIC_APP_URL: http://localhost:3000
+  - TWITCH_CLIENT_ID: dummy_client_id
+  - TWITCH_CLIENT_SECRET: dummy_client_secret
+  - TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
+  - SUPABASE_SERVICE_ROLE_KEY: dummy_service_role_key
+  - BLOB_READ_WRITE_TOKEN: dummy_blob_token
+- Buildステップで環境変数が設定されている: ✅ (L33-42)
+
+#### 3. CI workflow実行確認
+
+**確認事項**:
+- Buildステップが成功する: ✅ `npm run build` が正常に完了
+- 環境変数検証がスキップされる: ✅ `process.env.CI` が設定されているため検証がスキップ
+- ビルドプロセスで環境変数が必要な箇所でエラーが出ない: ✅ ダミー値で十分
 
 ## 仕様との齟齬確認
 
@@ -67,21 +81,23 @@ Issue #11: カードアップロード容量制限の実装
 
 | 項目 | 設計書 | 実装 | 状態 |
 |:---|:---|:---|:---:|
-| 画像サイズ検証（最大1MB） | 最大1MB | MAX_FILE_SIZE: 1 * 1024 * 1024 | ✅ |
-| 画像形式検証（JPEG/PNGのみ） | JPEG/PNGのみ | ALLOWED_TYPES: ['image/jpeg', 'image/png'] | ✅ |
-| クライアントサイド検証 | 画像選択時に検証 | handleFileChangeで実装 | ✅ |
-| サーバーサイド検証 | サーバーサイドでも検証 | /api/upload/route.tsで実装 | ✅ |
-| 400エラー返却 | 不正なファイルの場合は400エラー | { status: 400 }を返却 | ✅ |
-| エラーメッセージ | 適切なエラーメッセージ | 日本語のエラーメッセージを実装 | ✅ |
+| CI環境変数チェック追加 | process.env.CIをチェック | if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI) | ✅ |
+| CI環境変数の設定 | GitHub Actionsでダミー値を設定 | .github/workflows/ci.ymlでダミー値を設定済み | ✅ |
+| CI成功条件 | CIが成功、Buildが完了、テストとLintがパス | すべてパス | ✅ |
+
+## テスト環境とCI環境の検証動作
+
+| 環境 | NODE_ENV | CI | 検証動作 | 状態 |
+|:---|:---:|:---:|:---|:---:|
+| ローカル開発環境 | undefined | undefined | 検証実行 | ✅ |
+| テスト環境 | test | undefined | 検証スキップ | ✅ |
+| CI環境 | undefined | true | 検証スキップ | ✅ |
 
 ## 推奨事項
 
 ### 改善提案
 
-1. **upload-validation.tsのユニットテスト追加**
-   - validateUpload関数のテストケースを追加することをお勧めします
-   - 画像サイズ超過、不正な形式、正常ファイルの各ケースをテストすべきです
-   - これは受け入れ基準には含まれていませんが、品質向上のために推奨されます
+なし
 
 ## 結論
 
@@ -89,7 +105,7 @@ Issue #11: カードアップロード容量制限の実装
 
 **理由**:
 - すべての受け入れ基準を満たしている
-- 設計書（docs/ARCHITECTURE.md Issue #11）に記載された通りに実装されている
-- すべてのテスト（28件）、Lint、TypeCheckがパスしている
-- クライアントサイドとサーバーサイドの両方で適切に検証が実装されている
-- エラーメッセージが日本語で適切に表示される
+- 設計書（docs/ARCHITECTURE.md Issue #12）に記載された通りに実装されている
+- すべてのテスト（28件）、Lint、Buildがパスしている
+- CI環境で環境変数の検証が正しくスキップされる
+- GitHub Actions CI workflowですべての必要な環境変数にダミー値が設定されている
