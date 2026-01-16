@@ -31,9 +31,9 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          NEXT_PUBLIC_SUPABASE_URL: ''
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ''
-          NEXT_PUBLIC_TWITCH_CLIENT_ID: ''
+          NEXT_PUBLIC_SUPABASE_URL: https://dummy.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: dummy_anon_key
+          NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
           NEXT_PUBLIC_APP_URL: http://localhost:3000
           TWITCH_CLIENT_ID: dummy_client_id
           TWITCH_CLIENT_SECRET: dummy_client_secret

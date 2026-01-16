@@ -92,9 +92,10 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
+- CI Supabase Realtime environment variables fixed (dummy values for build)
+- Architecture documentation updated with CI fix design
 - CI environment variable validation fixed (skip in CI environment)
 - Card image upload size limit validation added (max 1MB, JPEG/PNG only)
-- Architecture documentation updated with issue resolutions
 - XSS vulnerability fix (callback route error parameter encoding)
 - Session expiry validation added
 - Improved error handling in Twitch auth

@@ -2,22 +2,35 @@
 
 ## QA Date
 
-2026-01-17 07:03:31
+2026-01-17 07:13:00
 
 ## 実装内容
 
-Issue #12: CI fails: Missing required environment variables in GitHub Actions
+Issue #8: 利用規約 (Terms of Service) のバグ修正
+
+### 修正内容
+
+1. 多言語コンテンツの削除と日本語への修正（重大バグ修正）
+   - Line 74: ロシア語 `пользователі` を削除し、 `ユーザー様` に修正
+   - Line 126: 中国語 `变更后的` を削除し、 `変更後の` に修正
+
+2. 著作権年の更新（2025 → 2026）
+   - Line 160: 著作権表示の年を2026に更新
+
+3. ダッシュボードリンクのログイン状態対応
+   - 未ログイン時にはダッシュボードリンクを表示しないように変更
 
 ## 受け入れ基準チェック
 
-### CI環境変数検証の修正
+### 利用規約（Issue #8）
 
 | 基準 | 状態 | 詳細 |
 |:---|:---:|:---|
-| CIが成功する | ✅ | ユニットテスト、Lint、Buildがすべてパス |
-| ビルドが正常に完了する | ✅ | next buildが成功し、16ルートが生成 |
-| すべてのテストとLintがパスする | ✅ | 28件のユニットテスト、Lintエラーなし |
-| 環境変数の検証がCI環境で正しくスキップされる | ✅ | src/lib/env-validation.ts:45 でprocess.env.CIチェックを追加 |
+| `/tos` ページにアクセスできる | ✅ | ルート `/tos` が正常に生成され、アクセス可能 |
+| 利用規約の内容が正しく表示される | ✅ | 多言語混入バグが修正され、日本語のみで表示 |
+| ナビゲーションまたはフッターから利用規約にリンクされている | ✅ | フッターに利用規約へのリンクが実装されている |
+| レスポンシブデザインで正しく表示される | ✅ | Tailwind CSSのレスポンシブクラスを使用（md:p-12など） |
+| ページがSEOに適した構造になっている | ✅ | Metadata、HTML5構造、適切な階層構造を使用 |
 
 ## 詳細なQA結果
 
@@ -36,44 +49,54 @@ Issue #12: CI fails: Missing required environment variables in GitHub Actions
 ### Build
 
 ✅ **パス**: Next.jsビルド成功
-- 16ルートが正常に生成
+- 17ルートが正常に生成
+  - Static: 1 page (/_not-found)
+  - Dynamic: 16 server-rendered pages (/, /tos, /dashboard, /overlay/[streamerId], API routes)
 - TypeScriptコンパイル成功
-- Prerendered: 1 static page
-- Dynamic: 15 server-rendered pages
+- `/tos` ページが正常に生成されている
 
 ### 実装確認
 
-#### 1. src/lib/env-validation.ts (修正)
+#### 1. src/app/tos/page.tsx (修正)
 
 **確認事項**:
-- CI環境変数チェックの追加: ✅ `if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI)`
-  - 元のコード: `if (!valid && process.env.NODE_ENV !== 'test')`
-  - 修正後: `process.env.CI` のチェックを追加
-  - GitHub Actions CIでは自動的に `CI=true` が設定されるため、これで正しく検証がスキップされる
-- テスト環境での検証スキップ: ✅ `process.env.NODE_ENV !== 'test'` を維持
-- その他の検証ロジック: ✅ 変更なし
+- 多言語混入バグの修正: ✅
+  - Line 74: `18歳以上のユーザー様を対象としています。` （ロシア語削除）
+  - Line 126: `変更後の規約は、当サービス上に掲載した時点で効力を生じます。` （中国語削除）
+- 著作権年の更新: ✅
+  - Line 160: `&copy; 2026 TwiCa. All rights reserved.` （2026に更新）
+- ダッシュボードリンクのログイン状態対応: ✅
+  - Line 10-11: `async function TosPage()` と `const session = await getSession();` でセッション取得
+  - Line 20-27: `{session && (...)}` で条件付きレンダリング
+  - 未ログイン時にはダッシュボードリンクを表示しない
+- Metadataの設定: ✅
+  - Line 5-8: タイトル、説明が適切に設定されている
+- レスポンシブデザイン: ✅
+  - Line 32: `md:p-12` で中画面以上で余白を拡大
+  - Line 33: `md:text-4xl` で中画面以上でフォントサイズを拡大
+- SEO対応: ✅
+  - 適切なHTML5構造（header, main, article, section, footer）
+  - 正しい見出し階層（h1, h2）
+  - メタデータの設定
 
-#### 2. .github/workflows/ci.yml (修正済み)
-
-**確認事項**:
-- すべての必要な環境変数にダミー値を設定: ✅
-  - NEXT_PUBLIC_SUPABASE_URL: ''
-  - NEXT_PUBLIC_SUPABASE_ANON_KEY: ''
-  - NEXT_PUBLIC_TWITCH_CLIENT_ID: ''
-  - NEXT_PUBLIC_APP_URL: http://localhost:3000
-  - TWITCH_CLIENT_ID: dummy_client_id
-  - TWITCH_CLIENT_SECRET: dummy_client_secret
-  - TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
-  - SUPABASE_SERVICE_ROLE_KEY: dummy_service_role_key
-  - BLOB_READ_WRITE_TOKEN: dummy_blob_token
-- Buildステップで環境変数が設定されている: ✅ (L33-42)
-
-#### 3. CI workflow実行確認
+#### 2. ナビゲーションとフッター
 
 **確認事項**:
-- Buildステップが成功する: ✅ `npm run build` が正常に完了
-- 環境変数検証がスキップされる: ✅ `process.env.CI` が設定されているため検証がスキップ
-- ビルドプロセスで環境変数が必要な箇所でエラーが出ない: ✅ ダミー値で十分
+- ナビゲーション: ✅
+  - Line 17-28: TwiCaロゴと、ログイン時のみダッシュボードリンク
+- フッター: ✅
+  - Line 153-160: 「ホーム」と「利用規約」のリンクが実装されている
+  - Line 160: 著作権表示
+
+#### 3. セッション管理
+
+**確認事項**:
+- getSession() の使用: ✅
+  - `src/lib/session.ts` から getSession() をインポート
+  - セッションが存在しない場合は null を返す
+  - セッションの有効期限チェックが実装されている
+- 条件付きレンダリング: ✅
+  - `{session && (...)}` でセッションがある場合のみダッシュボードリンクを表示
 
 ## 仕様との齟齬確認
 
@@ -81,17 +104,25 @@ Issue #12: CI fails: Missing required environment variables in GitHub Actions
 
 | 項目 | 設計書 | 実装 | 状態 |
 |:---|:---|:---|:---:|
-| CI環境変数チェック追加 | process.env.CIをチェック | if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI) | ✅ |
-| CI環境変数の設定 | GitHub Actionsでダミー値を設定 | .github/workflows/ci.ymlでダミー値を設定済み | ✅ |
-| CI成功条件 | CIが成功、Buildが完了、テストとLintがパス | すべてパス | ✅ |
+| 利用規約ページの作成 | `/tos` ページを作成 | `src/app/tos/page.tsx` に実装 | ✅ |
+| 利用規約の内容表示 | サービスの概要、ユーザーの責任と義務、利用制限等 | 第1条〜第7条の内容を実装 | ✅ |
+| ナビゲーションからのリンク追加 | ナビゲーションまたはフッターにリンク追加 | フッターにリンク追加 | ✅ |
+| レスポンシブデザイン対応 | レスポンシブデザイン対応 | Tailwind CSSを使用 | ✅ |
+| SEOに適した構造 | SEOに適した構造 | Metadata、HTML5構造 | ✅ |
 
-## テスト環境とCI環境の検証動作
+### 多言語バグ修正の確認
 
-| 環境 | NODE_ENV | CI | 検証動作 | 状態 |
+| 項目 | 修正前 | 修正後 | 状態 |
+|:---|:---|:---|:---:|
+| Line 74: ユーザー対象 | `18歳以上の пользователіを対象としています。` | `18歳以上のユーザー様を対象としています。` | ✅ |
+| Line 126: 変更後の規約 | `変更后的規約は、当サービス上に掲載した時点で効力を生じます。` | `変更後の規約は、当サービス上に掲載した時点で効力を生じます。` | ✅ |
+
+## テスト環境とCI環境の検証
+
+| 環境 | NODE_ENV | CI | テスト結果 | 状態 |
 |:---|:---:|:---:|:---|:---:|
-| ローカル開発環境 | undefined | undefined | 検証実行 | ✅ |
-| テスト環境 | test | undefined | 検証スキップ | ✅ |
-| CI環境 | undefined | true | 検証スキップ | ✅ |
+| ローカル開発環境 | undefined | undefined | 28 tests pass | ✅ |
+| ビルド | production | undefined | Build成功 | ✅ |
 
 ## 推奨事項
 
@@ -105,7 +136,11 @@ Issue #12: CI fails: Missing required environment variables in GitHub Actions
 
 **理由**:
 - すべての受け入れ基準を満たしている
-- 設計書（docs/ARCHITECTURE.md Issue #12）に記載された通りに実装されている
+- 設計書（docs/ARCHITECTURE.md Issue #8）に記載された通りに実装されている
+- 多言語混入バグが正しく修正されている
+- 著作権年が2026に更新されている
+- ダッシュボードリンクのログイン状態対応が正しく実装されている
 - すべてのテスト（28件）、Lint、Buildがパスしている
-- CI環境で環境変数の検証が正しくスキップされる
-- GitHub Actions CI workflowですべての必要な環境変数にダミー値が設定されている
+- `/tos` ページが正常に生成され、アクセス可能
+- レスポンシブデザインで正しく表示される
+- SEOに適した構造になっている

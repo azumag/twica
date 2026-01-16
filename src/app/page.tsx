@@ -113,6 +113,11 @@ export default async function Home() {
       </main>
 
       <footer className="container mx-auto px-4 py-8 text-center text-purple-300">
+        <div className="mb-4 flex justify-center gap-6">
+          <Link href="/tos" className="hover:text-white">
+            利用規約
+          </Link>
+        </div>
         <p>&copy; 2025 TwiCa. All rights reserved.</p>
       </footer>
     </div>
