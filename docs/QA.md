@@ -2,79 +2,75 @@
 
 ## QA Date
 
-2026-01-17 08:14:30
+2026-01-17 14:10:00
 
 ## 実装内容
 
-Issue #13: APIルートのレート制限実装
+Issue #15: カード対戦機能の実装
 
 ### 実装内容
 
-1. **レート制限ライブラリのインストール**
-   - `@upstash/ratelimit` と `@upstash/redis` がインストールされている
+1. **データベースマイグレーション (`supabase/migrations/00002_add_battle_features.sql`)**
+   - `cards`テーブルにステータス列追加: ✅ 実装済み
+     - hp, atk, def, spd
+     - skill_type, skill_name, skill_power
+   - `battles`テーブル作成: ✅ 実装済み
+   - `battle_stats`テーブル作成: ✅ 実装済み
+   - RLSポリシー設定: ✅ 実装済み
+   - トリガーによる統計自動更新: ✅ 実装済み
 
-2. **レート制限ライブラリの実装 (`src/lib/rate-limit.ts`)**
-   - Redisとインメモリの両方をサポート
-   - 各APIルート用のレート制限設定
-   - `checkRateLimit` 関数によるレート制限チェック
-   - `getClientIp` 関数によるIPアドレスの取得
-   - `getRateLimitIdentifier` 関数によるユーザー識別子の取得
+2. **バトルロジック実装 (`src/lib/battle.ts`)**
+   - `generateCardStats()`: ✅ 実装済み
+   - `toBattleCard()`: ✅ 実装済み
+   - `executeSkill()`: ✅ 実装済み
+   - `playBattle()`: ✅ 実装済み
+   - `generateCPUOpponent()`: ✅ 実装済み
 
-3. **APIルートへのレート制限の追加**
-   - `/api/upload` - ✅ 実装済み
-   - `/api/cards` (POST) - ✅ 実装済み
-   - `/api/cards` (GET) - ✅ 実装済み
-   - `/api/cards/[id]` (PUT/DELETE) - ✅ 実装済み
-   - `/api/streamer/settings` - ✅ 実装済み
-   - `/api/gacha` - ✅ 実装済み
-   - `/api/auth/twitch/login` - ✅ 実装済み
-   - `/api/auth/twitch/callback` - ✅ 実装済み
-   - `/api/auth/logout` (POST/GET) - ✅ 実装済み
-   - `/api/twitch/eventsub` - ✅ 実装済み（notificationメッセージを除く）
-   - `/api/twitch/rewards` (GET/POST) - ✅ 実装済み
-   - `/api/twitch/eventsub/subscribe` (POST/GET) - ✅ 実装済み
-   - `/api/gacha-history/[id]` (DELETE) - ✅ 実装済み
-   - `/api/debug-session` (GET) - ✅ 実装済み
+3. **APIルート実装**
+   - `POST /api/battle/start`: ✅ 実装済み
+   - `GET /api/battle/[battleId]`: ✅ 実装済み
+   - `GET /api/battle/stats`: ✅ 実装済み
 
-4. **グローバルレート制限ミドルウェア**
-   - `/api` ルート全体にグローバルレート制限を追加
-   - IP ベースの識別を使用
+4. **フロントエンド実装**
+   - `/battle` ページ: ✅ 実装済み
+   - `/battle/stats` ページ: ✅ 実装済み
+   - `AnimatedBattle` コンポーネント: ✅ 実装済み
 
-5. **フロントエンドでの429エラーハンドリング**
-   - `CardManager.tsx` - ✅ 実装済み
-   - `ChannelPointSettings.tsx` - ✅ 実装済み
-   - `GachaHistorySection.tsx` - ✅ 実装済み
+5. **レート制限実装**
+   - `battleStart`: 20 req/min: ✅ 実装済み
+   - `battleGet`: 100 req/min: ✅ 実装済み
+   - `battleStats`: 50 req/min: ✅ 実装済み
+
+6. **単体テスト**
+   - `tests/unit/battle.test.ts`: ✅ 24件のテスト実装済み
 
 ## 受け入れ基準チェック
 
-### レート制限実装（Issue #13）
+### カード対戦機能（Issue #15）
 
 | 基準 | 状態 | 詳細 |
 |:---|:---:|:---|
-| `@upstash/ratelimit` と `@upstash/redis` をインストール | ✅ | package.jsonで確認 |
-| `src/lib/rate-limit.ts` を実装 | ✅ | ファイルが存在し実装されている |
-| 各 API ルートにレート制限を追加 | ✅ | 全てのAPIルートにレート制限が実装されている |
-| 429 エラーが適切に返される | ✅ | 全てのルートで429エラーを返す |
-| レート制限ヘッダーが設定される | ✅ | `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` ヘッダーを設定 |
-| 開発環境でインメモリレート制限が動作する | ✅ | Redisがない場合はインメモリを使用 |
-| 本番環境で Redis レート制限が動作する | ✅ | Redis設定があれば使用 |
-| EventSub Webhook は緩いレート制限を持つ | ✅ | notificationメッセージを除き1000リクエスト/分 |
-| 認証済みユーザーは twitchUserId で識別される | ✅ | `getRateLimitIdentifier` で実装 |
-| 未認証ユーザーは IP アドレスで識別される | ✅ | `getRateLimitIdentifier` で実装 |
-| フロントエンドで 429 エラーが適切に表示される | ✅ | 全ての主要なコンポーネントで429エラーをハンドリング |
-| グローバルレート制限ミドルウェア | ✅ | ミドルウェアでグローバルレート制限が実装されている |
+| カードにステータス（HP、ATK、DEF、SPD）が追加される | ✅ | データベースと型定義で実装済み |
+| 各カードにスキルが設定される | ✅ | skill_type, skill_name, skill_power で実装済み |
+| CPU対戦が可能 | ✅ | `generateCPUOpponent()` で実装済み |
+| 自動ターン制バトルが動作する | ✅ | `playBattle()` で実装済み |
+| 勝敗判定が正しく行われる | ✅ | win/lose/draw 判定実装済み |
+| 対戦履歴が記録される | ✅ | `battles`テーブルで記録 |
+| 対戦統計が表示される | ✅ | `battle_stats`テーブルとAPIで実装済み |
+| フロントエンドで対戦が視覚的に楽しめる | ✅ | AnimatedBattleコンポーネントで実装 |
+| アニメーション効果が表示される | ✅ | 攻撃、ダメージ、回復のアニメーション実装済み |
+| モバイルで快適に操作可能 | ✅ | レスポンシブデザイン実装済み |
 
 ## 詳細なQA結果
 
 ### ユニットテスト
 
-✅ **パス**: 28件のテスト全てパス
-- logger.test.ts: 6 tests
-- gacha.test.ts: 6 tests
+✅ **パス**: 52件のテスト全てパス
 - constants.test.ts: 6 tests
+- gacha.test.ts: 6 tests
+- logger.test.ts: 6 tests
 - env-validation.test.ts: 10 tests
-
-**⚠️ 注意**: レート制限機能に関する単体テストが存在しない
+- battle.test.ts: 24 tests
 
 ### Lint
 
@@ -83,96 +79,172 @@ Issue #13: APIルートのレート制限実装
 ### Build
 
 ✅ **パス**: Next.jsビルド成功
-- 17ルートが正常に生成
 
 ## 実装確認
 
-### 1. src/lib/rate-limit.ts
+### 1. データベースマイグレーション
 
 **確認事項**:
-- Redisとインメモリの両方をサポート: ✅
-- 適切なレート制限設定: ✅
-  - upload: 10 req/min
-  - cardsPost: 20 req/min
-  - cardsGet: 100 req/min
-  - cardsId: 100 req/min
-  - streamerSettings: 10 req/min
-  - gacha: 30 req/min
-  - authLogin: 5 req/min
-  - authCallback: 10 req/min
-  - authLogout: 10 req/min
-  - eventsub: 1000 req/min
-  - twitchRewardsGet: 50 req/min
-  - twitchRewardsPost: 20 req/min
-  - eventsubSubscribePost: 10 req/min
-  - eventsubSubscribeGet: 50 req/min
-  - gachaHistoryDelete: 30 req/min
-  - debugSession: 10 req/min
-- `checkRateLimit` 関数の実装: ✅
-- `getClientIp` 関数の実装: ✅
-- `getRateLimitIdentifier` 関数の実装: ✅
-- エラーハンドリング（フェイルセーフ）: ✅
+- cardsテーブルへのステータス列追加: ✅
+  - hp, atk, def, spd: ✅
+  - skill_type (CHECK制約付き): ✅
+  - skill_name, skill_power: ✅
+- battlesテーブル作成: ✅
+  - 外部キー制約: ✅
+  - 結果のCHECK制約: ✅
+  - JSONB型のbattle_log: ✅
+- battle_statsテーブル作成: ✅
+  - UNIQUE制約: ✅
+  - win_rateの精度(5, 2): ✅
+- インデックス作成: ✅
+  - idx_battles_user_id: ✅
+  - idx_battles_created_at: ✅
+  - idx_battles_result: ✅
+  - idx_battle_stats_user_id: ✅
+- トリガーによる統計自動更新: ✅
+  - update_battle_stats() 関数: ✅
+  - insertトリガー: ✅
+  - updated_atトリガー: ✅
+- RLSポリシー: ✅
+  - "Service can manage battles": ✅
+  - "Service can manage battle_stats": ✅
 
-### 2. APIルートのレート制限実装
-
-| ルート | メソッド | レート制限 | 状態 |
-|:---|:---:|:---:|:---:|
-| /api/upload | POST | 10/min | ✅ |
-| /api/cards | POST | 20/min | ✅ |
-| /api/cards | GET | 100/min | ✅ |
-| /api/cards/[id] | PUT | 100/min | ✅ |
-| /api/cards/[id] | DELETE | 100/min | ✅ |
-| /api/streamer/settings | POST | 10/min | ✅ |
-| /api/gacha | POST | 30/min | ✅ |
-| /api/auth/twitch/login | GET | 5/min | ✅ |
-| /api/auth/twitch/callback | GET | 10/min | ✅ |
-| /api/auth/logout | POST | 10/min | ✅ |
-| /api/auth/logout | GET | 10/min | ✅ |
-| /api/twitch/eventsub | POST | 1000/min* | ✅ |
-| /api/twitch/rewards | GET | 50/min | ✅ |
-| /api/twitch/rewards | POST | 20/min | ✅ |
-| /api/twitch/eventsub/subscribe | POST | 10/min | ✅ |
-| /api/twitch/eventsub/subscribe | GET | 50/min | ✅ |
-| /api/gacha-history/[id] | DELETE | 30/min | ✅ |
-| /api/debug-session | GET | 10/min | ✅ |
-
-* notificationメッセージを除く
-
-### 3. グローバルレート制限ミドルウェア
+### 2. バトルロジック (src/lib/battle.ts)
 
 **確認事項**:
-- ミドルウェアでのグローバルレート制限: ✅ 実装済み
-  - 設計書 (docs/ARCHITECTURE.md 3.4節) ではミドルウェアによるグローバルレート制限が設計されている
-  - `src/middleware.ts` で `/api` ルート全体にグローバルレート制限が実装されている
-  - IP ベースの識別を使用
+- `generateCardStats()` 関数: ✅
+  - レアリティ別のステータス範囲が正しい:
+    - common: HP 100-120, ATK 20-30, DEF 10-15, SPD 1-3 ✅
+    - rare: HP 120-140, ATK 30-40, DEF 15-20, SPD 3-5 ✅
+    - epic: HP 140-160, ATK 40-45, DEF 20-25, SPD 5-7 ✅
+    - legendary: HP 160-200, ATK 45-50, DEF 25-30, SPD 7-10 ✅
+  - skill_type のランダム選択: ✅
+  - skill_name のランダム選択: ✅
+  - skill_power の適切な範囲: ✅
 
-### 4. フロントエンドの429エラーハンドリング
+- `toBattleCard()` 関数: ✅
+  - Card型からBattleCard型への変換: ✅
+  - currentHpの初期化: ✅
+
+- `executeSkill()` 関数: ✅
+  - attackスキル: ダメージ計算が正しい ✅
+  - defenseスキル: 防御力アップが正しい ✅
+  - healスキル: 回復量が正しい ✅
+  - specialスキル: 特殊ダメージ計算 ✅
+
+- `playBattle()` 関数: ✅
+  - 行動順決定（SPD基準）: ✅
+  - スキル発動確率（SPD × 10%, 最大70%）: ✅
+  - 通常攻撃ダメージ計算: ✅
+  - ターン制ループ（最大20ターン）: ✅
+  - 勝敗判定: ✅
+  - 戦闘ログの記録: ✅
+
+- `generateCPUOpponent()` 関数: ✅
+  - ランダムカード選択: ✅
+  - CPUカードの命名: ✅
+  - フォールバック処理: ✅
+
+### 3. APIルート
+
+#### POST /api/battle/start
 
 **確認事項**:
+- レート制限（20 req/min）: ✅
+- セッション認証: ✅
+- ユーザー取得: ✅
+- userCardIdのバリデーション: ✅
+- ユーザーカードの取得（所有権確認）: ✅
+- CPUオポネントの生成: ✅
+- バトル実行: ✅
+- バトル結果の保存: ✅
+- レスポンス形式（設計書通り）: ✅
 
-- CardManager.tsx (upload): ✅ 429エラーをハンドリングしている
-  - Line 99-103: `uploadResponse.status === 429` のチェック
+#### GET /api/battle/[battleId]
 
-- CardManager.tsx (card API): ✅ 429エラーをハンドリングしている
-  - Line 143-146: `response.status === 429` のチェック
+**確認事項**:
+- レート制限（100 req/min）: ✅
+- セッション認証: ✅
+- ユーザー取得: ✅
+- バトルデータの取得（所有権確認）: ✅
+- CPUカードのフォールバック処理: ✅
+- HPの再計算（バトルログから）: ✅
+- レスポンス形式（設計書通り）: ✅
 
-- CardManager.tsx (delete): ✅ 429エラーをハンドリングしている
-  - Line 168-172: `response.status === 429` のチェック
+#### GET /api/battle/stats
 
-- ChannelPointSettings.tsx (fetchRewards): ✅ 429エラーをハンドリングしている
-  - Line 58-63: `response.status === 429` のチェック
+**確認事項**:
+- レート制限（50 req/min）: ✅
+- セッション認証: ✅
+- ユーザー取得: ✅
+- 統計データの取得（フォールバック付き）: ✅
+- 最近の対戦履歴の取得: ✅
+- CPUカード名の取得: ✅
+- カード別統計の集計: ✅
+- レスポンス形式（設計書通り）: ✅
 
-- ChannelPointSettings.tsx (handleCreateReward): ✅ 429エラーをハンドリングしている
-  - Line 125-127: `response.status === 429` のチェック
+### 4. フロントエンド
 
-- ChannelPointSettings.tsx (handleSave - settings): ✅ 429エラーをハンドリングしている
-  - Line 154-157: `settingsResponse.status === 429` のチェック
+#### /battle ページ
 
-- ChannelPointSettings.tsx (handleSave - eventsub): ✅ 429エラーをハンドリングしている
-  - Line 179-181: `eventSubResponse.status === 429` のチェック
+**確認事項**:
+- カード選択画面: ✅
+  - ユーザーカードの表示: ✅
+  - ステータス情報の表示: ✅
+  - CPU対戦ボタン: ✅
+- 対戦進行画面: ✅
+  - AnimatedBattleコンポーネントによるリアルタイム表示: ✅
+  - アニメーション効果（攻撃、ダメージ、回復）: ✅
+  - ターンごとの進行表示: ✅
+  - HPバーのアニメーション: ✅
+  - バトルログのリアルタイム表示: ✅
+- 結果画面: ✅
+  - 勝敗の表示: ✅
+  - 統計情報: ✅
+  - 対戦ログ: ✅
+  - 再戦ボタン: ✅
+  - 他のカードで対戦ボタン: ✅
+  - 対戦記録へのリンク: ✅
+- レスポンシブ対応: ✅
 
-- GachaHistorySection.tsx (handleDelete): ✅ 429エラーをハンドリングしている
-  - Line 40-44: `response.status === 429` のチェック
+#### /battle/stats ページ
+
+**確認事項**:
+- 総対戦数、勝利数、敗北数、引き分け数の表示: ✅
+- 勝率の表示: ✅
+- 最近の対戦履歴: ✅
+- 使用カードごとの勝率: ✅
+  - カード別の成績表示: ✅
+  - 勝率計算: ✅
+- 対戦ページへのリンク: ✅
+
+### 5. 単体テスト (tests/unit/battle.test.ts)
+
+**確認事項**:
+- `generateCardStats()` のテスト: ✅
+  - レアリティ別のステータス範囲: ✅
+  - 無効なレアリティのハンドリング: ✅
+  - スキルタイプと名前の生成: ✅
+- `toBattleCard()` のテスト: ✅
+- `executeSkill()` のテスト: ✅
+  - attackスキル: ✅
+  - defenseスキル: ✅
+  - healスキル: ✅
+  - specialスキル: ✅
+  - 未知のスキルタイプのハンドリング: ✅
+  - 最小ダメージの保証: ✅
+- `playBattle()` のテスト: ✅
+  - 速度に基づくターン順: ✅
+  - スキル発動の正確性: ✅
+  - HPが0になった時の対戦終了: ✅
+  - 最大ターン後の対戦終了: ✅
+  - HPに基づく勝者判定: ✅
+  - 防御バフの適用: ✅
+  - 回復の処理: ✅
+- `generateCPUOpponent()` のテスト: ✅
+  - 利用可能なカードがない場合のフォールバック: ✅
+  - 既存カードからのCPUオポネント作成: ✅
+  - currentHpを最大HPにリセット: ✅
 
 ## 仕様との齟齬確認
 
@@ -180,73 +252,33 @@ Issue #13: APIルートのレート制限実装
 
 | 項目 | 設計書 | 実装 | 状態 |
 |:---|:---|:---|:---:|
-| `@upstash/ratelimit` と `@upstash/redis` をインストール | インストール必要 | インストール済み | ✅ |
-| `src/lib/rate-limit.ts` を実装 | 実装必要 | 実装済み | ✅ |
-| Redis/インメモリの両方をサポート | 両方をサポート | 両方をサポート | ✅ |
-| 各 API ルートにレート制限を追加 | 全APIルート | 全APIルートに実装 | ✅ |
-| 429 エラーが適切に返される | 429エラーを返す | 全ルートで返す | ✅ |
-| レート制限ヘッダーが設定される | ヘッダーを設定 | ヘッダーを設定 | ✅ |
-| 開発環境でインメモリレート制限が動作する | インメモリを使用 | インメモリを使用 | ✅ |
-| 本番環境で Redis レート制限が動作する | Redisを使用 | Redisを使用 | ✅ |
-| EventSub Webhook は緩いレート制限を持つ | 1000/min | 1000/min (notification除く) | ✅ |
-| 認証済みユーザーは twitchUserId で識別される | twitchUserIdを使用 | twitchUserIdを使用 | ✅ |
-| 未認証ユーザーは IP アドレスで識別される | IPアドレスを使用 | IPアドレスを使用 | ✅ |
-| フロントエンドで 429 エラーが適切に表示される | 429エラーを表示 | 全主要コンポーネントで実装 | ✅ |
-| グローバルレート制限ミドルウェア | 実装推奨 | 実装済み | ✅ |
-
-## 問題点
-
-### 重大な問題
-
-なし
-
-### 中程度の問題
-
-なし
-
-### 軽微な問題
-
-**単体テストの不足**:
-- レート制限機能に関する単体テストが存在しない
-
-**影響**: レート制限機能の自動テストができない
-
-**推奨される修正**: 以下のテストを追加する
-  - `checkRateLimit` 関数のテスト
-  - `getClientIp` 関数のテスト
-  - `getRateLimitIdentifier` 関数のテスト
-  - インメモリレート制限のテスト
-  - Redisレート制限のテスト（Redisがある場合）
-
-## テスト環境とCI環境の検証
-
-| 環境 | NODE_ENV | CI | テスト結果 | 状態 |
-|:---|:---:|:---:|:---|:---:|
-| ローカル開発環境 | undefined | undefined | 28 tests pass | ✅ |
-| ビルド | production | undefined | Build成功 | ✅ |
-
-## 推奨事項
-
-### 推奨修正
-
-1. **単体テストを追加する**:
-   - レート制限機能に関する単体テストを追加する
+| データベース設計 | マイグレーション実装 | マイグレーション実装済み | ✅ |
+| バトルロジック | playBattle()関数 | 実装済み | ✅ |
+| スキル発動確率 | SPD × 10%（最大70%） | 実装済み | ✅ |
+| ダメージ計算 | 正しく実装 | 実装済み | ✅ |
+| APIエンドポイント | POST /api/battle/start | 実装済み | ✅ |
+| APIエンドポイント | GET /api/battle/[battleId] | 実装済み | ✅ |
+| APIエンドポイント | GET /api/battle/stats | 実装済み | ✅ |
+| カード選択画面 | カード選択 | 実装済み | ✅ |
+| 対戦進行画面 | リアルタイム表示 | AnimatedBattleで実装 | ✅ |
+| アニメーション効果 | アニメーション | AnimatedBattleで実装 | ✅ |
+| 統計画面 | 使用カードごとの勝率 | 実装済み | ✅ |
+| レスポンシブ対応 | モバイル対応 | 実装済み | ✅ |
 
 ## 結論
 
 ✅ **QA合格**
 
 **理由**:
-- 全てのAPIルートにレート制限が適切に実装されている
-- 429エラーとレート制限ヘッダーが正しく返される
-- Redisとインメモリの両方をサポートしている
-- 認証済みユーザーと未認証ユーザーを適切に識別している
-- 開発環境と本番環境の両方で動作する
-- すべてのテスト（28件）、Lint、Buildがパスしている
-- グローバルレート制限ミドルウェアが実装されている
-- フロントエンドで429エラーが適切にハンドリングされている
+- すべての受け入れ基準を満たしている
+- データベースマイグレーションが正しく実装されている
+- バトルロジックが設計書通りに実装されている
+- APIエンドポイントが正しく実装されている
+- フロントエンドが視覚的に楽しめるよう実装されている
+- アニメーション効果が実装されている
+- レスポンシブ対応がされている
+- 単体テストが十分に実装されている（24件のテスト）
+- LintおよびBuildが成功している
+- 前回のQAであったビルドエラー（getSession()のクライアントコンポーネントでの使用問題）が修正されている
 
-**推奨事項**:
-- レート制限機能に関する単体テストを追加することを推奨するが、受け入れ基準を満たしているため必須ではない
-
-Issue #13: APIルートのレート制限実装はすべての受け入れ基準を満たしており、QA合格と判断します。
+Issue #15: カード対戦機能の実装は、**すべての受け入れ基準を満たしており、QA合格**と判断します。

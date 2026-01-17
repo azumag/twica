@@ -7,6 +7,8 @@ export type Json =
   | Json[]
 
 export type Rarity = 'common' | 'rare' | 'epic' | 'legendary'
+export type SkillType = 'attack' | 'defense' | 'heal' | 'special'
+export type BattleResult = 'win' | 'lose' | 'draw'
 
 export interface Database {
   public: {
@@ -59,6 +61,13 @@ export interface Database {
           rarity: Rarity
           drop_rate: number
           is_active: boolean
+          hp: number
+          atk: number
+          def: number
+          spd: number
+          skill_type: SkillType
+          skill_name: string
+          skill_power: number
           created_at: string
           updated_at: string
         }
@@ -71,6 +80,13 @@ export interface Database {
           rarity?: Rarity
           drop_rate?: number
           is_active?: boolean
+          hp?: number
+          atk?: number
+          def?: number
+          spd?: number
+          skill_type?: SkillType
+          skill_name?: string
+          skill_power?: number
           created_at?: string
           updated_at?: string
         }
@@ -83,6 +99,13 @@ export interface Database {
           rarity?: Rarity
           drop_rate?: number
           is_active?: boolean
+          hp?: number
+          atk?: number
+          def?: number
+          spd?: number
+          skill_type?: SkillType
+          skill_name?: string
+          skill_power?: number
           created_at?: string
           updated_at?: string
         }
@@ -162,6 +185,70 @@ export interface Database {
           redeemed_at?: string
         }
       }
+      battles: {
+        Row: {
+          id: string
+          user_id: string
+          user_card_id: string
+          opponent_card_id: string
+          result: BattleResult
+          turn_count: number
+          battle_log: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          user_card_id: string
+          opponent_card_id: string
+          result: BattleResult
+          turn_count?: number
+          battle_log?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          user_card_id?: string
+          opponent_card_id?: string
+          result?: BattleResult
+          turn_count?: number
+          battle_log?: Json | null
+          created_at?: string
+        }
+      }
+      battle_stats: {
+        Row: {
+          id: string
+          user_id: string
+          total_battles: number
+          wins: number
+          losses: number
+          draws: number
+          win_rate: number
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          total_battles?: number
+          wins?: number
+          losses?: number
+          draws?: number
+          win_rate?: number
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          total_battles?: number
+          wins?: number
+          losses?: number
+          draws?: number
+          win_rate?: number
+          updated_at?: string
+        }
+      }
     }
     Views: {
       [_ in never]: never
@@ -181,6 +268,8 @@ export type Card = Database['public']['Tables']['cards']['Row']
 export type User = Database['public']['Tables']['users']['Row']
 export type UserCard = Database['public']['Tables']['user_cards']['Row']
 export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
+export type Battle = Database['public']['Tables']['battles']['Row']
+export type BattleStats = Database['public']['Tables']['battle_stats']['Row']
 
 // Extended types with relations
 export type CardWithStreamer = Card & {
@@ -189,4 +278,49 @@ export type CardWithStreamer = Card & {
 
 export type UserCardWithDetails = UserCard & {
   card: CardWithStreamer
+}
+
+export type BattleWithDetails = Battle & {
+  user_card: UserCardWithDetails
+  opponent_card: CardWithStreamer
+}
+
+// Battle related types
+export interface BattleLog {
+  turn: number
+  actor: 'user' | 'opponent'
+  action: 'attack' | 'skill'
+  damage?: number
+  heal?: number
+  message: string
+}
+
+export interface BattleCard {
+  id: string
+  name: string
+  hp: number
+  currentHp: number
+  atk: number
+  def: number
+  spd: number
+  skill_type: SkillType
+  skill_name: string
+  skill_power: number
+  image_url?: string | null
+  rarity?: Rarity
+}
+
+export interface BattleResultData {
+  result: BattleResult
+  turnCount: number
+  userHp: number
+  opponentHp: number
+  logs: BattleLog[]
+}
+
+export interface SkillResult {
+  damage?: number
+  heal?: number
+  defenseUp?: number
+  message: string
 }

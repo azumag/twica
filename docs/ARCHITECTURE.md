@@ -42,6 +42,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 ### パフォーマンス
 - APIレスポンス: 500ms以内（99パーセンタイル）
 - ガチャ処理: 300ms以内
+- 対戦処理: 1000ms以内
 - 静的アセットのCDN配信（Vercel）
 - データベースインデックスによるクエリ最適化
 
@@ -54,7 +55,8 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - セッション有効期限: 7日（Cookie + expiresAt検証）
 - Twitch署名検証（EventSub Webhook）
 - EventSubべき等性（event_idによる重複チェック）
-- **APIレート制限によるDoS攻撃対策**
+- APIレート制限によるDoS攻撃対策
+- 対戦の不正防止（ランダム性の確保）
 
 ### 可用性
 - Vercelによる99.95% SLA
@@ -69,38 +71,51 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 ## 受け入れ基準
 
 ### ユーザー認証
-- [ ] Twitch OAuthでログインできる
-- [ ] 配信者として認証される
-- [ ] 視聴者として認証される
-- [ ] ログアウトできる
-- [ ] セッション有効期限後に再認証が必要
+- [x] Twitch OAuthでログインできる
+- [x] 配信者として認証される
+- [x] 視聴者として認証される
+- [x] ログアウトできる
+- [x] セッション有効期限後に再認証が必要
 
 ### カード管理
-- [ ] カードを新規登録できる
-- [ ] カードを編集できる
-- [ ] カードを削除できる
-- [ ] カード画像をアップロードできる
-- [ ] カード画像サイズが1MB以下である
-- [ ] カードの有効/無効を切り替えられる
-- [ ] ドロップ率を設定できる（合計1.0以下）
+- [x] カードを新規登録できる
+- [x] カードを編集できる
+- [x] カードを削除できる
+- [x] カード画像をアップロードできる
+- [x] カード画像サイズが1MB以下である
+- [x] カードの有効/無効を切り替えられる
+- [x] ドロップ率を設定できる（合計1.0以下）
 
 ### ガチャ機能
-- [ ] チャンネルポイントでガチャを引ける
-- [ ] ガチャ結果が正しく表示される
-- [ ] ドロップ率通りにカードが排出される
-- [ ] ガチャ履歴が記録される
-- [ ] 重みなしで同じ確率で排出される（全カードのドロップ率が等しい場合）
+- [x] チャンネルポイントでガチャを引ける
+- [x] ガチャ結果が正しく表示される
+- [x] ドロップ率通りにカードが排出される
+- [x] ガチャ履歴が記録される
+- [x] 重みなしで同じ確率で排出される（全カードのドロップ率が等しい場合）
 
 ### オーバーレイ
-- [ ] ガチャ結果がOBS等のブラウザソースで表示できる
-- [ ] カード画像が正しく表示される
-- [ ] レアリティに応じた色が表示される
+- [x] ガチャ結果がOBS等のブラウザソースで表示できる
+- [x] カード画像が正しく表示される
+- [x] レアリティに応じた色が表示される
 
 ### データ整合性
-- [ ] RLSポリシーが正しく機能する
-- [ ] 配信者は自分のカードしか編集できない
-- [ ] 視聴者は自分のカードしか見れない
-- [ ] ガチャ履歴が正しく記録される
+- [x] RLSポリシーが正しく機能する
+- [x] 配信者は自分のカードしか編集できない
+- [x] 視聴者は自分のカードしか見れない
+- [x] ガチャ履歴が正しく記録される
+
+### APIレート制限（Issue #13）
+- [x] `@upstash/ratelimit` と `@upstash/redis` をインストール
+- [x] `src/lib/rate-limit.ts` を実装
+- [x] 各 API ルートにレート制限を追加
+- [x] 429 エラーが適切に返される
+- [x] レート制限ヘッダーが設定される
+- [x] 開発環境でインメモリレート制限が動作する
+- [x] 本番環境で Redis レート制限が動作する
+- [x] EventSub Webhook は緩いレート制限を持つ
+- [x] 認証済みユーザーは twitchUserId で識別される
+- [x] 未認証ユーザーは IP アドレスで識別される
+- [x] フロントエンドで 429 エラーが適切に表示される
 
 ---
 
@@ -131,29 +146,24 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 ### システム全体図
 
 ```mermaid
-graph TD
-    User[ユーザー] -->|OAuth| NextJS[Next.js / Vercel]
-    NextJS -->|JWT| SupabaseAuth[Supabase Auth]
-    NextJS -->|RLS| SupabaseDB[Supabase DB]
-    NextJS -->|Token| VercelBlob[Vercel Blob]
-    NextJS -->|EventSub| Twitch[Twitch API]
-    Twitch -->|Webhook| NextJS
-    NextJS -->|Rate Limit| RateLimiter[レート制限]
-    
-    subgraph "Frontend"
-        NextJS
-    end
-    
-    subgraph "Backend Services"
-        SupabaseAuth
-        SupabaseDB
-        VercelBlob
-        RateLimiter
-    end
-    
-    subgraph "External Services"
-        Twitch
-    end
+graph LR
+    User[User/Streamer] --> NextJS[Next.js App/Vercel]
+    NextJS --> SupabaseAuth[Supabase Auth]
+    NextJS --> SupabaseDB[Supabase DB]
+    NextJS --> VercelBlob[Vercel Blob]
+    NextJS --> Twitch[Twitch API]
+
+    Subgraph[Data Flows]
+    AuthFlow[Auth: JWT-based]
+    UploadFlow[Upload: Client-side to Blob]
+    GachaFlow[Gacha: EventSub triggers]
+    BattleFlow[Battle: Card battles with abilities]
+    End
+
+    User --> AuthFlow
+    User --> UploadFlow
+    User --> GachaFlow
+    User --> BattleFlow
 ```
 
 ### データフロー
@@ -187,382 +197,522 @@ graph TD
 
 ---
 
-## Issue #13: APIルートのレート制限実装
+## Issue #15: 集めたカードで対戦できる機能
 
 ### 問題
 
-APIルートにレート制限が実装されておらず、悪意あるユーザーによるAPI乱用のリスクがあります。
+視聴者が集めたカードを使って対戦する機能が存在しません。配信者と視聴者のエンゲージメントを高めるために、カード対戦機能を実装する必要があります。
 
 ### 現象
 
-- `/api/upload` - アップロード API にレート制限がない
-- `/api/cards` - カード作成 API にレート制限がない
-- `/api/gacha` - ガチャ API にレート制限がない
-- その他すべての API ルートにレート制限がない
+- 視聴者が集めたカードを活用する方法がガチャのみ
+- カードのステータスや能力が定義されていない
+- 対戦ロジックが存在しない
 
-これにより以下のリスクがあります：
-- 大量の画像アップロードによるストレージ容量の消費
-- 大量のカード作成によるデータベース負荷の増加
-- ガチャ API の乱用によるサーバー負荷の増加
-- DoS 攻撃の可能性
+これにより以下の課題があります：
+- 視聴者のエンゲージメントが低下
+- カードのコレクション価値が低い
+- 配信者のコンテンツの多様性が不足
 
-### 解決策
+### 期待される動作
 
-インメモリのレート制限ライブラリを使用して、各 API ルートに適切なレート制限を実装する。
+視聴者が集めたカードを使って、自動対戦機能で遊べるようにする。
 
-### 設計内容
+### 優先度
 
-#### 1. レート制限ライブラリの選定
+中（エンゲージメント向上機能）
 
-**選択**: `@upstash/ratelimit`
+---
 
-**理由**:
-- Vercel Edge Runtime との互換性が高い
-- Redis またはインメモリストレージの両方に対応
-- TypeScript サポート
-- 軽量でシンプルな API
-- Vercel KV (Redis) との統合が容易
+## Issue #15: カード対戦機能の設計
 
-**トレードオフ**:
-- Redis を使用する場合、コストが発生する
-- インメモリの場合、複数のサーバーレス関数間で共有できない
-- ただし、Vercel のデプロイメント間ではインメモリでも十分機能する
+### 機能要件
 
-#### 2. レート制限の設定
+#### カードステータス
+- 各カードにステータスを追加
+- **HP (Hit Points)**: 体力（100-200の範囲）
+- **ATK (Attack)**: 攻撃力（20-50の範囲）
+- **DEF (Defense)**: 防御力（10-30の範囲）
+- **SPD (Speed)**: 速度（1-10の範囲、行動順決定）
 
-各 API ルートに対して、以下のレート制限を設定:
+#### カード能力（スキル）
+- 各カードに1つのアクティブスキルを持つ
+- スキル発動確率（SPDに基づく）
+- スキルタイプ:
+  - **攻撃型**: 相手にダメージを与える
+  - **防御型**: 自身の防御力を上げる
+  - **回復型**: 自身のHPを回復する
+  - **特殊型**: 特殊効果（状態異常など）
 
-| API ルート | リクエスト制限 | 期間 | 認証が必要 |
-|:---|:---:|:---:|:---:|
-| `/api/upload` | 10 リクエスト | 1 分 | ✓ |
-| `/api/cards` (POST) | 20 リクエスト | 1 分 | ✓ |
-| `/api/cards` (GET) | 100 リクエスト | 1 分 | ✓ |
-| `/api/cards/[id]` | 100 リクエスト | 1 分 | ✓ |
-| `/api/streamer/settings` | 10 リクエスト | 1 分 | ✓ |
-| `/api/gacha` | 30 リクエスト | 1 分 | ✓ |
-| `/api/auth/twitch/login` | 5 リクエスト | 1 分 | ✗ |
-| `/api/auth/twitch/callback` | 10 リクエスト | 1 分 | ✗ |
-| `/api/auth/logout` | 10 リクエスト | 1 分 | ✓ |
-| `/api/twitch/eventsub` | 1000 リクエスト | 1 分 | ✗ |
+#### 対戦ルール（シンプル版）
+- 1対1の自動対戦
+- ターン制バトル
+- ターンごとに攻撃またはスキル発動
+- HPが0になった方が敗北
+- 最大ターン数: 20ターン（制限超過時はHPが多い方の勝利）
 
-**補足**:
-- EventSub Webhook は Twitch からの信頼できる通知であるため、制限を緩く設定
-- ログイン関連は認証前なので、厳しく設定
-- アップロード API は最も厳しく設定（ストレージコスト削減）
+#### 対戦フロー
+1. 視聴者が自分のカードを選択
+2. CPUまたは他の視聴者のカードを選択（今回はCPUのみ）
+3. 対戦開始
+4. 自動でターン制バトルが進行
+5. 勝敗判定
+6. 対戦結果の表示
 
-#### 3. 実装設計
+#### 対戦履歴
+- 対戦結果をデータベースに記録
+- 勝利数、敗北数、勝率の統計
+- 使用したカードの履歴
 
-##### 3.1. `src/lib/rate-limit.ts` を新規作成
+### データベース設計
 
-```typescript
-import { Ratelimit } from "@upstash/ratelimit";
-import { Redis } from "@upstash/redis";
-import { logger } from "./logger";
+#### 既存テーブルへの変更
 
-// Redis クライアントの初期化（環境変数がある場合のみ）
-const redis = process.env.UPSTASH_REDIS_REST_URL
-  ? new Redis({
-      url: process.env.UPSTASH_REDIS_REST_URL,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-    })
-  : null;
+**`cards`テーブルにステータス列を追加**:
+```sql
+ALTER TABLE cards
+ADD COLUMN hp INTEGER DEFAULT 100,
+ADD COLUMN atk INTEGER DEFAULT 30,
+ADD COLUMN def INTEGER DEFAULT 15,
+ADD COLUMN spd INTEGER DEFAULT 5,
+ADD COLUMN skill_type TEXT DEFAULT 'attack',
+ADD COLUMN skill_name TEXT DEFAULT '通常攻撃',
+ADD COLUMN skill_power INTEGER DEFAULT 10;
+```
 
-// レート制限の作成
-function createRatelimit(limit: number, window: string) {
-  if (redis) {
-    // Redis を使用する場合
-    return new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(limit, window),
-      analytics: true,
-    });
-  } else {
-    // インメモリを使用する場合（開発環境）
-    return new Ratelimit({
-      redis: Ratelimit.memory(),
-      limiter: Ratelimit.slidingWindow(limit, window),
-    });
-  }
-}
+**スキルタイプの定義**:
+- `attack`: 攻撃型（相手にダメージ）
+- `defense`: 防御型（防御力アップ）
+- `heal`: 回復型（HP回復）
+- `special`: 特殊型（状態異常など）
 
-// 各 API ルート用のレート制限
-export const rateLimits = {
-  upload: createRatelimit(10, "1 m"),
-  cardsPost: createRatelimit(20, "1 m"),
-  cardsGet: createRatelimit(100, "1 m"),
-  streamerSettings: createRatelimit(10, "1 m"),
-  gacha: createRatelimit(30, "1 m"),
-  authLogin: createRatelimit(5, "1 m"),
-  authCallback: createRatelimit(10, "1 m"),
-  authLogout: createRatelimit(10, "1 m"),
-  eventsub: createRatelimit(1000, "1 m"),
-} as const;
+#### 新規テーブル
 
-// レート制限チェック関数
-export async function checkRateLimit(
-  ratelimit: Ratelimit,
-  identifier: string
-): Promise<{ success: boolean; limit?: number; remaining?: number; reset?: number }> {
-  try {
-    const result = await ratelimit.limit(identifier);
-    return {
-      success: result.success,
-      limit: result.limit,
-      remaining: result.remaining,
-      reset: result.reset,
-    };
-  } catch (error) {
-    logger.error("Rate limit check failed:", error);
-    // エラー時は許可（フェイルセーフ）
-    return { success: true };
-  }
-}
+**`battles`テーブル**:
+```sql
+CREATE TABLE battles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) NOT NULL,
+    user_card_id UUID REFERENCES user_cards(id) NOT NULL,
+    opponent_card_id UUID REFERENCES cards(id) NOT NULL,
+    result TEXT NOT NULL, -- 'win', 'lose', 'draw'
+    turn_count INTEGER DEFAULT 0,
+    battle_log JSONB, -- 対戦の詳細なログ
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-// IP アドレスの取得
-export function getClientIp(request: Request): string {
-  // Vercel のヘッダーをチェック
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    return forwarded.split(",")[0].trim();
-  }
-  
-  // その他のヘッダーをチェック
-  const realIp = request.headers.get("x-real-ip");
-  if (realIp) {
-    return realIp;
-  }
-  
-  // フォールバック
-  return "unknown";
+CREATE INDEX idx_battles_user_id ON battles(user_id);
+CREATE INDEX idx_battles_created_at ON battles(created_at DESC);
+```
+
+**`battle_stats`テーブル**:
+```sql
+CREATE TABLE battle_stats (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) NOT NULL UNIQUE,
+    total_battles INTEGER DEFAULT 0,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0,
+    draws INTEGER DEFAULT 0,
+    win_rate DECIMAL(5, 2) DEFAULT 0,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+```
+
+### API設計
+
+#### `POST /api/battle/start`
+
+対戦を開始する。
+
+**リクエスト**:
+```json
+{
+  "userCardId": "uuid",
+  "opponentType": "cpu"
 }
 ```
 
-##### 3.2. ユーザー識別子の取得
-
-認証済みユーザーの場合は `twitchUserId` を使用し、未認証の場合は IP アドレスを使用:
-
-```typescript
-export async function getRateLimitIdentifier(
-  request: Request,
-  twitchUserId?: string
-): Promise<string> {
-  if (twitchUserId) {
-    return `user:${twitchUserId}`;
+**レスポンス**:
+```json
+{
+  "battleId": "uuid",
+  "userCard": {
+    "id": "uuid",
+    "name": "カード名",
+    "hp": 150,
+    "currentHp": 150,
+    "atk": 35,
+    "def": 20,
+    "spd": 6
+  },
+  "opponentCard": {
+    "id": "uuid",
+    "name": "CPUカード",
+    "hp": 140,
+    "currentHp": 140,
+    "atk": 40,
+    "def": 15,
+    "spd": 5
   }
-  
-  const ip = getClientIp(request);
-  return `ip:${ip}`;
 }
 ```
 
-##### 3.3. API ルートへの統合
+#### `GET /api/battle/[battleId]`
 
-各 API ルートにレート制限チェックを追加:
+対戦状況を取得する。
 
-**例: `/api/upload/route.ts`**
+**レスポンス**:
+```json
+{
+  "battleId": "uuid",
+  "status": "in_progress", -- "in_progress", "completed"
+  "turn": 1,
+  "maxTurns": 20,
+  "userCard": {
+    "id": "uuid",
+    "name": "カード名",
+    "hp": 150,
+    "currentHp": 145,
+    "atk": 35,
+    "def": 20,
+    "spd": 6
+  },
+  "opponentCard": {
+    "id": "uuid",
+    "name": "CPUカード",
+    "hp": 140,
+    "currentHp": 135,
+    "atk": 40,
+    "def": 15,
+    "spd": 5
+  },
+  "logs": [
+    {
+      "turn": 1,
+      "actor": "user", -- "user", "opponent"
+      "action": "attack",
+      "damage": 5,
+      "message": "あなたのカードが攻撃！5ダメージを与えた！"
+    }
+  ]
+}
+```
+
+#### `GET /api/battle/stats`
+
+ユーザーの対戦統計を取得する。
+
+**レスポンス**:
+```json
+{
+  "totalBattles": 100,
+  "wins": 60,
+  "losses": 35,
+  "draws": 5,
+  "winRate": 60.0,
+  "recentBattles": [
+    {
+      "battleId": "uuid",
+      "result": "win",
+      "opponentCardName": "CPUカード",
+      "turnCount": 8,
+      "createdAt": "2026-01-17T10:00:00Z"
+    }
+  ]
+}
+```
+
+### 対戦ロジック
+
+#### ステータス計算
+
+カードのステータスは、レアリティに応じて変動：
+- **コモン**: HP 100-120, ATK 20-30, DEF 10-15, SPD 1-3
+- **レア**: HP 120-140, ATK 30-40, DEF 15-20, SPD 3-5
+- **エピック**: HP 140-160, ATK 40-45, DEF 20-25, SPD 5-7
+- **レジェンダリー**: HP 160-200, ATK 45-50, DEF 25-30, SPD 7-10
+
+#### スキル発動確率
+
+SPDに基づいてスキル発動確率を決定：
+- 発動確率 = SPD × 10%（最大70%）
+- 例: SPD 5の場合、50%の確率でスキル発動
+
+#### ダメージ計算
+
+通常攻撃ダメージ:
+```
+damage = max(1, attacker.atk - defender.def)
+```
+
+スキルダメージ:
+```
+skillDamage = max(1, attacker.atk + attacker.skill_power - defender.def)
+```
+
+防御力アップ:
+```
+newDef = defender.def + defender.skill_power
+```
+
+回復量:
+```
+healAmount = defender.skill_power
+```
+
+#### ターン制バトルフロー
 
 ```typescript
-import { NextRequest, NextResponse } from 'next/server';
-import { randomUUID } from 'crypto';
-import { put } from '@vercel/blob';
-import { getSession } from '@/lib/session';
-import { logger } from '@/lib/logger';
-import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
-import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
-
-export async function POST(request: NextRequest): Promise<NextResponse> {
-  const session = await getSession();
+async function playBattle(userCard: Card, opponentCard: Card): Promise<BattleResult> {
+  const maxTurns = 20;
+  const logs: BattleLog[] = [];
+  let turn = 1;
   
-  // レート制限チェック
-  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
-  const rateLimitResult = await checkRateLimit(rateLimits.upload, identifier);
+  // 行動順決定（SPDが高い方が先手）
+  let firstActor = userCard.spd >= opponentCard.spd ? 'user' : 'opponent';
+  let currentActor = firstActor;
   
-  if (!rateLimitResult.success) {
-    return NextResponse.json(
-      { 
-        error: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
-        retryAfter: rateLimitResult.reset,
-      },
-      { 
-        status: 429,
-        headers: {
-          'X-RateLimit-Limit': String(rateLimitResult.limit),
-          'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-          'X-RateLimit-Reset': String(rateLimitResult.reset),
-        },
+  // カードのステータスをコピー
+  let userStats = { ...userCard };
+  let opponentStats = { ...opponentCard };
+  
+  while (turn <= maxTurns && userStats.currentHp > 0 && opponentStats.currentHp > 0) {
+    const attacker = currentActor === 'user' ? userStats : opponentStats;
+    const defender = currentActor === 'user' ? opponentStats : userStats;
+    
+    // スキル発動判定
+    const skillTrigger = Math.random() * 100 < (attacker.spd * 10);
+    
+    if (skillTrigger) {
+      // スキル発動
+      const result = executeSkill(attacker, defender);
+      logs.push({
+        turn,
+        actor: currentActor,
+        action: 'skill',
+        damage: result.damage || 0,
+        heal: result.heal || 0,
+        message: `${attacker.name}がスキル発動！${result.message}`
+      });
+      
+      // ステータス更新
+      if (result.damage) {
+        defender.currentHp = Math.max(0, defender.currentHp - result.damage);
       }
-    );
-  }
-
-  try {
-    if (!session) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+      if (result.heal) {
+        attacker.currentHp = Math.min(attacker.hp, attacker.currentHp + result.heal);
+      }
+      if (result.defenseUp) {
+        defender.def += result.defenseUp;
+      }
+    } else {
+      // 通常攻撃
+      const damage = Math.max(1, attacker.atk - defender.def);
+      defender.currentHp = Math.max(0, defender.currentHp - damage);
+      
+      logs.push({
+        turn,
+        actor: currentActor,
+        action: 'attack',
+        damage,
+        message: `${attacker.name}が攻撃！${damage}ダメージを与えた！`
+      });
     }
-
-    const formData = await request.formData();
-    const file = formData.get('file') as File | null;
-
-    const validation = validateUpload(file);
-    if (!validation.valid) {
-      return NextResponse.json(
-        { error: getUploadErrorMessage(validation.error!, validation.maxSize) },
-        { status: 400 }
-      );
-    }
-
-    if (!file || !file.name || file.name.trim() === '') {
-      return NextResponse.json({ error: 'ファイル名が空です' }, { status: 400 });
-    }
-
-    const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
-    const fileName = `${session.twitchUserId}-${randomUUID()}.${ext}`;
-
-    const blob = await put(fileName, file, {
-      access: 'public',
-    });
-
-    return NextResponse.json({ url: blob.url });
-  } catch (error) {
-    logger.error('[Upload API] Error:', error);
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
-  }
-}
-```
-
-##### 3.4. ミドルウェアによるグローバルレート制限
-
-すべての API ルートに適用する基本的なレート制限:
-
-```typescript
-// src/middleware.ts
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit';
-
-export async function middleware(request: NextRequest) {
-  // API ルートのみ対象
-  if (request.nextUrl.pathname.startsWith('/api')) {
-    const ip = getClientIp(request);
     
-    // グローバルレート制限（IP ベース）
-    const identifier = `global:${ip}`;
-    const rateLimitResult = await checkRateLimit(
-      rateLimits.eventsub, // 最も緩い制限を使用
-      identifier
-    );
+    // ターン交代
+    currentActor = currentActor === 'user' ? 'opponent' : 'user';
     
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { error: 'Too many requests' },
-        { 
-          status: 429,
-          headers: {
-            'X-RateLimit-Limit': String(rateLimitResult.limit),
-            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-            'X-RateLimit-Reset': String(rateLimitResult.reset),
-          },
-        }
-      );
+    // 両方が行動したらターン終了
+    if (currentActor === firstActor) {
+      turn++;
     }
   }
   
-  return NextResponse.next();
+  // 勝敗判定
+  let result: 'win' | 'lose' | 'draw';
+  if (userStats.currentHp <= 0) {
+    result = 'lose';
+  } else if (opponentStats.currentHp <= 0) {
+    result = 'win';
+  } else {
+    // 20ターン経過時はHPが多い方の勝利
+    result = userStats.currentHp >= opponentStats.currentHp ? 'win' : 'lose';
+  }
+  
+  return {
+    result,
+    turnCount: turn,
+    userHp: userStats.currentHp,
+    opponentHp: opponentStats.currentHp,
+    logs
+  };
 }
-
-export const config = {
-  matcher: '/api/:path*',
-};
 ```
 
-#### 4. 依存関係の追加
-
-```bash
-npm install @upstash/ratelimit @upstash/redis
-```
-
-#### 5. 環境変数
-
-**開発環境（.env.local）**:
-```bash
-# Upstash Redis（オプション - 使用する場合のみ）
-# UPSTASH_REDIS_REST_URL=
-# UPSTASH_REDIS_REST_TOKEN=
-```
-
-**本番環境（Vercel）**:
-- Upstash Redis をセットアップすることを推奨
-- 本番環境ではスケーラビリティのために Redis を使用
-
-#### 6. フロントエンドでの対応
-
-429 エラーが返された場合、ユーザーに適切なメッセージを表示:
+### スキル実装
 
 ```typescript
-// 例: アップロードコンポーネント
-const handleUpload = async (file: File) => {
-  try {
-    const response = await fetch('/api/upload', {
-      method: 'POST',
-      body: formData,
-    });
+interface SkillResult {
+  damage?: number;
+  heal?: number;
+  defenseUp?: number;
+  message: string;
+}
+
+function executeSkill(attacker: Card, defender: Card): SkillResult {
+  switch (attacker.skillType) {
+    case 'attack':
+      const skillDamage = Math.max(1, attacker.atk + attacker.skill_power - defender.def);
+      return {
+        damage: skillDamage,
+        message: `${attacker.skill_name}！${skillDamage}ダメージを与えた！`
+      };
     
-    if (response.status === 429) {
-      const data = await response.json();
-      setError(data.error || 'リクエストが多すぎます');
-      return;
-    }
+    case 'defense':
+      return {
+        defenseUp: attacker.skill_power,
+        message: `${attacker.skill_name}！防御力が上がった！`
+      };
     
-    // ... 通常の処理
-  } catch (error) {
-    // ... エラーハンドリング
+    case 'heal':
+      const healAmount = Math.min(attacker.hp - attacker.currentHp, attacker.skill_power);
+      return {
+        heal: healAmount,
+        message: `${attacker.skill_name}！${healAmount}回復した！`
+      };
+    
+    case 'special':
+      // 特殊効果（今回は実装せず、次回の機能拡張で追加）
+      return {
+        message: `${attacker.skill_name}！特殊効果発動！`
+      };
+    
+    default:
+      return { message: 'スキル発動失敗' };
   }
-};
+}
 ```
+
+### フロントエンド設計
+
+#### 対戦画面 (`/battle`)
+
+1. **カード選択画面**
+   - ユーザーのカードリストを表示
+   - CPU対戦ボタン
+   - 最近使用したカードの履歴
+
+2. **対戦進行画面**
+   - ユーザーカードとCPUカードの表示
+   - 現在のHP、ターン数の表示
+   - 対戦ログのリアルタイム表示
+   - アニメーション効果（攻撃、ダメージ、回復）
+
+3. **結果画面**
+   - 勝敗の表示
+   - 統計情報（対戦数、勝率）
+   - 再戦ボタン
+   - 他のカードで対戦ボタン
+
+#### 統計画面 (`/battle/stats`)
+
+- 総対戦数、勝利数、敗北数、引き分け数
+- 勝率のグラフ表示
+- 最近の対戦履歴
+- 使用カードごとの勝率
+
+### UI/UX
+
+1. **カード選択**
+   - グリッド表示でカードを選択
+   - ステータス情報を表示（HP、ATK、DEF、SPD）
+   - レアリティごとに色分け
+
+2. **対戦進行**
+   - カードのイラストを中央に配置
+   - HPバーを表示
+   - 対戦ログをスクロール表示
+   - アニメーションをスムーズに実行
+
+3. **レスポンシブ対応**
+   - モバイルでも快適に操作可能
+   - 縦横両方のレイアウト対応
 
 ### 受け入れ基準
 
-- [ ] `@upstash/ratelimit` と `@upstash/redis` をインストール
-- [ ] `src/lib/rate-limit.ts` を実装
-- [ ] 各 API ルートにレート制限を追加
-- [ ] 429 エラーが適切に返される
-- [ ] レート制限ヘッダーが設定される
-- [ ] 開発環境でインメモリレート制限が動作する
-- [ ] 本番環境で Redis レート制限が動作する
-- [ ] EventSub Webhook は緩いレート制限を持つ
-- [ ] 認証済みユーザーは twitchUserId で識別される
-- [ ] 未認証ユーザーは IP アドレスで識別される
-- [ ] フロントエンドで 429 エラーが適切に表示される
+- [ ] カードにステータス（HP、ATK、DEF、SPD）が追加される
+- [ ] 各カードにスキルが設定される
+- [ ] CPU対戦が可能
+- [ ] 自動ターン制バトルが動作する
+- [ ] 勝敗判定が正しく行われる
+- [ ] 対戦履歴が記録される
+- [ ] 対戦統計が表示される
+- [ ] フロントエンドで対戦が視覚的に楽しめる
+- [ ] アニメーション効果が表示される
+- [ ] モバイルで快適に操作可能
 
 ### テスト計画
 
 1. **ユニットテスト**:
-   - `checkRateLimit` 関数のテスト
-   - `getClientIp` 関数のテスト
-   - `getRateLimitIdentifier` 関数のテスト
+   - 対戦ロジックのテスト（ダメージ計算、スキル発動）
+   - ステータス計算のテスト
+   - 勝敗判定のテスト
 
 2. **統合テスト**:
-   - 各 API ルートでレート制限が正しく動作することを確認
-   - 429 エラーが正しく返されることを確認
-   - レート制限ヘッダーが正しく設定されることを確認
+   - APIエンドポイントのテスト
+   - データベース操作のテスト
+   - 対戦フローのテスト
 
-3. **負荷テスト**:
-   - 複数のリクエストを同時に送信し、レート制限が正しく動作することを確認
+3. **E2Eテスト**:
+   - カード選択から対戦完了までのフロー
+   - 対戦履歴の確認
+   - 統計情報の表示
+
+4. **パフォーマンステスト**:
+   - 対戦処理が1000ms以内に完了すること
+   - 複数の対戦が同時に行われた場合の動作
 
 ### トレードオフの検討
 
-#### Redis vs インメモリ
+#### スキルの複雑さ vs シンプルさ
 
-**選択**: 両方をサポート（Redis があれば使用、なければインメモリ）
+**選択**: 最初はシンプルなスキルのみ実装
 
 **理由**:
-- 開発環境では設定の簡易さを優先（インメモリ）
-- 本番環境ではスケーラビリティを優先（Redis）
-- コストと運用のバランスを考慮
+- 開発期間を短縮
+- ユーザーがルールを理解しやすく
+- 将来的な機能拡張の余地を残す
 
 **トレードオフ**:
-- Redis はコストが発生するが、複数のインスタンス間で共有可能
-- インメモリは無料だが、単一のインスタンスに制限される
-- Vercel Serverless Functions では、同じデプロイメント内ではインメモリでも機能する
+- シンプルなスキルのみでは深みが不足
+- 複雑なスキルはバランス調整が困難
+
+#### CPUのAI
+
+**選択**: ランダム行動（シンプル版）
+
+**理由**:
+- 開発コストを削減
+- ランダムでも十分楽しめる
+- 将来的な機能拡張の余地を残す
+
+**トレードオフ**:
+- AIが予測可能で退屈
+- 複雑なAIは計算コストが高い
+
+#### 対戦モード
+
+**選択**: 1対1のCPU対戦のみ
+
+**理由**:
+- ユーザー同時接続の必要がない
+- リアルタイム通信の複雑さを回避
+- データベース設計がシンプル
+
+**トレードオフ**:
+- ユーザー同士の対戦ができない
+- エンゲージメントが制限される
 
 ---
 
@@ -570,4 +720,5 @@ const handleUpload = async (file: File) => {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-17 | APIルートのレート制限設計追加（Issue #13対応） |
+| 2026-01-17 | Issue #15 カード対戦機能の設計追加 |
+| 2026-01-17 | APIルートのレート制限実装完了（Issue #13） |

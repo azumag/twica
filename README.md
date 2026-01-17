@@ -16,19 +16,22 @@ Twitch配信者向けカード引きシステム (Gacha) アプリケーショ�
 ## Architecture
 
 ```mermaid
-graph TD
-    User([User / Streamer]) <--> NextJS[Next.js App / Vercel]
-    NextJS <--> SupabaseAuth[Supabase Auth / Twitch OAuth]
-    NextJS <--> SupabaseDB[(Supabase DB / PostgreSQL)]
-    NextJS -- "Token Generation" --> VercelBlob[Vercel Blob Storage]
-    User -- "Upload File" --> VercelBlob
-    NextJS <--> TwitchAPI[Twitch API / EventSub]
-    
-    subgraph "Data Flows"
-        AuthFlow[Authentication: JWT-based via Supabase & Twitch]
-        UploadFlow[Image Upload: Client-side upload to Vercel Blob with server-side token]
-        GachaFlow[Gacha: Twitch EventSub triggers card drops stored in Supabase]
-    end
+graph LR
+    User[User/Streamer] --> NextJS[Next.js App/Vercel]
+    NextJS --> SupabaseAuth[Supabase Auth]
+    NextJS --> SupabaseDB[Supabase DB]
+    NextJS --> VercelBlob[Vercel Blob]
+    NextJS --> Twitch[Twitch API]
+
+    Subgraph[Data Flows]
+    AuthFlow[Auth: JWT-based]
+    UploadFlow[Upload: Client-side to Blob]
+    GachaFlow[Gacha: EventSub triggers]
+    End
+
+    User --> AuthFlow
+    User --> UploadFlow
+    User --> GachaFlow
 ```
 
 ## Project Structure
@@ -92,7 +95,8 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
-- Rate limiting implementation design added (Issue #13)
+- Rate limiting implementation completed (Issue #13)
+- README mermaid diagram fixed (Issue #14)
 - Terms of Service page implemented and issue #8 closed
 - CI Supabase Realtime environment variables fixed (dummy values for build)
 - Architecture documentation updated with CI fix design
