@@ -1,11 +1,19 @@
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { selectWeightedCard } from '@/lib/gacha'
 import { Result, ok, err } from '@/types/result'
-import type { Card } from '@/types/database'
 import { logger } from '@/lib/logger'
 
+export interface GachaCard {
+  id: string
+  name: string
+  description: string | null
+  image_url: string | null
+  rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  drop_rate: number
+}
+
 export interface GachaResult {
-  card: Card
+  card: GachaCard
   userTwitchUsername: string
 }
 
@@ -17,7 +25,7 @@ export class GachaService {
       // Get active cards for this streamer
       const { data: cards, error: cardsError } = await this.supabase
         .from('cards')
-        .select('*')
+        .select('id, name, description, image_url, rarity, drop_rate')
         .eq('streamer_id', streamerId)
         .eq('is_active', true)
 
@@ -116,7 +124,7 @@ export class GachaService {
       reward: { id: string }
     },
     eventId?: string
-  ): Promise<Result<{ card: Card; userTwitchUsername: string }>> {
+  ): Promise<Result<GachaResult>> {
     try {
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')

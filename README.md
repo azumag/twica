@@ -126,11 +126,17 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
    ## Recent Changes
 
-   - Issue #26 created: Critical Security - Rate Limiting Fails Open on Error
-        - Rate limiting fails open when errors occur
-        - Allowing requests to bypass rate limits in error scenarios
-        - Security vulnerability requiring immediate fix
+   - Issue #27 created: Performance - Optimize Database Queries by Selecting Only Required Fields
+        - Several API routes use `.select('*')` to fetch all columns
+        - Leads to performance issues and unnecessary data exposure
         - Design documented in ARCHITECTURE.md
+   - Issue #26 implementation completed
+        - Rate limiting now fails closed on error
+        - Circuit breaker pattern implemented
+        - Development environment uses in-memory fallback
+        - Production environment blocks requests on error
+        - Sentry error reporting enhanced
+        - Issue closed
     - Issue #25 implementation completed
         - Unify API error messages to English
         - Add ERROR_MESSAGES constant in src/lib/constants.ts

@@ -88,7 +88,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    return NextResponse.json<GachaSuccessResponse>(result.data);
+    return NextResponse.json<GachaSuccessResponse>({
+      card: result.data.card
+    });
   } catch (error) {
     if (session) {
       reportGachaError(error, {

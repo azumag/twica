@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
     // Get user data
     const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
-      .select('*')
+      .select('id, twitch_user_id')
       .eq('twitch_user_id', session.twitchUserId)
       .single()
 
@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
     // Get user's battle stats
     const { data: battleStats, error: statsError } = await supabaseAdmin
       .from('battle_stats')
-      .select('*')
+      .select('id, total_battles, wins, losses, draws, win_rate, updated_at')
       .eq('user_id', userData.id)
       .single()
 
@@ -62,12 +62,31 @@ export async function GET(request: NextRequest) {
     const { data: recentBattles, error: battlesError } = await supabaseAdmin
       .from('battles')
       .select(`
-        *,
+        id,
+        result,
+        turn_count,
+        battle_log,
+        created_at,
+        opponent_card_id,
         user_card:user_cards(
-          *,
+          user_id,
+          card_id,
+          obtained_at,
           card:cards(
-            *,
-            streamer:streamers(*)
+            id,
+            name,
+            hp,
+            atk,
+            def,
+            spd,
+            skill_type,
+            skill_name,
+            skill_power,
+            image_url,
+            rarity,
+            streamer:streamers(
+              twitch_user_id
+            )
           )
         )
       `)
@@ -82,19 +101,21 @@ export async function GET(request: NextRequest) {
     // Get opponent card names for recent battles
     const battleHistory = []
     for (const battle of recentBattles || []) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const battleData = battle as any
       const { data: opponentCard, error: opponentError } = await supabaseAdmin
         .from('cards')
         .select('name')
-        .eq('id', battle.opponent_card_id)
+        .eq('id', battleData.opponent_card_id)
         .single()
 
       battleHistory.push({
-        battleId: battle.id,
-        result: battle.result,
+        battleId: battleData.id,
+        result: battleData.result,
         opponentCardName: opponentError ? 'CPUカード' : `CPUの${opponentCard.name}`,
-        turnCount: battle.turn_count,
-        createdAt: battle.created_at,
-        userCardName: battle.user_card.card.name
+        turnCount: battleData.turn_count,
+        createdAt: battleData.created_at,
+        userCardName: battleData.user_card.card.name
       })
     }
 
@@ -104,10 +125,24 @@ export async function GET(request: NextRequest) {
       .select(`
         result,
         user_card:user_cards(
-          *,
+          user_id,
+          card_id,
+          obtained_at,
           card:cards(
-            *,
-            streamer:streamers(*)
+            id,
+            name,
+            hp,
+            atk,
+            def,
+            spd,
+            skill_type,
+            skill_name,
+            skill_power,
+            image_url,
+            rarity,
+            streamer:streamers(
+              twitch_user_id
+            )
           )
         )
       `)
@@ -120,7 +155,9 @@ export async function GET(request: NextRequest) {
     // Aggregate card statistics
     const cardPerformanceMap = new Map()
     for (const battle of cardStats || []) {
-      const userCard = battle.user_card as unknown as UserCardWithDetails
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const battleData = battle as any
+      const userCard = battleData.user_card as unknown as UserCardWithDetails
       if (!userCard?.card) continue
       
       const cardId = userCard.card.id
@@ -144,9 +181,9 @@ export async function GET(request: NextRequest) {
       const stats = cardPerformanceMap.get(cardId)
       stats.totalBattles++
       
-      if (battle.result === 'win') stats.wins++
-      else if (battle.result === 'lose') stats.losses++
-      else if (battle.result === 'draw') stats.draws++
+      if (battleData.result === 'win') stats.wins++
+      else if (battleData.result === 'lose') stats.losses++
+      else if (battleData.result === 'draw') stats.draws++
     }
 
     // Convert to array and calculate win rates
@@ -159,11 +196,11 @@ export async function GET(request: NextRequest) {
 
     // Return default stats if none exist
     const defaultStats = {
-      totalBattles: 0,
+      total_battles: 0,
       wins: 0,
       losses: 0,
       draws: 0,
-      winRate: 0
+      win_rate: 0
     }
 
     const stats = battleStats || defaultStats

@@ -1,5 +1,19 @@
 import type { Card, BattleCard, BattleResultData, BattleLog, SkillResult, Rarity, SkillType } from '@/types/database'
 
+export interface BattleCardData {
+  id: string
+  name: string
+  hp: number
+  atk: number
+  def: number
+  spd: number
+  skill_type: SkillType
+  skill_name: string
+  skill_power: number
+  image_url: string | null
+  rarity: Rarity
+}
+
 // Generate card stats based on rarity
 export function generateCardStats(rarity: Rarity): {
   hp: number
@@ -73,7 +87,7 @@ export function generateCardStats(rarity: Rarity): {
 }
 
 // Convert card to battle card
-export function toBattleCard(card: Card): BattleCard {
+export function toBattleCard(card: Card | BattleCardData): BattleCard {
   return {
     id: card.id,
     name: card.name,
@@ -216,7 +230,7 @@ export async function playBattle(userCard: BattleCard, opponentCard: BattleCard)
 }
 
 // Generate a CPU opponent card (for now, return a random card)
-export function generateCPUOpponent(cards: Card[]): BattleCard {
+export function generateCPUOpponent(cards: (Card | BattleCardData)[]): BattleCard {
   if (cards.length === 0) {
     // Fallback if no cards available
     return {

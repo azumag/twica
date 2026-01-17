@@ -42,7 +42,7 @@ export async function GET(
     // Get user data
     const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
-      .select('*')
+      .select('id, twitch_user_id')
       .eq('twitch_user_id', session.twitchUserId)
       .single()
 
@@ -54,12 +54,30 @@ export async function GET(
     const { data: battleData, error: battleError } = await supabaseAdmin
       .from('battles')
       .select(`
-        *,
+        id,
+        result,
+        turn_count,
+        battle_log,
+        opponent_card_id,
         user_card:user_cards(
-          *,
+          user_id,
+          card_id,
+          obtained_at,
           card:cards(
-            *,
-            streamer:streamers(*)
+            id,
+            name,
+            hp,
+            atk,
+            def,
+            spd,
+            skill_type,
+            skill_name,
+            skill_power,
+            image_url,
+            rarity,
+            streamer:streamers(
+              twitch_user_id
+            )
           )
         )
       `)
@@ -71,11 +89,15 @@ export async function GET(
       return handleDatabaseError(battleError ?? new Error('Battle not found'), "Failed to fetch battle data")
     }
 
+    // Type cast the response to handle relation properly
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const battle = battleData as any
+
     // Get opponent card details
     const { data: opponentCard, error: opponentError } = await supabaseAdmin
       .from('cards')
-      .select('*')
-      .eq('id', battleData.opponent_card_id)
+      .select('id, name, hp, atk, def, spd, skill_type, skill_name, skill_power, image_url, rarity')
+      .eq('id', battle.opponent_card_id)
       .single()
 
     if (opponentError) {
@@ -95,30 +117,30 @@ export async function GET(
       }
       
       return NextResponse.json({
-        battleId: battleData.id,
+        battleId: battle.id,
         status: 'completed',
-        result: battleData.result,
-        turnCount: battleData.turn_count,
+        result: battle.result,
+        turnCount: battle.turn_count,
         userCard: {
-          id: battleData.user_card.card.id,
-          name: battleData.user_card.card.name,
-          hp: battleData.user_card.card.hp,
+          id: battle.user_card.card.id,
+          name: battle.user_card.card.name,
+          hp: battle.user_card.card.hp,
           currentHp: 0, // Would need to calculate from battle log
-          atk: battleData.user_card.card.atk,
-          def: battleData.user_card.card.def,
-          spd: battleData.user_card.card.spd,
-          skill_type: battleData.user_card.card.skill_type,
-          skill_name: battleData.user_card.card.skill_name,
-          image_url: battleData.user_card.card.image_url,
-          rarity: battleData.user_card.card.rarity
+          atk: battle.user_card.card.atk,
+          def: battle.user_card.card.def,
+          spd: battle.user_card.card.spd,
+          skill_type: battle.user_card.card.skill_type,
+          skill_name: battle.user_card.card.skill_name,
+          image_url: battle.user_card.card.image_url,
+          rarity: battle.user_card.card.rarity
         },
         opponentCard: cpuCard,
-        logs: battleData.battle_log || []
+        logs: battle.battle_log || []
       })
     }
 
     // Calculate final HP from battle log
-    const logs = (battleData.battle_log as Array<{
+    const logs = (battle.battle_log as Array<{
       turn: number
       actor: 'user' | 'opponent'
       action: 'attack' | 'skill'
@@ -126,7 +148,7 @@ export async function GET(
       heal?: number
       message: string
     }>) || []
-    let userHp = battleData.user_card.card.hp
+    let userHp = battle.user_card.card.hp
     let opponentHp = opponentCard.hp
 
     logs.forEach(log => {
@@ -136,29 +158,29 @@ export async function GET(
         userHp -= log.damage
       }
       if (log.actor === 'user' && log.heal) {
-        userHp = Math.min(battleData.user_card.card.hp, userHp + log.heal)
+        userHp = Math.min(battle.user_card.card.hp, userHp + log.heal)
       } else if (log.actor === 'opponent' && log.heal) {
         opponentHp = Math.min(opponentCard.hp, opponentHp + log.heal)
       }
     })
 
     return NextResponse.json({
-      battleId: battleData.id,
+      battleId: battle.id,
       status: 'completed',
-      result: battleData.result,
-      turnCount: battleData.turn_count,
+      result: battle.result,
+      turnCount: battle.turn_count,
       userCard: {
-        id: battleData.user_card.card.id,
-        name: battleData.user_card.card.name,
-        hp: battleData.user_card.card.hp,
+        id: battle.user_card.card.id,
+        name: battle.user_card.card.name,
+        hp: battle.user_card.card.hp,
         currentHp: Math.max(0, userHp),
-        atk: battleData.user_card.card.atk,
-        def: battleData.user_card.card.def,
-        spd: battleData.user_card.card.spd,
-        skill_type: battleData.user_card.card.skill_type,
-        skill_name: battleData.user_card.card.skill_name,
-        image_url: battleData.user_card.card.image_url,
-        rarity: battleData.user_card.card.rarity
+        atk: battle.user_card.card.atk,
+        def: battle.user_card.card.def,
+        spd: battle.user_card.card.spd,
+        skill_type: battle.user_card.card.skill_type,
+        skill_name: battle.user_card.card.skill_name,
+        image_url: battle.user_card.card.image_url,
+        rarity: battle.user_card.card.rarity
       },
       opponentCard: {
         id: opponentCard.id,
@@ -173,7 +195,7 @@ export async function GET(
         image_url: opponentCard.image_url,
         rarity: opponentCard.rarity
       },
-      logs: battleData.battle_log || []
+      logs: battle.battle_log || []
     })
 
   } catch (error) {

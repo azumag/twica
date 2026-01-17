@@ -1,6 +1,5 @@
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getSession } from '@/lib/session'
-import { type Card } from '@/types/database'
 import { toBattleCard, playBattle, generateCPUOpponent } from '@/lib/battle'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
@@ -55,7 +54,7 @@ export async function POST(request: NextRequest) {
     // Get user data
     const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
-      .select('*')
+      .select('id, twitch_user_id')
       .eq('twitch_user_id', session.twitchUserId)
       .single()
 
@@ -81,10 +80,23 @@ export async function POST(request: NextRequest) {
     const { data: userCardData, error: userCardError } = await supabaseAdmin
       .from('user_cards')
       .select(`
-        *,
+        user_id,
+        card_id,
         card:cards(
-          *,
-          streamer:streamers(*)
+          id,
+          name,
+          hp,
+          atk,
+          def,
+          spd,
+          skill_type,
+          skill_name,
+          skill_power,
+          image_url,
+          rarity,
+          streamer:streamers(
+            twitch_user_id
+          )
         )
       `)
       .eq('id', userCardId)
@@ -98,7 +110,7 @@ export async function POST(request: NextRequest) {
     // Get all active cards for CPU opponent
     const { data: allCards, error: allCardsError } = await supabaseAdmin
       .from('cards')
-      .select('*')
+      .select('id, name, hp, atk, def, spd, skill_type, skill_name, skill_power, image_url, rarity, drop_rate')
       .eq('is_active', true)
 
     if (allCardsError) {
@@ -106,8 +118,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Convert to BattleCard format
-    const userBattleCard = toBattleCard(userCardData.card)
-    const opponentBattleCard = generateCPUOpponent(allCards as Card[])
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const userCardDataForBattle = userCardData.card as any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opponentBattleCard = generateCPUOpponent(allCards as any[])
+    const userBattleCard = toBattleCard(userCardDataForBattle)
 
     // Play the battle
     const battleResult = await playBattle(userBattleCard, opponentBattleCard)

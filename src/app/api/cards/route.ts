@@ -138,7 +138,7 @@ export async function GET(request: NextRequest) {
 
     const { data: cards, error } = await supabaseAdmin
       .from("cards")
-      .select("*")
+      .select("id, streamer_id, name, description, image_url, rarity, drop_rate, created_at, updated_at")
       .eq("streamer_id", streamerId)
       .eq("is_active", true)
       .order("created_at", { ascending: false });

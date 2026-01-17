@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
     // Get user data
     const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
-      .select('*')
+      .select('id, twitch_user_id')
       .eq('twitch_user_id', session.twitchUserId)
       .single()
 
@@ -48,13 +48,7 @@ export async function GET(request: NextRequest) {
     // Get user's cards with details
     const { data: userCards, error: cardsError } = await supabaseAdmin
       .from('user_cards')
-      .select(`
-        *,
-        card:cards(
-          *,
-          streamer:streamers(*)
-        )
-      `)
+      .select('id, user_id, card_id, obtained_at')
       .eq('user_id', userData.id)
 
     if (cardsError) {
