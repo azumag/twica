@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   try {
     const ip = getClientIp(request);
     const identifier = `ip:${ip}`;
-    const rateLimitResult = await checkRateLimit(rateLimits.authLogin, identifier);
+    const rateLimitResult = await checkRateLimit(rateLimits.authLogin, identifier, 5, 60 * 1000);
 
     if (!rateLimitResult.success) {
       return NextResponse.json(

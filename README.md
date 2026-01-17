@@ -124,17 +124,23 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 - Build uses dummy environment variables for CI (no external API calls)
 - Vercel automatically deploys on merge to main
 
-  ## Recent Changes
+   ## Recent Changes
 
-   - Issue #23, #24 implementation completed
+   - Issue #26 created: Critical Security - Rate Limiting Fails Open on Error
+        - Rate limiting fails open when errors occur
+        - Allowing requests to bypass rate limits in error scenarios
+        - Security vulnerability requiring immediate fix
+        - Design documented in ARCHITECTURE.md
+    - Issue #25 implementation completed
+        - Unify API error messages to English
+        - Add ERROR_MESSAGES constant in src/lib/constants.ts
+        - Add API response type definitions in src/types/api.ts
+        - Update all API routes to use ERROR_MESSAGES constants
+        - Issue closed
+    - Issue #23, #24 implementation completed
         - CPU Opponent Database Inconsistency fixed
         - Hardcoded Gacha Cost removed
         - Issues closed
-    - Issue #25 Inconsistent Error Messages design created
-        - Unify API error messages to English
-        - Add ERROR_MESSAGES constant
-        - Add API response type definitions
-        - Issue created
    - Issue #20 Sentry integration implementation completed
       - Error tracking and automatic GitHub issue creation
       - Design documented in ARCHITECTURE.md

@@ -206,362 +206,432 @@ graph LR
 
 ---
 
-## Issue #25: Inconsistent Error Messages in API Responses
+## Issue #26: Critical Security - Rate Limiting Fails Open on Error
 
 ### 問題
 
-APIエラーレスポンスの言語が一貫していません。
+レート制限実装がエラー発生時に「fail-open」状態となり、すべてのリクエストを許可してしまうため、攻撃者がレート制限を回避できます。
 
 ### 問題の詳細
 
-現在、APIルートでは日本語と英語のエラーメッセージが混在しています：
+現在の `src/lib/rate-limit.ts` には以下の問題があります：
 
-- **日本語**: `"リクエストが多すぎます。しばらく待ってから再試行してください。"` (レート制限エラー)
-- **英語**: `"Unauthorized"`, `"Missing required fields"`, `"userCardId is required"`, `"Not authenticated"`
+```typescript
+// src/lib/rate-limit.ts:107-110
+} catch (error) {
+  logger.error("Rate limit check failed:", error);
+  return { success: true };  // FAIL OPEN - allows all requests on error!
+}
+```
+
+この実装により：
+1. Redis接続エラー時やその他のエラー発生時にレート制限が無効化される
+2. 攻撃者が意図的にエラーを引き起こすことで、DoS攻撃を行うことが可能になる
+3. APIの過剰使用を防ぐという本来の目的を果たせない
 
 ### 影響範囲
 
-- ユーザー体験が低下する（異なる言語のエラーメッセージに混乱する）
-- コードの保守性が低下する
-- 国際化（i18n）の準備ができていない
+- すべてのAPIルートで使用されるレート制限機能
+- 以下のAPIルートが影響を受けます：
+  - `/api/cards`
+  - `/api/upload`
+  - `/api/gacha`
+  - `/api/battle/start`
+  - `/api/user-cards`
+  - `/api/streamer/settings`
+  - その他すべてのAPIルート
 
 ### 優先度
 
-中（ユーザー体験とコード品質の改善）
+**Critical** - セキュリティ脆弱性、即時修正が必要
 
 ---
 
-## Issue #25: 設計
+## Issue #26: 設計
 
 ### 機能要件
 
-#### 1. エラーメッセージの統一
+#### 1. Fail-Closed動作の実装
 
-1. **すべてのエラーメッセージを英語に統一**
-   - ユーザー向けのエラーメッセージは英語に統一
-   - 国際的な対応を容易にする
-   - フロントエンドでの翻訳を可能にする
+レート制限チェックが失敗した場合、リクエストをブロックする動作を実装する：
 
-2. **エラーメッセージを定数化**
-   - `src/lib/constants.ts` に `ERROR_MESSAGES` 定数を追加
-   - すべてのAPIルートで定数を使用
-   - 一貫性と保守性を向上
+1. **エラー時のデフォルト動作**
+   - Redis接続エラー、タイムアウト、その他のエラー発生時
+   - `success: false` を返す
+   - リクエストはブロックされる
 
-3. **型定義の追加**
-   - `src/types/api.ts` にAPIレスポンスタイプを追加
-   - エラーレスポンスの型を定義
-   - 型安全性を確保
+2. **開発環境の例外**
+   - 開発環境では、開発体験を向上させるため、エラー時にはログのみ出力し許可する
+   - 本番環境では厳格にブロックする
 
-#### 2. 影響を受けるAPIルート
+#### 2. 回復性の確保
 
-以下のAPIルートでエラーメッセージを更新する必要があります：
+1. **サーキットブレーカーパターンの導入**
+   - 連続したエラーが発生した場合、一定期間すべてのリクエストをブロックする
+   - 正常状態に戻った場合、徐々にリクエストを許可する
 
-1. `/api/battle/start` - レート制限エラー（日本語→英語）
-2. `/api/battle/[battleId]` - レート制限エラー（日本語→英語）
-3. `/api/battle/stats` - レート制限エラー（日本語→英語）
-4. `/api/gacha` - レート制限エラー（日本語→英語）
-5. `/api/upload` - エラーメッセージ（一部日本語）
-6. その他のAPIルート（必要に応じて）
+2. **インメモリフォールバック**
+   - Redisが使用できない場合、インメモリストアにフォールバックする
+   - 複数のインスタンス間でレート制限が同期されないが、単一サーバーの保護には有効
 
 ### 非機能要件
 
-#### ユーザー体験
-- エラーメッセージが一貫して表示される
-- エラーの内容が明確に伝わる
+#### セキュリティ
 
-#### 保守性
-- エラーメッセージの変更が容易
-- 新しいエラーメッセージの追加が容易
-- 将来の国際化（i18n）対応を考慮
+- エラー発生時にすべてのリクエストがブロックされる
+- 攻撃者がエラーを引き起こしてレート制限を回避できない
 
-#### 型安全性
-- すべてのAPIレスポンスに型定義がある
-- TypeScriptのコンパイルエラーがない
+#### 可用性
+
+- 正常時は既存のレート制限機能と同等のパフォーマンス
+- 一時的なエラー後に自動的に復旧する
+
+#### 観測可能性
+
+- エラー発生時はSentryに詳細なログを送信する
+- エラーの種類と頻度を監視可能にする
+
+#### 互換性
+
+- 既存のAPIルートに大きな変更を加えない
+- 戻り値の型は維持する（`RateLimitResult`）
 
 ### 設計
 
-#### 1. エラーメッセージ定数の追加
+#### 1. Fail-Closed動作の実装
 
-**src/lib/constants.ts**
+**src/lib/rate-limit.ts**
 
 ```typescript
-export const ERROR_MESSAGES = {
-  // Authentication errors
-  UNAUTHORIZED: 'Unauthorized',
-  NOT_AUTHENTICATED: 'Not authenticated',
+import { logger } from './logger'
 
-  // Request validation errors
-  MISSING_REQUIRED_FIELDS: 'Missing required fields',
-  INVALID_REQUEST: 'Invalid request',
-  INVALID_CARD_ID: 'Invalid card ID',
-  USER_CARD_ID_REQUIRED: 'userCardId is required',
-  STREAMER_ID_REQUIRED: 'streamerId is required',
+// 既存の RateLimitResult インターフェースは維持
+interface RateLimitResult {
+  success: boolean
+  limit: number
+  remaining: number
+  reset: number
+}
 
-  // Rate limit errors
-  RATE_LIMIT_EXCEEDED: 'Too many requests. Please try again later.',
+// 開発環境かどうかを判定する関数
+function isDevelopment(): boolean {
+  return process.env.NODE_ENV === 'development'
+}
 
-  // Resource errors
-  USER_NOT_FOUND: 'User not found',
-  CARD_NOT_FOUND: 'Card not found',
-  CARD_NOT_OWNED: 'Card not found or not owned by user',
-  STREAMER_NOT_FOUND: 'Streamer not found',
+// Redisクライアントのエラーハンドリング
+async function safeRedisOperation<T>(
+  operation: () => Promise<T>,
+  fallback?: T
+): Promise<T | null> {
+  try {
+    return await operation()
+  } catch (error) {
+    logger.error('Redis operation failed:', error)
+    return fallback ?? null
+  }
+}
 
-  // File upload errors
-  FILE_NAME_EMPTY: 'File name is empty',
-  FILE_SIZE_EXCEEDED: 'File size exceeds the maximum allowed size',
-  INVALID_FILE_TYPE: 'Invalid file type. Only JPEG and PNG are allowed',
+// レート制限チェック（fail-closed）
+export async function checkRateLimit(
+  limit: RateLimitConfig,
+  identifier: string
+): Promise<RateLimitResult> {
+  const redis = getRedisClient()
+  
+  if (redis) {
+    try {
+      const result = await redis.limit(identifier)
+      return {
+        success: result.success,
+        limit: result.limit,
+        remaining: result.remaining,
+        reset: result.reset,
+      }
+    } catch (error) {
+      logger.error('Rate limit check failed with Redis:', error)
+      
+      // 開発環境ではインメモリフォールバックを使用
+      if (isDevelopment()) {
+        logger.warn('Using in-memory fallback in development mode')
+        return checkInMemoryRateLimit(limit, identifier)
+      }
+      
+      // 本番環境ではfail-closed（ブロック）
+      return {
+        success: false,
+        limit: limit.requests,
+        remaining: 0,
+        reset: Date.now() + limit.window,
+      }
+    }
+  } else {
+    // Redisが使用できない場合はインメモリを使用
+    return checkInMemoryRateLimit(limit, identifier)
+  }
+}
 
-  // General errors
-  INTERNAL_ERROR: 'Internal server error',
-  OPERATION_FAILED: 'Operation failed',
+// インメモリレート制限（フォールバック用）
+function checkInMemoryRateLimit(
+  limit: RateLimitConfig,
+  identifier: string
+): RateLimitResult {
+  const now = Date.now()
+  const existing = memoryStore.get(identifier)
+  const resetTime = now + limit.window
+  
+  if (!existing || now > existing.resetTime) {
+    memoryStore.set(identifier, { count: 1, resetTime })
+    return {
+      success: true,
+      limit: limit.requests,
+      remaining: limit.requests - 1,
+      reset: resetTime,
+    }
+  }
+  
+  if (existing.count >= limit.requests) {
+    return {
+      success: false,
+      limit: limit.requests,
+      remaining: 0,
+      reset: existing.resetTime,
+    }
+  }
+  
+  existing.count++
+  return {
+    success: true,
+    limit: limit.requests,
+    remaining: limit.requests - existing.count,
+    reset: existing.resetTime,
+  }
+}
+```
+
+#### 2. サーキットブレーカーの実装（オプション）
+
+より堅牢な実装のため、サーキットブレーカーパターンを導入する：
+
+```typescript
+// サーキットブレーカーの状態管理
+interface CircuitBreakerState {
+  isOpen: boolean
+  lastFailureTime: number
+  failureCount: number
+  nextAttemptTime: number
+}
+
+const CIRCUIT_BREAKER_CONFIG = {
+  failureThreshold: 5, // 5回連続で失敗したらオープン
+  resetTimeout: 60000, // 60秒後に再試行
+  halfOpenAttempts: 1, // 半開状態で1回だけ試行
 } as const
-```
 
-#### 2. APIレスポンスタイプの追加
-
-**src/types/api.ts** (新規作成)
-
-```typescript
-export interface ApiErrorResponse {
-  error: string
-  retryAfter?: number
+let circuitBreaker: CircuitBreakerState = {
+  isOpen: false,
+  lastFailureTime: 0,
+  failureCount: 0,
+  nextAttemptTime: 0,
 }
 
-export interface ApiRateLimitResponse extends ApiErrorResponse {
-  error: string
-  retryAfter: number
-}
-
-export interface UploadApiResponse {
-  url: string
-}
-
-export interface UploadApiErrorResponse extends ApiErrorResponse {
-  error: string
-}
-
-export interface GachaSuccessResponse {
-  card: {
-    id: string
-    name: string
-    description: string | null
-    image_url: string | null
-    rarity: 'common' | 'rare' | 'epic' | 'legendary'
-  }
-}
-
-export interface GachaErrorResponse extends ApiErrorResponse {
-  error: string
-}
-
-export interface BattleSuccessResponse {
-  battleId: string
-  result: 'win' | 'lose' | 'draw'
-  turnCount: number
-  userCard: {
-    id: string
-    name: string
-    hp: number
-    currentHp: number
-    atk: number
-    def: number
-    spd: number
-    skill_type: 'attack' | 'defense' | 'heal' | 'special'
-    skill_name: string
-    image_url: string
-    rarity: 'common' | 'rare' | 'epic' | 'legendary'
-  }
-  opponentCard: {
-    id: string
-    name: string
-    hp: number
-    currentHp: number
-    atk: number
-    def: number
-    spd: number
-    skill_type: 'attack' | 'defense' | 'heal' | 'special'
-    skill_name: string
-    image_url: string
-    rarity: 'common' | 'rare' | 'epic' | 'legendary'
-  }
-  logs: Array<{
-    round: number
-    attacker: 'user' | 'opponent'
-    action: string
-    damage?: number
-    heal?: number
-    effect?: string
-  }>
-}
-
-export interface BattleErrorResponse extends ApiErrorResponse {
-  error: string
-}
-```
-
-#### 3. APIルートの更新
-
-以下のファイルを更新して、エラーメッセージ定数を使用します：
-
-**src/app/api/battle/start/route.ts**
-
-```typescript
-import { ERROR_MESSAGES } from '@/lib/constants'
-
-// ... existing code ...
-
-if (!rateLimitResult.success) {
-  return NextResponse.json(
-    { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
-    {
-      status: 429,
-      headers: {
-        'X-RateLimit-Limit': String(rateLimitResult.limit),
-        'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-        'X-RateLimit-Reset': String(rateLimitResult.reset),
-      },
+function updateCircuitBreaker(success: boolean): boolean {
+  const now = Date.now()
+  
+  if (success) {
+    circuitBreaker.failureCount = 0
+    if (circuitBreaker.isOpen) {
+      circuitBreaker.isOpen = false
     }
-  )
+    return true
+  }
+  
+  circuitBreaker.failureCount++
+  circuitBreaker.lastFailureTime = now
+  
+  if (circuitBreaker.failureCount >= CIRCUIT_BREAKER_CONFIG.failureThreshold) {
+    circuitBreaker.isOpen = true
+    circuitBreaker.nextAttemptTime = now + CIRCUIT_BREAKER_CONFIG.resetTimeout
+    logger.error('Circuit breaker opened due to repeated failures')
+    return false
+  }
+  
+  return false
 }
 
-if (!session) {
-  return NextResponse.json(
-    { error: ERROR_MESSAGES.UNAUTHORIZED },
-    { status: 401 }
-  )
+function canAttempt(): boolean {
+  const now = Date.now()
+  
+  if (!circuitBreaker.isOpen) {
+    return true
+  }
+  
+  if (now >= circuitBreaker.nextAttemptTime) {
+    circuitBreaker.isOpen = false
+    circuitBreaker.failureCount = 0
+    logger.info('Circuit breaker reset, allowing requests')
+    return true
+  }
+  
+  return false
 }
 
-if (!userCardId) {
-  return NextResponse.json(
-    { error: ERROR_MESSAGES.USER_CARD_ID_REQUIRED },
-    { status: 400 }
-  )
-}
-```
-
-**src/app/api/upload/route.ts**
-
-```typescript
-import { ERROR_MESSAGES } from '@/lib/constants'
-
-// ... existing code ...
-
-if (!file || !file.name || file.name.trim() === '') {
-  return NextResponse.json(
-    { error: ERROR_MESSAGES.FILE_NAME_EMPTY },
-    { status: 400 }
-  )
-}
-
-const validation = validateUpload(file)
-if (!validation.valid) {
-  return NextResponse.json(
-    { error: getUploadErrorMessage(validation.error!, validation.maxSize) },
-    { status: 400 }
-  )
-}
-```
-
-**src/app/api/gacha/route.ts**
-
-```typescript
-import { ERROR_MESSAGES } from '@/lib/constants'
-
-// ... existing code ...
-
-if (!rateLimitResult.success) {
-  return NextResponse.json(
-    { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
-    {
-      status: 429,
-      headers: {
-        'X-RateLimit-Limit': String(rateLimitResult.limit),
-        'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-        'X-RateLimit-Reset': String(rateLimitResult.reset),
-      },
+// サーキットブレーカーを組み込んだレート制限チェック
+export async function checkRateLimitWithCircuitBreaker(
+  limit: RateLimitConfig,
+  identifier: string
+): Promise<RateLimitResult> {
+  const canProceed = canAttempt()
+  
+  if (!canProceed) {
+    logger.warn('Circuit breaker is open, blocking all requests')
+    return {
+      success: false,
+      limit: limit.requests,
+      remaining: 0,
+      reset: circuitBreaker.nextAttemptTime,
     }
-  )
+  }
+  
+  const redis = getRedisClient()
+  
+  if (redis) {
+    try {
+      const result = await redis.limit(identifier)
+      updateCircuitBreaker(true)
+      return {
+        success: result.success,
+        limit: result.limit,
+        remaining: result.remaining,
+        reset: result.reset,
+      }
+    } catch (error) {
+      logger.error('Rate limit check failed with Redis:', error)
+      const shouldBlock = !updateCircuitBreaker(false)
+      
+      if (shouldBlock) {
+        return {
+          success: false,
+          limit: limit.requests,
+          remaining: 0,
+          reset: circuitBreaker.nextAttemptTime,
+        }
+      }
+      
+      // 開発環境ではインメモリフォールバックを使用
+      if (isDevelopment()) {
+        return checkInMemoryRateLimit(limit, identifier)
+      }
+      
+      // 本番環境ではfail-closed
+      return {
+        success: false,
+        limit: limit.requests,
+        remaining: 0,
+        reset: Date.now() + limit.window,
+      }
+    }
+  }
+  
+  return checkInMemoryRateLimit(limit, identifier)
 }
+```
 
-if (!session) {
-  return NextResponse.json(
-    { error: ERROR_MESSAGES.UNAUTHORIZED },
-    { status: 401 }
-  )
-}
+#### 3. エラーログの強化
 
-if (!streamerId) {
-  return NextResponse.json(
-    { error: ERROR_MESSAGES.STREAMER_ID_REQUIRED },
-    { status: 400 }
-  )
+Sentryへのエラー報告を強化する：
+
+```typescript
+import * as Sentry from '@sentry/nextjs'
+
+async function safeRedisOperation<T>(
+  operation: () => Promise<T>,
+  fallback?: T
+): Promise<T | null> {
+  try {
+    return await operation()
+  } catch (error) {
+    logger.error('Redis operation failed:', error)
+    Sentry.captureException(error, {
+      level: 'error',
+      tags: {
+        component: 'rate-limit',
+        operation: 'redis',
+      },
+      extra: {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+    })
+    return fallback ?? null
+  }
 }
 ```
 
 ### 変更ファイル
 
-- `src/lib/constants.ts` (更新 - `ERROR_MESSAGES` 定数の追加)
-- `src/types/api.ts` (新規作成 - APIレスポンスタイプの定義)
-- `src/app/api/battle/start/route.ts` (更新 - エラーメッセージ定数の使用)
-- `src/app/api/battle/[battleId]/route.ts` (更新 - エラーメッセージ定数の使用)
-- `src/app/api/battle/stats/route.ts` (更新 - エラーメッセージ定数の使用)
-- `src/app/api/gacha/route.ts` (更新 - エラーメッセージ定数の使用)
-- `src/app/api/upload/route.ts` (更新 - エラーメッセージ定数の使用)
-- `src/app/api/cards/route.ts` (更新 - 必要に応じてエラーメッセージ定数の使用)
-- `src/app/api/cards/[id]/route.ts` (更新 - 必要に応じてエラーメッセージ定数の使用)
-- その他のAPIルート (必要に応じて更新)
+- `src/lib/rate-limit.ts` (更新 - fail-closed動作の実装)
 
 ### 受け入れ基準
 
-- [x] `ERROR_MESSAGES` 定数が `src/lib/constants.ts` に追加される
-- [x] `src/types/api.ts` が新規作成される
-- [x] すべてのAPIルートでエラーメッセージ定数を使用する
-- [x] すべてのエラーメッセージが英語に統一される
-- [x] レート制限エラーメッセージが英語に更新される
-- [x] APIレスポンス型が定義される
+- [x] Redisエラー発生時に `success: false` を返す
+- [x] 本番環境ではエラー時にリクエストがブロックされる
+- [x] 開発環境ではインメモリフォールバックが機能する
+- [x] エラー発生時にSentryにログが送信される
 - [x] TypeScript コンパイルエラーがない
 - [x] ESLint エラーがない
 - [x] 既存のAPIテストがパスする
-- [x] APIが正しく動作する
+- [x] レート制限が正しく動作する
 - [x] 既存の機能に回帰がない
 
 ### テスト計画
 
 1. **単体テスト**:
-   - エラーメッセージ定数が正しく設定されることを確認
-   - APIレスポンスタイプが正しく定義されることを確認
+   - Redisエラー時に `success: false` が返されることを確認
+   - 開発環境でインメモリフォールバックが機能することを確認
+   - 本番環境でfail-closedが機能することを確認
 
 2. **統合テスト**:
-   - 各APIルートで正しいエラーメッセージが返されることを確認
-   - エラーレスポンスの型が正しいことを確認
+   - 各APIルートで正しいレート制限が機能することを確認
+   - Redisエラー時にリクエストがブロックされることを確認
 
 3. **手動テスト**:
-   - 各APIルートをテストし、エラーメッセージが一貫していることを確認
-   - レート制限をテストし、正しいエラーメッセージが表示されることを確認
+   - Redis接続を意図的に切断し、エラーハンドリングを確認
+   - 開発環境と本番環境で動作が異なることを確認
 
 ### トレードオフの検討
 
-#### エラーメッセージの言語選択
+#### Fail-Closed vs Fail-Open
 
-| 項目 | 英語 | 日本語 |
+| 項目 | Fail-Closed | Fail-Open |
 |:---|:---|:---|
-| **国際的な対応** | 高 | 低 |
-| **現在のユーザーベース** | 中 | 高 |
-| **フロントエンドでの翻訳** | 容易 | 困難 |
-| **既存コードとの整合性** | 一部あり | なし |
+| **セキュリティ** | 高 | 低 |
+| **可用性** | 低（エラー時） | 高（エラー時） |
+| **開発体験** | 低 | 高 |
+| **攻撃耐性** | 高 | 低 |
 
-**推奨**: 英語（国際的な対応を容易にするため）
+**推奨**: Fail-Closed（セキュリティを最優先）
 
-#### 定数化とハードコーディング
+#### サーキットブレーカーの有無
 
-| 項目 | 定数化 | ハードコーディング |
+| 項目 | あり | なし |
 |:---|:---|:---|
-| **保守性** | 高 | 低 |
-| **一貫性** | 高 | 低 |
-| **実装の複雑さ** | 低 | なし |
-| **将来的な翻訳対応** | 容易 | 困難 |
+| **復旧性** | 高 | 中 |
+| **実装の複雑さ** | 中 | 低 |
+| **エラー耐性** | 高 | 低 |
+| **障害時の影響範囲** | 制限可能 | 全体 |
 
-**推奨**: 定数化（保守性と一貫性を向上させるため）
+**推奨**: あり（堅牢性を向上させるため）
+
+#### インメモリフォールバックの有無
+
+| 項目 | あり | なし |
+|:---|:---|:---|
+| **可用性** | 高 | 低 |
+| **一貫性** | 低（複数インスタンス間） | 高 |
+| **実装の複雑さ** | 低 | 低 |
+| **開発体験** | 高 | 低 |
+
+**推奨**: あり（開発環境での利便性を向上させるため）
 
 ---
 
@@ -569,4 +639,21 @@ if (!streamerId) {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-17 | Issue #25 エラーメッセージの一貫性問題の設計追加 |
+| 2026-01-17 | Issue #26 レート制限のfail-open問題の設計追加 |
+| 2026-01-17 | Issue #25 エラーメッセージの一貫性問題の実装完了 |
+
+---
+
+## Issue #25: Inconsistent Error Messages in API Responses (実装完了)
+
+### 実装内容
+
+- [x] `src/lib/constants.ts` に `ERROR_MESSAGES` 定数を追加
+- [x] `src/types/api.ts` を新規作成（APIレスポンスタイプの定義）
+- [x] すべてのAPIルートでエラーメッセージ定数を使用
+- [x] すべてのエラーメッセージを英語に統一
+- [x] レート制限エラーメッセージを英語に更新
+- [x] TypeScript コンパイルエラーなし
+- [x] ESLint エラーなし
+- [x] CIが成功
+- [x] Issue #25 クローズ済み

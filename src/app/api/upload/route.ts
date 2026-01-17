@@ -11,7 +11,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const session = await getSession();
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
-  const rateLimitResult = await checkRateLimit(rateLimits.upload, identifier);
+  const rateLimitResult = await checkRateLimit(rateLimits.upload, identifier, 10, 60 * 1000);
 
   if (!rateLimitResult.success) {
     return NextResponse.json(
