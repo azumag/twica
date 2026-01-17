@@ -20,7 +20,8 @@ export const API_ROUTES = {
 }
 
 export const SESSION_CONFIG = {
-  MAX_AGE_SECONDS: 60 * 60 * 24 * 30,
+  MAX_AGE_SECONDS: 7 * 24 * 60 * 60,  // 7 days
+  MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
   COOKIE_PATH: '/',
 }
 

@@ -20,6 +20,10 @@ const nextConfig: NextConfig = {
         protocol: "https",
         hostname: "*.twitch.tv",
       },
+      {
+        protocol: "https",
+        hostname: "*.vercel-storage.com",
+      },
     ],
   },
 };

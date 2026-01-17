@@ -1140,10 +1140,135 @@ tests/
 
 ---
 
+## Issue #22: Fix Session Configuration Inconsistency
+
+### 問題
+
+セッション設定に不整合があります：
+
+1. **定数ファイルの不一致**
+   - `src/lib/constants.ts` の `SESSION_CONFIG.MAX_AGE_SECONDS` は `60 * 60 * 24 * 30` (30日)
+   - `src/app/api/auth/twitch/callback/route.ts` の `SESSION_DURATION` は `7 * 24 * 60 * 60 * 1000` (7日)
+
+2. **クッキーのmaxAgeも7日にハードコード**
+   - Line 136: `maxAge: 60 * 60 * 24 * 7` (7日)
+
+3. **アーキテクチャドキュメントとの不一致**
+   - `docs/ARCHITECTURE.md` では `セッション有効期限: 7日` と記載されている
+
+### 優先度
+
+中（コード品質と保守性の改善）
+
+---
+
+## Issue #22: 設計
+
+### 機能要件
+
+#### 1. セッション設定の統一
+
+1. **定数の修正**
+   - `src/lib/constants.ts` の `SESSION_CONFIG.MAX_AGE_SECONDS` を `7 * 24 * 60 * 60` (7日) に修正
+   - `SESSION_CONFIG` に `MAX_AGE_MS` を追加（ミリ秒単位）
+
+2. **callback/route.ts の修正**
+   - ハードコードされた `SESSION_DURATION` 定数を削除
+   - `SESSION_CONFIG.MAX_AGE_MS` を使用するように修正
+   - クッキーの `maxAge` を `SESSION_CONFIG.MAX_AGE_SECONDS` を使用するように修正
+
+3. **他のセッション関連コードの確認**
+   - `src/lib/session.ts` での定数使用を確認
+   - その他セッション関連コードでハードコードされた値がないか確認
+
+### 非機能要件
+
+#### 一貫性
+- セッション有効期限はすべての場所で同じ定数を使用する
+- ドキュメントと実装を一貫させる
+
+#### 保守性
+- セッション有効期限を変更する場合、一箇所の修正で済むようにする
+
+### 設計
+
+#### 1. constants.ts の修正
+
+```typescript
+export const SESSION_CONFIG = {
+  MAX_AGE_SECONDS: 7 * 24 * 60 * 60,  // 7 days
+  MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
+  COOKIE_PATH: '/',
+}
+```
+
+#### 2. callback/route.ts の修正
+
+```typescript
+import { COOKIE_NAMES, SESSION_CONFIG } from '@/lib/constants'
+
+// ハードコードされた定数を削除
+// const SESSION_DURATION = 7 * 24 * 60 * 60 * 1000; // 削除
+
+const sessionData = JSON.stringify({
+  twitchUserId: twitchUser.id,
+  twitchUsername: twitchUser.login,
+  twitchDisplayName: twitchUser.display_name,
+  twitchProfileImageUrl: twitchUser.profile_image_url,
+  broadcasterType: twitchUser.broadcaster_type,
+  expiresAt: Date.now() + SESSION_CONFIG.MAX_AGE_MS, // 修正
+})
+
+cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
+  maxAge: SESSION_CONFIG.MAX_AGE_SECONDS, // 修正
+})
+```
+
+#### 3. session.ts の確認
+
+`src/lib/session.ts` でハードコードされた値がないか確認し、必要に応じて修正。
+
+### 変更ファイル
+
+- `src/lib/constants.ts` (更新 - `SESSION_CONFIG` の修正)
+- `src/app/api/auth/twitch/callback/route.ts` (更新 - 定数の使用)
+- `src/lib/session.ts` (確認/更新 - 必要に応じて)
+
+### 受け入れ基準
+
+- [x] `SESSION_CONFIG.MAX_AGE_SECONDS` が `7 * 24 * 60 * 60` である
+- [x] `SESSION_CONFIG.MAX_AGE_MS` が `7 * 24 * 60 * 60 * 1000` である
+- [x] `callback/route.ts` で `SESSION_CONFIG` を使用している
+- [x] クッキーの `maxAge` が `SESSION_CONFIG.MAX_AGE_SECONDS` を使用している
+- [x] ハードコードされたセッション有効期限がない
+- [x] TypeScript コンパイルエラーがない
+- [x] ESLint エラーがない
+- [x] 既存の機能に回帰がない
+
+### テスト計画
+
+1. **単体テスト**:
+   - セッション有効期限が正しく計算されることを確認
+
+2. **手動テスト**:
+   - ログイン後、セッションクッキーの有効期限を確認
+   - 7日後にセッションが期限切れになることを確認（またはログで確認）
+
+### トレードオフの検討
+
+なし（単純な修正であり、トレードオフの検討は不要）
+
+---
+
 ## 更新履歴
 
 | 日付 | 変更内容 |
 |:---|:---|
+| 2026-01-17 | Issue #21 Test Suite Improvement: Integrate upload API test with Vitest framework 実装完了・Issue閉鎖 |
 | 2026-01-17 | Issue #21 Test Suite Improvement: Integrate upload API test with Vitest framework 設計追加 |
 | 2026-01-17 | Issue #20 Sentry導入と自動イシュー作成の実装完了・Issue閉鎖 |
 | 2026-01-17 | Issue #20 Sentry導入と自動イシュー作成の設計追加 |

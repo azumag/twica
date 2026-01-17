@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { logger } from './logger'
+import { reportAuthError } from './sentry/error-handler'
 
 enum AuthErrorType {
   // Twitch APIエラー
@@ -101,6 +102,13 @@ export function handleAuthError(
       errorType,
       context,
       stack: error instanceof Error ? error.stack : undefined,
+    })
+    
+    // Send to Sentry with additional context
+    reportAuthError(error, {
+      provider: 'twitch',
+      action: errorType.replace(/_/g, '-'),
+      userId: context?.twitchUserId as string || undefined,
     })
   }
 

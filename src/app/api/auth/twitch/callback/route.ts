@@ -3,7 +3,7 @@ import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { COOKIE_NAMES } from '@/lib/constants'
+import { COOKIE_NAMES, SESSION_CONFIG } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 
 export async function GET(request: NextRequest) {
@@ -118,14 +118,13 @@ export async function GET(request: NextRequest) {
     }
 
     // Set session cookie with user info only (no tokens - Supabase Auth handles tokens)
-    const SESSION_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
     const sessionData = JSON.stringify({
       twitchUserId: twitchUser.id,
       twitchUsername: twitchUser.login,
       twitchDisplayName: twitchUser.display_name,
       twitchProfileImageUrl: twitchUser.profile_image_url,
       broadcasterType: twitchUser.broadcaster_type,
-      expiresAt: Date.now() + SESSION_DURATION,
+      expiresAt: Date.now() + SESSION_CONFIG.MAX_AGE_MS,
     })
 
     cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
@@ -133,7 +132,7 @@ export async function GET(request: NextRequest) {
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 7, // 7 days
+      maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
     })
 
     // Clear state cookie
