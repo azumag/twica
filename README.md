@@ -93,15 +93,22 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 - Build uses dummy environment variables for CI (no external API calls)
 - Vercel automatically deploys on merge to main
 
-## Recent Changes
+ ## Recent Changes
 
+- Type safety improvements completed (Issue #17)
+   - Removed `any` type usage in cards API
+   - Added proper TypeScript type definitions for Supabase queries
+   - ESLint warnings resolved
+- Middleware to Proxy migration (Issue #16) - Design completed
+   - Next.js 16 compatibility update
+   - `middleware.ts` to `proxy.ts` migration planned
 - Card battle system implementation completed (Issue #15)
-  - 1v1 CPU battle with turn-based combat
-  - Card stats: HP, ATK, DEF, SPD
-  - Skill system with multiple types (attack, defense, heal, special)
-  - Battle history and statistics tracking
-  - Animated battle UI with real-time logs
-  - Code quality improvements (ESLint fixes, TypeScript type safety)
+   - 1v1 CPU battle with turn-based combat
+   - Card stats: HP, ATK, DEF, SPD
+   - Skill system with multiple types (attack, defense, heal, special)
+   - Battle history and statistics tracking
+   - Animated battle UI with real-time logs
+   - Code quality improvements (ESLint fixes, TypeScript type safety)
 - Rate limiting implementation completed (Issue #13)
 - README mermaid diagram fixed (Issue #14)
 - Terms of Service page implemented and issue #8 closed

@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   // Apply global rate limiting to API routes
   if (request.nextUrl.pathname.startsWith('/api')) {
     const ip = getClientIp(request);

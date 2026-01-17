@@ -2,34 +2,36 @@
 
 ## QA Date
 
-2026-01-17 14:30:00
+2026-01-17 14:40:00
 
 ## 実装内容
 
-Issue #17: Code Quality - Remove 'any' type usage in cards API
+Issue #16: Middleware proxy update for Next.js 16
 
 ### 実装内容
 
-1. **型定義の追加 (`src/types/database.ts`)**
-   - `StreamerRelation` 型定義: ✅ 実装済み
-   - `CardWithStreamerRelation` 型定義: ✅ 实装済み
-   - `extractTwitchUserId()` 型ガード関数: ✅ 实装済み
+1. **ファイルの移行**
+   - `src/middleware.ts` → `src/proxy.ts`
+   - `export function middleware()` → `export function proxy()`
 
-2. **APIルートの更新 (`src/app/api/cards/[id]/route.ts`)**
-   - PUT /api/cards/[id]: ✅ `any`型削除、`extractTwitchUserId()`使用
-   - DELETE /api/cards/[id]: ✅ `any`型削除、`extractTwitchUserId()`使用
+2. **既存機能の維持**
+   - グローバルレート制限の維持
+   - セッション管理（Supabase middleware）の維持
+   - matcher設定の維持
 
 ## 受け入れ基準チェック
 
-### Code Quality - Remove 'any' type usage（Issue #17）
+### MiddlewareからProxyへの移行（Issue #16）
 
 | 基準 | 状態 | 詳細 |
 |:---|:---:|:---|
-| `any`型の使用が削除される | ✅ | `extractTwitchUserId()`関数で型安全に置換 |
-| ESLintの`@typescript-eslint/no-explicit-any`警告が解消される | ✅ | Lintパス、警告なし |
-| カード所有権の検証が正しく動作する | ✅ | 型ガード関数で正しく動作 |
-| TypeScriptのコンパイルエラーがない | ✅ | Build成功、TSエラーなし |
-| 既存のAPIテストがパスする | ✅ | 52件のテスト全てパス |
+| `src/proxy.ts` が作成される | ✅ | 作成済み |
+| `src/middleware.ts` が削除される | ✅ | src直下のmiddleware.ts削除（src/lib/supabase/middleware.tsは別ファイルとして維持） |
+| `export function proxy()` が定義されている | ✅ | 定義済み（src/proxy.ts:5） |
+| ビルド時の警告が解消される | ✅ | ビルド成功、"middleware deprecated"警告なし |
+| APIルートへのグローバルレート制限が正しく動作する | ✅ | IPベースのレート制限実装済み |
+| セッション管理が正しく動作する | ✅ | updateSession呼び出し維持 |
+| 既存の統合テストがパスする | ✅ | 52件のテスト全てパス |
 
 ## 詳細なQA結果
 
@@ -44,57 +46,51 @@ Issue #17: Code Quality - Remove 'any' type usage in cards API
 
 ### Lint
 
-✅ **パス**: ESLintエラーなし、`@typescript-eslint/no-explicit-any`警告なし
+✅ **パス**: ESLintエラーなし
 
 ### Build
 
 ✅ **パス**: Next.jsビルド成功
+- "middleware deprecated" 警告なし
+- 23 routes が正常に生成
 
 ## 実装確認
 
-### 1. 型定義 (src/types/database.ts)
+### 1. Proxyファイル (src/proxy.ts)
 
 **確認事項**:
-- `StreamerRelation` 型定義: ✅
-  - `twitch_user_id: string` の定義
-- `CardWithStreamerRelation` 型定義: ✅
-  - `streamers: StreamerRelation | StreamerRelation[]`
-- `extractTwitchUserId()` 型ガード関数: ✅
-  - 配列ケースのハンドリング: ✅
-  - オブジェクトケースのハンドリング: ✅
-  - null/undefinedケースのハンドリング: ✅
+- 関数名: `export async function proxy()` ✅
+- グローバルレート制限: ✅
+  - APIルート (`/api`) に対して適用
+  - IPアドレスベースの識別子 (`global:${ip}`)
+  - `rateLimits.eventsub` を使用（緩いレート制限）
+- セッション管理: ✅
+  - `await updateSession(request)` 呼び出し
+- Matcher設定: ✅
+  - 静的ファイル除外設定が維持されている
 
-### 2. APIルート (src/app/api/cards/[id]/route.ts)
-
-#### PUT /api/cards/[id]
-
-**確認事項**:
-- Line 57: `const streamers = card?.streamers as any;` から変更: ✅
-  - `const twitchUserId = extractTwitchUserId(card?.streamers);` に変更
-- Line 59: 所有権の検証ロジック: ✅
-  - `if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId)`
-
-#### DELETE /api/cards/[id]
+### 2. レート制限の実装
 
 **確認事項**:
-- Line 141: `const streamers = card?.streamers as any;` から変更: ✅
-  - `const twitchUserId = extractTwitchUserId(card?.streamers);` に変更
-- Line 143: 所有権の検証ロジック: ✅
-  - `if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId)`
+- IPアドレス取得: `getClientIp(request)` ✅
+- レート制限チェック: `checkRateLimit()` ✅
+- 429レスポンス: ✅
+  - ステータスコード: 429
+  - レート制限ヘッダー: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
+  - エラーメッセージ: "Too many requests"
 
-### 3. 型安全性の確認
+### 3. 旧ファイルの削除
 
 **確認事項**:
-- `streamers` の型が単一オブジェクトまたは配列の両方を扱える: ✅
-- `extractTwitchUserId()` が型ガードとして機能: ✅
-- 戻り値の型が `string | null` で正確: ✅
-- nullケースが適切にハンドリングされている: ✅
+- `src/middleware.ts` が存在しない: ✅
+- `src/proxy.ts` が存在する: ✅
 
 ### 4. 既存動作の維持
 
 **確認事項**:
-- カード所有権の検証ロジックが変更されていない: ✅
-- APIの挙動が変更されていない: ✅
+- グローバルレート制限が維持されている: ✅
+- セッション管理が維持されている: ✅
+- matcher設定が維持されている: ✅
 - 既存のテストがパスしている: ✅
 
 ## 仕様との齟齬確認
@@ -103,12 +99,44 @@ Issue #17: Code Quality - Remove 'any' type usage in cards API
 
 | 項目 | 設計書 | 実装 | 状態 |
 |:---|:---|:---|:---:|
-| 型定義の追加 | StreamerRelation型 | 実装済み | ✅ |
-| 型ガード関数 | extractTwitchUserId() | 実装済み | ✅ |
-| any型削除 | PUT, DELETEから削除 | 削除済み | ✅ |
-| ESLint警告解消 | @typescript-eslint/no-explicit-any | 解消済み | ✅ |
-| TypeScriptエラーなし | コンパイル成功 | 成功 | ✅ |
-| 既存動作の維持 | API挙動変更なし | 維持済み | ✅ |
+| ファイル名 | proxy.ts | proxy.ts | ✅ |
+| 関数名 | proxy | proxy | ✅ |
+| グローバルレート制限 | APIルートに適用 | 適用済み | ✅ |
+| セッション管理 | updateSession呼び出し | 呼び出し済み | ✅ |
+| matcher設定 | 静的ファイル除外 | 設定済み | ✅ |
+| ビルド警告 | 解消 | 解消済み | ✅ |
+
+### 非機能要件との整合性
+
+| 要件 | 設計書 | 実装 | 状態 |
+|:---|:---|:---|:---:|
+| APIレート制限 | 429エラーが返される | 返却済み | ✅ |
+| ビルド警告 | 解消される | 解消済み | ✅ |
+| 既存動作 | 変更なし | 維持済み | ✅ |
+
+## その他の確認
+
+### ビルド出力の確認
+
+```
+✓ Compiled successfully
+✓ Generating static pages (23/23)
+ƒ Proxy (Middleware)
+```
+
+- "The middleware file convention is deprecated" 警告が出ていない
+- Proxyが正しく認識されている
+- 23 routes が正常に生成
+
+### テスト結果の確認
+
+```
+Test Files  5 passed (5)
+     Tests  52 passed (52)
+```
+
+- すべてのユニットテストがパス
+- 既存の動作に変更なし
 
 ## 結論
 
@@ -116,13 +144,14 @@ Issue #17: Code Quality - Remove 'any' type usage in cards API
 
 **理由**:
 - すべての受け入れ基準を満たしている
-- `any`型が削除され、型安全な実装に置換されている
-- `extractTwitchUserId()` 型ガード関数が正しく実装されている
-- ESLintの`@typescript-eslint/no-explicit-any`警告が解消されている
-- カード所有権の検証が正しく動作している
-- TypeScriptのコンパイルエラーがない
-- 既存のAPIテストがパスしている（52件のテスト）
+- `src/proxy.ts` が正しく作成されている
+- `src/middleware.ts` が削除されている
+- `export function proxy()` が定義されている
+- ビルド時の警告が解消されている（"middleware deprecated"警告なし）
+- APIルートへのグローバルレート制限が正しく動作する
+- セッション管理が正しく動作する
+- 既存の統合テストがパスしている（52件のテスト）
 - LintおよびBuildが成功している
 - 既存の動作が維持されている
 
-Issue #17: Code Quality - Remove 'any' type usage in cards API は、**すべての受け入れ基準を満たしており、QA合格**と判断します。
+Issue #16: Middleware proxy update for Next.js 16 は、**すべての受け入れ基準を満たしており、QA合格**と判断します。
