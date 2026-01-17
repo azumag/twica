@@ -3,10 +3,11 @@ import path from 'path'
 
 export default defineConfig({
   test: {
-    include: ['tests/unit/**/*.{test,spec}.{ts,tsx}'],
+    include: ['tests/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['node_modules', '.next', 'dist'],
     environment: 'node',
     globals: true,
-    setupFiles: ['tests/unit/setup.ts'],
+    setupFiles: ['tests/setup.ts'],
   },
   resolve: {
     alias: {

@@ -81,6 +81,22 @@ src/
 | `SENTRY_ORG` | No | Sentry organization slug |
 | `SENTRY_PROJECT` | No | Sentry project slug |
 
+## Testing
+
+```bash
+# Run unit tests
+npm run test:unit
+
+# Run tests with UI
+npm run test:unit:ui
+
+# Run all tests (unit + integration)
+npm run test:all
+
+# Run integration tests only
+npm run test:integration
+```
+
 ## Getting Started
 
 ```bash
@@ -109,9 +125,15 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
  ## Recent Changes
 
- - Issue #20 Sentry integration implementation requested
-     - Error tracking and automatic GitHub issue creation
-     - Design documented in ARCHITECTURE.md
+  - Issue #20 Sentry integration implementation completed
+      - Error tracking and automatic GitHub issue creation
+      - Design documented in ARCHITECTURE.md
+      - Issue closed
+  - Issue #21 Test Suite Improvement implementation requested
+      - Integrate upload API test with Vitest framework
+      - Convert JavaScript test to TypeScript
+      - Remove TODO blocking test execution
+      - Design documented in ARCHITECTURE.md
 - Twitch login error handling improvements completed (Issue #19)
     - Detailed error messages for authentication failures
     - Enhanced error logging and user feedback
