@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { handleApiError } from '@/lib/error-handler'
+import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 
@@ -29,8 +29,10 @@ export async function GET(request: NextRequest) {
   }
 
   if (!code || !state) {
-    return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent('missing_params')}`
+    return handleAuthError(
+      new Error('Missing OAuth parameters'),
+      'missing_params',
+      { code: !!code, state: !!state }
     )
   }
 
@@ -39,36 +41,45 @@ export async function GET(request: NextRequest) {
   const storedState = cookieStore.get('twitch_auth_state')?.value
 
   if (!storedState || state !== storedState) {
-    return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent('invalid_state')}`
+    return handleAuthError(
+      new Error('Invalid state parameter'),
+      'invalid_state',
+      { storedState: !!storedState, stateMatch: storedState === state }
     )
   }
 
   try {
     const supabaseAdmin = getSupabaseAdmin()
     const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`
-    const tokens = await exchangeCodeForTokens(code, redirectUri)
-    const twitchUser = await getTwitchUser(tokens.access_token)
+    
+    let tokens
+    try {
+      tokens = await exchangeCodeForTokens(code, redirectUri)
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'twitch_auth_failed',
+        { code: code.substring(0, 10) + '...' }
+      )
+    }
+
+    let twitchUser
+    try {
+      twitchUser = await getTwitchUser(tokens.access_token)
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'twitch_user_fetch_failed',
+        { twitchUserId: tokens.access_token.substring(0, 10) + '...' }
+      )
+    }
 
     // Check if user can be a streamer (affiliate or partner)
     const canBeStreamer = twitchUser.broadcaster_type === 'affiliate' || twitchUser.broadcaster_type === 'partner'
 
-    // Always upsert to users table
-    await supabaseAdmin
-      .from('users')
-      .upsert({
-        twitch_user_id: twitchUser.id,
-        twitch_username: twitchUser.login,
-        twitch_display_name: twitchUser.display_name,
-        twitch_profile_image_url: twitchUser.profile_image_url,
-      }, {
-        onConflict: 'twitch_user_id',
-      })
-
-    // If affiliate/partner, also upsert to streamers table
-    if (canBeStreamer) {
+    try {
       await supabaseAdmin
-        .from('streamers')
+        .from('users')
         .upsert({
           twitch_user_id: twitchUser.id,
           twitch_username: twitchUser.login,
@@ -77,6 +88,33 @@ export async function GET(request: NextRequest) {
         }, {
           onConflict: 'twitch_user_id',
         })
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'database_error',
+        { operation: 'upsert_user', twitchUserId: twitchUser.id }
+      )
+    }
+
+    if (canBeStreamer) {
+      try {
+        await supabaseAdmin
+          .from('streamers')
+          .upsert({
+            twitch_user_id: twitchUser.id,
+            twitch_username: twitchUser.login,
+            twitch_display_name: twitchUser.display_name,
+            twitch_profile_image_url: twitchUser.profile_image_url,
+          }, {
+            onConflict: 'twitch_user_id',
+          })
+      } catch (error) {
+        return handleAuthError(
+          error,
+          'database_error',
+          { operation: 'upsert_streamer', twitchUserId: twitchUser.id }
+        )
+      }
     }
 
     // Set session cookie with user info only (no tokens - Supabase Auth handles tokens)
@@ -104,6 +142,6 @@ export async function GET(request: NextRequest) {
     // Always redirect to dashboard
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
   } catch (error) {
-    return handleApiError(error, "Twitch Auth Callback API");
+    return handleAuthError(error, 'unknown_error')
   }
 }

@@ -76,6 +76,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] 視聴者として認証される
 - [x] ログアウトできる
 - [x] セッション有効期限後に再認証が必要
+- [ ] Twitchログイン時のエラーが適切にハンドリングされる（Issue #19）
 
 ### カード管理
 - [x] カードを新規登録できる
@@ -137,11 +138,11 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] 既存のAPIテストがパスする
 
 ### APIエラーハンドリング標準化（Issue #18）
-- [ ] すべてのAPIルートで標準化されたエラーハンドラーを使用する
-- [ ] エラーメッセージがすべてのルートで一貫している
-- [ ] 既存のAPIテストがパスする
-- [ ] 手動テストでエラーハンドリングが正しく動作することを確認する
-- [ ] 既存の機能に回帰がない
+- [x] すべてのAPIルートで標準化されたエラーハンドラーを使用する
+- [x] エラーメッセージがすべてのルートで一貫している
+- [x] 既存のAPIテストがパスする
+- [x] 手動テストでエラーハンドリングが正しく動作することを確認する
+- [x] 既存の機能に回帰がない
 
 ---
 
@@ -160,6 +161,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 3. **Separation of Concerns**: 機能ごとのモジュール分割
 4. **Security First**: アプリケーション層での認証検証 + RLS（多層防御）
 5. **Consistency**: コードベース全体で一貫性を維持
+6. **Error Handling**: ユーザーにわかりやすいエラーメッセージを提供
 
 ### 技術選定基準
 - マネージドサービス優先（運用コスト削減）
@@ -195,318 +197,395 @@ graph LR
 
 ---
 
-## Issue #18: API Error Handling Standardization
+## Issue #19: Twitchログイン時のエラー改善
 
 ### 問題
 
-現在、APIルートでエラーハンドリングが一貫していません：
+Twitchログイン時にInternal Server Error（500）が発生していますが、ユーザーには詳細なエラー情報が提供されていません。現在のエラーハンドラーはすべてのエラーに対して"Internal server error"という汎用的なメッセージのみを返します。
 
-- 一部のルートでは `@/lib/error-handler` の `handleApiError` を使用（例: `src/app/api/gacha/route.ts`）
-- ほとんどのルートでは `logger.error` を使用した手動エラーハンドリング（例: `src/app/api/cards/route.ts`, `src/app/api/upload/route.ts`, `src/app/api/battle/start/route.ts`）
+**現在の問題点**:
 
-この一貫性の欠如は、コードベースの保守を困難にし、バグのリスクを増加させます。
+1. エラーの原因が特定できない
+   - Twitch APIの失敗か、データベースエラーか、環境変数の欠落か不明
+   - デバッグが困難
 
-### 影響
+2. ユーザーエクスペリエンスの低下
+   - ユーザーは何が問題なのか理解できない
+   - 再試行すべきか、連絡すべきかわからない
 
-- **保守性の低下**: エラーハンドリングの実装が分散しているため、変更や改善が困難
-- **バグのリスク増加**: 一部のルートでエラーハンドリングが不十分な可能性
-- **コードの一貫性欠如**: チームメンバーがどのエラーハンドリングパターンを使用すべきか判断するのが困難
+3. 運用上の問題
+   - エラーログは記録されるが、ユーザーにはフィードバックがない
+   - 開発者はエラーの詳細を把握するためにログを確認する必要がある
 
 ### 優先度
 
-中（コード品質と保守性の改善）
+高（ユーザーエクスペリエンスとデバッグ効率の改善）
 
 ---
 
-## Issue #18: API Error Handling Standardization Design
+## Issue #19: 設計
 
 ### 機能要件
 
-#### 標準化されたエラーハンドリング
-- すべてのAPIルートで `handleApiError` を使用
-- データベースエラーには `handleDatabaseError` を使用
-- エラーメッセージの一貫性を確保
-- 既存の機能とエラーレスポンスを維持
+#### 改善されたエラーハンドリング
+
+1. **Twitch Auth Callback API**での詳細なエラーハンドリング
+   - Twitch APIエラーを区別して処理
+   - データベースエラーを区別して処理
+   - 環境変数の欠落を検出
+   - バリデーションエラーを適切に処理
+
+2. **ユーザーへのわかりやすいエラーメッセージ**
+   - エラーの種類に応じて適切なメッセージを表示
+   - 必要に応じて再試行を促す
+   - 重要なエラーではサポート連絡を推奨
+
+3. **エラーログの強化**
+   - エラーの詳細情報をログに記録
+   - ユーザーID、リクエストIDなどのコンテキスト情報を含む
+   - スタックトレースを記録（開発環境）
 
 ### 設計
 
-#### 現在のエラーハンドリング実装
+#### エラータイプの分類
 
-**`src/lib/error-handler.ts`**:
+```typescript
+enum AuthErrorType {
+  // Twitch APIエラー
+  TWITCH_AUTH_FAILED = 'twitch_auth_failed',
+  TWITCH_USER_FETCH_FAILED = 'twitch_user_fetch_failed',
+  
+  // データベースエラー
+  DATABASE_ERROR = 'database_error',
+  DATABASE_CONNECTION_FAILED = 'database_connection_failed',
+  
+  // 環境変数エラー
+  MISSING_ENV_VAR = 'missing_env_var',
+  
+  // バリデーションエラー
+  INVALID_STATE = 'invalid_state',
+  MISSING_PARAMS = 'missing_params',
+  
+  // その他のエラー
+  UNKNOWN_ERROR = 'unknown_error',
+}
+```
+
+#### 改善されたエラーハンドラー
+
+**新しいファイル: `src/lib/auth-error-handler.ts`**
 
 ```typescript
 import { NextResponse } from 'next/server'
 import { logger } from './logger'
 
-export function handleApiError(error: unknown, context: string): Response {
-  logger.error(`${context}:`, error)
-  return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+interface AuthErrorDetails {
+  type: string
+  message: string
+  statusCode: number
+  userMessage: string
+  shouldLog: boolean
 }
 
-export function handleDatabaseError(error: unknown, context: string): Response {
-  logger.error(`${context}:`, error)
-  return NextResponse.json({ error: 'Database error' }, { status: 500 })
+const AUTH_ERROR_MAP: Record<string, AuthErrorDetails> = {
+  twitch_auth_failed: {
+    type: 'twitch_auth_failed',
+    message: 'Twitch authentication failed',
+    statusCode: 500,
+    userMessage: 'Twitchとの認証に失敗しました。しばらく待ってから再度お試しください。',
+    shouldLog: true,
+  },
+  twitch_user_fetch_failed: {
+    type: 'twitch_user_fetch_failed',
+    message: 'Failed to fetch Twitch user data',
+    statusCode: 500,
+    userMessage: 'ユーザー情報の取得に失敗しました。しばらく待ってから再度お試しください。',
+    shouldLog: true,
+  },
+  database_error: {
+    type: 'database_error',
+    message: 'Database operation failed',
+    statusCode: 500,
+    userMessage: 'データベースエラーが発生しました。しばらく待ってから再度お試しください。',
+    shouldLog: true,
+  },
+  database_connection_failed: {
+    type: 'database_connection_failed',
+    message: 'Failed to connect to database',
+    statusCode: 500,
+    userMessage: 'サーバーでエラーが発生しました。管理者にお問い合わせください。',
+    shouldLog: true,
+  },
+  missing_env_var: {
+    type: 'missing_env_var',
+    message: 'Missing required environment variables',
+    statusCode: 500,
+    userMessage: 'サーバー設定エラーが発生しました。管理者にお問い合わせください。',
+    shouldLog: true,
+  },
+  invalid_state: {
+    type: 'invalid_state',
+    message: 'Invalid OAuth state parameter',
+    statusCode: 400,
+    userMessage: '認証セッションが無効です。再度ログインしてください。',
+    shouldLog: false,
+  },
+  missing_params: {
+    type: 'missing_params',
+    message: 'Missing required OAuth parameters',
+    statusCode: 400,
+    userMessage: '必要なパラメータが不足しています。再度ログインしてください。',
+    shouldLog: false,
+  },
+  unknown_error: {
+    type: 'unknown_error',
+    message: 'Unknown error occurred',
+    statusCode: 500,
+    userMessage: '予期しないエラーが発生しました。しばらく待ってから再度お試しください。',
+    shouldLog: true,
+  },
 }
-```
 
-#### 現在の問題のある実装
-
-**`src/app/api/cards/route.ts`**（手動エラーハンドリング）:
-
-```typescript
-try {
-  // ... code ...
-  if (error) {
-    logger.error("Database error:", error);
-    return NextResponse.json({ error: "Failed to create card" }, { status: 500 });
-  }
-  // ... code ...
-} catch (error) {
-  logger.error("Error creating card:", error);
-  return NextResponse.json({ error: "Internal server error" }, { status: 500 });
-}
-```
-
-**`src/app/api/gacha/route.ts`**（正しい標準化された実装）:
-
-```typescript
-try {
-  // ... code ...
-  return NextResponse.json(result.data);
-} catch (error) {
-  return handleApiError(error, "Gacha API");
-}
-```
-
-#### 改善されたエラーハンドリング設計
-
-**オプション1: 既存のエラーハンドラーを強化**
-
-既存の `handleApiError` および `handleDatabaseError` をそのまま使用し、すべてのAPIルートで統一します。
-
-利点:
-- 既存の実装を再利用
-- 変更が最小限
-- シンプルでわかりやすい
-
-**オプション2: エラーハンドラーの拡張**
-
-エラーハンドラーを拡張して、より詳細なエラーコンテキストをサポートします。
-
-```typescript
-export function handleApiError(
+export function handleAuthError(
   error: unknown,
-  context: string,
-  options?: {
-    statusCode?: number
-    message?: string
-    includeDetails?: boolean
+  errorType: string,
+  context?: Record<string, unknown>
+): NextResponse {
+  const errorDetails = AUTH_ERROR_MAP[errorType] || AUTH_ERROR_MAP.unknown_error
+  
+  if (errorDetails.shouldLog) {
+    logger.error(`${errorDetails.message}:`, {
+      error,
+      errorType,
+      context,
+      stack: error instanceof Error ? error.stack : undefined,
+    })
   }
-): Response {
-  logger.error(`${context}:`, error)
-  
-  const statusCode = options?.statusCode ?? 500
-  const message = options?.message ?? 'Internal server error'
-  
-  return NextResponse.json(
-    { 
-      error: message,
-      ...(options?.includeDetails && { details: error instanceof Error ? error.message : String(error) })
-    }, 
-    { status: statusCode }
+
+  return NextResponse.redirect(
+    `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(errorDetails.userMessage)}`
   )
 }
 ```
 
-利点:
-- より柔軟なエラーハンドリング
-- 開発環境での詳細なエラー情報の表示
-- 本番環境での簡略化されたエラーメッセージ
+#### 更新された Twitch Auth Callback
 
-**推奨**: オプション1（シンプルさと既存コードの再利用）
-
-#### 実装方法
-
-1. **`src/app/api/cards/route.ts`の更新**:
+**ファイル: `src/app/api/auth/twitch/callback/route.ts`**
 
 ```typescript
-import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
-
-export async function POST(request: NextRequest) {
-  // ... code ...
-  
-  try {
-    const { data: card, error } = await supabaseAdmin
-      .from("cards")
-      .insert({ /* ... */ })
-      .select()
-      .single()
-
-    if (error) {
-      return handleDatabaseError(error, "Failed to create card")
-    }
-
-    return NextResponse.json(card);
-  } catch (error) {
-    return handleApiError(error, "Cards API: POST")
-  }
-}
+import { NextRequest, NextResponse } from 'next/server'
+import { cookies } from 'next/headers'
+import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
+import { getSupabaseAdmin } from '@/lib/supabase/admin'
+import { COOKIE_NAMES } from '@/lib/constants'
+import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
+import { handleAuthError } from '@/lib/auth-error-handler'
 
 export async function GET(request: NextRequest) {
-  // ... code ...
-  
-  try {
-    const { data: cards, error } = await supabaseAdmin
-      .from("cards")
-      .select("*")
-      .eq("streamer_id", streamerId)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
+  const ip = getClientIp(request)
+  const identifier = `ip:${ip}`
+  const rateLimitResult = await checkRateLimit(rateLimits.authCallback, identifier)
 
-    if (error) {
-      return handleDatabaseError(error, "Failed to fetch cards")
+  if (!rateLimitResult.success) {
+    return NextResponse.redirect(
+      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent('リクエストが多すぎます。しばらく待ってから再試行してください。')}`
+    )
+  }
+
+  const searchParams = request.nextUrl.searchParams
+  const code = searchParams.get('code')
+  const state = searchParams.get('state')
+  const error = searchParams.get('error')
+
+  if (error) {
+    return NextResponse.redirect(
+      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(error)}`
+    )
+  }
+
+  if (!code || !state) {
+    return handleAuthError(
+      new Error('Missing OAuth parameters'),
+      'missing_params',
+      { code: !!code, state: !!state }
+    )
+  }
+
+  const cookieStore = await cookies()
+  const storedState = cookieStore.get('twitch_auth_state')?.value
+
+  if (!storedState || state !== storedState) {
+    return handleAuthError(
+      new Error('Invalid state parameter'),
+      'invalid_state',
+      { storedState: !!storedState, stateMatch: storedState === state }
+    )
+  }
+
+  try {
+    const supabaseAdmin = getSupabaseAdmin()
+    const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`
+    
+    let tokens
+    try {
+      tokens = await exchangeCodeForTokens(code, redirectUri)
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'twitch_auth_failed',
+        { code: code.substring(0, 10) + '...' }
+      )
     }
 
-    return NextResponse.json(cards);
+    let twitchUser
+    try {
+      twitchUser = await getTwitchUser(tokens.access_token)
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'twitch_user_fetch_failed',
+        { twitchUserId: tokens.access_token.substring(0, 10) + '...' }
+      )
+    }
+
+    const canBeStreamer = twitchUser.broadcaster_type === 'affiliate' || twitchUser.broadcaster_type === 'partner'
+
+    try {
+      await supabaseAdmin
+        .from('users')
+        .upsert({
+          twitch_user_id: twitchUser.id,
+          twitch_username: twitchUser.login,
+          twitch_display_name: twitchUser.display_name,
+          twitch_profile_image_url: twitchUser.profile_image_url,
+        }, {
+          onConflict: 'twitch_user_id',
+        })
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'database_error',
+        { operation: 'upsert_user', twitchUserId: twitchUser.id }
+      )
+    }
+
+    if (canBeStreamer) {
+      try {
+        await supabaseAdmin
+          .from('streamers')
+          .upsert({
+            twitch_user_id: twitchUser.id,
+            twitch_username: twitchUser.login,
+            twitch_display_name: twitchUser.display_name,
+            twitch_profile_image_url: twitchUser.profile_image_url,
+          }, {
+            onConflict: 'twitch_user_id',
+          })
+      } catch (error) {
+        return handleAuthError(
+          error,
+          'database_error',
+          { operation: 'upsert_streamer', twitchUserId: twitchUser.id }
+        )
+      }
+    }
+
+    const SESSION_DURATION = 7 * 24 * 60 * 60 * 1000
+    const sessionData = JSON.stringify({
+      twitchUserId: twitchUser.id,
+      twitchUsername: twitchUser.login,
+      twitchDisplayName: twitchUser.display_name,
+      twitchProfileImageUrl: twitchUser.profile_image_url,
+      broadcasterType: twitchUser.broadcaster_type,
+      expiresAt: Date.now() + SESSION_DURATION,
+    })
+
+    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 7,
+    })
+
+    cookieStore.delete('twitch_auth_state')
+
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
   } catch (error) {
-    return handleApiError(error, "Cards API: GET")
+    return handleAuthError(error, 'unknown_error')
   }
 }
 ```
 
-2. **`src/app/api/upload/route.ts`の更新**:
+#### フロントエンドでのエラー表示の改善
 
-```typescript
-import { handleApiError } from '@/lib/error-handler'
+**ファイル: `src/app/page.tsx` (またはエラー表示コンポーネント)**
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
-  // ... code ...
-  
-  try {
-    // ... validation ...
-    
-    const blob = await put(fileName, file, {
-      access: 'public',
-    });
-
-    return NextResponse.json({ url: blob.url });
-  } catch (error) {
-    return handleApiError(error, "Upload API");
-  }
-}
-```
-
-3. **`src/app/api/battle/start/route.ts`の更新**:
-
-```typescript
-import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
-
-export async function POST(request: NextRequest) {
-  try {
-    // ... code ...
-    
-    const { data: userData, error: userError } = await supabaseAdmin
-      .from('users')
-      .select('*')
-      .eq('twitch_user_id', session.twitchUserId)
-      .single()
-
-    if (userError || !userData) {
-      return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
-    }
-
-    // ... more code ...
-    
-    const { data: battleData, error: battleError } = await supabaseAdmin
-      .from('battles')
-      .insert({ /* ... */ })
-      .select()
-      .single()
-
-    if (battleError) {
-      return handleDatabaseError(battleError, "Failed to save battle")
-    }
-
-    return NextResponse.json({ /* ... */ })
-  } catch (error) {
-    return handleApiError(error, "Battle Start API")
-  }
-}
-```
+既存のエラー表示ロジックを維持しつつ、よりユーザーフレンドリーなメッセージを表示する。
 
 ### 変更ファイル
 
-- `src/app/api/cards/route.ts` - エラーハンドリングの標準化
-- `src/app/api/upload/route.ts` - エラーハンドリングの標準化
-- `src/app/api/battle/start/route.ts` - エラーハンドリングの標準化
-- `src/app/api/battle/stats/route.ts` - エラーハンドリングの標準化
-- `src/app/api/battle/[battleId]/route.ts` - エラーハンドリングの標準化
-- `src/app/api/cards/[id]/route.ts` - エラーハンドリングの標準化
-- `src/app/api/user-cards/route.ts` - エラーハンドリングの標準化
-- `src/app/api/gacha-history/[id]/route.ts` - エラーハンドリングの標準化
-- `src/app/api/twitch/eventsub/subscribe/route.ts` - エラーハンドリングの標準化
-- `src/app/api/twitch/rewards/route.ts` - エラーハンドリングの標準化
-- `src/app/api/twitch/eventsub/route.ts` - エラーハンドリングの標準化
-- `src/app/api/auth/logout/route.ts` - エラーハンドリングの標準化
-- `src/app/api/auth/twitch/callback/route.ts` - エラーハンドリングの標準化
-- `src/app/api/auth/twitch/login/route.ts` - エラーハンドリングの標準化
-- `src/app/api/streamer/settings/route.ts` - エラーハンドリングの標準化
-- `src/app/api/session/route.ts` - エラーハンドリングの標準化
+- `src/lib/auth-error-handler.ts` (新規作成)
+- `src/app/api/auth/twitch/callback/route.ts` (更新)
+- `src/app/api/auth/twitch/login/route.ts` (更新 - 必要に応じて)
 
 ### 受け入れ基準
 
-- [ ] すべてのAPIルートで標準化されたエラーハンドラーを使用している
-- [ ] エラーメッセージがすべてのルートで一貫している
-- [ ] 既存のAPIテストがパスする
-- [ ] 手動テストでエラーハンドリングが正しく動作することを確認する
-- [ ] 既存の機能に回帰がない
+- [ ] Twitchログイン時にエラーが発生した場合、ユーザーにわかりやすいエラーメッセージが表示される
+- [ ] エラーの種類に応じて適切なメッセージが表示される
+- [ ] エラーの詳細情報がログに記録される
+- [ ] 正常なログインフローが引き続き動作する
+- [ ] テストで各エラーケースがカバーされる
 - [ ] TypeScriptコンパイルエラーがない
 - [ ] ESLintエラーがない
 
 ### テスト計画
 
-1. **静的解析**:
-   - TypeScript コンパイル
-   - ESLintチェック
+1. **単体テスト**:
+   - `handleAuthError`関数の各エラータイプをテスト
+   - エラーメッセージが正しく生成されることを確認
 
-2. **ユニットテスト**:
-   - 既存のユニットテストがパスする
+2. **統合テスト**:
+   - Twitch APIエラー時の挙動を確認
+   - データベースエラー時の挙動を確認
+   - 環境変数欠落時の挙動を確認
 
-3. **統合テスト**:
-   - APIルートへのアクセスでエラーが正しく処理される
-   - データベースエラーが正しく処理される
-   - エラーレスポンスが一貫している
-
-4. **手動テスト**:
-   - 各APIルートでエラーが発生した場合、正しいエラーレスポンスが返される
-   - ログに適切なエラー情報が記録される
-   - ユーザーに適切なエラーメッセージが表示される
+3. **手動テスト**:
+   - 正常なログインフローが動作する
+   - エラー時に適切なメッセージが表示される
+   - ログにエラー情報が記録される
 
 ### トレードオフの検討
 
-#### 手動エラーハンドリング vs 標準化されたエラーハンドラー
+#### エラーメッセージの詳細度
 
-| 項目 | 手動エラーハンドリング | 標準化されたエラーハンドラー |
+| 項目 | 詳細なエラーメッセージ | 簡略化されたエラーメッセージ |
 |:---|:---|:---|
-| **一貫性** | 低（ルートごとに異なる） | 高（統一された実装） |
-| **保守性** | 低（変更が分散） | 高（一箇所で変更） |
-| **バグのリスク** | 高（実装の不備） | 低（テスト済みの実装） |
-| **柔軟性** | 高（ルートごとにカスタマイズ可） | 中（オプションで対応可能） |
-| **学習曲線** | 低（シンプルな実装） | 中（新しいパターンの学習） |
+| **ユーザー理解度** | 高（何が問題かわかる） | 低（不明瞭） |
+| **セキュリティ** | 低（内部情報漏洩のリスク） | 高（情報を隠蔽） |
+| **デバッグ効率** | 高（原因が特定しやすい） | 低（ログ確認が必要） |
+| **ユーザーエクスペリエンス** | 高（適切なアクションが可能） | 低（フラストレーション） |
 
-**推奨**: 標準化されたエラーハンドラー（一貫性と保守性の観点から）
+**推奨**: 詳細なエラーメッセージ（ただしセキュリティ上の考慮が必要）
 
-#### オプション1 vs オプション2
+#### セキュリティ上の考慮
 
-| 項目 | オプション1（既存） | オプション2（拡張） |
+- 詳細なエラーメッセージには以下を含めない:
+  - パスワード、トークンなどの機密情報
+  - データベーススキーマ情報
+  - サーバー内部構造情報
+- ログには詳細情報を記録するが、ユーザーにはサニタイズされたメッセージを表示する
+
+#### 保守性
+
+| 項目 | 集中的なエラーハンドラー | 分散的なエラーハンドリング |
 |:---|:---|:---|
-| **複雑性** | 低（シンプル） | 中（柔軟性追加） |
-| **変更量** | 最小限 | 中 |
-| **保守性** | 高（シンプル） | 中（複雑性追加） |
-| **柔軟性** | 低 | 高 |
-| **学習曲線** | 低 | 中 |
+| **一貫性** | 高 | 低 |
+| **保守性** | 高（一箇所で変更） | 低（複数箇所で変更） |
+| **柔軟性** | 中 | 高 |
+| **学習曲線** | 中 | 低 |
 
-**推奨**: オプション1（シンプルさと既存コードの再用の観点から）
+**推奨**: 集中的なエラーハンドラー（一貫性と保守性の観点から）
 
 ---
 
@@ -514,7 +593,8 @@ export async function POST(request: NextRequest) {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-17 | Issue #18 API Error Handling Standardization 設計追加 |
+| 2026-01-17 | Issue #19 Twitchログイン時のエラー改善の設計追加 |
+| 2026-01-17 | Issue #18 API Error Handling Standardization 実装完了・Issue閉鎖 |
 | 2026-01-17 | Issue #16 Middleware proxy update 実装完了 |
 | 2026-01-17 | Issue #17 型安全性向上の設計追加（実装完了） |
 | 2026-01-17 | Issue #15 カード対戦機能の設計追加（実装完了） |

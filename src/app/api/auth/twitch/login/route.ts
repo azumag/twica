@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { getTwitchAuthUrl } from '@/lib/twitch/auth'
 import { cookies } from 'next/headers'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
-import { handleApiError } from '@/lib/error-handler'
+import { handleAuthError } from '@/lib/auth-error-handler'
 import { randomUUID } from 'crypto'
 
 export async function GET(request: Request) {
@@ -43,6 +43,6 @@ export async function GET(request: Request) {
 
     return NextResponse.redirect(authUrl)
   } catch (error) {
-    return handleApiError(error, "Twitch Auth Login API: GET")
+    return handleAuthError(error, 'unknown_error', { route: 'twitch_login' })
   }
 }
