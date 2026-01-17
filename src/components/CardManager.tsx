@@ -52,7 +52,7 @@ export default function CardManager({
     if (file) {
       const validation = validateUpload(file);
       if (!validation.valid) {
-        setUploadError(getUploadErrorMessage(validation.error!, validation.maxSize));
+        setUploadError(getUploadErrorMessage(validation.error!));
       }
     }
   };
@@ -82,7 +82,7 @@ export default function CardManager({
         
         const validation = validateUpload(file);
         if (!validation.valid) {
-          setUploadError(getUploadErrorMessage(validation.error!, validation.maxSize));
+          setUploadError(getUploadErrorMessage(validation.error!));
           setSaving(false);
           return;
         }
