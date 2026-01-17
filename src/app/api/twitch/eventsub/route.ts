@@ -4,7 +4,6 @@ import crypto from "crypto";
 import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
-import { logger } from "@/lib/logger";
 import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 
@@ -43,8 +42,7 @@ export async function POST(request: NextRequest) {
   try {
     data = JSON.parse(body);
   } catch (e) {
-    logger.error("Invalid JSON in request body", { error: e });
-    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    return handleApiError(e, "EventSub JSON parsing");
   }
 
   const messageId = request.headers.get("twitch-eventsub-message-id") || "";
@@ -53,7 +51,6 @@ export async function POST(request: NextRequest) {
   const signature = request.headers.get("twitch-eventsub-message-signature") || "";
 
   if (!verifyTwitchSignature(messageId, timestamp, body, signature)) {
-    logger.error("Invalid Twitch signature");
     return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
   }
 
@@ -119,7 +116,6 @@ async function handleRedemption(messageId: string, event: {
     .single();
 
   if (existingHistory) {
-    logger.info('Duplicate EventSub event skipped', { messageId });
     return;
   }
 
@@ -128,8 +124,7 @@ async function handleRedemption(messageId: string, event: {
     const result = await gachaService.executeGachaForEventSub(event, messageId);
 
     if (!result.success) {
-      // Log error but don't throw, as webhook should return 200
-      logger.error("Gacha failed:", result.error);
+      // Error in gacha but don't throw, as webhook should return 200
       return;
     }
 

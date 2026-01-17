@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { logger } from '@/lib/logger'
+import { handleApiError } from '@/lib/error-handler'
 import { COOKIE_NAMES } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 
@@ -103,11 +103,7 @@ export async function GET(request: NextRequest) {
 
     // Always redirect to dashboard
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
-  } catch (err) {
-    logger.error('Auth error:', err)
-    const errorMessage = err instanceof Error ? err.message : 'auth_failed'
-    return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(errorMessage)}`
-    )
+  } catch (error) {
+    return handleApiError(error, "Twitch Auth Callback API");
   }
 }

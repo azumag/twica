@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { createClient } from "@/lib/supabase/server";
-import { logger } from "@/lib/logger";
+import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
@@ -54,29 +54,13 @@ export async function GET(request: Request) {
 
     if (!response.ok) {
       const error = await response.json();
-      logger.error("Twitch API error:", error);
-
-      if (response.status === 403) {
-        return NextResponse.json(
-          { error: "チャネルポイントが有効になっていないか、アフィリエイト/パートナーではありません" },
-          { status: 403 }
-        );
-      }
-
-      return NextResponse.json(
-        { error: "報酬の取得に失敗しました" },
-        { status: response.status }
-      );
+      return handleApiError(error, "Twitch API rewards fetch");
     }
 
     const data = await response.json();
     return NextResponse.json(data.data || []);
   } catch (error) {
-    logger.error("Error fetching rewards:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return handleApiError(error, "Twitch rewards fetch");
   }
 }
 
@@ -132,20 +116,12 @@ export async function POST(request: Request) {
 
     if (!response.ok) {
       const error = await response.json();
-      logger.error("Twitch API error:", error);
-      return NextResponse.json(
-        { error: "報酬の作成に失敗しました" },
-        { status: response.status }
-      );
+      return handleApiError(error, "Twitch API reward creation");
     }
 
     const data = await response.json();
     return NextResponse.json(data.data[0]);
   } catch (error) {
-    logger.error("Error creating reward:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return handleApiError(error, "Twitch reward creation");
   }
 }

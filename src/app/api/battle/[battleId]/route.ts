@@ -2,7 +2,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getSession } from '@/lib/session'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
-import { logger } from '@/lib/logger'
+import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 
 export async function GET(
   request: NextRequest,
@@ -46,10 +46,7 @@ export async function GET(
       .single()
 
     if (userError || !userData) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      )
+      return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
     }
 
     // Get battle with details
@@ -70,10 +67,7 @@ export async function GET(
       .single()
 
     if (battleError || !battleData) {
-      return NextResponse.json(
-        { error: 'Battle not found' },
-        { status: 404 }
-      )
+      return handleDatabaseError(battleError ?? new Error('Battle not found'), "Failed to fetch battle data")
     }
 
     // Get opponent card details
@@ -182,10 +176,6 @@ export async function GET(
     })
 
   } catch (error) {
-    logger.error('Battle get error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return handleApiError(error, "Battle Get API")
   }
 }

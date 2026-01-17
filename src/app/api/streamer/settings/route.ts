@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { logger } from "@/lib/logger";
+import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
@@ -54,13 +54,11 @@ export async function POST(request: NextRequest) {
       .eq("id", streamerId);
 
     if (error) {
-      logger.error("Database error:", error);
-      return NextResponse.json({ error: "Failed to update settings" }, { status: 500 });
+      return handleDatabaseError(error, "Streamer Settings API: PUT");
     }
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    logger.error("Error updating settings:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error, "Streamer Settings API: General");
   }
 }

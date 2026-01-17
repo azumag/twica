@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { validateDropRateSum } from "@/lib/validations";
-import { logger } from "@/lib/logger";
+import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { extractTwitchUserId } from "@/types/database";
 
@@ -88,14 +88,12 @@ export async function PUT(
       .single();
 
     if (error) {
-      logger.error("Database error:", error);
-      return NextResponse.json({ error: "Failed to update card" }, { status: 500 });
+      return handleDatabaseError(error, "Failed to update card");
     }
 
     return NextResponse.json(updatedCard);
   } catch (error) {
-    logger.error("Error updating card:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error, "Cards API: PUT");
   }
 }
 
@@ -150,13 +148,11 @@ export async function DELETE(
       .eq("id", id);
 
     if (error) {
-      logger.error("Database error:", error);
-      return NextResponse.json({ error: "Failed to delete card" }, { status: 500 });
+      return handleDatabaseError(error, "Failed to delete card");
     }
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    logger.error("Error deleting card:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error, "Cards API: DELETE");
   }
 }

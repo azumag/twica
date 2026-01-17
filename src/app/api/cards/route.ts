@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { validateDropRateSum } from "@/lib/validations";
-import { logger } from "@/lib/logger";
+import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
@@ -80,14 +80,12 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      logger.error("Database error:", error);
-      return NextResponse.json({ error: "Failed to create card" }, { status: 500 });
+      return handleDatabaseError(error, "Cards API: Failed to create card");
     }
 
     return NextResponse.json(card);
   } catch (error) {
-    logger.error("Error creating card:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error, "Cards API: POST");
   }
 }
 
@@ -117,29 +115,32 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Missing streamerId" }, { status: 400 });
   }
 
-  const supabaseAdmin = getSupabaseAdmin();
-  const { data: streamer, error: streamerError } = await supabaseAdmin
-    .from("streamers")
-    .select("id")
-    .eq("id", streamerId)
-    .eq("twitch_user_id", session?.twitchUserId)
-    .single();
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data: streamer, error: streamerError } = await supabaseAdmin
+      .from("streamers")
+      .select("id")
+      .eq("id", streamerId)
+      .eq("twitch_user_id", session?.twitchUserId)
+      .single();
 
-  if (streamerError || !streamer) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (streamerError || !streamer) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const { data: cards, error } = await supabaseAdmin
+      .from("cards")
+      .select("*")
+      .eq("streamer_id", streamerId)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      return handleDatabaseError(error, "Cards API: Failed to fetch cards");
+    }
+
+    return NextResponse.json(cards);
+  } catch (error) {
+    return handleApiError(error, "Cards API: GET");
   }
-
-  const { data: cards, error } = await supabaseAdmin
-    .from("cards")
-    .select("*")
-    .eq("streamer_id", streamerId)
-    .eq("is_active", true)
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    logger.error("Database error:", error);
-    return NextResponse.json({ error: "Failed to fetch cards" }, { status: 500 });
-  }
-
-  return NextResponse.json(cards);
 }

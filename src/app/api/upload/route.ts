@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { put } from '@vercel/blob';
 import { getSession } from '@/lib/session';
-import { logger } from '@/lib/logger';
+import { handleApiError } from '@/lib/error-handler';
 import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
 
@@ -58,7 +58,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     return NextResponse.json({ url: blob.url });
   } catch (error) {
-    logger.error('[Upload API] Error:', error);
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+    return handleApiError(error, "Upload API");
   }
 }

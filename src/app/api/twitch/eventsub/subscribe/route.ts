@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { logger } from "@/lib/logger";
+import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
@@ -141,26 +141,17 @@ export async function POST(request: NextRequest) {
 
     if (!subscribeResponse.ok) {
       const error = await subscribeResponse.json();
-      logger.error("EventSub subscription error:", error);
-      return NextResponse.json(
-        { error: "Failed to subscribe to EventSub", details: error },
-        { status: subscribeResponse.status }
-      );
+      return handleApiError(error, "EventSub subscription error");
     }
 
     const subscriptionData = await subscribeResponse.json();
-    logger.info("EventSub subscription created:", subscriptionData);
 
     return NextResponse.json({
       success: true,
       subscription: subscriptionData.data[0],
     });
   } catch (error) {
-    logger.error("Error subscribing to EventSub:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return handleApiError(error, "EventSub Subscribe API");
   }
 }
 
@@ -220,10 +211,6 @@ export async function GET(request: Request) {
 
     return NextResponse.json(mySubscriptions);
   } catch (error) {
-    logger.error("Error getting EventSub subscriptions:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return handleApiError(error, "EventSub Get Subscriptions API");
   }
 }

@@ -136,6 +136,13 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] TypeScriptのコンパイルエラーがない
 - [x] 既存のAPIテストがパスする
 
+### APIエラーハンドリング標準化（Issue #18）
+- [ ] すべてのAPIルートで標準化されたエラーハンドラーを使用する
+- [ ] エラーメッセージがすべてのルートで一貫している
+- [ ] 既存のAPIテストがパスする
+- [ ] 手動テストでエラーハンドリングが正しく動作することを確認する
+- [ ] 既存の機能に回帰がない
+
 ---
 
 ## 設計方針
@@ -152,6 +159,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 2. **Type Safety**: TypeScriptによる厳格な型定義
 3. **Separation of Concerns**: 機能ごとのモジュール分割
 4. **Security First**: アプリケーション層での認証検証 + RLS（多層防御）
+5. **Consistency**: コードベース全体で一貫性を維持
 
 ### 技術選定基準
 - マネージドサービス優先（運用コスト削減）
@@ -187,170 +195,318 @@ graph LR
 
 ---
 
-## Issue #16: Middleware proxy update for Next.js 16
+## Issue #18: API Error Handling Standardization
 
 ### 問題
 
-Next.js 16で`middleware.ts`から`proxy.ts`への移行が推奨されています。
+現在、APIルートでエラーハンドリングが一貫していません：
 
-### 現象
+- 一部のルートでは `@/lib/error-handler` の `handleApiError` を使用（例: `src/app/api/gacha/route.ts`）
+- ほとんどのルートでは `logger.error` を使用した手動エラーハンドリング（例: `src/app/api/cards/route.ts`, `src/app/api/upload/route.ts`, `src/app/api/battle/start/route.ts`）
 
-Next.js 16のビルド時に以下の警告が出ています：
-```
-The "middleware" file convention is deprecated. Please use "proxy" instead.
-```
+この一貫性の欠如は、コードベースの保守を困難にし、バグのリスクを増加させます。
 
 ### 影響
 
-- ビルド時の警告により今後のバージョンで動作しなくなる可能性
-- Next.js 16の新しいAPIへの移行が必要
+- **保守性の低下**: エラーハンドリングの実装が分散しているため、変更や改善が困難
+- **バグのリスク増加**: 一部のルートでエラーハンドリングが不十分な可能性
+- **コードの一貫性欠如**: チームメンバーがどのエラーハンドリングパターンを使用すべきか判断するのが困難
 
 ### 優先度
 
-低（機能への影響なし、次期対応）
+中（コード品質と保守性の改善）
 
 ---
 
-## Issue #16: MiddlewareからProxyへの移行設計
+## Issue #18: API Error Handling Standardization Design
 
 ### 機能要件
 
-#### ファイル名の変更
-- `src/middleware.ts` を `src/proxy.ts` にリネーム
-- `export function middleware()` を `export function proxy()` に変更
-
-#### 既存の動作維持
-- APIルートに対するグローバルレート制限を維持
-- セッション管理（Supabase middleware）を維持
-- matcher設定を維持
+#### 標準化されたエラーハンドリング
+- すべてのAPIルートで `handleApiError` を使用
+- データベースエラーには `handleDatabaseError` を使用
+- エラーメッセージの一貫性を確保
+- 既存の機能とエラーレスポンスを維持
 
 ### 設計
 
-#### Next.js 16 Proxy APIの概要
+#### 現在のエラーハンドリング実装
 
-Next.js 16では、`middleware.ts`というファイル名が非推奨となり、`proxy.ts`に変更されました。主な変更点は以下の通りです：
+**`src/lib/error-handler.ts`**:
 
-1. **ファイル名**: `middleware.ts` → `proxy.ts`
-2. **エクスポート関数名**: `middleware` → `proxy`
-3. **引数の型**: `NextRequest`のまま（変更なし）
-4. **返り値の型**: `NextResponse`のまま（変更なし）
+```typescript
+import { NextResponse } from 'next/server'
+import { logger } from './logger'
+
+export function handleApiError(error: unknown, context: string): Response {
+  logger.error(`${context}:`, error)
+  return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+}
+
+export function handleDatabaseError(error: unknown, context: string): Response {
+  logger.error(`${context}:`, error)
+  return NextResponse.json({ error: 'Database error' }, { status: 500 })
+}
+```
+
+#### 現在の問題のある実装
+
+**`src/app/api/cards/route.ts`**（手動エラーハンドリング）:
+
+```typescript
+try {
+  // ... code ...
+  if (error) {
+    logger.error("Database error:", error);
+    return NextResponse.json({ error: "Failed to create card" }, { status: 500 });
+  }
+  // ... code ...
+} catch (error) {
+  logger.error("Error creating card:", error);
+  return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+}
+```
+
+**`src/app/api/gacha/route.ts`**（正しい標準化された実装）:
+
+```typescript
+try {
+  // ... code ...
+  return NextResponse.json(result.data);
+} catch (error) {
+  return handleApiError(error, "Gacha API");
+}
+```
+
+#### 改善されたエラーハンドリング設計
+
+**オプション1: 既存のエラーハンドラーを強化**
+
+既存の `handleApiError` および `handleDatabaseError` をそのまま使用し、すべてのAPIルートで統一します。
+
+利点:
+- 既存の実装を再利用
+- 変更が最小限
+- シンプルでわかりやすい
+
+**オプション2: エラーハンドラーの拡張**
+
+エラーハンドラーを拡張して、より詳細なエラーコンテキストをサポートします。
+
+```typescript
+export function handleApiError(
+  error: unknown,
+  context: string,
+  options?: {
+    statusCode?: number
+    message?: string
+    includeDetails?: boolean
+  }
+): Response {
+  logger.error(`${context}:`, error)
+  
+  const statusCode = options?.statusCode ?? 500
+  const message = options?.message ?? 'Internal server error'
+  
+  return NextResponse.json(
+    { 
+      error: message,
+      ...(options?.includeDetails && { details: error instanceof Error ? error.message : String(error) })
+    }, 
+    { status: statusCode }
+  )
+}
+```
+
+利点:
+- より柔軟なエラーハンドリング
+- 開発環境での詳細なエラー情報の表示
+- 本番環境での簡略化されたエラーメッセージ
+
+**推奨**: オプション1（シンプルさと既存コードの再利用）
 
 #### 実装方法
 
-**オプション1: 手動移行**
+1. **`src/app/api/cards/route.ts`の更新**:
 
 ```typescript
-// src/proxy.ts
-import { type NextRequest, NextResponse } from 'next/server'
-import { updateSession } from '@/lib/supabase/middleware'
-import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
+import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 
-export function proxy(request: NextRequest) {
-  // Apply global rate limiting to API routes
-  if (request.nextUrl.pathname.startsWith('/api')) {
-    const ip = getClientIp(request);
-    
-    // Global rate limit (IP-based)
-    const identifier = `global:${ip}`;
-    const rateLimitResult = await checkRateLimit(
-      rateLimits.eventsub, // Use the most lenient limit for global
-      identifier
-    );
-    
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { error: 'Too many requests' },
-        { 
-          status: 429,
-          headers: {
-            'X-RateLimit-Limit': String(rateLimitResult.limit),
-            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-            'X-RateLimit-Reset': String(rateLimitResult.reset),
-          },
-        }
-      );
-    }
-  }
+export async function POST(request: NextRequest) {
+  // ... code ...
   
-  return await updateSession(request)
+  try {
+    const { data: card, error } = await supabaseAdmin
+      .from("cards")
+      .insert({ /* ... */ })
+      .select()
+      .single()
+
+    if (error) {
+      return handleDatabaseError(error, "Failed to create card")
+    }
+
+    return NextResponse.json(card);
+  } catch (error) {
+    return handleApiError(error, "Cards API: POST")
+  }
 }
 
-export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-  ],
+export async function GET(request: NextRequest) {
+  // ... code ...
+  
+  try {
+    const { data: cards, error } = await supabaseAdmin
+      .from("cards")
+      .select("*")
+      .eq("streamer_id", streamerId)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+
+    if (error) {
+      return handleDatabaseError(error, "Failed to fetch cards")
+    }
+
+    return NextResponse.json(cards);
+  } catch (error) {
+    return handleApiError(error, "Cards API: GET")
+  }
 }
 ```
 
-**オプション2: Codemodを使用（推奨）**
+2. **`src/app/api/upload/route.ts`の更新**:
 
-Next.jsが提供するcodemodを使用して自動的に移行できます：
+```typescript
+import { handleApiError } from '@/lib/error-handler'
 
-```bash
-npx @next/codemod@canary middleware-to-proxy .
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  // ... code ...
+  
+  try {
+    // ... validation ...
+    
+    const blob = await put(fileName, file, {
+      access: 'public',
+    });
+
+    return NextResponse.json({ url: blob.url });
+  } catch (error) {
+    return handleApiError(error, "Upload API");
+  }
+}
 ```
 
-codemodは以下の変更を自動的に行います：
-1. ファイル名を `middleware.ts` → `proxy.ts` に変更
-2. `export function middleware()` → `export function proxy()` に変更
+3. **`src/app/api/battle/start/route.ts`の更新**:
 
-#### Supabase Middlewareとの互換性
+```typescript
+import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 
-`@/lib/supabase/middleware.ts` 内の `updateSession` 関数は、`NextRequest` を引数として受け取るため、そのまま使用できます。変更は不要です。
+export async function POST(request: NextRequest) {
+  try {
+    // ... code ...
+    
+    const { data: userData, error: userError } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('twitch_user_id', session.twitchUserId)
+      .single()
+
+    if (userError || !userData) {
+      return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
+    }
+
+    // ... more code ...
+    
+    const { data: battleData, error: battleError } = await supabaseAdmin
+      .from('battles')
+      .insert({ /* ... */ })
+      .select()
+      .single()
+
+    if (battleError) {
+      return handleDatabaseError(battleError, "Failed to save battle")
+    }
+
+    return NextResponse.json({ /* ... */ })
+  } catch (error) {
+    return handleApiError(error, "Battle Start API")
+  }
+}
+```
 
 ### 変更ファイル
 
-- `src/middleware.ts` → `src/proxy.ts` - ファイル名と関数名の変更
+- `src/app/api/cards/route.ts` - エラーハンドリングの標準化
+- `src/app/api/upload/route.ts` - エラーハンドリングの標準化
+- `src/app/api/battle/start/route.ts` - エラーハンドリングの標準化
+- `src/app/api/battle/stats/route.ts` - エラーハンドリングの標準化
+- `src/app/api/battle/[battleId]/route.ts` - エラーハンドリングの標準化
+- `src/app/api/cards/[id]/route.ts` - エラーハンドリングの標準化
+- `src/app/api/user-cards/route.ts` - エラーハンドリングの標準化
+- `src/app/api/gacha-history/[id]/route.ts` - エラーハンドリングの標準化
+- `src/app/api/twitch/eventsub/subscribe/route.ts` - エラーハンドリングの標準化
+- `src/app/api/twitch/rewards/route.ts` - エラーハンドリングの標準化
+- `src/app/api/twitch/eventsub/route.ts` - エラーハンドリングの標準化
+- `src/app/api/auth/logout/route.ts` - エラーハンドリングの標準化
+- `src/app/api/auth/twitch/callback/route.ts` - エラーハンドリングの標準化
+- `src/app/api/auth/twitch/login/route.ts` - エラーハンドリングの標準化
+- `src/app/api/streamer/settings/route.ts` - エラーハンドリングの標準化
+- `src/app/api/session/route.ts` - エラーハンドリングの標準化
 
 ### 受け入れ基準
 
-- [ ] `src/proxy.ts` が作成される
-- [ ] `src/middleware.ts` が削除される
-- [ ] `export function proxy()` が定義されている
-- [ ] ビルド時の警告が解消される
-- [ ] APIルートへのグローバルレート制限が正しく動作する
-- [ ] セッション管理が正しく動作する
-- [ ] 既存の統合テストがパスする
+- [ ] すべてのAPIルートで標準化されたエラーハンドラーを使用している
+- [ ] エラーメッセージがすべてのルートで一貫している
+- [ ] 既存のAPIテストがパスする
+- [ ] 手動テストでエラーハンドリングが正しく動作することを確認する
+- [ ] 既存の機能に回帰がない
+- [ ] TypeScriptコンパイルエラーがない
+- [ ] ESLintエラーがない
 
 ### テスト計画
 
 1. **静的解析**:
    - TypeScript コンパイル
-   - Next.js ビルド（警告の確認）
+   - ESLintチェック
 
-2. **統合テスト**:
-   - APIルートへのアクセスでレート制限が動作する
-   - セッション管理が正しく機能する
-   - 認証が必要なページへのアクセスが制御される
+2. **ユニットテスト**:
+   - 既存のユニットテストがパスする
 
-3. **手動テスト**:
-   - ログイン/ログアウトが正常に動作する
-   - APIへの過剰なリクエストで429が返される
-   - 配信者ダッシュボードにアクセスできる
-   - 視聴者ダッシュボードにアクセスできる
+3. **統合テスト**:
+   - APIルートへのアクセスでエラーが正しく処理される
+   - データベースエラーが正しく処理される
+   - エラーレスポンスが一貫している
+
+4. **手動テスト**:
+   - 各APIルートでエラーが発生した場合、正しいエラーレスポンスが返される
+   - ログに適切なエラー情報が記録される
+   - ユーザーに適切なエラーメッセージが表示される
 
 ### トレードオフの検討
 
-#### 手動移行 vs Codemod
+#### 手動エラーハンドリング vs 標準化されたエラーハンドラー
 
-| 項目 | 手動移行 | Codemod |
+| 項目 | 手動エラーハンドリング | 標準化されたエラーハンドラー |
 |:---|:---|:---|
-| **時間** | わずかに長い | 短い |
-| **エラー** | 人為的なミスのリスク | 自動化により安全 |
-| **可読性** | わかりやすい | ブラックボックス |
-| **学習効果** | APIの理解が深まる | 自動化のみ |
+| **一貫性** | 低（ルートごとに異なる） | 高（統一された実装） |
+| **保守性** | 低（変更が分散） | 高（一箇所で変更） |
+| **バグのリスク** | 高（実装の不備） | 低（テスト済みの実装） |
+| **柔軟性** | 高（ルートごとにカスタマイズ可） | 中（オプションで対応可能） |
+| **学習曲線** | 低（シンプルな実装） | 中（新しいパターンの学習） |
 
-**推奨**: Codemodを使用（時間効率と安全性の観点から）
+**推奨**: 標準化されたエラーハンドラー（一貫性と保守性の観点から）
 
-#### 移行のタイミング
+#### オプション1 vs オプション2
 
-| 項目 | 今すぐ移行 | 後で移行 |
+| 項目 | オプション1（既存） | オプション2（拡張） |
 |:---|:---|:---|
-| **リスク** | 低（機能への影響なし） | 将来のバージョンで動作しなくなる可能性 |
-| **優先度** | 低（機能追加には影響なし） | テクニカルデットとして残る |
-| **コスト** | 低（簡単な移行） | 高（後で大きな変更が必要になる可能性）|
+| **複雑性** | 低（シンプル） | 中（柔軟性追加） |
+| **変更量** | 最小限 | 中 |
+| **保守性** | 高（シンプル） | 中（複雑性追加） |
+| **柔軟性** | 低 | 高 |
+| **学習曲線** | 低 | 中 |
 
-**推奨**: 今すぐ移行（リスクとコストが低いため）
+**推奨**: オプション1（シンプルさと既存コードの再用の観点から）
 
 ---
 
@@ -358,7 +514,8 @@ codemodは以下の変更を自動的に行います：
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-17 | Issue #16 Middleware proxy update 設計追加 |
+| 2026-01-17 | Issue #18 API Error Handling Standardization 設計追加 |
+| 2026-01-17 | Issue #16 Middleware proxy update 実装完了 |
 | 2026-01-17 | Issue #17 型安全性向上の設計追加（実装完了） |
 | 2026-01-17 | Issue #15 カード対戦機能の設計追加（実装完了） |
 | 2026-01-17 | APIルートのレート制限実装完了（Issue #13） |

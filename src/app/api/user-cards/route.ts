@@ -2,7 +2,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getSession } from '@/lib/session'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
-import { logger } from '@/lib/logger'
+import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 
 export async function GET(request: NextRequest) {
   try {
@@ -42,10 +42,7 @@ export async function GET(request: NextRequest) {
       .single()
 
     if (userError || !userData) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      )
+      return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
     }
 
     // Get user's cards with details
@@ -61,20 +58,12 @@ export async function GET(request: NextRequest) {
       .eq('user_id', userData.id)
 
     if (cardsError) {
-      logger.error('Error fetching user cards:', cardsError)
-      return NextResponse.json(
-        { error: 'Failed to fetch user cards' },
-        { status: 500 }
-      )
+      return handleDatabaseError(cardsError, "Failed to fetch user cards")
     }
 
     return NextResponse.json(userCards || [])
 
   } catch (error) {
-    logger.error('User cards get error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return handleApiError(error, "User Cards API")
   }
 }

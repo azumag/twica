@@ -99,9 +99,10 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
    - Removed `any` type usage in cards API
    - Added proper TypeScript type definitions for Supabase queries
    - ESLint warnings resolved
-- Middleware to Proxy migration (Issue #16) - Design completed
-   - Next.js 16 compatibility update
-   - `middleware.ts` to `proxy.ts` migration planned
+- Middleware to Proxy migration completed (Issue #16)
+    - Next.js 16 compatibility update
+    - Successfully migrated `middleware.ts` to `proxy.ts`
+    - Build warnings resolved
 - Card battle system implementation completed (Issue #15)
    - 1v1 CPU battle with turn-based combat
    - Card stats: HP, ATK, DEF, SPD

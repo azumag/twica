@@ -4,7 +4,7 @@ import { type Card } from '@/types/database'
 import { toBattleCard, playBattle, generateCPUOpponent } from '@/lib/battle'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
-import { logger } from '@/lib/logger'
+import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 
 export async function POST(request: NextRequest) {
   try {
@@ -44,10 +44,7 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (userError || !userData) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      )
+      return handleDatabaseError(userError ?? new Error('User not found'), "Battle Start API: Failed to fetch user data")
     }
 
     const body = await request.json()
@@ -75,10 +72,7 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (userCardError || !userCardData) {
-      return NextResponse.json(
-        { error: 'Card not found or not owned by user' },
-        { status: 404 }
-      )
+      return handleDatabaseError(userCardError ?? new Error('Card not found or not owned by user'), "Battle Start API: Failed to fetch user card")
     }
 
     // Get all active cards for CPU opponent
@@ -88,10 +82,7 @@ export async function POST(request: NextRequest) {
       .eq('is_active', true)
 
     if (allCardsError) {
-      return NextResponse.json(
-        { error: 'Failed to fetch cards for CPU opponent' },
-        { status: 500 }
-      )
+      return handleDatabaseError(allCardsError, "Battle Start API: Failed to fetch cards for CPU opponent")
     }
 
     // Convert to BattleCard format
@@ -118,11 +109,7 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (battleError) {
-      logger.error('Failed to save battle:', battleError)
-      return NextResponse.json(
-        { error: 'Failed to save battle' },
-        { status: 500 }
-      )
+      return handleDatabaseError(battleError, "Battle Start API: Failed to save battle")
     }
 
     // Return battle result with card details
@@ -160,10 +147,6 @@ export async function POST(request: NextRequest) {
     })
 
   } catch (error) {
-    logger.error('Battle start error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return handleApiError(error, "Battle Start API: General")
   }
 }

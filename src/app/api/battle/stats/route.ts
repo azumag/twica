@@ -2,7 +2,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getSession } from '@/lib/session'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
-import { logger } from '@/lib/logger'
+import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import type { UserCardWithDetails } from '@/types/database'
 
 export async function GET(request: NextRequest) {
@@ -43,10 +43,7 @@ export async function GET(request: NextRequest) {
       .single()
 
     if (userError || !userData) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      )
+      return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
     }
 
     // Get user's battle stats
@@ -57,11 +54,7 @@ export async function GET(request: NextRequest) {
       .single()
 
     if (statsError && statsError.code !== 'PGRST116') { // PGRST116 is "not found"
-      logger.error('Error fetching battle stats:', statsError)
-      return NextResponse.json(
-        { error: 'Failed to fetch battle stats' },
-        { status: 500 }
-      )
+      return handleDatabaseError(statsError, "Failed to fetch battle stats")
     }
 
     // Get recent battles with card details
@@ -82,11 +75,7 @@ export async function GET(request: NextRequest) {
       .limit(10)
 
     if (battlesError) {
-      logger.error('Error fetching recent battles:', battlesError)
-      return NextResponse.json(
-        { error: 'Failed to fetch recent battles' },
-        { status: 500 }
-      )
+      return handleDatabaseError(battlesError, "Failed to fetch recent battles")
     }
 
     // Get opponent card names for recent battles
@@ -124,11 +113,7 @@ export async function GET(request: NextRequest) {
       .eq('user_id', userData.id)
 
     if (cardStatsError) {
-      logger.error('Error fetching card stats:', cardStatsError)
-      return NextResponse.json(
-        { error: 'Failed to fetch card stats' },
-        { status: 500 }
-      )
+      return handleDatabaseError(cardStatsError, "Failed to fetch card stats")
     }
 
     // Aggregate card statistics
@@ -193,10 +178,6 @@ export async function GET(request: NextRequest) {
     })
 
   } catch (error) {
-    logger.error('Battle stats error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return handleApiError(error, "Battle Stats API")
   }
 }
