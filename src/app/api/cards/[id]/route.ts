@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { validateDropRateSum } from "@/lib/validations";
 import { logger } from "@/lib/logger";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { extractTwitchUserId } from "@/types/database";
 
 export async function PUT(
   request: NextRequest,
@@ -53,11 +54,9 @@ export async function PUT(
       .eq("id", id)
       .single();
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const streamers = card?.streamers as any;
-    const twitchUserId = Array.isArray(streamers) ? streamers[0]?.twitch_user_id : streamers?.twitch_user_id;
+    const twitchUserId = extractTwitchUserId(card?.streamers);
 
-    if (!card || twitchUserId !== session.twitchUserId) {
+    if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -139,11 +138,9 @@ export async function DELETE(
       .eq("id", id)
       .single();
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const streamers = card?.streamers as any;
-    const twitchUserId = Array.isArray(streamers) ? streamers[0]?.twitch_user_id : streamers?.twitch_user_id;
+    const twitchUserId = extractTwitchUserId(card?.streamers);
 
-    if (!card || twitchUserId !== session.twitchUserId) {
+    if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

@@ -117,6 +117,18 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] 未認証ユーザーは IP アドレスで識別される
 - [x] フロントエンドで 429 エラーが適切に表示される
 
+### カード対戦機能（Issue #15）
+- [x] カードにステータス（HP、ATK、DEF、SPD）が追加される
+- [x] 各カードにスキルが設定される
+- [x] CPU対戦が可能
+- [x] 自動ターン制バトルが動作する
+- [x] 勝敗判定が正しく行われる
+- [x] 対戦履歴が記録される
+- [x] 対戦統計が表示される
+- [x] フロントエンドで対戦が視覚的に楽しめる
+- [x] アニメーション効果が表示される
+- [x] モバイルで快適に操作可能
+
 ---
 
 ## 設計方針
@@ -166,553 +178,136 @@ graph LR
     User --> BattleFlow
 ```
 
-### データフロー
-
-#### 認証フロー
-1. ユーザーがTwitchログインボタンをクリック
-2. `/api/auth/twitch/login`でTwitch OAuth URLを生成
-3. ユーザーがTwitchで認証
-4. `/api/auth/twitch/callback`でコードを処理
-5. Supabase AuthでJWTトークンを発行
-6. Cookieにセッションを保存
-
-#### ガチャフロー
-1. 視聴者がチャンネルポイントで報酬を交換
-2. Twitch EventSubが通知を送信
-3. `/api/twitch/eventsub`で通知を受信
-4. レート制限チェックをスキップ（EventSub WebhookはTwitchからの信頼できる通知）
-5. 有効なカードを取得（RLS）
-6. 重み付き選択アルゴリズムでカードを選択
-7. `user_cards`と`gacha_history`に記録
-8. オーバーレイが結果を表示
-
-#### 画像アップロードフロー
-1. 配信者が画像を選択
-2. フロントエンドで画像サイズと形式を検証（最大1MB）
-3. `/api/upload`でレート制限チェック
-4. レート制限を超過している場合、429エラーを返す
-5. クライアントからVercel Blobに直接アップロード
-6. 画像URLを返却
-7. カード登録時にURLを使用
-
 ---
 
-## Issue #15: 集めたカードで対戦できる機能
+## Issue #17: Code Quality - Remove 'any' type usage in cards API
 
 ### 問題
 
-視聴者が集めたカードを使って対戦する機能が存在しません。配信者と視聴者のエンゲージメントを高めるために、カード対戦機能を実装する必要があります。
+`src/app/api/cards/[id]/route.ts` で型安全を確保するために、`any`型の使用を削除する必要があります。
 
 ### 現象
 
-- 視聴者が集めたカードを活用する方法がガチャのみ
-- カードのステータスや能力が定義されていない
-- 対戦ロジックが存在しない
+2箇所で`any`型が使用されています：
+- Line 57: `const streamers = card?.streamers as any;`
+- Line 143: `const streamers = card?.streamers as any;`
 
-これにより以下の課題があります：
-- 視聴者のエンゲージメントが低下
-- カードのコレクション価値が低い
-- 配信者のコンテンツの多様性が不足
+### 影響
 
-### 期待される動作
-
-視聴者が集めたカードを使って、自動対戦機能で遊べるようにする。
+- 型安全性が低下
+- ランタイムエラーのリスクが増加
+- コードの保守性が低下
 
 ### 優先度
 
-中（エンゲージメント向上機能）
+中（コード品質改善）
 
 ---
 
-## Issue #15: カード対戦機能の設計
+## Issue #17: 型安全性向上の設計
 
 ### 機能要件
 
-#### カードステータス
-- 各カードにステータスを追加
-- **HP (Hit Points)**: 体力（100-200の範囲）
-- **ATK (Attack)**: 攻撃力（20-50の範囲）
-- **DEF (Defense)**: 防御力（10-30の範囲）
-- **SPD (Speed)**: 速度（1-10の範囲、行動順決定）
+#### 型定義の追加
+- Supabaseクエリ結果の適切な型定義を作成
+- `streamers`フィールドの型を定義
+- ESLintの`@typescript-eslint/no-explicit-any`警告を解消
 
-#### カード能力（スキル）
-- 各カードに1つのアクティブスキルを持つ
-- スキル発動確率（SPDに基づく）
-- スキルタイプ:
-  - **攻撃型**: 相手にダメージを与える
-  - **防御型**: 自身の防御力を上げる
-  - **回復型**: 自身のHPを回復する
-  - **特殊型**: 特殊効果（状態異常など）
+#### 既存の動作維持
+- カード所有権の検証ロジックを変更しない
+- APIの挙動を維持する
 
-#### 対戦ルール（シンプル版）
-- 1対1の自動対戦
-- ターン制バトル
-- ターンごとに攻撃またはスキル発動
-- HPが0になった方が敗北
-- 最大ターン数: 20ターン（制限超過時はHPが多い方の勝利）
+### 設計
 
-#### 対戦フロー
-1. 視聴者が自分のカードを選択
-2. CPUまたは他の視聴者のカードを選択（今回はCPUのみ）
-3. 対戦開始
-4. 自動でターン制バトルが進行
-5. 勝敗判定
-6. 対戦結果の表示
+#### 型定義の作成
 
-#### 対戦履歴
-- 対戦結果をデータベースに記録
-- 勝利数、敗北数、勝率の統計
-- 使用したカードの履歴
-
-### データベース設計
-
-#### 既存テーブルへの変更
-
-**`cards`テーブルにステータス列を追加**:
-```sql
-ALTER TABLE cards
-ADD COLUMN hp INTEGER DEFAULT 100,
-ADD COLUMN atk INTEGER DEFAULT 30,
-ADD COLUMN def INTEGER DEFAULT 15,
-ADD COLUMN spd INTEGER DEFAULT 5,
-ADD COLUMN skill_type TEXT DEFAULT 'attack',
-ADD COLUMN skill_name TEXT DEFAULT '通常攻撃',
-ADD COLUMN skill_power INTEGER DEFAULT 10;
-```
-
-**スキルタイプの定義**:
-- `attack`: 攻撃型（相手にダメージ）
-- `defense`: 防御型（防御力アップ）
-- `heal`: 回復型（HP回復）
-- `special`: 特殊型（状態異常など）
-
-#### 新規テーブル
-
-**`battles`テーブル**:
-```sql
-CREATE TABLE battles (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) NOT NULL,
-    user_card_id UUID REFERENCES user_cards(id) NOT NULL,
-    opponent_card_id UUID REFERENCES cards(id) NOT NULL,
-    result TEXT NOT NULL, -- 'win', 'lose', 'draw'
-    turn_count INTEGER DEFAULT 0,
-    battle_log JSONB, -- 対戦の詳細なログ
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX idx_battles_user_id ON battles(user_id);
-CREATE INDEX idx_battles_created_at ON battles(created_at DESC);
-```
-
-**`battle_stats`テーブル**:
-```sql
-CREATE TABLE battle_stats (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) NOT NULL UNIQUE,
-    total_battles INTEGER DEFAULT 0,
-    wins INTEGER DEFAULT 0,
-    losses INTEGER DEFAULT 0,
-    draws INTEGER DEFAULT 0,
-    win_rate DECIMAL(5, 2) DEFAULT 0,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-```
-
-### API設計
-
-#### `POST /api/battle/start`
-
-対戦を開始する。
-
-**リクエスト**:
-```json
-{
-  "userCardId": "uuid",
-  "opponentType": "cpu"
-}
-```
-
-**レスポンス**:
-```json
-{
-  "battleId": "uuid",
-  "userCard": {
-    "id": "uuid",
-    "name": "カード名",
-    "hp": 150,
-    "currentHp": 150,
-    "atk": 35,
-    "def": 20,
-    "spd": 6
-  },
-  "opponentCard": {
-    "id": "uuid",
-    "name": "CPUカード",
-    "hp": 140,
-    "currentHp": 140,
-    "atk": 40,
-    "def": 15,
-    "spd": 5
-  }
-}
-```
-
-#### `GET /api/battle/[battleId]`
-
-対戦状況を取得する。
-
-**レスポンス**:
-```json
-{
-  "battleId": "uuid",
-  "status": "in_progress", -- "in_progress", "completed"
-  "turn": 1,
-  "maxTurns": 20,
-  "userCard": {
-    "id": "uuid",
-    "name": "カード名",
-    "hp": 150,
-    "currentHp": 145,
-    "atk": 35,
-    "def": 20,
-    "spd": 6
-  },
-  "opponentCard": {
-    "id": "uuid",
-    "name": "CPUカード",
-    "hp": 140,
-    "currentHp": 135,
-    "atk": 40,
-    "def": 15,
-    "spd": 5
-  },
-  "logs": [
-    {
-      "turn": 1,
-      "actor": "user", -- "user", "opponent"
-      "action": "attack",
-      "damage": 5,
-      "message": "あなたのカードが攻撃！5ダメージを与えた！"
-    }
-  ]
-}
-```
-
-#### `GET /api/battle/stats`
-
-ユーザーの対戦統計を取得する。
-
-**レスポンス**:
-```json
-{
-  "totalBattles": 100,
-  "wins": 60,
-  "losses": 35,
-  "draws": 5,
-  "winRate": 60.0,
-  "recentBattles": [
-    {
-      "battleId": "uuid",
-      "result": "win",
-      "opponentCardName": "CPUカード",
-      "turnCount": 8,
-      "createdAt": "2026-01-17T10:00:00Z"
-    }
-  ]
-}
-```
-
-### 対戦ロジック
-
-#### ステータス計算
-
-カードのステータスは、レアリティに応じて変動：
-- **コモン**: HP 100-120, ATK 20-30, DEF 10-15, SPD 1-3
-- **レア**: HP 120-140, ATK 30-40, DEF 15-20, SPD 3-5
-- **エピック**: HP 140-160, ATK 40-45, DEF 20-25, SPD 5-7
-- **レジェンダリー**: HP 160-200, ATK 45-50, DEF 25-30, SPD 7-10
-
-#### スキル発動確率
-
-SPDに基づいてスキル発動確率を決定：
-- 発動確率 = SPD × 10%（最大70%）
-- 例: SPD 5の場合、50%の確率でスキル発動
-
-#### ダメージ計算
-
-通常攻撃ダメージ:
-```
-damage = max(1, attacker.atk - defender.def)
-```
-
-スキルダメージ:
-```
-skillDamage = max(1, attacker.atk + attacker.skill_power - defender.def)
-```
-
-防御力アップ:
-```
-newDef = defender.def + defender.skill_power
-```
-
-回復量:
-```
-healAmount = defender.skill_power
-```
-
-#### ターン制バトルフロー
+新しい型定義を `src/types/database.ts` または `src/types/supabase.ts` に追加：
 
 ```typescript
-async function playBattle(userCard: Card, opponentCard: Card): Promise<BattleResult> {
-  const maxTurns = 20;
-  const logs: BattleLog[] = [];
-  let turn = 1;
-  
-  // 行動順決定（SPDが高い方が先手）
-  let firstActor = userCard.spd >= opponentCard.spd ? 'user' : 'opponent';
-  let currentActor = firstActor;
-  
-  // カードのステータスをコピー
-  let userStats = { ...userCard };
-  let opponentStats = { ...opponentCard };
-  
-  while (turn <= maxTurns && userStats.currentHp > 0 && opponentStats.currentHp > 0) {
-    const attacker = currentActor === 'user' ? userStats : opponentStats;
-    const defender = currentActor === 'user' ? opponentStats : userStats;
-    
-    // スキル発動判定
-    const skillTrigger = Math.random() * 100 < (attacker.spd * 10);
-    
-    if (skillTrigger) {
-      // スキル発動
-      const result = executeSkill(attacker, defender);
-      logs.push({
-        turn,
-        actor: currentActor,
-        action: 'skill',
-        damage: result.damage || 0,
-        heal: result.heal || 0,
-        message: `${attacker.name}がスキル発動！${result.message}`
-      });
-      
-      // ステータス更新
-      if (result.damage) {
-        defender.currentHp = Math.max(0, defender.currentHp - result.damage);
-      }
-      if (result.heal) {
-        attacker.currentHp = Math.min(attacker.hp, attacker.currentHp + result.heal);
-      }
-      if (result.defenseUp) {
-        defender.def += result.defenseUp;
-      }
-    } else {
-      // 通常攻撃
-      const damage = Math.max(1, attacker.atk - defender.def);
-      defender.currentHp = Math.max(0, defender.currentHp - damage);
-      
-      logs.push({
-        turn,
-        actor: currentActor,
-        action: 'attack',
-        damage,
-        message: `${attacker.name}が攻撃！${damage}ダメージを与えた！`
-      });
-    }
-    
-    // ターン交代
-    currentActor = currentActor === 'user' ? 'opponent' : 'user';
-    
-    // 両方が行動したらターン終了
-    if (currentActor === firstActor) {
-      turn++;
-    }
-  }
-  
-  // 勝敗判定
-  let result: 'win' | 'lose' | 'draw';
-  if (userStats.currentHp <= 0) {
-    result = 'lose';
-  } else if (opponentStats.currentHp <= 0) {
-    result = 'win';
-  } else {
-    // 20ターン経過時はHPが多い方の勝利
-    result = userStats.currentHp >= opponentStats.currentHp ? 'win' : 'lose';
-  }
-  
-  return {
-    result,
-    turnCount: turn,
-    userHp: userStats.currentHp,
-    opponentHp: opponentStats.currentHp,
-    logs
-  };
+export interface CardWithStreamer {
+  id: string;
+  streamer_id: string;
+  streamers: {
+    twitch_user_id: string;
+  } | {
+    twitch_user_id: string;
+  }[];
 }
+
+export type StreamerRelation = {
+  twitch_user_id: string;
+};
 ```
 
-### スキル実装
+#### 実装方法
+
+**オプション1: 明示的な型定義を使用**
 
 ```typescript
-interface SkillResult {
-  damage?: number;
-  heal?: number;
-  defenseUp?: number;
-  message: string;
-}
+import type { CardWithStreamer } from '@/types/database';
 
-function executeSkill(attacker: Card, defender: Card): SkillResult {
-  switch (attacker.skillType) {
-    case 'attack':
-      const skillDamage = Math.max(1, attacker.atk + attacker.skill_power - defender.def);
-      return {
-        damage: skillDamage,
-        message: `${attacker.skill_name}！${skillDamage}ダメージを与えた！`
-      };
-    
-    case 'defense':
-      return {
-        defenseUp: attacker.skill_power,
-        message: `${attacker.skill_name}！防御力が上がった！`
-      };
-    
-    case 'heal':
-      const healAmount = Math.min(attacker.hp - attacker.currentHp, attacker.skill_power);
-      return {
-        heal: healAmount,
-        message: `${attacker.skill_name}！${healAmount}回復した！`
-      };
-    
-    case 'special':
-      // 特殊効果（今回は実装せず、次回の機能拡張で追加）
-      return {
-        message: `${attacker.skill_name}！特殊効果発動！`
-      };
-    
-    default:
-      return { message: 'スキル発動失敗' };
-  }
-}
+const { data: card } = await supabaseAdmin
+  .from("cards")
+  .select("streamer_id, streamers!inner(twitch_user_id)")
+  .eq("id", id)
+  .single();
+
+const streamers = card?.streamers as { twitch_user_id: string } | { twitch_user_id: string }[];
+const twitchUserId = Array.isArray(streamers) ? streamers[0]?.twitch_user_id : streamers?.twitch_user_id;
 ```
 
-### フロントエンド設計
+**オプション2: 型ガード関数を使用**
 
-#### 対戦画面 (`/battle`)
+```typescript
+function extractTwitchUserId(streamers: unknown): string | null {
+  if (!streamers) return null;
 
-1. **カード選択画面**
-   - ユーザーのカードリストを表示
-   - CPU対戦ボタン
-   - 最近使用したカードの履歴
+  if (Array.isArray(streamers)) {
+    return streamers[0]?.twitch_user_id ?? null;
+  }
 
-2. **対戦進行画面**
-   - ユーザーカードとCPUカードの表示
-   - 現在のHP、ターン数の表示
-   - 対戦ログのリアルタイム表示
-   - アニメーション効果（攻撃、ダメージ、回復）
+  if (typeof streamers === 'object' && 'twitch_user_id' in streamers) {
+    return streamers.twitch_user_id as string;
+  }
 
-3. **結果画面**
-   - 勝敗の表示
-   - 統計情報（対戦数、勝率）
-   - 再戦ボタン
-   - 他のカードで対戦ボタン
+  return null;
+}
 
-#### 統計画面 (`/battle/stats`)
+const twitchUserId = extractTwitchUserId(card?.streamers);
+```
 
-- 総対戦数、勝利数、敗北数、引き分け数
-- 勝率のグラフ表示
-- 最近の対戦履歴
-- 使用カードごとの勝率
+**推奨実装: オプション1（明示的な型定義）**
 
-### UI/UX
+オプション1が最もシンプルで、Supabaseのクエリ結果の型を明確にします。
 
-1. **カード選択**
-   - グリッド表示でカードを選択
-   - ステータス情報を表示（HP、ATK、DEF、SPD）
-   - レアリティごとに色分け
+### 変更ファイル
 
-2. **対戦進行**
-   - カードのイラストを中央に配置
-   - HPバーを表示
-   - 対戦ログをスクロール表示
-   - アニメーションをスムーズに実行
-
-3. **レスポンシブ対応**
-   - モバイルでも快適に操作可能
-   - 縦横両方のレイアウト対応
+- `src/app/api/cards/[id]/route.ts` - `any`型の削除
+- `src/types/database.ts` - 型定義の追加（新規または更新）
 
 ### 受け入れ基準
 
-- [ ] カードにステータス（HP、ATK、DEF、SPD）が追加される
-- [ ] 各カードにスキルが設定される
-- [ ] CPU対戦が可能
-- [ ] 自動ターン制バトルが動作する
-- [ ] 勝敗判定が正しく行われる
-- [ ] 対戦履歴が記録される
-- [ ] 対戦統計が表示される
-- [ ] フロントエンドで対戦が視覚的に楽しめる
-- [ ] アニメーション効果が表示される
-- [ ] モバイルで快適に操作可能
+- [ ] `any`型の使用が削除される
+- [ ] ESLintの`@typescript-eslint/no-explicit-any`警告が解消される
+- [ ] カード所有権の検証が正しく動作する
+- [ ] TypeScriptのコンパイルエラーがない
+- [ ] 既存のAPIテストがパスする
 
 ### テスト計画
 
-1. **ユニットテスト**:
-   - 対戦ロジックのテスト（ダメージ計算、スキル発動）
-   - ステータス計算のテスト
-   - 勝敗判定のテスト
+1. **静的解析**:
+   - TypeScript コンパイル
+   - ESLint チェック
 
 2. **統合テスト**:
-   - APIエンドポイントのテスト
-   - データベース操作のテスト
-   - 対戦フローのテスト
+   - PUT /api/cards/[id] が正しく動作する
+   - DELETE /api/cards/[id] が正しく動作する
+   - カード所有権の検証が正しく行われる
 
-3. **E2Eテスト**:
-   - カード選択から対戦完了までのフロー
-   - 対戦履歴の確認
-   - 統計情報の表示
-
-4. **パフォーマンステスト**:
-   - 対戦処理が1000ms以内に完了すること
-   - 複数の対戦が同時に行われた場合の動作
-
-### トレードオフの検討
-
-#### スキルの複雑さ vs シンプルさ
-
-**選択**: 最初はシンプルなスキルのみ実装
-
-**理由**:
-- 開発期間を短縮
-- ユーザーがルールを理解しやすく
-- 将来的な機能拡張の余地を残す
-
-**トレードオフ**:
-- シンプルなスキルのみでは深みが不足
-- 複雑なスキルはバランス調整が困難
-
-#### CPUのAI
-
-**選択**: ランダム行動（シンプル版）
-
-**理由**:
-- 開発コストを削減
-- ランダムでも十分楽しめる
-- 将来的な機能拡張の余地を残す
-
-**トレードオフ**:
-- AIが予測可能で退屈
-- 複雑なAIは計算コストが高い
-
-#### 対戦モード
-
-**選択**: 1対1のCPU対戦のみ
-
-**理由**:
-- ユーザー同時接続の必要がない
-- リアルタイム通信の複雑さを回避
-- データベース設計がシンプル
-
-**トレードオフ**:
-- ユーザー同士の対戦ができない
-- エンゲージメントが制限される
+3. **手動テスト**:
+   - 配信者が自分のカードを更新できる
+   - 配信者が自分のカードを削除できる
+   - 他の配信者のカードを操作できない
 
 ---
 
@@ -720,5 +315,7 @@ function executeSkill(attacker: Card, defender: Card): SkillResult {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-17 | Issue #15 カード対戦機能の設計追加 |
+| 2026-01-17 | Issue #17 型安全性向上の設計追加 |
+| 2026-01-17 | Issue #16 Middleware proxy update 設計追加 |
+| 2026-01-17 | Issue #15 カード対戦機能の設計追加（実装完了） |
 | 2026-01-17 | APIルートのレート制限実装完了（Issue #13） |

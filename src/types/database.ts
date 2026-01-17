@@ -276,6 +276,32 @@ export type CardWithStreamer = Card & {
   streamer: Streamer
 }
 
+// Types for Supabase query with streamer relation
+export type StreamerRelation = {
+  twitch_user_id: string
+}
+
+export type CardWithStreamerRelation = {
+  id: string
+  streamer_id: string
+  streamers: StreamerRelation | StreamerRelation[]
+}
+
+// Type guard function for extracting Twitch user ID from streamers relation
+export function extractTwitchUserId(streamers: unknown): string | null {
+  if (!streamers) return null;
+
+  if (Array.isArray(streamers)) {
+    return streamers[0]?.twitch_user_id ?? null;
+  }
+
+  if (typeof streamers === 'object' && 'twitch_user_id' in streamers) {
+    return (streamers as { twitch_user_id: string }).twitch_user_id;
+  }
+
+  return null;
+}
+
 export type UserCardWithDetails = UserCard & {
   card: CardWithStreamer
 }

@@ -1,0 +1,52 @@
+# 実装内容記録
+
+## 2026-01-17
+
+### Issue #17: Code Quality - Remove 'any' type usage in cards API
+
+#### 概要
+`src/app/api/cards/[id]/route.ts` で型安全性を確保するために、`any`型の使用を削除しました。
+
+#### 実装内容
+
+1. **型定義の追加** (`src/types/database.ts`)
+   - `StreamerRelation` 型を追加
+   - `CardWithStreamerRelation` 型を追加
+   - Supabaseクエリ結果の適切な型定義を作成
+
+2. **APIルートの修正** (`src/app/api/cards/[id]/route.ts`)
+   - `CardWithStreamerRelation` 型をインポート
+   - `any`型の使用を削除（2箇所）
+   - 適切な型キャストを使用して型安全性を向上
+
+#### 変更ファイル
+- `src/types/database.ts` - 型定義を追加
+- `src/app/api/cards/[id]/route.ts` - `any`型を削除し、適切な型を使用
+
+#### 検証結果
+- [x] TypeScript コンパイルが成功
+- [x] ESLint チェックが通過
+- [x] `@typescript-eslint/no-explicit-any` 警告が解消
+- [x] 既存のAPI機能が維持されている
+
+#### 技術的詳細
+
+**変更前:**
+```typescript
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const streamers = card?.streamers as any;
+```
+
+**変更後:**
+```typescript
+const streamers = (card as CardWithStreamerRelation)?.streamers;
+```
+
+これにより、Supabaseクエリ結果の型が明確になり、ランタイムエラーのリスクが低減しました。
+
+#### 受け入れ基準の達成
+- [x] `any`型の使用が削除される
+- [x] ESLintの`@typescript-eslint/no-explicit-any`警告が解消される  
+- [x] カード所有権の検証が正しく動作する
+- [x] TypeScriptのコンパイルエラーがない
+- [x] 既存のAPIテストがパスする

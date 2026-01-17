@@ -95,6 +95,13 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
+- Card battle system implementation completed (Issue #15)
+  - 1v1 CPU battle with turn-based combat
+  - Card stats: HP, ATK, DEF, SPD
+  - Skill system with multiple types (attack, defense, heal, special)
+  - Battle history and statistics tracking
+  - Animated battle UI with real-time logs
+  - Code quality improvements (ESLint fixes, TypeScript type safety)
 - Rate limiting implementation completed (Issue #13)
 - README mermaid diagram fixed (Issue #14)
 - Terms of Service page implemented and issue #8 closed
