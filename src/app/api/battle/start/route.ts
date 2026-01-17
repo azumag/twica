@@ -7,6 +7,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-l
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import { reportBattleError } from '@/lib/sentry/error-handler'
 import { setUserContext, setRequestContext, setGameContext } from '@/lib/sentry/user-context'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
@@ -30,7 +31,7 @@ export async function POST(request: NextRequest) {
 
     if (!rateLimitResult.success) {
       return NextResponse.json(
-        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+        { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
         {
           status: 429,
           headers: {
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
 
     if (!session) {
       return NextResponse.json(
-        { error: 'Unauthorized' },
+        { error: ERROR_MESSAGES.UNAUTHORIZED },
         { status: 401 }
       )
     }
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest) {
 
     if (!userCardId) {
       return NextResponse.json(
-        { error: 'userCardId is required' },
+        { error: ERROR_MESSAGES.USER_CARD_ID_REQUIRED },
         { status: 400 }
       )
     }

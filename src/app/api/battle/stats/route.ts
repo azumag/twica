@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import type { UserCardWithDetails } from '@/types/database'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
 export async function GET(request: NextRequest) {
   try {
@@ -14,7 +15,7 @@ export async function GET(request: NextRequest) {
 
     if (!rateLimitResult.success) {
       return NextResponse.json(
-        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+        { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
         {
           status: 429,
           headers: {
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest) {
 
     if (!session) {
       return NextResponse.json(
-        { error: 'Unauthorized' },
+        { error: ERROR_MESSAGES.UNAUTHORIZED },
         { status: 401 }
       )
     }

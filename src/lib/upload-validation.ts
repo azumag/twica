@@ -70,16 +70,17 @@ export function validateUpload(
   return { valid: true }
 }
 
-export function getUploadErrorMessage(error: UploadValidationError, maxSize?: number): string {
+import { ERROR_MESSAGES } from '@/lib/constants'
+
+export function getUploadErrorMessage(error: UploadValidationError): string {
   switch (error) {
     case 'FILE_TOO_LARGE':
-      const sizeInMB = maxSize ? (maxSize / (1024 * 1024)).toFixed(1) : '1'
-      return `ファイルサイズは${sizeInMB}MB以下にしてください`
+      return ERROR_MESSAGES.FILE_SIZE_EXCEEDED
     case 'INVALID_FILE_TYPE':
-      return '画像ファイル（JPEG, PNG）のみ対応しています'
+      return ERROR_MESSAGES.INVALID_FILE_TYPE
     case 'NO_FILE':
-      return 'ファイルが選択されていません'
+      return ERROR_MESSAGES.NO_FILE_SELECTED
     default:
-      return 'アップロードできません'
+      return ERROR_MESSAGES.UNABLE_TO_UPLOAD
   }
 }

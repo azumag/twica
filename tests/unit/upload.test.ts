@@ -46,7 +46,7 @@ describe('POST /api/upload', () => {
 
       expect(response.status).toBe(429)
       const body = await response.json()
-      expect(body.error).toBe('リクエストが多すぎます。しばらく待ってから再試行してください。')
+      expect(body.error).toBe('Too many requests. Please try again later.')
       expect(body.retryAfter).toBeDefined()
     })
   })
@@ -90,7 +90,7 @@ describe('POST /api/upload', () => {
 
       expect(response.status).toBe(400)
       const body = await response.json()
-      expect(body.error).toBe('ファイルが選択されていません')
+      expect(body.error).toBe('No file selected')
     })
   })
 
@@ -121,7 +121,7 @@ describe('POST /api/upload', () => {
 
       expect(response.status).toBe(400)
       const body = await response.json()
-      expect(body.error).toBe('ファイルサイズは1.0MB以下にしてください')
+      expect(body.error).toBe('File size exceeds the maximum allowed size')
     })
   })
 
@@ -152,7 +152,7 @@ describe('POST /api/upload', () => {
 
       expect(response.status).toBe(400)
       const body = await response.json()
-      expect(body.error).toBe('画像ファイル（JPEG, PNG）のみ対応しています')
+      expect(body.error).toBe('Invalid file type. Only JPEG and PNG are allowed')
     })
   })
 

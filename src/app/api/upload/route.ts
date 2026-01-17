@@ -5,6 +5,7 @@ import { getSession } from '@/lib/session';
 import { handleApiError } from '@/lib/error-handler';
 import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
+import { ERROR_MESSAGES } from '@/lib/constants';
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const session = await getSession();
@@ -15,7 +16,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!rateLimitResult.success) {
     return NextResponse.json(
       {
-        error: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
+        error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
         retryAfter: rateLimitResult.reset,
       },
       {
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   try {
     if (!session) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+      return NextResponse.json({ error: ERROR_MESSAGES.NOT_AUTHENTICATED }, { status: 401 });
     }
 
     const formData = await request.formData();
@@ -40,13 +41,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const validation = validateUpload(file);
     if (!validation.valid) {
       return NextResponse.json(
-        { error: getUploadErrorMessage(validation.error!, validation.maxSize) },
+        { error: getUploadErrorMessage(validation.error!) },
         { status: 400 }
       );
     }
 
     if (!file || !file.name || file.name.trim() === '') {
-      return NextResponse.json({ error: 'ファイル名が空です' }, { status: 400 });
+      return NextResponse.json({ error: ERROR_MESSAGES.FILE_NAME_EMPTY }, { status: 400 });
     }
 
     const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();

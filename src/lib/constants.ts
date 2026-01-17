@@ -42,3 +42,45 @@ export const RARITY_COLORS = {
 };
 
 export const GACHA_COST = parseInt(process.env.GACHA_COST || '100', 10)
+
+export const ERROR_MESSAGES = {
+  // Authentication errors
+  UNAUTHORIZED: 'Unauthorized',
+  NOT_AUTHENTICATED: 'Not authenticated',
+  FORBIDDEN: 'Forbidden',
+
+  // Request validation errors
+  MISSING_REQUIRED_FIELDS: 'Missing required fields',
+  INVALID_REQUEST: 'Invalid request',
+  INVALID_CARD_ID: 'Invalid card ID',
+  USER_CARD_ID_REQUIRED: 'userCardId is required',
+  STREAMER_ID_REQUIRED: 'streamerId is required',
+  STREAMER_ID_MISSING: 'Missing streamerId',
+  DROP_RATE_INVALID: 'Drop rate must be a number between 0 and 1',
+
+  // Rate limit errors
+  RATE_LIMIT_EXCEEDED: 'Too many requests. Please try again later.',
+
+  // Resource errors
+  USER_NOT_FOUND: 'User not found',
+  CARD_NOT_FOUND: 'Card not found',
+  CARD_NOT_OWNED: 'Card not found or not owned by user',
+  STREAMER_NOT_FOUND: 'Streamer not found',
+  NO_CARDS_AVAILABLE: 'No cards available for this streamer',
+  FAILED_TO_SELECT_CARD: 'Failed to select card',
+  FAILED_TO_RECORD_HISTORY: 'Failed to record gacha history',
+  DATABASE_ERROR: 'Database error',
+  REWARD_ID_MISMATCH: 'Reward ID mismatch',
+  UNEXPECTED_ERROR: 'Unexpected error',
+
+  // File upload errors
+  FILE_NAME_EMPTY: 'File name is empty',
+  FILE_SIZE_EXCEEDED: 'File size exceeds the maximum allowed size',
+  INVALID_FILE_TYPE: 'Invalid file type. Only JPEG and PNG are allowed',
+  NO_FILE_SELECTED: 'No file selected',
+  UNABLE_TO_UPLOAD: 'Unable to upload file',
+
+  // General errors
+  INTERNAL_ERROR: 'Internal server error',
+  OPERATION_FAILED: 'Operation failed',
+} as const

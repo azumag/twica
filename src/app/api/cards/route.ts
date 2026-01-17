@@ -4,6 +4,8 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { validateDropRateSum } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { ERROR_MESSAGES } from "@/lib/constants";
+import type { ApiRateLimitResponse } from "@/types/api";
 
 export async function POST(request: NextRequest) {
   const session = await getSession();
@@ -12,8 +14,11 @@ export async function POST(request: NextRequest) {
   const rateLimitResult = await checkRateLimit(rateLimits.cardsPost, identifier);
 
   if (!rateLimitResult.success) {
-    return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+    return NextResponse.json<ApiRateLimitResponse>(
+      { 
+        error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
+      },
       {
         status: 429,
         headers: {
@@ -26,7 +31,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
   try {
@@ -36,7 +41,7 @@ export async function POST(request: NextRequest) {
 
     if (typeof dropRate !== "number" || dropRate < 0 || dropRate > 1) {
       return NextResponse.json(
-        { error: "Drop rate must be a number between 0 and 1" },
+        { error: ERROR_MESSAGES.DROP_RATE_INVALID },
         { status: 400 }
       );
     }
@@ -50,7 +55,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!streamer) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
     // Validate drop rate sum
@@ -98,8 +103,11 @@ export async function GET(request: NextRequest) {
   const rateLimitResult = await checkRateLimit(rateLimits.cardsGet, identifier);
 
   if (!rateLimitResult.success) {
-    return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+    return NextResponse.json<ApiRateLimitResponse>(
+      { 
+        error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
+      },
       {
         status: 429,
         headers: {
@@ -112,7 +120,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!streamerId) {
-    return NextResponse.json({ error: "Missing streamerId" }, { status: 400 });
+    return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_ID_MISSING }, { status: 400 });
   }
 
   try {
@@ -125,7 +133,7 @@ export async function GET(request: NextRequest) {
       .single();
 
     if (streamerError || !streamer) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
     const { data: cards, error } = await supabaseAdmin

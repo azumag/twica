@@ -5,6 +5,8 @@ import { validateDropRateSum } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { extractTwitchUserId } from "@/types/database";
+import { ERROR_MESSAGES } from "@/lib/constants";
+import type { ApiRateLimitResponse } from "@/types/api";
 
 export async function PUT(
   request: NextRequest,
@@ -16,8 +18,11 @@ export async function PUT(
   const rateLimitResult = await checkRateLimit(rateLimits.cardsId, identifier);
 
   if (!rateLimitResult.success) {
-    return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+    return NextResponse.json<ApiRateLimitResponse>(
+      { 
+        error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
+      },
       {
         status: 429,
         headers: {
@@ -30,7 +35,7 @@ export async function PUT(
   }
 
   if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
   const { id } = await params;
@@ -42,7 +47,7 @@ export async function PUT(
 
     if (typeof dropRate !== "number" || dropRate < 0 || dropRate > 1) {
       return NextResponse.json(
-        { error: "Drop rate must be a number between 0 and 1" },
+        { error: ERROR_MESSAGES.DROP_RATE_INVALID },
         { status: 400 }
       );
     }
@@ -57,7 +62,7 @@ export async function PUT(
     const twitchUserId = extractTwitchUserId(card?.streamers);
 
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
     // Validate drop rate sum
@@ -107,8 +112,11 @@ export async function DELETE(
   const rateLimitResult = await checkRateLimit(rateLimits.cardsId, identifier);
 
   if (!rateLimitResult.success) {
-    return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+    return NextResponse.json<ApiRateLimitResponse>(
+      { 
+        error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
+      },
       {
         status: 429,
         headers: {
@@ -121,7 +129,7 @@ export async function DELETE(
   }
 
   if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
   const { id } = await params;
@@ -139,7 +147,7 @@ export async function DELETE(
     const twitchUserId = extractTwitchUserId(card?.streamers);
 
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
     const { error } = await supabaseAdmin
