@@ -206,582 +206,362 @@ graph LR
 
 ---
 
-## Issue #23: Fix CPU Opponent Database Inconsistency in Battle System
+## Issue #25: Inconsistent Error Messages in API Responses
 
 ### 問題
 
-CPU対戦相手のデータベース参照に不整合があります。
+APIエラーレスポンスの言語が一貫していません。
 
 ### 問題の詳細
 
-1. **battlesテーブルの外部キー制約の問題**
-   - `battles.opponent_card_id` は `cards(id)` への外部キー参照を持っています
-   - しかし、CPU対戦相手はランダムに生成される仮想的なカードで、実際にはデータベースに存在しません
-   - 現在は `allCards[0]?.id` をプレースホルダーとして使用していますが、これはデータベースの整合性を破壊します
+現在、APIルートでは日本語と英語のエラーメッセージが混在しています：
 
-2. **実装の問題**
-   - `src/app/api/battle/start/route.ts:121` で `opponent_card_id: allCards[0]?.id` を設定
-   - これにより、実際の対戦相手とは異なるカードIDが記録されます
+- **日本語**: `"リクエストが多すぎます。しばらく待ってから再試行してください。"` (レート制限エラー)
+- **英語**: `"Unauthorized"`, `"Missing required fields"`, `"userCardId is required"`, `"Not authenticated"`
 
 ### 影響範囲
 
-- 対戦履歴の正確性が損なわれる
-- 統計データが不正確になる
-- データの整合性が保たれない
+- ユーザー体験が低下する（異なる言語のエラーメッセージに混乱する）
+- コードの保守性が低下する
+- 国際化（i18n）の準備ができていない
 
 ### 優先度
 
-高（データ整合性と正確性の問題）
+中（ユーザー体験とコード品質の改善）
 
 ---
 
-## Issue #23: 設計
+## Issue #25: 設計
 
 ### 機能要件
 
-#### 1. CPU対戦相手の正確な記録
+#### 1. エラーメッセージの統一
 
-1. **battlesテーブルの構造変更**
-   - `opponent_card_id` を NULL許容に変更
-   - `opponent_card_data` (JSONB) カラムを追加
-   - CPU対戦の場合は `opponent_card_id` は NULL、CPU対戦相手の情報は `opponent_card_data` に格納
-   - プレイヤー対プレイヤー（将来の実装）の場合は `opponent_card_id` を使用
+1. **すべてのエラーメッセージを英語に統一**
+   - ユーザー向けのエラーメッセージは英語に統一
+   - 国際的な対応を容易にする
+   - フロントエンドでの翻訳を可能にする
 
-2. **CPU対戦相手データの構造**
-   - カードID（生成された一意なID、`cpu-xxx` 形式）
-   - カード名
-   - HP、ATK、DEF、SPD
-   - スキルタイプ、スキル名
-   - 画像URL
-   - レアリティ
+2. **エラーメッセージを定数化**
+   - `src/lib/constants.ts` に `ERROR_MESSAGES` 定数を追加
+   - すべてのAPIルートで定数を使用
+   - 一貫性と保守性を向上
 
-3. **APIの修正**
-   - `src/app/api/battle/start/route.ts` での修正
-   - CPU対戦相手のデータを `opponent_card_data` に格納
-   - `opponent_card_id` には NULL を設定
+3. **型定義の追加**
+   - `src/types/api.ts` にAPIレスポンスタイプを追加
+   - エラーレスポンスの型を定義
+   - 型安全性を確保
 
-#### 2. データベースマイグレーション
+#### 2. 影響を受けるAPIルート
 
-1. **マイグレーションファイルの作成**
-   - `supabase/migrations/00003_fix_cpu_opponent_inconsistency.sql`
-   - `opponent_card_id` を NULL許容に変更
-   - `opponent_card_data` (JSONB) カラムを追加
-   - 既存データのマイグレーション
+以下のAPIルートでエラーメッセージを更新する必要があります：
 
-2. **既存データのマイグレーション**
-   - 既存の対戦履歴の `opponent_card_id` を保持
-   - 必要に応じて `opponent_card_data` を補完
-
-#### 3. 型定義の更新
-
-1. **database.ts の更新**
-   - `Battle` 型に `opponent_card_data` フィールドを追加
-
-2. **battle.ts の更新**
-   - `playBattle` 関数の戻り値にCPU対戦相手データを含める
+1. `/api/battle/start` - レート制限エラー（日本語→英語）
+2. `/api/battle/[battleId]` - レート制限エラー（日本語→英語）
+3. `/api/battle/stats` - レート制限エラー（日本語→英語）
+4. `/api/gacha` - レート制限エラー（日本語→英語）
+5. `/api/upload` - エラーメッセージ（一部日本語）
+6. その他のAPIルート（必要に応じて）
 
 ### 非機能要件
 
-#### データ整合性
-- CPU対戦相手のデータを正確に記録する
-- 既存の対戦履歴との互換性を維持する
+#### ユーザー体験
+- エラーメッセージが一貫して表示される
+- エラーの内容が明確に伝わる
 
 #### 保守性
-- 将来のプレイヤー対プレイヤー実装に対応できる柔軟性を確保
-- マイグレーションが安全に実行できる
+- エラーメッセージの変更が容易
+- 新しいエラーメッセージの追加が容易
+- 将来の国際化（i18n）対応を考慮
+
+#### 型安全性
+- すべてのAPIレスポンスに型定義がある
+- TypeScriptのコンパイルエラーがない
 
 ### 設計
 
-#### 1. データベースマイグレーション
+#### 1. エラーメッセージ定数の追加
 
-**supabase/migrations/00003_fix_cpu_opponent_inconsistency.sql**
-
-```sql
--- Fix CPU opponent database inconsistency in battle system
-
--- Make opponent_card_id nullable
-ALTER TABLE battles
-ALTER COLUMN opponent_card_id DROP NOT NULL;
-
--- Add opponent_card_data column for storing CPU opponent data
-ALTER TABLE battles
-ADD COLUMN opponent_card_data JSONB;
-
--- Migrate existing data (if any)
--- Keep existing opponent_card_id values as they represent valid card references
--- For battles where opponent_card_id was incorrectly set, we'll need to fix them
--- This is a placeholder for any data migration logic if needed
-
--- Add comment for clarity
-COMMENT ON COLUMN battles.opponent_card_id IS 'Card ID for player vs player battles. NULL for CPU battles. References cards(id).';
-COMMENT ON COLUMN battles.opponent_card_data IS 'CPU opponent card data for CPU battles. Contains card details: id, name, hp, atk, def, spd, skill_type, skill_name, image_url, rarity.';
-```
-
-#### 2. 型定義の更新
-
-**src/types/database.ts**
+**src/lib/constants.ts**
 
 ```typescript
-export interface Battle {
-  id: string
-  user_id: string
-  user_card_id: string
-  opponent_card_id: string | null
-  opponent_card_data: OpponentCardData | null
+export const ERROR_MESSAGES = {
+  // Authentication errors
+  UNAUTHORIZED: 'Unauthorized',
+  NOT_AUTHENTICATED: 'Not authenticated',
+
+  // Request validation errors
+  MISSING_REQUIRED_FIELDS: 'Missing required fields',
+  INVALID_REQUEST: 'Invalid request',
+  INVALID_CARD_ID: 'Invalid card ID',
+  USER_CARD_ID_REQUIRED: 'userCardId is required',
+  STREAMER_ID_REQUIRED: 'streamerId is required',
+
+  // Rate limit errors
+  RATE_LIMIT_EXCEEDED: 'Too many requests. Please try again later.',
+
+  // Resource errors
+  USER_NOT_FOUND: 'User not found',
+  CARD_NOT_FOUND: 'Card not found',
+  CARD_NOT_OWNED: 'Card not found or not owned by user',
+  STREAMER_NOT_FOUND: 'Streamer not found',
+
+  // File upload errors
+  FILE_NAME_EMPTY: 'File name is empty',
+  FILE_SIZE_EXCEEDED: 'File size exceeds the maximum allowed size',
+  INVALID_FILE_TYPE: 'Invalid file type. Only JPEG and PNG are allowed',
+
+  // General errors
+  INTERNAL_ERROR: 'Internal server error',
+  OPERATION_FAILED: 'Operation failed',
+} as const
+```
+
+#### 2. APIレスポンスタイプの追加
+
+**src/types/api.ts** (新規作成)
+
+```typescript
+export interface ApiErrorResponse {
+  error: string
+  retryAfter?: number
+}
+
+export interface ApiRateLimitResponse extends ApiErrorResponse {
+  error: string
+  retryAfter: number
+}
+
+export interface UploadApiResponse {
+  url: string
+}
+
+export interface UploadApiErrorResponse extends ApiErrorResponse {
+  error: string
+}
+
+export interface GachaSuccessResponse {
+  card: {
+    id: string
+    name: string
+    description: string | null
+    image_url: string | null
+    rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  }
+}
+
+export interface GachaErrorResponse extends ApiErrorResponse {
+  error: string
+}
+
+export interface BattleSuccessResponse {
+  battleId: string
   result: 'win' | 'lose' | 'draw'
-  turn_count: number
-  battle_log: BattleLogEntry[]
-  created_at: string
+  turnCount: number
+  userCard: {
+    id: string
+    name: string
+    hp: number
+    currentHp: number
+    atk: number
+    def: number
+    spd: number
+    skill_type: 'attack' | 'defense' | 'heal' | 'special'
+    skill_name: string
+    image_url: string
+    rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  }
+  opponentCard: {
+    id: string
+    name: string
+    hp: number
+    currentHp: number
+    atk: number
+    def: number
+    spd: number
+    skill_type: 'attack' | 'defense' | 'heal' | 'special'
+    skill_name: string
+    image_url: string
+    rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  }
+  logs: Array<{
+    round: number
+    attacker: 'user' | 'opponent'
+    action: string
+    damage?: number
+    heal?: number
+    effect?: string
+  }>
 }
 
-export interface OpponentCardData {
-  id: string
-  name: string
-  hp: number
-  atk: number
-  def: number
-  spd: number
-  skill_type: 'attack' | 'defense' | 'heal' | 'special'
-  skill_name: string
-  image_url: string
-  rarity: 'common' | 'rare' | 'epic' | 'legendary'
-}
-
-export interface BattleLogEntry {
-  round: number
-  attacker: 'user' | 'opponent'
-  action: string
-  damage?: number
-  heal?: number
-  effect?: string
+export interface BattleErrorResponse extends ApiErrorResponse {
+  error: string
 }
 ```
 
-#### 3. APIの修正
+#### 3. APIルートの更新
+
+以下のファイルを更新して、エラーメッセージ定数を使用します：
 
 **src/app/api/battle/start/route.ts**
 
 ```typescript
-// ... existing imports ...
+import { ERROR_MESSAGES } from '@/lib/constants'
 
-export async function POST(request: NextRequest) {
-  const requestId = crypto.randomUUID()
-  setRequestContext(requestId, '/api/battle/start')
-  
-  let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
-  
-  try {
-    session = await getSession()
-    
-    if (session) {
-      setUserContext({
-        twitchUserId: session.twitchUserId,
-        twitchUsername: session.twitchUsername,
-        broadcasterType: session.broadcasterType,
-      })
-    }
-    
-    const identifier = await getRateLimitIdentifier(request, session?.twitchUserId)
-    const rateLimitResult = await checkRateLimit(rateLimits.battleStart, identifier)
+// ... existing code ...
 
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
-        {
-          status: 429,
-          headers: {
-            'X-RateLimit-Limit': String(rateLimitResult.limit),
-            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-            'X-RateLimit-Reset': String(rateLimitResult.reset),
-          },
-        }
-      )
-    }
-
-    if (!session) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      )
-    }
-
-    const supabaseAdmin = getSupabaseAdmin()
-    
-    // Get user data
-    const { data: userData, error: userError } = await supabaseAdmin
-      .from('users')
-      .select('*')
-      .eq('twitch_user_id', session.twitchUserId)
-      .single()
-
-    if (userError || !userData) {
-      return handleDatabaseError(userError ?? new Error('User not found'), "Battle Start API: Failed to fetch user data")
-    }
-
-    const body = await request.json()
-    const { userCardId } = body
-    
-    if (userCardId) {
-      setGameContext({ cardId: userCardId })
-    }
-
-    if (!userCardId) {
-      return NextResponse.json(
-        { error: 'userCardId is required' },
-        { status: 400 }
-      )
-    }
-
-    // Get user's card with details
-    const { data: userCardData, error: userCardError } = await supabaseAdmin
-      .from('user_cards')
-      .select(`
-        *,
-        card:cards(
-          *,
-          streamer:streamers(*)
-        )
-      `)
-      .eq('id', userCardId)
-      .eq('user_id', userData.id)
-      .single()
-
-    if (userCardError || !userCardData) {
-      return handleDatabaseError(userCardError ?? new Error('Card not found or not owned by user'), "Battle Start API: Failed to fetch user card")
-    }
-
-    // Get all active cards for CPU opponent
-    const { data: allCards, error: allCardsError } = await supabaseAdmin
-      .from('cards')
-      .select('*')
-      .eq('is_active', true)
-
-    if (allCardsError) {
-      return handleDatabaseError(allCardsError, "Battle Start API: Failed to fetch cards for CPU opponent")
-    }
-
-    // Convert to BattleCard format
-    const userBattleCard = toBattleCard(userCardData.card)
-    const opponentBattleCard = generateCPUOpponent(allCards as Card[])
-
-    // Play the battle
-    const battleResult = await playBattle(userBattleCard, opponentBattleCard)
-
-    // Prepare opponent card data for storage
-    const opponentCardData = {
-      id: opponentBattleCard.id,
-      name: opponentBattleCard.name,
-      hp: opponentBattleCard.hp,
-      atk: opponentBattleCard.atk,
-      def: opponentBattleCard.def,
-      spd: opponentBattleCard.spd,
-      skill_type: opponentBattleCard.skill_type,
-      skill_name: opponentBattleCard.skill_name,
-      image_url: opponentBattleCard.image_url,
-      rarity: opponentBattleCard.rarity
-    }
-
-    // Store battle in database
-    const { data: battleData, error: battleError } = await supabaseAdmin
-      .from('battles')
-      .insert({
-        user_id: userData.id,
-        user_card_id: userCardId,
-        opponent_card_id: null, // CPU battle, set to NULL
-        opponent_card_data: opponentCardData, // Store CPU opponent data
-        result: battleResult.result,
-        turn_count: battleResult.turnCount,
-        battle_log: battleResult.logs
-      })
-      .select()
-      .single()
-      
-    if (battleData) {
-      setGameContext({ 
-        battleId: battleData.id,
-        outcome: battleResult.result 
-      })
-    }
-
-    if (battleError) {
-      return handleDatabaseError(battleError, "Battle Start API: Failed to save battle")
-    }
-
-    // Return battle result with card details
-    return NextResponse.json({
-      battleId: battleData.id,
-      result: battleResult.result,
-      turnCount: battleResult.turnCount,
-      userCard: {
-        id: userBattleCard.id,
-        name: userBattleCard.name,
-        hp: userBattleCard.hp,
-        currentHp: battleResult.userHp,
-        atk: userBattleCard.atk,
-        def: userBattleCard.def,
-        spd: userBattleCard.spd,
-        skill_type: userBattleCard.skill_type,
-        skill_name: userBattleCard.skill_name,
-        image_url: userBattleCard.image_url,
-        rarity: userBattleCard.rarity
+if (!rateLimitResult.success) {
+  return NextResponse.json(
+    { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+    {
+      status: 429,
+      headers: {
+        'X-RateLimit-Limit': String(rateLimitResult.limit),
+        'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+        'X-RateLimit-Reset': String(rateLimitResult.reset),
       },
-      opponentCard: {
-        id: opponentBattleCard.id,
-        name: opponentBattleCard.name,
-        hp: opponentBattleCard.hp,
-        currentHp: battleResult.opponentHp,
-        atk: opponentBattleCard.atk,
-        def: opponentBattleCard.def,
-        spd: opponentBattleCard.spd,
-        skill_type: opponentBattleCard.skill_type,
-        skill_name: opponentBattleCard.skill_name,
-        image_url: opponentBattleCard.image_url,
-        rarity: opponentBattleCard.rarity
-      },
-      logs: battleResult.logs
-    })
-
-  } catch (error) {
-    if (session) {
-      reportBattleError(error, {
-        battleId: undefined, // Not created yet due to error
-        userId: session.twitchUserId,
-        round: undefined, // Battle hasn't started
-      })
-    } else {
-      reportBattleError(error, {})
     }
-    
-    return handleApiError(error, "Battle Start API: General")
-  }
+  )
+}
+
+if (!session) {
+  return NextResponse.json(
+    { error: ERROR_MESSAGES.UNAUTHORIZED },
+    { status: 401 }
+  )
+}
+
+if (!userCardId) {
+  return NextResponse.json(
+    { error: ERROR_MESSAGES.USER_CARD_ID_REQUIRED },
+    { status: 400 }
+  )
 }
 ```
 
-### 変更ファイル
-
-- `supabase/migrations/00003_fix_cpu_opponent_inconsistency.sql` (新規作成)
-- `src/types/database.ts` (更新 - `Battle` 型と `OpponentCardData` 型の追加)
-- `src/app/api/battle/start/route.ts` (更新 - CPU対戦相手データの格納)
-- `src/lib/battle.ts` (確認 - 必要に応じて更新)
-
-### 受け入れ基準
-
-- [x] `opponent_card_id` が NULL許容になる
-- [x] `opponent_card_data` カラムが追加される
-- [x] CPU対戦の場合、`opponent_card_id` に NULL が設定される
-- [x] CPU対戦相手のデータが `opponent_card_data` に格納される
-- [x] マイグレーションが成功する
-- [x] 既存の対戦履歴と互換性がある
-- [x] TypeScript コンパイルエラーがない
-- [x] ESLint エラーがない
-- [x] 対戦機能が正しく動作する
-- [x] 既存の機能に回帰がない
-
-### テスト計画
-
-1. **単体テスト**:
-   - マイグレーションが成功することを確認
-   - データ型が正しいことを確認
-
-2. **統合テスト**:
-   - CPU対戦が正しく動作することを確認
-   - 対戦履歴が正しく保存されることを確認
-
-3. **手動テスト**:
-   - 実際にCPU対戦を行い、履歴を確認
-   - 既存の対戦履歴を確認し、互換性を確認
-
-### トレードオフの検討
-
-#### 解決策の選択
-
-| 項目 | 新しいテーブルの作成 | 既存テーブルのカラム追加 | 外部キー制約の削除 |
-|:---|:---|:---|:---|
-| **データ整合性** | 高 | 中 | 低 |
-| **実装複雑度** | 中 | 低 | 低 |
-| **パフォーマンス** | 中（JOINが必要） | 高（単一テーブル） | 高 |
-| **将来の拡張性** | 高 | 高 | 低 |
-| **マイグレーションのリスク** | 中 | 低 | 低 |
-
-**推奨**: 既存テーブルのカラム追加（実装がシンプルで、パフォーマンスと整合性のバランスが良いため）
-
-#### NULL許容とJSONBの使用
-
-| 項目 | NULL許容 + JSONB | 別々のテーブル |
-|:---|:---|:---|
-| **クエリのシンプルさ** | 高 | 中 |
-| **データの整合性** | 中 | 高 |
-| **パフォーマンス** | 高（JOIN不要） | 中（JOINが必要） |
-| **将来の拡張性** | 高 | 高 |
-
-**推奨**: NULL許容 + JSONB（クエリがシンプルで、将来のプレイヤー対プレイヤー実装に対応できるため）
-
----
-
-## Issue #24: Remove Hardcoded Gacha Cost Value
-
-### 問題
-
-ガチャコストがハードコードされています。
-
-### 問題の詳細
-
-1. **ハードコードされた値**
-   - `src/app/api/gacha/route.ts:74` で、ガチャコストが `cost: 100` とハードコードされています
-
-2. **柔軟性の欠如**
-   - コストを変更する場合、コードの変更が必要
-   - 環境ごとに異なるコストを設定できない
-   - エラーレポートでコストが常に100として記録される
-
-### 影響範囲
-
-- コストの変更にはコード修正が必要
-- テスト環境と本番環境で異なるコストを設定できない
-- エラーレポートの正確性が損なわれる
-
-### 優先度
-
-中（保守性の向上）
-
----
-
-## Issue #24: 設計
-
-### 機能要件
-
-#### 1. ガチャコストの設定ファイルへの移動
-
-1. **constants.ts に定数を追加**
-   - `GACHA_COST` 定数を追加
-   - 環境変数からコストを取得（デフォルト値: 100）
-   - 環境変数がない場合はデフォルト値を使用
-
-2. **env-validation.ts の更新**
-   - `GACHA_COST` 環境変数の検証を追加
-   - 数値チェック、範囲チェック
-
-3. **APIの修正**
-   - `src/app/api/gacha/route.ts` でハードコードされた `cost: 100` を削除
-   - `GACHA_COST` 定数を使用
-
-#### 2. ドキュメントの更新
-
-1. **README.md の更新**
-   - 環境変数テーブルに `GACHA_COST` を追加
-   - デフォルト値と説明を追加
-
-2. **.env.local.example の更新**
-   - `GACHA_COST` の例を追加
-
-### 非機能要件
-
-#### 保守性
-- コストを変更する場合、環境変数の変更のみで済む
-- コードの変更が不要になる
-
-#### 柔軟性
-- 環境ごとに異なるコストを設定可能
-- デフォルト値が設定されているため、環境変数がなくても動作する
-
-### 設計
-
-#### 1. constants.ts の更新
+**src/app/api/upload/route.ts**
 
 ```typescript
-// ... existing exports ...
+import { ERROR_MESSAGES } from '@/lib/constants'
 
-export const GACHA_COST = parseInt(process.env.GACHA_COST || '100', 10)
-```
+// ... existing code ...
 
-#### 2. env-validation.ts の更新
+if (!file || !file.name || file.name.trim() === '') {
+  return NextResponse.json(
+    { error: ERROR_MESSAGES.FILE_NAME_EMPTY },
+    { status: 400 }
+  )
+}
 
-```typescript
-// ... existing validation ...
-
-// Gacha cost validation
-const gachaCost = parseInt(env.GACHA_COST || '100', 10)
-if (isNaN(gachaCost) || gachaCost < 1 || gachaCost > 10000) {
-  throw new Error('GACHA_COST must be a number between 1 and 10000')
+const validation = validateUpload(file)
+if (!validation.valid) {
+  return NextResponse.json(
+    { error: getUploadErrorMessage(validation.error!, validation.maxSize) },
+    { status: 400 }
+  )
 }
 ```
-
-#### 3. APIの修正
 
 **src/app/api/gacha/route.ts**
 
 ```typescript
-// ... existing imports ...
-import { GACHA_COST } from '@/lib/constants'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
 // ... existing code ...
 
-export async function POST(request: NextRequest) {
-  const requestId = crypto.randomUUID()
-  setRequestContext(requestId, '/api/gacha')
-  
-  let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
-  let body: Record<string, unknown> | null = null
-  
-  try {
-    // ... existing code ...
-
-    if (session) {
-      reportGachaError(error, {
-        streamerId: body && typeof body === 'object' && 'streamerId' in body ? String(body.streamerId) : undefined,
-        userId: session?.twitchUserId,
-        cost: GACHA_COST, // Use constant instead of hardcoded value
-      })
-    } else {
-      reportGachaError(error, {})
+if (!rateLimitResult.success) {
+  return NextResponse.json(
+    { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+    {
+      status: 429,
+      headers: {
+        'X-RateLimit-Limit': String(rateLimitResult.limit),
+        'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+        'X-RateLimit-Reset': String(rateLimitResult.reset),
+      },
     }
-    
-    // ... existing code ...
-  } catch (error) {
-    // ... existing code ...
-  }
+  )
+}
+
+if (!session) {
+  return NextResponse.json(
+    { error: ERROR_MESSAGES.UNAUTHORIZED },
+    { status: 401 }
+  )
+}
+
+if (!streamerId) {
+  return NextResponse.json(
+    { error: ERROR_MESSAGES.STREAMER_ID_REQUIRED },
+    { status: 400 }
+  )
 }
 ```
 
 ### 変更ファイル
 
-- `src/lib/constants.ts` (更新 - `GACHA_COST` 定数の追加)
-- `src/lib/env-validation.ts` (更新 - `GACHA_COST` 環境変数の検証)
-- `src/app/api/gacha/route.ts` (更新 - `GACHA_COST` 定数の使用)
-- `README.md` (更新 - 環境変数テーブルに `GACHA_COST` を追加)
-- `.env.local.example` (更新 - `GACHA_COST` の例を追加)
+- `src/lib/constants.ts` (更新 - `ERROR_MESSAGES` 定数の追加)
+- `src/types/api.ts` (新規作成 - APIレスポンスタイプの定義)
+- `src/app/api/battle/start/route.ts` (更新 - エラーメッセージ定数の使用)
+- `src/app/api/battle/[battleId]/route.ts` (更新 - エラーメッセージ定数の使用)
+- `src/app/api/battle/stats/route.ts` (更新 - エラーメッセージ定数の使用)
+- `src/app/api/gacha/route.ts` (更新 - エラーメッセージ定数の使用)
+- `src/app/api/upload/route.ts` (更新 - エラーメッセージ定数の使用)
+- `src/app/api/cards/route.ts` (更新 - 必要に応じてエラーメッセージ定数の使用)
+- `src/app/api/cards/[id]/route.ts` (更新 - 必要に応じてエラーメッセージ定数の使用)
+- その他のAPIルート (必要に応じて更新)
 
 ### 受け入れ基準
 
-- [x] `GACHA_COST` 定数が `src/lib/constants.ts` に追加される
-- [x] `GACHA_COST` 環境変数の検証が `src/lib/env-validation.ts` に追加される
-- [x] `src/app/api/gacha/route.ts` で `GACHA_COST` 定数を使用する
-- [x] ハードコードされた `cost: 100` が削除される
-- [x] 環境変数がない場合、デフォルト値（100）が使用される
-- [x] README.md に `GACHA_COST` 環境変数が記載される
-- [x] `.env.local.example` に `GACHA_COST` の例が追加される
+- [x] `ERROR_MESSAGES` 定数が `src/lib/constants.ts` に追加される
+- [x] `src/types/api.ts` が新規作成される
+- [x] すべてのAPIルートでエラーメッセージ定数を使用する
+- [x] すべてのエラーメッセージが英語に統一される
+- [x] レート制限エラーメッセージが英語に更新される
+- [x] APIレスポンス型が定義される
 - [x] TypeScript コンパイルエラーがない
 - [x] ESLint エラーがない
-- [x] ガチャ機能が正しく動作する
+- [x] 既存のAPIテストがパスする
+- [x] APIが正しく動作する
 - [x] 既存の機能に回帰がない
 
 ### テスト計画
 
 1. **単体テスト**:
-   - `GACHA_COST` 定数が正しく設定されることを確認
-   - 環境変数がない場合、デフォルト値が使用されることを確認
+   - エラーメッセージ定数が正しく設定されることを確認
+   - APIレスポンスタイプが正しく定義されることを確認
 
 2. **統合テスト**:
-   - ガチャAPIが正しく動作することを確認
-   - Sentryのエラーレポートで正しいコストが記録されることを確認
+   - 各APIルートで正しいエラーメッセージが返されることを確認
+   - エラーレスポンスの型が正しいことを確認
 
 3. **手動テスト**:
-   - 異なるコスト値を設定してガチャを試す
-   - エラーレポートを確認
+   - 各APIルートをテストし、エラーメッセージが一貫していることを確認
+   - レート制限をテストし、正しいエラーメッセージが表示されることを確認
 
 ### トレードオフの検討
 
-なし（単純な改善であり、トレードオフの検討は不要）
+#### エラーメッセージの言語選択
+
+| 項目 | 英語 | 日本語 |
+|:---|:---|:---|
+| **国際的な対応** | 高 | 低 |
+| **現在のユーザーベース** | 中 | 高 |
+| **フロントエンドでの翻訳** | 容易 | 困難 |
+| **既存コードとの整合性** | 一部あり | なし |
+
+**推奨**: 英語（国際的な対応を容易にするため）
+
+#### 定数化とハードコーディング
+
+| 項目 | 定数化 | ハードコーディング |
+|:---|:---|:---|
+| **保守性** | 高 | 低 |
+| **一貫性** | 高 | 低 |
+| **実装の複雑さ** | 低 | なし |
+| **将来的な翻訳対応** | 容易 | 困難 |
+
+**推奨**: 定数化（保守性と一貫性を向上させるため）
 
 ---
 
@@ -789,5 +569,4 @@ export async function POST(request: NextRequest) {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-17 | Issue #24 ガチャコストのハードコード問題の設計追加 |
-| 2026-01-17 | Issue #23 CPU対戦相手のデータベース不整合問題の設計追加 |
+| 2026-01-17 | Issue #25 エラーメッセージの一貫性問題の設計追加 |

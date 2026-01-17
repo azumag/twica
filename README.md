@@ -124,17 +124,17 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 - Build uses dummy environment variables for CI (no external API calls)
 - Vercel automatically deploys on merge to main
 
- ## Recent Changes
+  ## Recent Changes
 
-   - Issue #23 CPU Opponent Database Inconsistency design created
-       - Fix battles.opponent_card_id inconsistency for CPU opponents
-       - Add opponent_card_data column for accurate CPU battle recording
-       - Design documented in ARCHITECTURE.md
-       - Issue created
-   - Issue #24 Hardcoded Gacha Cost design created
-       - Remove hardcoded cost value in gacha API
-       - Move cost to constants or environment variable
-       - Issue created
+   - Issue #23, #24 implementation completed
+        - CPU Opponent Database Inconsistency fixed
+        - Hardcoded Gacha Cost removed
+        - Issues closed
+    - Issue #25 Inconsistent Error Messages design created
+        - Unify API error messages to English
+        - Add ERROR_MESSAGES constant
+        - Add API response type definitions
+        - Issue created
    - Issue #20 Sentry integration implementation completed
       - Error tracking and automatic GitHub issue creation
       - Design documented in ARCHITECTURE.md
