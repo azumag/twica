@@ -12,6 +12,7 @@ Twitch配信者向けカード引きシステム (Gacha) アプリケーショ�
 | **Supabase Auth** | Twitch OAuth authentication |
 | **Vercel Blob** | Card image storage |
 | **Twitch API / EventSub** | Channel rewards integration |
+| **Sentry** | Error tracking and automatic GitHub issue creation |
 
 ## Architecture
 
@@ -22,16 +23,24 @@ graph LR
     NextJS --> SupabaseDB[Supabase DB]
     NextJS --> VercelBlob[Vercel Blob]
     NextJS --> Twitch[Twitch API]
+    NextJS --> Sentry[Sentry]
+    Sentry --> GitHub[GitHub Issues]
 
     Subgraph[Data Flows]
     AuthFlow[Auth: JWT-based]
     UploadFlow[Upload: Client-side to Blob]
     GachaFlow[Gacha: EventSub triggers]
+    BattleFlow[Battle: Card battles with abilities]
+    ErrorTracking[Error: Sentry + GitHub Issues]
     End
 
     User --> AuthFlow
     User --> UploadFlow
     User --> GachaFlow
+    User --> BattleFlow
+    AuthFlow --> ErrorTracking
+    GachaFlow --> ErrorTracking
+    BattleFlow --> ErrorTracking
 ```
 
 ## Project Structure
@@ -66,6 +75,11 @@ src/
 | `NEXT_PUBLIC_APP_URL` | Yes | Application URL |
 | `BLOB_READ_WRITE_TOKEN` | Yes | Vercel Blob storage token |
 | `TWITCH_EVENTSUB_SECRET` | Yes | Twitch EventSub webhook secret |
+| `NEXT_PUBLIC_SENTRY_DSN` | No | Sentry Data Source Name |
+| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | No | Sentry environment (production/development) |
+| `SENTRY_AUTH_TOKEN` | No | Sentry authentication token |
+| `SENTRY_ORG` | No | Sentry organization slug |
+| `SENTRY_PROJECT` | No | Sentry project slug |
 
 ## Getting Started
 
@@ -95,21 +109,32 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
  ## Recent Changes
 
+ - Issue #20 Sentry integration implementation requested
+     - Error tracking and automatic GitHub issue creation
+     - Design documented in ARCHITECTURE.md
+- Twitch login error handling improvements completed (Issue #19)
+    - Detailed error messages for authentication failures
+    - Enhanced error logging and user feedback
+    - Issue closed after successful implementation
+- API error handling standardization completed (Issue #18)
+    - Unified error handler across all API routes
+    - Consistent error messages and proper error logging
+    - Issue closed after successful implementation
 - Type safety improvements completed (Issue #17)
-   - Removed `any` type usage in cards API
-   - Added proper TypeScript type definitions for Supabase queries
-   - ESLint warnings resolved
+    - Removed `any` type usage in cards API
+    - Added proper TypeScript type definitions for Supabase queries
+    - ESLint warnings resolved
 - Middleware to Proxy migration completed (Issue #16)
     - Next.js 16 compatibility update
     - Successfully migrated `middleware.ts` to `proxy.ts`
     - Build warnings resolved
 - Card battle system implementation completed (Issue #15)
-   - 1v1 CPU battle with turn-based combat
-   - Card stats: HP, ATK, DEF, SPD
-   - Skill system with multiple types (attack, defense, heal, special)
-   - Battle history and statistics tracking
-   - Animated battle UI with real-time logs
-   - Code quality improvements (ESLint fixes, TypeScript type safety)
+    - 1v1 CPU battle with turn-based combat
+    - Card stats: HP, ATK, DEF, SPD
+    - Skill system with multiple types (attack, defense, heal, special)
+    - Battle history and statistics tracking
+    - Animated battle UI with real-time logs
+    - Code quality improvements (ESLint fixes, TypeScript type safety)
 - Rate limiting implementation completed (Issue #13)
 - README mermaid diagram fixed (Issue #14)
 - Terms of Service page implemented and issue #8 closed

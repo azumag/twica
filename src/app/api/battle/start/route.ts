@@ -5,10 +5,25 @@ import { toBattleCard, playBattle, generateCPUOpponent } from '@/lib/battle'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
+import { reportBattleError } from '@/lib/sentry/error-handler'
+import { setUserContext, setRequestContext, setGameContext } from '@/lib/sentry/user-context'
 
 export async function POST(request: NextRequest) {
+  const requestId = crypto.randomUUID()
+  setRequestContext(requestId, '/api/battle/start')
+  
+  let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
+  
   try {
-    const session = await getSession()
+    session = await getSession()
+    
+    if (session) {
+      setUserContext({
+        twitchUserId: session.twitchUserId,
+        twitchUsername: session.twitchUsername,
+        broadcasterType: session.broadcasterType,
+      })
+    }
     
     const identifier = await getRateLimitIdentifier(request, session?.twitchUserId)
     const rateLimitResult = await checkRateLimit(rateLimits.battleStart, identifier)
@@ -49,6 +64,10 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json()
     const { userCardId } = body
+    
+    if (userCardId) {
+      setGameContext({ cardId: userCardId })
+    }
 
     if (!userCardId) {
       return NextResponse.json(
@@ -107,6 +126,13 @@ export async function POST(request: NextRequest) {
       })
       .select()
       .single()
+      
+    if (battleData) {
+      setGameContext({ 
+        battleId: battleData.id,
+        outcome: battleResult.result 
+      })
+    }
 
     if (battleError) {
       return handleDatabaseError(battleError, "Battle Start API: Failed to save battle")
@@ -147,6 +173,16 @@ export async function POST(request: NextRequest) {
     })
 
   } catch (error) {
+    if (session) {
+      reportBattleError(error, {
+        battleId: undefined, // Not created yet due to error
+        userId: session.twitchUserId,
+        round: undefined, // Battle hasn't started
+      })
+    } else {
+      reportBattleError(error, {})
+    }
+    
     return handleApiError(error, "Battle Start API: General")
   }
 }

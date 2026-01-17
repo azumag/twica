@@ -4,8 +4,14 @@ import { cookies } from 'next/headers'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { handleAuthError } from '@/lib/auth-error-handler'
 import { randomUUID } from 'crypto'
+import { reportAuthError } from '@/lib/sentry/error-handler'
+import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 
 export async function GET(request: Request) {
+  const requestId = randomUUID()
+  setRequestContext(requestId, '/api/auth/twitch/login')
+  clearUserContext()
+  
   try {
     const ip = getClientIp(request);
     const identifier = `ip:${ip}`;
@@ -43,6 +49,11 @@ export async function GET(request: Request) {
 
     return NextResponse.redirect(authUrl)
   } catch (error) {
+    reportAuthError(error, {
+      provider: 'twitch',
+      action: 'login',
+    })
+    
     return handleAuthError(error, 'unknown_error', { route: 'twitch_login' })
   }
 }
