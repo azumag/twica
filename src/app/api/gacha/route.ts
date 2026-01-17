@@ -5,6 +5,7 @@ import { getSession } from "@/lib/session";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { reportGachaError } from "@/lib/sentry/error-handler";
 import { setUserContext, setRequestContext } from "@/lib/sentry/user-context";
+import { GACHA_COST } from "@/lib/constants";
 
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
@@ -68,10 +69,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(result.data);
   } catch (error) {
     if (session) {
-    reportGachaError(error, {
+      reportGachaError(error, {
         streamerId: body && typeof body === 'object' && 'streamerId' in body ? String(body.streamerId) : undefined,
         userId: session?.twitchUserId,
-        cost: 100, // This could be made dynamic
+        cost: GACHA_COST,
       })
     } else {
       reportGachaError(error, {})

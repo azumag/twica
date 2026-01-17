@@ -40,3 +40,5 @@ export const RARITY_COLORS = {
   rare: "bg-blue-500",
   common: "bg-gray-500",
 };
+
+export const GACHA_COST = parseInt(process.env.GACHA_COST || '100', 10)

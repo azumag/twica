@@ -111,15 +111,28 @@ export async function POST(request: NextRequest) {
     // Play the battle
     const battleResult = await playBattle(userBattleCard, opponentBattleCard)
 
+    // Prepare opponent card data for storage
+    const opponentCardData = opponentBattleCard.id.startsWith('cpu-') ? {
+      id: opponentBattleCard.id,
+      name: opponentBattleCard.name,
+      hp: opponentBattleCard.hp,
+      atk: opponentBattleCard.atk,
+      def: opponentBattleCard.def,
+      spd: opponentBattleCard.spd,
+      skill_type: opponentBattleCard.skill_type,
+      skill_name: opponentBattleCard.skill_name,
+      image_url: opponentBattleCard.image_url,
+      rarity: opponentBattleCard.rarity
+    } : null
+
     // Store battle in database
     const { data: battleData, error: battleError } = await supabaseAdmin
       .from('battles')
       .insert({
         user_id: userData.id,
         user_card_id: userCardId,
-        opponent_card_id: opponentBattleCard.id.startsWith('cpu-') 
-          ? allCards[0]?.id // Use first card as placeholder for CPU
-          : opponentBattleCard.id,
+        opponent_card_id: opponentBattleCard.id.startsWith('cpu-') ? null : opponentBattleCard.id,
+        opponent_card_data: opponentCardData,
         result: battleResult.result,
         turn_count: battleResult.turnCount,
         battle_log: battleResult.logs

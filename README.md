@@ -80,6 +80,7 @@ src/
 | `SENTRY_AUTH_TOKEN` | No | Sentry authentication token |
 | `SENTRY_ORG` | No | Sentry organization slug |
 | `SENTRY_PROJECT` | No | Sentry project slug |
+| `GACHA_COST` | No | Gacha cost in channel points (default: 100) |
 
 ## Testing
 
@@ -125,7 +126,16 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
  ## Recent Changes
 
-  - Issue #20 Sentry integration implementation completed
+   - Issue #23 CPU Opponent Database Inconsistency design created
+       - Fix battles.opponent_card_id inconsistency for CPU opponents
+       - Add opponent_card_data column for accurate CPU battle recording
+       - Design documented in ARCHITECTURE.md
+       - Issue created
+   - Issue #24 Hardcoded Gacha Cost design created
+       - Remove hardcoded cost value in gacha API
+       - Move cost to constants or environment variable
+       - Issue created
+   - Issue #20 Sentry integration implementation completed
       - Error tracking and automatic GitHub issue creation
       - Design documented in ARCHITECTURE.md
       - Issue closed

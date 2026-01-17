@@ -41,6 +41,12 @@ export function getEnvVar(name: string, required: boolean = false): string | und
   return value
 }
 
+// Gacha cost validation
+const gachaCost = parseInt(process.env.GACHA_COST || '100', 10)
+if (isNaN(gachaCost) || gachaCost < 1 || gachaCost > 10000) {
+  throw new Error('GACHA_COST must be a number between 1 and 10000')
+}
+
 const { valid, missing } = validateEnvVars()
 if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI) {
   throw new Error(`Missing required environment variables: ${missing.join(', ')}`)

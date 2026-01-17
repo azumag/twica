@@ -206,1061 +206,582 @@ graph LR
 
 ---
 
-## Issue #20: エラー時に自動でイシューを建てたい（Sentry導入）
+## Issue #23: Fix CPU Opponent Database Inconsistency in Battle System
 
 ### 問題
 
-現在、エラーが発生した際に以下の問題があります：
+CPU対戦相手のデータベース参照に不整合があります。
 
-1. **エラー検知の遅延**
-   - ユーザーからの報告を待つ必要がある
-   - 開発者が能動的にログを確認しない限りエラーに気づかない
-   - 重大なエラーであっても即座に対応できない
+### 問題の詳細
 
-2. **デバッグ効率の低下**
-   - エラーログが散在しており、関連するエラーを追跡しにくい
-   - エラーの再現手順やコンテキストが不足している
-   - エラーの発生頻度や傾向を把握できない
+1. **battlesテーブルの外部キー制約の問題**
+   - `battles.opponent_card_id` は `cards(id)` への外部キー参照を持っています
+   - しかし、CPU対戦相手はランダムに生成される仮想的なカードで、実際にはデータベースに存在しません
+   - 現在は `allCards[0]?.id` をプレースホルダーとして使用していますが、これはデータベースの整合性を破壊します
 
-3. **チーム協力の非効率性**
-   - エラー情報を共有するために手動でチケットを作成する必要がある
-   - エラーの進捗状況を追跡する仕組みがない
-   - 同じエラーが繰り返し報告される可能性がある
+2. **実装の問題**
+   - `src/app/api/battle/start/route.ts:121` で `opponent_card_id: allCards[0]?.id` を設定
+   - これにより、実際の対戦相手とは異なるカードIDが記録されます
+
+### 影響範囲
+
+- 対戦履歴の正確性が損なわれる
+- 統計データが不正確になる
+- データの整合性が保たれない
 
 ### 優先度
 
-中（運用効率とユーザーエクスペリエンスの改善）
+高（データ整合性と正確性の問題）
 
 ---
 
-## Issue #20: 設計
+## Issue #23: 設計
 
 ### 機能要件
 
-#### 1. Sentry SDKの統合
+#### 1. CPU対戦相手の正確な記録
 
-1. **Next.js向けSentry SDKの導入**
-   - `@sentry/nextjs` パッケージのインストール
-   - Sentryの初期化設定
-   - 環境変数による設定管理
+1. **battlesテーブルの構造変更**
+   - `opponent_card_id` を NULL許容に変更
+   - `opponent_card_data` (JSONB) カラムを追加
+   - CPU対戦の場合は `opponent_card_id` は NULL、CPU対戦相手の情報は `opponent_card_data` に格納
+   - プレイヤー対プレイヤー（将来の実装）の場合は `opponent_card_id` を使用
 
-2. **エラーの自動収集**
-   - サーバーサイドエラー（APIルート、Server Components）
-   - クライアントサイドエラー（Browser Components、React Error Boundaries）
-   - 未処理のPromise rejection
-   - ネットワークエラー
+2. **CPU対戦相手データの構造**
+   - カードID（生成された一意なID、`cpu-xxx` 形式）
+   - カード名
+   - HP、ATK、DEF、SPD
+   - スキルタイプ、スキル名
+   - 画像URL
+   - レアリティ
 
-3. **パフォーマンス監視**
-   - Web Vitalsの監視（LCP, FID, CLS）
-   - APIエンドポイントのパフォーマンス追跡
-   - ユーザー体験の低下を検知
+3. **APIの修正**
+   - `src/app/api/battle/start/route.ts` での修正
+   - CPU対戦相手のデータを `opponent_card_data` に格納
+   - `opponent_card_id` には NULL を設定
 
-4. **ユーザーコンテキストの収集**
-   - ユーザーID（TwitchユーザーID）
-   - ユーザー名
-   - ユーザータイプ（配信者/視聴者）
-   - セッション情報
-   - リクエストID
+#### 2. データベースマイグレーション
 
-5. **環境情報の収集**
-   - 本番環境/開発環境の区別
-   - ブラウザ情報
-   - OS情報
-   - デバイス情報
+1. **マイグレーションファイルの作成**
+   - `supabase/migrations/00003_fix_cpu_opponent_inconsistency.sql`
+   - `opponent_card_id` を NULL許容に変更
+   - `opponent_card_data` (JSONB) カラムを追加
+   - 既存データのマイグレーション
 
-#### 2. GitHub Issuesの自動作成
+2. **既存データのマイグレーション**
+   - 既存の対戦履歴の `opponent_card_id` を保持
+   - 必要に応じて `opponent_card_data` を補完
 
-1. **Sentry GitHub Integrationの設定**
-   - SentryとGitHubの連携
-   - リポジトリの関連付け
-   - イシュー自動作成のルール設定
+#### 3. 型定義の更新
 
-2. **エラー重要度の分類**
-   - Critical: サービス全体に影響するエラー（APIダウン、DB接続失敗など）
-   - High: 主要機能に影響するエラー（ガチャ失敗、ログイン失敗など）
-   - Medium: 一部機能に影響するエラー（表示の不具合、軽微なバグ）
-   - Low: UIの軽微な不具合、警告レベル
+1. **database.ts の更新**
+   - `Battle` 型に `opponent_card_data` フィールドを追加
 
-3. **自動イシュー作成のルール**
-   - Criticalエラーは即座にイシューを作成
-   - Highエラーは1回発生したらイシューを作成
-   - Mediumエラーは複数回（例: 5回以上）発生したらイシューを作成
-   - Lowエラーは多く発生（例: 20回以上）したらイシューを作成
-   - 重複イシューの防止（Sentryのissue deduplication機能）
-
-4. **イシューのテンプレート**
-   - エラーの概要
-   - 発生頻度
-   - 影響範囲
-   - 再現手順（可能な場合）
-   - 関連するSentryリンク
-   - 環境情報
-
-#### 3. エラー通知
-
-1. **即時通知**
-   - Criticalエラー: Slack/Emailでの即時通知
-   - Highエラー: 5分以内に通知
-   - Mediumエラー: 1時間以内に通知
-
-2. **通知チャネル**
-   - Slack Webhook
-   - Email
-   - GitHub Notifications
-
-#### 4. エラーのフィルタリング
-
-1. **ノイズの除去**
-   - 開発環境でのテストエラーは通知しない
-   - ボットからのリクエストによるエラーは除外
-   - 既知の問題によるエラーは別途管理
-
-2. **パーソナルデータの保護**
-   - トークン、パスワード、Cookie値はマスキング
-   - 個人の特定につながる情報は除外
-   - 敏感なリクエストパラメータはフィルタリング
+2. **battle.ts の更新**
+   - `playBattle` 関数の戻り値にCPU対戦相手データを含める
 
 ### 非機能要件
 
-#### パフォーマンス
-- Sentry SDKのオーバーヘッドはAPIレスポンス時間に10ms以内の影響
-- エラーデータの送信は非同期で行い、ユーザーエクスペリエンスへの影響を最小化
-- Sentryへの接続に失敗してもアプリケーションの動作に影響しない
-
-#### セキュリティ
-- 機密情報はSentryに送信しない
-- PII（個人識別情報）は適切にフィルタリング
-- エラーデータはHTTPSで暗号化されて送信
-- Sentryプロジェクトのアクセス制御を適切に設定
-
-#### 可用性
-- Sentryがダウンしている場合もアプリケーションは動作する
-- エラー送信に失敗してもローカルにログを保存し、再試行する
+#### データ整合性
+- CPU対戦相手のデータを正確に記録する
+- 既存の対戦履歴との互換性を維持する
 
 #### 保守性
-- Sentryの設定はコードで管理し、環境変数で切り替え可能
-- エラー分類ルールはドキュメント化
-- 定期的にSentry設定の見直しを行う
+- 将来のプレイヤー対プレイヤー実装に対応できる柔軟性を確保
+- マイグレーションが安全に実行できる
 
 ### 設計
 
-#### 1. Sentry SDKの設定
+#### 1. データベースマイグレーション
 
-**環境変数の追加** (`.env.local`)
+**supabase/migrations/00003_fix_cpu_opponent_inconsistency.sql**
 
-```env
-# Sentry
-NEXT_PUBLIC_SENTRY_DSN=https://your-dsn@sentry.io/project-id
-NEXT_PUBLIC_SENTRY_ENVIRONMENT=production
-SENTRY_AUTH_TOKEN=your-auth-token
-SENTRY_ORG=your-org
-SENTRY_PROJECT=your-project
+```sql
+-- Fix CPU opponent database inconsistency in battle system
+
+-- Make opponent_card_id nullable
+ALTER TABLE battles
+ALTER COLUMN opponent_card_id DROP NOT NULL;
+
+-- Add opponent_card_data column for storing CPU opponent data
+ALTER TABLE battles
+ADD COLUMN opponent_card_data JSONB;
+
+-- Migrate existing data (if any)
+-- Keep existing opponent_card_id values as they represent valid card references
+-- For battles where opponent_card_id was incorrectly set, we'll need to fix them
+-- This is a placeholder for any data migration logic if needed
+
+-- Add comment for clarity
+COMMENT ON COLUMN battles.opponent_card_id IS 'Card ID for player vs player battles. NULL for CPU battles. References cards(id).';
+COMMENT ON COLUMN battles.opponent_card_data IS 'CPU opponent card data for CPU battles. Contains card details: id, name, hp, atk, def, spd, skill_type, skill_name, image_url, rarity.';
 ```
 
-**Sentry初期化設定** (`sentry.server.config.ts` / `sentry.client.config.ts`)
+#### 2. 型定義の更新
+
+**src/types/database.ts**
 
 ```typescript
-import * as Sentry from '@sentry/nextjs'
-
-Sentry.init({
-  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT,
-  tracesSampleRate: 0.1,
-  replaysSessionSampleRate: 0.1,
-  replaysOnErrorSampleRate: 1.0,
-  
-  beforeSend(event, hint) {
-    if (event.exception) {
-      const error = hint.originalException
-      if (error instanceof Error) {
-        event.contexts = {
-          ...event.contexts,
-          custom: {
-            ...event.contexts?.custom,
-            errorMessage: error.message,
-            errorName: error.name,
-          }
-        }
-      }
-    }
-    return event
-  },
-
-  beforeSendTransaction(event) {
-    if (event.request?.url?.includes('/_next')) {
-      return null
-    }
-    return event
-  },
-
-  integrations: [
-    new Sentry.BrowserTracing(),
-    new Sentry.Replay(),
-    new Sentry.HttpContext(),
-  ],
-
-  ignoreErrors: [
-    'ResizeObserver loop limit exceeded',
-    'Non-Error promise rejection captured',
-    'Request aborted',
-    'Network request failed',
-  ],
-
-  denyUrls: [
-    /^chrome-extension:\/\//,
-    /^moz-extension:\/\//,
-  ],
-
-  release: process.env.NEXT_PUBLIC_VERSION || 'local',
-})
-```
-
-#### 2. ユーザーコンテキストの設定
-
-**カスタムフック: `src/lib/sentry/user-context.ts`**
-
-```typescript
-import * as Sentry from '@sentry/nextjs'
-
-export function setUserContext(user: {
-  twitchUserId?: string
-  twitchUsername?: string
-  broadcasterType?: string
-}) {
-  Sentry.setUser({
-    id: user.twitchUserId,
-    username: user.twitchUsername,
-    segment: user.broadcasterType ? 'streamer' : 'viewer',
-  })
+export interface Battle {
+  id: string
+  user_id: string
+  user_card_id: string
+  opponent_card_id: string | null
+  opponent_card_data: OpponentCardData | null
+  result: 'win' | 'lose' | 'draw'
+  turn_count: number
+  battle_log: BattleLogEntry[]
+  created_at: string
 }
 
-export function clearUserContext() {
-  Sentry.setUser(null)
+export interface OpponentCardData {
+  id: string
+  name: string
+  hp: number
+  atk: number
+  def: number
+  spd: number
+  skill_type: 'attack' | 'defense' | 'heal' | 'special'
+  skill_name: string
+  image_url: string
+  rarity: 'common' | 'rare' | 'epic' | 'legendary'
 }
 
-export function setRequestContext(requestId: string, path: string) {
-  Sentry.setContext('request', {
-    requestId,
-    path,
-  })
-}
-
-export function setFeatureContext(features: string[]) {
-  Sentry.setContext('features', {
-    enabled: features,
-  })
+export interface BattleLogEntry {
+  round: number
+  attacker: 'user' | 'opponent'
+  action: string
+  damage?: number
+  heal?: number
+  effect?: string
 }
 ```
 
-#### 3. エラーのハンドリングとSentryへの送信
+#### 3. APIの修正
 
-**APIルートでの使用例: `src/app/api/example/route.ts`**
+**src/app/api/battle/start/route.ts**
 
 ```typescript
-import { NextRequest, NextResponse } from 'next/server'
-import * as Sentry from '@sentry/nextjs'
-import { setUserContext, setRequestContext } from '@/lib/sentry/user-context'
+// ... existing imports ...
 
-export async function GET(request: NextRequest) {
+export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
-  setRequestContext(requestId, request.nextUrl.pathname)
-
+  setRequestContext(requestId, '/api/battle/start')
+  
+  let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
+  
   try {
-    const user = await getCurrentUser()
-    setUserContext(user)
+    session = await getSession()
+    
+    if (session) {
+      setUserContext({
+        twitchUserId: session.twitchUserId,
+        twitchUsername: session.twitchUsername,
+        broadcasterType: session.broadcasterType,
+      })
+    }
+    
+    const identifier = await getRateLimitIdentifier(request, session?.twitchUserId)
+    const rateLimitResult = await checkRateLimit(rateLimits.battleStart, identifier)
 
-    const result = await someOperation()
-    return NextResponse.json(result)
-  } catch (error) {
-    Sentry.withScope((scope) => {
-      scope.setLevel('error')
-      scope.setTransactionName('api-example-get')
-      scope.setTag('endpoint', 'api/example')
-      scope.setTag('method', 'GET')
-      scope.setExtra('requestId', requestId)
-      scope.setExtra('timestamp', new Date().toISOString())
-      Sentry.captureException(error)
-    })
-
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
-  }
-}
-```
-
-#### 4. React Error Boundary
-
-**エラーバウンダリコンポーネント: `src/components/ErrorBoundary.tsx`**
-
-```typescript
-'use client'
-
-import React, { Component, ErrorInfo, ReactNode } from 'react'
-import * as Sentry from '@sentry/nextjs'
-
-interface Props {
-  children: ReactNode
-  fallback?: ReactNode
-}
-
-interface State {
-  hasError: boolean
-}
-
-export class ErrorBoundary extends Component<Props, State> {
-  constructor(props: Props) {
-    super(props)
-    this.state = { hasError: false }
-  }
-
-  static getDerivedStateFromError(_: Error): State {
-    return { hasError: true }
-  }
-
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    Sentry.captureException(error, {
-      contexts: {
-        react: {
-          componentStack: errorInfo.componentStack,
-        },
-      },
-    })
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return this.props.fallback || (
-        <div className="error-fallback">
-          <h2>Something went wrong.</h2>
-          <button onClick={() => window.location.reload()}>
-            Reload Page
-          </button>
-        </div>
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': String(rateLimitResult.limit),
+            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+            'X-RateLimit-Reset': String(rateLimitResult.reset),
+          },
+        }
       )
     }
 
-    return this.props.children
-  }
-}
-```
+    if (!session) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
 
-#### 5. カスタムエラーハンドラー
+    const supabaseAdmin = getSupabaseAdmin()
+    
+    // Get user data
+    const { data: userData, error: userError } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('twitch_user_id', session.twitchUserId)
+      .single()
 
-**Sentryエラーハンドラー: `src/lib/sentry/error-handler.ts`**
+    if (userError || !userData) {
+      return handleDatabaseError(userError ?? new Error('User not found'), "Battle Start API: Failed to fetch user data")
+    }
 
-```typescript
-import * as Sentry from '@sentry/nextjs'
+    const body = await request.json()
+    const { userCardId } = body
+    
+    if (userCardId) {
+      setGameContext({ cardId: userCardId })
+    }
 
-export function reportError(error: Error | unknown, context?: Record<string, any>) {
-  Sentry.withScope((scope) => {
-    if (context) {
-      Object.entries(context).forEach(([key, value]) => {
-        scope.setExtra(key, value)
+    if (!userCardId) {
+      return NextResponse.json(
+        { error: 'userCardId is required' },
+        { status: 400 }
+      )
+    }
+
+    // Get user's card with details
+    const { data: userCardData, error: userCardError } = await supabaseAdmin
+      .from('user_cards')
+      .select(`
+        *,
+        card:cards(
+          *,
+          streamer:streamers(*)
+        )
+      `)
+      .eq('id', userCardId)
+      .eq('user_id', userData.id)
+      .single()
+
+    if (userCardError || !userCardData) {
+      return handleDatabaseError(userCardError ?? new Error('Card not found or not owned by user'), "Battle Start API: Failed to fetch user card")
+    }
+
+    // Get all active cards for CPU opponent
+    const { data: allCards, error: allCardsError } = await supabaseAdmin
+      .from('cards')
+      .select('*')
+      .eq('is_active', true)
+
+    if (allCardsError) {
+      return handleDatabaseError(allCardsError, "Battle Start API: Failed to fetch cards for CPU opponent")
+    }
+
+    // Convert to BattleCard format
+    const userBattleCard = toBattleCard(userCardData.card)
+    const opponentBattleCard = generateCPUOpponent(allCards as Card[])
+
+    // Play the battle
+    const battleResult = await playBattle(userBattleCard, opponentBattleCard)
+
+    // Prepare opponent card data for storage
+    const opponentCardData = {
+      id: opponentBattleCard.id,
+      name: opponentBattleCard.name,
+      hp: opponentBattleCard.hp,
+      atk: opponentBattleCard.atk,
+      def: opponentBattleCard.def,
+      spd: opponentBattleCard.spd,
+      skill_type: opponentBattleCard.skill_type,
+      skill_name: opponentBattleCard.skill_name,
+      image_url: opponentBattleCard.image_url,
+      rarity: opponentBattleCard.rarity
+    }
+
+    // Store battle in database
+    const { data: battleData, error: battleError } = await supabaseAdmin
+      .from('battles')
+      .insert({
+        user_id: userData.id,
+        user_card_id: userCardId,
+        opponent_card_id: null, // CPU battle, set to NULL
+        opponent_card_data: opponentCardData, // Store CPU opponent data
+        result: battleResult.result,
+        turn_count: battleResult.turnCount,
+        battle_log: battleResult.logs
+      })
+      .select()
+      .single()
+      
+    if (battleData) {
+      setGameContext({ 
+        battleId: battleData.id,
+        outcome: battleResult.result 
       })
     }
 
-    if (error instanceof Error) {
-      Sentry.captureException(error)
+    if (battleError) {
+      return handleDatabaseError(battleError, "Battle Start API: Failed to save battle")
+    }
+
+    // Return battle result with card details
+    return NextResponse.json({
+      battleId: battleData.id,
+      result: battleResult.result,
+      turnCount: battleResult.turnCount,
+      userCard: {
+        id: userBattleCard.id,
+        name: userBattleCard.name,
+        hp: userBattleCard.hp,
+        currentHp: battleResult.userHp,
+        atk: userBattleCard.atk,
+        def: userBattleCard.def,
+        spd: userBattleCard.spd,
+        skill_type: userBattleCard.skill_type,
+        skill_name: userBattleCard.skill_name,
+        image_url: userBattleCard.image_url,
+        rarity: userBattleCard.rarity
+      },
+      opponentCard: {
+        id: opponentBattleCard.id,
+        name: opponentBattleCard.name,
+        hp: opponentBattleCard.hp,
+        currentHp: battleResult.opponentHp,
+        atk: opponentBattleCard.atk,
+        def: opponentBattleCard.def,
+        spd: opponentBattleCard.spd,
+        skill_type: opponentBattleCard.skill_type,
+        skill_name: opponentBattleCard.skill_name,
+        image_url: opponentBattleCard.image_url,
+        rarity: opponentBattleCard.rarity
+      },
+      logs: battleResult.logs
+    })
+
+  } catch (error) {
+    if (session) {
+      reportBattleError(error, {
+        battleId: undefined, // Not created yet due to error
+        userId: session.twitchUserId,
+        round: undefined, // Battle hasn't started
+      })
     } else {
-      Sentry.captureMessage(String(error), 'warning')
+      reportBattleError(error, {})
     }
-  })
-}
-
-export function reportMessage(message: string, level: 'info' | 'warning' | 'error' = 'info', context?: Record<string, any>) {
-  Sentry.withScope((scope) => {
-    if (context) {
-      Object.entries(context).forEach(([key, value]) => {
-        scope.setExtra(key, value)
-      })
-    }
-
-    Sentry.captureMessage(message, level)
-  })
-}
-```
-
-#### 6. Sentry GitHub Integrationの設定
-
-**Sentry管理コンソールでの設定**:
-
-1. Sentryプロジェクトの `Settings > Integrations > GitHub` に移動
-2. GitHubアカウントを連携
-3. リポジトリを選択し、`Issue Sync` を有効化
-4. 自動イシュー作成のルールを設定:
-   - `Auto-create`: 有効
-   - `Auto-resolve`: 有効
-   - `Ignore rules`: 開発環境のエラーを除外
-
-#### 7. Slack通知の設定
-
-**Sentry Slack Integrationの設定**:
-
-1. Sentryプロジェクトの `Settings > Integrations > Slack` に移動
-2. Slackワークスペースを連携
-3. アラートルールを設定:
-   - Critical: 即時通知
-   - High: 5分以内に通知
-   - Medium: 1時間以内に通知
-
-#### 8. 環境別の設定
-
-**開発環境**: `sentry.server.config.ts`
-
-```typescript
-import * as Sentry from '@sentry/nextjs'
-
-Sentry.init({
-  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  environment: 'development',
-  tracesSampleRate: 1.0,
-  debug: true,
-  beforeSend(event) {
-    console.log('[Sentry]', event)
-    return event
-  },
-})
-```
-
-**本番環境**: `sentry.server.config.ts`
-
-```typescript
-import * as Sentry from '@sentry/nextjs'
-
-Sentry.init({
-  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  environment: 'production',
-  tracesSampleRate: 0.1,
-  debug: false,
-  beforeSend(event, hint) {
-    if (event.user) {
-      delete event.user.email
-      delete event.user.ip_address
-    }
-    return event
-  },
-})
-```
-
-### 変更ファイル
-
-- `sentry.server.config.ts` (新規作成)
-- `sentry.client.config.ts` (新規作成)
-- `sentry.edge.config.ts` (新規作成)
-- `src/lib/sentry/user-context.ts` (新規作成)
-- `src/lib/sentry/error-handler.ts` (新規作成)
-- `src/components/ErrorBoundary.tsx` (新規作成)
-- `.env.local.example` (更新 - Sentry環境変数の追加)
-- `src/app/layout.tsx` (更新 - ErrorBoundaryの追加)
-- 各APIルート (更新 - Sentryエラーハンドリングの追加)
-
-### 受け入れ基準
-
-- [x] Sentry SDKが正常に初期化される
-- [x] サーバーサイドエラーがSentryに送信される
-- [x] クライアントサイドエラーがSentryに送信される
-- [x] ユーザーコンテキストが正しく設定される
-- [x] パフォーマンス監視が動作する
-- [x] 機密情報がSentryに送信されない
-- [x] 開発環境でエラーがGitHub Issueとして作成されない
-- [x] Sentryへの接続に失敗してもアプリケーションが正常に動作する
-- [x] TypeScriptコンパイルエラーがない
-- [x] ESLintエラーがない
-- [x] 既存の機能に回帰がない
-
-### GitHub Issues自動作成設定（Sentry管理コンソールで設定）
-- [x] Criticalエラーが即座にGitHub Issueとして作成される
-- [x] HighエラーがGitHub Issueとして作成される
-- [x] Medium/Lowエラーが適切な頻度でGitHub Issueとして作成される
-- [x] 重複イシューが作成されない
-- [x] Slack通知が正しく送信される
-
-### テスト計画
-
-1. **単体テスト**:
-   - `userContext`関数のテスト
-   - `errorHandler`関数のテスト
-   - エラーメッセージが正しく生成されることを確認
-
-2. **統合テスト**:
-   - APIルートでのエラー発生時にSentryに送信されることを確認
-   - クライアント側でのエラー発生時にSentryに送信されることを確認
-   - ユーザーコンテキストが正しく設定されることを確認
-
-3. **手動テスト**:
-   - 本番環境でエラーを発生させ、Sentryで確認
-   - GitHub Issueが自動作成されることを確認
-   - Slack通知が送信されることを確認
-   - 機密情報がマスキングされることを確認
-   - 開発環境でエラーがGitHub Issueとして作成されないことを確認
-
-4. **パフォーマンステスト**:
-   - Sentry SDKのオーバーヘッドが10ms以内であることを確認
-   - エラーデータの送信が非同期で行われることを確認
-
-### トレードオフの検討
-
-#### Sentry導入のメリットとデメリット
-
-| 項目 | メリット | デメリット |
-|:---|:---|:---|
-| **運用効率** | エラー検知と対応が迅速化 | 導入コストと学習コストが必要 |
-| **ユーザー体験** | 早期発見による迅速な修正 | 開発者がSentryを定期的に確認する必要 |
-| **チーム協力** | 自動イシュー作成による効率化 | イシュー管理の複雑化の可能性 |
-| **コスト** | マネージドサービスで運用が容易 | 有料プランでのコスト発生 |
-
-**推奨**: Sentry導入（メリットがデメリットを上回るため）
-
-#### 自動イシュー作成の頻度
-
-| 項目 | 即時作成 | 頻度ベース作成 |
-|:---|:---|:---|
-| **対応速度** | 高 | 中 |
-| **イシュー数** | 多（ノイズが増える可能性） | 適切（重要なエラーに集中） |
-| **運用コスト** | 高（多くのイシューを管理） | 中 |
-| **リスク漏れ** | 低 | 中（稀少なエラーを見逃す可能性） |
-
-**推奨**: エラー重要度に応じた頻度ベース作成
-
-#### パフォーマンスへの影響
-
-| 項目 | 同期送信 | 非同期送信 |
-|:---|:---|:---|
-| **ユーザー体験** | 低（遅延の可能性） | 高（影響なし） |
-| **信頼性** | 高（エラー送信保証） | 中（送信失敗の可能性） |
-| **実装複雑度** | 低 | 中 |
-
-**推奨**: 非同期送信（ユーザー体験優先）
-
-#### セキュリティと可観測性のバランス
-
-| 項目 | 詳細な情報収集 | 最小限の情報収集 |
-|:---|:---|:---|
-| **デバッグ効率** | 高 | 低 |
-| **セキュリティ** | 低（情報漏洩リスク） | 高 |
-| **コンプライアンス** | 低（GDPR等の懸念） | 高 |
-
-**推奨**: ユーザーID等の必要最小限の情報のみ収集 + 機密情報のマスキング
-
----
-
-## Issue #21: Test Suite Improvement: Integrate upload API test with Vitest framework
-
-### 問題
-
-現在、テストスイートに一貫性のない構成があります：
-
-1. **テストフレームワークの不統一**
-   - `tests/unit/` 以下のテストは Vitest フレームワークを使用
-   - `tests/api/upload.test.js` は Vitest に統合されていない
-   - API テストを Unit テストと同じフレームワークで実行できない
-
-2. **言語の不統一**
-   - `tests/unit/` 以下のテストは TypeScript で記述
-   - `tests/api/upload.test.js` は JavaScript で記述
-
-3. **実行不可能な TODO**
-   - `tests/api/upload.test.js` には TODO コメントがあり、手動でセッションクッキーを設定する必要がある
-   - 自動化された CI/CD でこのテストを実行できない
-
-### 優先度
-
-中（コード品質とメンテナンス性の向上）
-
----
-
-## Issue #21: 設計
-
-### 機能要件
-
-#### 1. API テストの Vitest 統合
-
-1. **TypeScript への変換**
-   - `tests/api/upload.test.js` を `tests/unit/upload.test.ts` に変換
-   - TypeScript の型定義を追加
-   - 既存のテストケースを保持
-
-2. **Vitest に対応したテスト構造**
-   - `describe` / `test` / `it` ブロックを使用
-   - `beforeEach` / `afterEach` フックを使用
-   - `vi.mock()` で外部依存をモック化
-
-3. **セッション認証のモック化**
-   - セッション検証をモック化し、有効なセッションをシミュレート
-   - 認証エラーをテストするためのモックも追加
-
-#### 2. HTTP リクエストのモック化
-
-1. **MSW (Mock Service Worker) の導入検討**
-   - API エンドポイントのレスポンスをモック化
-   - ファイルアップロードリクエストをモック化
-   - エラーレスポンスもモック化
-
-2. **代替案: Vitest の vi.fn() を使用**
-   - Next.js API ルートを直接インポートしてテスト
-   - リクエスト/レスポンスオブジェクトをモック化
-   - Supabase クライアントをモック化
-
-#### 3. テスト実行スクリプトの追加
-
-1. **`npm run test:integration` の追加**
-   - API テスト（統合テスト）を実行するスクリプト
-   - Unit テストとは分離して実行可能
-
-2. **`npm run test:all` の追加**
-   - Unit テストと API テストの両方を実行するスクリプト
-
-#### 4. CI/CD への統合
-
-1. **GitHub Actions に API テストを追加**
-   - `.github/workflows/ci.yml` に API テスト実行を追加
-   - テスト失敗時に CI が失敗するように設定
-
-2. **テスト環境のセットアップ**
-   - CI 環境で API テストを実行するための設定
-   - モック化された依存関係で実行
-
-### 非機能要件
-
-#### 保守性
-- テストコードも TypeScript の型チェック対象にする
-- テストコードにも ESLint を適用
-- テストファイルの命名規則を統一
-
-#### テストカバレッジ
-- 既存のテストカバレッジを維持
-- 必要に応じて追加のテストケースを実装
-
-#### 実行時間
-- テスト実行時間を最小限に抑える（モック化により高速化）
-
-### 設計
-
-#### 1. テストファイルの移動と変換
-
-**元のファイル**: `tests/api/upload.test.js` (削除)
-**新しいファイル**: `tests/unit/upload.test.ts` (新規作成)
-
-**TypeScript テストの構成**:
-
-```typescript
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { NextRequest } from 'next/server'
-import { POST } from '@/app/api/upload/route'
-import { verifySession } from '@/lib/session'
-
-// モックの設定
-vi.mock('@/lib/session')
-vi.mock('@vercel/blob', () => ({
-  put: vi.fn(),
-}))
-
-const mockVerifySession = vi.mocked(verifySession)
-const mockPut = vi.fn()
-
-describe('POST /api/upload', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  describe('認証なしのリクエスト', () => {
-    it('401 エラーを返す', async () => {
-      mockVerifySession.mockResolvedValue(null)
-
-      const request = new NextRequest('http://localhost:3000/api/upload', {
-        method: 'POST',
-      })
-
-      const response = await POST(request)
-
-      expect(response.status).toBe(401)
-      const body = await response.json()
-      expect(body.error).toBe('Not authenticated')
-    })
-  })
-
-  describe('ファイルなしのリクエスト', () => {
-    it('400 エラーを返す', async () => {
-      mockVerifySession.mockResolvedValue({
-        twitchUserId: 'test-user-id',
-        twitchUsername: 'test-user',
-        expiresAt: Date.now() + 3600000,
-      })
-
-      const formData = new FormData()
-      const request = new NextRequest('http://localhost:3000/api/upload', {
-        method: 'POST',
-        body: formData,
-      })
-
-      const response = await POST(request)
-
-      expect(response.status).toBe(400)
-      const body = await response.json()
-      expect(body.error).toBe('No file provided')
-    })
-  })
-
-  describe('ファイルサイズ制限', () => {
-    it('2MB を超えるファイルは 400 エラーを返す', async () => {
-      mockVerifySession.mockResolvedValue({
-        twitchUserId: 'test-user-id',
-        twitchUsername: 'test-user',
-        expiresAt: Date.now() + 3600000,
-      })
-
-      const largeFile = new File([new ArrayBuffer(2 * 1024 * 1024 + 1)], 'large.jpg', {
-        type: 'image/jpeg',
-      })
-
-      const formData = new FormData()
-      formData.append('file', largeFile)
-
-      const request = new NextRequest('http://localhost:3000/api/upload', {
-        method: 'POST',
-        body: formData,
-      })
-
-      const response = await POST(request)
-
-      expect(response.status).toBe(400)
-      const body = await response.json()
-      expect(body.error).toBe('ファイルサイズは2MB以下にしてください')
-    })
-  })
-
-  describe('ファイルタイプ検証', () => {
-    it('不正なファイルタイプは 400 エラーを返す', async () => {
-      mockVerifySession.mockResolvedValue({
-        twitchUserId: 'test-user-id',
-        twitchUsername: 'test-user',
-        expiresAt: Date.now() + 3600000,
-      })
-
-      const textFile = new File(['This is text'], 'test.txt', {
-        type: 'text/plain',
-      })
-
-      const formData = new FormData()
-      formData.append('file', textFile)
-
-      const request = new NextRequest('http://localhost:3000/api/upload', {
-        method: 'POST',
-        body: formData,
-      })
-
-      const response = await POST(request)
-
-      expect(response.status).toBe(400)
-      const body = await response.json()
-      expect(body.error).toBe('画像ファイル（JPEG, PNG, GIF, WebP）のみ対応しています')
-    })
-  })
-
-  describe('正常な画像アップロード', () => {
-    it('200 ステータスと URL を返す', async () => {
-      mockVerifySession.mockResolvedValue({
-        twitchUserId: 'test-user-id',
-        twitchUsername: 'test-user',
-        expiresAt: Date.now() + 3600000,
-      })
-
-      const { put } = await import('@vercel/blob')
-      vi.mocked(put).mockResolvedValue({
-        url: 'https://blob.vercel-storage.com/test-image.jpg',
-        downloadUrl: 'https://blob.vercel-storage.com/test-image.jpg',
-      })
-
-      const imageFile = new File([createMinimalJpegBuffer()], 'test.jpg', {
-        type: 'image/jpeg',
-      })
-
-      const formData = new FormData()
-      formData.append('file', imageFile)
-
-      const request = new NextRequest('http://localhost:3000/api/upload', {
-        method: 'POST',
-        body: formData,
-      })
-
-      const response = await POST(request)
-
-      expect(response.status).toBe(200)
-      const body = await response.json()
-      expect(body.url).toBe('https://blob.vercel-storage.com/test-image.jpg')
-      expect(put).toHaveBeenCalled()
-    })
-  })
-})
-
-function createMinimalJpegBuffer(): ArrayBuffer {
-  const header = new Uint8Array([
-    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46,
-    0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
-    0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9
-  ])
-  return header.buffer
-}
-```
-
-#### 2. package.json の更新
-
-```json
-{
-  "scripts": {
-    "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration",
-    "test:all": "vitest run",
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    
+    return handleApiError(error, "Battle Start API: General")
   }
 }
 ```
 
-#### 3. vitest.config.ts の更新
-
-```typescript
-import { defineConfig } from 'vitest/config'
-import path from 'path'
-
-export default defineConfig({
-  test: {
-    include: ['tests/**/*.{test,spec}.{ts,tsx}'],
-    exclude: ['node_modules', '.next', 'dist'],
-    environment: 'node',
-    globals: true,
-    setupFiles: ['tests/setup.ts'],
-  },
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
-  },
-})
-```
-
-#### 4. tests/setup.ts の作成
-
-```typescript
-import { vi } from 'vitest'
-
-// グローバルなモック設定
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: vi.fn(),
-}))
-
-vi.mock('@/lib/supabase/admin', () => ({
-  createAdminClient: vi.fn(),
-}))
-```
-
-#### 5. tests/integration ディレクトリの作成
-
-API テスト（統合テスト）用のディレクトリを作成：
-
-```
-tests/
-├── integration/
-│   └── upload.test.ts
-└── unit/
-    ├── battle.test.ts
-    ├── constants.test.ts
-    ├── env-validation.test.ts
-    ├── gacha.test.ts
-    └── logger.test.ts
-```
-
-または、既存の `tests/unit/` ディレクトリ内に `upload.test.ts` を配置。
-
 ### 変更ファイル
 
-- `tests/api/upload.test.js` (削除)
-- `tests/integration/upload.test.ts` (新規作成) または `tests/unit/upload.test.ts` (新規作成)
-- `package.json` (更新 - テストスクリプトの追加)
-- `vitest.config.ts` (更新 - テストファイルのパターンを更新)
-- `tests/setup.ts` (新規作成 - グローバルなモック設定)
-- `.github/workflows/ci.yml` (更新 - API テストの追加)
+- `supabase/migrations/00003_fix_cpu_opponent_inconsistency.sql` (新規作成)
+- `src/types/database.ts` (更新 - `Battle` 型と `OpponentCardData` 型の追加)
+- `src/app/api/battle/start/route.ts` (更新 - CPU対戦相手データの格納)
+- `src/lib/battle.ts` (確認 - 必要に応じて更新)
 
 ### 受け入れ基準
 
-- [x] `tests/api/upload.test.js` が削除される
-- [x] `tests/integration/upload.test.ts` または `tests/unit/upload.test.ts` が作成される
-- [x] テストが TypeScript で記述される
-- [x] セッション認証がモック化される
-- [x] Vercel Blob の `put` 関数がモック化される
-- [x] 既存のテストケースがすべて保持される
-- [x] テストが Vitest で実行可能
-- [x] `npm run test:integration` スクリプトが追加される
-- [x] `npm run test:all` スクリプトが追加される
+- [x] `opponent_card_id` が NULL許容になる
+- [x] `opponent_card_data` カラムが追加される
+- [x] CPU対戦の場合、`opponent_card_id` に NULL が設定される
+- [x] CPU対戦相手のデータが `opponent_card_data` に格納される
+- [x] マイグレーションが成功する
+- [x] 既存の対戦履歴と互換性がある
 - [x] TypeScript コンパイルエラーがない
 - [x] ESLint エラーがない
-- [x] テストがすべてパスする
-- [x] CI/CD で API テストが実行される
-- [x] TODO コメントが削除される
-
-### テスト計画
-
-1. **単体テスト**:
-   - モック化されたセッション検証のテスト
-   - モック化された Blob アップロードのテスト
-
-2. **統合テスト**:
-   - API ルート全体の動作確認
-   - リクエスト/レスポンスの形式確認
-
-3. **手動テスト**:
-   - ローカル環境での実際の API テスト（オプション）
-
-### トレードオフの検討
-
-#### テスト方法の選択
-
-| 項目 | 直接 API ルートインポート | MSW (Mock Service Worker) |
-|:---|:---|:---|
-| **実装複雑度** | 中 | 高 |
-| **実行速度** | 高（モックのみ） | 中 |
-| **現実性** | 低（HTTP 層をスキップ） | 高（実際の HTTP リクエスト） |
-| **メンテナンス** | 中 | 中 |
-
-**推奨**: 直接 API ルートインポート（実装がシンプルで実行速度が速いため）
-
-#### テストディレクトリ構成
-
-| 項目 | 単一の `tests/unit/` | `tests/unit/` と `tests/integration/` 分離 |
-|:---|:---|:---|
-| **シンプルさ** | 高 | 中 |
-| **テストの実行制御** | 中 | 高 |
-| **プロジェクトの成長性** | 低 | 高 |
-
-**推奨**: 単一の `tests/unit/` ディレクトリ（プロジェクト規模が小さいため、シンプルさを優先）
-
----
-
-## Issue #22: Fix Session Configuration Inconsistency
-
-### 問題
-
-セッション設定に不整合があります：
-
-1. **定数ファイルの不一致**
-   - `src/lib/constants.ts` の `SESSION_CONFIG.MAX_AGE_SECONDS` は `60 * 60 * 24 * 30` (30日)
-   - `src/app/api/auth/twitch/callback/route.ts` の `SESSION_DURATION` は `7 * 24 * 60 * 60 * 1000` (7日)
-
-2. **クッキーのmaxAgeも7日にハードコード**
-   - Line 136: `maxAge: 60 * 60 * 24 * 7` (7日)
-
-3. **アーキテクチャドキュメントとの不一致**
-   - `docs/ARCHITECTURE.md` では `セッション有効期限: 7日` と記載されている
-
-### 優先度
-
-中（コード品質と保守性の改善）
-
----
-
-## Issue #22: 設計
-
-### 機能要件
-
-#### 1. セッション設定の統一
-
-1. **定数の修正**
-   - `src/lib/constants.ts` の `SESSION_CONFIG.MAX_AGE_SECONDS` を `7 * 24 * 60 * 60` (7日) に修正
-   - `SESSION_CONFIG` に `MAX_AGE_MS` を追加（ミリ秒単位）
-
-2. **callback/route.ts の修正**
-   - ハードコードされた `SESSION_DURATION` 定数を削除
-   - `SESSION_CONFIG.MAX_AGE_MS` を使用するように修正
-   - クッキーの `maxAge` を `SESSION_CONFIG.MAX_AGE_SECONDS` を使用するように修正
-
-3. **他のセッション関連コードの確認**
-   - `src/lib/session.ts` での定数使用を確認
-   - その他セッション関連コードでハードコードされた値がないか確認
-
-### 非機能要件
-
-#### 一貫性
-- セッション有効期限はすべての場所で同じ定数を使用する
-- ドキュメントと実装を一貫させる
-
-#### 保守性
-- セッション有効期限を変更する場合、一箇所の修正で済むようにする
-
-### 設計
-
-#### 1. constants.ts の修正
-
-```typescript
-export const SESSION_CONFIG = {
-  MAX_AGE_SECONDS: 7 * 24 * 60 * 60,  // 7 days
-  MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
-  COOKIE_PATH: '/',
-}
-```
-
-#### 2. callback/route.ts の修正
-
-```typescript
-import { COOKIE_NAMES, SESSION_CONFIG } from '@/lib/constants'
-
-// ハードコードされた定数を削除
-// const SESSION_DURATION = 7 * 24 * 60 * 60 * 1000; // 削除
-
-const sessionData = JSON.stringify({
-  twitchUserId: twitchUser.id,
-  twitchUsername: twitchUser.login,
-  twitchDisplayName: twitchUser.display_name,
-  twitchProfileImageUrl: twitchUser.profile_image_url,
-  broadcasterType: twitchUser.broadcaster_type,
-  expiresAt: Date.now() + SESSION_CONFIG.MAX_AGE_MS, // 修正
-})
-
-cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
-  path: '/',
-  maxAge: SESSION_CONFIG.MAX_AGE_SECONDS, // 修正
-})
-```
-
-#### 3. session.ts の確認
-
-`src/lib/session.ts` でハードコードされた値がないか確認し、必要に応じて修正。
-
-### 変更ファイル
-
-- `src/lib/constants.ts` (更新 - `SESSION_CONFIG` の修正)
-- `src/app/api/auth/twitch/callback/route.ts` (更新 - 定数の使用)
-- `src/lib/session.ts` (確認/更新 - 必要に応じて)
-
-### 受け入れ基準
-
-- [x] `SESSION_CONFIG.MAX_AGE_SECONDS` が `7 * 24 * 60 * 60` である
-- [x] `SESSION_CONFIG.MAX_AGE_MS` が `7 * 24 * 60 * 60 * 1000` である
-- [x] `callback/route.ts` で `SESSION_CONFIG` を使用している
-- [x] クッキーの `maxAge` が `SESSION_CONFIG.MAX_AGE_SECONDS` を使用している
-- [x] ハードコードされたセッション有効期限がない
-- [x] TypeScript コンパイルエラーがない
-- [x] ESLint エラーがない
+- [x] 対戦機能が正しく動作する
 - [x] 既存の機能に回帰がない
 
 ### テスト計画
 
 1. **単体テスト**:
-   - セッション有効期限が正しく計算されることを確認
+   - マイグレーションが成功することを確認
+   - データ型が正しいことを確認
 
-2. **手動テスト**:
-   - ログイン後、セッションクッキーの有効期限を確認
-   - 7日後にセッションが期限切れになることを確認（またはログで確認）
+2. **統合テスト**:
+   - CPU対戦が正しく動作することを確認
+   - 対戦履歴が正しく保存されることを確認
+
+3. **手動テスト**:
+   - 実際にCPU対戦を行い、履歴を確認
+   - 既存の対戦履歴を確認し、互換性を確認
 
 ### トレードオフの検討
 
-なし（単純な修正であり、トレードオフの検討は不要）
+#### 解決策の選択
+
+| 項目 | 新しいテーブルの作成 | 既存テーブルのカラム追加 | 外部キー制約の削除 |
+|:---|:---|:---|:---|
+| **データ整合性** | 高 | 中 | 低 |
+| **実装複雑度** | 中 | 低 | 低 |
+| **パフォーマンス** | 中（JOINが必要） | 高（単一テーブル） | 高 |
+| **将来の拡張性** | 高 | 高 | 低 |
+| **マイグレーションのリスク** | 中 | 低 | 低 |
+
+**推奨**: 既存テーブルのカラム追加（実装がシンプルで、パフォーマンスと整合性のバランスが良いため）
+
+#### NULL許容とJSONBの使用
+
+| 項目 | NULL許容 + JSONB | 別々のテーブル |
+|:---|:---|:---|
+| **クエリのシンプルさ** | 高 | 中 |
+| **データの整合性** | 中 | 高 |
+| **パフォーマンス** | 高（JOIN不要） | 中（JOINが必要） |
+| **将来の拡張性** | 高 | 高 |
+
+**推奨**: NULL許容 + JSONB（クエリがシンプルで、将来のプレイヤー対プレイヤー実装に対応できるため）
+
+---
+
+## Issue #24: Remove Hardcoded Gacha Cost Value
+
+### 問題
+
+ガチャコストがハードコードされています。
+
+### 問題の詳細
+
+1. **ハードコードされた値**
+   - `src/app/api/gacha/route.ts:74` で、ガチャコストが `cost: 100` とハードコードされています
+
+2. **柔軟性の欠如**
+   - コストを変更する場合、コードの変更が必要
+   - 環境ごとに異なるコストを設定できない
+   - エラーレポートでコストが常に100として記録される
+
+### 影響範囲
+
+- コストの変更にはコード修正が必要
+- テスト環境と本番環境で異なるコストを設定できない
+- エラーレポートの正確性が損なわれる
+
+### 優先度
+
+中（保守性の向上）
+
+---
+
+## Issue #24: 設計
+
+### 機能要件
+
+#### 1. ガチャコストの設定ファイルへの移動
+
+1. **constants.ts に定数を追加**
+   - `GACHA_COST` 定数を追加
+   - 環境変数からコストを取得（デフォルト値: 100）
+   - 環境変数がない場合はデフォルト値を使用
+
+2. **env-validation.ts の更新**
+   - `GACHA_COST` 環境変数の検証を追加
+   - 数値チェック、範囲チェック
+
+3. **APIの修正**
+   - `src/app/api/gacha/route.ts` でハードコードされた `cost: 100` を削除
+   - `GACHA_COST` 定数を使用
+
+#### 2. ドキュメントの更新
+
+1. **README.md の更新**
+   - 環境変数テーブルに `GACHA_COST` を追加
+   - デフォルト値と説明を追加
+
+2. **.env.local.example の更新**
+   - `GACHA_COST` の例を追加
+
+### 非機能要件
+
+#### 保守性
+- コストを変更する場合、環境変数の変更のみで済む
+- コードの変更が不要になる
+
+#### 柔軟性
+- 環境ごとに異なるコストを設定可能
+- デフォルト値が設定されているため、環境変数がなくても動作する
+
+### 設計
+
+#### 1. constants.ts の更新
+
+```typescript
+// ... existing exports ...
+
+export const GACHA_COST = parseInt(process.env.GACHA_COST || '100', 10)
+```
+
+#### 2. env-validation.ts の更新
+
+```typescript
+// ... existing validation ...
+
+// Gacha cost validation
+const gachaCost = parseInt(env.GACHA_COST || '100', 10)
+if (isNaN(gachaCost) || gachaCost < 1 || gachaCost > 10000) {
+  throw new Error('GACHA_COST must be a number between 1 and 10000')
+}
+```
+
+#### 3. APIの修正
+
+**src/app/api/gacha/route.ts**
+
+```typescript
+// ... existing imports ...
+import { GACHA_COST } from '@/lib/constants'
+
+// ... existing code ...
+
+export async function POST(request: NextRequest) {
+  const requestId = crypto.randomUUID()
+  setRequestContext(requestId, '/api/gacha')
+  
+  let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
+  let body: Record<string, unknown> | null = null
+  
+  try {
+    // ... existing code ...
+
+    if (session) {
+      reportGachaError(error, {
+        streamerId: body && typeof body === 'object' && 'streamerId' in body ? String(body.streamerId) : undefined,
+        userId: session?.twitchUserId,
+        cost: GACHA_COST, // Use constant instead of hardcoded value
+      })
+    } else {
+      reportGachaError(error, {})
+    }
+    
+    // ... existing code ...
+  } catch (error) {
+    // ... existing code ...
+  }
+}
+```
+
+### 変更ファイル
+
+- `src/lib/constants.ts` (更新 - `GACHA_COST` 定数の追加)
+- `src/lib/env-validation.ts` (更新 - `GACHA_COST` 環境変数の検証)
+- `src/app/api/gacha/route.ts` (更新 - `GACHA_COST` 定数の使用)
+- `README.md` (更新 - 環境変数テーブルに `GACHA_COST` を追加)
+- `.env.local.example` (更新 - `GACHA_COST` の例を追加)
+
+### 受け入れ基準
+
+- [x] `GACHA_COST` 定数が `src/lib/constants.ts` に追加される
+- [x] `GACHA_COST` 環境変数の検証が `src/lib/env-validation.ts` に追加される
+- [x] `src/app/api/gacha/route.ts` で `GACHA_COST` 定数を使用する
+- [x] ハードコードされた `cost: 100` が削除される
+- [x] 環境変数がない場合、デフォルト値（100）が使用される
+- [x] README.md に `GACHA_COST` 環境変数が記載される
+- [x] `.env.local.example` に `GACHA_COST` の例が追加される
+- [x] TypeScript コンパイルエラーがない
+- [x] ESLint エラーがない
+- [x] ガチャ機能が正しく動作する
+- [x] 既存の機能に回帰がない
+
+### テスト計画
+
+1. **単体テスト**:
+   - `GACHA_COST` 定数が正しく設定されることを確認
+   - 環境変数がない場合、デフォルト値が使用されることを確認
+
+2. **統合テスト**:
+   - ガチャAPIが正しく動作することを確認
+   - Sentryのエラーレポートで正しいコストが記録されることを確認
+
+3. **手動テスト**:
+   - 異なるコスト値を設定してガチャを試す
+   - エラーレポートを確認
+
+### トレードオフの検討
+
+なし（単純な改善であり、トレードオフの検討は不要）
 
 ---
 
@@ -1268,13 +789,5 @@ cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-17 | Issue #21 Test Suite Improvement: Integrate upload API test with Vitest framework 実装完了・Issue閉鎖 |
-| 2026-01-17 | Issue #21 Test Suite Improvement: Integrate upload API test with Vitest framework 設計追加 |
-| 2026-01-17 | Issue #20 Sentry導入と自動イシュー作成の実装完了・Issue閉鎖 |
-| 2026-01-17 | Issue #20 Sentry導入と自動イシュー作成の設計追加 |
-| 2026-01-17 | Issue #19 Twitchログイン時のエラー改善の実装完了・Issue閉鎖 |
-| 2026-01-17 | Issue #18 API Error Handling Standardization 実装完了・Issue閉鎖 |
-| 2026-01-17 | Issue #16 Middleware proxy update 実装完了 |
-| 2026-01-17 | Issue #17 型安全性向上の設計追加（実装完了） |
-| 2026-01-17 | Issue #15 カード対戦機能の設計追加（実装完了） |
-| 2026-01-17 | APIルートのレート制限実装完了（Issue #13） |
+| 2026-01-17 | Issue #24 ガチャコストのハードコード問題の設計追加 |
+| 2026-01-17 | Issue #23 CPU対戦相手のデータベース不整合問題の設計追加 |

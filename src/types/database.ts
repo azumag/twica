@@ -190,7 +190,8 @@ export interface Database {
           id: string
           user_id: string
           user_card_id: string
-          opponent_card_id: string
+          opponent_card_id: string | null
+          opponent_card_data: Json | null
           result: BattleResult
           turn_count: number
           battle_log: Json | null
@@ -200,7 +201,8 @@ export interface Database {
           id?: string
           user_id: string
           user_card_id: string
-          opponent_card_id: string
+          opponent_card_id?: string | null
+          opponent_card_data?: Json | null
           result: BattleResult
           turn_count?: number
           battle_log?: Json | null
@@ -210,7 +212,8 @@ export interface Database {
           id?: string
           user_id?: string
           user_card_id?: string
-          opponent_card_id?: string
+          opponent_card_id?: string | null
+          opponent_card_data?: Json | null
           result?: BattleResult
           turn_count?: number
           battle_log?: Json | null
@@ -268,7 +271,9 @@ export type Card = Database['public']['Tables']['cards']['Row']
 export type User = Database['public']['Tables']['users']['Row']
 export type UserCard = Database['public']['Tables']['user_cards']['Row']
 export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
-export type Battle = Database['public']['Tables']['battles']['Row']
+export type Battle = Database['public']['Tables']['battles']['Row'] & {
+  opponent_card_data?: OpponentCardData | null
+}
 export type BattleStats = Database['public']['Tables']['battle_stats']['Row']
 
 // Extended types with relations
@@ -319,6 +324,19 @@ export interface BattleLog {
   damage?: number
   heal?: number
   message: string
+}
+
+export interface OpponentCardData {
+  id: string
+  name: string
+  hp: number
+  atk: number
+  def: number
+  spd: number
+  skill_type: 'attack' | 'defense' | 'heal' | 'special'
+  skill_name: string
+  image_url: string
+  rarity: 'common' | 'rare' | 'epic' | 'legendary'
 }
 
 export interface BattleCard {
