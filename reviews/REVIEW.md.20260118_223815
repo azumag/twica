@@ -1,0 +1,272 @@
+# レビューレポート: Sentry Debug Endpoints Security (Issue #36)
+
+**レビュー日時**: 2026-01-18 22:31
+**対象**: docs/ARCHITECTURE.md, docs/IMPLEMENTED.md, 実装コード
+
+---
+
+## レビュー結果
+
+### 全体的な評価
+
+- **コード品質**: ⚠️ 改善の余地あり
+- **セキュリティ**: ✅ 基本的な実装は適切
+- **パフォーマンス**: ✅ 問題なし
+- **コードの簡潔性**: ⚠️ 改善の余地あり
+
+---
+
+## 実装範囲に関する問題
+
+### Critical Issue: 実装範囲が不完全
+
+**問題**:
+設計書 (ARCHITECTURE.md) には2つの主要なセクションがあります:
+1. Sentry エラー送信問題の修正 (ライン 231-385)
+2. Sentry Debug Endpoints Security (Issue #36) (ライン 388-477)
+
+しかし、実装エージェントは **Issue #36 のみ** を実装し、Sentry エラー送信問題 (DSN ハードコード、初期化重複など) は実装していません。
+
+**影響**:
+- 設計書の受け入れ基準 "Sentry エラー追跡" (ライン 156-163) はすべて未チェックのまま
+- `instrumentation-client.ts` の削除が必要とされているが、実装されていない
+- 設計書の "実装完了の問題" セクション (ライン 490-497) で Issue #36 が "実装中" と記載されているが、完了している
+
+**推奨**:
+1. 設計書を更新し、Sentry エラー送信問題を別の Issue に分離するか、今回の実装から除外することを明記する
+2. または、Sentry エラー送信問題の実装を追加で行う
+
+---
+
+## Code Quality and Best Practices
+
+### High Issue: コードの重複 (DRY 原則違反)
+
+**問題**:
+`checkDebugAccess` 関数が6つのファイルすべてに個別に定義されています:
+
+- `src/app/api/test-sentry/route.ts`
+- `src/app/api/debug-sentry/route.ts`
+- `src/app/api/test-sentry-envelope/route.ts`
+- `src/app/api/test-sentry-connection/route.ts`
+- `src/app/api/debug-sentry-direct/route.ts`
+- `src/app/api/sentry-example-api/route.ts`
+
+**影響**:
+- コードの重複により、保守性が悪い
+- 将来的なバグ修正や機能追加時にすべてのファイルを変更する必要がある
+- ヒューマンエラーのリスクが増加
+
+**推奨**:
+共通のヘルパー関数として `src/lib/debug-access.ts` などのファイルに抽出し、すべてのエンドポイントで使用する:
+
+```typescript
+// src/lib/debug-access.ts
+import { NextResponse } from 'next/server'
+import { DEBUG_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
+
+export function checkDebugAccess(request: Request): NextResponse | null {
+  if (process.env.NODE_ENV === DEBUG_CONFIG.PRODUCTION_ENV) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.DEBUG_ENDPOINT_NOT_AVAILABLE },
+      { status: 404 }
+    )
+  }
+
+  const url = new URL(request.url)
+  const host = url.hostname
+
+  if (!DEBUG_CONFIG.ALLOWED_HOSTS.some(allowedHost => allowedHost === host)) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.DEBUG_ENDPOINT_NOT_AUTHORIZED },
+      { status: 403 }
+    )
+  }
+
+  return null
+}
+```
+
+---
+
+### Low Issue: 不要な async 宣言
+
+**問題**:
+`checkDebugAccess` 関数は `async` として定義されていますが、実際には非同期処理を行っていません:
+
+```typescript
+async function checkDebugAccess(request: Request): Promise<NextResponse | null> {
+  // 同期的な処理のみ
+}
+```
+
+**影響**:
+- 微細なパフォーマンスオーバーヘッド（実際には無視できる程度）
+- コードの意図が不明確になる
+
+**推奨**:
+`async` キーワードを削除し、同期関数として定義する:
+
+```typescript
+function checkDebugAccess(request: Request): NextResponse | null {
+  // ...
+}
+```
+
+---
+
+## Security Considerations
+
+### Medium Issue: IPv6 localhost の除外
+
+**問題**:
+`DEBUG_CONFIG.ALLOWED_HOSTS` には `localhost` と `127.0.0.1` が含まれていますが、`::1` (IPv6 の localhost) が含まれていません:
+
+```typescript
+export const DEBUG_CONFIG = {
+  ALLOWED_HOSTS: ['localhost', '127.0.0.1'],
+  // ...
+}
+```
+
+**影響**:
+- IPv6 を使用している開発者の場合、localhost からのアクセスが拒否される可能性がある
+- 一部の環境やブラウザの設定で IPv6 localhost が優先される場合がある
+
+**推奨**:
+`::1` を `ALLOWED_HOSTS` に追加する:
+
+```typescript
+export const DEBUG_CONFIG = {
+  ALLOWED_HOSTS: ['localhost', '127.0.0.1', '::1'],
+  PRODUCTION_ENV: 'production',
+} as const
+```
+
+---
+
+### Medium Issue: test-sentry-connection での情報露出
+
+**問題**:
+`src/app/api/test-sentry-connection/route.ts` のレスポンスに Sentry の接続情報が含まれています:
+
+```typescript
+return NextResponse.json({
+  dsnHost: dsnUrl.host,
+  sentryUrl,
+  testUrl: `https://${dsnUrl.host}/api/0/`,
+  // ...
+})
+```
+
+**影響**:
+- Sentry の URL が露出する
+- ただし、このエンドポイントは localhost のみアクセス可能なので、リスクは低い
+
+**推奨**:
+デバッグエンドポイントとして必要最小限の情報のみを返すようにする:
+
+```typescript
+return NextResponse.json({
+  responseStatus: response.status,
+  responseStatusText: response.statusText,
+  success: response.ok
+})
+```
+
+---
+
+### Low Issue: DSN の一部露出
+
+**問題**:
+すべてのエンドポイントで DSN の最初の 20-30 文字をレスポンスに含めています:
+
+```typescript
+dsnPreview: process.env.NEXT_PUBLIC_SENTRY_DSN?.substring(0, 30) + '...'
+```
+
+**影響**:
+- DSN の一部が露出するが、これは `NEXT_PUBLIC_` プレフィックス付きの環境変数なので、もともとクライアント側からアクセス可能
+- localhost のみアクセス可能なので、リスクは低い
+
+**推奨**:
+なし。これは許容可能な実装です。
+
+---
+
+## Potential Bugs and Edge Cases
+
+### Low Issue: X-Forwarded-Host ヘッダー
+
+**問題**:
+Vercel や CDN 経由でリクエストが来る場合、`request.url` の hostname はプロキシのホストになる可能性があります。
+
+**影響**:
+- 開発環境でもプロキシ経由でアクセスされる場合がある
+- ただし、開発環境でプロキシを使用することは稀
+
+**推奨**:
+特になし。localhost のみ許可する実装は適切です。
+
+---
+
+## Design Principles Compliance
+
+| 設計方針 | 遵守状況 | 詳細 |
+|---------|---------|------|
+| Simple over Complex | ⚠️ 要改善 | コードの重複がある |
+| Type Safety | ✅ 遵守 | TypeScript が適切に使用されている |
+| Separation of Concerns | ⚠️ 要改善 | 共通ロジックが分離されていない |
+| Security First | ✅ 遵守 | 本番環境でのアクセスを遮断 |
+| Consistency | ✅ 遵守 | すべてのデバッグエンドポイントで同一パターン使用 |
+| Development/Production Separation | ✅ 遵守 | デバッグツールは開発環境でのみ使用可能 |
+
+---
+
+## Summary of Issues
+
+### Critical Issues
+1. 実装範囲が不完全 - Sentry エラー送信問題が実装されていない
+
+### High Issues
+1. コードの重複 (DRY 原則違反)
+
+### Medium Issues
+1. IPv6 localhost の除外
+2. test-sentry-connection での情報露出
+
+### Low Issues
+1. 不要な async 宣言
+2. DSN の一部露出 (許容可能)
+
+---
+
+## Recommendations
+
+1. **Critical**: 実装範囲を明確化する
+   - 設計書を更新し、Sentry エラー送信問題を別の Issue に分離するか、今回の実装から除外することを明記する
+   - または、Sentry エラー送信問題の実装を追加で行う
+
+2. **High**: コードの重複を解消する
+   - `src/lib/debug-access.ts` などの共通モジュールを作成し、すべてのエンドポイントで使用する
+
+3. **Medium**: IPv6 localhost を許可する
+   - `DEBUG_CONFIG.ALLOWED_HOSTS` に `::1` を追加する
+
+4. **Medium**: test-sentry-connection の情報露出を減らす
+   - レスポンスから不要な情報を削除する
+
+5. **Low**: 不要な async 宣言を削除する
+   - `checkDebugAccess` 関数から `async` キーワードを削除する
+
+---
+
+## Conclusion
+
+実装は基本的なセキュリティ要件を満たしていますが、以下の点で改善が必要です:
+
+1. **実装範囲の明確化**: 設計書と実装の不一致を解消する必要がある
+2. **コード品質の向上**: コードの重複を解消し、保守性を向上させる必要がある
+3. **セキュリティの向上**: IPv6 localhost を許可し、情報露出を減らす必要がある
+
+これらの問題を修正することで、コードの品質と保守性が大幅に向上します。

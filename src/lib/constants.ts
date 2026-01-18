@@ -133,3 +133,11 @@ export const BATTLE_LOG_MESSAGES = {
     `${attackerName}が攻撃！${damage}ダメージを与えた！`,
   SKILL_FAILED: 'スキル発動失敗',
 } as const
+
+export const BATTLE_CONFIG = {
+  MAX_TURNS: 20,
+  SKILL_SPEED_MULTIPLIER: 10,
+  SKILL_TRIGGER_MAX_PERCENT: 70,
+  RANDOM_RANGE: 100,
+  SPECIAL_SKILL_DAMAGE_MULTIPLIER: 1.5,
+} as const

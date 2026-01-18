@@ -1,118 +1,134 @@
 # QA Report
 
-## Issue: Sentry Debug Endpoints Security (Issue #36)
+## Issue: Battle System Constants Refactoring (Issue #37)
 
 ## 実施日時
-2026-01-18 22:41
+2026-01-18 22:54
 
 ## 評価結果
-✅ **QA PASSED** - 実装は設計仕様を満たしています。すべての必須項目が実装されています。
+✅ **QA PASSED** - 実装は設計仕様を完全に満たしています。すべての受け入れ基準が達成されています。
 
----
+----
 
 ## 受け入れ基準チェック
 
-### Sentry Debug Endpoints Security (docs/ARCHITECTURE.md 行 467-477)
+### バトルシステム定数化（docs/ARCHITECTURE.md 行 309-318）
 
 | 項目 | 状態 | 説明 |
 |------|------|------|
-| `/api/test-sentry` が本番環境で404を返す | ✅ | `checkDebugAccess` で `NODE_ENV === 'production'` の場合に404を返す |
-| `/api/debug-sentry` が本番環境で404を返す | ✅ | `checkDebugAccess` で `NODE_ENV === 'production'` の場合に404を返す |
-| `/api/test-sentry-envelope` が本番環境で404を返す | ✅ | `checkDebugAccess` で `NODE_ENV === 'production'` の場合に404を返す |
-| `/api/test-sentry-connection` が本番環境で404を返す | ✅ | `checkDebugAccess` で `NODE_ENV === 'production'` の場合に404を返す |
-| `/api/debug-sentry-direct` が本番環境で404を返す | ✅ | `checkDebugAccess` で `NODE_ENV === 'production'` の場合に404を返す |
-| `/api/sentry-example-api` が本番環境で404を返す | ✅ | `checkDebugAccess` で `NODE_ENV === 'production'` の場合に404を返す |
-| すべてのSentry debugエンドポイントがlocalhost/127.0.0.1のみでアクセス可能 | ✅ | `DEBUG_CONFIG.ALLOWED_HOSTS` に `['localhost', '127.0.0.1', '::1']` が設定されている |
-| 本番環境以外の環境でlocalhostから正常に動作する | ✅ | 本番環境以外でlocalhostからのアクセスが許可されている |
-| lintとtestがパスする | ✅ | ESLintエラーなし、テスト 59/59 パス |
+| BATTLE_CONFIG 定数が追加されている | ✅ | `src/lib/constants.ts` に正確に定義されている |
+| BATTLE_CONFIG 定数が使用されている | ✅ | `src/lib/battle.ts` で正しくインポートされている |
+| maxTurns が置換されている | ✅ | `BATTLE_CONFIG.MAX_TURNS` に置換されている（行139） |
+| スキル発動率計算で定数を使用 | ✅ | `SKILL_SPEED_MULTIPLIER` と `SKILL_TRIGGER_MAX_PERCENT` が使用されている（行156-158） |
+| ランダム範囲で定数を使用 | ✅ | `BATTLE_CONFIG.RANDOM_RANGE` が使用されている（行159） |
+| スペシャルスキルダメージ倍率で定数を使用 | ✅ | `SPECIAL_SKILL_DAMAGE_MULTIPLIER` が使用されている（行126） |
+| 既存のバトルシステムの挙動が変わらない | ✅ | 定数の値が元のハードコード値と正確に一致している |
+| lint がパスする | ✅ | ESLint エラーなし |
+| TypeScript の型チェックがパスする | ✅ | `tsc --noEmit` が成功 |
 
----
+----
 
 ## 実装の詳細評価
-
-### `src/lib/debug-access.ts`
-
-```typescript
-export function checkDebugAccess(request: Request): NextResponse | null {
-  // 本番環境では404を返す
-  if (process.env.NODE_ENV === DEBUG_CONFIG.PRODUCTION_ENV) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.DEBUG_ENDPOINT_NOT_AVAILABLE },
-      { status: 404 }
-    )
-  }
-
-  // ホスト名が許可リストに含まれているか確認
-  const url = new URL(request.url)
-  const host = url.hostname
-
-  if (!DEBUG_CONFIG.ALLOWED_HOSTS.some(allowedHost => allowedHost === host)) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.DEBUG_ENDPOINT_NOT_AUTHORIZED },
-      { status: 403 }
-    )
-  }
-
-  return null
-}
-```
-
-#### 実装の評価
-- ✅ 本番環境（`NODE_ENV === 'production'`）の場合、404を返す
-- ✅ 本番環境以外の場合、ホスト名をチェックし、許可リストに含まれていない場合は403を返す
-- ✅ `DEBUG_CONFIG` と `ERROR_MESSAGES` を使用して定数を一元管理
-- ✅ `NextResponse | null` の型を返す関数として実装され、使用側で簡単にチェック可能
 
 ### `src/lib/constants.ts`
 
 ```typescript
-export const DEBUG_CONFIG = {
-  ALLOWED_HOSTS: ['localhost', '127.0.0.1', '::1'],
-  PRODUCTION_ENV: 'production',
-} as const
-
-export const ERROR_MESSAGES = {
-  // ...
-  DEBUG_ENDPOINT_NOT_AVAILABLE: 'Debug endpoint not available in production',
-  DEBUG_ENDPOINT_NOT_AUTHORIZED: 'Debug endpoint only accessible from localhost',
+export const BATTLE_CONFIG = {
+  MAX_TURNS: 20,
+  SKILL_SPEED_MULTIPLIER: 10,
+  SKILL_TRIGGER_MAX_PERCENT: 70,
+  RANDOM_RANGE: 100,
+  SPECIAL_SKILL_DAMAGE_MULTIPLIER: 1.5,
 } as const
 ```
 
 #### 実装の評価
-- ✅ `ALLOWED_HOSTS` に `localhost`, `127.0.0.1`, `::1`（IPv6ループバック）が含まれている
-- ✅ `PRODUCTION_ENV` に `'production'` が設定されている
-- ✅ エラーメッセージが定数として一元管理されている
+- ✅ 5つの定数がすべて `as const` で定義され、変更不可能になっている
+- ✅ 定数名が分かりやすく、意図が明確である
+- ✅ 既存の定数定義パターン（CPU_CARD_STRINGS, BATTLE_SKILL_NAMES 等）に従っている
 
-### Sentry Debugエンドポイントの実装
+### `src/lib/battle.ts`
 
-#### すべてのエンドポイントに `checkDebugAccess` が追加されている
-
-1. `/api/test-sentry/route.ts` - ✅ `checkDebugAccess` が追加されている
-2. `/api/debug-sentry/route.ts` - ✅ `checkDebugAccess` が追加されている
-3. `/api/test-sentry-envelope/route.ts` - ✅ `checkDebugAccess` が追加されている
-4. `/api/test-sentry-connection/route.ts` - ✅ `checkDebugAccess` が追加されている
-5. `/api/debug-sentry-direct/route.ts` - ✅ `checkDebugAccess` が追加されている
-6. `/api/sentry-example-api/route.ts` - ✅ `checkDebugAccess` が追加されている
-
-#### 実装パターン
-
-すべてのエンドポイントで以下のパターンが使用されている：
+#### 1. 定数のインポート（行2）
 
 ```typescript
-export async function GET(request: Request) {
-  const accessCheck = checkDebugAccess(request)
-  if (accessCheck) return accessCheck
-
-  // 元の実装...
-}
+import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES, BATTLE_LOG_MESSAGES, BATTLE_CONFIG } from '@/lib/constants'
 ```
 
-この実装により、以下の動作が保証されます：
-- 本番環境：404が返される
-- 本番環境以外かつ localhost/127.0.0.1/::1：正常に動作
-- 本番環境以外かつ localhost以外：403が返される
+- ✅ `BATTLE_CONFIG` が正しくインポートされている
+- ✅ インポート文が整理されている
 
----
+#### 2. 最大ターン数の置換（行139）
+
+```typescript
+// 修正前
+const maxTurns = 20
+
+// 修正後
+const maxTurns = BATTLE_CONFIG.MAX_TURNS
+```
+
+- ✅ 正確に置換されている
+
+#### 3. スキル発動率計算の置換（行156-159）
+
+```typescript
+// 修正前
+const skillTriggerChance = Math.min(attacker.spd * 10, 70)
+const skillTrigger = Math.random() * 100 < skillTriggerChance
+
+// 修正後
+const skillTriggerChance = Math.min(
+  attacker.spd * BATTLE_CONFIG.SKILL_SPEED_MULTIPLIER,
+  BATTLE_CONFIG.SKILL_TRIGGER_MAX_PERCENT
+)
+const skillTrigger = Math.random() * BATTLE_CONFIG.RANDOM_RANGE < skillTriggerChance
+```
+
+- ✅ 3つの定数が正確に置換されている
+- ✅ コードの可読性が向上している
+
+#### 4. スペシャルスキルダメージ倍率の置換（行126）
+
+```typescript
+// 修正前
+const specialDamage = Math.max(1, Math.floor(attacker.atk * 1.5) - defender.def)
+
+// 修正後
+const specialDamage = Math.max(1, Math.floor(attacker.atk * BATTLE_CONFIG.SPECIAL_SKILL_DAMAGE_MULTIPLIER) - defender.def)
+```
+
+- ✅ 正確に置換されている
+
+----
+
+## 数値の整合性確認
+
+| 定数名 | 定義値 | 元の値 | 一致 |
+|--------|--------|--------|------|
+| MAX_TURNS | 20 | 20 | ✅ |
+| SKILL_SPEED_MULTIPLIER | 10 | 10 | ✅ |
+| SKILL_TRIGGER_MAX_PERCENT | 70 | 70 | ✅ |
+| RANDOM_RANGE | 100 | 100 | ✅ |
+| SPECIAL_SKILL_DAMAGE_MULTIPLIER | 1.5 | 1.5 | ✅ |
+
+すべての定数値が元のハードコード値と正確に一致しており、挙動は変わらないことが確認されています。
+
+----
+
+## 設計書との整合性
+
+| 設計書の項目 | 実装状況 | 詳細 |
+|------------|---------|------|
+| 最大ターン数の定数化 | ✅ 完了 | BATTLE_CONFIG.MAX_TURNS = 20 |
+| スキル発動率計算の定数化 | ✅ 完了 | SKILL_SPEED_MULTIPLIER = 10, SKILL_TRIGGER_MAX_PERCENT = 70 |
+| スキル発動判定の定数化 | ✅ 完了 | RANDOM_RANGE = 100 |
+| スペシャルスキルダメージ倍率の定数化 | ✅ 完了 | SPECIAL_SKILL_DAMAGE_MULTIPLIER = 1.5 |
+| トレードオフの判断 | ✅ 遵守 | ゲームバランスに影響する重要な値のみ定数化 |
+| 定数の定義場所 | ✅ 遵守 | src/lib/constants.ts に追加 |
+| battle.ts での使用 | ✅ 遵守 | すべてのハードコード値を置換 |
+
+----
 
 ## テスト結果
 
@@ -128,43 +144,97 @@ export async function GET(request: Request) {
 ### ESLint
 - ✅ すべてのルールをパス
 
----
+### TypeScript Type Check
+- ✅ `npx tsc --noEmit` が成功
+
+----
+
+## 設計方針の遵守状況
+
+| 設計方針 | 遵守状況 | 詳細 |
+|---------|---------|------|
+| String Standardization | ✅ 遵守 | バトル設定値を定数として一元管理 |
+| Simple over Complex | ✅ 遵守 | シンプルな定数定義を使用 |
+| Type Safety | ✅ 遵守 | `as const` で型安全性を確保 |
+| Consistency | ✅ 遵守 | 既存の定数定義パターンに従っている |
+| Maintainability | ✅ 向上 | バランス調整が容易になった |
+
+----
+
+## 保守性の向上
+
+### メリット
+
+1. **バランス調整の容易さ**
+   - すべてのバトル設定値が一箇所で管理される
+   - 定数ファイルを変更するだけで済む
+
+2. **可読性の向上**
+   - 定数名により、数値の意味が明確になる
+   - コメントに依存せず、コード自体で意図が伝わる
+
+3. **テストの容易さ**
+   - 定数を変更して挙動を確認しやすい
+
+4. **型安全性**
+   - `as const` により、誤って変更されるリスクがない
+
+----
+
+## generateCardStats 内のハードコード値について
+
+**観察**: `generateCardStats` 関数内には、レアリティごとのステータス範囲を定義する多数のハードコード値があります。
+
+```typescript
+case 'common':
+  hp = Math.floor(Math.random() * 21) + 100 // 100-120
+  atk = Math.floor(Math.random() * 11) + 20 // 20-30
+  def = Math.floor(Math.random() * 6) + 10 // 10-15
+  spd = Math.floor(Math.random() * 3) + 1 // 1-3
+  skill_power = Math.floor(Math.random() * 6) + 5 // 5-10
+```
+
+**評価**:
+- 設計書のトレードオフ検討により、これらは意図的に定数化されていない
+- 「選択肢1: すべての数値を定数化する」に対して「定数の数が増え、可読性が下がる可能性がある」と判断
+- 今回の実装は「ゲームバランスに影響する重要な値のみ定数化」を選択
+
+**結論**: ✅ 設計書の判断通りであり、問題ない
+
+----
 
 ## セキュリティ評価
 
-### ✅ 実装されているセキュリティ対策
+この実装は設定値の定数化であり、セキュリティに影響を与える要素はありません。
 
-1. **本番環境でのエンドポイント無効化**
-   - `NODE_ENV === 'production'` の場合、404を返す
-   - エンドポイントの存在が外部に漏れない
+----
 
-2. **ホスト制限**
-   - `['localhost', '127.0.0.1', '::1']` のみアクセスを許可
-   - 外部からのアクセスを完全にブロック
+## パフォーマンス評価
 
-3. **適切なHTTPステータスコード**
-   - 本番環境：404（存在しないエンドポイントとして扱う）
-   - 許可されていないホスト：403（認証エラー）
+定数の導入によるパフォーマンスへの影響はありません。
 
-4. **定数による一元管理**
-   - `DEBUG_CONFIG` と `ERROR_MESSAGES` で定数を一元管理
-   - 設定の変更が容易
+- 実行時に値は変わらないため、コンパイラが最適化可能
+- 関数呼び出しや計算コストが追加されていない
+- 定数の参照コストは最小限
 
----
+----
 
-## 改善点
+## まとめ
 
-なし
+### 実装の成果
 
----
-
-## 結論
-
-### 要約
-実装は設計仕様（docs/ARCHITECTURE.md）を完全に満たしています。すべてのSentry Debugエンドポイントに `checkDebugAccess` が追加され、本番環境では404を返すようになっています。また、本番環境以外でもlocalhost/127.0.0.1/::1のみでアクセス可能になっており、セキュリティ要件を満たしています。
+1. ✅ **正確な実装**: すべての定数が設計書通りに定義され、正確に置換されている
+2. ✅ **コード品質**: ESLint と TypeScript 型チェックがパス
+3. ✅ **設計方針の遵守**: トレードオフ検討に基づき、重要な値のみ定数化
+4. ✅ **保守性の向上**: バランス調整が容易になった
+5. ✅ **可読性の向上**: 定数名により、コードの意図が明確になった
+6. ✅ **挙動の維持**: すべての定数値が元の値と一致し、挙動は変わらない
 
 ### QAの判定
 **PASSED** - 実装は設計仕様を完全に満たしています。すべての必須機能が実装され、テストもパスしています。
+
+### 関連Issue
+- **Issue #37**: Code Quality - Hardcoded Battle Configuration Values in battle.ts
 
 ### 次のステップ
 1. git commit して push する

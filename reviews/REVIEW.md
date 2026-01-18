@@ -1,6 +1,6 @@
-# レビューレポート: Sentry Debug Endpoints Security (Issue #36) - 修正後レビュー
+# レビューレポート: Battle System Constants Refactoring (Issue #37)
 
-**レビュー日時**: 2026-01-18 22:38
+**レビュー日時**: 2026-01-18 22:48
 **対象**: docs/ARCHITECTURE.md, docs/IMPLEMENTED.md, 実装コード
 
 ---
@@ -10,7 +10,7 @@
 ### 全体的な評価
 
 - **コード品質**: ✅ 優秀
-- **セキュリティ**: ✅ 優秀
+- **セキュリティ**: ✅ 該当なし
 - **パフォーマンス**: ✅ 優秀
 - **コードの簡潔性**: ✅ 優秀
 
@@ -18,81 +18,22 @@
 
 ## Code Quality and Best Practices
 
-### ✅ 改善: コードの重複解消 (DRY 原則遵守)
+### ✅ 正確な定数定義
 
-**評価**: 前回のレビューで指摘された「コードの重複」問題が適切に修正されました。
-
-**確認事項**:
-- `src/lib/debug-access.ts` が新規作成され、共通のヘルパー関数が定義されている
-- `checkDebugAccess` 関数がすべてのエンドポイントで正しくインポートされている
-- 6つのファイルすべてで重複コードが削除されている
-
-```typescript
-// src/lib/debug-access.ts
-export function checkDebugAccess(request: Request): NextResponse | null {
-  if (process.env.NODE_ENV === DEBUG_CONFIG.PRODUCTION_ENV) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.DEBUG_ENDPOINT_NOT_AVAILABLE },
-      { status: 404 }
-    )
-  }
-
-  const url = new URL(request.url)
-  const host = url.hostname
-
-  if (!DEBUG_CONFIG.ALLOWED_HOSTS.some(allowedHost => allowedHost === host)) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.DEBUG_ENDPOINT_NOT_AUTHORIZED },
-      { status: 403 }
-    )
-  }
-
-  return null
-}
-```
-
-**結果**: ✅ 完璧
-
----
-
-### ✅ 改善: 不要な async 宣言の削除
-
-**評価**: 前回のレビューで指摘された「不要な async 宣言」問題が適切に修正されました。
+**評価**: BATTLE_CONFIG 定数が設計書通りに正確に定義されています。
 
 **確認事項**:
-- `checkDebugAccess` 関数が同期関数として定義されている
-- 非同期処理を行っていないため、`async` キーワードが適切に削除されている
+- `src/lib/constants.ts` に `BATTLE_CONFIG` 定数が追加されている
+- 5つの定数値がすべて `as const` で定義され、変更不可能になっている
+- 定数名が分かりやすく、意図が明確である
 
 ```typescript
-// 修正前
-async function checkDebugAccess(request: Request): Promise<NextResponse | null> {
-  // ...
-}
-
-// 修正後
-export function checkDebugAccess(request: Request): NextResponse | null {
-  // ...
-}
-```
-
-**結果**: ✅ 完璧
-
----
-
-## Security Considerations
-
-### ✅ 改善: IPv6 localhost の許可
-
-**評価**: 前回のレビューで指摘された「IPv6 localhost の除外」問題が適切に修正されました。
-
-**確認事項**:
-- `src/lib/constants.ts` の `DEBUG_CONFIG.ALLOWED_HOSTS` に `::1` が追加されている
-- IPv6 ユーザーでも localhost からアクセス可能になっている
-
-```typescript
-export const DEBUG_CONFIG = {
-  ALLOWED_HOSTS: ['localhost', '127.0.0.1', '::1'],
-  PRODUCTION_ENV: 'production',
+export const BATTLE_CONFIG = {
+  MAX_TURNS: 20,
+  SKILL_SPEED_MULTIPLIER: 10,
+  SKILL_TRIGGER_MAX_PERCENT: 70,
+  RANDOM_RANGE: 100,
+  SPECIAL_SKILL_DAMAGE_MULTIPLIER: 1.5,
 } as const
 ```
 
@@ -100,31 +41,45 @@ export const DEBUG_CONFIG = {
 
 ---
 
-### ✅ 改善: test-sentry-connection での情報露出削減
+### ✅ 適切なインポート
 
-**評価**: 前回のレビューで指摘された「test-sentry-connection での情報露出」問題が適切に修正されました。
+**評価**: `src/lib/battle.ts` で定数が正しくインポートされています。
 
 **確認事項**:
-- `src/app/api/test-sentry-connection/route.ts` のレスポンスから Sentry URL が削除されている
-- 必要最小限の情報のみが返されるようになっている
+- `BATTLE_CONFIG` が `@/lib/constants` からインポートされている
+- インポート文が整理されている
 
 ```typescript
-// 修正前
-return NextResponse.json({
-  dsnHost: dsnUrl.host,
-  sentryUrl,
-  testUrl: `https://${dsnUrl.host}/api/0/`,
-  responseStatus: response.status,
-  responseStatusText: response.statusText,
-  success: response.ok
-})
+import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES, BATTLE_LOG_MESSAGES, BATTLE_CONFIG } from '@/lib/constants'
+```
 
-// 修正後
-return NextResponse.json({
-  responseStatus: response.status,
-  responseStatusText: response.statusText,
-  success: response.ok
-})
+**結果**: ✅ 完璧
+
+---
+
+### ✅ 正確な置換
+
+**評価**: ハードコードされた値がすべて設計書通りに置換されています。
+
+**確認事項**:
+1. **maxTurns**: 行139で `BATTLE_CONFIG.MAX_TURNS` に置換
+2. **スキル発動率**: 行156-158で `BATTLE_CONFIG.SKILL_SPEED_MULTIPLIER` と `BATTLE_CONFIG.SKILL_TRIGGER_MAX_PERCENT` に置換
+3. **ランダム範囲**: 行159で `BATTLE_CONFIG.RANDOM_RANGE` に置換
+4. **スペシャルスキルダメージ倍率**: 行126で `BATTLE_CONFIG.SPECIAL_SKILL_DAMAGE_MULTIPLIER` に置換
+
+```typescript
+// 行139
+const maxTurns = BATTLE_CONFIG.MAX_TURNS
+
+// 行156-159
+const skillTriggerChance = Math.min(
+  attacker.spd * BATTLE_CONFIG.SKILL_SPEED_MULTIPLIER,
+  BATTLE_CONFIG.SKILL_TRIGGER_MAX_PERCENT
+)
+const skillTrigger = Math.random() * BATTLE_CONFIG.RANDOM_RANGE < skillTriggerChance
+
+// 行126
+const specialDamage = Math.max(1, Math.floor(attacker.atk * BATTLE_CONFIG.SPECIAL_SKILL_DAMAGE_MULTIPLIER) - defender.def)
 ```
 
 **結果**: ✅ 完璧
@@ -133,35 +88,61 @@ return NextResponse.json({
 
 ## Potential Bugs and Edge Cases
 
-### ✅ エラーハンドリングの確認
+### ✅ 数値の整合性
+
+**評価**: 定数の値が元のハードコード値と正確に一致しており、挙動は変わらないことが確認できます。
 
 **確認事項**:
-- `test-sentry-connection` のエラーハンドリングで、dsn が null の場合のチェックが適切に行われている
-- `dsn?.substring(0, 30)` が使用されているが、これは安全なオプショナルチェーンで、null の場合 undefined になる
-
-```typescript
-if (!dsn) {
-  return NextResponse.json({ error: 'DSN not configured' }, { status: 500 })
-}
-
-// 後続の処理では dsn が null にならないことが保証されている
-```
+- `MAX_TURNS = 20` - 元の値と一致
+- `SKILL_SPEED_MULTIPLIER = 10` - 元の `10` と一致
+- `SKILL_TRIGGER_MAX_PERCENT = 70` - 元の `70` と一致
+- `RANDOM_RANGE = 100` - 元の `100` と一致
+- `SPECIAL_SKILL_DAMAGE_MULTIPLIER = 1.5` - 元の `1.5` と一致
 
 **結果**: ✅ 問題なし
 
 ---
 
-## Performance Implications
+### ✅ 型安全性
 
-### ✅ URL 解析のパフォーマンス
-
-**評価**: デバッグエンドポイントでの URL 解析は、開発環境でのみ実行されるため、パフォーマンスへの影響は無視できるレベルです。
+**評価**: `as const` を使用することで、型安全性が確保されています。
 
 **確認事項**:
-- 本番環境では早期リターンするため、URL 解析は行われない
-- 開発環境でのみ実行されるため、問題ない
+- 定数オブジェクトに `as const` が付与されている
+- TypeScript が readonly として型推論するため、誤って変更されるリスクがない
+
+```typescript
+export const BATTLE_CONFIG = {
+  // ...
+} as const  // readonly な型として推論される
+```
+
+**結果**: ✅ 完璧
+
+---
+
+## Performance Implications
+
+### ✅ パフォーマンスへの影響なし
+
+**評価**: 定数の導入によるパフォーマンスへの影響はありません。
+
+**確認事項**:
+- 実行時に値は変わらないため、コンパイラが最適化可能
+- 関数呼び出しや計算コストが追加されていない
+- 定数の参照コストは最小限
 
 **結果**: ✅ 問題なし
+
+---
+
+## Security Considerations
+
+### ⚠️ 該当なし
+
+**評価**: この実装は設定値の定数化であり、セキュリティに影響を与える要素はありません。
+
+**結果**: ✅ 該当なし
 
 ---
 
@@ -169,12 +150,42 @@ if (!dsn) {
 
 ### ✅ 適切な抽象化
 
-**評価**: コードの重複を解消しつつ、過度な抽象化を行っておらず、シンプルで理解しやすい実装になっています。
+**評価**: 設計書のトレードオフ検討に基づき、ゲームバランスに影響する重要な値のみを定数化しており、過度な抽象化を避けています。
 
 **確認事項**:
-- 共通ロジックを `src/lib/debug-access.ts` に抽出
-- 各エンドポイントで簡潔に使用
-- 複雑な抽象化や不必要なカプセル化なし
+- 設計書の「選択肢1: ゲームバランスに影響する重要な値のみ定数化」に従っている
+- 定数の数が5個と適切であり、可読性を損なっていない
+- `generateCardStats` 関数内のハードコード値は、設計書通りに定数化されていない（意図的な判断）
+
+```typescript
+// generateCardStats 内のハードコード値はそのまま
+// 設計書の判断に基づき、ゲームバランス設定のみを定数化
+switch (rarity) {
+  case 'common':
+    hp = Math.floor(Math.random() * 21) + 100 // 100-120
+    // ...
+}
+```
+
+**結果**: ✅ 完璧
+
+---
+
+### ✅ 可読性の向上
+
+**評価**: 定数名により、数値の意味が明確になっています。
+
+**確認事項**:
+- `1.5` よりも `BATTLE_CONFIG.SPECIAL_SKILL_DAMAGE_MULTIPLIER` の方が意図が明確
+- コメントに依存せず、コード自体で意図が伝わる
+
+```typescript
+// 修正前
+const specialDamage = Math.max(1, Math.floor(attacker.atk * 1.5) - defender.def)
+
+// 修正後
+const specialDamage = Math.max(1, Math.floor(attacker.atk * BATTLE_CONFIG.SPECIAL_SKILL_DAMAGE_MULTIPLIER) - defender.def)
+```
 
 **結果**: ✅ 完璧
 
@@ -184,68 +195,112 @@ if (!dsn) {
 
 | 設計方針 | 遵守状況 | 詳細 |
 |---------|---------|------|
-| Simple over Complex | ✅ 優秀 | コードの重複を解消し、シンプルに保たれている |
-| Type Safety | ✅ 遵守 | TypeScript が適切に使用されている |
-| Separation of Concerns | ✅ 優秀 | 共通ロジックが適切に分離されている |
-| Security First | ✅ 優秀 | IPv6 localhost を許可、情報露出を削減 |
-| Consistency | ✅ 遵守 | すべてのデバッグエンドポイントで同一パターン使用 |
-| Development/Production Separation | ✅ 遵守 | デバッグツールは開発環境でのみ使用可能 |
+| Simple over Complex | ✅ 優秀 | 過度な抽象化を避け、重要な値のみ定数化 |
+| Type Safety | ✅ 遵守 | TypeScript の `as const` で型安全性確保 |
+| String Standardization | ✅ 優秀 | バトル設定値を定数として一元管理 |
+| Consistency | ✅ 遵守 | 既存の定数定義パターンに従っている |
+| Maintainability | ✅ 向上 | バランス調整が容易になった |
 
 ---
 
-## Linting
+## Acceptance Criteria
+
+| 受け入れ基準 | 達成状況 | 詳細 |
+|-------------|----------|------|
+| BATTLE_CONFIG 定数が追加されている | ✅ 達成 | src/lib/constants.ts に正確に定義 |
+| BATTLE_CONFIG 定数が使用されている | ✅ 達成 | src/lib/battle.ts で正しくインポート |
+| maxTurns が置換されている | ✅ 達成 | BATTLE_CONFIG.MAX_TURNS を使用 |
+| スキル発動率計算で定数を使用 | ✅ 達成 | SKILL_SPEED_MULTIPLIER と SKILL_TRIGGER_MAX_PERCENT を使用 |
+| ランダム範囲で定数を使用 | ✅ 達成 | BATTLE_CONFIG.RANDOM_RANGE を使用 |
+| スペシャルスキルダメージ倍率で定数を使用 | ✅ 達成 | SPECIAL_SKILL_DAMAGE_MULTIPLIER を使用 |
+| 既存のバトルシステムの挙動が変わらない | ✅ 達成 | すべての定数値が元の値と一致 |
+| lint がパスする | ✅ 達成 | npm run lint が成功 |
+| TypeScript の型チェックがパスする | ✅ 達成 | tsc --noEmit が成功 |
+
+---
+
+## Linting and Type Checking
 
 ### ✅ ESLint パス
 
 **確認事項**:
 - `npm run lint` がエラーなしでパスしている
-- 未使用の import が削除されている（`sentry-example-api` の `NextResponse`）
+- コードスタイルが一貫している
 
 **結果**: ✅ パス
 
 ---
 
-## Summary of Previous Issues
+### ✅ TypeScript Type Check パス
 
-| 問題 | 優先度 | 前回レビュー | 今回レビュー |
-|------|--------|-----------|-----------|
-| 実装範囲が不完全 | Critical | ⚠️ 要改善 | ⚠️ 設計書更新が必要 |
-| コードの重複 | High | ⚠️ 要改善 | ✅ 解決済み |
-| 不要な async 宣言 | Low | ⚠️ 要改善 | ✅ 解決済み |
-| IPv6 localhost の除外 | Medium | ⚠️ 要改善 | ✅ 解決済み |
-| test-sentry-connection での情報露出 | Medium | ⚠️ 要改善 | ✅ 解決済み |
-| DSN の一部露出 | Low | ✅ 許容可能 | ✅ 許容可能 |
-| X-Forwarded-Host ヘッダー | Low | ✅ 許容可能 | ✅ 許容可能 |
+**確認事項**:
+- `npx tsc --noEmit` がエラーなしでパスしている
+- 型推論が正しく機能している
+
+**結果**: ✅ パス
 
 ---
 
-## Recommendations
+## 設計書との整合性
 
-### Critical: 設計書の更新
+| 設計書の項目 | 実装状況 | 詳細 |
+|------------|---------|------|
+| 最大ターン数の定数化 | ✅ 完了 | BATTLE_CONFIG.MAX_TURNS = 20 |
+| スキル発動率計算の定数化 | ✅ 完了 | SKILL_SPEED_MULTIPLIER = 10, SKILL_TRIGGER_MAX_PERCENT = 70 |
+| スキル発動判定の定数化 | ✅ 完了 | RANDOM_RANGE = 100 |
+| スペシャルスキルダメージ倍率の定数化 | ✅ 完了 | SPECIAL_SKILL_DAMAGE_MULTIPLIER = 1.5 |
+| トレードオフの判断 | ✅ 遵守 | ゲームバランスに影響する重要な値のみ定数化 |
+| 定数の定義場所 | ✅ 遵守 | src/lib/constants.ts に追加 |
+| battle.ts での使用 | ✅ 遵守 | すべてのハードコード値を置換 |
 
-**推奨**: 設計書 (docs/ARCHITECTURE.md) の「実装完了の問題」セクションを更新し、以下を明記する必要があります：
+---
 
-1. **Issue #36 は完了**: 実装完了の問題リストから Issue #36 を削除し、「解決済み」に移動する
-2. **Sentry エラー送信問題の分離**: 設計書には Sentry エラー送信問題 (DSN ハードコード、初期化重複など) の設計が含まれているが、今回の実装では実装されていない。この問題を別の Issue として分離するか、今回の実装から除外することを明記する
+## Minor Observations
+
+### ℹ️ generateCardStats 内のハードコード値
+
+**観察**: `generateCardStats` 関数内には、レアリティごとのステータス範囲を定義する多数のハードコード値があります。
+
+```typescript
+case 'common':
+  hp = Math.floor(Math.random() * 21) + 100 // 100-120
+  atk = Math.floor(Math.random() * 11) + 20 // 20-30
+  def = Math.floor(Math.random() * 6) + 10 // 10-15
+  spd = Math.floor(Math.random() * 3) + 1 // 1-3
+  skill_power = Math.floor(Math.random() * 6) + 5 // 5-10
+```
+
+**評価**:
+- 設計書のトレードオフ検討により、これらは意図的に定数化されていない
+- 「選択肢1: すべての数値を定数化する」に対して「定数の数が増え、可読性が下がる可能性がある」と判断
+- 今回の実装は「ゲームバランスに影響する重要な値のみ定数化」を選択
+
+**結論**: ✅ 設計書の判断通りであり、問題ない
 
 ---
 
 ## Conclusion
 
-実装エージェントは、前回のレビューで指摘されたすべての問題を適切に修正しました：
+実装エージェントは、設計書に記載された要件を完全に満たす実装を行いました：
 
-1. ✅ **コード品質の向上**: コードの重複を解消し、DRY 原則を遵守
-2. ✅ **セキュリティの向上**: IPv6 localhost を許可、情報露出を削減
-3. ✅ **コードの簡潔化**: 不要な `async` 宣言を削除
-4. ✅ **Lint パス**: ESLint がエラーなしでパス
+1. ✅ **正確な実装**: すべての定数が設計書通りに定義され、正確に置換されている
+2. ✅ **コード品質**: ESLint と TypeScript 型チェックがパス
+3. ✅ **設計方針の遵守**: トレードオフ検討に基づき、重要な値のみ定数化
+4. ✅ **保守性の向上**: バランス調整が容易になった
+5. ✅ **可読性の向上**: 定数名により、コードの意図が明確になった
 
 **実装はすべてのコード品質基準を満たしており、QA エージェントに依頼しても問題ないレベルです。**
 
-唯一の懸念点は「実装範囲の明確化」ですが、これは実装そのものの問題ではなく、設計書と実装の不一致を明確化するためのものです。実装は問題ありません。
+---
+
+## Recommendations
+
+なし
+
+すべての要件が満たされており、改善点はありません。実装は非常に良い品質です。
 
 ---
 
 ## Next Steps
 
 1. **QA エージェントへの依頼**: 実装がすべての基準を満たしているため、QA エージェントにテスト依頼を行うことを推奨
-2. **設計書の更新**: アーキテクチャエージェントに、設計書の「実装完了の問題」セクションの更新を依頼することを推奨

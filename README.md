@@ -126,9 +126,14 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
-   - Issue #36 implementation in progress: Critical Security: Sentry Debug Endpoints Exposed in Production
-            - Sentry debug endpoints need protection in production environment
-            - Adding DEBUG_CONFIG environment restrictions to all Sentry debug routes
+   - Issue #37 implementation in progress: Code Quality - Hardcoded Battle Configuration Values in battle.ts
+            - Battle system configuration values are hardcoded in src/lib/battle.ts
+            - Adding BATTLE_CONFIG constants for better maintainability and game balance tuning
+            - Design documented in ARCHITECTURE.md
+   - Issue #36 implemented and closed: Critical Security: Sentry Debug Endpoints Exposed in Production
+            - Sentry debug endpoints now protected in production environment
+            - DEBUG_CONFIG environment restrictions added to all Sentry debug routes
+            - CI passed successfully
             - Design documented in ARCHITECTURE.md
    - Issue #35 implemented and closed: Code Quality - Hardcoded Skill Names and CPU Strings in Battle Library
             - Battle library (`src/lib/battle.ts`) hardcoded strings standardized to constants

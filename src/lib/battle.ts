@@ -1,5 +1,5 @@
 import type { Card, BattleCard, BattleResultData, BattleLog, SkillResult, Rarity, SkillType } from '@/types/database'
-import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES, BATTLE_LOG_MESSAGES } from '@/lib/constants'
+import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES, BATTLE_LOG_MESSAGES, BATTLE_CONFIG } from '@/lib/constants'
 
 export interface BattleCardData {
   id: string
@@ -123,8 +123,7 @@ export function executeSkill(attacker: BattleCard, defender: BattleCard): SkillR
       }
     
     case 'special':
-      // Special effects can be implemented later
-      const specialDamage = Math.max(1, Math.floor(attacker.atk * 1.5) - defender.def)
+      const specialDamage = Math.max(1, Math.floor(attacker.atk * BATTLE_CONFIG.SPECIAL_SKILL_DAMAGE_MULTIPLIER) - defender.def)
       return {
         damage: specialDamage,
         message: BATTLE_LOG_MESSAGES.SKILL_SPECIAL(attacker.name, attacker.skill_name, specialDamage)
@@ -137,7 +136,7 @@ export function executeSkill(attacker: BattleCard, defender: BattleCard): SkillR
 
 // Play battle between two cards
 export async function playBattle(userCard: BattleCard, opponentCard: BattleCard): Promise<BattleResultData> {
-  const maxTurns = 20
+  const maxTurns = BATTLE_CONFIG.MAX_TURNS
   const logs: BattleLog[] = []
   let turn = 1
   
@@ -153,9 +152,11 @@ export async function playBattle(userCard: BattleCard, opponentCard: BattleCard)
     const attacker = currentActor === 'user' ? userStats : opponentStats
     const defender = currentActor === 'user' ? opponentStats : userStats
     
-    // Skill trigger chance (SPD * 10%, max 70%)
-    const skillTriggerChance = Math.min(attacker.spd * 10, 70)
-    const skillTrigger = Math.random() * 100 < skillTriggerChance
+    const skillTriggerChance = Math.min(
+      attacker.spd * BATTLE_CONFIG.SKILL_SPEED_MULTIPLIER,
+      BATTLE_CONFIG.SKILL_TRIGGER_MAX_PERCENT
+    )
+    const skillTrigger = Math.random() * BATTLE_CONFIG.RANDOM_RANGE < skillTriggerChance
     
     if (skillTrigger) {
       // Execute skill
