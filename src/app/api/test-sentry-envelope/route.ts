@@ -3,15 +3,19 @@ import { NextResponse } from 'next/server'
 export async function GET() {
   const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN
 
-  if (!dsn) {
-    return NextResponse.json({ error: 'DSN not configured' }, { status: 500 })
-  }
-
   try {
-    const dsnParts = dsn.split('@')
-    const publicKey = dsnParts[0].split('://')[1]
-    const host = dsnParts[1].split('/')[0]
-    const projectId = dsnParts[1].split('/')[1]
+    if (!dsn) {
+      throw new Error('DSN is not configured')
+    }
+
+    const url = new URL(dsn.replace('://', '://test@'))
+    const host = url.host
+    const pathParts = url.pathname.split('/').filter(Boolean)
+    const projectId = pathParts[0]
+
+    if (!host || !projectId) {
+      throw new Error('Invalid DSN format')
+    }
 
     const sentryUrl = `https://${host}/api/${projectId}/envelope/`
 
@@ -41,16 +45,12 @@ export async function GET() {
       success: true,
       status: response.status,
       statusText: response.statusText,
-      eventId: testEvent.event_id,
-      url: sentryUrl,
-      dsnHost: host,
-      projectId
+      eventId: testEvent.event_id
     })
   } catch (error) {
     return NextResponse.json({
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      dsn: dsn?.substring(0, 30) + '...'
+      error: error instanceof Error ? error.message : 'Unknown error'
     }, { status: 500 })
   }
 }

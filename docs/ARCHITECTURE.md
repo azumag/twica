@@ -35,6 +35,11 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - 配信者ダッシュボード（カード管理、設定）
 - 視聴者ダッシュボード（所持カード、ガチャ履歴）
 
+### エラートラッキング
+- Sentryによるエラー監視
+- アプリケーションエラーの自動送信
+- GitHub Issuesへの自動連携
+
 ---
 
 ## 非機能要件
@@ -64,10 +69,16 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 ### 可用性
 - Vercelによる99.95% SLA
 - Supabaseによる99.9% データベース可用性
+- エラー検知と通知（Sentry）
 
 ### スケーラビリティ
 - Vercel Serverless Functionsの自動スケーリング
 - SupabaseのマネージドPostgreSQL（自動スケーリング）
+
+### 可観測性
+- Sentryによるエラー追跡と監視
+- 構造化ロギング
+- パフォーマンスモニタリング
 
 ---
 
@@ -141,6 +152,15 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] ハードコードされた日本語文字列が削除されている
 - [x] Battle API と battle.ts の間で一貫性が保たれている
 
+### Sentry エラー追跡
+- [ ] Sentry DSN が環境変数から正しく読み込まれる
+- [ ] クライアント側エラーがSentryに送信される
+- [ ] サーバー側APIエラーがSentryに送信される
+- [ ] コンソールエラーがSentryにキャプチャされる
+- [ ] 500エラーがSentryに報告される
+- [ ] Sentryイベントの環境が正しく設定される
+- [ ] エラーコンテキスト（ユーザー、リクエストなど）が正しく付与される
+
 ---
 
 ## 設計方針
@@ -201,9 +221,166 @@ graph LR
     User --> GachaFlow
     User --> BattleFlow
     AuthFlow --> ErrorTracking
-    GachaFlow ErrorTracking
+    GachaFlow --> ErrorTracking
     BattleFlow --> ErrorTracking
 ```
+
+---
+
+## Sentry 設計
+
+### 現状の問題
+
+1. **`instrumentation-client.ts` でDSNがハードコードされている**
+   - 環境変数 `NEXT_PUBLIC_SENTRY_DSN` が使用されていない
+   - `sentry.client.config.ts` でも初期化されており、初期化が重複している可能性がある
+
+2. **`sentry.server.config.ts` の `beforeSend` で不適切な処理**
+   - `event.request?.headers` をチェックしているが、サーバー側エラーでは `event.request` が存在しない可能性がある
+   - これにより、イベントがフィルタリングされる可能性がある
+
+3. **Sentry初期化の重複**
+   - `instrumentation-client.ts` と `sentry.client.config.ts` の両方で `Sentry.init()` を呼んでいる
+   - これにより、初期化が競合し、正しく動作しない可能性がある
+
+4. **クライアント側エラーハンドリング**
+   - グローバルエラーハンドラー (`global-error.tsx`) は存在するが、クライアント側のエラーが正しくSentryに送信されているか不明
+
+### 解決策
+
+#### 1. `instrumentation-client.ts` の削除
+
+`src/instrumentation-client.ts` を削除し、`sentry.client.config.ts` に統合します。
+
+**理由**:
+- Next.jsのSentry SDKは、`sentry.client.config.ts` と `sentry.server.config.ts` を自動的に読み込みます
+- `instrumentation-client.ts` はNext.jsのApp Routerでは必要ありません
+- 初期化の重複を防ぐため
+
+**削除するファイル**:
+- `src/instrumentation-client.ts`
+
+#### 2. `sentry.client.config.ts` の更新
+
+`instrumentation-client.ts` から必要な設定を `sentry.client.config.ts` に移動し、環境変数を使用するように修正します。
+
+**変更点**:
+```typescript
+// sentry.client.config.ts
+import * as Sentry from '@sentry/nextjs'
+
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
+
+  integrations: [
+    Sentry.replayIntegration(),
+  ],
+
+  tracesSampleRate: 1.0,
+
+  replaysSessionSampleRate: 0.1,
+  replaysOnErrorSampleRate: 1.0,
+
+  beforeSend(event) {
+    if (event.user) {
+      delete event.user.email
+      delete event.user.ip_address
+    }
+
+    return event
+  },
+
+  release: process.env.NEXT_PUBLIC_VERSION || 'local',
+})
+```
+
+#### 3. `sentry.server.config.ts` の修正
+
+`beforeSend` で `event.request` が存在する場合のみヘッダーを削除するように修正します。
+
+**変更点**:
+```typescript
+// sentry.server.config.ts
+import * as Sentry from '@sentry/nextjs'
+
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
+
+  beforeSend(event) {
+    if (event.user) {
+      delete event.user.email
+      delete event.user.ip_address
+    }
+
+    if (event.request?.headers) {
+      const { cookie: _cookie, authorization: _auth, ...headers } = event.request.headers
+      void _cookie
+      void _auth
+      event.request.headers = headers
+    }
+
+    return event
+  },
+
+  release: process.env.NEXT_PUBLIC_VERSION || 'local',
+})
+```
+
+#### 4. `sentry.edge.config.ts` の確認
+
+エッジランタイムの設定も同様に修正します。
+
+**変更点**:
+```typescript
+// sentry.edge.config.ts
+import * as Sentry from '@sentry/nextjs'
+
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
+
+  beforeSend(event) {
+    if (event.user) {
+      delete event.user.email
+      delete event.user.ip_address
+    }
+
+    return event
+  },
+
+  release: process.env.NEXT_PUBLIC_VERSION || 'local',
+})
+```
+
+### トレードオフの検討
+
+#### 選択肢1: `instrumentation-client.ts` を残す
+- **メリット**: 独自の初期化ロジックを追加できる
+- **デメリット**: 初期化の重複により不具合の原因になる可能性がある
+- **判断**: 削除する（シンプルさを優先）
+
+#### 選択肢2: `beforeSend` でヘッダー削除を完全に無効化
+- **メリット**: すべての情報がSentryに送信される
+- **デメリット**: セキュリティ上のリスク（cookie、authorizationが送信される可能性がある）
+- **判断**: 適切にフィルタリングする（セキュリティを優先）
+
+#### 選択肢3: Replay Integrationを無効化
+- **メリット**: バンドルサイズが小さくなる
+- **デメリット**: エラーの再現が難しくなる
+- **判断**: 有効化する（デバッグ効率を優先）
+
+### 受け入れ基準
+
+- [ ] `instrumentation-client.ts` が削除されている
+- [ ] `sentry.client.config.ts` に必要な設定が統合されている
+- [ ] `sentry.client.config.ts` で環境変数 `NEXT_PUBLIC_SENTRY_DSN` が使用されている
+- [ ] `sentry.server.config.ts` の `beforeSend` で適切に `event.request` のチェックが行われている
+- [ ] `sentry.edge.config.ts` で環境変数 `NEXT_PUBLIC_SENTRY_DSN` が使用されている
+- [ ] クライアント側エラーがSentryに送信される（`/sentry-example-page` で確認）
+- [ ] サーバー側エラーがSentryに送信される（`/api/sentry-example-api` で確認）
+- [ ] 500エラーがSentryに報告される（意図的にエラーを発生させて確認）
 
 ---
 
@@ -211,10 +388,7 @@ graph LR
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-18 | Issue #35 バトルライブラリ文字列定数化の実装完了 |
-| 2026-01-18 | Issue #34 CPU カード文字列定数化の実装完了 |
-| 2026-01-18 | Issue #33 Session API エラーメッセージ標準化の実装完了 |
-| 2026-01-18 | Issue #32 デバッグエンドポイントセキュリティ強化の実装完了 |
+| 2026-01-18 | Sentryエラー送信問題の設計を追加 |
 
 ---
 
@@ -225,4 +399,4 @@ graph LR
 - **Issue #33**: Code Quality - Session API Error Message Standardization (解決済み)
 - **Issue #32**: Critical Security - Debug Endpoint Exposes Sensitive Cookies (解決済み)
 
-過去のアーキテクチャドキュメントの詳細は `docs/ARCHITECTURE_2026-01-18_140900.md` を参照してください。
+過去のアーキテクチャドキュメントの詳細は `docs/ARCHITECTURE_2026-01-18_200000.md` を参照してください。
