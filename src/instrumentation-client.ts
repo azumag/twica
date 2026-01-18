@@ -8,7 +8,6 @@ Sentry.init({
     environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
   
     integrations: [
-          Sentry.replayIntegration(),
           Sentry.globalHandlersIntegration({
                   onerror: true,
                   onunhandledrejection: true,
