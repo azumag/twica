@@ -1,11 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-
-interface TwitchLoginResponse {
-  authUrl?: string
-  error?: string
-}
+import { TwitchLoginResponse } from '@/types/auth'
 
 function useTwitchLogin() {
   const [isLoading, setIsLoading] = useState(false)

@@ -1,11 +1,7 @@
 'use client'
 
 import { useEffect } from 'react'
-
-interface TwitchLoginResponse {
-  authUrl?: string
-  error?: string
-}
+import { TwitchLoginResponse } from '@/types/auth'
 
 export function TwitchLoginRedirect() {
   useEffect(() => {
