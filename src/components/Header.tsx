@@ -1,6 +1,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { getSession } from "@/lib/session";
+import { UI_STRINGS } from "@/lib/constants";
 
 interface HeaderProps {
   session: Awaited<ReturnType<typeof getSession>>;
@@ -39,7 +40,7 @@ export default function Header({ session }: HeaderProps) {
             href="/api/auth/logout"
             className="rounded-lg border border-gray-700 px-4 py-2 text-gray-300 hover:bg-gray-800"
           >
-            ログアウト
+            {UI_STRINGS.AUTH.LOGOUT}
           </Link>
         </div>
       </div>

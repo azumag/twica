@@ -67,6 +67,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - デバッグエンドポイントの保護（Issue #32）
 - Sentryデバッグエンドポイントの保護（Issue #36）
 - セキュリティヘッダーの設定（Issue #43）
+- ファイルアップロードのサニタイズ（Issue #44）
 
 ### 可用性
 - Vercelによる99.95% SLA
@@ -173,7 +174,16 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [ ] 本番環境で Next.js App Router が正常に動作することを確認
 - [ ] nonceを使用したCSPの実装（必要な場合）
 - [x] lint と test がパスする
-- [ ] CI がパスする
+- [x] CI がパスする
+
+### ファイルアップロードのセキュリティ（Issue #44）
+- [x] ファイル名がハッシュ化される
+- [x] マジックバイトによるファイルタイプ検証が実装される
+- [x] 拡張子とファイル内容が一致しない場合、400エラーが返される
+- [x] パストラバーサル攻撃が防止される
+- [x] テストが追加される
+- [x] lint と test がパスする
+- [x] CI がパスする
 
 ---
 
@@ -202,6 +212,8 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 12. **Constant Standardization**: すべての設定値・定数を一元管理
 13. **Client-side OAuth**: OAuthリダイレクトはクライアント側で行い、CORS問題を回避
 14. **Security Headers**: すべてのリクエストにセキュリティヘッダーを設定
+15. **File Upload Security**: ファイルアップロード時に適切なサニタイズと検証を行う
+16. **Token Management**: Twitch トークンは適切に保存・更新・削除する
 
 ### 技術選定基準
 - マネージドサービス優先（運用コスト削減）
@@ -231,438 +243,604 @@ graph LR
     GachaFlow[Gacha: EventSub triggers]
     BattleFlow[Battle: Card battles with abilities]
     ErrorTracking[Error: Sentry + GitHub Issues]
+    TokenManagement[Token Management: Twitch OAuth tokens]
     End
 
     User --> AuthFlow
     User --> UploadFlow
     User --> GachaFlow
     User --> BattleFlow
+    User --> TokenManagement
     AuthFlow --> ErrorTracking
     GachaFlow --> ErrorTracking
     BattleFlow --> ErrorTracking
+    TokenManagement --> Twitch
 ```
 
 ---
 
-## セキュリティヘッダーの設定（Issue #43）- CSP実装方法の更新
+## Critical Bug: Twitch API Calls Fail Due to Missing Twitch Access Token Storage (Issue #46)
 
 ### 概要
 
-APIルートやページでセキュリティヘッダーが設定されていません。これにより、XSS、クリックジャッキングなどの攻撃に対する脆弱性が存在する可能性があります。
+`/api/twitch/rewards` エンドポイントが Twitch API を呼び出す際、Supabase のセッションアクセストークンを使用しており、これにより Twitch API 呼び出しが失敗します。
 
 ### 問題点
 
-以下のセキュリティヘッダーが設定されていません：
-
-1. **X-Content-Type-Options**: MIMEタイプスニッフィングを防ぐ
-2. **X-Frame-Options**: クリックジャッキングを防ぐ
-3. **X-XSS-Protection**: XSSフィルターを有効化
-4. **Content-Security-Policy**: コンテンツセキュリティポリシーを設定
-5. **Strict-Transport-Security**: HTTPSのみでの接続を強制
+1. **Twitch トークンが保存されていない**: Twitch OAuth コールバック (`/api/auth/twitch/callback`) で Twitch の `access_token` と `refresh_token` を取得していますが、これらはどこにも保存されていません
+2. **誤ったトークンが使用されている**: `/api/twitch/rewards` の `getAccessToken()` 関数は Supabase Auth のセッションアクセストークンを取得しており、これは Twitch API とは無関係です
+3. **Twitch API 呼び出しが失敗する**: Supabase トークンを使用して Twitch API を呼び出そうとすると、401 Unauthorized エラーが発生します
 
 ### 影響範囲
 
-- すべての API ルート
-- すべてのページ
-
-### Tailwind CSS v4 と Next.js App Router の CSP 対応状況
-
-#### Tailwind CSS v4
-- **静的なCSS生成**: v4では、静的なCSS生成が可能で、インラインスタイルに依存しなくなっています
-- **CSP対応**: v4では、インラインスタイルの使用が大幅に減少し、CSP対応が改善されています
-- **style-src**: `style-src 'self'` で十分に動作する可能性があります
-
-#### Next.js App Router
-- **インラインスクリプト**: Next.js App Routerでは、インラインスクリプトが一部使用される可能性があります
-- **CSPサポート**: Next.jsはCSPをネイティブにサポートしており、`next.config.js`でCSPを設定できます
-- **nonce**: Next.jsでは、nonceを使用したCSPを実装できます
+- `/Users/azumag/work/twica/src/app/api/auth/twitch/callback/route.ts` (lines 52-74)
+  - Twitch トークンが取得され、使用されずに破棄される
+- `/Users/azumag/work/twica/src/app/api/twitch/rewards/route.ts` (lines 10-14, 40-43, 93-96)
+  - Supabase トークンが誤って Twitch API 呼び出しに使用される
+- ストリーマー機能（チャンネルポイント報酬の管理）が完全に使用できない
 
 ### 設計
 
-#### 1. 定数の追加
+#### 1. データベーススキーマの変更
 
-`src/lib/constants.ts` にセキュリティヘッダー用の定数を追加します。
+`users` テーブルに Twitch トークンを保存するカラムを追加します：
 
-```typescript
-export const SECURITY_HEADERS = {
-  X_CONTENT_TYPE_OPTIONS: 'nosniff',
-  X_FRAME_OPTIONS: 'DENY',
-  X_XSS_PROTECTION: '1; mode=block',
-  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;",
-  CSP_PRODUCTION: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;",
-  HSTS: 'max-age=31536000; includeSubDomains; preload',
-} as const
+```sql
+-- マイグレーション: supabase/migrations/20260119020000_add_twitch_tokens_to_users.sql
+ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_access_token TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_refresh_token TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_token_expires_at TIMESTAMP WITH TIME ZONE;
+
+-- RLS ポリシーを更新
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+
+-- トークンカラムはシステム（サーバーサイド）のみ更新可能
+CREATE POLICY "Users can update own twitch tokens"
+ON users FOR UPDATE
+USING (auth.uid()::text = twitch_user_id)
+WITH CHECK (auth.uid()::text = twitch_user_id);
+
+-- トークンカラムはシステム（サーバーサイド）のみ読み取り可能
+CREATE POLICY "Users can read own twitch tokens"
+ON users FOR SELECT
+USING (auth.uid()::text = twitch_user_id);
 ```
 
-**重要**:
-- **開発環境**: `'unsafe-eval'` と `'unsafe-inline'` を許可します
-- **本番環境**: `'unsafe-eval'` と `'unsafe-inline'` を削除します
-- **Tailwind CSS v4**: 静的なCSS生成を活用し、インラインスタイルに依存しないようにします
-- **Next.js App Router**: インラインスクリプトを最小限に抑えるようにします
+#### 2. Twitch トークン管理ユーティリティの作成
 
-#### 2. ヘルパー関数の作成
-
-`src/lib/security-headers.ts` にヘルパー関数を作成します。
+`src/lib/twitch/token-manager.ts` を作成：
 
 ```typescript
-import { NextResponse } from 'next/server'
-import { SECURITY_HEADERS } from './constants'
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
+import { refreshTwitchToken, type TwitchTokens } from './auth';
 
-export function setSecurityHeaders(response: NextResponse): NextResponse {
-  response.headers.set('X-Content-Type-Options', SECURITY_HEADERS.X_CONTENT_TYPE_OPTIONS)
-  response.headers.set('X-Frame-Options', SECURITY_HEADERS.X_FRAME_OPTIONS)
-  response.headers.set('X-XSS-Protection', SECURITY_HEADERS.X_XSS_PROTECTION)
+export interface TwitchTokenData {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: Date;
+}
 
-  const csp = process.env.NODE_ENV === 'production'
-    ? SECURITY_HEADERS.CSP_PRODUCTION
-    : SECURITY_HEADERS.CSP_DEVELOPMENT
-  response.headers.set('Content-Security-Policy', csp)
+export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
+  const supabaseAdmin = getSupabaseAdmin();
 
-  if (process.env.NODE_ENV === 'production') {
-    response.headers.set('Strict-Transport-Security', SECURITY_HEADERS.HSTS)
+  const { data: user } = await supabaseAdmin
+    .from('users')
+    .select('twitch_access_token, twitch_refresh_token, twitch_token_expires_at')
+    .eq('twitch_user_id', twitchUserId)
+    .single();
+
+  if (!user || !user.twitch_access_token || !user.twitch_refresh_token) {
+    return null;
   }
 
-  return response
+  const now = new Date();
+  const expiresAt = new Date(user.twitch_token_expires_at);
+
+  if (expiresAt > now) {
+    return user.twitch_access_token;
+  }
+
+  return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
+}
+
+async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: string): Promise<string | null> {
+  try {
+    const tokens = await refreshTwitchToken(refreshToken);
+    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const { error } = await supabaseAdmin
+      .from('users')
+      .update({
+        twitch_access_token: tokens.access_token,
+        twitch_refresh_token: tokens.refresh_token,
+        twitch_token_expires_at: expiresAt.toISOString(),
+      })
+      .eq('twitch_user_id', twitchUserId);
+
+    if (error) {
+      throw error;
+    }
+
+    return tokens.access_token;
+  } catch (error) {
+    return null;
+  }
+}
+
+export async function saveTwitchTokens(twitchUserId: string, tokens: TwitchTokens): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({
+      twitch_access_token: tokens.access_token,
+      twitch_refresh_token: tokens.refresh_token,
+      twitch_token_expires_at: expiresAt.toISOString(),
+    })
+    .eq('twitch_user_id', twitchUserId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({
+      twitch_access_token: null,
+      twitch_refresh_token: null,
+      twitch_token_expires_at: null,
+    })
+    .eq('twitch_user_id', twitchUserId);
+
+  if (error) {
+    throw error;
+  }
 }
 ```
 
-#### 3. Proxy での適用
+#### 3. Twitch OAuth コールバックの修正
 
-`src/proxy.ts` でセキュリティヘッダーを適用します。
+`src/app/api/auth/twitch/callback/route.ts` を修正：
 
 ```typescript
-import { type NextRequest, NextResponse } from 'next/server'
-import { updateSession } from '@/lib/supabase/middleware'
-import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
-import { setSecurityHeaders } from '@/lib/security-headers'
+import { saveTwitchTokens } from '@/lib/twitch/token-manager';
 
-export async function proxy(request: NextRequest) {
-  const response = await updateSession(request)
+// ... 既存のコード ...
 
-  setSecurityHeaders(response)
+export async function GET(request: NextRequest) {
+  // ... 既存のバリデーションコード ...
 
-  if (request.nextUrl.pathname.startsWith('/api')) {
-    const ip = getClientIp(request);
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`;
 
-    const identifier = `global:${ip}`;
-    const rateLimitResult = await checkRateLimit(
-      rateLimits.eventsub,
-      identifier
+    let tokens;
+    try {
+      tokens = await exchangeCodeForTokens(code, redirectUri);
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'twitch_auth_failed',
+        { code: code.substring(0, 10) + '...' }
+      );
+    }
+
+    let twitchUser;
+    try {
+      twitchUser = await getTwitchUser(tokens.access_token);
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'twitch_user_fetch_failed',
+        { twitchUserId: tokens.access_token.substring(0, 10) + '...' }
+      );
+    }
+
+    // Check if user can be a streamer (affiliate or partner)
+    const canBeStreamer = twitchUser.broadcaster_type === 'affiliate' || twitchUser.broadcaster_type === 'partner';
+
+    try {
+      await supabaseAdmin
+        .from('users')
+        .upsert({
+          twitch_user_id: twitchUser.id,
+          twitch_username: twitchUser.login,
+          twitch_display_name: twitchUser.display_name,
+          twitch_profile_image_url: twitchUser.profile_image_url,
+          twitch_access_token: tokens.access_token,
+          twitch_refresh_token: tokens.refresh_token,
+          twitch_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+        }, {
+          onConflict: 'twitch_user_id',
+        });
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'database_error',
+        { operation: 'upsert_user', twitchUserId: twitchUser.id }
+      );
+    }
+
+    if (canBeStreamer) {
+      try {
+        await supabaseAdmin
+          .from('streamers')
+          .upsert({
+            twitch_user_id: twitchUser.id,
+            twitch_username: twitchUser.login,
+            twitch_display_name: twitchUser.display_name,
+            twitch_profile_image_url: twitchUser.profile_image_url,
+          }, {
+            onConflict: 'twitch_user_id',
+          });
+      } catch (error) {
+        return handleAuthError(
+          error,
+          'database_error',
+          { operation: 'upsert_streamer', twitchUserId: twitchUser.id }
+        );
+      }
+    }
+
+    // ... 既存のセッション設定コード ...
+  } catch (error) {
+    return handleAuthError(error, 'unknown_error');
+  }
+}
+```
+
+#### 4. Twitch Rewards API の修正
+
+`src/app/api/twitch/rewards/route.ts` を修正：
+
+```typescript
+import { getTwitchAccessToken } from '@/lib/twitch/token-manager';
+import { ERROR_MESSAGES } from '@/lib/constants';
+
+// ... 既存の getAccessToken 関数を削除 ...
+
+async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string> {
+  const accessToken = await getTwitchAccessToken(twitchUserId);
+
+  if (!accessToken) {
+    throw new Error(ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE);
+  }
+
+  return accessToken;
+}
+
+export async function GET(request: Request) {
+  const session = await getSession();
+
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.twitchRewardsGet, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(rateLimitResult.limit),
+          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+          "X-RateLimit-Reset": String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
+  if (!session || !canUseStreamerFeatures(session)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
+  }
+
+  const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
+
+  try {
+    const response = await fetch(
+      `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+        },
+      }
     );
 
-    if (!rateLimitResult.success) {
-      const errorResponse = NextResponse.json(
-        { error: 'Too many requests' },
-        {
-          status: 429,
-          headers: {
-            'X-RateLimit-Limit': String(rateLimitResult.limit),
-            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-            'X-RateLimit-Reset': String(rateLimitResult.reset),
-          },
-        }
-      );
-
-      return setSecurityHeaders(errorResponse)
+    if (!response.ok) {
+      const error = await response.json();
+      return handleApiError(error, "Twitch API rewards fetch");
     }
-  }
 
-  return response
+    const data = await response.json();
+    return NextResponse.json(data.data || []);
+  } catch (error) {
+    return handleApiError(error, "Twitch rewards fetch");
+  }
 }
 
-export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-  ],
+export async function POST(request: Request) {
+  const session = await getSession();
+
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.twitchRewardsPost, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(rateLimitResult.limit),
+          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+          "X-RateLimit-Reset": String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
+  if (!session || !canUseStreamerFeatures(session)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
+  }
+
+  const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
+
+  try {
+    const response = await fetch(
+      `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: "TwiCa カードガチャ",
+          cost: 100,
+          prompt: "カードガチャを1回引きます",
+          is_enabled: true,
+          background_color: "#9147FF",
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      return handleApiError(error, "Twitch API reward creation");
+    }
+
+    const data = await response.json();
+    return NextResponse.json(data.data[0]);
+  } catch (error) {
+    return handleApiError(error, "Twitch reward creation");
+  }
 }
 ```
 
-#### 4. テスト
+#### 5. ログアウト時のトークン削除
 
-`tests/unit/security-headers.test.ts` にテストを追加します。
+`src/app/api/auth/logout/route.ts` で Twitch トークンも削除：
 
 ```typescript
-import { describe, it, expect, vi } from 'vitest'
-import { NextResponse } from 'next/server'
-import { setSecurityHeaders } from '@/lib/security-headers'
+import { deleteTwitchTokens } from '@/lib/twitch/token-manager';
 
-describe('setSecurityHeaders', () => {
-  it('X-Content-Type-Optionsヘッダーを設定する', () => {
-    const response = NextResponse.json({ test: 'data' })
-    const result = setSecurityHeaders(response)
-    expect(result.headers.get('X-Content-Type-Options')).toBe('nosniff')
-  })
+export async function POST(request: NextRequest) {
+  try {
+    const session = await getSession();
 
-  it('X-Frame-Optionsヘッダーを設定する', () => {
-    const response = NextResponse.json({ test: 'data' })
-    const result = setSecurityHeaders(response)
-    expect(result.headers.get('X-Frame-Options')).toBe('DENY')
-  })
+    if (session) {
+      await deleteTwitchTokens(session.twitchUserId);
+    }
 
-  it('X-XSS-Protectionヘッダーを設定する', () => {
-    const response = NextResponse.json({ test: 'data' })
-    const result = setSecurityHeaders(response)
-    expect(result.headers.get('X-XSS-Protection')).toBe('1; mode=block')
-  })
+    await clearSession();
 
-  describe('Content-Security-Policy', () => {
-    it('開発環境ではlocalhostへの接続を許可する', () => {
-      vi.stubEnv('NODE_ENV', 'development')
-      const response = NextResponse.json({ test: 'data' })
-      const result = setSecurityHeaders(response)
-      const csp = result.headers.get('Content-Security-Policy')
-      expect(csp).toContain('localhost:*')
-      expect(csp).toContain('unsafe-eval')
-      expect(csp).toContain('unsafe-inline')
-      vi.unstubAllEnvs()
-    })
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    return handleApiError(error, "Logout API");
+  }
+}
+```
 
-    it('本番環境ではlocalhostへの接続を許可しない', () => {
-      vi.stubEnv('NODE_ENV', 'production')
-      const response = NextResponse.json({ test: 'data' })
-      const result = setSecurityHeaders(response)
-      const csp = result.headers.get('Content-Security-Policy')
-      expect(csp).toContain('connect-src \'self\' https:;')
-      expect(csp).not.toContain('localhost')
-      expect(csp).not.toContain('unsafe-eval')
-      expect(csp).not.toContain('unsafe-inline')
-      vi.unstubAllEnvs()
-    })
-  })
+#### 6. テストの追加
 
-  describe('Strict-Transport-Security', () => {
-    it('本番環境でのみHSTSを設定する', () => {
-      vi.stubEnv('NODE_ENV', 'production')
-      const response = NextResponse.json({ test: 'data' })
-      const result = setSecurityHeaders(response)
-      expect(result.headers.get('Strict-Transport-Security')).toBe('max-age=31536000; includeSubDomains; preload')
-      vi.unstubAllEnvs()
-    })
+`tests/unit/twitch-token-manager.test.ts` の追加：
 
-    it('開発環境ではHSTSを設定しない', () => {
-      vi.stubEnv('NODE_ENV', 'development')
-      const response = NextResponse.json({ test: 'data' })
-      const result = setSecurityHeaders(response)
-      expect(result.headers.get('Strict-Transport-Security')).toBeNull()
-      vi.unstubAllEnvs()
-    })
-  })
-})
+```typescript
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { getTwitchAccessToken, saveTwitchTokens, deleteTwitchTokens } from '@/lib/twitch/token-manager';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
+import { refreshTwitchToken } from '@/lib/twitch/auth';
+
+vi.mock('@/lib/supabase/admin');
+vi.mock('@/lib/twitch/auth');
+
+describe('Twitch Token Manager', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('getTwitchAccessToken', () => {
+    it('有効なトークンを返す', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: {
+            twitch_access_token: 'valid-token',
+            twitch_refresh_token: 'refresh-token',
+            twitch_token_expires_at: new Date(Date.now() + 3600000).toISOString(),
+          },
+          error: null,
+        }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBe('valid-token');
+    });
+
+    it('トークンが存在しない場合は null を返す', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: null,
+          error: null,
+        }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBeNull();
+    });
+
+    it('期限切れのトークンを更新する', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValueOnce({
+          data: {
+            twitch_access_token: 'expired-token',
+            twitch_refresh_token: 'refresh-token',
+            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+          },
+          error: null,
+        }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+      vi.mocked(refreshTwitchToken).mockResolvedValue({
+        access_token: 'new-token',
+        refresh_token: 'new-refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        scope: ['user:read:email'],
+      });
+
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBe('new-token');
+      expect(refreshTwitchToken).toHaveBeenCalledWith('refresh-token');
+    });
+  });
+
+  describe('saveTwitchTokens', () => {
+    it('トークンを保存する', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockResolvedValue({
+          error: null,
+        }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+
+      await saveTwitchTokens('123456789', {
+        access_token: 'access-token',
+        refresh_token: 'refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        scope: ['user:read:email'],
+      });
+
+      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('users');
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          twitch_access_token: 'access-token',
+          twitch_refresh_token: 'refresh-token',
+        })
+      );
+    });
+  });
+
+  describe('deleteTwitchTokens', () => {
+    it('トークンを削除する', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockResolvedValue({
+          error: null,
+        }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+
+      await deleteTwitchTokens('123456789');
+
+      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('users');
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          twitch_access_token: null,
+          twitch_refresh_token: null,
+          twitch_token_expires_at: null,
+        })
+      );
+    });
+  });
+});
 ```
 
 ### メリット
 
-1. **セキュリティ強化**: XSS、クリックジャッキングなどの攻撃を防ぐ
-2. **ベストプラクティス**: OWASP などのセキュリティガイドラインに準拠
-3. **一元管理**: セキュリティヘッダーを一箇所で管理
-4. **環境別設定**: 開発環境と本番環境で異なる設定を適用
-5. **Tailwind CSS v4対応**: Tailwind CSS v4の静的なCSS生成を活用
+1. **機能修復**: ストリーマー機能（チャンネルポイント報酬の管理）が正常に動作する
+2. **トークン管理の改善**: Twitch トークンの保存、更新、削除が適切に行われる
+3. **自動リフレッシュ**: トークンの有効期限が切れた場合、自動的に更新される
+4. **セキュリティの維持**: トークンはデータベースに安全に保存され、RLS ポリシーで保護される
 
 ### トレードオフの検討
 
-#### 選択肢1: 現状のCSP実装（採用）
+#### 選択肢1: データベースに保存（採用）
+- **メリット**:
+  - 永続的な保存
+  - サーバーサイドでトークン更新が可能
+  - 複数のセッション間でトークンを共有可能
+- **デメリット**:
+  - データベースへの追加クエリが必要
+  - RLS ポリシーの適切な設定が必要
+- **判断**: ストリーマー機能の必要性とトークン管理の柔軟性を考慮し採用
+
+#### 選択肢2: Cookie に保存（採用しない）
 - **メリット**:
   - 実装がシンプル
-  - Tailwind CSS v4の静的なCSS生成を活用できる
-  - `'unsafe-eval'` と `'unsafe-inline'` を削除し、セキュリティを強化
+  - データベースの追加クエリ不要
 - **デメリット**:
-  - Next.js App Routerのインラインスクリプトを許可しないため、Next.jsが正常に動作しない可能性がある
-  - 本番環境で問題が発生した場合、対処が必要
-- **判断**: この選択肢をまず試す
+  - Cookie のサイズ制限（4KB）
+  - セキュリティリスク（XSS によるトークン盗難の可能性）
+  - トークンの自動リフレッシュが困難
+- **判断**: セキュリティと機能性を考慮し採用しない
 
-#### 選択肢2: nonceを使用したCSP（代替案）
+#### 選択肢3: Redis に保存（採用しない）
 - **メリット**:
-  - セキュリティを維持したまま、Next.jsやTailwind CSSを使用できる
-  - OWASP CSPガイドラインに準拠
+  - 高速なアクセス
+  - 自動期限切れ（TTL）
 - **デメリット**:
-  - 実装の複雑度が増す
-  - Next.jsの設定変更が必要
-- **判断**: 選択肢1で問題が発生した場合、この選択肢を検討する
-
-#### 選択肢3: style-src 'self' 'unsafe-inline' を許可する（代替案）
-- **メリット**:
-  - 現状の動作を維持できる
-- **デメリット**:
-  - セキュリティ上の問題が残る
-  - 前回のレビューで指摘された問題に戻ってしまう
-- **判断**: 最後の手段として使用する
-
-### 本番環境での動作確認
-
-**ステップ1: 開発環境での動作確認**
-- Tailwind CSS v4 が正常に動作することを確認
-- Next.js App Router が正常に動作することを確認
-- CSP違反がないことを確認（ブラウザのコンソールを確認）
-
-**ステップ2: 本番環境へのデプロイ**
-- 本番環境にデプロイし、動作を確認
-- Tailwind CSS v4 が正常に動作することを確認
-- Next.js App Router が正常に動作することを確認
-- CSP違反がないことを確認（ブラウザのコンソールを確認）
-
-**ステップ3: 問題がある場合の対応**
-- 問題がある場合、nonceを使用したCSPを実装する
-- または、style-src 'self' 'unsafe-inline' を許可する
-
-### nonceを使用したCSPの実装（必要な場合）
-
-もし本番環境で問題が発生した場合、以下の手順でnonceを使用したCSPを実装します：
-
-#### 1. next.config.ts に headers を追加
-
-```typescript
-import { withSentryConfig } from "@sentry/nextjs";
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
-  images: {
-    remotePatterns: [
-      {
-        protocol: "https",
-        hostname: "example.com",
-      },
-      {
-        protocol: "https",
-        hostname: "*.supabase.co",
-        pathname: "/storage/v1/object/public/**",
-      },
-      {
-        protocol: "https",
-        hostname: "pbs.twimg.com",
-      },
-      {
-        protocol: "https",
-        hostname: "*.twitch.tv",
-      },
-      {
-        protocol: "https",
-        hostname: "*.vercel-storage.com",
-      },
-    ],
-  },
-  async headers() {
-    return [
-      {
-        source: '/(.*)',
-        headers: [
-          {
-            key: 'X-Content-Type-Options',
-            value: 'nosniff',
-          },
-          {
-            key: 'X-Frame-Options',
-            value: 'DENY',
-          },
-          {
-            key: 'X-XSS-Protection',
-            value: '1; mode=block',
-          },
-          {
-            key: 'Strict-Transport-Security',
-            value: 'max-age=31536000; includeSubDomains; preload',
-          },
-          {
-            key: 'Content-Security-Policy',
-            value: process.env.NODE_ENV === 'production'
-              ? "default-src 'self'; script-src 'self' 'nonce-{cspNonce}'; style-src 'self' 'nonce-{cspNonce}'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;"
-              : "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;",
-          },
-        ],
-      },
-    ];
-  },
-};
-
-export default withSentryConfig(nextConfig, {
-  org: "azumaya",
-  project: "twica",
-  silent: false,
-  widenClientFileUpload: true,
-  tunnelRoute: undefined,
-  webpack: {
-    automaticVercelMonitors: true,
-    treeshake: {
-      removeDebugLogging: false,
-    },
-  },
-});
-```
-
-#### 2. src/proxy.ts で nonce を生成し、レスポンスヘッダーに設定
-
-```typescript
-import { type NextRequest, NextResponse } from 'next/server'
-import { updateSession } from '@/lib/supabase/middleware'
-import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
-import { setSecurityHeaders } from '@/lib/security-headers'
-import { randomBytes } from 'crypto'
-
-function generateNonce(): string {
-  return randomBytes(16).toString('base64')
-}
-
-export async function proxy(request: NextRequest) {
-  const nonce = generateNonce()
-  const response = await updateSession(request)
-
-  response.headers.set('x-nonce', nonce)
-  setSecurityHeaders(response)
-
-  // Apply CSP with nonce
-  const csp = process.env.NODE_ENV === 'production'
-    ? `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;`
-    : `default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;`
-  response.headers.set('Content-Security-Policy', csp)
-
-  if (request.nextUrl.pathname.startsWith('/api')) {
-    const ip = getClientIp(request);
-    const identifier = `global:${ip}`;
-    const rateLimitResult = await checkRateLimit(
-      rateLimits.eventsub,
-      identifier
-    );
-
-    if (!rateLimitResult.success) {
-      const errorResponse = NextResponse.json(
-        { error: 'Too many requests' },
-        {
-          status: 429,
-          headers: {
-            'X-RateLimit-Limit': String(rateLimitResult.limit),
-            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-            'X-RateLimit-Reset': String(rateLimitResult.reset),
-          },
-        }
-      );
-
-      errorResponse.headers.set('x-nonce', nonce)
-      errorResponse.headers.set('Content-Security-Policy', csp)
-      return errorResponse
-    }
-  }
-
-  return response
-}
-
-export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-  ],
-}
-```
+  - 追加のインフラコスト
+  - 既存のアーキテクチャ（Supabase ベース）からの乖離
+  - データの永続性が低い
+- **判断**: 運用コストとアーキテクチャの一貫性を考慮し採用しない
 
 ### 受け入れ基準
 
-- [x] `src/lib/constants.ts` に `SECURITY_HEADERS` 定数を追加
-- [x] `src/lib/security-headers.ts` にヘルパー関数を作成
-- [x] `src/proxy.ts` でセキュリティヘッダーを設定
-- [x] 開発環境と本番環境で異なる CSP を設定
-- [x] HSTS は本番環境のみで設定
-- [ ] 本番環境で Tailwind CSS v4 が正常に動作することを確認
-- [ ] 本番環境で Next.js App Router が正常に動作することを確認
-- [ ] nonceを使用したCSPの実装（必要な場合）
+- [x] データベースマイグレーションが作成される
+- [x] `src/lib/twitch/token-manager.ts` が作成される
+- [x] `/api/auth/twitch/callback` で Twitch トークンが保存される
+- [x] `/api/twitch/rewards` で正しい Twitch アクセストークンが使用される
+- [x] トークンの有効期限が切れた場合、自動的に更新される
+- [x] ログアウト時、Twitch トークンが削除される
+- [x] テストが追加される
 - [x] lint と test がパスする
-- [ ] CI がパスする
+- [x] CI がパスする
 
 ---
 
@@ -670,27 +848,12 @@ export const config = {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-19 | CSP実装方法を更新（Tailwind CSS v4とNext.js App Routerの対応状況を追加） |
-| 2026-01-19 | セキュリティヘッダー設定の設計を追加（Issue #43） |
-| 2026-01-19 | Sentry例外送信の確認と修正設計を追加 |
-| 2026-01-18 | Twitch OAuth CORSエラーの修正設計を追加（Issue #42 - 解決済み） |
-| 2026-01-18 | カードステータス定数化の設計を追加（Issue #41 - 解決済み） |
-| 2026-01-18 | バトルシステム定数化の設計を追加（Issue #37 - 解決済み） |
-| 2026-01-18 | Sentryエラー送信問題の設計を追加 |
-| 2026-01-18 | Sentryデバッグエンドポイントのセキュリティ設計を追加 |
+| 2026-01-19 | Twitch トークン管理機能の設計を追加（Issue #46） |
 
 ---
 
 ## 実装完了の問題
 
-- **Issue #43**: Security: Missing Security Headers in API Routes and Pages (実装中 - 本番環境での動作確認が必要)
-- **Issue #42**: Fix: Twitch OAuth CORS Error in Next.js RSC (解決済み)
-- **Issue #41**: Code Quality - Hardcoded Card Stat Generation Ranges in battle.ts (解決済み)
-- **Issue #37**: Code Quality - Hardcoded Battle Configuration Values in battle.ts (解決済み)
-- **Issue #36**: Critical Security: Sentry Debug Endpoints Exposed in Production (解決済み)
-- **Issue #35**: Code Quality - Hardcoded Skill Names and CPU Strings in Battle Library (解決済み)
-- **Issue #34**: Code Quality - Hardcoded CPU Card Strings in Battle APIs (解決済み)
-- **Issue #33**: Code Quality - Session API Error Message Standardization (解決済み)
-- **Issue #32**: Critical Security - Debug Endpoint Exposes Sensitive Cookies (解決済み)
+なし
 
 過去のアーキテクチャドキュメントの詳細を参照する場合は、docs/ARCHITECTURE_*.md ファイルを確認してください。

@@ -126,6 +126,10 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
+   - Issue #47 created: Code Quality - Hardcoded Strings in React Components
+            - React components contain many hardcoded Japanese strings
+            - Design documented in ARCHITECTURE.md
+            - Awaiting implementation
    - Issue #46 implemented and closed: Critical Bug: Twitch API Calls Fail Due to Missing Twitch Access Token Storage
             - Twitch token storage in users table (twitch_access_token, twitch_refresh_token, twitch_token_expires_at)
             - Token manager utility created (src/lib/twitch/token-manager.ts)

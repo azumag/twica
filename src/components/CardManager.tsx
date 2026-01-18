@@ -3,10 +3,9 @@
 import { useState, useRef } from "react";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES } from "@/lib/constants";
+import { RARITIES, UI_STRINGS, UPLOAD_CONFIG } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
-import { UPLOAD_CONFIG } from "@/lib/constants";
 
 interface CardManagerProps {
   streamerId: string;
@@ -99,15 +98,9 @@ export default function CardManager({
         if (!uploadResponse.ok) {
           if (uploadResponse.status === 429) {
             const errorData = await uploadResponse.json();
-            setUploadError(errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。");
+            setUploadError(errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT);
             setSaving(false);
             return;
-          }
-          try {
-            const errorData = await uploadResponse.json();
-            logger.error("Upload failed details:", errorData);
-          } catch (e) {
-            logger.error("Upload failed, could not parse JSON error:", e);
           }
           throw new Error("Failed to upload image");
         }
@@ -143,7 +136,7 @@ export default function CardManager({
         resetForm();
       } else if (response.status === 429) {
         const errorData = await response.json();
-        setUploadError(errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。");
+        setUploadError(errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT);
       }
     } catch (error) {
       logger.error("Failed to save card:", error);
@@ -153,7 +146,7 @@ export default function CardManager({
   };
 
   const handleDelete = async (cardId: string) => {
-    if (!confirm("このカードを削除しますか？")) return;
+    if (!confirm(UI_STRINGS.CARD_MANAGER.CONFIRMATIONS.DELETE_CARD)) return;
 
     const originalCards = cards;
     try {
@@ -168,14 +161,14 @@ const response = await fetch(`/api/cards/${cardId}`, {
       if (!response.ok) {
         if (response.status === 429) {
           const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-          const errorMessage = errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。";
-          alert(`操作失敗: ${errorMessage}`);
+          const errorMessage = errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT;
+          alert(UI_STRINGS.CARD_MANAGER.MESSAGES.OPERATION_FAILED(errorMessage));
           logger.error("Rate limit exceeded:", errorData);
         } else {
           setCards(originalCards);
           const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-          const errorMessage = errorData.error || "カード削除に失敗しました";
-          alert(`削除失敗: ${errorMessage}`);
+          const errorMessage = errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.DELETE_FAILED;
+          alert(`${UI_STRINGS.CARD_MANAGER.MESSAGES.DELETE_FAILED_PREFIX} ${errorMessage}`);
           logger.error("Delete failed:", errorData);
         }
       }
@@ -184,7 +177,7 @@ const response = await fetch(`/api/cards/${cardId}`, {
       // Revert on network error
       setCards(originalCards);
       logger.error("Failed to delete card:", error);
-      alert("ネットワークエラーが発生しました。削除をキャンセルしました。");
+      alert(UI_STRINGS.CARD_MANAGER.MESSAGES.NETWORK_ERROR_DELETE);
     }
   };
 
@@ -194,12 +187,12 @@ const response = await fetch(`/api/cards/${cardId}`, {
   return (
     <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-6 flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-white">カード管理</h2>
+        <h2 className="text-xl font-semibold text-white">{UI_STRINGS.CARD_MANAGER.TITLE}</h2>
         <button
           onClick={() => setShowForm(true)}
           className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
         >
-          新規カード追加
+          {UI_STRINGS.CARD_MANAGER.ADD_NEW_CARD}
         </button>
       </div>
 
@@ -210,18 +203,18 @@ const response = await fetch(`/api/cards/${cardId}`, {
           className="mb-6 rounded-lg bg-gray-700 p-6"
         >
           <h3 className="mb-4 text-lg font-medium text-white">
-            {editingCard ? "カードを編集" : "新規カード"}
+            {editingCard ? UI_STRINGS.CARD_MANAGER.EDIT_CARD : UI_STRINGS.CARD_MANAGER.NEW_CARD}
           </h3>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <label className="mb-1 block text-sm text-gray-300">
-                カード名 *
+                {UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME} *
               </label>
               <input
                 type="text"
                 name="name"
                 required
-                placeholder="カード名"
+                placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME_PLACEHOLDER}
                 value={formData.name}
                 onChange={(e) =>
                   setFormData({ ...formData, name: e.target.value })
@@ -231,7 +224,7 @@ const response = await fetch(`/api/cards/${cardId}`, {
             </div>
               <div>
               <label className="mb-1 block text-sm text-gray-300">
-                画像 (ファイルまたはURL)
+                {UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE}
               </label>
               <div className="space-y-2">
                 <input
@@ -246,12 +239,12 @@ const response = await fetch(`/api/cards/${cardId}`, {
                   <p className="text-sm text-red-400">{uploadError}</p>
                 )}
                 <p className="text-xs text-gray-500">
-                  対応形式: JPEG, PNG | 最大サイズ: {(UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1)}MB
+                  {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.FORMATS}{UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.MAX_SIZE((UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1) + 'MB')}
                 </p>
                 <input
                   type="url"
                   name="imageUrl"
-                  placeholder="または画像URLを入力"
+                  placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE_URL_PLACEHOLDER}
                   value={formData.imageUrl}
                   onChange={(e) =>
                     setFormData({ ...formData, imageUrl: e.target.value })
@@ -262,7 +255,7 @@ const response = await fetch(`/api/cards/${cardId}`, {
             </div>
             <div>
               <label className="mb-1 block text-sm text-gray-300">
-                レアリティ
+                {UI_STRINGS.CARD_MANAGER.FORM_LABELS.RARITY}
               </label>
               <select
                 name="rarity"
@@ -281,7 +274,7 @@ const response = await fetch(`/api/cards/${cardId}`, {
             </div>
             <div>
               <label className="mb-1 block text-sm text-gray-300">
-                出現確率 ({(formData.dropRate * 100).toFixed(1)}%)
+                {UI_STRINGS.CARD_MANAGER.FORM_LABELS.DROP_RATE} ({(formData.dropRate * 100).toFixed(1)}%)
               </label>
               <input
                 type="range"
@@ -300,7 +293,7 @@ const response = await fetch(`/api/cards/${cardId}`, {
               />
             </div>
             <div className="md:col-span-2">
-              <label className="mb-1 block text-sm text-gray-300">説明</label>
+              <label className="mb-1 block text-sm text-gray-300">{UI_STRINGS.CARD_MANAGER.FORM_LABELS.DESCRIPTION}</label>
               <textarea
                 name="description"
                 value={formData.description}
@@ -318,14 +311,14 @@ const response = await fetch(`/api/cards/${cardId}`, {
               disabled={saving}
               className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
             >
-              {saving ? "保存中..." : editingCard ? "更新" : "追加"}
+              {saving ? UI_STRINGS.CARD_MANAGER.BUTTONS.SAVE : editingCard ? UI_STRINGS.CARD_MANAGER.BUTTONS.UPDATE : UI_STRINGS.CARD_MANAGER.BUTTONS.ADD}
             </button>
             <button
               type="button"
               onClick={resetForm}
               className="rounded-lg border border-gray-600 px-6 py-2 text-gray-300 hover:bg-gray-600"
             >
-              キャンセル
+              {UI_STRINGS.CARD_MANAGER.BUTTONS.CANCEL}
             </button>
           </div>
         </form>
@@ -334,7 +327,7 @@ const response = await fetch(`/api/cards/${cardId}`, {
       {/* Card List */}
       {cards.length === 0 ? (
         <p className="text-center text-gray-400">
-          まだカードがありません。「新規カード追加」から始めましょう。
+          {UI_STRINGS.CARD_MANAGER.MESSAGES.EMPTY_CARDS}
         </p>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -354,11 +347,11 @@ const response = await fetch(`/api/cards/${cardId}`, {
             height={200}
             className="w-full h-48 object-cover rounded mb-2"
           />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-gray-500">
-                      No Image
-                    </div>
-                  )}
+                   ) : (
+                     <div className="flex h-full items-center justify-center text-gray-500">
+                       {UI_STRINGS.CARD_MANAGER.MESSAGES.NO_IMAGE}
+                     </div>
+                   )}
                 </div>
                 <div className="p-4">
                   <div className="mb-2 flex items-center justify-between">
@@ -368,10 +361,10 @@ const response = await fetch(`/api/cards/${cardId}`, {
                     >
                       {rarityInfo.label}
                     </span>
-                  </div>
-                  <p className="mb-2 text-sm text-gray-400">
-                    確率: {(card.drop_rate * 100).toFixed(1)}%
-                  </p>
+                   </div>
+                   <p className="mb-2 text-sm text-gray-400">
+                     {UI_STRINGS.CARD_MANAGER.MESSAGES.PROBABILITY} {(card.drop_rate * 100).toFixed(1)}%
+                   </p>
                   {card.description && (
                     <p className="text-sm text-gray-300 line-clamp-2">
                       {card.description}
@@ -379,18 +372,18 @@ const response = await fetch(`/api/cards/${cardId}`, {
                   )}
                 </div>
                 <div className="absolute right-2 top-2 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
-                  <button
-                    onClick={() => handleEdit(card)}
-                    className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
-                  >
-                    編集
-                  </button>
-                  <button
-                    onClick={() => handleDelete(card.id)}
-                    className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
-                  >
-                    削除
-                  </button>
+                   <button
+                     onClick={() => handleEdit(card)}
+                     className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
+                   >
+                     {UI_STRINGS.CARD_MANAGER.BUTTONS.EDIT}
+                   </button>
+                   <button
+                     onClick={() => handleDelete(card.id)}
+                     className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
+                   >
+                     {UI_STRINGS.CARD_MANAGER.BUTTONS.DELETE}
+                   </button>
                 </div>
               </div>
             );

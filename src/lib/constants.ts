@@ -203,3 +203,159 @@ export const UPLOAD_CONFIG = {
     webp: 'image/webp',
   } as const,
 } as const
+
+export const UI_STRINGS = {
+  AUTH: {
+    TWITCH_LOGIN: 'Twitchでログイン',
+    LOADING: '読み込み中...',
+    LOGIN_FAILED: 'ログインに失敗しました',
+    NETWORK_ERROR: 'ネットワークエラーが発生しました',
+    LOGOUT: 'ログアウト',
+    REDIRECTING: 'Twitchログインページへ移動中...',
+  },
+
+  CARD_MANAGER: {
+    TITLE: 'カード管理',
+    ADD_NEW_CARD: '新規カード追加',
+    EDIT_CARD: 'カードを編集',
+    NEW_CARD: '新規カード',
+    FORM_LABELS: {
+      NAME: 'カード名',
+      NAME_PLACEHOLDER: 'カード名',
+      IMAGE: '画像 (ファイルまたはURL)',
+      IMAGE_URL_PLACEHOLDER: 'または画像URLを入力',
+      RARITY: 'レアリティ',
+      DROP_RATE: '出現確率',
+      DESCRIPTION: '説明',
+    },
+    FILE_UPLOAD: {
+      FORMATS: '対応形式: JPEG, PNG | ',
+      MAX_SIZE: (mb: string) => `最大サイズ: ${mb}MB`,
+    },
+    BUTTONS: {
+      SAVE: '保存中...',
+      UPDATE: '更新',
+      ADD: '追加',
+      CANCEL: 'キャンセル',
+      EDIT: '編集',
+      DELETE: '削除',
+    },
+    CONFIRMATIONS: {
+      DELETE_CARD: 'このカードを削除しますか？',
+    },
+    MESSAGES: {
+      RATE_LIMIT: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
+      DELETE_FAILED: 'カード削除に失敗しました',
+      DELETE_FAILED_PREFIX: '削除失敗:',
+      NETWORK_ERROR_DELETE: 'ネットワークエラーが発生しました。削除をキャンセルしました。',
+      OPERATION_FAILED: (msg: string) => `操作失敗: ${msg}`,
+      EMPTY_CARDS: 'まだカードがありません。「新規カード追加」から始めましょう。',
+      PROBABILITY: '確率:',
+      NO_IMAGE: 'No Image',
+    },
+  },
+
+  COLLECTION: {
+    TITLE: 'マイコレクション',
+    EMPTY_MESSAGE: {
+      LINE1: 'まだカードを持っていません。',
+      LINE2: '配信者のチャネルポイントを使ってカードをゲットしましょう！',
+    },
+    CARD_TYPES: (count: number) => `(${count} 種類)`,
+    CARD_COUNT: (count: number) => `x${count}`,
+  },
+
+  DASHBOARD: {
+    TITLE: 'ダッシュボード',
+    STREAMER_SETTINGS: '配信者設定',
+    OBS_OVERLAY_URL: 'OBSブラウザソースURL',
+    OBS_OVERLAY_DESCRIPTION: 'OBSのブラウザソースにこのURLを設定してください（推奨サイズ: 800x600）',
+  },
+
+  BATTLE: {
+    TITLE: 'カード対戦',
+    VERSUS: 'VS',
+    USER_CARD: 'あなたのカード',
+    CPU_CARD: 'CPUカード',
+    BATTLE_PROGRESS: 'バトル進行',
+    BATTLE_LOG: 'バトルログ',
+    TURN: 'ターン',
+    YOU: 'あなた',
+    CPU: 'CPU',
+    NO_IMAGE: 'No Image',
+  },
+
+  CHANNEL_POINT_SETTINGS: {
+    TITLE: 'チャネルポイント設定',
+    STATUS: {
+      ACTIVE: '接続中',
+      PENDING: '確認中',
+      ERROR: 'エラー',
+      NONE: '未設定',
+    },
+    MESSAGES: {
+      AFFILIATE_REQUIRED: 'チャネルポイントを使用するには、Twitchアフィリエイトまたはパートナーである必要があります。',
+      RATE_LIMIT: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
+      FETCH_FAILED: '報酬の取得に失敗しました。再度ログインしてください。',
+      REWARD_CREATED: '報酬を作成しました',
+      ERROR_OCCURRED: 'エラーが発生しました',
+      CREATE_REWARD_FAILED: '報酬の作成に失敗しました',
+      SAVE_FAILED: '設定の保存に失敗しました',
+      SAVE_SUCCESS: '保存しました（EventSub登録完了）',
+      EVENTSUB_FAILED: '設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。',
+    },
+    SUCCESS_MESSAGES: [
+      '報酬を作成しました',
+      '保存しました（EventSub登録完了）',
+    ] as const,
+    FORM_LABELS: {
+      SELECT_REWARD: '使用する報酬を選択',
+      NO_REWARDS: 'チャネルポイント報酬がありません。新しく作成しますか？',
+      SELECTED: '選択中:',
+      ID: 'ID:',
+      REWARD_ID: '報酬ID:',
+      ALL_REWARDS: '全報酬',
+      EVENTSUB_STATUS: 'EventSub ステータス',
+      NO_SUBSCRIPTIONS: 'EventSubサブスクリプションがありません。保存ボタンを押して登録してください。',
+      LOCAL_TUNNEL_NOTE: '※ ローカル環境ではngrokなどのトンネルが必要です',
+    },
+    BUTTONS: {
+      CREATING: '作成中...',
+      CREATE_REWARD: 'TwiCa用報酬を作成（100ポイント）',
+      SAVING: '保存中...',
+      SAVE: '保存 & EventSub登録',
+      REFRESH: '更新',
+    },
+    OPTIONS: {
+      SELECT_REWARD: '-- 報酬を選択 --',
+      POINTS: 'ポイント',
+      DISABLED: '[無効]',
+    },
+  },
+
+  COPY_BUTTON: {
+    COPIED: 'コピーしました',
+    COPY: 'コピー',
+  },
+
+  GACHA_HISTORY: {
+    TITLE: '最近の獲得情報',
+    EMPTY_MESSAGE: 'まだ獲得情報はありません。',
+    GOT: (username: string, cardName: string) => `${username} が${cardName} を獲得しました！`,
+    GOT_LABEL: ' が ',
+    UNKNOWN: 'Unknown',
+  },
+
+  STATS: {
+    TOTAL_CARDS: '総カード数',
+    UNIQUE: 'ユニーク',
+    LEGENDARY: 'レジェンダリー',
+    EPIC: 'エピック',
+    RARE: 'レア',
+    COMMON: 'コモン',
+  },
+
+  DEVELOPMENT_NOTICE: {
+    TEXT: '⚠️ このサービスは現在開発初期段階です。一部の機能が正常に動作しない場合があります。',
+  },
+} as const

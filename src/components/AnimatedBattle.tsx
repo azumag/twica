@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import Image from 'next/image'
 import type { BattleCard, BattleLog } from '@/types/database'
+import { UI_STRINGS } from '@/lib/constants'
 
 interface AnimatedBattleProps {
   userCard: BattleCard
@@ -108,9 +109,9 @@ export default function AnimatedBattle({
       <div className="grid md:grid-cols-2 gap-8">
         {/* User Card */}
         <div className={`relative ${shakeUser ? 'animate-pulse' : ''}`}>
-          <div className={`absolute inset-0 rounded-xl ${healUser ? 'bg-green-400 opacity-30 animate-pulse' : ''}`} />
+           <div className={`absolute inset-0 rounded-xl ${healUser ? 'bg-green-400 opacity-30 animate-pulse' : ''}`} />
           <div className="rounded-xl bg-gray-800 p-6 relative">
-            <h3 className="text-lg font-semibold text-white mb-4">あなたのカード</h3>
+            <h3 className="text-lg font-semibold text-white mb-4">{UI_STRINGS.BATTLE.USER_CARD}</h3>
             <div className="flex flex-col items-center">
               <div className={`h-32 w-32 bg-gray-700 rounded-lg flex items-center justify-center mb-4 relative ${
                 shakeUser ? 'animate-bounce' : ''
@@ -153,14 +154,14 @@ export default function AnimatedBattle({
 
         {/* VS */}
         <div className="flex items-center justify-center md:hidden">
-          <div className="text-2xl font-bold text-yellow-400 animate-pulse">VS</div>
+          <div className="text-2xl font-bold text-yellow-400 animate-pulse">{UI_STRINGS.BATTLE.VERSUS}</div>
         </div>
 
         {/* Opponent Card */}
         <div className={`relative ${shakeOpponent ? 'animate-pulse' : ''}`}>
           <div className={`absolute inset-0 rounded-xl ${healOpponent ? 'bg-green-400 opacity-30 animate-pulse' : ''}`} />
           <div className="rounded-xl bg-gray-800 p-6 relative">
-            <h3 className="text-lg font-semibold text-white mb-4">CPUカード</h3>
+            <h3 className="text-lg font-semibold text-white mb-4">{UI_STRINGS.BATTLE.CPU_CARD}</h3>
             <div className="flex flex-col items-center">
               <div className={`h-32 w-32 bg-gray-700 rounded-lg flex items-center justify-center mb-4 relative ${
                 shakeOpponent ? 'animate-bounce' : ''
@@ -204,7 +205,7 @@ export default function AnimatedBattle({
 
       {/* VS (Desktop) */}
       <div className="hidden md:flex items-center justify-center">
-        <div className="text-3xl font-bold text-yellow-400 animate-pulse">VS</div>
+        <div className="text-3xl font-bold text-yellow-400 animate-pulse">{UI_STRINGS.BATTLE.VERSUS}</div>
       </div>
 
       {/* Current Action */}
@@ -219,7 +220,7 @@ export default function AnimatedBattle({
       {/* Progress */}
       <div className="rounded-xl bg-gray-800 p-4">
         <div className="flex items-center justify-between text-sm text-gray-400 mb-2">
-          <span>バトル進行</span>
+          <span>{UI_STRINGS.BATTLE.BATTLE_PROGRESS}</span>
           <span>{currentLogIndex + 1} / {battleLogs.length}</span>
         </div>
         <div className="w-full bg-gray-700 rounded-full h-2">
@@ -232,7 +233,7 @@ export default function AnimatedBattle({
 
       {/* Battle Log */}
       <div className="rounded-xl bg-gray-800 p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">バトルログ</h3>
+        <h3 className="text-lg font-semibold text-white mb-4">{UI_STRINGS.BATTLE.BATTLE_LOG}</h3>
         <div className="space-y-2 max-h-60 overflow-y-auto">
           {battleLogs.slice(0, currentLogIndex + 1).map((log, index) => (
             <div
@@ -242,7 +243,7 @@ export default function AnimatedBattle({
               } ${index === currentLogIndex ? 'ring-2 ring-yellow-400' : ''}`}
             >
               <span className="font-semibold">
-                ターン{log.turn} {log.actor === 'user' ? 'あなた' : 'CPU'}:
+                {UI_STRINGS.BATTLE.TURN}{log.turn} {log.actor === 'user' ? UI_STRINGS.BATTLE.YOU : UI_STRINGS.BATTLE.CPU}:
               </span>
               {' '}{log.message}
             </div>

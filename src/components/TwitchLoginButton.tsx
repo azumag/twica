@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { TwitchLoginResponse } from '@/types/auth'
+import { UI_STRINGS } from '@/lib/constants'
 
 function useTwitchLogin() {
   const [isLoading, setIsLoading] = useState(false)
@@ -14,7 +15,7 @@ function useTwitchLogin() {
       const response = await fetch('/api/auth/twitch/login')
       if (!response.ok) {
         const errorData: TwitchLoginResponse = await response.json()
-        setError(errorData.error || 'ログインに失敗しました')
+        setError(errorData.error || UI_STRINGS.AUTH.LOGIN_FAILED)
         return
       }
       const data: TwitchLoginResponse = await response.json()
@@ -23,7 +24,7 @@ function useTwitchLogin() {
         window.location.href = data.authUrl
       }
     } catch (error) {
-      setError('ネットワークエラーが発生しました')
+      setError(UI_STRINGS.AUTH.NETWORK_ERROR)
       console.error('Failed to initiate login:', error)
     } finally {
       setIsLoading(false)
@@ -44,7 +45,7 @@ export function TwitchLoginButton({ className = '' }: { className?: string }) {
         disabled={isLoading}
         className={className}
       >
-        {isLoading ? '読み込み中...' : 'Twitchでログイン'}
+        {isLoading ? UI_STRINGS.AUTH.LOADING : UI_STRINGS.AUTH.TWITCH_LOGIN}
       </button>
     </>
   )
@@ -62,13 +63,13 @@ export function TwitchLoginButtonWithIcon({ className = '' }: { className?: stri
         className={className}
       >
         {isLoading ? (
-          '読み込み中...'
+          UI_STRINGS.AUTH.LOADING
         ) : (
           <>
             <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 24 24">
               <path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z" />
             </svg>
-            Twitchでログイン
+            {UI_STRINGS.AUTH.TWITCH_LOGIN}
           </>
         )}
       </button>

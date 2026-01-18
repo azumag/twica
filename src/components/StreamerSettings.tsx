@@ -3,6 +3,7 @@ import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CardManager from "@/components/CardManager";
 import CopyButton from "@/components/CopyButton";
 import type { Card } from "@/types/database";
+import { UI_STRINGS } from "@/lib/constants";
 
 interface StreamerSettingsProps {
   streamerData: Awaited<ReturnType<typeof getStreamerData>>;
@@ -13,16 +14,15 @@ export default function StreamerSettings({ streamerData }: StreamerSettingsProps
 
   return (
     <section className="mb-12">
-      <h2 className="mb-6 text-2xl font-semibold text-white">配信者設定</h2>
+      <h2 className="mb-6 text-2xl font-semibold text-white">{UI_STRINGS.DASHBOARD.STREAMER_SETTINGS}</h2>
       <div className="grid gap-8 lg:grid-cols-2">
         {/* OBS Overlay URL */}
         <div className="rounded-xl bg-gray-800 p-6">
           <h3 className="mb-4 text-xl font-semibold text-white">
-            OBSブラウザソースURL
+            {UI_STRINGS.DASHBOARD.OBS_OVERLAY_URL}
           </h3>
           <p className="mb-4 text-sm text-gray-400">
-            OBSのブラウザソースにこのURLを設定してください（推奨サイズ:
-            800x600）
+            {UI_STRINGS.DASHBOARD.OBS_OVERLAY_DESCRIPTION}
           </p>
           <div className="flex gap-2">
             <input

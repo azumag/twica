@@ -68,6 +68,14 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - Sentryデバッグエンドポイントの保護（Issue #36）
 - セキュリティヘッダーの設定（Issue #43）
 - ファイルアップロードのサニタイズ（Issue #44）
+- Twitch トークンの安全な管理（Issue #46）
+
+### コード品質
+- UI 文字列の標準化（Issue #35, Issue #47）
+- 定数による設定値の管理
+- TypeScript による型安全性
+- ESLint によるコード品質チェック
+- テストカバレッジの維持
 
 ### 可用性
 - Vercelによる99.95% SLA
@@ -185,6 +193,28 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] lint と test がパスする
 - [x] CI がパスする
 
+### Twitch トークン管理（Issue #46）
+- [x] データベースマイグレーションが作成される
+- [x] `src/lib/twitch/token-manager.ts` が作成される
+- [x] `/api/auth/twitch/callback` で Twitch トークンが保存される
+- [x] `/api/twitch/rewards` で正しい Twitch アクセストークンが使用される
+- [x] トークンの有効期限が切れた場合、自動的に更新される
+- [x] ログアウト時、Twitch トークンが削除される
+- [x] テストが追加される
+- [x] lint と test がパスする
+- [x] CI がパスする
+
+### コード品質 - UI 文字列の定数化（Issue #47）
+- [ ] `src/lib/constants.ts` に UI 文字列定数を追加する
+- [ ] `TwitchLoginButton.tsx` の文字列を定数化する
+- [ ] `Header.tsx` の文字列を定数化する
+- [ ] `Collection.tsx` の文字列を定数化する
+- [ ] `CardManager.tsx` の文字列を定数化する
+- [ ] その他のコンポーネントの文字列を定数化する
+- [ ] すべてのハードコードされた日本語文字列が定数に置き換えられる
+- [ ] lint と test がパスする
+- [ ] CI がパスする
+
 ---
 
 ## 設計方針
@@ -259,588 +289,305 @@ graph LR
 
 ---
 
-## Critical Bug: Twitch API Calls Fail Due to Missing Twitch Access Token Storage (Issue #46)
+## Code Quality - Hardcoded Strings in React Components (Issue #47)
 
 ### 概要
 
-`/api/twitch/rewards` エンドポイントが Twitch API を呼び出す際、Supabase のセッションアクセストークンを使用しており、これにより Twitch API 呼び出しが失敗します。
+React コンポーネント（`src/components/`）に多くのハードコードされた日本語文字列が含まれており、コードの保守性と一貫性が損なわれています。
+
+Issue #35 で Battle ライブラリ（`src/lib/battle.ts`）の文字列は定数化されましたが、React コンポーネントにはまだ多くのハードコードされた文字列が残っています。
 
 ### 問題点
 
-1. **Twitch トークンが保存されていない**: Twitch OAuth コールバック (`/api/auth/twitch/callback`) で Twitch の `access_token` と `refresh_token` を取得していますが、これらはどこにも保存されていません
-2. **誤ったトークンが使用されている**: `/api/twitch/rewards` の `getAccessToken()` 関数は Supabase Auth のセッションアクセストークンを取得しており、これは Twitch API とは無関係です
-3. **Twitch API 呼び出しが失敗する**: Supabase トークンを使用して Twitch API を呼び出そうとすると、401 Unauthorized エラーが発生します
+1. **ハードコードされた文字列が散在**: 複数のコンポーネントにハードコードされた日本語文字列が含まれている
+2. **保守性の低下**: 文字列の変更時に複数のファイルを修正する必要がある
+3. **翻訳の困難さ**: 将来的に多言語対応する場合の拡張性が低い
+4. **一貫性の欠如**: 類似の文字列が異なる表現で使用されている可能性がある
 
 ### 影響範囲
 
-- `/Users/azumag/work/twica/src/app/api/auth/twitch/callback/route.ts` (lines 52-74)
-  - Twitch トークンが取得され、使用されずに破棄される
-- `/Users/azumag/work/twica/src/app/api/twitch/rewards/route.ts` (lines 10-14, 40-43, 93-96)
-  - Supabase トークンが誤って Twitch API 呼び出しに使用される
-- ストリーマー機能（チャンネルポイント報酬の管理）が完全に使用できない
+以下のコンポーネントにハードコードされた日本語文字列が含まれています：
+- `TwitchLoginButton.tsx`: '読み込み中...', 'Twitchでログイン', 'ログインに失敗しました', 'ネットワークエラーが発生しました'
+- `Header.tsx`: 'ログアウト'
+- `Collection.tsx`: 'マイコレクション', 'まだカードを持っていません。', '配信者のチャネルポイントを使ってカードをゲットしましょう！', '種類'
+- `CardManager.tsx`: 多くのフォームラベル、ボタンテキスト、エラーメッセージ
+- その他のコンポーネント
 
 ### 設計
 
-#### 1. データベーススキーマの変更
+#### 1. UI 文字列定数の作成
 
-`users` テーブルに Twitch トークンを保存するカラムを追加します：
-
-```sql
--- マイグレーション: supabase/migrations/20260119020000_add_twitch_tokens_to_users.sql
-ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_access_token TEXT;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_refresh_token TEXT;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_token_expires_at TIMESTAMP WITH TIME ZONE;
-
--- RLS ポリシーを更新
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-
--- トークンカラムはシステム（サーバーサイド）のみ更新可能
-CREATE POLICY "Users can update own twitch tokens"
-ON users FOR UPDATE
-USING (auth.uid()::text = twitch_user_id)
-WITH CHECK (auth.uid()::text = twitch_user_id);
-
--- トークンカラムはシステム（サーバーサイド）のみ読み取り可能
-CREATE POLICY "Users can read own twitch tokens"
-ON users FOR SELECT
-USING (auth.uid()::text = twitch_user_id);
-```
-
-#### 2. Twitch トークン管理ユーティリティの作成
-
-`src/lib/twitch/token-manager.ts` を作成：
+`src/lib/constants.ts` に以下の定数を追加：
 
 ```typescript
-import { getSupabaseAdmin } from '@/lib/supabase/admin';
-import { refreshTwitchToken, type TwitchTokens } from './auth';
+export const UI_STRINGS = {
+  // Authentication
+  AUTH: {
+    TWITCH_LOGIN: 'Twitchでログイン',
+    LOADING: '読み込み中...',
+    LOGIN_FAILED: 'ログインに失敗しました',
+    NETWORK_ERROR: 'ネットワークエラーが発生しました',
+    LOGOUT: 'ログアウト',
+  },
 
-export interface TwitchTokenData {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: Date;
-}
+  // Card Manager
+  CARD_MANAGER: {
+    TITLE: 'カード管理',
+    ADD_NEW_CARD: '新規カード追加',
+    EDIT_CARD: 'カードを編集',
+    NEW_CARD: '新規カード',
+    FORM_LABELS: {
+      NAME: 'カード名',
+      NAME_PLACEHOLDER: 'カード名',
+      IMAGE: '画像 (ファイルまたはURL)',
+      IMAGE_URL_PLACEHOLDER: 'または画像URLを入力',
+      RARITY: 'レアリティ',
+      DROP_RATE: '出現確率',
+      DESCRIPTION: '説明',
+      DESCRIPTION_PLACEHOLDER: 'カードの説明を入力',
+    },
+    FILE_UPLOAD: {
+      FORMATS: '対応形式: JPEG, PNG',
+      MAX_SIZE: (mb: string) => `最大サイズ: ${mb}MB`,
+      SUPPORTED_FORMATS: '対応形式: JPEG, PNG | ',
+    },
+    BUTTONS: {
+      SAVE: '保存',
+      CANCEL: 'キャンセル',
+      DELETE: '削除',
+      CLOSE: '閉じる',
+      UPLOAD: 'アップロード',
+      EDIT: '編集',
+    },
+    CONFIRMATIONS: {
+      DELETE_CARD: 'このカードを削除しますか？',
+    },
+    MESSAGES: {
+      RATE_LIMIT: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
+      SAVE_FAILED: 'カードの保存に失敗しました',
+      DELETE_FAILED: 'カード削除に失敗しました',
+      OPERATION_FAILED: (msg: string) => `操作失敗: ${msg}`,
+      DELETE_FAILED_PREFIX: '削除失敗:',
+      NETWORK_ERROR: 'ネットワークエラーが発生しました。削除をキャンセルしました。',
+      UPLOAD_FAILED: '画像のアップロードに失敗しました',
+      SUCCESS: 'カードを保存しました',
+    },
+  },
 
-export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
-  const supabaseAdmin = getSupabaseAdmin();
+  // Collection
+  COLLECTION: {
+    TITLE: 'マイコレクション',
+    EMPTY_MESSAGE: {
+      LINE1: 'まだカードを持っていません。',
+      LINE2: '配信者のチャネルポイントを使ってカードをゲットしましょう！',
+    },
+    CARD_TYPES: (count: number) => `(${count} 種類)`,
+    CARD_COUNT: (count: number) => `x${count}`,
+  },
 
-  const { data: user } = await supabaseAdmin
-    .from('users')
-    .select('twitch_access_token, twitch_refresh_token, twitch_token_expires_at')
-    .eq('twitch_user_id', twitchUserId)
-    .single();
+  // Dashboard
+  DASHBOARD: {
+    TITLE: 'ダッシュボード',
+    WELCOME: (name: string) => `ようこそ、${name}さん！`,
+    RECENT_WINS: '最近の獲得',
+    STATS: '統計',
+  },
 
-  if (!user || !user.twitch_access_token || !user.twitch_refresh_token) {
-    return null;
-  }
+  // Battle
+  BATTLE: {
+    TITLE: 'カード対戦',
+    VERSUS: 'VS',
+    START_BATTLE: '対戦開始',
+    YOUR_CARD: 'あなたのカード',
+    OPPONENT_CARD: '相手のカード',
+    RESULT_WIN: '勝利！',
+    RESULT_LOSE: '敗北',
+    RESULT_DRAW: '引き分け',
+  },
 
-  const now = new Date();
-  const expiresAt = new Date(user.twitch_token_expires_at);
-
-  if (expiresAt > now) {
-    return user.twitch_access_token;
-  }
-
-  return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
-}
-
-async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: string): Promise<string | null> {
-  try {
-    const tokens = await refreshTwitchToken(refreshToken);
-    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-    const supabaseAdmin = getSupabaseAdmin();
-    const { error } = await supabaseAdmin
-      .from('users')
-      .update({
-        twitch_access_token: tokens.access_token,
-        twitch_refresh_token: tokens.refresh_token,
-        twitch_token_expires_at: expiresAt.toISOString(),
-      })
-      .eq('twitch_user_id', twitchUserId);
-
-    if (error) {
-      throw error;
-    }
-
-    return tokens.access_token;
-  } catch (error) {
-    return null;
-  }
-}
-
-export async function saveTwitchTokens(twitchUserId: string, tokens: TwitchTokens): Promise<void> {
-  const supabaseAdmin = getSupabaseAdmin();
-  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-  const { error } = await supabaseAdmin
-    .from('users')
-    .update({
-      twitch_access_token: tokens.access_token,
-      twitch_refresh_token: tokens.refresh_token,
-      twitch_token_expires_at: expiresAt.toISOString(),
-    })
-    .eq('twitch_user_id', twitchUserId);
-
-  if (error) {
-    throw error;
-  }
-}
-
-export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { error } = await supabaseAdmin
-    .from('users')
-    .update({
-      twitch_access_token: null,
-      twitch_refresh_token: null,
-      twitch_token_expires_at: null,
-    })
-    .eq('twitch_user_id', twitchUserId);
-
-  if (error) {
-    throw error;
-  }
-}
+  // General
+  GENERAL: {
+    LOADING: '読み込み中...',
+    ERROR: 'エラーが発生しました',
+    UNKNOWN_ERROR: '不明なエラーが発生しました',
+    BACK: '戻る',
+    NEXT: '次へ',
+    PREV: '前へ',
+    SAVE: '保存',
+    CANCEL: 'キャンセル',
+    DELETE: '削除',
+    CONFIRM: '確認',
+  },
+} as const
 ```
 
-#### 3. Twitch OAuth コールバックの修正
+#### 2. コンポーネントの更新例
 
-`src/app/api/auth/twitch/callback/route.ts` を修正：
+`src/components/TwitchLoginButton.tsx`:
 
 ```typescript
-import { saveTwitchTokens } from '@/lib/twitch/token-manager';
+import { UI_STRINGS } from '@/lib/constants'
 
-// ... 既存のコード ...
+// Before:
+setError('ログインに失敗しました')
 
-export async function GET(request: NextRequest) {
-  // ... 既存のバリデーションコード ...
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin();
-    const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`;
-
-    let tokens;
-    try {
-      tokens = await exchangeCodeForTokens(code, redirectUri);
-    } catch (error) {
-      return handleAuthError(
-        error,
-        'twitch_auth_failed',
-        { code: code.substring(0, 10) + '...' }
-      );
-    }
-
-    let twitchUser;
-    try {
-      twitchUser = await getTwitchUser(tokens.access_token);
-    } catch (error) {
-      return handleAuthError(
-        error,
-        'twitch_user_fetch_failed',
-        { twitchUserId: tokens.access_token.substring(0, 10) + '...' }
-      );
-    }
-
-    // Check if user can be a streamer (affiliate or partner)
-    const canBeStreamer = twitchUser.broadcaster_type === 'affiliate' || twitchUser.broadcaster_type === 'partner';
-
-    try {
-      await supabaseAdmin
-        .from('users')
-        .upsert({
-          twitch_user_id: twitchUser.id,
-          twitch_username: twitchUser.login,
-          twitch_display_name: twitchUser.display_name,
-          twitch_profile_image_url: twitchUser.profile_image_url,
-          twitch_access_token: tokens.access_token,
-          twitch_refresh_token: tokens.refresh_token,
-          twitch_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
-        }, {
-          onConflict: 'twitch_user_id',
-        });
-    } catch (error) {
-      return handleAuthError(
-        error,
-        'database_error',
-        { operation: 'upsert_user', twitchUserId: twitchUser.id }
-      );
-    }
-
-    if (canBeStreamer) {
-      try {
-        await supabaseAdmin
-          .from('streamers')
-          .upsert({
-            twitch_user_id: twitchUser.id,
-            twitch_username: twitchUser.login,
-            twitch_display_name: twitchUser.display_name,
-            twitch_profile_image_url: twitchUser.profile_image_url,
-          }, {
-            onConflict: 'twitch_user_id',
-          });
-      } catch (error) {
-        return handleAuthError(
-          error,
-          'database_error',
-          { operation: 'upsert_streamer', twitchUserId: twitchUser.id }
-        );
-      }
-    }
-
-    // ... 既存のセッション設定コード ...
-  } catch (error) {
-    return handleAuthError(error, 'unknown_error');
-  }
-}
+// After:
+setError(UI_STRINGS.AUTH.LOGIN_FAILED)
 ```
 
-#### 4. Twitch Rewards API の修正
-
-`src/app/api/twitch/rewards/route.ts` を修正：
+`src/components/Header.tsx`:
 
 ```typescript
-import { getTwitchAccessToken } from '@/lib/twitch/token-manager';
-import { ERROR_MESSAGES } from '@/lib/constants';
+import { UI_STRINGS } from '@/lib/constants'
 
-// ... 既存の getAccessToken 関数を削除 ...
+// Before:
+<Link
+  href="/api/auth/logout"
+  className="..."
+>
+  ログアウト
+</Link>
 
-async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string> {
-  const accessToken = await getTwitchAccessToken(twitchUserId);
-
-  if (!accessToken) {
-    throw new Error(ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE);
-  }
-
-  return accessToken;
-}
-
-export async function GET(request: Request) {
-  const session = await getSession();
-
-  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
-  const rateLimitResult = await checkRateLimit(rateLimits.twitchRewardsGet, identifier);
-
-  if (!rateLimitResult.success) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
-      {
-        status: 429,
-        headers: {
-          "X-RateLimit-Limit": String(rateLimitResult.limit),
-          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
-          "X-RateLimit-Reset": String(rateLimitResult.reset),
-        },
-      }
-    );
-  }
-
-  if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
-  }
-
-  const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
-
-  try {
-    const response = await fetch(
-      `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
-      {
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      const error = await response.json();
-      return handleApiError(error, "Twitch API rewards fetch");
-    }
-
-    const data = await response.json();
-    return NextResponse.json(data.data || []);
-  } catch (error) {
-    return handleApiError(error, "Twitch rewards fetch");
-  }
-}
-
-export async function POST(request: Request) {
-  const session = await getSession();
-
-  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
-  const rateLimitResult = await checkRateLimit(rateLimits.twitchRewardsPost, identifier);
-
-  if (!rateLimitResult.success) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
-      {
-        status: 429,
-        headers: {
-          "X-RateLimit-Limit": String(rateLimitResult.limit),
-          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
-          "X-RateLimit-Reset": String(rateLimitResult.reset),
-        },
-      }
-    );
-  }
-
-  if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
-  }
-
-  const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
-
-  try {
-    const response = await fetch(
-      `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          title: "TwiCa カードガチャ",
-          cost: 100,
-          prompt: "カードガチャを1回引きます",
-          is_enabled: true,
-          background_color: "#9147FF",
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      const error = await response.json();
-      return handleApiError(error, "Twitch API reward creation");
-    }
-
-    const data = await response.json();
-    return NextResponse.json(data.data[0]);
-  } catch (error) {
-    return handleApiError(error, "Twitch reward creation");
-  }
-}
+// After:
+<Link
+  href="/api/auth/logout"
+  className="..."
+>
+  {UI_STRINGS.AUTH.LOGOUT}
+</Link>
 ```
 
-#### 5. ログアウト時のトークン削除
-
-`src/app/api/auth/logout/route.ts` で Twitch トークンも削除：
+`src/components/Collection.tsx`:
 
 ```typescript
-import { deleteTwitchTokens } from '@/lib/twitch/token-manager';
+import { UI_STRINGS } from '@/lib/constants'
 
-export async function POST(request: NextRequest) {
-  try {
-    const session = await getSession();
+// Before:
+<h2 className="...">マイコレクション</h2>
 
-    if (session) {
-      await deleteTwitchTokens(session.twitchUserId);
-    }
+// After:
+<h2 className="...">{UI_STRINGS.COLLECTION.TITLE}</h2>
 
-    await clearSession();
+// Before:
+<p className="...">まだカードを持っていません。<br />配信者のチャネルポイントを使ってカードをゲットしましょう！</p>
 
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    return handleApiError(error, "Logout API");
-  }
-}
+// After:
+<p className="...">
+  {UI_STRINGS.COLLECTION.EMPTY_MESSAGE.LINE1}
+  <br />
+  {UI_STRINGS.COLLECTION.EMPTY_MESSAGE.LINE2}
+</p>
 ```
 
-#### 6. テストの追加
-
-`tests/unit/twitch-token-manager.test.ts` の追加：
+`src/components/CardManager.tsx`:
 
 ```typescript
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { getTwitchAccessToken, saveTwitchTokens, deleteTwitchTokens } from '@/lib/twitch/token-manager';
-import { getSupabaseAdmin } from '@/lib/supabase/admin';
-import { refreshTwitchToken } from '@/lib/twitch/auth';
+import { UI_STRINGS } from '@/lib/constants'
 
-vi.mock('@/lib/supabase/admin');
-vi.mock('@/lib/twitch/auth');
+// Form labels
+<label>{UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME}</label>
+<input placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME_PLACEHOLDER} />
 
-describe('Twitch Token Manager', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+// Buttons
+<button onClick={() => setShowForm(true)}>
+  {UI_STRINGS.CARD_MANAGER.ADD_NEW_CARD}
+</button>
 
-  describe('getTwitchAccessToken', () => {
-    it('有効なトークンを返す', async () => {
-      const mockSupabaseAdmin = {
-        from: vi.fn().mockReturnThis(),
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({
-          data: {
-            twitch_access_token: 'valid-token',
-            twitch_refresh_token: 'refresh-token',
-            twitch_token_expires_at: new Date(Date.now() + 3600000).toISOString(),
-          },
-          error: null,
-        }),
-      };
+// Messages
+<h3>
+  {editingCard ? UI_STRINGS.CARD_MANAGER.EDIT_CARD : UI_STRINGS.CARD_MANAGER.NEW_CARD}
+</h3>
 
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+// Error messages
+setUploadError(errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT)
 
-      const token = await getTwitchAccessToken('123456789');
-      expect(token).toBe('valid-token');
-    });
+// Confirmations
+if (!confirm(UI_STRINGS.CARD_MANAGER.CONFIRMATIONS.DELETE_CARD)) return
 
-    it('トークンが存在しない場合は null を返す', async () => {
-      const mockSupabaseAdmin = {
-        from: vi.fn().mockReturnThis(),
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({
-          data: null,
-          error: null,
-        }),
-      };
+// File upload info
+<p className="...">
+  {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.SUPPORTED_FORMATS}
+  {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.MAX_SIZE((UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1) + 'MB')}
+</p>
 
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+// Drop rate label
+<label>
+  {UI_STRINGS.CARD_MANAGER.FORM_LABELS.DROP_RATE} ({(formData.dropRate * 100).toFixed(1)}%)
+</label>
+```
 
-      const token = await getTwitchAccessToken('123456789');
-      expect(token).toBeNull();
-    });
+#### 3. その他のコンポーネントの更新
 
-    it('期限切れのトークンを更新する', async () => {
-      const mockSupabaseAdmin = {
-        from: vi.fn().mockReturnThis(),
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValueOnce({
-          data: {
-            twitch_access_token: 'expired-token',
-            twitch_refresh_token: 'refresh-token',
-            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
-          },
-          error: null,
-        }),
-      };
+以下のコンポーネントも同様に更新する必要があります：
+- `src/components/AnimatedBattle.tsx`
+- `src/components/BattleComponents.tsx` (存在する場合)
+- `src/components/ChannelPointSettings.tsx`
+- `src/components/CopyButton.tsx`
+- `src/components/DashboardComponents.tsx`
+- `src/components/GachaHistorySection.tsx`
+- `src/components/RecentWins.tsx`
+- `src/components/Stats.tsx`
+- `src/components/StreamerSettings.tsx`
+- `src/components/DevelopmentNotice.tsx`
 
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
-      vi.mocked(refreshTwitchToken).mockResolvedValue({
-        access_token: 'new-token',
-        refresh_token: 'new-refresh-token',
-        expires_in: 3600,
-        token_type: 'bearer',
-        scope: ['user:read:email'],
-      });
+#### 4. 型定義の更新
 
-      const token = await getTwitchAccessToken('123456789');
-      expect(token).toBe('new-token');
-      expect(refreshTwitchToken).toHaveBeenCalledWith('refresh-token');
-    });
-  });
+必要に応じて型定義を追加：
 
-  describe('saveTwitchTokens', () => {
-    it('トークンを保存する', async () => {
-      const mockSupabaseAdmin = {
-        from: vi.fn().mockReturnThis(),
-        update: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockResolvedValue({
-          error: null,
-        }),
-      };
-
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
-
-      await saveTwitchTokens('123456789', {
-        access_token: 'access-token',
-        refresh_token: 'refresh-token',
-        expires_in: 3600,
-        token_type: 'bearer',
-        scope: ['user:read:email'],
-      });
-
-      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('users');
-      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          twitch_access_token: 'access-token',
-          twitch_refresh_token: 'refresh-token',
-        })
-      );
-    });
-  });
-
-  describe('deleteTwitchTokens', () => {
-    it('トークンを削除する', async () => {
-      const mockSupabaseAdmin = {
-        from: vi.fn().mockReturnThis(),
-        update: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockResolvedValue({
-          error: null,
-        }),
-      };
-
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
-
-      await deleteTwitchTokens('123456789');
-
-      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('users');
-      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          twitch_access_token: null,
-          twitch_refresh_token: null,
-          twitch_token_expires_at: null,
-        })
-      );
-    });
-  });
-});
+```typescript
+export type UIStrings = typeof UI_STRINGS;
 ```
 
 ### メリット
 
-1. **機能修復**: ストリーマー機能（チャンネルポイント報酬の管理）が正常に動作する
-2. **トークン管理の改善**: Twitch トークンの保存、更新、削除が適切に行われる
-3. **自動リフレッシュ**: トークンの有効期限が切れた場合、自動的に更新される
-4. **セキュリティの維持**: トークンはデータベースに安全に保存され、RLS ポリシーで保護される
+1. **保守性の向上**: 文字列の変更時に 1 箇所（constants.ts）を修正するだけで済む
+2. **一貫性の確保**: 同じ意味の文字列が一箇所で管理されるため、不整合がなくなる
+3. **拡張性の確保**: 将来的に多言語対応（i18n）する場合の拡張性が高い
+4. **コードの可読性向上**: 定数名から意味が明確になる
+5. **Issue #35 との一貫性**: Battle ライブラリと同じパターンを適用
 
 ### トレードオフの検討
 
-#### 選択肢1: データベースに保存（採用）
+#### 選択肢1: 定数化（採用）
 - **メリット**:
-  - 永続的な保存
-  - サーバーサイドでトークン更新が可能
-  - 複数のセッション間でトークンを共有可能
+  - 保守性の向上
+  - 一貫性の確保
+  - 将来的な拡張性（i18n）
 - **デメリット**:
-  - データベースへの追加クエリが必要
-  - RLS ポリシーの適切な設定が必要
-- **判断**: ストリーマー機能の必要性とトークン管理の柔軟性を考慮し採用
+  - 初期実装に時間がかかる
+  - 定数ファイルが大きくなる
+- **判断**: Issue #35 での実績と、長期的な保守性を考慮し採用
 
-#### 選択肢2: Cookie に保存（採用しない）
+#### 選択肢2: 現状維持（採用しない）
 - **メリット**:
-  - 実装がシンプル
-  - データベースの追加クエリ不要
+  - 実装コストがかからない
 - **デメリット**:
-  - Cookie のサイズ制限（4KB）
-  - セキュリティリスク（XSS によるトークン盗難の可能性）
-  - トークンの自動リフレッシュが困難
-- **判断**: セキュリティと機能性を考慮し採用しない
+  - 保守性が低い
+  - 一貫性が保てない
+  - 将来的な拡張性がない
+- **判断**: コード品質と保守性を優先し採用しない
 
-#### 選択肢3: Redis に保存（採用しない）
+#### 選択肢3: i18n ライブラリの導入（採用しない）
 - **メリット**:
-  - 高速なアクセス
-  - 自動期限切れ（TTL）
+  - 多言語対応が容易
+  - 機能が豊富
 - **デメリット**:
-  - 追加のインフラコスト
-  - 既存のアーキテクチャ（Supabase ベース）からの乖離
-  - データの永続性が低い
-- **判断**: 運用コストとアーキテクチャの一貫性を考慮し採用しない
+  - 追加の依存関係
+  - 実装コストが高い
+  - 現時点では必要ない
+- **判断**: 現状では日本語のみで十分であり、将来 i18n が必要になった際に導入可能
 
 ### 受け入れ基準
 
-- [x] データベースマイグレーションが作成される
-- [x] `src/lib/twitch/token-manager.ts` が作成される
-- [x] `/api/auth/twitch/callback` で Twitch トークンが保存される
-- [x] `/api/twitch/rewards` で正しい Twitch アクセストークンが使用される
-- [x] トークンの有効期限が切れた場合、自動的に更新される
-- [x] ログアウト時、Twitch トークンが削除される
-- [x] テストが追加される
-- [x] lint と test がパスする
-- [x] CI がパスする
+- [ ] `src/lib/constants.ts` に UI 文字列定数を追加する
+- [ ] `TwitchLoginButton.tsx` の文字列を定数化する
+- [ ] `Header.tsx` の文字列を定数化する
+- [ ] `Collection.tsx` の文字列を定数化する
+- [ ] `CardManager.tsx` の文字列を定数化する
+- [ ] その他のコンポーネントの文字列を定数化する
+- [ ] すべてのハードコードされた日本語文字列が定数に置き換えられる
+- [ ] lint と test がパスする
+- [ ] CI がパスする
 
 ---
 
@@ -848,7 +595,8 @@ describe('Twitch Token Manager', () => {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-19 | Twitch トークン管理機能の設計を追加（Issue #46） |
+| 2026-01-19 | UI 文字列の定数化設計を追加（Issue #47） |
+| 2026-01-19 | アーキテクチャドキュメントの新規作成 |
 
 ---
 

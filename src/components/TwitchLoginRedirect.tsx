@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react'
 import { TwitchLoginResponse } from '@/types/auth'
+import { UI_STRINGS } from '@/lib/constants'
 
 export function TwitchLoginRedirect() {
   useEffect(() => {
@@ -31,7 +32,7 @@ export function TwitchLoginRedirect() {
 
   return (
     <div className="flex items-center justify-center">
-      <div className="text-white">Twitchログインページへ移動中...</div>
+      <div className="text-white">{UI_STRINGS.AUTH.REDIRECTING}</div>
     </div>
   )
 }

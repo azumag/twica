@@ -1,4 +1,4 @@
-import { RARITY_COLORS } from "@/lib/constants";
+import { RARITY_COLORS, UI_STRINGS } from "@/lib/constants";
 import Image from "next/image";
 
 interface CardWithDetails {
@@ -63,8 +63,8 @@ export function GachaHistoryList({ history }: { history: GachaHistoryWithCard[] 
       {history.map((entry) => (
         <div key={entry.id} className="bg-white rounded-lg shadow p-3 flex justify-between items-center">
           <div>
-            <span className="font-medium">{entry.user_twitch_username || 'Unknown'}</span>
-            <span className="text-gray-500"> got </span>
+            <span className="font-medium">{entry.user_twitch_username || UI_STRINGS.GACHA_HISTORY.UNKNOWN}</span>
+            <span className="text-gray-500">{UI_STRINGS.GACHA_HISTORY.GOT_LABEL}</span>
             <span className="font-semibold">{entry.cards.name}</span>
             <span className={`ml-2 px-2 py-1 rounded text-xs text-white ${RARITY_COLORS[entry.cards.rarity as keyof typeof RARITY_COLORS] || 'bg-gray-500'}`}>
               {entry.cards.rarity}

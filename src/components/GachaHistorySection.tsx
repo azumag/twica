@@ -4,6 +4,7 @@ import { useState } from "react";
 import Image from "next/image";
 import type { GachaHistory, Card } from "@/types/database";
 import { logger } from "@/lib/logger";
+import { UI_STRINGS } from "@/lib/constants";
 
 interface GachaHistoryWithCard extends GachaHistory {
   cards: Card;
@@ -28,7 +29,7 @@ export default function GachaHistorySection({
   const [history, setHistory] = useState<GachaHistoryWithCard[]>(recentGacha);
 
   const handleDelete = async (historyId: string) => {
-    if (!confirm("この記録を削除しますか？")) return;
+    if (!confirm(UI_STRINGS.CARD_MANAGER.CONFIRMATIONS.DELETE_CARD)) return;
 
     try {
       const response = await fetch(`/api/gacha-history/${historyId}`, {
@@ -39,7 +40,7 @@ export default function GachaHistorySection({
         setHistory(history.filter((h: GachaHistoryWithCard) => h.id !== historyId));
       } else if (response.status === 429) {
         const errorData = await response.json();
-        alert(`操作失敗: ${errorData.error || "リクエストが多すぎます。しばらく待ってから再試行してください。"}`);
+        alert(UI_STRINGS.CARD_MANAGER.MESSAGES.OPERATION_FAILED(errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT));
         logger.error("Rate limit exceeded:", errorData);
       }
     } catch (error) {
@@ -49,12 +50,12 @@ export default function GachaHistorySection({
 
   return (
     <section className="mb-12">
-      <h2 className="mb-6 text-2xl font-semibold text-white">最近の獲得情報</h2>
+      <h2 className="mb-6 text-2xl font-semibold text-white">{UI_STRINGS.GACHA_HISTORY.TITLE}</h2>
       <div className="overflow-hidden rounded-xl bg-gray-800">
         <div className="divide-y divide-gray-700">
           {history.length === 0 ? (
             <div className="p-6 text-center text-gray-400">
-              まだ獲得情報はありません。
+              {UI_STRINGS.GACHA_HISTORY.EMPTY_MESSAGE}
             </div>
           ) : (
             history.map((entry: GachaHistoryWithCard) => (
@@ -73,26 +74,25 @@ export default function GachaHistorySection({
                       🎴
                     </div>
                   )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-white">
-                    <span className="text-purple-400 font-bold">{entry.user_twitch_username}</span> が
-                    <span className="text-white font-bold ml-1">{entry.cards.name}</span> を獲得しました！
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    {new Date(entry.redeemed_at).toLocaleString('ja-JP')}
-                  </p>
-                </div>
-                <div className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[entry.cards.rarity]}`}>
-                  {entry.cards.rarity}
-                </div>
-                {isStreamer && (
-                  <button
-                    onClick={() => handleDelete(entry.id)}
-                    className="rounded bg-red-500 px-3 py-1 text-xs text-white hover:bg-red-600 transition-colors"
-                  >
-                    削除
-                  </button>
+                 </div>
+                 <div className="flex-1 min-w-0">
+                   <p className="text-sm font-medium text-white">
+                     {UI_STRINGS.GACHA_HISTORY.GOT(entry.user_twitch_username || UI_STRINGS.GACHA_HISTORY.UNKNOWN, entry.cards.name)}
+                   </p>
+                   <p className="text-xs text-gray-500">
+                     {new Date(entry.redeemed_at).toLocaleString('ja-JP')}
+                   </p>
+                 </div>
+                 <div className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[entry.cards.rarity]}`}>
+                   {entry.cards.rarity}
+                 </div>
+                 {isStreamer && (
+                   <button
+                     onClick={() => handleDelete(entry.id)}
+                     className="rounded bg-red-500 px-3 py-1 text-xs text-white hover:bg-red-600 transition-colors"
+                   >
+                     {UI_STRINGS.CARD_MANAGER.BUTTONS.DELETE}
+                   </button>
                 )}
               </div>
             ))

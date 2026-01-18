@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Stats from "./Stats";
 import type { Streamer, Card } from "@/types/database";
+import { UI_STRINGS } from "@/lib/constants";
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -22,7 +23,7 @@ interface CollectionProps {
 export default function Collection({ cardsByStreamer, stats }: CollectionProps) {
   return (
     <section>
-      <h2 className="mb-6 text-2xl font-semibold text-white">マイコレクション</h2>
+      <h2 className="mb-6 text-2xl font-semibold text-white">{UI_STRINGS.COLLECTION.TITLE}</h2>
 
       {/* Stats */}
       <Stats stats={stats} />
@@ -31,9 +32,9 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
       {Object.keys(cardsByStreamer).length === 0 ? (
         <div className="rounded-xl bg-gray-800 p-8 text-center">
           <p className="text-gray-400">
-            まだカードを持っていません。
+            {UI_STRINGS.COLLECTION.EMPTY_MESSAGE.LINE1}
             <br />
-            配信者のチャネルポイントを使ってカードをゲットしましょう！
+            {UI_STRINGS.COLLECTION.EMPTY_MESSAGE.LINE2}
           </p>
         </div>
       ) : (
@@ -53,7 +54,7 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
                 {streamer.twitch_display_name}
               </h3>
               <span className="text-sm text-gray-400">
-                ({cards.length} 種類)
+                {UI_STRINGS.COLLECTION.CARD_TYPES(cards.length)}
               </span>
             </div>
 
@@ -94,7 +95,7 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
                     )}
                     {card.count > 1 && (
                       <div className="text-sm text-gray-400">
-                        x{card.count}
+                        {UI_STRINGS.COLLECTION.CARD_COUNT(card.count)}
                       </div>
                     )}
                   </div>
