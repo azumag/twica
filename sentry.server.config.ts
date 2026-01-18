@@ -5,15 +5,61 @@
 import * as Sentry from "@sentry/nextjs";
 
 Sentry.init({
-  dsn: "https://71832ece44069cf646ab822dea3fb483@o4510724437245952.ingest.us.sentry.io/4510731008016384",
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
 
-  // Define how likely traces are sampled. Adjust this value in production, or use tracesSampler for greater control.
-  tracesSampleRate: 1,
+  environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
+  tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
+  debug: process.env.NODE_ENV === 'development',
 
-  // Enable logs to be sent to Sentry
-  enableLogs: true,
+  beforeSend(event, hint) {
+    if (event.user) {
+      delete event.user.email
+      delete event.user.ip_address
+    }
 
-  // Enable sending user PII (Personally Identifiable Information)
-  // https://docs.sentry.io/platforms/javascript/guides/nextjs/configuration/options/#sendDefaultPii
-  sendDefaultPii: true,
+    if (event.request?.headers) {
+      const { cookie: _cookie, authorization: _auth, ...headers } = event.request.headers
+      void _cookie
+      void _auth
+      event.request.headers = headers
+    }
+
+    if (event.exception) {
+      const error = hint.originalException
+      if (error instanceof Error) {
+        event.contexts = {
+          ...event.contexts,
+          custom: {
+            ...event.contexts?.custom,
+            errorMessage: error.message,
+            errorName: error.name,
+          }
+        }
+      }
+    }
+    return event
+  },
+
+  beforeSendTransaction(event) {
+    if (event.request?.url?.includes('/_next')) {
+      return null
+    }
+    return event
+  },
+
+  ignoreErrors: [
+    'ResizeObserver loop limit exceeded',
+    'Non-Error promise rejection captured',
+    'Request aborted',
+    'Network request failed',
+    'ChunkLoadError',
+  ],
+
+  denyUrls: [
+    /^chrome-extension:\/\//,
+    /^moz-extension:\/\//,
+    /^safari-extension:\/\//,
+  ],
+
+  release: process.env.NEXT_PUBLIC_VERSION || 'local',
 });
