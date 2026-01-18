@@ -133,80 +133,6 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] アニメーション効果が表示される
 - [x] モバイルで快適に操作可能
 
-### 型安全性向上（Issue #17）
-- [x] `any`型の使用が削減される
-- [x] ESLintの`@typescript-eslint/no-explicit-any`警告が解消される
-- [x] カード所有権の検証が正しく動作する
-- [x] TypeScriptのコンパイルエラーがない
-- [x] 既存のAPIテストがパスする
-
-### APIエラーハンドリング標準化（Issue #18）
-- [x] すべてのAPIルートで標準化されたエラーハンドラーを使用する
-- [x] エラーメッセージがすべてのルートで一貫している
-- [x] 既存のAPIテストがパスする
-- [x] 手動テストでエラーハンドリングが正しく動作することを確認する
-- [x] 既存の機能に回帰がない
-
-### レート制限のfail-open問題修正（Issue #26）
-- [x] Redisエラー発生時に `success: false` を返す
-- [x] 本番環境ではエラー時にリクエストがブロックされる
-- [x] 開発環境ではインメモリフォールバックが機能する
-- [x] エラー発生時にSentryにログが送信される
-- [x] TypeScript コンパイルエラーがない
-- [x] ESLint エラーがない
-- [x] 既存のAPIテストがパスする
-- [x] レート制限が正しく動作する
-- [x] 既存の機能に回帰がない
-
-### データベースクエリ最適化（Issue #27）
-- [x] すべての `.select('*')` が明示的なフィールド選択に置き換えられる
-- [x] 各APIルートで必要なフィールドのみが選択される
-- [x] TypeScript コンパイルエラーがない
-- [x] ESLint エラーがない
-- [x] 既存のAPIテストがパスする
-- [x] APIレスポンス形式が維持される
-- [x] 既存の機能に回帰がない
-- [x] データ転送量が削減される（50%以上）
-
-### N+1クエリ問題の解決 - Battle Stats API（Issue #28）
-- [x] N+1クエリ問題が解決される
-- [x] 最近の対戦履歴が単一のクエリで取得される
-- [x] APIレスポンス形式が維持される
-- [x] TypeScript コンパイルエラーがない
-- [x] ESLint エラーがない
-- [x] 既存のAPIテストがパスする
-- [x] 既存の機能に回帰がない
-- [x] データベースクエリ数が削減される（10件の対戦で11→1へ）
-- [x] Issue #28 クローズ済み
-
-### N+1クエリ問題の解決 - Battle Get API（Issue #29）
-- [x] N+1クエリ問題が解決される
-- [x] 対戦データが単一のクエリで取得される
-- [x] APIレスポンス形式が維持される
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint エラーなし
-- [x] CIが成功
-- [x] Issue #29 クローズ済み
-
-### APIエラーメッセージ標準化（Issue #30）
-- [x] すべての日本語エラーメッセージがERROR_MESSAGES定数に置換されている
-- [x] すべてのハードコードされた英語エラーメッセージがERROR_MESSAGES定数に置換されている
-- [x] すべての必要なERROR_MESSAGES定数がsrc/lib/constants.tsに追加されている
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint エラーなし
-- [x] CIが成功
-- [x] Issue #30 クローズ済み
-
-### デバッグエンドポイントセキュリティ強化（Issue #32）
-- [ ] デバッグエンドポイントが本番環境から削除される
-- [ ] 開発環境でのみアクセス可能になる
-- [ ] ローカルホストのみアクセス可能になる
-- [ ] Cookie値がクライアントに公開されない
-- [ ] TypeScript コンパイルエラーがない
-- [ ] ESLint エラーがない
-- [ ] CIが成功
-- [ ] Issue #32 クローズ済み
-
 ---
 
 ## 設計方針
@@ -272,245 +198,154 @@ graph LR
 
 ---
 
-## Issue #32: Critical Security - Debug Endpoint Exposes Sensitive Cookies
+## Issue #33: Code Quality - Inconsistent Error Message in Session API
 
 ### 問題
 
-デバッグエンドポイント `src/app/api/debug-session/route.ts` が、セッションを除くすべてのCookieを認証済みユーザーに公開しています。
+`/api/session` エンドポイントにハードコードされたエラーメッセージ `'Not authenticated'` があり、標準化された `ERROR_MESSAGES.NOT_AUTHENTICATED` 定数を使用していません。
 
 ### 問題の詳細
 
 #### 現在の実装
 
+**src/app/api/session/route.ts**
+
 ```typescript
-export async function GET(request: Request) {
-  // ...
-  const allCookies = cookieStore.getAll().map(c => ({ name: c.name, value: c.name === 'twica_session' ? '[REDACTED]' : c.value }));
-  return NextResponse.json({
-    authenticated: !!session,
-    session: session ? {
-      twitchUserId: session.twitchUserId,
-      twitchUsername: session.twitchUsername,
-    } : null,
-    cookies: allCookies,  // Exposes all cookies to authenticated users
-    timestamp: new Date().toISOString(),
-  });
+export async function GET() {
+  try {
+    const session = await getSession()
+    
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })  // Hardcoded string
+    }
+    
+    return NextResponse.json(session)
+  } catch (error) {
+    return handleApiError(error, "Session API: GET")
+  }
 }
 ```
 
 #### 影響
 
-- **セキュリティ**: すべてのCookieが認証済みユーザーに公開され、機密性の高いトークンやデータが漏洩する可能性がある
-- **データプライバシー**: プライベートであるべきCookieをユーザーが閲覧できる
-- **コンプライアンス**: プライバシー規制への違反の可能性
-
-#### 例: 予想されるリスク
-
-アプリケーションが追加のCookieを使用している場合：
-- アナリティクス/トラッキングトークン
-- 機能フラグやA/Bテストパラメータ
-- サードパーティ統合トークン
-
-これらはどの認証済みユーザーにも公開されます。
+- **コード品質**: Issue #30で実装されたAPIエラーメッセージ標準化に違反
+- **保守性**: ハードコードされた文字列はメンテナンスが困難で一貫性のないエラーメッセージにつながる可能性がある
+- **一貫性**: 他のAPIルートは適切に `ERROR_MESSAGES` 定数を使用している
 
 ### 優先度
 
-**Critical** - 機密データを公開するセキュリティ脆弱性
+**Low** - コード品質の問題、セキュリティまたは機能的なバグではない
 
 ---
 
-## Issue #32: 設計
+## Issue #33: 設計
 
 ### 機能要件
 
-#### 1. デバッグエンドポイントの保護
+#### 1. Session API エラーメッセージの標準化
 
-デバッグエンドポイントを保護し、本番環境ではアクセスできないようにします：
-
-1. **環境チェック**
-   - 本番環境（`NODE_ENV === 'production'`）では404を返す
-   - 開発環境でのみアクセスを許可
-
-2. **ローカルホスト制限**
-   - ローカルホスト（`localhost`、`127.0.0.1`）からのアクセスのみ許可
-   - その他のIPアドレスからのアクセスは拒否
-
-3. **Cookie値の公開禁止**
-   - Cookie値をクライアントに公開しない
-   - Cookie名のみを返す
+Session APIのエラーメッセージを標準化し、`ERROR_MESSAGES` 定数を使用します。
 
 ### 非機能要件
 
-#### セキュリティ
+#### コード品質
 
-- デバッグエンドポイントは本番環境でアクセスできない
-- ローカルホスト以外からのアクセスは拒否される
-- Cookie値はクライアントに公開されない
-- 環境変数やシークレットは公開されない
-
-#### 開発体験
-
-- 開発環境でデバッグ情報にアクセスできる
-- ローカル開発中にセッション状態を確認できる
+- すべてのエラーメッセージが `ERROR_MESSAGES` 定数を使用する
+- ハードコードされた文字列が削除される
+- 一貫性のあるエラーハンドリングが維持される
 
 ### 設計
 
-#### 1. デバッグエンドポイントの修正
+#### 1. Session API の修正
 
-**src/app/api/debug-session/route.ts**
+**src/app/api/session/route.ts**
 
 **変更前**:
 ```typescript
-export async function GET(request: Request) {
-  const cookieStore = await cookies()
-  const session = await getSession(request)
-
-  const allCookies = cookieStore.getAll().map(c => ({
-    name: c.name,
-    value: c.name === 'twica_session' ? '[REDACTED]' : c.value
-  }))
-
-  return NextResponse.json({
-    authenticated: !!session,
-    session: session ? {
-      twitchUserId: session.twitchUserId,
-      twitchUsername: session.twitchUsername,
-    } : null,
-    cookies: allCookies,
-    timestamp: new Date().toISOString(),
-  })
+export async function GET() {
+  try {
+    const session = await getSession()
+    
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+    
+    return NextResponse.json(session)
+  } catch (error) {
+    return handleApiError(error, "Session API: GET")
+  }
 }
 ```
 
 **変更後**:
 ```typescript
-export async function GET(request: Request) {
-  // Check if running in production
-  if (process.env.NODE_ENV === 'production') {
-    return NextResponse.json(
-      { error: 'Debug endpoint not available in production' },
-      { status: 404 }
-    )
+import { ERROR_MESSAGES } from '@/lib/constants'
+
+export async function GET() {
+  try {
+    const session = await getSession()
+    
+    if (!session) {
+      return NextResponse.json({ error: ERROR_MESSAGES.NOT_AUTHENTICATED }, { status: 401 })
+    }
+    
+    return NextResponse.json(session)
+  } catch (error) {
+    return handleApiError(error, "Session API: GET")
   }
-
-  // Check if request is from localhost
-  const url = new URL(request.url)
-  const host = url.hostname
-
-  if (host !== 'localhost' && host !== '127.0.0.1') {
-    return NextResponse.json(
-      { error: 'Debug endpoint only accessible from localhost' },
-      { status: 403 }
-    )
-  }
-
-  const cookieStore = await cookies()
-  const session = await getSession(request)
-
-  // Only return cookie names, never values
-  const cookieNames = cookieStore.getAll().map(c => c.name)
-
-  return NextResponse.json({
-    authenticated: !!session,
-    session: session ? {
-      twitchUserId: session.twitchUserId,
-      twitchUsername: session.twitchUsername,
-    } : null,
-    cookies: cookieNames,  // Only names, not values
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV,
-  })
 }
 ```
 
 **理由**:
-- 本番環境では404を返すことで、エンドポイントの存在を隠す
-- ローカルホスト制限により、開発者のみがアクセス可能
-- Cookie値を公開しないことで、機密性を保護
-- 環境情報を追加して、開発者が現在の環境を確認できる
-
-#### 2. 環境定数の追加
-
-**src/lib/constants.ts**
-
-```typescript
-export const DEBUG_CONFIG = {
-  ALLOWED_HOSTS: ['localhost', '127.0.0.1'],
-  PRODUCTION_ENV: 'production',
-} as const
-```
-
-**使用例**:
-```typescript
-import { DEBUG_CONFIG } from '@/lib/constants'
-
-if (process.env.NODE_ENV === DEBUG_CONFIG.PRODUCTION_ENV) {
-  // Return 404
-}
-
-if (!DEBUG_CONFIG.ALLOWED_HOSTS.includes(host)) {
-  // Return 403
-}
-```
+- 他のAPIルートと一貫性を保つ
+- エラーメッセージの一元管理により、将来の変更が容易
+- Issue #30の標準化完了状態を維持
 
 ### 変更ファイル
 
-- `src/app/api/debug-session/route.ts` (更新 - セキュリティ強化)
-- `src/lib/constants.ts` (更新 - デバッグ設定定数の追加)
+- `src/app/api/session/route.ts` (更新 - エラーメッセージ標準化)
 
 ### 受け入れ基準
 
-- [ ] デバッグエンドポイントが本番環境から削除される
-- [ ] 開発環境でのみアクセス可能になる
-- [ ] ローカルホストのみアクセス可能になる
-- [ ] Cookie値がクライアントに公開されない
+- [ ] `/api/session` エンドポイントが `ERROR_MESSAGES.NOT_AUTHENTICATED` 定数を使用する
 - [ ] TypeScript コンパイルエラーがない
 - [ ] ESLint エラーがない
 - [ ] 既存のAPIテストがパスする
 - [ ] CIが成功
-- [ ] Issue #32 クローズ済み
+- [ ] Issue #33 クローズ済み
 
 ### テスト計画
 
-1. **環境チェックテスト**:
-   - 本番環境で404が返されることを確認
-   - 開発環境でアクセスできることを確認
+1. **統合テスト**:
+   - セッションがない場合に `ERROR_MESSAGES.NOT_AUTHENTICATED` が返されることを確認
+   - セッションがある場合に正しいセッションデータが返されることを確認
 
-2. **ローカルホスト制限テスト**:
-   - localhost からのアクセスが許可されることを確認
-   - 127.0.0.1 からのアクセスが許可されることを確認
-   - その他のIPアドレスからのアクセスが拒否されることを確認
-
-3. **Cookie保護テスト**:
-   - Cookie名のみが返されることを確認
-   - Cookie値が返されないことを確認
-   - セッション情報が正しく返されることを確認
-
-4. **統合テスト**:
-   - デバッグエンドポイントの統合テストがパスすることを確認
+2. **回帰テスト**:
+   - 既存の認証フローが正しく動作することを確認
+   - 以前の動作と変わらないことを確認
 
 ### トレードオフの検討
 
-#### 現在の実装 vs 保護された実装
+#### ハードコードされた文字列 vs ERROR_MESSAGES定数
 
-| 項目 | 現在の実装 | 保護された実装 |
+| 項目 | ハードコードされた文字列 | ERROR_MESSAGES定数 |
 |:---|:---|:---|
-| **セキュリティ** | 低（Cookie値が公開） | 高（Cookie値が非公開） |
-| **開発体験** | 高（Cookie値を確認可能） | 中（Cookie名のみ確認可能） |
-| **本番環境での可用性** | 低（本番でも公開される） | 高（本番では利用不可） |
-| **コンプライアンス** | 低（規制違反の可能性） | 高（規制に準拠） |
+| **コード品質** | 低（標準化違反） | 高（一貫性あり） |
+| **保守性** | 低（変更時に複数箇所を修正） | 高（一箇所の修正で全体に反映） |
+| **一貫性** | 低（ルートごとに異なる可能性） | 高（全ルートで統一） |
+| **実装コスト** | 低（変更なし） | 低（簡単な置換） |
 
-**推奨**: 保護された実装
+**推奨**: ERROR_MESSAGES定数を使用
 
 **理由**:
-- セキュリティ脆弱性が修正される
-- 本番環境でのリスクが軽減される
-- 開発環境では引き続きデバッグ情報にアクセス可能
-- Cookie値は開発者ツールで確認できるため、開発体験への影響は最小限
+- Issue #30で実装された標準化完了状態を維持できる
+- 将来のエラーメッセージの変更や追加言語対応が容易
+- コードベース全体で一貫性が保たれる
 
 ### 関連問題
 
-- なし（新規のセキュリティ問題）
+- Issue #30 - API Error Message Standardization (解決済み)
+- Issue #25 - Inconsistent Error Messages in API Responses (解決済み)
 
 ---
 
@@ -518,13 +353,13 @@ if (!DEBUG_CONFIG.ALLOWED_HOSTS.includes(host)) {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-18 | Issue #32 デバッグエンドポイントセキュリティ強化の設計追加 |
+| 2026-01-18 | Issue #33 Session APIエラーメッセージ標準化の設計追加 |
+| 2026-01-18 | Issue #32 デバッグエンドポイントセキュリティ強化の実装完了・クローズ |
 | 2026-01-18 | Issue #31 `as any` 型キャスト削除の実装完了・クローズ |
 | 2026-01-18 | Issue #30 APIエラーメッセージ標準化の実装完了・クローズ |
 | 2026-01-18 | Issue #29 N+1クエリ問題の実装完了・クローズ |
 | 2026-01-18 | Issue #28 N+1クエリ問題の実装完了・クローズ |
-| 2026-01-18 | Issue #27 データベースクエリ最適化の実装完了 |
-| 2026-01-18 | Issue #27 データベースクエリ最適化の設計追加 |
+| 2026-01-18 | Issue #27 データベースクエリ最適化の実装完了・クローズ |
 | 2026-01-17 | Issue #26 レート制限のfail-open問題の実装完了 |
 | 2026-01-17 | Issue #25 エラーメッセージの一貫性問題の実装完了 |
 
@@ -532,88 +367,4 @@ if (!DEBUG_CONFIG.ALLOWED_HOSTS.includes(host)) {
 
 ## 実装完了の問題
 
-### Issue #31: Code Quality - Remove 'any' Type Usage in Battle Start API (解決済み)
-
-### 実装内容
-
-- [x] `as any` 型キャストが削除される
-- [x] 適切な型定義が使用される
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint `@typescript-eslint/no-explicit-any` 警告なし
-- [x] 既存のAPIテストがパスする
-- [x] 既存の機能に回帰がない
-- [x] CIが成功
-- [x] Issue #31 クローズ済み
-
----
-
-### Issue #30: Code Quality - Complete API Error Message Standardization - Japanese and Hardcoded Messages Remain (解決済み)
-
-### 実装内容
-
-- [x] すべての日本語エラーメッセージがERROR_MESSAGES定数に置換されている
-- [x] すべてのハードコードされた英語エラーメッセージがERROR_MESSAGES定数に置換されている
-- [x] すべての必要なERROR_MESSAGES定数がsrc/lib/constants.tsに追加されている
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint エラーなし
-- [x] CIが成功
-- [x] Issue #30 クローズ済み
-
----
-
-### Issue #29: Performance - Fix N+1 Query Problem in Battle Get API (解決済み)
-
-### 実装内容
-
-- [x] N+1クエリ問題が解決される
-- [x] 対戦データが単一のクエリで取得される
-- [x] APIレスポンス形式が維持される
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint エラーなし
-- [x] CIが成功
-- [x] Issue #29 クローズ済み
-
----
-
-### Issue #27: Performance - Optimize Database Queries by Selecting Only Required Fields (解決済み)
-
-### 実装内容
-
-- [x] すべての `.select('*')` が明示的なフィールド選択に置き換えられる
-- [x] 各APIルートで必要なフィールドのみが選択される
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint エラーなし
-- [x] CIが成功
-- [x] Issue #27 クローズ済み
-
----
-
-### Issue #26: Critical Security - Rate Limiting Fails Open on Error (解決済み)
-
-### 実装内容
-
-- [x] `src/lib/rate-limit.ts` で fail-closed 動作を実装
-- [x] 本番環境では Redis エラー時にリクエストをブロック
-- [x] 開発環境ではインメモリフォールバックを使用
-- [x] サーキットブレーカーパターンを導入
-- [x] Sentry エラー報告を強化
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint エラーなし
-- [x] CIが成功
-- [x] Issue #26 クローズ済み
-
----
-
-### Issue #25: Inconsistent Error Messages in API Responses (解決済み)
-
-### 実装内容
-
-- [x] `src/lib/constants.ts` に `ERROR_MESSAGES` 定数を追加
-- [x] `src/types/api.ts` を新規作成（APIレスポンスタイプの定義）
-- [x] すべてのAPIルートでエラーメッセージ定数を使用
-- [x] すべてのエラーメッセージを英語に統一
-- [x] レート制限エラーメッセージを英語に更新
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint エラーなし
-- [x] CIが成功
-- [x] Issue #25 クローズ済み
+詳細は `docs/ARCHITECTURE_2026-01-18.md` を参照してください。
