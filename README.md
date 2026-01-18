@@ -126,10 +126,15 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
-   - Issue #47 created: Code Quality - Hardcoded Strings in React Components
-            - React components contain many hardcoded Japanese strings
+   - Issue #47 implemented and closed: Code Quality - Hardcoded Strings in React Components
+            - UI_STRINGS constant object added to src/lib/constants.ts
+            - All 14 components updated to use UI_STRINGS instead of hardcoded strings
+            - SUCCESS_MESSAGES array added for channel point settings
+            - Message color detection logic fixed in ChannelPointSettings component
+            - GOT_LABEL constant added for gacha history display
+            - All acceptance criteria met: 81/81 tests pass, lint passes, build succeeds
+            - CI passed successfully
             - Design documented in ARCHITECTURE.md
-            - Awaiting implementation
    - Issue #46 implemented and closed: Critical Bug: Twitch API Calls Fail Due to Missing Twitch Access Token Storage
             - Twitch token storage in users table (twitch_access_token, twitch_refresh_token, twitch_token_expires_at)
             - Token manager utility created (src/lib/twitch/token-manager.ts)
