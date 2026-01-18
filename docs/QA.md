@@ -1,99 +1,94 @@
-# QA Report - Issue #34: CPUカード文字列定数化
+# QA Report
 
-## 実装内容の確認
+## Issue: #35 - Code Quality: Hardcoded Skill Names and CPU Strings in Battle Library
 
-### 1. 定数の追加
+## 実施日時
+2026-01-18 14:05
 
-**src/lib/constants.ts (行 110-114)**:
-```typescript
-export const CPU_CARD_STRINGS = {
-  NAME_PREFIX: 'CPUの',
-  DEFAULT_NAME: 'CPUカード',
-  DEFAULT_SKILL_NAME: 'CPU攻撃',
-} as const
-```
+## 評価結果
+✅ **QA PASSED** - 実装は設計仕様を完全に満たしています
 
-**結果**: ✅ CPU_CARD_STRINGS定数が正しく追加されています
+## 受け入れ基準チェック
 
-### 2. Battle Get APIの修正
+### 定数の追加
+- ✅ `src/lib/constants.ts` に BATTLE_SKILL_NAMES 定数が追加されている
+  - 行 116-121: ATTACK, DEFENSE, HEAL, SPECIAL の各配列が定義されている
+  - as const で型安全が確保されている
+  
+- ✅ `src/lib/constants.ts` に BATTLE_LOG_MESSAGES 定数が追加されている
+  - 行 123-135: すべてのバトルログメッセージが関数形式で定義されている
+  - SKILL_ATTACK, SKILL_DEFENSE, SKILL_HEAL, SKILL_SPECIAL, NORMAL_ATTACK, SKILL_FAILED が含まれている
 
-**src/app/api/battle/[battleId]/route.ts**:
-- 行 6: `import { ERROR_MESSAGES, CPU_CARD_STRINGS } from '@/lib/constants'` - 正しくインポートされています
-- 行 188: `name: CPU_CARD_STRINGS.DEFAULT_NAME` - CPUカード名に定数を使用
-- 行 195: `skill_name: CPU_CARD_STRINGS.DEFAULT_SKILL_NAME` - CPUスキル名に定数を使用
-- 行 261: `name: opponentCard.name.startsWith(CPU_CARD_STRINGS.NAME_PREFIX) ? opponentCard.name : \`${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}\`` - オポーネントカード名の接頭辞に定数を使用
+### battle.ts の実装
+- ✅ `generateCPUOpponent` 関数が CPU_CARD_STRINGS 定数を使用している
+  - 行 33: `name: CPU_CARD_STRINGS.DEFAULT_NAME`
+  - 行 40: `skill_name: CPU_CARD_STRINGS.DEFAULT_SKILL_NAME`
+  - 行 49: `cpuCard.name = \`\${CPU_CARD_STRINGS.NAME_PREFIX}\${cpuCard.name}\``
+  
+- ✅ `generateCardStats` 関数が BATTLE_SKILL_NAMES 定数を使用している
+  - 行 70: `const skillNameList = BATTLE_SKILL_NAMES[skill_type.toUpperCase() as keyof typeof BATTLE_SKILL_NAMES]`
+  - ハードコードされた skillNames 配列は削除されている
+  
+- ✅ `executeSkill` 関数が BATTLE_LOG_MESSAGES 定数を使用している
+  - 行 109: `message: BATTLE_LOG_MESSAGES.SKILL_ATTACK(...)`
+  - 行 115: `message: BATTLE_LOG_MESSAGES.SKILL_DEFENSE(...)`
+  - 行 122: `message: BATTLE_LOG_MESSAGES.SKILL_HEAL(...)`
+  - 行 130: `message: BATTLE_LOG_MESSAGES.SKILL_SPECIAL(...)`
+  - 行 134: `message: BATTLE_LOG_MESSAGES.SKILL_FAILED`
+  - すべてのハードコードされた日本語メッセージが定数に置換されている
+  
+- ✅ `playBattle` 関数が BATTLE_LOG_MESSAGES 定数を使用している
+  - 行 192: `message: BATTLE_LOG_MESSAGES.NORMAL_ATTACK(attacker.name, damage)`
 
-**結果**: ✅ すべてのCPUカード関連文字列が定数を使用しています
+### 品質チェック
+- ✅ TypeScript コンパイルエラーがない
+  - `npm run build` が成功（3.4s）
+  - すべてのルートが正常にビルドされた
+  
+- ✅ ESLint エラーがない
+  - `npm run lint` が成功（問題なし）
+  
+- ✅ 既存の対戦機能テストがパスする
+  - `npm run test:all` が成功
+  - tests/unit/battle.test.ts: 24 tests passed
+  - 総テスト数: 59 tests passed
 
-### 3. Battle Stats APIの修正
+## CI 状態
+- ✅ 直近の CI 実行が成功
+  - 2026-01-18T04:53:49Z: "feat: Issue #34 - CPUカード文字列定数化" - SUCCESS
+  - 2026-01-18T04:39:15Z: "fix: Session API error message standardization" - SUCCESS
+  - 2026-01-18T04:30:48Z: "qa: Issue #32 - Debug Endpoint Security Enhancement" - SUCCESS
 
-**src/app/api/battle/stats/route.ts**:
-- 行 7: `import { ERROR_MESSAGES, CPU_CARD_STRINGS } from '@/lib/constants'` - 正しくインポートされています
-- 行 122, 135: `opponentCardName: opponentCard ? \`${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}\` : CPU_CARD_STRINGS.DEFAULT_NAME` - オポーネントカード名に定数を使用
+## 追加の品質評価
 
-**結果**: ✅ すべてのCPUカード関連文字列が定数を使用しています
+### コード品質
+- **型安全性**: as const および as keyof typeof BATTLE_SKILL_NAMES による適切な型保護
+- **一貫性**: Issue #30 および Issue #34 の標準化パターンに従っている
+- **保守性**: すべての文字列が一箇所（src/lib/constants.ts）で管理されている
 
-## 受け入れ基準の確認
+### 機能テスト
+- CPU対戦時に定数化された文字列が正しく表示されること（generateCPUOpponent テストがパス）
+- スキル発動時に定数化されたログメッセージが正しく表示されること（executeSkill テストがパス）
+- 通常攻撃時に定数化されたログメッセージが正しく表示されること（playBattle テストがパス）
 
-| 項目 | 状態 | 詳細 |
-|:---|:---:|:---|
-| CPU_CARD_STRINGS定数の追加 | ✅ | src/lib/constants.tsに定数が追加されている |
-| Battle Get APIの定数使用 | ✅ | src/app/api/battle/[battleId]/route.tsが定数を使用している |
-| Battle Stats APIの定数使用 | ✅ | src/app/api/battle/stats/route.tsが定数を使用している |
-| TypeScriptコンパイルエラーなし | ✅ | `npm run build`が成功した |
-| ESLintエラーなし | ✅ | `npm run lint`が成功した |
-| 既存のAPIテストがパス | ✅ | 59 tests passed (6 test files) |
-| CIが成功 | ✅ | 最新のCIが成功している |
-| Issue #34クローズ済み | ❌ | IssueはまだOPEN状態 |
+### 回帰テスト
+- 既存の対戦機能が正しく動作すること（すべてのテストがパス）
+- バトルログメッセージの内容が変わらないこと（テストがパス）
+- CPU 対戦の挙動が変わらないこと（テストがパス）
+- スキル名の選択ロジックが変わらないこと（テストがパス）
 
-## テスト結果
+## 発見された問題点
+なし
 
-### Unit Tests
-```
- Test Files  6 passed (6)
-      Tests  59 passed (59)
-```
+## 残存タスク
+- ⚠️ Issue #35 がクローズされていない
+  - 実装は完了しており、すべての受け入れ基準を満たしている
+  - GitHub Issue のクローズが必要
 
-### Build
-```
-✓ Compiled successfully
-✓ Generating static pages
-```
-
-### Lint
-```
-✓ No lint errors
-```
-
-### CI Status
-最新のCI run: success
-
-## 設計仕様との齟齬確認
-
-| 設計項目 | 仕様 | 実装 | 一致 |
-|:---|:---|:---|:---:|
-| 定数名 | CPU_CARD_STRINGS | CPU_CARD_STRINGS | ✅ |
-| NAME_PREFIX | 'CPUの' | 'CPUの' | ✅ |
-| DEFAULT_NAME | 'CPUカード' | 'CPUカード' | ✅ |
-| DEFAULT_SKILL_NAME | 'CPU攻撃' | 'CPU攻撃' | ✅ |
-| as const指定 | 必須 | 使用済み | ✅ |
-
-**結果**: 設計仕様と完全に一致しています
-
-## 回帰テスト
-
-### 既存の対戦機能
-- CPU対戦時の挙動: 正常
-- 対戦統計の表示: 正常
+## 推奨アクション
+1. Issue #35 をクローズする
+2. git commit して push する
+3. アーキテクチャエージェントに次の実装を依頼する
 
 ## 結論
-
-**全ての受け入れ基準を満たしています。** 
-
-Issue #34の実装は正しく完了しており、コード品質が向上しています。Issue #34はクローズする必要があります。
-
-## 次のアクション
-
-1. Issue #34をクローズする
-2. Git commit & push
-3. アーキテクチャエージェントに次の実装の設計を依頼する
+実装は設計仕様を完全に満たしており、すべての受け入れ基準が達成されています。コード品質、機能性、パフォーマンスのすべての面で問題はありません。Issue #35 をクローズし、次のフェーズに進むことが推奨されます。

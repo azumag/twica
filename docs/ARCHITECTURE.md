@@ -198,64 +198,71 @@ graph LR
 
 ---
 
-## Issue #34: Code Quality - Hardcoded CPU Card Strings in Battle APIs
+## Issue #35: Code Quality - Hardcoded Skill Names and CPU Strings in Battle Library
 
 ### 問題
 
-Battle APIs は CPU オポーネントカードにハードコードされた日本語文字列を使用しており、定数として標準化する必要があります。
+Battle ライブラリ (`src/lib/battle.ts`) に、Issue #30 (APIエラーメッセージ標準化) および Issue #34 (CPUカード文字列定数化) に違反するハードコードされた日本語文字列が含まれています。
 
 ### 問題の詳細
 
 #### 現在の実装
 
-**src/app/api/battle/[battleId]/route.ts** (行 188, 195, 261):
+**1. `generateCPUOpponent` 関数のハードコードされた CPU カード文字列** (行 186-189, 200):
 
 ```typescript
-// Line 188
-const cpuCard: BattleCard = {
-  id: 'cpu-unknown',
-  name: 'CPUカード',  // Hardcoded
+return {
+  id: 'cpu-default',
+  name: 'CPUカード',  // ハードコード
   hp: 100,
-  currentHp: 0,
+  currentHp: 100,
   atk: 30,
   def: 15,
   spd: 5,
   skill_type: 'attack',
-  skill_name: 'CPU攻撃',  // Hardcoded
+  skill_name: 'CPU攻撃',  // ハードコード
   skill_power: 10,
   image_url: null,
   rarity: 'common'
 }
 
-// Line 261
-const opponentBattleCard: BattleCard = {
-  id: opponentCard.id,
-  name: opponentCard.name.startsWith('CPUの') ? opponentCard.name : `CPUの${opponentCard.name}`,  // Hardcoded
-  hp: opponentCard.hp,
-  currentHp: Math.max(0, opponentHp),
-  atk: opponentCard.atk,
-  def: opponentCard.def,
-  spd: opponentCard.spd,
-  skill_type: opponentCard.skill_type,
-  skill_name: opponentCard.skill_name,
-  skill_power: opponentCard.skill_power,
-  image_url: opponentCard.image_url,
-  rarity: opponentCard.rarity
+// 行 200
+cpuCard.name = `CPUの${cpuCard.name}`  // ハードコード
+```
+
+**2. ハードコードされたスキル名配列** (行 29-32):
+
+```typescript
+const skillNames = {
+  attack: ['強撃', '猛攻', '破壊光線', '必殺拳'],
+  defense: ['鉄壁', '硬化', '防御態勢', '守りの陣'],
+  heal: ['回復', '治癒', '生命の雨', '再生光'],
+  special: ['混乱攻撃', '急速', '幸運', '奇襲']
 }
 ```
 
-**src/app/api/battle/stats/route.ts** (行 122, 135):
+**3. ハードコードされたデフォルトエラーメッセージ** (行 139):
 
 ```typescript
-opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード',  // Hardcoded
+return { message: 'スキル発動失敗' }  // ハードコード
+```
+
+**4. `executeSkill` 関数のハードコードされた日本語メッセージ** (行 42, 45, 50, 56, 62):
+
+```typescript
+message: `${attacker.name}が${attacker.skill_name}！${skillDamage}ダメージを与えた！`
+message: `${attacker.name}が${attacker.skill_name}！防御力が${attacker.skill_power}上がった！`
+message: `${attacker.name}が${attacker.skill_name}！${healAmount}回復した！`
+message: `${attacker.name}が${attacker.skill_name}！特殊効果で${specialDamage}ダメージ！`
+message: `${attacker.name}が攻撃！${damage}ダメージを与えた！`
 ```
 
 #### 影響
 
 - **コード品質**: Issue #30 で実装された API エラーメッセージ標準化に違反
+- **一貫性**: Battle API は `CPU_CARD_STRINGS` 定数を使用しているが、`battle.ts` は使用していない
 - **保守性**: ハードコードされた文字列はメンテナンスが困難
 - **国際化**: 将来の i18n 対応を困難にする
-- **一貫性**: 他の API ルートは適切に定数を使用している
 
 ### 優先度
 
@@ -263,21 +270,22 @@ opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード', 
 
 ---
 
-## Issue #34: 設計
+## Issue #35: 設計
 
 ### 機能要件
 
-#### 1. CPU カード文字列の定数化
+#### 1. バトルライブラリの文字列定数化
 
-Battle API の CPU カード関連文字列を定数として標準化します。
+`src/lib/battle.ts` のすべてのハードコードされた日本語文字列を定数として標準化します。
 
 ### 非機能要件
 
 #### コード品質
 
-- すべての CPU カード関連文字列が定数を使用する
-- ハードコードされた文字列が削除される
-- 一貫性のあるコードが維持される
+- すべてのハードコードされた文字列が定数を使用する
+- Battle API と battle.ts の間で一貫性が保たれる
+- Issue #30 の標準化完了状態が維持される
+- Issue #34 の CPU_CARD_STRINGS 定数が再利用される
 
 ### 設計
 
@@ -286,29 +294,45 @@ Battle API の CPU カード関連文字列を定数として標準化します�
 **src/lib/constants.ts** に以下の定数を追加します：
 
 ```typescript
-export const CPU_CARD_STRINGS = {
-  NAME_PREFIX: 'CPUの',
-  DEFAULT_NAME: 'CPUカード',
-  DEFAULT_SKILL_NAME: 'CPU攻撃',
+export const BATTLE_SKILL_NAMES = {
+  ATTACK: ['強撃', '猛攻', '破壊光線', '必殺拳'],
+  DEFENSE: ['鉄壁', '硬化', '防御態勢', '守りの陣'],
+  HEAL: ['回復', '治癒', '生命の雨', '再生光'],
+  SPECIAL: ['混乱攻撃', '急速', '幸運', '奇襲'],
+} as const
+
+export const BATTLE_LOG_MESSAGES = {
+  SKILL_ATTACK: (attackerName: string, skillName: string, damage: number) =>
+    `${attackerName}が${skillName}！${damage}ダメージを与えた！`,
+  SKILL_DEFENSE: (attackerName: string, skillName: string, defenseUp: number) =>
+    `${attackerName}が${skillName}！防御力が${defenseUp}上がった！`,
+  SKILL_HEAL: (attackerName: string, skillName: string, healAmount: number) =>
+    `${attackerName}が${skillName}！${healAmount}回復した！`,
+  SKILL_SPECIAL: (attackerName: string, skillName: string, specialDamage: number) =>
+    `${attackerName}が${skillName}！特殊効果で${specialDamage}ダメージ！`,
+  NORMAL_ATTACK: (attackerName: string, damage: number) =>
+    `${attackerName}が攻撃！${damage}ダメージを与えた！`,
+  SKILL_FAILED: 'スキル発動失敗',
 } as const
 ```
 
 **理由**:
-- CPU カードに関連するすべての文字列を一箇所で管理
+- バトルロギングに関連するすべての文字列を一箇所で管理
+- 動的なメッセージは関数形式で実装し、テンプレートリテラルの乱用を防ぐ
+- Issue #30 の標準化パターンに従う
 - 将来の国際化対応が容易
-- Issue #30 の標準化完了状態を維持
 
-#### 2. Battle Get API の修正
+#### 2. `generateCPUOpponent` 関数の修正
 
-**src/app/api/battle/[battleId]/route.ts**
+**src/lib/battle.ts**
 
 **変更前**:
 ```typescript
-const cpuCard: BattleCard = {
-  id: 'cpu-unknown',
+return {
+  id: 'cpu-default',
   name: 'CPUカード',
   hp: 100,
-  currentHp: 0,
+  currentHp: 100,
   atk: 30,
   def: 15,
   spd: 5,
@@ -319,31 +343,18 @@ const cpuCard: BattleCard = {
   rarity: 'common'
 }
 
-const opponentBattleCard: BattleCard = {
-  id: opponentCard.id,
-  name: opponentCard.name.startsWith('CPUの') ? opponentCard.name : `CPUの${opponentCard.name}`,
-  hp: opponentCard.hp,
-  currentHp: Math.max(0, opponentHp),
-  atk: opponentCard.atk,
-  def: opponentCard.def,
-  spd: opponentCard.spd,
-  skill_type: opponentCard.skill_type,
-  skill_name: opponentCard.skill_name,
-  skill_power: opponentCard.skill_power,
-  image_url: opponentCard.image_url,
-  rarity: opponentCard.rarity
-}
+cpuCard.name = `CPUの${cpuCard.name}`
 ```
 
 **変更後**:
 ```typescript
-import { CPU_CARD_STRINGS } from '@/lib/constants'
+import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES } from '@/lib/constants'
 
-const cpuCard: BattleCard = {
-  id: 'cpu-unknown',
+return {
+  id: 'cpu-default',
   name: CPU_CARD_STRINGS.DEFAULT_NAME,
   hp: 100,
-  currentHp: 0,
+  currentHp: 100,
   atk: 30,
   def: 15,
   spd: 5,
@@ -354,101 +365,226 @@ const cpuCard: BattleCard = {
   rarity: 'common'
 }
 
-const opponentBattleCard: BattleCard = {
-  id: opponentCard.id,
-  name: opponentCard.name.startsWith(CPU_CARD_STRINGS.NAME_PREFIX) ? opponentCard.name : `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}`,
-  hp: opponentCard.hp,
-  currentHp: Math.max(0, opponentHp),
-  atk: opponentCard.atk,
-  def: opponentCard.def,
-  spd: opponentCard.spd,
-  skill_type: opponentCard.skill_type,
-  skill_name: opponentCard.skill_name,
-  skill_power: opponentCard.skill_power,
-  image_url: opponentCard.image_url,
-  rarity: opponentCard.rarity
+cpuCard.name = `${CPU_CARD_STRINGS.NAME_PREFIX}${cpuCard.name}`
+```
+
+**理由**:
+- 既存の CPU_CARD_STRINGS 定数を再利用（Issue #34 で定義済み）
+- Battle API との一貫性を保つ
+
+#### 3. `generateCardStats` 関数の修正
+
+**src/lib/battle.ts**
+
+**変更前**:
+```typescript
+const skillNames = {
+  attack: ['強撃', '猛攻', '破壊光線', '必殺拳'],
+  defense: ['鉄壁', '硬化', '防御態勢', '守りの陣'],
+  heal: ['回復', '治癒', '生命の雨', '再生光'],
+  special: ['混乱攻撃', '急速', '幸運', '奇襲']
+}
+
+const skill_type = skillTypes[Math.floor(Math.random() * skillTypes.length)]
+const skillNameList = skillNames[skill_type]
+const skill_name = skillNameList[Math.floor(Math.random() * skillNameList.length)]
+```
+
+**変更後**:
+```typescript
+import { BATTLE_SKILL_NAMES } from '@/lib/constants'
+
+const skill_type = skillTypes[Math.floor(Math.random() * skillTypes.length)]
+const skillNameList = BATTLE_SKILL_NAMES[skill_type.toUpperCase() as keyof typeof BATTLE_SKILL_NAMES]
+const skill_name = skillNameList[Math.floor(Math.random() * skillNameList.length)]
+```
+
+**理由**:
+- 定数を使用して文字列の一元管理
+- 型安全のために `as keyof typeof BATTLE_SKILL_NAMES` を使用
+
+#### 4. `executeSkill` 関数の修正
+
+**src/lib/battle.ts**
+
+**変更前**:
+```typescript
+export function executeSkill(attacker: BattleCard, defender: BattleCard): SkillResult {
+  switch (attacker.skill_type) {
+    case 'attack':
+      const skillDamage = Math.max(1, attacker.atk + attacker.skill_power - defender.def)
+      return {
+        damage: skillDamage,
+        message: `${attacker.name}が${attacker.skill_name}！${skillDamage}ダメージを与えた！`
+      }
+
+    case 'defense':
+      return {
+        defenseUp: attacker.skill_power,
+        message: `${attacker.name}が${attacker.skill_name}！防御力が${attacker.skill_power}上がった！`
+      }
+
+    case 'heal':
+      const healAmount = Math.min(attacker.hp - attacker.currentHp, attacker.skill_power)
+      return {
+        heal: healAmount,
+        message: `${attacker.name}が${attacker.skill_name}！${healAmount}回復した！`
+      }
+
+    case 'special':
+      const specialDamage = Math.max(1, Math.floor(attacker.atk * 1.5) - defender.def)
+      return {
+        damage: specialDamage,
+        message: `${attacker.name}が${attacker.skill_name}！特殊効果で${specialDamage}ダメージ！`
+      }
+
+    default:
+      return { message: 'スキル発動失敗' }
+  }
+}
+```
+
+**変更後**:
+```typescript
+import { BATTLE_LOG_MESSAGES } from '@/lib/constants'
+
+export function executeSkill(attacker: BattleCard, defender: BattleCard): SkillResult {
+  switch (attacker.skill_type) {
+    case 'attack':
+      const skillDamage = Math.max(1, attacker.atk + attacker.skill_power - defender.def)
+      return {
+        damage: skillDamage,
+        message: BATTLE_LOG_MESSAGES.SKILL_ATTACK(attacker.name, attacker.skill_name, skillDamage)
+      }
+
+    case 'defense':
+      return {
+        defenseUp: attacker.skill_power,
+        message: BATTLE_LOG_MESSAGES.SKILL_DEFENSE(attacker.name, attacker.skill_name, attacker.skill_power)
+      }
+
+    case 'heal':
+      const healAmount = Math.min(attacker.hp - attacker.currentHp, attacker.skill_power)
+      return {
+        heal: healAmount,
+        message: BATTLE_LOG_MESSAGES.SKILL_HEAL(attacker.name, attacker.skill_name, healAmount)
+      }
+
+    case 'special':
+      const specialDamage = Math.max(1, Math.floor(attacker.atk * 1.5) - defender.def)
+      return {
+        damage: specialDamage,
+        message: BATTLE_LOG_MESSAGES.SKILL_SPECIAL(attacker.name, attacker.skill_name, specialDamage)
+      }
+
+    default:
+      return { message: BATTLE_LOG_MESSAGES.SKILL_FAILED }
+  }
 }
 ```
 
 **理由**:
 - 定数を使用して文字列の一元管理
-- 他の API ルートと一貫性を保つ
-- エラーメッセージ標準化パターンに従う
+- 関数形式のメッセージ定数を使用することで、動的なパラメータを型安全に渡せる
+- テンプレートリテラルの重複を排除
 
-#### 3. Battle Stats API の修正
+#### 5. `playBattle` 関数の修正
 
-**src/app/api/battle/stats/route.ts**
+**src/lib/battle.ts**
 
 **変更前**:
 ```typescript
-opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード',
+const damage = Math.max(1, attacker.atk - defender.def)
+defender.currentHp = Math.max(0, defender.currentHp - damage)
+
+logs.push({
+  turn,
+  actor: currentActor,
+  action: 'attack',
+  damage,
+  message: `${attacker.name}が攻撃！${damage}ダメージを与えた！`
+})
 ```
 
 **変更後**:
 ```typescript
-import { CPU_CARD_STRINGS } from '@/lib/constants'
+import { BATTLE_LOG_MESSAGES } from '@/lib/constants'
 
-opponentCardName: opponentCard ? `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}` : CPU_CARD_STRINGS.DEFAULT_NAME,
+const damage = Math.max(1, attacker.atk - defender.def)
+defender.currentHp = Math.max(0, defender.currentHp - damage)
+
+logs.push({
+  turn,
+  actor: currentActor,
+  action: 'attack',
+  damage,
+  message: BATTLE_LOG_MESSAGES.NORMAL_ATTACK(attacker.name, damage)
+})
 ```
 
 **理由**:
-- Battle Get API と一貫性を保つ
 - 定数を使用して文字列の一元管理
+- `executeSkill` 関数と一貫性を保つ
 
 ### 変更ファイル
 
-- `src/lib/constants.ts` (更新 - CPU カード文字列定数の追加)
-- `src/app/api/battle/[battleId]/route.ts` (更新 - 定数の使用)
-- `src/app/api/battle/stats/route.ts` (更新 - 定数の使用)
+- `src/lib/constants.ts` (更新 - BATTLE_SKILL_NAMES および BATTLE_LOG_MESSAGES 定数の追加)
+- `src/lib/battle.ts` (更新 - すべてのハードコードされた文字列を定数に置換)
 
 ### 受け入れ基準
 
-- [ ] `src/lib/constants.ts` に CPU_CARD_STRINGS 定数が追加されている
-- [ ] `src/app/api/battle/[battleId]/route.ts` が CPU_CARD_STRINGS 定数を使用している
-- [ ] `src/app/api/battle/stats/route.ts` が CPU_CARD_STRINGS 定数を使用している
+- [ ] `src/lib/constants.ts` に BATTLE_SKILL_NAMES 定数が追加されている
+- [ ] `src/lib/constants.ts` に BATTLE_LOG_MESSAGES 定数が追加されている
+- [ ] `src/lib/battle.ts` の `generateCPUOpponent` 関数が CPU_CARD_STRINGS 定数を使用している
+- [ ] `src/lib/battle.ts` の `generateCardStats` 関数が BATTLE_SKILL_NAMES 定数を使用している
+- [ ] `src/lib/battle.ts` の `executeSkill` 関数が BATTLE_LOG_MESSAGES 定数を使用している
+- [ ] `src/lib/battle.ts` の `playBattle` 関数が BATTLE_LOG_MESSAGES 定数を使用している
 - [ ] TypeScript コンパイルエラーがない
 - [ ] ESLint エラーがない
-- [ ] 既存の API テストがパスする
+- [ ] 既存の対戦機能テストがパスする
 - [ ] CI が成功
-- [ ] Issue #34 クローズ済み
+- [ ] Issue #35 クローズ済み
 
 ### テスト計画
 
 1. **統合テスト**:
-   - CPU 対戦時に `CPU_CARD_STRINGS.DEFAULT_NAME` が使用されることを確認
-   - CPU 対戦時に `CPU_CARD_STRINGS.DEFAULT_SKILL_NAME` が使用されることを確認
-   - CPU オポーネントカード名に `CPU_CARD_STRINGS.NAME_PREFIX` が使用されることを確認
+   - CPU 対戦時に定数化された文字列が正しく表示されることを確認
+   - スキル発動時に定数化されたログメッセージが正しく表示されることを確認
+   - 通常攻撃時に定数化されたログメッセージが正しく表示されることを確認
 
 2. **回帰テスト**:
    - 既存の対戦機能が正しく動作することを確認
+   - バトルログメッセージの内容が変わらないことを確認
    - CPU 対戦の挙動が変わらないことを確認
-   - 対戦統計が正しく表示されることを確認
+   - スキル名の選択ロジックが変わらないことを確認
 
 ### トレードオフの検討
 
-#### ハードコードされた文字列 vs CPU_CARD_STRINGS定数
+#### ハードコードされた文字列 vs 定数化
 
-| 項目 | ハードコードされた文字列 | CPU_CARD_STRINGS定数 |
+| 項目 | ハードコードされた文字列 | 定数化 |
 |:---|:---|:---|
 | **コード品質** | 低（標準化違反） | 高（一貫性あり） |
 | **保守性** | 低（変更時に複数箇所を修正） | 高（一箇所の修正で全体に反映） |
 | **国際化** | 低（複数箇所を修正） | 高（定数ファイルのみ修正） |
 | **一貫性** | 低（ルートごとに異なる可能性） | 高（全ルートで統一） |
-| **実装コスト** | 低（変更なし） | 低（簡単な置換） |
+| **実装コスト** | 低（変更なし） | 中（複数の関数を修正） |
 
-**推奨**: CPU_CARD_STRINGS定数を使用
+**推奨**: 定数化を使用
 
 **理由**:
 - Issue #30 で実装された標準化完了状態を維持できる
+- Issue #34 で定義された CPU_CARD_STRINGS 定数を再利用できる
+- Battle API と battle.ts の間で一貫性を保てる
 - 将来の国際化対応が容易
 - コードベース全体で一貫性が保たれる
-- 他の定数（ERROR_MESSAGES など）と同じパターンに従う
+- テストカバレッジが十分にあり、リスクが低い
 
 ### 関連問題
 
-- Issue #30 - API Error Message Standardization (解決済み)
-- Issue #25 - Inconsistent Error Messages in API Responses (解決済み)
-- Issue #33 - Code Quality - Inconsistent Error Message in Session API (解決済み)
+- Issue #30 - Complete API Error Message Standardization (解決済み)
+- Issue #34 - Hardcoded CPU Card Strings in Battle APIs (解決済み)
+- Issue #31 - Remove 'any' type usage in Battle Start API (解決済み)
 
 ---
 
@@ -456,10 +592,10 @@ opponentCardName: opponentCard ? `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-18 | Issue #34 CPU カード文字列定数化の設計追加 |
+| 2026-01-18 | Issue #35 バトルライブラリ文字列定数化の設計追加 |
 
 ---
 
 ## 実装完了の問題
 
-詳細は `docs/ARCHITECTURE_2026-01-18.md` を参照してください。
+詳細は `docs/ARCHITECTURE_2026-01-18_135550.md` を参照してください。

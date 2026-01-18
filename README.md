@@ -124,12 +124,18 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 - Build uses dummy environment variables for CI (no external API calls)
 - Vercel automatically deploys on merge to main
 
-   ## Recent Changes
+## Recent Changes
 
-   - Issue #34 created: Code Quality - Hardcoded CPU Card Strings in Battle APIs
-           - Battle APIs use hardcoded Japanese strings for CPU opponent cards
-           - These should be standardized as constants for maintainability and consistency
-           - Design documented in ARCHITECTURE.md
+   - Issue #35 created: Code Quality - Hardcoded Skill Names and CPU Strings in Battle Library
+            - Battle library (`src/lib/battle.ts`) contains hardcoded Japanese strings
+            - CPU card strings, skill name arrays, and battle log messages should be constantized
+            - Inconsistent with Issue #30's API Error Message Standardization
+            - Inconsistent with Issue #34's CPU Card String Standardization
+            - Design documented in ARCHITECTURE.md
+   - Issue #34 implemented and closed: Code Quality - Hardcoded CPU Card Strings in Battle APIs
+            - Battle APIs use hardcoded Japanese strings for CPU opponent cards
+            - These should be standardized as constants for maintainability and consistency
+            - Design documented in ARCHITECTURE.md
    - Issue #33 implemented and closed: Session API Error Message Standardization
            - `/api/session` endpoint now uses `ERROR_MESSAGES.NOT_AUTHENTICATED` constant
            - All hardcoded error messages removed from session API

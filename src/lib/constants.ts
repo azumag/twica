@@ -112,3 +112,24 @@ export const CPU_CARD_STRINGS = {
   DEFAULT_NAME: 'CPUカード',
   DEFAULT_SKILL_NAME: 'CPU攻撃',
 } as const
+
+export const BATTLE_SKILL_NAMES = {
+  ATTACK: ['強撃', '猛攻', '破壊光線', '必殺拳'],
+  DEFENSE: ['鉄壁', '硬化', '防御態勢', '守りの陣'],
+  HEAL: ['回復', '治癒', '生命の雨', '再生光'],
+  SPECIAL: ['混乱攻撃', '急速', '幸運', '奇襲'],
+} as const
+
+export const BATTLE_LOG_MESSAGES = {
+  SKILL_ATTACK: (attackerName: string, skillName: string, damage: number) =>
+    `${attackerName}が${skillName}！${damage}ダメージを与えた！`,
+  SKILL_DEFENSE: (attackerName: string, skillName: string, defenseUp: number) =>
+    `${attackerName}が${skillName}！防御力が${defenseUp}上がった！`,
+  SKILL_HEAL: (attackerName: string, skillName: string, healAmount: number) =>
+    `${attackerName}が${skillName}！${healAmount}回復した！`,
+  SKILL_SPECIAL: (attackerName: string, skillName: string, specialDamage: number) =>
+    `${attackerName}が${skillName}！特殊効果で${specialDamage}ダメージ！`,
+  NORMAL_ATTACK: (attackerName: string, damage: number) =>
+    `${attackerName}が攻撃！${damage}ダメージを与えた！`,
+  SKILL_FAILED: 'スキル発動失敗',
+} as const

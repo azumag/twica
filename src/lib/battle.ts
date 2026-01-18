@@ -1,4 +1,5 @@
 import type { Card, BattleCard, BattleResultData, BattleLog, SkillResult, Rarity, SkillType } from '@/types/database'
+import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES, BATTLE_LOG_MESSAGES } from '@/lib/constants'
 
 export interface BattleCardData {
   id: string
@@ -25,12 +26,6 @@ export function generateCardStats(rarity: Rarity): {
   skill_power: number
 } {
   const skillTypes: SkillType[] = ['attack', 'defense', 'heal', 'special']
-  const skillNames = {
-    attack: ['強撃', '猛攻', '破壊光線', '必殺拳'],
-    defense: ['鉄壁', '硬化', '防御態勢', '守りの陣'],
-    heal: ['回復', '治癒', '生命の雨', '再生光'],
-    special: ['混乱攻撃', '急速', '幸運', '奇襲']
-  }
 
   let hp, atk, def, spd, skill_power
 
@@ -72,7 +67,7 @@ export function generateCardStats(rarity: Rarity): {
   }
 
   const skill_type = skillTypes[Math.floor(Math.random() * skillTypes.length)]
-  const skillNameList = skillNames[skill_type]
+  const skillNameList = BATTLE_SKILL_NAMES[skill_type.toUpperCase() as keyof typeof BATTLE_SKILL_NAMES]
   const skill_name = skillNameList[Math.floor(Math.random() * skillNameList.length)]
 
   return {
@@ -111,20 +106,20 @@ export function executeSkill(attacker: BattleCard, defender: BattleCard): SkillR
       const skillDamage = Math.max(1, attacker.atk + attacker.skill_power - defender.def)
       return {
         damage: skillDamage,
-        message: `${attacker.name}が${attacker.skill_name}！${skillDamage}ダメージを与えた！`
+        message: BATTLE_LOG_MESSAGES.SKILL_ATTACK(attacker.name, attacker.skill_name, skillDamage)
       }
     
     case 'defense':
       return {
         defenseUp: attacker.skill_power,
-        message: `${attacker.name}が${attacker.skill_name}！防御力が${attacker.skill_power}上がった！`
+        message: BATTLE_LOG_MESSAGES.SKILL_DEFENSE(attacker.name, attacker.skill_name, attacker.skill_power)
       }
     
     case 'heal':
       const healAmount = Math.min(attacker.hp - attacker.currentHp, attacker.skill_power)
       return {
         heal: healAmount,
-        message: `${attacker.name}が${attacker.skill_name}！${healAmount}回復した！`
+        message: BATTLE_LOG_MESSAGES.SKILL_HEAL(attacker.name, attacker.skill_name, healAmount)
       }
     
     case 'special':
@@ -132,11 +127,11 @@ export function executeSkill(attacker: BattleCard, defender: BattleCard): SkillR
       const specialDamage = Math.max(1, Math.floor(attacker.atk * 1.5) - defender.def)
       return {
         damage: specialDamage,
-        message: `${attacker.name}が${attacker.skill_name}！特殊効果で${specialDamage}ダメージ！`
+        message: BATTLE_LOG_MESSAGES.SKILL_SPECIAL(attacker.name, attacker.skill_name, specialDamage)
       }
     
     default:
-      return { message: 'スキル発動失敗' }
+      return { message: BATTLE_LOG_MESSAGES.SKILL_FAILED }
   }
 }
 
@@ -184,19 +179,19 @@ export async function playBattle(userCard: BattleCard, opponentCard: BattleCard)
       if (result.defenseUp) {
         defender.def += result.defenseUp
       }
-    } else {
-      // Normal attack
-      const damage = Math.max(1, attacker.atk - defender.def)
-      defender.currentHp = Math.max(0, defender.currentHp - damage)
-      
-      logs.push({
-        turn,
-        actor: currentActor,
-        action: 'attack',
-        damage,
-        message: `${attacker.name}が攻撃！${damage}ダメージを与えた！`
-      })
-    }
+} else {
+       // Normal attack
+       const damage = Math.max(1, attacker.atk - defender.def)
+       defender.currentHp = Math.max(0, defender.currentHp - damage)
+       
+       logs.push({
+         turn,
+         actor: currentActor,
+         action: 'attack',
+         damage,
+         message: BATTLE_LOG_MESSAGES.NORMAL_ATTACK(attacker.name, damage)
+       })
+     }
     
     // Switch actor
     currentActor = currentActor === 'user' ? 'opponent' : 'user'
@@ -235,14 +230,14 @@ export function generateCPUOpponent(cards: (Card | BattleCardData)[]): BattleCar
     // Fallback if no cards available
     return {
       id: 'cpu-default',
-      name: 'CPUカード',
+      name: CPU_CARD_STRINGS.DEFAULT_NAME,
       hp: 100,
       currentHp: 100,
       atk: 30,
       def: 15,
       spd: 5,
       skill_type: 'attack',
-      skill_name: 'CPU攻撃',
+      skill_name: CPU_CARD_STRINGS.DEFAULT_SKILL_NAME,
       skill_power: 10,
       image_url: null,
       rarity: 'common'
@@ -251,7 +246,7 @@ export function generateCPUOpponent(cards: (Card | BattleCardData)[]): BattleCar
   
   const randomCard = cards[Math.floor(Math.random() * cards.length)]
   const cpuCard = toBattleCard(randomCard)
-  cpuCard.name = `CPUの${cpuCard.name}`
+  cpuCard.name = `${CPU_CARD_STRINGS.NAME_PREFIX}${cpuCard.name}`
   cpuCard.id = `cpu-${cpuCard.id}`
   
   return cpuCard
