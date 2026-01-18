@@ -4,6 +4,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-l
 import { getSession } from '@/lib/session'
 import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
 
 export async function POST(request: Request) {
   try {
@@ -26,6 +27,10 @@ export async function POST(request: Request) {
       );
     }
 
+    if (session) {
+      await deleteTwitchTokens(session.twitchUserId);
+    }
+
     await clearSession()
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/`)
   } catch (error) {
@@ -42,6 +47,10 @@ export async function GET(request: Request) {
 
     if (!rateLimitResult.success) {
       return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)}`)
+    }
+
+    if (session) {
+      await deleteTwitchTokens(session.twitchUserId);
     }
 
     await clearSession()

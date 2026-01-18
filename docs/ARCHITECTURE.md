@@ -177,13 +177,13 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] CI がパスする
 
 ### ファイルアップロードのセキュリティ（Issue #44）
-- [ ] ファイル名がハッシュ化される
-- [ ] マジックバイトによるファイルタイプ検証が実装される
-- [ ] 拡張子とファイル内容が一致しない場合、400エラーが返される
-- [ ] パストラバーサル攻撃が防止される
-- [ ] テストが追加される
-- [ ] lint と test がパスする
-- [ ] CI がパスする
+- [x] ファイル名がハッシュ化される
+- [x] マジックバイトによるファイルタイプ検証が実装される
+- [x] 拡張子とファイル内容が一致しない場合、400エラーが返される
+- [x] パストラバーサル攻撃が防止される
+- [x] テストが追加される
+- [x] lint と test がパスする
+- [x] CI がパスする
 
 ---
 
@@ -213,6 +213,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 13. **Client-side OAuth**: OAuthリダイレクトはクライアント側で行い、CORS問題を回避
 14. **Security Headers**: すべてのリクエストにセキュリティヘッダーを設定
 15. **File Upload Security**: ファイルアップロード時に適切なサニタイズと検証を行う
+16. **Token Management**: Twitch トークンは適切に保存・更新・削除する
 
 ### 技術選定基準
 - マネージドサービス優先（運用コスト削減）
@@ -242,341 +243,604 @@ graph LR
     GachaFlow[Gacha: EventSub triggers]
     BattleFlow[Battle: Card battles with abilities]
     ErrorTracking[Error: Sentry + GitHub Issues]
+    TokenManagement[Token Management: Twitch OAuth tokens]
     End
 
     User --> AuthFlow
     User --> UploadFlow
     User --> GachaFlow
     User --> BattleFlow
+    User --> TokenManagement
     AuthFlow --> ErrorTracking
     GachaFlow --> ErrorTracking
     BattleFlow --> ErrorTracking
+    TokenManagement --> Twitch
 ```
 
 ---
 
-## ファイルアップロードのセキュリティ強化（Issue #44）
+## Critical Bug: Twitch API Calls Fail Due to Missing Twitch Access Token Storage (Issue #46)
 
 ### 概要
 
-ファイルアップロードAPI (`src/app/api/upload/route.ts`) で適切なサニタイズが行われていません。ファイル名が直接連結され、拡張子の検証が不十分です。
+`/api/twitch/rewards` エンドポイントが Twitch API を呼び出す際、Supabase のセッションアクセストークンを使用しており、これにより Twitch API 呼び出しが失敗します。
 
 ### 問題点
 
-1. **パストラバーサル攻撃の脆弱性**: ファイル名が直接連結され、`../` などのパストラバーサル攻撃が可能
-2. **不十分なファイルタイプ検証**: 現在の検証は拡張子のみをチェックしており、実際のファイル内容を検証していない
-3. **悪意のあるファイルのアップロード**: 拡張子を偽装したファイルがアップロードされる可能性がある
+1. **Twitch トークンが保存されていない**: Twitch OAuth コールバック (`/api/auth/twitch/callback`) で Twitch の `access_token` と `refresh_token` を取得していますが、これらはどこにも保存されていません
+2. **誤ったトークンが使用されている**: `/api/twitch/rewards` の `getAccessToken()` 関数は Supabase Auth のセッションアクセストークンを取得しており、これは Twitch API とは無関係です
+3. **Twitch API 呼び出しが失敗する**: Supabase トークンを使用して Twitch API を呼び出そうとすると、401 Unauthorized エラーが発生します
 
 ### 影響範囲
 
-- `/Users/azumag/work/twica/src/app/api/upload/route.ts` (lines 49-58)
-- カード画像アップロード機能
+- `/Users/azumag/work/twica/src/app/api/auth/twitch/callback/route.ts` (lines 52-74)
+  - Twitch トークンが取得され、使用されずに破棄される
+- `/Users/azumag/work/twica/src/app/api/twitch/rewards/route.ts` (lines 10-14, 40-43, 93-96)
+  - Supabase トークンが誤って Twitch API 呼び出しに使用される
+- ストリーマー機能（チャンネルポイント報酬の管理）が完全に使用できない
 
 ### 設計
 
-#### 1. ファイル名のサニタイズ
+#### 1. データベーススキーマの変更
 
-現在の実装:
-```typescript
-const fileName = `${session.twitchUserId}/${file.name}`
+`users` テーブルに Twitch トークンを保存するカラムを追加します：
+
+```sql
+-- マイグレーション: supabase/migrations/20260119020000_add_twitch_tokens_to_users.sql
+ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_access_token TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_refresh_token TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS twitch_token_expires_at TIMESTAMP WITH TIME ZONE;
+
+-- RLS ポリシーを更新
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+
+-- トークンカラムはシステム（サーバーサイド）のみ更新可能
+CREATE POLICY "Users can update own twitch tokens"
+ON users FOR UPDATE
+USING (auth.uid()::text = twitch_user_id)
+WITH CHECK (auth.uid()::text = twitch_user_id);
+
+-- トークンカラムはシステム（サーバーサイド）のみ読み取り可能
+CREATE POLICY "Users can read own twitch tokens"
+ON users FOR SELECT
+USING (auth.uid()::text = twitch_user_id);
 ```
 
-問題点:
-- `file.name` がユーザー入力であり、パストラバーサル攻撃が可能
-- ファイル名に特殊文字が含まれる可能性がある
+#### 2. Twitch トークン管理ユーティリティの作成
 
-修正後の実装:
-```typescript
-import { createHash } from 'crypto'
-
-// 拡張子を取得
-const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
-
-// 安全なベース名を生成（SHA-256 ハッシュの一部を使用）
-const safeBasename = createHash('sha256')
-  .update(`${session.twitchUserId}-${Date.now()}`)
-  .digest('hex')
-  .substring(0, 16);
-
-// 安全なファイル名を構築
-const fileName = `${safeBasename}.${ext}`;
-```
-
-メリット:
-- パストラバーサル攻撃を防止
-- ファイル名が推測不可能
-- 一意性が保証される
-
-#### 2. マジックバイトによるファイルタイプ検証
-
-マジックバイト（ファイルシグネチャ）を使用して、実際のファイル内容を検証します。
+`src/lib/twitch/token-manager.ts` を作成：
 
 ```typescript
-function getFileTypeFromBuffer(buffer: Buffer): string {
-  // JPEG
-  if (buffer.length >= 2 && buffer[0] === 0xFF && buffer[1] === 0xD8) {
-    return 'image/jpeg';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
+import { refreshTwitchToken, type TwitchTokens } from './auth';
+
+export interface TwitchTokenData {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: Date;
+}
+
+export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: user } = await supabaseAdmin
+    .from('users')
+    .select('twitch_access_token, twitch_refresh_token, twitch_token_expires_at')
+    .eq('twitch_user_id', twitchUserId)
+    .single();
+
+  if (!user || !user.twitch_access_token || !user.twitch_refresh_token) {
+    return null;
   }
-  
-  // PNG
-  if (buffer.length >= 8 && 
-      buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 &&
-      buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) {
-    return 'image/png';
+
+  const now = new Date();
+  const expiresAt = new Date(user.twitch_token_expires_at);
+
+  if (expiresAt > now) {
+    return user.twitch_access_token;
   }
-  
-  // GIF
-  if (buffer.length >= 6 &&
-      buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 &&
-      buffer[3] === 0x38 && buffer[4] === 0x37 && buffer[5] === 0x61) {
-    return 'image/gif';
+
+  return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
+}
+
+async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: string): Promise<string | null> {
+  try {
+    const tokens = await refreshTwitchToken(refreshToken);
+    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const { error } = await supabaseAdmin
+      .from('users')
+      .update({
+        twitch_access_token: tokens.access_token,
+        twitch_refresh_token: tokens.refresh_token,
+        twitch_token_expires_at: expiresAt.toISOString(),
+      })
+      .eq('twitch_user_id', twitchUserId);
+
+    if (error) {
+      throw error;
+    }
+
+    return tokens.access_token;
+  } catch (error) {
+    return null;
   }
-  
-  // WebP
-  if (buffer.length >= 12 &&
-      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-    return 'image/webp';
+}
+
+export async function saveTwitchTokens(twitchUserId: string, tokens: TwitchTokens): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({
+      twitch_access_token: tokens.access_token,
+      twitch_refresh_token: tokens.refresh_token,
+      twitch_token_expires_at: expiresAt.toISOString(),
+    })
+    .eq('twitch_user_id', twitchUserId);
+
+  if (error) {
+    throw error;
   }
-  
-  return 'application/octet-stream';
+}
+
+export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({
+      twitch_access_token: null,
+      twitch_refresh_token: null,
+      twitch_token_expires_at: null,
+    })
+    .eq('twitch_user_id', twitchUserId);
+
+  if (error) {
+    throw error;
+  }
 }
 ```
 
-#### 3. 拡張子の検証強化
+#### 3. Twitch OAuth コールバックの修正
+
+`src/app/api/auth/twitch/callback/route.ts` を修正：
 
 ```typescript
-// 許可される拡張子
-const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'] as const;
+import { saveTwitchTokens } from '@/lib/twitch/token-manager';
 
-function isValidExtension(ext: string): ext is typeof ALLOWED_EXTENSIONS[number] {
-  return ALLOWED_EXTENSIONS.includes(ext as any);
+// ... 既存のコード ...
+
+export async function GET(request: NextRequest) {
+  // ... 既存のバリデーションコード ...
+
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`;
+
+    let tokens;
+    try {
+      tokens = await exchangeCodeForTokens(code, redirectUri);
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'twitch_auth_failed',
+        { code: code.substring(0, 10) + '...' }
+      );
+    }
+
+    let twitchUser;
+    try {
+      twitchUser = await getTwitchUser(tokens.access_token);
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'twitch_user_fetch_failed',
+        { twitchUserId: tokens.access_token.substring(0, 10) + '...' }
+      );
+    }
+
+    // Check if user can be a streamer (affiliate or partner)
+    const canBeStreamer = twitchUser.broadcaster_type === 'affiliate' || twitchUser.broadcaster_type === 'partner';
+
+    try {
+      await supabaseAdmin
+        .from('users')
+        .upsert({
+          twitch_user_id: twitchUser.id,
+          twitch_username: twitchUser.login,
+          twitch_display_name: twitchUser.display_name,
+          twitch_profile_image_url: twitchUser.profile_image_url,
+          twitch_access_token: tokens.access_token,
+          twitch_refresh_token: tokens.refresh_token,
+          twitch_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+        }, {
+          onConflict: 'twitch_user_id',
+        });
+    } catch (error) {
+      return handleAuthError(
+        error,
+        'database_error',
+        { operation: 'upsert_user', twitchUserId: twitchUser.id }
+      );
+    }
+
+    if (canBeStreamer) {
+      try {
+        await supabaseAdmin
+          .from('streamers')
+          .upsert({
+            twitch_user_id: twitchUser.id,
+            twitch_username: twitchUser.login,
+            twitch_display_name: twitchUser.display_name,
+            twitch_profile_image_url: twitchUser.profile_image_url,
+          }, {
+            onConflict: 'twitch_user_id',
+          });
+      } catch (error) {
+        return handleAuthError(
+          error,
+          'database_error',
+          { operation: 'upsert_streamer', twitchUserId: twitchUser.id }
+        );
+      }
+    }
+
+    // ... 既存のセッション設定コード ...
+  } catch (error) {
+    return handleAuthError(error, 'unknown_error');
+  }
 }
 ```
 
-#### 4. アップロードAPIの修正
+#### 4. Twitch Rewards API の修正
 
-`src/app/api/upload/route.ts` の修正:
+`src/app/api/twitch/rewards/route.ts` を修正：
 
 ```typescript
-import { NextRequest, NextResponse } from 'next/server'
-import { put } from '@vercel/blob'
-import { getSession } from '@/lib/session'
-import { logger } from '@/lib/logger'
-import { createHash } from 'crypto'
+import { getTwitchAccessToken } from '@/lib/twitch/token-manager';
+import { ERROR_MESSAGES } from '@/lib/constants';
 
-// 許可される拡張子
-const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'] as const;
+// ... 既存の getAccessToken 関数を削除 ...
 
-function isValidExtension(ext: string): ext is typeof ALLOWED_EXTENSIONS[number] {
-  return ALLOWED_EXTENSIONS.includes(ext as any);
+async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string> {
+  const accessToken = await getTwitchAccessToken(twitchUserId);
+
+  if (!accessToken) {
+    throw new Error(ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE);
+  }
+
+  return accessToken;
 }
 
-function getFileTypeFromBuffer(buffer: Buffer): string {
-  // JPEG
-  if (buffer.length >= 2 && buffer[0] === 0xFF && buffer[1] === 0xD8) {
-    return 'image/jpeg';
+export async function GET(request: Request) {
+  const session = await getSession();
+
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.twitchRewardsGet, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(rateLimitResult.limit),
+          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+          "X-RateLimit-Reset": String(rateLimitResult.reset),
+        },
+      }
+    );
   }
-  
-  // PNG
-  if (buffer.length >= 8 && 
-      buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 &&
-      buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) {
-    return 'image/png';
+
+  if (!session || !canUseStreamerFeatures(session)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
-  
-  // GIF
-  if (buffer.length >= 6 &&
-      buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 &&
-      buffer[3] === 0x38 && buffer[4] === 0x37 && buffer[5] === 0x61) {
-    return 'image/gif';
+
+  const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
+
+  try {
+    const response = await fetch(
+      `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      return handleApiError(error, "Twitch API rewards fetch");
+    }
+
+    const data = await response.json();
+    return NextResponse.json(data.data || []);
+  } catch (error) {
+    return handleApiError(error, "Twitch rewards fetch");
   }
-  
-  // WebP
-  if (buffer.length >= 12 &&
-      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-    return 'image/webp';
-  }
-  
-  return 'application/octet-stream';
 }
+
+export async function POST(request: Request) {
+  const session = await getSession();
+
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.twitchRewardsPost, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(rateLimitResult.limit),
+          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+          "X-RateLimit-Reset": String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
+  if (!session || !canUseStreamerFeatures(session)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
+  }
+
+  const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
+
+  try {
+    const response = await fetch(
+      `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: "TwiCa カードガチャ",
+          cost: 100,
+          prompt: "カードガチャを1回引きます",
+          is_enabled: true,
+          background_color: "#9147FF",
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      return handleApiError(error, "Twitch API reward creation");
+    }
+
+    const data = await response.json();
+    return NextResponse.json(data.data[0]);
+  } catch (error) {
+    return handleApiError(error, "Twitch reward creation");
+  }
+}
+```
+
+#### 5. ログアウト時のトークン削除
+
+`src/app/api/auth/logout/route.ts` で Twitch トークンも削除：
+
+```typescript
+import { deleteTwitchTokens } from '@/lib/twitch/token-manager';
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getSession(request)
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const session = await getSession();
+
+    if (session) {
+      await deleteTwitchTokens(session.twitchUserId);
     }
 
-    const formData = await request.formData()
-    const file = formData.get('file') as File
+    await clearSession();
 
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided' }, { status: 400 })
-    }
-
-    // ファイルサイズの検証（1MB）
-    if (file.size > 1024 * 1024) {
-      return NextResponse.json({ error: 'File size exceeds 1MB limit' }, { status: 400 })
-    }
-
-    // 拡張子の検証
-    const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase()
-    if (!isValidExtension(ext)) {
-      return NextResponse.json({ error: 'Invalid file extension' }, { status: 400 })
-    }
-
-    // マジックバイトによるファイルタイプ検証
-    const buffer = Buffer.from(await file.arrayBuffer())
-    const actualType = getFileTypeFromBuffer(buffer)
-    
-    // 拡張子とファイルタイプのマッピング
-    const extToMimeType: Record<string, string> = {
-      jpg: 'image/jpeg',
-      jpeg: 'image/jpeg',
-      png: 'image/png',
-      gif: 'image/gif',
-      webp: 'image/webp',
-    }
-    
-    const expectedType = extToMimeType[ext]
-    
-    if (actualType !== expectedType) {
-      logger.warn(`File content does not match extension. Expected: ${expectedType}, Actual: ${actualType}`)
-      return NextResponse.json({ error: 'File content does not match extension' }, { status: 400 })
-    }
-
-    // ファイル名のサニタイズ
-    const safeBasename = createHash('sha256')
-      .update(`${session.twitchUserId}-${Date.now()}`)
-      .digest('hex')
-      .substring(0, 16)
-    
-    const fileName = `${safeBasename}.${ext}`
-
-    // Blob Storage にアップロード
-    const blob = await put(fileName, buffer, {
-      access: 'public',
-    })
-
-    return NextResponse.json({ url: blob.url })
+    return NextResponse.json({ success: true });
   } catch (error) {
-    logger.error('Upload error:', error)
-    return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
+    return handleApiError(error, "Logout API");
   }
 }
 ```
 
-#### 5. テストの追加
+#### 6. テストの追加
 
-`tests/unit/upload.test.ts` の追加:
+`tests/unit/twitch-token-manager.test.ts` の追加：
 
 ```typescript
-import { describe, it, expect } from 'vitest'
-import { getFileTypeFromBuffer, isValidExtension } from '@/lib/file-utils'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { getTwitchAccessToken, saveTwitchTokens, deleteTwitchTokens } from '@/lib/twitch/token-manager';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
+import { refreshTwitchToken } from '@/lib/twitch/auth';
 
-describe('File Utils', () => {
-  describe('getFileTypeFromBuffer', () => {
-    it('JPEGファイルを正しく識別する', () => {
-      const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46])
-      expect(getFileTypeFromBuffer(jpegBuffer)).toBe('image/jpeg')
-    })
+vi.mock('@/lib/supabase/admin');
+vi.mock('@/lib/twitch/auth');
 
-    it('PNGファイルを正しく識別する', () => {
-      const pngBuffer = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
-      expect(getFileTypeFromBuffer(pngBuffer)).toBe('image/png')
-    })
+describe('Twitch Token Manager', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
-    it('GIFファイルを正しく識別する', () => {
-      const gifBuffer = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x37, 0x61])
-      expect(getFileTypeFromBuffer(gifBuffer)).toBe('image/gif')
-    })
+  describe('getTwitchAccessToken', () => {
+    it('有効なトークンを返す', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: {
+            twitch_access_token: 'valid-token',
+            twitch_refresh_token: 'refresh-token',
+            twitch_token_expires_at: new Date(Date.now() + 3600000).toISOString(),
+          },
+          error: null,
+        }),
+      };
 
-    it('WebPファイルを正しく識別する', () => {
-      const webpBuffer = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50])
-      expect(getFileTypeFromBuffer(webpBuffer)).toBe('image/webp')
-    })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
 
-    it('不明なファイルタイプを返す', () => {
-      const unknownBuffer = Buffer.from([0x00, 0x00, 0x00, 0x00])
-      expect(getFileTypeFromBuffer(unknownBuffer)).toBe('application/octet-stream')
-    })
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBe('valid-token');
+    });
 
-    it('短いバッファを処理する', () => {
-      const shortBuffer = Buffer.from([0xFF])
-      expect(getFileTypeFromBuffer(shortBuffer)).toBe('application/octet-stream')
-    })
-  })
+    it('トークンが存在しない場合は null を返す', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: null,
+          error: null,
+        }),
+      };
 
-  describe('isValidExtension', () => {
-    it('有効な拡張子を許可する', () => {
-      expect(isValidExtension('jpg')).toBe(true)
-      expect(isValidExtension('jpeg')).toBe(true)
-      expect(isValidExtension('png')).toBe(true)
-      expect(isValidExtension('gif')).toBe(true)
-      expect(isValidExtension('webp')).toBe(true)
-    })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
 
-    it('無効な拡張子を拒否する', () => {
-      expect(isValidExtension('txt')).toBe(false)
-      expect(isValidExtension('exe')).toBe(false)
-      expect(isValidExtension('php')).toBe(false)
-      expect(isValidExtension('')).toBe(false)
-    })
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBeNull();
+    });
 
-    it('大文字の拡張子を拒否する', () => {
-      expect(isValidExtension('JPG')).toBe(false)
-      expect(isValidExtension('PNG')).toBe(false)
-    })
-  })
-})
+    it('期限切れのトークンを更新する', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValueOnce({
+          data: {
+            twitch_access_token: 'expired-token',
+            twitch_refresh_token: 'refresh-token',
+            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+          },
+          error: null,
+        }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+      vi.mocked(refreshTwitchToken).mockResolvedValue({
+        access_token: 'new-token',
+        refresh_token: 'new-refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        scope: ['user:read:email'],
+      });
+
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBe('new-token');
+      expect(refreshTwitchToken).toHaveBeenCalledWith('refresh-token');
+    });
+  });
+
+  describe('saveTwitchTokens', () => {
+    it('トークンを保存する', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockResolvedValue({
+          error: null,
+        }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+
+      await saveTwitchTokens('123456789', {
+        access_token: 'access-token',
+        refresh_token: 'refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        scope: ['user:read:email'],
+      });
+
+      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('users');
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          twitch_access_token: 'access-token',
+          twitch_refresh_token: 'refresh-token',
+        })
+      );
+    });
+  });
+
+  describe('deleteTwitchTokens', () => {
+    it('トークンを削除する', async () => {
+      const mockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockResolvedValue({
+          error: null,
+        }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as any);
+
+      await deleteTwitchTokens('123456789');
+
+      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('users');
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          twitch_access_token: null,
+          twitch_refresh_token: null,
+          twitch_token_expires_at: null,
+        })
+      );
+    });
+  });
+});
 ```
 
 ### メリット
 
-1. **セキュリティ強化**: パストラバーサル攻撃を防止
-2. **ファイルタイプ検証**: マジックバイトによる厳格なファイルタイプ検証
-3. **ユーザー保護**: 悪意のあるファイルのアップロードを防止
-4. **ファイル名の予測不可能性**: ハッシュ化されたファイル名によりファイルの予測を困難にする
+1. **機能修復**: ストリーマー機能（チャンネルポイント報酬の管理）が正常に動作する
+2. **トークン管理の改善**: Twitch トークンの保存、更新、削除が適切に行われる
+3. **自動リフレッシュ**: トークンの有効期限が切れた場合、自動的に更新される
+4. **セキュリティの維持**: トークンはデータベースに安全に保存され、RLS ポリシーで保護される
 
 ### トレードオフの検討
 
-#### 選択肢1: マジックバイトによる検証（採用）
+#### 選択肢1: データベースに保存（採用）
 - **メリット**:
-  - 実際のファイル内容を検証できる
-  - 拡張子偽装攻撃を防止できる
-  - OWASP のベストプラクティスに準拠
+  - 永続的な保存
+  - サーバーサイドでトークン更新が可能
+  - 複数のセッション間でトークンを共有可能
 - **デメリット**:
-  - 実装の複雑度が増す
-  - パフォーマンスへの影響（バッファの読み込み）
-- **判断**: セキュリティ上の重要性が高いため採用
+  - データベースへの追加クエリが必要
+  - RLS ポリシーの適切な設定が必要
+- **判断**: ストリーマー機能の必要性とトークン管理の柔軟性を考慮し採用
 
-#### 選択肢2: 拡張子のみの検証（採用しない）
+#### 選択肢2: Cookie に保存（採用しない）
 - **メリット**:
   - 実装がシンプル
-  - パフォーマンスへの影響が少ない
+  - データベースの追加クエリ不要
 - **デメリット**:
-  - 拡張子偽装攻撃が可能
-  - セキュリティ上のリスクが高い
-- **判断**: セキュリティ上のリスクが高いため採用しない
+  - Cookie のサイズ制限（4KB）
+  - セキュリティリスク（XSS によるトークン盗難の可能性）
+  - トークンの自動リフレッシュが困難
+- **判断**: セキュリティと機能性を考慮し採用しない
 
-#### 選択肢3: 外部ライブラリの使用（採用しない）
+#### 選択肢3: Redis に保存（採用しない）
 - **メリット**:
-  - 多くのファイルタイプをサポート
-  - メンテナンスが容易
+  - 高速なアクセス
+  - 自動期限切れ（TTL）
 - **デメリット**:
-  - 依存関係が増える
-  - バンドルサイズが増加
-- **判断**: 必要なファイルタイプが限られているため、自前実装を採用
+  - 追加のインフラコスト
+  - 既存のアーキテクチャ（Supabase ベース）からの乖離
+  - データの永続性が低い
+- **判断**: 運用コストとアーキテクチャの一貫性を考慮し採用しない
 
 ### 受け入れ基準
 
-- [ ] ファイル名がハッシュ化される
-- [ ] マジックバイトによるファイルタイプ検証が実装される
-- [ ] 拡張子とファイル内容が一致しない場合、400エラーが返される
-- [ ] パストラバーサル攻撃が防止される
-- [ ] テストが追加される（JPEG, PNG, GIF, WebP, 不明なファイルタイプ）
-- [ ] lint と test がパスする
-- [ ] CI がパスする
+- [x] データベースマイグレーションが作成される
+- [x] `src/lib/twitch/token-manager.ts` が作成される
+- [x] `/api/auth/twitch/callback` で Twitch トークンが保存される
+- [x] `/api/twitch/rewards` で正しい Twitch アクセストークンが使用される
+- [x] トークンの有効期限が切れた場合、自動的に更新される
+- [x] ログアウト時、Twitch トークンが削除される
+- [x] テストが追加される
+- [x] lint と test がパスする
+- [x] CI がパスする
 
 ---
 
@@ -584,16 +848,12 @@ describe('File Utils', () => {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-19 | ファイルアップロードのセキュリティ強化設計を追加（Issue #44） |
-| 2026-01-19 | CSP実装方法を更新（Tailwind CSS v4とNext.js App Routerの対応状況を追加） |
-| 2026-01-19 | セキュリティヘッダー設定の設計を追加（Issue #43 - 解決済み） |
+| 2026-01-19 | Twitch トークン管理機能の設計を追加（Issue #46） |
 
 ---
 
 ## 実装完了の問題
 
-- **Issue #44**: Critical Security: File Upload Lacks Proper Sanitization (未実装)
-- **Issue #43**: Security: Missing Security Headers in API Routes and Pages (解決済み - 本番環境での動作確認が必要)
-- **Issue #42**: Fix: Twitch OAuth CORS Error in Next.js RSC (解決済み)
+なし
 
 過去のアーキテクチャドキュメントの詳細を参照する場合は、docs/ARCHITECTURE_*.md ファイルを確認してください。

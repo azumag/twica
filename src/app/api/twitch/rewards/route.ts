@@ -1,16 +1,20 @@
 import { NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { createClient } from "@/lib/supabase/server";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { getTwitchAccessToken } from "@/lib/twitch/token-manager";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
-async function getAccessToken(): Promise<string | null> {
-  const supabase = await createClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  return session?.access_token || null;
+async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string> {
+  const accessToken = await getTwitchAccessToken(twitchUserId);
+
+  if (!accessToken) {
+    throw new Error(ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE);
+  }
+
+  return accessToken;
 }
 
 export async function GET(request: Request) {
@@ -37,10 +41,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
-  const accessToken = await getAccessToken();
-  if (!accessToken) {
-    return NextResponse.json({ error: ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE }, { status: 401 });
-  }
+  const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
 
   try {
     const response = await fetch(
@@ -90,10 +91,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
-  const accessToken = await getAccessToken();
-  if (!accessToken) {
-    return NextResponse.json({ error: ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE }, { status: 401 });
-  }
+  const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
 
   try {
     const response = await fetch(

@@ -126,12 +126,27 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
-   - Issue #44 created: Critical Security: File Upload Lacks Proper Sanitization
-            - File upload API vulnerable to path traversal attacks
-            - Filename is directly concatenated without sanitization
-            - Extension validation insufficient
+   - Issue #46 implemented and closed: Critical Bug: Twitch API Calls Fail Due to Missing Twitch Access Token Storage
+            - Twitch token storage in users table (twitch_access_token, twitch_refresh_token, twitch_token_expires_at)
+            - Token manager utility created (src/lib/twitch/token-manager.ts)
+            - OAuth callback now saves Twitch tokens to database
+            - Rewards API now uses correct Twitch access token
+            - Token auto-refresh implemented
+            - Logout deletes Twitch tokens
+            - Database migration added (00004_add_twitch_tokens_to_users.sql)
+            - Unit tests added (tests/unit/twitch-token-manager.test.ts)
+            - CI passed successfully (81 tests)
             - Design documented in ARCHITECTURE.md
-            - Implementation pending
+   - Issue #44 implemented and closed: Critical Security: File Upload Lacks Proper Sanitization
+            - File upload API security vulnerabilities fixed
+            - Filename sanitization with SHA-256 hashing
+            - Magic byte file type verification implemented
+            - Extension and content mismatch detection added
+            - Path traversal attack prevention implemented
+            - File utility library created (src/lib/file-utils.ts)
+            - Comprehensive unit tests added
+            - CI passed successfully (66 tests)
+            - Design documented in ARCHITECTURE.md
    - Issue #43 implemented and closed: Security: Missing Security Headers in API Routes and Pages
             - Security headers (X-Content-Type-Options, X-Frame-Options, etc.) implemented in API routes and pages
             - SECURITY_HEADERS constants added to src/lib/constants.ts

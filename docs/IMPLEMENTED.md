@@ -1,83 +1,83 @@
 # 実装内容
 
-## 実装日時
-2026-01-19 01:34
+## Issue #46: Critical Bug - Twitch API Calls Fail Due to Missing Twitch Access Token Storage
 
-## レビュー対応内容
+### 概要
+Twitch API コールが失敗するバグを修正しました。Supabase のセッションアクセストークンが誤って Twitch API 呼び出しに使用されていた問題を解決しました。
 
-### Issue #44: ファイルアップロードのセキュリティ強化 - レビュー対応
+### 実装内容
 
-#### 修正内容
-**重複する `getSession()` 呼び出しの削除**
+#### 1. データベースマイグレーション
+- **ファイル**: `supabase/migrations/00004_add_twitch_tokens_to_users.sql`
+- **内容**: 
+  - `users` テーブルに Twitch トークンを保存するカラムを追加
+  - `twitch_access_token`: Twitch アクセストークン
+  - `twitch_refresh_token`: Twitch リフレッシュトークン
+  - `twitch_token_expires_at`: トークンの有効期限
+  - RLS ポリシーを追加して、ユーザーが自身のトークンのみ読み取り/更新可能にする
 
-- `src/app/api/upload/route.ts` で `getSession()` が2回呼び出される問題を修正
-- `validateRequest` 関数の戻り値を `NextResponse | null` から `ValidateRequestResult` インターフェースに変更
-- `ValidateRequestResult` インターフェースに `error` と `session` プロパティを追加
-- `validateRequest` 関数で session を返し、`POST` 関数で再利用するように修正
+#### 2. Twitch トークン管理ユーティリティ
+- **ファイル**: `src/lib/twitch/token-manager.ts`
+- **機能**:
+  - `getTwitchAccessToken(twitchUserId)`: Twitch アクセストークンを取得、期限切れの場合は自動更新
+  - `saveTwitchTokens(twitchUserId, tokens)`: Twitch トークンをデータベースに保存
+  - `deleteTwitchTokens(twitchUserId)`: Twitch トークンをデータベースから削除
+  - トークンの有効期限チェックと自動リフレッシュ機能
 
-#### 修正前
-```typescript
-async function validateRequest(request: NextRequest): Promise<NextResponse | null> {
-  const session = await getSession();
-  // ... validation logic
-  return null;
-}
+#### 3. Twitch OAuth コールバックの修正
+- **ファイル**: `src/app/api/auth/twitch/callback/route.ts`
+- **変更点**:
+  - Twitch OAuth コールバックで取得したトークンをデータベースに保存
+  - `users` テーブルの upsert にトークン情報を追加
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
-  const rateLimitError = await validateRequest(request);
-  if (rateLimitError) {
-    return rateLimitError;
-  }
-  // ... validation logic
+#### 4. Twitch Rewards API の修正
+- **ファイル**: `src/app/api/twitch/rewards/route.ts`
+- **変更点**:
+  - Supabase セッショントークンを使用した `getAccessToken()` 関数を削除
+  - Twitch トークン管理ユーティリティを使用する `getTwitchAccessTokenOrError()` 関数を追加
+  - GET メソッドで正しい Twitch アクセストークンを使用
+  - POST メソッドで正しい Twitch アクセストークンを使用
 
-  const session = await getSession(); // 重複する呼び出し
-  const safeBasename = createHash('sha256')
-    .update(`${session!.twitchUserId}-${Date.now()}`)
-    .digest('hex')
-    .substring(0, 16);
-  // ...
-}
-```
+#### 5. ログアウト時のトークン削除
+- **ファイル**: `src/app/api/auth/logout/route.ts`
+- **変更点**:
+  - ログアウト時に Twitch トークンもデータベースから削除
+  - GET メソッドと POST メソッドの両方に実装
 
-#### 修正後
-```typescript
-interface ValidateRequestResult {
-  error?: NextResponse;
-  session?: Session;
-}
+#### 6. テストの追加
+- **ファイル**: `tests/unit/twitch-token-manager.test.ts`
+- **テスト内容**:
+  - 有効なトークンを正しく返すテスト
+  - トークンが存在しない場合は null を返すテスト
+  - 期限切れのトークンを更新するテスト
+  - トークンを保存するテスト
+  - トークンを削除するテスト
 
-async function validateRequest(request: NextRequest): Promise<ValidateRequestResult> {
-  const session = await getSession();
-  // ... validation logic
-  return { session };
-}
+### レビュー修正内容
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
-  const { error: rateLimitError, session } = await validateRequest(request);
-  if (rateLimitError) {
-    return rateLimitError;
-  }
-  // ... validation logic
+#### 1. 未使用のインターフェースの削除
+- **ファイル**: `src/lib/twitch/token-manager.ts`
+- **変更**: 未使用の `TwitchTokenData` インターフェースを削除
+- **理由**: コード品質の向上
 
-  const safeBasename = createHash('sha256')
-    .update(`${session!.twitchUserId}-${Date.now()}`)
-    .digest('hex')
-    .substring(0, 16);
-  // ...
-}
-```
+#### 2. エラーログの追加
+- **ファイル**: `src/lib/twitch/token-manager.ts`
+- **変更**: `refreshTwitchAccessToken` 関数にエラーログを追加
+- **理由**: トークンリフレッシュが失敗した原因の特定を容易にするため
+- **実装**: `logger.error('Failed to refresh Twitch access token', { twitchUserId, error })`
 
-#### メリット
-- データベースへの重複ルックアップを削除
-- パフォーマンスの向上
-- コードの簡潔化と効率化
+#### 3. マイグレーションのコメント修正
+- **ファイル**: `supabase/migrations/00004_add_twitch_tokens_to_users.sql`
+- **変更**: コメントを「Users can update their own twitch tokens」から「Policies for RLS (actual operations use admin client which bypasses RLS)」に変更
+- **理由**: コメントの誤解を防ぐため
 
-## テスト結果
-- ✅ 全76テストがパス
-- ✅ lint がパス
+### 検証
+- ✓ Lint にパス
+- ✓ すべてのユニットテストにパス (81 tests)
 
-## 影響範囲
-- `src/app/api/upload/route.ts`
-
-## 完了した受け入れ基準
-- [x] 重複する `getSession()` 呼び出しを削除し、1回の呼び出しで済むように修正
+### メリット
+1. **機能修復**: ストリーマー機能（チャンネルポイント報酬の管理）が正常に動作する
+2. **トークン管理の改善**: Twitch トークンの保存、更新、削除が適切に行われる
+3. **自動リフレッシュ**: トークンの有効期限が切れた場合、自動的に更新される
+4. **セキュリティの維持**: トークンはデータベースに安全に保存され、RLS ポリシーで保護される
+5. **デバッグ性の向上**: エラーログにより問題の特定が容易になる
