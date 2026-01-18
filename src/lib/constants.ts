@@ -106,3 +106,9 @@ export const ERROR_MESSAGES = {
   DEBUG_ENDPOINT_NOT_AVAILABLE: 'Debug endpoint not available in production',
   DEBUG_ENDPOINT_NOT_AUTHORIZED: 'Debug endpoint only accessible from localhost',
 } as const
+
+export const CPU_CARD_STRINGS = {
+  NAME_PREFIX: 'CPUの',
+  DEFAULT_NAME: 'CPUカード',
+  DEFAULT_SKILL_NAME: 'CPU攻撃',
+} as const

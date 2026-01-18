@@ -3,7 +3,7 @@ import { getSession } from '@/lib/session'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
-import { ERROR_MESSAGES } from '@/lib/constants'
+import { ERROR_MESSAGES, CPU_CARD_STRINGS } from '@/lib/constants'
 import type { 
   BattleLog, 
   BattleCard, 
@@ -185,14 +185,14 @@ export async function GET(
       // If opponent card not found (might be CPU), create a default
       const cpuCard: BattleCard = {
         id: 'cpu-unknown',
-        name: 'CPUカード',
+        name: CPU_CARD_STRINGS.DEFAULT_NAME,
         hp: 100,
         currentHp: 0, // CPU card - no battle history
         atk: 30,
         def: 15,
         spd: 5,
         skill_type: 'attack',
-        skill_name: 'CPU攻撃',
+        skill_name: CPU_CARD_STRINGS.DEFAULT_SKILL_NAME,
         skill_power: 10,
         image_url: null,
         rarity: 'common'
@@ -258,7 +258,7 @@ export async function GET(
 
     const opponentBattleCard: BattleCard = {
       id: opponentCard.id,
-      name: opponentCard.name.startsWith('CPUの') ? opponentCard.name : `CPUの${opponentCard.name}`,
+      name: opponentCard.name.startsWith(CPU_CARD_STRINGS.NAME_PREFIX) ? opponentCard.name : `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}`,
       hp: opponentCard.hp,
       currentHp: Math.max(0, opponentHp),
       atk: opponentCard.atk,

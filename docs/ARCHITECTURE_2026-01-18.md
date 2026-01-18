@@ -198,64 +198,39 @@ graph LR
 
 ---
 
-## Issue #34: Code Quality - Hardcoded CPU Card Strings in Battle APIs
+## Issue #33: Code Quality - Inconsistent Error Message in Session API
 
 ### 問題
 
-Battle APIs は CPU オポーネントカードにハードコードされた日本語文字列を使用しており、定数として標準化する必要があります。
+`/api/session` エンドポイントにハードコードされたエラーメッセージ `'Not authenticated'` があり、標準化された `ERROR_MESSAGES.NOT_AUTHENTICATED` 定数を使用していません。
 
 ### 問題の詳細
 
 #### 現在の実装
 
-**src/app/api/battle/[battleId]/route.ts** (行 188, 195, 261):
+**src/app/api/session/route.ts**
 
 ```typescript
-// Line 188
-const cpuCard: BattleCard = {
-  id: 'cpu-unknown',
-  name: 'CPUカード',  // Hardcoded
-  hp: 100,
-  currentHp: 0,
-  atk: 30,
-  def: 15,
-  spd: 5,
-  skill_type: 'attack',
-  skill_name: 'CPU攻撃',  // Hardcoded
-  skill_power: 10,
-  image_url: null,
-  rarity: 'common'
+export async function GET() {
+  try {
+    const session = await getSession()
+    
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })  // Hardcoded string
+    }
+    
+    return NextResponse.json(session)
+  } catch (error) {
+    return handleApiError(error, "Session API: GET")
+  }
 }
-
-// Line 261
-const opponentBattleCard: BattleCard = {
-  id: opponentCard.id,
-  name: opponentCard.name.startsWith('CPUの') ? opponentCard.name : `CPUの${opponentCard.name}`,  // Hardcoded
-  hp: opponentCard.hp,
-  currentHp: Math.max(0, opponentHp),
-  atk: opponentCard.atk,
-  def: opponentCard.def,
-  spd: opponentCard.spd,
-  skill_type: opponentCard.skill_type,
-  skill_name: opponentCard.skill_name,
-  skill_power: opponentCard.skill_power,
-  image_url: opponentCard.image_url,
-  rarity: opponentCard.rarity
-}
-```
-
-**src/app/api/battle/stats/route.ts** (行 122, 135):
-
-```typescript
-opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード',  // Hardcoded
 ```
 
 #### 影響
 
-- **コード品質**: Issue #30 で実装された API エラーメッセージ標準化に違反
-- **保守性**: ハードコードされた文字列はメンテナンスが困難
-- **国際化**: 将来の i18n 対応を困難にする
-- **一貫性**: 他の API ルートは適切に定数を使用している
+- **コード品質**: Issue #30で実装されたAPIエラーメッセージ標準化に違反
+- **保守性**: ハードコードされた文字列はメンテナンスが困難で一貫性のないエラーメッセージにつながる可能性がある
+- **一貫性**: 他のAPIルートは適切に `ERROR_MESSAGES` 定数を使用している
 
 ### 優先度
 
@@ -263,192 +238,114 @@ opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード', 
 
 ---
 
-## Issue #34: 設計
+## Issue #33: 設計
 
 ### 機能要件
 
-#### 1. CPU カード文字列の定数化
+#### 1. Session API エラーメッセージの標準化
 
-Battle API の CPU カード関連文字列を定数として標準化します。
+Session APIのエラーメッセージを標準化し、`ERROR_MESSAGES` 定数を使用します。
 
 ### 非機能要件
 
 #### コード品質
 
-- すべての CPU カード関連文字列が定数を使用する
+- すべてのエラーメッセージが `ERROR_MESSAGES` 定数を使用する
 - ハードコードされた文字列が削除される
-- 一貫性のあるコードが維持される
+- 一貫性のあるエラーハンドリングが維持される
 
 ### 設計
 
-#### 1. 定数の追加
+#### 1. Session API の修正
 
-**src/lib/constants.ts** に以下の定数を追加します：
-
-```typescript
-export const CPU_CARD_STRINGS = {
-  NAME_PREFIX: 'CPUの',
-  DEFAULT_NAME: 'CPUカード',
-  DEFAULT_SKILL_NAME: 'CPU攻撃',
-} as const
-```
-
-**理由**:
-- CPU カードに関連するすべての文字列を一箇所で管理
-- 将来の国際化対応が容易
-- Issue #30 の標準化完了状態を維持
-
-#### 2. Battle Get API の修正
-
-**src/app/api/battle/[battleId]/route.ts**
+**src/app/api/session/route.ts**
 
 **変更前**:
 ```typescript
-const cpuCard: BattleCard = {
-  id: 'cpu-unknown',
-  name: 'CPUカード',
-  hp: 100,
-  currentHp: 0,
-  atk: 30,
-  def: 15,
-  spd: 5,
-  skill_type: 'attack',
-  skill_name: 'CPU攻撃',
-  skill_power: 10,
-  image_url: null,
-  rarity: 'common'
-}
-
-const opponentBattleCard: BattleCard = {
-  id: opponentCard.id,
-  name: opponentCard.name.startsWith('CPUの') ? opponentCard.name : `CPUの${opponentCard.name}`,
-  hp: opponentCard.hp,
-  currentHp: Math.max(0, opponentHp),
-  atk: opponentCard.atk,
-  def: opponentCard.def,
-  spd: opponentCard.spd,
-  skill_type: opponentCard.skill_type,
-  skill_name: opponentCard.skill_name,
-  skill_power: opponentCard.skill_power,
-  image_url: opponentCard.image_url,
-  rarity: opponentCard.rarity
+export async function GET() {
+  try {
+    const session = await getSession()
+    
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+    
+    return NextResponse.json(session)
+  } catch (error) {
+    return handleApiError(error, "Session API: GET")
+  }
 }
 ```
 
 **変更後**:
 ```typescript
-import { CPU_CARD_STRINGS } from '@/lib/constants'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
-const cpuCard: BattleCard = {
-  id: 'cpu-unknown',
-  name: CPU_CARD_STRINGS.DEFAULT_NAME,
-  hp: 100,
-  currentHp: 0,
-  atk: 30,
-  def: 15,
-  spd: 5,
-  skill_type: 'attack',
-  skill_name: CPU_CARD_STRINGS.DEFAULT_SKILL_NAME,
-  skill_power: 10,
-  image_url: null,
-  rarity: 'common'
-}
-
-const opponentBattleCard: BattleCard = {
-  id: opponentCard.id,
-  name: opponentCard.name.startsWith(CPU_CARD_STRINGS.NAME_PREFIX) ? opponentCard.name : `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}`,
-  hp: opponentCard.hp,
-  currentHp: Math.max(0, opponentHp),
-  atk: opponentCard.atk,
-  def: opponentCard.def,
-  spd: opponentCard.spd,
-  skill_type: opponentCard.skill_type,
-  skill_name: opponentCard.skill_name,
-  skill_power: opponentCard.skill_power,
-  image_url: opponentCard.image_url,
-  rarity: opponentCard.rarity
+export async function GET() {
+  try {
+    const session = await getSession()
+    
+    if (!session) {
+      return NextResponse.json({ error: ERROR_MESSAGES.NOT_AUTHENTICATED }, { status: 401 })
+    }
+    
+    return NextResponse.json(session)
+  } catch (error) {
+    return handleApiError(error, "Session API: GET")
+  }
 }
 ```
 
 **理由**:
-- 定数を使用して文字列の一元管理
-- 他の API ルートと一貫性を保つ
-- エラーメッセージ標準化パターンに従う
-
-#### 3. Battle Stats API の修正
-
-**src/app/api/battle/stats/route.ts**
-
-**変更前**:
-```typescript
-opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード',
-```
-
-**変更後**:
-```typescript
-import { CPU_CARD_STRINGS } from '@/lib/constants'
-
-opponentCardName: opponentCard ? `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}` : CPU_CARD_STRINGS.DEFAULT_NAME,
-```
-
-**理由**:
-- Battle Get API と一貫性を保つ
-- 定数を使用して文字列の一元管理
+- 他のAPIルートと一貫性を保つ
+- エラーメッセージの一元管理により、将来の変更が容易
+- Issue #30の標準化完了状態を維持
 
 ### 変更ファイル
 
-- `src/lib/constants.ts` (更新 - CPU カード文字列定数の追加)
-- `src/app/api/battle/[battleId]/route.ts` (更新 - 定数の使用)
-- `src/app/api/battle/stats/route.ts` (更新 - 定数の使用)
+- `src/app/api/session/route.ts` (更新 - エラーメッセージ標準化)
 
 ### 受け入れ基準
 
-- [ ] `src/lib/constants.ts` に CPU_CARD_STRINGS 定数が追加されている
-- [ ] `src/app/api/battle/[battleId]/route.ts` が CPU_CARD_STRINGS 定数を使用している
-- [ ] `src/app/api/battle/stats/route.ts` が CPU_CARD_STRINGS 定数を使用している
+- [ ] `/api/session` エンドポイントが `ERROR_MESSAGES.NOT_AUTHENTICATED` 定数を使用する
 - [ ] TypeScript コンパイルエラーがない
 - [ ] ESLint エラーがない
-- [ ] 既存の API テストがパスする
-- [ ] CI が成功
-- [ ] Issue #34 クローズ済み
+- [ ] 既存のAPIテストがパスする
+- [ ] CIが成功
+- [ ] Issue #33 クローズ済み
 
 ### テスト計画
 
 1. **統合テスト**:
-   - CPU 対戦時に `CPU_CARD_STRINGS.DEFAULT_NAME` が使用されることを確認
-   - CPU 対戦時に `CPU_CARD_STRINGS.DEFAULT_SKILL_NAME` が使用されることを確認
-   - CPU オポーネントカード名に `CPU_CARD_STRINGS.NAME_PREFIX` が使用されることを確認
+   - セッションがない場合に `ERROR_MESSAGES.NOT_AUTHENTICATED` が返されることを確認
+   - セッションがある場合に正しいセッションデータが返されることを確認
 
 2. **回帰テスト**:
-   - 既存の対戦機能が正しく動作することを確認
-   - CPU 対戦の挙動が変わらないことを確認
-   - 対戦統計が正しく表示されることを確認
+   - 既存の認証フローが正しく動作することを確認
+   - 以前の動作と変わらないことを確認
 
 ### トレードオフの検討
 
-#### ハードコードされた文字列 vs CPU_CARD_STRINGS定数
+#### ハードコードされた文字列 vs ERROR_MESSAGES定数
 
-| 項目 | ハードコードされた文字列 | CPU_CARD_STRINGS定数 |
+| 項目 | ハードコードされた文字列 | ERROR_MESSAGES定数 |
 |:---|:---|:---|
 | **コード品質** | 低（標準化違反） | 高（一貫性あり） |
 | **保守性** | 低（変更時に複数箇所を修正） | 高（一箇所の修正で全体に反映） |
-| **国際化** | 低（複数箇所を修正） | 高（定数ファイルのみ修正） |
 | **一貫性** | 低（ルートごとに異なる可能性） | 高（全ルートで統一） |
 | **実装コスト** | 低（変更なし） | 低（簡単な置換） |
 
-**推奨**: CPU_CARD_STRINGS定数を使用
+**推奨**: ERROR_MESSAGES定数を使用
 
 **理由**:
-- Issue #30 で実装された標準化完了状態を維持できる
-- 将来の国際化対応が容易
+- Issue #30で実装された標準化完了状態を維持できる
+- 将来のエラーメッセージの変更や追加言語対応が容易
 - コードベース全体で一貫性が保たれる
-- 他の定数（ERROR_MESSAGES など）と同じパターンに従う
 
 ### 関連問題
 
 - Issue #30 - API Error Message Standardization (解決済み)
 - Issue #25 - Inconsistent Error Messages in API Responses (解決済み)
-- Issue #33 - Code Quality - Inconsistent Error Message in Session API (解決済み)
 
 ---
 
@@ -456,7 +353,15 @@ opponentCardName: opponentCard ? `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-18 | Issue #34 CPU カード文字列定数化の設計追加 |
+| 2026-01-18 | Issue #33 Session APIエラーメッセージ標準化の設計追加 |
+| 2026-01-18 | Issue #32 デバッグエンドポイントセキュリティ強化の実装完了・クローズ |
+| 2026-01-18 | Issue #31 `as any` 型キャスト削除の実装完了・クローズ |
+| 2026-01-18 | Issue #30 APIエラーメッセージ標準化の実装完了・クローズ |
+| 2026-01-18 | Issue #29 N+1クエリ問題の実装完了・クローズ |
+| 2026-01-18 | Issue #28 N+1クエリ問題の実装完了・クローズ |
+| 2026-01-18 | Issue #27 データベースクエリ最適化の実装完了・クローズ |
+| 2026-01-17 | Issue #26 レート制限のfail-open問題の実装完了 |
+| 2026-01-17 | Issue #25 エラーメッセージの一貫性問題の実装完了 |
 
 ---
 

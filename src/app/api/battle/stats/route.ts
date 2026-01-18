@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import type { UserCardWithDetails, BattleResult } from '@/types/database'
-import { ERROR_MESSAGES } from '@/lib/constants'
+import { ERROR_MESSAGES, CPU_CARD_STRINGS } from '@/lib/constants'
 
 export async function GET(request: NextRequest) {
   try {
@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
         return {
           battleId,
           result,
-          opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード',
+          opponentCardName: opponentCard ? `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}` : CPU_CARD_STRINGS.DEFAULT_NAME,
           turnCount,
           createdAt,
           userCardName: 'Unknown Card'
@@ -132,7 +132,7 @@ export async function GET(request: NextRequest) {
       return {
         battleId,
         result,
-        opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード',
+        opponentCardName: opponentCard ? `${CPU_CARD_STRINGS.NAME_PREFIX}${opponentCard.name}` : CPU_CARD_STRINGS.DEFAULT_NAME,
         turnCount,
         createdAt,
         userCardName: userCardData?.name || 'Unknown Card'

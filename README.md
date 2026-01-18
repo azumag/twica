@@ -126,7 +126,16 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
    ## Recent Changes
 
-   - Issue #32 created: Critical Security - Debug Endpoint Exposes Sensitive Cookies
+   - Issue #34 created: Code Quality - Hardcoded CPU Card Strings in Battle APIs
+           - Battle APIs use hardcoded Japanese strings for CPU opponent cards
+           - These should be standardized as constants for maintainability and consistency
+           - Design documented in ARCHITECTURE.md
+   - Issue #33 implemented and closed: Session API Error Message Standardization
+           - `/api/session` endpoint now uses `ERROR_MESSAGES.NOT_AUTHENTICATED` constant
+           - All hardcoded error messages removed from session API
+           - Code quality improved and consistent with Issue #30 standards
+           - CI passed successfully
+   - Issue #32 implemented and closed: Critical Security - Debug Endpoint Exposes Sensitive Cookies
            - Debug endpoint exposes all cookies (except session) to authenticated users
            - May contain sensitive tokens or data
            - Design documented in ARCHITECTURE.md
