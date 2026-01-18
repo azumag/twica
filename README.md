@@ -126,6 +126,12 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
+   - Issue #44 created: Critical Security: File Upload Lacks Proper Sanitization
+            - File upload API vulnerable to path traversal attacks
+            - Filename is directly concatenated without sanitization
+            - Extension validation insufficient
+            - Design documented in ARCHITECTURE.md
+            - Implementation pending
    - Issue #43 implemented and closed: Security: Missing Security Headers in API Routes and Pages
             - Security headers (X-Content-Type-Options, X-Frame-Options, etc.) implemented in API routes and pages
             - SECURITY_HEADERS constants added to src/lib/constants.ts

@@ -81,9 +81,10 @@ export const ERROR_MESSAGES = {
   // File upload errors
   FILE_NAME_EMPTY: 'File name is empty',
   FILE_SIZE_EXCEEDED: 'File size exceeds the maximum allowed size',
-  INVALID_FILE_TYPE: 'Invalid file type. Only JPEG and PNG are allowed',
+  INVALID_FILE_TYPE: 'Invalid file type. Only JPEG, PNG, GIF, and WebP are allowed',
   NO_FILE_SELECTED: 'No file selected',
   UNABLE_TO_UPLOAD: 'Unable to upload file',
+  FILE_CONTENT_MISMATCH: 'File content does not match extension',
 
   // General errors
   INTERNAL_ERROR: 'Internal server error',
@@ -188,4 +189,17 @@ export const SECURITY_HEADERS = {
   CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;",
   CSP_PRODUCTION: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;",
   HSTS: 'max-age=31536000; includeSubDomains; preload',
+} as const
+
+export const UPLOAD_CONFIG = {
+  MAX_FILE_SIZE: 1 * 1024 * 1024,
+  ALLOWED_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const,
+  ALLOWED_EXTENSIONS: ['jpg', 'jpeg', 'png', 'gif', 'webp'] as const,
+  EXT_TO_MIME_TYPE: {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+  } as const,
 } as const

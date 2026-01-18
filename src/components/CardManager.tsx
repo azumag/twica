@@ -5,7 +5,8 @@ import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
 import { logger } from "@/lib/logger";
-import { validateUpload, getUploadErrorMessage, UPLOAD_CONFIG } from "@/lib/upload-validation";
+import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
+import { UPLOAD_CONFIG } from "@/lib/constants";
 
 interface CardManagerProps {
   streamerId: string;

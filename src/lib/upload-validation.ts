@@ -1,25 +1,6 @@
-export const UPLOAD_CONFIG = {
-  MAX_FILE_SIZE: 1 * 1024 * 1024,
-  ALLOWED_TYPES: ['image/jpeg', 'image/png'] as const,
-}
+import { UPLOAD_CONFIG } from '@/lib/constants';
 
-const TYPE_TO_EXTENSIONS: Record<string, string[]> = {
-  'image/jpeg': ['jpg', 'jpeg'],
-  'image/png': ['png'],
-};
-
-function getFileExtension(fileName: string): string {
-  const lastDotIndex = fileName.lastIndexOf('.');
-  return lastDotIndex > -1 ? fileName.slice(lastDotIndex + 1).toLowerCase() : '';
-}
-
-function validateFileType(mimeType: string, extension: string): boolean {
-  const allowedExts = TYPE_TO_EXTENSIONS[mimeType];
-  if (!allowedExts) return false;
-  return allowedExts.includes(extension);
-}
-
-export type UploadValidationError = 
+export type UploadValidationError =
   | 'FILE_TOO_LARGE'
   | 'INVALID_FILE_TYPE'
   | 'NO_FILE'
@@ -49,16 +30,6 @@ export function validateUpload(
 
   const mimeType = file.type as typeof UPLOAD_CONFIG.ALLOWED_TYPES[number];
   if (!UPLOAD_CONFIG.ALLOWED_TYPES.includes(mimeType)) {
-    return {
-      valid: false,
-      error: 'INVALID_FILE_TYPE',
-      maxSize: UPLOAD_CONFIG.MAX_FILE_SIZE,
-      allowedTypes: [...UPLOAD_CONFIG.ALLOWED_TYPES],
-    }
-  }
-
-  const extension = getFileExtension(file.name);
-  if (!validateFileType(mimeType, extension)) {
     return {
       valid: false,
       error: 'INVALID_FILE_TYPE',

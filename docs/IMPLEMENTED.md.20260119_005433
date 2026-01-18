@@ -1,0 +1,127 @@
+# 実装内容
+
+## セキュリティヘッダー設定（Issue #43）
+
+### 実装概要
+APIルートやページでセキュリティヘッダーが設定されていない問題を修正しました。これにより、XSS、クリックジャッキングなどの攻撃に対する脆弱性を防ぎます。
+
+### 変更内容
+
+#### 1. `src/lib/constants.ts` に定数を追加
+
+セキュリティヘッダー用の定数を追加しました。
+
+```typescript
+export const SECURITY_HEADERS = {
+  X_CONTENT_TYPE_OPTIONS: 'nosniff',
+  X_FRAME_OPTIONS: 'DENY',
+  X_XSS_PROTECTION: '1; mode=block',
+  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;",
+  CSP_PRODUCTION: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;",
+  HSTS: 'max-age=31536000; includeSubDomains; preload',
+} as const
+```
+
+**設定内容**:
+- `X-Content-Type-Options: nosniff`: MIMEタイプスニッフィングを防ぐ
+- `X-Frame-Options: DENY`: クリックジャッキングを防ぐ
+- `X-XSS-Protection: 1; mode=block`: XSSフィルターを有効化
+- `Content-Security-Policy`: コンテンツセキュリティポリシーを設定（開発環境と本番環境で異なる設定）
+- `Strict-Transport-Security`: HTTPSのみでの接続を強制（本番環境のみ）
+
+#### 2. `src/lib/security-headers.ts` を新規作成
+
+セキュリティヘッダーを設定するヘルパー関数を作成しました。
+
+```typescript
+import { NextResponse } from 'next/server'
+import { SECURITY_HEADERS } from './constants'
+
+export function setSecurityHeaders(response: NextResponse): NextResponse {
+  response.headers.set('X-Content-Type-Options', SECURITY_HEADERS.X_CONTENT_TYPE_OPTIONS)
+  response.headers.set('X-Frame-Options', SECURITY_HEADERS.X_FRAME_OPTIONS)
+  response.headers.set('X-XSS-Protection', SECURITY_HEADERS.X_XSS_PROTECTION)
+
+  const csp = process.env.NODE_ENV === 'production'
+    ? SECURITY_HEADERS.CSP_PRODUCTION
+    : SECURITY_HEADERS.CSP_DEVELOPMENT
+  response.headers.set('Content-Security-Policy', csp)
+
+  if (process.env.NODE_ENV === 'production') {
+    response.headers.set('Strict-Transport-Security', SECURITY_HEADERS.HSTS)
+  }
+
+  return response
+}
+```
+
+**特徴**:
+- 環境に応じてCSPを切り替え（開発環境ではlocalhostへの接続を許可）
+- HSTSは本番環境のみで設定
+- すべてのレスポンスに対して一貫したヘッダーを適用
+
+#### 3. `src/proxy.ts` でセキュリティヘッダーを適用
+
+プロキシミドルウェアでセキュリティヘッダーを適用するように変更しました。
+
+**変更内容**:
+- `setSecurityHeaders` 関数をインポート
+- `updateSession` の後に `setSecurityHeaders` を適用
+- レート制限エラーレスポンスにもセキュリティヘッダーを適用
+
+### 設定されるセキュリティヘッダー
+
+| ヘッダー名 | 値 | 目的 | 適用環境 |
+|:---|:---|:---|:---|
+| X-Content-Type-Options | nosniff | MIMEタイプスニッフィングの防止 | すべて |
+| X-Frame-Options | DENY | クリックジャッキングの防止 | すべて |
+| X-XSS-Protection | 1; mode=block | XSSフィルターの有効化 | すべて |
+| Content-Security-Policy | 環境別設定 | コンテンツセキュリティポリシー | すべて |
+| Strict-Transport-Security | max-age=31536000; includeSubDomains; preload | HTTPS強制 | 本番のみ |
+
+### メリット
+
+1. **セキュリティ強化**: XSS、クリックジャッキングなどの攻撃を防ぐ
+2. **ベストプラクティス**: OWASP などのセキュリティガイドラインに準拠
+3. **一元管理**: セキュリティヘッダーを一箇所で管理
+4. **環境別設定**: 開発環境と本番環境で異なる設定を適用
+5. **グローバル適用**: すべてのルートに一貫したヘッダーが適用される
+
+### 受け入れ基準
+
+| 基準 | 状態 | 備考 |
+|:---|:---|:---|
+| `src/lib/constants.ts` に `SECURITY_HEADERS` 定数を追加 | ✅ | |
+| `src/lib/security-headers.ts` にヘルパー関数を作成 | ✅ | |
+| `src/proxy.ts` でセキュリティヘッダーを設定 | ✅ | |
+| 開発環境と本番環境で異なる CSP を設定 | ✅ | `NODE_ENV` で切り替え |
+| HSTS は本番環境のみで設定 | ✅ | `NODE_ENV === 'production'` でチェック |
+| lint と test がパスする | ✅ | すべてパス |
+| CI がパスする | ⏸️ | GitHub Actions での確認が必要 |
+
+### 影響範囲
+
+- **変更ファイル**: 3ファイル
+  - `src/lib/constants.ts` (変更)
+  - `src/lib/security-headers.ts` (新規作成)
+  - `src/proxy.ts` (変更)
+
+- **影響する機能**: なし
+  - 既存の機能はすべて維持されています
+  - すべてのルートにセキュリティヘッダーが追加されます
+
+### 設計原則への準拠
+
+| 設計原則 | 状態 | 備考 |
+|:---|:---|:---|
+| 1. Simple over Complex | ✅ | シンプルなヘルパー関数 |
+| 4. Security First | ✅ | セキュリティヘッダーの追加 |
+| 5. Consistency | ✅ | 一貫したヘッダー適用 |
+| 10. Development/Production Separation | ✅ | 環境別の設定 |
+| 12. Constant Standardization | ✅ | 定数として一元管理 |
+| 14. Security Headers | ✅ | すべてのリクエストにヘッダーを設定 |
+
+### テスト結果
+
+- **Lint**: ✅ パス
+- **Unit Tests**: ✅ 59 tests passed

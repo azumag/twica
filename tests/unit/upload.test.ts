@@ -4,6 +4,7 @@ import { POST } from '@/app/api/upload/route'
 import { getSession } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { put } from '@vercel/blob'
+import { getFileTypeFromBuffer } from '@/lib/file-utils'
 
 // Mock dependencies
 vi.mock('@/lib/session')
@@ -152,12 +153,72 @@ describe('POST /api/upload', () => {
 
       expect(response.status).toBe(400)
       const body = await response.json()
-      expect(body.error).toBe('Invalid file type. Only JPEG and PNG are allowed')
+      expect(body.error).toBe('Invalid file type. Only JPEG, PNG, GIF, and WebP are allowed')
+    })
+  })
+
+  describe('マジックバイト検証', () => {
+    it('拡張子がJPEGだが内容がJPEGでない場合 400 エラーを返す', async () => {
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+      })
+
+      const invalidFile = new File([Buffer.from([0x00, 0x00, 0x00])], 'fake.jpg', {
+        type: 'image/jpeg',
+      })
+
+      const formData = new FormData()
+      formData.append('file', invalidFile)
+
+      const request = new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(400)
+      const body = await response.json()
+      expect(body.error).toBe('File content does not match extension')
+    })
+
+    it('拡張子がPNGだが内容がJPEGの場合 400 エラーを返す', async () => {
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+      })
+
+      const jpegFile = new File([createMinimalJpegBuffer()], 'fake.png', {
+        type: 'image/png',
+      })
+
+      const formData = new FormData()
+      formData.append('file', jpegFile)
+
+      const request = new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(400)
+      const body = await response.json()
+      expect(body.error).toBe('File content does not match extension')
     })
   })
 
   describe('正常な画像アップロード', () => {
-    it('200 ステータスと URL を返す', async () => {
+    it('JPEG画像のアップロードに成功する', async () => {
       mockGetSession.mockResolvedValue({
         twitchUserId: 'test-user-id',
         twitchUsername: 'test-user',
@@ -193,6 +254,85 @@ describe('POST /api/upload', () => {
       const body = await response.json()
       expect(body.url).toBe('https://blob.vercel-storage.com/test-image.jpg')
       expect(mockPut).toHaveBeenCalled()
+      expect(mockPut).toHaveBeenCalledWith(
+        expect.stringMatching(/^[a-f0-9]{16}\.jpg$/),
+        expect.any(Buffer),
+        { access: 'public' }
+      )
+    })
+
+    it('PNG画像のアップロードに成功する', async () => {
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+      })
+
+      mockPut.mockResolvedValue({
+        url: 'https://blob.vercel-storage.com/test-image.png',
+        downloadUrl: 'https://blob.vercel-storage.com/test-image.png',
+        pathname: '/test-image.png',
+        contentType: 'image/png',
+        contentDisposition: 'inline; filename="test-image.png"',
+      })
+
+      const imageFile = new File([createMinimalPngBuffer()], 'test.png', {
+        type: 'image/png',
+      })
+
+      const formData = new FormData()
+      formData.append('file', imageFile)
+
+      const request = new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(200)
+      const body = await response.json()
+      expect(body.url).toBe('https://blob.vercel-storage.com/test-image.png')
+    })
+
+    it('GIF画像のアップロードに成功する', async () => {
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+      })
+
+      mockPut.mockResolvedValue({
+        url: 'https://blob.vercel-storage.com/test-image.gif',
+        downloadUrl: 'https://blob.vercel-storage.com/test-image.gif',
+        pathname: '/test-image.gif',
+        contentType: 'image/gif',
+        contentDisposition: 'inline; filename="test-image.gif"',
+      })
+
+      const imageFile = new File([createMinimalGifBuffer()], 'test.gif', {
+        type: 'image/gif',
+      })
+
+      const formData = new FormData()
+      formData.append('file', imageFile)
+
+      const request = new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(200)
+      const body = await response.json()
+      expect(body.url).toBe('https://blob.vercel-storage.com/test-image.gif')
     })
   })
 
@@ -238,3 +378,50 @@ function createMinimalJpegBuffer(): ArrayBuffer {
   ])
   return header.buffer
 }
+
+function createMinimalPngBuffer(): ArrayBuffer {
+  const header = new Uint8Array([
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+    0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52
+  ])
+  return header.buffer
+}
+
+function createMinimalGifBuffer(): ArrayBuffer {
+  const header = new Uint8Array([
+    0x47, 0x49, 0x46, 0x38, 0x37, 0x61
+  ])
+  return header.buffer
+}
+
+describe('getFileTypeFromBuffer', () => {
+  it('JPEGファイルを正しく識別する', () => {
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46])
+    expect(getFileTypeFromBuffer(jpegBuffer)).toBe('image/jpeg')
+  })
+
+  it('PNGファイルを正しく識別する', () => {
+    const pngBuffer = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    expect(getFileTypeFromBuffer(pngBuffer)).toBe('image/png')
+  })
+
+  it('GIFファイルを正しく識別する', () => {
+    const gifBuffer = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x37, 0x61])
+    expect(getFileTypeFromBuffer(gifBuffer)).toBe('image/gif')
+  })
+
+  it('WebPファイルを正しく識別する', () => {
+    const webpBuffer = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50])
+    expect(getFileTypeFromBuffer(webpBuffer)).toBe('image/webp')
+  })
+
+  it('不明なファイルタイプを返す', () => {
+    const unknownBuffer = Buffer.from([0x00, 0x00, 0x00, 0x00])
+    expect(getFileTypeFromBuffer(unknownBuffer)).toBe('application/octet-stream')
+  })
+
+  it('短いバッファを処理する', () => {
+    const shortBuffer = Buffer.from([0xFF])
+    expect(getFileTypeFromBuffer(shortBuffer)).toBe('application/octet-stream')
+  })
+})
