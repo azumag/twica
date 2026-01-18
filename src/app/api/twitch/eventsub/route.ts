@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import crypto from "crypto";
 import { GachaService } from "@/lib/services/gacha";
-import { TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
+import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
   const signature = request.headers.get("twitch-eventsub-message-signature") || "";
 
   if (!verifyTwitchSignature(messageId, timestamp, body, signature)) {
-    return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
+    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
   }
 
   if (messageType !== MESSAGE_TYPE_NOTIFICATION) {
@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
 
     if (!rateLimitResult.success) {
       return NextResponse.json(
-        { error: "Too many requests" },
+{ error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
         {
           status: 429,
           headers: {
@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true });
   }
 
-  return NextResponse.json({ error: "Unknown message type" }, { status: 400 });
+  return NextResponse.json({ error: ERROR_MESSAGES.UNKNOWN_MESSAGE_TYPE }, { status: 400 });
 }
 
 async function handleRedemption(messageId: string, event: {

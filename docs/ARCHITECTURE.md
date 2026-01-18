@@ -615,17 +615,278 @@ return NextResponse.json({
 
 ## 実装完了の問題
 
-### Issue #28: Performance - Fix N+1 Query Problem in Battle Stats API (解決済み)
+### Issue #30: Code Quality - Complete API Error Message Standardization - Japanese and Hardcoded Messages Remain
+
+### 問題
+
+Issue #25でAPIエラーメッセージの標準化を行いましたが、複数のファイルで日本語のエラーメッセージやハードコードされたエラーメッセージが残っています。
+
+### 問題の詳細
+
+#### 日本語のエラーメッセージが残っているファイル
+
+1. **src/app/api/gacha-history/[id]/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"`
+
+2. **src/app/api/user-cards/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"`
+
+3. **src/app/api/streamer/settings/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"`
+
+4. **src/app/api/twitch/rewards/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"` (GET, POST)
+
+5. **src/app/api/twitch/eventsub/subscribe/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"` (POST, GET)
+
+6. **src/app/api/auth/logout/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"` (POST, GET)
+   - `"リクエストが多すぎます。"` (GET)
+
+7. **src/app/api/auth/twitch/login/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"`
+
+8. **src/app/api/auth/twitch/callback/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"`
+
+9. **src/app/api/debug-session/route.ts**
+   - `"リクエストが多すぎます。しばらく待ってから再試行してください。"`
+
+#### 定数を使用していないハードコードされた英語のエラーメッセージ
+
+1. **src/app/api/gacha-history/[id]/route.ts**
+   - `"Unauthorized"`, `"Forbidden"`
+
+2. **src/app/api/user-cards/route.ts**
+   - `"Unauthorized"`
+
+3. **src/app/api/streamer/settings/route.ts**
+   - `"Unauthorized"`, `"Forbidden"`
+
+4. **src/app/api/twitch/rewards/route.ts**
+   - `"Unauthorized"`, `"No access token available"`
+
+5. **src/app/api/twitch/eventsub/subscribe/route.ts**
+   - `"Unauthorized"`, `"Missing rewardId"`, `"Streamer not found"`, `"Failed to get subscriptions"`
+
+6. **src/app/api/twitch/eventsub/route.ts**
+   - `"Too many requests"`, `"Invalid signature"`, `"Unknown message type"`
+
+### 影響
+
+- **一貫性**: 一部のAPIはERROR_MESSAGES定数を使用していますが、他は使用していません
+- **保守性**: ハードコードされたメッセージは保守と更新が困難です
+- **ローカライゼーション**: 日本語/英語が混在しており、ユーザー体験が低下します
+- **型安全性**: 定数はより良い型安全性とオートコンプリートを提供します
+
+### 優先度
+
+**Low** - 機能に影響しないコード品質の改善です。一貫性のないエラーメッセージでも正しく動作しますが、保守性と型安全性が不足しています。
+
+---
+
+## Issue #30: 設計
+
+### 機能要件
+
+#### 1. ERROR_MESSAGES定数の追加
+
+`src/lib/constants.ts`に以下の定数を追加します：
+
+```typescript
+export const ERROR_MESSAGES = {
+  // ... 既存の定数
+
+  // Authentication errors (追加)
+  NO_ACCESS_TOKEN_AVAILABLE: 'No access token available',
+
+  // Request validation errors (追加)
+  MISSING_REWARD_ID: 'Missing rewardId',
+
+  // EventSub errors (追加)
+  INVALID_SIGNATURE: 'Invalid signature',
+  UNKNOWN_MESSAGE_TYPE: 'Unknown message type',
+
+  // Twitch API errors (追加)
+  FAILED_TO_GET_SUBSCRIPTIONS: 'Failed to get subscriptions',
+} as const
+```
+
+#### 2. 日本語エラーメッセージの置換
+
+すべての日本語エラーメッセージをERROR_MESSAGES定数に置換します：
+
+**置換パターン**:
+- `"リクエストが多すぎます。しばらく待ってから再試行してください。"` → `ERROR_MESSAGES.RATE_LIMIT_EXCEEDED`
+- `"リクエストが多すぎます。"` → `ERROR_MESSAGES.RATE_LIMIT_EXCEEDED`
+
+#### 3. ハードコードされた英語エラーメッセージの置換
+
+すべてのハードコードされた英語エラーメッセージをERROR_MESSAGES定数に置換します：
+
+**置換パターン**:
+- `"Unauthorized"` → `ERROR_MESSAGES.UNAUTHORIZED`
+- `"Forbidden"` → `ERROR_MESSAGES.FORBIDDEN`
+- `"No access token available"` → `ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE`
+- `"Missing rewardId"` → `ERROR_MESSAGES.MISSING_REWARD_ID`
+- `"Streamer not found"` → `ERROR_MESSAGES.STREAMER_NOT_FOUND`
+- `"Failed to get subscriptions"` → `ERROR_MESSAGES.FAILED_TO_GET_SUBSCRIPTIONS`
+- `"Too many requests"` → `ERROR_MESSAGES.RATE_LIMIT_EXCEEDED`
+- `"Invalid signature"` → `ERROR_MESSAGES.INVALID_SIGNATURE`
+- `"Unknown message type"` → `ERROR_MESSAGES.UNKNOWN_MESSAGE_TYPE`
+
+### 非機能要件
+
+#### 保守性
+
+- ERROR_MESSAGES定数を使用することで、エラーメッセージを一元管理
+- エラーメッセージの変更が簡単になる
+
+#### 型安全性
+
+- TypeScriptの型チェックにより、タイポを防止
+- オートコンプリートによる開発効率向上
+
+#### 一貫性
+
+- すべてのAPIルートで同じ定数を使用
+- 日本語/英語の混在を解消
+
+### 設計
+
+#### 1. 変更ファイル
+
+**src/lib/constants.ts**
+- ERROR_MESSAGES定数に新しい定数を追加
+
+**src/app/api/gacha-history/[id]/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+- ハードコードされた英語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/user-cards/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+- ハードコードされた英語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/streamer/settings/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+- ハードコードされた英語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/twitch/rewards/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+- ハードコードされた英語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/twitch/eventsub/subscribe/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+- ハードコードされた英語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/auth/logout/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/auth/twitch/login/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/auth/twitch/callback/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/debug-session/route.ts**
+- 日本語エラーメッセージをERROR_MESSAGES定数に置換
+
+**src/app/api/twitch/eventsub/route.ts**
+- ハードコードされた英語エラーメッセージをERROR_MESSAGES定数に置換
+
+#### 2. 実装手順
+
+1. **src/lib/constants.tsの更新**
+   - 新しいERROR_MESSAGES定数を追加
+
+2. **各APIルートの更新**
+   - ERROR_MESSAGES定数をインポート
+   - 日本語エラーメッセージをERROR_MESSAGES定数に置換
+   - ハードコードされた英語エラーメッセージをERROR_MESSAGES定数に置換
+
+3. **テスト**
+   - TypeScriptコンパイルエラーがないことを確認
+   - ESLintエラーがないことを確認
+   - 既存のAPIテストがパスすることを確認
+   - 回帰がないことを確認
+
+### 受け入れ基準
+
+- [ ] すべての日本語エラーメッセージがERROR_MESSAGES定数に置換されている
+- [ ] すべてのハードコードされた英語エラーメッセージがERROR_MESSAGES定数に置換されている
+- [ ] すべての必要なERROR_MESSAGES定数がsrc/lib/constants.tsに追加されている
+- [ ] TypeScript コンパイルエラーがない
+- [ ] ESLint エラーがない
+- [ ] 既存のAPIテストがパスする
+- [ ] 既存の機能に回帰がない
+
+### テスト計画
+
+1. **単体テスト**:
+   - 既存の単体テストがパスすることを確認
+   - エラーメッセージが正しく返されることを確認
+
+2. **統合テスト**:
+   - 既存の統合テストがパスすることを確認
+   - APIレスポンス形式が変更されていないことを確認
+
+3. **手動テスト**:
+   - エラーが発生した際、適切なエラーメッセージが表示されることを確認
+   - レート制限が正しく動作することを確認
+
+### トレードオフの検討
+
+#### ハードコード vs 定数
+
+| 項目 | ハードコード | 定数（ERROR_MESSAGES） |
+|:---|:---|:---|
+| **実装の複雑さ** | 低 | 低（既存の定数に追加のみ） |
+| **保守性** | 低 | 高 |
+| **型安全性** | 低 | 高 |
+| **一貫性** | 低 | 高 |
+| **開発効率** | 中（タイポのリスク） | 高（オートコンプリート） |
+
+**推奨**: 定数（ERROR_MESSAGES）
+
+**理由**:
+- Issue #25で既に導入済みであり、一貫性を保つ必要がある
+- 保守性と型安全性が向上する
+- オートコンプリートによる開発効率向上
+
+### 関連問題
+
+- Issue #25: Inconsistent Error Messages in API Responses (部分的に完了)
+
+---
+
+## 更新履歴
+
+| 日付 | 変更内容 |
+|:---|:---|
+| 2026-01-18 | Issue #30 エラーメッセージ標準化の設計追加 |
+| 2026-01-18 | Issue #29 N+1クエリ問題の設計追加 |
+| 2026-01-18 | Issue #28 N+1クエリ問題の実装完了・クローズ |
+| 2026-01-18 | Issue #27 データベースクエリ最適化の実装完了 |
+| 2026-01-18 | Issue #27 データベースクエリ最適化の設計追加 |
+| 2026-01-17 | Issue #26 レート制限のfail-open問題の実装完了 |
+| 2026-01-17 | Issue #25 エラーメッセージの一貫性問題の実装完了 |
+
+---
+
+## 実装完了の問題
+
+### Issue #29: Performance - Fix N+1 Query Problem in Battle Get API (解決済み)
 
 ### 実装内容
 
 - [x] N+1クエリ問題が解決される
-- [x] 最近の対戦履歴が単一のクエリで取得される
+- [x] 対戦データが単一のクエリで取得される
 - [x] APIレスポンス形式が維持される
 - [x] TypeScript コンパイルエラーなし
 - [x] ESLint エラーなし
 - [x] CIが成功
-- [x] Issue #28 クローズ済み
+- [x] Issue #29 クローズ済み
 
 ---
 

@@ -3,6 +3,7 @@ import { clearSession } from '@/lib/session'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { getSession } from '@/lib/session'
 import { handleApiError } from '@/lib/error-handler'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
 export async function POST(request: Request) {
   try {
@@ -13,7 +14,7 @@ export async function POST(request: Request) {
 
     if (!rateLimitResult.success) {
       return NextResponse.json(
-        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+        { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
         {
           status: 429,
           headers: {
@@ -40,7 +41,7 @@ export async function GET(request: Request) {
     const rateLimitResult = await checkRateLimit(rateLimits.authLogout, identifier);
 
     if (!rateLimitResult.success) {
-      return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent('リクエストが多すぎます。')}`)
+      return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)}`)
     }
 
     await clearSession()

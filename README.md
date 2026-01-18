@@ -126,12 +126,18 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
    ## Recent Changes
 
-   - Issue #29 created: Performance - Fix N+1 Query Problem in Battle Get API
-         - Battle Get API makes 2 database queries when fetching battle data
-         - One initial query to fetch battle, then additional query to fetch opponent card details
-         - Should be optimized to use a single query with JOIN
-         - Design documented in ARCHITECTURE.md
-   - Issue #28 implementation completed
+   - Issue #30 created: Code Quality - Complete API Error Message Standardization
+          - Several files still use hardcoded error messages in Japanese or English
+          - Should use ERROR_MESSAGES constants for consistency and maintainability
+          - Design documented in ARCHITECTURE.md
+   - Issue #29 implementation completed
+          - N+1 query problem in Battle Get API fixed
+          - Single query with JOIN now fetches all data (battle + user card + opponent card)
+          - Database queries reduced from 2 to 1
+          - `as any` type cast removed
+          - CI passed successfully
+          - Issue closed
+    - Issue #28 implementation completed
          - N+1 query problem in Battle Stats API fixed
          - Single query with JOIN now fetches all data (battles + opponent cards)
          - Database queries reduced from N+1 to 1 (11 queries → 1 query for 10 battles)

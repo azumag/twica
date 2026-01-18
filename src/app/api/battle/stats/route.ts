@@ -3,12 +3,35 @@ import { getSession } from '@/lib/session'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
-import type { UserCardWithDetails } from '@/types/database'
+import type { UserCardWithDetails, BattleResult } from '@/types/database'
 import { ERROR_MESSAGES } from '@/lib/constants'
 
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession()
+    
+    // Common select pattern for user_card with card details
+    const USER_CARD_SELECT = `
+      user_id,
+      card_id,
+      obtained_at,
+      card:cards(
+        id,
+        name,
+        hp,
+        atk,
+        def,
+        spd,
+        skill_type,
+        skill_name,
+        skill_power,
+        image_url,
+        rarity,
+        streamer:streamers(
+          twitch_user_id
+        )
+      )
+    `
     
     const identifier = await getRateLimitIdentifier(request, session?.twitchUserId)
     const rateLimitResult = await checkRateLimit(rateLimits.battleStats, identifier)
@@ -58,7 +81,7 @@ export async function GET(request: NextRequest) {
       return handleDatabaseError(statsError, "Failed to fetch battle stats")
     }
 
-    // Get recent battles with card details
+    // Get recent battles with all card details (including opponent card)
     const { data: recentBattles, error: battlesError } = await supabaseAdmin
       .from('battles')
       .select(`
@@ -67,27 +90,12 @@ export async function GET(request: NextRequest) {
         turn_count,
         battle_log,
         created_at,
-        opponent_card_id,
         user_card:user_cards(
-          user_id,
-          card_id,
-          obtained_at,
-          card:cards(
-            id,
-            name,
-            hp,
-            atk,
-            def,
-            spd,
-            skill_type,
-            skill_name,
-            skill_power,
-            image_url,
-            rarity,
-            streamer:streamers(
-              twitch_user_id
-            )
-          )
+          ${USER_CARD_SELECT}
+        ),
+        opponent_card:cards(
+          id,
+          name
         )
       `)
       .eq('user_id', userData.id)
@@ -98,26 +106,38 @@ export async function GET(request: NextRequest) {
       return handleDatabaseError(battlesError, "Failed to fetch recent battles")
     }
 
-    // Get opponent card names for recent battles
-    const battleHistory = []
-    for (const battle of recentBattles || []) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const battleData = battle as any
-      const { data: opponentCard, error: opponentError } = await supabaseAdmin
-        .from('cards')
-        .select('name')
-        .eq('id', battleData.opponent_card_id)
-        .single()
-
-      battleHistory.push({
-        battleId: battleData.id,
-        result: battleData.result,
-        opponentCardName: opponentError ? 'CPUカード' : `CPUの${opponentCard.name}`,
-        turnCount: battleData.turn_count,
-        createdAt: battleData.created_at,
-        userCardName: battleData.user_card.card.name
-      })
-    }
+    // Process battles without additional queries
+    const battleHistory = (recentBattles || []).map((battle: Record<string, unknown>) => {
+      const battleId = battle.id as string
+      const result = battle.result as BattleResult
+      const turnCount = battle.turn_count as number
+      const createdAt = battle.created_at as string
+      const userCard = battle.user_card
+      const opponentCard = battle.opponent_card as { name: string } | null
+      
+      if (!userCard || typeof userCard !== 'object') {
+        return {
+          battleId,
+          result,
+          opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード',
+          turnCount,
+          createdAt,
+          userCardName: 'Unknown Card'
+        }
+      }
+      
+      const userCardRecord = userCard as Record<string, unknown>
+      const userCardData = userCardRecord?.card as { name: string } | null | undefined
+      
+      return {
+        battleId,
+        result,
+        opponentCardName: opponentCard ? `CPUの${opponentCard.name}` : 'CPUカード',
+        turnCount,
+        createdAt,
+        userCardName: userCardData?.name || 'Unknown Card'
+      }
+    })
 
     // Get card-specific statistics
     const { data: cardStats, error: cardStatsError } = await supabaseAdmin
@@ -125,25 +145,7 @@ export async function GET(request: NextRequest) {
       .select(`
         result,
         user_card:user_cards(
-          user_id,
-          card_id,
-          obtained_at,
-          card:cards(
-            id,
-            name,
-            hp,
-            atk,
-            def,
-            spd,
-            skill_type,
-            skill_name,
-            skill_power,
-            image_url,
-            rarity,
-            streamer:streamers(
-              twitch_user_id
-            )
-          )
+          ${USER_CARD_SELECT}
         )
       `)
       .eq('user_id', userData.id)
@@ -155,15 +157,20 @@ export async function GET(request: NextRequest) {
     // Aggregate card statistics
     const cardPerformanceMap = new Map()
     for (const battle of cardStats || []) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const battleData = battle as any
-      const userCard = battleData.user_card as unknown as UserCardWithDetails
-      if (!userCard?.card) continue
+      const battleData = battle as Record<string, unknown>
+      const userCard = battleData.user_card
       
-      const cardId = userCard.card.id
-      const cardName = userCard.card.name
-      const cardImage = userCard.card.image_url
-      const cardRarity = userCard.card.rarity
+      if (!userCard || typeof userCard !== 'object') continue
+      
+      const userCardRecord = userCard as Record<string, unknown>
+      const userCardData = userCardRecord.card as UserCardWithDetails['card'] | null
+      
+      if (!userCardData) continue
+      
+      const cardId = userCardData.id
+      const cardName = userCardData.name
+      const cardImage = userCardData.image_url
+      const cardRarity = userCardData.rarity
       
       if (!cardPerformanceMap.has(cardId)) {
         cardPerformanceMap.set(cardId, {

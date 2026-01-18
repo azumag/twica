@@ -6,6 +6,7 @@ import { handleAuthError } from '@/lib/auth-error-handler'
 import { randomUUID } from 'crypto'
 import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
 export async function GET(request: Request) {
   const requestId = randomUUID()
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
 
     if (!rateLimitResult.success) {
       return NextResponse.json(
-        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+{ error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
         {
           status: 429,
           headers: {

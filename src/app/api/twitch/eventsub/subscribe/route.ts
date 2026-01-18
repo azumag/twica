@@ -3,6 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { ERROR_MESSAGES } from "@/lib/constants";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -36,7 +37,7 @@ export async function POST(request: NextRequest) {
 
   if (!rateLimitResult.success) {
     return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
       {
         status: 429,
         headers: {
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
   try {
@@ -57,7 +58,7 @@ export async function POST(request: NextRequest) {
     const { rewardId } = body;
 
     if (!rewardId) {
-      return NextResponse.json({ error: "Missing rewardId" }, { status: 400 });
+      return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
     }
 
     const supabaseAdmin = getSupabaseAdmin();
@@ -70,7 +71,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!streamer) {
-      return NextResponse.json({ error: "Streamer not found" }, { status: 404 });
+      return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
     }
 
     // Get app access token
@@ -164,7 +165,7 @@ export async function GET(request: Request) {
 
   if (!rateLimitResult.success) {
     return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
       {
         status: 429,
         headers: {
@@ -177,7 +178,7 @@ export async function GET(request: Request) {
   }
 
   if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
   try {
@@ -196,7 +197,7 @@ export async function GET(request: Request) {
     if (!response.ok) {
       const error = await response.json();
       return NextResponse.json(
-        { error: "Failed to get subscriptions", details: error },
+        { error: ERROR_MESSAGES.FAILED_TO_GET_SUBSCRIPTIONS, details: error },
         { status: response.status }
       );
     }

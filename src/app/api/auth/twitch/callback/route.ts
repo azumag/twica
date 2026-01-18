@@ -3,7 +3,7 @@ import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { COOKIE_NAMES, SESSION_CONFIG } from '@/lib/constants'
+import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 
 export async function GET(request: NextRequest) {
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
 
   if (!rateLimitResult.success) {
     return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent('リクエストが多すぎます。しばらく待ってから再試行してください。')}`
+      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)}`
     );
   }
 

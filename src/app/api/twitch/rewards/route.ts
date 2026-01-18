@@ -3,6 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { createClient } from "@/lib/supabase/server";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { ERROR_MESSAGES } from "@/lib/constants";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -20,7 +21,7 @@ export async function GET(request: Request) {
 
   if (!rateLimitResult.success) {
     return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
       {
         status: 429,
         headers: {
@@ -33,12 +34,12 @@ export async function GET(request: Request) {
   }
 
   if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
   const accessToken = await getAccessToken();
   if (!accessToken) {
-    return NextResponse.json({ error: "No access token available" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE }, { status: 401 });
   }
 
   try {
@@ -73,7 +74,7 @@ export async function POST(request: Request) {
 
   if (!rateLimitResult.success) {
     return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
       {
         status: 429,
         headers: {
@@ -86,12 +87,12 @@ export async function POST(request: Request) {
   }
 
   if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
   const accessToken = await getAccessToken();
   if (!accessToken) {
-    return NextResponse.json({ error: "No access token available" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE }, { status: 401 });
   }
 
   try {

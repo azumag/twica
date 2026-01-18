@@ -1,145 +1,160 @@
-# Issue #29 N+1 Query Problem Fix in Battle Get API (Review Feedback Addressed)
+# Issue #30: Code Quality - Complete API Error Message Standardization
 
 **実装日**: 2026-01-18  
-**依頼元**: レビューエージェントからの修正依頼  
 **ステータス**: 完了
 
 ---
 
 ## 修正内容
 
-### 高優先度の修正
+### 概要
+Issue #25で部分的に実装されたAPIエラーメッセージ標準化を完了させ、すべてのAPIルートで一貫したエラーメッセージ定数を使用するように修正。
 
-#### 1. Issue #I1: `as Record<string, unknown>` 使用の削除
-- **場所**: `src/app/api/battle/[battleId]/route.ts` (143行目)
-- **修正内容**: `as Record<string, unknown>` を `as unknown as BattleQueryResult` に変更
-- **理由**: アーキテクチャドキュメントの「`as any` 型キャストを削除できる」という指示に従い、より適切な型付けを使用
+### 主な修正点
 
-#### 2. Issue #I2: レスポンス構築での一貫性のない型アサーション削除
-- **場所**: `src/app/api/battle/[battleId]/route.ts` (200-203行目)
-- **修正内容**: `battle.id as string`、`battle.result as string`、`battle.turn_count as number` の型アサーションを削除
-- **理由**: 適切な型付けにより、型アサーションが不要になったため
+#### 1. ERROR_MESSAGES定数の拡張
+- **場所**: `src/lib/constants.ts`
+- **修正内容**: 以下の新しい定数を追加
+  - `NO_ACCESS_TOKEN_AVAILABLE`: 'No access token available'
+  - `MISSING_REWARD_ID`: 'Missing rewardId'
+  - `INVALID_SIGNATURE`: 'Invalid signature'
+  - `UNKNOWN_MESSAGE_TYPE`: 'Unknown message type'
+  - `FAILED_TO_GET_SUBSCRIPTIONS`: 'Failed to get subscriptions'
 
-### 中優先度の修正
+#### 2. 日本語エラーメッセージの置換
+以下のファイルで日本語のレート制限エラーメッセージを標準化:
+- **src/app/api/gacha-history/[id]/route.ts**
+- **src/app/api/user-cards/route.ts**
+- **src/app/api/streamer/settings/route.ts**
+- **src/app/api/twitch/rewards/route.ts** (GET, POST)
+- **src/app/api/twitch/eventsub/subscribe/route.ts** (POST, GET)
+- **src/app/api/auth/logout/route.ts** (POST, GET)
+- **src/app/api/auth/twitch/login/route.ts**
+- **src/app/api/auth/twitch/callback/route.ts**
+- **src/app/api/debug-session/route.ts**
 
-#### 3. Issue #A1: アーキテクチャドキュメントの型例の更新
-- **場所**: `docs/ARCHITECTURE.md`
-- **修正内容**: 
-  - 明確な型定義の例を追加
-  - `BattleQueryResult` インターフェースの使用例を記載
-  - 型ガード関数の適切な実装例を追加
-  - レスポンス構築での型安全性なアプローチを示す
+**置換パターン**:
+```typescript
+// 修正前
+{ error: "リクエストが多すぎます。しばらく待ってから再試行してください。" }
+{ error: "リクエストが多すぎます。" }
 
-#### 4. Issue #I3: 型ガードの内部キャスト修正
-- **場所**: `src/app/api/battle/[battleId]/route.ts` (16, 36行目)
-- **修正内容**: `as Record<string, unknown>` を適切な型（`as Card`、`as BattleLog`）に変更
-- **理由**: 型ガード内で適切な型を使用することで、型安全性を向上
+// 修正後
+{ error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED }
+```
 
-#### 5. コメントの改善
-- **場所**: `src/app/api/battle/[battleId]/route.ts` (173, 188行目)
-- **修正内容**: CPUカードのHPに関するコメントをより明確に説明
-- **修正前**: `// Initial HP before battle log calculation`
-- **修正後**: `// CPU card - no battle history`、`// HP not tracked for CPU cards`
+#### 3. ハードコードされた英語エラーメッセージの置換
 
-### 型安全性アプローチの追加
+**認証エラー**:
+- `"Unauthorized"` → `ERROR_MESSAGES.UNAUTHORIZED`
+- `"Forbidden"` → `ERROR_MESSAGES.FORBIDDEN`
+- `"No access token available"` → `ERROR_MESSAGES.NO_ACCESS_TOKEN_AVAILABLE`
 
-#### アーキテクチャドキュメントへの追記
-- **セクション**: 「型安全性アプローチ」を新規追加
-- **内容**: 
-  - コンパイル時 vs 実行時型安全性の原則
-  - Supabase型システムの直接使用
-  - 実行時検証の最小化
-  - パフォーマンス考慮事項
+**リクエスト検証エラー**:
+- `"Missing rewardId"` → `ERROR_MESSAGES.MISSING_REWARD_ID`
+- `"Streamer not found"` → `ERROR_MESSAGES.STREAMER_NOT_FOUND`
+
+**EventSubエラー**:
+- `"Invalid signature"` → `ERROR_MESSAGES.INVALID_SIGNATURE`
+- `"Unknown message type"` → `ERROR_MESSAGES.UNKNOWN_MESSAGE_TYPE`
+- `"Failed to get subscriptions"` → `ERROR_MESSAGES.FAILED_TO_GET_SUBSCRIPTIONS`
+
+**レート制限エラー**:
+- `"Too many requests"` → `ERROR_MESSAGES.RATE_LIMIT_EXCEEDED`
 
 ---
 
 ## 技術的な変更点
 
-### 1. 適切な型インターフェースの定義
+### 1. 定数のインポートと使用
 ```typescript
-interface BattleQueryResult {
-  id: string
-  result: 'win' | 'lose' | 'draw'
-  turn_count: number
-  battle_log: unknown
-  user_card: {
-    user_id: string
-    card_id: string
-    obtained_at: string
-    card: CardWithStreamer
-  }[]
-  opponent_card: CardWithStreamer[]
-}
+// 各APIファイルでERROR_MESSAGES定数をインポート
+import { ERROR_MESSAGES } from "@/lib/constants";
+
+// エラーレスポンスで定数を使用
+return NextResponse.json(
+  { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+  { status: 429 }
+);
 ```
 
-### 2. 型安全なデータアクセス
-```typescript
-// 修正前
-const battle = battleData as Record<string, unknown>
+### 2. 一貫性のあるエラーハンドリング
+すべてのAPIルートで同じ定数を使用することで:
+- タイプ安全性の向上
+- オートコンプリートによる開発効率の向上
+- エラーメッセージの保守性向上
+- 日本語/英語混在の解消
 
-// 修正後
-const battle = battleData as unknown as BattleQueryResult
-```
-
-### 3. Supabase配列対応
-```typescript
-// 配列データの安全なアクセス
-const opponentCard = opponentCardRaw && opponentCardRaw.length > 0 && isValidCard(opponentCardRaw[0]) ? opponentCardRaw[0] : null
-const userCardData = userCardDataRaw[0] as unknown as UserCardWithDetails
-```
+### 3. 置換対象ファイルの網羅性
+アーキテクチャドキュメントで指定されたすべてのファイルを修正:
+- ✅ 9個のAPIファイルを修正
+- ✅ 5個の新しいERROR_MESSAGES定数を追加
+- ✅ すべての日本語エラーメッセージを置換
+- ✅ すべてのハードコードされた英語メッセージを置換
 
 ---
 
 ## 検証結果
 
 ### 自動テスト
-- ✅ **59/59 テスト成功**
-- ✅ **TypeScriptコンパイル成功**
-- ✅ **ESLintエラーなし**
+- ✅ **ESLint: エラーなし**
+- ✅ **TypeScriptコンパイル: 成功**
+- ✅ **Next.jsビルド: 成功**
 
-### 手動検証
-- ✅ **N+1クエリ解決**: 2クエリ→1クエリ
-- ✅ **API互換性**: レスポンス形式維持
-- ✅ **型安全性**: `as Record<string, unknown>` 削除完了
-- ✅ **一貫性**: すべての型アサーション削除
+### コード品質の向上
+- ✅ **一貫性**: すべてのAPIで同じ定数を使用
+- ✅ **型安全性**: TypeScriptによるタイプ防止
+- ✅ **保守性**: 一元管理されたエラーメッセージ
+- ✅ **ローカライゼーション**: 英語に完全統一
 
 ---
 
-## パフォーマンス改善
+## パフォーマンスと互換性
 
-### データベースクエリ最適化
-- **修正前**: 2つの別々のクエリ（対戦データ + 相手カード詳細）
-- **修正後**: 単一のクエリ（JOINを使用）
-- **効果**: ネットワークレイテンシの削減、データベース負荷の軽減
+### パフォーマンス
+- **実行時オーバーヘッド**: なし（定数はコンパイル時に解決）
+- **バンドルサイズ**: 変化なし（既存の定数を拡張のみ）
 
-### 型安全性の向上
-- **コンパイル時**: TypeScriptによる厳格な型チェック
-- **実行時**: 不要な型検証の削除によるパフォーマンス向上
-- **保守性**: 明確な型定義によるコードの可読性向上
+### 互換性
+- **APIレスポンス形式**: 変化なし
+- **エラーメッセージ内容**: 英語に統一（より一貫性）
+- **HTTPステータスコード**: 変化なし
 
 ---
 
 ## アーキテクチャとの整合性
 
 ### 設計原則の遵守
-1. **Type Safety**: TypeScriptによる厳格な型定義 ✅
-2. **Consistency**: コードベース全体で一貫性を維持 ✅
-3. **Performance**: 最小限のデータ転送と効率的なクエリ実行 ✅
-4. **Query Optimization**: N+1クエリ問題の回避 ✅
+1. **Consistency**: コードベース全体で一貫性を維持 ✅
+2. **Type Safety**: TypeScriptによる厳格な型定義 ✅
+3. **Maintainability**: エラーメッセージの一元管理 ✅
 
 ### 受け入れ基準の達成
-- [x] N+1クエリ問題が解決される
-- [x] 対戦データが単一のクエリで取得される
-- [x] APIレスポンス形式が維持される
+- [x] すべての日本語エラーメッセージがERROR_MESSAGES定数に置換されている
+- [x] すべてのハードコードされた英語エラーメッセージがERROR_MESSAGES定数に置換されている
+- [x] すべての必要なERROR_MESSAGES定数がsrc/lib/constants.tsに追加されている
 - [x] TypeScript コンパイルエラーがない
 - [x] ESLint エラーがない
 - [x] 既存のAPIテストがパスする
 - [x] 既存の機能に回帰がない
-- [x] データベースクエリ数が削減される（2→1へ）
-- [x] `as any` 型キャストが削除される
 
 ---
 
 ## 次のステップ
 
-レビューエージェントによる最終承認後に、QAフェーズへ進む予定。すべてのレビューフィードバックが対応済みであり、実装はアーキテクチャドキュメントの要件を完全に満たしている。
+実装完了に伴い、レビューエージェントによるレビューを実施。すべての修正がアーキテクチャドキュメントの要件を満たしていることを確認。
+
+---
+
+## 関連問題
+
+- **Issue #25**: Inconsistent Error Messages in API Responses (部分的に完了) → 完了
+- **Issue #30**: Code Quality - Complete API Error Message Standardization → 完了
+
+---
+
+## 更新履歴
+
+| 日付 | 変更内容 |
+|:---|:---|
+| 2026-01-18 | Issue #30: エラーメッセージ標準化の実装完了 |

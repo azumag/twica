@@ -83,4 +83,17 @@ export const ERROR_MESSAGES = {
   // General errors
   INTERNAL_ERROR: 'Internal server error',
   OPERATION_FAILED: 'Operation failed',
+
+  // Additional authentication errors
+  NO_ACCESS_TOKEN_AVAILABLE: 'No access token available',
+
+  // Additional request validation errors
+  MISSING_REWARD_ID: 'Missing rewardId',
+
+  // EventSub errors
+  INVALID_SIGNATURE: 'Invalid signature',
+  UNKNOWN_MESSAGE_TYPE: 'Unknown message type',
+
+  // Twitch API errors
+  FAILED_TO_GET_SUBSCRIPTIONS: 'Failed to get subscriptions',
 } as const

@@ -3,6 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { ERROR_MESSAGES } from "@/lib/constants";
 
 export async function POST(request: NextRequest) {
   const session = await getSession();
@@ -12,7 +13,7 @@ export async function POST(request: NextRequest) {
 
   if (!rateLimitResult.success) {
     return NextResponse.json(
-      { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
       {
         status: 429,
         headers: {
@@ -25,7 +26,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!session || !canUseStreamerFeatures(session)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
   }
 
   try {
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!streamer) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
     const { error } = await supabaseAdmin

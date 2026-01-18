@@ -3,6 +3,7 @@ import { getSession } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { ERROR_MESSAGES } from "@/lib/constants";
 
 interface DeleteRequestBody {
   userId: string;
@@ -15,7 +16,7 @@ export async function DELETE(
   try {
     const session = await getSession();
     if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
     }
 
     const identifier = await getRateLimitIdentifier(request, session.twitchUserId);
@@ -23,7 +24,7 @@ export async function DELETE(
 
     if (!rateLimitResult.success) {
       return NextResponse.json(
-        { error: "リクエストが多すぎます。しばらく待ってから再試行してください。" },
+        { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
         {
           status: 429,
           headers: {
@@ -57,7 +58,7 @@ export async function DELETE(
     }
 
     if (history.user_twitch_id !== session.twitchUserId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
     const { error } = await supabaseAdmin
