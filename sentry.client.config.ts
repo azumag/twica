@@ -7,8 +7,10 @@ Sentry.init({
   replaysSessionSampleRate: 1.0,
   replaysOnErrorSampleRate: 1.0,
   debug: true,
-  
+
   beforeSend(event, hint) {
+    console.log('[Sentry] beforeSend called', { event, hint })
+
     // Filter out sensitive information
     if (event.user) {
       delete event.user.email
@@ -29,6 +31,8 @@ Sentry.init({
         }
       }
     }
+
+    console.log('[Sentry] beforeSend returning event')
     return event
   },
 

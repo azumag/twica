@@ -12,6 +12,8 @@ Sentry.init({
   debug: true,
 
   beforeSend(event, hint) {
+    console.log('[Sentry Server] beforeSend called', { event, hint })
+
     if (event.user) {
       delete event.user.email
       delete event.user.ip_address
@@ -37,6 +39,8 @@ Sentry.init({
         }
       }
     }
+
+    console.log('[Sentry Server] beforeSend returning event')
     return event
   },
 
