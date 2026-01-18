@@ -49,8 +49,16 @@ export default function OverlayPage() {
   const [result, setResult] = useState<GachaResult | null>(null);
   const [showCard, setShowCard] = useState(false);
   const [sparklePositions, setSparklePositions] = useState<SparklePosition[]>([]);
-  const animationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const connectionStatusRef = useRef(connectionStatus);
+  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    connectionStatusRef.current = connectionStatus;
+  }, [connectionStatus]);
 
   // Display gacha result with animation
   const displayResult = useCallback((data: GachaResult) => {
@@ -87,11 +95,33 @@ export default function OverlayPage() {
           userTwitchUsername: payload.userTwitchUsername,
         });
       }
+    }, {
+      onError: (error) => {
+        setConnectionStatus('error');
+        setErrorMessage(error.message);
+      },
+      onSuccess: () => {
+        setConnectionStatus('connected');
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current);
+          connectionTimeoutRef.current = null;
+        }
+      },
     });
+
+    connectionTimeoutRef.current = setTimeout(() => {
+      if (connectionStatusRef.current === 'connecting') {
+        setConnectionStatus('error');
+        setErrorMessage('Connection timeout');
+      }
+    }, 10000);
 
     cleanupRef.current = cleanup;
 
     return () => {
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+      }
       if (cleanupRef.current) {
         cleanupRef.current();
       }
@@ -135,6 +165,18 @@ export default function OverlayPage() {
   if (!result) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-transparent">
+        {/* Connection status indicator */}
+        {connectionStatus === 'connecting' && (
+          <div className="fixed top-4 right-4 rounded bg-blue-600 px-4 py-2 text-sm text-white">
+            接続中...
+          </div>
+        )}
+        {connectionStatus === 'error' && errorMessage && (
+          <div className="fixed top-4 right-4 max-w-sm rounded bg-red-600 p-4 text-sm text-white">
+            <div className="mb-2 font-bold">接続エラー</div>
+            <div>{errorMessage}</div>
+          </div>
+        )}
         {/* Hidden trigger for demo */}
         <button
           onClick={triggerDemo}

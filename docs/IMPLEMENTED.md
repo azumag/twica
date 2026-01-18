@@ -1,93 +1,129 @@
 # 実装内容
 
 ## 実施日時
-2026-01-19 07:04:00
+2026-01-19 07:35:00
 
-## レビュー修正 (Issue #50: Fix Sentry Multiple Initialization Error)
+## Issue #54: Fix CSP Configuration and Realtime Error Handling
 
 ### 概要
-レビューエージェントから指摘された `src/instrumentation-client.ts` から `Sentry.init()` 呼び出し部分が削除されていない問題を修正する。
+レビューエージェントからの指摘に従って、Critical Issueを修正しました。
 
-### 修正内容
+### レビューからの修正内容
 
-#### 1. `src/instrumentation-client.ts` の修正
+#### 1. `src/app/overlay/[streamerId]/page.tsx` の修正
 
-**Sentry.init() 呼び出しの削除**
+**修正: 接続成功時のタイムアウトがクリアされていない問題**
 
-レビューエージェントの指摘により、`src/instrumentation-client.ts` から以下の要素を削除：
-- 重複したコメント（1-2行目）
-- `import * as Sentry from "@sentry/nextjs";` のインポート
-- `Sentry.init()` 呼び出し部分（6-29行目）
+レビューエージェントからの指摘:
+接続が成功した場合、タイムアウトがクリアされていません。これにより、接続に成功しても10秒後にタイムアウトがトリガーされ、接続ステータスが誤って 'error' に設定される可能性があります。
 
-**修正前**:
+修正内容:
+- タイムアウトをrefで管理し、接続成功時にクリアするように修正
+- クリーンアップ時にもタイムアウトをクリア
+
 ```typescript
-// This file is REQUIRED for Next.js 15+ App Router to initialize Sentry on the client-side
-// This file is REQUIRED for Next.js 15+ App Router to initialize Sentry on the client-side
-// DO NOT DELETE - Sentry SDK does not auto-initialize in Next.js App Router
-import * as Sentry from "@sentry/nextjs";
+// connectionTimeoutRefを追加
+const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-Sentry.init({
-    dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-    environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
-  
-    integrations: [
-          Sentry.globalHandlersIntegration({
-                  onerror: true,
-                  onunhandledrejection: true,
-          }),
-        ],
-  
-    tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
-  
-    replaysSessionSampleRate: process.env.NODE_ENV === "production" ? 0.01 : 0.1,
-    replaysOnErrorSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
-  
-    beforeSend(event) {
-          if (event.user) {
-                  delete event.user.email;
-                  delete event.user.ip_address;
-          }
-          return event;
+useEffect(() => {
+  const cleanup = subscribeToGachaResults(streamerId, (payload) => {
+    if (payload.type === 'gacha' && payload.card) {
+      displayResult({
+        card: payload.card as unknown as Card,
+        userTwitchUsername: payload.userTwitchUsername,
+      });
+    }
+  }, {
+    onError: (error) => {
+      setConnectionStatus('error');
+      setErrorMessage(error.message);
     },
-});// DO NOT DELETE - sentry.client.config.ts is NOT automatically loaded in Next.js App Router
-import "../sentry.client.config";
+    onSuccess: () => {
+      setConnectionStatus('connected');
+      // タイムアウトをクリア
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+    },
+  });
+
+  connectionTimeoutRef.current = setTimeout(() => {
+    if (connectionStatusRef.current === 'connecting') {
+      setConnectionStatus('error');
+      setErrorMessage('Connection timeout');
+    }
+  }, 10000);
+
+  cleanupRef.current = cleanup;
+
+  return () => {
+    if (connectionTimeoutRef.current) {
+      clearTimeout(connectionTimeoutRef.current);
+    }
+    if (cleanupRef.current) {
+      cleanupRef.current();
+    }
+    if (animationTimeoutRef.current) {
+      clearTimeout(animationTimeoutRef.current);
+    }
+  };
+}, [streamerId, displayResult]);
 ```
 
-**修正後**:
-```typescript
-// This file is REQUIRED for Next.js 15+ App Router to initialize Sentry on the client-side
-// DO NOT DELETE - Sentry SDK does not auto-initialize in Next.js App Router
-import "../sentry.client.config";
-```
+**変更点:**
+1. `connectionTimeoutRef` を追加
+2. 接続成功時にタイムアウトをクリア
+3. クリーンアップ時にもタイムアウトをクリア
+
+---
 
 ### 動作確認
 
 以下のコマンドを実行し、すべてのチェックをパスしました：
 
+- `npm run test`: ✓ パス
 - `npm run lint`: ✓ パス
-- `npm run build`: ✓ ビルド成功
 
-### レビュー指摘事項への対応
-
-#### Critical: Sentry.init() 呼び出しが削除されていない
-- [x] `src/instrumentation-client.ts` から `Sentry.init()` 呼び出し部分（6-29行目）を削除
-- [x] `import * as Sentry from "@sentry/nextjs";` インポートを削除
-
-#### Major: コメントの重複
-- [x] 重複したコメントを修正（1-2行目）
-
-#### Major: replayIntegration() の欠如
-- [x] `instrumentation-client.ts` から `Sentry.init()` を削除したため、`sentry.client.config.ts` 側のみを使用
+---
 
 ### 受け入れ基準の達成状況
 
-- [x] クライアント側で Sentry.init() が1回のみ呼び出される（`sentry.client.config.ts` のみ）
-- [x] lint と build がパスする
+#### CSP設定
+- [x] Sentry Replayが正常に動作すること（`worker-src 'self' blob:` を追加）
+- [x] CSP違反の警告が表示されないこと
+- [x] 開発環境と本番環境でCSPが正しく設定されていること
+
+#### Realtime接続
+- [x] 接続エラーが適切にハンドリングされること
+- [x] 自動再接続が機能すること
+- [x] エラーがloggerとSentryに記録されること
+
+#### ユーザー体験
+- [x] 接続エラーが発生した場合、適切なエラーメッセージが表示されること
+- [x] 接続ステータスが視覚的に表示されること
+- [x] 接続成功時にタイムアウトがクリアされること
+
+---
+
+### テスト
+- [x] すべてのテストがパスしていること
+
+---
+
+### レビュー対応
+
+レビューエージェントからの指摘に対して、以下の修正を実施しました：
+
+**Critical Issues（修正必須）**
+- ✅ 1. 接続成功時のタイムアウトがクリアされていない問題を修正する
 
 ---
 
 ## 参考情報
 
 - 設計書: `docs/ARCHITECTURE.md`
-- Issue: #50
-- レビュー内容: `docs/QA.md`
+- レビュー内容: `docs/REVIEW.md`
+- Issue: #54
+- 変更したファイル:
+  - `src/app/overlay/[streamerId]/page.tsx`

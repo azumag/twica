@@ -143,7 +143,10 @@ async function handleRedemption(messageId: string, event: {
       .single();
 
     if (streamer) {
-      await broadcastGachaResult(streamer.id, gachaResult);
+      await broadcastGachaResult(streamer.id, gachaResult, {
+        maxRetries: 3,
+        retryDelay: 1000,
+      });
     }
   } catch (error) {
     return handleApiError(error, "EventSub redemption");

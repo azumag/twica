@@ -131,3 +131,27 @@ export function reportPerformanceIssue(operation: string, duration: number, cont
     Sentry.captureMessage(`Performance issue: ${operation} took ${duration}ms`, 'warning')
   })
 }
+
+export function reportRealtimeError(error: unknown, context: { action?: string; streamerId?: string; status?: string; retryCount?: number }) {
+  Sentry.withScope((scope) => {
+    scope.setTag('category', 'realtime')
+    scope.setTag('action', context.action || 'unknown')
+    scope.setLevel('error')
+
+    if (context.streamerId) {
+      scope.setExtra('streamerId', context.streamerId)
+    }
+    if (context.status) {
+      scope.setExtra('status', context.status)
+    }
+    if (context.retryCount) {
+      scope.setExtra('retryCount', context.retryCount)
+    }
+
+    if (error instanceof Error) {
+      Sentry.captureException(error)
+    } else {
+      Sentry.captureMessage(`Realtime error: ${String(error)}`, 'error')
+    }
+  })
+}
