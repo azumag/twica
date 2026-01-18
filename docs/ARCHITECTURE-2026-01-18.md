@@ -59,7 +59,6 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - EventSubべき等性（event_idによる重複チェック）
 - APIレート制限によるDoS攻撃対策
 - 対戦の不正防止（ランダム性の確保）
-- デバッグエンドポイントの保護（Issue #32）
 
 ### 可用性
 - Vercelによる99.95% SLA
@@ -197,16 +196,6 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] CIが成功
 - [x] Issue #30 クローズ済み
 
-### デバッグエンドポイントセキュリティ強化（Issue #32）
-- [ ] デバッグエンドポイントが本番環境から削除される
-- [ ] 開発環境でのみアクセス可能になる
-- [ ] ローカルホストのみアクセス可能になる
-- [ ] Cookie値がクライアントに公開されない
-- [ ] TypeScript コンパイルエラーがない
-- [ ] ESLint エラーがない
-- [ ] CIが成功
-- [ ] Issue #32 クローズ済み
-
 ---
 
 ## 設計方針
@@ -229,7 +218,6 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 7. **Observability**: エラー追跡と自動イシュー作成により運用効率を向上
 8. **Performance**: 最小限のデータ転送と効率的なクエリ実行
 9. **Query Optimization**: N+1クエリ問題の回避とJOINの適切な使用
-10. **Development/Production Separation**: デバッグツールは開発環境でのみ使用
 
 ### 技術選定基準
 - マネージドサービス優先（運用コスト削減）
@@ -272,245 +260,201 @@ graph LR
 
 ---
 
-## Issue #32: Critical Security - Debug Endpoint Exposes Sensitive Cookies
+## Issue #31: Code Quality - Remove 'any' Type Usage in Battle Start API
 
 ### 問題
 
-デバッグエンドポイント `src/app/api/debug-session/route.ts` が、セッションを除くすべてのCookieを認証済みユーザーに公開しています。
+`src/app/api/battle/start/route.ts` に `as any` 型キャストが残っています：
+
+```typescript
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const userCardDataForBattle = userCardData.card as any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const opponentBattleCard = generateCPUOpponent(allCards as any[])
+```
 
 ### 問題の詳細
 
-#### 現在の実装
+#### 現在の実装 (Lines 120-125)
 
 ```typescript
-export async function GET(request: Request) {
-  // ...
-  const allCookies = cookieStore.getAll().map(c => ({ name: c.name, value: c.name === 'twica_session' ? '[REDACTED]' : c.value }));
-  return NextResponse.json({
-    authenticated: !!session,
-    session: session ? {
-      twitchUserId: session.twitchUserId,
-      twitchUsername: session.twitchUsername,
-    } : null,
-    cookies: allCookies,  // Exposes all cookies to authenticated users
-    timestamp: new Date().toISOString(),
-  });
-}
+// Convert to BattleCard format
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const userCardDataForBattle = userCardData.card as any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const opponentBattleCard = generateCPUOpponent(allCards as any[])
+const userBattleCard = toBattleCard(userCardDataForBattle)
 ```
 
-#### 影響
+### 影響
 
-- **セキュリティ**: すべてのCookieが認証済みユーザーに公開され、機密性の高いトークンやデータが漏洩する可能性がある
-- **データプライバシー**: プライベートであるべきCookieをユーザーが閲覧できる
-- **コンプライアンス**: プライバシー規制への違反の可能性
-
-#### 例: 予想されるリスク
-
-アプリケーションが追加のCookieを使用している場合：
-- アナリティクス/トラッキングトークン
-- 機能フラグやA/Bテストパラメータ
-- サードパーティ統合トークン
-
-これらはどの認証済みユーザーにも公開されます。
+- **型安全性**: `as any` 型キャストはTypeScriptの型チェックを無効化
+- **保守性**: コードの可読性と保守性が低下
+- **一貫性**: Issue #17で `any` 型の削減が完了しましたが、まだ残っている箇所があります
 
 ### 優先度
 
-**Critical** - 機密データを公開するセキュリティ脆弱性
+**Medium** - Issue #17と同様のコード品質の改善です。
 
 ---
 
-## Issue #32: 設計
+## Issue #31: 設計
 
 ### 機能要件
 
-#### 1. デバッグエンドポイントの保護
+#### 1. `as any` 型キャストの削除
 
-デバッグエンドポイントを保護し、本番環境ではアクセスできないようにします：
+`src/app/api/battle/start/route.ts` の `as any` 型キャストを削除し、適切な型定義を使用します：
 
-1. **環境チェック**
-   - 本番環境（`NODE_ENV === 'production'`）では404を返す
-   - 開発環境でのみアクセスを許可
+1. **Supabaseクエリ結果の型定義**
+   - `userCardData.card` の型を `Card` として定義
+   - `allCards` の型を `Card[]` として定義
 
-2. **ローカルホスト制限**
-   - ローカルホスト（`localhost`、`127.0.0.1`）からのアクセスのみ許可
-   - その他のIPアドレスからのアクセスは拒否
-
-3. **Cookie値の公開禁止**
-   - Cookie値をクライアントに公開しない
-   - Cookie名のみを返す
+2. **型アサーションの削除**
+   - `as any` 型キャストを削除
+   - 適切な型定義を使用
 
 ### 非機能要件
 
-#### セキュリティ
+#### 型安全性
 
-- デバッグエンドポイントは本番環境でアクセスできない
-- ローカルホスト以外からのアクセスは拒否される
-- Cookie値はクライアントに公開されない
-- 環境変数やシークレットは公開されない
+- TypeScriptの型チェックが正しく動作する
+- ESLintの `@typescript-eslint/no-explicit-any` 警告が解消される
+- コンパイル時に型エラーが検出される
 
-#### 開発体験
+#### 一貫性
 
-- 開発環境でデバッグ情報にアクセスできる
-- ローカル開発中にセッション状態を確認できる
+- Issue #17のアプローチと一貫性を維持
+- コードベース全体で `as any` 型キャストを削除
 
 ### 設計
 
-#### 1. デバッグエンドポイントの修正
+#### 1. 型定義の確認
 
-**src/app/api/debug-session/route.ts**
-
-**変更前**:
+**src/lib/battle.ts**
 ```typescript
-export async function GET(request: Request) {
-  const cookieStore = await cookies()
-  const session = await getSession(request)
-
-  const allCookies = cookieStore.getAll().map(c => ({
-    name: c.name,
-    value: c.name === 'twica_session' ? '[REDACTED]' : c.value
-  }))
-
-  return NextResponse.json({
-    authenticated: !!session,
-    session: session ? {
-      twitchUserId: session.twitchUserId,
-      twitchUsername: session.twitchUsername,
-    } : null,
-    cookies: allCookies,
-    timestamp: new Date().toISOString(),
-  })
+export interface BattleCardData {
+  id: string
+  name: string
+  hp: number
+  atk: number
+  def: number
+  spd: number
+  skill_type: SkillType
+  skill_name: string
+  skill_power: number
+  image_url: string | null
+  rarity: Rarity
 }
+
+export function toBattleCard(card: Card | BattleCardData): BattleCard
+export function generateCPUOpponent(cards: (Card | BattleCardData)[]): BattleCard
+```
+
+**src/types/database.ts**
+```typescript
+export type Card = Database['public']['Tables']['cards']['Row']
+
+export type UserCardWithDetails = UserCard & {
+  card: CardWithStreamer
+}
+```
+
+#### 2. Battle Start APIの修正
+
+**src/app/api/battle/start/route.ts**
+
+**変更前** (Lines 120-125):
+```typescript
+// Convert to BattleCard format
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const userCardDataForBattle = userCardData.card as any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const opponentBattleCard = generateCPUOpponent(allCards as any[])
+const userBattleCard = toBattleCard(userCardDataForBattle)
 ```
 
 **変更後**:
 ```typescript
-export async function GET(request: Request) {
-  // Check if running in production
-  if (process.env.NODE_ENV === 'production') {
-    return NextResponse.json(
-      { error: 'Debug endpoint not available in production' },
-      { status: 404 }
-    )
-  }
+import type { Card, UserCardWithDetails, BattleCardData } from '@/types/database'
+import { toBattleCard, generateCPUOpponent } from '@/lib/battle'
 
-  // Check if request is from localhost
-  const url = new URL(request.url)
-  const host = url.hostname
-
-  if (host !== 'localhost' && host !== '127.0.0.1') {
-    return NextResponse.json(
-      { error: 'Debug endpoint only accessible from localhost' },
-      { status: 403 }
-    )
-  }
-
-  const cookieStore = await cookies()
-  const session = await getSession(request)
-
-  // Only return cookie names, never values
-  const cookieNames = cookieStore.getAll().map(c => c.name)
-
-  return NextResponse.json({
-    authenticated: !!session,
-    session: session ? {
-      twitchUserId: session.twitchUserId,
-      twitchUsername: session.twitchUsername,
-    } : null,
-    cookies: cookieNames,  // Only names, not values
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV,
-  })
+// Define proper types for Supabase query results
+interface UserCardQueryResult {
+  user_id: string
+  card_id: string
+  obtained_at: string
+  card: Card
 }
+
+// Convert to BattleCard format with proper types
+const userCardQuery = userCardData as unknown as UserCardQueryResult
+const userCardDataForBattle: Card | BattleCardData = userCardQuery.card
+const opponentBattleCard = generateCPUOpponent(allCards as (Card | BattleCardData)[])
+const userBattleCard = toBattleCard(userCardDataForBattle)
 ```
 
 **理由**:
-- 本番環境では404を返すことで、エンドポイントの存在を隠す
-- ローカルホスト制限により、開発者のみがアクセス可能
-- Cookie値を公開しないことで、機密性を保護
-- 環境情報を追加して、開発者が現在の環境を確認できる
-
-#### 2. 環境定数の追加
-
-**src/lib/constants.ts**
-
-```typescript
-export const DEBUG_CONFIG = {
-  ALLOWED_HOSTS: ['localhost', '127.0.0.1'],
-  PRODUCTION_ENV: 'production',
-} as const
-```
-
-**使用例**:
-```typescript
-import { DEBUG_CONFIG } from '@/lib/constants'
-
-if (process.env.NODE_ENV === DEBUG_CONFIG.PRODUCTION_ENV) {
-  // Return 404
-}
-
-if (!DEBUG_CONFIG.ALLOWED_HOSTS.includes(host)) {
-  // Return 403
-}
-```
+- `toBattleCard` 関数は `Card | BattleCardData` を受け取る
+- `generateCPUOpponent` 関数は `(Card | BattleCardData)[]` を受け取る
+- Supabaseクエリ結果を適切な型にキャストすることで、`as any` を削除できる
+- `as unknown as` パターンを使用して、型安全性を維持
 
 ### 変更ファイル
 
-- `src/app/api/debug-session/route.ts` (更新 - セキュリティ強化)
-- `src/lib/constants.ts` (更新 - デバッグ設定定数の追加)
+- `src/app/api/battle/start/route.ts` (更新 - `as any` 型キャストの削除)
 
 ### 受け入れ基準
 
-- [ ] デバッグエンドポイントが本番環境から削除される
-- [ ] 開発環境でのみアクセス可能になる
-- [ ] ローカルホストのみアクセス可能になる
-- [ ] Cookie値がクライアントに公開されない
+- [ ] `as any` 型キャストが削除される
+- [ ] 適切な型定義が使用される
 - [ ] TypeScript コンパイルエラーがない
-- [ ] ESLint エラーがない
+- [ ] ESLint `@typescript-eslint/no-explicit-any` 警告がない
 - [ ] 既存のAPIテストがパスする
-- [ ] CIが成功
-- [ ] Issue #32 クローズ済み
+- [ ] 既存の機能に回帰がない
+- [ ] CIが成功する
 
 ### テスト計画
 
-1. **環境チェックテスト**:
-   - 本番環境で404が返されることを確認
-   - 開発環境でアクセスできることを確認
+1. **単体テスト**:
+   - 既存の単体テストがパスすることを確認
+   - Battle Start APIが正しいデータを返すことを確認
 
-2. **ローカルホスト制限テスト**:
-   - localhost からのアクセスが許可されることを確認
-   - 127.0.0.1 からのアクセスが許可されることを確認
-   - その他のIPアドレスからのアクセスが拒否されることを確認
+2. **統合テスト**:
+   - Battle Start APIの統合テストがパスすることを確認
+   - APIレスポンス形式が変更されていないことを確認
 
-3. **Cookie保護テスト**:
-   - Cookie名のみが返されることを確認
-   - Cookie値が返されないことを確認
-   - セッション情報が正しく返されることを確認
+3. **型チェック**:
+   - TypeScript コンパイルエラーがないことを確認
+   - ESLint `@typescript-eslint/no-explicit-any` 警告がないことを確認
 
-4. **統合テスト**:
-   - デバッグエンドポイントの統合テストがパスすることを確認
+4. **手動テスト**:
+   - 対戦開始が正しく動作することを確認
+   - CPU対戦が正しく動作することを確認
 
 ### トレードオフの検討
 
-#### 現在の実装 vs 保護された実装
+#### 現在の実装 vs 型安全な実装
 
-| 項目 | 現在の実装 | 保護された実装 |
+| 項目 | 現在の実装 (`as any`) | 型安全な実装 |
 |:---|:---|:---|
-| **セキュリティ** | 低（Cookie値が公開） | 高（Cookie値が非公開） |
-| **開発体験** | 高（Cookie値を確認可能） | 中（Cookie名のみ確認可能） |
-| **本番環境での可用性** | 低（本番でも公開される） | 高（本番では利用不可） |
-| **コンプライアンス** | 低（規制違反の可能性） | 高（規制に準拠） |
+| **実装の複雑さ** | 低 | 中（型定義が必要） |
+| **型安全性** | 低（型チェック無効化） | 高（型チェック有効） |
+| **保守性** | 低 | 高 |
+| **一貫性** | 低（Issue #17と不一致） | 高（Issue #17と一致） |
+| **コードの可読性** | 低（`as any` は意図不明確） | 高（型定義で意図明確） |
 
-**推奨**: 保護された実装
+**推奨**: 型安全な実装
 
 **理由**:
-- セキュリティ脆弱性が修正される
-- 本番環境でのリスクが軽減される
-- 開発環境では引き続きデバッグ情報にアクセス可能
-- Cookie値は開発者ツールで確認できるため、開発体験への影響は最小限
+- Issue #17で既に導入済みであり、一貫性を保つ必要がある
+- 型安全性が向上し、バグの早期発見が可能になる
+- ESLintの `@typescript-eslint/no-explicit-any` 警告を解消できる
 
 ### 関連問題
 
-- なし（新規のセキュリティ問題）
+- Issue #17: Code Quality - Remove 'any' type usage in cards API (解決済み)
+- 同じパターンを使用することで、コードベース全体で一貫性を維持
 
 ---
 
@@ -518,8 +462,7 @@ if (!DEBUG_CONFIG.ALLOWED_HOSTS.includes(host)) {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-18 | Issue #32 デバッグエンドポイントセキュリティ強化の設計追加 |
-| 2026-01-18 | Issue #31 `as any` 型キャスト削除の実装完了・クローズ |
+| 2026-01-18 | Issue #31 `as any` 型キャスト削除の設計追加 |
 | 2026-01-18 | Issue #30 APIエラーメッセージ標準化の実装完了・クローズ |
 | 2026-01-18 | Issue #29 N+1クエリ問題の実装完了・クローズ |
 | 2026-01-18 | Issue #28 N+1クエリ問題の実装完了・クローズ |
@@ -531,21 +474,6 @@ if (!DEBUG_CONFIG.ALLOWED_HOSTS.includes(host)) {
 ---
 
 ## 実装完了の問題
-
-### Issue #31: Code Quality - Remove 'any' Type Usage in Battle Start API (解決済み)
-
-### 実装内容
-
-- [x] `as any` 型キャストが削除される
-- [x] 適切な型定義が使用される
-- [x] TypeScript コンパイルエラーなし
-- [x] ESLint `@typescript-eslint/no-explicit-any` 警告なし
-- [x] 既存のAPIテストがパスする
-- [x] 既存の機能に回帰がない
-- [x] CIが成功
-- [x] Issue #31 クローズ済み
-
----
 
 ### Issue #30: Code Quality - Complete API Error Message Standardization - Japanese and Hardcoded Messages Remain (解決済み)
 

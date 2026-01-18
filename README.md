@@ -126,10 +126,16 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
    ## Recent Changes
 
-   - Issue #31 created: Code Quality - Remove 'any' Type Usage in Battle Start API
-           - `src/app/api/battle/start/route.ts` contains `as any` type casts
-           - Should use proper type definitions for type safety
+   - Issue #32 created: Critical Security - Debug Endpoint Exposes Sensitive Cookies
+           - Debug endpoint exposes all cookies (except session) to authenticated users
+           - May contain sensitive tokens or data
            - Design documented in ARCHITECTURE.md
+   - Issue #31 implementation completed
+           - `as any` type casts removed from `src/app/api/battle/start/route.ts`
+           - Proper type definitions added for type safety
+           - ESLint warnings resolved
+           - CI passed successfully (59 tests)
+           - Issue closed
    - Issue #30 implementation completed
           - All Japanese error messages replaced with ERROR_MESSAGES constants
           - All hardcoded English error messages replaced with ERROR_MESSAGES constants
