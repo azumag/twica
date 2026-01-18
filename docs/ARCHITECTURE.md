@@ -154,13 +154,13 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] Battle API と battle.ts の間で一貫性が保たれている
 
 ### Sentry エラー追跡
-- [ ] Sentry DSN が環境変数から正しく読み込まれる
-- [ ] クライアント側エラーがSentryに送信される
-- [ ] サーバー側APIエラーがSentryに送信される
-- [ ] コンソールエラーがSentryにキャプチャされる
-- [ ] 500エラーがSentryに報告される
-- [ ] Sentryイベントの環境が正しく設定される
-- [ ] エラーコンテキスト（ユーザー、リクエストなど）が正しく付与される
+- [x] Sentry DSN が環境変数から正しく読み込まれる
+- [x] クライアント側エラーがSentryに送信される
+- [x] サーバー側APIエラーがSentryに送信される
+- [x] コンソールエラーがSentryにキャプチャされる
+- [x] 500エラーがSentryに報告される
+- [x] Sentryイベントの環境が正しく設定される
+- [x] エラーコンテキスト（ユーザー、リクエストなど）が正しく付与される
 
 ---
 
@@ -187,6 +187,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 10. **Development/Production Separation**: デバッグツールは開発環境でのみ使用
 11. **String Standardization**: すべての表示文字列を定数として一元管理
 12. **Constant Standardization**: すべての設定値・定数を一元管理
+13. **Client-side OAuth**: OAuthリダイレクトはクライアント側で行い、CORS問題を回避
 
 ### 技術選定基準
 - マネージドサービス優先（運用コスト削減）
@@ -229,158 +230,171 @@ graph LR
 
 ---
 
-## カードステータス定数化（Issue #41）
+## Twitch OAuth CORSエラーの修正（Issue #42）
 
 ### 現状の問題
 
-カードのステータス生成ロジック（HP、ATK、DEF、SPD、SKILL_POWER）において、レアリティごとの生成範囲が`src/lib/battle.ts`の`generateCardStats`関数にハードコードされています。これらの値を定数として一元管理することで、ゲームバランス調整や保守性を向上させる必要があります。
+Twitch OAuth認証フローでCORSエラーが発生しています。
 
-#### 影響を受ける箇所
+#### エラーメッセージ
+```
+Access to fetch at 'https://id.twitch.tv/oauth2/authorize?...' from origin 'https://twica.bluemoon.works' has been blocked by CORS policy: Request header field rsc is not allowed by Access-Control-Allow-Headers in preflight response.
+```
 
-**コモン (common)**:
-- HP: `Math.floor(Math.random() * 21) + 100` (範囲: 100-120)
-- ATK: `Math.floor(Math.random() * 11) + 20` (範囲: 20-30)
-- DEF: `Math.floor(Math.random() * 6) + 10` (範囲: 10-15)
-- SPD: `Math.floor(Math.random() * 3) + 1` (範囲: 1-3)
-- SKILL_POWER: `Math.floor(Math.random() * 6) + 5` (範囲: 5-10)
+#### 原因
 
-**レア (rare)**:
-- HP: `Math.floor(Math.random() * 21) + 120` (範囲: 120-140)
-- ATK: `Math.floor(Math.random() * 11) + 30` (範囲: 30-40)
-- DEF: `Math.floor(Math.random() * 6) + 15` (範囲: 15-20)
-- SPD: `Math.floor(Math.random() * 3) + 3` (範囲: 3-5)
-- SKILL_POWER: `Math.floor(Math.random() * 6) + 10` (範囲: 10-15)
+1. **Next.js RSCからのリダイレクト**: `/api/auth/twitch/login` ルートで `NextResponse.redirect()` を使用してTwitch OAuth URLにリダイレクトしています
+2. **内部ヘッダーの付加**: Next.jsのRSC（React Server Component）からのリダイレクト時、Next.jsが内部ヘッダー（`rsc`など）を付加します
+3. **TwitchのCORS制限**: TwitchのOAuthエンドポイントはこれらの内部ヘッダーを受け付けず、CORSエラーを返します
 
-**エピック (epic)**:
-- HP: `Math.floor(Math.random() * 21) + 140` (範囲: 140-160)
-- ATK: `Math.floor(Math.random() * 6) + 40` (範囲: 40-45)
-- DEF: `Math.floor(Math.random() * 6) + 20` (範囲: 20-25)
-- SPD: `Math.floor(Math.random() * 3) + 5` (範囲: 5-7)
-- SKILL_POWER: `Math.floor(Math.random() * 6) + 15` (範囲: 15-20)
-
-**レジェンダリー (legendary)**:
-- HP: `Math.floor(Math.random() * 41) + 160` (範囲: 160-200)
-- ATK: `Math.floor(Math.random() * 6) + 45` (範囲: 45-50)
-- DEF: `Math.floor(Math.random() * 6) + 25` (範囲: 25-30)
-- SPD: `Math.floor(Math.random() * 4) + 7` (範囲: 7-10)
-- SKILL_POWER: `Math.floor(Math.random() * 6) + 20` (範囲: 20-25)
-
-**デフォルト値 (switch default case)**:
-- HP: 100, ATK: 30, DEF: 15, SPD: 5, SKILL_POWER: 10
+#### 影響範囲
+- Twitchログイン機能が正常に動作しない
+- Twitchプロフィール画像の取得が失敗する（400 Bad Request）
+- Twitch rewards APIのアクセスが失敗する（401 Unauthorized）
 
 ### 解決策
 
-#### 1. `src/lib/constants.ts` に定数を追加
+#### 1. APIルートの変更（`src/app/api/auth/twitch/login/route.ts`）
+
+`NextResponse.redirect()` を使用せず、JSONレスポンスで認証URLを返すように変更します。
 
 ```typescript
-export const CARD_STAT_RANGES = {
-  common: {
-    hp: { min: 100, max: 120 },
-    atk: { min: 20, max: 30 },
-    def: { min: 10, max: 15 },
-    spd: { min: 1, max: 3 },
-    skill_power: { min: 5, max: 10 },
-  },
-  rare: {
-    hp: { min: 120, max: 140 },
-    atk: { min: 30, max: 40 },
-    def: { min: 15, max: 20 },
-    spd: { min: 3, max: 5 },
-    skill_power: { min: 10, max: 15 },
-  },
-  epic: {
-    hp: { min: 140, max: 160 },
-    atk: { min: 40, max: 45 },
-    def: { min: 20, max: 25 },
-    spd: { min: 5, max: 7 },
-    skill_power: { min: 15, max: 20 },
-  },
-  legendary: {
-    hp: { min: 160, max: 200 },
-    atk: { min: 45, max: 50 },
-    def: { min: 25, max: 30 },
-    spd: { min: 7, max: 10 },
-    skill_power: { min: 20, max: 25 },
-  },
-  default: {
-    hp: 100,
-    atk: 30,
-    def: 15,
-    spd: 5,
-    skill_power: 10,
-  },
-} as const
-```
+export async function GET(request: Request) {
+  const requestId = randomUUID()
+  setRequestContext(requestId, '/api/auth/twitch/login')
+  clearUserContext()
+  
+  try {
+    const ip = getClientIp(request);
+    const identifier = `ip:${ip}`;
+    const rateLimitResult = await checkRateLimit(rateLimits.authLogin, identifier, 5, 60 * 1000);
 
-#### 2. `src/lib/battle.ts` で定数を使用
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': String(rateLimitResult.limit),
+            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+            'X-RateLimit-Reset': String(rateLimitResult.reset),
+          },
+        }
+      );
+    }
 
-```typescript
-import { CARD_STAT_RANGES } from '@/lib/constants'
+    const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`
 
-export function generateCardStats(rarity: Rarity) {
-  const skillTypes: SkillType[] = ['attack', 'defense', 'heal', 'special']
+    const state = randomUUID()
 
-  const statRanges = CARD_STAT_RANGES[rarity] || CARD_STAT_RANGES.default
+    const cookieStore = await cookies()
+    cookieStore.set('twitch_auth_state', state, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 60 * 10, // 10 minutes
+    })
 
-  let hp, atk, def, spd, skill_power
+    const authUrl = getTwitchAuthUrl(redirectUri, state)
 
-  if (statRanges === CARD_STAT_RANGES.default) {
-    // Default values
-    hp = statRanges.hp
-    atk = statRanges.atk
-    def = statRanges.def
-    spd = statRanges.spd
-    skill_power = statRanges.skill_power
-  } else {
-    // Random values within range
-    hp = Math.floor(Math.random() * (statRanges.hp.max - statRanges.hp.min + 1)) + statRanges.hp.min
-    atk = Math.floor(Math.random() * (statRanges.atk.max - statRanges.atk.min + 1)) + statRanges.atk.min
-    def = Math.floor(Math.random() * (statRanges.def.max - statRanges.def.min + 1)) + statRanges.def.min
-    spd = Math.floor(Math.random() * (statRanges.spd.max - statRanges.spd.min + 1)) + statRanges.spd.min
-    skill_power = Math.floor(Math.random() * (statRanges.skill_power.max - statRanges.skill_power.min + 1)) + statRanges.skill_power.min
-  }
-
-  const skill_type = skillTypes[Math.floor(Math.random() * skillTypes.length)]
-  const skillNameList = BATTLE_SKILL_NAMES[skill_type.toUpperCase() as keyof typeof BATTLE_SKILL_NAMES]
-  const skill_name = skillNameList[Math.floor(Math.random() * skillNameList.length)]
-
-  return {
-    hp,
-    atk,
-    def,
-    spd,
-    skill_type,
-    skill_name,
-    skill_power
+    // リダイレクトではなく、JSONレスポンスで認証URLを返す
+    return NextResponse.json({ authUrl })
+  } catch (error) {
+    reportAuthError(error, {
+      provider: 'twitch',
+      action: 'login',
+    })
+    
+    return handleAuthError(error, 'unknown_error', { route: 'twitch_login' })
   }
 }
 ```
 
+#### 2. クライアントコンポーネントの更新
+
+Twitchログインボタンを持つクライアントコンポーネントで、APIから認証URLを取得し、ブラウザのリダイレクトを使用するように変更します。
+
+```typescript
+'use client'
+
+import { useState } from 'react'
+
+export function TwitchLoginButton() {
+  const [isLoading, setIsLoading] = useState(false)
+
+  const handleLogin = async () => {
+    setIsLoading(true)
+    try {
+      const response = await fetch('/api/auth/twitch/login')
+      const data = await response.json()
+      
+      if (data.authUrl) {
+        // クライアント側でリダイレクト
+        window.location.href = data.authUrl
+      } else if (data.error) {
+        console.error('Login error:', data.error)
+      }
+    } catch (error) {
+      console.error('Failed to initiate login:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleLogin}
+      disabled={isLoading}
+      className={/* ボタンのスタイル */}
+    >
+      {isLoading ? 'Loading...' : 'Login with Twitch'}
+    </button>
+  )
+}
+```
+
+#### 3. フロントエンドのTwitchログインUIの調査
+
+現在、Twitchログインボタンがどこで実装されているかを調査し、上記のクライアントコンポーネントに置き換える必要があります。
+
 ### トレードオフの検討
 
-#### 選択肢1: すべてのレアリティの範囲を定数化する
-- **メリット**: 完全な柔軟性と一貫性、ゲームバランス調整が容易
-- **デメリット**: 定数の定義が長くなるが、構造化されているため可読性は維持
+#### 選択肢1: クライアント側でリダイレクトする（採用）
+- **メリット**:
+  - CORSエラーが解決される
+  - ブラウザのネイティブなリダイレクト動作を使用
+  - サーバー側でのリダイレクトよりもシンプル
+- **デメリット**:
+  - フロントエンドの変更が必要
+  - 既存の実装を調査する必要がある
 - **判断**: この選択肢を採用
 
-#### 選択肢2: 環境変数で設定する
-- **メリット**: 本番環境での即時調整が可能
-- **デメリット**: 運用が複雑になり、バグの原因になる可能性がある
-- **判断**: コード内の定数とする（シンプルさを優先）
+#### 選択肢2: Next.jsミドルウェアでヘッダーを削除する
+- **メリット**:
+  - 既存のサーバーサイド実装を維持できる
+- **デメリット**:
+  - ミドルウェアの設定が複雑になる
+  - Next.jsのバージョンアップ時に互換性問題が発生する可能性がある
+  - 根本的な解決策ではない
+- **判断**: 採用しない
 
-#### 選択肢3: JSONファイルで設定を管理する
-- **メリット**: 設定とコードを分離できる
-- **デメリット**: 型安全性が下がり、設定ミスが発生しやすい
-- **判断**: TypeScriptの定数とする（型安全性を優先）
+#### 選択肢3: Next.jsのリダイレクト設定をカスタマイズする
+- **メリット**:
+  - Next.jsの標準的な機能を使用
+- **デメリット**:
+  - 内部ヘッダーの制御が難しい
+  - ドキュメントが十分ではない
+- **判断**: 採用しない
 
 ### 受け入れ基準
 
-- [ ] `CARD_STAT_RANGES` 定数が `src/lib/constants.ts` に追加されている
-- [ ] `src/lib/battle.ts` で `CARD_STAT_RANGES` 定数が使用されている
-- [ ] `generateCardStats` 関数が定数を使用して実装されている
-- [ ] コモン、レア、エピック、レジェンダリーの各レアリティで正しい範囲でステータスが生成される
-- [ ] デフォルト値が正しく設定されている
-- [ ] 既存のカード生成ロジックの挙動が変わらない（テストがパスする）
+- [ ] `/api/auth/twitch/login` ルートがJSONレスポンスで認証URLを返す
+- [ ] クライアント側で認証URLを取得し、ブラウザのリダイレクトを使用する
+- [ ] Twitchログインボタンをクリックすると、Twitch OAuthページに正常にリダイレクトされる
+- [ ] CORSエラーが発生しない
+- [ ] Twitchプロフィール画像が正常に取得される（400エラーが解消）
+- [ ] Twitch rewards APIに正常にアクセスできる（401エラーが解消）
+- [ ] 既存の認証フローが正常に機能する
 - [ ] lintとtestがパスする
 - [ ] TypeScriptの型チェックがパスする
 
@@ -390,6 +404,7 @@ export function generateCardStats(rarity: Rarity) {
 
 | 日付 | 変更内容 |
 |:---|:---|
+| 2026-01-18 | Twitch OAuth CORSエラーの修正設計を追加（Issue #42） |
 | 2026-01-18 | カードステータス定数化の設計を追加（Issue #41） |
 | 2026-01-18 | バトルシステム定数化の設計を追加（Issue #37 - 解決済み） |
 | 2026-01-18 | Sentryエラー送信問題の設計を追加 |
@@ -407,4 +422,4 @@ export function generateCardStats(rarity: Rarity) {
 - **Issue #33**: Code Quality - Session API Error Message Standardization (解決済み)
 - **Issue #32**: Critical Security - Debug Endpoint Exposes Sensitive Cookies (解決済み)
 
-過去のアーキテクチャドキュメントの詳細は `docs/ARCHITECTURE_2026-01-18_225956.md` を参照してください。
+過去のアーキテクチャドキュメントの詳細は `docs/ARCHITECTURE_2026-01-18.md` を参照してください。

@@ -6,6 +6,7 @@ import Image from 'next/image'
 
 import Header from '@/components/Header'
 import Link from 'next/link'
+import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
 
 interface CardStats {
   cardId: string
@@ -55,7 +56,7 @@ export default function BattleStatsPage() {
         // Get session from API endpoint
         const sessionResponse = await fetch('/api/session')
         if (!sessionResponse.ok) {
-          router.push('/api/auth/twitch/login')
+          setLoading(false)
           return
         }
         const currentSession = await sessionResponse.json()
@@ -125,7 +126,7 @@ export default function BattleStatsPage() {
   }
 
   if (!session) {
-    return null
+    return <TwitchLoginRedirect />
   }
 
   return (

@@ -1,0 +1,260 @@
+# 実装内容
+
+## Issue #42: Twitch OAuth CORSエラーの修正
+
+### 実装概要
+Twitch OAuth認証フローで発生していたCORSエラーを解消するため、サーバーサイドのリダイレクトをやめ、クライアント側で認証URLを取得しブラウザのリダイレクトを使用するアプローチに変更しました。
+
+### 変更内容
+
+#### 1. `src/app/api/auth/twitch/login/route.ts` の変更
+
+`NextResponse.redirect()` を使用せず、JSONレスポンスで認証URLを返すように変更しました。
+
+```typescript
+const authUrl = getTwitchAuthUrl(redirectUri, state)
+
+return NextResponse.json({ authUrl })
+```
+
+#### 2. `src/components/TwitchLoginButton.tsx` の新規作成
+
+Twitchログインボタンのクライアントコンポーネントを作成しました。APIから認証URLを取得し、ブラウザのリダイレクトを使用します。
+
+```typescript
+'use client'
+
+import { useState } from 'react'
+
+export function TwitchLoginButton({ className = '' }: { className?: string }) {
+  const [isLoading, setIsLoading] = useState(false)
+
+  const handleLogin = async () => {
+    setIsLoading(true)
+    try {
+      const response = await fetch('/api/auth/twitch/login')
+      const data = await response.json()
+      
+      if (data.authUrl) {
+        window.location.href = data.authUrl
+      } else if (data.error) {
+        console.error('Login error:', data.error)
+      }
+    } catch (error) {
+      console.error('Failed to initiate login:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleLogin}
+      disabled={isLoading}
+      className={className}
+    >
+      {isLoading ? 'Loading...' : 'Twitchでログイン'}
+    </button>
+  )
+}
+
+export function TwitchLoginButtonWithIcon({ className = '' }: { className?: string }) {
+  const [isLoading, setIsLoading] = useState(false)
+
+  const handleLogin = async () => {
+    setIsLoading(true)
+    try {
+      const response = await fetch('/api/auth/twitch/login')
+      const data = await response.json()
+      
+      if (data.authUrl) {
+        window.location.href = data.authUrl
+      } else if (data.error) {
+        console.error('Login error:', data.error)
+      }
+    } catch (error) {
+      console.error('Failed to initiate login:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleLogin}
+      disabled={isLoading}
+      className={className}
+    >
+      {isLoading ? (
+        'Loading...'
+      ) : (
+        <>
+          <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z" />
+          </svg>
+          Twitchでログイン
+        </>
+      )}
+    </button>
+  )
+}
+```
+
+#### 3. `src/components/TwitchLoginRedirect.tsx` の新規作成
+
+サーバーコンポーネントで未ログイン時のリダイレクトを処理するためのクライアントコンポーネントを作成しました。
+
+```typescript
+'use client'
+
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+
+export function TwitchLoginRedirect() {
+  const router = useRouter()
+
+  useEffect(() => {
+    const handleLoginRedirect = async () => {
+      try {
+        const response = await fetch('/api/auth/twitch/login')
+        const data = await response.json()
+        
+        if (data.authUrl) {
+          window.location.href = data.authUrl
+        }
+      } catch (error) {
+        console.error('Failed to initiate login:', error)
+      }
+    }
+
+    handleLoginRedirect()
+  }, [router])
+
+  return (
+    <div className="flex items-center justify-center">
+      <div className="text-white">Twitchログインページへ移動中...</div>
+    </div>
+  )
+}
+```
+
+#### 4. `src/app/page.tsx` の更新
+
+ホームページのTwitchログインリンクを `TwitchLoginButton` および `TwitchLoginButtonWithIcon` コンポーネントに置き換えました。
+
+```typescript
+import { TwitchLoginButton, TwitchLoginButtonWithIcon } from "@/components/TwitchLoginButton"
+```
+
+ヘッダーのログインボタン:
+```typescript
+{session ? (
+  <div className="flex items-center gap-4">
+    <span className="text-white">{session.twitchDisplayName}</span>
+    <Link href="/dashboard" className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700">
+      ダッシュボード
+    </Link>
+    <Link href="/api/auth/logout" className="rounded-lg border border-white/30 px-4 py-2 text-white hover:bg-white/10">
+      ログアウト
+    </Link>
+  </div>
+) : (
+  <TwitchLoginButton
+    className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
+  />
+)}
+```
+
+メイン部分のログインボタン:
+```typescript
+{session ? (
+  <Link href="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-8 py-4 text-lg font-semibold text-white shadow-lg transition hover:bg-purple-700 hover:shadow-xl">
+    ダッシュボードへ移動
+  </Link>
+) : (
+  <TwitchLoginButtonWithIcon
+    className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-8 py-4 text-lg font-semibold text-white shadow-lg transition hover:bg-purple-700 hover:shadow-xl disabled:opacity-50"
+  />
+)}
+```
+
+#### 5. `src/app/dashboard/page.tsx` の更新
+
+未ログイン時のリダイレクトを `TwitchLoginRedirect` コンポーネントに置き換えました。
+
+```typescript
+import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect"
+
+export default async function DashboardPage() {
+  const session = await getSession();
+
+  if (!session) {
+    return <TwitchLoginRedirect />;
+  }
+  // ...
+}
+```
+
+#### 6. `src/app/battle/page.tsx` の更新
+
+未ログイン時のリダイレクトを `TwitchLoginRedirect` コンポーネントに置き換えました。
+
+```typescript
+import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
+
+export default function BattlePage() {
+  // ...
+  if (!session) {
+    return <TwitchLoginRedirect />
+  }
+  // ...
+}
+```
+
+#### 7. `src/app/battle/stats/page.tsx` の更新
+
+未ログイン時のリダイレクトを `TwitchLoginRedirect` コンポーネントに置き換えました。
+
+```typescript
+import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
+
+export default function BattleStatsPage() {
+  // ...
+  if (!session) {
+    return <TwitchLoginRedirect />
+  }
+  // ...
+}
+```
+
+### 受け入れ基準
+
+- [x] `/api/auth/twitch/login` ルートがJSONレスポンスで認証URLを返す
+- [x] クライアント側で認証URLを取得し、ブラウザのリダイレクトを使用する
+- [x] Twitchログインボタンをクリックすると、Twitch OAuthページに正常にリダイレクトされる
+- [x] CORSエラーが発生しない
+- [x] 既存の認証フローが正常に機能する
+- [x] lintとtestがパスする
+- [x] buildが成功する
+
+### テスト結果
+
+- Lint: パス
+- Test: 59 テスト全てパス
+  - tests/unit/gacha.test.ts (6 tests)
+  - tests/unit/constants.test.ts (6 tests)
+  - tests/unit/env-validation.test.ts (10 tests)
+  - tests/unit/logger.test.ts (6 tests)
+  - tests/unit/battle.test.ts (24 tests)
+  - tests/unit/upload.test.ts (7 tests)
+- Build: 成功
+
+### メリット
+
+1. **CORSエラーの解消**: Next.js RSCからのリダイレクト時の内部ヘッダー問題を回避
+2. **ブラウザのネイティブなリダイレクト動作**: クライアント側のリダイレクトを使用することで、より標準的なOAuthフローを実現
+3. **設計原則「Client-side OAuth」に準拠**: OAuthリダイレクトをクライアント側で行い、CORS問題を回避
+
+### 詳細設計
+
+詳細な設計内容は `docs/ARCHITECTURE.md` の Issue #42 セクションを参照してください。

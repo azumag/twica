@@ -1,4 +1,3 @@
-import { redirect } from "next/navigation";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData, getUserCards, getRecentGachaHistory } from "@/lib/dashboard-data";
 import { RARITY_ORDER } from "@/lib/constants";
@@ -8,6 +7,7 @@ import StreamerSettings from "@/components/StreamerSettings";
 import RecentWins from "@/components/RecentWins";
 import Collection from "@/components/Collection";
 import DevelopmentNotice from "@/components/DevelopmentNotice";
+import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -18,7 +18,7 @@ export default async function DashboardPage() {
   const session = await getSession();
 
   if (!session) {
-    redirect("/api/auth/twitch/login");
+    return <TwitchLoginRedirect />;
   }
 
   const isStreamer = canUseStreamerFeatures(session);

@@ -35,6 +35,11 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - 配信者ダッシュボード（カード管理、設定）
 - 視聴者ダッシュボード（所持カード、ガチャ履歴）
 
+### エラートラッキング
+- Sentryによるエラー監視
+- アプリケーションエラーの自動送信
+- GitHub Issuesへの自動連携
+
 ---
 
 ## 非機能要件
@@ -60,14 +65,21 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - APIレート制限によるDoS攻撃対策
 - 対戦の不正防止（ランダム性の確保）
 - デバッグエンドポイントの保護（Issue #32）
+- Sentryデバッグエンドポイントの保護（Issue #36）
 
 ### 可用性
 - Vercelによる99.95% SLA
 - Supabaseによる99.9% データベース可用性
+- エラー検知と通知（Sentry）
 
 ### スケーラビリティ
 - Vercel Serverless Functionsの自動スケーリング
 - SupabaseのマネージドPostgreSQL（自動スケーリング）
+
+### 可観測性
+- Sentryによるエラー追跡と監視
+- 構造化ロギング
+- パフォーマンスモニタリング
 
 ---
 
@@ -133,6 +145,23 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] アニメーション効果が表示される
 - [x] モバイルで快適に操作可能
 
+### コード品質（Issue #35）
+- [x] Battle ライブラリの文字列が定数化されている
+- [x] スキル名配列が定数として定義されている
+- [x] バトルログメッセージが定数として定義されている
+- [x] CPU カード文字列が定数を使用している
+- [x] ハードコードされた日本語文字列が削除されている
+- [x] Battle API と battle.ts の間で一貫性が保たれている
+
+### Sentry エラー追跡
+- [ ] Sentry DSN が環境変数から正しく読み込まれる
+- [ ] クライアント側エラーがSentryに送信される
+- [ ] サーバー側APIエラーがSentryに送信される
+- [ ] コンソールエラーがSentryにキャプチャされる
+- [ ] 500エラーがSentryに報告される
+- [ ] Sentryイベントの環境が正しく設定される
+- [ ] エラーコンテキスト（ユーザー、リクエストなど）が正しく付与される
+
 ---
 
 ## 設計方針
@@ -156,6 +185,8 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 8. **Performance**: 最小限のデータ転送と効率的なクエリ実行
 9. **Query Optimization**: N+1クエリ問題の回避とJOINの適切な使用
 10. **Development/Production Separation**: デバッグツールは開発環境でのみ使用
+11. **String Standardization**: すべての表示文字列を定数として一元管理
+12. **Constant Standardization**: すべての設定値・定数を一元管理
 
 ### 技術選定基準
 - マネージドサービス優先（運用コスト削減）
@@ -198,154 +229,160 @@ graph LR
 
 ---
 
-## Issue #33: Code Quality - Inconsistent Error Message in Session API
+## カードステータス定数化（Issue #41）
 
-### 問題
+### 現状の問題
 
-`/api/session` エンドポイントにハードコードされたエラーメッセージ `'Not authenticated'` があり、標準化された `ERROR_MESSAGES.NOT_AUTHENTICATED` 定数を使用していません。
+カードのステータス生成ロジック（HP、ATK、DEF、SPD、SKILL_POWER）において、レアリティごとの生成範囲が`src/lib/battle.ts`の`generateCardStats`関数にハードコードされています。これらの値を定数として一元管理することで、ゲームバランス調整や保守性を向上させる必要があります。
 
-### 問題の詳細
+#### 影響を受ける箇所
 
-#### 現在の実装
+**コモン (common)**:
+- HP: `Math.floor(Math.random() * 21) + 100` (範囲: 100-120)
+- ATK: `Math.floor(Math.random() * 11) + 20` (範囲: 20-30)
+- DEF: `Math.floor(Math.random() * 6) + 10` (範囲: 10-15)
+- SPD: `Math.floor(Math.random() * 3) + 1` (範囲: 1-3)
+- SKILL_POWER: `Math.floor(Math.random() * 6) + 5` (範囲: 5-10)
 
-**src/app/api/session/route.ts**
+**レア (rare)**:
+- HP: `Math.floor(Math.random() * 21) + 120` (範囲: 120-140)
+- ATK: `Math.floor(Math.random() * 11) + 30` (範囲: 30-40)
+- DEF: `Math.floor(Math.random() * 6) + 15` (範囲: 15-20)
+- SPD: `Math.floor(Math.random() * 3) + 3` (範囲: 3-5)
+- SKILL_POWER: `Math.floor(Math.random() * 6) + 10` (範囲: 10-15)
+
+**エピック (epic)**:
+- HP: `Math.floor(Math.random() * 21) + 140` (範囲: 140-160)
+- ATK: `Math.floor(Math.random() * 6) + 40` (範囲: 40-45)
+- DEF: `Math.floor(Math.random() * 6) + 20` (範囲: 20-25)
+- SPD: `Math.floor(Math.random() * 3) + 5` (範囲: 5-7)
+- SKILL_POWER: `Math.floor(Math.random() * 6) + 15` (範囲: 15-20)
+
+**レジェンダリー (legendary)**:
+- HP: `Math.floor(Math.random() * 41) + 160` (範囲: 160-200)
+- ATK: `Math.floor(Math.random() * 6) + 45` (範囲: 45-50)
+- DEF: `Math.floor(Math.random() * 6) + 25` (範囲: 25-30)
+- SPD: `Math.floor(Math.random() * 4) + 7` (範囲: 7-10)
+- SKILL_POWER: `Math.floor(Math.random() * 6) + 20` (範囲: 20-25)
+
+**デフォルト値 (switch default case)**:
+- HP: 100, ATK: 30, DEF: 15, SPD: 5, SKILL_POWER: 10
+
+### 解決策
+
+#### 1. `src/lib/constants.ts` に定数を追加
 
 ```typescript
-export async function GET() {
-  try {
-    const session = await getSession()
-    
-    if (!session) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })  // Hardcoded string
-    }
-    
-    return NextResponse.json(session)
-  } catch (error) {
-    return handleApiError(error, "Session API: GET")
+export const CARD_STAT_RANGES = {
+  common: {
+    hp: { min: 100, max: 120 },
+    atk: { min: 20, max: 30 },
+    def: { min: 10, max: 15 },
+    spd: { min: 1, max: 3 },
+    skill_power: { min: 5, max: 10 },
+  },
+  rare: {
+    hp: { min: 120, max: 140 },
+    atk: { min: 30, max: 40 },
+    def: { min: 15, max: 20 },
+    spd: { min: 3, max: 5 },
+    skill_power: { min: 10, max: 15 },
+  },
+  epic: {
+    hp: { min: 140, max: 160 },
+    atk: { min: 40, max: 45 },
+    def: { min: 20, max: 25 },
+    spd: { min: 5, max: 7 },
+    skill_power: { min: 15, max: 20 },
+  },
+  legendary: {
+    hp: { min: 160, max: 200 },
+    atk: { min: 45, max: 50 },
+    def: { min: 25, max: 30 },
+    spd: { min: 7, max: 10 },
+    skill_power: { min: 20, max: 25 },
+  },
+  default: {
+    hp: 100,
+    atk: 30,
+    def: 15,
+    spd: 5,
+    skill_power: 10,
+  },
+} as const
+```
+
+#### 2. `src/lib/battle.ts` で定数を使用
+
+```typescript
+import { CARD_STAT_RANGES } from '@/lib/constants'
+
+export function generateCardStats(rarity: Rarity) {
+  const skillTypes: SkillType[] = ['attack', 'defense', 'heal', 'special']
+
+  const statRanges = CARD_STAT_RANGES[rarity] || CARD_STAT_RANGES.default
+
+  let hp, atk, def, spd, skill_power
+
+  if (statRanges === CARD_STAT_RANGES.default) {
+    // Default values
+    hp = statRanges.hp
+    atk = statRanges.atk
+    def = statRanges.def
+    spd = statRanges.spd
+    skill_power = statRanges.skill_power
+  } else {
+    // Random values within range
+    hp = Math.floor(Math.random() * (statRanges.hp.max - statRanges.hp.min + 1)) + statRanges.hp.min
+    atk = Math.floor(Math.random() * (statRanges.atk.max - statRanges.atk.min + 1)) + statRanges.atk.min
+    def = Math.floor(Math.random() * (statRanges.def.max - statRanges.def.min + 1)) + statRanges.def.min
+    spd = Math.floor(Math.random() * (statRanges.spd.max - statRanges.spd.min + 1)) + statRanges.spd.min
+    skill_power = Math.floor(Math.random() * (statRanges.skill_power.max - statRanges.skill_power.min + 1)) + statRanges.skill_power.min
+  }
+
+  const skill_type = skillTypes[Math.floor(Math.random() * skillTypes.length)]
+  const skillNameList = BATTLE_SKILL_NAMES[skill_type.toUpperCase() as keyof typeof BATTLE_SKILL_NAMES]
+  const skill_name = skillNameList[Math.floor(Math.random() * skillNameList.length)]
+
+  return {
+    hp,
+    atk,
+    def,
+    spd,
+    skill_type,
+    skill_name,
+    skill_power
   }
 }
 ```
-
-#### 影響
-
-- **コード品質**: Issue #30で実装されたAPIエラーメッセージ標準化に違反
-- **保守性**: ハードコードされた文字列はメンテナンスが困難で一貫性のないエラーメッセージにつながる可能性がある
-- **一貫性**: 他のAPIルートは適切に `ERROR_MESSAGES` 定数を使用している
-
-### 優先度
-
-**Low** - コード品質の問題、セキュリティまたは機能的なバグではない
-
----
-
-## Issue #33: 設計
-
-### 機能要件
-
-#### 1. Session API エラーメッセージの標準化
-
-Session APIのエラーメッセージを標準化し、`ERROR_MESSAGES` 定数を使用します。
-
-### 非機能要件
-
-#### コード品質
-
-- すべてのエラーメッセージが `ERROR_MESSAGES` 定数を使用する
-- ハードコードされた文字列が削除される
-- 一貫性のあるエラーハンドリングが維持される
-
-### 設計
-
-#### 1. Session API の修正
-
-**src/app/api/session/route.ts**
-
-**変更前**:
-```typescript
-export async function GET() {
-  try {
-    const session = await getSession()
-    
-    if (!session) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-    }
-    
-    return NextResponse.json(session)
-  } catch (error) {
-    return handleApiError(error, "Session API: GET")
-  }
-}
-```
-
-**変更後**:
-```typescript
-import { ERROR_MESSAGES } from '@/lib/constants'
-
-export async function GET() {
-  try {
-    const session = await getSession()
-    
-    if (!session) {
-      return NextResponse.json({ error: ERROR_MESSAGES.NOT_AUTHENTICATED }, { status: 401 })
-    }
-    
-    return NextResponse.json(session)
-  } catch (error) {
-    return handleApiError(error, "Session API: GET")
-  }
-}
-```
-
-**理由**:
-- 他のAPIルートと一貫性を保つ
-- エラーメッセージの一元管理により、将来の変更が容易
-- Issue #30の標準化完了状態を維持
-
-### 変更ファイル
-
-- `src/app/api/session/route.ts` (更新 - エラーメッセージ標準化)
-
-### 受け入れ基準
-
-- [ ] `/api/session` エンドポイントが `ERROR_MESSAGES.NOT_AUTHENTICATED` 定数を使用する
-- [ ] TypeScript コンパイルエラーがない
-- [ ] ESLint エラーがない
-- [ ] 既存のAPIテストがパスする
-- [ ] CIが成功
-- [ ] Issue #33 クローズ済み
-
-### テスト計画
-
-1. **統合テスト**:
-   - セッションがない場合に `ERROR_MESSAGES.NOT_AUTHENTICATED` が返されることを確認
-   - セッションがある場合に正しいセッションデータが返されることを確認
-
-2. **回帰テスト**:
-   - 既存の認証フローが正しく動作することを確認
-   - 以前の動作と変わらないことを確認
 
 ### トレードオフの検討
 
-#### ハードコードされた文字列 vs ERROR_MESSAGES定数
+#### 選択肢1: すべてのレアリティの範囲を定数化する
+- **メリット**: 完全な柔軟性と一貫性、ゲームバランス調整が容易
+- **デメリット**: 定数の定義が長くなるが、構造化されているため可読性は維持
+- **判断**: この選択肢を採用
 
-| 項目 | ハードコードされた文字列 | ERROR_MESSAGES定数 |
-|:---|:---|:---|
-| **コード品質** | 低（標準化違反） | 高（一貫性あり） |
-| **保守性** | 低（変更時に複数箇所を修正） | 高（一箇所の修正で全体に反映） |
-| **一貫性** | 低（ルートごとに異なる可能性） | 高（全ルートで統一） |
-| **実装コスト** | 低（変更なし） | 低（簡単な置換） |
+#### 選択肢2: 環境変数で設定する
+- **メリット**: 本番環境での即時調整が可能
+- **デメリット**: 運用が複雑になり、バグの原因になる可能性がある
+- **判断**: コード内の定数とする（シンプルさを優先）
 
-**推奨**: ERROR_MESSAGES定数を使用
+#### 選択肢3: JSONファイルで設定を管理する
+- **メリット**: 設定とコードを分離できる
+- **デメリット**: 型安全性が下がり、設定ミスが発生しやすい
+- **判断**: TypeScriptの定数とする（型安全性を優先）
 
-**理由**:
-- Issue #30で実装された標準化完了状態を維持できる
-- 将来のエラーメッセージの変更や追加言語対応が容易
-- コードベース全体で一貫性が保たれる
+### 受け入れ基準
 
-### 関連問題
-
-- Issue #30 - API Error Message Standardization (解決済み)
-- Issue #25 - Inconsistent Error Messages in API Responses (解決済み)
+- [ ] `CARD_STAT_RANGES` 定数が `src/lib/constants.ts` に追加されている
+- [ ] `src/lib/battle.ts` で `CARD_STAT_RANGES` 定数が使用されている
+- [ ] `generateCardStats` 関数が定数を使用して実装されている
+- [ ] コモン、レア、エピック、レジェンダリーの各レアリティで正しい範囲でステータスが生成される
+- [ ] デフォルト値が正しく設定されている
+- [ ] 既存のカード生成ロジックの挙動が変わらない（テストがパスする）
+- [ ] lintとtestがパスする
+- [ ] TypeScriptの型チェックがパスする
 
 ---
 
@@ -353,18 +390,21 @@ export async function GET() {
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-18 | Issue #33 Session APIエラーメッセージ標準化の設計追加 |
-| 2026-01-18 | Issue #32 デバッグエンドポイントセキュリティ強化の実装完了・クローズ |
-| 2026-01-18 | Issue #31 `as any` 型キャスト削除の実装完了・クローズ |
-| 2026-01-18 | Issue #30 APIエラーメッセージ標準化の実装完了・クローズ |
-| 2026-01-18 | Issue #29 N+1クエリ問題の実装完了・クローズ |
-| 2026-01-18 | Issue #28 N+1クエリ問題の実装完了・クローズ |
-| 2026-01-18 | Issue #27 データベースクエリ最適化の実装完了・クローズ |
-| 2026-01-17 | Issue #26 レート制限のfail-open問題の実装完了 |
-| 2026-01-17 | Issue #25 エラーメッセージの一貫性問題の実装完了 |
+| 2026-01-18 | カードステータス定数化の設計を追加（Issue #41） |
+| 2026-01-18 | バトルシステム定数化の設計を追加（Issue #37 - 解決済み） |
+| 2026-01-18 | Sentryエラー送信問題の設計を追加 |
+| 2026-01-18 | Sentryデバッグエンドポイントのセキュリティ設計を追加 |
 
 ---
 
 ## 実装完了の問題
 
-詳細は `docs/ARCHITECTURE_2026-01-18.md` を参照してください。
+- **Issue #41**: Code Quality - Hardcoded Card Stat Generation Ranges in battle.ts (実装中)
+- **Issue #37**: Code Quality - Hardcoded Battle Configuration Values in battle.ts (解決済み)
+- **Issue #36**: Critical Security: Sentry Debug Endpoints Exposed in Production (解決済み)
+- **Issue #35**: Code Quality - Hardcoded Skill Names and CPU Strings in Battle Library (解決済み)
+- **Issue #34**: Code Quality - Hardcoded CPU Card Strings in Battle APIs (解決済み)
+- **Issue #33**: Code Quality - Session API Error Message Standardization (解決済み)
+- **Issue #32**: Critical Security - Debug Endpoint Exposes Sensitive Cookies (解決済み)
+
+過去のアーキテクチャドキュメントの詳細は `docs/ARCHITECTURE_2026-01-18_225956.md` を参照してください。
