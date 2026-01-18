@@ -126,16 +126,19 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
-   - Issue #42 created: Fix - Twitch OAuth CORS Error in Next.js RSC
+   - Issue #42 implementation in progress: Fix - Twitch OAuth CORS Error in Next.js RSC
             - Twitch OAuth authentication flow causes CORS errors
             - Next.js RSC redirect adds internal headers (rsc) that Twitch OAuth endpoint rejects
-            - Will change API route to return auth URL in JSON response instead of redirect
+            - API route modified to return auth URL in JSON response instead of redirect
             - Client-side navigation will be used to redirect to Twitch OAuth page
             - Design documented in ARCHITECTURE.md
    - Issues #38, #39, #40 closed: OAuth-related errors (CORS, network, auth errors)
             - Root cause identified as Twitch OAuth CORS issue
             - Resolution documented in Issue #42
-   - Issue #41 implementation in progress: Code Quality - Hardcoded Card Stat Generation Ranges in battle.ts
+   - Issue #41 completed: Code Quality - Hardcoded Card Stat Generation Ranges in battle.ts
+            - Card stat generation ranges now use CARD_STAT_RANGES constants
+            - Hardcoded values replaced for better maintainability
+            - CI passed successfully
             - Card stat generation values are hardcoded in src/lib/battle.ts
             - Adding CARD_STAT_RANGES constants for better maintainability and game balance tuning
             - Design documented in ARCHITECTURE.md
