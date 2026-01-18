@@ -65,6 +65,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - APIレート制限によるDoS攻撃対策
 - 対戦の不正防止（ランダム性の確保）
 - デバッグエンドポイントの保護（Issue #32）
+- Sentryデバッグエンドポイントの保護（Issue #36）
 
 ### 可用性
 - Vercelによる99.95% SLA
@@ -384,19 +385,114 @@ Sentry.init({
 
 ---
 
+## Sentry Debug Endpoints Security (Issue #36)
+
+### 現状の問題
+
+Sentryデバッグ用のAPIエンドポイントが本番環境でアクセス可能になっている。これらのエンドポイントには認証や環境制限がなく、悪用されるリスクがある。
+
+#### 影響を受けるエンドポイント
+- `/api/test-sentry` - Sentry設定確認とテストエラー送信
+- `/api/debug-sentry` - Sentry設定確認とテストエラー送信
+- `/api/test-sentry-envelope` - Sentryエンベロープテスト（DSN情報が露出）
+- `/api/test-sentry-connection` - Sentry接続テスト
+- `/api/debug-sentry-direct` - 直接Sentryテスト（コンソールログ）
+- `/api/sentry-example-api` - サンプルAPIエラー送信
+
+#### セキュリティリスク
+1. **情報露出**: DSNの一部、環境情報などが露出する可能性がある
+2. **DoS攻撃**: 意図的にエラーを大量生成し、Sentryのクォータを消費できる
+3. **偽装エラー**: エラーのパターンを分析し、システム挙動を推測できる
+
+### 解決策
+
+各Sentryデバッグエンドポイントに`DEBUG_CONFIG`を使用した環境制限を追加する。
+
+#### 実装パターン
+
+```typescript
+import { NextResponse } from 'next/server'
+import { DEBUG_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
+
+export async function GET(request: Request) {
+  // Check if running in production
+  if (process.env.NODE_ENV === DEBUG_CONFIG.PRODUCTION_ENV) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.DEBUG_ENDPOINT_NOT_AVAILABLE },
+      { status: 404 }
+    )
+  }
+
+  // Check if request is from localhost
+  const url = new URL(request.url)
+  const host = url.hostname
+
+  if (!DEBUG_CONFIG.ALLOWED_HOSTS.some(allowedHost => allowedHost === host)) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.DEBUG_ENDPOINT_NOT_AUTHORIZED },
+      { status: 403 }
+    )
+  }
+
+  // Original endpoint logic
+  // ...
+}
+```
+
+#### 変更対象ファイル
+- `src/app/api/test-sentry/route.ts`
+- `src/app/api/debug-sentry/route.ts`
+- `src/app/api/test-sentry-envelope/route.ts`
+- `src/app/api/test-sentry-connection/route.ts`
+- `src/app/api/debug-sentry-direct/route.ts`
+- `src/app/api/sentry-example-api/route.ts`
+
+### トレードオフの検討
+
+#### 選択肢1: すべてのdebugエンドポイントを削除
+- **メリット**: セキュリティリスクが完全に削除される
+- **デメリット**: 開発時のデバッグが不便になる
+- **判断**: 環境制限を追加して残す（開発効率を優先）
+
+#### 選択肢2: 認証を追加
+- **メリット**: 認証済みユーザーのみアクセス可能
+- **デメリット**: 実装が複雑になり、認証自体に脆弱性が生じる可能性がある
+- **判断**: localhostのみ許可（シンプルさを優先）
+
+#### 選択肢3: 本番環境でも有効にする
+- **メリット**: 本番環境でもデバッグ可能
+- **デメリット**: セキュリティリスクが高い
+- **判断**: 本番環境では無効化（セキュリティを優先）
+
+### 受け入れ基準
+
+- [ ] `/api/test-sentry` が本番環境で404を返す
+- [ ] `/api/debug-sentry` が本番環境で404を返す
+- [ ] `/api/test-sentry-envelope` が本番環境で404を返す
+- [ ] `/api/test-sentry-connection` が本番環境で404を返す
+- [ ] `/api/debug-sentry-direct` が本番環境で404を返す
+- [ ] `/api/sentry-example-api` が本番環境で404を返す
+- [ ] すべてのSentry debugエンドポイントがlocalhost/127.0.0.1のみでアクセス可能
+- [ ] 本番環境以外の環境でlocalhostから正常に動作する
+- [ ] lintとtestがパスする
+
+---
+
 ## 更新履歴
 
 | 日付 | 変更内容 |
 |:---|:---|
-| 2026-01-18 | Sentryエラー送信問題の設計を追加 |
+| | 2026-01-18 | Sentryエラー送信問題の設計を追加 |
+| | 2026-01-18 | Sentryデバッグエンドポイントのセキュリティ設計を追加 |
 
 ---
 
 ## 実装完了の問題
 
+- **Issue #36**: Critical Security: Sentry Debug Endpoints Exposed in Production (実装中)
 - **Issue #35**: Code Quality - Hardcoded Skill Names and CPU Strings in Battle Library (解決済み)
 - **Issue #34**: Code Quality - Hardcoded CPU Card Strings in Battle APIs (解決済み)
 - **Issue #33**: Code Quality - Session API Error Message Standardization (解決済み)
 - **Issue #32**: Critical Security - Debug Endpoint Exposes Sensitive Cookies (解決済み)
 
-過去のアーキテクチャドキュメントの詳細は `docs/ARCHITECTURE_2026-01-18_200000.md` を参照してください。
+過去のアーキテクチャドキュメントの詳細は `docs/ARCHITECTURE_2026-01-18_220000.md` を参照してください。

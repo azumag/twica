@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
+import { checkDebugAccess } from '@/lib/debug-access'
 
-export async function GET() {
+export async function GET(request: Request) {
+  const accessCheck = checkDebugAccess(request)
+  if (accessCheck) return accessCheck
+
   const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN
 
   try {

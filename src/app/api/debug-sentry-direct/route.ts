@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import * as Sentry from '@sentry/nextjs'
+import { checkDebugAccess } from '@/lib/debug-access'
 
-export async function GET() {
+export async function GET(request: Request) {
+  const accessCheck = checkDebugAccess(request)
+  if (accessCheck) return accessCheck
+
   console.log('[Debug Sentry] Environment check:', {
     dsnSet: !!process.env.NEXT_PUBLIC_SENTRY_DSN,
     dsnPreview: process.env.NEXT_PUBLIC_SENTRY_DSN?.substring(0, 20) + '...',
@@ -14,7 +18,10 @@ export async function GET() {
   })
 }
 
-export async function POST() {
+export async function POST(request: Request) {
+  const accessCheck = checkDebugAccess(request)
+  if (accessCheck) return accessCheck
+
   console.log('[Debug Sentry] Attempting to capture message...')
   Sentry.captureMessage('Direct test message - no filters', 'info')
   console.log('[Debug Sentry] Message captured')

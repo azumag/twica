@@ -44,7 +44,7 @@ export const RARITY_COLORS = {
 export const GACHA_COST = parseInt(process.env.GACHA_COST || '100', 10)
 
 export const DEBUG_CONFIG = {
-  ALLOWED_HOSTS: ['localhost', '127.0.0.1'],
+  ALLOWED_HOSTS: ['localhost', '127.0.0.1', '::1'],
   PRODUCTION_ENV: 'production',
 } as const
 

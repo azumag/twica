@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
+import { checkDebugAccess } from '@/lib/debug-access'
 
-export async function GET() {
+export async function GET(request: Request) {
+  const accessCheck = checkDebugAccess(request)
+  if (accessCheck) return accessCheck
+
   const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN
 
   if (!dsn) {
@@ -30,9 +34,6 @@ export async function GET() {
     })
 
     return NextResponse.json({
-      dsnHost: dsnUrl.host,
-      sentryUrl,
-      testUrl: `https://${dsnUrl.host}/api/0/`,
       responseStatus: response.status,
       responseStatusText: response.statusText,
       success: response.ok
