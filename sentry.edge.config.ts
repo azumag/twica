@@ -10,11 +10,9 @@ Sentry.init({
 
   environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
   tracesSampleRate: 1.0,
-  debug: true,
+  debug: false,
 
   beforeSend(event, hint) {
-    console.log('[Sentry Edge] beforeSend called', { event, hint })
-
     if (event.user) {
       delete event.user.email
       delete event.user.ip_address
@@ -34,7 +32,6 @@ Sentry.init({
       }
     }
 
-    console.log('[Sentry Edge] beforeSend returning event')
     return event
   },
 

@@ -6,11 +6,9 @@ Sentry.init({
   tracesSampleRate: 1.0,
   replaysSessionSampleRate: 1.0,
   replaysOnErrorSampleRate: 1.0,
-  debug: true,
+  debug: false,
 
   beforeSend(event, hint) {
-    console.log('[Sentry] beforeSend called', { event, hint })
-
     // Filter out sensitive information
     if (event.user) {
       delete event.user.email
@@ -32,7 +30,6 @@ Sentry.init({
       }
     }
 
-    console.log('[Sentry] beforeSend returning event')
     return event
   },
 
@@ -44,28 +41,11 @@ Sentry.init({
     return event
   },
 
-  integrations: [
-    Sentry.browserTracingIntegration(),
-    Sentry.replayIntegration({
-      maskAllText: true,
-      blockAllMedia: true,
-    }),
-    Sentry.httpContextIntegration(),
-  ],
+  integrations: [],
 
-  ignoreErrors: [
-    'ResizeObserver loop limit exceeded',
-    'Non-Error promise rejection captured',
-    'Request aborted',
-    'Network request failed',
-    'ChunkLoadError',
-  ],
+  ignoreErrors: [],
 
-  denyUrls: [
-    /^chrome-extension:\/\//,
-    /^moz-extension:\/\//,
-    /^safari-extension:\/\//,
-  ],
+  denyUrls: [],
 
   release: process.env.NEXT_PUBLIC_VERSION || 'local',
 })
