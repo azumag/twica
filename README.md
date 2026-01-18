@@ -126,9 +126,14 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
-   - Issue #37 implementation in progress: Code Quality - Hardcoded Battle Configuration Values in battle.ts
+   - Issue #41 created: Code Quality - Hardcoded Card Stat Generation Ranges in battle.ts
+            - Card stat generation values are hardcoded in src/lib/battle.ts
+            - Adding CARD_STAT_RANGES constants for better maintainability and game balance tuning
+            - Design documented in ARCHITECTURE.md
+   - Issue #37 implemented and closed: Code Quality - Hardcoded Battle Configuration Values in battle.ts
             - Battle system configuration values are hardcoded in src/lib/battle.ts
-            - Adding BATTLE_CONFIG constants for better maintainability and game balance tuning
+            - BATTLE_CONFIG constants added for better maintainability and game balance tuning
+            - CI passed successfully (59/59 tests)
             - Design documented in ARCHITECTURE.md
    - Issue #36 implemented and closed: Critical Security: Sentry Debug Endpoints Exposed in Production
             - Sentry debug endpoints now protected in production environment

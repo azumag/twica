@@ -134,6 +134,45 @@ export const BATTLE_LOG_MESSAGES = {
   SKILL_FAILED: 'スキル発動失敗',
 } as const
 
+export const CARD_STAT_RANGES = {
+  common: {
+    hp: { min: 100, max: 120 },
+    atk: { min: 20, max: 30 },
+    def: { min: 10, max: 15 },
+    spd: { min: 1, max: 3 },
+    skill_power: { min: 5, max: 10 },
+  },
+  rare: {
+    hp: { min: 120, max: 140 },
+    atk: { min: 30, max: 40 },
+    def: { min: 15, max: 20 },
+    spd: { min: 3, max: 5 },
+    skill_power: { min: 10, max: 15 },
+  },
+  epic: {
+    hp: { min: 140, max: 160 },
+    atk: { min: 40, max: 45 },
+    def: { min: 20, max: 25 },
+    spd: { min: 5, max: 7 },
+    skill_power: { min: 15, max: 20 },
+  },
+  legendary: {
+    hp: { min: 160, max: 200 },
+    atk: { min: 45, max: 50 },
+    def: { min: 25, max: 30 },
+    spd: { min: 7, max: 10 },
+    skill_power: { min: 20, max: 25 },
+  },
+} as const
+
+export const CARD_STAT_DEFAULTS = {
+  hp: 100,
+  atk: 30,
+  def: 15,
+  spd: 5,
+  skill_power: 10,
+} as const
+
 export const BATTLE_CONFIG = {
   MAX_TURNS: 20,
   SKILL_SPEED_MULTIPLIER: 10,

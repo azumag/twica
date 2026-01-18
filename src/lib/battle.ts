@@ -1,5 +1,5 @@
 import type { Card, BattleCard, BattleResultData, BattleLog, SkillResult, Rarity, SkillType } from '@/types/database'
-import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES, BATTLE_LOG_MESSAGES, BATTLE_CONFIG } from '@/lib/constants'
+import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES, BATTLE_LOG_MESSAGES, BATTLE_CONFIG, CARD_STAT_RANGES, CARD_STAT_DEFAULTS } from '@/lib/constants'
 
 export interface BattleCardData {
   id: string
@@ -27,43 +27,22 @@ export function generateCardStats(rarity: Rarity): {
 } {
   const skillTypes: SkillType[] = ['attack', 'defense', 'heal', 'special']
 
-  let hp, atk, def, spd, skill_power
+  const statRanges = CARD_STAT_RANGES[rarity as keyof typeof CARD_STAT_RANGES]
 
-  switch (rarity) {
-    case 'common':
-      hp = Math.floor(Math.random() * 21) + 100 // 100-120
-      atk = Math.floor(Math.random() * 11) + 20 // 20-30
-      def = Math.floor(Math.random() * 6) + 10 // 10-15
-      spd = Math.floor(Math.random() * 3) + 1 // 1-3
-      skill_power = Math.floor(Math.random() * 6) + 5 // 5-10
-      break
-    case 'rare':
-      hp = Math.floor(Math.random() * 21) + 120 // 120-140
-      atk = Math.floor(Math.random() * 11) + 30 // 30-40
-      def = Math.floor(Math.random() * 6) + 15 // 15-20
-      spd = Math.floor(Math.random() * 3) + 3 // 3-5
-      skill_power = Math.floor(Math.random() * 6) + 10 // 10-15
-      break
-    case 'epic':
-      hp = Math.floor(Math.random() * 21) + 140 // 140-160
-      atk = Math.floor(Math.random() * 6) + 40 // 40-45
-      def = Math.floor(Math.random() * 6) + 20 // 20-25
-      spd = Math.floor(Math.random() * 3) + 5 // 5-7
-      skill_power = Math.floor(Math.random() * 6) + 15 // 15-20
-      break
-    case 'legendary':
-      hp = Math.floor(Math.random() * 41) + 160 // 160-200
-      atk = Math.floor(Math.random() * 6) + 45 // 45-50
-      def = Math.floor(Math.random() * 6) + 25 // 25-30
-      spd = Math.floor(Math.random() * 4) + 7 // 7-10
-      skill_power = Math.floor(Math.random() * 6) + 20 // 20-25
-      break
-    default:
-      hp = 100
-      atk = 30
-      def = 15
-      spd = 5
-      skill_power = 10
+  let hp: number, atk: number, def: number, spd: number, skill_power: number
+
+  if (statRanges) {
+    hp = Math.floor(Math.random() * (statRanges.hp.max - statRanges.hp.min + 1)) + statRanges.hp.min
+    atk = Math.floor(Math.random() * (statRanges.atk.max - statRanges.atk.min + 1)) + statRanges.atk.min
+    def = Math.floor(Math.random() * (statRanges.def.max - statRanges.def.min + 1)) + statRanges.def.min
+    spd = Math.floor(Math.random() * (statRanges.spd.max - statRanges.spd.min + 1)) + statRanges.spd.min
+    skill_power = Math.floor(Math.random() * (statRanges.skill_power.max - statRanges.skill_power.min + 1)) + statRanges.skill_power.min
+  } else {
+    hp = CARD_STAT_DEFAULTS.hp
+    atk = CARD_STAT_DEFAULTS.atk
+    def = CARD_STAT_DEFAULTS.def
+    spd = CARD_STAT_DEFAULTS.spd
+    skill_power = CARD_STAT_DEFAULTS.skill_power
   }
 
   const skill_type = skillTypes[Math.floor(Math.random() * skillTypes.length)]

@@ -1,172 +1,139 @@
-# 実装完了レポート: Battle System Constants Refactoring (Issue #37)
+# 実装内容
 
-**日時**: 2026-01-18 22:48
+## Issue #41: Code Quality - Hardcoded Card Stat Generation Ranges in battle.ts
 
----
+### 実装概要
+`src/lib/battle.ts` の `generateCardStats` 関数にハードコードされていたカードステータス生成範囲を、定数として `src/lib/constants.ts` に移動しました。
 
-## 概要
+### 変更内容
 
-バトルシステムの設定値が `src/lib/battle.ts` にハードコードされている問題を解決しました。設定値を `BATTLE_CONFIG` 定数として `src/lib/constants.ts` に一元管理し、保守性とバランス調整の容易性を向上させました。
+#### 1. `src/lib/constants.ts` に定数を追加
 
----
-
-## 実装内容
-
-### 1. BATTLE_CONFIG 定数の追加
-
-**ファイル**: `src/lib/constants.ts`
-
-バトルシステムの設定値を定数として追加しました。
+- `CARD_STAT_RANGES`: 各レアリティ（コモン、レア、エピック、レジェンダリー）のステータス生成範囲を定義
+- `CARD_STAT_DEFAULTS`: デフォルト値を定義
 
 ```typescript
-export const BATTLE_CONFIG = {
-  MAX_TURNS: 20,
-  SKILL_SPEED_MULTIPLIER: 10,
-  SKILL_TRIGGER_MAX_PERCENT: 70,
-  RANDOM_RANGE: 100,
-  SPECIAL_SKILL_DAMAGE_MULTIPLIER: 1.5,
+export const CARD_STAT_RANGES = {
+  common: {
+    hp: { min: 100, max: 120 },
+    atk: { min: 20, max: 30 },
+    def: { min: 10, max: 15 },
+    spd: { min: 1, max: 3 },
+    skill_power: { min: 5, max: 10 },
+  },
+  rare: {
+    hp: { min: 120, max: 140 },
+    atk: { min: 30, max: 40 },
+    def: { min: 15, max: 20 },
+    spd: { min: 3, max: 5 },
+    skill_power: { min: 10, max: 15 },
+  },
+  epic: {
+    hp: { min: 140, max: 160 },
+    atk: { min: 40, max: 45 },
+    def: { min: 20, max: 25 },
+    spd: { min: 5, max: 7 },
+    skill_power: { min: 15, max: 20 },
+  },
+  legendary: {
+    hp: { min: 160, max: 200 },
+    atk: { min: 45, max: 50 },
+    def: { min: 25, max: 30 },
+    spd: { min: 7, max: 10 },
+    skill_power: { min: 20, max: 25 },
+  },
+} as const
+
+export const CARD_STAT_DEFAULTS = {
+  hp: 100,
+  atk: 30,
+  def: 15,
+  spd: 5,
+  skill_power: 10,
 } as const
 ```
 
-**設定値の説明**:
-- `MAX_TURNS`: 最大ターン数（20ターン）
-- `SKILL_SPEED_MULTIPLIER`: スキル発動率計算の速度倍率（SPD × 10）
-- `SKILL_TRIGGER_MAX_PERCENT`: スキル発動率の上限（70%）
-- `RANDOM_RANGE`: ランダム判定の範囲（100%）
-- `SPECIAL_SKILL_DAMAGE_MULTIPLIER`: スペシャルスキルのダメージ倍率（1.5倍）
+#### 2. `src/lib/battle.ts` で定数を使用
 
----
-
-### 2. battle.ts での定数使用
-
-**ファイル**: `src/lib/battle.ts`
-
-ハードコードされた値を `BATTLE_CONFIG` 定数で置換しました。
-
-#### 2.1 定数のインポート
+- `generateCardStats` 関数を定数を使用するように修正
+- `CARD_STAT_RANGES` と `CARD_STAT_DEFAULTS` をインポートして使用
 
 ```typescript
-import { CPU_CARD_STRINGS, BATTLE_SKILL_NAMES, BATTLE_LOG_MESSAGES, BATTLE_CONFIG } from '@/lib/constants'
-```
+import { CARD_STAT_RANGES, CARD_STAT_DEFAULTS } from '@/lib/constants'
 
-#### 2.2 最大ターン数の置換
+export function generateCardStats(rarity: Rarity): {
+  hp: number
+  atk: number
+  def: number
+  spd: number
+  skill_type: SkillType
+  skill_name: string
+  skill_power: number
+} {
+  const skillTypes: SkillType[] = ['attack', 'defense', 'heal', 'special']
 
-```typescript
-// 修正前
-export async function playBattle(userCard: BattleCard, opponentCard: BattleCard): Promise<BattleResultData> {
-  const maxTurns = 20
-  // ...
+  const statRanges = CARD_STAT_RANGES[rarity as keyof typeof CARD_STAT_RANGES]
 
-// 修正後
-export async function playBattle(userCard: BattleCard, opponentCard: BattleCard): Promise<BattleResultData> {
-  const maxTurns = BATTLE_CONFIG.MAX_TURNS
-  // ...
-```
+  let hp: number, atk: number, def: number, spd: number, skill_power: number
 
-#### 2.3 スキル発動率計算の置換
-
-```typescript
-// 修正前
-// Skill trigger chance (SPD * 10%, max 70%)
-const skillTriggerChance = Math.min(attacker.spd * 10, 70)
-const skillTrigger = Math.random() * 100 < skillTriggerChance
-
-// 修正後
-const skillTriggerChance = Math.min(
-  attacker.spd * BATTLE_CONFIG.SKILL_SPEED_MULTIPLIER,
-  BATTLE_CONFIG.SKILL_TRIGGER_MAX_PERCENT
-)
-const skillTrigger = Math.random() * BATTLE_CONFIG.RANDOM_RANGE < skillTriggerChance
-```
-
-#### 2.4 スペシャルスキルダメージ倍率の置換
-
-```typescript
-// 修正前
-case 'special':
-  // Special effects can be implemented later
-  const specialDamage = Math.max(1, Math.floor(attacker.atk * 1.5) - defender.def)
-  return {
-    damage: specialDamage,
-    message: BATTLE_LOG_MESSAGES.SKILL_SPECIAL(attacker.name, attacker.skill_name, specialDamage)
+  if (statRanges) {
+    hp = Math.floor(Math.random() * (statRanges.hp.max - statRanges.hp.min + 1)) + statRanges.hp.min
+    atk = Math.floor(Math.random() * (statRanges.atk.max - statRanges.atk.min + 1)) + statRanges.atk.min
+    def = Math.floor(Math.random() * (statRanges.def.max - statRanges.def.min + 1)) + statRanges.def.min
+    spd = Math.floor(Math.random() * (statRanges.spd.max - statRanges.spd.min + 1)) + statRanges.spd.min
+    skill_power = Math.floor(Math.random() * (statRanges.skill_power.max - statRanges.skill_power.min + 1)) + statRanges.skill_power.min
+  } else {
+    hp = CARD_STAT_DEFAULTS.hp
+    atk = CARD_STAT_DEFAULTS.atk
+    def = CARD_STAT_DEFAULTS.def
+    spd = CARD_STAT_DEFAULTS.spd
+    skill_power = CARD_STAT_DEFAULTS.skill_power
   }
 
-// 修正後
-case 'special':
-  const specialDamage = Math.max(1, Math.floor(attacker.atk * BATTLE_CONFIG.SPECIAL_SKILL_DAMAGE_MULTIPLIER) - defender.def)
+  const skill_type = skillTypes[Math.floor(Math.random() * skillTypes.length)]
+  const skillNameList = BATTLE_SKILL_NAMES[skill_type.toUpperCase() as keyof typeof BATTLE_SKILL_NAMES]
+  const skill_name = skillNameList[Math.floor(Math.random() * skillNameList.length)]
+
   return {
-    damage: specialDamage,
-    message: BATTLE_LOG_MESSAGES.SKILL_SPECIAL(attacker.name, attacker.skill_name, specialDamage)
+    hp,
+    atk,
+    def,
+    spd,
+    skill_type,
+    skill_name,
+    skill_power
   }
+}
 ```
 
----
+### 受け入れ基準
 
-## 変更ファイル一覧
+- [x] `CARD_STAT_RANGES` 定数が `src/lib/constants.ts` に追加されている
+- [x] `src/lib/battle.ts` で `CARD_STAT_RANGES` 定数が使用されている
+- [x] `generateCardStats` 関数が定数を使用して実装されている
+- [x] コモン、レア、エピック、レジェンダリーの各レアリティで正しい範囲でステータスが生成される
+- [x] デフォルト値が正しく設定されている
+- [x] 既存のカード生成ロジックの挙動が変わらない（テストがパスする）
+- [x] lintとtestがパスする
+- [x] TypeScriptの型チェックがパスする
 
-### 修正
-- `src/lib/constants.ts` - BATTLE_CONFIG 定数を追加
-- `src/lib/battle.ts` - ハードコードされた値を定数で置換
+### テスト結果
 
----
+- Lint: パス
+- Test: 59 テスト全てパス
+  - tests/unit/constants.test.ts (6 tests)
+  - tests/unit/gacha.test.ts (6 tests)
+  - tests/unit/logger.test.ts (6 tests)
+  - tests/unit/env-validation.test.ts (10 tests)
+  - tests/unit/battle.test.ts (24 tests)
+  - tests/unit/upload.test.ts (7 tests)
 
-## 設計方針との整合性
+### メリット
 
-| 設計方針 | 遵守状況 | 詳細 |
-|---------|---------|------|
-| String Standardization | ✅ 遵守 | バトル設定値を定数として一元管理 |
-| Simple over Complex | ✅ 遵守 | シンプルな定数定義を使用 |
-| Maintainability | ✅ 向上 | バランス調整が容易になった |
+1. **保守性向上**: ゲームバランスの調整が定数の変更のみで可能
+2. **可読性向上**: コードの意図が明確になる
+3. **一貫性**: 設計原則「String Standardization」「Constant Standardization」に準拠
 
----
+### 詳細設計
 
-## 受け入れ基準の達成状況
-
-| 受け入れ基準 | 達成状況 | 詳細 |
-|-------------|----------|------|
-| BATTLE_CONFIG 定数が追加されている | ✅ 達成 | src/lib/constants.ts に定義済み |
-| BATTLE_CONFIG 定数が使用されている | ✅ 達成 | src/lib/battle.ts で使用 |
-| maxTurns が置換されている | ✅ 達成 | BATTLE_CONFIG.MAX_TURNS を使用 |
-| スキル発動率計算で定数を使用 | ✅ 達成 | SKILL_SPEED_MULTIPLIER と SKILL_TRIGGER_MAX_PERCENT を使用 |
-| ランダム範囲で定数を使用 | ✅ 達成 | BATTLE_CONFIG.RANDOM_RANGE を使用 |
-| スペシャルスキルダメージ倍率で定数を使用 | ✅ 達成 | SPECIAL_SKILL_DAMAGE_MULTIPLIER を使用 |
-| 既存のバトルシステムの挙動が変わらない | ✅ 達成 | 定数の値は元のハードコード値と同じ |
-| lint がパスする | ✅ 達成 | npm run lint が成功 |
-| TypeScript の型チェックがパスする | ✅ 達成 | tsc --noEmit が成功 |
-
----
-
-## テスト
-
-### Lint
-```bash
-npm run lint
-```
-結果: ✅ パス
-
-### TypeScript Type Check
-```bash
-npx tsc --noEmit
-```
-結果: ✅ パス
-
----
-
-## メリット
-
-1. **保守性の向上**: バトルシステムのバランス調整を行う際、定数ファイルを変更するだけで済む
-2. **一元管理**: すべてのバトル設定値が一箇所で管理される
-3. **可読性の向上**: 定数名で設定値の意味が明確になる
-4. **テストの容易さ**: 定数を変更して挙動を確認しやすい
-
----
-
-## 関連Issue
-
-- **Issue #37**: Code Quality - Hardcoded Battle Configuration Values in battle.ts
-
----
-
-## まとめ
-
-バトルシステムのハードコードされた設定値を定数として抽出し、保守性を向上させました。すべての受け入れ基準を満たし、lint と TypeScript 型チェックをパスしました。今後のバランス調整が容易になりました。
+詳細な設計内容は `docs/ARCHITECTURE.md` の Issue #41 セクションを参照してください。
