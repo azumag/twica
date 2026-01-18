@@ -6,13 +6,14 @@ import { ERROR_MESSAGES } from '@/lib/constants'
 export async function GET() {
   try {
     const session = await getSession()
-    
+
     if (!session) {
       return NextResponse.json({ error: ERROR_MESSAGES.NOT_AUTHENTICATED }, { status: 401 })
     }
-    
+
     return NextResponse.json(session)
   } catch (error) {
+    console.log('[Session API] Error caught:', error)
     return handleApiError(error, "Session API: GET")
   }
 }

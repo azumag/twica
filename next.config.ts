@@ -38,7 +38,7 @@ export default withSentryConfig(nextConfig, {
   project: "twica",
 
   // Only print logs for uploading source maps in CI
-  silent: !process.env.CI,
+  silent: false,
 
   // For all available options, see:
   // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
@@ -54,7 +54,7 @@ export default withSentryConfig(nextConfig, {
 
   webpack: {
     // Enables automatic instrumentation of Vercel Cron Monitors. (Does not yet work with App Router route handlers.)
-    // See the following for more information:
+    // See following for more information:
     // https://docs.sentry.io/product/crons/
     // https://vercel.com/docs/cron-jobs
     automaticVercelMonitors: true,
@@ -62,7 +62,7 @@ export default withSentryConfig(nextConfig, {
     // Tree-shaking options for reducing bundle size
     treeshake: {
       // Automatically tree-shake Sentry logger statements to reduce bundle size
-      removeDebugLogging: true,
+      removeDebugLogging: false,
     },
   },
 });
