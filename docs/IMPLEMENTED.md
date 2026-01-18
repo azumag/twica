@@ -1,63 +1,63 @@
 # 実装内容
 
 ## 実施日時
-2026-01-19 02:45:00
+2026-01-19 07:04:00
 
-## レビュー修正 (Issue #47: コード品質 - UI 文字列の定数化)
+## レビュー修正 (Issue #50: Fix Sentry Multiple Initialization Error)
 
 ### 概要
-レビューエージェントから指摘された2つの問題点を修正し、UI文字列の定数化を完了させる。
+レビューエージェントから指摘された `src/instrumentation-client.ts` から `Sentry.init()` 呼び出し部分が削除されていない問題を修正する。
 
 ### 修正内容
 
-#### 1. `src/lib/constants.ts` の更新
+#### 1. `src/instrumentation-client.ts` の修正
 
-**成功メッセージの配列を追加** (`CHANNEL_POINT_SETTINGS.SUCCESS_MESSAGES`)
-- `['報酬を作成しました', '保存しました（EventSub登録完了）']` を配列として定義
-- 成功メッセージを一元管理し、ロジックで使用
+**Sentry.init() 呼び出しの削除**
 
-**ガチャ履歴のラベル定数を追加** (`GACHA_HISTORY.GOT_LABEL`)
-- `' が '` をラベル用定数として定義
-
-#### 2. `src/components/ChannelPointSettings.tsx` の修正
-
-**メッセージ色判定ロジックの修正** (Line 342-349)
+レビューエージェントの指摘により、`src/instrumentation-client.ts` から以下の要素を削除：
+- 重複したコメント（1-2行目）
+- `import * as Sentry from "@sentry/nextjs";` のインポート
+- `Sentry.init()` 呼び出し部分（6-29行目）
 
 **修正前**:
 ```typescript
-className={
-  message === UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.SAVE_SUCCESS
-    ? "text-green-400"
-    : "text-red-400"
-}
+// This file is REQUIRED for Next.js 15+ App Router to initialize Sentry on the client-side
+// This file is REQUIRED for Next.js 15+ App Router to initialize Sentry on the client-side
+// DO NOT DELETE - Sentry SDK does not auto-initialize in Next.js App Router
+import * as Sentry from "@sentry/nextjs";
+
+Sentry.init({
+    dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+    environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
+  
+    integrations: [
+          Sentry.globalHandlersIntegration({
+                  onerror: true,
+                  onunhandledrejection: true,
+          }),
+        ],
+  
+    tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
+  
+    replaysSessionSampleRate: process.env.NODE_ENV === "production" ? 0.01 : 0.1,
+    replaysOnErrorSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
+  
+    beforeSend(event) {
+          if (event.user) {
+                  delete event.user.email;
+                  delete event.user.ip_address;
+          }
+          return event;
+    },
+});// DO NOT DELETE - sentry.client.config.ts is NOT automatically loaded in Next.js App Router
+import "../sentry.client.config";
 ```
 
 **修正後**:
 ```typescript
-className={
-  // @ts-expect-error - SUCCESS_MESSAGES contains string literals
-  UI_STRINGS.CHANNEL_POINT_SETTINGS.SUCCESS_MESSAGES.includes(message)
-    ? "text-green-400"
-    : "text-red-400"
-}
-```
-
-**修正のポイント**:
-- `REWARD_CREATED` と `SAVE_SUCCESS` の両方の成功メッセージが緑色で表示されるように修正
-- TypeScriptの型エラーを回避するために `@ts-expect-error` コメントを使用
-
-#### 3. `src/components/DashboardComponents.tsx` の修正
-
-**ハードコードされた文字列の定数化** (Line 67)
-
-**修正前**:
-```typescript
-<span className="text-gray-500"> got </span>
-```
-
-**修正後**:
-```typescript
-<span className="text-gray-500">{UI_STRINGS.GACHA_HISTORY.GOT_LABEL}</span>
+// This file is REQUIRED for Next.js 15+ App Router to initialize Sentry on the client-side
+// DO NOT DELETE - Sentry SDK does not auto-initialize in Next.js App Router
+import "../sentry.client.config";
 ```
 
 ### 動作確認
@@ -65,38 +65,29 @@ className={
 以下のコマンドを実行し、すべてのチェックをパスしました：
 
 - `npm run lint`: ✓ パス
-- `npm run test:unit`: ✓ 81 テストすべてパス
 - `npm run build`: ✓ ビルド成功
 
 ### レビュー指摘事項への対応
 
-#### Critical: ChannelPointSettings.tsx のロジックバグ
-- [x] 成功メッセージの配列を定数に追加
-- [x] `includes` メソッドを使用して、すべての成功メッセージが緑色で表示されるように修正
-- [x] TypeScript の型エラーを適切に処理
+#### Critical: Sentry.init() 呼び出しが削除されていない
+- [x] `src/instrumentation-client.ts` から `Sentry.init()` 呼び出し部分（6-29行目）を削除
+- [x] `import * as Sentry from "@sentry/nextjs";` インポートを削除
 
-#### Major: DashboardComponents.tsx のハードコードされた文字列
-- [x] `GOT_LABEL` 定数を追加
-- [x] `DashboardComponents.tsx` の `" got "` を定数に置き換え
+#### Major: コメントの重複
+- [x] 重複したコメントを修正（1-2行目）
+
+#### Major: replayIntegration() の欠如
+- [x] `instrumentation-client.ts` から `Sentry.init()` を削除したため、`sentry.client.config.ts` 側のみを使用
 
 ### 受け入れ基準の達成状況
 
-- [x] `src/lib/constants.ts` に UI 文字列定数を追加する
-- [x] `TwitchLoginButton.tsx` の文字列を定数化する
-- [x] `Header.tsx` の文字列を定数化する
-- [x] `Collection.tsx` の文字列を定数化する
-- [x] `CardManager.tsx` の文字列を定数化する
-- [x] その他のコンポーネントの文字列を定数化する
-- [x] すべてのハードコードされた日本語文字列が定数に置き換えられる
-- [x] lint と test がパスする
-- [x] CI がパスする
-
-すべての受け入れ基準を達成しました。
+- [x] クライアント側で Sentry.init() が1回のみ呼び出される（`sentry.client.config.ts` のみ）
+- [x] lint と build がパスする
 
 ---
 
 ## 参考情報
 
 - 設計書: `docs/ARCHITECTURE.md`
-- Issue: #47
-- レビュー内容: `docs/REVIEW.md`
+- Issue: #50
+- レビュー内容: `docs/QA.md`
