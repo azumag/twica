@@ -126,10 +126,17 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
    ## Recent Changes
 
-   - Issue #30 created: Code Quality - Complete API Error Message Standardization
-          - Several files still use hardcoded error messages in Japanese or English
-          - Should use ERROR_MESSAGES constants for consistency and maintainability
-          - Design documented in ARCHITECTURE.md
+   - Issue #31 created: Code Quality - Remove 'any' Type Usage in Battle Start API
+           - `src/app/api/battle/start/route.ts` contains `as any` type casts
+           - Should use proper type definitions for type safety
+           - Design documented in ARCHITECTURE.md
+   - Issue #30 implementation completed
+          - All Japanese error messages replaced with ERROR_MESSAGES constants
+          - All hardcoded English error messages replaced with ERROR_MESSAGES constants
+          - All necessary ERROR_MESSAGES constants added to src/lib/constants.ts
+          - No TypeScript/ESLint errors
+          - CI passed successfully (59 tests)
+          - Issue closed
    - Issue #29 implementation completed
           - N+1 query problem in Battle Get API fixed
           - Single query with JOIN now fetches all data (battle + user card + opponent card)
@@ -137,75 +144,69 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
           - `as any` type cast removed
           - CI passed successfully
           - Issue closed
-    - Issue #28 implementation completed
-         - N+1 query problem in Battle Stats API fixed
-         - Single query with JOIN now fetches all data (battles + opponent cards)
-         - Database queries reduced from N+1 to 1 (11 queries → 1 query for 10 battles)
-         - `as any` type cast removed from battle history processing
-         - CI passed successfully (59 tests)
+     - Issue #28 implementation completed
+          - N+1 query problem in Battle Stats API fixed
+          - Single query with JOIN now fetches all data (battles + opponent cards)
+          - Database queries reduced from N+1 to 1 (11 queries → 1 query for 10 battles)
+          - `as any` type cast removed from battle history processing
+          - CI passed successfully (59 tests)
+          - Issue closed
+    - Issue #27 implementation completed
+          - All `.select('*')` replaced with explicit field selection
+          - Data transfer reduced by 50%+ (59 tests passed)
+          - No TypeScript/ESLint errors
+          - No regressions in existing functionality
+          - Issue closed
+    - Issue #26 implementation completed
+         - Rate limiting now fails closed on error
+         - Circuit breaker pattern implemented
+         - Development environment uses in-memory fallback
+         - Production environment blocks requests on error
+         - Sentry error reporting enhanced
          - Issue closed
-   - Issue #27 implementation completed
-         - All `.select('*')` replaced with explicit field selection
-         - Data transfer reduced by 50%+ (59 tests passed)
-         - No TypeScript/ESLint errors
-         - No regressions in existing functionality
-         - Issue closed
-   - Issue #27 implementation completed
-        - All `.select('*')` replaced with explicit field selection
-        - Data transfer reduced by 50%+ (59 tests passed)
-        - No TypeScript/ESLint errors
-        - No regressions in existing functionality
-        - Issue closed
-   - Issue #26 implementation completed
-        - Rate limiting now fails closed on error
-        - Circuit breaker pattern implemented
-        - Development environment uses in-memory fallback
-        - Production environment blocks requests on error
-        - Sentry error reporting enhanced
-        - Issue closed
-     - Issue #25 implementation completed
-         - Unify API error messages to English
-         - Add ERROR_MESSAGES constant in src/lib/constants.ts
-         - Add API response type definitions in src/types/api.ts
-         - Update all API routes to use ERROR_MESSAGES constants
-         - Issue closed
-     - Issue #23, #24 implementation completed
-         - CPU Opponent Database Inconsistency fixed
-         - Hardcoded Gacha Cost removed
-         - Issues closed
-   - Issue #20 Sentry integration implementation completed
-      - Error tracking and automatic GitHub issue creation
-      - Design documented in ARCHITECTURE.md
-      - Issue closed
-  - Issue #21 Test Suite Improvement implementation completed
-      - Integrate upload API test with Vitest framework
-      - Convert JavaScript test to TypeScript
-      - Remove TODO blocking test execution
-      - Design documented in ARCHITECTURE.md
-      - Issue closed
+      - Issue #25 implementation completed
+          - Unify API error messages to English
+          - Add ERROR_MESSAGES constant in src/lib/constants.ts
+          - Add API response type definitions in src/types/api.ts
+          - Update all API routes to use ERROR_MESSAGES constants
+          - Issue closed
+      - Issue #23, #24 implementation completed
+          - CPU Opponent Database Inconsistency fixed
+          - Hardcoded Gacha Cost removed
+          - Issues closed
+    - Issue #20 Sentry integration implementation completed
+       - Error tracking and automatic GitHub issue creation
+       - Design documented in ARCHITECTURE.md
+       - Issue closed
+   - Issue #21 Test Suite Improvement implementation completed
+       - Integrate upload API test with Vitest framework
+       - Convert JavaScript test to TypeScript
+       - Remove TODO blocking test execution
+       - Design documented in ARCHITECTURE.md
+       - Issue closed
 - Twitch login error handling improvements completed (Issue #19)
-    - Detailed error messages for authentication failures
-    - Enhanced error logging and user feedback
-    - Issue closed after successful implementation
+     - Detailed error messages for authentication failures
+     - Enhanced error logging and user feedback
+     - Issue closed after successful implementation
 - API error handling standardization completed (Issue #18)
-    - Unified error handler across all API routes
-    - Consistent error messages and proper error logging
-    - Issue closed after successful implementation
+     - Unified error handler across all API routes
+     - Consistent error messages and proper error logging
+     - Issue closed after successful implementation
 - Type safety improvements completed (Issue #17)
-    - Removed `any` type usage in cards API
-    - Added proper TypeScript type definitions for Supabase queries
-    - ESLint warnings resolved
+     - Removed `any` type usage in cards API
+     - Added proper TypeScript type definitions for Supabase queries
+     - ESLint warnings resolved
 - Middleware to Proxy migration completed (Issue #16)
-    - Next.js 16 compatibility update
-    - Successfully migrated `middleware.ts` to `proxy.ts`
-    - Build warnings resolved
+     - Next.js 16 compatibility update
+     - Successfully migrated `middleware.ts` to `proxy.ts`
+     - Build warnings resolved
 - Card battle system implementation completed (Issue #15)
-    - 1v1 CPU battle with turn-based combat
-    - Card stats: HP, ATK, DEF, SPD
-    - Skill system with multiple types (attack, defense, heal, special)
-    - Battle history and statistics tracking
-    - Animated battle UI with real-time logs
-    - Code quality improvements (ESLint fixes, TypeScript type safety)
+     - 1v1 CPU battle with turn-based combat
+     - Card stats: HP, ATK, DEF, SPD
+     - Skill system with multiple types (attack, defense, heal, special)
+     - Battle history and statistics tracking
+     - Animated battle UI with real-time logs
+     - Code quality improvements (ESLint fixes, TypeScript type safety)
 - Rate limiting implementation completed (Issue #13)
 - README mermaid diagram fixed (Issue #14)
 - Terms of Service page implemented and issue #8 closed

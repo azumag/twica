@@ -7,6 +7,8 @@ import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import { reportBattleError } from '@/lib/sentry/error-handler'
 import { setUserContext, setRequestContext, setGameContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import type { Card, CardWithStreamer } from '@/types/database'
+import type { BattleCardData } from '@/lib/battle'
 
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
@@ -117,11 +119,17 @@ export async function POST(request: NextRequest) {
       return handleDatabaseError(allCardsError, "Battle Start API: Failed to fetch cards for CPU opponent")
     }
 
-    // Convert to BattleCard format
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const userCardDataForBattle = userCardData.card as any
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const opponentBattleCard = generateCPUOpponent(allCards as any[])
+    // Define proper types for Supabase query results
+    interface UserCardQueryResult {
+      user_id: string
+      card_id: string
+      card: CardWithStreamer
+    }
+
+    // Convert to BattleCard format with proper types
+    const userCardQuery = userCardData as unknown as UserCardQueryResult
+    const userCardDataForBattle: Card | BattleCardData = userCardQuery.card
+    const opponentBattleCard = generateCPUOpponent(allCards as (Card | BattleCardData)[])
     const userBattleCard = toBattleCard(userCardDataForBattle)
 
     // Play the battle
