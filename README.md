@@ -126,10 +126,30 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
    ## Recent Changes
 
-   - Issue #27 created: Performance - Optimize Database Queries by Selecting Only Required Fields
-        - Several API routes use `.select('*')` to fetch all columns
-        - Leads to performance issues and unnecessary data exposure
-        - Design documented in ARCHITECTURE.md
+   - Issue #29 created: Performance - Fix N+1 Query Problem in Battle Get API
+         - Battle Get API makes 2 database queries when fetching battle data
+         - One initial query to fetch battle, then additional query to fetch opponent card details
+         - Should be optimized to use a single query with JOIN
+         - Design documented in ARCHITECTURE.md
+   - Issue #28 implementation completed
+         - N+1 query problem in Battle Stats API fixed
+         - Single query with JOIN now fetches all data (battles + opponent cards)
+         - Database queries reduced from N+1 to 1 (11 queries → 1 query for 10 battles)
+         - `as any` type cast removed from battle history processing
+         - CI passed successfully (59 tests)
+         - Issue closed
+   - Issue #27 implementation completed
+         - All `.select('*')` replaced with explicit field selection
+         - Data transfer reduced by 50%+ (59 tests passed)
+         - No TypeScript/ESLint errors
+         - No regressions in existing functionality
+         - Issue closed
+   - Issue #27 implementation completed
+        - All `.select('*')` replaced with explicit field selection
+        - Data transfer reduced by 50%+ (59 tests passed)
+        - No TypeScript/ESLint errors
+        - No regressions in existing functionality
+        - Issue closed
    - Issue #26 implementation completed
         - Rate limiting now fails closed on error
         - Circuit breaker pattern implemented
@@ -137,16 +157,16 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
         - Production environment blocks requests on error
         - Sentry error reporting enhanced
         - Issue closed
-    - Issue #25 implementation completed
-        - Unify API error messages to English
-        - Add ERROR_MESSAGES constant in src/lib/constants.ts
-        - Add API response type definitions in src/types/api.ts
-        - Update all API routes to use ERROR_MESSAGES constants
-        - Issue closed
-    - Issue #23, #24 implementation completed
-        - CPU Opponent Database Inconsistency fixed
-        - Hardcoded Gacha Cost removed
-        - Issues closed
+     - Issue #25 implementation completed
+         - Unify API error messages to English
+         - Add ERROR_MESSAGES constant in src/lib/constants.ts
+         - Add API response type definitions in src/types/api.ts
+         - Update all API routes to use ERROR_MESSAGES constants
+         - Issue closed
+     - Issue #23, #24 implementation completed
+         - CPU Opponent Database Inconsistency fixed
+         - Hardcoded Gacha Cost removed
+         - Issues closed
    - Issue #20 Sentry integration implementation completed
       - Error tracking and automatic GitHub issue creation
       - Design documented in ARCHITECTURE.md

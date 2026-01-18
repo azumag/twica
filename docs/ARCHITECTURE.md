@@ -46,6 +46,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - 静的アセットのCDN配信（Vercel）
 - データベースインデックスによるクエリ最適化
 - データベースクエリフィールド選択の最適化
+- N+1クエリ問題の回避
 
 ### セキュリティ
 - HTTPSでの通信
@@ -156,6 +157,27 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 - [x] レート制限が正しく動作する
 - [x] 既存の機能に回帰がない
 
+### データベースクエリ最適化（Issue #27）
+- [x] すべての `.select('*')` が明示的なフィールド選択に置き換えられる
+- [x] 各APIルートで必要なフィールドのみが選択される
+- [x] TypeScript コンパイルエラーがない
+- [x] ESLint エラーがない
+- [x] 既存のAPIテストがパスする
+- [x] APIレスポンス形式が維持される
+- [x] 既存の機能に回帰がない
+- [x] データ転送量が削減される（50%以上）
+
+### N+1クエリ問題の解決 - Battle Stats API（Issue #28）
+- [x] N+1クエリ問題が解決される
+- [x] 最近の対戦履歴が単一のクエリで取得される
+- [x] APIレスポンス形式が維持される
+- [x] TypeScript コンパイルエラーがない
+- [x] ESLint エラーがない
+- [x] 既存のAPIテストがパスする
+- [x] 既存の機能に回帰がない
+- [x] データベースクエリ数が削減される（10件の対戦で11→1へ）
+- [x] Issue #28 クローズ済み
+
 ---
 
 ## 設計方針
@@ -177,6 +199,7 @@ TwiCaはTwitch配信者向けのカードガチャシステムです。視聴者
 6. **Error Handling**: ユーザーにわかりやすいエラーメッセージを提供
 7. **Observability**: エラー追跡と自動イシュー作成により運用効率を向上
 8. **Performance**: 最小限のデータ転送と効率的なクエリ実行
+9. **Query Optimization**: N+1クエリ問題の回避とJOINの適切な使用
 
 ### 技術選定基準
 - マネージドサービス優先（運用コスト削減）
@@ -219,352 +242,243 @@ graph LR
 
 ---
 
-## Issue #27: Performance - Optimize Database Queries by Selecting Only Required Fields
+## Issue #29: Performance - Fix N+1 Query Problem in Battle Get API
 
 ### 問題
 
-複数のAPIルートで `.select('*')` を使用してデータベーステーブルからすべてのカラムを取得しており、これにより以下の問題が発生している：
-
-1. **パフォーマンス問題**: 不必要なカラムの取得によりデータ転送時間とメモリ使用量が増加する
-2. **データ露出**: アプリケーションロジックで必要ない内部フィールドが露出する可能性がある
-3. **メンテナンスオーバーヘッド**: 新しいカラムが追加されると、明示的な考慮なしに自動的に取得される
+Battle Get API (`src/app/api/battle/[battleId]/route.ts`) にN+1クエリ問題がある。対戦データを取得する際、1つの初期クエリで対戦データとユーザーカード詳細を取得し、その後、別のデータベースクエリを実行して相手カードの詳細を取得している。
 
 ### 問題の詳細
 
-#### Gacha Service
-
-**ファイル**: `src/lib/services/gacha.ts:20`
+#### 現在の実装 (Lines 54-101)
 
 ```typescript
-const { data: cards, error: cardsError } = await this.supabase
+// Get battle with details
+const { data: battleData, error: battleError } = await supabaseAdmin
+  .from('battles')
+  .select(`
+    id,
+    result,
+    turn_count,
+    battle_log,
+    opponent_card_id,
+    user_card:user_cards(
+      user_id,
+      card_id,
+      obtained_at,
+      card:cards(
+        id,
+        name,
+        hp,
+        atk,
+        def,
+        spd,
+        skill_type,
+        skill_name,
+        skill_power,
+        image_url,
+        rarity,
+        streamer:streamers(
+          twitch_user_id
+        )
+      )
+    )
+  `)
+  .eq('id', battleId)
+  .eq('user_id', userData.id)
+  .single()
+
+// Type cast the response to handle relation properly
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const battle = battleData as any
+
+// Get opponent card details (N+1 query - ADDITIONAL QUERY)
+const { data: opponentCard, error: opponentError } = await supabaseAdmin
   .from('cards')
-  .select('*')  // 16個のカラムすべてを取得
-  .eq('streamer_id', streamerId)
-  .eq('is_active', true)
+  .select('id, name, hp, atk, def, spd, skill_type, skill_name, skill_power, image_url, rarity')
+  .eq('id', battle.opponent_card_id)
+  .single()
 ```
 
-**cardsテーブルの全カラム**:
-1. `id` - 必要
-2. `streamer_id` - 不要
-3. `name` - 必要
-4. `description` - 必要
-5. `image_url` - 必要
-6. `rarity` - 必要
-7. `drop_rate` - 必要（重み付き選択アルゴリズム用）
-8. `is_active` - 不要（クエリ条件として使用済み）
-9. `created_at` - 不要
-10. `updated_at` - 不要
-11. `hp` - 不要（バトル機能用）
-12. `atk` - 不要（バトル機能用）
-13. `def` - 不要（バトル機能用）
-14. `spd` - 不要（バトル機能用）
-15. `skill_type` - 不要（バトル機能用）
-16. `skill_name` - 不要（バトル機能用）
-17. `skill_power` - 不要（バトル機能用）
+### 影響
 
-**必要なカラム**:
-- `id` - データベース操作用
-- `drop_rate` - 重み付き選択アルゴリズム用
-- `name` - APIレスポンス用
-- `description` - APIレスポンス用
-- `image_url` - APIレスポンス用
-- `rarity` - APIレスポンス用
-
-**統計**:
-- **取得カラム数**: 17
-- **必要カラム数**: 6
-- **無駄なカラム数**: 11 (64.7%)
-
-#### 他のAPIルートでの類似問題
-
-以下のファイルでも `.select('*')` が使用されている：
-- `src/app/api/battle/start/route.ts`
-- `src/app/api/battle/[battleId]/route.ts`
-- `src/app/api/battle/stats/route.ts`
-- `src/app/api/user-cards/route.ts`
-- `src/app/api/cards/route.ts`
-
-### 影響範囲
-
-- ガチャ機能のパフォーマンス
-- バトル機能のパフォーマンス
-- カード管理機能のパフォーマンス
-- ユーザーカード閲覧のパフォーマンス
+- **パフォーマンス**: 2つのデータベースクエリが実行される
+- **レイテンシ**: 追加クエリはネットワークレイテンシを追加する
+- **データベース負荷**: 不必要なデータベース負荷
+- **一貫性**: Issue #28と同様の問題（Battle Stats APIでは既に修正済み）
 
 ### 優先度
 
-**Medium** - パフォーマンス最適化
+**Medium** - Issue #28と同様のパフォーマンス最適化
 
 ---
 
-## Issue #27: 設計
+## Issue #29: 設計
 
 ### 機能要件
 
-#### 1. 明示的なフィールド選択の実装
+#### 1. N+1クエリ問題の解決
 
-すべてのAPIルートとサービスで、必要なフィールドのみを明示的に選択する：
+Battle Get APIの対戦データ取得において、すべての必要なデータを単一のクエリで取得する：
 
-1. **Gacha Service**
-   - `cards` テーブルから必要なフィールドのみ選択: `id, name, description, image_url, rarity, drop_rate`
+1. **初期クエリの修正**
+   - `battles` テーブルのクエリに `opponent_card` のJOINを追加
+   - 単一のクエリで相手カードの詳細を取得
 
-2. **Battle API**
-   - 適切なフィールドのみ選択
-   - 関連テーブル（cards, streamers）のフィールドも明示的に指定
-
-3. **Cards API**
-   - 必要なフィールドのみ選択
-   - GETとPOSTで異なるフィールドセットを使用
-
-4. **User Cards API**
-   - 必要なフィールドのみ選択
+2. **追加クエリの削除**
+   - 相手カード取得のための追加クエリを削除
+   - `as any` 型キャストを削除（適切な型定義を使用）
 
 ### 非機能要件
 
 #### パフォーマンス
 
-- データ転送量の削減（目標: 50%以上の削減）
-- メモリ使用量の削減
-- クエリ実行時間の短縮
-
-#### コード品質
-
-- コードの意図が明確になる（何のデータを取得しているか一目でわかる）
-- 保守性の向上（新しいフィールド追加時の影響が明確）
+- データベースクエリ数の削減（目標: 2から1へ）
+- APIレスポンス時間の短縮
+- データベース負荷の軽減
 
 #### 互換性
 
 - 既存のAPIレスポンス形式を維持
 - 既存の機能に回帰がない
 
+#### 型安全性
+
+- `as any` 型キャストを削除
+- 適切な型定義を使用
+
+### 型安全性アプローチ
+
+#### 1. コンパイル時 vs 実行時型安全性
+
+**原則**:
+- **コンパイル時型安全性を優先**: TypeScriptの型システムを最大限活用
+- **Supabaseの型システムを直接使用**: データベーススキーマから生成された型を活用
+- **実行時検証は最小限**: 信頼できない外部データのみで実行時検証を使用
+
+**実装ガイドライン**:
+- Supabaseクエリ結果は `as unknown as TargetType` で型付け
+- 型ガード関数では内部キャストに適切な型を使用 (`as Record<string, unknown>` の代わりに `as Card`)
+- APIレスポンス構築では型アサーションを不要にするため、事前に適切な型付けを行う
+
+**パフォーマンス考慮事項**:
+- Supabaseはデータベースレベルでスキーマを強制済み
+- APIはクエリで明示的に選択されたデータのみにアクセス
+- 実行時検証は高トラフィックAPIでは不要なオーバーヘッドを追加
+
 ### 設計
 
-#### 1. Gacha Serviceの最適化
-
-**src/lib/services/gacha.ts**
-
-**変更前**:
-```typescript
-const { data: cards, error: cardsError } = await this.supabase
-  .from('cards')
-  .select('*')
-  .eq('streamer_id', streamerId)
-  .eq('is_active', true)
-```
-
-**変更後**:
-```typescript
-const { data: cards, error: cardsError } = await this.supabase
-  .from('cards')
-  .select('id, name, description, image_url, rarity, drop_rate')
-  .eq('streamer_id', streamerId)
-  .eq('is_active', true)
-```
-
-**理由**:
-- `id`: データベース操作（user_cards, gacha_history）に必要
-- `name`, `description`, `image_url`, `rarity`: APIレスポンス（`GachaSuccessResponse`）に必要
-- `drop_rate`: 重み付き選択アルゴリズム（`selectWeightedCard`）に必要
-
-#### 2. Battle Start APIの最適化
-
-**src/app/api/battle/start/route.ts**
-
-**変更前**:
-```typescript
-const { data: userData, error: userError } = await supabaseAdmin
-  .from('users')
-  .select('*')
-  .eq('twitch_user_id', session.twitchUserId)
-  .single()
-```
-
-**変更後**:
-```typescript
-const { data: userData, error: userError } = await supabaseAdmin
-  .from('users')
-  .select('id, twitch_user_id')
-  .eq('twitch_user_id', session.twitchUserId)
-  .single()
-```
-
-**変更前**:
-```typescript
-const { data: userCardData, error: userCardError } = await supabaseAdmin
-  .from('user_cards')
-  .select(`
-    *,
-    card:cards(
-      *,
-      streamer:streamers(*)
-    )
-  `)
-```
-
-**変更後**:
-```typescript
-const { data: userCardData, error: userCardError } = await supabaseAdmin
-  .from('user_cards')
-  .select(`
-    user_id,
-    card_id,
-    card:cards(
-      id,
-      name,
-      hp,
-      atk,
-      def,
-      spd,
-      skill_type,
-      skill_name,
-      skill_power,
-      image_url,
-      rarity,
-      streamer:streamers(
-        twitch_user_id
-      )
-    )
-  `)
-```
-
-**変更前**:
-```typescript
-const { data: allCards, error: allCardsError } = await supabaseAdmin
-  .from('cards')
-  .select('*')
-  .eq('is_active', true)
-```
-
-**変更後**:
-```typescript
-const { data: allCards, error: allCardsError } = await supabaseAdmin
-  .from('cards')
-  .select('id, name, hp, atk, def, spd, skill_type, skill_name, skill_power, image_url, rarity, drop_rate')
-  .eq('is_active', true)
-```
-
-**理由**:
-- バトルシステムにはカードのステータス（hp, atk, def, spd）とスキル情報が必要
-- `streamer_id` はCPUオポーネント生成では不要
-- `is_active` はクエリ条件として使用済み
-
-#### 3. Battle Get APIの最適化
+#### 1. Battle Get APIの最適化
 
 **src/app/api/battle/[battleId]/route.ts**
 
-**変更前**:
+**変更前** (Lines 54-101):
 ```typescript
-const { data: battle, error } = await supabaseAdmin
-  .from('battles')
-  .select('*')
-  .eq('id', battleId)
-  .single()
-```
-
-**変更後**:
-```typescript
-const { data: battle, error } = await supabaseAdmin
+// Get battle with details
+const { data: battleData, error: battleError } = await supabaseAdmin
   .from('battles')
   .select(`
     id,
     result,
     turn_count,
     battle_log,
-    created_at
-  `)
-  .eq('id', battleId)
-  .single()
-```
-
-**変更前**:
-```typescript
-const { data: userCardData } = await supabaseAdmin
-  .from('user_cards')
-  .select(`
-    *,
-    card:cards(
-      *,
-      streamer:streamers(*)
-    )
-  `)
-```
-
-**変更後**:
-```typescript
-const { data: userCardData } = await supabaseAdmin
-  .from('user_cards')
-  .select(`
-    user_id,
-    card_id,
-    obtained_at,
-    card:cards(
-      id,
-      name,
-      hp,
-      atk,
-      def,
-      spd,
-      skill_type,
-      skill_name,
-      skill_power,
-      image_url,
-      rarity,
-      streamer:streamers(
-        twitch_user_id
+    opponent_card_id,
+    user_card:user_cards(
+      user_id,
+      card_id,
+      obtained_at,
+      card:cards(
+        id,
+        name,
+        hp,
+        atk,
+        def,
+        spd,
+        skill_type,
+        skill_name,
+        skill_power,
+        image_url,
+        rarity,
+        streamer:streamers(
+          twitch_user_id
+        )
       )
     )
   `)
-```
+  .eq('id', battleId)
+  .eq('user_id', userData.id)
+  .single()
 
-**理由**:
-- バトル結果の表示に必要なフィールドのみ選択
-- `user_id` は所有権の検証に必要
+if (battleError || !battleData) {
+  return handleDatabaseError(battleError ?? new Error('Battle not found'), "Failed to fetch battle data")
+}
 
-#### 4. Battle Stats APIの最適化
+// Type cast the response to handle relation properly
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const battle = battleData as any
 
-**src/app/api/battle/stats/route.ts**
-
-**変更前**:
-```typescript
-const { data: stats } = await supabaseAdmin
-  .from('battle_stats')
-  .select('*')
-  .eq('user_id', userId)
+// Get opponent card details (N+1 query - ADDITIONAL QUERY)
+const { data: opponentCard, error: opponentError } = await supabaseAdmin
+  .from('cards')
+  .select('id, name, hp, atk, def, spd, skill_type, skill_name, skill_power, image_url, rarity')
+  .eq('id', battle.opponent_card_id)
   .single()
 ```
 
 **変更後**:
 ```typescript
-const { data: stats } = await supabaseAdmin
-  .from('battle_stats')
-  .select('id, total_battles, wins, losses, draws, win_rate, updated_at')
-  .eq('user_id', userId)
-  .single()
-```
+import type { 
+  BattleLog, 
+  BattleCard, 
+  Card,
+  UserCardWithDetails,
+  CardWithStreamer
+} from '@/types/database'
 
-**変更前**:
-```typescript
-const { data: recentBattles } = await supabaseAdmin
-  .from('battles')
-  .select(`
-    *,
-    opponent_card:cards(
-      *,
-      streamer:streamers(*)
-    )
-  `)
-```
+// Interface for the battle query result from Supabase
+interface BattleQueryResult {
+  id: string
+  result: 'win' | 'lose' | 'draw'
+  turn_count: number
+  battle_log: unknown
+  user_card: {
+    user_id: string
+    card_id: string
+    obtained_at: string
+    card: CardWithStreamer
+  }[]
+  opponent_card: CardWithStreamer[]
+}
 
-**変更後**:
-```typescript
-const { data: recentBattles } = await supabaseAdmin
+// Get battle with all card details (including opponent card)
+const { data: battleData, error: battleError } = await supabaseAdmin
   .from('battles')
   .select(`
     id,
     result,
     turn_count,
     battle_log,
-    created_at,
+    user_card:user_cards(
+      user_id,
+      card_id,
+      obtained_at,
+      card:cards(
+        id,
+        name,
+        hp,
+        atk,
+        def,
+        spd,
+        skill_type,
+        skill_name,
+        skill_power,
+        image_url,
+        rarity,
+        streamer:streamers(
+          twitch_user_id
+        )
+      )
+    ),
     opponent_card:cards(
       id,
       name,
@@ -576,125 +490,113 @@ const { data: recentBattles } = await supabaseAdmin
       skill_name,
       skill_power,
       image_url,
-      rarity,
-      streamer:streamers(
-        twitch_user_id
-      )
+      rarity
     )
   `)
-```
+  .eq('id', battleId)
+  .eq('user_id', userData.id)
+  .single()
 
-#### 5. Cards APIの最適化
+if (battleError || !battleData) {
+  return handleDatabaseError(battleError ?? new Error('Battle not found'), "Failed to fetch battle data")
+}
 
-**src/app/api/cards/route.ts (GET)**
+// Use proper types instead of type assertions
+const battle = battleData as unknown as BattleQueryResult
+const opponentCardRaw = battle.opponent_card
+const opponentCard = opponentCardRaw && opponentCardRaw.length > 0 ? opponentCardRaw[0] : null
 
-**変更前**:
-```typescript
-const { data: cards, error } = await supabaseAdmin
-  .from('cards')
-  .select('*')
-  .eq('streamer_id', streamerId)
-  .eq('is_active', true)
-```
+// Type guard for validating card data (using proper type casting)
+function isValidCard(card: unknown): card is Card {
+  if (!card || typeof card !== 'object') return false
+  const c = card as Card
+  return (
+    typeof c.id === 'string' &&
+    typeof c.name === 'string' &&
+    typeof c.hp === 'number' &&
+    typeof c.atk === 'number' &&
+    typeof c.def === 'number' &&
+    typeof c.spd === 'number' &&
+    typeof c.skill_type === 'string' &&
+    typeof c.skill_name === 'string' &&
+    typeof c.skill_power === 'number' &&
+    typeof c.rarity === 'string'
+  )
+}
 
-**変更後**:
-```typescript
-const { data: cards, error } = await supabaseAdmin
-  .from('cards')
-  .select('id, streamer_id, name, description, image_url, rarity, drop_rate, created_at, updated_at')
-  .eq('streamer_id', streamerId)
-  .eq('is_active', true)
-```
-
-**理由**:
-- `CardResponse` 型で必要なフィールドのみ選択
-- `is_active` はクエリ条件として使用済み
-
-#### 6. User Cards APIの最適化
-
-**src/app/api/user-cards/route.ts**
-
-**変更前**:
-```typescript
-const { data: userCards, error } = await supabaseAdmin
-  .from('user_cards')
-  .select('*')
-```
-
-**変更後**:
-```typescript
-const { data: userCards, error } = await supabaseAdmin
-  .from('user_cards')
-  .select('id, user_id, card_id, obtained_at')
+// Response construction without type assertions
+return NextResponse.json({
+  battleId: battle.id,  // Already typed as string
+  result: battle.result,  // Already typed as string
+  turnCount: battle.turn_count,  // Already typed as number
+  userCard: userBattleCard,
+  opponentCard: opponentBattleCard,
+  logs: logs
+})
 ```
 
 **理由**:
-- APIレスポンスに必要なフィールドのみ選択
-- カード詳細は別途取得する場合が多いため
+- `battles` テーブルには `opponent_card_id` があり、`cards` テーブルを参照している
+- 初期クエリは既に `user_cards` と `cards` をJOINしてユーザーカード詳細を取得している
+- 相手カードJOINを追加するのは簡単で、同じクエリの一部にすべき
+- Issue #28と同様のアプローチ
+- 追加クエリを削除することで `as any` 型キャストも削除できる
 
 ### 変更ファイル
 
-- `src/lib/services/gacha.ts` (更新 - gacha queryの最適化)
-- `src/app/api/battle/start/route.ts` (更新 - battle start queriesの最適化)
-- `src/app/api/battle/[battleId]/route.ts` (更新 - battle get queriesの最適化)
-- `src/app/api/battle/stats/route.ts` (更新 - battle stats queriesの最適化)
-- `src/app/api/cards/route.ts` (更新 - cards queriesの最適化)
-- `src/app/api/user-cards/route.ts` (更新 - user cards queryの最適化)
+- `src/app/api/battle/[battleId]/route.ts` (更新 - 対戦データ取得クエリの最適化)
 
 ### 受け入れ基準
 
-- [x] すべての `.select('*')` が明示的なフィールド選択に置き換えられる
-- [x] 各APIルートで必要なフィールドのみが選択される
-- [x] TypeScript コンパイルエラーがない
-- [x] ESLint エラーがない
-- [x] 既存のAPIテストがパスする
-- [x] APIレスポンス形式が維持される
-- [x] 既存の機能に回帰がない
-- [x] データ転送量が削減される（50%以上を目標）
+- [ ] N+1クエリ問題が解決される
+- [ ] 対戦データが単一のクエリで取得される
+- [ ] APIレスポンス形式が維持される
+- [ ] TypeScript コンパイルエラーがない
+- [ ] ESLint エラーがない
+- [ ] 既存のAPIテストがパスする
+- [ ] 既存の機能に回帰がない
+- [ ] データベースクエリ数が削減される（2→1へ）
+- [ ] `as any` 型キャストが削除される
 
 ### テスト計画
 
 1. **単体テスト**:
    - 既存の単体テストがパスすることを確認
-   - 各APIルートで正しいデータが返されることを確認
+   - Battle Get APIが正しいデータを返すことを確認
 
 2. **統合テスト**:
-   - 各APIルートの統合テストがパスすることを確認
+   - Battle Get APIの統合テストがパスすることを確認
    - APIレスポンス形式が変更されていないことを確認
 
 3. **パフォーマンステスト**:
-   - 最適化前後でデータ転送量を比較
-   - クエリ実行時間を計測
+   - 最適化前後でクエリ数を比較
+   - APIレスポンス時間を計測
+   - データベースクエリ数を検証（1回のみであることを確認）
 
 4. **手動テスト**:
-   - すべての機能が正しく動作することを確認
-   - APIレスポンスが正しいことを確認
+   - 対戦詳細ページが正しく表示されることを確認
+   - 対戦履歴の各対戦が正しく表示されることを確認
 
 ### トレードオフの検討
 
-#### select('*') vs 明示的なフィールド選択
+#### 現在の実装 vs 最適化された実装
 
-| 項目 | select('*') | 明示的な選択 |
-|:---|:---|:|
-| **実装の容易さ** | 高 | 低（初期実装時） |
-| **コードの明確さ** | 低 | 高 |
-| **パフォーマンス** | 低 | 高 |
-| **データ露出** | 高 | 低 |
-| **保守性** | 低 | 高 |
-| **バグの発見** | 難しい | 容易 |
+| 項目 | 現在の実装 (N+1) | 最適化された実装 |
+|:---|:---|:---|
+| **実装の複雑さ** | 低 | 中（JOINを使用） |
+| **データベースクエリ数** | 2 | 1 |
+| **APIレスポンス時間** | 遅い（追加のネットワークレイテンシ） | 速い（単一クエリ） |
+| **データベース負荷** | 高 | 低 |
+| **型安全性** | 低（`as any`を使用） | 高（適切な型定義） |
+| **コードの可読性** | 高 | 高 |
+| **一貫性** | 低（Battle Stats APIと不一致） | 高（Battle Stats APIと一致） |
 
-**推奨**: 明示的なフィールド選択（ベストプラクティス）
+**推奨**: 最適化された実装（JOINを使用）
 
-#### 変更の範囲
+### 関連問題
 
-| 項目 | 全体最適化 | 段階的適用 |
-|:---|:---|:|
-| **即時の効果** | 高 | 中 |
-| **リスク** | 中 | 低 |
-| **実装時間** | 長 | 短 |
-| **テスト範囲** | 広 | 狭 |
-
-**推奨**: 全体最適化（影響範囲を明確にするため）
+- Issue #28: Battle Stats APIのN+1クエリ問題（解決済み）
+- 同じパターンを使用することで、コードベース全体で一貫性を維持
 
 ---
 
@@ -702,13 +604,45 @@ const { data: userCards, error } = await supabaseAdmin
 
 | 日付 | 変更内容 |
 |:---|:---|
+| 2026-01-18 | Issue #29 N+1クエリ問題の設計追加 |
+| 2026-01-18 | Issue #28 N+1クエリ問題の実装完了・クローズ |
+| 2026-01-18 | Issue #27 データベースクエリ最適化の実装完了 |
 | 2026-01-18 | Issue #27 データベースクエリ最適化の設計追加 |
 | 2026-01-17 | Issue #26 レート制限のfail-open問題の実装完了 |
 | 2026-01-17 | Issue #25 エラーメッセージの一貫性問題の実装完了 |
 
 ---
 
-## Issue #26: Critical Security - Rate Limiting Fails Open on Error (実装完了)
+## 実装完了の問題
+
+### Issue #28: Performance - Fix N+1 Query Problem in Battle Stats API (解決済み)
+
+### 実装内容
+
+- [x] N+1クエリ問題が解決される
+- [x] 最近の対戦履歴が単一のクエリで取得される
+- [x] APIレスポンス形式が維持される
+- [x] TypeScript コンパイルエラーなし
+- [x] ESLint エラーなし
+- [x] CIが成功
+- [x] Issue #28 クローズ済み
+
+---
+
+### Issue #27: Performance - Optimize Database Queries by Selecting Only Required Fields (解決済み)
+
+### 実装内容
+
+- [x] すべての `.select('*')` が明示的なフィールド選択に置き換えられる
+- [x] 各APIルートで必要なフィールドのみが選択される
+- [x] TypeScript コンパイルエラーなし
+- [x] ESLint エラーなし
+- [x] CIが成功
+- [x] Issue #27 クローズ済み
+
+---
+
+### Issue #26: Critical Security - Rate Limiting Fails Open on Error (解決済み)
 
 ### 実装内容
 
@@ -724,7 +658,7 @@ const { data: userCards, error } = await supabaseAdmin
 
 ---
 
-## Issue #25: Inconsistent Error Messages in API Responses (実装完了)
+### Issue #25: Inconsistent Error Messages in API Responses (解決済み)
 
 ### 実装内容
 

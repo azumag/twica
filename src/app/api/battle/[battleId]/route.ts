@@ -4,6 +4,61 @@ import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import type { 
+  BattleLog, 
+  BattleCard, 
+  Card,
+  UserCardWithDetails,
+  CardWithStreamer
+} from '@/types/database'
+
+// Interface for the battle query result from Supabase
+interface BattleQueryResult {
+  id: string
+  result: 'win' | 'lose' | 'draw'
+  turn_count: number
+  battle_log: unknown
+  user_card: {
+    user_id: string
+    card_id: string
+    obtained_at: string
+    card: CardWithStreamer
+  }[]
+  opponent_card: CardWithStreamer[]
+}
+
+// Type guard for validating card data
+function isValidCard(card: unknown): card is Card {
+  if (!card || typeof card !== 'object') return false
+  const c = card as Card
+  return (
+    typeof c.id === 'string' &&
+    typeof c.name === 'string' &&
+    typeof c.hp === 'number' &&
+    typeof c.atk === 'number' &&
+    typeof c.def === 'number' &&
+    typeof c.spd === 'number' &&
+    typeof c.skill_type === 'string' &&
+    typeof c.skill_name === 'string' &&
+    typeof c.skill_power === 'number' &&
+    typeof c.rarity === 'string'
+  )
+}
+
+// Type guard for validating battle log
+function isValidBattleLog(log: unknown): log is BattleLog[] {
+  if (!Array.isArray(log)) return false
+  return log.every(item => {
+    if (!item || typeof item !== 'object') return false
+    const l = item as BattleLog
+    return (
+      typeof l.turn === 'number' &&
+      (l.actor === 'user' || l.actor === 'opponent') &&
+      (l.action === 'attack' || l.action === 'skill') &&
+      typeof l.message === 'string'
+    )
+  })
+}
 
 export async function GET(
   request: NextRequest,
@@ -50,7 +105,7 @@ export async function GET(
       return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
     }
 
-    // Get battle with details
+    // Get battle with all card details (including opponent card)
     const { data: battleData, error: battleError } = await supabaseAdmin
       .from('battles')
       .select(`
@@ -58,7 +113,6 @@ export async function GET(
         result,
         turn_count,
         battle_log,
-        opponent_card_id,
         user_card:user_cards(
           user_id,
           card_id,
@@ -79,6 +133,19 @@ export async function GET(
               twitch_user_id
             )
           )
+        ),
+        opponent_card:cards(
+          id,
+          name,
+          hp,
+          atk,
+          def,
+          spd,
+          skill_type,
+          skill_name,
+          skill_power,
+          image_url,
+          rarity
         )
       `)
       .eq('id', battleId)
@@ -89,31 +156,61 @@ export async function GET(
       return handleDatabaseError(battleError ?? new Error('Battle not found'), "Failed to fetch battle data")
     }
 
-    // Type cast the response to handle relation properly
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const battle = battleData as any
+    // Type the battle data using proper types
+    const battle = battleData as unknown as BattleQueryResult
+    const opponentCardRaw = battle.opponent_card
 
-    // Get opponent card details
-    const { data: opponentCard, error: opponentError } = await supabaseAdmin
-      .from('cards')
-      .select('id, name, hp, atk, def, spd, skill_type, skill_name, skill_power, image_url, rarity')
-      .eq('id', battle.opponent_card_id)
-      .single()
+    // Validate opponent card
+    const opponentCard = opponentCardRaw && opponentCardRaw.length > 0 && isValidCard(opponentCardRaw[0]) ? opponentCardRaw[0] : null
 
-    if (opponentError) {
+    // Validate and extract battle log early
+    const battleLogRaw = battle.battle_log
+    const logs = isValidBattleLog(battleLogRaw) ? battleLogRaw : []
+
+    // Validate user card data with null safety
+    const userCardDataRaw = battle.user_card
+    if (!userCardDataRaw || typeof userCardDataRaw !== 'object') {
+      return handleApiError(new Error('Invalid user card data'), "Battle Get API")
+    }
+
+    const userCardData = userCardDataRaw[0] as unknown as UserCardWithDetails
+    const userCardRaw = userCardData.card
+    if (!isValidCard(userCardRaw)) {
+      return handleApiError(new Error('Invalid card data'), "Battle Get API")
+    }
+
+    const userCard = userCardRaw
+
+    if (!opponentCard) {
       // If opponent card not found (might be CPU), create a default
-      const cpuCard = {
+      const cpuCard: BattleCard = {
         id: 'cpu-unknown',
         name: 'CPUカード',
         hp: 100,
+        currentHp: 0, // CPU card - no battle history
         atk: 30,
         def: 15,
         spd: 5,
-        skill_type: 'attack' as const,
+        skill_type: 'attack',
         skill_name: 'CPU攻撃',
         skill_power: 10,
         image_url: null,
-        rarity: 'common' as const
+        rarity: 'common'
+      }
+      
+      const userBattleCard: BattleCard = {
+        id: userCard.id,
+        name: userCard.name,
+        hp: userCard.hp,
+        currentHp: 0, // HP not tracked for CPU cards
+        atk: userCard.atk,
+        def: userCard.def,
+        spd: userCard.spd,
+        skill_type: userCard.skill_type,
+        skill_name: userCard.skill_name,
+        skill_power: userCard.skill_power,
+        image_url: userCard.image_url,
+        rarity: userCard.rarity
       }
       
       return NextResponse.json({
@@ -121,34 +218,14 @@ export async function GET(
         status: 'completed',
         result: battle.result,
         turnCount: battle.turn_count,
-        userCard: {
-          id: battle.user_card.card.id,
-          name: battle.user_card.card.name,
-          hp: battle.user_card.card.hp,
-          currentHp: 0, // Would need to calculate from battle log
-          atk: battle.user_card.card.atk,
-          def: battle.user_card.card.def,
-          spd: battle.user_card.card.spd,
-          skill_type: battle.user_card.card.skill_type,
-          skill_name: battle.user_card.card.skill_name,
-          image_url: battle.user_card.card.image_url,
-          rarity: battle.user_card.card.rarity
-        },
+        userCard: userBattleCard,
         opponentCard: cpuCard,
-        logs: battle.battle_log || []
+        logs: logs
       })
     }
 
-    // Calculate final HP from battle log
-    const logs = (battle.battle_log as Array<{
-      turn: number
-      actor: 'user' | 'opponent'
-      action: 'attack' | 'skill'
-      damage?: number
-      heal?: number
-      message: string
-    }>) || []
-    let userHp = battle.user_card.card.hp
+    // Calculate final HP from battle log (already validated above)
+    let userHp = userCard.hp
     let opponentHp = opponentCard.hp
 
     logs.forEach(log => {
@@ -158,44 +235,50 @@ export async function GET(
         userHp -= log.damage
       }
       if (log.actor === 'user' && log.heal) {
-        userHp = Math.min(battle.user_card.card.hp, userHp + log.heal)
+        userHp = Math.min(userCard.hp, userHp + log.heal)
       } else if (log.actor === 'opponent' && log.heal) {
         opponentHp = Math.min(opponentCard.hp, opponentHp + log.heal)
       }
     })
+
+    const userBattleCard: BattleCard = {
+      id: userCard.id,
+      name: userCard.name,
+      hp: userCard.hp,
+      currentHp: Math.max(0, userHp),
+      atk: userCard.atk,
+      def: userCard.def,
+      spd: userCard.spd,
+      skill_type: userCard.skill_type,
+      skill_name: userCard.skill_name,
+      skill_power: userCard.skill_power,
+      image_url: userCard.image_url,
+      rarity: userCard.rarity
+    }
+
+    const opponentBattleCard: BattleCard = {
+      id: opponentCard.id,
+      name: opponentCard.name.startsWith('CPUの') ? opponentCard.name : `CPUの${opponentCard.name}`,
+      hp: opponentCard.hp,
+      currentHp: Math.max(0, opponentHp),
+      atk: opponentCard.atk,
+      def: opponentCard.def,
+      spd: opponentCard.spd,
+      skill_type: opponentCard.skill_type,
+      skill_name: opponentCard.skill_name,
+      skill_power: opponentCard.skill_power,
+      image_url: opponentCard.image_url,
+      rarity: opponentCard.rarity
+    }
 
     return NextResponse.json({
       battleId: battle.id,
       status: 'completed',
       result: battle.result,
       turnCount: battle.turn_count,
-      userCard: {
-        id: battle.user_card.card.id,
-        name: battle.user_card.card.name,
-        hp: battle.user_card.card.hp,
-        currentHp: Math.max(0, userHp),
-        atk: battle.user_card.card.atk,
-        def: battle.user_card.card.def,
-        spd: battle.user_card.card.spd,
-        skill_type: battle.user_card.card.skill_type,
-        skill_name: battle.user_card.card.skill_name,
-        image_url: battle.user_card.card.image_url,
-        rarity: battle.user_card.card.rarity
-      },
-      opponentCard: {
-        id: opponentCard.id,
-        name: opponentCard.name.startsWith('CPUの') ? opponentCard.name : `CPUの${opponentCard.name}`,
-        hp: opponentCard.hp,
-        currentHp: Math.max(0, opponentHp),
-        atk: opponentCard.atk,
-        def: opponentCard.def,
-        spd: opponentCard.spd,
-        skill_type: opponentCard.skill_type,
-        skill_name: opponentCard.skill_name,
-        image_url: opponentCard.image_url,
-        rarity: opponentCard.rarity
-      },
-      logs: battle.battle_log || []
+      userCard: userBattleCard,
+      opponentCard: opponentBattleCard,
+      logs: logs
     })
 
   } catch (error) {
