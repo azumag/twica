@@ -7,8 +7,7 @@ import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import { reportBattleError } from '@/lib/sentry/error-handler'
 import { setUserContext, setRequestContext, setGameContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES } from '@/lib/constants'
-import type { Card, CardWithStreamer } from '@/types/database'
-import type { BattleCardData } from '@/lib/battle'
+import type { CardWithStreamer } from '@/types/database'
 
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
@@ -128,8 +127,8 @@ export async function POST(request: NextRequest) {
 
     // Convert to BattleCard format with proper types
     const userCardQuery = userCardData as unknown as UserCardQueryResult
-    const userCardDataForBattle: Card | BattleCardData = userCardQuery.card
-    const opponentBattleCard = generateCPUOpponent(allCards as (Card | BattleCardData)[])
+    const userCardDataForBattle = userCardQuery.card
+    const opponentBattleCard = generateCPUOpponent(allCards)
     const userBattleCard = toBattleCard(userCardDataForBattle)
 
     // Play the battle
