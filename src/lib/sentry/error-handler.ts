@@ -1,7 +1,6 @@
 import * as Sentry from '@sentry/nextjs'
 
 export function reportError(error: Error | unknown, context?: Record<string, unknown>) {
-  console.log('[Sentry] Reporting error:', error)
   Sentry.withScope((scope) => {
     if (context) {
       Object.entries(context).forEach(([key, value]) => {
@@ -17,7 +16,6 @@ export function reportError(error: Error | unknown, context?: Record<string, unk
       Sentry.captureMessage(String(error), 'warning')
     }
   })
-  console.log('[Sentry] Error reported')
 }
 
 export function reportMessage(message: string, level: 'info' | 'warning' | 'error' = 'info', context?: Record<string, unknown>) {

@@ -13,7 +13,6 @@ export async function GET() {
 
     return NextResponse.json(session)
   } catch (error) {
-    console.log('[Session API] Error caught:', error)
     return handleApiError(error, "Session API: GET")
   }
 }
