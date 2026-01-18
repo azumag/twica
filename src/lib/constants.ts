@@ -180,3 +180,12 @@ export const BATTLE_CONFIG = {
   RANDOM_RANGE: 100,
   SPECIAL_SKILL_DAMAGE_MULTIPLIER: 1.5,
 } as const
+
+export const SECURITY_HEADERS = {
+  X_CONTENT_TYPE_OPTIONS: 'nosniff',
+  X_FRAME_OPTIONS: 'DENY',
+  X_XSS_PROTECTION: '1; mode=block',
+  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;",
+  CSP_PRODUCTION: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;",
+  HSTS: 'max-age=31536000; includeSubDomains; preload',
+} as const

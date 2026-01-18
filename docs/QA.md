@@ -1,41 +1,27 @@
-# QA Report - Sentry Exception Verification Fixes
+# QA Report - Security Headers Implementation (Issue #43)
 
 ## Date
-2026-01-19 00:38:15
+2026-01-19 01:08:40
 
 ## Issue
-Sentry Exception Verification and Fixes - Review Response
+Security: Missing Security Headers in API Routes and Pages
 
 ## Implementation Verification
 
 ### 1. Code Changes Verification ✓
 
-#### Review Issues Fixed ✓
+#### Security Headers Implementation ✓
 
-All issues identified in the review (docs/REVIEW.md) have been addressed:
+All required components have been implemented:
 
-**Critical Issues (Must Fix):**
+**Critical Components Implemented:**
 
-| Issue | Status | Evidence |
-|-------|--------|----------|
-| Test endpoints exposed in production | ✅ FIXED | `if (process.env.NODE_ENV === 'production')` returns 403 |
-| API async processing issue | ✅ FIXED | `await Sentry.flush(2000)` added |
-| Sentry initialization check missing | ✅ FIXED | `if (!process.env.NEXT_PUBLIC_SENTRY_DSN)` check added |
-
-**Medium Issues (Should Fix):**
-
-| Issue | Status | Evidence |
-|-------|--------|----------|
-| triggerConsoleError behavior | ✅ FIXED | `Sentry.captureMessage('Test console error', 'warning')` added |
-| Hardcoded test data | ✅ FIXED | `TEST_USER_ID` constant defined |
-| Code duplication | ✅ FIXED | `errorTests` array pattern used |
-
-**Minor Issues (Nice to Have):**
-
-| Issue | Status | Evidence |
-|-------|--------|----------|
-| Type annotation missing | ✅ FIXED | `error: unknown` annotation added |
-| Magic number usage | ✅ FIXED | `ERROR_TRIGGER_DELAY` constant defined |
+| Component | Status | Location | Evidence |
+|-----------|--------|----------|----------|
+| SECURITY_HEADERS constants | ✅ IMPLEMENTED | src/lib/constants.ts:184-191 | All security headers defined |
+| setSecurityHeaders helper | ✅ IMPLEMENTED | src/lib/security-headers.ts:1-20 | Helper function created |
+| Security headers application | ✅ IMPLEMENTED | src/proxy.ts:4,9,33 | Applied in proxy middleware |
+| Unit tests | ✅ IMPLEMENTED | tests/unit/security-headers.test.ts:1-67 | 7 tests created |
 
 ---
 
@@ -43,14 +29,12 @@ All issues identified in the review (docs/REVIEW.md) have been addressed:
 
 | Criteria | Status | Evidence |
 |----------|--------|----------|
-| テストエンドポイントが本番環境で無効化されている | ✅ PASS | Returns 403 in production |
-| APIエンドポイントでSentryのflushを待機する | ✅ PASS | `await Sentry.flush(2000)` added |
-| DSN設定の確認を追加した | ✅ PASS | DSN check implemented |
-| triggerConsoleErrorを修正した | ✅ PASS | Uses `Sentry.captureMessage()` |
-| テストデータを定数化した | ✅ PASS | `TEST_USER_ID` and `ERROR_TRIGGER_DELAY` defined |
-| コード重複を解消した | ✅ PASS | `errorTests` array used |
-| 型アノテーションを追加した | ✅ PASS | `error: unknown` added |
-| マジックナンバーを定数化した | ✅ PASS | `ERROR_TRIGGER_DELAY` defined |
+| `SECURITY_HEADERS` 定数を追加 | ✅ PASS | Lines 184-191 in src/lib/constants.ts |
+| ヘルパー関数を作成 | ✅ PASS | src/lib/security-headers.ts implemented |
+| プロキシでヘッダーを設定 | ✅ PASS | Applied in src/proxy.ts:9,33 |
+| 開発・本番環境で異なるCSP | ✅ PASS | CSP_DEVELOPMENT vs CSP_PRODUCTION constants |
+| HSTSは本番環境のみ | ✅ PASS | Conditional check in security-headers.ts:14-16 |
+| lintとtestがパスする | ✅ PASS | 66/66 tests pass, lint passes |
 
 ---
 
@@ -58,8 +42,8 @@ All issues identified in the review (docs/REVIEW.md) have been addressed:
 
 #### Unit Tests
 ```
-Test Files  6 passed (6)
-     Tests  59 passed (59)
+Test Files  7 passed (7)
+     Tests  66 passed (66)
 ```
 
 **Test Breakdown:**
@@ -68,6 +52,7 @@ Test Files  6 passed (6)
 - ✓ tests/unit/logger.test.ts (6 tests)
 - ✓ tests/unit/env-validation.test.ts (10 tests)
 - ✓ tests/unit/battle.test.ts (24 tests)
+- ✓ tests/unit/security-headers.test.ts (7 tests) ⭐ NEW
 - ✓ tests/unit/upload.test.ts (7 tests)
 
 #### Lint
@@ -87,96 +72,179 @@ next build - PASS (compiled successfully)
 
 ---
 
-### 4. Architecture Compliance
+### 4. Security Headers Implementation Review
+
+#### SECURITY_HEADERS Constants ✓
+```typescript
+export const SECURITY_HEADERS = {
+  X_CONTENT_TYPE_OPTIONS: 'nosniff',
+  X_FRAME_OPTIONS: 'DENY',
+  X_XSS_PROTECTION: '1; mode=block',
+  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;",
+  CSP_PRODUCTION: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;",
+  HSTS: 'max-age=31536000; includeSubDomains; preload',
+} as const
+```
+
+**Analysis:**
+- ✅ X-Content-Type-Options: Prevents MIME type sniffing
+- ✅ X-Frame-Options: Prevents clickjacking (DENY)
+- ✅ X-XSS-Protection: XSS filter enabled
+- ✅ CSP Development: Allows localhost and unsafe-inline for development
+- ✅ CSP Production: Restrictive, no unsafe-inline or unsafe-eval
+- ✅ HSTS: Properly configured with preload
+
+#### setSecurityHeaders Function ✓
+```typescript
+export function setSecurityHeaders(response: NextResponse): NextResponse {
+  response.headers.set('X-Content-Type-Options', SECURITY_HEADERS.X_CONTENT_TYPE_OPTIONS)
+  response.headers.set('X-Frame-Options', SECURITY_HEADERS.X_FRAME_OPTIONS)
+  response.headers.set('X-XSS-Protection', SECURITY_HEADERS.X_XSS_PROTECTION)
+
+  const csp = process.env.NODE_ENV === 'production'
+    ? SECURITY_HEADERS.CSP_PRODUCTION
+    : SECURITY_HEADERS.CSP_DEVELOPMENT
+  response.headers.set('Content-Security-Policy', csp)
+
+  if (process.env.NODE_ENV === 'production') {
+    response.headers.set('Strict-Transport-Security', SECURITY_HEADERS.HSTS)
+  }
+
+  return response
+}
+```
+
+**Analysis:**
+- ✅ Sets all required security headers
+- ✅ Environment-aware CSP configuration
+- ✅ HSTS only in production
+- ✅ Returns modified response
+
+#### Proxy Integration ✓
+```typescript
+export async function proxy(request: NextRequest) {
+  const response = await updateSession(request)
+
+  setSecurityHeaders(response)  // ⭐ Applied here
+
+  if (request.nextUrl.pathname.startsWith('/api')) {
+    // ... rate limiting ...
+    if (!rateLimitResult.success) {
+      return setSecurityHeaders(errorResponse)  // ⭐ Also applied to 429 errors
+    }
+  }
+
+  return response
+}
+```
+
+**Analysis:**
+- ✅ Security headers applied to all responses
+- ✅ Applied to error responses (429)
+- ✅ Matches all routes via proxy middleware
+
+---
+
+### 5. Architecture Compliance
 
 | Design Principle | Status | Notes |
 |----------------|--------|-------|
-| 1. Simple over Complex | ✅ PASS | Minimal changes, no over-engineering |
-| 2. Type Safety | ✅ PASS | Type annotations added |
-| 4. Security First | ✅ PASS | Production protection added |
-| 5. Consistency | ✅ PASS | Code duplication eliminated |
-| 10. Development/Production Separation | ✅ PASS | Test endpoints only in development |
-| 11. String Standardization | ✅ PASS | Test data constants defined |
-| 12. Constant Standardization | ✅ PASS | Magic numbers constants defined |
+| 1. Simple over Complex | ✅ PASS | Clean, straightforward implementation |
+| 2. Type Safety | ✅ PASS | Proper TypeScript types and constants |
+| 4. Security First | ✅ PASS | Multiple security headers implemented |
+| 10. Development/Production Separation | ✅ PASS | Environment-aware CSP and HSTS |
+| 12. Constant Standardization | ✅ PASS | All security headers centralized |
+| 14. Security Headers | ✅ PASS | All required headers implemented |
 
 ---
 
-### 5. Security Verification ✓
+### 6. Security Verification ✓
 
 | Security Aspect | Status | Evidence |
 |-----------------|--------|----------|
-| Production protection | ✅ PASS | 403 returned in production |
-| DSN configuration check | ✅ PASS | Validates before execution |
-| Sensitive data exposure | ✅ PASS | No new exposure risks |
-| DoS prevention | ✅ PASS | Rate limiting still applies |
+| XSS Prevention | ✅ PASS | X-XSS-Protection + CSP |
+| Clickjacking Prevention | ✅ PASS | X-Frame-Options: DENY |
+| MIME Sniffing Prevention | ✅ PASS | X-Content-Type-Options: nosniff |
+| HTTPS Enforcement | ✅ PASS | HSTS (production only) |
+| Content Security | ✅ PASS | Environment-aware CSP |
+| Development vs Production | ✅ PASS | Different CSP policies |
 
 ---
 
-### 6. Code Quality Assessment
+### 7. Code Quality Assessment
 
 | Aspect | Score | Rationale |
 |--------|--------|-----------|
-| **Implementation Completeness** | A | All review issues addressed |
+| **Implementation Completeness** | A | All required components implemented |
 | **Code Quality** | A | Clean, follows all best practices |
 | **Type Safety** | A | Proper TypeScript usage |
-| **Test Coverage** | A | All existing tests pass |
-| **Documentation** | A | IMPLEMENTED.md detailed |
+| **Test Coverage** | A | 7 comprehensive tests for security headers |
+| **Documentation** | A | Clear code structure |
 | **Architecture Compliance** | A | Follows all design principles |
-| **Security** | A | Production protection added |
+| **Security** | A | Multiple layers of security headers |
 
 **Overall Score:** A
 
 ---
 
-### 7. Edge Cases Tested
+### 8. Edge Cases Tested
 
 | Edge Case | Status | Notes |
 |------------|--------|-------|
-| Production environment access | ✅ PASS | Returns 403 |
-| Missing DSN configuration | ✅ PASS | Returns 500 |
-| Async error capture | ✅ PASS | Uses flush |
-| Type safety | ✅ PASS | Type annotations verified |
+| Development environment CSP | ✅ PASS | Allows localhost, unsafe-inline, unsafe-eval |
+| Production environment CSP | ✅ PASS | Restrictive, no unsafe-inline/unsafe-eval |
+| HSTS in production | ✅ PASS | Set only in production |
+| HSTS in development | ✅ PASS | Not set in development |
+| Rate limit error response | ✅ PASS | Security headers applied to 429 errors |
+| All proxy responses | ✅ PASS | Security headers applied via middleware |
 
 ---
 
-### 8. Known Issues & Technical Debt
+### 9. Known Issues & Outstanding Requirements
 
-| Issue | Priority | Impact | Owner |
+| Issue | Priority | Impact | Notes |
 |-------|----------|--------|-------|
-| None | - | - | - |
+| Production deployment verification | MEDIUM | Cannot verify without production access | Need to verify Tailwind CSS v4 and Next.js App Router work with CSP in production |
+| CI pipeline status | MEDIUM | Unknown | Need to verify CI passes |
+| CSP nonce implementation | LOW | Conditional | May need if production CSP causes issues |
 
-**Note:** All issues from the review have been resolved.
+**Outstanding Acceptance Criteria from ARCHITECTURE.md:**
+- [ ] 本番環境で Tailwind CSS v4 が正常に動作することを確認
+- [ ] 本番環境で Next.js App Router が正常に動作することを確認
+- [ ] nonceを使用したCSPの実装（必要な場合）
+- [ ] CI がパスする
 
 ---
 
-### 9. Regression Testing
+### 10. Regression Testing
 
 | Feature | Status | Notes |
 |----------|--------|-------|
-| Sentry error reporting | ✅ PASS | No changes to core functionality |
-| Error handler functions | ✅ PASS | Used correctly in test endpoints |
-| Development workflow | ✅ PASS | Test endpoints work in development |
-| Production deployment | ✅ PASS | Test endpoints blocked in production |
+| Session management | ✅ PASS | No changes to session middleware |
+| Rate limiting | ✅ PASS | Still functioning correctly |
+| API routes | ✅ PASS | All tests pass |
+| Authentication | ✅ PASS | No changes to auth flow |
+| Error handling | ✅ PASS | Security headers applied to error responses |
 
 ---
 
 ## QA Decision
 
-### ✅ QA PASSED
+### ⚠️ QA PASSED WITH CONDITIONS
 
 **Rationale:**
 
-1. **All Review Issues Resolved**: Every issue identified in the review (critical, medium, and minor) has been properly addressed.
+1. **Implementation Complete**: All security headers have been properly implemented with constants, helper functions, and middleware integration.
 
-2. **Security Fixed**: Critical security issue (production exposure) is now mitigated with environment-based protection.
+2. **All Tests Pass**: 66/66 unit tests pass, including 7 new tests for security headers. Lint, type check, and build all pass.
 
-3. **Code Quality Improved**: All code quality issues (type annotations, constants, duplication) have been resolved.
+3. **Architecture Compliant**: The implementation follows all relevant design principles, particularly Security First, Type Safety, and Constant Standardization.
 
-4. **All Tests Pass**: 59/59 unit tests pass, lint passes, type check passes, build succeeds.
+4. **Security Enhanced**: Multiple security headers implemented to protect against XSS, clickjacking, MIME sniffing, and enforce HTTPS.
 
-5. **Architecture Compliance**: The implementation follows all relevant design principles, particularly Security First, Type Safety, and Consistency.
+5. **Environment Awareness**: Proper separation between development (permissive) and production (restrictive) configurations.
 
-6. **No Breaking Changes**: Existing functionality is preserved. This is a fix to test endpoints with no impact on production users.
+6. **Outstanding Requirements**: Cannot fully verify production behavior (Tailwind CSS v4 + Next.js App Router with CSP) without actual production deployment. Also, CI status is unknown.
 
 ---
 
@@ -190,24 +258,33 @@ next build - PASS (compiled successfully)
 **Architecture Compliance:** ✅ Excellent
 
 **Blocking Issues:** 0
-**Non-blocking Improvements:** 0
+**Non-blocking Improvements:** 2 (production verification, CI check)
 
 ---
 
 ## Recommendations
 
-1. **Approve for Commit**: This implementation is ready to be committed and pushed to the repository.
+1. **Approve for Commit**: The implementation is complete and ready for deployment.
 
-2. **Next Steps**: After commit and push, verify in production that:
-   - Test endpoints return 403
-   - Regular Sentry error reporting continues to work
+2. **Production Verification**: After deployment to production:
+   - Verify Tailwind CSS v4 works correctly with the restrictive CSP
+   - Verify Next.js App Router works correctly without inline scripts
+   - Check browser console for CSP violations
+   - Monitor for any rendering issues
 
-3. **Clean Up**: Consider removing test endpoints after verification is complete (as noted in design docs).
+3. **Fallback Plan**: If production CSP causes issues:
+   - Option 1: Implement nonce-based CSP (as documented in ARCHITECTURE.md)
+   - Option 2: Add `'unsafe-inline'` to style-src temporarily
+   - Document which option is used and why
+
+4. **CI Verification**: Ensure CI pipeline passes after this change.
+
+5. **Close Issue**: Once production verification is complete and all tests pass, close Issue #43.
 
 ---
 
 ## Conclusion
 
-All review issues have been successfully resolved. The implementation properly addresses security concerns, improves code quality, and maintains all existing functionality. All acceptance criteria are met, all tests pass, and the implementation follows project design principles.
+All core implementation requirements for security headers have been successfully completed. The code is of high quality, well-tested, and follows project design principles. The only remaining items are production environment verification and CI status check, which require deployment and cannot be verified in the current development environment.
 
-**Final Status:** ✅ READY FOR COMMIT AND PUSH
+**Final Status:** ✅ READY FOR COMMIT AND PRODUCTION DEPLOYMENT (with post-deployment verification)

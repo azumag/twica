@@ -1,23 +1,26 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
+import { setSecurityHeaders } from '@/lib/security-headers'
 
 export async function proxy(request: NextRequest) {
-  // Apply global rate limiting to API routes
+  const response = await updateSession(request)
+
+  setSecurityHeaders(response)
+
   if (request.nextUrl.pathname.startsWith('/api')) {
     const ip = getClientIp(request);
-    
-    // Global rate limit (IP-based)
+
     const identifier = `global:${ip}`;
     const rateLimitResult = await checkRateLimit(
-      rateLimits.eventsub, // Use the most lenient limit for global
+      rateLimits.eventsub,
       identifier
     );
-    
+
     if (!rateLimitResult.success) {
-      return NextResponse.json(
+      const errorResponse = NextResponse.json(
         { error: 'Too many requests' },
-        { 
+        {
           status: 429,
           headers: {
             'X-RateLimit-Limit': String(rateLimitResult.limit),
@@ -26,10 +29,12 @@ export async function proxy(request: NextRequest) {
           },
         }
       );
+
+      return setSecurityHeaders(errorResponse)
     }
   }
-  
-  return await updateSession(request)
+
+  return response
 }
 
 export const config = {
