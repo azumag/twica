@@ -1,56 +1,20 @@
-import * as Sentry from '@sentry/nextjs'
+// This file configures the initialization of Sentry for edge features (middleware, edge routes, and so on).
+// The config you add here will be used whenever one of the edge features is loaded.
+// Note that this config is unrelated to the Vercel Edge Runtime and is also required when running locally.
+// https://docs.sentry.io/platforms/javascript/guides/nextjs/
+
+import * as Sentry from "@sentry/nextjs";
 
 Sentry.init({
-  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
-  tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
-  debug: process.env.NODE_ENV === 'development',
-  
-  beforeSend(event, hint) {
-    // Filter out sensitive information
-    if (event.user) {
-      delete event.user.email
-      delete event.user.ip_address
-    }
+  dsn: "https://71832ece44069cf646ab822dea3fb483@o4510724437245952.ingest.us.sentry.io/4510731008016384",
 
-    // Add custom context for debugging
-    if (event.exception) {
-      const error = hint.originalException
-      if (error instanceof Error) {
-        event.contexts = {
-          ...event.contexts,
-          custom: {
-            ...event.contexts?.custom,
-            errorMessage: error.message,
-            errorName: error.name,
-          }
-        }
-      }
-    }
-    return event
-  },
+  // Define how likely traces are sampled. Adjust this value in production, or use tracesSampler for greater control.
+  tracesSampleRate: 1,
 
-  beforeSendTransaction(event) {
-    // Filter out Next.js internal requests
-    if (event.request?.url?.includes('/_next')) {
-      return null
-    }
-    return event
-  },
+  // Enable logs to be sent to Sentry
+  enableLogs: true,
 
-  ignoreErrors: [
-    'ResizeObserver loop limit exceeded',
-    'Non-Error promise rejection captured',
-    'Request aborted',
-    'Network request failed',
-    'ChunkLoadError',
-  ],
-
-  denyUrls: [
-    /^chrome-extension:\/\//,
-    /^moz-extension:\/\//,
-    /^safari-extension:\/\//,
-  ],
-
-  release: process.env.NEXT_PUBLIC_VERSION || 'local',
-})
+  // Enable sending user PII (Personally Identifiable Information)
+  // https://docs.sentry.io/platforms/javascript/guides/nextjs/configuration/options/#sendDefaultPii
+  sendDefaultPii: true,
+});

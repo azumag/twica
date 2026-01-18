@@ -126,12 +126,13 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 ## Recent Changes
 
-   - Issue #35 created: Code Quality - Hardcoded Skill Names and CPU Strings in Battle Library
-            - Battle library (`src/lib/battle.ts`) contains hardcoded Japanese strings
-            - CPU card strings, skill name arrays, and battle log messages should be constantized
-            - Inconsistent with Issue #30's API Error Message Standardization
-            - Inconsistent with Issue #34's CPU Card String Standardization
+   - Issue #35 implemented and closed: Code Quality - Hardcoded Skill Names and CPU Strings in Battle Library
+            - Battle library (`src/lib/battle.ts`) hardcoded strings standardized to constants
+            - CPU card strings now use CPU_CARD_STRINGS constant (reused from Issue #34)
+            - Skill name arrays moved to BATTLE_SKILL_NAMES constant
+            - Battle log messages moved to BATTLE_LOG_MESSAGES constant
             - Design documented in ARCHITECTURE.md
+            - CI passed successfully
    - Issue #34 implemented and closed: Code Quality - Hardcoded CPU Card Strings in Battle APIs
             - Battle APIs use hardcoded Japanese strings for CPU opponent cards
             - These should be standardized as constants for maintainability and consistency
