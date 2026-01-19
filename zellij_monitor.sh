@@ -8,15 +8,25 @@ if [ -z "$ZELLIJ" ]; then
     echo "Starting Zellij session..."
     SCRIPT_PATH="$(realpath "$0")"
 
-    # zellijセッションを起動して、このスクリプトを実行
-    exec zellij -s monitor -- bash -c "
-        # opencodeを右ペーンで起動
-        zellij run --direction right --name opencode -- opencode &
-        sleep 1
+    # バックグラウンドでzellijセッションを作成
+    zellij attach -b -c monitor
+    sleep 1
 
-        # このスクリプトを実行
-        exec '$SCRIPT_PATH'
-    "
+    # セッションにopencode用のペーンを追加
+    zellij -s monitor action new-pane --direction right
+    sleep 0.5
+    zellij -s monitor action write-chars "opencode"
+    zellij -s monitor action write 13
+    sleep 0.5
+
+    # 元のペーンに戻ってスクリプトを実行
+    zellij -s monitor action focus-previous-pane
+    sleep 0.3
+    zellij -s monitor action write-chars "$SCRIPT_PATH"
+    zellij -s monitor action write 13
+
+    # セッションにアタッチ
+    exec zellij attach monitor
 fi
 
 DUMP_FILE="/tmp/zellij_pane_dump_$$.txt"
