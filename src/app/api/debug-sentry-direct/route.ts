@@ -6,11 +6,13 @@ export async function GET(request: Request) {
   const accessCheck = checkDebugAccess(request)
   if (accessCheck) return accessCheck
 
-  console.log('[Debug Sentry] Environment check:', {
-    dsnSet: !!process.env.NEXT_PUBLIC_SENTRY_DSN,
-    dsnPreview: process.env.NEXT_PUBLIC_SENTRY_DSN?.substring(0, 20) + '...',
-    env: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
-  })
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[Debug Sentry] Environment check:', {
+      dsnSet: !!process.env.NEXT_PUBLIC_SENTRY_DSN,
+      dsnPreview: process.env.NEXT_PUBLIC_SENTRY_DSN?.substring(0, 20) + '...',
+      env: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT || process.env.NODE_ENV,
+    })
+  }
 
   return NextResponse.json({
     message: 'Debug info logged to console',
@@ -22,16 +24,24 @@ export async function POST(request: Request) {
   const accessCheck = checkDebugAccess(request)
   if (accessCheck) return accessCheck
 
-  console.log('[Debug Sentry] Attempting to capture message...')
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[Debug Sentry] Attempting to capture message...')
+  }
   Sentry.captureMessage('Direct test message - no filters', 'info')
-  console.log('[Debug Sentry] Message captured')
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[Debug Sentry] Message captured')
+  }
 
-  console.log('[Debug Sentry] Attempting to capture exception...')
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[Debug Sentry] Attempting to capture exception...')
+  }
   try {
     throw new Error('Direct test exception - no filters')
   } catch (error) {
     Sentry.captureException(error)
-    console.log('[Debug Sentry] Exception captured', error)
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[Debug Sentry] Exception captured', error)
+    }
   }
 
   return NextResponse.json({

@@ -6,6 +6,7 @@ import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, SESSION_COOKIE_OPTIONS } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setCSRFToken } from '@/lib/csrf'
+import { logger } from '@/lib/logger'
 
 export async function GET(request: NextRequest) {
   const ip = getClientIp(request);
@@ -141,7 +142,7 @@ export async function GET(request: NextRequest) {
     try {
       await setCSRFToken()
     } catch (error) {
-      console.error('Failed to generate CSRF token after OAuth callback:', error)
+      logger.error('Failed to generate CSRF token after OAuth callback:', error)
     }
 
     // Always redirect to dashboard

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { TwitchLoginResponse } from '@/types/auth'
 import { UI_STRINGS } from '@/lib/constants'
+import * as Sentry from '@sentry/nextjs'
 
 function useTwitchLogin() {
   const [isLoading, setIsLoading] = useState(false)
@@ -25,7 +26,7 @@ function useTwitchLogin() {
       }
     } catch (error) {
       setError(UI_STRINGS.AUTH.NETWORK_ERROR)
-      console.error('Failed to initiate login:', error)
+      Sentry.captureException(error)
     } finally {
       setIsLoading(false)
     }

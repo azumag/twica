@@ -3,6 +3,7 @@
 import { useEffect } from 'react'
 import { TwitchLoginResponse } from '@/types/auth'
 import { UI_STRINGS } from '@/lib/constants'
+import * as Sentry from '@sentry/nextjs'
 
 export function TwitchLoginRedirect() {
   useEffect(() => {
@@ -18,7 +19,7 @@ export function TwitchLoginRedirect() {
         }
       } catch (error) {
         if (isMounted) {
-          console.error('Failed to initiate login:', error)
+          Sentry.captureException(error)
         }
       }
     }

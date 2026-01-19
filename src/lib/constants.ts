@@ -1,3 +1,5 @@
+import { logger } from './logger'
+
 export const BROADCASTER_TYPE = {
   AFFILIATE: 'affiliate' as const,
   PARTNER: 'partner' as const,
@@ -78,7 +80,7 @@ export const CSRF_CONFIG = {
         origins.push(`http://[::1]:${port}`)
       }
     } catch (error) {
-      console.warn('Failed to parse NEXT_PUBLIC_APP_URL for CSRF origins:', error)
+      logger.warn('Failed to parse NEXT_PUBLIC_APP_URL for CSRF origins:', error)
       origins.push(appUrl)
     }
     

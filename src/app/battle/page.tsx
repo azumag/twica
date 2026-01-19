@@ -8,6 +8,7 @@ import Header from '@/components/Header'
 import AnimatedBattle from '@/components/AnimatedBattle'
 import Image from 'next/image'
 import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
+import * as Sentry from '@sentry/nextjs'
 import { fetchSession } from '@/lib/api-client'
 
 
@@ -87,7 +88,7 @@ export default function BattlePage() {
           alert(error.error || 'カード情報の取得に失敗しました')
         }
       } catch (error) {
-        console.error('Failed to load data:', error)
+        Sentry.captureException(error)
       } finally {
         setLoading(false)
       }
@@ -121,7 +122,7 @@ export default function BattlePage() {
         alert(error.error || '対戦の開始に失敗しました')
       }
     } catch (error) {
-      console.error('Battle error:', error)
+      Sentry.captureException(error)
       alert('対戦の開始に失敗しました')
     } finally {
       setBattleLoading(false)

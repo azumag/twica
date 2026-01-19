@@ -21,7 +21,9 @@ export default function TestSentryClient() {
   }
 
   const triggerConsoleError = () => {
-    console.error('Test console error')
+    if (process.env.NODE_ENV === 'development') {
+      console.error('Test console error')
+    }
     Sentry.captureMessage('Test console error', 'warning')
     alert('Console error triggered. Check Sentry dashboard.')
   }
