@@ -14,16 +14,15 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  // CSRF検証
-  const validation = await validateCSRFToken(request)
-  if (!validation.valid) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.FORBIDDEN },
-      { status: 403 }
-    )
-  }
-
   try {
+    const csrfValidation = await validateCSRFToken(request)
+    if (!csrfValidation.valid) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.FORBIDDEN },
+        { status: 403 }
+      )
+    }
+
     const session = await getSession();
     if (!session) {
       return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });

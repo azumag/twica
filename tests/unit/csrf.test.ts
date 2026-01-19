@@ -4,7 +4,7 @@ import { randomBytes, timingSafeEqual, createHash } from 'crypto'
 import { logger } from '@/lib/logger'
 
 import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
-import { setCSRFToken, validateCSRFToken, hashToken, clearCSRFToken, hashIp, sanitizeEndpoint } from '@/lib/csrf'
+import { setCSRFToken, validateCSRFToken, hashToken, clearCSRFToken, hashIP, sanitizeURL } from '@/lib/csrf'
 import type { MockInstance } from 'vitest'
 
 interface MockCookieStore {
@@ -12,6 +12,17 @@ interface MockCookieStore {
   set: ReturnType<typeof vi.fn>
   delete: ReturnType<typeof vi.fn>
 }
+
+vi.mock('@/lib/constants', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/constants')>('@/lib/constants')
+  return {
+    ...actual,
+    CSRF_CONFIG: {
+      ...actual.CSRF_CONFIG,
+      ALLOWED_ORIGINS: ['https://example.com', 'http://localhost:3000'],
+    },
+  }
+})
 
 vi.mock('next/headers')
 vi.mock('crypto')
@@ -77,10 +88,13 @@ describe('CSRF Protection', () => {
   })
 
   describe('setCSRFToken', () => {
-    it('should generate and store CSRF token hash in session with httpOnly cookie', async () => {
+    it('should generate and store CSRF token hash in session and httpOnly cookie', async () => {
       const sessionData = {
         twitchUserId: 'user123',
         twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         version: 1
       }
@@ -121,6 +135,9 @@ describe('CSRF Protection', () => {
       const sessionData = {
         twitchUserId: 'user123',
         twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         csrfTokenHash: 'existing-hash',
         version: 1
@@ -158,14 +175,16 @@ describe('CSRF Protection', () => {
   })
 
   describe('validateCSRFToken', () => {
-it('should validate matching tokens from httpOnly cookie', async () => {
-      // Generate token using mocked randomBytes to ensure correct length
-      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' // This is what mockRandomBytes returns as string
-      const tokenHash = 'mocked-hash' // Should match mocked hash output
+    it('should validate matching tokens from httpOnly cookie', async () => {
+      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      const tokenHash = 'mocked-hash'
 
       const sessionData = {
         twitchUserId: 'user123',
         twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         csrfTokenHash: tokenHash,
         version: 1
@@ -200,6 +219,9 @@ it('should validate matching tokens from httpOnly cookie', async () => {
       const sessionData = {
         twitchUserId: 'user123',
         twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         csrfTokenHash: 'session-hash',
         version: 1
@@ -228,6 +250,9 @@ it('should validate matching tokens from httpOnly cookie', async () => {
       const sessionData = {
         twitchUserId: 'user123',
         twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         csrfTokenHash: 'session-hash',
         version: 1
@@ -239,7 +264,7 @@ it('should validate matching tokens from httpOnly cookie', async () => {
             return { value: JSON.stringify(sessionData) }
           }
           if (name === COOKIE_NAMES.CSRF_TOKEN) {
-            return { value: 'short' } // Invalid length
+            return { value: 'a'.repeat(63) } // Invalid length (should be 64)
           }
           return undefined
         }),
@@ -272,6 +297,177 @@ it('should validate matching tokens from httpOnly cookie', async () => {
       expect(result.valid).toBe(false)
       expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
     })
+
+    it('should accept valid origin header', async () => {
+      vi.stubEnv('NODE_ENV', 'test')
+      vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://example.com')
+
+      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      const tokenHash = 'mocked-hash'
+
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: tokenHash,
+        version: 1
+      }
+
+      const mockCookieStore = {
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: JSON.stringify(sessionData) }
+          }
+          if (name === COOKIE_NAMES.CSRF_TOKEN) {
+            return { value: token }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+      }
+      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+
+      const request = new Request('https://example.com', {
+        headers: { 'origin': 'https://example.com' }
+      })
+
+      const result = await validateCSRFToken(request)
+
+      expect(result.valid).toBe(true)
+
+      vi.unstubAllEnvs()
+    })
+
+    it('should reject invalid origin header', async () => {
+      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      const tokenHash = 'mocked-hash'
+
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: tokenHash,
+        version: 1
+      }
+
+      const mockCookieStore = {
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: JSON.stringify(sessionData) }
+          }
+          if (name === COOKIE_NAMES.CSRF_TOKEN) {
+            return { value: token }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+      }
+      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+
+      const request = new Request('https://example.com', {
+        headers: { 'origin': 'https://malicious.com' }
+      })
+
+      const result = await validateCSRFToken(request)
+
+      expect(result.valid).toBe(false)
+      expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
+      expect(mockLogger.warn).toHaveBeenCalledWith('CSRF validation failed: Origin header not in allowed list', {
+        userId: 'user123',
+        origin: 'https://malicious.com',
+        allowedOrigins: expect.any(Array),
+        endpoint: '/',
+      })
+    })
+
+    it('should accept valid referer header when origin is missing', async () => {
+      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      const tokenHash = 'mocked-hash'
+
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: tokenHash,
+        version: 1
+      }
+
+      const mockCookieStore = {
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: JSON.stringify(sessionData) }
+          }
+          if (name === COOKIE_NAMES.CSRF_TOKEN) {
+            return { value: token }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+      }
+      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+
+      const request = new Request('https://example.com/api/test', {
+        headers: { 'referer': 'https://example.com/page' }
+      })
+
+      const result = await validateCSRFToken(request)
+
+      expect(result.valid).toBe(true)
+    })
+
+    it('should reject invalid referer header when origin is missing', async () => {
+      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      const tokenHash = 'mocked-hash'
+
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: tokenHash,
+        version: 1
+      }
+
+      const mockCookieStore = {
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: JSON.stringify(sessionData) }
+          }
+          if (name === COOKIE_NAMES.CSRF_TOKEN) {
+            return { value: token }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+      }
+      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+
+      const request = new Request('https://example.com', {
+        headers: { 'referer': 'https://malicious.com/page' }
+      })
+
+      const result = await validateCSRFToken(request)
+
+      expect(result.valid).toBe(false)
+      expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
+      expect(mockLogger.warn).toHaveBeenCalledWith('CSRF validation failed: Referer header mismatch', {
+        userId: 'user123',
+        referer: 'https://malicious.com',
+        expectedOrigin: 'https://example.com',
+        endpoint: '/',
+      })
+    })
   })
 
   describe('clearCSRFToken', () => {
@@ -279,6 +475,9 @@ it('should validate matching tokens from httpOnly cookie', async () => {
       const sessionData = {
         twitchUserId: 'user123',
         twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         csrfTokenHash: 'session-hash',
         version: 1
@@ -316,6 +515,9 @@ it('should validate matching tokens from httpOnly cookie', async () => {
       const sessionData = {
         twitchUserId: 'user123',
         twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         version: 1
       }
@@ -334,7 +536,11 @@ it('should validate matching tokens from httpOnly cookie', async () => {
 
       await clearCSRFToken()
 
-      expect(mockCookieStore.set).not.toHaveBeenCalled()
+      expect(mockCookieStore.set).toHaveBeenCalledWith(
+        COOKIE_NAMES.SESSION,
+        expect.stringContaining('"version":2'),
+        expect.any(Object)
+      )
       expect(mockCookieStore.delete).toHaveBeenCalledWith(COOKIE_NAMES.CSRF_TOKEN)
     })
 
@@ -360,14 +566,14 @@ it('should validate matching tokens from httpOnly cookie', async () => {
         digest: vi.fn().mockReturnValue('mocked-hash'),
       }
       mockCreateHash.mockReturnValue(mockHash as unknown as ReturnType<typeof createHash>)
-      
+
       const ip = '192.168.1.1'
-      const hash = hashIp(ip)
+      const hash = hashIP(ip)
       expect(hash).toBe('mocked-h') // substring(0, 8) of 'mocked-hash'
     })
 
     it('should return unknown for null IP', () => {
-      const hash = hashIp(null)
+      const hash = hashIP(null)
       expect(hash).toBe('unknown')
     })
   })
@@ -375,13 +581,13 @@ it('should validate matching tokens from httpOnly cookie', async () => {
   describe('sanitizeURL', () => {
     it('should return pathname for valid URLs', () => {
       const url = 'https://example.com/api/test?param=value'
-      const sanitized = sanitizeEndpoint(url)
+      const sanitized = sanitizeURL(url)
       expect(sanitized).toBe('/api/test')
     })
 
     it('should return invalid_url for invalid URLs', () => {
       const url = 'not-a-url'
-      const sanitized = sanitizeEndpoint(url)
+      const sanitized = sanitizeURL(url)
       expect(sanitized).toBe('invalid_url')
     })
   })

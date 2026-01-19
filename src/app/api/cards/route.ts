@@ -9,9 +9,8 @@ import { validateCSRFToken } from "@/lib/csrf";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 export async function POST(request: NextRequest) {
-  // CSRF検証
-  const validation = await validateCSRFToken(request)
-  if (!validation.valid) {
+  const csrfValidation = await validateCSRFToken(request)
+  if (!csrfValidation.valid) {
     return NextResponse.json(
       { error: ERROR_MESSAGES.FORBIDDEN },
       { status: 403 }

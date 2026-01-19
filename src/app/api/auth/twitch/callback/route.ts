@@ -3,7 +3,7 @@ import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
+import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, SESSION_COOKIE_OPTIONS } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setCSRFToken } from '@/lib/csrf'
 
@@ -132,13 +132,7 @@ export async function GET(request: NextRequest) {
       version: 1,
     })
 
-    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
-    })
+    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, SESSION_COOKIE_OPTIONS)
 
     // Clear state cookie
     cookieStore.delete('twitch_auth_state')

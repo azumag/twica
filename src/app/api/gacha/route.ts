@@ -12,20 +12,19 @@ import type { GachaSuccessResponse, GachaErrorResponse, ApiRateLimitResponse } f
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
   setRequestContext(requestId, '/api/gacha')
-  
-  // CSRF検証
-  const validation = await validateCSRFToken(request)
-  if (!validation.valid) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.FORBIDDEN },
-      { status: 403 }
-    )
-  }
-  
+
   let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
   let body: Record<string, unknown> | null = null
   
   try {
+    const csrfValidation = await validateCSRFToken(request)
+    if (!csrfValidation.valid) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.FORBIDDEN },
+        { status: 403 }
+      )
+    }
+
     session = await getSession()
     
     if (session) {

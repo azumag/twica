@@ -69,6 +69,14 @@ export async function GET(request: Request) {
 
 // Create a new custom reward
 export async function POST(request: Request) {
+  const csrfValidation = await validateCSRFToken(request)
+  if (!csrfValidation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    )
+  }
+
   const session = await getSession();
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
@@ -90,14 +98,6 @@ export async function POST(request: Request) {
 
   if (!session || !canUseStreamerFeatures(session)) {
     return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
-  }
-
-  const csrfValidation = await validateCSRFToken(request);
-  if (!csrfValidation.valid) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.FORBIDDEN },
-      { status: 403 }
-    );
   }
 
   const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);

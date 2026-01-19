@@ -11,7 +11,7 @@ describe('CSRF Integration Tests', () => {
     vi.clearAllMocks()
   })
 
-  describe('validateCSRFToken - cookie-based validation', () => {
+  describe('validateCSRFToken - httpOnly cookie validation', () => {
     it('should validate request with valid CSRF token in httpOnly cookie', async () => {
       const { cookies } = await import('next/headers')
       const cookiesMock = cookies as unknown as MockInstance
@@ -131,24 +131,6 @@ describe('CSRF Integration Tests', () => {
     })
   })
 
-  describe('CSRF Token API endpoint behavior', () => {
-    it('should have correct endpoint configuration', () => {
-      const endpoint = '/api/csrf-token'
-      expect(endpoint).toBe('/api/csrf-token')
-    })
-
-    it('should require authentication for CSRF token', () => {
-      const requiredAuth = true
-      expect(requiredAuth).toBe(true)
-    })
-
-    it('should return CSRF token in expected format', () => {
-      const expectedResponse = { csrfToken: 'string' }
-      expect(expectedResponse).toHaveProperty('csrfToken')
-      expect(typeof expectedResponse.csrfToken).toBe('string')
-    })
-  })
-
   describe('CSRF protection patterns', () => {
     it('should protect state-changing operations', () => {
       const protectedMethods = ['POST', 'PUT', 'DELETE', 'PATCH']
@@ -163,7 +145,7 @@ describe('CSRF Integration Tests', () => {
       })
     })
 
-    it('should use httpOnly cookies for CSRF protection', () => {
+    it('should use httpOnly cookies for CSRF token', () => {
       const cookieName = COOKIE_NAMES.CSRF_TOKEN
       expect(cookieName).toBe('csrf_token')
     })
@@ -183,7 +165,7 @@ describe('CSRF Integration Tests', () => {
 
     it('should have correct retry configuration', () => {
       expect(CSRF_CONFIG.MAX_RETRY_COUNT).toBe(3)
-      expect(CSRF_CONFIG.RETRY_DELAY_MS).toBe(10)
+      expect(CSRF_CONFIG.RETRY_DELAY_MS).toBe(50)
     })
 
     it('should generate tokens with sufficient entropy', () => {
@@ -237,35 +219,6 @@ describe('CSRF Integration Tests', () => {
       expect(validationResult).toHaveProperty('error')
       expect(typeof validationResult.valid).toBe('boolean')
       expect(typeof validationResult.error).toBe('string')
-    })
-  })
-
-  describe('HttpOnly Cookie Pattern', () => {
-    it('should use httpOnly cookie for CSRF token', () => {
-      const cookieConfig = {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'lax'
-      }
-      expect(cookieConfig.httpOnly).toBe(true)
-    })
-
-    it('should validate tokens from httpOnly cookie', () => {
-      const cookieName = COOKIE_NAMES.CSRF_TOKEN
-      expect(cookieName).toBe('csrf_token')
-    })
-
-    it('should compare cookie value hash with session hash', async () => {
-      const sessionHash = 'session-hash-123'
-      const cookieToken = 'cookie-token-456'
-      
-      const { hashToken } = await import('@/lib/csrf')
-      const cookieTokenHash = hashToken(cookieToken)
-      
-      expect(sessionHash).toBeDefined()
-      expect(cookieTokenHash).toBeDefined()
-      expect(typeof sessionHash).toBe('string')
-      expect(typeof cookieTokenHash).toBe('string')
     })
   })
 })

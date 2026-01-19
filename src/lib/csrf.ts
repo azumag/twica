@@ -3,15 +3,15 @@ import { randomBytes, timingSafeEqual, createHash } from 'crypto'
 
 import { logger } from './logger'
 import { reportSecurityError } from './sentry/error-handler'
-import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES, SESSION_CONFIG } from './constants'
+import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES, SESSION_COOKIE_OPTIONS } from './constants'
 import { parseSession } from './session'
 
-export function hashIp(ip: string | null): string {
+export function hashIP(ip: string | null): string {
   if (!ip) return 'unknown'
   return createHash('sha256').update(ip).digest('hex').substring(0, 8)
 }
 
-export function sanitizeEndpoint(url: string): string {
+export function sanitizeURL(url: string): string {
   try {
     const urlObj = new URL(url)
     return urlObj.pathname
@@ -31,7 +31,18 @@ function generateCSRFToken(): string {
  * トークンのハッシュを生成（SHA-256）
  */
 export function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex')
+  const salt = process.env.CSRF_TOKEN_SALT
+
+  if (!salt) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('CSRF_TOKEN_SALT environment variable is required in production')
+    }
+
+    logger.warn('CSRF_TOKEN_SALT is not set, using default salt. Please set CSRF_TOKEN_SALT in your .env file')
+    return createHash('sha256').update(token + 'default-salt').digest('hex')
+  }
+
+  return createHash('sha256').update(token + salt).digest('hex')
 }
 
 /**
@@ -45,7 +56,7 @@ function getCSRFTokenFromCookie(cookieStore: Awaited<ReturnType<typeof cookies>>
 /**
  * セッションにCSRFトークンのハッシュを保存し、トークン自体はhttpOnly cookieに保存
  */
-export async function setCSRFToken(retryCount: number = 0): Promise<string> {
+async function setCSRFTokenWithRetry(retryCount: number = 0): Promise<string> {
   const cookieStore = await cookies()
 
   const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
@@ -56,12 +67,9 @@ export async function setCSRFToken(retryCount: number = 0): Promise<string> {
   const session = parseSession(sessionCookie)
   const userId = session.twitchUserId
 
-  // Idempotent: 既にトークンが存在する場合は返す
-  if (session.csrfTokenHash) {
-    const existingToken = getCSRFTokenFromCookie(cookieStore)
-    if (existingToken) {
-      return existingToken
-    }
+  const existingToken = getCSRFTokenFromCookie(cookieStore)
+  if (session.csrfTokenHash && existingToken) {
+    return existingToken
   }
 
   const token = generateCSRFToken()
@@ -74,6 +82,12 @@ export async function setCSRFToken(retryCount: number = 0): Promise<string> {
   }
 
   const currentSession = parseSession(currentSessionCookie)
+  
+  // Check session expiration before version validation
+  if (currentSession.expiresAt && Date.now() > currentSession.expiresAt) {
+    throw new Error('Session expired')
+  }
+  
   if (currentSession.version !== session.version) {
     if (retryCount >= CSRF_CONFIG.MAX_RETRY_COUNT) {
       logger.error('CSRF token generation: Max retry count exceeded', {
@@ -93,35 +107,22 @@ export async function setCSRFToken(retryCount: number = 0): Promise<string> {
     })
 
     await new Promise(resolve => setTimeout(resolve, CSRF_CONFIG.RETRY_DELAY_MS))
-    return setCSRFToken(retryCount + 1)
+    return setCSRFTokenWithRetry(retryCount + 1)
   }
 
-  // セッションにハッシュを保存（httpOnly）
-  const updatedSession = {
-    ...session,
-    csrfTokenHash: tokenHash,
-    version: session.version + 1,
-  }
+  const updatedSession = { ...session, csrfTokenHash: tokenHash, version: session.version + 1 }
 
-  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
-  })
+  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), SESSION_COOKIE_OPTIONS)
 
   // トークン自体もhttpOnly cookieに保存（JavaScriptからアクセス不可）
-  cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
-  })
+  cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, token, SESSION_COOKIE_OPTIONS)
 
   logger.info(`CSRF token generated for user ${userId}`)
   return token
+}
+
+export async function setCSRFToken(): Promise<string> {
+  return setCSRFTokenWithRetry(0)
 }
 
 /**
@@ -135,13 +136,21 @@ export async function validateCSRFToken(
 
   if (!sessionCookie) {
     logger.warn('CSRF validation failed: No session found', {
-      ip: hashIp(request.headers.get('x-forwarded-for')),
+      ip: hashIP(request.headers.get('x-forwarded-for')),
       userAgent: request.headers.get('user-agent'),
     })
     return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
   }
 
   const session = parseSession(sessionCookie)
+
+  if (session.expiresAt && Date.now() > session.expiresAt) {
+    logger.warn('CSRF validation failed: Session expired', {
+      userId: session.twitchUserId,
+    })
+    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+  }
+
   const sessionTokenHash = session.csrfTokenHash
 
   if (!sessionTokenHash) {
@@ -154,14 +163,53 @@ export async function validateCSRFToken(
   // Cookieからトークンを取得（HttpOnly Cookie Pattern）
   const requestToken = getCSRFTokenFromCookie(cookieStore)
 
-  if (!requestToken) {
-    logger.warn('CSRF validation failed: CSRF token missing in cookie', {
+  if (!requestToken || typeof requestToken !== 'string' || requestToken.trim() === '') {
+    logger.warn('CSRF validation failed: CSRF token missing or invalid in cookie', {
       userId: session.twitchUserId,
-      endpoint: sanitizeEndpoint(request.url),
+      endpoint: sanitizeURL(request.url),
     })
     return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
   }
 
+  // Originヘッダーの検証（多層防御として）
+  const origin = request.headers.get('origin')
+  const referer = request.headers.get('referer')
+  const requestUrl = new URL(request.url)
+  const expectedOrigin = `${requestUrl.protocol}//${requestUrl.host}`
+
+  if (origin && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(origin)) {
+    logger.warn('CSRF validation failed: Origin header not in allowed list', {
+      userId: session.twitchUserId,
+      origin,
+      allowedOrigins: CSRF_CONFIG.ALLOWED_ORIGINS,
+      endpoint: sanitizeURL(request.url),
+    })
+    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+  }
+
+  // Originヘッダーがない場合、Refererヘッダーを検証（オプション）
+  if (!origin && referer) {
+    try {
+      const refererUrl = new URL(referer)
+      const refererOrigin = `${refererUrl.protocol}//${refererUrl.host}`
+      if (refererOrigin !== expectedOrigin) {
+        logger.warn('CSRF validation failed: Referer header mismatch', {
+          userId: session.twitchUserId,
+          referer: refererOrigin,
+          expectedOrigin,
+          endpoint: sanitizeURL(request.url),
+        })
+        return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+      }
+    } catch (error) {
+      logger.info('Failed to parse referer header', {
+        referer,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  // Tokens are hex-encoded (2 chars per byte)
   // トークン長の検証
   if (requestToken.length !== CSRF_CONFIG.TOKEN_LENGTH * 2) {
     logger.warn('CSRF validation failed: Invalid token length', {
@@ -190,8 +238,8 @@ export async function validateCSRFToken(
     if (!isValid) {
       logger.warn('CSRF token validation failed: Token mismatch (potential attack)', {
         userId: session.twitchUserId,
-        ipHash: hashIp(request.headers.get('x-forwarded-for')),
-        endpoint: sanitizeEndpoint(request.url),
+        ipHash: hashIP(request.headers.get('x-forwarded-for')),
+        endpoint: sanitizeURL(request.url),
         timestamp: new Date().toISOString(),
       })
 
@@ -233,19 +281,14 @@ export async function clearCSRFToken(): Promise<void> {
 
   const session = parseSession(sessionCookie)
 
-  // セッションからハッシュを削除し、バージョン番号をインクリメント
-  if (session.csrfTokenHash) {
-    const sessionWithoutCsrf = { ...session, version: session.version + 1 }
-    delete sessionWithoutCsrf.csrfTokenHash
-
-    cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(sessionWithoutCsrf), {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
-    })
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { csrfTokenHash, ...sessionWithoutCsrf } = session
+  const updatedSession = {
+    ...sessionWithoutCsrf,
+    version: session.version + 1,
   }
+
+  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), SESSION_COOKIE_OPTIONS)
 
   // CSRFトークンクッキーを削除
   cookieStore.delete(COOKIE_NAMES.CSRF_TOKEN)

@@ -10,16 +10,53 @@ export interface Session {
   broadcasterType: string // 'affiliate' | 'partner' | ''
   expiresAt: number // Unix timestamp (milliseconds)
   csrfTokenHash?: string
-  csrfTokenSignature?: string
   version: number // Optimistic locking
 }
 
 export function parseSession(raw: string): Session {
   try {
     const parsed = JSON.parse(raw)
-    if (!parsed.twitchUserId || !parsed.twitchUsername || !parsed.expiresAt) {
-      throw new Error('Invalid session: missing required fields')
+    
+    // Validate all required fields
+    const requiredFields = [
+      'twitchUserId',
+      'twitchUsername', 
+      'twitchDisplayName',
+      'twitchProfileImageUrl',
+      'broadcasterType',
+      'expiresAt',
+      'version'
+    ] as const
+    
+    for (const field of requiredFields) {
+      if (parsed[field] === undefined || parsed[field] === null) {
+        throw new Error(`Invalid session: missing required field '${field}'`)
+      }
     }
+    
+    // Validate field types
+    if (typeof parsed.twitchUserId !== 'string') {
+      throw new Error('Invalid session: twitchUserId must be a string')
+    }
+    if (typeof parsed.twitchUsername !== 'string') {
+      throw new Error('Invalid session: twitchUsername must be a string')
+    }
+    if (typeof parsed.twitchDisplayName !== 'string') {
+      throw new Error('Invalid session: twitchDisplayName must be a string')
+    }
+    if (typeof parsed.twitchProfileImageUrl !== 'string') {
+      throw new Error('Invalid session: twitchProfileImageUrl must be a string')
+    }
+    if (typeof parsed.broadcasterType !== 'string') {
+      throw new Error('Invalid session: broadcasterType must be a string')
+    }
+    if (typeof parsed.expiresAt !== 'number') {
+      throw new Error('Invalid session: expiresAt must be a number')
+    }
+    if (typeof parsed.version !== 'number') {
+      throw new Error('Invalid session: version must be a number')
+    }
+    
     return parsed as Session
   } catch (error) {
     if (error instanceof Error) {
@@ -42,6 +79,12 @@ export async function getSession(): Promise<Session | null> {
 
     if (session.expiresAt && Date.now() > session.expiresAt) {
       await clearSession();
+      try {
+        const { clearCSRFToken } = await import('./csrf')
+        await clearCSRFToken()
+      } catch {
+        // CSRFトークンクリアはセッションクリリアの失敗を意味しない
+      }
       return null;
     }
 

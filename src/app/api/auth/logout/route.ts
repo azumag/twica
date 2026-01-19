@@ -9,6 +9,14 @@ import { clearCSRFToken, validateCSRFToken } from '@/lib/csrf'
 
 export async function POST(request: Request) {
   try {
+    const csrfValidation = await validateCSRFToken(request)
+    if (!csrfValidation.valid) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.FORBIDDEN },
+        { status: 403 }
+      )
+    }
+
     const session = await getSession();
 
     const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
@@ -24,13 +32,7 @@ export async function POST(request: Request) {
             'X-RateLimit-Remaining': String(rateLimitResult.remaining),
             'X-RateLimit-Reset': String(rateLimitResult.reset),
           },
-        }
-      );
-    }
-
-    const csrfValidation = await validateCSRFToken(request);
-    if (!csrfValidation.valid) {
-      return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(ERROR_MESSAGES.FORBIDDEN)}`);
+        });
     }
 
     if (session) {

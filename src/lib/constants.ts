@@ -49,10 +49,23 @@ export const DEBUG_CONFIG = {
   PRODUCTION_ENV: 'production',
 } as const
 
+export const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax' as const,
+  path: '/',
+  maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+} as const
+
 export const CSRF_CONFIG = {
   TOKEN_LENGTH: 32,
+  HEADER_NAME: 'X-CSRF-Token',
   MAX_RETRY_COUNT: 3,
-  RETRY_DELAY_MS: 10,
+  RETRY_DELAY_MS: 50,
+  ALLOWED_ORIGINS: [
+    process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+    ...(process.env.NODE_ENV === 'development' ? ['http://127.0.0.1:3000'] : []),
+  ].filter((origin, index, arr) => arr.indexOf(origin) === index) as string[],
 } as const
 
 export const ERROR_MESSAGES = {

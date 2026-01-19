@@ -29,9 +29,7 @@ describe('POST /api/upload', () => {
     // Mock cookies to return empty store
     mockCookies.mockResolvedValue({
       get: vi.fn().mockReturnValue(undefined),
-      set: vi.fn(),
-      delete: vi.fn(),
-    } as unknown as ReturnType<typeof cookies>)
+    } as unknown as Awaited<ReturnType<typeof cookies>>)
     // Mock rate limit to pass by default
     mockCheckRateLimit.mockResolvedValue({
       success: true,

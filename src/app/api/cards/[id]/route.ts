@@ -13,9 +13,8 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  // CSRF検証
-  const validation = await validateCSRFToken(request)
-  if (!validation.valid) {
+  const csrfValidation = await validateCSRFToken(request)
+  if (!csrfValidation.valid) {
     return NextResponse.json(
       { error: ERROR_MESSAGES.FORBIDDEN },
       { status: 403 }
@@ -116,9 +115,8 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  // CSRF検証
-  const validation = await validateCSRFToken(request)
-  if (!validation.valid) {
+  const csrfValidation = await validateCSRFToken(request)
+  if (!csrfValidation.valid) {
     return NextResponse.json(
       { error: ERROR_MESSAGES.FORBIDDEN },
       { status: 403 }

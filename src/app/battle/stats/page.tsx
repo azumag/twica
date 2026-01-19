@@ -45,6 +45,8 @@ export default function BattleStatsPage() {
     twitchProfileImageUrl: string
     broadcasterType: string
     expiresAt: number
+    version: number
+    csrfTokenHash?: string
   } | null>(null)
   const [stats, setStats] = useState<BattleStats | null>(null)
   const [loading, setLoading] = useState(true)

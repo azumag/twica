@@ -13,19 +13,18 @@ import type { CardWithStreamer } from '@/types/database'
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
   setRequestContext(requestId, '/api/battle/start')
-  
-  // CSRF検証
-  const validation = await validateCSRFToken(request)
-  if (!validation.valid) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.FORBIDDEN },
-      { status: 403 }
-    )
-  }
-  
+
   let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
-  
+
   try {
+    const csrfValidation = await validateCSRFToken(request)
+    if (!csrfValidation.valid) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.FORBIDDEN },
+        { status: 403 }
+      )
+    }
+
     session = await getSession()
     
     if (session) {

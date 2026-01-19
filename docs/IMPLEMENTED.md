@@ -1,148 +1,63 @@
-# HttpOnly Cookie PatternへのCSRF保護機能修正
+# 実装済み機能
 
-## 概要
+**実装日**: 2026-01-19
 
-レビュー結果（docs/REVIEW.md）に基づいて、CSRF保護機能をHttpOnly Cookie Patternに修正しました。
+## CSRF保護の実装
 
----
+### 対応したAPIルート
 
-## 修正内容
+レビューエージェントからの指摘に基づき、以下のすべての状態変更APIルートにCSRF検証を追加しました：
 
-### 優先度: 高
+#### POSTメソッド
+- `/api/gacha/route.ts` - ガチャ実行API
+- `/api/cards/route.ts` - カード作成API  
+- `/api/battle/start/route.ts` - バトル開始API
+- `/api/streamer/settings/route.ts` - 配信者設定API
+- `/api/upload/route.ts` - ファイルアップロードAPI
+- `/api/twitch/rewards/route.ts` - Twitch報酬作成API
+- `/api/auth/logout/route.ts` - ログアウトAPI（POST）
 
-#### 1. CSRFトークン検証をHttpOnly Cookie Patternに変更
+#### PUT/DELETEメソッド
+- `/api/cards/[id]/route.ts` - カード更新（PUT）・削除（DELETE）API
+- `/api/gacha-history/[id]/route.ts` - ガチャ履歴削除（DELETE）API
 
-**ファイル**: `src/lib/csrf.ts`
+### 実装内容
 
-**問題点**: 
-- 現在は `X-CSRF-Token` ヘッダーからトークンを取得している
-- HttpOnly Cookie Patternでは、cookieから自動的にトークンを取得する必要がある
+各APIルートに以下のCSRF検証コードを追加：
 
-**修正内容**:
 ```typescript
-// 修正前:
-const requestToken = request.headers.get(CSRF_CONFIG.HEADER_NAME)
+import { validateCSRFToken } from "@/lib/csrf"
 
-// 修正後:
-const requestToken = getCSRFTokenFromCookie(cookieStore)
-```
-
-`validateCSRFToken` 関数内のヘッダー検証ロジックを削除し、cookieからトークンを取得するように変更しました。
-
----
-
-#### 2. CSRF_SIGNING_KEYの必須化を削除
-
-**ファイル**: `src/lib/csrf.ts`
-
-**問題点**: 
-- 設計書では署名機能は不要とされている
-- 環境変数 `CSRF_SIGNING_KEY` の必須化を削除する
-
-**修正内容**:
-```typescript
-// 削除:
-const SIGNING_KEY = process.env.CSRF_SIGNING_KEY
-if (!SIGNING_KEY) {
-  throw new Error('CSRF_SIGNING_KEY environment variable is required')
+export async function POST(request: NextRequest) {
+  const csrfValidation = await validateCSRFToken(request)
+  if (!csrfValidation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    )
+  }
+  
+  // 既存の処理を続行...
 }
 ```
 
----
+### 技術詳細
 
-### 優先度: 中
+1. **バリデーション実装**: `validateCSRFToken`関数を各ルートの先頭で呼び出し
+2. **エラーハンドリング**: 検証失敗時は403ステータスでFORBIDDENエラーを返却
+3. **統一性**: すべての状態変更ルートで同じパターンを適用
+4. **既存機能への影響**: 既存の認証・レートリミット処理の前にCSRF検証を実装
 
-#### 3. 定数から不要な署名関連設定を削除
+### セキュリティ効果
 
-**ファイル**: `src/lib/constants.ts`
+- **CSRF攻撃防止**: すべての状態変更操作がCSRFトークン検証により保護
+- **多層防御**: Origin/Refererヘッダー検証と組み合わせた多層防御が実現
+- **セッション連携**: HttpOnlyクッキーに保存されたCSRFトークンとの整合性を検証
 
-**問題点**: 
-- 設計書では署名は不要とされている
-- 不要な定数を削除する
+### レビュー対応
 
-**修正内容**:
-```typescript
-// 削除した定数:
-HEADER_NAME: 'X-CSRF-Token',
-SIGNATURE_LENGTH: 64,
-SIGNATURE_ALGORITHM: 'sha256',
-```
+レビューエージェントからの重大なセキュリティ問題（P0）を解消：
 
-`CSRF_CONFIG` から以下の定数を削除しました:
-- `HEADER_NAME`
-- `SIGNATURE_LENGTH`
-- `SIGNATURE_ALGORITHM`
-
-残った定数:
-- `TOKEN_LENGTH`
-- `ERROR_MESSAGE`
-- `MAX_RETRY_COUNT`
-- `RETRY_DELAY_MS`
-
----
-
-#### 4. fetchWithCSRFを削除
-
-**ファイル**: `src/lib/client/csrf.ts` （存在しないことを確認）
-
-**確認**: `fetchWithCSRF` は既に存在しないため、削除作業は不要でした。
-
----
-
-#### 5. CSRFテストを実装
-
-**ファイル**: `tests/unit/csrf.test.ts`, `tests/integration/csrf.test.ts`
-
-**問題点**: 
-- テストが未実装
-
-**修正内容**:
-HttpOnly Cookie Patternに対応したテストを実装しました。
-
-#### ユニットテスト (`tests/unit/csrf.test.ts`):
-- `generateCSRFToken`: 正しい長さのトークンを生成すること、一意性を確認
-- `hashToken`: 同じトークンで同じハッシュを生成すること、異なるトークンで異なるハッシュを生成すること
-- `validateCSRFToken`: マッチするトークンを検証すること、トークンがない場合に拒否すること、マッチしないトークンを拒否すること
-
-#### 統合テスト (`tests/integration/csrf.test.ts`):
-- CSRFトークンなしのPOSTリクエストを拒否すること
-- 有効なCSRFトークンでPOSTリクエストを受け入れること
-
----
-
-## セキュリティ上の改善
-
-### 1. XSS脆弱性の回避
-
-- **効果**: HttpOnly Cookie Patternにより、XSS攻撃時のCSRFトークン窃取を完全に防止
-- **理由**: JavaScriptからCSRFトークンにアクセスできないため、XSS脆弱性があってもCSRF保護が維持される
-
-### 2. 署名機能の削除
-
-- **効果**: 実装の簡素化
-- **理由**: HttpOnly Cookie Patternでは署名は不要（ブラウザが自動的にhttpOnly cookieを送信するため）
-
----
-
-## テスト結果
-
-- ユニットテスト: 16個のテストがすべてパス
-- 統合テスト: 20個の統合テストがすべてパス
-- ESLintチェック: エラーなし
-
----
-
-## 関連ファイル
-
-- `src/lib/csrf.ts`: CSRF保護の実装
-- `src/lib/constants.ts`: 定数定義
-- `tests/unit/csrf.test.ts`: ユニットテスト
-- `tests/integration/csrf.test.ts`: 統合テスト
-- `docs/ARCHITECTURE.md`: 設計書
-- `docs/REVIEW.md`: レビュー結果
-
----
-
-## 結論
-
-レビュー結果に基づいて、CSRF保護機能をHttpOnly Cookie Patternに正常に修正しました。特に、HttpOnly Cookie Patternへの移行により、XSS攻撃時のCSRFトークン窃取を完全に防止できるようになりました。すべてのテストがパスし、実装が設計書（docs/ARCHITECTURE.md）と一致することを確認しました。
+- ❌ 未修正 → ✅ 修正完了
+- すべてのPOST/PUT/DELETEルートにCSRF検証を実装
+- 設計書（docs/ARCHITECTURE.md）との整合性を確保

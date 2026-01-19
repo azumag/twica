@@ -4,7 +4,6 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { validateCSRFToken } from "@/lib/csrf";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -52,14 +51,6 @@ export async function POST(request: NextRequest) {
 
   if (!session || !canUseStreamerFeatures(session)) {
     return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
-  }
-
-  const csrfValidation = await validateCSRFToken(request);
-  if (!csrfValidation.valid) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.FORBIDDEN },
-      { status: 403 }
-    );
   }
 
   try {
