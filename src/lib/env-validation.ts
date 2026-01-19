@@ -14,6 +14,7 @@ export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', required: true },
   { name: 'SUPABASE_SERVICE_ROLE_KEY', required: true },
   { name: 'BLOB_READ_WRITE_TOKEN', required: true },
+  { name: 'CSRF_TOKEN_SALT', required: true },
 ]
 
 export function validateEnvVars(): { valid: boolean; missing: string[] } {
@@ -41,10 +42,33 @@ export function getEnvVar(name: string, required: boolean = false): string | und
   return value
 }
 
+export function validateCSRFTokenSalt(): { valid: boolean; error?: string } {
+  const salt = process.env.CSRF_TOKEN_SALT
+
+  if (!salt) {
+    return { valid: false, error: 'CSRF_TOKEN_SALT is not set' }
+  }
+
+  if (salt.length < 32) {
+    return { 
+      valid: false, 
+      error: 'CSRF_TOKEN_SALT must be at least 32 characters for cryptographic security' 
+    }
+  }
+
+  return { valid: true }
+}
+
 // Gacha cost validation
 const gachaCost = parseInt(process.env.GACHA_COST || '100', 10)
 if (isNaN(gachaCost) || gachaCost < 1 || gachaCost > 10000) {
   throw new Error('GACHA_COST must be a number between 1 and 10000')
+}
+
+// CSRF token salt validation
+const csrfSaltValidation = validateCSRFTokenSalt()
+if (!csrfSaltValidation.valid && process.env.NODE_ENV !== 'test' && !process.env.CI) {
+  throw new Error(`CSRF token salt validation failed: ${csrfSaltValidation.error}`)
 }
 
 const { valid, missing } = validateEnvVars()

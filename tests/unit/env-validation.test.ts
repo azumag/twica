@@ -15,6 +15,13 @@ describe('requiredEnvVars', () => {
     expect(found?.required).toBe(true)
   })
 
+  it('contains CSRF_TOKEN_SALT', async () => {
+    const { requiredEnvVars } = await import('@/lib/env-validation')
+    const found = requiredEnvVars.find(v => v.name === 'CSRF_TOKEN_SALT')
+    expect(found).toBeDefined()
+    expect(found?.required).toBe(true)
+  })
+
   it('contains all required Supabase variables', async () => {
     const { requiredEnvVars } = await import('@/lib/env-validation')
     const supabaseVars = requiredEnvVars.filter(v =>
@@ -87,5 +94,49 @@ describe('getEnvVar', () => {
     process.env.TEST_VAR = 'required-value'
     const result = getEnvVar('TEST_VAR', true)
     expect(result).toBe('required-value')
+  })
+})
+
+describe('validateCSRFTokenSalt', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns valid: true when CSRF_TOKEN_SALT is set and at least 32 characters', async () => {
+    const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
+    process.env.CSRF_TOKEN_SALT = 'a'.repeat(32)
+    const result = validateCSRFTokenSalt()
+    expect(result.valid).toBe(true)
+    expect(result.error).toBeUndefined()
+  })
+
+  it('returns valid: false when CSRF_TOKEN_SALT is not set', async () => {
+    const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
+    delete process.env.CSRF_TOKEN_SALT
+    const result = validateCSRFTokenSalt()
+    expect(result.valid).toBe(false)
+    expect(result.error).toBe('CSRF_TOKEN_SALT is not set')
+  })
+
+  it('returns valid: false when CSRF_TOKEN_SALT is less than 32 characters', async () => {
+    const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
+    process.env.CSRF_TOKEN_SALT = 'a'.repeat(31)
+    const result = validateCSRFTokenSalt()
+    expect(result.valid).toBe(false)
+    expect(result.error).toBe('CSRF_TOKEN_SALT must be at least 32 characters for cryptographic security')
+  })
+
+  it('returns valid: true when CSRF_TOKEN_SALT is exactly 32 characters', async () => {
+    const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
+    process.env.CSRF_TOKEN_SALT = 'a'.repeat(32)
+    const result = validateCSRFTokenSalt()
+    expect(result.valid).toBe(true)
+  })
+
+  it('returns valid: true when CSRF_TOKEN_SALT is more than 32 characters', async () => {
+    const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
+    process.env.CSRF_TOKEN_SALT = 'a'.repeat(64)
+    const result = validateCSRFTokenSalt()
+    expect(result.valid).toBe(true)
   })
 })
