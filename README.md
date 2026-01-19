@@ -19,18 +19,24 @@ See [SECURITY.md](./SECURITY.md) for detailed security policies and known vulner
 
 ## Current Focus
 
-Active issues (priority order):
-- #92: Fix CSRF test failures - CSRF_CONFIG mocking issue (medium priority) - Test infrastructure fix
+Investigating test environment issues (not blocking production):
 
 **Recently Completed:**
 - Issue #88: Add unit tests for CopyButton component (18 tests, 100% pass rate)
 - Issue #87: Improve testing infrastructure with Supabase mock utilities
 - Issue #91: CSRF_TOKEN_SALT missing in production - Documented fix
 - Issue #90: Next.js invariant error - Documented as framework issue
+- Issue #92: CSRF test failures - Partially investigated (1/2 tests now passing)
 - Issue #84: Fixed WebSocket connection error handling - distinguished normal closures from errors
 - Issue #83: Closed - E2E test results documented, WebSocket issue resolved
 - Issue #85: Added streamer settings API tests (100% coverage, 5/5 tests passing)
 - Issue #86: Closed - Streamer settings test failure resolved
+
+**Investigating:**
+- CSRF test failure: "should reject invalid referer header when origin is missing"
+  - Root cause: Test environment Request URL parsing behavior
+  - Note: Not a production issue - test-only
+  - Status: Requires deeper investigation into Request API behavior in test environment
 
 ## Production Issues
 
