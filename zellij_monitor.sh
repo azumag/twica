@@ -8,21 +8,15 @@ if [ -z "$ZELLIJ" ]; then
     echo "Starting Zellij session..."
     SCRIPT_PATH="$(realpath "$0")"
 
-    # 一時的なレイアウトファイルを作成
-    LAYOUT_FILE="/tmp/zellij_monitor_layout.kdl"
-    cat > "$LAYOUT_FILE" <<EOF
-layout {
-    pane split_direction="vertical" {
-        pane command="bash" {
-            args "-c" "$SCRIPT_PATH"
-        }
-        pane command="opencode"
-    }
-}
-EOF
+    # zellijセッションを起動して、このスクリプトを実行
+    exec zellij -s monitor -- bash -c "
+        # opencodeを右ペーンで起動
+        zellij run --direction right --name opencode -- opencode &
+        sleep 1
 
-    # レイアウトを使ってzellijセッションを起動
-    exec zellij -s monitor -l "$LAYOUT_FILE"
+        # このスクリプトを実行
+        exec '$SCRIPT_PATH'
+    "
 fi
 
 DUMP_FILE="/tmp/zellij_pane_dump_$$.txt"
