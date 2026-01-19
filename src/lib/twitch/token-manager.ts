@@ -29,6 +29,12 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
       return null;
     }
 
+    // PGRST204 means column not found - token columns may not exist in schema
+    if (dbError.code === 'PGRST204') {
+      logger.warn('Twitch token columns not found in schema', { twitchUserId, error: dbError });
+      return null;
+    }
+
     // Other database errors are unexpected and should be thrown
     logger.error('Database error fetching user tokens', { twitchUserId, error: dbError });
     throw new TwitchTokenError(
@@ -75,6 +81,11 @@ async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: stri
       .eq('twitch_user_id', twitchUserId);
 
     if (error) {
+      // If columns don't exist (PGRST204), just return the token without saving
+      if (error.code === 'PGRST204') {
+        logger.warn('Twitch token columns not found in schema, returning token without saving', { twitchUserId, error });
+        return tokens.access_token;
+      }
       throw error;
     }
 
@@ -103,6 +114,11 @@ export async function saveTwitchTokens(twitchUserId: string, tokens: TwitchToken
     .eq('twitch_user_id', twitchUserId);
 
   if (error) {
+    // If columns don't exist (PGRST204), just log and return
+    if (error.code === 'PGRST204') {
+      logger.warn('Twitch token columns not found in schema, skipping save', { twitchUserId, error });
+      return;
+    }
     throw error;
   }
 }
@@ -120,6 +136,11 @@ export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
     .eq('twitch_user_id', twitchUserId);
 
   if (error) {
+    // If columns don't exist (PGRST204), just log and return
+    if (error.code === 'PGRST204') {
+      logger.warn('Twitch token columns not found in schema, skipping deletion', { twitchUserId, error });
+      return;
+    }
     throw error;
   }
 }

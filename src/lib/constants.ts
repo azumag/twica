@@ -54,7 +54,7 @@ export const DEBUG_CONFIG = {
 export const SESSION_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: 'strict' as const,
+  sameSite: 'lax' as const,
   path: '/',
   maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
 } as const

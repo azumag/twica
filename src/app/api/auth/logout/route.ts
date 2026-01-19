@@ -36,7 +36,12 @@ export async function POST(request: Request) {
     }
 
     if (session) {
-      await deleteTwitchTokens(session.twitchUserId);
+      try {
+        await deleteTwitchTokens(session.twitchUserId);
+      } catch (error) {
+        // Token deletion is optional - log but continue logout
+        console.error('Failed to delete Twitch tokens during logout:', error);
+      }
     }
 
     await clearSession()
@@ -59,7 +64,12 @@ export async function GET(request: Request) {
     }
 
     if (session) {
-      await deleteTwitchTokens(session.twitchUserId);
+      try {
+        await deleteTwitchTokens(session.twitchUserId);
+      } catch (error) {
+        // Token deletion is optional - log but continue logout
+        console.error('Failed to delete Twitch tokens during logout:', error);
+      }
     }
 
     await clearSession()
