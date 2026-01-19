@@ -13,7 +13,7 @@ export class TwitchTokenError extends Error {
   }
 }
 
-export async function getTwitchAccessToken(twitchUserId: string): Promise<string> {
+export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
   const supabaseAdmin = getSupabaseAdmin();
 
   const { data: user, error: dbError } = await supabaseAdmin
@@ -31,25 +31,16 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
   }
 
   if (!user || !user.twitch_access_token || !user.twitch_refresh_token) {
-    throw new TwitchTokenError(
-      'No Twitch tokens found for user',
-      'NO_TOKEN'
-    );
+    return null;
   }
 
   if (!user.twitch_token_expires_at) {
-    throw new TwitchTokenError(
-      'Token expiry date is missing',
-      'NO_TOKEN'
-    );
+    return null;
   }
 
   const expiresAt = new Date(user.twitch_token_expires_at);
   if (isNaN(expiresAt.getTime())) {
-    throw new TwitchTokenError(
-      'Invalid token expiry date format',
-      'NO_TOKEN'
-    );
+    return null;
   }
 
   const now = new Date();
