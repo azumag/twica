@@ -18,7 +18,11 @@ vi.mock('@/lib/constants', async () => {
   return {
     ...actual,
     CSRF_CONFIG: {
-      ...actual.CSRF_CONFIG,
+      TOKEN_LENGTH: actual.CSRF_CONFIG.TOKEN_LENGTH,
+      HEADER_NAME: actual.CSRF_CONFIG.HEADER_NAME,
+      MAX_RETRY_COUNT: actual.CSRF_CONFIG.MAX_RETRY_COUNT,
+      RETRY_DELAY_MS: actual.CSRF_CONFIG.RETRY_DELAY_MS,
+      ALLOW_LOCAL_ORIGINS: false,
       ALLOWED_ORIGINS: ['https://example.com', 'http://localhost:3000'],
     },
   }
@@ -381,7 +385,7 @@ describe('CSRF Protection', () => {
       expect(mockLogger.warn).toHaveBeenCalledWith('CSRF validation failed: Origin header not in allowed list', {
         userId: 'user123',
         origin: 'https://malicious.com',
-        allowLocalOrigins: false,
+        ALLOW_LOCAL_ORIGINS: false,
         allowedOrigins: expect.any(Array),
         endpoint: '/',
       })
@@ -426,6 +430,9 @@ describe('CSRF Protection', () => {
     })
 
     it('should reject invalid referer header when origin is missing', async () => {
+      const originalAppUrl = process.env.NEXT_PUBLIC_APP_URL
+      process.env.NEXT_PUBLIC_APP_URL = 'https://example.com'
+
       const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       const tokenHash = 'mocked-hash'
 
@@ -468,6 +475,8 @@ describe('CSRF Protection', () => {
         expectedOrigin: 'https://example.com',
         endpoint: '/',
       })
+
+      process.env.NEXT_PUBLIC_APP_URL = originalAppUrl
     })
   })
 

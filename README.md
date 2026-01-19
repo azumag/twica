@@ -17,21 +17,36 @@ All documented security vulnerabilities, bugs, and code quality issues have been
 
 See [SECURITY.md](./SECURITY.md) for detailed security policies and known vulnerabilities.
 
-## Project Status
+## Current Focus
 
-✅ **All Issues Resolved**
-
-No open GitHub issues. All documented issues have been addressed:
+Active issues (priority order):
+- #92: Fix CSRF test failures - CSRF_CONFIG mocking issue (medium priority) - Test infrastructure fix
 
 **Recently Completed:**
-- Issue #88: Added unit tests for CopyButton component (18 tests, 100% pass rate)
-- Issue #87: Improved testing infrastructure with Supabase mock utilities
+- Issue #88: Add unit tests for CopyButton component (18 tests, 100% pass rate)
+- Issue #87: Improve testing infrastructure with Supabase mock utilities
 - Issue #91: CSRF_TOKEN_SALT missing in production - Documented fix
 - Issue #90: Next.js invariant error - Documented as framework issue
 - Issue #84: Fixed WebSocket connection error handling - distinguished normal closures from errors
 - Issue #83: Closed - E2E test results documented, WebSocket issue resolved
 - Issue #85: Added streamer settings API tests (100% coverage, 5/5 tests passing)
 - Issue #86: Closed - Streamer settings test failure resolved
+
+## Production Issues
+
+All production issues have been documented and closed:
+
+### Issue #91: CSRF_TOKEN_SALT Missing ✅ Documented
+- **Status:** Documented - Requires production environment configuration
+- **Documentation:** See [PRODUCTION_FIX_CSRF_SALT.md](./docs/PRODUCTION_FIX_CSRF_SALT.md)
+- **Action:** Generate secure salt (32+ chars) and add to Vercel environment variables
+
+### Issue #90: Next.js Request ID Error ✅ Documented
+- **Status:** Documented - Known Next.js framework issue
+- **Impact:** No user impact, application functions correctly
+- **Documentation:** See [NEXTJS_INVARIANT_ERROR.md](./docs/NEXTJS_INVARIANT_ERROR.md)
+- **Note:** Framework-level invariant error, not application bug
+- **Action:** Configure Sentry to ignore this specific error
 
 ## Production Issues
 
