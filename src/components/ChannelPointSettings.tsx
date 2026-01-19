@@ -49,7 +49,20 @@ export default function ChannelPointSettings({
     setError("");
 
     try {
-      const response = await fetch("/api/twitch/rewards");
+      const response = await fetch("/api/twitch/rewards", {
+        credentials: "include",
+      });
+
+      if (response.status === 401) {
+        const errorData = await response.json();
+        if (errorData.requiresReauth) {
+          setError("報酬の取得に失敗しました。再度ログインしてください。");
+        } else {
+          setError(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.FETCH_FAILED);
+        }
+        setLoading(false);
+        return;
+      }
 
       if (response.status === 403) {
         setError(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.AFFILIATE_REQUIRED);
@@ -65,12 +78,16 @@ export default function ChannelPointSettings({
       }
 
       if (!response.ok) {
-        throw new Error("Failed to fetch rewards");
+        const errorData = await response.json();
+        setError(errorData.error || "報酬の取得に失敗しました");
+        setLoading(false);
+        return;
       }
 
       const data = await response.json();
       setRewards(data);
-    } catch {
+    } catch (err) {
+      logger.error("Failed to fetch rewards:", err);
       setError(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.FETCH_FAILED);
     } finally {
       setLoading(false);
@@ -79,7 +96,9 @@ export default function ChannelPointSettings({
 
   const fetchEventSubStatus = useCallback(async () => {
     try {
-      const response = await fetch("/api/twitch/eventsub/subscribe");
+      const response = await fetch("/api/twitch/eventsub/subscribe", {
+        credentials: "include",
+      });
       if (response.ok) {
         const subs = await response.json();
         setSubscriptions(subs);
@@ -116,6 +135,7 @@ export default function ChannelPointSettings({
     try {
       const response = await fetch("/api/twitch/rewards", {
         method: "POST",
+        credentials: "include",
       });
 
       if (response.ok) {
@@ -145,6 +165,7 @@ export default function ChannelPointSettings({
       // Save settings
       const settingsResponse = await fetch("/api/streamer/settings", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           streamerId,
@@ -167,6 +188,7 @@ export default function ChannelPointSettings({
       // Subscribe to EventSub
       const eventSubResponse = await fetch("/api/twitch/eventsub/subscribe", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           rewardId: selectedRewardId,
