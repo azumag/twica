@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { validateDropRateSum } from "@/lib/validations";
+import {
+  validateDropRateSum,
+  validateCardName,
+  validateCardDescription,
+  validateImageUrl,
+  validateRarity,
+} from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { extractTwitchUserId } from "@/types/database";
@@ -54,11 +60,53 @@ export async function PUT(
     const body = await request.json();
     const { name, description, imageUrl, rarity, dropRate } = body;
 
-    if (typeof dropRate !== "number" || dropRate < 0 || dropRate > 1) {
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.DROP_RATE_INVALID },
-        { status: 400 }
-      );
+    if (name !== undefined) {
+      const nameValidation = validateCardName(name)
+      if (!nameValidation.valid) {
+        return NextResponse.json(
+          { error: nameValidation.error },
+          { status: 400 }
+        )
+      }
+    }
+
+    if (description !== undefined) {
+      const descriptionValidation = validateCardDescription(description)
+      if (!descriptionValidation.valid) {
+        return NextResponse.json(
+          { error: descriptionValidation.error },
+          { status: 400 }
+        )
+      }
+    }
+
+    if (imageUrl !== undefined) {
+      const imageUrlValidation = validateImageUrl(imageUrl)
+      if (!imageUrlValidation.valid) {
+        return NextResponse.json(
+          { error: imageUrlValidation.error },
+          { status: 400 }
+        )
+      }
+    }
+
+    if (rarity !== undefined) {
+      const rarityValidation = validateRarity(rarity)
+      if (!rarityValidation.valid) {
+        return NextResponse.json(
+          { error: rarityValidation.error },
+          { status: 400 }
+        )
+      }
+    }
+
+    if (dropRate !== undefined) {
+      if (typeof dropRate !== "number" || dropRate < 0 || dropRate > 1) {
+        return NextResponse.json(
+          { error: ERROR_MESSAGES.DROP_RATE_INVALID },
+          { status: 400 }
+        );
+      }
     }
 
     // Verify ownership

@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { validateDropRateSum } from "@/lib/validations";
+import {
+  validateDropRateSum,
+  validateCardName,
+  validateCardDescription,
+  validateImageUrl,
+  validateRarity,
+} from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
@@ -54,6 +60,38 @@ export async function POST(request: NextRequest) {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
     const { streamerId, name, description, imageUrl, rarity, dropRate } = body;
+
+    const nameValidation = validateCardName(name)
+    if (!nameValidation.valid) {
+      return NextResponse.json(
+        { error: nameValidation.error },
+        { status: 400 }
+      )
+    }
+
+    const descriptionValidation = validateCardDescription(description)
+    if (!descriptionValidation.valid) {
+      return NextResponse.json(
+        { error: descriptionValidation.error },
+        { status: 400 }
+      )
+    }
+
+    const imageUrlValidation = validateImageUrl(imageUrl)
+    if (!imageUrlValidation.valid) {
+      return NextResponse.json(
+        { error: imageUrlValidation.error },
+        { status: 400 }
+      )
+    }
+
+    const rarityValidation = validateRarity(rarity)
+    if (!rarityValidation.valid) {
+      return NextResponse.json(
+        { error: rarityValidation.error },
+        { status: 400 }
+      )
+    }
 
     if (typeof dropRate !== "number" || dropRate < 0 || dropRate > 1) {
       return NextResponse.json(
