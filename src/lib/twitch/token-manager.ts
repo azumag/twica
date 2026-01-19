@@ -5,7 +5,7 @@ import { logger } from '@/lib/logger';
 export class TwitchTokenError extends Error {
   constructor(
     message: string,
-    public readonly code: 'NO_TOKEN' | 'REFRESH_FAILED' | 'DATABASE_ERROR',
+    public readonly code: 'NO_TOKEN' | 'REFRESH_FAILED' | 'DATABASE_ERROR' | 'USER_NOT_FOUND',
     public readonly originalError?: Error
   ) {
     super(message);
@@ -23,6 +23,14 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
     .single();
 
   if (dbError) {
+    // PGRST116 means no rows returned - user not found, which is an expected case
+    if (dbError.code === 'PGRST116') {
+      logger.warn('User not found in database', { twitchUserId });
+      return null;
+    }
+
+    // Other database errors are unexpected and should be thrown
+    logger.error('Database error fetching user tokens', { twitchUserId, error: dbError });
     throw new TwitchTokenError(
       'Failed to fetch user tokens from database',
       'DATABASE_ERROR',

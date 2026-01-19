@@ -60,6 +60,41 @@ describe('Twitch Token Manager', () => {
       expect(token).toBeNull();
     });
 
+    it('ユーザーが見つからない場合（PGRST116）は null を返す', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: null,
+          error: { code: 'PGRST116', message: 'No rows returned' },
+        }),
+        update: vi.fn().mockReturnThis(),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBeNull();
+    });
+
+    it('データベースエラー（PGRST116以外）は例外をスローする', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: null,
+          error: { code: 'PGRST000', message: 'Database connection failed' },
+        }),
+        update: vi.fn().mockReturnThis(),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      await expect(getTwitchAccessToken('123456789')).rejects.toThrow('Failed to fetch user tokens from database');
+    });
+
     it('期限切れのトークンを更新する', async () => {
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
