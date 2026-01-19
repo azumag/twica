@@ -6,17 +6,23 @@
 # Zellijがまだ起動していない場合は起動
 if [ -z "$ZELLIJ" ]; then
     echo "Starting Zellij session..."
-    # 新しいzellijセッションを起動してこのスクリプトを再実行
-    exec zellij -s monitor -l welcome -- bash -c "
-        # 新しいペーンでopencodeを起動
-        zellij action new-pane -- opencode
-        sleep 1
-        # 元のペーンに戻る
-        zellij action focus-previous-pane
-        sleep 0.5
-        # 監視スクリプトを実行
-        exec $0
-    "
+    # 一時的なレイアウトファイルを作成
+    LAYOUT_FILE="/tmp/zellij_monitor_layout_$$.kdl"
+    SCRIPT_PATH="$(realpath "$0")"
+
+    cat > "$LAYOUT_FILE" <<EOF
+layout {
+    pane split_direction="vertical" {
+        pane command="bash" {
+            args "-c" "$SCRIPT_PATH"
+        }
+        pane command="opencode"
+    }
+}
+EOF
+
+    # レイアウトファイルを使ってzellijセッションを起動
+    exec zellij -l "$LAYOUT_FILE" -s monitor
 fi
 
 DUMP_FILE="/tmp/zellij_pane_dump_$$.txt"
