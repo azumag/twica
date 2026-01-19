@@ -56,6 +56,15 @@ export function parseSession(raw: string): Session {
     if (typeof parsed.version !== 'number') {
       throw new Error('Invalid session: version must be a number')
     }
+    if (!Number.isInteger(parsed.version)) {
+      throw new Error('Invalid session: version must be an integer')
+    }
+    if (parsed.version < 1) {
+      throw new Error('Invalid session: version must be greater than or equal to 1')
+    }
+    if (parsed.version > Number.MAX_SAFE_INTEGER) {
+      throw new Error('Invalid session: version exceeds maximum safe integer value')
+    }
     
     return parsed as Session
   } catch (error) {
