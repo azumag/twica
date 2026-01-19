@@ -1,0 +1,107 @@
+{
+  "projectName": "TwiCa",
+  "environments": {
+    "production": {
+      "url": "https://twica.bluemoon.works",
+      "name": "本番環境",
+      "auth": {
+        "enabled": false
+      }
+    },
+    "dev": {
+      "url": "http://localhost:3000",
+      "name": "開発環境",
+      "auth": {
+        "enabled": true,
+        "stateFiles": {
+          "viewer": ".e2e-auth-state-viewer.json",
+          "streamer": ".e2e-auth-state-streamer.json"
+        }
+      }
+    },
+    "staging": {
+      "url": "https://staging.twica.bluemoon.works",
+      "name": "ステージング環境",
+      "auth": {
+        "enabled": false
+      }
+    }
+  },
+  "userTypes": [
+    {
+      "id": "viewer",
+      "name": "視聴者",
+      "description": "一般的な視聴者ユーザー（カードバトル・統計閲覧）"
+    },
+    {
+      "id": "streamer",
+      "name": "配信者",
+      "description": "配信者権限を持つユーザー（カード管理・チャンネルポイント設定）"
+    }
+  ],
+  "testPages": [
+    {
+      "name": "トップページ",
+      "path": "/",
+      "title": "TwiCa - Twitch Channel Point Trading Cards",
+      "authRequired": false,
+      "elements": {
+        "loginButton": "Twitchでログイン",
+        "tosLink": "利用規約"
+      }
+    },
+    {
+      "name": "利用規約ページ",
+      "path": "/tos",
+      "title": "利用規約 - TwiCa",
+      "authRequired": false,
+      "backLink": "TwiCa"
+    },
+    {
+      "name": "ダッシュボード（視聴者）",
+      "path": "/dashboard",
+      "title": "ダッシュボード - TwiCa",
+      "authRequired": true,
+      "requiredUserType": "viewer",
+      "elements": {
+        "userInfo": "ユーザー情報",
+        "cardCollection": "カードコレクション"
+      }
+    },
+    {
+      "name": "カードバトル",
+      "path": "/battle",
+      "title": "カードバトル - TwiCa",
+      "authRequired": true,
+      "requiredUserType": "viewer",
+      "elements": {
+        "battleArena": "バトルアリーナ",
+        "cardDeck": "デッキ"
+      }
+    },
+    {
+      "name": "バトル統計",
+      "path": "/battle/stats",
+      "title": "バトル統計 - TwiCa",
+      "authRequired": true,
+      "requiredUserType": "viewer",
+      "elements": {
+        "statsTable": "統計表",
+        "winRate": "勝率"
+      }
+    },
+    {
+      "name": "ダッシュボード（配信者）",
+      "path": "/dashboard",
+      "title": "ダッシュボード - TwiCa",
+      "authRequired": true,
+      "requiredUserType": "streamer",
+      "elements": {
+        "streamerSettings": "配信者設定",
+        "cardManager": "カード管理"
+      }
+    }
+  ],
+  "issueLabels": ["testing", "e2e", "automated"],
+  "screenshotDir": "/tmp"
+}
