@@ -61,9 +61,10 @@ export function reportApiError(endpoint: string, method: string, error: Error | 
           scope.setExtra('errorObject', error);
           scope.setExtra('errorJson', errorJson);
         } catch (e) {
-          errorMessage = `${method} ${endpoint}: [Unserializable Object]`;
+          errorMessage = `${method} ${endpoint}: [Unserializable Object] - ${e}`;
           scope.setExtra('errorType', 'unserializable');
           scope.setExtra('errorString', String(error));
+          scope.setExtra('serializationError', e instanceof Error ? e.message : String(e));
         }
       } else if (error !== undefined && error !== null) {
         errorMessage = `${method} ${endpoint}: ${String(error)}`;
