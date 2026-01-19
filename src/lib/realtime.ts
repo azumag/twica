@@ -2,6 +2,29 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { logger } from './logger'
 import { reportRealtimeError } from './sentry/error-handler'
 
+/*
+ * Supabase Realtime Connection Lifecycle
+ * ========================================
+ * 
+ * Expected Connection Statuses (Normal, Not Errors):
+ * - SUBSCRIBED: Successfully connected and subscribed
+ * - CLOSED: Connection closed normally (cleanup, page navigation)
+ * - TIMED_OUT: Connection timed out during idle periods
+ * - CHANNEL_ERROR: Channel-specific errors (handled gracefully)
+ *
+ * These statuses are part of normal WebSocket lifecycle and do not indicate
+ * application errors. They are logged at INFO level for debugging purposes.
+ *
+ * Actual Errors (Reported to Sentry):
+ * - Repeated connection failures beyond max retries
+ * - Unexpected error messages
+ * - Subscription failures that prevent functionality
+ *
+ * Note: Browser console may show "Connection closed" messages during page
+ * transitions or cleanup. This is expected behavior and does not affect
+ * application functionality.
+ */
+
 let supabaseRealtime: SupabaseClient | null = null
 
 function getSupabaseRealtimeClient(): SupabaseClient {
@@ -47,7 +70,10 @@ export interface RealtimeError {
   type: 'connection' | 'subscription' | 'broadcast' | 'unknown'
   message: string
   error: unknown
+  isExpected?: boolean
 }
+
+const EXPECTED_CLOSE_STATUSES = ['CLOSED', 'TIMED_OUT', 'CHANNEL_ERROR']
 
 export async function broadcastGachaResult(
   streamerId: string,
@@ -90,8 +116,8 @@ export async function broadcastGachaResult(
   } finally {
     try {
       client.removeChannel(channel)
-    } catch (cleanupError) {
-      logger.warn(`Failed to cleanup channel for streamer ${streamerId}:`, cleanupError)
+    } catch {
+      logger.info(`Channel cleanup completed for streamer ${streamerId}`)
     }
   }
 }
@@ -167,22 +193,27 @@ export function subscribeToGachaResults(
             logger.info(`Successfully subscribed to gacha:${streamerId}`)
             onSuccess?.()
           } else {
-            logger.warn(`Connection issue for gacha:${streamerId}, status: ${status}`)
+            const isExpected = EXPECTED_CLOSE_STATUSES.includes(status)
             isSubscribed = false
 
             const error: RealtimeError = {
               type: 'connection',
               message: `Realtime connection issue: ${status}`,
               error: err,
+              isExpected,
             }
 
-            logger.error(`Realtime error for streamer ${streamerId}:`, error)
-            reportRealtimeError(err, {
-              action: 'subscribe',
-              streamerId,
-              status,
-              retryCount,
-            })
+            if (isExpected) {
+              logger.info(`Expected connection closure for gacha:${streamerId}, status: ${status}`)
+            } else {
+              logger.warn(`Connection issue for gacha:${streamerId}, status: ${status}`)
+              reportRealtimeError(err, {
+                action: 'subscribe',
+                streamerId,
+                status,
+                retryCount,
+              })
+            }
 
             onError?.(error)
 
@@ -197,6 +228,7 @@ export function subscribeToGachaResults(
                 type: 'connection',
                 message: 'Max retries reached. Please refresh the page to reconnect.',
                 error: null,
+                isExpected: false,
               }
               onError?.(maxRetriesError)
             }

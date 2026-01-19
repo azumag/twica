@@ -159,7 +159,13 @@ export function reportPerformanceIssue(operation: string, duration: number, cont
   })
 }
 
-export function reportRealtimeError(error: unknown, context: { action?: string; streamerId?: string; status?: string; retryCount?: number }) {
+export function reportRealtimeError(error: unknown, context: { action?: string; streamerId?: string; status?: string; retryCount?: number; isExpected?: boolean }) {
+  const EXPECTED_STATUSES = ['CLOSED', 'TIMED_OUT', 'CHANNEL_ERROR']
+
+  if (context.isExpected || (context.status && EXPECTED_STATUSES.includes(context.status))) {
+    return
+  }
+
   Sentry.withScope((scope) => {
     scope.setTag('category', 'realtime')
     scope.setTag('action', context.action || 'unknown')

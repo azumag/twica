@@ -98,8 +98,13 @@ export default function OverlayPage() {
       }
     }, {
       onError: (error) => {
-        setConnectionStatus('error');
-        setErrorMessage(error.message);
+        if (error.isExpected) {
+          setConnectionStatus('disconnected');
+          setErrorMessage(null);
+        } else {
+          setConnectionStatus('error');
+          setErrorMessage(error.message);
+        }
       },
       onSuccess: () => {
         setConnectionStatus('connected');
