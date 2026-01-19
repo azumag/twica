@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const ngrok = require('ngrok');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const fs = require('fs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -14,10 +12,41 @@ const ENV_FILE = path.join(__dirname, '..', '.env.local');
 async function startDev() {
   console.log('🚀 Starting development environment...\n');
 
+  let ngrokProcess = null;
+  let nextProcess = null;
+
   try {
     // Start ngrok
     console.log('📡 Starting ngrok tunnel...');
-    const url = await ngrok.connect(3000);
+    ngrokProcess = spawn('ngrok', ['http', '3000', '--log=stdout'], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    // Wait for ngrok URL
+    const url = await new Promise((resolve, reject) => {
+      let output = '';
+      const timeout = setTimeout(() => {
+        reject(new Error('ngrok startup timeout'));
+      }, 30000);
+
+      ngrokProcess.stdout.on('data', (data) => {
+        output += data.toString();
+        const match = output.match(/url=(https:\/\/[^\s]+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        }
+      });
+
+      ngrokProcess.stderr.on('data', (data) => {
+        console.error(data.toString());
+      });
+
+      ngrokProcess.on('error', (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
 
     console.log(`✅ ngrok tunnel started: ${url}\n`);
 
@@ -43,7 +72,7 @@ async function startDev() {
 
     // Start Next.js dev server
     console.log('🚀 Starting Next.js development server...\n');
-    const nextProcess = spawn('npm', ['run', 'dev:next'], {
+    nextProcess = spawn('npm', ['run', 'dev:next'], {
       stdio: 'inherit',
       shell: true,
       env: {
@@ -53,10 +82,10 @@ async function startDev() {
     });
 
     // Handle cleanup
-    const cleanup = async () => {
+    const cleanup = () => {
       console.log('\n\n🛑 Shutting down...');
-      nextProcess.kill();
-      await ngrok.kill();
+      if (nextProcess) nextProcess.kill();
+      if (ngrokProcess) ngrokProcess.kill();
       console.log('✅ Cleanup complete');
       process.exit(0);
     };
@@ -64,13 +93,15 @@ async function startDev() {
     process.on('SIGINT', cleanup);
     process.on('SIGTERM', cleanup);
 
-    nextProcess.on('exit', async (code) => {
-      await ngrok.kill();
+    nextProcess.on('exit', (code) => {
+      if (ngrokProcess) ngrokProcess.kill();
       process.exit(code);
     });
 
   } catch (error) {
     console.error('❌ Error:', error.message);
+    if (ngrokProcess) ngrokProcess.kill();
+    if (nextProcess) nextProcess.kill();
     process.exit(1);
   }
 }

@@ -43,7 +43,7 @@ export async function GET(request: Request) {
 
     const authUrl = getTwitchAuthUrl(redirectUri, state)
 
-    return NextResponse.json({ authUrl })
+    return NextResponse.redirect(authUrl)
   } catch (error) {
     reportAuthError(error, {
       provider: 'twitch',
