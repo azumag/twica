@@ -12,17 +12,25 @@ function useTwitchLogin() {
   const initiateLogin = async () => {
     setIsLoading(true)
     setError(null)
+    
     try {
-      const response = await fetch('/api/auth/twitch/login')
+      const response = await fetch('/api/auth/twitch/login', {
+        method: 'GET',
+        credentials: 'include',
+      })
+      
       if (!response.ok) {
         const errorData: TwitchLoginResponse = await response.json()
         setError(errorData.error || UI_STRINGS.AUTH.LOGIN_FAILED)
         return
       }
+      
       const data: TwitchLoginResponse = await response.json()
 
       if (data.authUrl) {
         window.location.href = data.authUrl
+      } else if (!data.authUrl) {
+        setError(UI_STRINGS.AUTH.LOGIN_FAILED)
       }
     } catch (error) {
       setError(UI_STRINGS.AUTH.NETWORK_ERROR)
