@@ -9,6 +9,7 @@ import AnimatedBattle from '@/components/AnimatedBattle'
 import Image from 'next/image'
 import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
 
+
 interface BattleCard {
   id: string
   name: string

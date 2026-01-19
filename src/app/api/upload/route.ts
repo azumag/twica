@@ -8,6 +8,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-l
 import { ERROR_MESSAGES, UPLOAD_CONFIG } from '@/lib/constants';
 import { getFileTypeFromBuffer, getFileExtension, isValidExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger';
+import { validateCSRFToken } from '@/lib/csrf';
 import type { Session } from '@/lib/session';
 
 interface ValidateRequestResult {
@@ -85,6 +86,15 @@ async function validateFile(file: File | null): Promise<NextResponse | null> {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  // CSRF検証
+  const validation = await validateCSRFToken(request)
+  if (!validation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    )
+  }
+
   const { error: rateLimitError, session } = await validateRequest(request);
   if (rateLimitError) {
     return rateLimitError;

@@ -9,6 +9,7 @@ process.env.TWITCH_CLIENT_ID = 'test-client-id'
 process.env.TWITCH_CLIENT_SECRET = 'test-client-secret'
 process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'test-client-id'
 process.env.TWITCH_EVENTSUB_SECRET = 'test-eventsub-secret'
+process.env.CSRF_SIGNING_KEY = 'test-csrf-signing-key'
 
 // Global mocks
 vi.mock('@/lib/supabase/server', () => ({

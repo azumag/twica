@@ -4,8 +4,18 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { validateCSRFToken } from "@/lib/csrf";
 
 export async function POST(request: NextRequest) {
+  // CSRF検証
+  const validation = await validateCSRFToken(request)
+  if (!validation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    )
+  }
+
   const session = await getSession();
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);

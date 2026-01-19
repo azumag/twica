@@ -7,6 +7,7 @@ import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
 
+
 interface GachaResult {
   card: Card;
   userTwitchUsername: string;

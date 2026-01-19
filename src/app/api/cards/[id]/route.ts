@@ -6,12 +6,22 @@ import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { extractTwitchUserId } from "@/types/database";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { validateCSRFToken } from "@/lib/csrf";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // CSRF検証
+  const validation = await validateCSRFToken(request)
+  if (!validation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    )
+  }
+
   const session = await getSession();
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
@@ -106,6 +116,15 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // CSRF検証
+  const validation = await validateCSRFToken(request)
+  if (!validation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    )
+  }
+
   const session = await getSession();
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);

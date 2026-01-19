@@ -1,408 +1,1038 @@
-# Issue #54: Fix CSP Configuration and Realtime Error Handling
+# Issue #55: Critical Security - Missing CSRF Protection on State-Changing API Routes
 
 ## 概要
 
-Sentryが自動作成した以下のissueを解決する：
-
-- Issue #51: Uncaught (in promise) Error: Connection closed. (Realtime接続エラー)
-- Issue #52: Creating a worker from 'blob:...' violates the following Content Security Policy directive (CSP違反)
-- Issue #53: Executing inline script violates the following Content Security Policy directive (CSP違反)
+アプリケーションは現在セッションベースの認証のみを使用しており、CSRF（Cross-Site Request Forgery）保護が実装されていません。これにより、すべての状態変更操作がCSRF攻撃に対して脆弱です。
 
 ## 問題分析
 
-### CSP設定の問題
+### 現在の実装
 
-現在のCSP設定（`src/lib/constants.ts`）:
+現在のセッション管理（`src/lib/session.ts`, `src/app/api/auth/twitch/callback/route.ts`）:
 
 ```typescript
-CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;",
-CSP_PRODUCTION: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;",
+// OAuth callbackでセッションクッキーを設定
+cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',  // SameSite='lax' blocks cross-site POST requests (primary CSRF defense)
+  path: '/',
+  maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+})
 ```
+
+**SameSite='lax'による保護:**
+
+SameSite='lax'はCSRF攻撃に対する効果的な一次防御レイヤーです：
+- ✓ クロスサイトPOSTリクエストでCookieが送信されない
+- ✓ OAuthコールバックを含むトップレベルナビゲーションは許可
+- ✗ 古いブラウザでは未サポート（Safari < 12, IE）
+
+**防御の深層化:**
+
+SameSite='lax' + CSRFトークンで多層防御を実現：
+- SameSite='lax': ブラウザレベルでのクロスサイトPOST阻止
+- CSRFトークン: カスタムヘッダーによる追加検証（XSS対策としても機能）
 
 **問題点:**
 
-1. `worker-src`が設定されていないため、Sentry ReplayがWeb Workersを作成できない
-2. 開発環境では`'unsafe-inline'`が許可されているが、本番環境では許可されていないため、インラインスクリプトがブロックされる可能性がある
+1. **CSRFトークンの欠如**:
+   - すべてのPOST/PUT/DELETE APIルートはセッションクッキーのみで認証
+   - カスタムヘッダーの検証がない
+   - リクエストのオリジンを検証していない
 
-### Realtime接続の問題
+2. **影響を受けるエンドポイント**:
+   - `/api/upload` - ファイルアップロード
+   - `/api/cards` - カード作成/更新/削除
+   - `/api/gacha` - ガチャ実行
+   - `/api/battle/start` - バトル開始
+   - `/api/streamer/settings` - 配信者設定
+   - `/api/user-cards` - ユーザーカード管理
 
-現在のRealtime接続（`src/lib/realtime.ts`）:
+### 攻撃シナリオ
 
-```typescript
-export function subscribeToGachaResults(
-  streamerId: string,
-  callback: (payload: GachaBroadcastPayload) => void
-): () => void {
-  const client = getSupabaseRealtimeClient()
-  const channel = client.channel(`gacha:${streamerId}`)
+攻撃者が以下のような悪意のあるサイトを作成できます:
 
-  channel
-    .on('broadcast', { event: 'gacha_result' }, (payload) => {
-      callback(payload.payload as GachaBroadcastPayload)
-    })
-    .subscribe()
+```html
+<!-- 攻撃者のサイト -->
+<form action="https://twica.app/api/battle/start" method="POST">
+  <input type="hidden" name="userCardId" value="victim-card-id">
+  <button>Click to win prize!</button>
+</form>
 
-  return () => {
-    client.removeChannel(channel)
-  }
-}
+<script>
+  // 自動送信
+  document.forms[0].submit();
+</script>
 ```
 
-**問題点:**
-
-1. 接続エラーが発生した場合のエラーハンドリングがない
-2. 接続が切断された場合の再接続ロジックがない
-3. エラーがloggerやSentryに記録されない
+SameSite='lax'の保護機能:
+- クロスサイトPOSTリクエストではCookieが送信されないため、この攻撃はブロックされる
+- CSRFトークン検証により追加の保護レイヤーが提供される
+- 攻撃者の意図しないバトル実行は防止される
 
 ## 機能要件
 
-1. **CSP設定の改善**:
-   - `worker-src 'self' blob:`をCSP_DEVELOPMENTとCSP_PRODUCTIONに追加
-   - 必要に応じて`script-src`を調整
+1. **CSRFトークン生成**:
+   - ユーザーごとにユニークなCSRFトークンを生成
+   - トークンのハッシュをセッションに保存
+   - 暗号学的に安全な乱数を使用
 
-2. **Realtime接続のエラーハンドリング**:
-   - 接続エラーを検知してログに記録
-   - 再接続ロジックを実装
-   - エラーをloggerとSentryに記録
+2. **CSRFトークン配布**:
+   - トークンのハッシュをセッションに保存（httpOnly cookie）
+   - トークン自体もhttpOnly cookieに保存（JavaScriptからアクセス不可）
+   - ブラウザが自動的にトークンをリクエストに含める
 
-3. **ユーザー体験の改善**:
-   - 接続エラーが発生した場合、ユーザーにわかりやすいメッセージを表示
+3. **CSRFトークン検証**:
+   - すべてのPOST/PUT/DELETEリクエストでトークンを検証
+   - cookieからトークンを取得し、ハッシュ比較で検証
+   - トークン不一致の場合は403エラーを返す
+
+4. **セキュアなトークン管理**:
+   - セッションごとに一意のトークン
+   - トークンの有効期限を管理
+   - ログアウト時にトークンを無効化
 
 ## 非機能要件
 
 1. **セキュリティ**:
-   - CSPのセキュリティレベルを維持
-   - 必要最小限のソースのみを許可
+   - 暗号学的に強力な乱数生成器を使用
+   - トークン推測攻撃を防ぐため、十分なエントロピーを持つ
+   - タイミング攻撃に対して安全な比較
+   - トークンのハッシュをセッションに保存（トークン値の漏洩防止）
 
-2. **信頼性**:
-   - Realtime接続が安定して動作する
-   - エラーが適切に検知・回復する
+2. **可用性**:
+   - 既存のOAuthフローを維持
+   - すべての正当なリクエストが正常に動作
+   - エラーメッセージは攻撃者に情報を漏らさない
 
-3. **可観測性**:
-   - すべてのエラーがloggerとSentryに記録される
+3. **パフォーマンス**:
+   - トークン検証のオーバーヘッドを最小化
+   - キャッシュ戦略を検討（ただし、セキュリティを優先）
+
+4. **可観測性**:
+   - CSRF検証エラーをloggerとSentryに詳細に記録
+   - 不審なリクエストパターンを検知
 
 ## 受け入れ基準
 
-1. **CSP設定**:
-   - Sentry Replayが正常に動作すること
-   - CSP違反の警告が表示されないこと
-   - 開発環境と本番環境でCSPが正しく設定されていること
+1. **CSRF保護の実装**:
+    - すべてのPOST/PUT/DELETE APIルートでCSRFトークン検証が行われる
+    - トークンのハッシュがセッションに正しく保存される
+    - トークンがhttpOnly cookieに保存され、JavaScriptからアクセス不可
 
-2. **Realtime接続**:
-   - 接続エラーが適切にハンドリングされること
-   - 自動再接続が機能すること
-   - エラーがloggerとSentryに記録されること
+2. **セキュリティ**:
+   - CSRF攻撃が防止されることをテストで検証
+   - トークンが推測不可能であること
+   - トークン不一致が適切に検知される
+   - XSS攻撃時にトークンが窃取されても、ハッシュ比較で検証される
 
-3. **ユーザー体験**:
-   - 接続エラーが発生した場合、適切なエラーメッセージが表示されること
-   - ユーザーが手動で再接続できること
+3. **既存機能の互換性**:
+   - OAuthフローが正常に動作
+   - すべての機能がCSRF保護下で動作
+   - エラーメッセージが適切
+
+4. **テスト**:
+   - CSRF保護のユニットテストが存在
+   - 統合テストがパス
+   - 手動テストでCSRF攻撃が防止されることを確認
 
 ## 設計方針
 
-### CSP設定の修正
+### アーキテクチャ決定
 
-**変更するファイル: `src/lib/constants.ts`**
+**選択: HttpOnly Cookie Pattern**
 
-```typescript
-// 変更前
-CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:*; font-src 'self' data:;",
-CSP_PRODUCTION: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https: blob:; connect-src 'self' https:; font-src 'self' data:;",
+選定理由:
+1. XSS攻撃時にCSRFトークンが窃取されないため、より安全
+2. 実装がシンプルでエラーが発生しにくい
+3. SameSite='lax'との組み合わせで強固なCSRF保護が実現できる
+4. クライアント側での追加実装が不要
+5. OAuthフローとの完全な互換性
 
-// 変更後
-CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
-CSP_PRODUCTION: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: wss:; font-src 'self' data:; worker-src 'self' blob:;",
+### アーキテクチャ図
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Server Side (Session - httpOnly, secure)          │
+│  ┌──────────────────────────────────────────────┐  │
+│  │ {                                             │  │
+│  │   twitchUserId: "xxx",                       │  │
+│  │   csrfTokenHash: "a1b2c3...",                  │  │
+│  │   version: 5,                                 │  │
+│  │ }                                             │  │
+│  └──────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  Client Side (csrf_token Cookie - httpOnly)       │
+│  ┌──────────────────────────────────────────────┐  │
+│  │ csrf_token: "d4e5f6..." (JavaScriptからアクセス不可) │  │
+│  └──────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+
+Request Flow:
+1. Browser automatically sends httpOnly csrf_token cookie with requests
+2. Server reads token from cookie, hashes it, and compares with session.csrfTokenHash
+3. No client-side token handling required
+4. On token generation, optimistic locking prevents race conditions
 ```
 
-**変更の理由:**
+### 競合状態対策（楽観的ロック）
 
-1. `worker-src 'self' blob:`の追加:
-   - Sentry ReplayがWeb Workersを作成する必要がある
-   - `blob:`スキーマは動的に生成されたWorkerコードで使用される
+セッションにバージョン番号を追加し、トークン生成時にバージョンを検証することで、複数の同時リクエストによる競合状態を回避します。
 
-2. `wss:`の追加（connect-src）:
-   - Supabase RealtimeはWebSocketを使用している
-   - WebSocket接続を許可するために`wss:`が必要
+**実装仕様**:
+- セッションの読み取りと更新の間でバージョンを確認
+- バージョンが不一致の場合、リトライ（最大3回、10ms間隔）
+- 更新成功時にバージョンをインクリメント
+- リトライ回数超過時はエラーをスロー
 
-3. `'unsafe-inline'`の追加（script-src）:
-   - 開発環境では既に許可されているが、本番環境でも必要な場合がある
-   - ただし、セキュリティリスクがあるため、注意が必要
+### セキュリティ配慮のあるログ記録
 
-### Realtime接続のエラーハンドリング
+エラーログには以下の処理を適用し、情報漏洩を防止します：
+- IPアドレスのSHA-256ハッシュ化（先頭8文字のみ）
+- エンドポイントURLのサニタイズ（パスのみ）
+- タイムスタンプのISO 8601形式記録
+- ユーザーIDの記録（デバッグ用）
 
-**変更するファイル: `src/lib/realtime.ts`**
+### コンポーネント設計
+
+#### 1. CSRFトークン管理モジュール
+
+**新規ファイル**: `src/lib/csrf.ts`
 
 ```typescript
-import { createClient, SupabaseClient } from '@supabase/supabase-js'
+import { cookies } from 'next/headers'
+import { crypto } from 'node:crypto'
 import { logger } from './logger'
-import { reportRealtimeError } from './sentry/error-handler'
+import { reportSecurityError } from './sentry/error-handler'
+import { COOKIE_NAMES } from './constants'
+import { parseSession } from './session'
 
-let supabaseRealtime: SupabaseClient | null = null
+const CSRF_TOKEN_LENGTH = 32 // 256 bits
+// HttpOnly Cookie Patternではヘッダーは不要
+const CSRF_ERROR_MESSAGE = 'Invalid CSRF token'
 
-function getSupabaseRealtimeClient(): SupabaseClient {
-  if (supabaseRealtime) {
-    return supabaseRealtime
+/**
+ * CSRFトークンを生成
+ */
+function generateCSRFToken(): string {
+  return crypto.randomBytes(CSRF_TOKEN_LENGTH).toString('hex')
+}
+
+/**
+ * トークンのハッシュを生成（SHA-256）
+ */
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+/**
+ * セッションにCSRFトークンのハッシュを保存し、トークン自体もhttpOnly cookieに保存
+ */
+export async function setCSRFToken(): Promise<string> {
+  const cookieStore = await cookies()
+
+  const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+  if (!sessionCookie) {
+    throw new Error('No session found')
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const session = parseSession(sessionCookie)
+  const userId = session.twitchUserId
 
-  if (!supabaseUrl || !supabaseKey) {
-    if (process.env.CI || process.env.NODE_ENV === 'test') {
-      throw new Error('Realtime not available in CI/test environment')
-    } else {
-      throw new Error('Missing Supabase environment variables for realtime')
+  // Idempotent: 既にトークンが存在する場合は返す
+  if (session.csrfTokenHash) {
+    // トークン自体はcookieから取得して返す（存在する場合）
+    const existingToken = getCSRFTokenFromCookie(cookieStore)
+    if (existingToken) {
+      return existingToken
     }
   }
 
-  supabaseRealtime = createClient(supabaseUrl, supabaseKey, {
-    realtime: {
-      params: {
-        eventsPerSecond: 10,
-      },
-    },
+  // 新しいトークンを生成
+  const token = generateCSRFToken()
+  const tokenHash = hashToken(token)
+
+  // セッションにハッシュを保存（httpOnly）
+  const updatedSession = {
+    ...session,
+    csrfTokenHash: tokenHash,
+  }
+
+  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
   })
 
-  return supabaseRealtime
+  // トークン自体もhttpOnly cookieに保存（JavaScriptからアクセス不可）
+  cookieStore.set('csrf_token', token, {
+    httpOnly: true, // HttpOnly Cookie Pattern
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+  })
+
+  logger.info(`CSRF token generated for user ${userId}`)
+  return token
 }
 
-export interface GachaBroadcastPayload {
-  type: 'gacha'
-  card: {
-    id: string
-    name: string
-    description: string | null
-    image_url: string | null
-    rarity: string
+/**
+ * CookieからCSRFトークンを取得
+ */
+function getCSRFTokenFromCookie(cookieStore: Awaited<ReturnType<typeof cookies>>): string | null {
+  const tokenCookie = cookieStore.get('csrf_token')?.value
+  return tokenCookie || null
+}
+
+/**
+ * CSRFトークンを検証（ハッシュ比較）
+ */
+export async function validateCSRFToken(
+  request: Request
+): Promise<{ valid: boolean; error?: string }> {
+  const cookieStore = await cookies()
+  const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+
+  if (!sessionCookie) {
+    logger.warn('CSRF validation failed: No session found', {
+      ip: request.headers.get('x-forwarded-for'),
+      userAgent: request.headers.get('user-agent'),
+    })
+    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
   }
-  userTwitchUsername: string
-}
 
-export interface RealtimeError {
-  type: 'connection' | 'subscription' | 'broadcast' | 'unknown'
-  message: string
-  error: unknown
-}
+  const session = parseSession(sessionCookie)
+  const sessionTokenHash = session.csrfTokenHash
 
-export async function broadcastGachaResult(
-  streamerId: string,
-  payload: GachaBroadcastPayload
-): Promise<void> {
-  const client = getSupabaseRealtimeClient()
-  const channel = client.channel(`gacha:${streamerId}`)
+  if (!sessionTokenHash) {
+    logger.warn('CSRF validation failed: No CSRF token in session', {
+      userId: session.twitchUserId,
+    })
+    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+  }
+
+  const requestToken = getCSRFTokenFromCookie(cookieStore)
+
+  if (!requestToken) {
+    logger.warn('CSRF validation failed: CSRF token missing in cookie', {
+      userId: session.twitchUserId,
+      endpoint: request.url,
+    })
+    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+  }
+
+  // ハッシュを比較（トークン値の漏洩を防止）
+  const requestTokenHash = hashToken(requestToken)
 
   try {
-    await channel.send({
-      type: 'broadcast',
-      event: 'gacha_result',
-      payload,
-    })
-  } catch (error) {
-    logger.error(`Failed to broadcast gacha result for streamer ${streamerId}:`, error)
-    reportRealtimeError(error, {
-      action: 'broadcast',
-      streamerId,
-    })
-    throw error
-  }
-}
+    const isValid = crypto.timingSafeEqual(
+      Buffer.from(sessionTokenHash),
+      Buffer.from(requestTokenHash)
+    )
 
-export interface SubscribeOptions {
-  maxRetries?: number
-  retryDelay?: number
-  onError?: (error: RealtimeError) => void
-  onSuccess?: () => void
-}
-
-export function subscribeToGachaResults(
-  streamerId: string,
-  callback: (payload: GachaBroadcastPayload) => void,
-  options: SubscribeOptions = {}
-): () => void {
-  const {
-    maxRetries = 5,
-    retryDelay = 3000,
-    onError,
-  } = options
-
-  let client: SupabaseClient | null = null
-  let channel: ReturnType<SupabaseClient['channel']> | null = null
-  let retryCount = 0
-  let isSubscribed = false
-  let retryTimeout: NodeJS.Timeout | null = null
-
-  const cleanup = () => {
-    if (retryTimeout) {
-      clearTimeout(retryTimeout)
-      retryTimeout = null
-    }
-    if (channel && isSubscribed) {
-      client?.removeChannel(channel)
-      isSubscribed = false
-    }
-  }
-
-  const subscribe = () => {
-    try {
-      client = getSupabaseRealtimeClient()
-      channel = client.channel(`gacha:${streamerId}`)
-
-      channel
-        .on('broadcast', { event: 'gacha_result' }, (payload) => {
-          try {
-            callback(payload.payload as GachaBroadcastPayload)
-          } catch (error) {
-            logger.error(`Error processing gacha result payload:`, error)
-            reportRealtimeError(error, {
-              action: 'process_payload',
-              streamerId,
-            })
-          }
-        })
-        .subscribe((status, err) => {
-          if (status === 'SUBSCRIBED') {
-            isSubscribed = true
-            retryCount = 0
-            logger.info(`Successfully subscribed to gacha:${streamerId}`)
-          } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
-            logger.warn(`Connection closed for gacha:${streamerId}, status: ${status}`)
-            isSubscribed = false
-
-            const error: RealtimeError = {
-              type: 'connection',
-              message: `Realtime connection closed: ${status}`,
-              error: err,
-            }
-
-            logger.error(`Realtime error for streamer ${streamerId}:`, error)
-            reportRealtimeError(err, {
-              action: 'subscribe',
-              streamerId,
-              status,
-              retryCount,
-            })
-
-            onError?.(error)
-
-            if (retryCount < maxRetries) {
-              retryCount++
-              logger.info(`Retrying connection (attempt ${retryCount}/${maxRetries})...`)
-              retryTimeout = setTimeout(subscribe, retryDelay)
-            } else {
-              logger.error(`Max retries (${maxRetries}) reached for gacha:${streamerId}`)
-            }
-          }
-        })
-    } catch (error) {
-      logger.error(`Failed to subscribe to gacha:${streamerId}:`, error)
-      reportRealtimeError(error, {
-        action: 'subscribe',
-        streamerId,
+    if (!isValid) {
+      logger.warn('CSRF token validation failed: Token mismatch (potential attack)', {
+        userId: session.twitchUserId,
+        ip: request.headers.get('x-forwarded-for'),
+        referer: request.headers.get('referer'),
+        endpoint: request.url,
       })
 
-      const realtimeError: RealtimeError = {
-        type: 'subscription',
-        message: 'Failed to subscribe to realtime channel',
-        error,
-      }
+      reportSecurityError(new Error('CSRF token mismatch'), {
+        action: 'csrf_validation',
+        userId: session.twitchUserId,
+      })
 
-      onError?.(realtimeError)
-
-      if (retryCount < maxRetries) {
-        retryCount++
-        retryTimeout = setTimeout(subscribe, retryDelay)
-      }
+      return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
     }
+
+    return { valid: true }
+  } catch (error) {
+    // timingSafeEqualはバッファ長不一致でエラーをスロー
+    logger.warn('CSRF validation failed: Hash comparison error', {
+      userId: session.twitchUserId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+  }
+}
+
+/**
+ * CSRFトークンをクリア
+ */
+export async function clearCSRFToken(): Promise<void> {
+  const cookieStore = await cookies()
+  const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+
+  if (sessionCookie) {
+    const session = parseSession(sessionCookie)
+
+    // セッションからハッシュを削除
+    const updatedSession = { ...session }
+    delete updatedSession.csrfTokenHash
+
+    cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+    })
   }
 
-  subscribe()
+  // CSRFトークンクッキーを削除
+  cookieStore.delete('csrf_token')
 
-  return cleanup
+  logger.info('CSRF token cleared')
 }
 ```
 
-**変更するファイル: `src/app/overlay/[streamerId]/page.tsx`**
+#### 2. CSRFトークン取得APIエンドポイント
+
+**HttpOnly Cookie Patternでは不要**
+
+HttpOnly Cookie Patternでは、トークンがhttpOnly cookieに保存されるため、クライアントにトークンを返すAPIは不要です。
+
+- トークンはcookie経由で自動的に送信されます
+- JavaScriptからトークンにアクセスする必要がありません
+- APIエンドポイントは削除します
+
+#### 3. CSRF検証ミドルウェア
+
+**新規ファイル**: `src/lib/middleware/csrf.ts`
 
 ```typescript
-// 接続ステートを追加
-const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
-const [errorMessage, setErrorMessage] = useState<string | null>(null)
+import { NextRequest, NextResponse } from 'next/server'
+import { validateCSRFToken } from '@/lib/csrf'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
-// 接続ステートを更新
-useEffect(() => {
-  const cleanup = subscribeToGachaResults(streamerId, (payload) => {
-    if (payload.type === 'gacha' && payload.card) {
-      displayResult({
-        card: payload.card as unknown as Card,
-        userTwitchUsername: payload.userTwitchUsername,
-      })
+/**
+ * CSRFトークンを検証するミドルウェア
+ * POST/PUT/DELETEリクエストに対して適用
+ */
+export async function withCSRFProtection(
+  handler: (request: NextRequest) => Promise<NextResponse>
+): Promise<NextResponse> {
+  return async (request: NextRequest) => {
+    const method = request.method.toUpperCase()
+
+    // POST/PUT/DELETEのみ検証
+    if (['POST', 'PUT', 'DELETE'].includes(method)) {
+      const validation = await validateCSRFToken(request)
+
+      if (!validation.valid) {
+        return NextResponse.json(
+          { error: ERROR_MESSAGES.FORBIDDEN },
+          { status: 403 }
+        )
+      }
     }
-  }, {
-    onError: (error) => {
-      setConnectionStatus('error')
-      setErrorMessage(error.message)
-    },
-  })
 
-  setConnectionStatus('connected')
-
-  return () => {
-    cleanup()
+    return handler(request)
   }
-}, [streamerId, displayResult])
+}
+```
+
+#### 4. APIルートの修正例
+
+**修正ファイル**: `src/app/api/gacha/route.ts`
+
+```typescript
+import { NextRequest, NextResponse } from "next/server";
+import { validateCSRFToken } from "@/lib/csrf"; // 追加
+
+export async function POST(request: NextRequest) {
+  // CSRF検証を追加
+  const validation = await validateCSRFToken(request);
+  if (!validation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    );
+  }
+
+  // 既存の実装...
+  const gachaService = new GachaService();
+  const result = await gachaService.executeGacha(streamerId, session.twitchUserId, session.twitchUsername);
+
+  return NextResponse.json<GachaSuccessResponse>({
+    card: result.data.card
+  });
+}
+```
+
+#### 5. クライアント側の実装
+
+** HttpOnly Cookie Patternでは不要**
+
+HttpOnly Cookie Patternでは、CSRFトークンがhttpOnly cookieに保存されるため、クライアント側での実装は不要です。
+
+- トークンはブラウザによって自動的に送信されます
+- JavaScriptからトークンにアクセスする必要がありません
+- 通常のfetch呼び出しでCSRF保護が自動的に適用されます
+
+```typescript
+// 通常のfetch呼び出しでOK
+const response = await fetch('/api/cards', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(cardData),
+})
+```
+
+### 定数の追加
+
+**修正ファイル**: `src/lib/constants.ts`
+
+```typescript
+export const CSRF_CONFIG = {
+  TOKEN_LENGTH: 32,
+  ERROR_MESSAGE: 'Invalid CSRF token',
+  MAX_RETRY_COUNT: 3,      // 楽観的ロックの最大リトライ回数
+  RETRY_DELAY_MS: 10,       // リトライ遅延（ミリ秒）
+} as const
+
+export const SESSION_CONFIG = {
+  MAX_AGE_SECONDS: 7 * 24 * 60 * 60, // 7 days
+} as const
+
+export const COOKIE_NAMES = {
+  SESSION: 'twica_session',
+  AUTH_STATE: 'twitch_auth_state',
+  CSRF_TOKEN: 'csrf_token', // httpOnly cookie - JavaScriptからアクセス不可
+}
+```
+
+### エラーメッセージの追加
+
+**修正ファイル**: `src/lib/constants.ts`
+
+```typescript
+export const ERROR_MESSAGES = {
+  // 既存のエラーメッセージ...
+  FORBIDDEN: 'Forbidden',
+  // CSRFエラーを追加
+  CSRF_TOKEN_INVALID: 'Invalid or missing CSRF token',
+} as const
 ```
 
 ### トレードオフ
 
 #### メリット
 
-1. **CSP設定**:
-   - Sentry Replayが正常に動作する
-   - CSP違反の警告が解消される
-   - WebSocket接続が許可される
+1. **セキュリティ向上**:
+   - CSRF攻撃を効果的に防止
+   - ユーザーの不正利用を防ぐ
+   - OWASP推奨のベストプラクティスに準拠
+   - XSS攻撃時にトークンが窃取されても、ハッシュ比較で保護
+   - 詳細なログ記録で監査・デバッグが容易
 
-2. **Realtime接続**:
-   - 接続エラーが適切にハンドリングされる
-   - 自動再接続によりユーザー体験が向上する
-   - エラーが記録されるため、デバッグが容易になる
+2. **実装の簡潔さ**:
+   - 追加のデータベースが不要
+   - 既存のセッション構造を利用
+   - クライアント側の実装が簡単
+
+3. **OAuthフローとの互換性**:
+   - SameSite='lax'を維持
+   - OAuthコールバックが正常に動作
 
 #### デメリット
 
-1. **CSP設定**:
-   - `'unsafe-inline'`を追加するとセキュリティリスクが増加する
-   - 回避策: nonce-based CSPを使用することを検討
+1. **セッションサイズの増加**:
+   - CSRFトークンのハッシュがセッションに含まれるため、サイズが増加
+   - 64文字（SHA-256 hex）の追加
 
-2. **Realtime接続**:
-   - 再接続ロジックによりコードが複雑になる
-   - 多数の再接続試行によりサーバーに負荷がかかる可能性がある
+2. **追加のCookie**:
+   - httpOnly cookieが1つ追加される
+   - Cookieサイズの増加（最小限）
+
+3. **トークン更新ロジック**:
+   - セッション更新時にトークンも更新する必要がある
+   - ログアウト時にトークンを無効化
 
 ### リスク
 
-1. **CSP設定**:
-   - `'unsafe-inline'`を追加することでXSS攻撃のリスクが増加
-   - 回避策: 将来的にnonce-based CSPまたはhash-based CSPを導入
+1. **実装ミスのリスク**:
+   - 一部のAPIルートで検証を忘れる可能性
+   - 回避策: ESLintルールやTypeScriptのデコレータで強制
 
-2. **Realtime接続**:
-   - 再接続ロジックが無限ループに陥る可能性
-   - 回避策: maxRetries設定を慎重に調整
+2. **パフォーマンスへの影響**:
+   - すべてのリクエストでトークン検証が追加される
+   - 回避策: キャッシュ戦略の検討（ただし、セキュリティを優先）
+
+3. **クライアント側の複雑性**:
+   - HttpOnly Cookie Patternではクライアント側の実装が不要
+   - 回避策: 開発者ドキュメントで通常のfetch使用を明記
+
+4. **XSS脆弱性との組み合わせ**:
+   - HttpOnly CookieによりXSS攻撃時でもCSRFトークンが窃取されない
+   - 回避策: httpOnly cookie設定によりJavaScriptからのアクセスを完全にブロック
 
 ### テスト計画
 
-1. **CSP設定**:
-   - 開発環境でアプリケーションを起動し、CSP違反の警告が表示されないことを確認
-   - Sentry Replayが動作していることを確認
-   - WebSocket接続が正常に機能していることを確認
+#### ユニットテスト
 
-2. **Realtime接続**:
-   - オーバーレイページで接続ステートが正しく表示されることを確認
-   - 接続エラーが発生した場合、自動再接続が機能することを確認
-   - エラーメッセージが適切に表示されることを確認
-   - エラーがloggerとSentryに記録されることを確認
+**新規ファイル**: `tests/unit/csrf.test.ts`
+
+```typescript
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { generateCSRFToken, validateCSRFToken, hashToken } from '@/lib/csrf'
+
+describe('CSRF Protection', () => {
+  describe('generateCSRFToken', () => {
+    it('should generate a token of correct length', () => {
+      const token = generateCSRFToken()
+      expect(token).toHaveLength(64) // 32 bytes * 2 (hex)
+    })
+
+    it('should generate unique tokens', () => {
+      const token1 = generateCSRFToken()
+      const token2 = generateCSRFToken()
+      expect(token1).not.toBe(token2)
+    })
+  })
+
+  describe('hashToken', () => {
+    it('should generate consistent hashes', () => {
+      const token = 'test-token'
+      const hash1 = hashToken(token)
+      const hash2 = hashToken(token)
+      expect(hash1).toBe(hash2)
+    })
+
+    it('should generate different hashes for different tokens', () => {
+      const hash1 = hashToken('token1')
+      const hash2 = hashToken('token2')
+      expect(hash1).not.toBe(hash2)
+    })
+  })
+
+describe('validateCSRFToken', () => {
+  it('should validate matching tokens', async () => {
+    const token = generateCSRFToken()
+    // Mock request with matching token in cookie
+    const request = new Request('https://example.com', {
+      headers: { 'Cookie': `csrf_token=${token}` }
+    })
+    const result = await validateCSRFToken(request)
+    expect(result.valid).toBe(true)
+  })
+
+  it('should reject missing token', async () => {
+    const request = new Request('https://example.com')
+    const result = await validateCSRFToken(request)
+    expect(result.valid).toBe(false)
+  })
+
+  it('should reject mismatched tokens', async () => {
+    const request = new Request('https://example.com', {
+      headers: { 'Cookie': 'csrf_token=wrong-token' }
+    })
+    const result = await validateCSRFToken(request)
+    expect(result.valid).toBe(false)
+  })
+})
+})
+```
+
+#### 統合テスト
+
+**新規ファイル**: `tests/integration/csrf.test.ts`
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { createServer } from 'http'
+
+describe('CSRF Integration Tests', () => {
+  it('should reject POST request without CSRF token', async () => {
+    const response = await fetch('http://localhost:3000/api/gacha', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streamerId: 'test' }),
+    })
+
+    expect(response.status).toBe(403)
+  })
+
+  it('should accept POST request with valid CSRF token', async () => {
+    // HttpOnly Cookie Patternでは、cookie経由でトークンが自動的に送信されます
+    // アプリ内からの通常のリクエストは、cookieにcsrf_tokenが含まれていれば成功します
+
+    // 1. 最初にセッションを作成し、トークンを生成（アプリ内からのリクエストを想定）
+    // 実際のテストでは、セッション初期化フローを実行する必要があります
+
+    // 2. cookie付きでリクエストを送信（ブラウザが自動的にcookieを含める）
+    const response = await fetch('http://localhost:3000/api/gacha', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Cookieはブラウザによって自動的に含まれるため、手動で設定する必要はありません
+      },
+      body: JSON.stringify({ streamerId: 'test' }),
+      credentials: 'include', // cookieを含めるように設定
+    })
+
+    // 認証エラーなど、CSRF以外のエラーが返るはず
+    expect(response.status).not.toBe(403)
+  })
+})
+```
+
+#### 手動テスト
+
+1. **CSRF攻撃のシミュレーション**:
+   - 外部サイトからPOSTリクエストを送信
+   - 403エラーが返ることを確認
+
+2. **正当なリクエスト**:
+   - アプリ内から正常にリクエストが送信できることを確認
+   - CSRFトークンが正しく含まれていることを確認
+
+3. **トークンの有効期限**:
+   - セッション切れ後に古いトークンでリクエストを送信
+   - 403エラーが返ることを確認
+
+## 実装ステップ
+
+### Phase 1: 基礎コンポーネントの実装
+1. `src/lib/csrf.ts` - CSRFトークン管理モジュールの実装（HttpOnly Cookie Pattern）
+2. `src/lib/constants.ts` - 定数の追加
+3. ユニットテストの実装
+
+### Phase 2: APIルートの保護
+1. `src/lib/middleware/csrf.ts` - CSRF検証ミドルウェアの実装
+2. すべてのPOST/PUT/DELETE APIルートにCSRF検証を追加
+3. エラーハンドリングの統合
+
+### Phase 3: クライアント側の実装
+1. HttpOnly Cookie Patternではクライアント側の実装は不要
+2. 通常のfetch呼び出しでCSRF保護が自動的に適用される
+3. fetchWithCSRFは不要となるため削除
+
+### Phase 4: テストとドキュメント
+1. 統合テストの実装
+2. 手動テストの実施
+3. ドキュメントの更新
+
+## 変更履歴
+
+### 2026-01-19 - HttpOnly Cookie Patternへの変更
+
+**理由**: レビューで指摘された設計と実装の不一致を解決し、セキュリティを強化
+
+**変更内容**:
+- セッションにはCSRFトークンのハッシュを保存（httpOnly）
+- CSRFトークン自体もhttpOnly cookieに保存（JavaScriptからアクセス不可）
+- ブラウザが自動的にトークンをリクエストに含める
+- X-CSRF-Tokenヘッダーは不要
+- fetchWithCSRFは不要
+
+**メリット**:
+- XSS攻撃時にCSRFトークンが窃取されないため、より安全
+- 実装がシンプルでエラーが発生しにくい
+- クライアント側の実装が不要
+
+**デメリット**:
+- Cookieが1つ追加される（最小限のオーバーヘッド）
+
+### 2026-01-19 - SameSite='lax'の説明を修正
+
+**理由**: 設計書でSameSite='lax'を「⚠️ CSRF脆弱性」として説明していたが、これは誤り
+
+**変更内容**:
+- SameSite='lax'はCSRF攻撃に対する効果的な一次防御レイヤーであることを明記
+- CSRFトークンは多層防御として機能することを説明
+
+### 2026-01-19 - エラーハンドリングの改善
+
+**理由**: セキュリティとデバッグ性のバランスを改善
+
+**変更内容**:
+- クライアントへのエラーメッセージは汎用的に（ERROR_MESSAGES.CSRF_TOKEN_INVALID）
+- ログメッセージは詳細に（検証失敗の理由、IP、ユーザーIDなど）
+
+### 2026-01-19 - 楽観的ロックの実装
+
+**理由**: セッション更新時の競合状態を回避
+
+**変更内容**:
+- セッションにバージョン番号を追加
+- トークン生成時にバージョンを検証
+- バージョンが不一致の場合、リトライ（最大3回、10ms間隔）
+- 更新成功時にバージョンをインクリメント
+
+### 2026-01-19 - セキュリティ配慮のあるログ記録
+
+**理由**: エラーログからの情報漏洩を防止
+
+**変更内容**:
+- IPアドレスのSHA-256ハッシュ化（先頭8文字のみ）
+- エンドポイントURLのサニタイズ（パスのみ）
+- タイムスタンプのISO 8601形式記録
+- ユーザーIDの記録（デバッグ用）
+
+## 推奨される実装順序
+
+### 優先度1: SameSite属性の修正
+- **影響範囲**: 小
+- **リスク**: なし
+- **説明**: CSRFトークンcookieのsameSite属性を'lax'に変更するだけで、OAuthコールバックが正常に動作するようになる
+
+### 優先度2: HttpOnly Cookieパターンへの移行
+- **影響範囲**: 中
+- **リスク**: 中
+- **説明**: CSRFトークンをhttpOnly cookieに保存し、X-CSRF-Tokenヘッダーを削除する。これにより、XSS脆弱性がある場合でもCSRFトークンが窃取されないようになる
+
+### 優先度3: 楽観的ロックの実装
+- **影響範囲**: 小
+- **リスク**: 低
+- **説明**: セッションにバージョン番号を追加し、トークン生成時に競合状態を回避する
+- **ステータス**: ✅ 実装済み
+
+### 優先度4: エラーハンドリングの改善
+- **影響範囲**: 小
+- **リスク**: なし
+- **説明**: エラーの種類に応じて異なるログレベルを使用する
+- **ステータス**: ✅ 実装済み（IPハッシュ化、URLサニタイズ）
+
+---
+
+## レビュー結果に基づく設計修正
+
+### 2026-01-19 - レビュー結果に基づくセキュリティ改善
+
+**理由:** docs/REVIEW.md で指摘された以下の問題に対処する
+- XSS脆弱性によりCSRF保護が完全に無効化されるリスク
+- SameSite='strict'によるOAuthコールバック失敗のリスク
+- トークン生成の競合状態
+- エラーハンドリングの改善
+
+---
+
+## Q1: XSS脆弱性とCSRF保護の共存
+
+### 選択したアプローチ: HttpOnly Cookie Pattern
+
+HttpOnly Cookie Patternを採用し、XSS攻撃時のトークン窃取を完全に防ぎます。
+
+### 理由
+
+1. **XSS攻撃に対する強固な保護**
+   - HttpOnly cookieによりJavaScriptからのアクセスを完全にブロック
+   - CSRFトークンが窃取される可能性がない
+
+2. **SameSite='lax'による一次防御**
+   - 既に実装済み
+   - CSRF攻撃の大部分を防ぐ
+
+3. **ハッシュ比較によるセキュリティ強化**
+   - トークン値の漏洩を防ぐ
+   - セッションにはハッシュのみを保存
+
+4. **OAuthフローとの互換性**
+   - SameSite='lax'でOAuthコールバックが正常に動作
+
+5. **実装の簡潔さ**
+   - クライアント側の実装が不要
+   - 追加のインフラが不要
+
+### トレードオフ
+
+**メリット:**
+- SameSite='lax'による一次防御
+- HttpOnly cookieによるXSS攻撃時の完全な保護
+- ハッシュ比較によるトークン漏洩防止
+- OAuthフローとの互換性
+- 実装がシンプル
+
+**デメリット:**
+- Cookieが1つ追加される（最小限のオーバーヘッド）
+
+**対応策:**
+- 不要（HttpOnly Cookie PatternはXSS攻撃に対して完全に安全）
+
+---
+
+## Q2: SameSite属性の適切な設定
+
+### 選択したアプローチ: オプション1
+
+- セッションcookie: `sameSite: 'lax'`（現在通り）
+- CSRFトークンcookie: `sameSite: 'lax'`に変更
+
+### 理由
+
+1. **OAuthコールバックの互換性**
+   - 外部ドメイン（Twitch）からのリダイレクトでcookieが送信される
+
+2. **CSRF攻撃の防止**
+   - SameSite='lax'はクロスサイトPOSTリクエストでcookieが送信されない
+   - CSRFトークンによる追加の検証
+
+3. **一貫性**
+   - セッションcookieとCSRFトークンcookieの設定を統一
+
+### トレードオフ
+
+**メリット:**
+- OAuthコールバックが正常に動作
+- SameSite='lax'によるCSRF防御
+- 設定の一貫性
+
+**デメリット:**
+- SameSite='strict'よりもCSRF保護が弱い
+- 古いブラウザでは未サポート（Safari < 12, IE）
+
+**対応策:**
+- SameSite='strict'はOAuthコールバックと互換性がないため採用しない
+- 古いブラウザへの対応は、主要ブラウザの最新版を使用することを前提とする
+
+---
+
+## Q3: 競合状態の回避
+
+### 選択したアプローチ: オプション1
+
+現在のidempotent設計を維持し、コメントとドキュメントで制約を明記する。
+
+### 理由
+
+1. **競合状態の発生頻度が低い**
+   - トークン生成は通常、セッション開始時に1回のみ
+   - 並列リクエストが同時にトークン生成を呼び出す可能性は低い
+
+2. **実装の簡潔さ**
+   - 追加の複雑性を導入しない
+
+3. **失敗時の影響が小さい**
+   - 競合状態が発生しても、最後に設定されたトークンが有効
+   - クライアントはトークンを再取得すれば解決
+
+### トレードオフ
+
+**メリット:**
+- 実装がシンプル
+- 追加のオーバーヘッドがない
+
+**デメリット:**
+- 競合状態が理論上は発生する可能性がある
+- 並列リクエストでトークンが上書きされる可能性がある
+
+**対応策:**
+- `setCSRFToken()`関数のコメントとドキュメントで制約を明記
+- テストで並列リクエストの挙動を検証
+
+---
+
+## Q4: エラーハンドリングの改善
+
+### 選択したアプローチ: オプション2
+
+エラーの種類に応じて異なるログレベルを使用する。
+
+### 理由
+
+1. **セキュリティとデバッグ性のバランス**
+   - タイミング攻撃の疑いがある場合（WARN）：セキュリティイベントとして記録
+   - バッファ長不一致（INFO）：検証失敗として記録
+   - その他のエラー（ERROR）：サーバーエラーとして記録
+
+2. **Sentryアラートの活用**
+   - タイミング攻撃の疑いがある場合にSentryにアラートを送信
+   - 短時間に多数の失敗がある場合に検知
+
+### トレードオフ
+
+**メリット:**
+- セキュリティイベントと通常のエラーを区別できる
+- Sentryアラートで攻撃を早期検知できる
+- デバッグ性の向上
+
+**デメリット:**
+- ログ分析の複雑性が増す
+- 過剰なアラートのリスク
+
+**対応策:**
+- ログ分析のダッシュボードを整備
+- アラートの閾値を適切に設定
+
+---
+
+HttpOnly Cookie Patternでは署名は不要です。
+
+**理由**:
+- トークンはhttpOnly cookieに保存され、JavaScriptからアクセスできない
+- ブラウザが自動的にトークンを送信するため、改ざんのリスクがない
+- ハッシュ比較のみで十分なセキュリティが確保される
+
+**実装の簡素化**:
+- 署名関数は不要
+- 環境変数 `CSRF_SIGNING_KEY` は不要
+- 検証ロジックはハッシュ比較のみ
+
+---
+
+## 追加のセキュリティ対策
+
+### 1. CSP（Content Security Policy）の強化
+
+既存のCSP設定を確認し、必要に応じて強化します。
+
+### 2. 入力検証とエスケープ
+
+- ユーザー入力の検証を徹底
+- XSS脆弱性の防止
+
+### 3. セキュリティヘッダーの確認
+
+- X-Content-Type-Options
+- X-Frame-Options
+- X-XSS-Protection
+
+---
+
+## まとめ
+
+### 回答概要
+
+| 質問 | 選択したアプローチ | 理由 |
+|------|------------------|------|
+| Q1: XSSとCSRFの共存 | HttpOnly Cookie Pattern + Hash Comparison | HttpOnlyによりXSS攻撃時のトークン窃取を完全防止、SameSite='lax'による一次防御、ハッシュ比較による保護 |
+| Q2: SameSite設定 | オプション1: both 'lax' | OAuthコールバックの互換性、CSRF防御、設定の一貫性 |
+| Q3: 競合状態 | オプション1: idempotent設計を維持 | 発生頻度が低い、実装がシンプル、失敗時の影響が小さい |
+| Q4: エラーハンドリング | オプション2: ログレベルの使い分け | セキュリティイベントと通常のエラーを区別、Sentryアラートで攻撃を早期検知 |
+
+### トレードオフのまとめ
+
+**メインのトレードオフ:**
+- **セキュリティ vs 実装の簡潔さ**
+  - HttpOnly Cookie Patternは最も安全で実装がシンプル
+  - OAuthフローとの完全な互換性を維持
+
+**XSS脆弱性への対応:**
+- HttpOnly CookieによりXSS攻撃時のトークン窃取を完全に防止
+
+### 実装の優先順位
+
+1. **HttpOnly Cookie Patternへの移行** - 即時対応
+2. **不要なコンポーネントの削除**（fetchWithCSRF、/api/csrf-token） - 即時対応
+3. **エラーハンドリングの改善** - 短期対応
+4. **競合状態のドキュメント化** - 短期対応
+
+---
 
 ## 参考資料
 
-- Issue #51: Uncaught (in promise) Error: Connection closed.
-- Issue #52: Creating a worker from 'blob:...' violates the following Content Security Policy directive
-- Issue #53: Executing inline script violates the following Content Security Policy directive
-- Content Security Policy Level 3
-- Supabase Realtime Documentation
-- Sentry Replay Documentation
+- Issue #55: Critical Security: Missing CSRF Protection on State-Changing API Routes
+- OWASP CSRF Prevention Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+- MDN Web Docs - Cross-Site Request Forgery (CSRF): https://developer.mozilla.org/en-US/docs/Web/Security/Types_of_attacks#csrf
+- Next.js Security Best Practices: https://nextjs.org/docs/app/building-your-application/configuring/security
+- CSRF Tokens: Simple Defense Against a Dangerous Web Attack: https://portswigger.net/web-security/csrf/tokens
+- HttpOnly Cookies: https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies#restrict_access_to_cookies
+- Content Security Policy (CSP): https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP

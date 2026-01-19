@@ -1,161 +1,103 @@
-# QA結果
+# QA Report - Issue #55: Critical Security - Missing CSRF Protection on State-Changing API Routes
 
-## QA実施日時
-2026-01-19 07:37:00
-
-## QA対象
-- 設計書: `docs/ARCHITECTURE.md`
-- 実装内容: `docs/IMPLEMENTED.md`
-- Issue: #54: Fix CSP Configuration and Realtime Error Handling
-
-## QA結果
-✅ **QAパス**: すべての受け入れ基準を満たしています。
+**Date:** 2026-01-19 19:49:09
+**Issue:** #55 - Critical Security - Missing CSRF Protection on State-Changing API Routes
+**QA Status:** ✅ PASS
 
 ---
 
-## 受け入れ基準への評価
+## Summary
 
-### CSP設定
-- [x] Sentry Replayが正常に動作すること（`worker-src 'self' blob:` を追加）
-- [x] CSP違反の警告が表示されないこと（テストで確認済み）
-- [x] 開発環境と本番環境でCSPが正しく設定されていること（テストで確認済み）
-
-### Realtime接続
-- [x] 接続エラーが適切にハンドリングされること
-- [x] 自動再接続が機能すること
-- [x] エラーがloggerとSentryに記録されること
-
-### ユーザー体験
-- [x] 接続エラーが発生した場合、適切なエラーメッセージが表示されること
-- [x] 接続ステータスが視覚的に表示されること
-- [x] ユーザーが手動で再接続できること（ページを更新することで再接続可能）
-- [x] 接続成功時にタイムアウトがクリアされること
-
-### テスト
-- [x] すべてのテストがパスしていること（81/81 テストパス）
+The CSRF protection implementation has been successfully implemented and verified against the design specifications in `docs/ARCHITECTURE.md`. All acceptance criteria have been met.
 
 ---
 
-## 検証結果
+## Test Results
 
-### 1. CSP設定の実装確認
+### Overall Test Status
+- **Total Tests:** 117
+- **Passed:** 117 ✅
+- **Failed:** 0
+- **Duration:** 861ms
 
-**ファイル**: `src/lib/constants.ts:189-190`
-
-```typescript
-CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
-CSP_PRODUCTION: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: wss:; font-src 'self' data:; worker-src 'self' blob:;",
-```
-
-**確認事項**:
-- ✅ `worker-src 'self' blob:` が追加されている
-- ✅ `connect-src` に `wss:` が追加されている
-- ✅ 本番環境で `localhost` が除外されている
-- ✅ テスト `security-headers.test.ts:36-46` がパスしている
+### Test Coverage Breakdown
+- `tests/unit/csrf.test.ts`: 16 tests passed
+- `tests/integration/csrf.test.ts`: 20 tests passed
+- All other test files: 81 tests passed
 
 ---
 
-### 2. Realtime接続のエラーハンドリング確認
+## Implementation Verification
 
-**ファイル**: `src/lib/realtime.ts`
+### 1. CSRF Token Management Module ✅
+| Requirement | Implementation | Status |
+|-------------|----------------|--------|
+| 256-bit secure token generation | `randomBytes(32)` in `src/lib/csrf.ts:27` | ✅ |
+| SHA-256 hash in session | `session.csrfTokenHash` in `src/lib/csrf.ts:100-103` | ✅ |
+| httpOnly cookie storage | `cookieStore.set()` with httpOnly flag in `src/lib/csrf.ts:115-121` | ✅ |
+| Timing-safe comparison | `timingSafeEqual()` in `src/lib/csrf.ts:188` | ✅ |
+| Optimistic locking | Version-based retry (max 3 retries, 10ms delay) in `src/lib/csrf.ts:70-97` | ✅ |
 
-**確認事項**:
-- ✅ `onSuccess` コールバックが実装されている（line 109）
-- ✅ 接続成功時に `onSuccess?.()` が呼ばれている（line 168）
-- ✅ 接続エラーが検知され、loggerとSentryに記録されている（lines 179-186）
-- ✅ 指数バックオフ付きの再接続ロジックが実装されている（lines 99-103, 189-194）
-- ✅ 最大再接続回数（maxRetries）を超えた場合のハンドリングがある（lines 194-201）
+### 2. API Route Protection ✅
+All state-changing API endpoints are protected:
+- ✅ `/api/upload` (POST)
+- ✅ `/api/cards` (POST, PUT, DELETE)
+- ✅ `/api/gacha` (POST)
+- ✅ `/api/battle/start` (POST)
+- ✅ `/api/streamer/settings` (POST)
+- ✅ `/api/auth/logout` (POST)
+- ✅ `/api/gacha-history/[id]` (DELETE)
+- ✅ `/api/twitch/rewards` (POST)
+- ✅ `/api/twitch/eventsub/subscribe` (POST)
 
----
+**Note:** `/api/twitch/eventsub` is protected by Twitch HMAC signature verification instead of CSRF tokens (webhook endpoint).
 
-### 3. 接続ステートのタイムアウト処理確認
+### 3. Security Features ✅
+- ✅ IP hashing for security logging (`hashIp()` function)
+- ✅ URL sanitization (`sanitizeEndpoint()` function)
+- ✅ Detailed security event logging to logger
+- ✅ Sentry integration for security error reporting
+- ✅ Consistent error messages to clients
 
-**ファイル**: `src/app/overlay/[streamerId]/page.tsx`
-
-**修正内容**:
-```typescript
-const connectionStatusRef = useRef(connectionStatus);  // line 56
-const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);  // line 57
-
-useEffect(() => {
-  connectionStatusRef.current = connectionStatus;  // line 60
-}, [connectionStatus]);
-
-onSuccess: () => {
-  setConnectionStatus('connected');
-  if (connectionTimeoutRef.current) {
-    clearTimeout(connectionTimeoutRef.current);  // 接続成功時にタイムアウトをクリア
-    connectionTimeoutRef.current = null;
-  }
-},
-```
-
-**確認事項**:
-- ✅ `connectionStatusRef` を使用し、クロージャ問題を解決している
-- ✅ 接続成功時にタイムアウトがクリアされている（lines 105-108）
-- ✅ クリーンアップ時にタイムアウトがクリアされている（lines 122-124）
-- ✅ タイムアウト時のエラーハンドリングが正しく動作する
+### 4. Code Quality ✅
+- HttpOnly cookie pattern prevents XSS token theft
+- Timing-safe comparisons prevent timing attacks
+- Optimistic locking prevents race conditions
+- Comprehensive test coverage (unit + integration)
+- Proper cookie attributes (`httpOnly`, `secure`, `sameSite: 'lax'`)
 
 ---
 
-### 4. テスト実行結果
+## Minor Observations
 
-```bash
-$ npm run test:all
+1. **Middleware File**: `src/lib/middleware/csrf.ts` exports `withCSRFProtection` but routes directly call `validateCSRFToken` instead of using the middleware. This is a minor code organization issue and does not affect functionality.
 
- Test Files  8 passed (8)
-      Tests  81 passed (81)
-   Start at  07:36:36
-   Duration  808ms
-```
+2. **Unused Field**: `csrfTokenSignature` field in session interface (`session.ts:13`) is declared but unused. This is a minor cleanup item and does not affect functionality.
 
-**確認事項**:
-- ✅ すべてのテストがパスしている
-- ✅ CSP設定のテスト（security-headers.test.ts）がパスしている
-- ✅ 接続エラー処理のテストが含まれている
+These issues are cosmetic and do not impact security or functionality. Consider addressing them in a future cleanup task.
 
 ---
 
-## 設計書との齟齬
+## Acceptance Criteria Checklist
 
-### 発見された齟齬
-
-**項目**: `onSuccess` コールバック
-
-**詳細**:
-- 設計書（`docs/ARCHITECTURE.md`）には `onSuccess` コールバックが含まれていない
-- 実装（`src/lib/realtime.ts`）には `onSuccess` コールバックが追加されている
-
-**影響**:
-- これは機能追加であり、ユーザー体験を向上させる改善
-- 設計書を更新する必要がある
-
-**推奨**:
-- 設計書を更新し、`onSuccess` コールバックをドキュメント化する
-- これはCritical Issueではなく、今後の改善として扱う
+| Criteria | Status |
+|----------|--------|
+| CSRF token generation is cryptographically secure | ✅ |
+| Token hash stored in session, token in httpOnly cookie | ✅ |
+| SHA-256 hash comparison with timing-safe equal | ✅ |
+| Optimistic locking for concurrent requests | ✅ |
+| All state-changing API endpoints protected | ✅ |
+| Security-aware logging implemented | ✅ |
+| Sentry error reporting for security events | ✅ |
+| All tests passing | ✅ |
+| Implementation follows design specifications | ✅ |
 
 ---
 
-## 結論
+## Conclusion
 
-**QAパス**: Issue #54 の実装は完了しており、すべての受け入れ基準を満たしています。
+**QA Result: PASS ✅**
 
-### 実装エージェントへのフィードバック
-なし（すべてのCritical Issueが解決済み）
+The CSRF protection implementation successfully addresses Issue #55. The implementation follows the design specifications in `docs/ARCHITECTURE.md`, includes comprehensive security features, and all tests are passing. The code is production-ready.
 
-### 次のステップ
-1. git commit and push を実行する
-2. アーキテクチャエージェントに次の実装の設計を依頼する
-
----
-
-## 参考情報
-
-- 設計書: `docs/ARCHITECTURE.md`
-- 実装内容: `docs/IMPLEMENTED.md`
-- 前回のQA: `docs/history/qa/QA_2026-01-19_07-36-??.md`
-- 変更されたファイル:
-  - `src/lib/constants.ts`（CSP設定更新）
-  - `src/lib/realtime.ts`（エラーハンドリング、再接続ロジック）
-  - `src/app/overlay/[streamerId]/page.tsx`（接続ステート、タイムアウト処理）
-  - `tests/unit/security-headers.test.ts`（テスト更新）
+The minor observations listed above do not block deployment but may be addressed in future cleanup work.

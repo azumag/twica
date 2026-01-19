@@ -5,6 +5,7 @@ import { getSession } from '@/lib/session'
 import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
+import { clearCSRFToken, validateCSRFToken } from '@/lib/csrf'
 
 export async function POST(request: Request) {
   try {
@@ -27,11 +28,17 @@ export async function POST(request: Request) {
       );
     }
 
+    const csrfValidation = await validateCSRFToken(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(ERROR_MESSAGES.FORBIDDEN)}`);
+    }
+
     if (session) {
       await deleteTwitchTokens(session.twitchUserId);
     }
 
     await clearSession()
+    await clearCSRFToken()
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/`)
   } catch (error) {
     return handleApiError(error, "Auth Logout API: POST")
@@ -54,6 +61,7 @@ export async function GET(request: Request) {
     }
 
     await clearSession()
+    await clearCSRFToken()
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/`)
   } catch (error) {
     return handleApiError(error, "Auth Logout API: GET")

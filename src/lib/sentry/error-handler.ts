@@ -155,3 +155,21 @@ export function reportRealtimeError(error: unknown, context: { action?: string; 
     }
   })
 }
+
+export function reportSecurityError(error: Error | unknown, context: { action?: string; userId?: string; [key: string]: unknown }) {
+  Sentry.withScope((scope) => {
+    scope.setTag('category', 'security')
+    scope.setTag('action', context.action || 'unknown')
+    scope.setLevel('error')
+
+    Object.entries(context).forEach(([key, value]) => {
+      scope.setExtra(key, value)
+    })
+
+    if (error instanceof Error) {
+      Sentry.captureException(error)
+    } else {
+      Sentry.captureMessage(`Security error: ${String(error)}`, 'error')
+    }
+  })
+}

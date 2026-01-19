@@ -6,13 +6,14 @@ Twitch配信者向けチャネルポイント・カード引換システム
 
 | Component | Responsibility |
 | :--- | :--- |
-| **Next.js (App Router)** | UI framework, Server Components, API Routes |
-| **Vercel** | Hosting, serverless functions, CI/CD |
-| **Supabase (PostgreSQL)** | Persistent database for users, cards, gacha history |
-| **Supabase Auth** | Twitch OAuth authentication |
-| **Vercel Blob** | Card image storage |
-| **Twitch API / EventSub** | Channel rewards integration |
-| **Sentry** | Error tracking and automatic GitHub issue creation |
+ | **Next.js (App Router)** | UI framework, Server Components, API Routes |
+ | **Vercel** | Hosting, serverless functions, CI/CD |
+ | **Supabase (PostgreSQL)** | Persistent database for users, cards, gacha history |
+ | **Supabase Auth** | Twitch OAuth authentication |
+ | **Vercel Blob** | Card image storage |
+ | **Twitch API / EventSub** | Channel rewards integration |
+ | **Sentry** | Error tracking, session replay, and automatic GitHub issue creation |
+ | **CSRF Protection** | Custom request header pattern for state-changing operations |
 
 ## Architecture
 
@@ -123,3 +124,34 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 - GitHub Actions runs on push to main and pull requests
 - Build uses dummy environment variables for CI (no external API calls)
 - Vercel automatically deploys on merge to main
+
+## Security
+
+### CSRF Protection
+
+This application implements CSRF (Cross-Site Request Forgery) protection using the custom request header pattern:
+
+- **CSRF Token Generation**: Cryptographically secure tokens (256-bit) generated per session
+- **Token Distribution**: Tokens are retrieved via `/api/csrf-token` endpoint
+- **Token Validation**: All state-changing API routes (POST/PUT/DELETE) validate the `X-CSRF-Token` header
+- **Client Integration**: Use `fetchWithCSRF()` wrapper for protected requests
+
+```typescript
+// Example client-side usage
+import { fetchWithCSRF } from '@/lib/client/csrf'
+
+const response = await fetchWithCSRF('/api/gacha', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ streamerId: 'streamer-123' }),
+})
+```
+
+### Security Measures
+
+- Session-based authentication with HTTP-only cookies
+- CSRF token validation on all state-changing requests
+- Rate limiting on API endpoints
+- Content Security Policy (CSP) headers
+- Input validation and sanitization
+- Secure file upload with MIME type validation

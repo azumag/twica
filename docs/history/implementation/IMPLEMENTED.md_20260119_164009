@@ -1,0 +1,277 @@
+# CSRF保護機能レビュー結果に基づく修正実装完了
+
+## 実施日時
+2026-01-19 16:25:00
+
+## レビュー結果に基づく実装
+
+レビュー結果（docs/REVIEW.md）に基づき、以下の修正を実施しました：
+
+### 1. Double Submit Cookie Patternへの修正（Critical）
+
+**変更内容**:
+- CSRFトークンクッキーのhttpOnly属性を`false`に変更（`src/lib/csrf.ts:109行目`）
+- `validateCSRFToken()`でX-CSRF-Tokenヘッダーからトークンを取得（`src/lib/csrf.ts:156行目`）
+- `getCSRFTokenFromCookie()`を使用してフォールバックを実装
+
+**理由**: 設計書（ARCHITECTURE.md）に記載されたDouble Submit Cookie Patternに従うため。
+
+**修正コード**:
+```typescript
+// トークン自体は非httpOnly cookieに保存（JavaScriptからアクセス可能）
+cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, token, {
+  httpOnly: false, // Double Submit Cookie Pattern
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
+  maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+})
+
+// X-CSRF-Tokenヘッダーからトークンを取得（Double Submit Cookie Pattern）
+const requestToken = request.headers.get(CSRF_CONFIG.HEADER_NAME) || getCSRFTokenFromCookie(cookieStore)
+```
+
+---
+
+### 2. clearCSRFToken()でバージョン番号を更新（Medium）
+
+**変更内容**:
+- `clearCSRFToken()`でセッションを更新する際、versionフィールドをインクリメント（`src/lib/csrf.ts:228行目`）
+
+**理由**: 楽観的ロックの一貫性を確保するため。
+
+**修正コード**:
+```typescript
+// セッションからハッシュを削除し、バージョン番号をインクリメント
+if (session.csrfTokenHash) {
+  const sessionWithoutCsrf = { ...session, version: session.version + 1 }
+  delete sessionWithoutCsrf.csrfTokenHash
+
+  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(sessionWithoutCsrf), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+  })
+}
+```
+
+---
+
+### 3. clearCSRFToken()のテストを追加（Medium）
+
+**変更内容**:
+- clearCSRFToken()のテストケースを追加（`tests/unit/csrf.test.ts:474-538行目`）
+  - CSRFトークンハッシュを削除してバージョン番号をインクリメントするテスト
+  - CSRFトークンが存在しない場合のテスト
+  - セッションが存在しない場合のテスト
+
+**理由**: テストカバレッジを向上させ、リグレッションを防止するため。
+
+---
+
+### 4. 統合テストでvalidateCSRFToken()を実際に呼び出す（Medium）
+
+**変更内容**:
+- 統合テストで`validateCSRFToken()`を実際に呼び出すテストを追加（`tests/integration/csrf.test.ts:10-69行目`）
+  - X-CSRF-Tokenヘッダーが正しい場合のテスト
+  - X-CSRF-Tokenヘッダーがない場合のテスト
+  - X-CSRF-Tokenヘッダーが不正な場合のテスト
+  - Cookieからのフォールバックのテスト
+
+**理由**: 実際の動作を検証する真の統合テストを実装するため。
+
+---
+
+### 5. 定数の統一管理（Low）
+
+**変更内容**:
+- `MAX_RETRY_COUNT`と`RETRY_DELAY_MS`を`CSRF_CONFIG`定数に追加（`src/lib/constants.ts:52-57行目`）
+- ハードコードされた定数を削除（`src/lib/csrf.ts`）
+
+**理由**: 定数を一元管理し、コードの保守性を向上させるため。
+
+**修正コード**:
+```typescript
+export const CSRF_CONFIG = {
+  TOKEN_LENGTH: 32,
+  HEADER_NAME: 'X-CSRF-Token',
+  ERROR_MESSAGE: 'Invalid CSRF token',
+  MAX_RETRY_COUNT: 3,
+  RETRY_DELAY_MS: 10,
+} as const
+```
+
+---
+
+### 6. ログレベルをwarnに引き上げ（Low）
+
+**変更内容**:
+- セキュリティ関連のログを`info`レベルから`warn`レベルに変更（`src/lib/csrf.ts:138, 149, 159行目`）
+  - "No session found"
+  - "No CSRF token in session"
+  - "CSRF token missing in request"
+
+**理由**: セキュリティイベントは監視の重要度が高いため、warnレベルで記録する。
+
+---
+
+### 7. テストの更新（Low）
+
+**変更内容**:
+- テストファイルのhttpOnly設定を`false`に修正（`tests/unit/csrf.test.ts:105行目`）
+- `validateCSRFToken()`のテストでX-CSRF-Tokenヘッダーを使用するように修正
+- Double Submit Cookie Patternのテストケースを追加（`tests/integration/csrf.test.ts:169-194行目`）
+
+**理由**: Double Submit Cookie Patternに合わせてテストを更新するため。
+
+---
+
+## 修正ファイル一覧
+
+### 修正ファイル
+
+1. **`src/lib/csrf.ts`**
+   - CSRFトークンクッキーのhttpOnly属性を`false`に変更
+   - `validateCSRFToken()`でX-CSRF-Tokenヘッダーを使用
+   - `clearCSRFToken()`でバージョン番号をインクリメント
+   - ログレベルをwarnに変更
+   - `getCSRFTokenFromCookie()`を使用
+   - ハードコードされた定数を削除
+
+2. **`src/lib/constants.ts`**
+   - `CSRF_CONFIG`定数に`MAX_RETRY_COUNT`と`RETRY_DELAY_MS`を追加
+
+3. **`tests/unit/csrf.test.ts`**
+   - `clearCSRFToken`のテストを追加
+   - httpOnly設定を`false`に修正
+   - X-CSRF-Tokenヘッダーのテストを更新
+
+4. **`tests/integration/csrf.test.ts`**
+   - `validateCSRFToken()`を実際に呼び出す統合テストを追加
+   - Double Submit Cookie Patternのテストケースを追加
+
+---
+
+## 実装のポイント
+
+### Double Submit Cookie Pattern
+
+**アーキテクチャ**:
+- セッションにはCSRFトークンのハッシュを保存（httpOnly）
+- 別の非httpOnly cookieにCSRFトークンを保存（JavaScriptからアクセス可能）
+- クライアントはcookieからトークンを読み取り、X-CSRF-Tokenヘッダーに設定
+- サーバーはヘッダーの値のハッシュとセッションのハッシュを比較
+
+**メリット**:
+- SPA（Single-Page Application）に最適
+- 既存のOAuthフローに影響を与えない
+- JavaScriptからトークンにアクセス可能
+- セッションにはハッシュのみを保存（セキュリティ強化）
+
+**デメリット**:
+- XSS攻撃時にトークンが窃取される可能性（ハッシュ比較で軽減）
+
+### 楽観的ロックの一貫性
+
+**変更内容**:
+- `clearCSRFToken()`でセッションを更新する際、versionフィールドをインクリメント
+- 同時実行時のデータ整合性を確保
+
+### テストカバレッジの向上
+
+**追加テスト**:
+- `clearCSRFToken()`の3つのテストケース
+- `validateCSRFToken()`の統合テスト4ケース
+- Double Submit Cookie Patternのテストケース
+
+---
+
+## テスト実行手順
+
+### ユニットテストの実行
+```bash
+npm run test:unit
+```
+
+または、Vitestを使用して実行：
+```bash
+npx vitest run tests/unit/csrf.test.ts
+```
+
+### 統合テストの実行
+```bash
+npm run test:integration
+```
+
+または、Vitestを使用して実行：
+```bash
+npx vitest run tests/integration/csrf.test.ts
+```
+
+### すべてのテストの実行
+```bash
+npm test
+```
+
+または：
+```bash
+npx vitest run
+```
+
+### カバレッジの確認
+```bash
+npm run test:coverage
+```
+
+または：
+```bash
+npx vitest run --coverage
+```
+
+---
+
+## テスト結果
+
+ユニットテストと統合テストを実行した結果、すべてのテストがパスしました：
+
+```
+Test Files  9 passed (9)
+     Tests  106 passed (106)
+```
+
+---
+
+## 既存機能の互換性
+
+- OAuthフローは正常に動作
+- すべての機能がCSRF保護下で動作
+- エラーメッセージは適切
+- 既存のテストが壊れていないことを確認
+
+---
+
+## セキュリティ向上
+
+- Double Submit Cookie PatternによるCSRF保護の強化
+- 楽観的ロックの一貫性によるデータ整合性の確保
+- 詳細なログ記録で監査・デバッグが容易
+- セキュリティイベントをwarnレベルで記録
+
+---
+
+## 参考資料
+
+- 設計書: docs/ARCHITECTURE.md
+- レビュー結果: docs/REVIEW.md
+- Issue: #55
+- OWASP CSRF Prevention Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+- MDN Web Docs - SameSite cookies: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite
+
+## 2025-01-19
+
+### src/lib/csrf.tsの修正
+- **変更内容**: 109行目で httpOnly: true を httpOnly: false に修正
+- **目的**: Double Submit Cookie Patternの実装
+- **影響範囲**: CSRFトークンのCookie設定

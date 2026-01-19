@@ -9,6 +9,24 @@ export interface Session {
   twitchProfileImageUrl: string
   broadcasterType: string // 'affiliate' | 'partner' | ''
   expiresAt: number // Unix timestamp (milliseconds)
+  csrfTokenHash?: string
+  csrfTokenSignature?: string
+  version: number // Optimistic locking
+}
+
+export function parseSession(raw: string): Session {
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed.twitchUserId || !parsed.twitchUsername || !parsed.expiresAt) {
+      throw new Error('Invalid session: missing required fields')
+    }
+    return parsed as Session
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Invalid session format: ${error.message}`)
+    }
+    throw new Error('Invalid session format')
+  }
 }
 
 export async function getSession(): Promise<Session | null> {
@@ -20,7 +38,7 @@ export async function getSession(): Promise<Session | null> {
   }
 
   try {
-    const session = JSON.parse(sessionCookie) as Session
+    const session = parseSession(sessionCookie)
 
     if (session.expiresAt && Date.now() > session.expiresAt) {
       await clearSession();

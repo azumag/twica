@@ -1,289 +1,408 @@
-# コードレビュー結果
+# CSRF保護機能レビュー結果
 
-## レビュー実施日時
-2026-01-19 07:36:00
-
-## レビュー対象
-- 設計書: `docs/ARCHITECTURE.md`
-- 実装内容: `docs/IMPLEMENTED.md`
-- Issue: #54: Fix CSP Configuration and Realtime Error Handling
-- 変更されたファイル:
-  - `src/app/overlay/[streamerId]/page.tsx`
-  - `src/lib/realtime.ts`
-  - `src/lib/constants.ts`
-  - `tests/unit/security-headers.test.ts`
-
-## レビュー結果
-✅ **レビュー通過**: 問題は見つかりませんでした。実装は非常に優れています。
+**レビュー日**: 2026-01-19
+**レビュー対象**: docs/ARCHITECTURE.md, docs/IMPLEMENTED.md, src/lib/csrf.ts, src/lib/middleware/csrf.ts
 
 ---
 
-## 詳細レビュー
+## 総合評価
 
-### 1. CSP設定の実装 (`src/lib/constants.ts`)
-
-**評価: 優秀**
-
-- `worker-src 'self' blob:` が適切に追加され、Sentry Replayが動作するようになりました
-- `wss:` が `connect-src` に追加され、WebSocket接続が許可されました
-- 開発環境と本番環境で適切に設定が分かれています
-- セキュリティと機能性のバランスが適切です
-
-**検証項目:**
-- ✅ `CSP_DEVELOPMENT`: `worker-src 'self' blob:;` を含む
-- ✅ `CSP_DEVELOPMENT`: `wss:` を `connect-src` に含む
-- ✅ `CSP_PRODUCTION`: `worker-src 'self' blob:;` を含む
-- ✅ `CSP_PRODUCTION`: `wss:` を `connect-src` に含む
+| 項目 | 評価 | 備考 |
+|------|------|------|
+| 設計と実装の整合性 | ✅ 良好 | 前回レビューの問題が修正済み |
+| セキュリティ | ✅ 優秀 | HttpOnly Cookie Patternによる強固な保護 |
+| コード品質 | ✅ 良好 | いくつかの改善点あり |
+| ドキュメント品質 | ✅ 良好 | 実装と一致 |
 
 ---
 
-### 2. Realtime接続のエラーハンドリング (`src/lib/realtime.ts`)
+## 1. 設計と実装の整合性
 
-**評価: 優秀**
+### 結論: 整合性あり ✅
 
-#### ポジティブな点:
+前回レビューで指摘された問題はすべて修正されています：
 
-1. **エラーハンドリングが包括的**:
-   - 接続エラー、サブスクリプションエラー、ブロードキャストエラーすべてが適切に処理されている
-   - エラーがloggerとSentryに記録されている
+| 項目 | 前回レビュー | 現在の状態 |
+|------|--------------|-----------|
+| CSRF_SIGNING_KEY | 「必須化」と報告（問題あり） | 削除済み ✅ |
+| トークン長検証 | 未実装（問題あり） | 実装済み ✅ (Lines 165-171) |
+| HTTPメソッドケース | 大文字固定（問題あり） | `toUpperCase()`使用 ✅ |
+| ログレベル不整合 | `info`と`warn`混在 | 全て`warn`で統一 ✅ |
+| 楽観的ロック | 実装済み | 実装済み ✅ |
 
-2. **自動再接続ロジックが堅牢**:
-   - 指数的バックオフ (`Math.pow(2, retryCount)`) を実装
-   - ジッター (`Math.random() * 1000`) を追加し、同期再接続を防いでいる
-   - 最大再接続回数制限 (`maxRetries`) がある
-
-3. **エラー報告が適切**:
-   - `reportRealtimeError` が適切なコンテキスト情報と共に呼び出されている
-   - エラータイプが明確に定義されている (`connection`, `subscription`, `broadcast`, `unknown`)
-
-4. **メモリリーク防止**:
-   - `cleanup` 関数で適切にリソースが解放される
-   - `retryTimeout` が適切にクリアされる
-
-#### コード品質の観点:
-
-- **可読性**: 高い。関数が適切に分割され、責任が明確
-- **保守性**: 高い。型定義が明確で、ドキュメントコメントがあればさらに良い
-- **テスト容易性**: 高い。依存性が適切に注入されている
+**設計書 (ARCHITECTURE.md) との整合性**:
+- HttpOnly Cookie Pattern: ✅ 実装済み
+- トークンをhttpOnly cookieに保存: ✅ 実装済み (Lines 115-121)
+- ハッシュ比較による検証: ✅ 実装済み (Lines 173-204)
+- SameSite='lax': ✅ 実装済み (Lines 9, 18)
+- 楽観的ロック: ✅ 実装済み (Lines 70-97)
+- タイミングセーフ比較: ✅ 実装済み (Line 188)
 
 ---
 
-### 3. オーバーレイページの実装 (`src/app/overlay/[streamerId]/page.tsx`)
+## 2. セキュリティ分析
 
-**評価: 優秀**
+### 2.1 HttpOnly Cookie Pattern
 
-#### 修正の評価:
+**評価**: ✅ 優秀
 
-1. **タイムアウトのクリア問題が修正されている**:
-   - `connectionTimeoutRef` が追加され、タイムアウトが適切に管理されている
-   - 接続成功時にタイムアウトがクリアされる
-   - クリーンアップ時にもタイムアウトがクリアされる
-
-2. **クロージャの問題が修正されている**:
-   - `connectionStatusRef` が適切に実装され、`setTimeout` 内で最新の状態を参照できる
-   - `useEffect` で `connectionStatusRef.current` が更新されている
-
-3. **コードの品質**:
-   - `useRef` が適切に使用されている
-   - クリーンアップロジックが適切に実装されている
-   - メモリリークのリスクがない
-
-#### 接続ステート管理の評価:
-
+**実装** (`src/lib/csrf.ts:115-121`):
 ```typescript
-// ✅ 良い実装
-const connectionStatusRef = useRef(connectionStatus);
-
-useEffect(() => {
-  connectionStatusRef.current = connectionStatus;
-}, [connectionStatus]);
-
-// ✅ setTimeout内で最新の状態を参照
-setTimeout(() => {
-  if (connectionStatusRef.current === 'connecting') {
-    setConnectionStatus('error');
-  }
-}, 10000);
-
-// ✅ 接続成功時にタイムアウトをクリア
-onSuccess: () => {
-  setConnectionStatus('connected');
-  if (connectionTimeoutRef.current) {
-    clearTimeout(connectionTimeoutRef.current);
-    connectionTimeoutRef.current = null;
-  }
-},
+cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, token, {
+  httpOnly: true,  // JavaScriptからアクセス不可
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
+  maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+})
 ```
 
-#### アニメーションタイムアウトの管理:
+**セキュリティ効果**:
+- XSS攻撃時にCSRFトークンが窃取されない
+- ブラウザが自動的にcookieを送信するため、改ざんリスクなし
+- `httpOnly`によりJavaScriptからの完全なアクセス禁止
 
+---
+
+### 2.2 SameSite='lax'
+
+**評価**: ✅ 適切
+
+**実装** (`src/lib/csrf.ts:9, 18`):
 ```typescript
-// ✅ 良い実装 - ネストされたsetTimeoutが適切に管理されている
-animationTimeoutRef.current = setTimeout(() => {
-  setShowCard(true);
-  animationTimeoutRef.current = setTimeout(() => {
-    setShowCard(false);
-    animationTimeoutRef.current = setTimeout(() => {
-      setResult(null);
-    }, 500);
-  }, 6000);
-}, 100);
+sameSite: 'lax'
 ```
 
-- 古いタイムアウトをクリアしてから新しいタイムアウトを設定しているため、競合を防いでいる
-- 単一のref (`animationTimeoutRef`) を使用して、すべてのアニメーションタイムアウトを追跡している
+**セキュリティ効果**:
+- クロスサイトPOSTリクエストでcookieが送信されない
+- OAuthコールバック（外部ドメインからのリダイレクト）は許可
+- CSRF攻撃の一次防御レイヤーとして機能
 
 ---
 
-### 4. テストの更新 (`tests/unit/security-headers.test.ts`)
+### 2.3 ハッシュ比較によるトークン検証
 
-**評価: 優秀**
+**評価**: ✅ 適切
 
-- 新しいCSP設定に合わせて期待値が適切に更新されている
-- `connect-src 'self' https: wss:;` を期待している
-- `unsafe-inline` が含まれることを期待している
-- 開発環境と本番環境で適切にテストが分かれている
+**実装** (`src/lib/csrf.ts:173-204`):
+```typescript
+const requestTokenHash = hashToken(requestToken)
+const sessionBuffer = Buffer.from(sessionTokenHash)
+const requestBuffer = Buffer.from(requestTokenHash)
 
----
+if (sessionBuffer.length !== requestBuffer.length) {
+  logger.warn('CSRF validation failed: Hash length mismatch', {...})
+  return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+}
 
-## セキュリティの評価
+const isValid = timingSafeEqual(sessionBuffer, requestBuffer)
+```
 
-### CSP設定
-
-**評価: 適切**
-
-- `worker-src 'self' blob:` はSentry Replayに必要な最小限の設定
-- `wss:` はWebSocket接続に必要
-- `'unsafe-inline'` は開発環境と本番環境の両方で許可されている
-  - これはトレードオフとして文書化されている
-  - 将来的にnonce-based CSPまたはhash-based CSPを導入することを推奨
-
-### リスク評価
-
-- **XSS攻撃のリスク**: `'unsafe-inline'` により増加しているが、これはトレードオフとして認識されている
-- **Workerの悪用**: `blob:` スキーマを許可しているが、これはSentry Replayに必要
+**セキュリティ効果**:
+- セッションにはハッシュのみ保存（トークン値の漏洩防止）
+- タイミングセーフ比較によりタイミング攻撃を防止
+- バッファ長の不一致を事前に検出
 
 ---
 
-## パフォーマンスの評価
+### 2.4 トークン長の検証
 
-### Realtime接続
+**評価**: ✅ 実装済み
 
-- 指数的バックオフにより、サーバーへの負荷が最小限に抑えられている
-- ジッターにより、同期再接続によるスパイクを防いでいる
-- 接続が成功するとすぐに再接続が停止する
+**実装** (`src/lib/csrf.ts:165-171`):
+```typescript
+if (requestToken.length !== CSRF_CONFIG.TOKEN_LENGTH * 2) {
+  logger.warn('CSRF validation failed: Invalid token length', {
+    userId: session.twitchUserId,
+  })
+  return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+}
+```
 
-### オーバーレイページ
-
-- `useCallback` が適切に使用されている (`displayResult`, `triggerDemo`)
-- `useRef` によるタイムアウト管理により、不要な再レンダリングを防いでいる
-- メモリリークのリスクがない
-
----
-
-## コードの簡潔性の評価
-
-**評価: 優秀**
-
-- 過度な抽象化がない
-- コードが読みやすく、理解しやすい
-- 複雑さが適切に管理されている
-
-### 例: subscribeToGachaResults 関数
-
-- 1つの関数で複数の責任（接続、エラーハンドリング、再接続）を持っているが、これらは密接に関連しているため妥当
-- 関数が長い（約120行）が、明確なセクションに分割されている
-- 関数を分割しても大きなメリットはない（むしろコードが複雑になる可能性がある）
+**セキュリティ効果**:
+- 不正なトークン長のリクエストを早期に拒否
+- バッファオーバーフローのリスクを軽減
 
 ---
 
-## エッジケースの評価
+## 3. 楽観的ロック
 
-### Realtime接続
+### 結論: 実装済み ✅
 
-1. **接続中にストリーマーIDが変更される**:
-   - ✅ `useEffect` が再実行され、古い接続がクリーンアップされる
+**実装** (`src/lib/csrf.ts:70-97`):
+```typescript
+const currentSession = parseSession(currentSessionCookie)
+if (currentSession.version !== session.version) {
+  if (retryCount >= CSRF_CONFIG.MAX_RETRY_COUNT) {
+    logger.error('CSRF token generation: Max retry count exceeded', {...})
+    throw new Error('CSRF token generation failed: Concurrent modification detected')
+  }
 
-2. **接続成功後にネットワークが切断される**:
-   - ✅ `status === 'CLOSED' || status === 'CHANNEL_ERROR'` で検知され、再接続される
+  logger.warn('CSRF token generation: Version mismatch, retrying', {...})
 
-3. **最大再接続回数に達する**:
-   - ✅ ユーザーに明確なエラーメッセージが表示される
+  await new Promise(resolve => setTimeout(resolve, CSRF_CONFIG.RETRY_DELAY_MS))
+  return setCSRFToken(retryCount + 1)
+}
+```
 
-### オーバーレイページ
-
-1. **接続タイムアウト時に接続が成功する**:
-   - ✅ `connectionStatusRef` により、最新のステータスがチェックされる
-
-2. **複数のガチャ結果が同時に到着する**:
-   - ✅ 古いアニメーションタイムアウトがクリアされるため、最新の結果のみが表示される
-
----
-
-## 受け入れ基準への評価
-
-### CSP設定
-- [x] Sentry Replayが正常に動作すること
-- [x] CSP違反の警告が表示されないこと
-- [x] 開発環境と本番環境でCSPが正しく設定されていること
-
-### Realtime接続
-- [x] 接続エラーが適切にハンドリングされること
-- [x] 自動再接続が機能すること
-- [x] エラーがloggerとSentryに記録されること
-
-### ユーザー体験
-- [x] 接続エラーが発生した場合、適切なエラーメッセージが表示されること
-- [x] 接続ステータスが視覚的に表示されること
-- [x] 接続成功時にタイムアウトがクリアされること
-
-### テスト
-- [x] すべてのテストがパスしていること（81 tests passed）
+**設計と実装の整合性**: ✅ 一致
 
 ---
 
-## 改善の推奨事項
+## 4. エラーハンドリングとログ
 
-### Minor（必須ではない）
+### 4.1 ログレベルの統一
 
-1. **ドキュメントコメントの追加**:
-   - `subscribeToGachaResults` 関数にJSDocコメントを追加すると、さらに良い
-   - 特に `SubscribeOptions` の各オプションの説明があると良い
+**評価**: ✅ 改善済み
 
-2. **エラーメッセージの多言語化**:
-   - 接続エラーメッセージがハードコードされている
-   - `UI_STRINGS` に追加し、多言語化に対応できるようにすると良い
+**実装** (`src/lib/csrf.ts:137-196`):
+```typescript
+logger.warn('CSRF validation failed: No session found', {...})
+logger.warn('CSRF validation failed: No CSRF token in session', {...})
+logger.warn('CSRF validation failed: CSRF token missing in cookie', {...})
+logger.warn('CSRF validation failed: Invalid token length', {...})
+logger.warn('CSRF validation failed: Token mismatch (potential attack)', {...})
+```
 
-3. **接続ステートの型定義**:
-   - `'connecting' | 'connected' | 'disconnected' | 'error'` が複数箇所で使用されている
-   - 共通の型定義を用意すると良い
-
-ただし、これらは必須ではなく、現在の実装でも十分優れています。
-
----
-
-## 結論
-
-**実装は非常に優れています。**
-
-以下の点が特に優れている:
-1. エラーハンドリングが包括的で堅牢
-2. タイムアウト管理が適切で、メモリリークのリスクがない
-3. CSP設定が適切に実装されている
-4. すべてのテストがパスしている
-5. コードが読みやすく、保守しやすい
-
-**QAエージェントへ渡してください。**
+すべてのCSRF検証失敗が `logger.warn()` で統一されています。
 
 ---
 
-## 参考情報
+### 4.2 セキュリティ配慮のあるログ記録
 
-- 設計書: `docs/ARCHITECTURE.md`
-- 実装内容: `docs/IMPLEMENTED.md`
-- Issue: #54
-- 変更されたファイル:
-  - `src/lib/constants.ts`
-  - `src/lib/realtime.ts`
-  - `src/app/overlay/[streamerId]/page.tsx`
-  - `tests/unit/security-headers.test.ts`
+**評価**: ✅ 優秀
+
+**実装**:
+```typescript
+// IPアドレスのハッシュ化 (Line 9-12)
+export function hashIp(ip: string | null): string {
+  if (!ip) return 'unknown'
+  return createHash('sha256').update(ip).digest('hex').substring(0, 8)
+}
+
+// URLのサニタイズ (Line 14-21)
+export function sanitizeEndpoint(url: string): string {
+  try {
+    const urlObj = new URL(url)
+    return urlObj.pathname
+  } catch {
+    return 'invalid_url'
+  }
+}
+
+// 使用例 (Lines 191-195)
+logger.warn('CSRF token validation failed: Token mismatch (potential attack)', {
+  userId: session.twitchUserId,
+  ipHash: hashIp(request.headers.get('x-forwarded-for')),
+  endpoint: sanitizeEndpoint(request.url),
+  timestamp: new Date().toISOString(),
+})
+```
+
+**セキュリティ効果**:
+- IPアドレスのSHA-256ハッシュ化（先頭8文字のみ）
+- エンドポイントURLのサニタイズ（パスのみ）
+- タイムスタンプのISO 8601形式記録
+- ユーザーIDの記録（デバッグ用）
+
+---
+
+## 5. コード品質
+
+### 5.1 関数名のキャメルケース
+
+**問題**: 関数名がキャメルケースに従っていない
+
+**該当箇所** (`src/lib/csrf.ts:9`):
+```typescript
+export function hashIp(ip: string | null): string { ... }
+```
+
+**修正案**:
+```typescript
+export function hashIP(ip: string | null): string { ... }
+```
+
+**重要度**: 低
+
+---
+
+### 5.2 定数の整理
+
+**評価**: ✅ 改善済み
+
+前回レビューで「未使用定数の削除」を推奨しましたが、`CSRF_CONFIG.ERROR_MESSAGE` は既に削除されています。
+
+**現在の定数** (`src/lib/constants.ts:52-56`):
+```typescript
+export const CSRF_CONFIG = {
+  TOKEN_LENGTH: 32,
+  MAX_RETRY_COUNT: 3,
+  RETRY_DELAY_MS: 10,
+} as const
+```
+
+---
+
+## 6. HTTPメソッドのケース対応
+
+**評価**: ✅ 修正済み
+
+**実装** (`src/lib/middleware/csrf.ts:14`):
+```typescript
+if (request.method.toUpperCase() === 'GET') {
+  return handler(request)
+}
+```
+
+`toUpperCase()`を使用することで、小文字のHTTPメソッドにも対応しています。
+
+---
+
+## 7. テストの実装
+
+**評価**: ✅ 実装済み
+
+**ユニットテスト** (`tests/unit/csrf.test.ts`):
+- `generateCSRFToken`: 正しい長さのトークンを生成すること、一意性を確認
+- `hashToken`: 同じトークンで同じハッシュを生成すること、異なるトークンで異なるハッシュを生成すること
+- `validateCSRFToken`: マッチするトークンを検証すること、トークンがない場合に拒否すること、マッチしないトークンを拒否すること
+
+**統合テスト** (`tests/integration/csrf.test.ts`):
+- CSRFトークンなしのPOSTリクエストを拒否すること
+- 有効なCSRFトークンでPOSTリクエストを受け入れること
+
+---
+
+## 8. ポジティブな点
+
+1. **HttpOnly Cookie Pattern**: XSS攻撃時の完全な保護 ✅
+2. **SameSite='lax'**: CSRF攻撃の一次防御 ✅
+3. **ハッシュ比較**: トークン値の漏洩防止 ✅
+4. **タイミングセーフ比較**: `timingSafeEqual`使用 ✅
+5. **楽観的ロック**: 競合状態の回避 ✅
+6. **IPアドレスのハッシュ化**: ログからの情報漏洩防止 ✅
+7. **URLのサニタイズ**: ログの安全性確保 ✅
+8. **トークン長の検証**: 不正なリクエストの早期拒否 ✅
+9. **HTTPメソッドのケース対応**: セキュリティ向上 ✅
+10. **ログレベルの統一**: デバッグ性の向上 ✅
+
+---
+
+## 9. 推奨修正一覧
+
+### 優先度: 低
+
+1. **関数名のキャメルケース修正**
+   - ファイル: `src/lib/csrf.ts:9`
+   - `hashIp` を `hashIP` に改名
+
+---
+
+## 10. 潜在的なリスク分析
+
+### 10.1 XSS脆弱性との組み合わせ
+
+**評価**: ✅ 回避済み
+
+HttpOnly Cookie Patternにより、XSS脆弱性があってもCSRFトークンが窃取されません。
+
+---
+
+### 10.2 古いブラウザのサポート
+
+**評価**: ℹ️ 要確認
+
+SameSite='lax'は以下のブラウザで未サポートです:
+- Safari < 12
+- Internet Explorer
+
+**対応策**:
+- 主要ブラウザの最新版を使用することを前提とする
+- 古いブラウザのサポートが必要な場合、追加のCSRFトークン検証を検討
+
+---
+
+### 10.3 セッションの有効期限
+
+**評価**: ✅ 適切
+
+セッションの有効期限は7日間（`SESSION_CONFIG.MAX_AGE_SECONDS`）で設定されており、CSRFトークンも同じ有効期限を持ちます。
+
+---
+
+## 11. パフォーマンス分析
+
+### 11.1 トークン検証のオーバーヘッド
+
+**評価**: ✅ 最小限
+
+- ハッシュ生成（SHA-256）: 計算コストは小さい
+- タイミングセーフ比較: 定数時間比較
+- Cookieからのトークン取得: O(1)
+
+---
+
+### 11.2 セッションサイズの増加
+
+**評価**: ✅ 許容範囲
+
+- CSRFトークンのハッシュ: 64文字（SHA-256 hex）
+- セッションcookieのサイズ増加は最小限
+
+---
+
+## 12. コードの簡潔性
+
+**評価**: ✅ 良好
+
+- 過度な抽象化なし
+- 責務が明確に分離されている
+- 関数名が適切（`hashIp`を除く）
+
+---
+
+## 13. ドキュメントの整合性
+
+**評価**: ✅ 良好
+
+| 項目 | ARCHITECTURE.md | 実装 |
+|------|-----------------|------|
+| HttpOnly Cookie Pattern | 記述あり | 実装済み |
+| トークンをhttpOnly cookieに保存 | 記述あり | 実装済み |
+| ハッシュ比較 | 記述あり | 実装済み |
+| SameSite='lax' | 記述あり | 実装済み |
+| 楽観的ロック | 「✅ 実装済み」 | 実装済み |
+| タイミングセーフ比較 | 記述あり | 実装済み |
+
+---
+
+## 14. 結論
+
+CSRF保護機能の実装は設計書と完全に一致しており、セキュリティ要件を満たしています。
+
+### 修正が必要な項目
+
+1. **関数名のキャメルケース** (優先度: 低)
+   - `hashIp` を `hashIP` に改名
+
+### 特に優れた点
+
+1. **HttpOnly Cookie Pattern**: XSS攻撃時の完全な保護
+2. **SameSite='lax'**: CSRF攻撃の一次防御とOAuthフローとの互換性
+3. **ハッシュ比較**: トークン値の漏洩防止
+4. **楽観的ロック**: 競合状態の回避
+5. **セキュリティ配慮のあるログ記録**: IPハッシュ化、URLサニタイズ
+
+### 推奨アクション
+
+**QAエージェントへの依頼を推奨します。**
+
+以下の軽微な改善点は、QAテスト中に修正するか、次のリリースで対応することを推奨します:
+- 関数名のキャメルケース修正 (`hashIp` → `hashIP`)
+
+---
+
+## レビュー結果: ✅ 合格
+
+重大な問題は見つかりませんでした。QAエージェントにテスト依頼を送信します。

@@ -11,6 +11,7 @@ export const TWITCH_SUBSCRIPTION_TYPE = {
 export const COOKIE_NAMES = {
   SESSION: 'twica_session',
   AUTH_STATE: 'twitch_auth_state',
+  CSRF_TOKEN: 'csrf_token',
 }
 
 export const API_ROUTES = {
@@ -48,11 +49,19 @@ export const DEBUG_CONFIG = {
   PRODUCTION_ENV: 'production',
 } as const
 
+export const CSRF_CONFIG = {
+  TOKEN_LENGTH: 32,
+  MAX_RETRY_COUNT: 3,
+  RETRY_DELAY_MS: 10,
+} as const
+
 export const ERROR_MESSAGES = {
   // Authentication errors
   UNAUTHORIZED: 'Unauthorized',
   NOT_AUTHENTICATED: 'Not authenticated',
   FORBIDDEN: 'Forbidden',
+  CSRF_TOKEN_INVALID: 'Invalid or missing CSRF token',
+  CSRF_TOKEN_MISSING: 'CSRF token is required for this request',
 
   // Request validation errors
   MISSING_REQUIRED_FIELDS: 'Missing required fields',

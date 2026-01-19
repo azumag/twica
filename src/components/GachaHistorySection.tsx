@@ -6,6 +6,7 @@ import type { GachaHistory, Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { UI_STRINGS } from "@/lib/constants";
 
+
 interface GachaHistoryWithCard extends GachaHistory {
   cards: Card;
 }

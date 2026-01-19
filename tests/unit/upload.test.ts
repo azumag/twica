@@ -1,23 +1,37 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { cookies } from 'next/headers'
 import { POST } from '@/app/api/upload/route'
 import { getSession } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { put } from '@vercel/blob'
 import { getFileTypeFromBuffer } from '@/lib/file-utils'
+import { validateCSRFToken } from '@/lib/csrf'
 
 // Mock dependencies
+vi.mock('next/headers')
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
 vi.mock('@vercel/blob')
+vi.mock('@/lib/csrf')
 
+const mockCookies = vi.mocked(cookies)
 const mockGetSession = vi.mocked(getSession)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockPut = vi.mocked(put)
+const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 
 describe('POST /api/upload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Mock CSRF validation to pass by default
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    // Mock cookies to return empty store
+    mockCookies.mockResolvedValue({
+      get: vi.fn().mockReturnValue(undefined),
+      set: vi.fn(),
+      delete: vi.fn(),
+    } as unknown as ReturnType<typeof cookies>)
     // Mock rate limit to pass by default
     mockCheckRateLimit.mockResolvedValue({
       success: true,
@@ -79,6 +93,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       const formData = new FormData()
@@ -104,6 +119,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       const largeFile = new File([new ArrayBuffer(1 * 1024 * 1024 + 1)], 'large.jpg', {
@@ -135,6 +151,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       const textFile = new File(['This is text'], 'test.txt', {
@@ -166,6 +183,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       const invalidFile = new File([Buffer.from([0x00, 0x00, 0x00])], 'fake.jpg', {
@@ -195,6 +213,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       const jpegFile = new File([createMinimalJpegBuffer()], 'fake.png', {
@@ -226,6 +245,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       mockPut.mockResolvedValue({
@@ -269,6 +289,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       mockPut.mockResolvedValue({
@@ -306,6 +327,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       mockPut.mockResolvedValue({
@@ -345,6 +367,7 @@ describe('POST /api/upload', () => {
         twitchProfileImageUrl: 'https://example.com/avatar.jpg',
         broadcasterType: '',
         expiresAt: Date.now() + 3600000,
+        version: 1,
       })
 
       mockPut.mockRejectedValue(new Error('Vercel Blob error'))

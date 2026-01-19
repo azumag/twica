@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { logger } from "@/lib/logger";
 import { UI_STRINGS } from "@/lib/constants";
 
+
 interface TwitchReward {
   id: string;
   title: string;

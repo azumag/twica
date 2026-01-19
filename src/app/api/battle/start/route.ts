@@ -7,11 +7,21 @@ import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import { reportBattleError } from '@/lib/sentry/error-handler'
 import { setUserContext, setRequestContext, setGameContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { validateCSRFToken } from '@/lib/csrf'
 import type { CardWithStreamer } from '@/types/database'
 
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
   setRequestContext(requestId, '/api/battle/start')
+  
+  // CSRF検証
+  const validation = await validateCSRFToken(request)
+  if (!validation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    )
+  }
   
   let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
   

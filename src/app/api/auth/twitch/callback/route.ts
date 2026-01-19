@@ -5,6 +5,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
+import { setCSRFToken } from '@/lib/csrf'
 
 export async function GET(request: NextRequest) {
   const ip = getClientIp(request);
@@ -128,6 +129,7 @@ export async function GET(request: NextRequest) {
       twitchProfileImageUrl: twitchUser.profile_image_url,
       broadcasterType: twitchUser.broadcaster_type,
       expiresAt: Date.now() + SESSION_CONFIG.MAX_AGE_MS,
+      version: 1,
     })
 
     cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
@@ -140,6 +142,13 @@ export async function GET(request: NextRequest) {
 
     // Clear state cookie
     cookieStore.delete('twitch_auth_state')
+
+    // Generate and set CSRF token for the new session
+    try {
+      await setCSRFToken()
+    } catch (error) {
+      console.error('Failed to generate CSRF token after OAuth callback:', error)
+    }
 
     // Always redirect to dashboard
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
