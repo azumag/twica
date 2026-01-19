@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
-import { put } from '@vercel/blob';
 import { getSession } from '@/lib/session';
-import { handleApiError } from '@/lib/error-handler';
+import { handleApiError, handleBlobError, uploadWithRetry } from '@/lib/error-handler';
 import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
 import { ERROR_MESSAGES, UPLOAD_CONFIG } from '@/lib/constants';
@@ -99,6 +98,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return rateLimitError;
   }
 
+  let buffer: Buffer | null = null
+  let fileName: string | null = null
+
   try {
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
@@ -109,7 +111,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const ext = getFileExtension(file!.name);
-    const buffer = Buffer.from(await file!.arrayBuffer());
+    buffer = Buffer.from(await file!.arrayBuffer());
     const actualType = getFileTypeFromBuffer(buffer);
 
     const expectedType = UPLOAD_CONFIG.EXT_TO_MIME_TYPE[ext as keyof typeof UPLOAD_CONFIG.EXT_TO_MIME_TYPE];
@@ -127,14 +129,35 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .digest('hex')
       .substring(0, 16);
 
-    const fileName = `${safeBasename}.${ext}`;
+    fileName = `${safeBasename}.${ext}`;
 
-    const blob = await put(fileName, buffer, {
-      access: 'public',
-    });
+    const uploadResult = await uploadWithRetry(fileName, buffer, { access: 'public' });
 
-    return NextResponse.json({ url: blob.url });
+    if ('error' in uploadResult) {
+      return handleBlobError(
+        new Error(uploadResult.error),
+        "Upload API: Failed to upload to Vercel Blob",
+        { userId: session!.twitchUserId, fileName, fileSize: buffer.length }
+      )
+    }
+
+    return NextResponse.json({ url: uploadResult.url });
   } catch (error) {
+    const blobError = error instanceof Error && (
+      error.message.includes('quota') ||
+      error.message.includes('limit') ||
+      error.message.includes('authentication') ||
+      error.message.includes('service unavailable')
+    )
+
+    if (blobError) {
+      return handleBlobError(
+        error,
+        "Upload API: Vercel Blob error",
+        { userId: session?.twitchUserId, fileName: fileName || 'unknown', fileSize: buffer?.length }
+      )
+    }
+
     return handleApiError(error, "Upload API");
   }
 }
