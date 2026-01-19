@@ -35,7 +35,7 @@ export function reportApiError(endpoint: string, method: string, error: Error | 
     scope.setTag('endpoint', endpoint)
     scope.setTag('method', method)
     scope.setLevel('error')
-    
+
     if (additionalContext) {
       Object.entries(additionalContext).forEach(([key, value]) => {
         scope.setExtra(key, value)
@@ -45,7 +45,33 @@ export function reportApiError(endpoint: string, method: string, error: Error | 
     if (error instanceof Error) {
       Sentry.captureException(error)
     } else {
-      Sentry.captureMessage(`${method} ${endpoint}: ${String(error)}`, 'error')
+      // 非Error型のエラーを詳細に記録
+      let errorMessage = `${method} ${endpoint}: Unknown error`;
+
+      if (typeof error === 'string') {
+        errorMessage = `${method} ${endpoint}: ${error}`;
+        scope.setExtra('errorType', 'string');
+        scope.setExtra('errorValue', error);
+      } else if (error && typeof error === 'object') {
+        // オブジェクトの場合、すべてのキーと値を記録
+        try {
+          const errorJson = JSON.stringify(error, null, 2);
+          errorMessage = `${method} ${endpoint}: Object error`;
+          scope.setExtra('errorType', 'object');
+          scope.setExtra('errorObject', error);
+          scope.setExtra('errorJson', errorJson);
+        } catch (e) {
+          errorMessage = `${method} ${endpoint}: [Unserializable Object]`;
+          scope.setExtra('errorType', 'unserializable');
+          scope.setExtra('errorString', String(error));
+        }
+      } else if (error !== undefined && error !== null) {
+        errorMessage = `${method} ${endpoint}: ${String(error)}`;
+        scope.setExtra('errorType', typeof error);
+        scope.setExtra('errorValue', error);
+      }
+
+      Sentry.captureMessage(errorMessage, 'error')
     }
   })
 }

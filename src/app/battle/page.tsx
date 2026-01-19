@@ -8,6 +8,7 @@ import Header from '@/components/Header'
 import AnimatedBattle from '@/components/AnimatedBattle'
 import Image from 'next/image'
 import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
+import { fetchSession } from '@/lib/api-client'
 
 
 interface BattleCard {
@@ -69,13 +70,11 @@ export default function BattlePage() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        // Get session from API endpoint
-        const sessionResponse = await fetch('/api/session')
-        if (!sessionResponse.ok) {
+        const currentSession = await fetchSession()
+        if (!currentSession) {
           setLoading(false)
           return
         }
-        const currentSession = await sessionResponse.json()
         setSession(currentSession)
 
         // Fetch user's cards

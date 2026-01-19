@@ -2,22 +2,57 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { refreshTwitchToken, type TwitchTokens } from './auth';
 import { logger } from '@/lib/logger';
 
-export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
+export class TwitchTokenError extends Error {
+  constructor(
+    message: string,
+    public readonly code: 'NO_TOKEN' | 'REFRESH_FAILED' | 'DATABASE_ERROR',
+    public readonly originalError?: Error
+  ) {
+    super(message);
+    this.name = 'TwitchTokenError';
+  }
+}
+
+export async function getTwitchAccessToken(twitchUserId: string): Promise<string> {
   const supabaseAdmin = getSupabaseAdmin();
 
-  const { data: user } = await supabaseAdmin
+  const { data: user, error: dbError } = await supabaseAdmin
     .from('users')
     .select('twitch_access_token, twitch_refresh_token, twitch_token_expires_at')
     .eq('twitch_user_id', twitchUserId)
     .single();
 
+  if (dbError) {
+    throw new TwitchTokenError(
+      'Failed to fetch user tokens from database',
+      'DATABASE_ERROR',
+      dbError
+    );
+  }
+
   if (!user || !user.twitch_access_token || !user.twitch_refresh_token) {
-    return null;
+    throw new TwitchTokenError(
+      'No Twitch tokens found for user',
+      'NO_TOKEN'
+    );
+  }
+
+  if (!user.twitch_token_expires_at) {
+    throw new TwitchTokenError(
+      'Token expiry date is missing',
+      'NO_TOKEN'
+    );
+  }
+
+  const expiresAt = new Date(user.twitch_token_expires_at);
+  if (isNaN(expiresAt.getTime())) {
+    throw new TwitchTokenError(
+      'Invalid token expiry date format',
+      'NO_TOKEN'
+    );
   }
 
   const now = new Date();
-  const expiresAt = new Date(user.twitch_token_expires_at);
-
   if (expiresAt > now) {
     return user.twitch_access_token;
   }
@@ -25,7 +60,7 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
   return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
 }
 
-async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: string): Promise<string | null> {
+async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: string): Promise<string> {
   try {
     const tokens = await refreshTwitchToken(refreshToken);
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
@@ -47,7 +82,11 @@ async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: stri
     return tokens.access_token;
   } catch (error) {
     logger.error('Failed to refresh Twitch access token', { twitchUserId, error });
-    return null;
+    throw new TwitchTokenError(
+      'Failed to refresh Twitch access token',
+      'REFRESH_FAILED',
+      error instanceof Error ? error : undefined
+    );
   }
 }
 

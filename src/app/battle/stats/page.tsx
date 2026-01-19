@@ -7,6 +7,8 @@ import Image from 'next/image'
 import Header from '@/components/Header'
 import Link from 'next/link'
 import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
+import { fetchSession } from '@/lib/api-client'
+import { type Session } from '@/lib/session'
 
 interface CardStats {
   cardId: string
@@ -38,16 +40,7 @@ interface BattleStats {
 }
 
 export default function BattleStatsPage() {
-  const [session, setSession] = useState<{
-    twitchUserId: string
-    twitchUsername: string
-    twitchDisplayName: string
-    twitchProfileImageUrl: string
-    broadcasterType: string
-    expiresAt: number
-    version: number
-    csrfTokenHash?: string
-  } | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
   const [stats, setStats] = useState<BattleStats | null>(null)
   const [loading, setLoading] = useState(true)
   const router = useRouter()
@@ -55,13 +48,11 @@ export default function BattleStatsPage() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        // Get session from API endpoint
-        const sessionResponse = await fetch('/api/session')
-        if (!sessionResponse.ok) {
+        const currentSession = await fetchSession()
+        if (!currentSession) {
           setLoading(false)
           return
         }
-        const currentSession = await sessionResponse.json()
         setSession(currentSession)
 
         // Fetch battle stats

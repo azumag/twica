@@ -113,7 +113,8 @@ export const ERROR_MESSAGES = {
   OPERATION_FAILED: 'Operation failed',
 
   // Additional authentication errors
-  NO_ACCESS_TOKEN_AVAILABLE: 'No access token available',
+  TWITCH_TOKEN_REQUIRED: 'Twitch連携が必要です。再ログインしてください。',
+  TWITCH_TOKEN_REFRESH_FAILED: 'Twitchトークンの更新に失敗しました。再ログインしてください。',
 
   // Additional request validation errors
   MISSING_REWARD_ID: 'Missing rewardId',

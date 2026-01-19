@@ -191,6 +191,7 @@ export const rateLimits = {
   authLogin: createRatelimit(5, 60 * 1000),
   authCallback: createRatelimit(10, 60 * 1000),
   authLogout: createRatelimit(10, 60 * 1000),
+  authReauth: createRatelimit(3, 60 * 1000),
   eventsub: createRatelimit(1000, 60 * 1000),
   twitchRewardsGet: createRatelimit(50, 60 * 1000),
   twitchRewardsPost: createRatelimit(20, 60 * 1000),
