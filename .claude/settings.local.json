@@ -51,7 +51,14 @@
       "Bash(node -e:*)",
       "Bash(npm run dev:local:*)",
       "Bash(API_TEST_SESSION_COOKIE='%7B%22twitchUserId%22%3A%22130871908%22%2C%22twitchUsername%22%3A%22azumagbanjo%22%2C%22twitchDisplayName%22%3A%22%E3%81%82%E3%81%9A%E3%81%BE%E3%81%90%22%2C%22twitchProfileImageUrl%22%3A%22https%3A%2F%2Fstatic-cdn.jtvnw.net%2Fjtv_user_pictures%2Fee97d6e3-d61c-4b08-a6c3-a0deaae5ffe3-profile_image-300x300.png%22%2C%22broadcasterType%22%3A%22partner%22%2C%22expiresAt%22%3A1769456885733%2C%22version%22%3A2%2C%22csrfTokenHash%22%3A%22af0aeeb83d69a77accf9e9e73b15ee9de7638bf63728b9bef8974d33e1d4c858%22%7D' node scripts/api-test.js:*)",
-      "Skill(coop)"
+      "Skill(coop)",
+      "Bash(gh issue view:*)",
+      "Bash(npm audit:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run:*)",
+      "Bash(gh issue close:*)",
+      "Bash(find:*)"
     ]
   },
   "sandbox": {
