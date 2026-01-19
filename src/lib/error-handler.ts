@@ -39,14 +39,14 @@ export function handleBlobError(error: unknown, context: string, additionalInfo?
 export async function uploadWithRetry(
   fileName: string,
   buffer: Buffer,
-  options: { access: 'public' },
+  options: { access: 'public' } & { token?: string },
   maxRetries: number = 3
 ): Promise<{ url: string } | { error: string }> {
   const { put } = await import('@vercel/blob')
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const blob = await put(fileName, buffer, options)
+      const blob = await put(fileName, buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, options as any)
       return { url: blob.url }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
