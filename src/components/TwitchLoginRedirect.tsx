@@ -11,6 +11,20 @@ export function TwitchLoginRedirect() {
 
     const handleLoginRedirect = async () => {
       try {
+        // First, check if we have a valid session
+        const sessionResponse = await fetch('/api/session', {
+          credentials: 'include',
+        })
+
+        if (sessionResponse.ok) {
+          // Session is valid, reload the page
+          if (isMounted) {
+            window.location.reload()
+          }
+          return
+        }
+
+        // No valid session, proceed with login redirect
         const response = await fetch('/api/auth/twitch/login')
         const data: TwitchLoginResponse = await response.json()
 

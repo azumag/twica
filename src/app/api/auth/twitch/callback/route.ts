@@ -133,7 +133,14 @@ export async function GET(request: NextRequest) {
       version: 1,
     })
 
-    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, SESSION_COOKIE_OPTIONS)
+    // Set session cookie with explicit options
+    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+    })
 
     // Clear state cookie
     cookieStore.delete('twitch_auth_state')
