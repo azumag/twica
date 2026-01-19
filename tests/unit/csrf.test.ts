@@ -374,8 +374,11 @@ describe('CSRF Protection', () => {
       }
       mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
 
-      const request = new Request('https://example.com', {
-        headers: { 'origin': 'https://malicious.com' }
+      const request = new Request('https://example.com')
+      const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
+        if (name === 'origin') return 'https://malicious.com'
+        if (name === 'referer') return null
+        return null
       })
 
       const result = await validateCSRFToken(request)
@@ -385,10 +388,12 @@ describe('CSRF Protection', () => {
       expect(mockLogger.warn).toHaveBeenCalledWith('CSRF validation failed: Origin header not in allowed list', {
         userId: 'user123',
         origin: 'https://malicious.com',
-        ALLOW_LOCAL_ORIGINS: false,
+        allowLocalOrigins: false,
         allowedOrigins: expect.any(Array),
         endpoint: '/',
       })
+
+      getSpy.mockRestore()
     })
 
     it('should accept valid referer header when origin is missing', async () => {
@@ -430,9 +435,6 @@ describe('CSRF Protection', () => {
     })
 
     it('should reject invalid referer header when origin is missing', async () => {
-      const originalAppUrl = process.env.NEXT_PUBLIC_APP_URL
-      process.env.NEXT_PUBLIC_APP_URL = 'https://example.com'
-
       const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       const tokenHash = 'mocked-hash'
 
@@ -461,8 +463,11 @@ describe('CSRF Protection', () => {
       }
       mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
 
-      const request = new Request('https://example.com', {
-        headers: { 'referer': 'https://malicious.com/page' }
+      const request = new Request('https://example.com')
+      const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
+        if (name === 'origin') return null
+        if (name === 'referer') return 'https://malicious.com/page'
+        return null
       })
 
       const result = await validateCSRFToken(request)
@@ -476,7 +481,7 @@ describe('CSRF Protection', () => {
         endpoint: '/',
       })
 
-      process.env.NEXT_PUBLIC_APP_URL = originalAppUrl
+      getSpy.mockRestore()
     })
   })
 
