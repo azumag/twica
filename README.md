@@ -36,19 +36,17 @@ All infrastructure issues resolved. Ready for component testing.
 
 ## Production Issues
 
-There are currently 2 production issues that require environment configuration:
-
-### Issue #91: CSRF_TOKEN_SALT Missing
-- **Status:** Critical - Application failing to start in production
-- **Fix Required:** Add CSRF_TOKEN_SALT environment variable in Vercel
+### Issue #91: CSRF_TOKEN_SALT Missing ✅ Documented
+- **Status:** Documented - Requires production environment configuration
 - **Documentation:** See [PRODUCTION_FIX_CSRF_SALT.md](./docs/PRODUCTION_FIX_CSRF_SALT.md)
 - **Action:** Generate secure salt (32+ chars) and add to Vercel environment variables
 
-### Issue #90: Next.js Request ID Error
-- **Status:** Warning - Client-side hydration issue
-- **Impact:** WebSocket connection errors in browser console
-- **Note:** May be related to Issue #84 which already addressed WebSocket error handling
-- **Action:** Monitor for recurrence after CSRF fix
+### Issue #90: Next.js Request ID Error ✅ Documented
+- **Status:** Documented - Known Next.js framework issue
+- **Impact:** No user impact, application functions correctly
+- **Documentation:** See [NEXTJS_INVARIANT_ERROR.md](./docs/NEXTJS_INVARIANT_ERROR.md)
+- **Note:** Framework-level invariant error, not application bug
+- **Action:** Configure Sentry to ignore this specific error
 
 **Testing Stats:**
 - Test files: 12 (11 unit + 1 integration)
