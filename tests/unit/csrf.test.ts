@@ -124,7 +124,7 @@ describe('CSRF Protection', () => {
         expect.any(String),
         expect.objectContaining({
           httpOnly: true,
-          sameSite: 'lax',
+          sameSite: 'strict',
         })
       )
 

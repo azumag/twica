@@ -6,7 +6,7 @@ import { handleAuthError } from '@/lib/auth-error-handler'
 import { randomUUID } from 'crypto'
 import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
-import { ERROR_MESSAGES } from '@/lib/constants'
+import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS } from '@/lib/constants'
 
 export async function GET(request: Request) {
   const requestId = randomUUID()
@@ -39,12 +39,7 @@ export async function GET(request: Request) {
 
     // Store state in cookie
     const cookieStore = await cookies()
-    cookieStore.set('twitch_auth_state', state, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 60 * 10, // 10 minutes
-    })
+    cookieStore.set('twitch_auth_state', state, STATE_COOKIE_OPTIONS)
 
     const authUrl = getTwitchAuthUrl(redirectUri, state)
 
