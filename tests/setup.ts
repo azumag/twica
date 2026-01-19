@@ -1,5 +1,6 @@
 import { vi } from 'vitest'
 import '@testing-library/jest-dom'
+import { createMockSupabaseClient } from './utils/supabase-mock'
 
 // Setup environment variables
 process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000'
@@ -25,9 +26,9 @@ Object.defineProperty(global.navigator, 'clipboard', {
 
 // Global mocks
 vi.mock('@/lib/supabase/server', () => ({
-  createClient: vi.fn(),
+  createClient: vi.fn(() => createMockSupabaseClient()),
 }))
 
 vi.mock('@/lib/supabase/admin', () => ({
-  createAdminClient: vi.fn(),
+  createAdminClient: vi.fn(() => createMockSupabaseClient()),
 }))
