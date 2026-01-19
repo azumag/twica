@@ -34,6 +34,10 @@ yarn-error.log*
 .env*
 !.env.local.example
 
+# E2E Test Authentication State Files
+# These files contain sensitive session information
+.e2e-auth-state-*.json
+
 # vercel
 .vercel
 

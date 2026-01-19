@@ -17,19 +17,34 @@ All documented security vulnerabilities, bugs, and code quality issues have been
 
 See [SECURITY.md](./SECURITY.md) for detailed security policies and known vulnerabilities.
 
-## Current Focus: Test Coverage Expansion
+## Current Focus: Incremental Test Coverage Expansion
 
-Active issue: #82 - Add unit tests for card management API routes (medium priority)
+Active issues (priority order):
+- #87: Improve testing infrastructure for Supabase client mocking (high priority) - Complex task
+- #88: Add unit tests for CopyButton component (low priority) - Simple, quick win
 
 **Approach:**
-Break down large testing task (#78) into smaller, focused issues for each feature area:
-- Card management API routes (#82 - currently active)
-- Dashboard features (new issue)
-- Gacha and battle integration tests (new issue)
-- Streamer settings API (new issue)
-- OBS integration (new issue)
+1. **Quick wins first:** Add tests for small, simple components (like CopyButton) to build momentum
+2. **Infrastructure second:** Improve Supabase mocking utilities to enable API route testing
+3. **Coverage expansion:** Use improved infrastructure to add tests for remaining components and API routes
 
-This allows incremental progress with clear, achievable goals.
+**Recently Completed:**
+- Issue #84: Fixed WebSocket connection error handling - distinguished normal closures from errors
+- Issue #83: Closed - E2E test results documented, WebSocket issue resolved
+- Issue #85: Added streamer settings API tests (75% coverage, 3/4 tests passing)
+- Issue #86: Closed - Streamer settings test failure covered by issue #87
+
+**Testing Stats:**
+- Test files: 11
+- Total tests: 127 (126 passing, 1 infrastructure-related failure)
+- Overall pass rate: 99.2%
+- Test framework: Vitest
+
+**Components without tests (smallest first):**
+- CopyButton.tsx (32 lines) - Issue #88 created
+- TwitchLoginRedirect.tsx (39 lines)
+- Header.tsx (48 lines)
+- Stats.tsx (48 lines)
 
 ## Tech Stack
 
