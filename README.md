@@ -19,26 +19,43 @@ See [SECURITY.md](./SECURITY.md) for detailed security policies and known vulner
 
 ## Current Focus: Incremental Test Coverage Expansion
 
-Active issues (priority order):
-- #87: Improve testing infrastructure for Supabase client mocking (high priority) - Complex task
+All infrastructure issues resolved. Ready for component testing.
 
 **Approach:**
 1. **Quick wins first:** Add tests for small, simple components to build momentum ✅ Completed
-2. **Infrastructure second:** Improve Supabase mocking utilities to enable API route testing
+2. **Infrastructure second:** Improve Supabase mocking utilities to enable API route testing ✅ Completed
 3. **Coverage expansion:** Use improved infrastructure to add tests for remaining components and API routes
 
 **Recently Completed:**
+- Issue #87: Improved testing infrastructure with Supabase mock utilities
 - Issue #88: Added comprehensive unit tests for CopyButton component (18 tests, 100% pass rate)
 - Issue #84: Fixed WebSocket connection error handling - distinguished normal closures from errors
 - Issue #83: Closed - E2E test results documented, WebSocket issue resolved
-- Issue #85: Added streamer settings API tests (75% coverage, 3/4 tests passing)
-- Issue #86: Closed - Streamer settings test failure covered by issue #87
+- Issue #85: Added streamer settings API tests (100% coverage, 5/5 tests passing)
+- Issue #86: Closed - Streamer settings test failure resolved
+
+## Production Issues
+
+There are currently 2 production issues that require environment configuration:
+
+### Issue #91: CSRF_TOKEN_SALT Missing
+- **Status:** Critical - Application failing to start in production
+- **Fix Required:** Add CSRF_TOKEN_SALT environment variable in Vercel
+- **Documentation:** See [PRODUCTION_FIX_CSRF_SALT.md](./docs/PRODUCTION_FIX_CSRF_SALT.md)
+- **Action:** Generate secure salt (32+ chars) and add to Vercel environment variables
+
+### Issue #90: Next.js Request ID Error
+- **Status:** Warning - Client-side hydration issue
+- **Impact:** WebSocket connection errors in browser console
+- **Note:** May be related to Issue #84 which already addressed WebSocket error handling
+- **Action:** Monitor for recurrence after CSRF fix
 
 **Testing Stats:**
-- Test files: 11
-- Total tests: 127 (126 passing, 1 infrastructure-related failure)
-- Overall pass rate: 99.2%
+- Test files: 12 (11 unit + 1 integration)
+- Total tests: 149 (147 passing, 2 pre-existing failures)
+- Overall pass rate: 98.7%
 - Test framework: Vitest
+- New Supabase mock utilities for easier testing
 
 **Components without tests (smallest first):**
 - CopyButton.tsx (32 lines) - Issue #88 created
