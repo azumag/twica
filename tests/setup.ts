@@ -12,6 +12,7 @@ process.env.TWITCH_EVENTSUB_SECRET = 'test-eventsub-secret'
 process.env.CSRF_SIGNING_KEY = 'test-csrf-signing-key'
 process.env.CSRF_TOKEN_SALT = 'test-csrf-token-salt-at-least-32-characters-long'
 process.env.BLOB_READ_WRITE_TOKEN = 'test-blob-read-write-token'
+process.env.CSRF_ALLOW_ALL_LOCAL = 'false'
 
 // Global mocks
 vi.mock('@/lib/supabase/server', () => ({

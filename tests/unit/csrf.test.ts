@@ -381,6 +381,7 @@ describe('CSRF Protection', () => {
       expect(mockLogger.warn).toHaveBeenCalledWith('CSRF validation failed: Origin header not in allowed list', {
         userId: 'user123',
         origin: 'https://malicious.com',
+        allowLocalOrigins: false,
         allowedOrigins: expect.any(Array),
         endpoint: '/',
       })

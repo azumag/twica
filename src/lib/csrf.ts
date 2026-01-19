@@ -177,14 +177,40 @@ export async function validateCSRFToken(
   const requestUrl = new URL(request.url)
   const expectedOrigin = `${requestUrl.protocol}//${requestUrl.host}`
 
+  function isLocalOrigin(origin: string): boolean {
+    try {
+      const url = new URL(origin)
+      const hostname = url.hostname
+      
+      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+        return true
+      }
+      
+      const localNetworkPatterns = [
+        /^192\.168\.\d+\.\d+$/,
+        /^10\.\d+\.\d+\.\d+$/,
+        /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
+      ]
+      
+      return localNetworkPatterns.some(pattern => pattern.test(hostname))
+    } catch {
+      return false
+    }
+  }
+
   if (origin && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(origin)) {
-    logger.warn('CSRF validation failed: Origin header not in allowed list', {
-      userId: session.twitchUserId,
-      origin,
-      allowedOrigins: CSRF_CONFIG.ALLOWED_ORIGINS,
-      endpoint: sanitizeURL(request.url),
-    })
-    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    const isLocal = CSRF_CONFIG.ALLOW_LOCAL_ORIGINS && isLocalOrigin(origin)
+    
+    if (!isLocal) {
+      logger.warn('CSRF validation failed: Origin header not in allowed list', {
+        userId: session.twitchUserId,
+        origin,
+        allowedOrigins: CSRF_CONFIG.ALLOWED_ORIGINS,
+        allowLocalOrigins: CSRF_CONFIG.ALLOW_LOCAL_ORIGINS,
+        endpoint: sanitizeURL(request.url),
+      })
+      return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    }
   }
 
   // Originヘッダーがない場合、Refererヘッダーを検証（オプション）

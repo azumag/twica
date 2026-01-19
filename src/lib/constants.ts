@@ -62,10 +62,28 @@ export const CSRF_CONFIG = {
   HEADER_NAME: 'X-CSRF-Token',
   MAX_RETRY_COUNT: 3,
   RETRY_DELAY_MS: 50,
-  ALLOWED_ORIGINS: [
-    process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
-    ...(process.env.NODE_ENV === 'development' ? ['http://127.0.0.1:3000'] : []),
-  ].filter((origin, index, arr) => arr.indexOf(origin) === index) as string[],
+  ALLOW_LOCAL_ORIGINS: process.env.CSRF_ALLOW_ALL_LOCAL === 'true' && process.env.NODE_ENV === 'development',
+  ALLOWED_ORIGINS: (() => {
+    const origins: string[] = []
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    
+    try {
+      const url = new URL(appUrl)
+      const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+      
+      origins.push(appUrl)
+      
+      if (process.env.NODE_ENV === 'development') {
+        origins.push(`http://127.0.0.1:${port}`)
+        origins.push(`http://[::1]:${port}`)
+      }
+    } catch (error) {
+      console.warn('Failed to parse NEXT_PUBLIC_APP_URL for CSRF origins:', error)
+      origins.push(appUrl)
+    }
+    
+    return origins.filter((origin, index, arr) => arr.indexOf(origin) === index) as string[]
+  })(),
 } as const
 
 export const ERROR_MESSAGES = {
@@ -84,6 +102,8 @@ export const ERROR_MESSAGES = {
   STREAMER_ID_REQUIRED: 'streamerId is required',
   STREAMER_ID_MISSING: 'Missing streamerId',
   DROP_RATE_INVALID: 'Drop rate must be a number between 0 and 1',
+  CONTENT_TYPE_MISSING: 'Content-Type header is required',
+  CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
 
   // Rate limit errors
   RATE_LIMIT_EXCEEDED: 'Too many requests. Please try again later.',
