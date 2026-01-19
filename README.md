@@ -13,6 +13,7 @@ All documented security vulnerabilities, bugs, and code quality issues have been
 - ✅ Error handling improvements
 - ✅ Security hardening (CSP improvements, session validation)
 - ✅ Dependency vulnerability documentation (SECURITY.md)
+- ✅ Twitch login button credentials and error handling
 
 See [SECURITY.md](./SECURITY.md) for detailed security policies and known vulnerabilities.
 
