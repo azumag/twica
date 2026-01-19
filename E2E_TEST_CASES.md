@@ -3,7 +3,7 @@
 ## テスト環境
 - 本番URL: https://twica.bluemoon.works/
 - ツール: agent-browser
-- 対象: 公開ページとログイン不要な機能
+- 対象: 公開ページとログイン必要なページ（認証状態を使用）
 
 ---
 
@@ -675,30 +675,27 @@ agent-browser get text @e1
 
 ---
 
-## 10. 認証後ページのテスト（開発環境のみ）
+## 10. 認証後ページのテスト（本番環境）
 
-**重要:** このセクションのテストケースは開発環境（http://localhost:3000）でのみ実行されます。本番環境では自動的にスキップされます。
+**重要:** このセクションのテストケースは本番環境（https://twica.bluemoon.works/）で実行されます。
 
 ### 前提条件
-- 開発サーバーが起動している（`npm run dev`）
 - 認証状態ファイルがセットアップ済み：
-  - 視聴者用: `.e2e-auth-state-viewer.json`
-  - 配信者用: `.e2e-auth-state-streamer.json`
+  - 視聴者用: `.e2e-auth-state-viewer-prod.json`
+  - 配信者用: `.e2e-auth-state-streamer-prod.json`
 - E2Eテストスキルで `--auth` フラグを使用して実行
 
 ### 認証状態のセットアップ方法
 ```bash
-# 初回のみ: 手動ログインで認証状態を保存
-/e2e-test --env dev --setup-auth viewer
-/e2e-test --env dev --setup-auth streamer
+# 初回のみ: 手動ログインで認証状態を保存（本番環境）
+/e2e-test --env production --setup-auth viewer
+/e2e-test --env production --setup-auth streamer
 ```
 
 ---
 
 ### TC-901: ダッシュボード（視聴者）の表示確認
 **目的:** 視聴者ユーザーでダッシュボードが正しく表示されることを確認する
-
-**環境制限:** 開発環境のみ
 
 **ユーザー種別:** viewer
 
@@ -707,8 +704,8 @@ agent-browser get text @e1
 - ログイン済み状態
 
 **テストステップ:**
-1. `agent-browser state load .e2e-auth-state-viewer.json` で認証状態を復元
-2. `agent-browser open http://localhost:3000/dashboard` を実行
+1. `agent-browser state load .e2e-auth-state-viewer-prod.json` で認証状態を復元
+2. `agent-browser open https://twica.bluemoon.works/dashboard` を実行
 3. `agent-browser wait --load networkidle` でページ読み込みを待つ
 4. `agent-browser get title` でページタイトルを確認
 5. `agent-browser snapshot -i` でインタラクティブ要素を確認
@@ -716,7 +713,7 @@ agent-browser get text @e1
 7. `agent-browser screenshot /tmp/tc901-dashboard-viewer.png` でスクリーンショット取得
 
 **期待結果:**
-- URLが `http://localhost:3000/dashboard` である
+- URLが `https://twica.bluemoon.works/dashboard` である
 - ページタイトルが "ダッシュボード - TwiCa" である
 - ユーザー情報セクションが表示される
 - カードコレクションが表示される
@@ -728,8 +725,6 @@ agent-browser get text @e1
 ### TC-902: カードバトルページの表示確認
 **目的:** 視聴者ユーザーでカードバトルページが正しく表示されることを確認する
 
-**環境制限:** 開発環境のみ
-
 **ユーザー種別:** viewer
 
 **前提条件:**
@@ -737,15 +732,15 @@ agent-browser get text @e1
 - ログイン済み状態
 
 **テストステップ:**
-1. `agent-browser state load .e2e-auth-state-viewer.json` で認証状態を復元
-2. `agent-browser open http://localhost:3000/battle` を実行
+1. `agent-browser state load .e2e-auth-state-viewer-prod.json` で認証状態を復元
+2. `agent-browser open https://twica.bluemoon.works/battle` を実行
 3. `agent-browser wait --load networkidle` でページ読み込みを待つ
 4. `agent-browser get title` でページタイトルを確認
 5. `agent-browser snapshot -i` でインタラクティブ要素を確認
 6. `agent-browser screenshot /tmp/tc902-battle.png` でスクリーンショット取得
 
 **期待結果:**
-- URLが `http://localhost:3000/battle` である
+- URLが `https://twica.bluemoon.works/battle` である
 - ページタイトルが "カードバトル - TwiCa" である
 - バトルアリーナが表示される
 - デッキが表示される
@@ -756,8 +751,6 @@ agent-browser get text @e1
 ### TC-903: バトル統計ページの表示確認
 **目的:** 視聴者ユーザーでバトル統計ページが正しく表示されることを確認する
 
-**環境制限:** 開発環境のみ
-
 **ユーザー種別:** viewer
 
 **前提条件:**
@@ -765,15 +758,15 @@ agent-browser get text @e1
 - ログイン済み状態
 
 **テストステップ:**
-1. `agent-browser state load .e2e-auth-state-viewer.json` で認証状態を復元
-2. `agent-browser open http://localhost:3000/battle/stats` を実行
+1. `agent-browser state load .e2e-auth-state-viewer-prod.json` で認証状態を復元
+2. `agent-browser open https://twica.bluemoon.works/battle/stats` を実行
 3. `agent-browser wait --load networkidle` でページ読み込みを待つ
 4. `agent-browser get title` でページタイトルを確認
 5. `agent-browser snapshot -i` でインタラクティブ要素を確認
 6. `agent-browser screenshot /tmp/tc903-battle-stats.png` でスクリーンショット取得
 
 **期待結果:**
-- URLが `http://localhost:3000/battle/stats` である
+- URLが `https://twica.bluemoon.works/battle/stats` である
 - ページタイトルが "バトル統計 - TwiCa" である
 - 統計表が表示される
 - 勝率などの統計情報が表示される
@@ -783,8 +776,6 @@ agent-browser get text @e1
 ### TC-911: ダッシュボード配信者機能の確認
 **目的:** 配信者ユーザーでダッシュボードの配信者専用機能が表示されることを確認する
 
-**環境制限:** 開発環境のみ
-
 **ユーザー種別:** streamer
 
 **前提条件:**
@@ -792,15 +783,15 @@ agent-browser get text @e1
 - 配信者権限でログイン済み
 
 **テストステップ:**
-1. `agent-browser state load .e2e-auth-state-streamer.json` で認証状態を復元
-2. `agent-browser open http://localhost:3000/dashboard` を実行
+1. `agent-browser state load .e2e-auth-state-streamer-prod.json` で認証状態を復元
+2. `agent-browser open https://twica.bluemoon.works/dashboard` を実行
 3. `agent-browser wait --load networkidle` でページ読み込みを待つ
 4. `agent-browser get title` でページタイトルを確認
 5. `agent-browser snapshot -i` でインタラクティブ要素を確認
 6. `agent-browser screenshot /tmp/tc911-dashboard-streamer.png` でスクリーンショット取得
 
 **期待結果:**
-- URLが `http://localhost:3000/dashboard` である
+- URLが `https://twica.bluemoon.works/dashboard` である
 - ページタイトルが "ダッシュボード - TwiCa" である
 - 配信者設定パネルが表示される
 - カード管理リンクが表示される
@@ -811,8 +802,6 @@ agent-browser get text @e1
 ### TC-912: カード管理ページの確認
 **目的:** 配信者ユーザーでカード管理ページが正しく表示されることを確認する
 
-**環境制限:** 開発環境のみ
-
 **ユーザー種別:** streamer
 
 **前提条件:**
@@ -820,8 +809,8 @@ agent-browser get text @e1
 - 配信者権限でログイン済み
 
 **テストステップ:**
-1. `agent-browser state load .e2e-auth-state-streamer.json` で認証状態を復元
-2. `agent-browser open http://localhost:3000/dashboard` を実行（カード管理へのナビゲーション経由）
+1. `agent-browser state load .e2e-auth-state-streamer-prod.json` で認証状態を復元
+2. `agent-browser open https://twica.bluemoon.works/dashboard` を実行（カード管理へのナビゲーション経由）
 3. `agent-browser wait --load networkidle` でページ読み込みを待つ
 4. `agent-browser snapshot -i` でカード管理要素を確認
 5. `agent-browser screenshot /tmp/tc912-card-manager.png` でスクリーンショット取得
@@ -837,8 +826,6 @@ agent-browser get text @e1
 ### TC-920: 認証期限切れ時のリダイレクト確認
 **目的:** セッション期限切れ時に適切にログインページへリダイレクトされることを確認する
 
-**環境制限:** 開発環境のみ
-
 **ユーザー種別:** viewer または streamer
 
 **前提条件:**
@@ -846,12 +833,12 @@ agent-browser get text @e1
 
 **テストステップ:**
 1. 期限切れの認証状態をロード（または状態なしで実行）
-2. `agent-browser open http://localhost:3000/dashboard` を実行
+2. `agent-browser open https://twica.bluemoon.works/dashboard` を実行
 3. `agent-browser wait --load networkidle` でページ読み込みを待つ
 4. `agent-browser get url` でリダイレクト後のURLを確認
 
 **期待結果:**
-- トップページ（`http://localhost:3000/`）にリダイレクトされる
+- トップページ（`https://twica.bluemoon.works/`）にリダイレクトされる
 - またはログインを促すメッセージが表示される
 - ダッシュボードのコンテンツは表示されない
 
@@ -860,9 +847,8 @@ agent-browser get text @e1
 ### 認証テスト実行チェックリスト
 
 #### セットアップ
-- [ ] 開発サーバーが起動している（`npm run dev`）
-- [ ] 視聴者用認証状態をセットアップ済み（`/e2e-test --env dev --setup-auth viewer`）
-- [ ] 配信者用認証状態をセットアップ済み（`/e2e-test --env dev --setup-auth streamer`）
+- [ ] 視聴者用認証状態をセットアップ済み（`/e2e-test --env production --setup-auth viewer`）
+- [ ] 配信者用認証状態をセットアップ済み（`/e2e-test --env production --setup-auth streamer`）
 
 #### 視聴者テスト
 - [ ] TC-901: ダッシュボード（視聴者）
@@ -883,19 +869,19 @@ agent-browser get text @e1
 本E2Eテストケースは以下の制限があります：
 
 ### 本番環境でのテスト
-公開ページと認証不要な機能に限定されています。以下の機能は本番環境でのテストには含まれません：
+公開ページと認証が必要なページの両方をテストできます。ただし、以下の制約があります：
 
-- 実際のTwitchログイン処理
-- ダッシュボード機能（ログイン必要）
-- カード管理機能（配信者権限必要）
-- ガチャ実行（チャネルポイント必要）
-- カードバトル機能（ログイン必要）
-- Twitch API連携機能
-
-### 開発環境でのテスト
-認証が必要なページのテストが可能ですが、以下の制約があります：
-
-- 初回セットアップ時に手動ログインが必要
+- 初回セットアップ時に手動ログインが必要（本番環境でのTwitchログイン）
 - 認証状態の有効期限は7日間（Twitchセッションの有効期限）
-- 期限切れ後は再セットアップが必要
-- 実際のTwitch APIとの連携が必要な機能は、Twitchアカウントが必要
+- 期限切れ後は再セットアップが必要（`/e2e-test --env production --setup-auth viewer/streamer`）
+- 実際のTwitch APIとの連携が必要な機能は、実際のTwitchアカウントが必要
+- ガチャ実行にはチャネルポイントが必要
+
+### テスト対象の機能
+以下の機能がテスト可能です：
+
+- 公開ページ（トップページ、利用規約など）
+- ログイン後のダッシュボード（視聴者・配信者）
+- カードバトル機能
+- カード管理機能（配信者のみ）
+- OBSオーバーレイ

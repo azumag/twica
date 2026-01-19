@@ -140,12 +140,10 @@ export default function OverlayPage() {
   // Demo function for testing
   const triggerDemo = useCallback(async () => {
     try {
-      const response = await fetch("/api/gacha", {
+      // Use demo endpoint which doesn't require authentication
+      const response = await fetch("/api/gacha/demo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          streamerId,
-        }),
       });
 
       if (response.ok) {
@@ -155,7 +153,7 @@ export default function OverlayPage() {
       } catch (error) {
         logger.error("Demo gacha error:", error);
       }
-  }, [streamerId, displayResult]);
+  }, [displayResult]);
 
   // Check URL for demo param
   useEffect(() => {
