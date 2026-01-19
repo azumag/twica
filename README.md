@@ -17,6 +17,20 @@ All documented security vulnerabilities, bugs, and code quality issues have been
 
 See [SECURITY.md](./SECURITY.md) for detailed security policies and known vulnerabilities.
 
+## Current Focus: Test Coverage Expansion
+
+Active issue: #82 - Add unit tests for card management API routes (medium priority)
+
+**Approach:**
+Break down large testing task (#78) into smaller, focused issues for each feature area:
+- Card management API routes (#82 - currently active)
+- Dashboard features (new issue)
+- Gacha and battle integration tests (new issue)
+- Streamer settings API (new issue)
+- OBS integration (new issue)
+
+This allows incremental progress with clear, achievable goals.
+
 ## Tech Stack
 
 | Component | Responsibility |
