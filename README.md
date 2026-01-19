@@ -85,6 +85,15 @@ src/
 
 ## Testing
 
+### Current Coverage
+
+- **Source files**: 89 TypeScript/TSX files
+- **Test files**: 11 test files
+- **Test framework**: Vitest
+- **Current coverage**: ~25%
+
+### Running Tests
+
 ```bash
 # Run unit tests
 npm run test:unit
@@ -98,6 +107,73 @@ npm run test:all
 # Run integration tests only
 npm run test:integration
 ```
+
+### Testing Guidelines
+
+When writing new tests, follow these conventions:
+
+1. **Test files location**: Place tests in `tests/unit/` for unit tests, `tests/integration/` for integration tests
+2. **File naming**: Name test files as `*.test.ts` and mirror the source file structure
+3. **Test structure**: Group related tests using `describe()` blocks
+4. **Test naming**: Use descriptive test names starting with "should" or the behavior being tested
+5. **Mock appropriately**: Mock external dependencies (Supabase, Sentry, etc.) in unit tests
+6. **Test edge cases**: Include tests for error conditions, null/undefined inputs, and boundary values
+
+### Coverage Goals
+
+Priority order for adding test coverage:
+
+1. **Critical security paths** (target: 100% coverage)
+   - CSRF token generation and validation (`src/lib/csrf.ts`)
+   - Session management (`src/lib/session.ts`)
+   - Authentication flows (`src/app/api/auth/*`)
+   - Rate limiting (`src/lib/rate-limit.ts`)
+
+2. **API routes** (target: 80% coverage)
+   - All POST/PUT/DELETE endpoints
+   - CSRF protection enforcement
+   - Input validation
+   - Error handling
+
+3. **Business logic** (target: 70% coverage)
+   - Gacha algorithm (`src/lib/gacha.ts`)
+   - Battle logic (`src/lib/battle.ts`)
+   - Card operations
+
+4. **Integration tests**
+   - End-to-end user flows
+   - Database operations
+   - External API integrations
+
+### Critical Areas Needing Tests
+
+The following components currently have limited or no test coverage:
+
+- `src/lib/twitch/token-manager.ts` - No explicit tests
+- `src/app/api/cards/[id]/route.ts` - Limited coverage
+- `src/app/api/streamer/settings/route.ts` - Limited coverage
+- `src/lib/gacha.ts` - Needs comprehensive testing
+- `src/lib/battle.ts` - Needs comprehensive testing
+- Components in `src/components/` - No component tests
+
+### Before Committing
+
+Ensure all tests pass before pushing:
+
+```bash
+npm run test:unit
+npm run lint
+```
+
+### Adding Coverage Reports
+
+To generate coverage reports:
+
+```bash
+npm run test:unit -- --coverage
+```
+
+Coverage reports will be generated in the `coverage/` directory.
 
 ## Getting Started
 
