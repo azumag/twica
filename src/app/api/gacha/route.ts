@@ -7,6 +7,7 @@ import { reportGachaError } from "@/lib/sentry/error-handler";
 import { setUserContext, setRequestContext } from "@/lib/sentry/user-context";
 import { GACHA_COST, ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
+import { validateContentType } from "@/lib/request-validation";
 import type { GachaSuccessResponse, GachaErrorResponse, ApiRateLimitResponse } from "@/types/api";
 
 export async function POST(request: NextRequest) {
@@ -15,8 +16,14 @@ export async function POST(request: NextRequest) {
 
   let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
   let body: Record<string, unknown> | null = null
-  
+
   try {
+    // Content-Type validation - must be the first check
+    const contentTypeValidation = validateContentType(request, 'application/json')
+    if (contentTypeValidation) {
+      return contentTypeValidation
+    }
+
     const csrfValidation = await validateCSRFToken(request)
     if (!csrfValidation.valid) {
       return NextResponse.json(

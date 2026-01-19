@@ -6,9 +6,16 @@ import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
+import { validateContentType } from "@/lib/request-validation";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 export async function POST(request: NextRequest) {
+  // Content-Type validation - must be the first check
+  const contentTypeValidation = validateContentType(request, 'application/json')
+  if (contentTypeValidation) {
+    return contentTypeValidation
+  }
+
   const csrfValidation = await validateCSRFToken(request)
   if (!csrfValidation.valid) {
     return NextResponse.json(

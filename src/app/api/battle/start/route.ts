@@ -8,6 +8,7 @@ import { reportBattleError } from '@/lib/sentry/error-handler'
 import { setUserContext, setRequestContext, setGameContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { validateCSRFToken } from '@/lib/csrf'
+import { validateContentType } from '@/lib/request-validation'
 import type { CardWithStreamer } from '@/types/database'
 
 export async function POST(request: NextRequest) {
@@ -17,6 +18,12 @@ export async function POST(request: NextRequest) {
   let session: { twitchUserId: string; twitchUsername: string; broadcasterType?: string } | null = null
 
   try {
+    // Content-Type validation - must be the first check
+    const contentTypeValidation = validateContentType(request, 'application/json')
+    if (contentTypeValidation) {
+      return contentTypeValidation
+    }
+
     const csrfValidation = await validateCSRFToken(request)
     if (!csrfValidation.valid) {
       return NextResponse.json(
