@@ -1,4 +1,5 @@
 import { vi } from 'vitest'
+import '@testing-library/jest-dom'
 
 // Setup environment variables
 process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000'
@@ -13,6 +14,14 @@ process.env.CSRF_SIGNING_KEY = 'test-csrf-signing-key'
 process.env.CSRF_TOKEN_SALT = 'test-csrf-token-salt-at-least-32-characters-long'
 process.env.BLOB_READ_WRITE_TOKEN = 'test-blob-read-write-token'
 process.env.CSRF_ALLOW_ALL_LOCAL = 'false'
+
+// Mock clipboard API
+Object.defineProperty(global.navigator, 'clipboard', {
+  value: {
+    writeText: vi.fn(),
+  },
+  writable: true,
+})
 
 // Global mocks
 vi.mock('@/lib/supabase/server', () => ({

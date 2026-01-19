@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`CopyButton > スナップショットテスト > デフォルト状態のスナップショット 1`] = `
+<button
+  class="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
+>
+  コピー
+</button>
+`;

@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['node_modules', '.next', 'dist'],
-    environment: 'node',
+    environment: 'happy-dom',
     globals: true,
     setupFiles: ['tests/setup.ts'],
   },
