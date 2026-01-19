@@ -1,13 +1,29 @@
 #!/bin/bash
 
-# Zellijの左隣ペーン監視スクリプト
-# 左隣のペーンの出力が1分以上変化していない場合、自動的に "/pm" を送信
+# Zellijの現在ペーン監視スクリプト
+# 現在のペーンの出力が1分以上変化していない場合、自動的に "/singlerun" を送信
+
+# Zellijがまだ起動していない場合は起動
+if [ -z "$ZELLIJ" ]; then
+    echo "Starting Zellij session..."
+    # 新しいzellijセッションを起動してこのスクリプトを再実行
+    exec zellij -s monitor -l welcome -- bash -c "
+        # 新しいペーンでopencodeを起動
+        zellij action new-pane -- opencode
+        sleep 1
+        # 元のペーンに戻る
+        zellij action focus-previous-pane
+        sleep 0.5
+        # 監視スクリプトを実行
+        exec $0
+    "
+fi
 
 DUMP_FILE="/tmp/zellij_pane_dump_$$.txt"
 PREV_DUMP_FILE="/tmp/zellij_pane_dump_prev_$$.txt"
 LAST_CHANGE_TIME=$(date +%s)
 
-echo "Zellij pane monitor started. Monitoring left pane for inactivity..."
+echo "Zellij pane monitor started. Monitoring current pane for inactivity..."
 echo "Press Ctrl+C to stop."
 
 # クリーンアップ関数
@@ -20,40 +36,28 @@ cleanup() {
 trap cleanup INT TERM
 
 while true; do
-    # 左隣のペーンに移動
-    zellij action focus-previous-pane
-    sleep 0.3
-
-    # ペーンの内容をダンプ
+    # 現在のペーンの内容をダンプ（ペーン移動なし）
     zellij action dump-screen "$DUMP_FILE" 2>/dev/null
-
-    # 元のペーン（Claude）に戻る
-    zellij action focus-next-pane
-    sleep 0.3
 
     # 内容が変化したかチェック
     if [ -f "$PREV_DUMP_FILE" ]; then
         if ! diff -q "$DUMP_FILE" "$PREV_DUMP_FILE" > /dev/null 2>&1; then
             # 内容が変化した
             LAST_CHANGE_TIME=$(date +%s)
-            echo "[$(date '+%H:%M:%S')] Activity detected in left pane. Resetting timer."
+            echo "[$(date '+%H:%M:%S')] Activity detected in current pane. Resetting timer."
         else
             # 内容が変化していない
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - LAST_CHANGE_TIME))
 
             if [ $ELAPSED -ge 60 ]; then
-                echo "[$(date '+%H:%M:%S')] No activity for $ELAPSED seconds. Sending /pm command..."
+                echo "[$(date '+%H:%M:%S')] No activity for $ELAPSED seconds. Sending /singlerun command..."
 
-                # 左隣のペーンに移動してコマンド送信
-                zellij action focus-previous-pane
-                sleep 0.3
+                # 現在のペーンにコマンド送信（ペーン移動なし）
                 zellij action write-chars "/singlerun"
                 zellij action write 32
                 sleep 1.5
                 zellij action write 13
-                sleep 0.3
-                zellij action focus-next-pane
 
                 # タイマーをリセット
                 LAST_CHANGE_TIME=$(date +%s)
