@@ -133,8 +133,11 @@ export async function GET(request: NextRequest) {
       version: 1,
     })
 
-    // Set session cookie with explicit options
-    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
+    // Create redirect response first
+    const redirectResponse = NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
+
+    // Set session cookie on the response object
+    redirectResponse.cookies.set(COOKIE_NAMES.SESSION, sessionData, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -142,8 +145,8 @@ export async function GET(request: NextRequest) {
       maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
     })
 
-    // Clear state cookie
-    cookieStore.delete('twitch_auth_state')
+    // Clear state cookie on the response object
+    redirectResponse.cookies.delete('twitch_auth_state')
 
     // Generate and set CSRF token for the new session
     try {
@@ -152,8 +155,7 @@ export async function GET(request: NextRequest) {
       logger.error('Failed to generate CSRF token after OAuth callback:', error)
     }
 
-    // Always redirect to dashboard
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
+    return redirectResponse
   } catch (error) {
     return handleAuthError(error, 'unknown_error')
   }
