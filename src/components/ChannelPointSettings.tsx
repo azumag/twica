@@ -323,15 +323,33 @@ export default function ChannelPointSettings({
            <div className="rounded-lg bg-gray-700/50 p-4">
              <h3 className="mb-2 text-sm font-medium text-gray-300">{UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.EVENTSUB_STATUS}</h3>
              {subscriptions.length > 0 ? (
-               <div className="space-y-1">
+               <div className="space-y-2">
                  {subscriptions.map((sub) => (
-                   <div key={sub.id} className="flex items-center justify-between text-xs">
-                     <span className="text-gray-400">
-                       {sub.condition.reward_id ? `${UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.REWARD_ID} ${sub.condition.reward_id.slice(0, 8)}...` : UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.ALL_REWARDS}
-                     </span>
-                     <span className={sub.status === "enabled" ? "text-green-400" : "text-yellow-400"}>
-                       {sub.status}
-                     </span>
+                   <div key={sub.id}>
+                     <div className="flex items-center justify-between text-xs">
+                       <span className="text-gray-400">
+                         {sub.condition.reward_id ? `${UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.REWARD_ID} ${sub.condition.reward_id.slice(0, 8)}...` : UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.ALL_REWARDS}
+                       </span>
+                       <span className={sub.status === "enabled" ? "text-green-400" : "text-yellow-400"}>
+                         {sub.status}
+                       </span>
+                     </div>
+                     {/* Explanation for pending verification status */}
+                     {/* 検証待ち状態の説明 */}
+                     {sub.status === "webhook_callback_verification_pending" && (
+                       <div className="mt-1 rounded bg-yellow-500/10 p-2 text-xs text-yellow-300">
+                         <p className="font-medium">Webhook検証待ち</p>
+                         <p className="mt-1 text-yellow-400/80">
+                           TwitchがWebhookエンドポイントの検証を試みています。
+                           通常は数秒〜数分で完了します。
+                         </p>
+                         <ul className="mt-1 list-inside list-disc text-yellow-400/70">
+                           <li>サーバーが正常に動作しているか確認してください</li>
+                           <li>しばらく待ってから「更新」ボタンを押してください</li>
+                           <li>解決しない場合は、報酬を再設定してみてください</li>
+                         </ul>
+                       </div>
+                     )}
                    </div>
                  ))}
                </div>
