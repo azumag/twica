@@ -310,6 +310,12 @@ export default function CardManager({
                 {UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE}
               </label>
               <div className="space-y-2">
+                {/* Error message - always visible when there's an error */}
+                {/* エラーメッセージ - エラーがある場合は常に表示 */}
+                {uploadError && (
+                  <p className="text-sm text-red-400 bg-red-900/30 px-3 py-2 rounded">{uploadError}</p>
+                )}
+
                 {/* Show current image preview and delete button when editing */}
                 {/* 編集時は現在の画像プレビューと削除ボタンを表示 */}
                 {editingCard && formData.imageUrl && (
@@ -350,9 +356,6 @@ export default function CardManager({
                       onChange={handleFileChange}
                       className="w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-purple-700"
                     />
-                    {uploadError && (
-                      <p className="text-sm text-red-400">{uploadError}</p>
-                    )}
                     <p className="text-xs text-gray-500">
                       {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.FORMATS}{UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.MAX_SIZE((UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1) + 'MB')}
                     </p>
