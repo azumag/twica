@@ -105,20 +105,29 @@ export class GachaService {
       }
 
       if (user) {
-        const { error: collectionError } = await this.supabase
+        // Try insert first, if duplicate exists it will fail silently
+        // まずinsertを試み、重複があれば静かに失敗する
+        const { data: insertedCard, error: collectionError } = await this.supabase
           .from('user_cards')
-          .upsert({
+          .insert({
             user_id: user.id,
             card_id: selectedCard.id,
             obtained_at: new Date().toISOString(),
-          }, {
-            onConflict: 'user_id, card_id',
-            ignoreDuplicates: true,
           })
+          .select()
+          .single()
 
-        console.log('[GachaService] Collection upsert:', { userId: user.id, cardId: selectedCard.id, error: collectionError?.message })
+        console.log('[GachaService] Collection insert:', {
+          userId: user.id,
+          cardId: selectedCard.id,
+          inserted: !!insertedCard,
+          error: collectionError?.message,
+          errorCode: collectionError?.code,
+        })
 
-        if (collectionError) {
+        // Ignore duplicate key error (23505)
+        // 重複キーエラー（23505）は無視
+        if (collectionError && collectionError.code !== '23505') {
           logger.warn('Failed to add to collection:', collectionError.message)
         }
       }
