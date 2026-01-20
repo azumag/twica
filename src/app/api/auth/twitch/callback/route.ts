@@ -139,11 +139,9 @@ export async function GET(request: NextRequest) {
       twitchUserId: twitchUser.id,
     })
 
-    // Create redirect response first
-    const redirectResponse = NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
-
-    // Set session cookie on the response object
-    redirectResponse.cookies.set(COOKIE_NAMES.SESSION, sessionData, {
+    // Set session cookie using cookies() API for consistency
+    // This ensures the cookie is set the same way as csrf_token
+    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -151,13 +149,13 @@ export async function GET(request: NextRequest) {
       maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
     })
 
-    // Clear state cookie on the response object
-    redirectResponse.cookies.delete('twitch_auth_state')
+    // Clear state cookie
+    cookieStore.delete('twitch_auth_state')
 
     // Note: CSRF token will be generated automatically on first POST request
-    // We cannot generate it here because the session cookie is not yet readable via cookies()
 
-    return redirectResponse
+    // Redirect to dashboard
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
   } catch (error) {
     return handleAuthError(error, 'unknown_error')
   }
