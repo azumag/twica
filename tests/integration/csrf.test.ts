@@ -88,7 +88,7 @@ describe('CSRF Integration Tests', () => {
 
       const result = await validateCSRFToken(request)
       expect(result.valid).toBe(false)
-      expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
+      expect(result.error).toBe('CSRFトークンがCookieに見つかりません。ページを再読み込みしてください。')
     })
 
     it('should reject request with invalid CSRF token in cookie', async () => {
@@ -130,7 +130,7 @@ describe('CSRF Integration Tests', () => {
 
       const result = await validateCSRFToken(request)
       expect(result.valid).toBe(false)
-      expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
+      expect(result.error).toBe('CSRFトークンの長さが不正です。ページを再読み込みしてください。')
     })
   })
 

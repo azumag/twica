@@ -232,7 +232,7 @@ describe('CSRF Protection', () => {
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(false)
-      expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
+      expect(result.error).toBe('CSRFトークンがCookieに見つかりません。ページを再読み込みしてください。')
     })
 
     it('should reject invalid token length', async () => {
@@ -266,9 +266,11 @@ describe('CSRF Protection', () => {
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(false)
-      expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
+      expect(result.error).toBe('CSRFトークンの長さが不正です。ページを再読み込みしてください。')
       expect(mockLogger.warn).toHaveBeenCalledWith('CSRF validation failed: Invalid token length', {
         userId: 'user123',
+        expectedLength: 64,
+        actualLength: 63,
       })
     })
 
@@ -284,7 +286,7 @@ describe('CSRF Protection', () => {
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(false)
-      expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
+      expect(result.error).toBe('セッションが見つかりません。再度ログインしてください。')
     })
 
     it('should accept valid origin header', async () => {
@@ -364,7 +366,7 @@ describe('CSRF Protection', () => {
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(false)
-      expect(result.error).toBe(ERROR_MESSAGES.CSRF_TOKEN_INVALID)
+      expect(result.error).toBe('Originヘッダーが許可リストにありません: https://malicious.com')
       expect(mockLogger.warn).toHaveBeenCalledWith('CSRF validation failed: Origin header not in allowed list', {
         userId: 'user123',
         origin: 'https://malicious.com',

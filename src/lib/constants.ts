@@ -66,20 +66,14 @@ export const DEBUG_CONFIG = {
 } as const
 
 /**
- * NEXT_PUBLIC_APP_URL からCookieドメインを計算
- * localhost/127.0.0.1 の場合は undefined を返す（ブラウザのデフォルト動作に委ねる）
+ * Cookieドメインを取得
+ * 明示的にドメインを設定せず、ブラウザのデフォルト動作に任せる
+ * これにより、Cookieは現在のホストに対して設定され、同一オリジンからのリクエストで自動的に送信される
  */
 export function getCookieDomain(): string | undefined {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
-  try {
-    const url = new URL(appUrl)
-    if (url.hostname.includes('localhost') || url.hostname.includes('127.0.0.1')) {
-      return undefined
-    }
-    return url.hostname
-  } catch {
-    return undefined
-  }
+  // 常に undefined を返し、ブラウザのデフォルト動作に任せる
+  // 明示的にドメインを設定すると、サブドメインの扱いやクロスオリジンの問題が発生する可能性がある
+  return undefined
 }
 
 /**
