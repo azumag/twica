@@ -37,6 +37,22 @@ export default function CardManager({
   // Track if user has interacted with image field (to keep URL input visible)
   // ユーザーが画像フィールドを操作したかどうか（URL入力欄を表示し続けるため）
   const [userModifiedImage, setUserModifiedImage] = useState(true);
+  // Modal for drop rate explanation
+  // 出現確率説明モーダル
+  const [showDropRateInfo, setShowDropRateInfo] = useState(false);
+
+  // Calculate total weight and actual probability
+  // 合計重みと実際の確率を計算
+  const calculateActualProbability = (dropRate: number): number => {
+    // Get total weight of all active cards (excluding current if editing)
+    // 全アクティブカードの合計重み（編集中の場合は現在のカードを除く）
+    const otherCardsWeight = cards
+      .filter(c => c.is_active && (!editingCard || c.id !== editingCard.id))
+      .reduce((sum, c) => sum + c.drop_rate, 0);
+    const totalWeight = otherCardsWeight + dropRate;
+    if (totalWeight === 0) return 0;
+    return (dropRate / totalWeight) * 100;
+  };
 
   // Delete image from Vercel Blob
   // Vercel Blobから画像を削除
@@ -415,9 +431,30 @@ export default function CardManager({
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-gray-300">
-                {UI_STRINGS.CARD_MANAGER.FORM_LABELS.DROP_RATE} ({(formData.dropRate * 100).toFixed(1)}%)
-              </label>
+              <div className="mb-1 flex items-center gap-2">
+                <label className="text-sm text-gray-300">
+                  {UI_STRINGS.CARD_MANAGER.FORM_LABELS.DROP_RATE}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowDropRateInfo(true)}
+                  className="text-gray-400 hover:text-white"
+                  title="出現確率について"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </button>
+              </div>
+              <div className="mb-2 flex items-center gap-3 text-sm">
+                <span className="text-gray-400">
+                  重み: <span className="text-white font-medium">{(formData.dropRate * 100).toFixed(1)}%</span>
+                </span>
+                <span className="text-gray-500">→</span>
+                <span className="text-gray-400">
+                  実際の確率: <span className="text-green-400 font-medium">{calculateActualProbability(formData.dropRate).toFixed(1)}%</span>
+                </span>
+              </div>
               <input
                 type="range"
                 name="dropRate"
@@ -551,6 +588,58 @@ export default function CardManager({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Drop Rate Info Modal */}
+      {/* 出現確率説明モーダル */}
+      {showDropRateInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={() => setShowDropRateInfo(false)}>
+          <div className="mx-4 max-w-lg rounded-xl bg-gray-800 p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">出現確率について</h3>
+              <button
+                onClick={() => setShowDropRateInfo(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-4 text-gray-300">
+              <p>
+                <strong className="text-white">「重み」</strong>は相対的な出現しやすさを表します。
+                実際の出現確率は、全カードの重みの合計に対する割合で計算されます。
+              </p>
+              <div className="rounded-lg bg-gray-700 p-4">
+                <p className="mb-2 text-sm text-gray-400">計算式:</p>
+                <p className="font-mono text-sm text-white">
+                  実際の確率 = このカードの重み ÷ 全カードの重みの合計 × 100%
+                </p>
+              </div>
+              <div className="rounded-lg bg-gray-700 p-4">
+                <p className="mb-2 text-sm text-gray-400">例:</p>
+                <ul className="space-y-1 text-sm">
+                  <li>• カードA: 重み10%、カードB: 重み10%、カードC: 重み10%</li>
+                  <li className="text-green-400">→ 各カードの実際の確率: 10÷30×100 = <strong>33.3%</strong></li>
+                </ul>
+                <ul className="mt-2 space-y-1 text-sm">
+                  <li>• カードA: 重み50%、カードB: 重み25%</li>
+                  <li className="text-green-400">→ カードA: 50÷75×100 = <strong>66.7%</strong>、カードB: <strong>33.3%</strong></li>
+                </ul>
+              </div>
+              <p className="text-sm text-gray-400">
+                ※ 配布停止中のカードは確率計算に含まれません。
+              </p>
+            </div>
+            <button
+              onClick={() => setShowDropRateInfo(false)}
+              className="mt-6 w-full rounded-lg bg-purple-600 py-2 text-white hover:bg-purple-700"
+            >
+              閉じる
+            </button>
+          </div>
         </div>
       )}
     </div>
