@@ -61,7 +61,8 @@
       "Bash(find:*)",
       "Bash(brew install:*)",
       "Bash(supabase --version:*)",
-      "Bash(npx supabase:*)"
+      "Bash(npx supabase:*)",
+      "Bash(~/git-push-claude.sh)"
     ]
   },
   "sandbox": {
