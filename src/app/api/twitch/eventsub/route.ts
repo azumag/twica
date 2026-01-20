@@ -18,7 +18,22 @@ function verifyTwitchSignature(
   signature: string
 ): boolean {
   const secret = process.env.TWITCH_EVENTSUB_SECRET;
-  if (!secret || !signature) return false;
+
+  // Debug logging for signature verification issues
+  // デバッグ用：署名検証の問題を特定するためのログ出力
+  console.log("[EventSub] Signature verification:", {
+    hasSecret: !!secret,
+    secretLength: secret?.length || 0,
+    hasSignature: !!signature,
+    messageId,
+    timestamp,
+    bodyLength: body.length,
+  });
+
+  if (!secret || !signature) {
+    console.log("[EventSub] Missing secret or signature");
+    return false;
+  }
 
   const message = messageId + timestamp + body;
   const expectedSignature = "sha256=" + crypto
@@ -26,22 +41,40 @@ function verifyTwitchSignature(
     .update(message)
     .digest("hex");
 
+  // Debug: Compare first/last few chars of signatures (safe to log)
+  // デバッグ用：署名の最初と最後の数文字を比較（ログに出力しても安全）
+  console.log("[EventSub] Signature comparison:", {
+    receivedPrefix: signature.substring(0, 15),
+    expectedPrefix: expectedSignature.substring(0, 15),
+    receivedSuffix: signature.substring(signature.length - 8),
+    expectedSuffix: expectedSignature.substring(expectedSignature.length - 8),
+    lengthMatch: signature.length === expectedSignature.length,
+  });
+
   try {
-    return crypto.timingSafeEqual(
+    const result = crypto.timingSafeEqual(
       Buffer.from(expectedSignature),
       Buffer.from(signature)
     );
-  } catch {
+    console.log("[EventSub] Signature verification result:", result);
+    return result;
+  } catch (e) {
+    console.log("[EventSub] Signature verification error:", e);
     return false;
   }
 }
 
 export async function POST(request: NextRequest) {
+  // Debug: Log incoming request for EventSub troubleshooting
+  // デバッグ用：EventSubのトラブルシューティングのため、受信リクエストをログ出力
+  console.log("[EventSub] Incoming request from:", request.headers.get("user-agent"));
+
   const body = await request.text();
   let data;
   try {
     data = JSON.parse(body);
   } catch (e) {
+    console.log("[EventSub] JSON parse error:", e);
     return handleApiError(e, "EventSub JSON parsing");
   }
 
@@ -50,9 +83,16 @@ export async function POST(request: NextRequest) {
   const messageType = request.headers.get("twitch-eventsub-message-type") || "";
   const signature = request.headers.get("twitch-eventsub-message-signature") || "";
 
+  // Debug: Log message type for verification tracking
+  // デバッグ用：検証追跡のためメッセージタイプをログ出力
+  console.log("[EventSub] Message type:", messageType, "| Challenge present:", !!data.challenge);
+
   if (!verifyTwitchSignature(messageId, timestamp, body, signature)) {
+    console.log("[EventSub] Signature verification FAILED - returning 403");
     return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
   }
+
+  console.log("[EventSub] Signature verification PASSED");
 
   if (messageType !== MESSAGE_TYPE_NOTIFICATION) {
     const ip = getClientIp(request);
