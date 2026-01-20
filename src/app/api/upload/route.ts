@@ -154,12 +154,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    const safeBasename = createHash('sha256')
+    // User prefix for tracking uploads per user (must match storage-usage.ts)
+    // ユーザー別アップロード追跡用プレフィックス（storage-usage.tsと一致させる）
+    const userPrefix = createHash('sha256')
+      .update(session!.twitchUserId)
+      .digest('hex')
+      .substring(0, 8);
+
+    const uniqueSuffix = createHash('sha256')
       .update(`${session!.twitchUserId}-${Date.now()}`)
       .digest('hex')
-      .substring(0, 16);
+      .substring(0, 8);
 
-    fileName = `${safeBasename}.${ext}`;
+    // Format: {userPrefix}_{uniqueSuffix}.{ext}
+    fileName = `${userPrefix}_${uniqueSuffix}.${ext}`;
 
     const uploadResult = await uploadWithRetry(fileName, buffer, { access: 'public' });
 

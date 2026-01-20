@@ -28,8 +28,13 @@ export async function getStorageUsage(userPrefix?: string): Promise<StorageUsage
 
         // Check if blob belongs to the user (filename starts with user's hash prefix)
         // Blobがユーザーのものかチェック（ファイル名がユーザーのハッシュプレフィックスで始まるか）
-        if (userPrefix && blob.pathname.includes(userPrefix)) {
-          userUsage += blob.size;
+        if (userPrefix) {
+          // Extract filename from pathname (pathname may include full path)
+          // pathnameからファイル名を抽出（pathnameにはフルパスが含まれる場合がある）
+          const filename = blob.pathname.split('/').pop() || blob.pathname;
+          if (filename.startsWith(userPrefix)) {
+            userUsage += blob.size;
+          }
         }
       }
 
