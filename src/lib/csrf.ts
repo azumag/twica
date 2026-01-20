@@ -165,13 +165,32 @@ export async function validateCSRFToken(
     return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
   }
 
-  const sessionTokenHash = session.csrfTokenHash
+  let sessionTokenHash = session.csrfTokenHash
 
+  // If no CSRF token in session, generate one lazily (for first POST after OAuth)
   if (!sessionTokenHash) {
-    logger.warn('CSRF validation failed: No CSRF token in session', {
-      userId: session.twitchUserId,
-    })
-    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    try {
+      logger.info('Generating CSRF token lazily for first POST request', {
+        userId: session.twitchUserId,
+      })
+      await setCSRFToken()
+      // Re-read session after generating token
+      const updatedSessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+      if (!updatedSessionCookie) {
+        logger.error('Failed to read session after CSRF token generation')
+        return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+      }
+      const updatedSession = parseSession(updatedSessionCookie)
+      sessionTokenHash = updatedSession.csrfTokenHash
+
+      if (!sessionTokenHash) {
+        logger.error('CSRF token hash missing after generation')
+        return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+      }
+    } catch (error) {
+      logger.error('Failed to generate CSRF token', { error, userId: session.twitchUserId })
+      return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    }
   }
 
   // Cookieからトークンを取得（HttpOnly Cookie Pattern）
