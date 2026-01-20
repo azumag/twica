@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, SESSION_COOKIE_OPTIONS } from '@/lib/constants'
+import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
-import { setCSRFToken } from '@/lib/csrf'
 import { logger } from '@/lib/logger'
 
 export async function GET(request: NextRequest) {
@@ -148,12 +146,8 @@ export async function GET(request: NextRequest) {
     // Clear state cookie on the response object
     redirectResponse.cookies.delete('twitch_auth_state')
 
-    // Generate and set CSRF token for the new session
-    try {
-      await setCSRFToken()
-    } catch (error) {
-      logger.error('Failed to generate CSRF token after OAuth callback:', error)
-    }
+    // Note: CSRF token will be generated automatically on first POST request
+    // We cannot generate it here because the session cookie is not yet readable via cookies()
 
     return redirectResponse
   } catch (error) {
