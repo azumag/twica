@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { del } from "@vercel/blob";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -13,7 +14,15 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { extractTwitchUserId } from "@/types/database";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
+import { logger } from "@/lib/logger";
 import type { ApiRateLimitResponse } from "@/types/api";
+
+// Helper function to check if URL is a Vercel Blob URL
+// URLがVercel BlobのURLかどうかを確認するヘルパー関数
+function isVercelBlobUrl(url: string | null): boolean {
+  if (!url) return false;
+  return url.includes("blob.vercel-storage.com") || url.includes("public.blob.vercel-storage.com");
+}
 
 export async function PUT(
   request: NextRequest,
@@ -205,10 +214,11 @@ export async function DELETE(
   try {
     const supabaseAdmin = getSupabaseAdmin();
 
-    // Verify ownership
+    // Get card with image_url for deletion
+    // 削除用にimage_url付きでカードを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, streamers!inner(twitch_user_id)")
+      .select("streamer_id, image_url, streamers!inner(twitch_user_id)")
       .eq("id", id)
       .single();
 
@@ -216,6 +226,19 @@ export async function DELETE(
 
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+    }
+
+    // Delete image from Vercel Blob if it exists
+    // Vercel Blobから画像を削除（存在する場合）
+    if (isVercelBlobUrl(card.image_url)) {
+      try {
+        await del(card.image_url);
+        logger.info(`Deleted blob image: ${card.image_url}`);
+      } catch (blobError) {
+        // Log but don't fail the card deletion if blob deletion fails
+        // Blob削除が失敗してもカード削除は続行（ログのみ記録）
+        logger.warn(`Failed to delete blob image: ${card.image_url}`, blobError);
+      }
     }
 
     const { error } = await supabaseAdmin
