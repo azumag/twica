@@ -31,6 +31,9 @@ export default function CardManager({
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [deletingImage, setDeletingImage] = useState(false);
+  // Separate state for confirmed image URL (only update on blur)
+  // プレビュー表示用の確定済み画像URL（フォーカスが外れた時のみ更新）
+  const [confirmedImageUrl, setConfirmedImageUrl] = useState("");
 
   // Delete image from Vercel Blob
   // Vercel Blobから画像を削除
@@ -48,19 +51,19 @@ export default function CardManager({
     }
   };
 
-  // Handle image removal in edit mode
-  // 編集モードでの画像削除処理
+  // Handle image removal
+  // 画像削除処理
   const handleRemoveImage = async () => {
-    if (!formData.imageUrl) return;
+    if (!confirmedImageUrl) return;
 
     // Only delete from Blob if it's a Vercel Blob URL
     // Vercel BlobのURLの場合のみBlobから削除
-    const isBlobUrl = formData.imageUrl.includes("blob.vercel-storage.com") ||
-                      formData.imageUrl.includes("public.blob.vercel-storage.com");
+    const isBlobUrl = confirmedImageUrl.includes("blob.vercel-storage.com") ||
+                      confirmedImageUrl.includes("public.blob.vercel-storage.com");
 
     if (isBlobUrl) {
       setDeletingImage(true);
-      const deleted = await deleteImage(formData.imageUrl);
+      const deleted = await deleteImage(confirmedImageUrl);
       setDeletingImage(false);
 
       if (!deleted) {
@@ -70,6 +73,7 @@ export default function CardManager({
     }
 
     setFormData({ ...formData, imageUrl: "" });
+    setConfirmedImageUrl("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -83,6 +87,7 @@ export default function CardManager({
       rarity: "common",
       dropRate: 0.25,
     });
+    setConfirmedImageUrl("");
     setEditingCard(null);
     setShowForm(false);
     setUploadError(null);
@@ -111,6 +116,7 @@ export default function CardManager({
       rarity: card.rarity,
       dropRate: card.drop_rate,
     });
+    setConfirmedImageUrl(card.image_url || "");
     setShowForm(true);
   };
 
@@ -316,12 +322,12 @@ export default function CardManager({
                   <p className="text-sm text-red-400 bg-red-900/30 px-3 py-2 rounded">{uploadError}</p>
                 )}
 
-                {/* Show current image preview and delete button when editing */}
-                {/* 編集時は現在の画像プレビューと削除ボタンを表示 */}
-                {editingCard && formData.imageUrl && (
+                {/* Show current image preview and delete button when confirmed URL exists */}
+                {/* 確定済みURLがある場合は画像プレビューと削除ボタンを表示 */}
+                {confirmedImageUrl && (
                   <div className="flex items-center gap-3 rounded-lg bg-gray-600 p-3">
                     <Image
-                      src={formData.imageUrl}
+                      src={confirmedImageUrl}
                       alt="現在の画像"
                       width={60}
                       height={60}
@@ -330,7 +336,7 @@ export default function CardManager({
                     <div className="flex-1">
                       <p className="text-sm text-gray-300">現在の画像</p>
                       <p className="text-xs text-gray-500 truncate max-w-[200px]">
-                        {formData.imageUrl.split('/').pop()}
+                        {confirmedImageUrl.split('/').pop()}
                       </p>
                     </div>
                     <button
@@ -344,9 +350,9 @@ export default function CardManager({
                   </div>
                 )}
 
-                {/* Show file input only when no image is set (or after deletion) */}
-                {/* 画像が設定されていない場合（または削除後）のみファイル入力を表示 */}
-                {(!editingCard || !formData.imageUrl) && (
+                {/* Show file input only when no confirmed image URL exists */}
+                {/* 確定済み画像URLがない場合のみファイル入力を表示 */}
+                {!confirmedImageUrl && (
                   <>
                     <input
                       type="file"
@@ -367,6 +373,13 @@ export default function CardManager({
                       onChange={(e) =>
                         setFormData({ ...formData, imageUrl: e.target.value })
                       }
+                      onBlur={() => {
+                        // Only confirm URL on blur if it has a value
+                        // フォーカスが外れた時にURLを確定（値がある場合のみ）
+                        if (formData.imageUrl) {
+                          setConfirmedImageUrl(formData.imageUrl);
+                        }
+                      }}
                       className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
                     />
                   </>
