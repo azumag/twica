@@ -360,33 +360,44 @@ export default function CardManager({
         </button>
       </div>
 
-      {/* Card Form */}
+      {/* Card Form Modal */}
+      {/* カードフォームモーダル */}
       {showForm && (
-        <form
-          onSubmit={handleSubmit}
-          className="mb-6 rounded-lg bg-gray-700 p-6"
-        >
-          <h3 className="mb-4 text-lg font-medium text-white">
-            {editingCard ? UI_STRINGS.CARD_MANAGER.EDIT_CARD : UI_STRINGS.CARD_MANAGER.NEW_CARD}
-          </h3>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">
-                {UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME} *
-              </label>
-              <input
-                type="text"
-                name="name"
-                required
-                placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME_PLACEHOLDER}
-                value={formData.name}
-                onChange={(e) =>
-                  setFormData({ ...formData, name: e.target.value })
-                }
-                className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
-              />
-            </div>
-              <div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={resetForm}>
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-gray-800 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <form onSubmit={handleSubmit} className="p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-white">
+                  {editingCard ? UI_STRINGS.CARD_MANAGER.EDIT_CARD : UI_STRINGS.CARD_MANAGER.NEW_CARD}
+                </h3>
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm text-gray-300">
+                    {UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME} *
+                  </label>
+                  <input
+                    type="text"
+                    name="name"
+                    required
+                    placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME_PLACEHOLDER}
+                    value={formData.name}
+                    onChange={(e) =>
+                      setFormData({ ...formData, name: e.target.value })
+                    }
+                    className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                  />
+                </div>
+                <div>
               <label className="mb-1 block text-sm text-gray-300">
                 {UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE}
               </label>
@@ -558,23 +569,25 @@ export default function CardManager({
               />
             </div>
           </div>
-          <div className="mt-4 flex gap-4">
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
-            >
-              {saving ? UI_STRINGS.CARD_MANAGER.BUTTONS.SAVE : editingCard ? UI_STRINGS.CARD_MANAGER.BUTTONS.UPDATE : UI_STRINGS.CARD_MANAGER.BUTTONS.ADD}
-            </button>
-            <button
-              type="button"
-              onClick={resetForm}
-              className="rounded-lg border border-gray-600 px-6 py-2 text-gray-300 hover:bg-gray-600"
-            >
-              {UI_STRINGS.CARD_MANAGER.BUTTONS.CANCEL}
-            </button>
+              <div className="mt-6 flex gap-4">
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
+                >
+                  {saving ? UI_STRINGS.CARD_MANAGER.BUTTONS.SAVE : editingCard ? UI_STRINGS.CARD_MANAGER.BUTTONS.UPDATE : UI_STRINGS.CARD_MANAGER.BUTTONS.ADD}
+                </button>
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="rounded-lg border border-gray-600 px-6 py-2 text-gray-300 hover:bg-gray-600"
+                >
+                  {UI_STRINGS.CARD_MANAGER.BUTTONS.CANCEL}
+                </button>
+              </div>
+            </form>
           </div>
-        </form>
+        </div>
       )}
 
       {/* Card List */}
