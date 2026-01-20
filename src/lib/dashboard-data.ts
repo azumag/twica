@@ -32,15 +32,21 @@ export async function getStreamerData(twitchUserId: string) {
 export async function getUserCards(twitchUserId: string): Promise<CardWithDetails[]> {
   const supabaseAdmin = getSupabaseAdmin();
 
-  const { data: user } = await supabaseAdmin
+  // Debug: Log Twitch user ID being queried
+  // デバッグ用：クエリされるTwitch user IDをログ出力
+  console.log('[getUserCards] Querying for twitchUserId:', twitchUserId);
+
+  const { data: user, error: userError } = await supabaseAdmin
     .from("users")
     .select("id")
     .eq("twitch_user_id", twitchUserId)
     .single();
 
+  console.log('[getUserCards] User lookup:', { found: !!user, userId: user?.id, error: userError?.message });
+
   if (!user) return [];
 
-  const { data: userCards } = await supabaseAdmin
+  const { data: userCards, error: cardsError } = await supabaseAdmin
     .from("user_cards")
     .select(`
       card_id,
@@ -50,6 +56,8 @@ export async function getUserCards(twitchUserId: string): Promise<CardWithDetail
       )
     `)
     .eq("user_id", user.id);
+
+  console.log('[getUserCards] User cards query:', { count: userCards?.length, error: cardsError?.message });
 
   if (!userCards) return [];
 
