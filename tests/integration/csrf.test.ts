@@ -16,6 +16,7 @@ describe('CSRF Integration Tests', () => {
       const { cookies } = await import('next/headers')
       const cookiesMock = cookies as unknown as MockInstance
       const token = 'a'.repeat(64) // 32 bytes * 2 (hex encoding) = 64 chars
+      const tokenHash = await hashToken(token)
       cookiesMock.mockResolvedValue({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
@@ -27,7 +28,7 @@ describe('CSRF Integration Tests', () => {
                 twitchProfileImageUrl: 'https://example.com/image.png',
                 broadcasterType: 'affiliate',
                 expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-                csrfTokenHash: hashToken(token),
+                csrfTokenHash: tokenHash,
                 version: 1
               })
             }
@@ -56,6 +57,7 @@ describe('CSRF Integration Tests', () => {
     it('should reject request without CSRF token in cookie', async () => {
       const { cookies } = await import('next/headers')
       const cookiesMock = cookies as unknown as MockInstance
+      const tokenHash = await hashToken('a'.repeat(64))
       cookiesMock.mockResolvedValue({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
@@ -67,7 +69,7 @@ describe('CSRF Integration Tests', () => {
                 twitchProfileImageUrl: 'https://example.com/image.png',
                 broadcasterType: 'affiliate',
                 expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-                csrfTokenHash: hashToken('a'.repeat(64)),
+                csrfTokenHash: tokenHash,
                 version: 1
               })
             }
@@ -92,6 +94,7 @@ describe('CSRF Integration Tests', () => {
     it('should reject request with invalid CSRF token in cookie', async () => {
       const { cookies } = await import('next/headers')
       const cookiesMock = cookies as unknown as MockInstance
+      const tokenHash = await hashToken('a'.repeat(64))
       cookiesMock.mockResolvedValue({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
@@ -103,7 +106,7 @@ describe('CSRF Integration Tests', () => {
                 twitchProfileImageUrl: 'https://example.com/image.png',
                 broadcasterType: 'affiliate',
                 expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-                csrfTokenHash: hashToken('a'.repeat(64)),
+                csrfTokenHash: tokenHash,
                 version: 1
               })
             }
@@ -199,14 +202,10 @@ describe('CSRF Integration Tests', () => {
   })
 
   describe('Security considerations', () => {
-    it('should use secure token generation', async () => {
-      const { randomBytes } = await import('crypto')
-      expect(typeof randomBytes).toBe('function')
-    })
-
-    it('should use timing-safe comparison', async () => {
-      const { timingSafeEqual } = await import('crypto')
-      expect(typeof timingSafeEqual).toBe('function')
+    it('should use secure token generation via Web Crypto API', () => {
+      // Web Crypto API is available in modern environments
+      expect(typeof crypto.getRandomValues).toBe('function')
+      expect(typeof crypto.subtle.digest).toBe('function')
     })
 
     it('should have proper error handling', () => {

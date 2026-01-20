@@ -4,21 +4,27 @@ import { cookies } from 'next/headers'
 import { POST } from '@/app/api/upload/route'
 import { getSession } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
-import { put } from '@vercel/blob'
 import { getFileTypeFromBuffer } from '@/lib/file-utils'
 import { validateCSRFToken } from '@/lib/csrf'
+import { uploadWithRetry } from '@/lib/error-handler'
 
 // Mock dependencies
 vi.mock('next/headers')
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
-vi.mock('@vercel/blob')
 vi.mock('@/lib/csrf')
+vi.mock('@/lib/error-handler', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/lib/error-handler')>()
+  return {
+    ...original,
+    uploadWithRetry: vi.fn(),
+  }
+})
 
 const mockCookies = vi.mocked(cookies)
 const mockGetSession = vi.mocked(getSession)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
-const mockPut = vi.mocked(put)
+const mockUploadWithRetry = vi.mocked(uploadWithRetry)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 
 describe('POST /api/upload', () => {
@@ -246,12 +252,8 @@ describe('POST /api/upload', () => {
         version: 1,
       })
 
-      mockPut.mockResolvedValue({
+      mockUploadWithRetry.mockResolvedValue({
         url: 'https://blob.vercel-storage.com/test-image.jpg',
-        downloadUrl: 'https://blob.vercel-storage.com/test-image.jpg',
-        pathname: '/test-image.jpg',
-        contentType: 'image/jpeg',
-        contentDisposition: 'inline; filename="test-image.jpg"',
       })
 
       const imageFile = new File([createMinimalJpegBuffer()], 'test.jpg', {
@@ -271,12 +273,15 @@ describe('POST /api/upload', () => {
       expect(response.status).toBe(200)
       const body = await response.json()
       expect(body.url).toBe('https://blob.vercel-storage.com/test-image.jpg')
-      expect(mockPut).toHaveBeenCalled()
-      expect(mockPut).toHaveBeenCalledWith(
-        expect.stringMatching(/^[a-f0-9]{16}\.jpg$/),
-        expect.any(Buffer),
-        { access: 'public' }
-      )
+      expect(mockUploadWithRetry).toHaveBeenCalled()
+      // First argument should be the filename pattern
+      expect(mockUploadWithRetry.mock.calls[0][0]).toMatch(/^[a-f0-9]{16}\.jpg$/)
+      // Second argument should be Buffer or Uint8Array-like (file contents)
+      const fileArg = mockUploadWithRetry.mock.calls[0][1]
+      expect(fileArg).toBeDefined()
+      expect(fileArg.length).toBeGreaterThan(0)
+      // Third argument should be the options
+      expect(mockUploadWithRetry.mock.calls[0][2]).toEqual({ access: 'public' })
     })
 
     it('PNG画像のアップロードに成功する', async () => {
@@ -290,12 +295,8 @@ describe('POST /api/upload', () => {
         version: 1,
       })
 
-      mockPut.mockResolvedValue({
+      mockUploadWithRetry.mockResolvedValue({
         url: 'https://blob.vercel-storage.com/test-image.png',
-        downloadUrl: 'https://blob.vercel-storage.com/test-image.png',
-        pathname: '/test-image.png',
-        contentType: 'image/png',
-        contentDisposition: 'inline; filename="test-image.png"',
       })
 
       const imageFile = new File([createMinimalPngBuffer()], 'test.png', {
@@ -328,12 +329,8 @@ describe('POST /api/upload', () => {
         version: 1,
       })
 
-      mockPut.mockResolvedValue({
+      mockUploadWithRetry.mockResolvedValue({
         url: 'https://blob.vercel-storage.com/test-image.gif',
-        downloadUrl: 'https://blob.vercel-storage.com/test-image.gif',
-        pathname: '/test-image.gif',
-        contentType: 'image/gif',
-        contentDisposition: 'inline; filename="test-image.gif"',
       })
 
       const imageFile = new File([createMinimalGifBuffer()], 'test.gif', {
@@ -368,7 +365,7 @@ describe('POST /api/upload', () => {
         version: 1,
       })
 
-      mockPut.mockRejectedValue(new Error('Vercel Blob error'))
+      mockUploadWithRetry.mockRejectedValue(new Error('Vercel Blob error'))
 
       const imageFile = new File([createMinimalJpegBuffer()], 'test.jpg', {
         type: 'image/jpeg',

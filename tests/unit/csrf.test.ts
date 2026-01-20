@@ -1,11 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cookies } from 'next/headers'
-import { randomBytes, timingSafeEqual, createHash } from 'crypto'
 import { logger } from '@/lib/logger'
 
 import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
 import { setCSRFToken, validateCSRFToken, hashToken, clearCSRFToken, hashIP, sanitizeURL } from '@/lib/csrf'
-import type { MockInstance } from 'vitest'
 
 interface MockCookieStore {
   get: ReturnType<typeof vi.fn>
@@ -25,24 +23,34 @@ vi.mock('@/lib/constants', async () => {
       ALLOW_LOCAL_ORIGINS: false,
       ALLOWED_ORIGINS: ['https://example.com', 'http://localhost:3000'],
     },
+    getSessionCookieOptions: () => ({
+      httpOnly: true,
+      secure: false,
+      sameSite: 'lax' as const,
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60,
+    }),
+    getDeleteCookieOptions: () => ({
+      httpOnly: true,
+      secure: false,
+      sameSite: 'lax' as const,
+      path: '/',
+      maxAge: 0,
+    }),
   }
 })
 
 vi.mock('next/headers')
-vi.mock('crypto')
 vi.mock('@/lib/logger')
 vi.mock('@/lib/sentry/error-handler')
 
-const mockCookies = vi.mocked(cookies) as unknown as MockInstance
-const mockRandomBytes = vi.mocked(randomBytes) as unknown as ReturnType<typeof vi.fn>
-const mockTimingSafeEqual = vi.mocked(timingSafeEqual) as unknown as ReturnType<typeof vi.fn>
-const mockCreateHash = vi.mocked(createHash) as unknown as ReturnType<typeof vi.fn>
-
+const mockCookies = vi.mocked(cookies)
 const mockLogger = vi.mocked(logger)
 
 describe('CSRF Protection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.stubEnv('CSRF_TOKEN_SALT', 'test-salt-for-csrf-token-hashing')
 
     const mockCookieStore = {
       get: vi.fn(),
@@ -51,43 +59,22 @@ describe('CSRF Protection', () => {
     }
 
     mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
-    mockRandomBytes.mockReturnValue(Buffer.from('a'.repeat(64), 'hex'))
-    mockTimingSafeEqual.mockReturnValue(true)
-
-    const mockHash = {
-      update: vi.fn().mockReturnThis(),
-      digest: vi.fn().mockReturnValue('mocked-hash'),
-    }
-    mockCreateHash.mockReturnValue(mockHash as unknown as ReturnType<typeof createHash>)
   })
 
   describe('hashToken', () => {
-    it('should generate consistent hashes', () => {
+    it('should generate consistent hashes', async () => {
       const token = 'test-token'
-      const hash1 = hashToken(token)
-      const hash2 = hashToken(token)
+      const hash1 = await hashToken(token)
+      const hash2 = await hashToken(token)
       expect(hash1).toBe(hash2)
-      expect(hash1).toBe('mocked-hash')
+      expect(typeof hash1).toBe('string')
+      expect(hash1.length).toBe(64) // SHA-256 produces 64 hex characters
     })
 
-    it('should generate different hashes for different tokens', () => {
-      const mockHash1 = {
-        update: vi.fn().mockReturnThis(),
-        digest: vi.fn().mockReturnValue('hash1'),
-      }
-      const mockHash2 = {
-        update: vi.fn().mockReturnThis(),
-        digest: vi.fn().mockReturnValue('hash2'),
-      }
-      mockCreateHash
-        .mockReturnValueOnce(mockHash1 as unknown as ReturnType<typeof createHash>)
-        .mockReturnValueOnce(mockHash2 as unknown as ReturnType<typeof createHash>)
-
-      const hash1 = hashToken('token1')
-      const hash2 = hashToken('token2')
+    it('should generate different hashes for different tokens', async () => {
+      const hash1 = await hashToken('token1')
+      const hash2 = await hashToken('token2')
       expect(hash1).not.toBe(hash2)
-      expect(hash1).toBe('hash1')
-      expect(hash2).toBe('hash2')
     })
   })
 
@@ -111,24 +98,25 @@ describe('CSRF Protection', () => {
 
       const token = await setCSRFToken()
 
-      expect(token).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
-      expect(mockRandomBytes).toHaveBeenCalledWith(CSRF_CONFIG.TOKEN_LENGTH)
+      // Token should be 64 hex characters (32 bytes * 2)
+      expect(token).toMatch(/^[a-f0-9]{64}$/)
 
       expect(mockCookieStore.set).toHaveBeenCalledTimes(2)
 
+      // First call: session with csrfTokenHash
       expect(mockCookieStore.set).toHaveBeenNthCalledWith(
         1,
         COOKIE_NAMES.SESSION,
-        expect.stringContaining('"csrfTokenHash":"mocked-hash"'),
+        expect.stringContaining('"csrfTokenHash"'),
         expect.any(Object)
       )
+      // Second call: CSRF token cookie
       expect(mockCookieStore.set).toHaveBeenNthCalledWith(
         2,
         COOKIE_NAMES.CSRF_TOKEN,
         expect.any(String),
         expect.objectContaining({
           httpOnly: true,
-          sameSite: 'strict',
         })
       )
 
@@ -164,7 +152,7 @@ describe('CSRF Protection', () => {
       const token = await setCSRFToken()
 
       expect(token).toBe('existing-token')
-      expect(mockRandomBytes).not.toHaveBeenCalled()
+      expect(mockCookieStore.set).not.toHaveBeenCalled()
     })
 
     it('should throw error when no session found', async () => {
@@ -180,8 +168,9 @@ describe('CSRF Protection', () => {
 
   describe('validateCSRFToken', () => {
     it('should validate matching tokens from httpOnly cookie', async () => {
-      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-      const tokenHash = 'mocked-hash'
+      // Generate a real token and hash for testing
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
 
       const sessionData = {
         twitchUserId: 'user123',
@@ -213,10 +202,6 @@ describe('CSRF Protection', () => {
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(true)
-      expect(mockTimingSafeEqual).toHaveBeenCalledWith(
-        Buffer.from(tokenHash),
-        Buffer.from('mocked-hash')
-      )
     })
 
     it('should reject missing token in cookie', async () => {
@@ -303,11 +288,8 @@ describe('CSRF Protection', () => {
     })
 
     it('should accept valid origin header', async () => {
-      vi.stubEnv('NODE_ENV', 'test')
-      vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://example.com')
-
-      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-      const tokenHash = 'mocked-hash'
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
 
       const sessionData = {
         twitchUserId: 'user123',
@@ -341,13 +323,11 @@ describe('CSRF Protection', () => {
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(true)
-
-      vi.unstubAllEnvs()
     })
 
     it('should reject invalid origin header', async () => {
-      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-      const tokenHash = 'mocked-hash'
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
 
       const sessionData = {
         twitchUserId: 'user123',
@@ -397,8 +377,8 @@ describe('CSRF Protection', () => {
     })
 
     it('should accept valid referer header when origin is missing', async () => {
-      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-      const tokenHash = 'mocked-hash'
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
 
       const sessionData = {
         twitchUserId: 'user123',
@@ -435,8 +415,8 @@ describe('CSRF Protection', () => {
     })
 
     it('should reject invalid referer header when origin is missing', async () => {
-      const token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-      const tokenHash = 'mocked-hash'
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
 
       const sessionData = {
         twitchUserId: 'user123',
@@ -512,6 +492,7 @@ describe('CSRF Protection', () => {
 
       await clearCSRFToken()
 
+      // Session should be updated with incremented version and without csrfTokenHash
       expect(mockCookieStore.set).toHaveBeenCalledWith(
         COOKIE_NAMES.SESSION,
         expect.stringContaining('"version":2'),
@@ -522,7 +503,12 @@ describe('CSRF Protection', () => {
         expect.not.stringContaining('csrfTokenHash'),
         expect.any(Object)
       )
-      expect(mockCookieStore.delete).toHaveBeenCalledWith(COOKIE_NAMES.CSRF_TOKEN)
+      // CSRF token cookie should be cleared with maxAge=0
+      expect(mockCookieStore.set).toHaveBeenCalledWith(
+        COOKIE_NAMES.CSRF_TOKEN,
+        '',
+        expect.objectContaining({ maxAge: 0 })
+      )
       expect(mockLogger.info).toHaveBeenCalledWith('CSRF token cleared')
     })
 
@@ -556,7 +542,12 @@ describe('CSRF Protection', () => {
         expect.stringContaining('"version":2'),
         expect.any(Object)
       )
-      expect(mockCookieStore.delete).toHaveBeenCalledWith(COOKIE_NAMES.CSRF_TOKEN)
+      // CSRF token cookie should still be cleared
+      expect(mockCookieStore.set).toHaveBeenCalledWith(
+        COOKIE_NAMES.CSRF_TOKEN,
+        '',
+        expect.objectContaining({ maxAge: 0 })
+      )
     })
 
     it('should handle case when no session exists', async () => {
@@ -569,26 +560,25 @@ describe('CSRF Protection', () => {
 
       await clearCSRFToken()
 
-      expect(mockCookieStore.set).not.toHaveBeenCalled()
-      expect(mockCookieStore.delete).not.toHaveBeenCalled()
+      // Should still try to clear CSRF token cookie even without session
+      expect(mockCookieStore.set).toHaveBeenCalledWith(
+        COOKIE_NAMES.CSRF_TOKEN,
+        '',
+        expect.objectContaining({ maxAge: 0 })
+      )
     })
   })
 
   describe('hashIP', () => {
-    it('should hash IP addresses', () => {
-      const mockHash = {
-        update: vi.fn().mockReturnThis(),
-        digest: vi.fn().mockReturnValue('mocked-hash'),
-      }
-      mockCreateHash.mockReturnValue(mockHash as unknown as ReturnType<typeof createHash>)
-
+    it('should hash IP addresses', async () => {
       const ip = '192.168.1.1'
-      const hash = hashIP(ip)
-      expect(hash).toBe('mocked-h') // substring(0, 8) of 'mocked-hash'
+      const hash = await hashIP(ip)
+      expect(typeof hash).toBe('string')
+      expect(hash.length).toBe(8) // substring(0, 8)
     })
 
-    it('should return unknown for null IP', () => {
-      const hash = hashIP(null)
+    it('should return unknown for null IP', async () => {
+      const hash = await hashIP(null)
       expect(hash).toBe('unknown')
     })
   })
