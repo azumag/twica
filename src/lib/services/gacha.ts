@@ -22,8 +22,6 @@ export class GachaService {
 
   async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string, eventId?: string): Promise<Result<GachaResult>> {
     try {
-      console.log('[GachaService] executeGacha called:', { streamerId, userTwitchId, userTwitchUsername, eventId })
-
       // Get active cards for this streamer
       // このストリーマーの有効なカードを取得
       const { data: cards, error: cardsError } = await this.supabase
@@ -31,8 +29,6 @@ export class GachaService {
         .select('id, name, description, image_url, rarity, drop_rate')
         .eq('streamer_id', streamerId)
         .eq('is_active', true)
-
-      console.log('[GachaService] Cards query:', { cardsCount: cards?.length, error: cardsError?.message })
 
       if (cardsError) {
         return err(`Database error: ${cardsError.message}`)
@@ -45,7 +41,6 @@ export class GachaService {
       // Select a card based on drop rates
       // ドロップ率に基づいてカードを選択
       const selectedCard = selectWeightedCard(cards)
-      console.log('[GachaService] Selected card:', { cardId: selectedCard?.id, cardName: selectedCard?.name })
 
       if (!selectedCard) {
         return err('Failed to select card')
@@ -66,8 +61,6 @@ export class GachaService {
           ignoreDuplicates: true,
         })
 
-      console.log('[GachaService] History upsert:', { error: historyError?.message })
-
       if (historyError) {
         return err(`Failed to record history: ${historyError.message}`)
       }
@@ -79,8 +72,6 @@ export class GachaService {
         .select('id')
         .eq('twitch_user_id', userTwitchId)
         .single()
-
-      console.log('[GachaService] User lookup:', { found: !!user, userId: user?.id })
 
       if (!user) {
         const { data: newUser, error: createError } = await this.supabase
@@ -95,8 +86,6 @@ export class GachaService {
           .select('id')
           .single()
 
-        console.log('[GachaService] User create:', { newUserId: newUser?.id, error: createError?.message })
-
         if (createError) {
           logger.warn('Failed to create user:', createError.message)
         } else {
@@ -105,25 +94,15 @@ export class GachaService {
       }
 
       if (user) {
-        // Try insert first, if duplicate exists it will fail silently
-        // まずinsertを試み、重複があれば静かに失敗する
-        const { data: insertedCard, error: collectionError } = await this.supabase
+        // Use insert instead of upsert - upsert with composite key doesn't work correctly
+        // upsertではなくinsertを使用 - 複合キーでのupsertは正しく動作しない
+        const { error: collectionError } = await this.supabase
           .from('user_cards')
           .insert({
             user_id: user.id,
             card_id: selectedCard.id,
             obtained_at: new Date().toISOString(),
           })
-          .select()
-          .single()
-
-        console.log('[GachaService] Collection insert:', {
-          userId: user.id,
-          cardId: selectedCard.id,
-          inserted: !!insertedCard,
-          error: collectionError?.message,
-          errorCode: collectionError?.code,
-        })
 
         // Ignore duplicate key error (23505)
         // 重複キーエラー（23505）は無視
@@ -132,13 +111,11 @@ export class GachaService {
         }
       }
 
-      console.log('[GachaService] executeGacha completed successfully')
       return ok({
         card: selectedCard,
         userTwitchUsername,
       })
     } catch (error) {
-      console.log('[GachaService] executeGacha error:', error)
       return err(`Unexpected error: ${error}`)
     }
   }
@@ -154,51 +131,22 @@ export class GachaService {
     eventId?: string
   ): Promise<Result<GachaResult>> {
     try {
-      // Debug: Log event details for troubleshooting
-      // デバッグ用：トラブルシューティングのためイベント詳細をログ出力
-      console.log('[GachaService] executeGachaForEventSub called:', {
-        broadcaster_user_id: event.broadcaster_user_id,
-        user_id: event.user_id,
-        reward_id: event.reward?.id,
-        eventId,
-      })
-
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
         .select('id, channel_point_reward_id')
         .eq('twitch_user_id', event.broadcaster_user_id)
         .single()
 
-      // Debug: Log streamer lookup result
-      // デバッグ用：ストリーマー検索結果をログ出力
-      console.log('[GachaService] Streamer lookup:', {
-        found: !!streamer,
-        streamer_id: streamer?.id,
-        db_reward_id: streamer?.channel_point_reward_id,
-        event_reward_id: event.reward?.id,
-        error: streamerError?.message,
-      })
-
       if (streamerError || !streamer) {
         return err('Streamer not found')
       }
 
       if (streamer.channel_point_reward_id !== event.reward.id) {
-        // Debug: Log reward ID mismatch details
-        // デバッグ用：リワードID不一致の詳細をログ出力
-        console.log('[GachaService] Reward ID mismatch:', {
-          db_reward_id: streamer.channel_point_reward_id,
-          event_reward_id: event.reward.id,
-          db_reward_id_type: typeof streamer.channel_point_reward_id,
-          event_reward_id_type: typeof event.reward.id,
-        })
         return err('Reward ID mismatch')
       }
 
-      console.log('[GachaService] Reward ID matched, executing gacha...')
       return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
     } catch (error) {
-      console.log('[GachaService] Unexpected error:', error)
       return err(`Unexpected error: ${error}`)
     }
   }

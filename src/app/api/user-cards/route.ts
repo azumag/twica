@@ -8,7 +8,7 @@ import { ERROR_MESSAGES } from '@/lib/constants'
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession()
-    
+
     const identifier = await getRateLimitIdentifier(request, session?.twitchUserId)
     const rateLimitResult = await checkRateLimit(rateLimits.cardsGet, identifier)
 
@@ -35,10 +35,6 @@ export async function GET(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin()
 
-    // Debug: Log session info for troubleshooting
-    // デバッグ用：トラブルシューティングのためセッション情報をログ出力
-    console.log('[UserCards] Session:', { twitchUserId: session.twitchUserId })
-
     // Get user data
     // ユーザーデータを取得
     const { data: userData, error: userError } = await supabaseAdmin
@@ -47,10 +43,7 @@ export async function GET(request: NextRequest) {
       .eq('twitch_user_id', session.twitchUserId)
       .single()
 
-    console.log('[UserCards] User lookup:', { found: !!userData, userId: userData?.id, error: userError?.message })
-
     if (userError || !userData) {
-      console.log('[UserCards] User not found, returning error')
       return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
     }
 
@@ -60,8 +53,6 @@ export async function GET(request: NextRequest) {
       .from('user_cards')
       .select('id, user_id, card_id, obtained_at')
       .eq('user_id', userData.id)
-
-    console.log('[UserCards] Cards query:', { count: userCards?.length, error: cardsError?.message })
 
     if (cardsError) {
       return handleDatabaseError(cardsError, "Failed to fetch user cards")
