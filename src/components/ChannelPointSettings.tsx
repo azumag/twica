@@ -340,9 +340,11 @@ export default function ChannelPointSettings({
                  {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.NO_SUBSCRIPTIONS}
                </p>
              )}
-             <p className="mt-2 text-xs text-gray-500">
-               {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.LOCAL_TUNNEL_NOTE}
-             </p>
+             {process.env.NODE_ENV === 'development' && (
+              <p className="mt-2 text-xs text-gray-500">
+                {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.LOCAL_TUNNEL_NOTE}
+              </p>
+            )}
            </div>
 
            <div className="flex items-center gap-4">
