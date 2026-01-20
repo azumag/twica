@@ -1,10 +1,9 @@
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getStreamerData, getUserCards, getRecentGachaHistory } from "@/lib/dashboard-data";
+import { getStreamerData, getUserCards } from "@/lib/dashboard-data";
 import { RARITY_ORDER } from "@/lib/constants";
 import type { Card, Streamer } from "@/types/database";
 import Header from "@/components/Header";
 import StreamerSettings from "@/components/StreamerSettings";
-import RecentWins from "@/components/RecentWins";
 import Collection from "@/components/Collection";
 import DevelopmentNotice from "@/components/DevelopmentNotice";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
@@ -35,7 +34,6 @@ export default async function DashboardPage() {
   const isStreamer = canUseStreamerFeatures(session);
   const streamerData = isStreamer ? await getStreamerData(session.twitchUserId) : null;
   const userCards = await getUserCards(session.twitchUserId);
-  const recentGacha = await getRecentGachaHistory();
 
   // Sort cards by rarity
   userCards.sort((a, b) => {
@@ -88,9 +86,6 @@ export default async function DashboardPage() {
             </p>
           </div>
         )}
-
-        {/* Global Recent Wins Section */}
-        <RecentWins recentGacha={recentGacha} />
 
         {/* Collection Section */}
         <Collection cardsByStreamer={cardsByStreamer} stats={stats} />
