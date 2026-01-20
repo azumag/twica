@@ -4,10 +4,11 @@ import { getSession } from '@/lib/session';
 import { handleApiError, handleBlobError, uploadWithRetry } from '@/lib/error-handler';
 import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
-import { ERROR_MESSAGES, UPLOAD_CONFIG } from '@/lib/constants';
+import { ERROR_MESSAGES, UPLOAD_CONFIG, STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
 import { getFileTypeFromBuffer, getFileExtension, isValidExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger';
 import { validateCSRFToken } from '@/lib/csrf';
+import { getStorageUsage } from '@/lib/storage-usage';
 import type { Session } from '@/lib/session';
 
 interface ValidateRequestResult {
@@ -96,6 +97,35 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const { error: rateLimitError, session } = await validateRequest(request);
   if (rateLimitError) {
     return rateLimitError;
+  }
+
+  // Check storage limits before processing file
+  // ファイル処理前にストレージ制限をチェック
+  const userPrefix = createHash('sha256')
+    .update(session!.twitchUserId)
+    .digest('hex')
+    .substring(0, 8);
+
+  const storageUsage = await getStorageUsage(userPrefix);
+
+  if (storageUsage.globalLimitReached) {
+    return NextResponse.json(
+      {
+        error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED,
+        code: 'GLOBAL_LIMIT_REACHED'
+      },
+      { status: 507 } // Insufficient Storage
+    );
+  }
+
+  if (storageUsage.userLimitReached) {
+    return NextResponse.json(
+      {
+        error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED,
+        code: 'USER_LIMIT_REACHED'
+      },
+      { status: 507 } // Insufficient Storage
+    );
   }
 
   let buffer: Buffer | null = null

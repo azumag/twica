@@ -346,6 +346,15 @@ export const UPLOAD_CONFIG = {
     gif: 'image/gif',
     webp: 'image/webp',
   } as const,
+  // Storage limits
+  // ストレージ制限
+  USER_STORAGE_LIMIT: 5 * 1024 * 1024, // 5MB per user
+  GLOBAL_STORAGE_LIMIT: 250 * 1024 * 1024, // 250MB total
+} as const
+
+export const STORAGE_LIMIT_MESSAGES = {
+  USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき5MBです。本サービスは無料のホスティングプランで運営しており、ストレージ容量が全体で250MBに制限されているためです。マネタイズの目処がついた際には拡充可能なので、もっと使いたいという方が多ければ有料プラン導入を検討致します。',
+  GLOBAL_LIMIT_REACHED: '画像のアップロード利用が全体で250MBを超えたため、アップロード機能は制限されました。本サービスは無料のホスティングプランで運営しており、ストレージ容量が全体で250MBに制限されているためです。マネタイズの目処がついた際には拡充可能なので、もっと使いたいという方が多ければ有料プラン導入を検討致します。',
 } as const
 
 export const UI_STRINGS = {

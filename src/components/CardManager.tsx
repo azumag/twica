@@ -1,11 +1,24 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UI_STRINGS, UPLOAD_CONFIG } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
+
+interface StorageStatus {
+  userUsage: number;
+  globalUsage: number;
+  userUsageFormatted: string;
+  globalUsageFormatted: string;
+  userLimitFormatted: string;
+  globalLimitFormatted: string;
+  userLimitReached: boolean;
+  globalLimitReached: boolean;
+  uploadDisabled: boolean;
+  message: string | null;
+}
 
 
 interface CardManagerProps {
@@ -40,6 +53,29 @@ export default function CardManager({
   // Modal for drop rate explanation
   // 出現確率説明モーダル
   const [showDropRateInfo, setShowDropRateInfo] = useState(false);
+  // Storage status for upload limits
+  // アップロード制限用のストレージ状態
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+
+  // Fetch storage status
+  // ストレージ状態を取得
+  const fetchStorageStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/storage-status", {
+        credentials: "include",
+      });
+      if (response.ok) {
+        const status = await response.json();
+        setStorageStatus(status);
+      }
+    } catch (error) {
+      logger.error("Failed to fetch storage status:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchStorageStatus();
+  }, [fetchStorageStatus]);
 
   // Calculate total weight and actual probability
   // 合計重みと実際の確率を計算
@@ -89,6 +125,9 @@ export default function CardManager({
         setUploadError("画像の削除に失敗しました");
         return;
       }
+      // Refresh storage status after successful deletion
+      // 削除成功後にストレージ状態を更新
+      fetchStorageStatus();
     }
 
     setFormData({ ...formData, imageUrl: "" });
@@ -178,11 +217,23 @@ export default function CardManager({
             setSaving(false);
             return;
           }
+          // Handle storage limit errors (507 Insufficient Storage)
+          // ストレージ制限エラーを処理 (507)
+          if (uploadResponse.status === 507) {
+            const errorData = await uploadResponse.json();
+            setUploadError(errorData.error);
+            fetchStorageStatus(); // Refresh storage status
+            setSaving(false);
+            return;
+          }
           throw new Error("Failed to upload image");
         }
 
         const blob = await uploadResponse.json();
         finalImageUrl = blob.url;
+        // Refresh storage status after successful upload
+        // アップロード成功後にストレージ状態を更新
+        fetchStorageStatus();
       }
       const endpoint = editingCard
         ? `/api/cards/${editingCard.id}`
@@ -374,6 +425,24 @@ export default function CardManager({
                   </div>
                 )}
 
+                {/* Storage limit warning */}
+                {/* ストレージ制限の警告 */}
+                {storageStatus?.uploadDisabled && storageStatus.message && (
+                  <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4 text-sm text-yellow-300">
+                    <p className="font-medium mb-2">アップロード機能が制限されています</p>
+                    <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
+                  </div>
+                )}
+
+                {/* Storage usage info */}
+                {/* ストレージ使用量の情報 */}
+                {storageStatus && !storageStatus.uploadDisabled && (
+                  <p className="text-xs text-gray-500">
+                    使用量: {storageStatus.userUsageFormatted} / {storageStatus.userLimitFormatted}
+                    （全体: {storageStatus.globalUsageFormatted} / {storageStatus.globalLimitFormatted}）
+                  </p>
+                )}
+
                 {/* Show file input when no confirmed image or user has modified the field */}
                 {/* 確定済み画像がないか、ユーザーが操作した場合にファイル入力を表示 */}
                 {(!confirmedImageUrl || userModifiedImage) && (
@@ -384,7 +453,12 @@ export default function CardManager({
                       accept="image/*"
                       ref={fileInputRef}
                       onChange={handleFileChange}
-                      className="w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-purple-700"
+                      disabled={storageStatus?.uploadDisabled}
+                      className={`w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
+                        storageStatus?.uploadDisabled
+                          ? 'opacity-50 cursor-not-allowed file:bg-gray-500'
+                          : 'file:bg-purple-600 hover:file:bg-purple-700'
+                      }`}
                     />
                     <p className="text-xs text-gray-500">
                       {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.FORMATS}{UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.MAX_SIZE((UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1) + 'MB')}
