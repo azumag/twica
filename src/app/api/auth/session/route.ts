@@ -4,8 +4,18 @@ import { parseSession } from '@/lib/session'
 import { logger } from '@/lib/logger'
 
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
 
 export async function GET(request: NextRequest) {
+  // Debug: log all cookies from request
+  const allCookies = request.cookies.getAll()
+  const cookieHeader = request.headers.get('cookie')
+  logger.info('Session API: Cookie debug', {
+    cookieHeaderPresent: !!cookieHeader,
+    cookieHeaderLength: cookieHeader?.length || 0,
+    cookiesFromRequest: allCookies.map(c => c.name),
+  })
+
   // Read session cookie directly from request
   const sessionCookie = request.cookies.get(COOKIE_NAMES.SESSION)?.value
 
