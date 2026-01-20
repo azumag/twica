@@ -34,6 +34,9 @@ export default function CardManager({
   // Separate state for confirmed image URL (only update on blur)
   // プレビュー表示用の確定済み画像URL（フォーカスが外れた時のみ更新）
   const [confirmedImageUrl, setConfirmedImageUrl] = useState("");
+  // Track if user has interacted with image field (to keep URL input visible)
+  // ユーザーが画像フィールドを操作したかどうか（URL入力欄を表示し続けるため）
+  const [userModifiedImage, setUserModifiedImage] = useState(true);
 
   // Delete image from Vercel Blob
   // Vercel Blobから画像を削除
@@ -74,6 +77,7 @@ export default function CardManager({
 
     setFormData({ ...formData, imageUrl: "" });
     setConfirmedImageUrl("");
+    setUserModifiedImage(true);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -88,6 +92,7 @@ export default function CardManager({
       dropRate: 0.25,
     });
     setConfirmedImageUrl("");
+    setUserModifiedImage(true);
     setEditingCard(null);
     setShowForm(false);
     setUploadError(null);
@@ -117,6 +122,9 @@ export default function CardManager({
       dropRate: card.drop_rate,
     });
     setConfirmedImageUrl(card.image_url || "");
+    // Hide URL input initially only when editing card with existing image
+    // 既存画像がある場合のみ、URL入力欄を初期状態で非表示
+    setUserModifiedImage(!card.image_url);
     setShowForm(true);
   };
 
@@ -350,9 +358,9 @@ export default function CardManager({
                   </div>
                 )}
 
-                {/* Show file input only when no confirmed image URL exists */}
-                {/* 確定済み画像URLがない場合のみファイル入力を表示 */}
-                {!confirmedImageUrl && (
+                {/* Show file input when no confirmed image or user has modified the field */}
+                {/* 確定済み画像がないか、ユーザーが操作した場合にファイル入力を表示 */}
+                {(!confirmedImageUrl || userModifiedImage) && (
                   <>
                     <input
                       type="file"
@@ -374,11 +382,12 @@ export default function CardManager({
                         setFormData({ ...formData, imageUrl: e.target.value })
                       }
                       onBlur={() => {
-                        // Only confirm URL on blur if it has a value
-                        // フォーカスが外れた時にURLを確定（値がある場合のみ）
+                        // Confirm URL on blur and mark as user modified
+                        // フォーカスが外れた時にURLを確定し、ユーザー操作フラグを設定
                         if (formData.imageUrl) {
                           setConfirmedImageUrl(formData.imageUrl);
                         }
+                        setUserModifiedImage(true);
                       }}
                       className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
                     />
