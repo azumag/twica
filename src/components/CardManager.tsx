@@ -93,6 +93,7 @@ export default function CardManager({
 
         const uploadResponse = await fetch("/api/upload", {
           method: "POST",
+          credentials: "include",
           body: formDataUpload,
         });
 
@@ -117,6 +118,7 @@ export default function CardManager({
       const response = await fetch(endpoint, {
         method,
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           streamerId,
           name: formData.name,
@@ -138,6 +140,11 @@ export default function CardManager({
       } else if (response.status === 429) {
         const errorData = await response.json();
         setUploadError(errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT);
+      } else {
+        // Handle other errors (403, 400, 401, etc.)
+        const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+        setUploadError(errorData.error || `エラーが発生しました (${response.status})`);
+        logger.error("Failed to save card:", errorData);
       }
     } catch (error) {
       logger.error("Failed to save card:", error);
