@@ -1,12 +1,22 @@
 import Link from "next/link";
 import { getSession } from "@/lib/session";
 import DevelopmentNotice from "@/components/DevelopmentNotice";
-import { TwitchLoginButton, TwitchLoginButtonWithIcon } from "@/components/TwitchLoginButton";
+import { TwitchLoginButtonWithIcon } from "@/components/TwitchLoginButton";
+import TopPageHeader from "@/components/TopPageHeader";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
   const session = await getSession();
+
+  // Prepare session data for client component (without sensitive info)
+  const sessionData = session ? {
+    twitchUserId: session.twitchUserId,
+    twitchUsername: session.twitchUsername,
+    twitchDisplayName: session.twitchDisplayName,
+    twitchProfileImageUrl: session.twitchProfileImageUrl,
+    broadcasterType: session.broadcasterType,
+  } : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-purple-900 via-purple-800 to-indigo-900">
@@ -14,27 +24,7 @@ export default async function Home() {
       <header className="container mx-auto px-4 py-6">
         <nav className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-white">TwiCa</h1>
-          {session ? (
-            <div className="flex items-center gap-4">
-              <span className="text-white">{session.twitchDisplayName}</span>
-              <Link
-                href="/dashboard"
-                className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
-              >
-                ダッシュボード
-              </Link>
-              <Link
-                href="/api/auth/logout"
-                className="rounded-lg border border-white/30 px-4 py-2 text-white hover:bg-white/10"
-              >
-                ログアウト
-              </Link>
-            </div>
-          ) : (
-            <TwitchLoginButton
-              className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
-            />
-          )}
+          <TopPageHeader initialSession={sessionData} />
         </nav>
       </header>
 

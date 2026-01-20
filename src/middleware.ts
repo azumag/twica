@@ -10,6 +10,15 @@ export async function middleware(request: NextRequest) {
   const response = await updateSession(request)
   setSecurityHeaders(response)
 
+  // Ensure pages with session-dependent content are never cached
+  // This is especially important for the top page which shows different content
+  // based on login state
+  if (pathname === '/' || pathname === '/dashboard') {
+    response.headers.set('Cache-Control', 'private, no-cache, no-store, max-age=0, must-revalidate')
+    response.headers.set('Pragma', 'no-cache')
+    response.headers.set('Expires', '0')
+  }
+
   if (pathname.startsWith('/api')) {
     const ip = getClientIp(request)
     const identifier = `global:${ip}`
