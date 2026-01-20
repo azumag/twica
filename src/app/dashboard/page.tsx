@@ -8,6 +8,7 @@ import RecentWins from "@/components/RecentWins";
 import Collection from "@/components/Collection";
 import DevelopmentNotice from "@/components/DevelopmentNotice";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
+import { setCSRFToken } from "@/lib/csrf";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,14 @@ export default async function DashboardPage() {
 
   if (!session) {
     return <TwitchLoginRedirect />;
+  }
+
+  // Pre-generate CSRF token for form submissions
+  // This ensures the token is available before any POST/PUT requests
+  try {
+    await setCSRFToken();
+  } catch {
+    // Ignore errors - token will be generated lazily if needed
   }
 
   const isStreamer = canUseStreamerFeatures(session);
