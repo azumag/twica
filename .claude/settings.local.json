@@ -58,7 +58,10 @@
       "Bash(npm test:*)",
       "Bash(npm run:*)",
       "Bash(gh issue close:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(brew install:*)",
+      "Bash(supabase --version:*)",
+      "Bash(npx supabase:*)"
     ]
   },
   "sandbox": {
