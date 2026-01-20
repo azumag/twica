@@ -68,7 +68,8 @@
       "Bash(xargs:*)",
       "Bash(npx vitest run)",
       "Bash(git diff:*)",
-      "Bash(vercel logs:*)"
+      "Bash(vercel logs:*)",
+      "Bash(npx vercel:*)"
     ]
   },
   "sandbox": {

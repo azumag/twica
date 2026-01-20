@@ -22,12 +22,17 @@ export class GachaService {
 
   async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string, eventId?: string): Promise<Result<GachaResult>> {
     try {
+      console.log('[GachaService] executeGacha called:', { streamerId, userTwitchId, userTwitchUsername, eventId })
+
       // Get active cards for this streamer
+      // このストリーマーの有効なカードを取得
       const { data: cards, error: cardsError } = await this.supabase
         .from('cards')
         .select('id, name, description, image_url, rarity, drop_rate')
         .eq('streamer_id', streamerId)
         .eq('is_active', true)
+
+      console.log('[GachaService] Cards query:', { cardsCount: cards?.length, error: cardsError?.message })
 
       if (cardsError) {
         return err(`Database error: ${cardsError.message}`)
@@ -38,13 +43,16 @@ export class GachaService {
       }
 
       // Select a card based on drop rates
+      // ドロップ率に基づいてカードを選択
       const selectedCard = selectWeightedCard(cards)
+      console.log('[GachaService] Selected card:', { cardId: selectedCard?.id, cardName: selectedCard?.name })
 
       if (!selectedCard) {
         return err('Failed to select card')
       }
 
       // Record gacha history (with idempotency using upsert)
+      // ガチャ履歴を記録（冪等性のためupsertを使用）
       const { error: historyError } = await this.supabase
         .from('gacha_history')
         .upsert({
@@ -58,16 +66,21 @@ export class GachaService {
           ignoreDuplicates: true,
         })
 
+      console.log('[GachaService] History upsert:', { error: historyError?.message })
+
       if (historyError) {
         return err(`Failed to record history: ${historyError.message}`)
       }
 
       // Check if user exists, if not create user
+      // ユーザーが存在するか確認、存在しなければ作成
       let { data: user } = await this.supabase
         .from('users')
         .select('id')
         .eq('twitch_user_id', userTwitchId)
         .single()
+
+      console.log('[GachaService] User lookup:', { found: !!user, userId: user?.id })
 
       if (!user) {
         const { data: newUser, error: createError } = await this.supabase
@@ -81,6 +94,8 @@ export class GachaService {
           })
           .select('id')
           .single()
+
+        console.log('[GachaService] User create:', { newUserId: newUser?.id, error: createError?.message })
 
         if (createError) {
           logger.warn('Failed to create user:', createError.message)
@@ -101,16 +116,20 @@ export class GachaService {
             ignoreDuplicates: true,
           })
 
+        console.log('[GachaService] Collection upsert:', { userId: user.id, cardId: selectedCard.id, error: collectionError?.message })
+
         if (collectionError) {
           logger.warn('Failed to add to collection:', collectionError.message)
         }
       }
 
+      console.log('[GachaService] executeGacha completed successfully')
       return ok({
         card: selectedCard,
         userTwitchUsername,
       })
     } catch (error) {
+      console.log('[GachaService] executeGacha error:', error)
       return err(`Unexpected error: ${error}`)
     }
   }
