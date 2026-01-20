@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import Link from 'next/link'
 import { TwitchLoginButton } from '@/components/TwitchLoginButton'
 
@@ -17,28 +17,10 @@ interface TopPageHeaderProps {
 }
 
 export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
-  const [session, setSession] = useState<SessionData | null>(initialSession)
-  const [isLoading, setIsLoading] = useState(!initialSession)
-
-  useEffect(() => {
-    // Always check session on client side to ensure it's up-to-date
-    // This handles the case where RSC prefetch returns stale data
-    const checkSession = async () => {
-      try {
-        const response = await fetch('/api/auth/session', {
-          credentials: 'include',
-        })
-        const data = await response.json()
-        setSession(data.session)
-      } catch (error) {
-        console.error('Failed to check session:', error)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-
-    checkSession()
-  }, [])
+  // Trust the server-side session data passed from RSC
+  // Don't re-fetch on client side as API routes have different cookie handling
+  const [session] = useState<SessionData | null>(initialSession)
+  const isLoading = false
 
   if (isLoading && !initialSession) {
     return (
