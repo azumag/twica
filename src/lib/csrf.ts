@@ -166,6 +166,7 @@ export async function validateCSRFToken(
   }
 
   let sessionTokenHash = session.csrfTokenHash
+  let generatedToken: string | null = null
 
   // If no CSRF token in session, generate one lazily (for first POST after OAuth)
   if (!sessionTokenHash) {
@@ -173,7 +174,7 @@ export async function validateCSRFToken(
       logger.info('Generating CSRF token lazily for first POST request', {
         userId: session.twitchUserId,
       })
-      await setCSRFToken()
+      generatedToken = await setCSRFToken()
       // Re-read session after generating token
       const updatedSessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
       if (!updatedSessionCookie) {
@@ -194,7 +195,8 @@ export async function validateCSRFToken(
   }
 
   // Cookieからトークンを取得（HttpOnly Cookie Pattern）
-  const requestToken = getCSRFTokenFromCookie(cookieStore)
+  // 遅延生成した場合は、同じリクエスト内ではCookieから読み取れないため、生成したトークンを使用
+  const requestToken = generatedToken || getCSRFTokenFromCookie(cookieStore)
 
   if (!requestToken || typeof requestToken !== 'string' || requestToken.trim() === '') {
     logger.warn('CSRF validation failed: CSRF token missing or invalid in cookie', {

@@ -67,6 +67,9 @@ export function validateCardDescription(description: unknown): { valid: boolean;
   return { valid: true }
 }
 
+// Allowed image extensions for external URLs
+const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png']
+
 export function validateImageUrl(imageUrl: unknown): { valid: boolean; error?: string } {
   if (imageUrl === null || imageUrl === undefined) {
     return { valid: true }
@@ -76,8 +79,32 @@ export function validateImageUrl(imageUrl: unknown): { valid: boolean; error?: s
     return { valid: false, error: ERROR_MESSAGES.INVALID_IMAGE_URL }
   }
 
+  // Empty string is allowed (means no image)
+  if (imageUrl.trim() === '') {
+    return { valid: true }
+  }
+
   try {
-    new URL(imageUrl)
+    const url = new URL(imageUrl)
+
+    // Only allow HTTPS protocol
+    if (url.protocol !== 'https:') {
+      return { valid: false, error: ERROR_MESSAGES.INVALID_IMAGE_URL }
+    }
+
+    // Check file extension (jpg, jpeg, png only)
+    const pathname = url.pathname.toLowerCase()
+    const hasValidExtension = ALLOWED_IMAGE_EXTENSIONS.some((ext) =>
+      pathname.endsWith(ext)
+    )
+
+    if (!hasValidExtension) {
+      return { valid: false, error: ERROR_MESSAGES.INVALID_IMAGE_URL }
+    }
+
+    // TODO: Future enhancement - validate that the URL actually returns an image
+    // by checking Content-Type header or fetching and validating magic bytes
+
     return { valid: true }
   } catch {
     return { valid: false, error: ERROR_MESSAGES.INVALID_IMAGE_URL }

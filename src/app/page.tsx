@@ -3,6 +3,8 @@ import { getSession } from "@/lib/session";
 import DevelopmentNotice from "@/components/DevelopmentNotice";
 import { TwitchLoginButton, TwitchLoginButtonWithIcon } from "@/components/TwitchLoginButton";
 
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   const session = await getSession();
 
