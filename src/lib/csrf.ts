@@ -155,7 +155,7 @@ export async function validateCSRFToken(
       ip: await hashIP(request.headers.get('x-forwarded-for')),
       userAgent: request.headers.get('user-agent'),
     })
-    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    return { valid: false, error: 'セッションが見つかりません。再度ログインしてください。' }
   }
 
   const session = parseSession(sessionCookie)
@@ -164,7 +164,7 @@ export async function validateCSRFToken(
     logger.warn('CSRF validation failed: Session expired', {
       userId: session.twitchUserId,
     })
-    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    return { valid: false, error: 'セッションの有効期限が切れました。再度ログインしてください。' }
   }
 
   let sessionTokenHash = session.csrfTokenHash
@@ -204,8 +204,9 @@ export async function validateCSRFToken(
     logger.warn('CSRF validation failed: CSRF token missing or invalid in cookie', {
       userId: session.twitchUserId,
       endpoint: sanitizeURL(request.url),
+      hasSessionTokenHash: !!sessionTokenHash,
     })
-    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    return { valid: false, error: 'CSRFトークンがCookieに見つかりません。ページを再読み込みしてください。' }
   }
 
   // Originヘッダーの検証（多層防御として）
@@ -237,7 +238,7 @@ export async function validateCSRFToken(
 
   if (origin && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(origin)) {
     const isLocal = CSRF_CONFIG.ALLOW_LOCAL_ORIGINS && isLocalOrigin(origin)
-    
+
     if (!isLocal) {
       logger.warn('CSRF validation failed: Origin header not in allowed list', {
         userId: session.twitchUserId,
@@ -246,7 +247,7 @@ export async function validateCSRFToken(
         allowLocalOrigins: CSRF_CONFIG.ALLOW_LOCAL_ORIGINS,
         endpoint: sanitizeURL(request.url),
       })
-      return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+      return { valid: false, error: `Originヘッダーが許可リストにありません: ${origin}` }
     }
   }
 
@@ -277,8 +278,10 @@ export async function validateCSRFToken(
   if (requestToken.length !== CSRF_CONFIG.TOKEN_LENGTH * 2) {
     logger.warn('CSRF validation failed: Invalid token length', {
       userId: session.twitchUserId,
+      expectedLength: CSRF_CONFIG.TOKEN_LENGTH * 2,
+      actualLength: requestToken.length,
     })
-    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    return { valid: false, error: 'CSRFトークンの長さが不正です。ページを再読み込みしてください。' }
   }
 
   // ハッシュを比較
@@ -289,7 +292,7 @@ export async function validateCSRFToken(
     logger.warn('CSRF validation failed: Hash length mismatch', {
       userId: session.twitchUserId,
     })
-    return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+    return { valid: false, error: 'CSRFトークンのハッシュ長が一致しません。' }
   }
 
   try {
@@ -322,7 +325,7 @@ export async function validateCSRFToken(
         userId: session.twitchUserId,
       })
 
-      return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
+      return { valid: false, error: 'CSRFトークンが一致しません。ページを再読み込みして再度お試しください。' }
     }
 
     return { valid: true }

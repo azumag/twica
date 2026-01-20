@@ -22,7 +22,7 @@ export async function PUT(
   const csrfValidation = await validateCSRFToken(request)
   if (!csrfValidation.valid) {
     return NextResponse.json(
-      { error: ERROR_MESSAGES.FORBIDDEN },
+      { error: csrfValidation.error || ERROR_MESSAGES.FORBIDDEN, code: 'CSRF_VALIDATION_FAILED' },
       { status: 403 }
     )
   }
@@ -166,7 +166,7 @@ export async function DELETE(
   const csrfValidation = await validateCSRFToken(request)
   if (!csrfValidation.valid) {
     return NextResponse.json(
-      { error: ERROR_MESSAGES.FORBIDDEN },
+      { error: csrfValidation.error || ERROR_MESSAGES.FORBIDDEN, code: 'CSRF_VALIDATION_FAILED' },
       { status: 403 }
     )
   }
