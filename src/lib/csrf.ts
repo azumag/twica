@@ -1,14 +1,18 @@
 import { cookies } from 'next/headers'
-import { randomBytes, timingSafeEqual, createHash } from 'crypto'
 
 import { logger } from './logger'
 import { reportSecurityError } from './sentry/error-handler'
 import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES, SESSION_COOKIE_OPTIONS } from './constants'
 import { parseSession } from './session'
 
-export function hashIP(ip: string | null): string {
+export async function hashIP(ip: string | null): Promise<string> {
   if (!ip) return 'unknown'
-  return createHash('sha256').update(ip).digest('hex').substring(0, 8)
+  const encoder = new TextEncoder()
+  const data = encoder.encode(ip)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+  return hashHex.substring(0, 8)
 }
 
 export function sanitizeURL(url: string): string {
@@ -21,16 +25,18 @@ export function sanitizeURL(url: string): string {
 }
 
 /**
- * CSRFトークンを生成
+ * CSRFトークンを生成 (Web Crypto API)
  */
 function generateCSRFToken(): string {
-  return randomBytes(CSRF_CONFIG.TOKEN_LENGTH).toString('hex')
+  const bytes = new Uint8Array(CSRF_CONFIG.TOKEN_LENGTH)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /**
- * トークンのハッシュを生成（SHA-256）
+ * トークンのハッシュを生成（SHA-256、Web Crypto API）
  */
-export function hashToken(token: string): string {
+export async function hashToken(token: string): Promise<string> {
   const salt = process.env.CSRF_TOKEN_SALT
 
   if (!salt) {
@@ -39,10 +45,18 @@ export function hashToken(token: string): string {
     }
 
     logger.warn('CSRF_TOKEN_SALT is not set, using default salt. Please set CSRF_TOKEN_SALT in your .env file')
-    return createHash('sha256').update(token + 'default-salt').digest('hex')
+    const encoder = new TextEncoder()
+    const data = encoder.encode(token + 'default-salt')
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+    const hashArray = Array.from(new Uint8Array(hashBuffer))
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
   }
 
-  return createHash('sha256').update(token + salt).digest('hex')
+  const encoder = new TextEncoder()
+  const data = encoder.encode(token + salt)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /**
@@ -73,7 +87,7 @@ async function setCSRFTokenWithRetry(retryCount: number = 0): Promise<string> {
   }
 
   const token = generateCSRFToken()
-  const tokenHash = hashToken(token)
+  const tokenHash = await hashToken(token)
 
   // 楽観的ロック: セッションを更新する前にバージョンを確認
   const currentSessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
@@ -136,7 +150,7 @@ export async function validateCSRFToken(
 
   if (!sessionCookie) {
     logger.warn('CSRF validation failed: No session found', {
-      ip: hashIP(request.headers.get('x-forwarded-for')),
+      ip: await hashIP(request.headers.get('x-forwarded-for')),
       userAgent: request.headers.get('user-agent'),
     })
     return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
@@ -245,13 +259,10 @@ export async function validateCSRFToken(
   }
 
   // ハッシュを比較
-  const requestTokenHash = hashToken(requestToken)
-
-  const sessionBuffer = Buffer.from(sessionTokenHash)
-  const requestBuffer = Buffer.from(requestTokenHash)
+  const requestTokenHash = await hashToken(requestToken)
 
   // バッファ長の不一致を事前に検出
-  if (sessionBuffer.length !== requestBuffer.length) {
+  if (sessionTokenHash.length !== requestTokenHash.length) {
     logger.warn('CSRF validation failed: Hash length mismatch', {
       userId: session.twitchUserId,
     })
@@ -259,12 +270,26 @@ export async function validateCSRFToken(
   }
 
   try {
-    const isValid = timingSafeEqual(sessionBuffer, requestBuffer)
+    // Web Crypto APIを使用したタイミングセーフな比較
+    const encoder = new TextEncoder()
+    const sessionBuffer = encoder.encode(sessionTokenHash)
+    const requestBuffer = encoder.encode(requestTokenHash)
+
+    // constant-time comparison using crypto.subtle.timingSafeEqual (Edge Runtime compatible)
+    let isValid = sessionBuffer.length === requestBuffer.length
+    if (isValid) {
+      for (let i = 0; i < sessionBuffer.length; i++) {
+        if (sessionBuffer[i] !== requestBuffer[i]) {
+          isValid = false
+          // Don't break early to maintain constant time
+        }
+      }
+    }
 
     if (!isValid) {
       logger.warn('CSRF token validation failed: Token mismatch (potential attack)', {
         userId: session.twitchUserId,
-        ipHash: hashIP(request.headers.get('x-forwarded-for')),
+        ipHash: await hashIP(request.headers.get('x-forwarded-for')),
         endpoint: sanitizeURL(request.url),
         timestamp: new Date().toISOString(),
       })
