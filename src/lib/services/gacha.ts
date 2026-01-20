@@ -126,22 +126,51 @@ export class GachaService {
     eventId?: string
   ): Promise<Result<GachaResult>> {
     try {
+      // Debug: Log event details for troubleshooting
+      // デバッグ用：トラブルシューティングのためイベント詳細をログ出力
+      console.log('[GachaService] executeGachaForEventSub called:', {
+        broadcaster_user_id: event.broadcaster_user_id,
+        user_id: event.user_id,
+        reward_id: event.reward?.id,
+        eventId,
+      })
+
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
         .select('id, channel_point_reward_id')
         .eq('twitch_user_id', event.broadcaster_user_id)
         .single()
 
+      // Debug: Log streamer lookup result
+      // デバッグ用：ストリーマー検索結果をログ出力
+      console.log('[GachaService] Streamer lookup:', {
+        found: !!streamer,
+        streamer_id: streamer?.id,
+        db_reward_id: streamer?.channel_point_reward_id,
+        event_reward_id: event.reward?.id,
+        error: streamerError?.message,
+      })
+
       if (streamerError || !streamer) {
         return err('Streamer not found')
       }
 
       if (streamer.channel_point_reward_id !== event.reward.id) {
+        // Debug: Log reward ID mismatch details
+        // デバッグ用：リワードID不一致の詳細をログ出力
+        console.log('[GachaService] Reward ID mismatch:', {
+          db_reward_id: streamer.channel_point_reward_id,
+          event_reward_id: event.reward.id,
+          db_reward_id_type: typeof streamer.channel_point_reward_id,
+          event_reward_id_type: typeof event.reward.id,
+        })
         return err('Reward ID mismatch')
       }
 
+      console.log('[GachaService] Reward ID matched, executing gacha...')
       return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
     } catch (error) {
+      console.log('[GachaService] Unexpected error:', error)
       return err(`Unexpected error: ${error}`)
     }
   }
