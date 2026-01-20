@@ -141,7 +141,8 @@ export async function GET(request: NextRequest) {
 
     // Create redirect response and set cookies on the response object
     // This ensures Set-Cookie headers are included in the redirect response
-    const redirectResponse = NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
+    // Temporarily redirect to top page to test if cookie is set correctly
+    const redirectResponse = NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/`)
 
     // Set session cookie on the redirect response
     redirectResponse.cookies.set(COOKIE_NAMES.SESSION, sessionData, {
