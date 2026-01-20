@@ -6,15 +6,19 @@ import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
+import { getBaseUrl } from '@/lib/url-utils'
 
 export async function GET(request: NextRequest) {
+  // 開発環境ではリクエストのホストから動的にベースURLを取得
+  const baseUrl = getBaseUrl(request)
+
   const ip = getClientIp(request);
   const identifier = `ip:${ip}`;
   const rateLimitResult = await checkRateLimit(rateLimits.authCallback, identifier);
 
   if (!rateLimitResult.success) {
     return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)}`
+      `${baseUrl}/?error=${encodeURIComponent(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)}`
     );
   }
 
@@ -25,7 +29,7 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(error)}`
+      `${baseUrl}/?error=${encodeURIComponent(error)}`
     )
   }
 
@@ -51,7 +55,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const supabaseAdmin = getSupabaseAdmin()
-    const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`
+    // Twitchへのトークン交換リクエストでは、元のリダイレクトURIと一致する必要がある
+    const redirectUri = `${baseUrl}/api/auth/twitch/callback`
     
     let tokens
     try {
@@ -139,11 +144,12 @@ export async function GET(request: NextRequest) {
       twitchUserId: twitchUser.id,
     })
 
-    const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
+    const redirectUrl = `${baseUrl}/dashboard`
 
     logger.info('Auth callback: Redirecting with session cookie', {
       twitchUserId: twitchUser.id,
       redirectUrl,
+      baseUrl,
     })
 
     // Create redirect response with cookies

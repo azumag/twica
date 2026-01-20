@@ -163,9 +163,15 @@ export const CSRF_CONFIG = {
         origins.push(`https://${process.env.VERCEL_BRANCH_URL}`)
       }
 
+      // 開発環境では localhost と 127.0.0.1 を追加
+      // NEXT_PUBLIC_APP_URL が ngrok 等の外部 URL でも localhost でアクセスできるようにする
       if (process.env.NODE_ENV === 'development') {
         origins.push(`http://127.0.0.1:${port}`)
         origins.push(`http://[::1]:${port}`)
+        // localhost も追加（ポート 3000, 3001 など一般的なポート）
+        origins.push('http://localhost:3000')
+        origins.push('http://localhost:3001')
+        origins.push(`http://localhost:${port}`)
       }
     } catch (error) {
       logger.warn('Failed to parse NEXT_PUBLIC_APP_URL for CSRF origins:', error)

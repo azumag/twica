@@ -62,7 +62,12 @@
       "Bash(brew install:*)",
       "Bash(supabase --version:*)",
       "Bash(npx supabase:*)",
-      "Bash(~/git-push-claude.sh)"
+      "Bash(~/git-push-claude.sh)",
+      "Bash(npx vercel logs:*)",
+      "Bash(wc:*)",
+      "Bash(xargs:*)",
+      "Bash(npx vitest run)",
+      "Bash(git diff:*)"
     ]
   },
   "sandbox": {

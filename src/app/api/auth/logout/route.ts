@@ -7,8 +7,12 @@ import { ERROR_MESSAGES } from '@/lib/constants'
 import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
 import { clearCSRFToken, validateCSRFToken } from '@/lib/csrf'
 import { logger } from '@/lib/logger'
+import { getBaseUrl } from '@/lib/url-utils'
 
 export async function POST(request: Request) {
+  // 開発環境ではリクエストのホストから動的にベースURLを取得
+  const baseUrl = getBaseUrl(request)
+
   try {
     const csrfValidation = await validateCSRFToken(request)
     if (!csrfValidation.valid) {
@@ -47,13 +51,16 @@ export async function POST(request: Request) {
 
     await clearSession()
     await clearCSRFToken()
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/`)
+    return NextResponse.redirect(`${baseUrl}/`)
   } catch (error) {
     return handleApiError(error, "Auth Logout API: POST")
   }
 }
 
 export async function GET(request: Request) {
+  // 開発環境ではリクエストのホストから動的にベースURLを取得
+  const baseUrl = getBaseUrl(request)
+
   try {
     const session = await getSession();
 
@@ -61,7 +68,7 @@ export async function GET(request: Request) {
     const rateLimitResult = await checkRateLimit(rateLimits.authLogout, identifier);
 
     if (!rateLimitResult.success) {
-      return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)}`)
+      return NextResponse.redirect(`${baseUrl}/?error=${encodeURIComponent(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)}`)
     }
 
     if (session) {
@@ -75,7 +82,7 @@ export async function GET(request: Request) {
 
     await clearSession()
     await clearCSRFToken()
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/`)
+    return NextResponse.redirect(`${baseUrl}/`)
   } catch (error) {
     return handleApiError(error, "Auth Logout API: GET")
   }

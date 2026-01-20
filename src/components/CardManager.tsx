@@ -153,18 +153,49 @@ export default function CardManager({
     }
   };
 
+  // 配布一時停止/再開のトグル
+  const handleToggleActive = async (card: Card) => {
+    const newIsActive = !card.is_active;
+    const originalCards = cards;
+
+    try {
+      // Optimistic update
+      setCards(cards.map((c) => c.id === card.id ? { ...c, is_active: newIsActive } : c));
+
+      const response = await fetch(`/api/cards/${card.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ isActive: newIsActive }),
+      });
+
+      if (!response.ok) {
+        // Revert on error
+        setCards(originalCards);
+        const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+        alert(`操作に失敗しました: ${errorData.error}`);
+        logger.error("Toggle active failed:", errorData);
+      }
+    } catch (error) {
+      setCards(originalCards);
+      logger.error("Failed to toggle card active:", error);
+      alert("ネットワークエラーが発生しました");
+    }
+  };
+
+  // 全体削除（手持ちからも削除）
   const handleDelete = async (cardId: string) => {
-    if (!confirm(UI_STRINGS.CARD_MANAGER.CONFIRMATIONS.DELETE_CARD)) return;
+    if (!confirm("このカードを完全に削除しますか？\n\n⚠️ 既にこのカードを持っているユーザーの手持ちからも削除されます。")) return;
 
     const originalCards = cards;
     try {
       // Optimistic update: remove from UI immediately
       setCards(cards.filter((c) => c.id !== cardId));
 
-const response = await fetch(`/api/cards/${cardId}`, {
-          method: "DELETE",
-          credentials: "include",
-        });
+      const response = await fetch(`/api/cards/${cardId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
 
       if (!response.ok) {
         if (response.status === 429) {
@@ -341,57 +372,78 @@ const response = await fetch(`/api/cards/${cardId}`, {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {cards.map((card) => {
             const rarityInfo = getRarityInfo(card.rarity);
+            const isPaused = !card.is_active;
             return (
               <div
                 key={card.id}
-                className="group relative overflow-hidden rounded-lg bg-gray-700"
+                className={`group relative overflow-hidden rounded-lg bg-gray-700 ${isPaused ? 'opacity-60' : ''}`}
               >
-                <div className="aspect-[3/4] bg-gray-600">
-                  {card.image_url ? (
-          <Image
-            src={card.image_url || "/placeholder.png"}
-            alt={card.name}
-            width={200}
-            height={200}
-            className="w-full h-48 object-cover rounded mb-2"
-          />
-                   ) : (
-                     <div className="flex h-full items-center justify-center text-gray-500">
-                       {UI_STRINGS.CARD_MANAGER.MESSAGES.NO_IMAGE}
-                     </div>
-                   )}
-                </div>
-                <div className="p-4">
-                  <div className="mb-2 flex items-center justify-between">
-                    <h3 className="font-semibold text-white">{card.name}</h3>
+                {/* 一時停止中バッジ */}
+                {isPaused && (
+                  <div className="absolute top-0 left-0 right-0 bg-yellow-600 text-white text-xs text-center py-1 z-10">
+                    配布停止中
+                  </div>
+                )}
+                {/* 名前とレアリティを一番上に配置 */}
+                <div className={`p-3 pb-2 ${isPaused ? 'pt-8' : ''}`}>
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-white truncate">{card.name}</h3>
                     <span
-                      className={`rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.color}`}
+                      className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
                     >
                       {rarityInfo.label}
                     </span>
-                   </div>
-                   <p className="mb-2 text-sm text-gray-400">
-                     {UI_STRINGS.CARD_MANAGER.MESSAGES.PROBABILITY} {(card.drop_rate * 100).toFixed(1)}%
-                   </p>
-                  {card.description && (
+                  </div>
+                </div>
+                {/* 正方形画像（トリミング） */}
+                <div className="aspect-square bg-gray-600">
+                  {card.image_url ? (
+                    <Image
+                      src={card.image_url}
+                      alt={card.name}
+                      width={300}
+                      height={300}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-gray-500">
+                      {UI_STRINGS.CARD_MANAGER.MESSAGES.NO_IMAGE}
+                    </div>
+                  )}
+                </div>
+                {/* 説明は画像の下 */}
+                {card.description && (
+                  <div className="p-3 pt-2">
                     <p className="text-sm text-gray-300 line-clamp-2">
                       {card.description}
                     </p>
-                  )}
-                </div>
-                <div className="absolute right-2 top-2 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
-                   <button
-                     onClick={() => handleEdit(card)}
-                     className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
-                   >
-                     {UI_STRINGS.CARD_MANAGER.BUTTONS.EDIT}
-                   </button>
-                   <button
-                     onClick={() => handleDelete(card.id)}
-                     className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
-                   >
-                     {UI_STRINGS.CARD_MANAGER.BUTTONS.DELETE}
-                   </button>
+                  </div>
+                )}
+                {/* 操作ボタン */}
+                <div className="p-3 pt-0 flex gap-2 flex-wrap">
+                  {/* 配布停止/再開ボタン */}
+                  <button
+                    onClick={() => handleToggleActive(card)}
+                    className={`rounded px-2 py-1 text-xs text-white ${
+                      isPaused
+                        ? 'bg-green-600 hover:bg-green-700'
+                        : 'bg-yellow-600 hover:bg-yellow-700'
+                    }`}
+                  >
+                    {isPaused ? '配布再開' : '配布停止'}
+                  </button>
+                  <button
+                    onClick={() => handleEdit(card)}
+                    className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
+                  >
+                    {UI_STRINGS.CARD_MANAGER.BUTTONS.EDIT}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(card.id)}
+                    className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
+                  >
+                    完全削除
+                  </button>
                 </div>
               </div>
             );

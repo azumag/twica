@@ -38,12 +38,13 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
         >
           ダッシュボード
         </Link>
-        <Link
+        {/* API エンドポイントには Link ではなく通常の a タグを使用 */}
+        <a
           href="/api/auth/logout"
           className="rounded-lg border border-white/30 px-4 py-2 text-white hover:bg-white/10"
         >
           ログアウト
-        </Link>
+        </a>
       </div>
     )
   }

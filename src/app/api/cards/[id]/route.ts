@@ -58,7 +58,7 @@ export async function PUT(
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate } = body;
+    const { name, description, imageUrl, rarity, dropRate, isActive } = body;
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -136,15 +136,18 @@ export async function PUT(
       );
     }
 
+    // 更新するフィールドを動的に構築（undefined のフィールドは更新しない）
+    const updateData: Record<string, unknown> = {};
+    if (name !== undefined) updateData.name = name;
+    if (description !== undefined) updateData.description = description;
+    if (imageUrl !== undefined) updateData.image_url = imageUrl;
+    if (rarity !== undefined) updateData.rarity = rarity;
+    if (dropRate !== undefined) updateData.drop_rate = dropRate;
+    if (isActive !== undefined) updateData.is_active = isActive;
+
     const { data: updatedCard, error } = await supabaseAdmin
       .from("cards")
-      .update({
-        name,
-        description,
-        image_url: imageUrl,
-        rarity,
-        drop_rate: dropRate,
-      })
+      .update(updateData)
       .eq("id", id)
       .select()
       .single();

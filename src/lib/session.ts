@@ -79,6 +79,12 @@ export async function getSession(): Promise<Session | null> {
   const cookieStore = await cookies()
   const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
 
+  // Debug: Log cookie presence
+  logger.info('[Session] getSession called', {
+    hasCookie: !!sessionCookie,
+    cookieLength: sessionCookie?.length || 0,
+  })
+
   if (!sessionCookie) {
     return null
   }
@@ -86,7 +92,16 @@ export async function getSession(): Promise<Session | null> {
   try {
     const session = parseSession(sessionCookie)
 
+    // Debug: Log session expiration check
+    logger.info('[Session] Checking expiration', {
+      expiresAt: session.expiresAt,
+      now: Date.now(),
+      isExpired: Date.now() > session.expiresAt,
+      timeUntilExpiry: session.expiresAt - Date.now(),
+    })
+
     if (session.expiresAt && Date.now() > session.expiresAt) {
+      logger.warn('[Session] Session expired, clearing')
       await clearSession();
       try {
         const { clearCSRFToken } = await import('./csrf')
@@ -110,6 +125,12 @@ export function canUseStreamerFeatures(session: Session | null): boolean {
 }
 
 export async function clearSession(): Promise<void> {
+  // Debug: Log stack trace to find who is calling clearSession
+  const stack = new Error().stack
+  logger.warn('[Session] clearSession called', {
+    stack: stack?.split('\n').slice(1, 5).join(' | '),
+  })
+
   const cookieStore = await cookies()
   // ドメイン設定されたCookieを確実に削除するため、maxAge=0で上書き
   cookieStore.set(COOKIE_NAMES.SESSION, '', getDeleteCookieOptions())

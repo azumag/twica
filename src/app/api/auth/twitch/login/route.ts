@@ -7,12 +7,13 @@ import { randomUUID } from 'crypto'
 import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS } from '@/lib/constants'
+import { getBaseUrl } from '@/lib/url-utils'
 
 export async function GET(request: Request) {
   const requestId = randomUUID()
   setRequestContext(requestId, '/api/auth/twitch/login')
   clearUserContext()
-  
+
   try {
     const ip = getClientIp(request);
     const identifier = `ip:${ip}`;
@@ -32,7 +33,10 @@ export async function GET(request: Request) {
       );
     }
 
-    const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/twitch/callback`
+    // 開発環境ではリクエストのホストから動的にベースURLを取得
+    // 本番環境では NEXT_PUBLIC_APP_URL を使用
+    const baseUrl = getBaseUrl(request)
+    const redirectUri = `${baseUrl}/api/auth/twitch/callback`
 
     // Generate state for CSRF protection
     const state = randomUUID()

@@ -36,12 +36,13 @@ export default function Header({ session }: HeaderProps) {
               </span>
             )}
           </div>
-          <Link
+          {/* API エンドポイントには Link ではなく通常の a タグを使用 */}
+          <a
             href="/api/auth/logout"
             className="rounded-lg border border-gray-700 px-4 py-2 text-gray-300 hover:bg-gray-800"
           >
             {UI_STRINGS.AUTH.LOGOUT}
-          </Link>
+          </a>
         </div>
       </div>
     </header>
