@@ -30,6 +30,50 @@ export default function CardManager({
   });
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [deletingImage, setDeletingImage] = useState(false);
+
+  // Delete image from Vercel Blob
+  // Vercel Blobから画像を削除
+  const deleteImage = async (url: string): Promise<boolean> => {
+    try {
+      const response = await fetch("/api/upload/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ url }),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  // Handle image removal in edit mode
+  // 編集モードでの画像削除処理
+  const handleRemoveImage = async () => {
+    if (!formData.imageUrl) return;
+
+    // Only delete from Blob if it's a Vercel Blob URL
+    // Vercel BlobのURLの場合のみBlobから削除
+    const isBlobUrl = formData.imageUrl.includes("blob.vercel-storage.com") ||
+                      formData.imageUrl.includes("public.blob.vercel-storage.com");
+
+    if (isBlobUrl) {
+      setDeletingImage(true);
+      const deleted = await deleteImage(formData.imageUrl);
+      setDeletingImage(false);
+
+      if (!deleted) {
+        setUploadError("画像の削除に失敗しました");
+        return;
+      }
+    }
+
+    setFormData({ ...formData, imageUrl: "" });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
 
   const resetForm = () => {
     setFormData({
@@ -266,30 +310,64 @@ export default function CardManager({
                 {UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE}
               </label>
               <div className="space-y-2">
-                <input
-                  type="file"
-                  name="image"
-                  accept="image/*"
-                  ref={fileInputRef}
-                  onChange={handleFileChange}
-                  className="w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-purple-700"
-                />
-                {uploadError && (
-                  <p className="text-sm text-red-400">{uploadError}</p>
+                {/* Show current image preview and delete button when editing */}
+                {/* 編集時は現在の画像プレビューと削除ボタンを表示 */}
+                {editingCard && formData.imageUrl && (
+                  <div className="flex items-center gap-3 rounded-lg bg-gray-600 p-3">
+                    <Image
+                      src={formData.imageUrl}
+                      alt="現在の画像"
+                      width={60}
+                      height={60}
+                      className="rounded object-cover"
+                    />
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-300">現在の画像</p>
+                      <p className="text-xs text-gray-500 truncate max-w-[200px]">
+                        {formData.imageUrl.split('/').pop()}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRemoveImage}
+                      disabled={deletingImage}
+                      className="rounded bg-red-500 px-3 py-1 text-sm text-white hover:bg-red-600 disabled:opacity-50"
+                    >
+                      {deletingImage ? "削除中..." : "画像を削除"}
+                    </button>
+                  </div>
                 )}
-                <p className="text-xs text-gray-500">
-                  {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.FORMATS}{UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.MAX_SIZE((UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1) + 'MB')}
-                </p>
-                <input
-                  type="url"
-                  name="imageUrl"
-                  placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE_URL_PLACEHOLDER}
-                  value={formData.imageUrl}
-                  onChange={(e) =>
-                    setFormData({ ...formData, imageUrl: e.target.value })
-                  }
-                  className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
-                />
+
+                {/* Show file input only when no image is set (or after deletion) */}
+                {/* 画像が設定されていない場合（または削除後）のみファイル入力を表示 */}
+                {(!editingCard || !formData.imageUrl) && (
+                  <>
+                    <input
+                      type="file"
+                      name="image"
+                      accept="image/*"
+                      ref={fileInputRef}
+                      onChange={handleFileChange}
+                      className="w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-purple-700"
+                    />
+                    {uploadError && (
+                      <p className="text-sm text-red-400">{uploadError}</p>
+                    )}
+                    <p className="text-xs text-gray-500">
+                      {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.FORMATS}{UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.MAX_SIZE((UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1) + 'MB')}
+                    </p>
+                    <input
+                      type="url"
+                      name="imageUrl"
+                      placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE_URL_PLACEHOLDER}
+                      value={formData.imageUrl}
+                      onChange={(e) =>
+                        setFormData({ ...formData, imageUrl: e.target.value })
+                      }
+                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                    />
+                  </>
+                )}
               </div>
             </div>
             <div>
