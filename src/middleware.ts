@@ -2,9 +2,6 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setSecurityHeaders } from '@/lib/security-headers'
-import { validateCSRFToken } from '@/lib/csrf'
-import { ERROR_MESSAGES } from '@/lib/constants'
-import { logger } from '@/lib/logger'
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
@@ -47,40 +44,9 @@ export async function middleware(request: NextRequest) {
       return response
     }
 
-    const safeMethods = ['GET', 'HEAD', 'OPTIONS']
-    if (safeMethods.includes(method)) {
-      return response
-    }
-
-    try {
-      const validation = await validateCSRFToken(request)
-
-      if (!validation.valid) {
-        logger.error('CSRF validation failed in middleware', {
-          url: request.url,
-          method: request.method,
-          error: validation.error,
-        })
-        return NextResponse.json(
-          { error: ERROR_MESSAGES.FORBIDDEN },
-          { status: 403 }
-        )
-      }
-
-      return response
-    } catch (error) {
-      logger.error('CSRF middleware error', {
-        url: request.url,
-        method: request.method,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : undefined,
-      })
-
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.INTERNAL_ERROR },
-        { status: 500 }
-      )
-    }
+    // CSRF validation is handled in individual route handlers
+    // Middleware runs in Edge Runtime where cookies() is not available
+    return response
   }
 
   return response
