@@ -151,12 +151,31 @@ export async function GET(request: NextRequest) {
     const response = NextResponse.redirect(redirectUrl)
 
     // Set session cookie on the response
+    // Extract domain from APP_URL for cookie domain setting
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
+    let cookieDomain: string | undefined = undefined
+    try {
+      const url = new URL(appUrl)
+      // Only set domain for non-localhost hosts
+      if (!url.hostname.includes('localhost') && !url.hostname.includes('127.0.0.1')) {
+        cookieDomain = url.hostname
+      }
+    } catch {
+      // If URL parsing fails, don't set domain
+    }
+
+    logger.info('Auth callback: Setting cookie with domain', {
+      cookieDomain,
+      appUrl,
+    })
+
     response.cookies.set(COOKIE_NAMES.SESSION, sessionData, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
       maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+      ...(cookieDomain && { domain: cookieDomain }),
     })
 
     // Clear state cookie
