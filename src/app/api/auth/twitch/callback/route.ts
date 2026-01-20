@@ -141,57 +141,14 @@ export async function GET(request: NextRequest) {
 
     const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
 
-    logger.info('Auth callback: Returning HTML page with cookie and redirect', {
+    logger.info('Auth callback: Redirecting with session cookie', {
       twitchUserId: twitchUser.id,
       redirectUrl,
     })
 
-    // Return an HTML page that sets the cookie and redirects
-    // This approach ensures the cookie is properly set by the browser before navigation
-    const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>ログイン完了</title>
-  <style>
-    body {
-      background: #1a1a2e;
-      color: white;
-      font-family: sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-    }
-    .container {
-      text-align: center;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <p>ログイン完了</p>
-    <p>リダイレクト中...</p>
-  </div>
-  <script>
-    // Redirect after a short delay to ensure cookie is set
-    setTimeout(function() {
-      window.location.href = '${redirectUrl}';
-    }, 100);
-  </script>
-</body>
-</html>
-`
-
-    // Create response with HTML and set cookies
-    const response = new NextResponse(html, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-      },
-    })
+    // Create redirect response with cookies
+    // Use 302 redirect with explicit Set-Cookie header
+    const response = NextResponse.redirect(redirectUrl)
 
     // Set session cookie on the response
     response.cookies.set(COOKIE_NAMES.SESSION, sessionData, {
@@ -205,7 +162,12 @@ export async function GET(request: NextRequest) {
     // Clear state cookie
     response.cookies.delete('twitch_auth_state')
 
-    // Note: CSRF token will be generated automatically on first POST request
+    // Log the Set-Cookie header for debugging
+    const setCookieHeader = response.headers.get('Set-Cookie')
+    logger.info('Auth callback: Set-Cookie header', {
+      hasCookieHeader: !!setCookieHeader,
+      cookieHeaderLength: setCookieHeader?.length || 0,
+    })
 
     return response
   } catch (error) {

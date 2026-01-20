@@ -11,6 +11,8 @@ import Collection from "@/components/Collection";
 import DevelopmentNotice from "@/components/DevelopmentNotice";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
 
+export const dynamic = "force-dynamic";
+
 interface CardWithDetails extends Card {
   streamer: Streamer;
   count: number;
