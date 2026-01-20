@@ -3,7 +3,7 @@ import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
+import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 
@@ -147,36 +147,17 @@ export async function GET(request: NextRequest) {
     })
 
     // Create redirect response with cookies
-    // Use 302 redirect with explicit Set-Cookie header
     const response = NextResponse.redirect(redirectUrl)
 
-    // Set session cookie on the response
-    // Extract domain from APP_URL for cookie domain setting
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
-    let cookieDomain: string | undefined = undefined
-    try {
-      const url = new URL(appUrl)
-      // Only set domain for non-localhost hosts
-      if (!url.hostname.includes('localhost') && !url.hostname.includes('127.0.0.1')) {
-        cookieDomain = url.hostname
-      }
-    } catch {
-      // If URL parsing fails, don't set domain
-    }
+    // セッションCookieを設定（統一されたドメイン設定を使用）
+    const cookieOptions = getSessionCookieOptions()
 
-    logger.info('Auth callback: Setting cookie with domain', {
-      cookieDomain,
-      appUrl,
+    logger.info('Auth callback: Setting cookie with options', {
+      domain: cookieOptions.domain,
+      secure: cookieOptions.secure,
     })
 
-    response.cookies.set(COOKIE_NAMES.SESSION, sessionData, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
-      ...(cookieDomain && { domain: cookieDomain }),
-    })
+    response.cookies.set(COOKIE_NAMES.SESSION, sessionData, cookieOptions)
 
     // Clear state cookie
     response.cookies.delete('twitch_auth_state')

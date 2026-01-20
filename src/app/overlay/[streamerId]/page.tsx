@@ -6,7 +6,7 @@ import Image from "next/image";
 import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
-
+import { RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
 
 interface GachaResult {
   card: Card;
@@ -19,20 +19,6 @@ interface SparklePosition {
   animationDelay: string;
   animationDuration: string;
 }
-
-const RARITY_COLORS = {
-  common: "from-gray-400 to-gray-600",
-  rare: "from-blue-400 to-blue-600",
-  epic: "from-purple-400 to-purple-600",
-  legendary: "from-yellow-400 to-orange-500",
-};
-
-const RARITY_GLOW = {
-  common: "shadow-gray-500/50",
-  rare: "shadow-blue-500/50",
-  epic: "shadow-purple-500/50",
-  legendary: "shadow-yellow-500/50",
-};
 
 // Generate sparkle positions outside of render
 function generateSparklePositions(): SparklePosition[] {
@@ -192,7 +178,7 @@ export default function OverlayPage() {
     );
   }
 
-  const rarityColor = RARITY_COLORS[result.card.rarity];
+  const rarityColor = RARITY_GRADIENT_COLORS[result.card.rarity];
   const rarityGlow = RARITY_GLOW[result.card.rarity];
 
   return (

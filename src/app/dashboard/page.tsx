@@ -1,8 +1,6 @@
-import { cookies } from "next/headers";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData, getUserCards, getRecentGachaHistory } from "@/lib/dashboard-data";
-import { RARITY_ORDER, COOKIE_NAMES } from "@/lib/constants";
-import { logger } from "@/lib/logger";
+import { RARITY_ORDER } from "@/lib/constants";
 import type { Card, Streamer } from "@/types/database";
 import Header from "@/components/Header";
 import StreamerSettings from "@/components/StreamerSettings";
@@ -19,24 +17,7 @@ interface CardWithDetails extends Card {
 }
 
 export default async function DashboardPage() {
-  // Debug: log cookie state in RSC for comparison with top page
-  const cookieStore = await cookies();
-  const allCookies = cookieStore.getAll();
-  const sessionCookieValue = cookieStore.get(COOKIE_NAMES.SESSION)?.value;
-
-  logger.info('Dashboard RSC: Cookie debug', {
-    cookieCount: allCookies.length,
-    cookieNames: allCookies.map(c => c.name),
-    hasSessionCookie: !!sessionCookieValue,
-    sessionCookieLength: sessionCookieValue?.length || 0,
-  });
-
   const session = await getSession();
-
-  logger.info('Dashboard RSC: Session result', {
-    hasSession: !!session,
-    twitchUserId: session?.twitchUserId || null,
-  });
 
   if (!session) {
     return <TwitchLoginRedirect />;

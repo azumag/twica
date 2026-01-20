@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { Card } from "@/types/database";
+import { logger } from "@/lib/logger";
 
 // Demo cards for testing overlay
 const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streamer_id'>> = [
@@ -88,7 +89,7 @@ export async function POST() {
       userTwitchUsername: "DemoUser",
     });
   } catch (error) {
-    console.error("Demo gacha error:", error);
+    logger.error("Demo gacha error:", { error });
     return NextResponse.json(
       { error: "Failed to generate demo card" },
       { status: 500 }

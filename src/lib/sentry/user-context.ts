@@ -25,32 +25,10 @@ export function setRequestContext(requestId: string, path: string) {
   })
 }
 
-export function setFeatureContext(features: string[]) {
-  Sentry.setContext('features', {
-    enabled: features,
-  })
-}
-
 export function setGameContext(gameData: {
   battleId?: string
   cardId?: string
   outcome?: string
 }) {
   Sentry.setContext('game', gameData)
-}
-
-export function setGachaContext(gachaData: {
-  gachaId?: string
-  cardId?: string
-  cost?: number
-}) {
-  Sentry.setContext('gacha', gachaData)
-}
-
-export function setStreamContext(streamData: {
-  streamerId?: string
-  streamTitle?: string
-  gameId?: string
-}) {
-  Sentry.setContext('stream', streamData)
 }

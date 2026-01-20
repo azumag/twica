@@ -10,7 +10,7 @@ import Image from 'next/image'
 import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
 import * as Sentry from '@sentry/nextjs'
 import { fetchSession } from '@/lib/api-client'
-
+import { RARITY_COLORS } from '@/lib/constants'
 
 interface BattleCard {
   id: string
@@ -41,13 +41,6 @@ interface BattleResult {
     heal?: number
     message: string
   }>
-}
-
-const rarityColors = {
-  common: 'bg-gray-500',
-  rare: 'bg-blue-500',
-  epic: 'bg-purple-500',
-  legendary: 'bg-yellow-500'
 }
 
 const skillTypeIcons = {
@@ -205,7 +198,7 @@ export default function BattlePage() {
                         <div className="mb-1 flex items-center justify-between">
                           <h4 className="font-semibold text-white">{userCard.card.name}</h4>
                           <span
-                            className={`rounded-full px-2 py-0.5 text-xs text-white ${rarityColors[userCard.card.rarity]}`}
+                            className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[userCard.card.rarity]}`}
                           >
                             {userCard.card.rarity}
                           </span>

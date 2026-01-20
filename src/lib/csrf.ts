@@ -2,7 +2,7 @@ import { cookies } from 'next/headers'
 
 import { logger } from './logger'
 import { reportSecurityError } from './sentry/error-handler'
-import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES, SESSION_COOKIE_OPTIONS } from './constants'
+import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from './constants'
 import { parseSession } from './session'
 
 export async function hashIP(ip: string | null): Promise<string> {
@@ -126,10 +126,12 @@ async function setCSRFTokenWithRetry(retryCount: number = 0): Promise<string> {
 
   const updatedSession = { ...session, csrfTokenHash: tokenHash, version: session.version + 1 }
 
-  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), SESSION_COOKIE_OPTIONS)
+  // セッションとCSRFトークンは同じドメイン設定で保存
+  const cookieOptions = getSessionCookieOptions()
+  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), cookieOptions)
 
   // トークン自体もhttpOnly cookieに保存（JavaScriptからアクセス不可）
-  cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, token, SESSION_COOKIE_OPTIONS)
+  cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, token, cookieOptions)
 
   logger.info(`CSRF token generated for user ${userId}`)
   return token
@@ -348,6 +350,8 @@ export async function clearCSRFToken(): Promise<void> {
   const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
 
   if (!sessionCookie) {
+    // セッションがなくてもCSRFトークンCookieは削除を試みる
+    cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, '', getDeleteCookieOptions())
     return
   }
 
@@ -360,10 +364,11 @@ export async function clearCSRFToken(): Promise<void> {
     version: session.version + 1,
   }
 
-  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), SESSION_COOKIE_OPTIONS)
+  // ドメイン設定を含むオプションで保存
+  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), getSessionCookieOptions())
 
-  // CSRFトークンクッキーを削除
-  cookieStore.delete(COOKIE_NAMES.CSRF_TOKEN)
+  // CSRFトークンクッキーを確実に削除（maxAge=0で上書き）
+  cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, '', getDeleteCookieOptions())
 
   logger.info('CSRF token cleared')
 }

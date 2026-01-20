@@ -1,5 +1,5 @@
 import { cookies } from 'next/headers'
-import { BROADCASTER_TYPE, COOKIE_NAMES } from './constants'
+import { BROADCASTER_TYPE, COOKIE_NAMES, getDeleteCookieOptions } from './constants'
 import { logger } from './logger'
 
 export interface Session {
@@ -111,5 +111,6 @@ export function canUseStreamerFeatures(session: Session | null): boolean {
 
 export async function clearSession(): Promise<void> {
   const cookieStore = await cookies()
-  cookieStore.delete(COOKIE_NAMES.SESSION)
+  // ドメイン設定されたCookieを確実に削除するため、maxAge=0で上書き
+  cookieStore.set(COOKIE_NAMES.SESSION, '', getDeleteCookieOptions())
 }

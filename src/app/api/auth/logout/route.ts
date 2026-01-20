@@ -6,6 +6,7 @@ import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
 import { clearCSRFToken, validateCSRFToken } from '@/lib/csrf'
+import { logger } from '@/lib/logger'
 
 export async function POST(request: Request) {
   try {
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
         await deleteTwitchTokens(session.twitchUserId);
       } catch (error) {
         // Token deletion is optional - log but continue logout
-        console.error('Failed to delete Twitch tokens during logout:', error);
+        logger.error('Failed to delete Twitch tokens during logout:', { error });
       }
     }
 
@@ -68,7 +69,7 @@ export async function GET(request: Request) {
         await deleteTwitchTokens(session.twitchUserId);
       } catch (error) {
         // Token deletion is optional - log but continue logout
-        console.error('Failed to delete Twitch tokens during logout:', error);
+        logger.error('Failed to delete Twitch tokens during logout:', { error });
       }
     }
 

@@ -1,8 +1,5 @@
 import Link from "next/link";
-import { cookies } from "next/headers";
 import { getSession } from "@/lib/session";
-import { COOKIE_NAMES } from "@/lib/constants";
-import { logger } from "@/lib/logger";
 import DevelopmentNotice from "@/components/DevelopmentNotice";
 import { TwitchLoginButtonWithIcon } from "@/components/TwitchLoginButton";
 import TopPageHeader from "@/components/TopPageHeader";
@@ -10,24 +7,7 @@ import TopPageHeader from "@/components/TopPageHeader";
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  // Debug: log cookie state in RSC
-  const cookieStore = await cookies();
-  const allCookies = cookieStore.getAll();
-  const sessionCookieValue = cookieStore.get(COOKIE_NAMES.SESSION)?.value;
-
-  logger.info('Top page RSC: Cookie debug', {
-    cookieCount: allCookies.length,
-    cookieNames: allCookies.map(c => c.name),
-    hasSessionCookie: !!sessionCookieValue,
-    sessionCookieLength: sessionCookieValue?.length || 0,
-  });
-
   const session = await getSession();
-
-  logger.info('Top page RSC: Session result', {
-    hasSession: !!session,
-    twitchUserId: session?.twitchUserId || null,
-  });
 
   // Prepare session data for client component (without sensitive info)
   const sessionData = session ? {

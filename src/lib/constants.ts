@@ -42,7 +42,21 @@ export const RARITY_COLORS = {
   epic: "bg-purple-500",
   rare: "bg-blue-500",
   common: "bg-gray-500",
-};
+} as const;
+
+export const RARITY_GRADIENT_COLORS = {
+  common: "from-gray-400 to-gray-600",
+  rare: "from-blue-400 to-blue-600",
+  epic: "from-purple-400 to-purple-600",
+  legendary: "from-yellow-400 to-orange-500",
+} as const;
+
+export const RARITY_GLOW = {
+  common: "shadow-gray-500/50",
+  rare: "shadow-blue-500/50",
+  epic: "shadow-purple-500/50",
+  legendary: "shadow-yellow-500/50",
+} as const;
 
 export const GACHA_COST = parseInt(process.env.GACHA_COST || '100', 10)
 
@@ -51,6 +65,68 @@ export const DEBUG_CONFIG = {
   PRODUCTION_ENV: 'production',
 } as const
 
+/**
+ * NEXT_PUBLIC_APP_URL からCookieドメインを計算
+ * localhost/127.0.0.1 の場合は undefined を返す（ブラウザのデフォルト動作に委ねる）
+ */
+export function getCookieDomain(): string | undefined {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
+  try {
+    const url = new URL(appUrl)
+    if (url.hostname.includes('localhost') || url.hostname.includes('127.0.0.1')) {
+      return undefined
+    }
+    return url.hostname
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * セッションCookieのオプションを取得（ドメイン設定を含む）
+ */
+export function getSessionCookieOptions(): {
+  httpOnly: boolean
+  secure: boolean
+  sameSite: 'lax'
+  path: string
+  maxAge: number
+  domain?: string
+} {
+  const domain = getCookieDomain()
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    path: '/',
+    maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+    ...(domain && { domain }),
+  }
+}
+
+/**
+ * Cookie削除用のオプション（maxAge: 0 で即座に削除）
+ */
+export function getDeleteCookieOptions(): {
+  httpOnly: boolean
+  secure: boolean
+  sameSite: 'lax'
+  path: string
+  maxAge: number
+  domain?: string
+} {
+  const domain = getCookieDomain()
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    path: '/',
+    maxAge: 0,
+    ...(domain && { domain }),
+  }
+}
+
+// 後方互換性のために残す（使用箇所は順次 getSessionCookieOptions() に置き換え）
 export const SESSION_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',

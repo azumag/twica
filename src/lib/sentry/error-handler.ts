@@ -18,18 +18,6 @@ export function reportError(error: Error | unknown, context?: Record<string, unk
   })
 }
 
-export function reportMessage(message: string, level: 'info' | 'warning' | 'error' = 'info', context?: Record<string, unknown>) {
-  Sentry.withScope((scope) => {
-    if (context) {
-      Object.entries(context).forEach(([key, value]) => {
-        scope.setExtra(key, value)
-      })
-    }
-
-    Sentry.captureMessage(message, level)
-  })
-}
-
 export function reportApiError(endpoint: string, method: string, error: Error | unknown, additionalContext?: Record<string, unknown>) {
   Sentry.withScope((scope) => {
     scope.setTag('endpoint', endpoint)
@@ -45,33 +33,9 @@ export function reportApiError(endpoint: string, method: string, error: Error | 
     if (error instanceof Error) {
       Sentry.captureException(error)
     } else {
-      // 非Error型のエラーを詳細に記録
-      let errorMessage = `${method} ${endpoint}: Unknown error`;
-
-      if (typeof error === 'string') {
-        errorMessage = `${method} ${endpoint}: ${error}`;
-        scope.setExtra('errorType', 'string');
-        scope.setExtra('errorValue', error);
-      } else if (error && typeof error === 'object') {
-        // オブジェクトの場合、すべてのキーと値を記録
-        try {
-          const errorJson = JSON.stringify(error, null, 2);
-          errorMessage = `${method} ${endpoint}: Object error`;
-          scope.setExtra('errorType', 'object');
-          scope.setExtra('errorObject', error);
-          scope.setExtra('errorJson', errorJson);
-        } catch (e) {
-          errorMessage = `${method} ${endpoint}: [Unserializable Object] - ${e}`;
-          scope.setExtra('errorType', 'unserializable');
-          scope.setExtra('errorString', String(error));
-          scope.setExtra('serializationError', e instanceof Error ? e.message : String(e));
-        }
-      } else if (error !== undefined && error !== null) {
-        errorMessage = `${method} ${endpoint}: ${String(error)}`;
-        scope.setExtra('errorType', typeof error);
-        scope.setExtra('errorValue', error);
-      }
-
+      const errorMessage = `${method} ${endpoint}: ${String(error)}`
+      scope.setExtra('errorType', typeof error)
+      scope.setExtra('errorValue', error)
       Sentry.captureMessage(errorMessage, 'error')
     }
   })
@@ -139,23 +103,6 @@ export function reportBattleError(error: Error | unknown, context: { battleId?: 
     } else {
       Sentry.captureMessage(`Battle error: ${String(error)}`, 'error')
     }
-  })
-}
-
-export function reportPerformanceIssue(operation: string, duration: number, context?: Record<string, unknown>) {
-  Sentry.withScope((scope) => {
-    scope.setTag('category', 'performance')
-    scope.setTag('operation', operation)
-    scope.setLevel('warning')
-    scope.setExtra('duration', duration)
-
-    if (context) {
-      Object.entries(context).forEach(([key, value]) => {
-        scope.setExtra(key, value)
-      })
-    }
-
-    Sentry.captureMessage(`Performance issue: ${operation} took ${duration}ms`, 'warning')
   })
 }
 
