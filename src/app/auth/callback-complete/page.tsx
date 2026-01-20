@@ -1,11 +1,10 @@
 'use client'
 
-import { useEffect } from 'react'
-import { useSearchParams, useRouter } from 'next/navigation'
+import { Suspense, useEffect } from 'react'
+import { useSearchParams } from 'next/navigation'
 
-export default function CallbackCompletePage() {
+function CallbackCompleteContent() {
   const searchParams = useSearchParams()
-  const router = useRouter()
 
   useEffect(() => {
     // The session cookie has been set by the API route
@@ -14,7 +13,7 @@ export default function CallbackCompletePage() {
 
     // Use window.location for a full page navigation to ensure cookies are sent
     window.location.href = redirectTo
-  }, [searchParams, router])
+  }, [searchParams])
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-900">
@@ -23,5 +22,20 @@ export default function CallbackCompletePage() {
         <div className="text-gray-400">リダイレクト中...</div>
       </div>
     </div>
+  )
+}
+
+export default function CallbackCompletePage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center bg-gray-900">
+        <div className="text-center">
+          <div className="mb-4 text-white">ログイン完了</div>
+          <div className="text-gray-400">リダイレクト中...</div>
+        </div>
+      </div>
+    }>
+      <CallbackCompleteContent />
+    </Suspense>
   )
 }
