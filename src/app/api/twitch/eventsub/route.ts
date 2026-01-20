@@ -146,49 +146,77 @@ async function handleRedemption(messageId: string, event: {
   user_name: string;
   reward: { id: string; title: string };
 }) {
+  // Debug: Log redemption event details
+  // デバッグ用：引き換えイベントの詳細をログ出力
+  console.log("[EventSub] handleRedemption called:", {
+    messageId,
+    broadcaster_user_id: event.broadcaster_user_id,
+    user_login: event.user_login,
+    reward_id: event.reward?.id,
+    reward_title: event.reward?.title,
+  });
+
   const supabaseAdmin = getSupabaseAdmin();
 
   // Idempotency check - skip if this event was already processed
-  const { data: existingHistory } = await supabaseAdmin
+  // 冪等性チェック：既に処理済みのイベントはスキップ
+  const { data: existingHistory, error: historyError } = await supabaseAdmin
     .from('gacha_history')
     .select('id')
     .eq('event_id', messageId)
     .single();
 
+  console.log("[EventSub] Idempotency check:", { existingHistory: !!existingHistory, historyError: historyError?.message });
+
   if (existingHistory) {
+    console.log("[EventSub] Event already processed, skipping");
     return;
   }
 
   try {
+    console.log("[EventSub] Creating GachaService and executing gacha...");
     const gachaService = new GachaService();
     const result = await gachaService.executeGachaForEventSub(event, messageId);
 
+    console.log("[EventSub] Gacha result:", { success: result.success, error: result.error });
+
     if (!result.success) {
       // Error in gacha but don't throw, as webhook should return 200
+      // ガチャでエラーが発生してもthrowしない。webhookは200を返す必要がある
+      console.log("[EventSub] Gacha failed:", result.error);
       return;
     }
 
     // Notify overlay via Supabase Realtime
+    // Supabase Realtimeを通じてオーバーレイに通知
     const gachaResult = {
       type: "gacha" as const,
       card: result.data.card,
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
+    console.log("[EventSub] Gacha success, card:", result.data.card?.name);
+
     // Get streamer ID for broadcast
-    const { data: streamer } = await supabaseAdmin
+    // ブロードキャスト用にストリーマーIDを取得
+    const { data: streamer, error: streamerError } = await supabaseAdmin
       .from("streamers")
       .select("id")
       .eq("twitch_user_id", event.broadcaster_user_id)
       .single();
 
+    console.log("[EventSub] Streamer lookup:", { found: !!streamer, error: streamerError?.message });
+
     if (streamer) {
+      console.log("[EventSub] Broadcasting gacha result to streamer:", streamer.id);
       await broadcastGachaResult(streamer.id, gachaResult, {
         maxRetries: 3,
         retryDelay: 1000,
       });
+      console.log("[EventSub] Broadcast complete");
     }
   } catch (error) {
+    console.log("[EventSub] handleRedemption error:", error);
     return handleApiError(error, "EventSub redemption");
   }
 }
