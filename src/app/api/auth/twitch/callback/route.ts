@@ -132,6 +132,13 @@ export async function GET(request: NextRequest) {
       version: 1,
     })
 
+    // Log session data size for debugging
+    logger.info('Auth callback: Setting session cookie', {
+      sessionDataLength: sessionData.length,
+      cookieName: COOKIE_NAMES.SESSION,
+      twitchUserId: twitchUser.id,
+    })
+
     // Create redirect response first
     const redirectResponse = NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`)
 
