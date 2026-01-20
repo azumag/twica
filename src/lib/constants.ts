@@ -76,13 +76,23 @@ export const CSRF_CONFIG = {
   ALLOWED_ORIGINS: (() => {
     const origins: string[] = []
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
-    
+
     try {
       const url = new URL(appUrl)
       const port = url.port || (url.protocol === 'https:' ? '443' : '80')
-      
+
       origins.push(appUrl)
-      
+
+      // Vercel preview/production deployments
+      if (process.env.VERCEL_URL) {
+        origins.push(`https://${process.env.VERCEL_URL}`)
+      }
+
+      // Vercel branch deployments (e.g., project-git-branch-user.vercel.app)
+      if (process.env.VERCEL_BRANCH_URL) {
+        origins.push(`https://${process.env.VERCEL_BRANCH_URL}`)
+      }
+
       if (process.env.NODE_ENV === 'development') {
         origins.push(`http://127.0.0.1:${port}`)
         origins.push(`http://[::1]:${port}`)
@@ -91,7 +101,7 @@ export const CSRF_CONFIG = {
       logger.warn('Failed to parse NEXT_PUBLIC_APP_URL for CSRF origins:', error)
       origins.push(appUrl)
     }
-    
+
     return origins.filter((origin, index, arr) => arr.indexOf(origin) === index) as string[]
   })(),
 } as const
