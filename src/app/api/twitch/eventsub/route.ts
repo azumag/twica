@@ -178,7 +178,7 @@ async function handleRedemption(messageId: string, event: {
     const gachaService = new GachaService();
     const result = await gachaService.executeGachaForEventSub(event, messageId);
 
-    console.log("[EventSub] Gacha result:", { success: result.success, error: result.error });
+    console.log("[EventSub] Gacha result:", { success: result.success });
 
     if (!result.success) {
       // Error in gacha but don't throw, as webhook should return 200
