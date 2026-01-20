@@ -139,9 +139,62 @@ export async function GET(request: NextRequest) {
       twitchUserId: twitchUser.id,
     })
 
-    // Use cookies() API to set session cookie (more reliable than redirect response cookies)
-    // This sets the cookie before the redirect response is sent
-    cookieStore.set(COOKIE_NAMES.SESSION, sessionData, {
+    const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
+
+    logger.info('Auth callback: Returning HTML page with cookie and redirect', {
+      twitchUserId: twitchUser.id,
+      redirectUrl,
+    })
+
+    // Return an HTML page that sets the cookie and redirects
+    // This approach ensures the cookie is properly set by the browser before navigation
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ログイン完了</title>
+  <style>
+    body {
+      background: #1a1a2e;
+      color: white;
+      font-family: sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .container {
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <p>ログイン完了</p>
+    <p>リダイレクト中...</p>
+  </div>
+  <script>
+    // Redirect after a short delay to ensure cookie is set
+    setTimeout(function() {
+      window.location.href = '${redirectUrl}';
+    }, 100);
+  </script>
+</body>
+</html>
+`
+
+    // Create response with HTML and set cookies
+    const response = new NextResponse(html, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+      },
+    })
+
+    // Set session cookie on the response
+    response.cookies.set(COOKIE_NAMES.SESSION, sessionData, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -150,20 +203,11 @@ export async function GET(request: NextRequest) {
     })
 
     // Clear state cookie
-    cookieStore.delete('twitch_auth_state')
-
-    // Redirect to intermediate page that will then redirect to dashboard
-    // This ensures the cookie is properly set before the final navigation
-    const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback-complete?redirect=/dashboard`
-
-    logger.info('Auth callback: Redirecting to callback-complete page', {
-      twitchUserId: twitchUser.id,
-      redirectUrl,
-    })
+    response.cookies.delete('twitch_auth_state')
 
     // Note: CSRF token will be generated automatically on first POST request
 
-    return NextResponse.redirect(redirectUrl)
+    return response
   } catch (error) {
     return handleAuthError(error, 'unknown_error')
   }
