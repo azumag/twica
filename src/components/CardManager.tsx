@@ -398,12 +398,15 @@ export default function CardManager({
   const handleRemoveImage = async () => {
     if (!confirmedImageUrl) return;
 
-    // Only delete from Blob if it's a Vercel Blob URL
-    // Vercel BlobのURLの場合のみBlobから削除
-    const isBlobUrl = confirmedImageUrl.includes("blob.vercel-storage.com") ||
-                      confirmedImageUrl.includes("public.blob.vercel-storage.com");
+    // Only delete from storage if it's a storage URL (R2 or Vercel Blob)
+    // ストレージURL（R2またはVercel Blob）の場合のみストレージから削除
+    const isStorageUrl = confirmedImageUrl.includes("blob.vercel-storage.com") ||
+                         confirmedImageUrl.includes("public.blob.vercel-storage.com") ||
+                         confirmedImageUrl.includes(".r2.dev") ||
+                         confirmedImageUrl.includes("r2.cloudflarestorage.com") ||
+                         confirmedImageUrl.includes("image.twica.bluemoon.works");
 
-    if (isBlobUrl) {
+    if (isStorageUrl) {
       setDeletingImage(true);
       const deleted = await deleteImage(confirmedImageUrl);
       setDeletingImage(false);
@@ -610,6 +613,9 @@ export default function CardManager({
         const updatedCard = await response.json();
         if (editingCard) {
           setCards(cards.map((c) => (c.id === editingCard.id ? updatedCard : c)));
+          // Refresh storage status after update (old image may have been deleted)
+          // 更新後にストレージ状態を更新（古い画像が削除された可能性があるため）
+          fetchStorageStatus();
         } else {
           setCards([updatedCard, ...cards]);
         }
@@ -687,8 +693,11 @@ export default function CardManager({
           alert(`${UI_STRINGS.CARD_MANAGER.MESSAGES.DELETE_FAILED_PREFIX} ${errorMessage}`);
           logger.error("Delete failed:", errorData);
         }
+      } else {
+        // Success: refresh storage status to reflect deleted image
+        // 成功: 削除された画像を反映するためストレージ状態を更新
+        fetchStorageStatus();
       }
-      // Success: no alert needed as optimistic update already provides feedback
     } catch (error) {
       // Revert on network error
       setCards(originalCards);
