@@ -21,12 +21,14 @@ export default function Header({ session }: HeaderProps) {
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             {session.twitchProfileImageUrl && (
+              // unoptimized: Twitch CDNから取得済みの画像のため、Vercel Image Transformationsをスキップしてコスト削減
               <Image
                 src={session.twitchProfileImageUrl}
                 alt={session.twitchDisplayName}
                 width={32}
                 height={32}
                 className="h-8 w-8 rounded-full"
+                unoptimized
               />
             )}
             <span className="text-white">{session.twitchDisplayName}</span>
