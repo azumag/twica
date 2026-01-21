@@ -20,7 +20,8 @@ export default async function Home() {
   } : null;
 
   return (
-    <div className="min-h-screen bg-gray-900">
+    // overflow-x-hidden: モバイルで横スクロールを防止
+    <div className="min-h-screen overflow-x-hidden bg-gray-900">
       <DevelopmentNotice />
       <header className="border-b border-gray-800">
         <div className="container mx-auto px-4 py-4">
@@ -40,12 +41,15 @@ export default async function Home() {
               カードコレクション
             </span>
           </h2>
-          {/* break-keep: 日本語テキストを単語の区切り（句読点など）で折り返す */}
-          <p className="mb-12 break-keep text-lg text-gray-400">
+          {/* break-words: 長いテキストがコンテナ幅を超える場合に折り返す */}
+          <p className="mb-12 break-words text-lg text-gray-400">
             TwiCaは、Twitchのチャネルポイントを活用した
+            <br className="hidden sm:inline" />
             カード配布システムです。
             <br />
-            視聴者はポイントを使用してカードを獲得し、コレクションを構築できます。
+            視聴者はポイントを使用してカードを獲得し、
+            <br className="sm:hidden" />
+            コレクションを構築できます。
           </p>
 
           {/* ログイン状態に応じて表示を切り替え */}
