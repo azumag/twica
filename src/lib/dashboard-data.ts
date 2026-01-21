@@ -50,6 +50,59 @@ export const getStreamerData = cache(async (twitchUserId: string) => {
 })
 
 /**
+ * Get streamer data with paginated cards
+ * サーバーサイドページング対応の配信者データとカード取得
+ */
+export const getStreamerDataPaginated = cache(async (
+  twitchUserId: string,
+  page: number = 1,
+  perPage: number = 8
+) => {
+  const supabaseAdmin = getSupabaseAdmin();
+  const start = Date.now();
+
+  // Get streamer first
+  // まず配信者を取得
+  const { data: streamer } = await supabaseAdmin
+    .from("streamers")
+    .select("*")
+    .eq("twitch_user_id", twitchUserId)
+    .single();
+
+  if (!streamer) return null;
+
+  // Get total count of cards for this streamer
+  // この配信者のカード総数を取得
+  const { count: totalCount } = await supabaseAdmin
+    .from("cards")
+    .select("*", { count: "exact", head: true })
+    .eq("streamer_id", streamer.id);
+
+  // Get paginated cards with ordering
+  // ページネーション付きでカードを取得（新しい順）
+  const offset = (page - 1) * perPage;
+  const { data: cards } = await supabaseAdmin
+    .from("cards")
+    .select("*")
+    .eq("streamer_id", streamer.id)
+    .order("created_at", { ascending: false })
+    .range(offset, offset + perPage - 1);
+
+  logger.info(`[Perf] getStreamerDataPaginated: ${Date.now() - start}ms (page ${page}, ${cards?.length || 0} cards)`);
+
+  return {
+    streamer,
+    cards: cards || [],
+    pagination: {
+      page,
+      perPage,
+      total: totalCount || 0,
+      totalPages: Math.ceil((totalCount || 0) / perPage),
+    },
+  };
+})
+
+/**
  * Internal function to fetch user cards from database
  * 内部関数: データベースからユーザーカードを取得
  */

@@ -1,19 +1,23 @@
 import { redirect } from "next/navigation";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getStreamerData } from "@/lib/dashboard-data";
+import { getStreamerDataPaginated } from "@/lib/dashboard-data";
 import CardManager from "@/components/CardManager";
 import type { Card } from "@/types/database";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
+const CARDS_PER_PAGE = 8;
+
 /**
- * Card management page for streamers
- * Full card CRUD functionality with view toggle and pagination
- * 配信者向けカード管理ページ
- * 表示切り替えとページネーション付きのフルカードCRUD機能
+ * Card management page for streamers with server-side pagination
+ * サーバーサイドページング対応の配信者向けカード管理ページ
  */
-export default async function CardsPage() {
+export default async function CardsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
   const session = await getSession();
 
   // Session check is handled by layout, but double-check for safety
@@ -29,9 +33,18 @@ export default async function CardsPage() {
     redirect("/dashboard");
   }
 
-  // Fetch streamer data including cards
-  // カードを含む配信者データを取得
-  const streamerData = await getStreamerData(session.twitchUserId);
+  // Get page from URL search params
+  // URLパラメータからページ番号を取得
+  const params = await searchParams;
+  const page = Math.max(1, parseInt(params.page || "1", 10));
+
+  // Fetch paginated streamer data
+  // ページネーション対応の配信者データを取得
+  const streamerData = await getStreamerDataPaginated(
+    session.twitchUserId,
+    page,
+    CARDS_PER_PAGE
+  );
 
   if (!streamerData) {
     redirect("/dashboard");
@@ -44,7 +57,12 @@ export default async function CardsPage() {
       viewMode="list"
       showViewToggle={true}
       enablePagination={true}
-      cardsPerPage={12}
+      serverPagination={{
+        currentPage: streamerData.pagination.page,
+        totalPages: streamerData.pagination.totalPages,
+        total: streamerData.pagination.total,
+        perPage: streamerData.pagination.perPage,
+      }}
     />
   );
 }

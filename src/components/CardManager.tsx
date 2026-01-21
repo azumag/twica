@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UI_STRINGS, UPLOAD_CONFIG } from "@/lib/constants";
@@ -37,6 +38,17 @@ interface TwitchEmote {
 }
 
 
+/**
+ * Server-side pagination info
+ * サーバーサイドページング情報
+ */
+interface ServerPagination {
+  currentPage: number;
+  totalPages: number;
+  total: number;
+  perPage: number;
+}
+
 interface CardManagerProps {
   streamerId: string;
   initialCards: Card[];
@@ -49,12 +61,15 @@ interface CardManagerProps {
   // Whether to enable pagination (default: false)
   // ページネーションを有効にするかどうか（デフォルト: false）
   enablePagination?: boolean;
-  // Number of cards per page (default: 12)
-  // 1ページあたりのカード数（デフォルト: 12）
+  // Number of cards per page for client-side pagination (default: 12)
+  // クライアントサイドページング用の1ページあたりのカード数（デフォルト: 12）
   cardsPerPage?: number;
   // Maximum number of cards to display (for preview mode)
   // 表示するカードの最大数（プレビューモード用）
   maxCards?: number;
+  // Server-side pagination info (if provided, uses server pagination)
+  // サーバーサイドページング情報（指定された場合はサーバーページングを使用）
+  serverPagination?: ServerPagination;
 }
 
 export default function CardManager({
@@ -65,14 +80,27 @@ export default function CardManager({
   enablePagination = false,
   cardsPerPage = 12,
   maxCards,
+  serverPagination,
 }: CardManagerProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [cards, setCards] = useState<Card[]>(initialCards);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
   const [currentViewMode, setCurrentViewMode] = useState<ViewMode>(initialViewMode);
-  // Current page for pagination (1-indexed)
-  // ページネーション用の現在のページ（1始まり）
+  // Current page for client-side pagination (1-indexed)
+  // クライアントサイドページネーション用の現在のページ（1始まり）
   const [currentPage, setCurrentPage] = useState(1);
+
+  /**
+   * Handle server-side page change by updating URL
+   * URLを更新してサーバーサイドページ変更を処理
+   */
+  const handleServerPageChange = useCallback((page: number) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("page", page.toString());
+    router.push(`?${params.toString()}`);
+  }, [router, searchParams]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -924,21 +952,43 @@ export default function CardManager({
       {/* Card List/Grid */}
       {/* カード一覧（リスト/グリッド） */}
       {(() => {
+        // Use server pagination if provided, otherwise client-side
+        // サーバーページングが提供されている場合はそれを使用、そうでなければクライアントサイド
+        const useServerPagination = !!serverPagination;
+
+        // For server pagination, cards are already paginated
+        // サーバーページングの場合、カードは既にページネーション済み
+        let displayCards = cards;
+
         // Apply maxCards limit if specified (for preview mode)
         // maxCardsが指定されている場合は制限を適用（プレビューモード用）
-        let displayCards = maxCards ? cards.slice(0, maxCards) : cards;
+        if (maxCards) {
+          displayCards = displayCards.slice(0, maxCards);
+        }
 
-        // Apply pagination if enabled
-        // ページネーションが有効な場合は適用
-        const totalPages = enablePagination
+        // Apply client-side pagination if enabled and not using server pagination
+        // サーバーページングを使用していない場合、クライアントサイドページネーションを適用
+        const totalPages = useServerPagination
+          ? serverPagination.totalPages
+          : enablePagination
           ? Math.ceil(displayCards.length / cardsPerPage)
           : 1;
 
-        if (enablePagination && totalPages > 1) {
+        const currentPageNum = useServerPagination
+          ? serverPagination.currentPage
+          : currentPage;
+
+        if (!useServerPagination && enablePagination && totalPages > 1) {
           const startIndex = (currentPage - 1) * cardsPerPage;
           const endIndex = startIndex + cardsPerPage;
           displayCards = displayCards.slice(startIndex, endIndex);
         }
+
+        // Handle page change based on pagination type
+        // ページネーションタイプに基づいてページ変更を処理
+        const onPageChange = useServerPagination
+          ? handleServerPageChange
+          : setCurrentPage;
 
         if (cards.length === 0) {
           return (
@@ -1049,15 +1099,26 @@ export default function CardManager({
               </div>
             )}
 
-            {/* Pagination (shown when enablePagination is true and there are multiple pages) */}
-            {/* ページネーション（enablePaginationがtrueで複数ページある場合に表示） */}
-            {enablePagination && totalPages > 1 && (
-              <div className="mt-6">
-                <Pagination
-                  currentPage={currentPage}
-                  totalPages={totalPages}
-                  onPageChange={setCurrentPage}
-                />
+            {/* Pagination and total count display */}
+            {/* ページネーションと総数表示 */}
+            {enablePagination && (
+              <div className="mt-6 flex flex-col items-center gap-2">
+                {/* Total count display for server pagination */}
+                {/* サーバーページング用の総数表示 */}
+                {serverPagination && serverPagination.total > 0 && (
+                  <p className="text-sm text-gray-400">
+                    全 {serverPagination.total} 件中 {(serverPagination.currentPage - 1) * serverPagination.perPage + 1} - {Math.min(serverPagination.currentPage * serverPagination.perPage, serverPagination.total)} 件を表示
+                  </p>
+                )}
+                {/* Show pagination controls only when there are multiple pages */}
+                {/* 複数ページある場合のみページネーションコントロールを表示 */}
+                {totalPages > 1 && (
+                  <Pagination
+                    currentPage={currentPageNum}
+                    totalPages={totalPages}
+                    onPageChange={onPageChange}
+                  />
+                )}
               </div>
             )}
           </>
