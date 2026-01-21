@@ -1,5 +1,6 @@
 import { cache } from "react";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { logger } from "@/lib/logger";
 import type { Card, Streamer, GachaHistory } from "@/types/database";
 
 interface CardWithDetails extends Card {
@@ -55,10 +56,15 @@ export const getStreamerData = cache(async (twitchUserId: string) => {
  * Supabaseのリレーションを使用して1回のクエリで取得し、ネットワーク往復を削減
  */
 export const getUserCards = cache(async (twitchUserId: string): Promise<CardWithDetails[]> => {
+  const startTotal = Date.now();
+
+  const startClient = Date.now();
   const supabaseAdmin = getSupabaseAdmin();
+  logger.info(`[Perf] getSupabaseAdmin: ${Date.now() - startClient}ms`);
 
   // Single query: get user with their cards using foreign key relations
   // 1回のクエリ: 外部キーリレーションを使用してユーザーとカードを取得
+  const startQuery = Date.now();
   const { data: user } = await supabaseAdmin
     .from("users")
     .select(`
@@ -73,8 +79,12 @@ export const getUserCards = cache(async (twitchUserId: string): Promise<CardWith
     `)
     .eq("twitch_user_id", twitchUserId)
     .single();
+  logger.info(`[Perf] getUserCards query: ${Date.now() - startQuery}ms`);
 
-  if (!user || !user.user_cards) return [];
+  if (!user || !user.user_cards) {
+    logger.info(`[Perf] getUserCards total (no data): ${Date.now() - startTotal}ms`);
+    return [];
+  }
 
   const cardMap = new Map<string, CardWithDetails>();
 
@@ -94,6 +104,7 @@ export const getUserCards = cache(async (twitchUserId: string): Promise<CardWith
     }
   }
 
+  logger.info(`[Perf] getUserCards total: ${Date.now() - startTotal}ms`);
   return Array.from(cardMap.values());
 })
 

@@ -85,10 +85,12 @@ export function parseSession(raw: string): Session {
  * レイアウトとページの両方がgetSession()を呼び出すが、リクエストごとに1回のみ実行される。
  */
 export const getSession = cache(async (): Promise<Session | null> => {
+  const start = Date.now();
   const cookieStore = await cookies()
   const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
 
   if (!sessionCookie) {
+    logger.info(`[Perf] getSession (no cookie): ${Date.now() - start}ms`);
     return null
   }
 
@@ -104,12 +106,15 @@ export const getSession = cache(async (): Promise<Session | null> => {
       } catch {
         // CSRFトークンクリアはセッションクリアの失敗を意味しない
       }
+      logger.info(`[Perf] getSession (expired): ${Date.now() - start}ms`);
       return null;
     }
 
+    logger.info(`[Perf] getSession: ${Date.now() - start}ms`);
     return session
   } catch (error) {
     logger.error('[Session] Failed to parse session cookie:', error);
+    logger.info(`[Perf] getSession (error): ${Date.now() - start}ms`);
     return null
   }
 })
