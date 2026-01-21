@@ -816,12 +816,17 @@ export default function CardManager({
                 {/* 確定済みURLがある場合は画像プレビューと削除ボタンを表示 */}
                 {confirmedImageUrl && (
                   <div className="flex items-center gap-3 rounded-lg bg-gray-600 p-3">
+                    {/* unoptimized: User-uploaded images are already optimized (400x400 JPEG) */}
+                    {/* Skip Vercel Image Transformations to reduce usage costs */}
+                    {/* unoptimized: ユーザーアップロード画像は既に最適化済み(400x400 JPEG) */}
+                    {/* Vercel Image Transformations をスキップして使用量を削減 */}
                     <Image
                       src={confirmedImageUrl}
                       alt="現在の画像"
                       width={60}
                       height={60}
                       className="rounded object-cover"
+                      unoptimized
                     />
                     <div className="flex-1">
                       <p className="text-sm text-gray-300">現在の画像</p>
@@ -1151,6 +1156,10 @@ export default function CardManager({
                       {/* 正方形画像（トリミング） */}
                       <div className="aspect-square bg-gray-600">
                         {card.image_url ? (
+                          /* unoptimized: User-uploaded images are already optimized (400x400 JPEG) */
+                          /* Skip Vercel Image Transformations to reduce usage costs */
+                          /* unoptimized: ユーザーアップロード画像は既に最適化済み(400x400 JPEG) */
+                          /* Vercel Image Transformations をスキップして使用量を削減 */
                           <Image
                             src={card.image_url}
                             alt={card.name}
@@ -1158,6 +1167,7 @@ export default function CardManager({
                             height={300}
                             className="w-full h-full object-cover"
                             priority={isPriority}
+                            unoptimized
                           />
                         ) : (
                           <div className="flex h-full items-center justify-center text-gray-500">

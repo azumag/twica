@@ -95,6 +95,10 @@ export default function CardList({
                 <td className="px-4 py-3">
                   <div className="h-12 w-12 overflow-hidden rounded bg-gray-600">
                     {card.image_url ? (
+                      // unoptimized: User-uploaded images are already optimized (400x400 JPEG)
+                      // Skip Vercel Image Transformations to reduce usage costs
+                      // unoptimized: ユーザーアップロード画像は既に最適化済み(400x400 JPEG)
+                      // Vercel Image Transformations をスキップして使用量を削減
                       <Image
                         src={card.image_url}
                         alt={card.name}
@@ -102,6 +106,7 @@ export default function CardList({
                         height={48}
                         className="h-full w-full object-cover"
                         priority={isPriority}
+                        unoptimized
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-gray-500 text-xs">
