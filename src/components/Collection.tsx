@@ -54,12 +54,14 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
           <div key={streamer.id} className="mb-8">
             <div className="mb-4 flex items-center gap-3">
               {streamer.twitch_profile_image_url && (
+                // unoptimized: Twitch CDNから取得済みの画像のため、Vercel Image Transformationsをスキップしてコスト削減
                 <Image
                   src={streamer.twitch_profile_image_url}
                   alt={streamer.twitch_display_name}
                   width={40}
                   height={40}
                   className="h-10 w-10 rounded-full"
+                  unoptimized
                 />
               )}
               <h3 className="text-xl font-semibold text-white">
@@ -96,6 +98,7 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
                     {/* 正方形画像（トリミング） */}
                     <div className="aspect-square bg-gray-600">
                       {card.image_url ? (
+                        // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                         <Image
                           src={card.image_url}
                           alt={card.name}
@@ -103,6 +106,7 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
                           height={300}
                           className="w-full h-full object-cover"
                           priority={isPriority}
+                          unoptimized
                         />
                       ) : (
                         <div className="flex h-full items-center justify-center text-gray-500">

@@ -225,12 +225,14 @@ export default function OverlayPage() {
             {/* Card Image - square like Collection */}
             <div className="aspect-square bg-gray-600">
               {result.card.image_url ? (
+                // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                 <Image
                   src={result.card.image_url}
                   alt={result.card.name}
                   width={300}
                   height={300}
                   className="w-full h-full object-cover"
+                  unoptimized
                 />
               ) : (
                 <div className="flex h-full items-center justify-center">

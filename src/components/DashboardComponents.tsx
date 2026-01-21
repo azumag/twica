@@ -36,12 +36,14 @@ export function CardGrid({ cards }: { cards: CardWithDetails[] }) {
             </span>
           </div>
           {card.image_url && (
+            // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
             <Image
               src={card.image_url}
               alt={card.name}
               width={200}
               height={200}
               className="w-full h-48 object-cover rounded mb-2"
+              unoptimized
             />
           )}
           {card.description && (
