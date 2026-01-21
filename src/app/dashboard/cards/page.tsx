@@ -1,23 +1,19 @@
 import { redirect } from "next/navigation";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getStreamerDataPaginated } from "@/lib/dashboard-data";
+import { getStreamerData } from "@/lib/dashboard-data";
 import CardManager from "@/components/CardManager";
 import type { Card } from "@/types/database";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
-const CARDS_PER_PAGE = 12;
-
 /**
- * Card management page for streamers with server-side pagination
- * サーバーサイドページング対応の配信者向けカード管理ページ
+ * Card management page for streamers
+ * Initial cards are loaded server-side, then client handles "Load More"
+ * 配信者向けカード管理ページ
+ * 初期カードはサーバーサイドで読み込み、その後クライアントで「もっと読み込む」を処理
  */
-export default async function CardsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ page?: string }>;
-}) {
+export default async function CardsPage() {
   const session = await getSession();
 
   // Session check is handled by layout, but double-check for safety
@@ -33,36 +29,26 @@ export default async function CardsPage({
     redirect("/dashboard");
   }
 
-  // Get page from URL search params
-  // URLパラメータからページ番号を取得
-  const params = await searchParams;
-  const page = Math.max(1, parseInt(params.page || "1", 10));
-
-  // Fetch paginated streamer data
-  // ページネーション対応の配信者データを取得
-  const streamerData = await getStreamerDataPaginated(
-    session.twitchUserId,
-    page,
-    CARDS_PER_PAGE
-  );
+  // Fetch streamer data (cards will be loaded via client-side API)
+  // 配信者データを取得（カードはクライアントサイドAPIで読み込み）
+  const streamerData = await getStreamerData(session.twitchUserId);
 
   if (!streamerData) {
     redirect("/dashboard");
   }
 
+  // Pass initial cards (first 12) from server
+  // サーバーから初期カード（最初の12件）を渡す
+  const initialCards = streamerData.cards.slice(0, 12) as Card[];
+  const totalCards = streamerData.cards.length;
+
   return (
     <CardManager
       streamerId={streamerData.streamer.id}
-      initialCards={streamerData.cards as Card[]}
+      initialCards={initialCards}
+      totalCards={totalCards}
       viewMode="list"
       showViewToggle={true}
-      enablePagination={true}
-      serverPagination={{
-        currentPage: streamerData.pagination.page,
-        totalPages: streamerData.pagination.totalPages,
-        total: streamerData.pagination.total,
-        perPage: streamerData.pagination.perPage,
-      }}
     />
   );
 }

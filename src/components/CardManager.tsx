@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UI_STRINGS, UPLOAD_CONFIG } from "@/lib/constants";
@@ -10,7 +9,6 @@ import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import ImageCropper from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
-import Pagination from "./Pagination";
 
 interface StorageStatus {
   userUsage: number;
@@ -38,71 +36,138 @@ interface TwitchEmote {
 }
 
 
-/**
- * Server-side pagination info
- * サーバーサイドページング情報
- */
-interface ServerPagination {
-  currentPage: number;
-  totalPages: number;
-  total: number;
-  perPage: number;
-}
-
 interface CardManagerProps {
   streamerId: string;
   initialCards: Card[];
+  // Total number of cards (for "Load More" functionality)
+  // カードの総数（「もっと読み込む」機能用）
+  totalCards?: number;
   // Initial view mode (default: 'thumbnail')
   // 初期表示モード（デフォルト: 'thumbnail'）
   viewMode?: ViewMode;
   // Whether to show view toggle buttons (default: false)
   // 表示切り替えボタンを表示するかどうか（デフォルト: false）
   showViewToggle?: boolean;
-  // Whether to enable pagination (default: false)
-  // ページネーションを有効にするかどうか（デフォルト: false）
-  enablePagination?: boolean;
-  // Number of cards per page for client-side pagination (default: 12)
-  // クライアントサイドページング用の1ページあたりのカード数（デフォルト: 12）
-  cardsPerPage?: number;
   // Maximum number of cards to display (for preview mode)
   // 表示するカードの最大数（プレビューモード用）
   maxCards?: number;
-  // Server-side pagination info (if provided, uses server pagination)
-  // サーバーサイドページング情報（指定された場合はサーバーページングを使用）
-  serverPagination?: ServerPagination;
 }
+
+const CARDS_PER_PAGE = 12;
 
 export default function CardManager({
   streamerId,
   initialCards,
+  totalCards: initialTotalCards,
   viewMode: initialViewMode = "thumbnail",
   showViewToggle = false,
-  enablePagination = false,
-  cardsPerPage = 12,
   maxCards,
-  serverPagination,
 }: CardManagerProps) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
   const [cards, setCards] = useState<Card[]>(initialCards);
+  const [totalCards, setTotalCards] = useState(initialTotalCards ?? initialCards.length);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
   const [currentViewMode, setCurrentViewMode] = useState<ViewMode>(initialViewMode);
-  // Current page for client-side pagination (1-indexed)
-  // クライアントサイドページネーション用の現在のページ（1始まり）
-  const [currentPage, setCurrentPage] = useState(1);
+  // Ref for infinite scroll trigger element
+  // 無限スクロールトリガー要素用のRef
+  const loadMoreRef = useRef<HTMLDivElement>(null);
 
   /**
-   * Handle server-side page change by updating URL
-   * URLを更新してサーバーサイドページ変更を処理
-   * scroll: false prevents scroll reset on page change
-   * scroll: false でページ変更時のスクロールリセットを防止
+   * Load more cards from API
+   * APIからさらにカードを読み込む
    */
-  const handleServerPageChange = useCallback((page: number) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("page", page.toString());
-    router.push(`?${params.toString()}`, { scroll: false });
-  }, [router, searchParams]);
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore || loadingAll || cards.length >= totalCards) return;
+
+    setLoadingMore(true);
+    try {
+      const response = await fetch(
+        `/api/cards?streamerId=${streamerId}&limit=${CARDS_PER_PAGE}&offset=${cards.length}&includeInactive=true`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setCards(prev => [...prev, ...data.cards]);
+        setTotalCards(data.pagination.total);
+      }
+    } catch (error) {
+      logger.error("Failed to load more cards:", error);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [streamerId, cards.length, totalCards, loadingMore, loadingAll]);
+
+  /**
+   * Load all remaining cards
+   * 残りの全カードを読み込む
+   */
+  const handleLoadAll = useCallback(async () => {
+    if (loadingMore || loadingAll || cards.length >= totalCards) return;
+
+    setLoadingAll(true);
+    try {
+      // Load all remaining cards in one request (max 50 per request)
+      // 残りの全カードを1リクエストで読み込む（最大50件/リクエスト）
+      const response = await fetch(
+        `/api/cards?streamerId=${streamerId}&limit=50&offset=${cards.length}&includeInactive=true`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setCards(prev => [...prev, ...data.cards]);
+        setTotalCards(data.pagination.total);
+
+        // If there are still more, load them too
+        // まだあれば続けて読み込む
+        if (data.pagination.hasMore) {
+          let currentOffset = cards.length + data.cards.length;
+          while (currentOffset < data.pagination.total) {
+            const moreResponse = await fetch(
+              `/api/cards?streamerId=${streamerId}&limit=50&offset=${currentOffset}&includeInactive=true`
+            );
+            if (moreResponse.ok) {
+              const moreData = await moreResponse.json();
+              setCards(prev => [...prev, ...moreData.cards]);
+              currentOffset += moreData.cards.length;
+              if (!moreData.pagination.hasMore) break;
+            } else {
+              break;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      logger.error("Failed to load all cards:", error);
+    } finally {
+      setLoadingAll(false);
+    }
+  }, [streamerId, cards.length, totalCards, loadingMore, loadingAll]);
+
+  /**
+   * Infinite scroll: Load more when scrolling near bottom
+   * 無限スクロール: 下端付近でスクロールしたら追加読み込み
+   */
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && !loadingMore && !loadingAll && cards.length < totalCards) {
+          handleLoadMore();
+        }
+      },
+      { threshold: 0.1, rootMargin: "100px" }
+    );
+
+    const currentRef = loadMoreRef.current;
+    if (currentRef) {
+      observer.observe(currentRef);
+    }
+
+    return () => {
+      if (currentRef) {
+        observer.unobserve(currentRef);
+      }
+    };
+  }, [handleLoadMore, loadingMore, loadingAll, cards.length, totalCards]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -954,43 +1019,10 @@ export default function CardManager({
       {/* Card List/Grid */}
       {/* カード一覧（リスト/グリッド） */}
       {(() => {
-        // Use server pagination if provided, otherwise client-side
-        // サーバーページングが提供されている場合はそれを使用、そうでなければクライアントサイド
-        const useServerPagination = !!serverPagination;
-
-        // For server pagination, cards are already paginated
-        // サーバーページングの場合、カードは既にページネーション済み
-        let displayCards = cards;
-
         // Apply maxCards limit if specified (for preview mode)
         // maxCardsが指定されている場合は制限を適用（プレビューモード用）
-        if (maxCards) {
-          displayCards = displayCards.slice(0, maxCards);
-        }
-
-        // Apply client-side pagination if enabled and not using server pagination
-        // サーバーページングを使用していない場合、クライアントサイドページネーションを適用
-        const totalPages = useServerPagination
-          ? serverPagination.totalPages
-          : enablePagination
-          ? Math.ceil(displayCards.length / cardsPerPage)
-          : 1;
-
-        const currentPageNum = useServerPagination
-          ? serverPagination.currentPage
-          : currentPage;
-
-        if (!useServerPagination && enablePagination && totalPages > 1) {
-          const startIndex = (currentPage - 1) * cardsPerPage;
-          const endIndex = startIndex + cardsPerPage;
-          displayCards = displayCards.slice(startIndex, endIndex);
-        }
-
-        // Handle page change based on pagination type
-        // ページネーションタイプに基づいてページ変更を処理
-        const onPageChange = useServerPagination
-          ? handleServerPageChange
-          : setCurrentPage;
+        const displayCards = maxCards ? cards.slice(0, maxCards) : cards;
+        const hasMore = cards.length < totalCards;
 
         if (cards.length === 0) {
           return (
@@ -1101,28 +1133,42 @@ export default function CardManager({
               </div>
             )}
 
-            {/* Pagination and total count display */}
-            {/* ページネーションと総数表示 */}
-            {enablePagination && (
-              <div className="mt-6 flex flex-col items-center gap-2">
-                {/* Total count display for server pagination */}
-                {/* サーバーページング用の総数表示 */}
-                {serverPagination && serverPagination.total > 0 && (
-                  <p className="text-sm text-gray-400">
-                    全 {serverPagination.total} 件中 {(serverPagination.currentPage - 1) * serverPagination.perPage + 1} - {Math.min(serverPagination.currentPage * serverPagination.perPage, serverPagination.total)} 件を表示
-                  </p>
-                )}
-                {/* Show pagination controls only when there are multiple pages */}
-                {/* 複数ページある場合のみページネーションコントロールを表示 */}
-                {totalPages > 1 && (
-                  <Pagination
-                    currentPage={currentPageNum}
-                    totalPages={totalPages}
-                    onPageChange={onPageChange}
-                  />
-                )}
-              </div>
-            )}
+            {/* Load status and Load All button */}
+            {/* 読み込み状態と全て読み込むボタン */}
+            <div className="mt-6 flex flex-col items-center gap-3">
+              <p className="text-sm text-gray-400">
+                {totalCards > 0
+                  ? `全 ${totalCards} 件中 ${Math.min(cards.length, totalCards)} 件を表示`
+                  : "カードがありません"}
+              </p>
+
+              {/* Loading indicator */}
+              {/* 読み込み中表示 */}
+              {(loadingMore || loadingAll) && (
+                <div className="flex items-center gap-2 text-gray-400">
+                  <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <span>{loadingAll ? "全て読み込み中..." : "読み込み中..."}</span>
+                </div>
+              )}
+
+              {/* Load All button */}
+              {/* 全て読み込むボタン */}
+              {hasMore && !loadingMore && !loadingAll && (
+                <button
+                  onClick={handleLoadAll}
+                  className="rounded-lg border border-gray-600 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700"
+                >
+                  全て読み込む（残り {totalCards - cards.length} 件）
+                </button>
+              )}
+
+              {/* Infinite scroll trigger */}
+              {/* 無限スクロールトリガー */}
+              {hasMore && <div ref={loadMoreRef} className="h-4" />}
+            </div>
           </>
         );
       })()}

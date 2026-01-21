@@ -145,13 +145,20 @@ export async function GET(request: NextRequest) {
   const session = await getSession();
   const { searchParams } = new URL(request.url);
   const streamerId = searchParams.get("streamerId");
+  // Pagination parameters
+  // ページネーションパラメータ
+  const limit = Math.min(parseInt(searchParams.get("limit") || "12", 10), 50);
+  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  // Include inactive cards (for card management)
+  // 非アクティブカードも含める（カード管理用）
+  const includeInactive = searchParams.get("includeInactive") === "true";
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
   const rateLimitResult = await checkRateLimit(rateLimits.cardsGet, identifier);
 
   if (!rateLimitResult.success) {
     return NextResponse.json<ApiRateLimitResponse>(
-      { 
+      {
         error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
         retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
       },
@@ -183,18 +190,38 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    const { data: cards, error } = await supabaseAdmin
+    // Single query with count and pagination
+    // カウントとページネーションを1クエリで取得
+    let query = supabaseAdmin
       .from("cards")
-      .select("id, streamer_id, name, description, image_url, rarity, drop_rate, created_at, updated_at")
+      .select("*", { count: "exact" })
       .eq("streamer_id", streamerId)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    // Only filter by is_active if not including inactive
+    // includeInactiveでない場合のみis_activeでフィルタ
+    if (!includeInactive) {
+      query = query.eq("is_active", true);
+    }
+
+    const { data: cards, error, count } = await query;
 
     if (error) {
       return handleDatabaseError(error, "Cards API: Failed to fetch cards");
     }
 
-    return NextResponse.json(cards);
+    // Return paginated response with metadata
+    // メタデータ付きのページネーションレスポンスを返す
+    return NextResponse.json({
+      cards: cards || [],
+      pagination: {
+        total: count || 0,
+        limit,
+        offset,
+        hasMore: (count || 0) > offset + limit,
+      },
+    });
   } catch (error) {
     return handleApiError(error, "Cards API: GET");
   }
