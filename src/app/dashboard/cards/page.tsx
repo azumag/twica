@@ -9,9 +9,9 @@ import type { Card } from "@/types/database";
 
 /**
  * Card management page for streamers
- * Initial cards are loaded server-side, then client handles "Load More"
+ * All cards are loaded server-side, with client-side sorting/filtering
  * 配信者向けカード管理ページ
- * 初期カードはサーバーサイドで読み込み、その後クライアントで「もっと読み込む」を処理
+ * 全カードはサーバーサイドで読み込み、クライアントサイドで並び替え/フィルタリング
  */
 export default async function CardsPage() {
   const session = await getSession();
@@ -37,16 +37,14 @@ export default async function CardsPage() {
     redirect("/dashboard");
   }
 
-  // Pass initial cards (first 12) from server
-  // サーバーから初期カード（最初の12件）を渡す
-  const initialCards = streamerData.cards.slice(0, 12) as Card[];
-  const totalCards = streamerData.cards.length;
+  // Pass all cards from server (no pagination)
+  // サーバーから全カードを渡す（ページネーションなし）
+  const initialCards = streamerData.cards as Card[];
 
   return (
     <CardManager
       streamerId={streamerData.streamer.id}
       initialCards={initialCards}
-      totalCards={totalCards}
       viewMode="list"
       showViewToggle={true}
     />

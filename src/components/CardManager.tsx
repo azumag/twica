@@ -39,9 +39,6 @@ interface TwitchEmote {
 interface CardManagerProps {
   streamerId: string;
   initialCards: Card[];
-  // Total number of cards (for "Load More" functionality)
-  // カードの総数（「もっと読み込む」機能用）
-  totalCards?: number;
   // Initial view mode (default: 'thumbnail')
   // 初期表示モード（デフォルト: 'thumbnail'）
   viewMode?: ViewMode;
@@ -65,26 +62,18 @@ type SortDirection = "asc" | "desc";
 // ステータスフィルターの選択肢
 type StatusFilter = "all" | "active" | "inactive";
 
-const CARDS_PER_PAGE = 12;
-
 export default function CardManager({
   streamerId,
   initialCards,
-  totalCards: initialTotalCards,
   viewMode: initialViewMode = "thumbnail",
   showViewToggle = false,
   maxCards,
 }: CardManagerProps) {
   const [cards, setCards] = useState<Card[]>(initialCards);
-  const [totalCards, setTotalCards] = useState(initialTotalCards ?? initialCards.length);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadingAll, setLoadingAll] = useState(false);
+  const [loading, setLoading] = useState(false);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
   const [currentViewMode, setCurrentViewMode] = useState<ViewMode>(initialViewMode);
-  // Ref for infinite scroll trigger element
-  // 無限スクロールトリガー要素用のRef
-  const loadMoreRef = useRef<HTMLDivElement>(null);
 
   // Sorting and filtering state
   // 並び替えとフィルタリングの状態
@@ -96,40 +85,36 @@ export default function CardManager({
   const isFirstRender = useRef(true);
 
   /**
-   * Build API URL with sort/filter parameters
-   * 並び替え/フィルターパラメータを含むAPI URLを構築
-   */
-  const buildApiUrl = useCallback((offset: number, limit: number) => {
-    const params = new URLSearchParams({
-      streamerId,
-      limit: String(limit),
-      offset: String(offset),
-      sortField,
-      sortDirection,
-      status: statusFilter,
-    });
-    return `/api/cards?${params.toString()}`;
-  }, [streamerId, sortField, sortDirection, statusFilter]);
-
-  /**
-   * Reload cards from server (called when sort/filter changes)
-   * カードをサーバーから再読み込み（並び替え/フィルター変更時に呼び出し）
+   * Reload all cards from server (called when sort/filter changes)
+   * サーバーから全カードを再読み込み（並び替え/フィルター変更時に呼び出し）
    */
   const reloadCards = useCallback(async () => {
-    setLoadingMore(true);
+    setLoading(true);
     try {
-      const response = await fetch(buildApiUrl(0, CARDS_PER_PAGE));
+      // Build API URL with sort/filter parameters, fetch all cards (limit=1000)
+      // 並び替え/フィルターパラメータでAPI URLを構築、全カードを取得（limit=1000）
+      const params = new URLSearchParams({
+        streamerId,
+        limit: "1000",
+        offset: "0",
+        sortField,
+        sortDirection,
+        status: statusFilter,
+      });
+      const url = `/api/cards?${params.toString()}`;
+      const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
         setCards(data.cards);
-        setTotalCards(data.pagination.total);
+      } else {
+        logger.error("[CardManager] reloadCards failed:", response.status);
       }
     } catch (error) {
       logger.error("Failed to reload cards:", error);
     } finally {
-      setLoadingMore(false);
+      setLoading(false);
     }
-  }, [buildApiUrl]);
+  }, [streamerId, sortField, sortDirection, statusFilter]);
 
   /**
    * Effect to reload cards when sort/filter parameters change
@@ -163,95 +148,6 @@ export default function CardManager({
     // カードは既にサーバーでソートされているのでそのまま返す
     return cards;
   }, [cards, statusFilter]);
-
-  /**
-   * Load more cards from API
-   * APIからさらにカードを読み込む
-   */
-  const handleLoadMore = useCallback(async () => {
-    if (loadingMore || loadingAll || cards.length >= totalCards) return;
-
-    setLoadingMore(true);
-    try {
-      const response = await fetch(buildApiUrl(cards.length, CARDS_PER_PAGE));
-      if (response.ok) {
-        const data = await response.json();
-        setCards(prev => [...prev, ...data.cards]);
-        setTotalCards(data.pagination.total);
-      }
-    } catch (error) {
-      logger.error("Failed to load more cards:", error);
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [buildApiUrl, cards.length, totalCards, loadingMore, loadingAll]);
-
-  /**
-   * Load all remaining cards
-   * 残りの全カードを読み込む
-   */
-  const handleLoadAll = useCallback(async () => {
-    if (loadingMore || loadingAll || cards.length >= totalCards) return;
-
-    setLoadingAll(true);
-    try {
-      // Load all remaining cards in one request (max 50 per request)
-      // 残りの全カードを1リクエストで読み込む（最大50件/リクエスト）
-      const response = await fetch(buildApiUrl(cards.length, 50));
-      if (response.ok) {
-        const data = await response.json();
-        setCards(prev => [...prev, ...data.cards]);
-        setTotalCards(data.pagination.total);
-
-        // If there are still more, load them too
-        // まだあれば続けて読み込む
-        if (data.pagination.hasMore) {
-          let currentOffset = cards.length + data.cards.length;
-          while (currentOffset < data.pagination.total) {
-            const moreResponse = await fetch(buildApiUrl(currentOffset, 50));
-            if (moreResponse.ok) {
-              const moreData = await moreResponse.json();
-              setCards(prev => [...prev, ...moreData.cards]);
-              currentOffset += moreData.cards.length;
-              if (!moreData.pagination.hasMore) break;
-            } else {
-              break;
-            }
-          }
-        }
-      }
-    } catch (error) {
-      logger.error("Failed to load all cards:", error);
-    } finally {
-      setLoadingAll(false);
-    }
-  }, [buildApiUrl, cards.length, totalCards, loadingMore, loadingAll]);
-
-  /**
-   * Infinite scroll: Load more when scrolling near bottom
-   * 無限スクロール: 下端付近でスクロールしたら追加読み込み
-   */
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && !loadingMore && !loadingAll && cards.length < totalCards) {
-          handleLoadMore();
-        }
-      },
-      { threshold: 0.1, rootMargin: "100px" }
-    );
-
-    const currentRef = loadMoreRef.current;
-    if (currentRef) {
-      observer.observe(currentRef);
-    }
-
-    return () => {
-      if (currentRef) {
-        observer.unobserve(currentRef);
-      }
-    };
-  }, [handleLoadMore, loadingMore, loadingAll, cards.length, totalCards]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1168,7 +1064,12 @@ export default function CardManager({
         // maxCardsが指定されている場合は制限を適用（プレビューモード用）
         // 並び替え/フィルタリングが適用されたfilteredAndSortedCardsを表示に使用
         const displayCards = maxCards ? filteredAndSortedCards.slice(0, maxCards) : filteredAndSortedCards;
-        const hasMore = cards.length < totalCards;
+
+        // Calculate total weight of all active cards for probability calculation
+        // 出現確率計算用の全アクティブカードの重み合計を計算
+        const totalActiveWeight = cards
+          .filter(c => c.is_active)
+          .reduce((sum, c) => sum + c.drop_rate, 0);
 
         if (cards.length === 0) {
           return (
@@ -1185,6 +1086,7 @@ export default function CardManager({
             {currentViewMode === "list" ? (
               <CardList
                 cards={displayCards}
+                totalActiveWeight={totalActiveWeight}
                 onEdit={handleEdit}
                 onDelete={handleDelete}
                 onToggleActive={handleToggleActive}
@@ -1279,43 +1181,26 @@ export default function CardManager({
               </div>
             )}
 
-            {/* Load status and Load All button */}
-            {/* 読み込み状態と全て読み込むボタン */}
+            {/* Card count and loading status */}
+            {/* カード件数と読み込み状態 */}
             <div className="mt-6 flex flex-col items-center gap-3">
               <p className="text-sm text-gray-400">
-                {totalCards > 0
-                  ? statusFilter !== "all" || cards.length !== filteredAndSortedCards.length
-                    ? `全 ${totalCards} 件中 ${filteredAndSortedCards.length} 件を表示（読込済み ${cards.length} 件）`
-                    : `全 ${totalCards} 件中 ${Math.min(cards.length, totalCards)} 件を表示`
+                {filteredAndSortedCards.length > 0
+                  ? `${filteredAndSortedCards.length} 件のカード`
                   : "カードがありません"}
               </p>
 
               {/* Loading indicator */}
               {/* 読み込み中表示 */}
-              {(loadingMore || loadingAll) && (
+              {loading && (
                 <div className="flex items-center gap-2 text-gray-400">
                   <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                   </svg>
-                  <span>{loadingAll ? "全て読み込み中..." : "読み込み中..."}</span>
+                  <span>読み込み中...</span>
                 </div>
               )}
-
-              {/* Load All button */}
-              {/* 全て読み込むボタン */}
-              {hasMore && !loadingMore && !loadingAll && (
-                <button
-                  onClick={handleLoadAll}
-                  className="rounded-lg border border-gray-600 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700"
-                >
-                  全て読み込む（残り {totalCards - cards.length} 件）
-                </button>
-              )}
-
-              {/* Infinite scroll trigger */}
-              {/* 無限スクロールトリガー */}
-              {hasMore && <div ref={loadMoreRef} className="h-4" />}
             </div>
           </>
         );

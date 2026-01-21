@@ -8,6 +8,9 @@ interface CardListProps {
   // Array of cards to display
   // 表示するカードの配列
   cards: Card[];
+  // Total weight of all active cards (for calculating actual probability)
+  // 全アクティブカードの重み合計（実際の出現確率計算用）
+  totalActiveWeight?: number;
   // Callback when edit button is clicked
   // 編集ボタンクリック時のコールバック
   onEdit?: (card: Card) => void;
@@ -35,11 +38,23 @@ const getRarityInfo = (rarity: Rarity) =>
  */
 export default function CardList({
   cards,
+  totalActiveWeight = 0,
   onEdit,
   onDelete,
   onToggleActive,
   showActions = true,
 }: CardListProps) {
+  /**
+   * Calculate actual probability for a card based on its weight and total active weight
+   * カードの重みと全アクティブ重みから実際の出現確率を計算
+   */
+  const calculateActualProbability = (dropRate: number, isActive: boolean): string => {
+    // Inactive cards don't contribute to probability
+    // 非アクティブカードは確率に寄与しない
+    if (!isActive || totalActiveWeight === 0) return "-";
+    const probability = (dropRate / totalActiveWeight) * 100;
+    return `${probability.toFixed(1)}%`;
+  };
   if (cards.length === 0) {
     return (
       <p className="text-center text-gray-400">
@@ -56,7 +71,8 @@ export default function CardList({
             <th className="px-4 py-3">画像</th>
             <th className="px-4 py-3">名前</th>
             <th className="px-4 py-3">レアリティ</th>
-            <th className="px-4 py-3">出現確率</th>
+            <th className="px-4 py-3">重み</th>
+            <th className="px-4 py-3">確率</th>
             <th className="px-4 py-3">ステータス</th>
             {showActions && <th className="px-4 py-3">操作</th>}
           </tr>
@@ -118,10 +134,16 @@ export default function CardList({
                   </span>
                 </td>
 
-                {/* Drop rate */}
-                {/* 出現確率 */}
+                {/* Drop weight (relative weight setting) */}
+                {/* 出現重み（相対的な重み設定値） */}
                 <td className="px-4 py-3 text-sm text-gray-300">
-                  {(card.drop_rate * 100).toFixed(1)}%
+                  {(card.drop_rate * 100).toFixed(1)}
+                </td>
+
+                {/* Actual probability (calculated from weights) */}
+                {/* 出現確率（重みから計算された実際の確率） */}
+                <td className="px-4 py-3 text-sm text-green-400 font-medium">
+                  {calculateActualProbability(card.drop_rate, card.is_active)}
                 </td>
 
                 {/* Status */}
