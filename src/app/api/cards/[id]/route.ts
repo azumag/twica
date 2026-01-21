@@ -113,10 +113,11 @@ export async function PUT(
       }
     }
 
-    // Verify ownership
+    // Verify ownership and get current image_url for cleanup
+    // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, streamers!inner(twitch_user_id)")
+      .select("streamer_id, image_url, streamers!inner(twitch_user_id)")
       .eq("id", id)
       .single();
 
@@ -141,6 +142,38 @@ export async function PUT(
     if (rarity !== undefined) updateData.rarity = rarity;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
     if (isActive !== undefined) updateData.is_active = isActive;
+
+    // Delete old image if imageUrl is being changed to a different URL
+    // imageUrlが異なるURLに変更される場合、古い画像を削除
+    const oldImageUrl = card.image_url;
+    const isImageChanging = imageUrl !== undefined && imageUrl !== oldImageUrl;
+
+    if (isImageChanging && oldImageUrl && isStorageUrl(oldImageUrl)) {
+      // Remove from DB and update usage
+      // DBから削除し使用量を更新
+      try {
+        await removeBlobFile(oldImageUrl);
+      } catch (dbError) {
+        logger.warn(`Failed to remove old image from DB: ${oldImageUrl}`, dbError);
+      }
+
+      // Delete from storage (R2 or Vercel Blob)
+      // ストレージから削除（R2またはVercel Blob）
+      try {
+        if (isR2Url(oldImageUrl)) {
+          const key = getR2KeyFromUrl(oldImageUrl);
+          if (key) {
+            await deleteFromR2(key);
+            logger.info(`Deleted old R2 image on update: ${oldImageUrl}`);
+          }
+        } else if (isVercelBlobUrl(oldImageUrl)) {
+          await del(oldImageUrl);
+          logger.info(`Deleted old Vercel Blob image on update: ${oldImageUrl}`);
+        }
+      } catch (storageError) {
+        logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
+      }
+    }
 
     const { data: updatedCard, error } = await supabaseAdmin
       .from("cards")
