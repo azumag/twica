@@ -478,8 +478,7 @@ export default function CardManager({
             </div>
           ) : (
             <p className="text-sm text-gray-400">
-              使用量: {storageStatus.userUsageFormatted} / {storageStatus.userLimitFormatted}
-              （全体: {storageStatus.globalUsageFormatted} / {storageStatus.globalLimitFormatted}）
+              画像使用量: {storageStatus.userUsageFormatted} / {storageStatus.userLimitFormatted}
             </p>
           )}
         </div>
