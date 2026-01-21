@@ -24,6 +24,18 @@ interface StorageStatus {
   message: string | null;
 }
 
+/**
+ * Twitch emote data structure
+ * Twitchエモートのデータ構造
+ */
+interface TwitchEmote {
+  id: string;
+  name: string;
+  imageUrl: string;
+  tier: string;
+  emoteType: string;
+}
+
 
 interface CardManagerProps {
   streamerId: string;
@@ -99,6 +111,21 @@ export default function CardManager({
   // トリミング済み画像のプレビューURL（メモリリーク防止のため別管理）
   const [croppedPreviewUrl, setCroppedPreviewUrl] = useState<string | null>(null);
 
+  // Emote import modal state
+  // エモートインポートモーダルの状態
+  const [showEmoteModal, setShowEmoteModal] = useState(false);
+  const [emotes, setEmotes] = useState<TwitchEmote[]>([]);
+  const [selectedEmotes, setSelectedEmotes] = useState<Set<string>>(new Set());
+  const [loadingEmotes, setLoadingEmotes] = useState(false);
+  const [emoteError, setEmoteError] = useState<string | null>(null);
+  const [creatingCards, setCreatingCards] = useState(false);
+  // Default rarity for emote cards
+  // エモートカードのデフォルトレアリティ
+  const [emoteDefaultRarity, setEmoteDefaultRarity] = useState<Rarity>("common");
+  // Default drop rate for emote cards
+  // エモートカードのデフォルト出現確率
+  const [emoteDefaultDropRate, setEmoteDefaultDropRate] = useState(0.25);
+
   // Fetch storage status
   // ストレージ状態を取得
   const fetchStorageStatus = useCallback(async () => {
@@ -118,6 +145,149 @@ export default function CardManager({
   useEffect(() => {
     fetchStorageStatus();
   }, [fetchStorageStatus]);
+
+  /**
+   * Fetch emotes from Twitch API
+   * Twitch APIからエモートを取得
+   */
+  const fetchEmotes = useCallback(async () => {
+    setLoadingEmotes(true);
+    setEmoteError(null);
+    try {
+      const response = await fetch("/api/twitch/emotes", {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "エモートの取得に失敗しました");
+      }
+      const data: TwitchEmote[] = await response.json();
+      setEmotes(data);
+    } catch (error) {
+      logger.error("Failed to fetch emotes:", error);
+      setEmoteError(error instanceof Error ? error.message : "エモートの取得に失敗しました");
+    } finally {
+      setLoadingEmotes(false);
+    }
+  }, []);
+
+  /**
+   * Get emotes that don't already exist as cards (by name comparison)
+   * 既存カード名と比較して、まだカードになっていないエモートを取得
+   */
+  const getAvailableEmotes = useCallback(() => {
+    const existingCardNames = new Set(cards.map(c => c.name.toLowerCase()));
+    return emotes.filter(emote => !existingCardNames.has(emote.name.toLowerCase()));
+  }, [emotes, cards]);
+
+  /**
+   * Toggle emote selection
+   * エモートの選択をトグル
+   */
+  const toggleEmoteSelection = (emoteId: string) => {
+    setSelectedEmotes(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(emoteId)) {
+        newSet.delete(emoteId);
+      } else {
+        newSet.add(emoteId);
+      }
+      return newSet;
+    });
+  };
+
+  /**
+   * Select all available emotes
+   * 利用可能な全エモートを選択
+   */
+  const selectAllEmotes = () => {
+    const availableEmotes = getAvailableEmotes();
+    setSelectedEmotes(new Set(availableEmotes.map(e => e.id)));
+  };
+
+  /**
+   * Deselect all emotes
+   * 全エモートの選択を解除
+   */
+  const deselectAllEmotes = () => {
+    setSelectedEmotes(new Set());
+  };
+
+  /**
+   * Create cards from selected emotes
+   * 選択したエモートからカードを作成
+   */
+  const createCardsFromEmotes = async () => {
+    if (selectedEmotes.size === 0) return;
+
+    setCreatingCards(true);
+    setEmoteError(null);
+
+    try {
+      // Get CSRF token from cookie
+      // CookieからCSRFトークンを取得
+      const csrfToken = document.cookie
+        .split("; ")
+        .find(row => row.startsWith("csrf_token="))
+        ?.split("=")[1];
+
+      const selectedEmoteData = emotes.filter(e => selectedEmotes.has(e.id));
+      const cardsToCreate = selectedEmoteData.map(emote => ({
+        name: emote.name,
+        imageUrl: emote.imageUrl,
+        rarity: emoteDefaultRarity,
+        dropRate: emoteDefaultDropRate,
+        description: `Twitchエモート: ${emote.name}`,
+      }));
+
+      const response = await fetch("/api/cards/batch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken || "",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          streamerId,
+          cards: cardsToCreate,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "カードの作成に失敗しました");
+      }
+
+      const result = await response.json();
+
+      // Add created cards to the list
+      // 作成したカードをリストに追加
+      if (result.cards) {
+        setCards(prev => [...result.cards, ...prev]);
+      }
+
+      // Close modal and reset state
+      // モーダルを閉じて状態をリセット
+      setShowEmoteModal(false);
+      setSelectedEmotes(new Set());
+    } catch (error) {
+      logger.error("Failed to create cards from emotes:", error);
+      setEmoteError(error instanceof Error ? error.message : "カードの作成に失敗しました");
+    } finally {
+      setCreatingCards(false);
+    }
+  };
+
+  /**
+   * Open emote import modal
+   * エモートインポートモーダルを開く
+   */
+  const openEmoteModal = () => {
+    setShowEmoteModal(true);
+    setSelectedEmotes(new Set());
+    setEmoteError(null);
+    fetchEmotes();
+  };
 
   // Calculate total weight and actual probability
   // 合計重みと実際の確率を計算
@@ -459,12 +629,22 @@ export default function CardManager({
     <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-white">{UI_STRINGS.CARD_MANAGER.TITLE}</h2>
-        <button
-          onClick={() => setShowForm(true)}
-          className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
-        >
-          {UI_STRINGS.CARD_MANAGER.ADD_NEW_CARD}
-        </button>
+        <div className="flex gap-2">
+          {/* Emote import button */}
+          {/* エモートインポートボタン */}
+          <button
+            onClick={openEmoteModal}
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition"
+          >
+            エモートからインポート
+          </button>
+          <button
+            onClick={() => setShowForm(true)}
+            className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
+          >
+            {UI_STRINGS.CARD_MANAGER.ADD_NEW_CARD}
+          </button>
+        </div>
       </div>
 
       {/* Storage usage info displayed at panel level */}
@@ -940,6 +1120,207 @@ export default function CardManager({
           onCropComplete={handleCropComplete}
           onCancel={handleCropCancel}
         />
+      )}
+
+      {/* Emote Import Modal */}
+      {/* エモートインポートモーダル */}
+      {showEmoteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setShowEmoteModal(false)}>
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-xl bg-gray-800 shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Modal Header */}
+            {/* モーダルヘッダー */}
+            <div className="p-6 border-b border-gray-700">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-white">エモートからカードを作成</h3>
+                <button
+                  onClick={() => setShowEmoteModal(false)}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <p className="mt-2 text-sm text-gray-400">
+                チャンネルのエモートを選択してカードを作成します。既にカードになっているエモートは除外されます。
+              </p>
+            </div>
+
+            {/* Modal Body */}
+            {/* モーダル本文 */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {/* Error message */}
+              {/* エラーメッセージ */}
+              {emoteError && (
+                <div className="mb-4 rounded-lg bg-red-900/30 border border-red-600/50 p-3 text-sm text-red-300">
+                  {emoteError}
+                </div>
+              )}
+
+              {/* Loading state */}
+              {/* ローディング状態 */}
+              {loadingEmotes && (
+                <div className="flex items-center justify-center py-12">
+                  <div className="text-gray-400">エモートを読み込み中...</div>
+                </div>
+              )}
+
+              {/* Emote list */}
+              {/* エモート一覧 */}
+              {!loadingEmotes && emotes.length > 0 && (
+                <>
+                  {/* Selection controls */}
+                  {/* 選択コントロール */}
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="text-sm text-gray-400">
+                      {getAvailableEmotes().length === 0 ? (
+                        "全てのエモートが既にカードになっています"
+                      ) : (
+                        <>
+                          {selectedEmotes.size} / {getAvailableEmotes().length} 件選択中
+                          {emotes.length !== getAvailableEmotes().length && (
+                            <span className="ml-2 text-yellow-400">
+                              （{emotes.length - getAvailableEmotes().length} 件は既存カードと重複）
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={selectAllEmotes}
+                        className="text-sm text-purple-400 hover:text-purple-300"
+                        disabled={getAvailableEmotes().length === 0}
+                      >
+                        全て選択
+                      </button>
+                      <span className="text-gray-600">|</span>
+                      <button
+                        onClick={deselectAllEmotes}
+                        className="text-sm text-purple-400 hover:text-purple-300"
+                      >
+                        選択解除
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Emote grid */}
+                  {/* エモートグリッド */}
+                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
+                    {emotes.map((emote) => {
+                      const isExisting = !getAvailableEmotes().find(e => e.id === emote.id);
+                      const isSelected = selectedEmotes.has(emote.id);
+                      return (
+                        <button
+                          key={emote.id}
+                          onClick={() => !isExisting && toggleEmoteSelection(emote.id)}
+                          disabled={isExisting}
+                          className={`relative rounded-lg p-2 transition ${
+                            isExisting
+                              ? "bg-gray-700/50 opacity-50 cursor-not-allowed"
+                              : isSelected
+                              ? "bg-purple-600 ring-2 ring-purple-400"
+                              : "bg-gray-700 hover:bg-gray-600"
+                          }`}
+                          title={isExisting ? "既にカードとして存在します" : emote.name}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={emote.imageUrl}
+                            alt={emote.name}
+                            className="w-full aspect-square object-contain"
+                          />
+                          <p className="mt-1 text-xs text-center text-gray-300 truncate">
+                            {emote.name}
+                          </p>
+                          {isExisting && (
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="bg-gray-900/80 px-2 py-1 rounded text-xs text-gray-400">
+                                作成済み
+                              </span>
+                            </div>
+                          )}
+                          {isSelected && (
+                            <div className="absolute top-1 right-1 bg-purple-500 rounded-full p-0.5">
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {/* No emotes state */}
+              {/* エモートがない状態 */}
+              {!loadingEmotes && emotes.length === 0 && !emoteError && (
+                <div className="text-center py-12 text-gray-400">
+                  チャンネルにエモートがありません。
+                  <br />
+                  Twitchアフィリエイト/パートナーでエモートを設定してください。
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            {/* モーダルフッター */}
+            <div className="p-6 border-t border-gray-700 bg-gray-800/50">
+              {/* Default settings for new cards */}
+              {/* 新規カードのデフォルト設定 */}
+              <div className="mb-4 grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">デフォルトレアリティ</label>
+                  <select
+                    value={emoteDefaultRarity}
+                    onChange={(e) => setEmoteDefaultRarity(e.target.value as Rarity)}
+                    className="w-full rounded-lg bg-gray-700 px-3 py-2 text-white text-sm"
+                  >
+                    {RARITIES.map((r) => (
+                      <option key={r.value} value={r.value}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">
+                    デフォルト重み: {(emoteDefaultDropRate * 100).toFixed(0)}%
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={emoteDefaultDropRate}
+                    onChange={(e) => setEmoteDefaultDropRate(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              {/* アクションボタン */}
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setShowEmoteModal(false)}
+                  className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
+                >
+                  キャンセル
+                </button>
+                <button
+                  onClick={createCardsFromEmotes}
+                  disabled={selectedEmotes.size === 0 || creatingCards}
+                  className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {creatingCards ? "作成中..." : `${selectedEmotes.size}件のカードを作成`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
