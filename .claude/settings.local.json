@@ -69,7 +69,10 @@
       "Bash(npx vitest run)",
       "Bash(git diff:*)",
       "Bash(vercel logs:*)",
-      "Bash(npx vercel:*)"
+      "Bash(npx vercel:*)",
+      "Bash(source .env.local)",
+      "Bash(export BLOB_READ_WRITE_TOKEN=\"vercel_blob_rw_lAxiX8RDazscyKzy_wBGTwkD70rT2K5NcEYJ77ooxtsLFuf\")",
+      "Skill(commit-push)"
     ]
   },
   "sandbox": {

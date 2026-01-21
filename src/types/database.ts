@@ -117,6 +117,9 @@ export interface Database {
           twitch_username: string
           twitch_display_name: string
           twitch_profile_image_url: string | null
+          // 利用規約同意日時 - NULLの場合は未同意
+          // Terms of Service acceptance timestamp - NULL means not yet accepted
+          tos_accepted_at: string | null
           created_at: string
           updated_at: string
         }
@@ -126,6 +129,7 @@ export interface Database {
           twitch_username: string
           twitch_display_name: string
           twitch_profile_image_url?: string | null
+          tos_accepted_at?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -135,6 +139,7 @@ export interface Database {
           twitch_username?: string
           twitch_display_name?: string
           twitch_profile_image_url?: string | null
+          tos_accepted_at?: string | null
           created_at?: string
           updated_at?: string
         }

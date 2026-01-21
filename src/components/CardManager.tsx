@@ -6,6 +6,10 @@ import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UI_STRINGS, UPLOAD_CONFIG } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
+import ImageCropper from "./ImageCropper";
+import CardViewToggle, { type ViewMode } from "./CardViewToggle";
+import CardList from "./CardList";
+import Pagination from "./Pagination";
 
 interface StorageStatus {
   userUsage: number;
@@ -24,13 +28,39 @@ interface StorageStatus {
 interface CardManagerProps {
   streamerId: string;
   initialCards: Card[];
+  // Initial view mode (default: 'thumbnail')
+  // 初期表示モード（デフォルト: 'thumbnail'）
+  viewMode?: ViewMode;
+  // Whether to show view toggle buttons (default: false)
+  // 表示切り替えボタンを表示するかどうか（デフォルト: false）
+  showViewToggle?: boolean;
+  // Whether to enable pagination (default: false)
+  // ページネーションを有効にするかどうか（デフォルト: false）
+  enablePagination?: boolean;
+  // Number of cards per page (default: 12)
+  // 1ページあたりのカード数（デフォルト: 12）
+  cardsPerPage?: number;
+  // Maximum number of cards to display (for preview mode)
+  // 表示するカードの最大数（プレビューモード用）
+  maxCards?: number;
 }
 
 export default function CardManager({
   streamerId,
   initialCards,
+  viewMode: initialViewMode = "thumbnail",
+  showViewToggle = false,
+  enablePagination = false,
+  cardsPerPage = 12,
+  maxCards,
 }: CardManagerProps) {
   const [cards, setCards] = useState<Card[]>(initialCards);
+  // Current view mode state (thumbnail or list)
+  // 現在の表示モード状態（サムネイルまたはリスト）
+  const [currentViewMode, setCurrentViewMode] = useState<ViewMode>(initialViewMode);
+  // Current page for pagination (1-indexed)
+  // ページネーション用の現在のページ（1始まり）
+  const [currentPage, setCurrentPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -56,6 +86,18 @@ export default function CardManager({
   // Storage status for upload limits
   // アップロード制限用のストレージ状態
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  // Image cropping modal state
+  // 画像トリミングモーダルの状態
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  // Original file selected for cropping (before crop)
+  // トリミング対象として選択されたオリジナルファイル（トリミング前）
+  const [selectedFileForCrop, setSelectedFileForCrop] = useState<File | null>(null);
+  // Cropped image file ready for upload
+  // アップロード準備完了のトリミング済み画像ファイル
+  const [croppedFile, setCroppedFile] = useState<File | null>(null);
+  // Preview URL for cropped image (managed separately to avoid memory leaks)
+  // トリミング済み画像のプレビューURL（メモリリーク防止のため別管理）
+  const [croppedPreviewUrl, setCroppedPreviewUrl] = useState<string | null>(null);
 
   // Fetch storage status
   // ストレージ状態を取得
@@ -151,6 +193,17 @@ export default function CardManager({
     setEditingCard(null);
     setShowForm(false);
     setUploadError(null);
+    // Reset cropping state
+    // トリミング状態をリセット
+    setCropModalOpen(false);
+    setSelectedFileForCrop(null);
+    setCroppedFile(null);
+    // Clean up preview URL to prevent memory leaks
+    // メモリリーク防止のためプレビューURLをクリーンアップ
+    if (croppedPreviewUrl) {
+      URL.revokeObjectURL(croppedPreviewUrl);
+      setCroppedPreviewUrl(null);
+    }
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -160,10 +213,57 @@ export default function CardManager({
     const file = e.target.files?.[0];
     setUploadError(null);
     if (file) {
-      const validation = validateUpload(file);
-      if (!validation.valid) {
-        setUploadError(getUploadErrorMessage(validation.error!));
+      // Only validate file type before cropping (skip size check)
+      // Cropped image will be compressed to 400x400 JPEG, so original size doesn't matter
+      // トリミング前はファイルタイプのみ検証（サイズチェックはスキップ）
+      // トリミング後は400x400 JPEGに圧縮されるため、元のサイズは問題にならない
+      const allowedTypes = UPLOAD_CONFIG.ALLOWED_TYPES as readonly string[];
+      if (!allowedTypes.includes(file.type)) {
+        setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
+        return;
       }
+      // Open cropping modal instead of direct upload
+      // 直接アップロードせずにトリミングモーダルを開く
+      setSelectedFileForCrop(file);
+      setCropModalOpen(true);
+    }
+  };
+
+  /**
+   * Handles the completion of image cropping
+   * 画像トリミング完了時の処理
+   * @param croppedBlob - The cropped image as a Blob
+   */
+  const handleCropComplete = (croppedBlob: Blob) => {
+    // Convert Blob to File with a proper filename for upload
+    // アップロード用に適切なファイル名でBlobをFileに変換
+    const croppedFileName = `cropped-${Date.now()}.jpg`;
+    const file = new File([croppedBlob], croppedFileName, { type: "image/jpeg" });
+    setCroppedFile(file);
+    // Create preview URL for the cropped image
+    // トリミング済み画像のプレビューURLを作成
+    const previewUrl = URL.createObjectURL(croppedBlob);
+    setCroppedPreviewUrl(previewUrl);
+    setCropModalOpen(false);
+    setSelectedFileForCrop(null);
+    // Clear the file input since we now have a cropped file
+    // トリミング済みファイルがあるのでファイル入力をクリア
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  /**
+   * Handles cancellation of image cropping
+   * 画像トリミングのキャンセル処理
+   */
+  const handleCropCancel = () => {
+    setCropModalOpen(false);
+    setSelectedFileForCrop(null);
+    // Clear the file input
+    // ファイル入力をクリア
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
   };
 
@@ -190,19 +290,26 @@ export default function CardManager({
     try {
       let finalImageUrl = formData.imageUrl;
 
+      // Prioritize cropped file over raw file input
+      // 生のファイル入力よりトリミング済みファイルを優先
+      const fileToUpload = croppedFile || fileInputRef.current?.files?.[0];
+
       // Handle file upload if a file is selected
-      if (fileInputRef.current?.files?.[0]) {
-        const file = fileInputRef.current.files[0];
-        
-        const validation = validateUpload(file);
-        if (!validation.valid) {
-          setUploadError(getUploadErrorMessage(validation.error!));
-          setSaving(false);
-          return;
+      // ファイルが選択されている場合はアップロード処理
+      if (fileToUpload) {
+        // Skip validation for cropped files (already validated before cropping)
+        // トリミング済みファイルはバリデーションをスキップ（トリミング前に検証済み）
+        if (!croppedFile) {
+          const validation = validateUpload(fileToUpload);
+          if (!validation.valid) {
+            setUploadError(getUploadErrorMessage(validation.error!));
+            setSaving(false);
+            return;
+          }
         }
 
         const formDataUpload = new FormData();
-        formDataUpload.append("file", file);
+        formDataUpload.append("file", fileToUpload);
 
         const uploadResponse = await fetch("/api/upload", {
           method: "POST",
@@ -431,7 +538,7 @@ export default function CardManager({
                       disabled={deletingImage}
                       className="rounded bg-red-500 px-3 py-1 text-sm text-white hover:bg-red-600 disabled:opacity-50"
                     >
-                      {deletingImage ? "削除中..." : "画像を削除"}
+                      {deletingImage ? "削除中..." : "削除"}
                     </button>
                   </div>
                 )}
@@ -454,9 +561,41 @@ export default function CardManager({
                   </p>
                 )}
 
+                {/* Show cropped image preview when a file has been cropped */}
+                {/* トリミング済みファイルがある場合はプレビュー表示 */}
+                {croppedFile && croppedPreviewUrl && (
+                  <div className="flex items-center gap-3 rounded-lg bg-green-900/30 border border-green-600/50 p-3">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={croppedPreviewUrl}
+                      alt="トリミング済みプレビュー"
+                      className="h-[60px] w-[60px] rounded object-cover"
+                    />
+                    <div className="flex-1">
+                      <p className="text-sm text-green-300">トリミング済み画像</p>
+                      <p className="text-xs text-gray-400">400x400px (JPEG)</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Clean up preview URL and reset cropped file
+                        // プレビューURLをクリーンアップしてトリミング済みファイルをリセット
+                        if (croppedPreviewUrl) {
+                          URL.revokeObjectURL(croppedPreviewUrl);
+                        }
+                        setCroppedPreviewUrl(null);
+                        setCroppedFile(null);
+                      }}
+                      className="rounded bg-red-500 px-3 py-1 text-sm text-white hover:bg-red-600"
+                    >
+                      取り消し
+                    </button>
+                  </div>
+                )}
+
                 {/* Show file input when no confirmed image or user has modified the field */}
                 {/* 確定済み画像がないか、ユーザーが操作した場合にファイル入力を表示 */}
-                {(!confirmedImageUrl || userModifiedImage) && (
+                {(!confirmedImageUrl || userModifiedImage) && !croppedFile && (
                   <>
                     <input
                       type="file"
@@ -472,7 +611,9 @@ export default function CardManager({
                       }`}
                     />
                     <p className="text-xs text-gray-500">
-                      {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.FORMATS}{UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.MAX_SIZE((UPLOAD_CONFIG.MAX_FILE_SIZE / (1024 * 1024)).toFixed(1) + 'MB')}
+                      {/* File size limit removed since cropping compresses to 400x400 JPEG */}
+                      {/* トリミングで400x400 JPEGに圧縮されるためファイルサイズ制限を削除 */}
+                      {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.FORMATS}（400x400にトリミング）
                     </p>
                     <input
                       type="url"
@@ -590,93 +731,155 @@ export default function CardManager({
         </div>
       )}
 
-      {/* Card List */}
-      {cards.length === 0 ? (
-        <p className="text-center text-gray-400">
-          {UI_STRINGS.CARD_MANAGER.MESSAGES.EMPTY_CARDS}
-        </p>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {cards.map((card) => {
-            const rarityInfo = getRarityInfo(card.rarity);
-            const isPaused = !card.is_active;
-            return (
-              <div
-                key={card.id}
-                className={`group relative overflow-hidden rounded-lg bg-gray-700 ${isPaused ? 'opacity-60' : ''}`}
-              >
-                {/* 一時停止中バッジ */}
-                {isPaused && (
-                  <div className="absolute top-0 left-0 right-0 bg-yellow-600 text-white text-xs text-center py-1 z-10">
-                    配布停止中
-                  </div>
-                )}
-                {/* 名前とレアリティを一番上に配置 */}
-                <div className={`p-3 pb-2 ${isPaused ? 'pt-8' : ''}`}>
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-white truncate">{card.name}</h3>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
-                    >
-                      {rarityInfo.label}
-                    </span>
-                  </div>
-                </div>
-                {/* 正方形画像（トリミング） */}
-                <div className="aspect-square bg-gray-600">
-                  {card.image_url ? (
-                    <Image
-                      src={card.image_url}
-                      alt={card.name}
-                      width={300}
-                      height={300}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-gray-500">
-                      {UI_STRINGS.CARD_MANAGER.MESSAGES.NO_IMAGE}
-                    </div>
-                  )}
-                </div>
-                {/* 説明は画像の下 */}
-                {card.description && (
-                  <div className="p-3 pt-2">
-                    <p className="text-sm text-gray-300 line-clamp-2">
-                      {card.description}
-                    </p>
-                  </div>
-                )}
-                {/* 操作ボタン */}
-                <div className="p-3 pt-0 flex gap-2 flex-wrap">
-                  {/* 配布停止/再開ボタン */}
-                  <button
-                    onClick={() => handleToggleActive(card)}
-                    className={`rounded px-2 py-1 text-xs text-white ${
-                      isPaused
-                        ? 'bg-green-600 hover:bg-green-700'
-                        : 'bg-yellow-600 hover:bg-yellow-700'
-                    }`}
-                  >
-                    {isPaused ? '配布再開' : '配布停止'}
-                  </button>
-                  <button
-                    onClick={() => handleEdit(card)}
-                    className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
-                  >
-                    {UI_STRINGS.CARD_MANAGER.BUTTONS.EDIT}
-                  </button>
-                  <button
-                    onClick={() => handleDelete(card.id)}
-                    className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
-                  >
-                    完全削除
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+      {/* View toggle (shown when showViewToggle is true) */}
+      {/* ビュートグル（showViewToggleがtrueの場合に表示） */}
+      {showViewToggle && cards.length > 0 && (
+        <div className="mb-4 flex justify-end">
+          <CardViewToggle
+            viewMode={currentViewMode}
+            onViewModeChange={setCurrentViewMode}
+          />
         </div>
       )}
+
+      {/* Card List/Grid */}
+      {/* カード一覧（リスト/グリッド） */}
+      {(() => {
+        // Apply maxCards limit if specified (for preview mode)
+        // maxCardsが指定されている場合は制限を適用（プレビューモード用）
+        let displayCards = maxCards ? cards.slice(0, maxCards) : cards;
+
+        // Apply pagination if enabled
+        // ページネーションが有効な場合は適用
+        const totalPages = enablePagination
+          ? Math.ceil(displayCards.length / cardsPerPage)
+          : 1;
+
+        if (enablePagination && totalPages > 1) {
+          const startIndex = (currentPage - 1) * cardsPerPage;
+          const endIndex = startIndex + cardsPerPage;
+          displayCards = displayCards.slice(startIndex, endIndex);
+        }
+
+        if (cards.length === 0) {
+          return (
+            <p className="text-center text-gray-400">
+              {UI_STRINGS.CARD_MANAGER.MESSAGES.EMPTY_CARDS}
+            </p>
+          );
+        }
+
+        return (
+          <>
+            {/* List view */}
+            {/* リスト表示 */}
+            {currentViewMode === "list" ? (
+              <CardList
+                cards={displayCards}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+                onToggleActive={handleToggleActive}
+                showActions={true}
+              />
+            ) : (
+              /* Thumbnail grid view */
+              /* サムネイルグリッド表示 */
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {displayCards.map((card) => {
+                  const rarityInfo = getRarityInfo(card.rarity);
+                  const isPaused = !card.is_active;
+                  return (
+                    <div
+                      key={card.id}
+                      className={`group relative overflow-hidden rounded-lg bg-gray-700 ${isPaused ? 'opacity-60' : ''}`}
+                    >
+                      {/* 一時停止中バッジ */}
+                      {isPaused && (
+                        <div className="absolute top-0 left-0 right-0 bg-yellow-600 text-white text-xs text-center py-1 z-10">
+                          配布停止中
+                        </div>
+                      )}
+                      {/* 名前とレアリティを一番上に配置 */}
+                      <div className={`p-3 pb-2 ${isPaused ? 'pt-8' : ''}`}>
+                        <div className="flex items-center justify-between">
+                          <h3 className="font-semibold text-white truncate">{card.name}</h3>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
+                          >
+                            {rarityInfo.label}
+                          </span>
+                        </div>
+                      </div>
+                      {/* 正方形画像（トリミング） */}
+                      <div className="aspect-square bg-gray-600">
+                        {card.image_url ? (
+                          <Image
+                            src={card.image_url}
+                            alt={card.name}
+                            width={300}
+                            height={300}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-gray-500">
+                            {UI_STRINGS.CARD_MANAGER.MESSAGES.NO_IMAGE}
+                          </div>
+                        )}
+                      </div>
+                      {/* 説明は画像の下 */}
+                      {card.description && (
+                        <div className="p-3 pt-2">
+                          <p className="text-sm text-gray-300 line-clamp-2">
+                            {card.description}
+                          </p>
+                        </div>
+                      )}
+                      {/* 操作ボタン */}
+                      <div className="p-3 pt-0 flex gap-2 flex-wrap">
+                        {/* 配布停止/再開ボタン */}
+                        <button
+                          onClick={() => handleToggleActive(card)}
+                          className={`rounded px-2 py-1 text-xs text-white ${
+                            isPaused
+                              ? 'bg-green-600 hover:bg-green-700'
+                              : 'bg-yellow-600 hover:bg-yellow-700'
+                          }`}
+                        >
+                          {isPaused ? '配布再開' : '配布停止'}
+                        </button>
+                        <button
+                          onClick={() => handleEdit(card)}
+                          className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
+                        >
+                          {UI_STRINGS.CARD_MANAGER.BUTTONS.EDIT}
+                        </button>
+                        <button
+                          onClick={() => handleDelete(card.id)}
+                          className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
+                        >
+                          完全削除
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Pagination (shown when enablePagination is true and there are multiple pages) */}
+            {/* ページネーション（enablePaginationがtrueで複数ページある場合に表示） */}
+            {enablePagination && totalPages > 1 && (
+              <div className="mt-6">
+                <Pagination
+                  currentPage={currentPage}
+                  totalPages={totalPages}
+                  onPageChange={setCurrentPage}
+                />
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* Drop Rate Info Modal */}
       {/* 出現確率説明モーダル */}
@@ -728,6 +931,16 @@ export default function CardManager({
             </button>
           </div>
         </div>
+      )}
+
+      {/* Image Cropper Modal */}
+      {/* 画像トリミングモーダル */}
+      {cropModalOpen && selectedFileForCrop && (
+        <ImageCropper
+          imageFile={selectedFileForCrop}
+          onCropComplete={handleCropComplete}
+          onCancel={handleCropCancel}
+        />
       )}
     </div>
   );

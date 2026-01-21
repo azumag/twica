@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { TwitchLoginButton } from '@/components/TwitchLoginButton'
 
 interface SessionData {
   twitchUserId: string
@@ -28,6 +27,8 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
     )
   }
 
+  // ログインユーザーの場合のみヘッダーに表示
+  // Only show header content for logged-in users
   if (session) {
     return (
       <div className="flex items-center gap-4">
@@ -49,9 +50,9 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
     )
   }
 
-  return (
-    <TwitchLoginButton
-      className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
-    />
-  )
+  // 未ログインユーザーの場合はヘッダーにはログインボタンを表示しない
+  // Don't show login button in header for logged-out users
+  // ログインボタンは画面中央のメインCTAエリアにのみ表示
+  // Login button is only shown in the main CTA area in the center of the page
+  return null
 }

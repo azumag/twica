@@ -439,7 +439,7 @@ export const UI_STRINGS = {
   },
 
   CHANNEL_POINT_SETTINGS: {
-    TITLE: 'チャネルポイント設定',
+    TITLE: 'カード引き換え設定',
     STATUS: {
       ACTIVE: '接続中',
       PENDING: '確認中',
@@ -462,7 +462,7 @@ export const UI_STRINGS = {
       '保存しました（EventSub登録完了）',
     ] as const,
     FORM_LABELS: {
-      SELECT_REWARD: '使用する報酬を選択',
+      SELECT_REWARD: 'カード引き換えに使用するチャネルポイント報酬を選択',
       NO_REWARDS: 'チャネルポイント報酬がありません。新しく作成しますか？',
       SELECTED: '選択中:',
       ID: 'ID:',
@@ -509,6 +509,68 @@ export const UI_STRINGS = {
   },
 
   DEVELOPMENT_NOTICE: {
-    TEXT: '⚠️ このサービスは現在開発初期段階です。一部の機能が正常に動作しない場合があります。',
+    TEXT: '⚠️ このサービスはβテスト中です。一部の機能が正常に動作しない場合があります。',
+  },
+
+  // Dashboard navigation and page strings
+  // ダッシュボードナビゲーションとページの文字列
+  DASHBOARD_NAV: {
+    OVERVIEW: '概要',
+    CARD_MANAGEMENT: 'カード管理',
+    SETTINGS: '配信設定',
+    COLLECTION: 'マイコレクション',
+  },
+
+  // Dashboard overview page strings
+  // ダッシュボード概要ページの文字列
+  DASHBOARD_OVERVIEW: {
+    TITLE: 'ダッシュボード',
+    RECENT_CARDS: '最近のカード',
+    VIEW_ALL_CARDS: 'すべてのカードを見る',
+    VIEW_ALL_COLLECTION: 'コレクションをすべて見る',
+    VIEW_SETTINGS: '配信設定を開く',
+    COLLECTION_SUMMARY: 'コレクション概要',
+    STREAMER_INFO: '配信者機能について',
+    STREAMER_INFO_TEXT: 'チャネルポイント報酬やカード管理機能を使用するには、Twitchアフィリエイトまたはパートナーである必要があります。',
+    NO_CARDS_YET: 'まだカードがありません',
+    CREATE_FIRST_CARD: '最初のカードを作成',
+    QUICK_LINKS: 'クイックリンク',
+  },
+
+  // Card view toggle strings
+  // カード表示切り替えの文字列
+  CARD_VIEW: {
+    THUMBNAIL: 'サムネイル',
+    LIST: 'リスト',
+  },
+
+  // Pagination strings
+  // ページネーションの文字列
+  PAGINATION: {
+    PREVIOUS: '前へ',
+    NEXT: '次へ',
+    PAGE_INFO: (current: number, total: number) => `${current} / ${total}`,
+    ITEMS_PER_PAGE: '件表示',
+  },
+
+  // Settings page strings
+  // 設定ページの文字列
+  SETTINGS_PAGE: {
+    TITLE: '配信設定',
+    DESCRIPTION: 'OBSオーバーレイとチャネルポイント報酬の設定を行います。',
+  },
+
+  // Cards page strings
+  // カードページの文字列
+  CARDS_PAGE: {
+    TITLE: 'カード管理',
+    DESCRIPTION: 'カードの作成、編集、削除を行います。',
+  },
+
+  // Collection page strings
+  // コレクションページの文字列
+  COLLECTION_PAGE: {
+    TITLE: 'マイコレクション',
+    DESCRIPTION: '獲得したカードを確認できます。',
   },
 } as const

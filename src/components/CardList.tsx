@@ -1,0 +1,190 @@
+"use client";
+
+import Image from "next/image";
+import type { Card, Rarity } from "@/types/database";
+import { RARITIES, UI_STRINGS } from "@/lib/constants";
+
+interface CardListProps {
+  // Array of cards to display
+  // 表示するカードの配列
+  cards: Card[];
+  // Callback when edit button is clicked
+  // 編集ボタンクリック時のコールバック
+  onEdit?: (card: Card) => void;
+  // Callback when delete button is clicked
+  // 削除ボタンクリック時のコールバック
+  onDelete?: (cardId: string) => void;
+  // Callback when toggle active button is clicked
+  // 有効/無効切り替えボタンクリック時のコールバック
+  onToggleActive?: (card: Card) => void;
+  // Whether to show action buttons (edit, delete, toggle)
+  // アクションボタン（編集、削除、切り替え）を表示するかどうか
+  showActions?: boolean;
+}
+
+/**
+ * Get rarity information (label and color) for a given rarity value
+ * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
+ */
+const getRarityInfo = (rarity: Rarity) =>
+  RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+
+/**
+ * List view component for displaying cards in a tabular format
+ * カードを表形式で表示するリストビューコンポーネント
+ */
+export default function CardList({
+  cards,
+  onEdit,
+  onDelete,
+  onToggleActive,
+  showActions = true,
+}: CardListProps) {
+  if (cards.length === 0) {
+    return (
+      <p className="text-center text-gray-400">
+        {UI_STRINGS.CARD_MANAGER.MESSAGES.EMPTY_CARDS}
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left">
+        <thead className="border-b border-gray-700 text-sm text-gray-400">
+          <tr>
+            <th className="px-4 py-3">画像</th>
+            <th className="px-4 py-3">名前</th>
+            <th className="px-4 py-3">レアリティ</th>
+            <th className="px-4 py-3">出現確率</th>
+            <th className="px-4 py-3">ステータス</th>
+            {showActions && <th className="px-4 py-3">操作</th>}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-700">
+          {cards.map((card) => {
+            const rarityInfo = getRarityInfo(card.rarity);
+            const isPaused = !card.is_active;
+
+            return (
+              <tr
+                key={card.id}
+                className={`hover:bg-gray-700/50 ${isPaused ? "opacity-60" : ""}`}
+              >
+                {/* Card image thumbnail */}
+                {/* カード画像サムネイル */}
+                <td className="px-4 py-3">
+                  <div className="h-12 w-12 overflow-hidden rounded bg-gray-600">
+                    {card.image_url ? (
+                      <Image
+                        src={card.image_url}
+                        alt={card.name}
+                        width={48}
+                        height={48}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-gray-500 text-xs">
+                        No img
+                      </div>
+                    )}
+                  </div>
+                </td>
+
+                {/* Card name and description */}
+                {/* カード名と説明 */}
+                <td className="px-4 py-3">
+                  <div>
+                    <p className="font-medium text-white">{card.name}</p>
+                    {card.description && (
+                      <p className="mt-0.5 text-xs text-gray-400 line-clamp-1">
+                        {card.description}
+                      </p>
+                    )}
+                  </div>
+                </td>
+
+                {/* Rarity badge */}
+                {/* レアリティバッジ */}
+                <td className="px-4 py-3">
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.color}`}
+                  >
+                    {rarityInfo.label}
+                  </span>
+                </td>
+
+                {/* Drop rate */}
+                {/* 出現確率 */}
+                <td className="px-4 py-3 text-sm text-gray-300">
+                  {(card.drop_rate * 100).toFixed(1)}%
+                </td>
+
+                {/* Status */}
+                {/* ステータス */}
+                <td className="px-4 py-3">
+                  {isPaused ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-yellow-500"></span>
+                      配布停止中
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-green-500/20 px-2 py-0.5 text-xs text-green-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-green-500"></span>
+                      配布中
+                    </span>
+                  )}
+                </td>
+
+                {/* Action buttons */}
+                {/* アクションボタン */}
+                {showActions && (
+                  <td className="px-4 py-3">
+                    <div className="flex gap-2">
+                      {/* Toggle active/paused */}
+                      {/* 有効/停止切り替え */}
+                      {onToggleActive && (
+                        <button
+                          onClick={() => onToggleActive(card)}
+                          className={`rounded px-2 py-1 text-xs text-white ${
+                            isPaused
+                              ? "bg-green-600 hover:bg-green-700"
+                              : "bg-yellow-600 hover:bg-yellow-700"
+                          }`}
+                        >
+                          {isPaused ? "再開" : "停止"}
+                        </button>
+                      )}
+
+                      {/* Edit button */}
+                      {/* 編集ボタン */}
+                      {onEdit && (
+                        <button
+                          onClick={() => onEdit(card)}
+                          className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
+                        >
+                          {UI_STRINGS.CARD_MANAGER.BUTTONS.EDIT}
+                        </button>
+                      )}
+
+                      {/* Delete button */}
+                      {/* 削除ボタン */}
+                      {onDelete && (
+                        <button
+                          onClick={() => onDelete(card.id)}
+                          className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
+                        >
+                          削除
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}

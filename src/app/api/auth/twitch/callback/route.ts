@@ -144,7 +144,35 @@ export async function GET(request: NextRequest) {
       twitchUserId: twitchUser.id,
     })
 
-    const redirectUrl = `${baseUrl}/dashboard`
+    // ユーザーがTOS（利用規約）に同意済みかチェック
+    // Check if user has accepted Terms of Service
+    let hasTosAccepted = false
+    try {
+      const { data: userData } = await supabaseAdmin
+        .from('users')
+        .select('tos_accepted_at')
+        .eq('twitch_user_id', twitchUser.id)
+        .single()
+
+      hasTosAccepted = userData?.tos_accepted_at !== null
+
+      logger.info('Auth callback: TOS acceptance check', {
+        twitchUserId: twitchUser.id,
+        hasTosAccepted,
+        tosAcceptedAt: userData?.tos_accepted_at,
+      })
+    } catch (error) {
+      // TOS確認エラーの場合もログイン自体は続行、TOSページへリダイレクト
+      // On TOS check error, continue with login but redirect to TOS page
+      logger.warn('Auth callback: Failed to check TOS acceptance', {
+        error,
+        twitchUserId: twitchUser.id,
+      })
+    }
+
+    // 未同意の場合は利用規約ページへ、同意済みの場合はダッシュボードへリダイレクト
+    // Redirect to TOS page if not accepted, otherwise to dashboard
+    const redirectUrl = hasTosAccepted ? `${baseUrl}/dashboard` : `${baseUrl}/tos`
 
     logger.info('Auth callback: Redirecting with session cookie', {
       twitchUserId: twitchUser.id,

@@ -3,7 +3,6 @@ import { del } from "@vercel/blob";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
-  validateDropRateSum,
   validateCardName,
   validateCardDescription,
   validateImageUrl,
@@ -131,19 +130,12 @@ export async function PUT(
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    // Validate drop rate sum
-    const dropRateValidation = await validateDropRateSum(
-      supabaseAdmin,
-      card.streamer_id,
-      dropRate,
-      id
-    );
-    if (!dropRateValidation.valid) {
-      return NextResponse.json(
-        { error: dropRateValidation.error },
-        { status: 400 }
-      );
-    }
+    // NOTE: Drop rate validation removed because the system uses relative weights
+    // The actual probability is calculated as: this_card_weight / total_weights
+    // So there's no need to limit the sum to 100% - weights are relative, not absolute percentages
+    // 注意: ドロップレート検証を削除。システムは相対重みを使用するため
+    // 実際の確率は「このカードの重み / 全体の重み」で計算される
+    // 重みは相対的であり絶対的な割合ではないため、合計100%制限は不要
 
     // 更新するフィールドを動的に構築（undefined のフィールドは更新しない）
     const updateData: Record<string, unknown> = {};
