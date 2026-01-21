@@ -1,4 +1,5 @@
 import { cookies } from 'next/headers'
+import { cache } from 'react'
 import { BROADCASTER_TYPE, COOKIE_NAMES, getDeleteCookieOptions } from './constants'
 import { logger } from './logger'
 
@@ -75,15 +76,17 @@ export function parseSession(raw: string): Session {
   }
 }
 
-export async function getSession(): Promise<Session | null> {
+/**
+ * Get session from cookies with request-level caching
+ * Using React.cache() to avoid duplicate session reads within the same request.
+ * Layout and page both call getSession(), but it will only execute once per request.
+ *
+ * React.cache()を使用してリクエスト内でセッションの重複読み取りを回避。
+ * レイアウトとページの両方がgetSession()を呼び出すが、リクエストごとに1回のみ実行される。
+ */
+export const getSession = cache(async (): Promise<Session | null> => {
   const cookieStore = await cookies()
   const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
-
-  // Debug: Log cookie presence
-  logger.info('[Session] getSession called', {
-    hasCookie: !!sessionCookie,
-    cookieLength: sessionCookie?.length || 0,
-  })
 
   if (!sessionCookie) {
     return null
@@ -92,14 +95,6 @@ export async function getSession(): Promise<Session | null> {
   try {
     const session = parseSession(sessionCookie)
 
-    // Debug: Log session expiration check
-    logger.info('[Session] Checking expiration', {
-      expiresAt: session.expiresAt,
-      now: Date.now(),
-      isExpired: Date.now() > session.expiresAt,
-      timeUntilExpiry: session.expiresAt - Date.now(),
-    })
-
     if (session.expiresAt && Date.now() > session.expiresAt) {
       logger.warn('[Session] Session expired, clearing')
       await clearSession();
@@ -107,7 +102,7 @@ export async function getSession(): Promise<Session | null> {
         const { clearCSRFToken } = await import('./csrf')
         await clearCSRFToken()
       } catch {
-        // CSRFトークンクリアはセッションクリリアの失敗を意味しない
+        // CSRFトークンクリアはセッションクリアの失敗を意味しない
       }
       return null;
     }
@@ -117,7 +112,7 @@ export async function getSession(): Promise<Session | null> {
     logger.error('[Session] Failed to parse session cookie:', error);
     return null
   }
-}
+})
 
 export function canUseStreamerFeatures(session: Session | null): boolean {
   if (!session) return false

@@ -2,13 +2,17 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
-import { setCSRFToken } from "@/lib/csrf";
 
 /**
  * Dashboard layout component
  * Provides shared layout for all dashboard pages including Header and Navigation
  * ダッシュボードレイアウトコンポーネント
  * HeaderとNavigationを含む全ダッシュボードページの共有レイアウトを提供
+ *
+ * Note: CSRF token is generated lazily on first POST request, not pre-generated here.
+ * This improves page load performance by avoiding unnecessary crypto operations on GET.
+ * CSRFトークンは最初のPOSTリクエスト時に遅延生成される（ここでは事前生成しない）。
+ * GETリクエストでの不要な暗号化処理を避けることでページ読み込みパフォーマンスが向上。
  */
 export default async function DashboardLayout({
   children,
@@ -23,15 +27,6 @@ export default async function DashboardLayout({
   // 未認証の場合はログインページにリダイレクト
   if (!session) {
     return <TwitchLoginRedirect />;
-  }
-
-  // Pre-generate CSRF token for form submissions
-  // フォーム送信用にCSRFトークンを事前生成
-  try {
-    await setCSRFToken();
-  } catch {
-    // Ignore errors - token will be generated lazily if needed
-    // エラーは無視 - 必要に応じてトークンは遅延生成される
   }
 
   // Check if user has streamer features (affiliate/partner)
