@@ -46,7 +46,8 @@ export async function uploadWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const blob = await put(fileName, buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, options as any)
+      // Cast options to PutBlobOptions to satisfy type requirements
+      const blob = await put(fileName, buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, options as Parameters<typeof put>[2])
       return { url: blob.url }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
