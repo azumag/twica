@@ -2,10 +2,10 @@ import { redirect } from "next/navigation";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
 import CardManager from "@/components/CardManager";
-import { UI_STRINGS } from "@/lib/constants";
 import type { Card } from "@/types/database";
 
-export const dynamic = "force-dynamic";
+// Note: Page is automatically dynamic due to cookies() usage in getSession()
+// cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
 /**
  * Card management page for streamers
@@ -38,27 +38,13 @@ export default async function CardsPage() {
   }
 
   return (
-    <div>
-      {/* Page header */}
-      {/* ページヘッダー */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white">
-          {UI_STRINGS.CARDS_PAGE.TITLE}
-        </h1>
-        <p className="mt-2 text-gray-400">
-          {UI_STRINGS.CARDS_PAGE.DESCRIPTION}
-        </p>
-      </div>
-
-      {/* Card manager with full features */}
-      {/* フル機能のカードマネージャー */}
-      <CardManager
-        streamerId={streamerData.streamer.id}
-        initialCards={streamerData.cards as Card[]}
-        showViewToggle={true}
-        enablePagination={true}
-        cardsPerPage={12}
-      />
-    </div>
+    <CardManager
+      streamerId={streamerData.streamer.id}
+      initialCards={streamerData.cards as Card[]}
+      viewMode="list"
+      showViewToggle={true}
+      enablePagination={true}
+      cardsPerPage={12}
+    />
   );
 }

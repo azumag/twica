@@ -1,21 +1,14 @@
 import Link from "next/link";
 import Image from "next/image";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getStreamerData, getUserCards } from "@/lib/dashboard-data";
+import { getUserCards } from "@/lib/dashboard-data";
 import { RARITY_ORDER, UI_STRINGS, RARITIES } from "@/lib/constants";
 import Stats from "@/components/Stats";
-import type { Card, Streamer } from "@/types/database";
+// Streamer type is used by getUserCards internally but not needed in this file
+// Streamer型はgetUserCards内部で使用されるが、このファイルでは不要
 
-export const dynamic = "force-dynamic";
-
-/**
- * Extended card interface with streamer and count information
- * 配信者情報と所持数を含む拡張カードインターフェース
- */
-interface CardWithDetails extends Card {
-  streamer: Streamer;
-  count: number;
-}
+// Note: Page is automatically dynamic due to cookies() usage in getSession()
+// cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
 /**
  * Dashboard overview page
@@ -33,9 +26,9 @@ export default async function DashboardPage() {
   }
 
   const isStreamer = canUseStreamerFeatures(session);
-  const streamerData = isStreamer
-    ? await getStreamerData(session.twitchUserId)
-    : null;
+
+  // Fetch user's card collection
+  // ユーザーのカードコレクションを取得（streamerDataは概要ページでは不要）
   const userCards = await getUserCards(session.twitchUserId);
 
   // Sort cards by rarity (legendary first)

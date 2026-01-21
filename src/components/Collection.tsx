@@ -1,7 +1,15 @@
 import Image from "next/image";
 import Stats from "./Stats";
 import type { Streamer, Card } from "@/types/database";
-import { UI_STRINGS } from "@/lib/constants";
+import { UI_STRINGS, RARITIES } from "@/lib/constants";
+import type { Rarity } from "@/types/database";
+
+/**
+ * Get rarity information (label and color) for a given rarity value
+ * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
+ */
+const getRarityInfo = (rarity: Rarity) =>
+  RARITIES.find((r) => r.value === rarity) || RARITIES[0];
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -58,49 +66,57 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
               </span>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-              {cards.map((card) => (
-                <div
-                  key={card.id}
-                  className="group relative overflow-hidden rounded-lg bg-gray-800"
-                >
-                  <div className="aspect-[3/4] bg-gray-700">
-                    {card.image_url ? (
-                      <Image
-                        src={card.image_url}
-                        alt={card.name}
-                        width={200}
-                        height={300}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-4xl">
-                        🎴
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {cards.map((card) => {
+                const rarityInfo = getRarityInfo(card.rarity);
+                return (
+                  <div
+                    key={card.id}
+                    className="group relative overflow-hidden rounded-lg bg-gray-700"
+                  >
+                    {/* 名前とレアリティを一番上に配置 */}
+                    <div className="p-3 pb-2">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-semibold text-white truncate">{card.name}</h3>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
+                        >
+                          {rarityInfo.label}
+                        </span>
                       </div>
-                    )}
-                  </div>
-                  <div className="p-3">
-                    <div className="mb-1 flex items-center justify-between">
-                      <h4 className="font-semibold text-white">{card.name}</h4>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs text-white bg-yellow-500`}
-                      >
-                        {card.rarity}
-                      </span>
                     </div>
-                    {card.description && (
-                      <p className="mb-2 text-xs text-gray-400 line-clamp-2">
-                        {card.description}
-                      </p>
-                    )}
-                    {card.count > 1 && (
-                      <div className="text-sm text-gray-400">
-                        {UI_STRINGS.COLLECTION.CARD_COUNT(card.count)}
-                      </div>
-                    )}
+                    {/* 正方形画像（トリミング） */}
+                    <div className="aspect-square bg-gray-600">
+                      {card.image_url ? (
+                        <Image
+                          src={card.image_url}
+                          alt={card.name}
+                          width={300}
+                          height={300}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-gray-500">
+                          画像なし
+                        </div>
+                      )}
+                    </div>
+                    {/* 説明とカウント */}
+                    <div className="p-3 pt-2">
+                      {card.description && (
+                        <p className="text-sm text-gray-300 line-clamp-2 mb-1">
+                          {card.description}
+                        </p>
+                      )}
+                      {card.count > 1 && (
+                        <div className="text-sm text-gray-400">
+                          {UI_STRINGS.COLLECTION.CARD_COUNT(card.count)}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ))

@@ -5,7 +5,8 @@ import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CopyButton from "@/components/CopyButton";
 import { UI_STRINGS } from "@/lib/constants";
 
-export const dynamic = "force-dynamic";
+// Note: Page is automatically dynamic due to cookies() usage in getSession()
+// cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
 /**
  * Settings page for streamers

@@ -4,7 +4,8 @@ import DevelopmentNotice from "@/components/DevelopmentNotice";
 import { TwitchLoginButtonWithIcon } from "@/components/TwitchLoginButton";
 import TopPageHeader from "@/components/TopPageHeader";
 
-export const dynamic = "force-dynamic";
+// Note: Page is automatically dynamic due to cookies() usage in getSession()
+// cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
 export default async function Home() {
   const session = await getSession();

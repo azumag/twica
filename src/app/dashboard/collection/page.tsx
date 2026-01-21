@@ -2,10 +2,10 @@ import { getSession } from "@/lib/session";
 import { getUserCards } from "@/lib/dashboard-data";
 import { RARITY_ORDER } from "@/lib/constants";
 import Collection from "@/components/Collection";
-import { UI_STRINGS } from "@/lib/constants";
 import type { Card, Streamer } from "@/types/database";
 
-export const dynamic = "force-dynamic";
+// Note: Page is automatically dynamic due to cookies() usage in getSession()
+// cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
 /**
  * Extended card interface with streamer and count information
@@ -67,22 +67,5 @@ export default async function CollectionPage() {
     common: userCards.filter((c) => c.rarity === "common").length,
   };
 
-  return (
-    <div>
-      {/* Page header */}
-      {/* ページヘッダー */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white">
-          {UI_STRINGS.COLLECTION_PAGE.TITLE}
-        </h1>
-        <p className="mt-2 text-gray-400">
-          {UI_STRINGS.COLLECTION_PAGE.DESCRIPTION}
-        </p>
-      </div>
-
-      {/* Collection component with full display */}
-      {/* フル表示のコレクションコンポーネント */}
-      <Collection cardsByStreamer={cardsByStreamer} stats={stats} />
-    </div>
-  );
+  return <Collection cardsByStreamer={cardsByStreamer} stats={stats} />;
 }
