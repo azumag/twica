@@ -62,9 +62,12 @@ export default function CardList({
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-700">
-          {cards.map((card) => {
+          {cards.map((card, index) => {
             const rarityInfo = getRarityInfo(card.rarity);
             const isPaused = !card.is_active;
+            // First 4 rows get priority for LCP optimization
+            // 最初の4行はLCP最適化のためpriority設定
+            const isPriority = index < 4;
 
             return (
               <tr
@@ -82,6 +85,7 @@ export default function CardList({
                         width={48}
                         height={48}
                         className="h-full w-full object-cover"
+                        priority={isPriority}
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-gray-500 text-xs">

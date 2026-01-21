@@ -964,9 +964,12 @@ export default function CardManager({
               /* Thumbnail grid view */
               /* サムネイルグリッド表示 */
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {displayCards.map((card) => {
+                {displayCards.map((card, index) => {
                   const rarityInfo = getRarityInfo(card.rarity);
                   const isPaused = !card.is_active;
+                  // First 4 cards get priority for LCP optimization
+                  // 最初の4枚のカードはLCP最適化のためpriority設定
+                  const isPriority = index < 4;
                   return (
                     <div
                       key={card.id}
@@ -998,6 +1001,7 @@ export default function CardManager({
                             width={300}
                             height={300}
                             className="w-full h-full object-cover"
+                            priority={isPriority}
                           />
                         ) : (
                           <div className="flex h-full items-center justify-center text-gray-500">
