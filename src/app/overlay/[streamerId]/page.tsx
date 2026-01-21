@@ -3,10 +3,17 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
-import type { Card } from "@/types/database";
+import type { Card, Rarity } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
-import { RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
+import { RARITIES, RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
+
+/**
+ * Get rarity information (label and color) for a given rarity value
+ * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
+ */
+const getRarityInfo = (rarity: Rarity) =>
+  RARITIES.find((r) => r.value === rarity) || RARITIES[0];
 
 interface GachaResult {
   card: Card;
@@ -180,6 +187,7 @@ export default function OverlayPage() {
 
   const rarityColor = RARITY_GRADIENT_COLORS[result.card.rarity];
   const rarityGlow = RARITY_GLOW[result.card.rarity];
+  const rarityInfo = getRarityInfo(result.card.rarity);
 
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
@@ -188,53 +196,57 @@ export default function OverlayPage() {
           showCard ? "scale-100 opacity-100" : "scale-50 opacity-0"
         }`}
       >
-        {/* Card Container */}
+        {/* Card Container - matches Collection style */}
         <div
           className={`relative w-80 overflow-hidden rounded-2xl bg-gradient-to-br ${rarityColor} p-1 shadow-2xl ${rarityGlow}`}
         >
-          <div className="rounded-xl bg-gray-900 p-4">
+          <div className="rounded-xl bg-gray-700 overflow-hidden">
             {/* User Info */}
-            <div className="mb-3 text-center">
+            <div className="bg-gray-800 py-2 text-center">
               <span className="text-sm text-gray-400">
                 {result.userTwitchUsername} が引いたカード
               </span>
             </div>
 
-            {/* Card Image */}
-            <div className="relative aspect-[3/4] overflow-hidden rounded-lg bg-gray-800">
+            {/* Card Name and Rarity - on top like Collection */}
+            <div className="p-3 pb-2">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold text-white truncate text-lg">
+                  {result.card.name}
+                </h2>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
+                >
+                  {rarityInfo.label}
+                </span>
+              </div>
+            </div>
+
+            {/* Card Image - square like Collection */}
+            <div className="aspect-square bg-gray-600">
               {result.card.image_url ? (
                 <Image
                   src={result.card.image_url}
                   alt={result.card.name}
                   width={300}
-                  height={400}
-                  className="h-full w-full object-cover"
+                  height={300}
+                  className="w-full h-full object-cover"
                 />
               ) : (
                 <div className="flex h-full items-center justify-center">
                   <span className="text-6xl">🎴</span>
                 </div>
               )}
-
-              {/* Rarity Badge */}
-              <div
-                className={`absolute right-2 top-2 rounded-full bg-gradient-to-r ${rarityColor} px-3 py-1 text-xs font-bold uppercase text-white shadow-lg`}
-              >
-                {result.card.rarity}
-              </div>
             </div>
 
-            {/* Card Info */}
-            <div className="mt-4 text-center">
-              <h2 className="text-2xl font-bold text-white">
-                {result.card.name}
-              </h2>
-              {result.card.description && (
-                <p className="mt-2 text-sm text-gray-400">
+            {/* Description - below image like Collection */}
+            {result.card.description && (
+              <div className="p-3 pt-2">
+                <p className="text-sm text-gray-300 line-clamp-2">
                   {result.card.description}
                 </p>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
 
