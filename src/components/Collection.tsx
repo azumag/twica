@@ -46,7 +46,11 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
           </p>
         </div>
       ) : (
-        Object.values(cardsByStreamer).map(({ streamer, cards }) => (
+        // Track global card index across all streamers for LCP priority
+        // 全配信者を通じてカードインデックスを追跡してLCP優先度を設定
+        (() => {
+          let globalCardIndex = 0;
+          return Object.values(cardsByStreamer).map(({ streamer, cards }) => (
           <div key={streamer.id} className="mb-8">
             <div className="mb-4 flex items-center gap-3">
               {streamer.twitch_profile_image_url && (
@@ -69,6 +73,10 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {cards.map((card) => {
                 const rarityInfo = getRarityInfo(card.rarity);
+                // First 4 cards get priority for LCP optimization
+                // 最初の4枚のカードはLCP最適化のためpriority設定
+                const isPriority = globalCardIndex < 4;
+                globalCardIndex++;
                 return (
                   <div
                     key={card.id}
@@ -94,6 +102,7 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
                           width={300}
                           height={300}
                           className="w-full h-full object-cover"
+                          priority={isPriority}
                         />
                       ) : (
                         <div className="flex h-full items-center justify-center text-gray-500">
@@ -119,7 +128,8 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
               })}
             </div>
           </div>
-        ))
+        ));
+        })()
       )}
     </section>
   );
