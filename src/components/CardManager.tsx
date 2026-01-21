@@ -457,7 +457,7 @@ export default function CardManager({
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-white">{UI_STRINGS.CARD_MANAGER.TITLE}</h2>
         <button
           onClick={() => setShowForm(true)}
@@ -466,6 +466,24 @@ export default function CardManager({
           {UI_STRINGS.CARD_MANAGER.ADD_NEW_CARD}
         </button>
       </div>
+
+      {/* Storage usage info displayed at panel level */}
+      {/* ストレージ使用量をパネルレベルで表示 */}
+      {storageStatus && (
+        <div className="mb-6">
+          {storageStatus.uploadDisabled && storageStatus.message ? (
+            <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-3 text-sm text-yellow-300">
+              <p className="font-medium mb-1">アップロード機能が制限されています</p>
+              <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400">
+              使用量: {storageStatus.userUsageFormatted} / {storageStatus.userLimitFormatted}
+              （全体: {storageStatus.globalUsageFormatted} / {storageStatus.globalLimitFormatted}）
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Card Form Modal */}
       {/* カードフォームモーダル */}
@@ -541,24 +559,6 @@ export default function CardManager({
                       {deletingImage ? "削除中..." : "削除"}
                     </button>
                   </div>
-                )}
-
-                {/* Storage limit warning */}
-                {/* ストレージ制限の警告 */}
-                {storageStatus?.uploadDisabled && storageStatus.message && (
-                  <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4 text-sm text-yellow-300">
-                    <p className="font-medium mb-2">アップロード機能が制限されています</p>
-                    <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
-                  </div>
-                )}
-
-                {/* Storage usage info */}
-                {/* ストレージ使用量の情報 */}
-                {storageStatus && !storageStatus.uploadDisabled && (
-                  <p className="text-xs text-gray-500">
-                    使用量: {storageStatus.userUsageFormatted} / {storageStatus.userLimitFormatted}
-                    （全体: {storageStatus.globalUsageFormatted} / {storageStatus.globalLimitFormatted}）
-                  </p>
                 )}
 
                 {/* Show cropped image preview when a file has been cropped */}
