@@ -97,8 +97,11 @@ export default async function DashboardPage() {
         {/* 最近のコレクションカードプレビュー */}
         {recentCards.length > 0 && (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {recentCards.map((card) => {
+            {recentCards.map((card, index) => {
               const rarityInfo = getRarityInfo(card.rarity);
+              // First 4 cards get priority for LCP optimization
+              // 最初の4枚のカードはLCP最適化のためpriority設定
+              const isPriority = index < 4;
               return (
                 <div
                   key={card.id}
@@ -112,6 +115,7 @@ export default async function DashboardPage() {
                         width={200}
                         height={200}
                         className="h-full w-full object-cover"
+                        priority={isPriority}
                       />
                     ) : (
                       <div className="flex h-full items-center justify-center text-4xl text-gray-600">
