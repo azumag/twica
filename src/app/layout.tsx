@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+// Vercel Analytics - ユーザー行動とパフォーマンスデータを収集してVercel Dashboardで可視化
+import { Analytics } from "@vercel/analytics/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,6 +33,8 @@ export default function RootLayout({
         <ErrorBoundary>
           {children}
         </ErrorBoundary>
+        {/* Vercel Analytics: ページビューとWeb Vitalsを自動収集 */}
+        <Analytics />
       </body>
     </html>
   );
