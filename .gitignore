@@ -58,3 +58,7 @@ supabase/.temp/
 
 # supabase backup
 .backup.sql
+
+# Dashboard
+dashboard/node_modules
+dashboard/dist
