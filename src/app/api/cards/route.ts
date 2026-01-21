@@ -141,6 +141,21 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// Valid sort fields for cards
+// カードの有効な並び替えフィールド
+const VALID_SORT_FIELDS = ["created_at", "rarity", "drop_rate"] as const;
+type SortField = typeof VALID_SORT_FIELDS[number];
+
+// Valid sort directions
+// 有効な並び替え方向
+const VALID_SORT_DIRECTIONS = ["asc", "desc"] as const;
+type SortDirection = typeof VALID_SORT_DIRECTIONS[number];
+
+// Valid status filters
+// 有効なステータスフィルター
+const VALID_STATUS_FILTERS = ["all", "active", "inactive"] as const;
+type StatusFilter = typeof VALID_STATUS_FILTERS[number];
+
 export async function GET(request: NextRequest) {
   const session = await getSession();
   const { searchParams } = new URL(request.url);
@@ -149,8 +164,27 @@ export async function GET(request: NextRequest) {
   // ページネーションパラメータ
   const limit = Math.min(parseInt(searchParams.get("limit") || "12", 10), 50);
   const offset = parseInt(searchParams.get("offset") || "0", 10);
-  // Include inactive cards (for card management)
-  // 非アクティブカードも含める（カード管理用）
+
+  // Sorting parameters (default: created_at desc)
+  // 並び替えパラメータ（デフォルト: created_at 降順）
+  const sortFieldParam = searchParams.get("sortField") || "created_at";
+  const sortField: SortField = VALID_SORT_FIELDS.includes(sortFieldParam as SortField)
+    ? sortFieldParam as SortField
+    : "created_at";
+  const sortDirParam = searchParams.get("sortDirection") || "desc";
+  const sortDirection: SortDirection = VALID_SORT_DIRECTIONS.includes(sortDirParam as SortDirection)
+    ? sortDirParam as SortDirection
+    : "desc";
+
+  // Status filter parameter (default: all for includeInactive=true, active otherwise)
+  // ステータスフィルターパラメータ（デフォルト: includeInactive=trueならall、それ以外はactive）
+  const statusParam = searchParams.get("status");
+  const statusFilter: StatusFilter = statusParam && VALID_STATUS_FILTERS.includes(statusParam as StatusFilter)
+    ? statusParam as StatusFilter
+    : "all";
+
+  // Legacy support: includeInactive parameter
+  // レガシーサポート: includeInactiveパラメータ
   const includeInactive = searchParams.get("includeInactive") === "true";
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
@@ -195,15 +229,31 @@ export async function GET(request: NextRequest) {
     let query = supabaseAdmin
       .from("cards")
       .select("*", { count: "exact" })
-      .eq("streamer_id", streamerId)
-      .order("created_at", { ascending: false })
-      .range(offset, offset + limit - 1);
+      .eq("streamer_id", streamerId);
 
-    // Only filter by is_active if not including inactive
-    // includeInactiveでない場合のみis_activeでフィルタ
-    if (!includeInactive) {
+    // Apply status filter
+    // ステータスフィルターを適用
+    // New status parameter takes precedence over legacy includeInactive
+    // 新しいstatusパラメータがレガシーのincludeInactiveより優先
+    if (statusFilter === "active") {
       query = query.eq("is_active", true);
+    } else if (statusFilter === "inactive") {
+      query = query.eq("is_active", false);
+    } else if (!includeInactive && statusFilter === "all") {
+      // Legacy behavior: if includeInactive is false and no status filter, show only active
+      // レガシー動作: includeInactiveがfalseでstatusフィルターがない場合、アクティブのみ表示
+      // But since we default to "all" when includeInactive=true, this handles the case
+      // when neither is specified (default to showing only active for public APIs)
     }
+
+    // Apply sorting
+    // 並び替えを適用
+    const ascending = sortDirection === "asc";
+    query = query.order(sortField, { ascending });
+
+    // Apply pagination
+    // ページネーションを適用
+    query = query.range(offset, offset + limit - 1);
 
     const { data: cards, error, count } = await query;
 

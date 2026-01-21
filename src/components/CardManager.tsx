@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UI_STRINGS, UPLOAD_CONFIG } from "@/lib/constants";
@@ -53,6 +53,18 @@ interface CardManagerProps {
   maxCards?: number;
 }
 
+// Sorting field options
+// 並び替えフィールドの選択肢
+type SortField = "created_at" | "rarity" | "drop_rate";
+
+// Sorting direction options
+// 並び替え方向の選択肢
+type SortDirection = "asc" | "desc";
+
+// Status filter options
+// ステータスフィルターの選択肢
+type StatusFilter = "all" | "active" | "inactive";
+
 const CARDS_PER_PAGE = 12;
 
 export default function CardManager({
@@ -74,6 +86,84 @@ export default function CardManager({
   // 無限スクロールトリガー要素用のRef
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
+  // Sorting and filtering state
+  // 並び替えとフィルタリングの状態
+  const [sortField, setSortField] = useState<SortField>("created_at");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // Track if this is the first render to skip initial reload
+  // 初回レンダリングかどうかを追跡して初期リロードをスキップ
+  const isFirstRender = useRef(true);
+
+  /**
+   * Build API URL with sort/filter parameters
+   * 並び替え/フィルターパラメータを含むAPI URLを構築
+   */
+  const buildApiUrl = useCallback((offset: number, limit: number) => {
+    const params = new URLSearchParams({
+      streamerId,
+      limit: String(limit),
+      offset: String(offset),
+      sortField,
+      sortDirection,
+      status: statusFilter,
+    });
+    return `/api/cards?${params.toString()}`;
+  }, [streamerId, sortField, sortDirection, statusFilter]);
+
+  /**
+   * Reload cards from server (called when sort/filter changes)
+   * カードをサーバーから再読み込み（並び替え/フィルター変更時に呼び出し）
+   */
+  const reloadCards = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const response = await fetch(buildApiUrl(0, CARDS_PER_PAGE));
+      if (response.ok) {
+        const data = await response.json();
+        setCards(data.cards);
+        setTotalCards(data.pagination.total);
+      }
+    } catch (error) {
+      logger.error("Failed to reload cards:", error);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [buildApiUrl]);
+
+  /**
+   * Effect to reload cards when sort/filter parameters change
+   * 並び替え/フィルターパラメータが変更されたらカードを再読み込み
+   */
+  useEffect(() => {
+    // Skip first render (use initialCards from props)
+    // 初回レンダリングはスキップ（propsのinitialCardsを使用）
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    reloadCards();
+  }, [sortField, sortDirection, statusFilter, reloadCards]);
+
+  /**
+   * Client-side filtering for optimistic updates
+   * Server handles sorting, client only filters for immediate UI feedback
+   * 楽観的更新用のクライアントサイドフィルタリング
+   * サーバーがソートを処理、クライアントは即時UIフィードバックのためフィルタリングのみ
+   */
+  const filteredAndSortedCards = useMemo(() => {
+    // Only apply client-side filter for optimistic updates (toggle active)
+    // 楽観的更新（アクティブ切り替え）用にクライアントサイドフィルターのみ適用
+    if (statusFilter === "active") {
+      return cards.filter(card => card.is_active);
+    } else if (statusFilter === "inactive") {
+      return cards.filter(card => !card.is_active);
+    }
+    // Cards are already sorted by server, just return as-is
+    // カードは既にサーバーでソートされているのでそのまま返す
+    return cards;
+  }, [cards, statusFilter]);
+
   /**
    * Load more cards from API
    * APIからさらにカードを読み込む
@@ -83,9 +173,7 @@ export default function CardManager({
 
     setLoadingMore(true);
     try {
-      const response = await fetch(
-        `/api/cards?streamerId=${streamerId}&limit=${CARDS_PER_PAGE}&offset=${cards.length}&includeInactive=true`
-      );
+      const response = await fetch(buildApiUrl(cards.length, CARDS_PER_PAGE));
       if (response.ok) {
         const data = await response.json();
         setCards(prev => [...prev, ...data.cards]);
@@ -96,7 +184,7 @@ export default function CardManager({
     } finally {
       setLoadingMore(false);
     }
-  }, [streamerId, cards.length, totalCards, loadingMore, loadingAll]);
+  }, [buildApiUrl, cards.length, totalCards, loadingMore, loadingAll]);
 
   /**
    * Load all remaining cards
@@ -109,9 +197,7 @@ export default function CardManager({
     try {
       // Load all remaining cards in one request (max 50 per request)
       // 残りの全カードを1リクエストで読み込む（最大50件/リクエスト）
-      const response = await fetch(
-        `/api/cards?streamerId=${streamerId}&limit=50&offset=${cards.length}&includeInactive=true`
-      );
+      const response = await fetch(buildApiUrl(cards.length, 50));
       if (response.ok) {
         const data = await response.json();
         setCards(prev => [...prev, ...data.cards]);
@@ -122,9 +208,7 @@ export default function CardManager({
         if (data.pagination.hasMore) {
           let currentOffset = cards.length + data.cards.length;
           while (currentOffset < data.pagination.total) {
-            const moreResponse = await fetch(
-              `/api/cards?streamerId=${streamerId}&limit=50&offset=${currentOffset}&includeInactive=true`
-            );
+            const moreResponse = await fetch(buildApiUrl(currentOffset, 50));
             if (moreResponse.ok) {
               const moreData = await moreResponse.json();
               setCards(prev => [...prev, ...moreData.cards]);
@@ -141,7 +225,7 @@ export default function CardManager({
     } finally {
       setLoadingAll(false);
     }
-  }, [streamerId, cards.length, totalCards, loadingMore, loadingAll]);
+  }, [buildApiUrl, cards.length, totalCards, loadingMore, loadingAll]);
 
   /**
    * Infinite scroll: Load more when scrolling near bottom
@@ -1005,14 +1089,74 @@ export default function CardManager({
         </div>
       )}
 
-      {/* View toggle (shown when showViewToggle is true) */}
-      {/* ビュートグル（showViewToggleがtrueの場合に表示） */}
-      {showViewToggle && cards.length > 0 && (
-        <div className="mb-4 flex justify-end">
-          <CardViewToggle
-            viewMode={currentViewMode}
-            onViewModeChange={setCurrentViewMode}
-          />
+      {/* Sorting, filtering, and view toggle controls */}
+      {/* 並び替え、フィルタリング、表示切り替えコントロール */}
+      {cards.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          {/* Sorting and filtering controls */}
+          {/* 並び替えとフィルタリングコントロール */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Sort field selector */}
+            {/* 並び替えフィールド選択 */}
+            <select
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value as SortField)}
+              className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600"
+            >
+              <option value="created_at">設定日</option>
+              <option value="rarity">レアリティ</option>
+              <option value="drop_rate">出現重み</option>
+            </select>
+
+            {/* Sort direction toggle */}
+            {/* 並び替え方向トグル */}
+            <button
+              onClick={() => setSortDirection(prev => prev === "asc" ? "desc" : "asc")}
+              className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600 hover:bg-gray-600 flex items-center gap-1"
+              title={sortDirection === "asc" ? "昇順" : "降順"}
+            >
+              {sortDirection === "asc" ? (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                  </svg>
+                  昇順
+                </>
+              ) : (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                  降順
+                </>
+              )}
+            </button>
+
+            {/* Separator */}
+            {/* 区切り線 */}
+            <div className="h-6 w-px bg-gray-600" />
+
+            {/* Status filter */}
+            {/* ステータスフィルター */}
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+              className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600"
+            >
+              <option value="all">全て</option>
+              <option value="active">配布中のみ</option>
+              <option value="inactive">配布停止のみ</option>
+            </select>
+          </div>
+
+          {/* View toggle (shown when showViewToggle is true) */}
+          {/* ビュートグル（showViewToggleがtrueの場合に表示） */}
+          {showViewToggle && (
+            <CardViewToggle
+              viewMode={currentViewMode}
+              onViewModeChange={setCurrentViewMode}
+            />
+          )}
         </div>
       )}
 
@@ -1020,8 +1164,10 @@ export default function CardManager({
       {/* カード一覧（リスト/グリッド） */}
       {(() => {
         // Apply maxCards limit if specified (for preview mode)
+        // Use filteredAndSortedCards for display with sorting/filtering applied
         // maxCardsが指定されている場合は制限を適用（プレビューモード用）
-        const displayCards = maxCards ? cards.slice(0, maxCards) : cards;
+        // 並び替え/フィルタリングが適用されたfilteredAndSortedCardsを表示に使用
+        const displayCards = maxCards ? filteredAndSortedCards.slice(0, maxCards) : filteredAndSortedCards;
         const hasMore = cards.length < totalCards;
 
         if (cards.length === 0) {
@@ -1138,7 +1284,9 @@ export default function CardManager({
             <div className="mt-6 flex flex-col items-center gap-3">
               <p className="text-sm text-gray-400">
                 {totalCards > 0
-                  ? `全 ${totalCards} 件中 ${Math.min(cards.length, totalCards)} 件を表示`
+                  ? statusFilter !== "all" || cards.length !== filteredAndSortedCards.length
+                    ? `全 ${totalCards} 件中 ${filteredAndSortedCards.length} 件を表示（読込済み ${cards.length} 件）`
+                    : `全 ${totalCards} 件中 ${Math.min(cards.length, totalCards)} 件を表示`
                   : "カードがありません"}
               </p>
 
