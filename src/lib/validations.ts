@@ -68,7 +68,16 @@ export function validateCardDescription(description: unknown): { valid: boolean;
 }
 
 // Allowed image extensions for external URLs
-const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png']
+// 外部URLの許可された画像拡張子
+const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+
+// Trusted image CDN domains that don't require extension validation
+// 拡張子検証が不要な信頼できる画像CDNドメイン
+const TRUSTED_IMAGE_DOMAINS = [
+  'static-cdn.jtvnw.net',     // Twitch emotes
+  'blob.vercel-storage.com',  // Vercel Blob storage
+  'public.blob.vercel-storage.com', // Vercel Blob public storage
+]
 
 export function validateImageUrl(imageUrl: unknown): { valid: boolean; error?: string } {
   if (imageUrl === null || imageUrl === undefined) {
@@ -80,6 +89,7 @@ export function validateImageUrl(imageUrl: unknown): { valid: boolean; error?: s
   }
 
   // Empty string is allowed (means no image)
+  // 空文字列は許可（画像なしを意味する）
   if (imageUrl.trim() === '') {
     return { valid: true }
   }
@@ -88,11 +98,23 @@ export function validateImageUrl(imageUrl: unknown): { valid: boolean; error?: s
     const url = new URL(imageUrl)
 
     // Only allow HTTPS protocol
+    // HTTPSプロトコルのみ許可
     if (url.protocol !== 'https:') {
       return { valid: false, error: ERROR_MESSAGES.INVALID_IMAGE_URL }
     }
 
-    // Check file extension (jpg, jpeg, png only)
+    // Skip extension check for trusted CDN domains
+    // 信頼できるCDNドメインの場合は拡張子チェックをスキップ
+    const isTrustedDomain = TRUSTED_IMAGE_DOMAINS.some(domain =>
+      url.hostname === domain || url.hostname.endsWith('.' + domain)
+    )
+
+    if (isTrustedDomain) {
+      return { valid: true }
+    }
+
+    // Check file extension for other domains
+    // その他のドメインはファイル拡張子をチェック
     const pathname = url.pathname.toLowerCase()
     const hasValidExtension = ALLOWED_IMAGE_EXTENSIONS.some((ext) =>
       pathname.endsWith(ext)
@@ -101,9 +123,6 @@ export function validateImageUrl(imageUrl: unknown): { valid: boolean; error?: s
     if (!hasValidExtension) {
       return { valid: false, error: ERROR_MESSAGES.INVALID_IMAGE_URL }
     }
-
-    // TODO: Future enhancement - validate that the URL actually returns an image
-    // by checking Content-Type header or fetching and validating magic bytes
 
     return { valid: true }
   } catch {
