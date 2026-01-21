@@ -275,7 +275,8 @@ describe('POST /api/upload', () => {
       expect(body.url).toBe('https://blob.vercel-storage.com/test-image.jpg')
       expect(mockUploadWithRetry).toHaveBeenCalled()
       // First argument should be the filename pattern
-      expect(mockUploadWithRetry.mock.calls[0][0]).toMatch(/^[a-f0-9]{16}\.jpg$/)
+      // Filename format: {userPrefix(8chars)}_{uniqueSuffix(8chars)}.{ext}
+      expect(mockUploadWithRetry.mock.calls[0][0]).toMatch(/^[a-f0-9]{8}_[a-f0-9]{8}\.jpg$/)
       // Second argument should be Buffer or Uint8Array-like (file contents)
       const fileArg = mockUploadWithRetry.mock.calls[0][1]
       expect(fileArg).toBeDefined()
