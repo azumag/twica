@@ -7,7 +7,7 @@ import type { Card } from "@/types/database";
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
-const CARDS_PER_PAGE = 8;
+const CARDS_PER_PAGE = 12;
 
 /**
  * Card management page for streamers with server-side pagination

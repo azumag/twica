@@ -95,11 +95,13 @@ export default function CardManager({
   /**
    * Handle server-side page change by updating URL
    * URLを更新してサーバーサイドページ変更を処理
+   * scroll: false prevents scroll reset on page change
+   * scroll: false でページ変更時のスクロールリセットを防止
    */
   const handleServerPageChange = useCallback((page: number) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("page", page.toString());
-    router.push(`?${params.toString()}`);
+    router.push(`?${params.toString()}`, { scroll: false });
   }, [router, searchParams]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
