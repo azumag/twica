@@ -160,7 +160,6 @@ export default function CardManager({
   });
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [deletingImage, setDeletingImage] = useState(false);
   // Separate state for confirmed image URL (only update on blur)
   // プレビュー表示用の確定済み画像URL（フォーカスが外れた時のみ更新）
   const [confirmedImageUrl, setConfirmedImageUrl] = useState("");
@@ -176,6 +175,9 @@ export default function CardManager({
   // Loading state for storage status refresh
   // ストレージ状態更新中のローディング状態
   const [storageLoading, setStorageLoading] = useState(false);
+  // Pending image deletion URL (deleted on form submit, not immediately)
+  // 削除予定の画像URL（即座に削除せず、フォーム送信時に削除）
+  const [pendingDeleteUrl, setPendingDeleteUrl] = useState<string | null>(null);
   // Image cropping modal state
   // 画像トリミングモーダルの状態
   const [cropModalOpen, setCropModalOpen] = useState(false);
@@ -399,33 +401,29 @@ export default function CardManager({
     }
   };
 
-  // Handle image removal
-  // 画像削除処理
-  const handleRemoveImage = async () => {
+  // Helper function to check if URL is a storage URL
+  // URLがストレージURLかどうかをチェックするヘルパー関数
+  const isStorageUrl = (url: string): boolean => {
+    return url.includes("blob.vercel-storage.com") ||
+           url.includes("public.blob.vercel-storage.com") ||
+           url.includes(".r2.dev") ||
+           url.includes("r2.cloudflarestorage.com") ||
+           url.includes("image.twica.bluemoon.works");
+  };
+
+  // Handle image removal (deferred until form submit)
+  // 画像削除処理（フォーム送信時まで遅延）
+  const handleRemoveImage = () => {
     if (!confirmedImageUrl) return;
 
-    // Only delete from storage if it's a storage URL (R2 or Vercel Blob)
-    // ストレージURL（R2またはVercel Blob）の場合のみストレージから削除
-    const isStorageUrl = confirmedImageUrl.includes("blob.vercel-storage.com") ||
-                         confirmedImageUrl.includes("public.blob.vercel-storage.com") ||
-                         confirmedImageUrl.includes(".r2.dev") ||
-                         confirmedImageUrl.includes("r2.cloudflarestorage.com") ||
-                         confirmedImageUrl.includes("image.twica.bluemoon.works");
-
-    if (isStorageUrl) {
-      setDeletingImage(true);
-      const deleted = await deleteImage(confirmedImageUrl);
-      setDeletingImage(false);
-
-      if (!deleted) {
-        setUploadError("画像の削除に失敗しました");
-        return;
-      }
-      // Refresh storage status after successful deletion
-      // 削除成功後にストレージ状態を更新
-      fetchStorageStatus();
+    // Mark for deletion on submit if it's a storage URL
+    // ストレージURLの場合は送信時に削除するようマーク
+    if (isStorageUrl(confirmedImageUrl)) {
+      setPendingDeleteUrl(confirmedImageUrl);
     }
 
+    // Clear UI immediately (actual deletion happens on submit)
+    // UIは即座にクリア（実際の削除は送信時）
     setFormData({ ...formData, imageUrl: "" });
     setConfirmedImageUrl("");
     setUserModifiedImage(true);
@@ -447,6 +445,9 @@ export default function CardManager({
     setEditingCard(null);
     setShowForm(false);
     setUploadError(null);
+    // Clear pending deletion (cancelled by closing modal)
+    // 削除予定をクリア（モーダルを閉じてキャンセル）
+    setPendingDeleteUrl(null);
     // Reset cropping state
     // トリミング状態をリセット
     setCropModalOpen(false);
@@ -831,10 +832,9 @@ export default function CardManager({
                     <button
                       type="button"
                       onClick={handleRemoveImage}
-                      disabled={deletingImage}
-                      className="rounded bg-red-500 px-3 py-1 text-sm text-white hover:bg-red-600 disabled:opacity-50"
+                      className="rounded bg-red-500 px-3 py-1 text-sm text-white hover:bg-red-600"
                     >
-                      {deletingImage ? "削除中..." : "削除"}
+                      削除
                     </button>
                   </div>
                 )}
