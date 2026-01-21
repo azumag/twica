@@ -14,14 +14,10 @@ import { extractTwitchUserId } from "@/types/database";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { logger } from "@/lib/logger";
+import { deleteFromR2 } from "@/lib/r2-client";
+import { removeBlobFile } from "@/lib/storage-db";
+import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import type { ApiRateLimitResponse } from "@/types/api";
-
-// Helper function to check if URL is a Vercel Blob URL
-// URLがVercel BlobのURLかどうかを確認するヘルパー関数
-function isVercelBlobUrl(url: string | null): boolean {
-  if (!url) return false;
-  return url.includes("blob.vercel-storage.com") || url.includes("public.blob.vercel-storage.com");
-}
 
 export async function PUT(
   request: NextRequest,
@@ -220,16 +216,34 @@ export async function DELETE(
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    // Delete image from Vercel Blob if it exists
-    // Vercel Blobから画像を削除（存在する場合）
-    if (isVercelBlobUrl(card.image_url)) {
+    // Delete image from storage if it exists (R2 or Vercel Blob)
+    // ストレージから画像を削除（存在する場合、R2またはVercel Blob）
+    if (card.image_url && isStorageUrl(card.image_url)) {
       try {
-        await del(card.image_url);
-        logger.info(`Deleted blob image: ${card.image_url}`);
-      } catch (blobError) {
-        // Log but don't fail the card deletion if blob deletion fails
-        // Blob削除が失敗してもカード削除は続行（ログのみ記録）
-        logger.warn(`Failed to delete blob image: ${card.image_url}`, blobError);
+        // DBからファイル情報を削除し、使用量を減算
+        await removeBlobFile(card.image_url);
+      } catch (dbError) {
+        // DB操作に失敗しても続行
+        logger.warn(`Failed to remove blob file from DB: ${card.image_url}`, dbError);
+      }
+
+      try {
+        if (isR2Url(card.image_url)) {
+          // R2から削除
+          const key = getR2KeyFromUrl(card.image_url);
+          if (key) {
+            await deleteFromR2(key);
+            logger.info(`Deleted R2 image: ${card.image_url}`);
+          }
+        } else if (isVercelBlobUrl(card.image_url)) {
+          // Vercel Blobから削除（既存データ用）
+          await del(card.image_url);
+          logger.info(`Deleted Vercel Blob image: ${card.image_url}`);
+        }
+      } catch (storageError) {
+        // Log but don't fail the card deletion if storage deletion fails
+        // ストレージ削除が失敗してもカード削除は続行（ログのみ記録）
+        logger.warn(`Failed to delete storage image: ${card.image_url}`, storageError);
       }
     }
 

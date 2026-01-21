@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { getSession } from '@/lib/session';
-import { handleApiError, handleBlobError, uploadWithRetry } from '@/lib/error-handler';
+import { handleApiError, handleBlobError } from '@/lib/error-handler';
 import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
 import { ERROR_MESSAGES, UPLOAD_CONFIG, STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
 import { getFileTypeFromBuffer, getFileExtension, isValidExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger';
 import { validateCSRFToken } from '@/lib/csrf';
-import { getStorageUsage } from '@/lib/storage-usage';
+import { uploadToR2WithRetry } from '@/lib/r2-client';
+import { getStorageUsageFromDB, recordBlobFile } from '@/lib/storage-db';
 import type { Session } from '@/lib/session';
 
 interface ValidateRequestResult {
@@ -101,12 +102,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   // Check storage limits before processing file
   // ファイル処理前にストレージ制限をチェック
+  // DB経由で使用量を取得（list()を使わないため操作数を節約）
   const userPrefix = createHash('sha256')
     .update(session!.twitchUserId)
     .digest('hex')
     .substring(0, 8);
 
-  const storageUsage = await getStorageUsage(userPrefix);
+  const storageUsage = await getStorageUsageFromDB(userPrefix);
 
   if (storageUsage.globalLimitReached) {
     return NextResponse.json(
@@ -154,9 +156,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // User prefix for tracking uploads per user (must match storage-usage.ts)
-    // ユーザー別アップロード追跡用プレフィックス（storage-usage.tsと一致させる）
-    const userPrefix = createHash('sha256')
+    // User prefix for tracking uploads per user (must match storage-db.ts)
+    // ユーザー別アップロード追跡用プレフィックス（storage-db.tsと一致させる）
+    const userPrefixForFile = createHash('sha256')
       .update(session!.twitchUserId)
       .digest('hex')
       .substring(0, 8);
@@ -167,31 +169,44 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .substring(0, 8);
 
     // Format: {userPrefix}_{uniqueSuffix}.{ext}
-    fileName = `${userPrefix}_${uniqueSuffix}.${ext}`;
+    fileName = `${userPrefixForFile}_${uniqueSuffix}.${ext}`;
 
-    const uploadResult = await uploadWithRetry(fileName, buffer, { access: 'public' });
+    // R2にアップロード（Vercel Blobの代わり）
+    const uploadResult = await uploadToR2WithRetry(fileName, buffer, actualType);
 
     if ('error' in uploadResult) {
       return handleBlobError(
         new Error(uploadResult.error),
-        "Upload API: Failed to upload to Vercel Blob",
+        "Upload API: Failed to upload to R2",
         { userId: session!.twitchUserId, fileName, fileSize: buffer.length }
       )
     }
 
+    // DBにファイル情報を記録（使用量追跡用）
+    try {
+      await recordBlobFile(uploadResult.url, userPrefixForFile, buffer.length, 'r2');
+    } catch (dbError) {
+      // DB記録に失敗しても、アップロードは成功しているので警告ログのみ
+      // 次回の初期化スクリプト実行時に同期される
+      logger.warn('Failed to record blob file in DB:', dbError);
+    }
+
     return NextResponse.json({ url: uploadResult.url });
   } catch (error) {
-    const blobError = error instanceof Error && (
+    // R2またはDB操作でのエラーをハンドリング
+    const storageError = error instanceof Error && (
       error.message.includes('quota') ||
       error.message.includes('limit') ||
       error.message.includes('authentication') ||
-      error.message.includes('service unavailable')
+      error.message.includes('service unavailable') ||
+      error.message.includes('AccessDenied') ||
+      error.message.includes('NetworkingError')
     )
 
-    if (blobError) {
+    if (storageError) {
       return handleBlobError(
         error,
-        "Upload API: Vercel Blob error",
+        "Upload API: R2 storage error",
         { userId: session?.twitchUserId, fileName: fileName || 'unknown', fileSize: buffer?.length }
       )
     }

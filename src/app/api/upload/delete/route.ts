@@ -6,6 +6,10 @@ import { validateContentType } from "@/lib/request-validation";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { handleApiError } from "@/lib/error-handler";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { deleteFromR2 } from "@/lib/r2-client";
+import { removeBlobFile } from "@/lib/storage-db";
+import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
+import { logger } from "@/lib/logger";
 
 export async function POST(request: NextRequest) {
   try {
@@ -65,18 +69,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate that the URL is a Vercel Blob URL
-    // URLがVercel BlobのURLであることを検証
-    if (!url.includes("blob.vercel-storage.com") && !url.includes("public.blob.vercel-storage.com")) {
+    // Validate that the URL is a storage URL (R2 or Vercel Blob)
+    // URLがストレージURL（R2またはVercel Blob）であることを検証
+    if (!isStorageUrl(url)) {
       return NextResponse.json(
-        { error: "Invalid blob URL" },
+        { error: "Invalid storage URL" },
         { status: 400 }
       );
     }
 
-    // Delete the blob
-    // Blobを削除
-    await del(url);
+    // DBからファイル情報を取得し、削除
+    // これにより使用量も自動的に減算される
+    try {
+      await removeBlobFile(url);
+    } catch (dbError) {
+      // DB操作に失敗しても、ストレージからの削除は続行
+      // 使用量が不整合になる可能性があるが、初期化スクリプトで修正可能
+      logger.warn('Failed to remove blob file from DB:', dbError);
+    }
+
+    // ストレージから削除（R2またはVercel Blob）
+    if (isR2Url(url)) {
+      // R2から削除
+      const key = getR2KeyFromUrl(url);
+      if (key) {
+        await deleteFromR2(key);
+        logger.info(`Deleted R2 file: ${key}`);
+      } else {
+        logger.warn(`Could not extract key from R2 URL: ${url}`);
+      }
+    } else if (isVercelBlobUrl(url)) {
+      // Vercel Blobから削除（既存データ用）
+      // del() は無料なので操作数制限を気にする必要はない
+      await del(url);
+      logger.info(`Deleted Vercel Blob: ${url}`);
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
