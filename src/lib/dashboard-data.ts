@@ -1,4 +1,5 @@
 import { cache } from "react";
+import { unstable_cache } from "next/cache";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { logger } from "@/lib/logger";
 import type { Card, Streamer, GachaHistory } from "@/types/database";
@@ -49,13 +50,10 @@ export const getStreamerData = cache(async (twitchUserId: string) => {
 })
 
 /**
- * Get user's card collection - cached per request
- * Single query using Supabase relations to reduce network round-trips
- *
- * リクエストごとにキャッシュされるユーザーのカードコレクション取得
- * Supabaseのリレーションを使用して1回のクエリで取得し、ネットワーク往復を削減
+ * Internal function to fetch user cards from database
+ * 内部関数: データベースからユーザーカードを取得
  */
-export const getUserCards = cache(async (twitchUserId: string): Promise<CardWithDetails[]> => {
+async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetails[]> {
   const startTotal = Date.now();
 
   const startClient = Date.now();
@@ -106,6 +104,29 @@ export const getUserCards = cache(async (twitchUserId: string): Promise<CardWith
 
   logger.info(`[Perf] getUserCards total: ${Date.now() - startTotal}ms`);
   return Array.from(cardMap.values());
+}
+
+/**
+ * Get user's card collection - cached with Next.js cache (30 seconds TTL)
+ * Uses unstable_cache for cross-request caching to reduce database load
+ *
+ * ユーザーのカードコレクション取得 - Next.jsキャッシュ使用（30秒TTL）
+ * unstable_cacheでリクエスト間キャッシュを使用してデータベース負荷を軽減
+ */
+export const getUserCards = cache(async (twitchUserId: string): Promise<CardWithDetails[]> => {
+  const start = Date.now();
+
+  // Use Next.js cache with 30 second revalidation
+  // Next.jsキャッシュを使用（30秒で再検証）
+  const cachedFetch = unstable_cache(
+    async () => fetchUserCardsFromDB(twitchUserId),
+    [`user-cards-${twitchUserId}`],
+    { revalidate: 30, tags: [`user-cards-${twitchUserId}`] }
+  );
+
+  const result = await cachedFetch();
+  logger.info(`[Perf] getUserCards (with cache): ${Date.now() - start}ms`);
+  return result;
 })
 
 export async function getRecentGachaHistory(): Promise<GachaHistoryWithCard[]> {
