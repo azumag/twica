@@ -330,7 +330,9 @@ export const SECURITY_HEADERS = {
   X_CONTENT_TYPE_OPTIONS: 'nosniff',
   X_FRAME_OPTIONS: 'DENY',
   X_XSS_PROTECTION: '1; mode=block',
-  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
+  // Development CSP includes 'unsafe-eval' for Next.js fast refresh and dev tools
+  // 開発用CSPにはNext.jsのfast refreshと開発ツールのため'unsafe-eval'を含む
+  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
   CSP_PRODUCTION: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: wss:; font-src 'self' data:; worker-src 'self' blob:;",
   HSTS: 'max-age=31536000; includeSubDomains; preload',
 } as const
