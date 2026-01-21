@@ -173,6 +173,9 @@ export default function CardManager({
   // Storage status for upload limits
   // アップロード制限用のストレージ状態
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  // Loading state for storage status refresh
+  // ストレージ状態更新中のローディング状態
+  const [storageLoading, setStorageLoading] = useState(false);
   // Image cropping modal state
   // 画像トリミングモーダルの状態
   const [cropModalOpen, setCropModalOpen] = useState(false);
@@ -204,6 +207,7 @@ export default function CardManager({
   // Fetch storage status
   // ストレージ状態を取得
   const fetchStorageStatus = useCallback(async () => {
+    setStorageLoading(true);
     try {
       const response = await fetch("/api/storage-status", {
         credentials: "include",
@@ -214,6 +218,8 @@ export default function CardManager({
       }
     } catch (error) {
       logger.error("Failed to fetch storage status:", error);
+    } finally {
+      setStorageLoading(false);
     }
   }, []);
 
@@ -741,8 +747,17 @@ export default function CardManager({
               <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
             </div>
           ) : (
-            <div className="text-sm text-gray-400">
+            <div className="text-sm text-gray-400 flex items-center gap-2">
               <p>画像使用量: {storageStatus.userUsageFormatted} / {storageStatus.userLimitFormatted}</p>
+              {storageLoading && (
+                <span className="inline-flex items-center gap-1 text-purple-400">
+                  <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span className="text-xs">更新中</span>
+                </span>
+              )}
             </div>
           )}
         </div>
