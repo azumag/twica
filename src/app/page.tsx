@@ -34,13 +34,14 @@ export default async function Home() {
       <main className="container mx-auto px-4 py-16">
         <div className="mx-auto max-w-3xl text-center">
           <h2 className="mb-6 text-4xl font-bold text-white">
-            Twitch チャネルポイント連携
+            Twitch連携
             <br />
             <span className="text-purple-400">
               カードコレクション
             </span>
           </h2>
-          <p className="mb-12 text-lg text-gray-400">
+          {/* break-keep: 日本語テキストを単語の区切り（句読点など）で折り返す */}
+          <p className="mb-12 break-keep text-lg text-gray-400">
             TwiCaは、Twitchのチャネルポイントを活用した
             カード配布システムです。
             <br />
