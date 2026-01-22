@@ -163,22 +163,32 @@ export default function DashboardNav({ isStreamer }: DashboardNavProps) {
         ))}
       </div>
 
-      {/* Mobile: Horizontal scrollable navigation / モバイル: 水平スクロールナビゲーション */}
-      <div className="flex gap-1 overflow-x-auto md:hidden">
-        {visibleNavItems.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-              isActive(item.href)
-                ? "bg-purple-600 text-white"
-                : "text-gray-300 hover:bg-gray-700 hover:text-white"
-            }`}
-          >
-            {item.icon}
-            <span>{t(item.labelKey)}</span>
-          </Link>
-        ))}
+      {/* Mobile: Horizontal scrollable navigation with scroll indicator */}
+      {/* モバイル: 水平スクロールナビゲーション + スクロールインジケーター */}
+      <div className="relative md:hidden">
+        <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-thin scrollbar-track-gray-700 scrollbar-thumb-gray-500">
+          {visibleNavItems.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                isActive(item.href)
+                  ? "bg-purple-600 text-white"
+                  : "text-gray-300 hover:bg-gray-700 hover:text-white"
+              }`}
+            >
+              {item.icon}
+              <span>{t(item.labelKey)}</span>
+            </Link>
+          ))}
+          {/* 右端のスペーサー - スクロール可能であることを示すための余白 */}
+          <div className="shrink-0 w-2" aria-hidden="true" />
+        </div>
+        {/* 右端にスクロール可能を示すグラデーションオーバーレイ */}
+        <div
+          className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-gray-800 to-transparent"
+          aria-hidden="true"
+        />
       </div>
     </nav>
   );

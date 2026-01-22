@@ -44,13 +44,20 @@ export default async function Home() {
               {t("hero.cardCollection")}
             </span>
           </h2>
-          {/* break-words: 長いテキストがコンテナ幅を超える場合に折り返す */}
+          {/*
+            スマホ: description1a/1b/2/3a/3b/4を各行で表示（自然な日本語の区切りで改行）
+            PC: 1a+1b+2を1行目、3a+3b+4を2行目に表示
+          */}
           <p className="mb-12 break-words text-lg text-gray-400">
-            {t("hero.description1")}
-            <br className="hidden sm:inline" />
+            {t("hero.description1a")}
+            <br className="sm:hidden" />
+            {t("hero.description1b")}
+            <br className="sm:hidden" />
             {t("hero.description2")}
             <br />
-            {t("hero.description3")}
+            {t("hero.description3a")}
+            <br className="sm:hidden" />
+            {t("hero.description3b")}
             <br className="sm:hidden" />
             {t("hero.description4")}
           </p>

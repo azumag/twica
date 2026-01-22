@@ -278,9 +278,11 @@
     "hero": {
       "twitchIntegration": "Twitch連携",
       "cardCollection": "カードコレクション",
-      "description1": "TwiCaは、Twitchのチャネルポイントを活用した",
+      "description1a": "TwiCaは、",
+      "description1b": "Twitchのチャネルポイントを活用した",
       "description2": "カード配布システムです。",
-      "description3": "視聴者はポイントを使用してカードを獲得し、",
+      "description3a": "視聴者はポイントを使用して",
+      "description3b": "カードを獲得し、",
       "description4": "コレクションを構築できます。",
       "viewerGuide": "視聴者向け使い方",
       "streamerGuide": "配信者向け使い方",
@@ -438,6 +440,16 @@
     "about": "運営者情報"
   },
   "header": {
-    "dashboard": "ダッシュボード"
+    "dashboard": "ダッシュボード",
+    "userSettings": "ユーザー設定",
+    "logout": "ログアウト"
+  },
+  "accountPage": {
+    "title": "ユーザー設定",
+    "description": "言語設定などのアカウント設定を管理します。",
+    "language": {
+      "title": "言語設定",
+      "description": "表示言語を選択してください。"
+    }
   }
 }

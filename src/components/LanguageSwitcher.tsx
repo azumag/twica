@@ -45,7 +45,7 @@ export function LanguageSwitcher() {
             }`}
             aria-label={locale === 'ja' ? t('japanese') : t('english')}
           >
-            {locale === 'ja' ? '日本語' : 'EN'}
+            {locale === 'ja' ? '日本語' : 'English'}
           </button>
         ))}
       </div>
@@ -76,7 +76,7 @@ export function LanguageSwitcherCompact() {
       className="px-2 py-1 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
       aria-label={`Switch to ${nextLocale === 'ja' ? 'Japanese' : 'English'}`}
     >
-      {currentLocale === 'ja' ? 'EN' : '日本語'}
+      {currentLocale === 'ja' ? 'English' : '日本語'}
     </button>
   )
 }
@@ -107,9 +107,86 @@ export function LanguageSwitcherDark() {
           }`}
           aria-label={locale === 'ja' ? '日本語' : 'English'}
         >
-          {locale === 'ja' ? '日本語' : 'EN'}
+          {locale === 'ja' ? '日本語' : 'English'}
         </button>
       ))}
+    </div>
+  )
+}
+
+/**
+ * Language Switcher for settings page (larger, more visible buttons)
+ * 設定ページ用の言語切り替え（大きく見やすいボタン）
+ * PC表示時は横並びのカード形式、モバイルでは縦積みで表示
+ */
+export function LanguageSwitcherSettings() {
+  const t = useTranslations('languageSwitcher')
+  const currentLocale = useLocale()
+
+  const switchLocale = (newLocale: Locale) => {
+    if (newLocale === currentLocale) return
+    document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
+    window.location.reload()
+  }
+
+  // Language options with full names and descriptions
+  // 言語オプション（フルネームと説明付き）
+  const languageOptions = [
+    { locale: 'ja' as Locale, name: '日本語', nativeName: 'Japanese' },
+    { locale: 'en' as Locale, name: 'English', nativeName: '英語' },
+  ]
+
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
+      {languageOptions.map((option) => {
+        const isSelected = currentLocale === option.locale
+        return (
+          <button
+            key={option.locale}
+            onClick={() => switchLocale(option.locale)}
+            className={`flex items-center gap-3 rounded-lg border-2 p-4 text-left transition-all sm:p-5 ${
+              isSelected
+                ? 'border-purple-500 bg-purple-600/20'
+                : 'border-gray-600 bg-gray-700/50 hover:border-gray-500 hover:bg-gray-700'
+            }`}
+            aria-label={option.locale === 'ja' ? t('japanese') : t('english')}
+          >
+            {/* チェックマークアイコン（選択時のみ表示） */}
+            <div
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 ${
+                isSelected
+                  ? 'border-purple-500 bg-purple-500'
+                  : 'border-gray-500'
+              }`}
+            >
+              {isSelected && (
+                <svg
+                  className="h-4 w-4 text-white"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={3}
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+              )}
+            </div>
+            {/* 言語名 */}
+            <div>
+              <div className={`text-base font-medium sm:text-lg ${isSelected ? 'text-white' : 'text-gray-200'}`}>
+                {option.name}
+              </div>
+              <div className={`text-sm ${isSelected ? 'text-purple-300' : 'text-gray-400'}`}>
+                {option.nativeName}
+              </div>
+            </div>
+          </button>
+        )
+      })}
     </div>
   )
 }

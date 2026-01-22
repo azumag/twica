@@ -278,9 +278,11 @@
     "hero": {
       "twitchIntegration": "Twitch Integration",
       "cardCollection": "Card Collection",
-      "description1": "TwiCa is a card distribution system",
+      "description1a": "TwiCa is a",
+      "description1b": "card distribution system",
       "description2": "powered by Twitch channel points.",
-      "description3": "Viewers can earn cards using points",
+      "description3a": "Viewers can earn cards",
+      "description3b": "using points",
       "description4": "and build their collection.",
       "viewerGuide": "Viewer Guide",
       "streamerGuide": "Streamer Guide",
@@ -438,6 +440,16 @@
     "about": "About"
   },
   "header": {
-    "dashboard": "Dashboard"
+    "dashboard": "Dashboard",
+    "userSettings": "User Settings",
+    "logout": "Logout"
+  },
+  "accountPage": {
+    "title": "User Settings",
+    "description": "Manage your account settings including language preferences.",
+    "language": {
+      "title": "Language",
+      "description": "Select your preferred display language."
+    }
   }
 }
