@@ -59,6 +59,6 @@ supabase/.temp/
 # supabase backup
 .backup.sql
 
-# Local Admin Dashboard
-admin-local/node_modules
-admin-local/dist
+# Analysis Dashboard
+analysis/node_modules
+analysis/dist

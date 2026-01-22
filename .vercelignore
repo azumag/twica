@@ -1,2 +1,2 @@
-# Ignore the local admin dashboard (separate Vite app)
-admin-local/
+# Ignore the local analysis dashboard (separate Vite app)
+analysis/
