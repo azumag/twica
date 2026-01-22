@@ -1,10 +1,11 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
 
 export const metadata: Metadata = {
-  title: "使い方 - TwiCa",
-  description: "TwiCaの使い方ガイドです。視聴者向け・配信者向けの利用方法を説明します。",
+  title: "Guide - TwiCa",
+  description: "TwiCa usage guide for viewers and streamers.",
 };
 
 /**
@@ -13,6 +14,9 @@ export const metadata: Metadata = {
  */
 export default async function GuidePage() {
   const session = await getSession();
+  const t = await getTranslations("guidePage");
+  const tHeader = await getTranslations("header");
+  const tFooter = await getTranslations("footer");
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -27,14 +31,14 @@ export default async function GuidePage() {
                 href="/dashboard"
                 className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
               >
-                ダッシュボード
+                {tHeader("dashboard")}
               </Link>
             ) : (
               <Link
                 href="/"
                 className="text-gray-400 hover:text-white"
               >
-                ホーム
+                {t("home")}
               </Link>
             )}
           </nav>
@@ -43,14 +47,14 @@ export default async function GuidePage() {
 
       <main className="container mx-auto max-w-4xl px-4 py-12">
         <h1 className="mb-8 text-3xl font-bold text-white">
-          使い方
+          {t("title")}
         </h1>
 
         {/* For viewers section */}
         {/* 視聴者向けセクション - id="viewer" でトップページからリンク可能 */}
         <section id="viewer" className="mb-12 scroll-mt-8">
           <h2 className="mb-6 text-2xl font-semibold text-purple-400">
-            視聴者向け
+            {t("viewer.title")}
           </h2>
 
           <div className="space-y-6">
@@ -60,11 +64,11 @@ export default async function GuidePage() {
                   1
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  Twitchでログイン
+                  {t("viewer.step1.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                TwiCaのトップページから「Twitchでログイン」ボタンをクリックし、Twitchアカウントでログインします。
+                {t("viewer.step1.description")}
               </p>
             </div>
 
@@ -74,12 +78,11 @@ export default async function GuidePage() {
                   2
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  配信でチャネルポイントを使用
+                  {t("viewer.step2.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                TwiCaに対応した配信者の配信を視聴し、チャネルポイント報酬からカードガチャを実行します。
-                配信者が設定した報酬（例：「カードガチャ」）をチャネルポイントで交換してください。
+                {t("viewer.step2.description")}
               </p>
             </div>
 
@@ -89,12 +92,11 @@ export default async function GuidePage() {
                   3
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  カードを獲得
+                  {t("viewer.step3.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                ガチャが実行されると、配信者が作成したオリジナルカードがランダムで獲得できます。
-                獲得したカードは配信画面にも表示されます。
+                {t("viewer.step3.description")}
               </p>
             </div>
 
@@ -104,12 +106,11 @@ export default async function GuidePage() {
                   4
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  コレクションを確認
+                  {t("viewer.step4.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                ダッシュボードの「マイコレクション」から、獲得したカードを確認できます。
-                レアリティごとの統計も表示されます。
+                {t("viewer.step4.description")}
               </p>
             </div>
           </div>
@@ -119,10 +120,10 @@ export default async function GuidePage() {
         {/* 配信者向けセクション - id="streamer" でトップページからリンク可能 */}
         <section id="streamer" className="mb-12 scroll-mt-8">
           <h2 className="mb-6 text-2xl font-semibold text-purple-400">
-            配信者向け
+            {t("streamer.title")}
           </h2>
           <p className="mb-6 text-gray-400">
-            ※ Twitchアフィリエイトまたはパートナーのステータスが必要です。
+            {t("streamer.requiresAffiliate")}
           </p>
 
           <div className="space-y-6">
@@ -132,12 +133,11 @@ export default async function GuidePage() {
                   1
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  Twitchでログイン
+                  {t("streamer.step1.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                TwiCaにTwitchアカウントでログインします。
-                アフィリエイト/パートナーのアカウントであれば、自動的に配信者機能が有効になります。
+                {t("streamer.step1.description")}
               </p>
             </div>
 
@@ -147,12 +147,11 @@ export default async function GuidePage() {
                   2
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  カードを作成
+                  {t("streamer.step2.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                ダッシュボードの「カード管理」から、オリジナルカードを作成します。
-                カード名、画像、レアリティ、出現確率を設定できます。
+                {t("streamer.step2.description")}
               </p>
             </div>
 
@@ -162,12 +161,11 @@ export default async function GuidePage() {
                   3
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  チャネルポイント報酬を設定
+                  {t("streamer.step3.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                ダッシュボードの「配信設定」から、チャネルポイント報酬を選択または新規作成します。
-                「保存 & EventSub登録」ボタンを押すと、Twitchとの連携が完了します。
+                {t("streamer.step3.description")}
               </p>
             </div>
 
@@ -177,13 +175,11 @@ export default async function GuidePage() {
                   4
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  OBSにオーバーレイを追加
+                  {t("streamer.step4.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                ダッシュボードの「配信設定」に表示されるOBSブラウザソースURLをコピーし、
-                OBSのブラウザソースに追加します。推奨サイズは800x600です。
-                これで、ガチャ結果が配信画面に表示されるようになります。
+                {t("streamer.step4.description")}
               </p>
             </div>
 
@@ -193,12 +189,11 @@ export default async function GuidePage() {
                   5
                 </span>
                 <h3 className="text-lg font-semibold text-white">
-                  配信開始
+                  {t("streamer.step5.title")}
                 </h3>
               </div>
               <p className="text-gray-400">
-                配信を開始すると、視聴者がチャネルポイントでカードガチャを実行できるようになります。
-                獲得されたカードは自動的に配信画面に表示されます。
+                {t("streamer.step5.description")}
               </p>
             </div>
           </div>
@@ -208,26 +203,26 @@ export default async function GuidePage() {
         {/* ヒントセクション */}
         <section>
           <h2 className="mb-6 text-2xl font-semibold text-purple-400">
-            ヒント
+            {t("tips.title")}
           </h2>
 
           <div className="rounded-xl bg-gray-800 p-6">
             <ul className="space-y-3 text-gray-400">
               <li className="flex items-start gap-2">
                 <span className="text-purple-400">•</span>
-                カードの出現確率は「重み」で設定します。全カードの重みの合計に対する割合が実際の出現確率になります。
+                {t("tips.tip1")}
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-purple-400">•</span>
-                カードは「配布停止」にすることで、一時的にガチャから除外できます。
+                {t("tips.tip2")}
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-purple-400">•</span>
-                アップロード画像は400x400ピクセルに自動トリミングされます。画像URL指定の場合はトリミングされず、そのまま使用されます。
+                {t("tips.tip3")}
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-purple-400">•</span>
-                EventSubのステータスが「接続中」になっていることを確認してから配信を開始してください。
+                {t("tips.tip4")}
               </li>
             </ul>
           </div>
@@ -240,10 +235,10 @@ export default async function GuidePage() {
             <p className="text-sm text-gray-500">&copy; 2025 TwiCa</p>
             <div className="flex gap-6">
               <Link href="/tos" className="text-sm text-gray-500 hover:text-gray-300">
-                利用規約
+                {tFooter("tos")}
               </Link>
               <Link href="/about" className="text-sm text-gray-500 hover:text-gray-300">
-                運営者情報
+                {tFooter("about")}
               </Link>
             </div>
           </div>

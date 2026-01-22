@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
 import DevelopmentNotice from "@/components/DevelopmentNotice";
 import { TwitchLoginButtonWithIcon } from "@/components/TwitchLoginButton";
@@ -9,6 +10,8 @@ import TopPageHeader from "@/components/TopPageHeader";
 
 export default async function Home() {
   const session = await getSession();
+  const t = await getTranslations("topPage");
+  const tFooter = await getTranslations("footer");
 
   // Prepare session data for client component (without sensitive info)
   const sessionData = session ? {
@@ -35,21 +38,21 @@ export default async function Home() {
       <main className="container mx-auto px-4 py-16">
         <div className="mx-auto max-w-3xl text-center">
           <h2 className="mb-6 text-4xl font-bold text-white">
-            Twitch連携
+            {t("hero.twitchIntegration")}
             <br />
             <span className="text-purple-400">
-              カードコレクション
+              {t("hero.cardCollection")}
             </span>
           </h2>
           {/* break-words: 長いテキストがコンテナ幅を超える場合に折り返す */}
           <p className="mb-12 break-words text-lg text-gray-400">
-            TwiCaは、Twitchのチャネルポイントを活用した
+            {t("hero.description1")}
             <br className="hidden sm:inline" />
-            カード配布システムです。
+            {t("hero.description2")}
             <br />
-            視聴者はポイントを使用してカードを獲得し、
+            {t("hero.description3")}
             <br className="sm:hidden" />
-            コレクションを構築できます。
+            {t("hero.description4")}
           </p>
 
           {/* ログイン状態に応じて表示を切り替え */}
@@ -64,7 +67,7 @@ export default async function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                 </svg>
-                視聴者向け使い方
+                {t("hero.viewerGuide")}
               </Link>
               <Link
                 href="/guide#streamer"
@@ -73,7 +76,7 @@ export default async function Home() {
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                 </svg>
-                配信者向け使い方
+                {t("hero.streamerGuide")}
               </Link>
             </div>
           ) : (
@@ -86,7 +89,7 @@ export default async function Home() {
                 href="/guide"
                 className="inline-flex items-center gap-2 rounded-lg border border-gray-600 px-8 py-3 font-medium text-gray-300 transition hover:bg-gray-800 hover:text-white"
               >
-                使い方を見る
+                {t("hero.viewGuide")}
               </Link>
             </div>
           )}
@@ -99,9 +102,9 @@ export default async function Home() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
               </svg>
             </div>
-            <h3 className="mb-2 text-lg font-semibold text-white">カード収集</h3>
+            <h3 className="mb-2 text-lg font-semibold text-white">{t("features.cardCollection.title")}</h3>
             <p className="text-sm text-gray-400">
-              チャネルポイントを使用してガチャを実行し、配信者が作成したオリジナルカードを収集できます。
+              {t("features.cardCollection.description")}
             </p>
           </div>
           <div className="rounded-xl bg-gray-800 p-6">
@@ -110,31 +113,31 @@ export default async function Home() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
             </div>
-            <h3 className="mb-2 text-lg font-semibold text-white">配信連携</h3>
+            <h3 className="mb-2 text-lg font-semibold text-white">{t("features.streamIntegration.title")}</h3>
             <p className="text-sm text-gray-400">
-              OBSブラウザソースでガチャ演出を配信に表示。視聴者とリアルタイムで結果を共有できます。
+              {t("features.streamIntegration.description")}
             </p>
           </div>
         </div>
 
         {/* Info for streamers */}
         <div className="mx-auto mt-16 max-w-2xl rounded-xl bg-gray-800 p-6">
-          <h3 className="mb-3 text-lg font-semibold text-white">配信者向け機能</h3>
+          <h3 className="mb-3 text-lg font-semibold text-white">{t("streamerInfo.title")}</h3>
           <p className="text-sm text-gray-400">
-            Twitchアフィリエイトまたはパートナーステータスをお持ちの方は、以下の機能をご利用いただけます：
+            {t("streamerInfo.description")}
           </p>
           <ul className="mt-3 space-y-1 text-sm text-gray-400">
             <li className="flex items-center gap-2">
               <span className="text-purple-400">•</span>
-              オリジナルカードの作成・管理
+              {t("streamerInfo.feature1")}
             </li>
             <li className="flex items-center gap-2">
               <span className="text-purple-400">•</span>
-              チャネルポイント報酬との連携設定
+              {t("streamerInfo.feature2")}
             </li>
             <li className="flex items-center gap-2">
               <span className="text-purple-400">•</span>
-              配信用オーバーレイのカスタマイズ
+              {t("streamerInfo.feature3")}
             </li>
           </ul>
         </div>
@@ -146,13 +149,13 @@ export default async function Home() {
             <p className="text-sm text-gray-500">&copy; 2025 TwiCa</p>
             <div className="flex gap-6">
               <Link href="/guide" className="text-sm text-gray-500 hover:text-gray-300">
-                使い方
+                {tFooter("guide")}
               </Link>
               <Link href="/tos" className="text-sm text-gray-500 hover:text-gray-300">
-                利用規約
+                {tFooter("tos")}
               </Link>
               <Link href="/about" className="text-sm text-gray-500 hover:text-gray-300">
-                運営者情報
+                {tFooter("about")}
               </Link>
             </div>
           </div>

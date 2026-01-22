@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 import type { GachaHistory, Card } from "@/types/database";
 import { logger } from "@/lib/logger";
-import { UI_STRINGS } from "@/lib/constants";
 
 
 interface GachaHistoryWithCard extends GachaHistory {
@@ -23,14 +23,22 @@ const RARITY_COLORS = {
   legendary: "bg-yellow-500",
 };
 
+/**
+ * Gacha History Section Component
+ * Displays recent card acquisitions with optional delete functionality for streamers
+ * ガチャ履歴セクションコンポーネント - 配信者向けの削除機能付きで最近のカード獲得を表示
+ */
 export default function GachaHistorySection({
   recentGacha,
   isStreamer,
 }: GachaHistorySectionProps) {
+  const t = useTranslations("gachaHistory");
+  const tCard = useTranslations("cardManager");
+  const tCommon = useTranslations("common");
   const [history, setHistory] = useState<GachaHistoryWithCard[]>(recentGacha);
 
   const handleDelete = async (historyId: string) => {
-    if (!confirm(UI_STRINGS.CARD_MANAGER.CONFIRMATIONS.DELETE_CARD)) return;
+    if (!confirm(tCard("confirmations.deleteCard"))) return;
 
     try {
       const response = await fetch(`/api/gacha-history/${historyId}`, {
@@ -41,7 +49,7 @@ export default function GachaHistorySection({
         setHistory(history.filter((h: GachaHistoryWithCard) => h.id !== historyId));
       } else if (response.status === 429) {
         const errorData = await response.json();
-        alert(UI_STRINGS.CARD_MANAGER.MESSAGES.OPERATION_FAILED(errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT));
+        alert(tCard("messages.operationFailed", { msg: errorData.error || tCard("messages.rateLimit") }));
         logger.error("Rate limit exceeded:", errorData);
       }
     } catch (error) {
@@ -51,12 +59,12 @@ export default function GachaHistorySection({
 
   return (
     <section className="mb-12">
-      <h2 className="mb-6 text-2xl font-semibold text-white">{UI_STRINGS.GACHA_HISTORY.TITLE}</h2>
+      <h2 className="mb-6 text-2xl font-semibold text-white">{t("title")}</h2>
       <div className="overflow-hidden rounded-xl bg-gray-800">
         <div className="divide-y divide-gray-700">
           {history.length === 0 ? (
             <div className="p-6 text-center text-gray-400">
-              {UI_STRINGS.GACHA_HISTORY.EMPTY_MESSAGE}
+              {t("emptyMessage")}
             </div>
           ) : (
             history.map((entry: GachaHistoryWithCard) => (
@@ -78,7 +86,7 @@ export default function GachaHistorySection({
                  </div>
                  <div className="flex-1 min-w-0">
                    <p className="text-sm font-medium text-white">
-                     {UI_STRINGS.GACHA_HISTORY.GOT(entry.user_twitch_username || UI_STRINGS.GACHA_HISTORY.UNKNOWN, entry.cards.name)}
+                     {t("got", { username: entry.user_twitch_username || t("unknown"), cardName: entry.cards.name })}
                    </p>
                    <p className="text-xs text-gray-500">
                      {new Date(entry.redeemed_at).toLocaleString('ja-JP')}
@@ -92,7 +100,7 @@ export default function GachaHistorySection({
                      onClick={() => handleDelete(entry.id)}
                      className="rounded bg-red-500 px-3 py-1 text-xs text-white hover:bg-red-600 transition-colors"
                    >
-                     {UI_STRINGS.CARD_MANAGER.BUTTONS.DELETE}
+                     {tCommon("delete")}
                    </button>
                 )}
               </div>

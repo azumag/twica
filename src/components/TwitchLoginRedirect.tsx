@@ -1,11 +1,17 @@
 'use client'
 
 import { useEffect } from 'react'
+import { useTranslations } from 'next-intl'
 import { TwitchLoginResponse } from '@/types/auth'
-import { UI_STRINGS } from '@/lib/constants'
 import * as Sentry from '@sentry/nextjs'
 
+/**
+ * Component that redirects to Twitch login page
+ * Twitchログインページにリダイレクトするコンポーネント
+ */
 export function TwitchLoginRedirect() {
+  const t = useTranslations('auth')
+
   useEffect(() => {
     let isMounted = true
 
@@ -33,7 +39,7 @@ export function TwitchLoginRedirect() {
 
   return (
     <div className="flex items-center justify-center">
-      <div className="text-white">{UI_STRINGS.AUTH.REDIRECTING}</div>
+      <div className="text-white">{t('redirecting')}</div>
     </div>
   )
 }

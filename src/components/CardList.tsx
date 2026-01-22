@@ -1,8 +1,9 @@
 "use client";
 
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES, UI_STRINGS } from "@/lib/constants";
+import { RARITIES } from "@/lib/constants";
 
 interface CardListProps {
   // Array of cards to display
@@ -44,6 +45,9 @@ export default function CardList({
   onToggleActive,
   showActions = true,
 }: CardListProps) {
+  const t = useTranslations("cardManager");
+  const tCommon = useTranslations("common");
+  const tRarity = useTranslations("rarity");
   /**
    * Calculate actual probability for a card based on its weight and total active weight
    * カードの重みと全アクティブ重みから実際の出現確率を計算
@@ -58,7 +62,7 @@ export default function CardList({
   if (cards.length === 0) {
     return (
       <p className="text-center text-gray-400">
-        {UI_STRINGS.CARD_MANAGER.MESSAGES.EMPTY_CARDS}
+        {t("messages.emptyCards")}
       </p>
     );
   }
@@ -68,13 +72,13 @@ export default function CardList({
       <table className="w-full text-left">
         <thead className="border-b border-gray-700 text-sm text-gray-400">
           <tr>
-            <th className="px-4 py-3">画像</th>
-            <th className="px-4 py-3">名前</th>
-            <th className="px-4 py-3">レアリティ</th>
-            <th className="px-4 py-3">重み</th>
-            <th className="px-4 py-3">確率</th>
-            <th className="px-4 py-3">ステータス</th>
-            {showActions && <th className="px-4 py-3">操作</th>}
+            <th className="px-4 py-3">{t("table.image")}</th>
+            <th className="px-4 py-3">{t("table.name")}</th>
+            <th className="px-4 py-3">{t("table.rarity")}</th>
+            <th className="px-4 py-3">{t("table.weight")}</th>
+            <th className="px-4 py-3">{t("table.probability")}</th>
+            <th className="px-4 py-3">{t("table.status")}</th>
+            {showActions && <th className="px-4 py-3">{t("table.actions")}</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-700">
@@ -110,7 +114,7 @@ export default function CardList({
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-gray-500 text-xs">
-                        No img
+                        {tCommon("noImage")}
                       </div>
                     )}
                   </div>
@@ -135,7 +139,7 @@ export default function CardList({
                   <span
                     className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.color}`}
                   >
-                    {rarityInfo.label}
+                    {tRarity(card.rarity)}
                   </span>
                 </td>
 
@@ -157,12 +161,12 @@ export default function CardList({
                   {isPaused ? (
                     <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-400">
                       <span className="h-1.5 w-1.5 rounded-full bg-yellow-500"></span>
-                      配布停止中
+                      {t("status.paused")}
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 rounded-full bg-green-500/20 px-2 py-0.5 text-xs text-green-400">
                       <span className="h-1.5 w-1.5 rounded-full bg-green-500"></span>
-                      配布中
+                      {t("status.distributing")}
                     </span>
                   )}
                 </td>
@@ -183,7 +187,7 @@ export default function CardList({
                               : "bg-yellow-600 hover:bg-yellow-700"
                           }`}
                         >
-                          {isPaused ? "再開" : "停止"}
+                          {isPaused ? t("actions.resume") : t("actions.pause")}
                         </button>
                       )}
 
@@ -194,7 +198,7 @@ export default function CardList({
                           onClick={() => onEdit(card)}
                           className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
                         >
-                          {UI_STRINGS.CARD_MANAGER.BUTTONS.EDIT}
+                          {tCommon("edit")}
                         </button>
                       )}
 
@@ -205,7 +209,7 @@ export default function CardList({
                           onClick={() => onDelete(card.id)}
                           className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
                         >
-                          削除
+                          {tCommon("delete")}
                         </button>
                       )}
                     </div>

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 
 /**
  * Navigation item definition for dashboard sidebar
@@ -9,7 +10,7 @@ import { usePathname } from "next/navigation";
  */
 interface NavItem {
   href: string;
-  label: string;
+  labelKey: string;
   // Icon component for the navigation item
   // ナビゲーション項目のアイコンコンポーネント
   icon: React.ReactNode;
@@ -32,13 +33,14 @@ interface DashboardNavProps {
  */
 export default function DashboardNav({ isStreamer }: DashboardNavProps) {
   const pathname = usePathname();
+  const t = useTranslations("navigation");
 
   // Navigation items configuration
   // ナビゲーション項目の設定
   const navItems: NavItem[] = [
     {
       href: "/dashboard",
-      label: "概要",
+      labelKey: "overview",
       icon: (
         <svg
           className="h-5 w-5"
@@ -57,7 +59,7 @@ export default function DashboardNav({ isStreamer }: DashboardNavProps) {
     },
     {
       href: "/dashboard/cards",
-      label: "カード管理",
+      labelKey: "cardManagement",
       streamerOnly: true,
       icon: (
         <svg
@@ -77,7 +79,7 @@ export default function DashboardNav({ isStreamer }: DashboardNavProps) {
     },
     {
       href: "/dashboard/settings",
-      label: "配信設定",
+      labelKey: "settings",
       streamerOnly: true,
       icon: (
         <svg
@@ -103,7 +105,7 @@ export default function DashboardNav({ isStreamer }: DashboardNavProps) {
     },
     {
       href: "/dashboard/collection",
-      label: "マイコレクション",
+      labelKey: "collection",
       icon: (
         <svg
           className="h-5 w-5"
@@ -156,7 +158,7 @@ export default function DashboardNav({ isStreamer }: DashboardNavProps) {
             }`}
           >
             {item.icon}
-            <span>{item.label}</span>
+            <span>{t(item.labelKey)}</span>
           </Link>
         ))}
       </div>
@@ -174,7 +176,7 @@ export default function DashboardNav({ isStreamer }: DashboardNavProps) {
             }`}
           >
             {item.icon}
-            <span>{item.label}</span>
+            <span>{t(item.labelKey)}</span>
           </Link>
         ))}
       </div>

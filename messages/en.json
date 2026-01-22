@@ -1,0 +1,443 @@
+{
+  "metadata": {
+    "title": "TwiCa - Twitch Channel Point Trading Cards",
+    "description": "Draw card gacha with channel points"
+  },
+  "common": {
+    "loading": "Loading...",
+    "save": "Save",
+    "cancel": "Cancel",
+    "edit": "Edit",
+    "delete": "Delete",
+    "update": "Update",
+    "add": "Add",
+    "refresh": "Refresh",
+    "copy": "Copy",
+    "copied": "Copied",
+    "noImage": "No Image"
+  },
+  "auth": {
+    "twitchLogin": "Login with Twitch",
+    "loginFailed": "Login failed",
+    "networkError": "A network error occurred",
+    "logout": "Logout",
+    "redirecting": "Redirecting to Twitch login page..."
+  },
+  "navigation": {
+    "overview": "Overview",
+    "cardManagement": "Card Management",
+    "settings": "Stream Settings",
+    "collection": "My Collection"
+  },
+  "rarity": {
+    "common": "Common",
+    "rare": "Rare",
+    "epic": "Epic",
+    "legendary": "Legendary"
+  },
+  "cardManager": {
+    "title": "Card Management",
+    "addNewCard": "Add New Card",
+    "editCard": "Edit Card",
+    "newCard": "New Card",
+    "importFromEmotes": "Import from Emotes",
+    "form": {
+      "name": "Card Name",
+      "namePlaceholder": "Card name",
+      "image": "Image (File or URL)",
+      "imageUrlPlaceholder": "Or enter image URL",
+      "rarity": "Rarity",
+      "dropRate": "Drop Rate",
+      "description": "Description",
+      "currentImage": "Current image",
+      "croppedImage": "Cropped image",
+      "croppedSize": "400x400px (JPEG)",
+      "cropNote": "(Crop to 400x400)"
+    },
+    "fileUpload": {
+      "formats": "Supported: JPEG, PNG | ",
+      "maxSize": "Max size: {mb}MB"
+    },
+    "buttons": {
+      "saving": "Saving...",
+      "creating": "Creating...",
+      "undo": "Undo"
+    },
+    "confirmations": {
+      "deleteCard": "Delete this card?",
+      "fullDeleteCard": "Permanently delete this card?\n\n⚠️ This will also remove the card from all users who own it."
+    },
+    "messages": {
+      "rateLimit": "Too many requests. Please wait and try again.",
+      "deleteFailed": "Failed to delete card",
+      "deleteFailedPrefix": "Delete failed:",
+      "networkErrorDelete": "A network error occurred. Deletion cancelled.",
+      "operationFailed": "Operation failed: {msg}",
+      "emptyCards": "No cards yet. Start by adding a new card.",
+      "probability": "Probability:",
+      "errorOccurred": "An error occurred ({status})",
+      "uploadLimited": "Upload feature is limited",
+      "imageUsage": "Image usage: {usage} / {limit}",
+      "refreshing": "Refreshing"
+    },
+    "sort": {
+      "createdAt": "Date Created",
+      "rarity": "Rarity",
+      "dropRate": "Drop Weight",
+      "ascending": "Ascending",
+      "descending": "Descending"
+    },
+    "filter": {
+      "all": "All",
+      "active": "Active Only",
+      "inactive": "Paused Only"
+    },
+    "table": {
+      "image": "Image",
+      "name": "Name",
+      "rarity": "Rarity",
+      "weight": "Weight",
+      "probability": "Probability",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "status": {
+      "distributing": "Active",
+      "paused": "Paused"
+    },
+    "actions": {
+      "resume": "Resume",
+      "pause": "Pause",
+      "resumeDistribution": "Resume Distribution",
+      "pauseDistribution": "Pause Distribution",
+      "fullDelete": "Delete Permanently"
+    },
+    "cardCount": {
+      "nCards": "{count} cards",
+      "noCards": "No cards"
+    },
+    "dropRateInfo": {
+      "title": "About Drop Rate",
+      "weight": "Weight",
+      "actualProbability": "Actual Probability",
+      "description1": "\"Weight\" represents the relative chance of appearing. The actual probability is calculated as the ratio of this card's weight to the total weight of all cards.",
+      "formula": "Formula:",
+      "formulaText": "Actual Probability = This Card's Weight ÷ Total Weight of All Cards × 100%",
+      "example": "Example:",
+      "example1": "Card A: 10%, Card B: 10%, Card C: 10%",
+      "example1Result": "→ Each card's actual probability: 10÷30×100 = 33.3%",
+      "example2": "Card A: 50%, Card B: 25%",
+      "example2Result": "→ Card A: 50÷75×100 = 66.7%, Card B: 33.3%",
+      "note": "* Paused cards are not included in probability calculation.",
+      "close": "Close"
+    },
+    "emoteImport": {
+      "title": "Create Cards from Emotes",
+      "description": "Select channel emotes to create cards. Emotes that are already cards will be excluded.",
+      "loading": "Loading emotes...",
+      "allExisting": "All emotes are already cards",
+      "selected": "{selected} / {total} selected",
+      "duplicates": "({count} duplicates with existing cards)",
+      "selectAll": "Select All",
+      "deselectAll": "Deselect All",
+      "alreadyExists": "Already exists as a card",
+      "created": "Created",
+      "noEmotes": "No emotes in this channel.",
+      "requiresAffiliate": "Please set up emotes as a Twitch Affiliate/Partner.",
+      "defaultRarity": "Default Rarity",
+      "defaultWeight": "Default Weight: {weight}%",
+      "createCards": "Create {count} cards",
+      "fetchFailed": "Failed to fetch emotes",
+      "createFailed": "Failed to create cards"
+    }
+  },
+  "collection": {
+    "title": "My Collection",
+    "empty": {
+      "line1": "You don't have any cards yet.",
+      "line2": "Use streamer's channel points to get cards!"
+    },
+    "cardTypes": "({count} types)",
+    "cardCount": "x{count}"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "streamerSettings": "Streamer Settings",
+    "obsOverlayUrl": "OBS Browser Source URL",
+    "obsOverlayDescription": "Set this URL in your OBS browser source (Recommended size: 800x600)",
+    "recentCards": "Recent Cards",
+    "viewAllCards": "View All Cards",
+    "viewSettings": "Open Stream Settings",
+    "noCardsYet": "No cards yet",
+    "createFirstCard": "Create Your First Card",
+    "overview": {
+      "collectionSummary": "Collection Summary",
+      "viewAllCollection": "View Full Collection",
+      "streamerInfo": "About Streamer Features",
+      "streamerInfoText": "You must be a Twitch Affiliate or Partner to use channel point rewards and card management features.",
+      "quickLinks": "Quick Links"
+    }
+  },
+  "battle": {
+    "title": "Card Battle",
+    "versus": "VS",
+    "userCard": "Your Card",
+    "cpuCard": "CPU Card",
+    "battleProgress": "Battle Progress",
+    "battleLog": "Battle Log",
+    "turn": "Turn",
+    "you": "You",
+    "cpu": "CPU"
+  },
+  "channelPointSettings": {
+    "title": "Card Redemption Settings",
+    "status": {
+      "active": "Connected",
+      "pending": "Pending",
+      "error": "Error",
+      "none": "Not Set"
+    },
+    "messages": {
+      "affiliateRequired": "You must be a Twitch Affiliate or Partner to use channel points.",
+      "rateLimit": "Too many requests. Please wait and try again.",
+      "fetchFailed": "Failed to fetch rewards. Please log in again.",
+      "rewardCreated": "Reward created",
+      "errorOccurred": "An error occurred",
+      "createRewardFailed": "Failed to create reward",
+      "saveFailed": "Failed to save settings",
+      "saveSuccess": "Saved (EventSub registration complete)",
+      "eventsubFailed": "Settings saved, but EventSub registration failed. Please verify the URL is accessible externally."
+    },
+    "form": {
+      "selectReward": "Select channel point reward for card redemption",
+      "noRewards": "No channel point rewards available. Create a new one?",
+      "selected": "Selected:",
+      "id": "ID:",
+      "rewardId": "Reward ID:",
+      "allRewards": "All Rewards",
+      "eventsubStatus": "EventSub Status",
+      "noSubscriptions": "No EventSub subscriptions. Click save to register.",
+      "localTunnelNote": "* Local environment requires ngrok or similar tunnel"
+    },
+    "buttons": {
+      "createReward": "Create TwiCa Reward (100 points)",
+      "saveEventSub": "Save & Register EventSub"
+    },
+    "options": {
+      "selectReward": "-- Select Reward --",
+      "points": "points",
+      "disabled": "[Disabled]"
+    }
+  },
+  "gachaHistory": {
+    "title": "Recent Acquisitions",
+    "emptyMessage": "No acquisition history yet.",
+    "got": "{username} got {cardName}!",
+    "gotLabel": " got ",
+    "unknown": "Unknown"
+  },
+  "stats": {
+    "totalCards": "Total Cards",
+    "unique": "Unique",
+    "legendary": "Legendary",
+    "epic": "Epic",
+    "rare": "Rare",
+    "common": "Common"
+  },
+  "developmentNotice": {
+    "text": "⚠️ This service is in beta testing. Some features may not work properly."
+  },
+  "cardView": {
+    "thumbnail": "Thumbnail",
+    "list": "List"
+  },
+  "pagination": {
+    "previous": "Previous",
+    "next": "Next",
+    "pageInfo": "{current} / {total}",
+    "itemsPerPage": "per page"
+  },
+  "settingsPage": {
+    "title": "Stream Settings",
+    "description": "Configure OBS overlay and channel point rewards."
+  },
+  "cardsPage": {
+    "title": "Card Management",
+    "description": "Create, edit, and delete cards."
+  },
+  "collectionPage": {
+    "title": "My Collection",
+    "description": "View your acquired cards."
+  },
+  "languageSwitcher": {
+    "label": "Language",
+    "japanese": "日本語",
+    "english": "English"
+  },
+  "topPage": {
+    "hero": {
+      "twitchIntegration": "Twitch Integration",
+      "cardCollection": "Card Collection",
+      "description1": "TwiCa is a card distribution system",
+      "description2": "powered by Twitch channel points.",
+      "description3": "Viewers can earn cards using points",
+      "description4": "and build their collection.",
+      "viewerGuide": "Viewer Guide",
+      "streamerGuide": "Streamer Guide",
+      "viewGuide": "View Guide"
+    },
+    "features": {
+      "cardCollection": {
+        "title": "Card Collection",
+        "description": "Use channel points to draw gacha and collect original cards created by streamers."
+      },
+      "streamIntegration": {
+        "title": "Stream Integration",
+        "description": "Display gacha animations on your stream using OBS browser source. Share results with viewers in real-time."
+      }
+    },
+    "streamerInfo": {
+      "title": "Streamer Features",
+      "description": "Twitch Affiliates and Partners can access the following features:",
+      "feature1": "Create and manage original cards",
+      "feature2": "Set up channel point reward integration",
+      "feature3": "Customize stream overlay"
+    }
+  },
+  "guidePage": {
+    "title": "Guide",
+    "metaDescription": "TwiCa usage guide. Learn how to use TwiCa as a viewer or streamer.",
+    "home": "Home",
+    "viewer": {
+      "title": "For Viewers",
+      "step1": {
+        "title": "Login with Twitch",
+        "description": "Click the \"Login with Twitch\" button on the TwiCa homepage to log in with your Twitch account."
+      },
+      "step2": {
+        "title": "Use Channel Points in Stream",
+        "description": "Watch a TwiCa-enabled stream and redeem the card gacha using channel points. Exchange points for the reward set by the streamer (e.g., \"Card Gacha\")."
+      },
+      "step3": {
+        "title": "Get Cards",
+        "description": "When you draw gacha, you'll randomly receive original cards created by the streamer. Your acquired card will also appear on stream."
+      },
+      "step4": {
+        "title": "View Your Collection",
+        "description": "Check your acquired cards in \"My Collection\" on your dashboard. Statistics by rarity are also displayed."
+      }
+    },
+    "streamer": {
+      "title": "For Streamers",
+      "requiresAffiliate": "* Requires Twitch Affiliate or Partner status.",
+      "step1": {
+        "title": "Login with Twitch",
+        "description": "Log in to TwiCa with your Twitch account. If you're an Affiliate/Partner, streamer features are automatically enabled."
+      },
+      "step2": {
+        "title": "Create Cards",
+        "description": "Create original cards from \"Card Management\" on your dashboard. Set card name, image, rarity, and drop rate."
+      },
+      "step3": {
+        "title": "Set Up Channel Point Reward",
+        "description": "Select or create a channel point reward from \"Stream Settings\" on your dashboard. Click \"Save & Register EventSub\" to complete the Twitch integration."
+      },
+      "step4": {
+        "title": "Add Overlay to OBS",
+        "description": "Copy the OBS browser source URL shown in \"Stream Settings\" and add it as a browser source in OBS. Recommended size is 800x600. Gacha results will then appear on your stream."
+      },
+      "step5": {
+        "title": "Start Streaming",
+        "description": "Once you start streaming, viewers can draw card gacha using channel points. Acquired cards automatically appear on your stream."
+      }
+    },
+    "tips": {
+      "title": "Tips",
+      "tip1": "Drop rates are set using \"weight\". The actual probability is the ratio of each card's weight to the total weight of all cards.",
+      "tip2": "You can temporarily exclude cards from gacha by setting them to \"Paused\".",
+      "tip3": "Uploaded images are automatically cropped to 400x400 pixels. Images specified by URL are used as-is without cropping.",
+      "tip4": "Make sure EventSub status shows \"Connected\" before starting your stream."
+    }
+  },
+  "aboutPage": {
+    "title": "About",
+    "metaDescription": "TwiCa operator information. Contact details, social media accounts, and support options.",
+    "operator": {
+      "title": "Operator",
+      "name": "azumag"
+    },
+    "contact": {
+      "title": "Social Media & Contact"
+    },
+    "support": {
+      "title": "Support",
+      "description": "If you'd like to support TwiCa's development and operations, your contribution would be greatly appreciated.",
+      "button": "Support on OFUSE"
+    },
+    "about": {
+      "title": "About TwiCa",
+      "description": "TwiCa is a card collection system connecting Twitch streamers and viewers. Distribute original cards to viewers using channel points. Currently in beta testing."
+    }
+  },
+  "tosPage": {
+    "title": "Terms of Service",
+    "metaDescription": "TwiCa Terms of Service. Service overview, user responsibilities, and usage restrictions.",
+    "intro": "These Terms of Service (\"Terms\") set forth the conditions for using TwiCa (\"Service\"). Users agree to use the Service in accordance with these Terms.",
+    "article1": {
+      "title": "Article 1: Service Overview",
+      "content": "This Service is a card gacha system for Twitch streamers. Viewers can draw gacha using channel points and collect original cards created by streamers."
+    },
+    "article2": {
+      "title": "Article 2: User Responsibilities",
+      "item1": "Users shall use the Service in compliance with all applicable laws and public morals.",
+      "item2": "Users are responsible for managing their Twitch account and maintaining its security.",
+      "item3": "Users shall use card information obtained through the Service only for personal use."
+    },
+    "article3": {
+      "title": "Article 3: Usage Restrictions",
+      "item1": "This Service is intended for users aged 18 and above.",
+      "item2": "The following actions are prohibited:",
+      "prohibited1": "Unauthorized use or tampering with the Service",
+      "prohibited2": "Actions that disturb other users",
+      "prohibited3": "Infringement of copyrights, trademarks, or other intellectual property rights",
+      "prohibited4": "Violations of applicable laws"
+    },
+    "article4": {
+      "title": "Article 4: Intellectual Property Rights",
+      "content": "Intellectual property rights related to the Service belong to the operator or rightful owners. Users are prohibited from reproducing, distributing, or posting content provided through the Service without prior written consent from the operator."
+    },
+    "article5": {
+      "title": "Article 5: Disclaimer",
+      "item1": "The Service makes no warranties regarding the accuracy, completeness, or usefulness of any content or services provided.",
+      "item2": "The operator is not liable for any direct or indirect damages arising from the use of this Service.",
+      "item3": "The Service may be unavailable due to maintenance or system failures."
+    },
+    "article6": {
+      "title": "Article 6: Modifications and Termination",
+      "content": "The operator may modify these Terms at any time. Modified Terms take effect when posted on the Service. The operator may terminate the Service at any time."
+    },
+    "article7": {
+      "title": "Article 7: Contact",
+      "content": "For questions about the Service, please contact us through the ",
+      "operatorInfoLink": "About page",
+      "contentEnd": "."
+    },
+    "lastUpdated": "Last updated: {date}",
+    "accept": {
+      "title": "To Use the Service",
+      "description": "You must agree to the above Terms of Service to use TwiCa.",
+      "processing": "Processing...",
+      "button": "Agree to Terms and Start Using",
+      "error": "An error occurred while processing your agreement",
+      "unexpectedError": "An unexpected error occurred"
+    }
+  },
+  "footer": {
+    "guide": "Guide",
+    "tos": "Terms of Service",
+    "about": "About"
+  },
+  "header": {
+    "dashboard": "Dashboard"
+  }
+}

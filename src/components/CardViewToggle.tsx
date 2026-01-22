@@ -1,6 +1,6 @@
 "use client";
 
-import { UI_STRINGS } from "@/lib/constants";
+import { useTranslations } from "next-intl";
 
 /**
  * View mode type for card display
@@ -25,6 +25,7 @@ export default function CardViewToggle({
   viewMode,
   onViewModeChange,
 }: CardViewToggleProps) {
+  const t = useTranslations("cardView");
   return (
     <div className="flex rounded-lg border border-gray-600 p-1">
       {/* Thumbnail view button */}
@@ -37,7 +38,7 @@ export default function CardViewToggle({
             : "text-gray-400 hover:text-white"
         }`}
         aria-pressed={viewMode === "thumbnail"}
-        title={UI_STRINGS.CARD_VIEW.THUMBNAIL}
+        title={t("thumbnail")}
       >
         {/* Grid icon for thumbnail view */}
         {/* サムネイル表示用のグリッドアイコン */}
@@ -54,7 +55,7 @@ export default function CardViewToggle({
             d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
           />
         </svg>
-        <span className="hidden sm:inline">{UI_STRINGS.CARD_VIEW.THUMBNAIL}</span>
+        <span className="hidden sm:inline">{t("thumbnail")}</span>
       </button>
 
       {/* List view button */}
@@ -67,7 +68,7 @@ export default function CardViewToggle({
             : "text-gray-400 hover:text-white"
         }`}
         aria-pressed={viewMode === "list"}
-        title={UI_STRINGS.CARD_VIEW.LIST}
+        title={t("list")}
       >
         {/* List icon for list view */}
         {/* リスト表示用のリストアイコン */}
@@ -84,7 +85,7 @@ export default function CardViewToggle({
             d="M4 6h16M4 10h16M4 14h16M4 18h16"
           />
         </svg>
-        <span className="hidden sm:inline">{UI_STRINGS.CARD_VIEW.LIST}</span>
+        <span className="hidden sm:inline">{t("list")}</span>
       </button>
     </div>
   );

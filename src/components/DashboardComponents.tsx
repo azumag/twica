@@ -1,5 +1,8 @@
-import { RARITY_COLORS, UI_STRINGS } from "@/lib/constants";
+"use client";
+
+import { RARITY_COLORS } from "@/lib/constants";
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 
 interface CardWithDetails {
   id: string;
@@ -24,6 +27,11 @@ interface GachaHistoryWithCard {
   redeemed_at: string;
 }
 
+/**
+ * Card Grid Component
+ * Displays cards in a grid layout
+ * カードグリッドコンポーネント - カードをグリッドレイアウトで表示
+ */
 export function CardGrid({ cards }: { cards: CardWithDetails[] }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -59,14 +67,20 @@ export function CardGrid({ cards }: { cards: CardWithDetails[] }) {
   );
 }
 
+/**
+ * Gacha History List Component
+ * Displays gacha history in a list format
+ * ガチャ履歴リストコンポーネント - ガチャ履歴をリスト形式で表示
+ */
 export function GachaHistoryList({ history }: { history: GachaHistoryWithCard[] }) {
+  const t = useTranslations("gachaHistory");
   return (
     <div className="space-y-2">
       {history.map((entry) => (
         <div key={entry.id} className="bg-white rounded-lg shadow p-3 flex justify-between items-center">
           <div>
-            <span className="font-medium">{entry.user_twitch_username || UI_STRINGS.GACHA_HISTORY.UNKNOWN}</span>
-            <span className="text-gray-500">{UI_STRINGS.GACHA_HISTORY.GOT_LABEL}</span>
+            <span className="font-medium">{entry.user_twitch_username || t("unknown")}</span>
+            <span className="text-gray-500">{t("gotLabel")}</span>
             <span className="font-semibold">{entry.cards.name}</span>
             <span className={`ml-2 px-2 py-1 rounded text-xs text-white ${RARITY_COLORS[entry.cards.rarity as keyof typeof RARITY_COLORS] || 'bg-gray-500'}`}>
               {entry.cards.rarity}

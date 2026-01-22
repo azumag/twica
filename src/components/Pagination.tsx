@@ -1,6 +1,6 @@
 "use client";
 
-import { UI_STRINGS } from "@/lib/constants";
+import { useTranslations } from "next-intl";
 
 interface PaginationProps {
   // Current page number (1-indexed)
@@ -23,6 +23,7 @@ export default function Pagination({
   totalPages,
   onPageChange,
 }: PaginationProps) {
+  const t = useTranslations("pagination");
   // Don't render if only one page or no pages
   // ページが1つ以下の場合はレンダリングしない
   if (totalPages <= 1) {
@@ -117,7 +118,7 @@ export default function Pagination({
         onClick={handlePrevious}
         disabled={currentPage === 1}
         className="rounded-lg border border-gray-600 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-        aria-label={UI_STRINGS.PAGINATION.PREVIOUS}
+        aria-label={t("previous")}
       >
         <svg
           className="h-4 w-4"
@@ -168,7 +169,7 @@ export default function Pagination({
         onClick={handleNext}
         disabled={currentPage === totalPages}
         className="rounded-lg border border-gray-600 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-        aria-label={UI_STRINGS.PAGINATION.NEXT}
+        aria-label={t("next")}
       >
         <svg
           className="h-4 w-4"
@@ -188,7 +189,7 @@ export default function Pagination({
       {/* Page info */}
       {/* ページ情報 */}
       <span className="ml-2 text-sm text-gray-400">
-        {UI_STRINGS.PAGINATION.PAGE_INFO(currentPage, totalPages)}
+        {t("pageInfo", { current: currentPage, total: totalPages })}
       </span>
     </div>
   );

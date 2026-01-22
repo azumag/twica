@@ -2,13 +2,57 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setSecurityHeaders } from '@/lib/security-headers'
+import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
+
+/**
+ * Detect locale from request (cookie or Accept-Language header)
+ * リクエストからロケールを検出（CookieまたはAccept-Languageヘッダー）
+ */
+function detectLocale(request: NextRequest): Locale {
+  // Priority 1: Check cookie for user's saved preference
+  // 優先度1: ユーザーの保存された設定をCookieから確認
+  const localeCookie = request.cookies.get(LOCALE_COOKIE_NAME)?.value
+  if (localeCookie && locales.includes(localeCookie as Locale)) {
+    return localeCookie as Locale
+  }
+
+  // Priority 2: Check Accept-Language header
+  // 優先度2: Accept-Languageヘッダーを確認
+  const acceptLanguage = request.headers.get('accept-language')
+  if (acceptLanguage) {
+    const languages = acceptLanguage
+      .split(',')
+      .map((lang) => {
+        const [code, qValue] = lang.trim().split(';q=')
+        return {
+          code: code.split('-')[0].toLowerCase(),
+          quality: qValue ? parseFloat(qValue) : 1,
+        }
+      })
+      .sort((a, b) => b.quality - a.quality)
+
+    for (const lang of languages) {
+      if (locales.includes(lang.code as Locale)) {
+        return lang.code as Locale
+      }
+    }
+  }
+
+  // Priority 3: Fall back to default locale
+  // 優先度3: デフォルトロケールにフォールバック
+  return defaultLocale
+}
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
-  const method = request.method.toUpperCase()
 
   const response = await updateSession(request)
   setSecurityHeaders(response)
+
+  // Detect and set locale for server components
+  // サーバーコンポーネント用にロケールを検出・設定
+  const locale = detectLocale(request)
+  response.headers.set('x-locale', locale)
 
   // Ensure pages with session-dependent content are never cached
   // This is especially important for the top page which shows different content

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 
 interface TosAcceptButtonProps {
   // ユーザーがログイン済みかどうか
@@ -22,6 +23,7 @@ export default function TosAcceptButton({ isLoggedIn, hasAccepted }: TosAcceptBu
   const router = useRouter()
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const t = useTranslations('tosPage.accept')
 
   // 未ログインまたは同意済みの場合は何も表示しない
   // Don't show anything if not logged in or already accepted
@@ -41,14 +43,14 @@ export default function TosAcceptButton({ isLoggedIn, hasAccepted }: TosAcceptBu
       const data = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || '同意の処理中にエラーが発生しました')
+        throw new Error(data.error || t('error'))
       }
 
       // 同意成功後、ダッシュボードへリダイレクト
       // After successful acceptance, redirect to dashboard
       router.push(data.redirectUrl || '/dashboard')
     } catch (err) {
-      setError(err instanceof Error ? err.message : '予期しないエラーが発生しました')
+      setError(err instanceof Error ? err.message : t('unexpectedError'))
       setIsLoading(false)
     }
   }
@@ -56,10 +58,10 @@ export default function TosAcceptButton({ isLoggedIn, hasAccepted }: TosAcceptBu
   return (
     <div className="mt-8 rounded-xl bg-purple-900/50 border border-purple-600 p-6">
       <h3 className="mb-3 text-lg font-semibold text-white">
-        サービスをご利用いただくには
+        {t('title')}
       </h3>
       <p className="mb-4 text-gray-300">
-        TwiCaをご利用いただくには、上記の利用規約に同意していただく必要があります。
+        {t('description')}
       </p>
 
       {error && (
@@ -91,10 +93,10 @@ export default function TosAcceptButton({ isLoggedIn, hasAccepted }: TosAcceptBu
                 d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
               />
             </svg>
-            処理中...
+            {t('processing')}
           </>
         ) : (
-          '利用規約に同意してサービスを利用する'
+          t('button')
         )}
       </button>
     </div>

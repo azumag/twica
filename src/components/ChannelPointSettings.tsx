@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
-import { UI_STRINGS } from "@/lib/constants";
 
 
 interface TwitchReward {
@@ -28,11 +28,18 @@ interface ChannelPointSettingsProps {
   currentRewardName: string | null;
 }
 
+/**
+ * Channel Point Settings Component
+ * Manages Twitch channel point reward configuration for card redemption
+ * チャネルポイント設定コンポーネント - カード引き換え用のTwitchチャネルポイント報酬設定を管理
+ */
 export default function ChannelPointSettings({
   streamerId,
   currentRewardId,
   currentRewardName,
 }: ChannelPointSettingsProps) {
+  const t = useTranslations("channelPointSettings");
+  const tCommon = useTranslations("common");
   const [rewards, setRewards] = useState<TwitchReward[]>([]);
   const [selectedRewardId, setSelectedRewardId] = useState(currentRewardId || "");
   const [selectedRewardName, setSelectedRewardName] = useState(currentRewardName || "");
@@ -58,21 +65,21 @@ export default function ChannelPointSettings({
         if (errorData.requiresReauth) {
           setError("報酬の取得に失敗しました。再度ログインしてください。");
         } else {
-          setError(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.FETCH_FAILED);
+          setError(t("messages.fetchFailed"));
         }
         setLoading(false);
         return;
       }
 
       if (response.status === 403) {
-        setError(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.AFFILIATE_REQUIRED);
+        setError(t("messages.affiliateRequired"));
         setLoading(false);
         return;
       }
 
       if (response.status === 429) {
         const errorData = await response.json();
-        setError(errorData.error || UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.RATE_LIMIT);
+        setError(errorData.error || t("messages.rateLimit"));
         setLoading(false);
         return;
       }
@@ -88,7 +95,7 @@ export default function ChannelPointSettings({
       setRewards(data);
     } catch (err) {
       logger.error("Failed to fetch rewards:", err);
-      setError(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.FETCH_FAILED);
+      setError(t("messages.fetchFailed"));
     } finally {
       setLoading(false);
     }
@@ -143,15 +150,15 @@ export default function ChannelPointSettings({
         setRewards([...rewards, newReward]);
         setSelectedRewardId(newReward.id);
         setSelectedRewardName(newReward.title);
-        setMessage(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.REWARD_CREATED);
+        setMessage(t("messages.rewardCreated"));
       } else if (response.status === 429) {
         const errorData = await response.json();
-        setMessage(errorData.error || UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.RATE_LIMIT);
+        setMessage(errorData.error || t("messages.rateLimit"));
       } else {
-        setMessage(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.CREATE_REWARD_FAILED);
+        setMessage(t("messages.createRewardFailed"));
       }
     } catch {
-      setMessage(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.ERROR_OCCURRED);
+      setMessage(t("messages.errorOccurred"));
     } finally {
       setCreating(false);
     }
@@ -176,12 +183,12 @@ export default function ChannelPointSettings({
 
       if (settingsResponse.status === 429) {
         const errorData = await settingsResponse.json();
-        setMessage(errorData.error || UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.RATE_LIMIT);
+        setMessage(errorData.error || t("messages.rateLimit"));
         return;
       }
 
       if (!settingsResponse.ok) {
-        setMessage(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.SAVE_FAILED);
+        setMessage(t("messages.saveFailed"));
         return;
       }
 
@@ -196,21 +203,21 @@ export default function ChannelPointSettings({
       });
 
       if (eventSubResponse.ok) {
-        setMessage(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.SAVE_SUCCESS);
+        setMessage(t("messages.saveSuccess"));
         setEventSubStatus("pending");
         // Refresh status
         await fetchEventSubStatus();
       } else if (eventSubResponse.status === 429) {
         const errorData = await eventSubResponse.json();
-        setMessage(errorData.error || UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.RATE_LIMIT);
+        setMessage(errorData.error || t("messages.rateLimit"));
       } else {
         const errorData = await eventSubResponse.json();
         logger.error("EventSub error:", errorData);
-        setMessage(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.EVENTSUB_FAILED);
+        setMessage(t("messages.eventsubFailed"));
         setEventSubStatus("error");
       }
     } catch {
-      setMessage(UI_STRINGS.CHANNEL_POINT_SETTINGS.MESSAGES.ERROR_OCCURRED);
+      setMessage(t("messages.errorOccurred"));
     } finally {
       setSaving(false);
     }
@@ -230,28 +237,28 @@ export default function ChannelPointSettings({
         return (
           <span className="inline-flex items-center gap-1 rounded-full bg-green-500/20 px-2 py-1 text-xs text-green-400">
             <span className="h-2 w-2 rounded-full bg-green-500"></span>
-            {UI_STRINGS.CHANNEL_POINT_SETTINGS.STATUS.ACTIVE}
+            {t("status.active")}
           </span>
         );
       case "pending":
         return (
           <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-1 text-xs text-yellow-400">
             <span className="h-2 w-2 rounded-full bg-yellow-500"></span>
-            {UI_STRINGS.CHANNEL_POINT_SETTINGS.STATUS.PENDING}
+            {t("status.pending")}
           </span>
         );
       case "error":
         return (
           <span className="inline-flex items-center gap-1 rounded-full bg-red-500/20 px-2 py-1 text-xs text-red-400">
             <span className="h-2 w-2 rounded-full bg-red-500"></span>
-            {UI_STRINGS.CHANNEL_POINT_SETTINGS.STATUS.ERROR}
+            {t("status.error")}
           </span>
         );
       default:
         return (
           <span className="inline-flex items-center gap-1 rounded-full bg-gray-500/20 px-2 py-1 text-xs text-gray-400">
             <span className="h-2 w-2 rounded-full bg-gray-500"></span>
-            {UI_STRINGS.CHANNEL_POINT_SETTINGS.STATUS.NONE}
+            {t("status.none")}
           </span>
         );
     }
@@ -261,7 +268,7 @@ export default function ChannelPointSettings({
     <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-white">
-          {UI_STRINGS.CHANNEL_POINT_SETTINGS.TITLE}
+          {t("title")}
         </h2>
         {getEventSubStatusBadge()}
       </div>
@@ -271,23 +278,23 @@ export default function ChannelPointSettings({
            {error}
          </div>
        ) : loading ? (
-         <div className="text-gray-400">{UI_STRINGS.AUTH.LOADING}</div>
+         <div className="text-gray-400">{tCommon("loading")}</div>
        ) : (
          <div className="space-y-4">
            <div>
              <label className="mb-1 block text-sm text-gray-300">
-               {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.SELECT_REWARD}
+               {t("form.selectReward")}
              </label>
              <select
                value={selectedRewardId}
                onChange={handleRewardSelect}
                className="w-full rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
              >
-               <option value="">{UI_STRINGS.CHANNEL_POINT_SETTINGS.OPTIONS.SELECT_REWARD}</option>
+               <option value="">{t("options.selectReward")}</option>
                {rewards.map((reward) => (
                  <option key={reward.id} value={reward.id}>
-                   {reward.title} ({reward.cost} {UI_STRINGS.CHANNEL_POINT_SETTINGS.OPTIONS.POINTS})
-                   {!reward.is_enabled && UI_STRINGS.CHANNEL_POINT_SETTINGS.OPTIONS.DISABLED}
+                   {reward.title} ({reward.cost} {t("options.points")})
+                   {!reward.is_enabled && t("options.disabled")}
                  </option>
                ))}
              </select>
@@ -296,14 +303,14 @@ export default function ChannelPointSettings({
            {rewards.length === 0 && (
              <div className="rounded-lg bg-gray-700 p-4">
                <p className="mb-3 text-sm text-gray-400">
-                 {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.NO_REWARDS}
+                 {t("form.noRewards")}
                </p>
                <button
                  onClick={handleCreateReward}
                  disabled={creating}
                  className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
                >
-                 {creating ? UI_STRINGS.CHANNEL_POINT_SETTINGS.BUTTONS.CREATING : UI_STRINGS.CHANNEL_POINT_SETTINGS.BUTTONS.CREATE_REWARD}
+                 {creating ? t("buttons.creating") : t("buttons.createReward")}
                </button>
              </div>
            )}
@@ -311,24 +318,24 @@ export default function ChannelPointSettings({
            {selectedRewardId && (
              <div className="rounded-lg bg-gray-700 p-3">
                <p className="text-sm text-gray-400">
-                 {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.SELECTED} <span className="text-white">{selectedRewardName}</span>
+                 {t("form.selected")} <span className="text-white">{selectedRewardName}</span>
                </p>
                <p className="mt-1 text-xs text-gray-500">
-                 {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.ID} {selectedRewardId}
+                 {t("form.id")} {selectedRewardId}
                </p>
              </div>
            )}
 
            {/* EventSub Info */}
            <div className="rounded-lg bg-gray-700/50 p-4">
-             <h3 className="mb-2 text-sm font-medium text-gray-300">{UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.EVENTSUB_STATUS}</h3>
+             <h3 className="mb-2 text-sm font-medium text-gray-300">{t("form.eventsubStatus")}</h3>
              {subscriptions.length > 0 ? (
                <div className="space-y-2">
                  {subscriptions.map((sub) => (
                    <div key={sub.id}>
                      <div className="flex items-center justify-between text-xs">
                        <span className="text-gray-400">
-                         {sub.condition.reward_id ? `${UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.REWARD_ID} ${sub.condition.reward_id.slice(0, 8)}...` : UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.ALL_REWARDS}
+                         {sub.condition.reward_id ? `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...` : t("form.allRewards")}
                        </span>
                        <span className={sub.status === "enabled" ? "text-green-400" : "text-yellow-400"}>
                          {sub.status}
@@ -355,12 +362,12 @@ export default function ChannelPointSettings({
                </div>
              ) : (
                <p className="text-xs text-gray-500">
-                 {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.NO_SUBSCRIPTIONS}
+                 {t("form.noSubscriptions")}
                </p>
              )}
              {process.env.NODE_ENV === 'development' && (
               <p className="mt-2 text-xs text-gray-500">
-                {UI_STRINGS.CHANNEL_POINT_SETTINGS.FORM_LABELS.LOCAL_TUNNEL_NOTE}
+                {t("form.localTunnelNote")}
               </p>
             )}
            </div>
@@ -371,19 +378,20 @@ export default function ChannelPointSettings({
                disabled={saving || !selectedRewardId}
                className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
              >
-               {saving ? UI_STRINGS.CHANNEL_POINT_SETTINGS.BUTTONS.SAVING : UI_STRINGS.CHANNEL_POINT_SETTINGS.BUTTONS.SAVE}
+               {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
              <button
                onClick={() => { fetchRewards(); fetchEventSubStatus(); }}
                className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
              >
-               {UI_STRINGS.CHANNEL_POINT_SETTINGS.BUTTONS.REFRESH}
+               {tCommon("refresh")}
              </button>
               {message && (
                 <span
                   className={
-                    // @ts-expect-error - SUCCESS_MESSAGES contains string literals
-                    UI_STRINGS.CHANNEL_POINT_SETTINGS.SUCCESS_MESSAGES.includes(message)
+                    // Check if message is a success message by comparing with translated values
+                    // 翻訳された値と比較して成功メッセージかどうかを確認
+                    [t("messages.rewardCreated"), t("messages.saveSuccess")].includes(message)
                       ? "text-green-400"
                       : "text-red-400"
                   }

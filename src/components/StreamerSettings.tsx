@@ -1,28 +1,34 @@
+import { getTranslations } from "next-intl/server";
 import { getStreamerData } from "@/lib/dashboard-data";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CardManager from "@/components/CardManager";
 import CopyButton from "@/components/CopyButton";
 import type { Card } from "@/types/database";
-import { UI_STRINGS } from "@/lib/constants";
 
 interface StreamerSettingsProps {
   streamerData: Awaited<ReturnType<typeof getStreamerData>>;
 }
 
-export default function StreamerSettings({ streamerData }: StreamerSettingsProps) {
+/**
+ * Streamer Settings Component (Server Component)
+ * Displays streamer-specific settings including OBS overlay and channel point configuration
+ * 配信者設定コンポーネント（サーバーコンポーネント）- OBSオーバーレイとチャネルポイント設定を含む配信者固有の設定を表示
+ */
+export default async function StreamerSettings({ streamerData }: StreamerSettingsProps) {
+  const t = await getTranslations("dashboard");
   if (!streamerData) return null;
 
   return (
     <section className="mb-12">
-      <h2 className="mb-6 text-2xl font-semibold text-white">{UI_STRINGS.DASHBOARD.STREAMER_SETTINGS}</h2>
+      <h2 className="mb-6 text-2xl font-semibold text-white">{t("streamerSettings")}</h2>
       <div className="grid gap-8 lg:grid-cols-2">
         {/* OBS Overlay URL */}
         <div className="rounded-xl bg-gray-800 p-6">
           <h3 className="mb-4 text-xl font-semibold text-white">
-            {UI_STRINGS.DASHBOARD.OBS_OVERLAY_URL}
+            {t("obsOverlayUrl")}
           </h3>
           <p className="mb-4 text-sm text-gray-400">
-            {UI_STRINGS.DASHBOARD.OBS_OVERLAY_DESCRIPTION}
+            {t("obsOverlayDescription")}
           </p>
           <div className="flex gap-2">
             <input

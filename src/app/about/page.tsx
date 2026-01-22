@@ -1,10 +1,11 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
 
 export const metadata: Metadata = {
-  title: "運営者情報 - TwiCa",
-  description: "TwiCaの運営者情報ページです。連絡先やSNSアカウント、支援先についてご案内します。",
+  title: "About - TwiCa",
+  description: "TwiCa operator information, contact details, and support options.",
 };
 
 /**
@@ -13,6 +14,10 @@ export const metadata: Metadata = {
  */
 export default async function AboutPage() {
   const session = await getSession();
+  const t = await getTranslations("aboutPage");
+  const tHeader = await getTranslations("header");
+  const tFooter = await getTranslations("footer");
+  const tGuidePage = await getTranslations("guidePage");
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -27,14 +32,14 @@ export default async function AboutPage() {
                 href="/dashboard"
                 className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
               >
-                ダッシュボード
+                {tHeader("dashboard")}
               </Link>
             ) : (
               <Link
                 href="/"
                 className="text-gray-400 hover:text-white"
               >
-                ホーム
+                {tGuidePage("home")}
               </Link>
             )}
           </nav>
@@ -43,17 +48,17 @@ export default async function AboutPage() {
 
       <main className="container mx-auto max-w-4xl px-4 py-12">
         <h1 className="mb-8 text-3xl font-bold text-white">
-          運営者情報
+          {t("title")}
         </h1>
 
         {/* Operator info section */}
         {/* 運営者情報セクション */}
         <section className="mb-8 rounded-xl bg-gray-800 p-6">
           <h2 className="mb-4 text-xl font-semibold text-white">
-            運営者
+            {t("operator.title")}
           </h2>
           <p className="text-gray-400">
-            azumag
+            {t("operator.name")}
           </p>
         </section>
 
@@ -61,7 +66,7 @@ export default async function AboutPage() {
         {/* SNSリンクセクション */}
         <section className="mb-8 rounded-xl bg-gray-800 p-6">
           <h2 className="mb-4 text-xl font-semibold text-white">
-            SNS・連絡先
+            {t("contact.title")}
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
             {/* X (Twitter) */}
@@ -142,10 +147,10 @@ export default async function AboutPage() {
         {/* 支援セクション */}
         <section className="mb-8 rounded-xl bg-gray-800 p-6">
           <h2 className="mb-4 text-xl font-semibold text-white">
-            支援する
+            {t("support.title")}
           </h2>
           <p className="mb-4 text-gray-400">
-            TwiCaの開発・運営を支援していただける方、気に入ったらご支援頂けますと幸いです。
+            {t("support.description")}
           </p>
           <a
             href="https://ofuse.me/8fe1bedb"
@@ -156,7 +161,7 @@ export default async function AboutPage() {
             <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
             </svg>
-            OFUSEで支援する
+            {t("support.button")}
           </a>
         </section>
 
@@ -164,12 +169,10 @@ export default async function AboutPage() {
         {/* TwiCaについてセクション */}
         <section className="rounded-xl bg-gray-800 p-6">
           <h2 className="mb-4 text-xl font-semibold text-white">
-            TwiCaについて
+            {t("about.title")}
           </h2>
           <p className="text-gray-400">
-            TwiCaは、Twitch配信者と視聴者をつなぐカードコレクションシステムです。
-            チャネルポイントを活用して、配信者オリジナルのカードを視聴者に配布できます。
-            現在βテスト中のサービスとなります。
+            {t("about.description")}
           </p>
         </section>
       </main>
@@ -180,13 +183,13 @@ export default async function AboutPage() {
             <p className="text-sm text-gray-500">&copy; 2025 TwiCa</p>
             <div className="flex gap-6">
               <Link href="/guide" className="text-sm text-gray-500 hover:text-gray-300">
-                使い方
+                {tFooter("guide")}
               </Link>
               <Link href="/tos" className="text-sm text-gray-500 hover:text-gray-300">
-                利用規約
+                {tFooter("tos")}
               </Link>
               <Link href="/about" className="text-sm text-gray-500 hover:text-gray-300">
-                運営者情報
+                {tFooter("about")}
               </Link>
             </div>
           </div>

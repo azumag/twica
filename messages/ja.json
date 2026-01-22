@@ -1,0 +1,443 @@
+{
+  "metadata": {
+    "title": "TwiCa - Twitch Channel Point Trading Cards",
+    "description": "チャネルポイントでカードガチャを引けるサービス"
+  },
+  "common": {
+    "loading": "読み込み中...",
+    "save": "保存",
+    "cancel": "キャンセル",
+    "edit": "編集",
+    "delete": "削除",
+    "update": "更新",
+    "add": "追加",
+    "refresh": "更新",
+    "copy": "コピー",
+    "copied": "コピーしました",
+    "noImage": "No Image"
+  },
+  "auth": {
+    "twitchLogin": "Twitchでログイン",
+    "loginFailed": "ログインに失敗しました",
+    "networkError": "ネットワークエラーが発生しました",
+    "logout": "ログアウト",
+    "redirecting": "Twitchログインページへ移動中..."
+  },
+  "navigation": {
+    "overview": "概要",
+    "cardManagement": "カード管理",
+    "settings": "配信設定",
+    "collection": "マイコレクション"
+  },
+  "rarity": {
+    "common": "コモン",
+    "rare": "レア",
+    "epic": "エピック",
+    "legendary": "レジェンダリー"
+  },
+  "cardManager": {
+    "title": "カード管理",
+    "addNewCard": "新規カード追加",
+    "editCard": "カードを編集",
+    "newCard": "新規カード",
+    "importFromEmotes": "エモートからインポート",
+    "form": {
+      "name": "カード名",
+      "namePlaceholder": "カード名",
+      "image": "画像 (ファイルまたはURL)",
+      "imageUrlPlaceholder": "または画像URLを入力",
+      "rarity": "レアリティ",
+      "dropRate": "出現確率",
+      "description": "説明",
+      "currentImage": "現在の画像",
+      "croppedImage": "トリミング済み画像",
+      "croppedSize": "400x400px (JPEG)",
+      "cropNote": "（400x400にトリミング）"
+    },
+    "fileUpload": {
+      "formats": "対応形式: JPEG, PNG | ",
+      "maxSize": "最大サイズ: {mb}MB"
+    },
+    "buttons": {
+      "saving": "保存中...",
+      "creating": "作成中...",
+      "undo": "取り消し"
+    },
+    "confirmations": {
+      "deleteCard": "このカードを削除しますか？",
+      "fullDeleteCard": "このカードを完全に削除しますか？\n\n⚠️ 既にこのカードを持っているユーザーの手持ちからも削除されます。"
+    },
+    "messages": {
+      "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。",
+      "deleteFailed": "カード削除に失敗しました",
+      "deleteFailedPrefix": "削除失敗:",
+      "networkErrorDelete": "ネットワークエラーが発生しました。削除をキャンセルしました。",
+      "operationFailed": "操作に失敗しました: {msg}",
+      "emptyCards": "まだカードがありません。「新規カード追加」から始めましょう。",
+      "probability": "確率:",
+      "errorOccurred": "エラーが発生しました ({status})",
+      "uploadLimited": "アップロード機能が制限されています",
+      "imageUsage": "画像使用量: {usage} / {limit}",
+      "refreshing": "更新中"
+    },
+    "sort": {
+      "createdAt": "設定日",
+      "rarity": "レアリティ",
+      "dropRate": "出現重み",
+      "ascending": "昇順",
+      "descending": "降順"
+    },
+    "filter": {
+      "all": "全て",
+      "active": "配布中のみ",
+      "inactive": "配布停止のみ"
+    },
+    "table": {
+      "image": "画像",
+      "name": "名前",
+      "rarity": "レアリティ",
+      "weight": "重み",
+      "probability": "確率",
+      "status": "ステータス",
+      "actions": "操作"
+    },
+    "status": {
+      "distributing": "配布中",
+      "paused": "配布停止中"
+    },
+    "actions": {
+      "resume": "再開",
+      "pause": "停止",
+      "resumeDistribution": "配布再開",
+      "pauseDistribution": "配布停止",
+      "fullDelete": "完全削除"
+    },
+    "cardCount": {
+      "nCards": "{count} 件のカード",
+      "noCards": "カードがありません"
+    },
+    "dropRateInfo": {
+      "title": "出現確率について",
+      "weight": "重み",
+      "actualProbability": "実際の確率",
+      "description1": "「重み」は相対的な出現しやすさを表します。実際の出現確率は、全カードの重みの合計に対する割合で計算されます。",
+      "formula": "計算式:",
+      "formulaText": "実際の確率 = このカードの重み ÷ 全カードの重みの合計 × 100%",
+      "example": "例:",
+      "example1": "カードA: 重み10%、カードB: 重み10%、カードC: 重み10%",
+      "example1Result": "→ 各カードの実際の確率: 10÷30×100 = 33.3%",
+      "example2": "カードA: 重み50%、カードB: 重み25%",
+      "example2Result": "→ カードA: 50÷75×100 = 66.7%、カードB: 33.3%",
+      "note": "※ 配布停止中のカードは確率計算に含まれません。",
+      "close": "閉じる"
+    },
+    "emoteImport": {
+      "title": "エモートからカードを作成",
+      "description": "チャンネルのエモートを選択してカードを作成します。既にカードになっているエモートは除外されます。",
+      "loading": "エモートを読み込み中...",
+      "allExisting": "全てのエモートが既にカードになっています",
+      "selected": "{selected} / {total} 件選択中",
+      "duplicates": "（{count} 件は既存カードと重複）",
+      "selectAll": "全て選択",
+      "deselectAll": "選択解除",
+      "alreadyExists": "既にカードとして存在します",
+      "created": "作成済み",
+      "noEmotes": "チャンネルにエモートがありません。",
+      "requiresAffiliate": "Twitchアフィリエイト/パートナーでエモートを設定してください。",
+      "defaultRarity": "デフォルトレアリティ",
+      "defaultWeight": "デフォルト重み: {weight}%",
+      "createCards": "{count}件のカードを作成",
+      "fetchFailed": "エモートの取得に失敗しました",
+      "createFailed": "カードの作成に失敗しました"
+    }
+  },
+  "collection": {
+    "title": "マイコレクション",
+    "empty": {
+      "line1": "まだカードを持っていません。",
+      "line2": "配信者のチャネルポイントを使ってカードをゲットしましょう！"
+    },
+    "cardTypes": "({count} 種類)",
+    "cardCount": "x{count}"
+  },
+  "dashboard": {
+    "title": "ダッシュボード",
+    "streamerSettings": "配信者設定",
+    "obsOverlayUrl": "OBSブラウザソースURL",
+    "obsOverlayDescription": "OBSのブラウザソースにこのURLを設定してください（推奨サイズ: 800x600）",
+    "recentCards": "最近のカード",
+    "viewAllCards": "すべてのカードを見る",
+    "viewSettings": "配信設定を開く",
+    "noCardsYet": "まだカードがありません",
+    "createFirstCard": "最初のカードを作成",
+    "overview": {
+      "collectionSummary": "コレクション概要",
+      "viewAllCollection": "コレクションをすべて見る",
+      "streamerInfo": "配信者機能について",
+      "streamerInfoText": "チャネルポイント報酬やカード管理機能を使用するには、Twitchアフィリエイトまたはパートナーである必要があります。",
+      "quickLinks": "クイックリンク"
+    }
+  },
+  "battle": {
+    "title": "カード対戦",
+    "versus": "VS",
+    "userCard": "あなたのカード",
+    "cpuCard": "CPUカード",
+    "battleProgress": "バトル進行",
+    "battleLog": "バトルログ",
+    "turn": "ターン",
+    "you": "あなた",
+    "cpu": "CPU"
+  },
+  "channelPointSettings": {
+    "title": "カード引き換え設定",
+    "status": {
+      "active": "接続中",
+      "pending": "確認中",
+      "error": "エラー",
+      "none": "未設定"
+    },
+    "messages": {
+      "affiliateRequired": "チャネルポイントを使用するには、Twitchアフィリエイトまたはパートナーである必要があります。",
+      "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。",
+      "fetchFailed": "報酬の取得に失敗しました。再度ログインしてください。",
+      "rewardCreated": "報酬を作成しました",
+      "errorOccurred": "エラーが発生しました",
+      "createRewardFailed": "報酬の作成に失敗しました",
+      "saveFailed": "設定の保存に失敗しました",
+      "saveSuccess": "保存しました（EventSub登録完了）",
+      "eventsubFailed": "設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。"
+    },
+    "form": {
+      "selectReward": "カード引き換えに使用するチャネルポイント報酬を選択",
+      "noRewards": "チャネルポイント報酬がありません。新しく作成しますか？",
+      "selected": "選択中:",
+      "id": "ID:",
+      "rewardId": "報酬ID:",
+      "allRewards": "全報酬",
+      "eventsubStatus": "EventSub ステータス",
+      "noSubscriptions": "EventSubサブスクリプションがありません。保存ボタンを押して登録してください。",
+      "localTunnelNote": "※ ローカル環境ではngrokなどのトンネルが必要です"
+    },
+    "buttons": {
+      "createReward": "TwiCa用報酬を作成（100ポイント）",
+      "saveEventSub": "保存 & EventSub登録"
+    },
+    "options": {
+      "selectReward": "-- 報酬を選択 --",
+      "points": "ポイント",
+      "disabled": "[無効]"
+    }
+  },
+  "gachaHistory": {
+    "title": "最近の獲得情報",
+    "emptyMessage": "まだ獲得情報はありません。",
+    "got": "{username} が{cardName} を獲得しました！",
+    "gotLabel": " が ",
+    "unknown": "Unknown"
+  },
+  "stats": {
+    "totalCards": "総カード数",
+    "unique": "ユニーク",
+    "legendary": "レジェンダリー",
+    "epic": "エピック",
+    "rare": "レア",
+    "common": "コモン"
+  },
+  "developmentNotice": {
+    "text": "⚠️ このサービスはβテスト中です。一部の機能が正常に動作しない場合があります。"
+  },
+  "cardView": {
+    "thumbnail": "サムネイル",
+    "list": "リスト"
+  },
+  "pagination": {
+    "previous": "前へ",
+    "next": "次へ",
+    "pageInfo": "{current} / {total}",
+    "itemsPerPage": "件表示"
+  },
+  "settingsPage": {
+    "title": "配信設定",
+    "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。"
+  },
+  "cardsPage": {
+    "title": "カード管理",
+    "description": "カードの作成、編集、削除を行います。"
+  },
+  "collectionPage": {
+    "title": "マイコレクション",
+    "description": "獲得したカードを確認できます。"
+  },
+  "languageSwitcher": {
+    "label": "言語",
+    "japanese": "日本語",
+    "english": "English"
+  },
+  "topPage": {
+    "hero": {
+      "twitchIntegration": "Twitch連携",
+      "cardCollection": "カードコレクション",
+      "description1": "TwiCaは、Twitchのチャネルポイントを活用した",
+      "description2": "カード配布システムです。",
+      "description3": "視聴者はポイントを使用してカードを獲得し、",
+      "description4": "コレクションを構築できます。",
+      "viewerGuide": "視聴者向け使い方",
+      "streamerGuide": "配信者向け使い方",
+      "viewGuide": "使い方を見る"
+    },
+    "features": {
+      "cardCollection": {
+        "title": "カード収集",
+        "description": "チャネルポイントを使用してガチャを実行し、配信者が作成したオリジナルカードを収集できます。"
+      },
+      "streamIntegration": {
+        "title": "配信連携",
+        "description": "OBSブラウザソースでガチャ演出を配信に表示。視聴者とリアルタイムで結果を共有できます。"
+      }
+    },
+    "streamerInfo": {
+      "title": "配信者向け機能",
+      "description": "Twitchアフィリエイトまたはパートナーステータスをお持ちの方は、以下の機能をご利用いただけます：",
+      "feature1": "オリジナルカードの作成・管理",
+      "feature2": "チャネルポイント報酬との連携設定",
+      "feature3": "配信用オーバーレイのカスタマイズ"
+    }
+  },
+  "guidePage": {
+    "title": "使い方",
+    "metaDescription": "TwiCaの使い方ガイドです。視聴者向け・配信者向けの利用方法を説明します。",
+    "home": "ホーム",
+    "viewer": {
+      "title": "視聴者向け",
+      "step1": {
+        "title": "Twitchでログイン",
+        "description": "TwiCaのトップページから「Twitchでログイン」ボタンをクリックし、Twitchアカウントでログインします。"
+      },
+      "step2": {
+        "title": "配信でチャネルポイントを使用",
+        "description": "TwiCaに対応した配信者の配信を視聴し、チャネルポイント報酬からカードガチャを実行します。配信者が設定した報酬（例：「カードガチャ」）をチャネルポイントで交換してください。"
+      },
+      "step3": {
+        "title": "カードを獲得",
+        "description": "ガチャが実行されると、配信者が作成したオリジナルカードがランダムで獲得できます。獲得したカードは配信画面にも表示されます。"
+      },
+      "step4": {
+        "title": "コレクションを確認",
+        "description": "ダッシュボードの「マイコレクション」から、獲得したカードを確認できます。レアリティごとの統計も表示されます。"
+      }
+    },
+    "streamer": {
+      "title": "配信者向け",
+      "requiresAffiliate": "※ Twitchアフィリエイトまたはパートナーのステータスが必要です。",
+      "step1": {
+        "title": "Twitchでログイン",
+        "description": "TwiCaにTwitchアカウントでログインします。アフィリエイト/パートナーのアカウントであれば、自動的に配信者機能が有効になります。"
+      },
+      "step2": {
+        "title": "カードを作成",
+        "description": "ダッシュボードの「カード管理」から、オリジナルカードを作成します。カード名、画像、レアリティ、出現確率を設定できます。"
+      },
+      "step3": {
+        "title": "チャネルポイント報酬を設定",
+        "description": "ダッシュボードの「配信設定」から、チャネルポイント報酬を選択または新規作成します。「保存 & EventSub登録」ボタンを押すと、Twitchとの連携が完了します。"
+      },
+      "step4": {
+        "title": "OBSにオーバーレイを追加",
+        "description": "ダッシュボードの「配信設定」に表示されるOBSブラウザソースURLをコピーし、OBSのブラウザソースに追加します。推奨サイズは800x600です。これで、ガチャ結果が配信画面に表示されるようになります。"
+      },
+      "step5": {
+        "title": "配信開始",
+        "description": "配信を開始すると、視聴者がチャネルポイントでカードガチャを実行できるようになります。獲得されたカードは自動的に配信画面に表示されます。"
+      }
+    },
+    "tips": {
+      "title": "ヒント",
+      "tip1": "カードの出現確率は「重み」で設定します。全カードの重みの合計に対する割合が実際の出現確率になります。",
+      "tip2": "カードは「配布停止」にすることで、一時的にガチャから除外できます。",
+      "tip3": "アップロード画像は400x400ピクセルに自動トリミングされます。画像URL指定の場合はトリミングされず、そのまま使用されます。",
+      "tip4": "EventSubのステータスが「接続中」になっていることを確認してから配信を開始してください。"
+    }
+  },
+  "aboutPage": {
+    "title": "運営者情報",
+    "metaDescription": "TwiCaの運営者情報ページです。連絡先やSNSアカウント、支援先についてご案内します。",
+    "operator": {
+      "title": "運営者",
+      "name": "azumag"
+    },
+    "contact": {
+      "title": "SNS・連絡先"
+    },
+    "support": {
+      "title": "支援する",
+      "description": "TwiCaの開発・運営を支援していただける方、気に入ったらご支援頂けますと幸いです。",
+      "button": "OFUSEで支援する"
+    },
+    "about": {
+      "title": "TwiCaについて",
+      "description": "TwiCaは、Twitch配信者と視聴者をつなぐカードコレクションシステムです。チャネルポイントを活用して、配信者オリジナルのカードを視聴者に配布できます。現在βテスト中のサービスとなります。"
+    }
+  },
+  "tosPage": {
+    "title": "利用規約",
+    "metaDescription": "TwiCaの利用規約ページです。サービスの概要、ユーザーの責任と義務、利用制限について説明します。",
+    "intro": "この利用規約（以下「本規約」）は、TwiCa（以下「当サービス」）の利用に関する条件を定めるものです。ユーザーの皆さまには、本規約に従って当サービスをご利用いただきます。",
+    "article1": {
+      "title": "第1条 サービスの概要",
+      "content": "当サービスは、Twitch配信者向けのカードガチャシステムです。視聴者はチャンネルポイントを使ってガチャを引き、配信者が作成したオリジナルカードを収集できます。"
+    },
+    "article2": {
+      "title": "第2条 ユーザーの責任と義務",
+      "item1": "ユーザーは、当サービスを法令および公序良俗に従って利用するものとします。",
+      "item2": "ユーザーは、自らの責任においてTwitchアカウントを管理し、セキュリティを確保するものとします。",
+      "item3": "ユーザーは、当サービスを通じて得たカード情報を個人利用の範囲内でのみ使用するものとします。"
+    },
+    "article3": {
+      "title": "第3条 利用制限",
+      "item1": "当サービスは、18歳以上のユーザー様を対象としています。",
+      "item2": "以下に該当する行為は禁止とします：",
+      "prohibited1": "当サービスの不正利用または改ざん",
+      "prohibited2": "他のユーザーへの迷惑行為",
+      "prohibited3": "著作権、商標権等の知的財産権の侵害",
+      "prohibited4": "法令に違反する行為"
+    },
+    "article4": {
+      "title": "第4条 知的財産権",
+      "content": "当サービスに関する知的財産権は、運営者または正当な権利者に帰属します。ユーザーは、当サービスを通じて提供される内容を、運営者の事前書面による承諾なく、複製、配布、掲示等することは禁止します。"
+    },
+    "article5": {
+      "title": "第5条 免責事項",
+      "item1": "当サービスは、提供するコンテンツ、サービス的一切について、その正確性、完全性、有用性についていかなる保証も行いません。",
+      "item2": "当サービスに伴い発生した直接的、間接的な損害について、運営者は責任を負いません。",
+      "item3": "メンテナンスやシステム障害等により、当サービスが利用できない場合があります。"
+    },
+    "article6": {
+      "title": "第6条 変更と終了",
+      "content": "運営者は、本規約を随時変更できるものとします。変更後の規約は、当サービス上に掲載した時点で効力を生じます。運営者は、当サービスを任意の時点で終了することができるものとします。"
+    },
+    "article7": {
+      "title": "第7条 お問い合わせ先",
+      "content": "当サービスに関するご質問は、",
+      "operatorInfoLink": "運営者情報ページ",
+      "contentEnd": "に記載の連絡先までお問い合わせください。"
+    },
+    "lastUpdated": "最終更新日：{date}",
+    "accept": {
+      "title": "サービスをご利用いただくには",
+      "description": "TwiCaをご利用いただくには、上記の利用規約に同意していただく必要があります。",
+      "processing": "処理中...",
+      "button": "利用規約に同意してサービスを利用する",
+      "error": "同意の処理中にエラーが発生しました",
+      "unexpectedError": "予期しないエラーが発生しました"
+    }
+  },
+  "footer": {
+    "guide": "使い方",
+    "tos": "利用規約",
+    "about": "運営者情報"
+  },
+  "header": {
+    "dashboard": "ダッシュボード"
+  }
+}

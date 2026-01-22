@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES, UI_STRINGS, UPLOAD_CONFIG } from "@/lib/constants";
+import { RARITIES, UPLOAD_CONFIG } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import ImageCropper from "./ImageCropper";
@@ -69,6 +70,11 @@ export default function CardManager({
   showViewToggle = false,
   maxCards,
 }: CardManagerProps) {
+  // i18n translations
+  // i18n翻訳
+  const t = useTranslations("cardManager");
+  const tCommon = useTranslations("common");
+  const tRarity = useTranslations("rarity");
   const [cards, setCards] = useState<Card[]>(initialCards);
   const [loading, setLoading] = useState(false);
   // Current view mode state (thumbnail or list)
@@ -575,7 +581,7 @@ export default function CardManager({
         if (!uploadResponse.ok) {
           if (uploadResponse.status === 429) {
             const errorData = await uploadResponse.json();
-            setUploadError(errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT);
+            setUploadError(errorData.error || t("messages.rateLimit"));
             setSaving(false);
             return;
           }
@@ -629,7 +635,7 @@ export default function CardManager({
         resetForm();
       } else if (response.status === 429) {
         const errorData = await response.json();
-        setUploadError(errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT);
+        setUploadError(errorData.error || t("messages.rateLimit"));
       } else {
         // Handle other errors (403, 400, 401, etc.)
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
@@ -690,14 +696,14 @@ export default function CardManager({
       if (!response.ok) {
         if (response.status === 429) {
           const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-          const errorMessage = errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.RATE_LIMIT;
-          alert(UI_STRINGS.CARD_MANAGER.MESSAGES.OPERATION_FAILED(errorMessage));
+          const errorMessage = errorData.error || t("messages.rateLimit");
+          alert(t("messages.operationFailed", { msg: errorMessage }));
           logger.error("Rate limit exceeded:", errorData);
         } else {
           setCards(originalCards);
           const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-          const errorMessage = errorData.error || UI_STRINGS.CARD_MANAGER.MESSAGES.DELETE_FAILED;
-          alert(`${UI_STRINGS.CARD_MANAGER.MESSAGES.DELETE_FAILED_PREFIX} ${errorMessage}`);
+          const errorMessage = errorData.error || t("messages.deleteFailed");
+          alert(`${t("messages.deleteFailedPrefix")} ${errorMessage}`);
           logger.error("Delete failed:", errorData);
         }
       } else {
@@ -709,7 +715,7 @@ export default function CardManager({
       // Revert on network error
       setCards(originalCards);
       logger.error("Failed to delete card:", error);
-      alert(UI_STRINGS.CARD_MANAGER.MESSAGES.NETWORK_ERROR_DELETE);
+      alert(t("messages.networkErrorDelete"));
     }
   };
 
@@ -719,7 +725,7 @@ export default function CardManager({
   return (
     <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-white">{UI_STRINGS.CARD_MANAGER.TITLE}</h2>
+        <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
         <div className="flex gap-2">
           {/* Emote import button */}
           {/* エモートインポートボタン */}
@@ -727,13 +733,13 @@ export default function CardManager({
             onClick={openEmoteModal}
             className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition"
           >
-            エモートからインポート
+            {t("importFromEmotes")}
           </button>
           <button
             onClick={() => setShowForm(true)}
             className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
           >
-            {UI_STRINGS.CARD_MANAGER.ADD_NEW_CARD}
+            {t("addNewCard")}
           </button>
         </div>
       </div>
@@ -744,19 +750,19 @@ export default function CardManager({
         <div className="mb-6">
           {storageStatus.uploadDisabled && storageStatus.message ? (
             <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-3 text-sm text-yellow-300">
-              <p className="font-medium mb-1">アップロード機能が制限されています</p>
+              <p className="font-medium mb-1">{t("messages.uploadLimited")}</p>
               <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
             </div>
           ) : (
             <div className="text-sm text-gray-400 flex items-center gap-2">
-              <p>画像使用量: {storageStatus.userUsageFormatted} / {storageStatus.userLimitFormatted}</p>
+              <p>{t("messages.imageUsage", { usage: storageStatus.userUsageFormatted, limit: storageStatus.userLimitFormatted })}</p>
               {storageLoading && (
                 <span className="inline-flex items-center gap-1 text-purple-400">
                   <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  <span className="text-xs">更新中</span>
+                  <span className="text-xs">{t("messages.refreshing")}</span>
                 </span>
               )}
             </div>
@@ -772,7 +778,7 @@ export default function CardManager({
             <form onSubmit={handleSubmit} className="p-6">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-white">
-                  {editingCard ? UI_STRINGS.CARD_MANAGER.EDIT_CARD : UI_STRINGS.CARD_MANAGER.NEW_CARD}
+                  {editingCard ? t("editCard") : t("newCard")}
                 </h3>
                 <button
                   type="button"
@@ -787,13 +793,13 @@ export default function CardManager({
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
                   <label className="mb-1 block text-sm text-gray-300">
-                    {UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME} *
+                    {t("form.name")} *
                   </label>
                   <input
                     type="text"
                     name="name"
                     required
-                    placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.NAME_PLACEHOLDER}
+                    placeholder={t("form.namePlaceholder")}
                     value={formData.name}
                     onChange={(e) =>
                       setFormData({ ...formData, name: e.target.value })
@@ -803,7 +809,7 @@ export default function CardManager({
                 </div>
                 <div>
               <label className="mb-1 block text-sm text-gray-300">
-                {UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE}
+                {t("form.image")}
               </label>
               <div className="space-y-2">
                 {/* Error message - always visible when there's an error */}
@@ -822,14 +828,14 @@ export default function CardManager({
                     {/* Vercel Image Transformations をスキップして使用量を削減 */}
                     <Image
                       src={confirmedImageUrl}
-                      alt="現在の画像"
+                      alt={t("form.currentImage")}
                       width={60}
                       height={60}
                       className="rounded object-cover"
                       unoptimized
                     />
                     <div className="flex-1">
-                      <p className="text-sm text-gray-300">現在の画像</p>
+                      <p className="text-sm text-gray-300">{t("form.currentImage")}</p>
                       <p className="text-xs text-gray-500 truncate max-w-[200px]">
                         {confirmedImageUrl.split('/').pop()}
                       </p>
@@ -839,7 +845,7 @@ export default function CardManager({
                       onClick={handleRemoveImage}
                       className="rounded bg-red-500 px-3 py-1 text-sm text-white hover:bg-red-600"
                     >
-                      削除
+                      {tCommon("delete")}
                     </button>
                   </div>
                 )}
@@ -851,12 +857,12 @@ export default function CardManager({
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={croppedPreviewUrl}
-                      alt="トリミング済みプレビュー"
+                      alt={t("form.croppedImage")}
                       className="h-[60px] w-[60px] rounded object-cover"
                     />
                     <div className="flex-1">
-                      <p className="text-sm text-green-300">トリミング済み画像</p>
-                      <p className="text-xs text-gray-400">400x400px (JPEG)</p>
+                      <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
+                      <p className="text-xs text-gray-400">{t("form.croppedSize")}</p>
                     </div>
                     <button
                       type="button"
@@ -871,7 +877,7 @@ export default function CardManager({
                       }}
                       className="rounded bg-red-500 px-3 py-1 text-sm text-white hover:bg-red-600"
                     >
-                      取り消し
+                      {t("buttons.undo")}
                     </button>
                   </div>
                 )}
@@ -896,12 +902,12 @@ export default function CardManager({
                     <p className="text-xs text-gray-500">
                       {/* File size limit removed since cropping compresses to 400x400 JPEG */}
                       {/* トリミングで400x400 JPEGに圧縮されるためファイルサイズ制限を削除 */}
-                      {UI_STRINGS.CARD_MANAGER.FILE_UPLOAD.FORMATS}（400x400にトリミング）
+                      {t("fileUpload.formats")}{t("form.cropNote")}
                     </p>
                     <input
                       type="url"
                       name="imageUrl"
-                      placeholder={UI_STRINGS.CARD_MANAGER.FORM_LABELS.IMAGE_URL_PLACEHOLDER}
+                      placeholder={t("form.imageUrlPlaceholder")}
                       value={formData.imageUrl}
                       onChange={(e) =>
                         setFormData({ ...formData, imageUrl: e.target.value })
@@ -922,7 +928,7 @@ export default function CardManager({
             </div>
             <div>
               <label className="mb-1 block text-sm text-gray-300">
-                {UI_STRINGS.CARD_MANAGER.FORM_LABELS.RARITY}
+                {t("form.rarity")}
               </label>
               <select
                 name="rarity"
@@ -934,7 +940,7 @@ export default function CardManager({
               >
                 {RARITIES.map((r) => (
                   <option key={r.value} value={r.value}>
-                    {r.label}
+                    {tRarity(r.value)}
                   </option>
                 ))}
               </select>
@@ -942,13 +948,13 @@ export default function CardManager({
             <div>
               <div className="mb-1 flex items-center gap-2">
                 <label className="text-sm text-gray-300">
-                  {UI_STRINGS.CARD_MANAGER.FORM_LABELS.DROP_RATE}
+                  {t("form.dropRate")}
                 </label>
                 <button
                   type="button"
                   onClick={() => setShowDropRateInfo(true)}
                   className="text-gray-400 hover:text-white"
-                  title="出現確率について"
+                  title={t("dropRateInfo.title")}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -957,11 +963,11 @@ export default function CardManager({
               </div>
               <div className="mb-2 flex items-center gap-3 text-sm">
                 <span className="text-gray-400">
-                  重み: <span className="text-white font-medium">{(formData.dropRate * 100).toFixed(1)}%</span>
+                  {t("dropRateInfo.weight")}: <span className="text-white font-medium">{(formData.dropRate * 100).toFixed(1)}%</span>
                 </span>
                 <span className="text-gray-500">→</span>
                 <span className="text-gray-400">
-                  実際の確率: <span className="text-green-400 font-medium">{calculateActualProbability(formData.dropRate).toFixed(1)}%</span>
+                  {t("dropRateInfo.actualProbability")}: <span className="text-green-400 font-medium">{calculateActualProbability(formData.dropRate).toFixed(1)}%</span>
                 </span>
               </div>
               <input
@@ -981,7 +987,7 @@ export default function CardManager({
               />
             </div>
             <div className="md:col-span-2">
-              <label className="mb-1 block text-sm text-gray-300">{UI_STRINGS.CARD_MANAGER.FORM_LABELS.DESCRIPTION}</label>
+              <label className="mb-1 block text-sm text-gray-300">{t("form.description")}</label>
               <textarea
                 name="description"
                 value={formData.description}
@@ -999,14 +1005,14 @@ export default function CardManager({
                   disabled={saving}
                   className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
                 >
-                  {saving ? UI_STRINGS.CARD_MANAGER.BUTTONS.SAVE : editingCard ? UI_STRINGS.CARD_MANAGER.BUTTONS.UPDATE : UI_STRINGS.CARD_MANAGER.BUTTONS.ADD}
+                  {saving ? t("buttons.saving") : editingCard ? tCommon("update") : tCommon("add")}
                 </button>
                 <button
                   type="button"
                   onClick={resetForm}
                   className="rounded-lg border border-gray-600 px-6 py-2 text-gray-300 hover:bg-gray-600"
                 >
-                  {UI_STRINGS.CARD_MANAGER.BUTTONS.CANCEL}
+                  {tCommon("cancel")}
                 </button>
               </div>
             </form>
@@ -1028,9 +1034,9 @@ export default function CardManager({
               onChange={(e) => setSortField(e.target.value as SortField)}
               className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600"
             >
-              <option value="created_at">設定日</option>
-              <option value="rarity">レアリティ</option>
-              <option value="drop_rate">出現重み</option>
+              <option value="created_at">{t("sort.createdAt")}</option>
+              <option value="rarity">{t("sort.rarity")}</option>
+              <option value="drop_rate">{t("sort.dropRate")}</option>
             </select>
 
             {/* Sort direction toggle */}
@@ -1038,21 +1044,21 @@ export default function CardManager({
             <button
               onClick={() => setSortDirection(prev => prev === "asc" ? "desc" : "asc")}
               className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600 hover:bg-gray-600 flex items-center gap-1"
-              title={sortDirection === "asc" ? "昇順" : "降順"}
+              title={sortDirection === "asc" ? t("sort.ascending") : t("sort.descending")}
             >
               {sortDirection === "asc" ? (
                 <>
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
                   </svg>
-                  昇順
+                  {t("sort.ascending")}
                 </>
               ) : (
                 <>
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
-                  降順
+                  {t("sort.descending")}
                 </>
               )}
             </button>
@@ -1068,9 +1074,9 @@ export default function CardManager({
               onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
               className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600"
             >
-              <option value="all">全て</option>
-              <option value="active">配布中のみ</option>
-              <option value="inactive">配布停止のみ</option>
+              <option value="all">{t("filter.all")}</option>
+              <option value="active">{t("filter.active")}</option>
+              <option value="inactive">{t("filter.inactive")}</option>
             </select>
           </div>
 
@@ -1103,7 +1109,7 @@ export default function CardManager({
         if (cards.length === 0) {
           return (
             <p className="text-center text-gray-400">
-              {UI_STRINGS.CARD_MANAGER.MESSAGES.EMPTY_CARDS}
+              {t("messages.emptyCards")}
             </p>
           );
         }
@@ -1136,10 +1142,10 @@ export default function CardManager({
                       key={card.id}
                       className={`group relative overflow-hidden rounded-lg bg-gray-700 ${isPaused ? 'opacity-60' : ''}`}
                     >
-                      {/* 一時停止中バッジ */}
+                      {/* Paused badge / 一時停止中バッジ */}
                       {isPaused && (
                         <div className="absolute top-0 left-0 right-0 bg-yellow-600 text-white text-xs text-center py-1 z-10">
-                          配布停止中
+                          {t("status.paused")}
                         </div>
                       )}
                       {/* 名前とレアリティを一番上に配置 */}
@@ -1149,7 +1155,7 @@ export default function CardManager({
                           <span
                             className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
                           >
-                            {rarityInfo.label}
+                            {tRarity(card.rarity)}
                           </span>
                         </div>
                       </div>
@@ -1171,7 +1177,7 @@ export default function CardManager({
                           />
                         ) : (
                           <div className="flex h-full items-center justify-center text-gray-500">
-                            {UI_STRINGS.CARD_MANAGER.MESSAGES.NO_IMAGE}
+                            {tCommon("noImage")}
                           </div>
                         )}
                       </div>
@@ -1194,19 +1200,19 @@ export default function CardManager({
                               : 'bg-yellow-600 hover:bg-yellow-700'
                           }`}
                         >
-                          {isPaused ? '配布再開' : '配布停止'}
+                          {isPaused ? t("actions.resumeDistribution") : t("actions.pauseDistribution")}
                         </button>
                         <button
                           onClick={() => handleEdit(card)}
                           className="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
                         >
-                          {UI_STRINGS.CARD_MANAGER.BUTTONS.EDIT}
+                          {tCommon("edit")}
                         </button>
                         <button
                           onClick={() => handleDelete(card.id)}
                           className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
                         >
-                          完全削除
+                          {t("actions.fullDelete")}
                         </button>
                       </div>
                     </div>
@@ -1220,8 +1226,8 @@ export default function CardManager({
             <div className="mt-6 flex flex-col items-center gap-3">
               <p className="text-sm text-gray-400">
                 {filteredAndSortedCards.length > 0
-                  ? `${filteredAndSortedCards.length} 件のカード`
-                  : "カードがありません"}
+                  ? t("cardCount.nCards", { count: filteredAndSortedCards.length })
+                  : t("cardCount.noCards")}
               </p>
 
               {/* Loading indicator */}
@@ -1232,7 +1238,7 @@ export default function CardManager({
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                   </svg>
-                  <span>読み込み中...</span>
+                  <span>{tCommon("loading")}</span>
                 </div>
               )}
             </div>
@@ -1246,7 +1252,7 @@ export default function CardManager({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={() => setShowDropRateInfo(false)}>
           <div className="mx-4 max-w-lg rounded-xl bg-gray-800 p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-white">出現確率について</h3>
+              <h3 className="text-lg font-semibold text-white">{t("dropRateInfo.title")}</h3>
               <button
                 onClick={() => setShowDropRateInfo(false)}
                 className="text-gray-400 hover:text-white"
@@ -1258,35 +1264,34 @@ export default function CardManager({
             </div>
             <div className="space-y-4 text-gray-300">
               <p>
-                <strong className="text-white">「重み」</strong>は相対的な出現しやすさを表します。
-                実際の出現確率は、全カードの重みの合計に対する割合で計算されます。
+                {t("dropRateInfo.description1")}
               </p>
               <div className="rounded-lg bg-gray-700 p-4">
-                <p className="mb-2 text-sm text-gray-400">計算式:</p>
+                <p className="mb-2 text-sm text-gray-400">{t("dropRateInfo.formula")}</p>
                 <p className="font-mono text-sm text-white">
-                  実際の確率 = このカードの重み ÷ 全カードの重みの合計 × 100%
+                  {t("dropRateInfo.formulaText")}
                 </p>
               </div>
               <div className="rounded-lg bg-gray-700 p-4">
-                <p className="mb-2 text-sm text-gray-400">例:</p>
+                <p className="mb-2 text-sm text-gray-400">{t("dropRateInfo.example")}</p>
                 <ul className="space-y-1 text-sm">
-                  <li>• カードA: 重み10%、カードB: 重み10%、カードC: 重み10%</li>
-                  <li className="text-green-400">→ 各カードの実際の確率: 10÷30×100 = <strong>33.3%</strong></li>
+                  <li>• {t("dropRateInfo.example1")}</li>
+                  <li className="text-green-400">{t("dropRateInfo.example1Result")}</li>
                 </ul>
                 <ul className="mt-2 space-y-1 text-sm">
-                  <li>• カードA: 重み50%、カードB: 重み25%</li>
-                  <li className="text-green-400">→ カードA: 50÷75×100 = <strong>66.7%</strong>、カードB: <strong>33.3%</strong></li>
+                  <li>• {t("dropRateInfo.example2")}</li>
+                  <li className="text-green-400">{t("dropRateInfo.example2Result")}</li>
                 </ul>
               </div>
               <p className="text-sm text-gray-400">
-                ※ 配布停止中のカードは確率計算に含まれません。
+                {t("dropRateInfo.note")}
               </p>
             </div>
             <button
               onClick={() => setShowDropRateInfo(false)}
               className="mt-6 w-full rounded-lg bg-purple-600 py-2 text-white hover:bg-purple-700"
             >
-              閉じる
+              {t("dropRateInfo.close")}
             </button>
           </div>
         </div>
@@ -1311,7 +1316,7 @@ export default function CardManager({
             {/* モーダルヘッダー */}
             <div className="p-6 border-b border-gray-700">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-white">エモートからカードを作成</h3>
+                <h3 className="text-lg font-semibold text-white">{t("emoteImport.title")}</h3>
                 <button
                   onClick={() => setShowEmoteModal(false)}
                   className="text-gray-400 hover:text-white"
@@ -1322,7 +1327,7 @@ export default function CardManager({
                 </button>
               </div>
               <p className="mt-2 text-sm text-gray-400">
-                チャンネルのエモートを選択してカードを作成します。既にカードになっているエモートは除外されます。
+                {t("emoteImport.description")}
               </p>
             </div>
 
@@ -1341,7 +1346,7 @@ export default function CardManager({
               {/* ローディング状態 */}
               {loadingEmotes && (
                 <div className="flex items-center justify-center py-12">
-                  <div className="text-gray-400">エモートを読み込み中...</div>
+                  <div className="text-gray-400">{t("emoteImport.loading")}</div>
                 </div>
               )}
 
@@ -1354,13 +1359,13 @@ export default function CardManager({
                   <div className="mb-4 flex items-center justify-between">
                     <div className="text-sm text-gray-400">
                       {getAvailableEmotes().length === 0 ? (
-                        "全てのエモートが既にカードになっています"
+                        t("emoteImport.allExisting")
                       ) : (
                         <>
-                          {selectedEmotes.size} / {getAvailableEmotes().length} 件選択中
+                          {t("emoteImport.selected", { selected: selectedEmotes.size, total: getAvailableEmotes().length })}
                           {emotes.length !== getAvailableEmotes().length && (
                             <span className="ml-2 text-yellow-400">
-                              （{emotes.length - getAvailableEmotes().length} 件は既存カードと重複）
+                              {t("emoteImport.duplicates", { count: emotes.length - getAvailableEmotes().length })}
                             </span>
                           )}
                         </>
@@ -1372,14 +1377,14 @@ export default function CardManager({
                         className="text-sm text-purple-400 hover:text-purple-300"
                         disabled={getAvailableEmotes().length === 0}
                       >
-                        全て選択
+                        {t("emoteImport.selectAll")}
                       </button>
                       <span className="text-gray-600">|</span>
                       <button
                         onClick={deselectAllEmotes}
                         className="text-sm text-purple-400 hover:text-purple-300"
                       >
-                        選択解除
+                        {t("emoteImport.deselectAll")}
                       </button>
                     </div>
                   </div>
@@ -1402,7 +1407,7 @@ export default function CardManager({
                               ? "bg-purple-600 ring-2 ring-purple-400"
                               : "bg-gray-700 hover:bg-gray-600"
                           }`}
-                          title={isExisting ? "既にカードとして存在します" : emote.name}
+                          title={isExisting ? t("emoteImport.alreadyExists") : emote.name}
                         >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
@@ -1416,7 +1421,7 @@ export default function CardManager({
                           {isExisting && (
                             <div className="absolute inset-0 flex items-center justify-center">
                               <span className="bg-gray-900/80 px-2 py-1 rounded text-xs text-gray-400">
-                                作成済み
+                                {t("emoteImport.created")}
                               </span>
                             </div>
                           )}
@@ -1438,9 +1443,9 @@ export default function CardManager({
               {/* エモートがない状態 */}
               {!loadingEmotes && emotes.length === 0 && !emoteError && (
                 <div className="text-center py-12 text-gray-400">
-                  チャンネルにエモートがありません。
+                  {t("emoteImport.noEmotes")}
                   <br />
-                  Twitchアフィリエイト/パートナーでエモートを設定してください。
+                  {t("emoteImport.requiresAffiliate")}
                 </div>
               )}
             </div>
@@ -1452,7 +1457,7 @@ export default function CardManager({
               {/* 新規カードのデフォルト設定 */}
               <div className="mb-4 grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm text-gray-400 mb-1">デフォルトレアリティ</label>
+                  <label className="block text-sm text-gray-400 mb-1">{t("emoteImport.defaultRarity")}</label>
                   <select
                     value={emoteDefaultRarity}
                     onChange={(e) => setEmoteDefaultRarity(e.target.value as Rarity)}
@@ -1460,14 +1465,14 @@ export default function CardManager({
                   >
                     {RARITIES.map((r) => (
                       <option key={r.value} value={r.value}>
-                        {r.label}
+                        {tRarity(r.value)}
                       </option>
                     ))}
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm text-gray-400 mb-1">
-                    デフォルト重み: {(emoteDefaultDropRate * 100).toFixed(0)}%
+                    {t("emoteImport.defaultWeight", { weight: (emoteDefaultDropRate * 100).toFixed(0) })}
                   </label>
                   <input
                     type="range"
@@ -1488,14 +1493,14 @@ export default function CardManager({
                   onClick={() => setShowEmoteModal(false)}
                   className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
                 >
-                  キャンセル
+                  {tCommon("cancel")}
                 </button>
                 <button
                   onClick={createCardsFromEmotes}
                   disabled={selectedEmotes.size === 0 || creatingCards}
                   className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {creatingCards ? "作成中..." : `${selectedEmotes.size}件のカードを作成`}
+                  {creatingCards ? t("buttons.creating") : t("emoteImport.createCards", { count: selectedEmotes.size })}
                 </button>
               </div>
             </div>

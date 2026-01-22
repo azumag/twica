@@ -6,25 +6,36 @@ import { getSession } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { getFileTypeFromBuffer } from '@/lib/file-utils'
 import { validateCSRFToken } from '@/lib/csrf'
-import { uploadWithRetry } from '@/lib/error-handler'
+import { uploadToR2WithRetry } from '@/lib/r2-client'
 
 // Mock dependencies
 vi.mock('next/headers')
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
 vi.mock('@/lib/csrf')
-vi.mock('@/lib/error-handler', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@/lib/error-handler')>()
-  return {
-    ...original,
-    uploadWithRetry: vi.fn(),
-  }
-})
+// Mock R2 client for upload functionality
+// R2クライアントをモックしてアップロード機能をテスト
+vi.mock('@/lib/r2-client', () => ({
+  uploadToR2WithRetry: vi.fn(),
+}))
+// Mock storage-db to avoid unmocked supabase/admin dependency
+// ストレージDBをモックしてsupabase/adminの未モック依存を回避
+vi.mock('@/lib/storage-db', () => ({
+  getStorageUsageFromDB: vi.fn().mockResolvedValue({
+    userUsage: 0,
+    globalUsage: 0,
+    userLimitReached: false,
+    globalLimitReached: false,
+    userLimitBytes: 100 * 1024 * 1024,
+    globalLimitBytes: 1000 * 1024 * 1024,
+  }),
+  recordBlobFile: vi.fn().mockResolvedValue(undefined),
+}))
 
 const mockCookies = vi.mocked(cookies)
 const mockGetSession = vi.mocked(getSession)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
-const mockUploadWithRetry = vi.mocked(uploadWithRetry)
+const mockUploadToR2WithRetry = vi.mocked(uploadToR2WithRetry)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 
 describe('POST /api/upload', () => {
@@ -252,7 +263,7 @@ describe('POST /api/upload', () => {
         version: 1,
       })
 
-      mockUploadWithRetry.mockResolvedValue({
+      mockUploadToR2WithRetry.mockResolvedValue({
         url: 'https://blob.vercel-storage.com/test-image.jpg',
       })
 
@@ -273,16 +284,19 @@ describe('POST /api/upload', () => {
       expect(response.status).toBe(200)
       const body = await response.json()
       expect(body.url).toBe('https://blob.vercel-storage.com/test-image.jpg')
-      expect(mockUploadWithRetry).toHaveBeenCalled()
+      expect(mockUploadToR2WithRetry).toHaveBeenCalled()
       // First argument should be the filename pattern
       // Filename format: {userPrefix(8chars)}_{uniqueSuffix(8chars)}.{ext}
-      expect(mockUploadWithRetry.mock.calls[0][0]).toMatch(/^[a-f0-9]{8}_[a-f0-9]{8}\.jpg$/)
+      // 第1引数はファイル名パターン
+      expect(mockUploadToR2WithRetry.mock.calls[0][0]).toMatch(/^[a-f0-9]{8}_[a-f0-9]{8}\.jpg$/)
       // Second argument should be Buffer or Uint8Array-like (file contents)
-      const fileArg = mockUploadWithRetry.mock.calls[0][1]
+      // 第2引数はファイル内容のBuffer
+      const fileArg = mockUploadToR2WithRetry.mock.calls[0][1]
       expect(fileArg).toBeDefined()
       expect(fileArg.length).toBeGreaterThan(0)
-      // Third argument should be the options
-      expect(mockUploadWithRetry.mock.calls[0][2]).toEqual({ access: 'public' })
+      // Third argument should be the contentType (R2 upload uses contentType, not options)
+      // 第3引数はcontentType（R2アップロードはoptionsではなくcontentTypeを使用）
+      expect(mockUploadToR2WithRetry.mock.calls[0][2]).toBe('image/jpeg')
     })
 
     it('PNG画像のアップロードに成功する', async () => {
@@ -296,7 +310,7 @@ describe('POST /api/upload', () => {
         version: 1,
       })
 
-      mockUploadWithRetry.mockResolvedValue({
+      mockUploadToR2WithRetry.mockResolvedValue({
         url: 'https://blob.vercel-storage.com/test-image.png',
       })
 
@@ -330,7 +344,7 @@ describe('POST /api/upload', () => {
         version: 1,
       })
 
-      mockUploadWithRetry.mockResolvedValue({
+      mockUploadToR2WithRetry.mockResolvedValue({
         url: 'https://blob.vercel-storage.com/test-image.gif',
       })
 
@@ -366,7 +380,7 @@ describe('POST /api/upload', () => {
         version: 1,
       })
 
-      mockUploadWithRetry.mockRejectedValue(new Error('Vercel Blob error'))
+      mockUploadToR2WithRetry.mockRejectedValue(new Error('Vercel Blob error'))
 
       const imageFile = new File([createMinimalJpegBuffer()], 'test.jpg', {
         type: 'image/jpeg',

@@ -28,7 +28,9 @@ describe('setSecurityHeaders', () => {
       const result = setSecurityHeaders(response)
       const csp = result.headers.get('Content-Security-Policy')
       expect(csp).toContain('localhost:*')
-      expect(csp).not.toContain('unsafe-eval')
+      // Development CSP includes 'unsafe-eval' for Next.js fast refresh and dev tools
+      // 開発環境では Next.js の fast refresh と開発ツールのため 'unsafe-eval' が必要
+      expect(csp).toContain('unsafe-eval')
       expect(csp).toContain('unsafe-inline')
       vi.unstubAllEnvs()
     })

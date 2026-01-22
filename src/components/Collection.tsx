@@ -1,7 +1,8 @@
 import Image from "next/image";
+import { getTranslations } from "next-intl/server";
 import Stats from "./Stats";
 import type { Streamer, Card } from "@/types/database";
-import { UI_STRINGS, RARITIES } from "@/lib/constants";
+import { RARITIES } from "@/lib/constants";
 import type { Rarity } from "@/types/database";
 
 /**
@@ -28,10 +29,17 @@ interface CollectionProps {
   };
 }
 
-export default function Collection({ cardsByStreamer, stats }: CollectionProps) {
+/**
+ * Collection Component (Server Component)
+ * Displays user's card collection grouped by streamer
+ * コレクションコンポーネント（サーバーコンポーネント）- ユーザーのカードコレクションを配信者ごとに表示
+ */
+export default async function Collection({ cardsByStreamer, stats }: CollectionProps) {
+  const t = await getTranslations("collection");
+  const tCommon = await getTranslations("common");
   return (
     <section>
-      <h2 className="mb-6 text-2xl font-semibold text-white">{UI_STRINGS.COLLECTION.TITLE}</h2>
+      <h2 className="mb-6 text-2xl font-semibold text-white">{t("title")}</h2>
 
       {/* Stats */}
       <Stats stats={stats} />
@@ -40,9 +48,9 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
       {Object.keys(cardsByStreamer).length === 0 ? (
         <div className="rounded-xl bg-gray-800 p-8 text-center">
           <p className="text-gray-400">
-            {UI_STRINGS.COLLECTION.EMPTY_MESSAGE.LINE1}
+            {t("empty.line1")}
             <br />
-            {UI_STRINGS.COLLECTION.EMPTY_MESSAGE.LINE2}
+            {t("empty.line2")}
           </p>
         </div>
       ) : (
@@ -68,7 +76,7 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
                 {streamer.twitch_display_name}
               </h3>
               <span className="text-sm text-gray-400">
-                {UI_STRINGS.COLLECTION.CARD_TYPES(cards.length)}
+                {t("cardTypes", { count: cards.length })}
               </span>
             </div>
 
@@ -110,7 +118,7 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
                         />
                       ) : (
                         <div className="flex h-full items-center justify-center text-gray-500">
-                          画像なし
+                          {tCommon("noImage")}
                         </div>
                       )}
                     </div>
@@ -123,7 +131,7 @@ export default function Collection({ cardsByStreamer, stats }: CollectionProps) 
                       )}
                       {card.count > 1 && (
                         <div className="text-sm text-gray-400">
-                          {UI_STRINGS.COLLECTION.CARD_COUNT(card.count)}
+                          {t("cardCount", { count: card.count })}
                         </div>
                       )}
                     </div>

@@ -1,16 +1,28 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { NextIntlClientProvider } from 'next-intl'
 import CopyButton from '@/components/CopyButton'
 
 vi.mock('@/lib/logger')
-vi.mock('@/lib/constants', () => ({
-  UI_STRINGS: {
-    COPY_BUTTON: {
-      COPIED: 'コピーしました',
-      COPY: 'コピー',
-    },
+
+// Mock messages for i18n testing
+// i18nテスト用のモックメッセージ
+const messages = {
+  common: {
+    copy: 'コピー',
+    copied: 'コピーしました',
   },
-}))
+}
+
+// Wrapper component for providing i18n context
+// i18nコンテキストを提供するラッパーコンポーネント
+const renderWithIntl = (component: React.ReactElement) => {
+  return render(
+    <NextIntlClientProvider locale="ja" messages={messages}>
+      {component}
+    </NextIntlClientProvider>
+  )
+}
 
 describe('CopyButton', () => {
   const mockText = 'Test text to copy'
@@ -22,33 +34,33 @@ describe('CopyButton', () => {
 
   describe('基本レンダリング', () => {
     it('デフォルトのコピー状態でレンダリングされる', () => {
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
       expect(button).toBeInTheDocument()
       expect(button).toHaveTextContent('コピー')
     })
 
     it('「コピー」テキストが表示される', () => {
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByText('コピー')
       expect(button).toBeInTheDocument()
     })
 
     it('適切なCSSクラスが適用されている', () => {
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
       expect(button).toHaveClass('rounded-lg', 'bg-purple-600', 'px-4', 'py-2', 'text-white', 'hover:bg-purple-700')
     })
 
     it('空のテキストでレンダリングできる', () => {
-      render(<CopyButton text="" />)
+      renderWithIntl(<CopyButton text="" />)
       const button = screen.getByRole('button')
       expect(button).toBeInTheDocument()
     })
 
     it('長いテキストでレンダリングできる', () => {
       const longText = 'a'.repeat(1000)
-      render(<CopyButton text={longText} />)
+      renderWithIntl(<CopyButton text={longText} />)
       const button = screen.getByRole('button')
       expect(button).toBeInTheDocument()
     })
@@ -57,7 +69,7 @@ describe('CopyButton', () => {
   describe('コピー機能（正常系）', () => {
     it('ボタンをクリックすると、navigator.clipboard.writeText() が呼び出される', async () => {
       const writeTextMock = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce(undefined)
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -71,7 +83,7 @@ describe('CopyButton', () => {
 
     it('コピーが成功すると、ボタンのテキストが「コピーしました」に変化', async () => {
       vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce(undefined)
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -83,7 +95,7 @@ describe('CopyButton', () => {
 
     it('2秒後にボタンのテキストが「コピー」に戻る', async () => {
       vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce(undefined)
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -103,7 +115,7 @@ describe('CopyButton', () => {
     it('text プロパティが正しく渡される', async () => {
       const customText = 'Custom text to copy'
       const writeTextMock = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce(undefined)
-      render(<CopyButton text={customText} />)
+      renderWithIntl(<CopyButton text={customText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -118,7 +130,7 @@ describe('CopyButton', () => {
     it('特殊文字を含むテキストをコピーできる', async () => {
       const specialText = 'Test with émojis 🎉 and spëcial çhars!'
       const writeTextMock = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce(undefined)
-      render(<CopyButton text={specialText} />)
+      renderWithIntl(<CopyButton text={specialText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -132,7 +144,7 @@ describe('CopyButton', () => {
 
     it('複数回クリックしても正しく動作する', async () => {
       const writeTextMock = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -164,7 +176,7 @@ describe('CopyButton', () => {
       const errorSpy = vi.spyOn(logger, 'error')
       vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValueOnce(new Error('Clipboard error'))
 
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -178,7 +190,7 @@ describe('CopyButton', () => {
 
     it('エラー時にボタンのテキストは「コピー」のままである', async () => {
       vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValueOnce(new Error('Clipboard error'))
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -190,7 +202,7 @@ describe('CopyButton', () => {
 
     it('エラー時にユーザー操作には影響がない', async () => {
       vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValueOnce(new Error('Clipboard error'))
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
 
       fireEvent.click(button)
@@ -205,7 +217,7 @@ describe('CopyButton', () => {
       const { logger } = await import('@/lib/logger')
       const errorSpy = vi.spyOn(logger, 'error')
 
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
 
       expect(() => fireEvent.click(button)).not.toThrow()
@@ -220,13 +232,13 @@ describe('CopyButton', () => {
 
   describe('アクセシビリティ', () => {
     it('button要素が正しくレンダリングされる', () => {
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
       expect(button).toBeInTheDocument()
     })
 
     it('ボタンはデフォルトで有効になっている', () => {
-      render(<CopyButton text={mockText} />)
+      renderWithIntl(<CopyButton text={mockText} />)
       const button = screen.getByRole('button')
       expect(button).toBeEnabled()
     })
@@ -234,7 +246,7 @@ describe('CopyButton', () => {
 
   describe('スナップショットテスト', () => {
     it('デフォルト状態のスナップショット', () => {
-      const { container } = render(<CopyButton text={mockText} />)
+      const { container } = renderWithIntl(<CopyButton text={mockText} />)
       expect(container.firstChild).toMatchSnapshot()
     })
   })

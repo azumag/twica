@@ -1,13 +1,20 @@
 import Link from "next/link";
 import Image from "next/image";
+import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
-import { UI_STRINGS } from "@/lib/constants";
+import { LanguageSwitcherDark } from "@/components/LanguageSwitcher";
 
 interface HeaderProps {
   session: Awaited<ReturnType<typeof getSession>>;
 }
 
-export default function Header({ session }: HeaderProps) {
+/**
+ * Header Component (Server Component)
+ * Displays navigation header with user info and logout button
+ * ヘッダーコンポーネント（サーバーコンポーネント）- ユーザー情報とログアウトボタンを含むナビゲーションヘッダーを表示
+ */
+export default async function Header({ session }: HeaderProps) {
+  const t = await getTranslations("auth");
   if (!session) return null;
 
   const isStreamer = session.broadcasterType === "partner" || session.broadcasterType === "affiliate";
@@ -38,12 +45,15 @@ export default function Header({ session }: HeaderProps) {
               </span>
             )}
           </div>
+          {/* Language Switcher */}
+          {/* 言語切り替え */}
+          <LanguageSwitcherDark />
           {/* API エンドポイントには Link ではなく通常の a タグを使用 */}
           <a
             href="/api/auth/logout"
             className="rounded-lg border border-gray-700 px-4 py-2 text-gray-300 hover:bg-gray-800"
           >
-            {UI_STRINGS.AUTH.LOGOUT}
+            {t("logout")}
           </a>
         </div>
       </div>

@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import { useTranslations } from 'next-intl'
+import { LanguageSwitcherDark } from '@/components/LanguageSwitcher'
 
 interface SessionData {
   twitchUserId: string
@@ -66,6 +68,8 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
   // Don't re-fetch on client side as API routes have different cookie handling
   const [session] = useState<SessionData | null>(initialSession)
   const isLoading = false
+  const t = useTranslations('header')
+  const tAuth = useTranslations('auth')
 
   if (isLoading && !initialSession) {
     return (
@@ -81,18 +85,21 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
         {/* ユーザー名：スマホでは非表示、sm以上で表示 */}
         <span className="hidden text-white sm:block">{session.twitchDisplayName}</span>
 
+        {/* 言語切り替え / Language switcher */}
+        <LanguageSwitcherDark />
+
         {/* ダッシュボードリンク：スマホではアイコンのみ、sm以上でテキスト表示 */}
         <Link
           href="/dashboard"
           className="rounded-lg bg-purple-600 p-2 text-white hover:bg-purple-700 sm:px-4 sm:py-2"
-          title="ダッシュボード"
+          title={t("dashboard")}
         >
           {/* スマホ：アイコン表示 */}
           <span className="sm:hidden">
             <DashboardIcon />
           </span>
           {/* sm以上：テキスト表示 */}
-          <span className="hidden sm:inline">ダッシュボード</span>
+          <span className="hidden sm:inline">{t("dashboard")}</span>
         </Link>
 
         {/* ログアウトリンク：スマホではアイコンのみ、sm以上でテキスト表示 */}
@@ -100,22 +107,20 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
         <a
           href="/api/auth/logout"
           className="rounded-lg border border-white/30 p-2 text-white hover:bg-white/10 sm:px-4 sm:py-2"
-          title="ログアウト"
+          title={tAuth("logout")}
         >
           {/* スマホ：アイコン表示 */}
           <span className="sm:hidden">
             <LogoutIcon />
           </span>
           {/* sm以上：テキスト表示 */}
-          <span className="hidden sm:inline">ログアウト</span>
+          <span className="hidden sm:inline">{tAuth("logout")}</span>
         </a>
       </div>
     )
   }
 
-  // 未ログインユーザーの場合はヘッダーにはログインボタンを表示しない
-  // Don't show login button in header for logged-out users
-  // ログインボタンは画面中央のメインCTAエリアにのみ表示
-  // Login button is only shown in the main CTA area in the center of the page
-  return null
+  // 未ログインユーザーの場合は言語切り替えのみ表示
+  // For logged-out users, only show the language switcher
+  return <LanguageSwitcherDark />
 }

@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CopyButton from "@/components/CopyButton";
-import { UI_STRINGS } from "@/lib/constants";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -15,6 +15,8 @@ import { UI_STRINGS } from "@/lib/constants";
  * OBSオーバーレイURLとチャネルポイント報酬の設定を含む
  */
 export default async function SettingsPage() {
+  const t = await getTranslations("settingsPage");
+  const tDashboard = await getTranslations("dashboard");
   const session = await getSession();
 
   // Session check is handled by layout, but double-check for safety
@@ -44,10 +46,10 @@ export default async function SettingsPage() {
       {/* ページヘッダー */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-white">
-          {UI_STRINGS.SETTINGS_PAGE.TITLE}
+          {t("title")}
         </h1>
         <p className="mt-2 text-gray-400">
-          {UI_STRINGS.SETTINGS_PAGE.DESCRIPTION}
+          {t("description")}
         </p>
       </div>
 
@@ -58,10 +60,10 @@ export default async function SettingsPage() {
         {/* OBSオーバーレイURLセクション */}
         <div className="rounded-xl bg-gray-800 p-6">
           <h2 className="mb-4 text-xl font-semibold text-white">
-            {UI_STRINGS.DASHBOARD.OBS_OVERLAY_URL}
+            {tDashboard("obsOverlayUrl")}
           </h2>
           <p className="mb-4 text-sm text-gray-400">
-            {UI_STRINGS.DASHBOARD.OBS_OVERLAY_DESCRIPTION}
+            {tDashboard("obsOverlayDescription")}
           </p>
           <div className="flex gap-2">
             <input

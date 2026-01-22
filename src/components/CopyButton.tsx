@@ -1,14 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
-import { UI_STRINGS } from "@/lib/constants";
 
 interface CopyButtonProps {
   text: string;
 }
 
+/**
+ * Copy to Clipboard Button Component
+ * クリップボードへコピーするボタンコンポーネント
+ */
 export default function CopyButton({ text }: CopyButtonProps) {
+  const t = useTranslations("common");
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -26,7 +31,7 @@ export default function CopyButton({ text }: CopyButtonProps) {
       onClick={handleCopy}
       className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
     >
-      {copied ? UI_STRINGS.COPY_BUTTON.COPIED : UI_STRINGS.COPY_BUTTON.COPY}
+      {copied ? t("copied") : t("copy")}
     </button>
   );
 }

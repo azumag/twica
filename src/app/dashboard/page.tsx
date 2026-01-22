@@ -1,8 +1,9 @@
 import Link from "next/link";
 import Image from "next/image";
+import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUserCards } from "@/lib/dashboard-data";
-import { RARITY_ORDER, UI_STRINGS, RARITIES } from "@/lib/constants";
+import { RARITY_ORDER, RARITIES } from "@/lib/constants";
 import Stats from "@/components/Stats";
 // Streamer type is used by getUserCards internally but not needed in this file
 // Streamer型はgetUserCards内部で使用されるが、このファイルでは不要
@@ -17,6 +18,10 @@ import Stats from "@/components/Stats";
  * 統計概要、最近のカード、他のセクションへのクイックリンクを表示
  */
 export default async function DashboardPage() {
+  const t = await getTranslations("dashboard");
+  const tCards = await getTranslations("cardsPage");
+  const tSettings = await getTranslations("settingsPage");
+  const tCollection = await getTranslations("collectionPage");
   const session = await getSession();
 
   // Session check is handled by layout, but we need session for data fetch
@@ -66,10 +71,10 @@ export default async function DashboardPage() {
       {!isStreamer && (
         <div className="mb-8 rounded-xl bg-gray-800 p-6">
           <h2 className="mb-2 text-lg font-semibold text-white">
-            {UI_STRINGS.DASHBOARD_OVERVIEW.STREAMER_INFO}
+            {t("overview.streamerInfo")}
           </h2>
           <p className="text-gray-400">
-            {UI_STRINGS.DASHBOARD_OVERVIEW.STREAMER_INFO_TEXT}
+            {t("overview.streamerInfoText")}
           </p>
         </div>
       )}
@@ -79,13 +84,13 @@ export default async function DashboardPage() {
       <section className="mb-8">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-xl font-semibold text-white">
-            {UI_STRINGS.DASHBOARD_OVERVIEW.COLLECTION_SUMMARY}
+            {t("overview.collectionSummary")}
           </h2>
           <Link
             href="/dashboard/collection"
             className="text-sm text-purple-400 hover:text-purple-300"
           >
-            {UI_STRINGS.DASHBOARD_OVERVIEW.VIEW_ALL_COLLECTION} →
+            {t("overview.viewAllCollection")} →
           </Link>
         </div>
 
@@ -152,7 +157,7 @@ export default async function DashboardPage() {
       {isStreamer && (
         <section>
           <h2 className="mb-4 text-xl font-semibold text-white">
-            {UI_STRINGS.DASHBOARD_OVERVIEW.QUICK_LINKS}
+            {t("overview.quickLinks")}
           </h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {/* Card management link */}
@@ -177,10 +182,10 @@ export default async function DashboardPage() {
                 </svg>
               </div>
               <h3 className="font-semibold text-white group-hover:text-purple-400">
-                {UI_STRINGS.CARDS_PAGE.TITLE}
+                {tCards("title")}
               </h3>
               <p className="mt-1 text-sm text-gray-400">
-                {UI_STRINGS.CARDS_PAGE.DESCRIPTION}
+                {tCards("description")}
               </p>
             </Link>
 
@@ -212,10 +217,10 @@ export default async function DashboardPage() {
                 </svg>
               </div>
               <h3 className="font-semibold text-white group-hover:text-blue-400">
-                {UI_STRINGS.SETTINGS_PAGE.TITLE}
+                {tSettings("title")}
               </h3>
               <p className="mt-1 text-sm text-gray-400">
-                {UI_STRINGS.SETTINGS_PAGE.DESCRIPTION}
+                {tSettings("description")}
               </p>
             </Link>
 
@@ -241,10 +246,10 @@ export default async function DashboardPage() {
                 </svg>
               </div>
               <h3 className="font-semibold text-white group-hover:text-green-400">
-                {UI_STRINGS.COLLECTION_PAGE.TITLE}
+                {tCollection("title")}
               </h3>
               <p className="mt-1 text-sm text-gray-400">
-                {UI_STRINGS.COLLECTION_PAGE.DESCRIPTION}
+                {tCollection("description")}
               </p>
             </Link>
           </div>
