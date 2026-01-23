@@ -3,7 +3,6 @@ import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
-import CopyButton from "@/components/CopyButton";
 import OverlayPreview from "@/components/OverlayPreview";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
@@ -17,7 +16,6 @@ import OverlayPreview from "@/components/OverlayPreview";
  */
 export default async function SettingsPage() {
   const t = await getTranslations("settingsPage");
-  const tDashboard = await getTranslations("dashboard");
   const session = await getSession();
 
   // Session check is handled by layout, but double-check for safety
@@ -54,46 +52,20 @@ export default async function SettingsPage() {
         </p>
       </div>
 
-      {/* Settings grid */}
-      {/* 設定グリッド */}
-      <div className="grid gap-8 lg:grid-cols-2">
-        {/* OBS Overlay URL Section */}
-        {/* OBSオーバーレイURLセクション */}
-        <div className="rounded-xl bg-gray-800 p-6">
-          <h2 className="mb-4 text-xl font-semibold text-white">
-            {tDashboard("obsOverlayUrl")}
-          </h2>
-          <p className="mb-4 text-sm text-gray-400">
-            {tDashboard("obsOverlayDescription")}
-          </p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              readOnly
-              value={`${process.env.NEXT_PUBLIC_APP_URL}/overlay/${streamerData.streamer.id}`}
-              className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
-            />
-            <CopyButton
-              text={`${process.env.NEXT_PUBLIC_APP_URL}/overlay/${streamerData.streamer.id}`}
-            />
-          </div>
-        </div>
+      {/* Overlay Preview Section - OBSブラウザソースURLとオーバーレイ設定 */}
+      {/* URLパラメータでオーバーレイ表示をカスタマイズできる機能を含む */}
+      <OverlayPreview
+        streamerId={streamerData.streamer.id}
+        baseUrl={process.env.NEXT_PUBLIC_APP_URL || ""}
+      />
 
-        {/* Channel Point Settings Section */}
-        {/* チャネルポイント設定セクション */}
+      {/* Channel Point Settings Section */}
+      {/* チャネルポイント設定セクション */}
+      <div className="mt-8">
         <ChannelPointSettings
           streamerId={streamerData.streamer.id}
           currentRewardId={streamerData.streamer.channel_point_reward_id}
           currentRewardName={streamerData.streamer.channel_point_reward_name}
-        />
-      </div>
-
-      {/* Overlay Preview Section - オーバーレイ設定とプレビュー */}
-      {/* URLパラメータでオーバーレイ表示をカスタマイズできるプレビュー機能 */}
-      <div className="mt-8">
-        <OverlayPreview
-          streamerId={streamerData.streamer.id}
-          baseUrl={process.env.NEXT_PUBLIC_APP_URL || ""}
         />
       </div>
     </div>

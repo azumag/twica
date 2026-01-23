@@ -63,15 +63,19 @@ export default function OverlayPage() {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // オーバーレイ表示オプション（URLパラメータで設定）
+  // autoPortraitとsmallModeはデフォルトでtrue（より良い表示体験のため）
   const [options, setOptions] = useState<OverlayOptions>({
     imageOnly: false,
-    autoPortrait: false,
+    autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
-    smallMode: false,
+    smallMode: true,     // デフォルトで小さい画像モードを有効化
     hideDemo: false,
   });
   // 画像のアスペクト比が縦長かどうかを判定するためのState
   const [isPortraitImage, setIsPortraitImage] = useState(false);
+  // 画像が小さい（400x400未満）かどうかを判定するためのState
+  // 小さい画像の場合はsmallModeを自動適用するために使用
+  const [isSmallImage, setIsSmallImage] = useState(false);
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
@@ -83,24 +87,26 @@ export default function OverlayPage() {
 
   // URLパラメータからオーバーレイオプションを解析
   // Parse overlay options from URL parameters
+  // autoPortrait, smallMode, effectsはデフォルトでtrue（falseの場合のみURLパラメータで明示）
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     setOptions({
       imageOnly: urlParams.get("imageOnly") === "true",
-      autoPortrait: urlParams.get("autoPortrait") === "true",
-      effects: urlParams.get("effects") !== "false", // デフォルトはtrue
-      smallMode: urlParams.get("smallMode") === "true",
-      hideDemo: urlParams.get("hideDemo") === "true", // プレビュー用にDEMOボタンを非表示
+      autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
+      effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
+      smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
+      hideDemo: urlParams.get("hideDemo") === "true",            // プレビュー用にDEMOボタンを非表示
     });
   }, []);
 
-  // 画像のアスペクト比を判定（縦長かどうか）
-  // Check if image is portrait (height > width)
+  // 画像のアスペクト比を判定（縦長かどうか）と小さい画像かどうかを判定
+  // Check if image is portrait (height > width) and if image is small (< 400x400)
   // Promiseを返すことで、画像ロード完了を待てるようにする
   const checkImageAspectRatio = useCallback((imageUrl: string | null): Promise<boolean> => {
     return new Promise((resolve) => {
       if (!imageUrl) {
         setIsPortraitImage(false);
+        setIsSmallImage(false);
         resolve(false);
         return;
       }
@@ -111,10 +117,17 @@ export default function OverlayPage() {
         // Portrait if height is greater than width (not a square)
         const isPortrait = img.height > img.width;
         setIsPortraitImage(isPortrait);
+
+        // 画像が400x400未満の場合は小さい画像として判定
+        // 小さい画像モードを自動適用するために使用
+        const isSmall = img.width < 400 && img.height < 400;
+        setIsSmallImage(isSmall);
+
         resolve(isPortrait);
       };
       img.onerror = () => {
         setIsPortraitImage(false);
+        setIsSmallImage(false);
         resolve(false);
       };
       img.src = imageUrl;
@@ -273,9 +286,11 @@ export default function OverlayPage() {
   const shouldShowEffects = options.effects && result.card.rarity === "legendary";
 
   // 小さい画像モード用のサイズクラス
-  // smallModeが有効の場合はカードサイズを縮小
-  const cardSizeClass = options.smallMode ? "w-48" : "w-80";
-  const imageOnlySizeClass = options.smallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
+  // smallModeオプションが有効、または画像が400x400未満の場合はカードサイズを縮小
+  // これにより小さい画像でも適切なサイズで表示される
+  const shouldUseSmallMode = options.smallMode || isSmallImage;
+  const cardSizeClass = shouldUseSmallMode ? "w-48" : "w-80";
+  const imageOnlySizeClass = shouldUseSmallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
 
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
@@ -292,14 +307,14 @@ export default function OverlayPage() {
               <Image
                 src={result.card.image_url}
                 alt={result.card.name}
-                width={options.smallMode ? 192 : 320}
-                height={options.smallMode ? 268 : 448}
+                width={shouldUseSmallMode ? 192 : 320}
+                height={shouldUseSmallMode ? 268 : 448}
                 className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
                 unoptimized
               />
             ) : (
-              <div className={`flex items-center justify-center bg-gray-700 rounded-lg ${options.smallMode ? "w-48 h-48" : "w-80 h-80"}`}>
-                <span className={options.smallMode ? "text-4xl" : "text-6xl"}>🎴</span>
+              <div className={`flex items-center justify-center bg-gray-700 rounded-lg ${shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80"}`}>
+                <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
               </div>
             )}
             {/* Sparkle Effects for Legendary (if enabled) */}
@@ -328,19 +343,19 @@ export default function OverlayPage() {
               <div className="rounded-xl bg-gray-700 overflow-hidden">
                 {/* User Info */}
                 <div className="bg-gray-800 py-2 text-center">
-                  <span className={`text-gray-400 ${options.smallMode ? "text-xs" : "text-sm"}`}>
+                  <span className={`text-gray-400 ${shouldUseSmallMode ? "text-xs" : "text-sm"}`}>
                     {result.userTwitchUsername} が引いたカード
                   </span>
                 </div>
 
                 {/* Card Name and Rarity - on top like Collection */}
-                <div className={options.smallMode ? "p-2 pb-1" : "p-3 pb-2"}>
+                <div className={shouldUseSmallMode ? "p-2 pb-1" : "p-3 pb-2"}>
                   <div className="flex items-center justify-between">
-                    <h2 className={`font-semibold text-white truncate ${options.smallMode ? "text-sm" : "text-lg"}`}>
+                    <h2 className={`font-semibold text-white truncate ${shouldUseSmallMode ? "text-sm" : "text-lg"}`}>
                       {result.card.name}
                     </h2>
                     <span
-                      className={`rounded-full px-2 py-0.5 text-white shrink-0 ml-2 ${options.smallMode ? "text-[10px]" : "text-xs"} ${rarityInfo.color}`}
+                      className={`rounded-full px-2 py-0.5 text-white shrink-0 ml-2 ${shouldUseSmallMode ? "text-[10px]" : "text-xs"} ${rarityInfo.color}`}
                     >
                       {rarityInfo.label}
                     </span>
@@ -354,22 +369,22 @@ export default function OverlayPage() {
                     <Image
                       src={result.card.image_url}
                       alt={result.card.name}
-                      width={options.smallMode ? 180 : 300}
-                      height={options.smallMode ? 180 : 300}
+                      width={shouldUseSmallMode ? 180 : 300}
+                      height={shouldUseSmallMode ? 180 : 300}
                       className="w-full h-full object-cover"
                       unoptimized
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center">
-                      <span className={options.smallMode ? "text-4xl" : "text-6xl"}>🎴</span>
+                      <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
                     </div>
                   )}
                 </div>
 
                 {/* Description - below image like Collection */}
                 {result.card.description && (
-                  <div className={options.smallMode ? "p-2 pt-1" : "p-3 pt-2"}>
-                    <p className={`text-gray-300 line-clamp-2 ${options.smallMode ? "text-xs" : "text-sm"}`}>
+                  <div className={shouldUseSmallMode ? "p-2 pt-1" : "p-3 pt-2"}>
+                    <p className={`text-gray-300 line-clamp-2 ${shouldUseSmallMode ? "text-xs" : "text-sm"}`}>
                       {result.card.description}
                     </p>
                   </div>
