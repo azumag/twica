@@ -597,7 +597,12 @@ export default function CardManager({
 
     return new Promise((resolve) => {
       const img = document.createElement("img");
-      img.crossOrigin = "anonymous";
+      // Note: crossOrigin is NOT set intentionally
+      // Setting crossOrigin="anonymous" would cause CORS errors for servers
+      // that don't return CORS headers, making valid image URLs fail to load
+      // crossOriginを設定しないのは意図的です
+      // crossOrigin="anonymous"を設定するとCORSヘッダーを返さないサーバーの
+      // 画像が読み込めなくなり、正常なURLでもエラーになります
 
       img.onload = () => {
         const width = img.naturalWidth;
