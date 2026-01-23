@@ -34,14 +34,12 @@ interface SparklePosition {
  * - autoPortrait: 縦長画像を自動検出してオリジナル画像表示
  * - effects: レジェンダリーのキラキラエフェクト表示（デフォルト: true）
  * - smallMode: 小さい画像用の縮小表示モード
- * - hideDemo: DEMOボタンを非表示（プレビュー用）
  */
 interface OverlayOptions {
   imageOnly: boolean;
   autoPortrait: boolean;
   effects: boolean;
   smallMode: boolean;
-  hideDemo: boolean;
 }
 
 // Generate sparkle positions outside of render
@@ -69,7 +67,6 @@ export default function OverlayPage() {
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
-    hideDemo: false,
   });
   // 画像のアスペクト比が縦長かどうかを判定するためのState
   const [isPortraitImage, setIsPortraitImage] = useState(false);
@@ -95,7 +92,6 @@ export default function OverlayPage() {
       autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
       effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
       smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
-      hideDemo: urlParams.get("hideDemo") === "true",            // プレビュー用にDEMOボタンを非表示
     });
   }, []);
 
@@ -260,15 +256,6 @@ export default function OverlayPage() {
             <div className="mb-2 font-bold">接続エラー</div>
             <div>{errorMessage}</div>
           </div>
-        )}
-        {/* Hidden trigger for demo (hideDemoがtrueの場合は非表示) */}
-        {!options.hideDemo && (
-          <button
-            onClick={triggerDemo}
-            className="fixed bottom-4 right-4 rounded bg-purple-600 px-4 py-2 text-sm text-white opacity-30 hover:opacity-100"
-          >
-            Demo
-          </button>
         )}
       </div>
     );
