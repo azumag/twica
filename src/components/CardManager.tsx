@@ -11,6 +11,7 @@ import ImageCropper, { type CropMode, CROP_MODES } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import BatchDropRateModal from "./BatchDropRateModal";
+import ExpandableDescription from "./ExpandableDescription";
 
 interface StorageStatus {
   userUsage: number;
@@ -1345,12 +1346,11 @@ export default function CardManager({
                           </div>
                         )}
                       </div>
-                      {/* 説明は画像の下 */}
+                      {/* 説明は画像の下（長い場合は省略してクリックで展開） */}
+                      {/* Description below image (truncated if long, expandable on click) */}
                       {card.description && (
                         <div className="p-3 pt-2">
-                          <p className="text-sm text-gray-300 line-clamp-2">
-                            {card.description}
-                          </p>
+                          <ExpandableDescription description={card.description} maxLines={2} />
                         </div>
                       )}
                       {/* 操作ボタン */}
