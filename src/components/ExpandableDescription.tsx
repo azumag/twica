@@ -6,6 +6,8 @@ interface ExpandableDescriptionProps {
   description: string;
   /** 折りたたみ時の最大行数（デフォルト: 2） */
   maxLines?: number;
+  /** テキストのサイズ: 'sm' (default) or 'xs' */
+  size?: "sm" | "xs";
 }
 
 /**
@@ -19,7 +21,11 @@ interface ExpandableDescriptionProps {
 export default function ExpandableDescription({
   description,
   maxLines = 2,
+  size = "sm",
 }: ExpandableDescriptionProps) {
+  // テキストサイズに基づくクラス
+  // Classes based on text size
+  const textSizeClass = size === "xs" ? "text-xs text-gray-400" : "text-sm text-gray-300";
   const [isExpanded, setIsExpanded] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
   const textRef = useRef<HTMLParagraphElement>(null);
@@ -56,7 +62,7 @@ export default function ExpandableDescription({
       <p
         ref={textRef}
         onClick={handleClick}
-        className={`text-sm text-gray-300 ${lineClampClass} ${
+        className={`${textSizeClass} ${lineClampClass} ${
           isClickable ? "cursor-pointer hover:text-gray-200" : ""
         }`}
       >

@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import ExpandableDescription from "./ExpandableDescription";
 
 interface CardListProps {
   // Array of cards to display
@@ -120,15 +121,17 @@ export default function CardList({
                   </div>
                 </td>
 
-                {/* Card name and description */}
-                {/* カード名と説明 */}
+                {/* Card name and description (expandable if long) */}
+                {/* カード名と説明（長い場合は展開可能） */}
                 <td className="px-4 py-3">
                   <div>
                     <p className="font-medium text-white">{card.name}</p>
                     {card.description && (
-                      <p className="mt-0.5 text-xs text-gray-400 line-clamp-1">
-                        {card.description}
-                      </p>
+                      /* 説明文の横幅を画像の約4倍（192px = 48px * 4）に制限 */
+                      /* Limit description width to about 4x image width (192px = 48px * 4) */
+                      <div className="mt-0.5 max-w-48">
+                        <ExpandableDescription description={card.description} maxLines={1} size="xs" />
+                      </div>
                     )}
                   </div>
                 </td>
