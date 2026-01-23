@@ -54,9 +54,12 @@ export default async function SettingsPage() {
 
       {/* OBSブラウザソースURLとカード引換設定を横並びに配置、プレビューは下に全幅で表示 */}
       {/* URL settings and channel point settings side by side, preview below full width */}
+      {/* cardsを渡してセレクトボックスでカードを選択可能にする */}
+      {/* Pass cards prop to enable card selection in dropdown */}
       <OverlayPreview
         streamerId={streamerData.streamer.id}
         baseUrl={process.env.NEXT_PUBLIC_APP_URL || ""}
+        cards={streamerData.cards}
         sideContent={
           <ChannelPointSettings
             streamerId={streamerData.streamer.id}

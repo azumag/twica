@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import CopyButton from "@/components/CopyButton";
+import type { Card } from "@/types/database";
 
 /**
  * Overlay preview options interface
@@ -20,7 +21,16 @@ interface OverlayPreviewProps {
   baseUrl: string;
   showPreview?: boolean;  // プレビューセクションを表示するかどうか（デフォルト: true）
   sideContent?: React.ReactNode;  // URLセクションの横に表示するコンテンツ（横並びレイアウト用）
+  cards?: Card[];  // デバッグ用：配信者のカード一覧（セレクトボックスで選択可能）
 }
+
+/**
+ * Vercelプレビュー環境かどうかを判定
+ * NEXT_PUBLIC_VERCEL_ENVはVercelが自動的に設定する環境変数
+ * "preview" = プレビューデプロイ、"production" = 本番、"development" = ローカル開発
+ * Check if running in Vercel preview environment
+ */
+const isPreviewEnvironment = process.env.NEXT_PUBLIC_VERCEL_ENV === "preview";
 
 /**
  * Overlay Preview Component
@@ -30,7 +40,7 @@ interface OverlayPreviewProps {
  * - iframeでのプレビュー表示
  * - DEMOボタンで配信者のカードを表示
  */
-export default function OverlayPreview({ streamerId, baseUrl, showPreview = true, sideContent }: OverlayPreviewProps) {
+export default function OverlayPreview({ streamerId, baseUrl, showPreview = true, sideContent, cards = [] }: OverlayPreviewProps) {
   const t = useTranslations("overlaySettings");
   const tDashboard = useTranslations("dashboard");
 
@@ -50,6 +60,13 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
 
   // iframeの参照（DEMOボタン用）
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // デバッグ用：選択されたカードID（"random"でランダム、カードIDで特定のカード）
+  // Debug: selected card ID for demo/gacha ("random" for random selection, card ID for specific card)
+  const [selectedCardId, setSelectedCardId] = useState<string>("random");
+
+  // 実行中状態の管理（重複実行防止）
+  const [isExecuting, setIsExecuting] = useState(false);
 
   // 現在のオプションからURLパラメータを生成（ユーザー向けURL用）
   // Generate URL parameters from current options (for user-facing URL)
@@ -89,14 +106,56 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   }, [options]);
 
   // DEMOを実行（iframe内のオーバーレイにメッセージを送信）
-  // Trigger demo in iframe by refreshing with demo param
+  // 選択されたカードID（またはランダム）でデモを実行
+  // Trigger demo in iframe by refreshing with demo param and optional cardId
   const triggerDemo = useCallback(() => {
     if (iframeRef.current) {
       // iframeをリロードしてdemoパラメータ付きで再読み込み
-      const demoUrl = urlParams ? `${overlayUrl}?${urlParams}&demo=true` : `${overlayUrl}?demo=true`;
+      // カードIDも指定（"random"の場合はランダム選択）
+      let demoUrl = urlParams ? `${overlayUrl}?${urlParams}&demo=true` : `${overlayUrl}?demo=true`;
+      if (selectedCardId && selectedCardId !== "random") {
+        demoUrl += `&cardId=${selectedCardId}`;
+      }
       iframeRef.current.src = demoUrl;
     }
-  }, [overlayUrl, urlParams]);
+  }, [overlayUrl, urlParams, selectedCardId]);
+
+  // 実際にガチャを引く（DBに記録される本番のガチャAPI呼び出し）
+  // Execute real gacha (calls production gacha API and records to DB)
+  // CSRFトークンはhttpOnly Cookieパターンで自動的にサーバーに送信される
+  // CSRF token is automatically sent via httpOnly cookie pattern
+  const triggerRealGacha = useCallback(async () => {
+    if (isExecuting) return;
+
+    setIsExecuting(true);
+    try {
+      // 本番のガチャAPIを呼び出し
+      // CSRFトークンはCookieから自動的に検証される（httpOnly Cookie Pattern）
+      // CSRF token is automatically validated from cookie (httpOnly Cookie Pattern)
+      const response = await fetch("/api/gacha", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ streamerId }),
+        credentials: "include",  // Cookieを含めて送信
+      });
+
+      if (response.ok) {
+        // ガチャ成功時はリアルタイム通知でオーバーレイに表示される
+        // On success, result is displayed via real-time notification to overlay
+      } else {
+        const errorData = await response.json();
+        console.error("Gacha API error:", errorData);
+        alert(`ガチャ実行エラー: ${errorData.error || "Unknown error"}`);
+      }
+    } catch (error) {
+      console.error("Failed to execute gacha:", error);
+      alert("ガチャ実行に失敗しました");
+    } finally {
+      setIsExecuting(false);
+    }
+  }, [streamerId, isExecuting]);
 
   // オプションの切り替え
   const toggleOption = (key: keyof OverlayOptions) => {
@@ -208,18 +267,62 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
     </div>
   );
 
+  // アクティブなカードのみフィルタリング（デモ/ガチャで使用）
+  // Filter only active cards for demo/gacha
+  const activeCards = cards.filter(card => card.is_active);
+
   // プレビューセクションのコンテンツ
   // Preview section content
   const previewSection = showPreview && (
     <div className="rounded-xl bg-gray-800 p-6">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
         <h3 className="text-xl font-semibold text-white">{t("preview")}</h3>
-        <button
-          onClick={triggerDemo}
-          className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 transition-colors"
-        >
-          {t("runDemo")}
-        </button>
+
+        {/* カード選択とアクションボタン */}
+        {/* Card selection and action buttons */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+          {/* カード選択セレクトボックス（カードが登録されている場合のみ表示） */}
+          {/* Card selector dropdown (only shown when cards are registered) */}
+          {activeCards.length > 0 && (
+            <select
+              value={selectedCardId}
+              onChange={(e) => setSelectedCardId(e.target.value)}
+              className="rounded-lg bg-gray-700 px-3 py-2 text-sm text-white border border-gray-600 focus:border-purple-500 focus:outline-none min-w-[200px]"
+            >
+              <option value="random">ランダム</option>
+              {activeCards.map((card) => (
+                <option key={card.id} value={card.id}>
+                  {card.name} ({card.rarity})
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* デモボタン（全環境で表示） */}
+          {/* Demo button (shown in all environments) */}
+          <button
+            onClick={triggerDemo}
+            className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 transition-colors whitespace-nowrap"
+          >
+            {t("runDemo")}
+          </button>
+
+          {/* 実際に引くボタン（Vercelプレビュー環境でのみ表示） */}
+          {/* Real gacha button (only shown in Vercel preview environment) */}
+          {isPreviewEnvironment && (
+            <button
+              onClick={triggerRealGacha}
+              disabled={isExecuting}
+              className={`rounded-lg px-4 py-2 text-sm text-white transition-colors whitespace-nowrap ${
+                isExecuting
+                  ? "bg-gray-600 cursor-not-allowed"
+                  : "bg-green-600 hover:bg-green-700"
+              }`}
+            >
+              {isExecuting ? "実行中..." : "実際に引く"}
+            </button>
+          )}
+        </div>
       </div>
       <div className="rounded-lg overflow-hidden bg-gray-900 border border-gray-700">
         <iframe
@@ -232,6 +335,13 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
       <p className="text-xs text-gray-500 mt-2">
         {t("demoNote")}
       </p>
+      {/* プレビュー環境での説明文 */}
+      {/* Explanation for preview environment */}
+      {isPreviewEnvironment && activeCards.length > 0 && (
+        <p className="text-xs text-gray-500 mt-1">
+          ※「実際に引く」はプレビュー環境専用です。DBに記録され、履歴に残ります。
+        </p>
+      )}
     </div>
   );
 

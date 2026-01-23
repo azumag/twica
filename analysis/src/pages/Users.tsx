@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { DataTable } from '../components/DataTable'
-import { User, BattleStats, UserCard } from '../types/database'
+import { User, BattleStats } from '../types/database'
 
 // Extended user type with aggregated statistics
 interface UserWithStats extends User {
   card_count: number
   battle_stats: BattleStats | null
 }
+
+// ソート順の定義
+type SortOrder = 'card_count_desc' | 'card_count_asc' | 'win_rate_desc' | 'battles_desc' | 'created_at_desc' | 'name_asc'
 
 /**
  * Users page - Displays all registered users with their statistics
@@ -17,28 +21,36 @@ export function Users() {
   const [users, setUsers] = useState<UserWithStats[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
+  // ソート順（デフォルト: カード数の多い順）
+  const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
+  // カード数0のユーザーを非表示にするフラグ
+  const [hideZeroCards, setHideZeroCards] = useState(false)
+  // ページネーション状態
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
 
   useEffect(() => {
     fetchUsers()
   }, [])
 
+  // フィルター条件が変わったらページを1に戻す
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, sortOrder, hideZeroCards])
+
   /**
    * Fetches all users with their card counts and battle statistics
-   * Uses multiple queries and combines the data on the client side
+   * Supabaseのリレーション機能を使って効率的にカード数を取得
    */
   async function fetchUsers() {
     setLoading(true)
     try {
-      // Fetch users, user_cards counts, and battle_stats in parallel
-      const [usersResult, userCardsResult, battleStatsResult] = await Promise.all([
+      // ユーザー情報とカード数をリレーション機能で取得、バトル統計は別クエリ
+      const [usersResult, battleStatsResult] = await Promise.all([
         supabase
           .from('users')
-          .select('*')
+          .select('*, user_cards(count)')
           .order('created_at', { ascending: false }),
-        // Get card counts per user using a group query
-        supabase
-          .from('user_cards')
-          .select('user_id'),
         supabase
           .from('battle_stats')
           .select('*'),
@@ -46,17 +58,13 @@ export function Users() {
 
       if (usersResult.error) throw usersResult.error
 
-      // Type assertions for query results
-      const usersData = usersResult.data as User[]
-      const userCardsData = (userCardsResult.data || []) as Pick<UserCard, 'user_id'>[]
-      const battleStatsData = (battleStatsResult.data || []) as BattleStats[]
+      // 型定義: Supabaseのリレーションカウント結果の形式
+      type UserWithCardCount = User & {
+        user_cards: { count: number }[]
+      }
 
-      // Create a map of user_id -> card count
-      const cardCountMap = new Map<string, number>()
-      userCardsData.forEach((uc) => {
-        const current = cardCountMap.get(uc.user_id) || 0
-        cardCountMap.set(uc.user_id, current + 1)
-      })
+      const rawData = usersResult.data as unknown as UserWithCardCount[]
+      const battleStatsData = (battleStatsResult.data || []) as BattleStats[]
 
       // Create a map of user_id -> battle stats
       const battleStatsMap = new Map<string, BattleStats>()
@@ -65,11 +73,21 @@ export function Users() {
       })
 
       // Combine users with their statistics
-      const usersWithStats: UserWithStats[] = usersData.map((user) => ({
-        ...user,
-        card_count: cardCountMap.get(user.id) || 0,
-        battle_stats: battleStatsMap.get(user.id) || null,
-      }))
+      const usersWithStats: UserWithStats[] = (rawData || []).map((user) => {
+        const cardCount = user.user_cards?.[0]?.count ?? 0
+        return {
+          id: user.id,
+          twitch_user_id: user.twitch_user_id,
+          twitch_username: user.twitch_username,
+          twitch_display_name: user.twitch_display_name,
+          twitch_profile_image_url: user.twitch_profile_image_url,
+          tos_accepted_at: user.tos_accepted_at,
+          created_at: user.created_at,
+          updated_at: user.updated_at,
+          card_count: cardCount,
+          battle_stats: battleStatsMap.get(user.id) || null,
+        }
+      })
 
       setUsers(usersWithStats)
     } catch (error) {
@@ -79,12 +97,41 @@ export function Users() {
     }
   }
 
-  // Filter users based on search term
-  const filteredUsers = users.filter(
-    (user) =>
+  // Filter users based on search term and hideZeroCards flag
+  const filteredUsers = users.filter((user) => {
+    // 検索フィルター
+    const matchesSearch =
       user.twitch_username.toLowerCase().includes(searchTerm.toLowerCase()) ||
       user.twitch_display_name.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+    // カード0件フィルター
+    const matchesCardFilter = hideZeroCards ? user.card_count > 0 : true
+    return matchesSearch && matchesCardFilter
+  })
+
+  /**
+   * ソートを適用したユーザー一覧を生成
+   */
+  const sortedUsers = [...filteredUsers].sort((a, b) => {
+    switch (sortOrder) {
+      case 'card_count_desc':
+        return b.card_count - a.card_count
+      case 'card_count_asc':
+        return a.card_count - b.card_count
+      case 'win_rate_desc':
+        const aWinRate = a.battle_stats?.win_rate ?? -1
+        const bWinRate = b.battle_stats?.win_rate ?? -1
+        return bWinRate - aWinRate
+      case 'battles_desc':
+        const aBattles = a.battle_stats?.total_battles ?? 0
+        const bBattles = b.battle_stats?.total_battles ?? 0
+        return bBattles - aBattles
+      case 'name_asc':
+        return a.twitch_display_name.localeCompare(b.twitch_display_name)
+      case 'created_at_desc':
+      default:
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    }
+  })
 
   // Table column definitions
   const columns = [
@@ -115,7 +162,14 @@ export function Users() {
       key: 'card_count',
       header: 'Cards',
       render: (user: UserWithStats) => (
-        <span className="font-medium">{user.card_count}</span>
+        // カード数をクリックするとカード一覧ページに遷移
+        <Link
+          to={`/users/${user.id}/cards`}
+          className="font-medium text-blue-600 hover:text-blue-800 hover:underline"
+          title="カード一覧を表示"
+        >
+          {user.card_count}枚 →
+        </Link>
       ),
     },
     {
@@ -183,10 +237,11 @@ export function Users() {
     },
   ]
 
-  // Calculate summary statistics
+  // Calculate summary statistics（全データに基づく）
   const totalCards = users.reduce((sum, u) => sum + u.card_count, 0)
   const usersWithTos = users.filter((u) => u.tos_accepted_at).length
   const usersWithBattles = users.filter((u) => u.battle_stats && u.battle_stats.total_battles > 0).length
+  const usersWithCards = users.filter((u) => u.card_count > 0).length
 
   return (
     <div className="space-y-6">
@@ -221,24 +276,78 @@ export function Users() {
         </div>
       </div>
 
-      {/* Search Bar */}
+      {/* フィルター・ソートコントロール */}
       <div className="bg-white rounded-lg shadow p-4">
-        <input
-          type="text"
-          placeholder="Search by username..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
+        <div className="flex flex-wrap items-center gap-4">
+          {/* 検索 */}
+          <div className="flex-1 min-w-[200px]">
+            <input
+              type="text"
+              placeholder="ユーザー名で検索..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full px-4 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            />
+          </div>
+
+          {/* ソート選択 */}
+          <div className="flex items-center space-x-2">
+            <label htmlFor="sort" className="text-sm text-gray-600">
+              ソート:
+            </label>
+            <select
+              id="sort"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="card_count_desc">カード数 (多い順)</option>
+              <option value="card_count_asc">カード数 (少ない順)</option>
+              <option value="win_rate_desc">勝率 (高い順)</option>
+              <option value="battles_desc">バトル数 (多い順)</option>
+              <option value="name_asc">名前 (A-Z)</option>
+              <option value="created_at_desc">登録日 (新しい順)</option>
+            </select>
+          </div>
+
+          {/* カード数0を非表示トグル */}
+          <label className="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={hideZeroCards}
+              onChange={(e) => setHideZeroCards(e.target.checked)}
+              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+            />
+            <span className="text-sm text-gray-600">
+              カード0件を非表示
+            </span>
+          </label>
+
+          {/* 表示件数 */}
+          <div className="text-sm text-gray-500">
+            表示: {sortedUsers.length} / {users.length} 件
+            {hideZeroCards && ` (カード所持: ${usersWithCards}件)`}
+          </div>
+        </div>
       </div>
 
       {/* Users Table */}
       <DataTable
         columns={columns}
-        data={filteredUsers}
+        data={sortedUsers}
         keyExtractor={(user) => user.id}
         loading={loading}
         emptyMessage="No users found"
+        pagination={{
+          currentPage,
+          pageSize,
+          onPageChange: setCurrentPage,
+          onPageSizeChange: (size) => {
+            setPageSize(size)
+            setCurrentPage(1)
+          },
+          pageSizeOptions: [10, 20, 50, 100],
+        }}
       />
     </div>
   )

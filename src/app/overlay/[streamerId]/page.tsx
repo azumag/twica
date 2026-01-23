@@ -217,14 +217,16 @@ export default function OverlayPage() {
 
   // Demo function for testing
   // デモ機能 - 配信者のカードがあればそれを、なければデモカードを表示
-  const triggerDemo = useCallback(async () => {
+  // cardIdが指定されている場合はそのカードを表示
+  const triggerDemo = useCallback(async (cardId?: string) => {
     try {
       // Use demo endpoint which doesn't require authentication
       // streamerIdを渡して、配信者のカードを優先的に取得
+      // cardIdが指定されている場合は特定のカードを取得
       const response = await fetch("/api/gacha/demo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ streamerId }),
+        body: JSON.stringify({ streamerId, cardId }),
       });
 
       if (response.ok) {
@@ -236,12 +238,15 @@ export default function OverlayPage() {
     }
   }, [displayResult, streamerId]);
 
-  // Check URL for demo param
+  // Check URL for demo param and optional cardId
+  // URLパラメータでdemo=trueの場合にデモを実行、cardIdが指定されていればそのカードを表示
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get("demo") === "true") {
+      // cardIdパラメータが指定されていれば特定のカードを表示
+      const cardId = urlParams.get("cardId") || undefined;
       const timeoutId = setTimeout(() => {
-        triggerDemo();
+        triggerDemo(cardId);
       }, 500);
       return () => clearTimeout(timeoutId);
     }
