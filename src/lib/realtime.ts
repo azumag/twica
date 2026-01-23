@@ -133,6 +133,9 @@ export interface SubscribeOptions {
   retryDelay?: number
   onError?: (error: RealtimeError) => void
   onSuccess?: () => void
+  // デバッグ用：接続ステータスの変化を追跡するコールバック
+  // OBSブラウザソースでの接続問題を調査するために使用
+  onStatusChange?: (status: string) => void
 }
 
 export function subscribeToGachaResults(
@@ -145,6 +148,7 @@ export function subscribeToGachaResults(
     retryDelay = 3000,
     onError,
     onSuccess,
+    onStatusChange,
   } = options
 
   let client: SupabaseClient | null = null
@@ -170,9 +174,14 @@ export function subscribeToGachaResults(
       retryTimeout = null
     }
 
+    // デバッグ用：サブスクリプション開始を通知
+    onStatusChange?.('INITIALIZING')
+
     try {
       client = getSupabaseRealtimeClient()
+      onStatusChange?.('CLIENT_CREATED')
       channel = client.channel(`gacha:${streamerId}`)
+      onStatusChange?.('CHANNEL_CREATED')
 
       channel
         .on('broadcast', { event: 'gacha_result' }, (payload) => {
@@ -187,6 +196,10 @@ export function subscribeToGachaResults(
           }
         })
         .subscribe((status, err) => {
+          // デバッグ用：すべてのステータス変化を通知
+          // OBSブラウザソースでの接続問題を調査するために使用
+          onStatusChange?.(`SUBSCRIBE_STATUS: ${status}`)
+
           if (status === 'SUBSCRIBED') {
             isSubscribed = true
             retryCount = 0

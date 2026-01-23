@@ -34,12 +34,14 @@ interface SparklePosition {
  * - autoPortrait: 縦長画像を自動検出してオリジナル画像表示
  * - effects: レジェンダリーのキラキラエフェクト表示（デフォルト: true）
  * - smallMode: 小さい画像用の縮小表示モード
+ * - debug: デバッグモード（接続状態の詳細表示）
  */
 interface OverlayOptions {
   imageOnly: boolean;
   autoPortrait: boolean;
   effects: boolean;
   smallMode: boolean;
+  debug: boolean;
 }
 
 // Generate sparkle positions outside of render
@@ -67,7 +69,11 @@ export default function OverlayPage() {
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
+    debug: false,        // デバッグモード（接続状態の詳細表示）
   });
+  // デバッグ用の詳細な接続ログ
+  // OBSブラウザソースでの接続問題を調査するために使用
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
   // 画像のアスペクト比が縦長かどうかを判定するためのState
   const [isPortraitImage, setIsPortraitImage] = useState(false);
   // 画像が小さい（400x400未満）かどうかを判定するためのState
@@ -90,13 +96,19 @@ export default function OverlayPage() {
     const urlParams = new URLSearchParams(window.location.search);
     // 非同期に実行してuseEffect内での同期的なsetState呼び出しを回避
     // Defer setState to avoid synchronous state update in effect body
+    const isDebug = urlParams.get("debug") === "true";
     queueMicrotask(() => {
       setOptions({
         imageOnly: urlParams.get("imageOnly") === "true",
         autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
         effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
         smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
+        debug: isDebug,
       });
+      if (isDebug) {
+        // デバッグモードの場合、初期化ログを追加
+        setDebugLogs(prev => [...prev, `[${new Date().toISOString()}] Debug mode enabled`]);
+      }
     });
   }, []);
 
@@ -165,9 +177,22 @@ export default function OverlayPage() {
     }, 100);
   }, [checkImageAspectRatio]);
 
+  // デバッグログを追加するヘルパー関数
+  // OBSブラウザソースでの接続問題を調査するために使用
+  const addDebugLog = useCallback((message: string) => {
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ${message}`;
+    logger.info(logEntry);
+    setDebugLogs(prev => [...prev.slice(-19), logEntry]); // 最新20件を保持
+  }, []);
+
   // Connect to Supabase Realtime for real-time events
   useEffect(() => {
+    addDebugLog(`Starting subscription for streamer: ${streamerId}`);
+    addDebugLog(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
+
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
+      addDebugLog(`Received payload: ${payload.type}`);
       if (payload.type === 'gacha' && payload.card) {
         displayResult({
           card: payload.card as unknown as Card,
@@ -176,6 +201,7 @@ export default function OverlayPage() {
       }
     }, {
       onError: (error) => {
+        addDebugLog(`Connection error: ${error.message} (expected: ${error.isExpected})`);
         if (error.isExpected) {
           setConnectionStatus('disconnected');
           setErrorMessage(null);
@@ -185,16 +211,23 @@ export default function OverlayPage() {
         }
       },
       onSuccess: () => {
+        addDebugLog('Connection successful - SUBSCRIBED');
         setConnectionStatus('connected');
         if (connectionTimeoutRef.current) {
           clearTimeout(connectionTimeoutRef.current);
           connectionTimeoutRef.current = null;
         }
       },
+      onStatusChange: (status) => {
+        // デバッグ用：接続ステータスの変化を追跡
+        // OBSブラウザソースでの接続問題を調査するために使用
+        addDebugLog(`Connection status: ${status}`);
+      },
     });
 
     connectionTimeoutRef.current = setTimeout(() => {
       if (connectionStatusRef.current === 'connecting') {
+        addDebugLog('Connection timeout after 10 seconds');
         setConnectionStatus('error');
         setErrorMessage('Connection timeout');
       }
@@ -213,7 +246,7 @@ export default function OverlayPage() {
         clearTimeout(animationTimeoutRef.current);
       }
     };
-  }, [streamerId, displayResult]);
+  }, [streamerId, displayResult, addDebugLog]);
 
   // Demo function for testing
   // デモ機能 - 配信者のカードがあればそれを、なければデモカードを表示
@@ -260,6 +293,28 @@ export default function OverlayPage() {
           <div className="fixed top-4 right-4 max-w-sm rounded bg-red-600 p-4 text-sm text-white">
             <div className="mb-2 font-bold">接続エラー</div>
             <div>{errorMessage}</div>
+          </div>
+        )}
+        {/* デバッグモード：接続状態の詳細ログを表示 */}
+        {/* OBSブラウザソースでの接続問題を調査するために使用 */}
+        {/* URLに ?debug=true を追加すると表示される */}
+        {options.debug && (
+          <div className="fixed bottom-4 left-4 right-4 max-h-64 overflow-y-auto rounded bg-black/80 p-4 font-mono text-xs text-green-400">
+            <div className="mb-2 text-white font-bold">Debug Mode - Connection Log</div>
+            <div className="mb-2 text-yellow-400">
+              Status: {connectionStatus} | StreamerId: {streamerId}
+            </div>
+            <div className="mb-2 text-gray-400">
+              User Agent: {typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 80) + '...' : 'N/A'}
+            </div>
+            {debugLogs.map((log, index) => (
+              <div key={index} className="whitespace-pre-wrap break-all">
+                {log}
+              </div>
+            ))}
+            {debugLogs.length === 0 && (
+              <div className="text-gray-500">Waiting for logs...</div>
+            )}
           </div>
         )}
       </div>
