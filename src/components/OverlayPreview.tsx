@@ -114,33 +114,28 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
 
   // 実際にガチャを引く（DBに記録される本番のガチャAPI呼び出し）
   // Execute real gacha (calls production gacha API and records to DB)
+  // CSRFトークンはhttpOnly Cookieパターンで自動的にサーバーに送信される
+  // CSRF token is automatically sent via httpOnly cookie pattern
   const triggerRealGacha = useCallback(async () => {
     if (isExecuting) return;
 
     setIsExecuting(true);
     try {
-      // CSRFトークンを取得
-      const csrfResponse = await fetch("/api/csrf");
-      const { csrfToken } = await csrfResponse.json();
-
       // 本番のガチャAPIを呼び出し
+      // CSRFトークンはCookieから自動的に検証される（httpOnly Cookie Pattern）
+      // CSRF token is automatically validated from cookie (httpOnly Cookie Pattern)
       const response = await fetch("/api/gacha", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-csrf-token": csrfToken,
         },
         body: JSON.stringify({ streamerId }),
+        credentials: "include",  // Cookieを含めて送信
       });
 
       if (response.ok) {
         // ガチャ成功時はリアルタイム通知でオーバーレイに表示される
-        // iframeをリロードして接続を確認
-        if (iframeRef.current) {
-          // 既にリアルタイム接続されているので、表示は自動的に更新される
-          // ただし確実に表示するため少し待ってからデモ表示をトリガー
-          // （リアルタイムで表示されない場合のフォールバック）
-        }
+        // On success, result is displayed via real-time notification to overlay
       } else {
         const errorData = await response.json();
         console.error("Gacha API error:", errorData);
