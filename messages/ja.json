@@ -52,7 +52,7 @@
       "currentImage": "現在の画像",
       "croppedImage": "トリミング済み画像",
       "selectCropMode": "トリミングサイズを選択",
-      "cropModeDescription": "画像のトリミングサイズを選択してください。正方形はアイコン向け、ポートレイトはカード向けです。",
+      "cropModeDescription": "正方形の場合、表示時に名前・説明をカード枠に表示できます。オーバーレイ設定で表示非表示を選択できます。ポートレイトはそのまま表示されます。",
       "cropNoteWithOptions": "（正方形800x800またはポートレイト800x1118にトリミング）"
     },
     "fileUpload": {
@@ -79,7 +79,11 @@
       "errorOccurred": "エラーが発生しました ({status})",
       "uploadLimited": "アップロード機能が制限されています",
       "imageUsage": "画像使用量: {usage} / {limit}",
-      "refreshing": "更新中"
+      "refreshing": "更新中",
+      "imageUrlInvalidAspectRatio": "画像URLの画像は縦長または正方形である必要があります（現在: {width}x{height}）",
+      "imageUrlResolutionExceeded": "画像URLの解像度が制限を超えています。横幅1920px、縦幅2682pxまでです（現在: {width}x{height}）",
+      "imageUrlLoadFailed": "画像URLの読み込みに失敗しました。URLを確認してください。",
+      "imageUrlValidating": "画像を検証中..."
     },
     "sort": {
       "createdAt": "設定日",
