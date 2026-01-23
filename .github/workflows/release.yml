@@ -1,0 +1,190 @@
+name: Auto Release
+
+# mainブランチへのプッシュ時に自動リリースを作成
+# Creates automatic release when pushed to main branch
+on:
+  push:
+    branches: [main]
+
+# 同時実行を防止（リリースの重複を避ける）
+# Prevent concurrent runs to avoid duplicate releases
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # プルリクエストのマージコミットのみを対象（直接プッシュも含む）
+    # Only run on merge commits (includes direct pushes)
+    permissions:
+      contents: write  # リリース作成に必要
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 全履歴を取得（タグとの比較に必要）
+
+      - name: Get latest tag
+        id: get_latest_tag
+        run: |
+          # 最新のリリースタグを取得（v*.*.*形式）
+          # Get latest release tag (v*.*.* format)
+          LATEST_TAG=$(git tag -l 'v*.*.*' --sort=-version:refname | head -n 1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "Latest tag: $LATEST_TAG"
+
+      - name: Determine version bump
+        id: version_bump
+        run: |
+          LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
+
+          # タグからバージョン番号を抽出
+          # Extract version numbers from tag
+          VERSION=${LATEST_TAG#v}
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+
+          # 前回タグからのコミットメッセージを分析
+          # Analyze commit messages since last tag
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            COMMITS=$(git log --pretty=format:"%s" HEAD)
+          else
+            COMMITS=$(git log --pretty=format:"%s" ${LATEST_TAG}..HEAD)
+          fi
+
+          # バージョンバンプの種類を判定
+          # Determine version bump type based on commit messages
+          # - BREAKING CHANGE or !: → major
+          # - feat: → minor
+          # - その他 → patch
+          BUMP_TYPE="patch"
+
+          if echo "$COMMITS" | grep -qE "^.*!:|BREAKING CHANGE"; then
+            BUMP_TYPE="major"
+          elif echo "$COMMITS" | grep -qE "^feat(\(.*\))?:"; then
+            BUMP_TYPE="minor"
+          fi
+
+          # 新しいバージョンを計算
+          # Calculate new version
+          case $BUMP_TYPE in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION (bump: $BUMP_TYPE)"
+
+      - name: Check if release needed
+        id: check_release
+        run: |
+          LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
+
+          # 前回タグからのコミット数を確認
+          # Check number of commits since last tag
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            COMMIT_COUNT=$(git rev-list --count HEAD)
+          else
+            COMMIT_COUNT=$(git rev-list --count ${LATEST_TAG}..HEAD)
+          fi
+
+          echo "Commits since last tag: $COMMIT_COUNT"
+
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "No new commits, skipping release"
+          else
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "Creating new release"
+          fi
+
+      - name: Generate release notes
+        id: release_notes
+        if: steps.check_release.outputs.should_release == 'true'
+        run: |
+          LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
+          NEW_VERSION="${{ steps.version_bump.outputs.new_version }}"
+
+          # リリースノートを生成
+          # Generate release notes
+          {
+            echo "## What's Changed"
+            echo ""
+
+            # コミットをカテゴリ別に分類
+            # Categorize commits
+            if [ "$LATEST_TAG" = "v0.0.0" ]; then
+              RANGE="HEAD"
+            else
+              RANGE="${LATEST_TAG}..HEAD"
+            fi
+
+            # Breaking Changes
+            BREAKING=$(git log --pretty=format:"- %s (%h)" $RANGE | grep -E "^- .*!:|BREAKING CHANGE" || true)
+            if [ -n "$BREAKING" ]; then
+              echo "### Breaking Changes"
+              echo "$BREAKING"
+              echo ""
+            fi
+
+            # Features
+            FEATURES=$(git log --pretty=format:"- %s (%h)" $RANGE | grep -E "^- feat(\(.*\))?:" || true)
+            if [ -n "$FEATURES" ]; then
+              echo "### Features"
+              echo "$FEATURES"
+              echo ""
+            fi
+
+            # Bug Fixes
+            FIXES=$(git log --pretty=format:"- %s (%h)" $RANGE | grep -E "^- fix(\(.*\))?:" || true)
+            if [ -n "$FIXES" ]; then
+              echo "### Bug Fixes"
+              echo "$FIXES"
+              echo ""
+            fi
+
+            # Other changes (refactor, docs, style, chore, etc.)
+            OTHERS=$(git log --pretty=format:"- %s (%h)" $RANGE | grep -vE "^- (feat|fix)(\(.*\))?:|^- .*!:|BREAKING CHANGE" || true)
+            if [ -n "$OTHERS" ]; then
+              echo "### Other Changes"
+              echo "$OTHERS"
+              echo ""
+            fi
+
+            echo "---"
+            echo ""
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LATEST_TAG}...${NEW_VERSION}"
+          } > release_notes.md
+
+          cat release_notes.md
+
+      - name: Create Release
+        if: steps.check_release.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version_bump.outputs.new_version }}
+          name: Release ${{ steps.version_bump.outputs.new_version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
