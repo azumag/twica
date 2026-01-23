@@ -46,51 +46,45 @@ export class GachaService {
         return err('Failed to select card')
       }
 
-      // Record gacha history (with idempotency using upsert)
-      // ガチャ履歴を記録（冪等性のためupsertを使用）
-      const { error: historyError } = await this.supabase
-        .from('gacha_history')
-        .upsert({
-          event_id: eventId || null,
-          user_twitch_id: userTwitchId,
-          user_twitch_username: userTwitchUsername,
-          card_id: selectedCard.id,
-          streamer_id: streamerId,
-        }, {
-          onConflict: 'event_id',
-          ignoreDuplicates: true,
-        })
-
-      if (historyError) {
-        return err(`Failed to record history: ${historyError.message}`)
-      }
-
-      // Check if user exists, if not create user
-      // ユーザーが存在するか確認、存在しなければ作成
-      let { data: user } = await this.supabase
-        .from('users')
-        .select('id')
-        .eq('twitch_user_id', userTwitchId)
-        .single()
-
-      if (!user) {
-        const { data: newUser, error: createError } = await this.supabase
+      // Execute gacha history recording and user upsert in parallel to reduce CPU time
+      // CPU時間削減のため、ガチャ履歴記録とユーザーupsertを並列実行
+      const [historyResult, userResult] = await Promise.all([
+        // Record gacha history (with idempotency using upsert)
+        // ガチャ履歴を記録（冪等性のためupsertを使用）
+        this.supabase
+          .from('gacha_history')
+          .upsert({
+            event_id: eventId || null,
+            user_twitch_id: userTwitchId,
+            user_twitch_username: userTwitchUsername,
+            card_id: selectedCard.id,
+            streamer_id: streamerId,
+          }, {
+            onConflict: 'event_id',
+            ignoreDuplicates: true,
+          }),
+        // Upsert user in a single query (combines check and create)
+        // 1回のクエリでユーザーをupsert（確認と作成を統合）
+        this.supabase
           .from('users')
           .upsert({
             twitch_user_id: userTwitchId,
             twitch_username: userTwitchUsername,
           }, {
             onConflict: 'twitch_user_id',
-            ignoreDuplicates: true,
+            ignoreDuplicates: false,
           })
           .select('id')
           .single()
+      ])
 
-        if (createError) {
-          logger.warn('Failed to create user:', createError.message)
-        } else {
-          user = newUser
-        }
+      if (historyResult.error) {
+        return err(`Failed to record history: ${historyResult.error.message}`)
+      }
+
+      const user = userResult.data
+      if (userResult.error) {
+        logger.warn('Failed to upsert user:', userResult.error.message)
       }
 
       if (user) {

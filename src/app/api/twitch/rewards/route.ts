@@ -5,9 +5,14 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { getTwitchAccessToken } from "@/lib/twitch/token-manager";
 import { validateCSRFToken } from "@/lib/csrf";
+import { getCachedRewards } from "@/lib/twitch/api-cache";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
+/**
+ * Helper function to get Twitch access token or throw an error
+ * Twitchアクセストークンを取得するか、エラーをスローするヘルパー関数
+ */
 async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string> {
   const accessToken = await getTwitchAccessToken(twitchUserId);
   if (accessToken === null) {
@@ -43,23 +48,10 @@ export async function GET(request: Request) {
   try {
     const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
 
-    const response = await fetch(
-      `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
-      {
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      const error = await response.json();
-      return handleApiError(error, "Twitch API rewards fetch");
-    }
-
-    const data = await response.json();
-    return NextResponse.json(data.data || []);
+    // Use cached rewards to reduce Twitch API calls and CPU usage
+    // キャッシュ済み報酬を使用してTwitch API呼び出しとCPU使用量を削減
+    const rewards = await getCachedRewards(session.twitchUserId, accessToken);
+    return NextResponse.json(rewards);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : '';
     if (errorMessage === ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED) {
