@@ -4,6 +4,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CopyButton from "@/components/CopyButton";
+import OverlayPreview from "@/components/OverlayPreview";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -84,6 +85,15 @@ export default async function SettingsPage() {
           streamerId={streamerData.streamer.id}
           currentRewardId={streamerData.streamer.channel_point_reward_id}
           currentRewardName={streamerData.streamer.channel_point_reward_name}
+        />
+      </div>
+
+      {/* Overlay Preview Section - オーバーレイ設定とプレビュー */}
+      {/* URLパラメータでオーバーレイ表示をカスタマイズできるプレビュー機能 */}
+      <div className="mt-8">
+        <OverlayPreview
+          streamerId={streamerData.streamer.id}
+          baseUrl={process.env.NEXT_PUBLIC_APP_URL || ""}
         />
       </div>
     </div>
