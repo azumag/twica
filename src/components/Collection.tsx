@@ -1,6 +1,7 @@
 import Image from "next/image";
 import { getTranslations } from "next-intl/server";
 import Stats from "./Stats";
+import ExpandableDescription from "./ExpandableDescription";
 import type { Streamer, Card } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
 import type { Rarity } from "@/types/database";
@@ -123,11 +124,10 @@ export default async function Collection({ cardsByStreamer, stats }: CollectionP
                       )}
                     </div>
                     {/* 説明とカウント */}
+                    {/* Description (expandable) and count */}
                     <div className="p-3 pt-2">
                       {card.description && (
-                        <p className="text-sm text-gray-300 line-clamp-2 mb-1">
-                          {card.description}
-                        </p>
+                        <ExpandableDescription description={card.description} />
                       )}
                       {card.count > 1 && (
                         <div className="text-sm text-gray-400">
