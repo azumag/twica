@@ -238,7 +238,7 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
         <iframe
           ref={iframeRef}
           src={previewUrl}
-          className="w-full h-[400px]"
+          className="w-full h-[600px]"
           title="Overlay Preview"
         />
       </div>
