@@ -217,6 +217,9 @@ export default function CardManager({
   // Preview URL for cropped image (managed separately to avoid memory leaks)
   // トリミング済み画像のプレビューURL（メモリリーク防止のため別管理）
   const [croppedPreviewUrl, setCroppedPreviewUrl] = useState<string | null>(null);
+  // Image URL validation loading state
+  // 画像URL検証中のローディング状態
+  const [imageUrlValidating, setImageUrlValidating] = useState(false);
 
   // Emote import modal state
   // エモートインポートモーダルの状態
@@ -574,6 +577,70 @@ export default function CardManager({
       fileInputRef.current.value = "";
     }
   };
+
+  /**
+   * Validates image URL for aspect ratio and resolution limits
+   * Image must be portrait (height >= width) or square, max 1920x2682
+   * 画像URLのアスペクト比と解像度制限を検証
+   * 画像は縦長（高さ >= 幅）または正方形で、最大1920x2682
+   */
+  const validateImageUrl = useCallback(async (url: string): Promise<boolean> => {
+    if (!url) return true;
+
+    // Constants for image URL validation limits
+    // 画像URL検証用の制限値
+    const MAX_WIDTH = 1920;
+    const MAX_HEIGHT = 2682;
+
+    setImageUrlValidating(true);
+    setUploadError(null);
+
+    return new Promise((resolve) => {
+      const img = document.createElement("img");
+      img.crossOrigin = "anonymous";
+
+      img.onload = () => {
+        const width = img.naturalWidth;
+        const height = img.naturalHeight;
+
+        // Check if image is portrait (height >= width) or square
+        // 画像が縦長（高さ >= 幅）または正方形かチェック
+        const isPortraitOrSquare = height >= width;
+        if (!isPortraitOrSquare) {
+          setUploadError(t("messages.imageUrlInvalidAspectRatio", { width, height }));
+          setImageUrlValidating(false);
+          setFormData(prev => ({ ...prev, imageUrl: "" }));
+          resolve(false);
+          return;
+        }
+
+        // Check resolution limits
+        // 解像度制限をチェック
+        if (width > MAX_WIDTH || height > MAX_HEIGHT) {
+          setUploadError(t("messages.imageUrlResolutionExceeded", { width, height }));
+          setImageUrlValidating(false);
+          setFormData(prev => ({ ...prev, imageUrl: "" }));
+          resolve(false);
+          return;
+        }
+
+        // Validation passed - confirm the URL
+        // 検証成功 - URLを確定
+        setConfirmedImageUrl(url);
+        setImageUrlValidating(false);
+        resolve(true);
+      };
+
+      img.onerror = () => {
+        setUploadError(t("messages.imageUrlLoadFailed"));
+        setImageUrlValidating(false);
+        setFormData(prev => ({ ...prev, imageUrl: "" }));
+        resolve(false);
+      };
+
+      img.src = url;
+    });
+  }, [t]);
 
   const handleEdit = (card: Card) => {
     setEditingCard(card);
@@ -964,15 +1031,27 @@ export default function CardManager({
                         setFormData({ ...formData, imageUrl: e.target.value })
                       }
                       onBlur={() => {
-                        // Confirm URL on blur and mark as user modified
-                        // フォーカスが外れた時にURLを確定し、ユーザー操作フラグを設定
+                        // Validate and confirm URL on blur, mark as user modified
+                        // フォーカスが外れた時にURLを検証・確定し、ユーザー操作フラグを設定
                         if (formData.imageUrl) {
-                          setConfirmedImageUrl(formData.imageUrl);
+                          validateImageUrl(formData.imageUrl);
                         }
                         setUserModifiedImage(true);
                       }}
-                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                      disabled={imageUrlValidating}
+                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white disabled:opacity-50"
                     />
+                    {/* Show validating indicator when checking image URL */}
+                    {/* 画像URL検証中の表示 */}
+                    {imageUrlValidating && (
+                      <p className="text-sm text-purple-400 flex items-center gap-2">
+                        <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        {t("messages.imageUrlValidating")}
+                      </p>
+                    )}
                   </>
                 )}
               </div>

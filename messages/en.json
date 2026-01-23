@@ -52,7 +52,7 @@
       "currentImage": "Current image",
       "croppedImage": "Cropped image",
       "selectCropMode": "Select Crop Size",
-      "cropModeDescription": "Choose the crop size for your image. Square is ideal for icons, Portrait is ideal for cards.",
+      "cropModeDescription": "For Square images, name and description can be shown in the card frame on display. You can toggle this in overlay settings. Portrait images are displayed as-is.",
       "cropNoteWithOptions": "(Crop to Square 800x800 or Portrait 800x1118)"
     },
     "fileUpload": {
@@ -79,7 +79,11 @@
       "errorOccurred": "An error occurred ({status})",
       "uploadLimited": "Upload feature is limited",
       "imageUsage": "Image usage: {usage} / {limit}",
-      "refreshing": "Refreshing"
+      "refreshing": "Refreshing",
+      "imageUrlInvalidAspectRatio": "Image URL must be portrait (vertical) or square (current: {width}x{height})",
+      "imageUrlResolutionExceeded": "Image URL resolution exceeds limit. Max width: 1920px, max height: 2682px (current: {width}x{height})",
+      "imageUrlLoadFailed": "Failed to load image URL. Please check the URL.",
+      "imageUrlValidating": "Validating image..."
     },
     "sort": {
       "createdAt": "Date Created",
