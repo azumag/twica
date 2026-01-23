@@ -136,6 +136,28 @@
       "note": "* Paused cards are not included in probability calculation.",
       "close": "Close"
     },
+    "batchDropRate": {
+      "button": "Batch Drop Rate",
+      "title": "Batch Drop Rate Adjustment",
+      "tabIndividual": "Individual",
+      "tabRarity": "By Rarity",
+      "totalWeight": "Total Weight",
+      "activeCards": "Active Cards",
+      "weight": "Weight",
+      "probability": "Probability",
+      "save": "Save All",
+      "saving": "Saving...",
+      "saveFailed": "Failed to update drop rates",
+      "noActiveCards": "No active cards available",
+      "cardsModified": "modified",
+      "raritiesModified": "rarities modified",
+      "confirmClose": "You have unsaved changes. Close anyway?",
+      "rarityDescription": "Adjust multipliers by rarity to batch-change weights for all cards of the same rarity.",
+      "cardsCount": "cards",
+      "originalWeight": "Original",
+      "multiplier": "Multiplier",
+      "newWeight": "New Weight"
+    },
     "emoteImport": {
       "title": "Create Cards from Emotes",
       "description": "Select channel emotes to create cards. Emotes that are already cards will be excluded.",

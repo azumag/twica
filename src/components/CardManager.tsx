@@ -10,6 +10,7 @@ import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import ImageCropper, { type CropMode, CROP_MODES } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
+import BatchDropRateModal from "./BatchDropRateModal";
 
 interface StorageStatus {
   userUsage: number;
@@ -224,6 +225,9 @@ export default function CardManager({
   // Emote import modal state
   // エモートインポートモーダルの状態
   const [showEmoteModal, setShowEmoteModal] = useState(false);
+  // Batch drop rate modal state
+  // 確率一括調整モーダルの状態
+  const [showBatchDropRateModal, setShowBatchDropRateModal] = useState(false);
   const [emotes, setEmotes] = useState<TwitchEmote[]>([]);
   const [selectedEmotes, setSelectedEmotes] = useState<Set<string>>(new Set());
   const [loadingEmotes, setLoadingEmotes] = useState(false);
@@ -401,6 +405,23 @@ export default function CardManager({
     setEmoteError(null);
     fetchEmotes();
   };
+
+  /**
+   * Handle batch drop rate save
+   * 確率一括調整の保存処理
+   * Updates local cards state with the updated cards from the API response
+   * APIレスポンスから更新されたカードでローカルカード状態を更新
+   */
+  const handleBatchDropRateSave = useCallback((updatedCards: Card[]) => {
+    setCards(prevCards => {
+      // Create a map of updated cards for quick lookup
+      // 高速検索用に更新されたカードのマップを作成
+      const updatedMap = new Map(updatedCards.map(c => [c.id, c]));
+      // Replace cards that were updated, keep others as-is
+      // 更新されたカードを置き換え、他はそのまま維持
+      return prevCards.map(card => updatedMap.get(card.id) || card);
+    });
+  }, []);
 
   // Calculate total weight and actual probability
   // 合計重みと実際の確率を計算
@@ -848,6 +869,14 @@ export default function CardManager({
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
         <div className="flex flex-col gap-2 sm:flex-row">
+          {/* Batch drop rate adjustment button */}
+          {/* 確率一括調整ボタン */}
+          <button
+            onClick={() => setShowBatchDropRateModal(true)}
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
+          >
+            {t("batchDropRate.button")}
+          </button>
           {/* Emote import button */}
           {/* エモートインポートボタン */}
           <button
@@ -1524,6 +1553,16 @@ export default function CardManager({
           onCancel={handleCropCancel}
         />
       )}
+
+      {/* Batch Drop Rate Modal */}
+      {/* 確率一括調整モーダル */}
+      <BatchDropRateModal
+        isOpen={showBatchDropRateModal}
+        onClose={() => setShowBatchDropRateModal(false)}
+        cards={cards}
+        streamerId={streamerId}
+        onSave={handleBatchDropRateSave}
+      />
 
       {/* Emote Import Modal */}
       {/* エモートインポートモーダル */}
