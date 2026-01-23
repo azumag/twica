@@ -9,9 +9,22 @@ describe('setSecurityHeaders', () => {
     expect(result.headers.get('X-Content-Type-Options')).toBe('nosniff')
   })
 
-  it('X-Frame-Optionsヘッダーを設定する', () => {
+  it('X-Frame-Optionsヘッダーを設定する（デフォルトはDENY）', () => {
     const response = NextResponse.json({ test: 'data' })
     const result = setSecurityHeaders(response)
+    expect(result.headers.get('X-Frame-Options')).toBe('DENY')
+  })
+
+  it('overlayルートではX-Frame-OptionsがSAMEORIGINになる', () => {
+    // overlay ルートは同一オリジンからの iframe 埋め込みを許可（プレビュー機能用）
+    const response = NextResponse.json({ test: 'data' })
+    const result = setSecurityHeaders(response, '/overlay/123')
+    expect(result.headers.get('X-Frame-Options')).toBe('SAMEORIGIN')
+  })
+
+  it('overlay以外のルートではX-Frame-OptionsがDENYのまま', () => {
+    const response = NextResponse.json({ test: 'data' })
+    const result = setSecurityHeaders(response, '/dashboard/settings')
     expect(result.headers.get('X-Frame-Options')).toBe('DENY')
   })
 

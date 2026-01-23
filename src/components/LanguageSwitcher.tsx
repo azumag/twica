@@ -23,6 +23,8 @@ export function LanguageSwitcher() {
 
     // Set cookie with 1-year expiration
     // 1年の有効期限でCookieを設定
+    // ブラウザのdocument.cookieへの書き込みは通常の操作であり、lintルールを無効化
+    // eslint-disable-next-line react-hooks/immutability
     document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
 
     // Reload to apply the new locale
@@ -90,6 +92,8 @@ export function LanguageSwitcherDark() {
 
   const switchLocale = (newLocale: Locale) => {
     if (newLocale === currentLocale) return
+    // ブラウザのdocument.cookieへの書き込みは通常の操作であり、lintルールを無効化
+    // eslint-disable-next-line react-hooks/immutability
     document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
     window.location.reload()
   }
@@ -125,6 +129,8 @@ export function LanguageSwitcherSettings() {
 
   const switchLocale = (newLocale: Locale) => {
     if (newLocale === currentLocale) return
+    // ブラウザのdocument.cookieへの書き込みは通常の操作であり、lintルールを無効化
+    // eslint-disable-next-line react-hooks/immutability
     document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
     window.location.reload()
   }

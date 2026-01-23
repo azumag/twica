@@ -46,33 +46,39 @@ export class GachaService {
         return err('Failed to select card')
       }
 
-      // Record gacha history (with idempotency using upsert)
-      // ガチャ履歴を記録（冪等性のためupsertを使用）
-      const { error: historyError } = await this.supabase
-        .from('gacha_history')
-        .upsert({
-          event_id: eventId || null,
-          user_twitch_id: userTwitchId,
-          user_twitch_username: userTwitchUsername,
-          card_id: selectedCard.id,
-          streamer_id: streamerId,
-        }, {
-          onConflict: 'event_id',
-          ignoreDuplicates: true,
-        })
+      // Execute gacha history recording and user check in parallel to reduce CPU time
+      // CPU時間削減のため、ガチャ履歴記録とユーザー確認を並列実行
+      const [historyResult, userCheckResult] = await Promise.all([
+        // Record gacha history (with idempotency using upsert)
+        // ガチャ履歴を記録（冪等性のためupsertを使用）
+        this.supabase
+          .from('gacha_history')
+          .upsert({
+            event_id: eventId || null,
+            user_twitch_id: userTwitchId,
+            user_twitch_username: userTwitchUsername,
+            card_id: selectedCard.id,
+            streamer_id: streamerId,
+          }, {
+            onConflict: 'event_id',
+            ignoreDuplicates: true,
+          }),
+        // Check if user exists (SELECT only, no UPDATE)
+        // ユーザーの存在確認（SELECTのみ、UPDATEなし）
+        this.supabase
+          .from('users')
+          .select('id')
+          .eq('twitch_user_id', userTwitchId)
+          .single()
+      ])
 
-      if (historyError) {
-        return err(`Failed to record history: ${historyError.message}`)
+      if (historyResult.error) {
+        return err(`Failed to record history: ${historyResult.error.message}`)
       }
 
-      // Check if user exists, if not create user
-      // ユーザーが存在するか確認、存在しなければ作成
-      let { data: user } = await this.supabase
-        .from('users')
-        .select('id')
-        .eq('twitch_user_id', userTwitchId)
-        .single()
-
+      // If user doesn't exist, create one
+      // ユーザーが存在しない場合は作成
+      let user = userCheckResult.data
       if (!user) {
         const { data: newUser, error: createError } = await this.supabase
           .from('users')

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { unstable_cache } from "next/cache";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -12,7 +13,12 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
+import { logger } from "@/lib/logger";
 import type { ApiRateLimitResponse } from "@/types/api";
+
+// Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
+// カード一覧のキャッシュTTL（新鮮さとCPU使用量のバランスで30秒）
+const CARDS_CACHE_TTL = 30;
 
 export async function POST(request: NextRequest) {
   // Content-Type validation - must be the first check
@@ -135,6 +141,11 @@ export async function POST(request: NextRequest) {
       return handleDatabaseError(error, "Cards API: Failed to create card");
     }
 
+    // Note: Cache invalidation is handled by TTL (30 seconds)
+    // Short TTL ensures new cards appear quickly without manual invalidation
+    // 注意: キャッシュ無効化はTTL（30秒）で処理
+    // 短いTTLにより手動で無効化せずとも新しいカードがすぐに表示される
+
     return NextResponse.json(card);
   } catch (error) {
     return handleApiError(error, "Cards API: POST");
@@ -155,6 +166,57 @@ type SortDirection = typeof VALID_SORT_DIRECTIONS[number];
 // 有効なステータスフィルター
 const VALID_STATUS_FILTERS = ["all", "active", "inactive"] as const;
 type StatusFilter = typeof VALID_STATUS_FILTERS[number];
+
+/**
+ * Internal function to fetch cards from database (used for caching)
+ * データベースからカードを取得する内部関数（キャッシュ用）
+ */
+async function fetchCardsFromDB(
+  streamerId: string,
+  limit: number,
+  offset: number,
+  sortField: SortField,
+  sortDirection: SortDirection,
+  statusFilter: StatusFilter,
+  includeInactive: boolean
+): Promise<{ cards: unknown[]; count: number | null }> {
+  const start = Date.now();
+  const supabaseAdmin = getSupabaseAdmin();
+
+  let query = supabaseAdmin
+    .from("cards")
+    .select("*", { count: "exact" })
+    .eq("streamer_id", streamerId);
+
+  // Apply status filter
+  // ステータスフィルターを適用
+  if (statusFilter === "active") {
+    query = query.eq("is_active", true);
+  } else if (statusFilter === "inactive") {
+    query = query.eq("is_active", false);
+  } else if (!includeInactive && statusFilter === "all") {
+    // Legacy behavior handled in caller
+  }
+
+  // Apply sorting
+  // 並び替えを適用
+  const ascending = sortDirection === "asc";
+  query = query.order(sortField, { ascending });
+
+  // Apply pagination
+  // ページネーションを適用
+  query = query.range(offset, offset + limit - 1);
+
+  const { data: cards, error, count } = await query;
+
+  if (error) {
+    throw error;
+  }
+
+  logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${cards?.length || 0} cards)`);
+
+  return { cards: cards || [], count };
+}
 
 export async function GET(request: NextRequest) {
   const session = await getSession();
@@ -224,47 +286,24 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    // Single query with count and pagination
-    // カウントとページネーションを1クエリで取得
-    let query = supabaseAdmin
-      .from("cards")
-      .select("*", { count: "exact" })
-      .eq("streamer_id", streamerId);
+    // Use cached fetch to reduce CPU usage from repeated queries
+    // 繰り返しクエリによるCPU使用量を削減するためキャッシュ済みフェッチを使用
+    const cacheKey = `cards-${streamerId}-${limit}-${offset}-${sortField}-${sortDirection}-${statusFilter}-${includeInactive}`;
+    const cachedFetch = unstable_cache(
+      async () => fetchCardsFromDB(streamerId, limit, offset, sortField, sortDirection, statusFilter, includeInactive),
+      [cacheKey],
+      {
+        revalidate: CARDS_CACHE_TTL,
+        tags: [`cards-${streamerId}`],
+      }
+    );
 
-    // Apply status filter
-    // ステータスフィルターを適用
-    // New status parameter takes precedence over legacy includeInactive
-    // 新しいstatusパラメータがレガシーのincludeInactiveより優先
-    if (statusFilter === "active") {
-      query = query.eq("is_active", true);
-    } else if (statusFilter === "inactive") {
-      query = query.eq("is_active", false);
-    } else if (!includeInactive && statusFilter === "all") {
-      // Legacy behavior: if includeInactive is false and no status filter, show only active
-      // レガシー動作: includeInactiveがfalseでstatusフィルターがない場合、アクティブのみ表示
-      // But since we default to "all" when includeInactive=true, this handles the case
-      // when neither is specified (default to showing only active for public APIs)
-    }
-
-    // Apply sorting
-    // 並び替えを適用
-    const ascending = sortDirection === "asc";
-    query = query.order(sortField, { ascending });
-
-    // Apply pagination
-    // ページネーションを適用
-    query = query.range(offset, offset + limit - 1);
-
-    const { data: cards, error, count } = await query;
-
-    if (error) {
-      return handleDatabaseError(error, "Cards API: Failed to fetch cards");
-    }
+    const { cards, count } = await cachedFetch();
 
     // Return paginated response with metadata
     // メタデータ付きのページネーションレスポンスを返す
     return NextResponse.json({
-      cards: cards || [],
+      cards,
       pagination: {
         total: count || 0,
         limit,

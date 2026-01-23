@@ -43,11 +43,21 @@ function detectLocale(request: NextRequest): Locale {
   return defaultLocale
 }
 
+// Paths excluded from global rate limiting (have their own rate limits)
+// グローバルレート制限から除外するパス（独自のレート制限を持つ）
+const RATE_LIMIT_EXCLUDED_PATHS = [
+  '/api/auth/twitch/callback',
+  '/api/twitch/eventsub',
+  '/api/auth/twitch/login',
+]
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   const response = await updateSession(request)
-  setSecurityHeaders(response)
+  // パスに基づいて適切なセキュリティヘッダーを設定
+  // Set appropriate security headers based on the path
+  setSecurityHeaders(response, pathname)
 
   // Detect and set locale for server components
   // サーバーコンポーネント用にロケールを検出・設定
@@ -63,38 +73,38 @@ export async function middleware(request: NextRequest) {
     response.headers.set('Expires', '0')
   }
 
+  // Apply global rate limiting only to API routes
+  // グローバルレート制限はAPIルートにのみ適用
   if (pathname.startsWith('/api')) {
-    const ip = getClientIp(request)
-    const identifier = `global:${ip}`
-    const rateLimitResult = await checkRateLimit(
-      rateLimits.eventsub,
-      identifier
-    )
+    // Skip global rate limiting for paths with their own rate limiting
+    // to reduce CPU overhead from redundant checks
+    // 独自のレート制限を持つパスはグローバルレート制限をスキップして
+    // 冗長なチェックによるCPUオーバーヘッドを削減
+    const isExcludedPath = RATE_LIMIT_EXCLUDED_PATHS.some(path => pathname.startsWith(path))
 
-    if (!rateLimitResult.success) {
-      const errorResponse = NextResponse.json(
-        { error: 'Too many requests' },
-        {
-          status: 429,
-          headers: {
-            'X-RateLimit-Limit': String(rateLimitResult.limit),
-            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
-            'X-RateLimit-Reset': String(rateLimitResult.reset),
-          },
-        }
+    if (!isExcludedPath) {
+      const ip = getClientIp(request)
+      const identifier = `global:${ip}`
+      const rateLimitResult = await checkRateLimit(
+        rateLimits.eventsub,
+        identifier
       )
 
-      return setSecurityHeaders(errorResponse)
-    }
+      if (!rateLimitResult.success) {
+        const errorResponse = NextResponse.json(
+          { error: 'Too many requests' },
+          {
+            status: 429,
+            headers: {
+              'X-RateLimit-Limit': String(rateLimitResult.limit),
+              'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+              'X-RateLimit-Reset': String(rateLimitResult.reset),
+            },
+          }
+        )
 
-    const excludePaths = [
-      '/api/auth/twitch/callback',
-      '/api/twitch/eventsub',
-      '/api/auth/twitch/login',
-    ]
-
-    if (excludePaths.some(path => pathname.startsWith(path))) {
-      return response
+        return setSecurityHeaders(errorResponse, pathname)
+      }
     }
 
     // CSRF validation is handled in individual route handlers
@@ -106,7 +116,9 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
+  // Exclude static files and assets from middleware to reduce CPU usage
+  // 静的ファイルとアセットをミドルウェアから除外してCPU使用量を削減
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon\\.ico|robots\\.txt|sitemap\\.xml|manifest\\.json|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff|woff2|ttf|otf|eot)$).*)',
   ],
 }

@@ -4,9 +4,34 @@ import { useState, useRef, useCallback } from "react";
 import ReactCrop, { type Crop, centerCrop, makeAspectCrop } from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
 
-// Output image dimensions (400x400 square)
-// 出力画像サイズ（400x400の正方形）
-const OUTPUT_SIZE = 400;
+// Crop mode type: square or portrait
+// トリミングモードの型：正方形またはポートレイト
+export type CropMode = "square" | "portrait";
+
+// Output dimensions configuration for each crop mode
+// 各トリミングモードの出力サイズ設定
+export const CROP_MODES = {
+  // Square mode: 800x800 pixels (1:1 aspect ratio)
+  // 正方形モード: 800x800ピクセル（1:1のアスペクト比）
+  square: {
+    width: 800,
+    height: 800,
+    aspect: 1, // 1:1 aspect ratio
+    label: "正方形",
+    labelEn: "Square",
+    dimensions: "800x800",
+  },
+  // Portrait mode: 800x1118 pixels (approximately 5:7 aspect ratio)
+  // ポートレイトモード: 800x1118ピクセル（約5:7のアスペクト比）
+  portrait: {
+    width: 800,
+    height: 1118,
+    aspect: 800 / 1118, // approximately 0.716
+    label: "ポートレイト",
+    labelEn: "Portrait",
+    dimensions: "800x1118",
+  },
+} as const;
 
 // Props for the ImageCropper component
 // ImageCropperコンポーネントのプロパティ
@@ -14,6 +39,9 @@ interface ImageCropperProps {
   // Source image file to crop
   // トリミング対象の画像ファイル
   imageFile: File;
+  // Crop mode: square (800x800) or portrait (800x1118)
+  // トリミングモード: 正方形(800x800)またはポートレイト(800x1118)
+  cropMode: CropMode;
   // Callback when cropping is confirmed, returns the cropped image as a Blob
   // トリミング確定時のコールバック、トリミング済み画像をBlobで返す
   onCropComplete: (croppedBlob: Blob) => void;
@@ -23,13 +51,14 @@ interface ImageCropperProps {
 }
 
 /**
- * Creates a centered square crop for the initial display
- * 初期表示用の中央配置された正方形クロップを作成
+ * Creates a centered crop for the initial display based on crop mode
+ * トリミングモードに基づいて初期表示用の中央配置されたクロップを作成
  * @param mediaWidth - Width of the loaded image
  * @param mediaHeight - Height of the loaded image
- * @returns Centered 1:1 aspect ratio crop
+ * @param aspect - Aspect ratio for the crop (width/height)
+ * @returns Centered crop with the specified aspect ratio
  */
-function centerAspectCrop(mediaWidth: number, mediaHeight: number): Crop {
+function centerAspectCrop(mediaWidth: number, mediaHeight: number, aspect: number): Crop {
   return centerCrop(
     makeAspectCrop(
       {
@@ -38,7 +67,7 @@ function centerAspectCrop(mediaWidth: number, mediaHeight: number): Crop {
         // 小さい方の辺の90%をカバーするクロップから開始
         width: 90,
       },
-      1, // 1:1 aspect ratio for square output
+      aspect, // Aspect ratio based on crop mode
       mediaWidth,
       mediaHeight
     ),
@@ -48,12 +77,15 @@ function centerAspectCrop(mediaWidth: number, mediaHeight: number): Crop {
 }
 
 /**
- * ImageCropper component that allows users to select a square region of an image
- * and outputs a 400x400 cropped image
+ * ImageCropper component that allows users to select a region of an image
+ * and outputs a cropped image based on the selected crop mode
  *
- * ユーザーが画像の正方形領域を選択し、400x400のトリミング画像を出力するコンポーネント
+ * ユーザーが画像の領域を選択し、選択されたトリミングモードに基づいてトリミング画像を出力するコンポーネント
  */
-export default function ImageCropper({ imageFile, onCropComplete, onCancel }: ImageCropperProps) {
+export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCancel }: ImageCropperProps) {
+  // Get crop mode configuration
+  // トリミングモードの設定を取得
+  const cropConfig = CROP_MODES[cropMode];
   // Current crop selection state
   // 現在のクロップ選択状態
   const [crop, setCrop] = useState<Crop>();
@@ -68,13 +100,13 @@ export default function ImageCropper({ imageFile, onCropComplete, onCancel }: Im
   const [previewUrl] = useState(() => URL.createObjectURL(imageFile));
 
   /**
-   * Called when the image loads to initialize the centered square crop
-   * 画像読み込み時に呼ばれ、中央配置の正方形クロップを初期化
+   * Called when the image loads to initialize the centered crop
+   * 画像読み込み時に呼ばれ、中央配置のクロップを初期化
    */
   const onImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const { width, height } = e.currentTarget;
-    setCrop(centerAspectCrop(width, height));
-  }, []);
+    setCrop(centerAspectCrop(width, height, cropConfig.aspect));
+  }, [cropConfig.aspect]);
 
   /**
    * Creates a canvas with the cropped and resized image
@@ -82,13 +114,13 @@ export default function ImageCropper({ imageFile, onCropComplete, onCancel }: Im
    *
    * Uses Canvas API to:
    * 1. Extract the selected crop region from the source image
-   * 2. Resize it to OUTPUT_SIZE x OUTPUT_SIZE (400x400)
-   * 3. Export as WebP for better compression
+   * 2. Resize it to the dimensions specified by crop mode
+   * 3. Export as JPEG for universal browser support
    *
    * Canvas APIを使用して:
    * 1. ソース画像から選択されたクロップ領域を抽出
-   * 2. OUTPUT_SIZE x OUTPUT_SIZE (400x400)にリサイズ
-   * 3. 圧縮率の良いWebPとしてエクスポート
+   * 2. トリミングモードで指定されたサイズにリサイズ
+   * 3. 全ブラウザ対応のJPEG形式でエクスポート
    */
   const getCroppedImg = useCallback(async (): Promise<Blob | null> => {
     const image = imgRef.current;
@@ -112,10 +144,10 @@ export default function ImageCropper({ imageFile, onCropComplete, onCancel }: Im
       height: (crop.height / 100) * image.height * scaleY,
     };
 
-    // Set canvas size to the desired output dimensions
-    // Canvasサイズを目的の出力サイズに設定
-    canvas.width = OUTPUT_SIZE;
-    canvas.height = OUTPUT_SIZE;
+    // Set canvas size to the desired output dimensions based on crop mode
+    // トリミングモードに基づいて目的の出力サイズにCanvasサイズを設定
+    canvas.width = cropConfig.width;
+    canvas.height = cropConfig.height;
 
     // Enable image smoothing for better quality when resizing
     // リサイズ時の品質向上のため画像スムージングを有効化
@@ -132,8 +164,8 @@ export default function ImageCropper({ imageFile, onCropComplete, onCancel }: Im
       pixelCrop.height,
       0,
       0,
-      OUTPUT_SIZE,
-      OUTPUT_SIZE
+      cropConfig.width,
+      cropConfig.height
     );
 
     // Convert canvas to Blob using JPEG format (universally supported)
@@ -147,7 +179,7 @@ export default function ImageCropper({ imageFile, onCropComplete, onCancel }: Im
         0.85 // 85% quality provides good balance between size and quality
       );
     });
-  }, [crop]);
+  }, [crop, cropConfig.width, cropConfig.height]);
 
   /**
    * Handles the confirm button click
@@ -206,13 +238,13 @@ export default function ImageCropper({ imageFile, onCropComplete, onCancel }: Im
         {/* トリミングエリアのコンテナ */}
         <div className="p-4">
           <p className="mb-3 text-sm text-gray-400">
-            ドラッグして位置とサイズを調整してください（正方形でトリミングされます）
+            ドラッグして位置とサイズを調整してください（{cropConfig.dimensions}にトリミングされます）
           </p>
           <div className="flex justify-center rounded-lg bg-gray-900 p-2">
             <ReactCrop
               crop={crop}
               onChange={(_, percentCrop) => setCrop(percentCrop)}
-              aspect={1} // Force 1:1 aspect ratio for square output
+              aspect={cropConfig.aspect} // Aspect ratio based on crop mode
               className="max-h-[60vh]"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
