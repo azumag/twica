@@ -286,9 +286,9 @@ export default function OverlayPage() {
   const shouldShowEffects = options.effects && result.card.rarity === "legendary";
 
   // 小さい画像モード用のサイズクラス
-  // smallModeオプションが有効、または画像が400x400未満の場合はカードサイズを縮小
-  // これにより小さい画像でも適切なサイズで表示される
-  const shouldUseSmallMode = options.smallMode || isSmallImage;
+  // smallModeオプションが有効で、かつ画像が400x400未満の場合のみカードサイズを縮小
+  // これにより小さい画像でも適切なサイズで表示され、大きい画像は通常サイズで表示される
+  const shouldUseSmallMode = options.smallMode && isSmallImage;
   const cardSizeClass = shouldUseSmallMode ? "w-48" : "w-80";
   const imageOnlySizeClass = shouldUseSmallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
 
