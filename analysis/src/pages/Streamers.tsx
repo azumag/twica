@@ -17,10 +17,13 @@ type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'nam
  * Streamers page - Displays all registered streamers with their card collections
  * Shows active status, EventSub configuration, and card statistics
  * ストリーマー名をクリックするとポップアップでTwitchリンクが表示される
+ * 検索フォームでユーザー名・表示名でフィルタリング可能
  */
 export function Streamers() {
   const [streamers, setStreamers] = useState<StreamerWithStats[]>([])
   const [loading, setLoading] = useState(true)
+  // 検索クエリ（ユーザー名・表示名でフィルタリング）
+  const [searchQuery, setSearchQuery] = useState('')
   // ソート順（デフォルト: カード数の多い順）
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
   // カード数0のストリーマーを非表示にするフラグ
@@ -36,7 +39,7 @@ export function Streamers() {
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
     setCurrentPage(1)
-  }, [sortOrder, hideZeroCards])
+  }, [sortOrder, hideZeroCards, searchQuery])
 
   /**
    * Fetches all streamers with card counts
@@ -193,12 +196,25 @@ export function Streamers() {
 
   /**
    * フィルターとソートを適用したストリーマー一覧を生成
+   * 検索クエリ、カード数フィルター、ソート順を適用
    */
   const filteredAndSortedStreamers = (() => {
+    let result = streamers
+
+    // フィルター: 検索クエリ（ユーザー名または表示名に部分一致）
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim()
+      result = result.filter(
+        (s) =>
+          s.twitch_username.toLowerCase().includes(query) ||
+          s.twitch_display_name.toLowerCase().includes(query)
+      )
+    }
+
     // フィルター: カード数0を非表示にする場合
-    let result = hideZeroCards
-      ? streamers.filter((s) => s.card_count > 0)
-      : streamers
+    if (hideZeroCards) {
+      result = result.filter((s) => s.card_count > 0)
+    }
 
     // ソート
     result = [...result].sort((a, b) => {
@@ -246,6 +262,46 @@ export function Streamers() {
         </div>
       </div>
 
+      {/* 検索フォーム */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="relative">
+          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <svg
+              className="h-5 w-5 text-gray-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+          </div>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="ストリーマー名で検索..."
+            className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-10 pr-4 text-gray-900 placeholder-gray-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+          />
+          {/* 検索クエリをクリアするボタン */}
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600"
+              title="クリア"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* フィルター・ソートコントロール */}
       <div className="bg-white rounded-lg shadow p-4">
         <div className="flex flex-wrap items-center gap-4">
@@ -283,6 +339,7 @@ export function Streamers() {
           {/* 表示件数 */}
           <div className="text-sm text-gray-500 ml-auto">
             表示: {filteredAndSortedStreamers.length} / {streamers.length} 件
+            {searchQuery && ` (検索: "${searchQuery}")`}
             {hideZeroCards && ` (カードあり: ${streamersWithCards}件)`}
           </div>
         </div>
