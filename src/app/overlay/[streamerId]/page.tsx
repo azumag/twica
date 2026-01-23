@@ -85,13 +85,18 @@ export default function OverlayPage() {
   // URLパラメータからオーバーレイオプションを解析
   // Parse overlay options from URL parameters
   // autoPortrait, smallMode, effectsはデフォルトでtrue（falseの場合のみURLパラメータで明示）
+  // queueMicrotaskを使用してsetStateを非同期に実行し、カスケードレンダーを回避
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    setOptions({
-      imageOnly: urlParams.get("imageOnly") === "true",
-      autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
-      effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
-      smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
+    // 非同期に実行してuseEffect内での同期的なsetState呼び出しを回避
+    // Defer setState to avoid synchronous state update in effect body
+    queueMicrotask(() => {
+      setOptions({
+        imageOnly: urlParams.get("imageOnly") === "true",
+        autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
+        effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
+        smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
+      });
     });
   }, []);
 

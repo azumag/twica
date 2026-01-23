@@ -70,13 +70,17 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
 
   // オプション変更時にURL更新メッセージを表示
   // 初回レンダリング時は表示しない
+  // queueMicrotaskを使用してsetStateを非同期に実行し、カスケードレンダーを回避
   useEffect(() => {
     if (isFirstRender.current) {
       isFirstRender.current = false;
       return;
     }
-    // メッセージを表示
-    setShowUrlUpdated(true);
+    // 非同期に実行してuseEffect内での同期的なsetState呼び出しを回避
+    // Defer setState to avoid synchronous state update in effect body
+    queueMicrotask(() => {
+      setShowUrlUpdated(true);
+    });
     // 3秒後に非表示
     const timer = setTimeout(() => {
       setShowUrlUpdated(false);
