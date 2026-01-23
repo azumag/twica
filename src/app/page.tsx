@@ -8,10 +8,16 @@ import TopPageHeader from "@/components/TopPageHeader";
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
-export default async function Home() {
+// searchParams型定義 - URLクエリパラメータを受け取るため
+type SearchParams = Promise<{ error?: string }>;
+
+export default async function Home({ searchParams }: { searchParams: SearchParams }) {
   const session = await getSession();
   const t = await getTranslations("topPage");
   const tFooter = await getTranslations("footer");
+
+  // URLのerrorパラメータを取得（認証エラー等のリダイレクト時に使用）
+  const { error } = await searchParams;
 
   // Prepare session data for client component (without sensitive info)
   const sessionData = session ? {
@@ -26,6 +32,14 @@ export default async function Home() {
     // overflow-x-hidden: モバイルで横スクロールを防止
     <div className="min-h-screen overflow-x-hidden bg-gray-900">
       <DevelopmentNotice />
+      {/* エラーメッセージ表示 - 認証エラー等でリダイレクトされた場合に表示 */}
+      {error && (
+        <div className="bg-red-900/50 border-b border-red-700">
+          <div className="container mx-auto px-4 py-3">
+            <p className="text-center text-sm text-red-200">{error}</p>
+          </div>
+        </div>
+      )}
       <header className="border-b border-gray-800">
         <div className="container mx-auto px-4 py-4">
           <nav className="flex items-center justify-between">
