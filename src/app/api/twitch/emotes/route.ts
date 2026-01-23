@@ -4,7 +4,28 @@ import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { getTwitchAccessToken } from "@/lib/twitch/token-manager";
-import { getCachedEmotes } from "@/lib/twitch/api-cache";
+
+const TWITCH_API_URL = "https://api.twitch.tv/helix";
+
+/**
+ * Twitch emote data structure from API response
+ * Twitch APIレスポンスのエモートデータ構造
+ */
+interface TwitchEmote {
+  id: string;
+  name: string;
+  images: {
+    url_1x: string;
+    url_2x: string;
+    url_4x: string;
+  };
+  tier: string;
+  emote_type: string;
+  emote_set_id: string;
+  format: string[];
+  scale: string[];
+  theme_mode: string[];
+}
 
 /**
  * Helper function to get Twitch access token or throw an error
@@ -54,10 +75,39 @@ export async function GET(request: Request) {
   try {
     const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
 
-    // Use cached emotes to reduce Twitch API calls and CPU usage
-    // キャッシュ済みエモートを使用してTwitch API呼び出しとCPU使用量を削減
-    const emotes = await getCachedEmotes(session.twitchUserId, accessToken);
-    return NextResponse.json(emotes);
+    // Fetch channel emotes from Twitch API
+    // Twitch APIからチャンネルエモートを取得
+    const response = await fetch(
+      `${TWITCH_API_URL}/chat/emotes?broadcaster_id=${session.twitchUserId}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      return handleApiError(error, "Twitch API emotes fetch");
+    }
+
+    const data = await response.json();
+    const emotes: TwitchEmote[] = data.data || [];
+
+    // Transform emotes to a simpler format for the client
+    // クライアント用にエモートをシンプルな形式に変換
+    const transformedEmotes = emotes.map((emote) => ({
+      id: emote.id,
+      name: emote.name,
+      // Use 4x (largest) image for card quality, fall back to 2x or 1x
+      // カード品質のため4x（最大）画像を使用、なければ2xまたは1xにフォールバック
+      imageUrl: emote.images.url_4x || emote.images.url_2x || emote.images.url_1x,
+      tier: emote.tier,
+      emoteType: emote.emote_type,
+    }));
+
+    return NextResponse.json(transformedEmotes);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : '';
     if (errorMessage === ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED) {
