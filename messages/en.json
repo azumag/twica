@@ -263,22 +263,23 @@
     "itemsPerPage": "per page"
   },
   "overlaySettings": {
-    "title": "Overlay Settings",
-    "description": "Customize overlay display using URL parameters",
+    "title": "Overlay Customization",
+    "description": "Configure overlay display options. Changes are reflected in the OBS Browser Source URL.",
     "options": {
-      "imageOnly": "Image Only",
-      "imageOnlyDescription": "Show only the image without card frame or text",
+      "imageOnly": "Image Only (even for square)",
+      "imageOnlyDescription": "Show only the image without card frame or text, even for square images",
       "autoPortrait": "Auto-detect Portrait",
       "autoPortraitDescription": "Automatically switch to image-only mode for portrait images",
       "effects": "Show Effects",
       "effectsDescription": "Show sparkle effects for legendary cards",
       "smallMode": "Small Image Mode",
-      "smallModeDescription": "Smaller display for images 800x800 or less"
+      "smallModeDescription": "Smaller display for images under 400x400 (auto-applied)"
     },
     "generatedUrl": "Generated URL",
     "preview": "Preview",
     "runDemo": "Run DEMO",
-    "demoNote": "* DEMO button shows your configured cards. Demo cards are shown if you have no cards."
+    "demoNote": "* DEMO button shows your configured cards. Demo cards are shown if you have no cards.",
+    "urlUpdated": "Overlay URL has been updated"
   },
   "settingsPage": {
     "title": "Stream Settings",
