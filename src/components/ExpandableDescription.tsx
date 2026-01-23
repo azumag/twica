@@ -62,24 +62,15 @@ export default function ExpandableDescription({
       >
         {description}
       </p>
-      {/* 展開/折りたたみインジケーター */}
-      {/* Expand/collapse indicator */}
-      {isClickable && (
+      {/* 展開インジケーター（省略時のみ表示、展開後は非表示だがクリックで折りたたみ可能） */}
+      {/* Expand indicator (shown only when truncated, hidden after expand but click to collapse still works) */}
+      {isTruncated && !isExpanded && (
         <button
           onClick={handleClick}
           className="text-xs text-purple-400 hover:text-purple-300 mt-1 flex items-center gap-1"
         >
-          {isExpanded ? (
-            <>
-              <span>▲</span>
-              <span>閉じる</span>
-            </>
-          ) : (
-            <>
-              <span>▼</span>
-              <span>もっと見る</span>
-            </>
-          )}
+          <span>▼</span>
+          <span>開く</span>
         </button>
       )}
     </div>
