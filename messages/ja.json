@@ -262,6 +262,24 @@
     "pageInfo": "{current} / {total}",
     "itemsPerPage": "件表示"
   },
+  "overlaySettings": {
+    "title": "オーバーレイ設定",
+    "description": "URLパラメータでオーバーレイの表示をカスタマイズできます",
+    "options": {
+      "imageOnly": "画像のみ表示",
+      "imageOnlyDescription": "カード枠・テキストを非表示にして画像だけを表示",
+      "autoPortrait": "縦長画像を自動検出",
+      "autoPortraitDescription": "ポートレイト画像の場合、自動で画像のみ表示に切り替え",
+      "effects": "エフェクト表示",
+      "effectsDescription": "レジェンダリーカードのキラキラエフェクトを表示",
+      "smallMode": "小さい画像モード",
+      "smallModeDescription": "800x800以下の画像用に縮小表示"
+    },
+    "generatedUrl": "生成されたURL",
+    "preview": "プレビュー",
+    "runDemo": "DEMOを実行",
+    "demoNote": "※ DEMOボタンで設定されたカードが表示されます。カードがない場合はデモカードが表示されます。"
+  },
   "settingsPage": {
     "title": "配信設定",
     "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。"

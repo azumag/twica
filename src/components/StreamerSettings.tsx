@@ -3,6 +3,7 @@ import { getStreamerData } from "@/lib/dashboard-data";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import CardManager from "@/components/CardManager";
 import CopyButton from "@/components/CopyButton";
+import OverlayPreview from "@/components/OverlayPreview";
 import type { Card } from "@/types/database";
 
 interface StreamerSettingsProps {
@@ -17,6 +18,8 @@ interface StreamerSettingsProps {
 export default async function StreamerSettings({ streamerData }: StreamerSettingsProps) {
   const t = await getTranslations("dashboard");
   if (!streamerData) return null;
+
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "";
 
   return (
     <section className="mb-12">
@@ -34,10 +37,10 @@ export default async function StreamerSettings({ streamerData }: StreamerSetting
             <input
               type="text"
               readOnly
-              value={`${process.env.NEXT_PUBLIC_APP_URL}/overlay/${streamerData.streamer.id}`}
+              value={`${baseUrl}/overlay/${streamerData.streamer.id}`}
               className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
             />
-            <CopyButton text={`${process.env.NEXT_PUBLIC_APP_URL}/overlay/${streamerData.streamer.id}`} />
+            <CopyButton text={`${baseUrl}/overlay/${streamerData.streamer.id}`} />
           </div>
         </div>
 
@@ -49,13 +52,21 @@ export default async function StreamerSettings({ streamerData }: StreamerSetting
         />
       </div>
 
-        {/* Card Manager */}
-        <div className="mt-8">
-          <CardManager
-            streamerId={streamerData.streamer.id}
-            initialCards={streamerData.cards as Card[]}
-          />
-        </div>
+      {/* Overlay Preview - オーバーレイ設定とプレビュー */}
+      <div className="mt-8">
+        <OverlayPreview
+          streamerId={streamerData.streamer.id}
+          baseUrl={baseUrl}
+        />
+      </div>
+
+      {/* Card Manager */}
+      <div className="mt-8">
+        <CardManager
+          streamerId={streamerData.streamer.id}
+          initialCards={streamerData.cards as Card[]}
+        />
+      </div>
     </section>
   );
 }
