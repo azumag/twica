@@ -51,8 +51,6 @@
       "description": "Description",
       "currentImage": "Current image",
       "croppedImage": "Cropped image",
-      "croppedSize": "400x400px (JPEG)",
-      "cropNote": "(Crop to 400x400)",
       "selectCropMode": "Select Crop Size",
       "cropModeDescription": "Choose the crop size for your image. Square is ideal for icons, Portrait is ideal for cards.",
       "cropNoteWithOptions": "(Crop to Square 800x800 or Portrait 800x1118)"

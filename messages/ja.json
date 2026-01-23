@@ -51,8 +51,6 @@
       "description": "説明",
       "currentImage": "現在の画像",
       "croppedImage": "トリミング済み画像",
-      "croppedSize": "400x400px (JPEG)",
-      "cropNote": "（400x400にトリミング）",
       "selectCropMode": "トリミングサイズを選択",
       "cropModeDescription": "画像のトリミングサイズを選択してください。正方形はアイコン向け、ポートレイトはカード向けです。",
       "cropNoteWithOptions": "（正方形800x800またはポートレイト800x1118にトリミング）"
