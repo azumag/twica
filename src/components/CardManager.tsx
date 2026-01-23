@@ -771,10 +771,10 @@ export default function CardManager({
       )}
 
       {/* Card Form Modal */}
-      {/* カードフォームモーダル */}
+      {/* カードフォームモーダル - 外クリックでキャンセルしない（誤操作防止のため、明示的にキャンセルボタンを押す必要がある） */}
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={resetForm}>
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-gray-800 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-gray-800 shadow-2xl">
             <form onSubmit={handleSubmit} className="p-6">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-white">
