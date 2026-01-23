@@ -262,6 +262,24 @@
     "pageInfo": "{current} / {total}",
     "itemsPerPage": "per page"
   },
+  "overlaySettings": {
+    "title": "Overlay Settings",
+    "description": "Customize overlay display using URL parameters",
+    "options": {
+      "imageOnly": "Image Only",
+      "imageOnlyDescription": "Show only the image without card frame or text",
+      "autoPortrait": "Auto-detect Portrait",
+      "autoPortraitDescription": "Automatically switch to image-only mode for portrait images",
+      "effects": "Show Effects",
+      "effectsDescription": "Show sparkle effects for legendary cards",
+      "smallMode": "Small Image Mode",
+      "smallModeDescription": "Smaller display for images 800x800 or less"
+    },
+    "generatedUrl": "Generated URL",
+    "preview": "Preview",
+    "runDemo": "Run DEMO",
+    "demoNote": "* DEMO button shows your configured cards. Demo cards are shown if you have no cards."
+  },
   "settingsPage": {
     "title": "Stream Settings",
     "description": "Configure OBS overlay and channel point rewards."

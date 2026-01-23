@@ -1,8 +1,10 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
+import { createClient } from "@supabase/supabase-js";
 
-// Demo cards for testing overlay
+// Demo cards for testing overlay (used when streamer has no cards)
+// 配信者がカードを持っていない場合に使用されるデモカード
 const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streamer_id'>> = [
   {
     name: "デモカード - コモン",
@@ -68,11 +70,55 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
 
 /**
  * Demo gacha endpoint for testing overlay without authentication
- * This endpoint returns a random demo card without requiring login or database access
+ * This endpoint returns a random card from streamer's cards (if available) or demo cards
+ * デモガチャエンドポイント - 認証なしでオーバーレイをテスト
+ * 配信者のカードがあればそれを、なければデモカードを返す
+ *
+ * @param request - POST request with optional streamerId in body
+ *   - streamerId: 配信者ID（指定された場合、その配信者のカードを優先して返す）
  */
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
-    // Select random card
+    // リクエストボディからstreamerIdを取得（オプション）
+    let streamerId: string | null = null;
+    try {
+      const body = await request.json();
+      streamerId = body.streamerId || null;
+    } catch {
+      // JSONパースエラーは無視（streamerIdなしとして処理）
+    }
+
+    // 配信者IDが指定されている場合、その配信者のカードを取得
+    // If streamerId is provided, fetch streamer's cards
+    if (streamerId) {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+      if (supabaseUrl && supabaseKey) {
+        const supabase = createClient(supabaseUrl, supabaseKey);
+
+        // 配信者のアクティブなカードを取得
+        const { data: cards, error } = await supabase
+          .from("cards")
+          .select("*")
+          .eq("streamer_id", streamerId)
+          .eq("is_active", true);
+
+        if (!error && cards && cards.length > 0) {
+          // 配信者のカードからランダムに選択
+          // Select random card from streamer's cards
+          const randomCard = cards[Math.floor(Math.random() * cards.length)];
+
+          return NextResponse.json({
+            card: randomCard,
+            userTwitchUsername: "DemoUser",
+          });
+        }
+      }
+    }
+
+    // 配信者のカードがない場合、デモカードを使用
+    // Use demo cards if streamer has no cards
     const randomCard = DEMO_CARDS[Math.floor(Math.random() * DEMO_CARDS.length)];
 
     // Create card object with required fields
