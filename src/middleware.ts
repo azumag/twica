@@ -55,7 +55,9 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   const response = await updateSession(request)
-  setSecurityHeaders(response)
+  // パスに基づいて適切なセキュリティヘッダーを設定
+  // Set appropriate security headers based on the path
+  setSecurityHeaders(response, pathname)
 
   // Detect and set locale for server components
   // サーバーコンポーネント用にロケールを検出・設定
@@ -101,7 +103,7 @@ export async function middleware(request: NextRequest) {
           }
         )
 
-        return setSecurityHeaders(errorResponse)
+        return setSecurityHeaders(errorResponse, pathname)
       }
     }
 
