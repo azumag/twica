@@ -4,19 +4,25 @@
 
 /**
  * リクエストからベースURLを取得する
- * 開発環境ではリクエストのホストヘッダーから動的に生成
+ * 開発環境・プレビュー環境ではリクエストのホストヘッダーから動的に生成
  * 本番環境では NEXT_PUBLIC_APP_URL を使用
  *
  * @param request - HTTPリクエスト
  * @returns ベースURL（例: http://localhost:3000, https://example.com）
  */
 export function getBaseUrl(request: Request): string {
-  // 本番環境では常に NEXT_PUBLIC_APP_URL を使用
-  if (process.env.NODE_ENV === 'production') {
+  // 本番環境では NEXT_PUBLIC_APP_URL を使用
+  // ただし、Vercelのプレビュー環境（VERCEL_ENV === 'preview'）では
+  // リクエストのホストから動的に取得する
+  // これは、プレビュー環境（preview.twica.bluemoon.works）でOAuth認証の
+  // リダイレクトURIが正しく設定されるようにするため
+  const isVercelPreview = process.env.VERCEL_ENV === 'preview'
+
+  if (process.env.NODE_ENV === 'production' && !isVercelPreview) {
     return process.env.NEXT_PUBLIC_APP_URL || ''
   }
 
-  // 開発環境ではリクエストのホストから動的に取得
+  // 開発環境・プレビュー環境ではリクエストのホストから動的に取得
   const host = request.headers.get('host')
   if (!host) {
     // フォールバック: NEXT_PUBLIC_APP_URL を使用
