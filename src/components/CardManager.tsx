@@ -80,6 +80,9 @@ export default function CardManager({
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
   const [currentViewMode, setCurrentViewMode] = useState<ViewMode>(initialViewMode);
+  // Track if initial view mode has been set based on screen size
+  // 画面サイズに基づいて初期表示モードが設定されたかどうかを追跡
+  const hasSetInitialViewMode = useRef(false);
 
   // Sorting and filtering state
   // 並び替えとフィルタリングの状態
@@ -121,6 +124,18 @@ export default function CardManager({
       setLoading(false);
     }
   }, [streamerId, sortField, sortDirection, statusFilter]);
+
+  /**
+   * Effect to set initial view mode based on screen size
+   * On mobile (< 640px), default to thumbnail mode for better usability
+   * モバイル（640px未満）では使いやすさのためサムネイルモードをデフォルトにする
+   */
+  useEffect(() => {
+    if (!hasSetInitialViewMode.current && window.innerWidth < 640) {
+      setCurrentViewMode("thumbnail");
+    }
+    hasSetInitialViewMode.current = true;
+  }, []);
 
   /**
    * Effect to reload cards when sort/filter parameters change
@@ -724,20 +739,22 @@ export default function CardManager({
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
-      <div className="mb-4 flex items-center justify-between">
+      {/* Header section - stacks vertically on mobile for better button readability */}
+      {/* ヘッダーセクション - モバイルではボタンの可読性向上のため縦並び */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           {/* Emote import button */}
           {/* エモートインポートボタン */}
           <button
             onClick={openEmoteModal}
-            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition"
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
           >
             {t("importFromEmotes")}
           </button>
           <button
             onClick={() => setShowForm(true)}
-            className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
+            className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 whitespace-nowrap"
           >
             {t("addNewCard")}
           </button>
