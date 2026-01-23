@@ -8,6 +8,9 @@ interface ExpandableDescriptionProps {
   maxLines?: number;
   /** テキストのサイズ: 'sm' (default) or 'xs' */
   size?: "sm" | "xs";
+  /** 展開時の最大高さをピクセルで指定（デフォルト: 無制限） */
+  /** Max height in pixels when expanded (default: unlimited) */
+  maxExpandedHeight?: number;
 }
 
 /**
@@ -22,6 +25,7 @@ export default function ExpandableDescription({
   description,
   maxLines = 2,
   size = "sm",
+  maxExpandedHeight,
 }: ExpandableDescriptionProps) {
   // テキストサイズに基づくクラス
   // Classes based on text size
@@ -57,11 +61,18 @@ export default function ExpandableDescription({
   // Whether clickable (truncated or already expanded)
   const isClickable = isTruncated || isExpanded;
 
+  // 展開時に最大高さが指定されている場合のスタイル
+  // Style for expanded state with max height limit
+  const expandedStyle = isExpanded && maxExpandedHeight
+    ? { maxHeight: `${maxExpandedHeight}px`, overflowY: "auto" as const }
+    : undefined;
+
   return (
     <div className="mb-1">
       <p
         ref={textRef}
         onClick={handleClick}
+        style={expandedStyle}
         className={`${textSizeClass} ${lineClampClass} ${
           isClickable ? "cursor-pointer hover:text-gray-200" : ""
         }`}
@@ -77,6 +88,17 @@ export default function ExpandableDescription({
         >
           <span>▼</span>
           <span>開く</span>
+        </button>
+      )}
+      {/* 折りたたみインジケーター（展開時のみ表示） */}
+      {/* Collapse indicator (shown only when expanded) */}
+      {isExpanded && (
+        <button
+          onClick={handleClick}
+          className="text-xs text-purple-400 hover:text-purple-300 mt-1 flex items-center gap-1"
+        >
+          <span>▲</span>
+          <span>閉じる</span>
         </button>
       )}
     </div>
