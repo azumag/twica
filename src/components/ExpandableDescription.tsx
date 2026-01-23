@@ -11,8 +11,10 @@ interface ExpandableDescriptionProps {
 /**
  * 展開可能な説明テキストコンポーネント
  * デフォルトで指定行数に省略し、クリックで全文表示
+ * 省略時は「▼ もっと見る」、展開時は「▲ 閉じる」を表示
  * Expandable description text component
  * Truncates to specified lines by default, expands on click
+ * Shows "▼ more" when truncated, "▲ close" when expanded
  */
 export default function ExpandableDescription({
   description,
@@ -45,16 +47,41 @@ export default function ExpandableDescription({
   // Dynamically generate line-clamp class
   const lineClampClass = isExpanded ? "" : `line-clamp-${maxLines}`;
 
+  // クリック可能かどうか（省略されているか展開済み）
+  // Whether clickable (truncated or already expanded)
+  const isClickable = isTruncated || isExpanded;
+
   return (
-    <p
-      ref={textRef}
-      onClick={handleClick}
-      className={`text-sm text-gray-300 mb-1 ${lineClampClass} ${
-        isTruncated || isExpanded ? "cursor-pointer hover:text-gray-200" : ""
-      }`}
-      title={isTruncated && !isExpanded ? "クリックして全文を表示" : undefined}
-    >
-      {description}
-    </p>
+    <div className="mb-1">
+      <p
+        ref={textRef}
+        onClick={handleClick}
+        className={`text-sm text-gray-300 ${lineClampClass} ${
+          isClickable ? "cursor-pointer hover:text-gray-200" : ""
+        }`}
+      >
+        {description}
+      </p>
+      {/* 展開/折りたたみインジケーター */}
+      {/* Expand/collapse indicator */}
+      {isClickable && (
+        <button
+          onClick={handleClick}
+          className="text-xs text-purple-400 hover:text-purple-300 mt-1 flex items-center gap-1"
+        >
+          {isExpanded ? (
+            <>
+              <span>▲</span>
+              <span>閉じる</span>
+            </>
+          ) : (
+            <>
+              <span>▼</span>
+              <span>もっと見る</span>
+            </>
+          )}
+        </button>
+      )}
+    </div>
   );
 }
