@@ -74,46 +74,68 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
  * デモガチャエンドポイント - 認証なしでオーバーレイをテスト
  * 配信者のカードがあればそれを、なければデモカードを返す
  *
- * @param request - POST request with optional streamerId in body
+ * @param request - POST request with optional streamerId and cardId in body
  *   - streamerId: 配信者ID（指定された場合、その配信者のカードを優先して返す）
+ *   - cardId: カードID（指定された場合、そのカードを直接返す。"random"または未指定でランダム選択）
  */
 export async function POST(request: NextRequest) {
   try {
-    // リクエストボディからstreamerIdを取得（オプション）
+    // リクエストボディからstreamerId, cardIdを取得（オプション）
     let streamerId: string | null = null;
+    let cardId: string | null = null;
     try {
       const body = await request.json();
       streamerId = body.streamerId || null;
+      cardId = body.cardId || null;
     } catch {
-      // JSONパースエラーは無視（streamerIdなしとして処理）
+      // JSONパースエラーは無視（パラメータなしとして処理）
+    }
+
+    // Supabaseクライアントの初期化
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    // 特定のカードIDが指定されている場合、そのカードを直接取得
+    // If specific cardId is provided, fetch that card directly
+    if (cardId && cardId !== "random" && supabaseUrl && supabaseKey) {
+      const supabase = createClient(supabaseUrl, supabaseKey);
+
+      const { data: card, error } = await supabase
+        .from("cards")
+        .select("*")
+        .eq("id", cardId)
+        .single();
+
+      if (!error && card) {
+        return NextResponse.json({
+          card,
+          userTwitchUsername: "DemoUser",
+        });
+      }
+      // カードが見つからない場合はランダム選択にフォールバック
     }
 
     // 配信者IDが指定されている場合、その配信者のカードを取得
     // If streamerId is provided, fetch streamer's cards
-    if (streamerId) {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (streamerId && supabaseUrl && supabaseKey) {
+      const supabase = createClient(supabaseUrl, supabaseKey);
 
-      if (supabaseUrl && supabaseKey) {
-        const supabase = createClient(supabaseUrl, supabaseKey);
+      // 配信者のアクティブなカードを取得
+      const { data: cards, error } = await supabase
+        .from("cards")
+        .select("*")
+        .eq("streamer_id", streamerId)
+        .eq("is_active", true);
 
-        // 配信者のアクティブなカードを取得
-        const { data: cards, error } = await supabase
-          .from("cards")
-          .select("*")
-          .eq("streamer_id", streamerId)
-          .eq("is_active", true);
+      if (!error && cards && cards.length > 0) {
+        // 配信者のカードからランダムに選択
+        // Select random card from streamer's cards
+        const randomCard = cards[Math.floor(Math.random() * cards.length)];
 
-        if (!error && cards && cards.length > 0) {
-          // 配信者のカードからランダムに選択
-          // Select random card from streamer's cards
-          const randomCard = cards[Math.floor(Math.random() * cards.length)];
-
-          return NextResponse.json({
-            card: randomCard,
-            userTwitchUsername: "DemoUser",
-          });
-        }
+        return NextResponse.json({
+          card: randomCard,
+          userTwitchUsername: "DemoUser",
+        });
       }
     }
 

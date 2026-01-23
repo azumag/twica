@@ -53,10 +53,12 @@ export default async function StreamerSettings({ streamerData }: StreamerSetting
       </div>
 
       {/* Overlay Preview - オーバーレイ設定とプレビュー */}
+      {/* カード一覧を渡してデバッグ用にセレクトボックスで選択可能にする */}
       <div className="mt-8">
         <OverlayPreview
           streamerId={streamerData.streamer.id}
           baseUrl={baseUrl}
+          cards={streamerData.cards as Card[]}
         />
       </div>
 
