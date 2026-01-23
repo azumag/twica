@@ -7,7 +7,7 @@ import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UPLOAD_CONFIG } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
-import ImageCropper from "./ImageCropper";
+import ImageCropper, { type CropMode, CROP_MODES } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 
@@ -202,6 +202,12 @@ export default function CardManager({
   // Image cropping modal state
   // 画像トリミングモーダルの状態
   const [cropModalOpen, setCropModalOpen] = useState(false);
+  // Crop mode selection modal state (shown before cropper)
+  // トリミングモード選択モーダルの状態（クロッパー表示前に表示）
+  const [cropModeModalOpen, setCropModeModalOpen] = useState(false);
+  // Selected crop mode: square (800x800) or portrait (800x1118)
+  // 選択されたトリミングモード: 正方形(800x800)またはポートレイト(800x1118)
+  const [selectedCropMode, setSelectedCropMode] = useState<CropMode>("square");
   // Original file selected for cropping (before crop)
   // トリミング対象として選択されたオリジナルファイル（トリミング前）
   const [selectedFileForCrop, setSelectedFileForCrop] = useState<File | null>(null);
@@ -472,6 +478,8 @@ export default function CardManager({
     // Reset cropping state
     // トリミング状態をリセット
     setCropModalOpen(false);
+    setCropModeModalOpen(false);
+    setSelectedCropMode("square");
     setSelectedFileForCrop(null);
     setCroppedFile(null);
     // Clean up preview URL to prevent memory leaks
@@ -490,18 +498,42 @@ export default function CardManager({
     setUploadError(null);
     if (file) {
       // Only validate file type before cropping (skip size check)
-      // Cropped image will be compressed to 400x400 JPEG, so original size doesn't matter
+      // Cropped image will be compressed to JPEG, so original size doesn't matter
       // トリミング前はファイルタイプのみ検証（サイズチェックはスキップ）
-      // トリミング後は400x400 JPEGに圧縮されるため、元のサイズは問題にならない
+      // トリミング後はJPEGに圧縮されるため、元のサイズは問題にならない
       const allowedTypes = UPLOAD_CONFIG.ALLOWED_TYPES as readonly string[];
       if (!allowedTypes.includes(file.type)) {
         setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
         return;
       }
-      // Open cropping modal instead of direct upload
-      // 直接アップロードせずにトリミングモーダルを開く
+      // Store file and open crop mode selection modal first
+      // ファイルを保存し、まずトリミングモード選択モーダルを開く
       setSelectedFileForCrop(file);
-      setCropModalOpen(true);
+      setCropModeModalOpen(true);
+    }
+  };
+
+  /**
+   * Handles crop mode selection and opens the cropper
+   * トリミングモード選択後にクロッパーを開く
+   */
+  const handleCropModeSelect = (mode: CropMode) => {
+    setSelectedCropMode(mode);
+    setCropModeModalOpen(false);
+    setCropModalOpen(true);
+  };
+
+  /**
+   * Cancels crop mode selection
+   * トリミングモード選択をキャンセル
+   */
+  const handleCropModeCancel = () => {
+    setCropModeModalOpen(false);
+    setSelectedFileForCrop(null);
+    // Clear the file input
+    // ファイル入力をクリア
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
   };
 
@@ -875,11 +907,13 @@ export default function CardManager({
                     <img
                       src={croppedPreviewUrl}
                       alt={t("form.croppedImage")}
-                      className="h-[60px] w-[60px] rounded object-cover"
+                      className={`rounded object-cover ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
                     />
                     <div className="flex-1">
                       <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
-                      <p className="text-xs text-gray-400">{t("form.croppedSize")}</p>
+                      <p className="text-xs text-gray-400">
+                        {CROP_MODES[selectedCropMode].dimensions}px ({CROP_MODES[selectedCropMode].label})
+                      </p>
                     </div>
                     <button
                       type="button"
@@ -917,9 +951,9 @@ export default function CardManager({
                       }`}
                     />
                     <p className="text-xs text-gray-500">
-                      {/* File size limit removed since cropping compresses to 400x400 JPEG */}
-                      {/* トリミングで400x400 JPEGに圧縮されるためファイルサイズ制限を削除 */}
-                      {t("fileUpload.formats")}{t("form.cropNote")}
+                      {/* File size limit removed since cropping compresses to JPEG */}
+                      {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
+                      {t("fileUpload.formats")}{t("form.cropNoteWithOptions")}
                     </p>
                     <input
                       type="url"
@@ -1314,11 +1348,94 @@ export default function CardManager({
         </div>
       )}
 
+      {/* Crop Mode Selection Modal */}
+      {/* トリミングモード選択モーダル */}
+      {cropModeModalOpen && selectedFileForCrop && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="w-full max-w-md rounded-xl bg-gray-800 shadow-2xl">
+            {/* Modal header */}
+            {/* モーダルヘッダー */}
+            <div className="flex items-center justify-between border-b border-gray-700 p-4">
+              <h3 className="text-lg font-semibold text-white">
+                {t("form.selectCropMode")}
+              </h3>
+              <button
+                type="button"
+                onClick={handleCropModeCancel}
+                className="text-gray-400 hover:text-white"
+                aria-label="閉じる"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Crop mode options */}
+            {/* トリミングモードオプション */}
+            <div className="p-4 space-y-3">
+              <p className="text-sm text-gray-400 mb-4">
+                {t("form.cropModeDescription")}
+              </p>
+
+              {/* Square option */}
+              {/* 正方形オプション */}
+              <button
+                type="button"
+                onClick={() => handleCropModeSelect("square")}
+                className="w-full flex items-center gap-4 p-4 rounded-lg bg-gray-700 hover:bg-gray-600 border-2 border-transparent hover:border-purple-500 transition"
+              >
+                <div className="w-12 h-12 bg-purple-600 rounded flex items-center justify-center shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h16v16H4z" />
+                  </svg>
+                </div>
+                <div className="text-left">
+                  <p className="font-medium text-white">{CROP_MODES.square.label}</p>
+                  <p className="text-sm text-gray-400">{CROP_MODES.square.dimensions}px (JPEG)</p>
+                </div>
+              </button>
+
+              {/* Portrait option */}
+              {/* ポートレイトオプション */}
+              <button
+                type="button"
+                onClick={() => handleCropModeSelect("portrait")}
+                className="w-full flex items-center gap-4 p-4 rounded-lg bg-gray-700 hover:bg-gray-600 border-2 border-transparent hover:border-purple-500 transition"
+              >
+                <div className="w-12 h-12 bg-purple-600 rounded flex items-center justify-center shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-6 text-white" fill="none" viewBox="0 0 24 32" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h16v24H4z" />
+                  </svg>
+                </div>
+                <div className="text-left">
+                  <p className="font-medium text-white">{CROP_MODES.portrait.label}</p>
+                  <p className="text-sm text-gray-400">{CROP_MODES.portrait.dimensions}px (JPEG)</p>
+                </div>
+              </button>
+            </div>
+
+            {/* Cancel button */}
+            {/* キャンセルボタン */}
+            <div className="flex justify-end border-t border-gray-700 p-4">
+              <button
+                type="button"
+                onClick={handleCropModeCancel}
+                className="rounded-lg border border-gray-600 px-6 py-2 text-gray-300 hover:bg-gray-700"
+              >
+                {tCommon("cancel")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Image Cropper Modal */}
       {/* 画像トリミングモーダル */}
       {cropModalOpen && selectedFileForCrop && (
         <ImageCropper
           imageFile={selectedFileForCrop}
+          cropMode={selectedCropMode}
           onCropComplete={handleCropComplete}
           onCancel={handleCropCancel}
         />

@@ -350,13 +350,19 @@ export const UPLOAD_CONFIG = {
   } as const,
   // Storage limits
   // ストレージ制限
-  USER_STORAGE_LIMIT: 5 * 1024 * 1024, // 5MB per user
-  GLOBAL_STORAGE_LIMIT: 250 * 1024 * 1024, // 250MB total
+  USER_STORAGE_LIMIT: 10 * 1024 * 1024, // 10MB per user (increased from 5MB)
+  // Global storage limit disabled - set to very large value
+  // グローバルストレージ制限を撤廃 - 非常に大きな値を設定
+  GLOBAL_STORAGE_LIMIT: Number.MAX_SAFE_INTEGER, // No global limit
 } as const
 
 export const STORAGE_LIMIT_MESSAGES = {
-  USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき5MBです。本サービスは無料のホスティングプランで運営しており、ストレージ容量が全体で250MBに制限されているためです。マネタイズの目処がついた際には拡充可能なので、もっと使いたいという方が多ければ有料プラン導入を検討致します。',
-  GLOBAL_LIMIT_REACHED: '画像のアップロード利用が全体で250MBを超えたため、アップロード機能は制限されました。本サービスは無料のホスティングプランで運営しており、ストレージ容量が全体で250MBに制限されているためです。マネタイズの目処がついた際には拡充可能なので、もっと使いたいという方が多ければ有料プラン導入を検討致します。',
+  // User limit message: increased to 10MB
+  // ユーザー制限メッセージ: 10MBに増加
+  USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。',
+  // Global limit message: kept for backwards compatibility but no longer used
+  // グローバル制限メッセージ: 後方互換性のために残すが使用されない
+  GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
 } as const
 
 export const UI_STRINGS = {

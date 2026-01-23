@@ -52,7 +52,10 @@
       "currentImage": "Current image",
       "croppedImage": "Cropped image",
       "croppedSize": "400x400px (JPEG)",
-      "cropNote": "(Crop to 400x400)"
+      "cropNote": "(Crop to 400x400)",
+      "selectCropMode": "Select Crop Size",
+      "cropModeDescription": "Choose the crop size for your image. Square is ideal for icons, Portrait is ideal for cards.",
+      "cropNoteWithOptions": "(Crop to Square 800x800 or Portrait 800x1118)"
     },
     "fileUpload": {
       "formats": "Supported: JPEG, PNG | ",
@@ -357,7 +360,7 @@
       "title": "Tips",
       "tip1": "Drop rates are set using \"weight\". The actual probability is the ratio of each card's weight to the total weight of all cards.",
       "tip2": "You can temporarily exclude cards from gacha by setting them to \"Paused\".",
-      "tip3": "Uploaded images are automatically cropped to 400x400 pixels. Images specified by URL are used as-is without cropping.",
+      "tip3": "Uploaded images can be cropped to Square (800x800) or Portrait (800x1118). Images specified by URL are used as-is without cropping.",
       "tip4": "Make sure EventSub status shows \"Connected\" before starting your stream."
     }
   },
