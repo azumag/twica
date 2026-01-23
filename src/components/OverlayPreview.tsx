@@ -41,8 +41,8 @@ export default function OverlayPreview({ streamerId, baseUrl }: OverlayPreviewPr
   // iframeの参照（DEMOボタン用）
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  // 現在のオプションからURLパラメータを生成
-  // Generate URL parameters from current options
+  // 現在のオプションからURLパラメータを生成（ユーザー向けURL用）
+  // Generate URL parameters from current options (for user-facing URL)
   const buildUrlParams = useCallback(() => {
     const params = new URLSearchParams();
     if (options.imageOnly) params.set("imageOnly", "true");
@@ -52,20 +52,36 @@ export default function OverlayPreview({ streamerId, baseUrl }: OverlayPreviewPr
     return params.toString();
   }, [options]);
 
-  // オーバーレイURLを生成（プレビュー用）
+  // プレビュー用のURLパラメータを生成（hideDemoを含む）
+  // Generate URL parameters for preview iframe (includes hideDemo)
+  const buildPreviewUrlParams = useCallback(() => {
+    const params = new URLSearchParams();
+    if (options.imageOnly) params.set("imageOnly", "true");
+    if (options.autoPortrait) params.set("autoPortrait", "true");
+    if (!options.effects) params.set("effects", "false");
+    if (options.smallMode) params.set("smallMode", "true");
+    params.set("hideDemo", "true"); // プレビューではDEMOボタンを非表示
+    return params.toString();
+  }, [options]);
+
+  // オーバーレイURLを生成
   const overlayUrl = `${baseUrl}/overlay/${streamerId}`;
-  const overlayUrlWithParams = buildUrlParams() ? `${overlayUrl}?${buildUrlParams()}` : overlayUrl;
+  // ユーザー向けURL（コピー用）- hideDemoは含まない
+  const userParams = buildUrlParams();
+  const overlayUrlWithParams = userParams ? `${overlayUrl}?${userParams}` : overlayUrl;
+  // プレビュー用URL - hideDemoを含む
+  const previewParams = buildPreviewUrlParams();
+  const previewUrl = `${overlayUrl}?${previewParams}`;
 
   // DEMOを実行（iframe内のオーバーレイにメッセージを送信）
   // Trigger demo in iframe by refreshing with demo param
   const triggerDemo = useCallback(() => {
     if (iframeRef.current) {
       // iframeをリロードしてdemoパラメータ付きで再読み込み
-      const demoParams = buildUrlParams();
-      const separator = demoParams ? "&" : "?";
-      iframeRef.current.src = `${overlayUrl}?${demoParams}${separator}demo=true`;
+      // プレビュー用パラメータを使用（hideDemoを含む）
+      iframeRef.current.src = `${overlayUrl}?${previewParams}&demo=true`;
     }
-  }, [overlayUrl, buildUrlParams]);
+  }, [overlayUrl, previewParams]);
 
   // オプションの切り替え
   const toggleOption = (key: keyof OverlayOptions) => {
@@ -172,7 +188,7 @@ export default function OverlayPreview({ streamerId, baseUrl }: OverlayPreviewPr
         <div className="rounded-lg overflow-hidden bg-gray-900 border border-gray-700">
           <iframe
             ref={iframeRef}
-            src={overlayUrlWithParams}
+            src={previewUrl}
             className="w-full h-[400px]"
             title="Overlay Preview"
           />

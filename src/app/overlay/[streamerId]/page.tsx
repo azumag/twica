@@ -34,12 +34,14 @@ interface SparklePosition {
  * - autoPortrait: 縦長画像を自動検出してオリジナル画像表示
  * - effects: レジェンダリーのキラキラエフェクト表示（デフォルト: true）
  * - smallMode: 小さい画像用の縮小表示モード
+ * - hideDemo: DEMOボタンを非表示（プレビュー用）
  */
 interface OverlayOptions {
   imageOnly: boolean;
   autoPortrait: boolean;
   effects: boolean;
   smallMode: boolean;
+  hideDemo: boolean;
 }
 
 // Generate sparkle positions outside of render
@@ -66,6 +68,7 @@ export default function OverlayPage() {
     autoPortrait: false,
     effects: true,
     smallMode: false,
+    hideDemo: false,
   });
   // 画像のアスペクト比が縦長かどうかを判定するためのState
   const [isPortraitImage, setIsPortraitImage] = useState(false);
@@ -87,39 +90,47 @@ export default function OverlayPage() {
       autoPortrait: urlParams.get("autoPortrait") === "true",
       effects: urlParams.get("effects") !== "false", // デフォルトはtrue
       smallMode: urlParams.get("smallMode") === "true",
+      hideDemo: urlParams.get("hideDemo") === "true", // プレビュー用にDEMOボタンを非表示
     });
   }, []);
 
   // 画像のアスペクト比を判定（縦長かどうか）
   // Check if image is portrait (height > width)
-  const checkImageAspectRatio = useCallback((imageUrl: string | null) => {
-    if (!imageUrl) {
-      setIsPortraitImage(false);
-      return;
-    }
+  // Promiseを返すことで、画像ロード完了を待てるようにする
+  const checkImageAspectRatio = useCallback((imageUrl: string | null): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (!imageUrl) {
+        setIsPortraitImage(false);
+        resolve(false);
+        return;
+      }
 
-    const img = new window.Image();
-    img.onload = () => {
-      // 画像の縦が横より大きい（正方形でない縦長画像）の場合はポートレイト
-      // Portrait if height is greater than width (not a square)
-      const isPortrait = img.height > img.width;
-      setIsPortraitImage(isPortrait);
-    };
-    img.onerror = () => {
-      setIsPortraitImage(false);
-    };
-    img.src = imageUrl;
+      const img = new window.Image();
+      img.onload = () => {
+        // 画像の縦が横より大きい（正方形でない縦長画像）の場合はポートレイト
+        // Portrait if height is greater than width (not a square)
+        const isPortrait = img.height > img.width;
+        setIsPortraitImage(isPortrait);
+        resolve(isPortrait);
+      };
+      img.onerror = () => {
+        setIsPortraitImage(false);
+        resolve(false);
+      };
+      img.src = imageUrl;
+    });
   }, []);
 
   // Display gacha result with animation
-  const displayResult = useCallback((data: GachaResult) => {
+  const displayResult = useCallback(async (data: GachaResult) => {
     // Clear any existing animation
     if (animationTimeoutRef.current) {
       clearTimeout(animationTimeoutRef.current);
     }
 
     // 画像のアスペクト比をチェック（autoPortraitモード用）
-    checkImageAspectRatio(data.card.image_url);
+    // 画像ロードが完了するまで待機してから表示を開始
+    await checkImageAspectRatio(data.card.image_url);
 
     // Generate sparkle positions
     setSparklePositions(generateSparklePositions());
@@ -237,13 +248,15 @@ export default function OverlayPage() {
             <div>{errorMessage}</div>
           </div>
         )}
-        {/* Hidden trigger for demo */}
-        <button
-          onClick={triggerDemo}
-          className="fixed bottom-4 right-4 rounded bg-purple-600 px-4 py-2 text-sm text-white opacity-30 hover:opacity-100"
-        >
-          Demo
-        </button>
+        {/* Hidden trigger for demo (hideDemoがtrueの場合は非表示) */}
+        {!options.hideDemo && (
+          <button
+            onClick={triggerDemo}
+            className="fixed bottom-4 right-4 rounded bg-purple-600 px-4 py-2 text-sm text-white opacity-30 hover:opacity-100"
+          >
+            Demo
+          </button>
+        )}
       </div>
     );
   }
