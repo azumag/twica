@@ -314,20 +314,20 @@
     "viewer": {
       "title": "For Viewers",
       "step1": {
-        "title": "Login with Twitch",
-        "description": "Click the \"Login with Twitch\" button on the TwiCa homepage to log in with your Twitch account."
+        "title": "Use Channel Points in Stream",
+        "description": "Watch a TwiCa-enabled stream and redeem the card gacha using channel points. Exchange points for the reward set by the streamer (e.g., \"Card Gacha\"). You can draw gacha even without logging in to TwiCa."
       },
       "step2": {
-        "title": "Use Channel Points in Stream",
-        "description": "Watch a TwiCa-enabled stream and redeem the card gacha using channel points. Exchange points for the reward set by the streamer (e.g., \"Card Gacha\")."
+        "title": "Get Cards",
+        "description": "When you draw gacha, you'll randomly receive original cards created by the streamer. Your acquired card will also appear on stream. Even without logging in, your gacha results are automatically saved to your Twitch account."
       },
       "step3": {
-        "title": "Get Cards",
-        "description": "When you draw gacha, you'll randomly receive original cards created by the streamer. Your acquired card will also appear on stream."
+        "title": "Login with Twitch (To View Collection)",
+        "description": "To view your card collection, you need to log in to TwiCa. Click the \"Login with Twitch\" button on the homepage to log in with your Twitch account."
       },
       "step4": {
         "title": "View Your Collection",
-        "description": "Check your acquired cards in \"My Collection\" on your dashboard. Statistics by rarity are also displayed."
+        "description": "After logging in, check your acquired cards in \"My Collection\" on your dashboard. Statistics by rarity are also displayed."
       }
     },
     "streamer": {
