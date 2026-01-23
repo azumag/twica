@@ -46,9 +46,9 @@ export class GachaService {
         return err('Failed to select card')
       }
 
-      // Execute gacha history recording and user upsert in parallel to reduce CPU time
-      // CPU時間削減のため、ガチャ履歴記録とユーザーupsertを並列実行
-      const [historyResult, userResult] = await Promise.all([
+      // Execute gacha history recording and user check in parallel to reduce CPU time
+      // CPU時間削減のため、ガチャ履歴記録とユーザー確認を並列実行
+      const [historyResult, userCheckResult] = await Promise.all([
         // Record gacha history (with idempotency using upsert)
         // ガチャ履歴を記録（冪等性のためupsertを使用）
         this.supabase
@@ -63,18 +63,12 @@ export class GachaService {
             onConflict: 'event_id',
             ignoreDuplicates: true,
           }),
-        // Upsert user in a single query (combines check and create)
-        // 1回のクエリでユーザーをupsert（確認と作成を統合）
+        // Check if user exists (SELECT only, no UPDATE)
+        // ユーザーの存在確認（SELECTのみ、UPDATEなし）
         this.supabase
           .from('users')
-          .upsert({
-            twitch_user_id: userTwitchId,
-            twitch_username: userTwitchUsername,
-          }, {
-            onConflict: 'twitch_user_id',
-            ignoreDuplicates: false,
-          })
           .select('id')
+          .eq('twitch_user_id', userTwitchId)
           .single()
       ])
 
@@ -82,9 +76,27 @@ export class GachaService {
         return err(`Failed to record history: ${historyResult.error.message}`)
       }
 
-      const user = userResult.data
-      if (userResult.error) {
-        logger.warn('Failed to upsert user:', userResult.error.message)
+      // If user doesn't exist, create one
+      // ユーザーが存在しない場合は作成
+      let user = userCheckResult.data
+      if (!user) {
+        const { data: newUser, error: createError } = await this.supabase
+          .from('users')
+          .upsert({
+            twitch_user_id: userTwitchId,
+            twitch_username: userTwitchUsername,
+          }, {
+            onConflict: 'twitch_user_id',
+            ignoreDuplicates: true,
+          })
+          .select('id')
+          .single()
+
+        if (createError) {
+          logger.warn('Failed to create user:', createError.message)
+        } else {
+          user = newUser
+        }
       }
 
       if (user) {

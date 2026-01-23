@@ -1,4 +1,3 @@
-import { unstable_cache } from "next/cache";
 import { logger } from "@/lib/logger";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
@@ -70,10 +69,46 @@ export interface TwitchReward {
   } | null;
 }
 
-// Cache TTL settings (in seconds)
-// キャッシュTTL設定（秒単位）
-const EMOTES_CACHE_TTL = 300; // 5 minutes - エモートは頻繁に変わらない
-const REWARDS_CACHE_TTL = 60; // 1 minute - 報酬は変更される可能性がある
+// Cache TTL settings (in milliseconds)
+// キャッシュTTL設定（ミリ秒単位）
+const EMOTES_CACHE_TTL_MS = 300 * 1000; // 5 minutes - エモートは頻繁に変わらない
+const REWARDS_CACHE_TTL_MS = 60 * 1000; // 1 minute - 報酬は変更される可能性がある
+
+/**
+ * In-memory cache entry structure
+ * インメモリキャッシュエントリの構造
+ */
+interface CacheEntry<T> {
+  data: T;
+  expiresAt: number;
+}
+
+// In-memory caches with automatic TTL expiration
+// TTLで自動期限切れするインメモリキャッシュ
+// Note: Using in-memory cache instead of unstable_cache because:
+// 1. accessToken changes require fresh API calls (unstable_cache doesn't track closure variables)
+// 2. In-memory cache provides predictable behavior within each serverless instance
+// 注意: unstable_cacheの代わりにインメモリキャッシュを使用する理由:
+// 1. accessTokenの変更には新しいAPI呼び出しが必要（unstable_cacheはクロージャ変数を追跡しない）
+// 2. インメモリキャッシュは各サーバーレスインスタンス内で予測可能な動作を提供
+const emotesCache = new Map<string, CacheEntry<TransformedEmote[]>>();
+const rewardsCache = new Map<string, CacheEntry<TwitchReward[]>>();
+
+// Periodic cleanup of expired cache entries (every 5 minutes)
+// 期限切れキャッシュエントリの定期クリーンアップ（5分ごと）
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of emotesCache.entries()) {
+    if (now > entry.expiresAt) {
+      emotesCache.delete(key);
+    }
+  }
+  for (const [key, entry] of rewardsCache.entries()) {
+    if (now > entry.expiresAt) {
+      rewardsCache.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
 
 /**
  * Internal function to fetch emotes from Twitch API
@@ -157,50 +192,72 @@ async function fetchRewardsFromTwitch(
 
 /**
  * Get cached emotes for a broadcaster
- * Uses Next.js unstable_cache for cross-request caching (5 minute TTL)
+ * Uses in-memory cache with 5 minute TTL
  *
  * 配信者のキャッシュ済みエモートを取得
- * Next.jsのunstable_cacheでリクエスト間キャッシュを使用（5分TTL）
+ * 5分TTLのインメモリキャッシュを使用
  */
 export async function getCachedEmotes(
   twitchUserId: string,
   accessToken: string
 ): Promise<TransformedEmote[]> {
-  // Create a cached version of the fetch function
-  // フェッチ関数のキャッシュ版を作成
-  const cachedFetch = unstable_cache(
-    async () => fetchEmotesFromTwitch(twitchUserId, accessToken),
-    [`twitch-emotes-${twitchUserId}`],
-    {
-      revalidate: EMOTES_CACHE_TTL,
-      tags: [`twitch-emotes-${twitchUserId}`],
-    }
-  );
+  const cacheKey = twitchUserId;
+  const now = Date.now();
+  const cached = emotesCache.get(cacheKey);
 
-  return cachedFetch();
+  // Return cached data if valid
+  // 有効なキャッシュデータがあれば返す
+  if (cached && now < cached.expiresAt) {
+    logger.info(`[Cache] Emotes cache hit for user ${twitchUserId}`);
+    return cached.data;
+  }
+
+  // Fetch fresh data from Twitch API
+  // Twitch APIから新しいデータを取得
+  const emotes = await fetchEmotesFromTwitch(twitchUserId, accessToken);
+
+  // Store in cache with TTL
+  // TTL付きでキャッシュに保存
+  emotesCache.set(cacheKey, {
+    data: emotes,
+    expiresAt: now + EMOTES_CACHE_TTL_MS,
+  });
+
+  return emotes;
 }
 
 /**
  * Get cached rewards for a broadcaster
- * Uses Next.js unstable_cache for cross-request caching (1 minute TTL)
+ * Uses in-memory cache with 1 minute TTL
  *
  * 配信者のキャッシュ済み報酬を取得
- * Next.jsのunstable_cacheでリクエスト間キャッシュを使用（1分TTL）
+ * 1分TTLのインメモリキャッシュを使用
  */
 export async function getCachedRewards(
   twitchUserId: string,
   accessToken: string
 ): Promise<TwitchReward[]> {
-  // Create a cached version of the fetch function
-  // フェッチ関数のキャッシュ版を作成
-  const cachedFetch = unstable_cache(
-    async () => fetchRewardsFromTwitch(twitchUserId, accessToken),
-    [`twitch-rewards-${twitchUserId}`],
-    {
-      revalidate: REWARDS_CACHE_TTL,
-      tags: [`twitch-rewards-${twitchUserId}`],
-    }
-  );
+  const cacheKey = twitchUserId;
+  const now = Date.now();
+  const cached = rewardsCache.get(cacheKey);
 
-  return cachedFetch();
+  // Return cached data if valid
+  // 有効なキャッシュデータがあれば返す
+  if (cached && now < cached.expiresAt) {
+    logger.info(`[Cache] Rewards cache hit for user ${twitchUserId}`);
+    return cached.data;
+  }
+
+  // Fetch fresh data from Twitch API
+  // Twitch APIから新しいデータを取得
+  const rewards = await fetchRewardsFromTwitch(twitchUserId, accessToken);
+
+  // Store in cache with TTL
+  // TTL付きでキャッシュに保存
+  rewardsCache.set(cacheKey, {
+    data: rewards,
+    expiresAt: now + REWARDS_CACHE_TTL_MS,
+  });
+
+  return rewards;
 }
