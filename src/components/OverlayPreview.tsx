@@ -25,6 +25,14 @@ interface OverlayPreviewProps {
 }
 
 /**
+ * Vercelプレビュー環境かどうかを判定
+ * NEXT_PUBLIC_VERCEL_ENVはVercelが自動的に設定する環境変数
+ * "preview" = プレビューデプロイ、"production" = 本番、"development" = ローカル開発
+ * Check if running in Vercel preview environment
+ */
+const isPreviewEnvironment = process.env.NEXT_PUBLIC_VERCEL_ENV === "preview";
+
+/**
  * Overlay Preview Component
  * オーバーレイ設定のプレビューコンポーネント
  * - OBSブラウザソースURLの表示（オプション変更で自動更新）
@@ -290,7 +298,8 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
             </select>
           )}
 
-          {/* デモボタン */}
+          {/* デモボタン（全環境で表示） */}
+          {/* Demo button (shown in all environments) */}
           <button
             onClick={triggerDemo}
             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 transition-colors whitespace-nowrap"
@@ -298,19 +307,21 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
             {t("runDemo")}
           </button>
 
-          {/* 実際に引くボタン（ログイン済みの場合のみ有効） */}
-          {/* Real gacha button (only works when logged in) */}
-          <button
-            onClick={triggerRealGacha}
-            disabled={isExecuting}
-            className={`rounded-lg px-4 py-2 text-sm text-white transition-colors whitespace-nowrap ${
-              isExecuting
-                ? "bg-gray-600 cursor-not-allowed"
-                : "bg-green-600 hover:bg-green-700"
-            }`}
-          >
-            {isExecuting ? "実行中..." : "実際に引く"}
-          </button>
+          {/* 実際に引くボタン（Vercelプレビュー環境でのみ表示） */}
+          {/* Real gacha button (only shown in Vercel preview environment) */}
+          {isPreviewEnvironment && (
+            <button
+              onClick={triggerRealGacha}
+              disabled={isExecuting}
+              className={`rounded-lg px-4 py-2 text-sm text-white transition-colors whitespace-nowrap ${
+                isExecuting
+                  ? "bg-gray-600 cursor-not-allowed"
+                  : "bg-green-600 hover:bg-green-700"
+              }`}
+            >
+              {isExecuting ? "実行中..." : "実際に引く"}
+            </button>
+          )}
         </div>
       </div>
       <div className="rounded-lg overflow-hidden bg-gray-900 border border-gray-700">
@@ -324,9 +335,11 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
       <p className="text-xs text-gray-500 mt-2">
         {t("demoNote")}
       </p>
-      {activeCards.length > 0 && (
+      {/* プレビュー環境での説明文 */}
+      {/* Explanation for preview environment */}
+      {isPreviewEnvironment && activeCards.length > 0 && (
         <p className="text-xs text-gray-500 mt-1">
-          ※「実際に引く」はログイン状態でのみ動作し、履歴に記録されます。デモはプレビュー表示のみです。
+          ※「実際に引く」はプレビュー環境専用です。DBに記録され、履歴に残ります。
         </p>
       )}
     </div>
