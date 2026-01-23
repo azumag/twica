@@ -52,22 +52,19 @@ export default async function SettingsPage() {
         </p>
       </div>
 
-      {/* Overlay Preview Section - OBSブラウザソースURLとオーバーレイ設定 */}
-      {/* URLパラメータでオーバーレイ表示をカスタマイズできる機能を含む */}
+      {/* OBSブラウザソースURLとカード引換設定を横並びに配置、プレビューは下に全幅で表示 */}
+      {/* URL settings and channel point settings side by side, preview below full width */}
       <OverlayPreview
         streamerId={streamerData.streamer.id}
         baseUrl={process.env.NEXT_PUBLIC_APP_URL || ""}
+        sideContent={
+          <ChannelPointSettings
+            streamerId={streamerData.streamer.id}
+            currentRewardId={streamerData.streamer.channel_point_reward_id}
+            currentRewardName={streamerData.streamer.channel_point_reward_name}
+          />
+        }
       />
-
-      {/* Channel Point Settings Section */}
-      {/* チャネルポイント設定セクション */}
-      <div className="mt-8">
-        <ChannelPointSettings
-          streamerId={streamerData.streamer.id}
-          currentRewardId={streamerData.streamer.channel_point_reward_id}
-          currentRewardName={streamerData.streamer.channel_point_reward_name}
-        />
-      </div>
     </div>
   );
 }
