@@ -1,8 +1,7 @@
 import { redirect, notFound } from "next/navigation";
-import { cookies } from "next/headers";
 import { getSession } from "@/lib/session";
 import { getUserCardsForStreamer, getStreamerById } from "@/lib/dashboard-data";
-import { RARITY_ORDER, COOKIE_NAMES, STATE_COOKIE_OPTIONS } from "@/lib/constants";
+import { RARITY_ORDER } from "@/lib/constants";
 import StreamerCollection from "@/components/StreamerCollection";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
@@ -24,12 +23,11 @@ export default async function StreamerCollectionPage({
 
   // If not logged in, redirect to login with return URL
   // 未ログインの場合、ログインページへリダイレクトし、ログイン後に戻る
+  // Note: We pass returnTo as a query parameter since cookies cannot be set in Server Components
+  // Server ComponentではCookieを設定できないため、クエリパラメータでreturnToを渡す
   if (!session) {
-    // Store current URL in cookie for post-login redirect
-    // ログイン後のリダイレクト用に現在のURLをCookieに保存
-    const cookieStore = await cookies();
-    cookieStore.set(COOKIE_NAMES.RETURN_TO, `/collection/${streamerId}`, STATE_COOKIE_OPTIONS);
-    redirect("/api/auth/twitch/login?redirect=true");
+    const returnTo = encodeURIComponent(`/collection/${streamerId}`);
+    redirect(`/api/auth/twitch/login?redirect=true&returnTo=${returnTo}`);
   }
 
   // Get streamer info
