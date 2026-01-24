@@ -136,6 +136,28 @@
       "note": "* Paused cards are not included in probability calculation.",
       "close": "Close"
     },
+    "batchDropRate": {
+      "button": "Batch Drop Rate",
+      "title": "Batch Drop Rate Adjustment",
+      "tabIndividual": "Individual",
+      "tabRarity": "By Rarity",
+      "totalWeight": "Total Weight",
+      "activeCards": "Active Cards",
+      "weight": "Weight",
+      "probability": "Probability",
+      "save": "Save All",
+      "saving": "Saving...",
+      "saveFailed": "Failed to update drop rates",
+      "noActiveCards": "No active cards available",
+      "cardsModified": "modified",
+      "raritiesModified": "rarities modified",
+      "confirmClose": "You have unsaved changes. Close anyway?",
+      "rarityDescription": "Adjust multipliers by rarity to batch-change weights for all cards of the same rarity.",
+      "cardsCount": "cards",
+      "originalWeight": "Original",
+      "multiplier": "Multiplier",
+      "newWeight": "New Weight"
+    },
     "emoteImport": {
       "title": "Create Cards from Emotes",
       "description": "Select channel emotes to create cards. Emotes that are already cards will be excluded.",
@@ -164,6 +186,14 @@
     },
     "cardTypes": "({count} types)",
     "cardCount": "x{count}"
+  },
+  "streamerCollection": {
+    "title": "{streamerName}'s Collection",
+    "empty": {
+      "line1": "You don't have any cards from this streamer yet.",
+      "line2": "Use channel points to get cards!"
+    },
+    "viewFullCollection": "← View Full Collection"
   },
   "dashboard": {
     "title": "Dashboard",
@@ -279,7 +309,9 @@
     "preview": "Preview",
     "runDemo": "Run DEMO",
     "demoNote": "* DEMO button shows your configured cards. Demo cards are shown if you have no cards.",
-    "urlUpdated": "Overlay URL has been updated"
+    "urlUpdated": "Overlay URL has been updated",
+    "collectionUrl": "Collection Page URL",
+    "collectionUrlDescription": "A page where viewers can view their collection from this streamer. Share it on chat or social media."
   },
   "settingsPage": {
     "title": "Stream Settings",

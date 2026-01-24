@@ -1,9 +1,13 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Streamer } from '../types/database'
+import { Streamer, Card } from '../types/database'
+import { RarityBadge } from './RarityBadge'
 
 interface StreamerPopupProps {
   streamer: Streamer | null | undefined
+  // ストリーマーが登録しているカード一覧（オプション）
+  // 渡された場合、ポップアップ内にカード一覧を表示する
+  cards?: Card[]
   children?: React.ReactNode
 }
 
@@ -11,9 +15,10 @@ interface StreamerPopupProps {
  * StreamerPopup - クリックで小さなポップアップカードを表示するコンポーネント
  * ストリーマー名をクリックすると、プロフィール画像、名前、Twitchリンクを含む
  * 小さなカードがポップアップ表示される
+ * cardsが渡された場合、ストリーマーが登録しているカード一覧も表示する
  * ポータルを使用してbody直下にレンダリングし、親のoverflowに影響されない
  */
-export function StreamerPopup({ streamer, children }: StreamerPopupProps) {
+export function StreamerPopup({ streamer, cards, children }: StreamerPopupProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({})
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -39,27 +44,35 @@ export function StreamerPopup({ streamer, children }: StreamerPopupProps) {
   }, [isOpen])
 
   // ポップアップの位置を計算（トリガー要素の位置に基づく）
+  // cardsが渡されている場合はポップアップが大きくなるため、必要スペースを増やす
   useEffect(() => {
     if (isOpen && triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect()
       const spaceBelow = window.innerHeight - rect.bottom
       const spaceRight = window.innerWidth - rect.left
 
+      // カード一覧がある場合は必要な縦スペースが増える
+      // 基本高さ(約200px) + カード一覧(最大160px) + バッファ
+      const requiredHeight = cards && cards.length > 0 ? 400 : 220
+
       // 画面下部に近い場合は上に表示
-      const showAbove = spaceBelow < 220
+      const showAbove = spaceBelow < requiredHeight
+
+      // ポップアップ幅: カードがある場合は広め(320px)、ない場合は標準(256px)
+      const popupWidth = cards && cards.length > 0 ? 320 : 256
 
       // 画面右端に近い場合は左寄せ
-      const alignRight = spaceRight < 280
+      const alignRight = spaceRight < popupWidth + 20
 
       setPopupStyle({
         position: 'fixed',
         top: showAbove ? rect.top - 8 : rect.bottom + 8,
-        left: alignRight ? rect.right - 256 : rect.left,
+        left: alignRight ? rect.right - popupWidth : rect.left,
         transform: showAbove ? 'translateY(-100%)' : 'none',
         zIndex: 9999,
       })
     }
-  }, [isOpen])
+  }, [isOpen, cards])
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -74,11 +87,14 @@ export function StreamerPopup({ streamer, children }: StreamerPopupProps) {
   }
 
   // ポップアップカードの内容
+  // カードがある場合は幅を広げて表示領域を確保
+  const popupWidthClass = cards && cards.length > 0 ? 'w-80' : 'w-64'
+
   const popupContent = (
     <div
       ref={popupRef}
       style={popupStyle}
-      className="w-64 bg-white rounded-lg shadow-xl border border-gray-200 p-4"
+      className={`${popupWidthClass} bg-white rounded-lg shadow-xl border border-gray-200 p-4`}
       onClick={(e) => e.stopPropagation()}
     >
       {/* ヘッダー: プロフィール画像と名前 */}
@@ -121,6 +137,60 @@ export function StreamerPopup({ streamer, children }: StreamerPopupProps) {
           </span>
         )}
       </div>
+
+      {/* カード一覧セクション（cardsが渡された場合のみ表示） */}
+      {cards && cards.length > 0 && (
+        <div className="mb-3">
+          <p className="text-xs font-medium text-gray-500 mb-2">
+            登録カード ({cards.length}枚)
+          </p>
+          {/* カード一覧をスクロール可能なリストで表示 */}
+          <div className="max-h-40 overflow-y-auto space-y-2">
+            {cards.map((card) => (
+              <div
+                key={card.id}
+                className="flex items-center space-x-2 p-2 bg-gray-50 rounded-lg"
+              >
+                {/* カード画像（あれば表示、なければプレースホルダー） */}
+                {card.image_url ? (
+                  <img
+                    src={card.image_url}
+                    alt={card.name}
+                    className="w-10 h-10 rounded object-cover flex-shrink-0"
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded bg-gray-200 flex items-center justify-center flex-shrink-0">
+                    <span className="text-gray-400 text-xs">🃏</span>
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  {/* カード名（長い場合は省略） */}
+                  <p className="text-sm font-medium text-gray-900 truncate">
+                    {card.name}
+                  </p>
+                  {/* レアリティバッジとステータス */}
+                  <div className="flex items-center space-x-1 mt-0.5">
+                    <RarityBadge rarity={card.rarity} />
+                    {/* ステータス表示（HP/ATK/DEF/SPD） */}
+                    <span className="text-xs text-gray-400">
+                      HP:{card.hp} ATK:{card.atk}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* カードが0件の場合のメッセージ */}
+      {cards && cards.length === 0 && (
+        <div className="mb-3 p-2 bg-gray-50 rounded-lg">
+          <p className="text-xs text-gray-400 text-center">
+            カードが登録されていません
+          </p>
+        </div>
+      )}
 
       {/* Twitchリンクボタン */}
       <a

@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { DataTable } from '../components/DataTable'
 import { StreamerPopup } from '../components/StreamerPopup'
-import { Streamer, Card, BlobFile } from '../types/database'
+import { Streamer, BlobFile } from '../types/database'
 
 // Extended streamer type with card statistics and storage usage
 // ストリーマーのカード統計とストレージ使用量を含む拡張型
 interface StreamerWithStats extends Streamer {
   card_count: number
-  cards: Card[]
   // ストレージ使用量（バイト単位）- カード画像のファイルサイズ合計
   storage_bytes: number
 }
@@ -25,37 +25,54 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
+// ソート順の定義
+type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'name_asc' | 'storage_desc'
+
 /**
  * Streamers page - Displays all registered streamers with their card collections
  * Shows active status, EventSub configuration, card statistics, and storage usage
  * ストリーマー名をクリックするとポップアップでTwitchリンクが表示される
  * ストレージ使用量は各ストリーマーのカード画像サイズの合計を表示
+ * 検索フォームでユーザー名・表示名でフィルタリング可能
  */
 export function Streamers() {
   const [streamers, setStreamers] = useState<StreamerWithStats[]>([])
   const [loading, setLoading] = useState(true)
+  // 検索クエリ（ユーザー名・表示名でフィルタリング）
+  const [searchQuery, setSearchQuery] = useState('')
+  // ソート順（デフォルト: カード数の多い順）
+  const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
+  // カード数0のストリーマーを非表示にするフラグ
+  const [hideZeroCards, setHideZeroCards] = useState(false)
+  // ページネーション状態
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
 
   useEffect(() => {
     fetchStreamers()
   }, [])
 
+  // フィルター条件が変わったらページを1に戻す
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [sortOrder, hideZeroCards, searchQuery])
+
   /**
-   * Fetches all streamers with their associated cards and storage usage
+   * Fetches all streamers with card counts and storage usage
+   * Supabaseのリレーション機能を使って効率的にカード数を取得
    * ストレージ使用量は cards.image_url と blob_files.url を紐付けて計算
    */
   async function fetchStreamers() {
     setLoading(true)
     try {
-      // Fetch streamers, cards, and blob_files in parallel
-      // blob_filesテーブルにはカード画像のファイルサイズ情報が格納されている
-      const [streamersResult, cardsResult, blobFilesResult] = await Promise.all([
+      // Supabaseのリレーション機能でストリーマーとカード情報を同時に取得
+      // cards(count) はカード数のみ、cards:cards(image_url) は画像URLを取得
+      // blob_filesテーブルからファイルサイズ情報も並行して取得
+      const [streamersResult, blobFilesResult] = await Promise.all([
         supabase
           .from('streamers')
-          .select('*')
+          .select('*, cards(count), card_images:cards(image_url)')
           .order('created_at', { ascending: false }),
-        supabase
-          .from('cards')
-          .select('*'),
         supabase
           .from('blob_files')
           .select('url, file_size'),
@@ -63,31 +80,27 @@ export function Streamers() {
 
       if (streamersResult.error) throw streamersResult.error
 
-      // Type assertions for query results
-      const streamersData = streamersResult.data as Streamer[]
-      const cardsData = (cardsResult.data || []) as Card[]
+      // blob_filesのURLをキーにしてファイルサイズを高速に参照できるMapを作成
       const blobFilesData = (blobFilesResult.data || []) as Pick<BlobFile, 'url' | 'file_size'>[]
-
-      // Create a map of image_url -> file_size for efficient lookup
-      // blob_filesテーブルのURLをキーにしてファイルサイズを高速に参照できるMapを作成
       const fileSizeByUrl = new Map<string, number>()
       blobFilesData.forEach((blob) => {
         fileSizeByUrl.set(blob.url, blob.file_size)
       })
 
-      // Group cards by streamer_id
-      const cardsByStreamer = new Map<string, Card[]>()
-      cardsData.forEach((card) => {
-        const existing = cardsByStreamer.get(card.streamer_id) || []
-        cardsByStreamer.set(card.streamer_id, [...existing, card])
-      })
+      // 型定義: Supabaseのリレーション結果の形式
+      type StreamerWithRelations = Streamer & {
+        cards: { count: number }[]
+        card_images: { image_url: string | null }[]
+      }
 
-      // Combine streamers with their cards and calculate storage usage
-      // 各ストリーマーのカード画像サイズを合計してストレージ使用量を算出
-      const streamersWithStats: StreamerWithStats[] = streamersData.map((streamer) => {
-        const cards = cardsByStreamer.get(streamer.id) || []
-        // Sum up file sizes for all card images belonging to this streamer
-        const storageBytes = cards.reduce((total, card) => {
+      // Supabaseのリレーション結果を変換
+      const rawData = streamersResult.data as unknown as StreamerWithRelations[]
+      const streamersWithStats: StreamerWithStats[] = (rawData || []).map((streamer) => {
+        // Supabaseのリレーションカウントは { count: number } の配列として返る
+        const cardCount = streamer.cards?.[0]?.count ?? 0
+
+        // 各カード画像のファイルサイズを合計してストレージ使用量を算出
+        const storageBytes = (streamer.card_images || []).reduce((total, card) => {
           if (card.image_url) {
             const fileSize = fileSizeByUrl.get(card.image_url) || 0
             return total + fileSize
@@ -96,9 +109,17 @@ export function Streamers() {
         }, 0)
 
         return {
-          ...streamer,
-          cards,
-          card_count: cards.length,
+          id: streamer.id,
+          twitch_user_id: streamer.twitch_user_id,
+          twitch_username: streamer.twitch_username,
+          twitch_display_name: streamer.twitch_display_name,
+          twitch_profile_image_url: streamer.twitch_profile_image_url,
+          channel_point_reward_id: streamer.channel_point_reward_id,
+          channel_point_reward_name: streamer.channel_point_reward_name,
+          is_active: streamer.is_active,
+          created_at: streamer.created_at,
+          updated_at: streamer.updated_at,
+          card_count: cardCount,
           storage_bytes: storageBytes,
         }
       })
@@ -160,7 +181,14 @@ export function Streamers() {
       key: 'card_count',
       header: 'Cards',
       render: (streamer: StreamerWithStats) => (
-        <span className="font-medium">{streamer.card_count}</span>
+        // カード数をクリックするとカード一覧ページに遷移
+        <Link
+          to={`/streamers/${streamer.id}/cards`}
+          className="font-medium text-blue-600 hover:text-blue-800 hover:underline"
+          title="カード一覧を表示"
+        >
+          {streamer.card_count}枚 →
+        </Link>
       ),
     },
     {
@@ -215,6 +243,49 @@ export function Streamers() {
   const configuredStreamers = streamers.filter((s) => s.channel_point_reward_id).length
   const totalCards = streamers.reduce((sum, s) => sum + s.card_count, 0)
   const totalStorage = streamers.reduce((sum, s) => sum + s.storage_bytes, 0)
+  const streamersWithCards = streamers.filter((s) => s.card_count > 0).length
+
+  /**
+   * フィルターとソートを適用したストリーマー一覧を生成
+   * 検索クエリ、カード数フィルター、ソート順を適用
+   */
+  const filteredAndSortedStreamers = (() => {
+    let result = streamers
+
+    // フィルター: 検索クエリ（ユーザー名または表示名に部分一致）
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim()
+      result = result.filter(
+        (s) =>
+          s.twitch_username.toLowerCase().includes(query) ||
+          s.twitch_display_name.toLowerCase().includes(query)
+      )
+    }
+
+    // フィルター: カード数0を非表示にする場合
+    if (hideZeroCards) {
+      result = result.filter((s) => s.card_count > 0)
+    }
+
+    // ソート
+    result = [...result].sort((a, b) => {
+      switch (sortOrder) {
+        case 'card_count_desc':
+          return b.card_count - a.card_count
+        case 'card_count_asc':
+          return a.card_count - b.card_count
+        case 'storage_desc':
+          return b.storage_bytes - a.storage_bytes
+        case 'name_asc':
+          return a.twitch_display_name.localeCompare(b.twitch_display_name)
+        case 'created_at_desc':
+        default:
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      }
+    })
+
+    return result
+  })()
 
   return (
     <div className="space-y-6">
@@ -248,13 +319,107 @@ export function Streamers() {
         </div>
       </div>
 
+      {/* 検索フォーム */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="relative">
+          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <svg
+              className="h-5 w-5 text-gray-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+          </div>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="ストリーマー名で検索..."
+            className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-10 pr-4 text-gray-900 placeholder-gray-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+          />
+          {/* 検索クエリをクリアするボタン */}
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600"
+              title="クリア"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* フィルター・ソートコントロール */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="flex flex-wrap items-center gap-4">
+          {/* ソート選択 */}
+          <div className="flex items-center space-x-2">
+            <label htmlFor="sort" className="text-sm text-gray-600">
+              ソート:
+            </label>
+            <select
+              id="sort"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+            >
+              <option value="card_count_desc">カード数 (多い順)</option>
+              <option value="card_count_asc">カード数 (少ない順)</option>
+              <option value="storage_desc">ストレージ (大きい順)</option>
+              <option value="name_asc">名前 (A-Z)</option>
+              <option value="created_at_desc">登録日 (新しい順)</option>
+            </select>
+          </div>
+
+          {/* カード数0を非表示トグル */}
+          <label className="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={hideZeroCards}
+              onChange={(e) => setHideZeroCards(e.target.checked)}
+              className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+            />
+            <span className="text-sm text-gray-600">
+              カード0件を非表示
+            </span>
+          </label>
+
+          {/* 表示件数 */}
+          <div className="text-sm text-gray-500 ml-auto">
+            表示: {filteredAndSortedStreamers.length} / {streamers.length} 件
+            {searchQuery && ` (検索: "${searchQuery}")`}
+            {hideZeroCards && ` (カードあり: ${streamersWithCards}件)`}
+          </div>
+        </div>
+      </div>
+
       {/* Streamers Table */}
       <DataTable
         columns={columns}
-        data={streamers}
+        data={filteredAndSortedStreamers}
         keyExtractor={(streamer) => streamer.id}
         loading={loading}
         emptyMessage="No streamers registered"
+        pagination={{
+          currentPage,
+          pageSize,
+          onPageChange: setCurrentPage,
+          onPageSizeChange: (size) => {
+            setPageSize(size)
+            setCurrentPage(1)
+          },
+          pageSizeOptions: [10, 20, 50, 100],
+        }}
       />
     </div>
   )

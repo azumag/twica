@@ -136,6 +136,28 @@
       "note": "※ 配布停止中のカードは確率計算に含まれません。",
       "close": "閉じる"
     },
+    "batchDropRate": {
+      "button": "確率一括調整",
+      "title": "確率一括調整",
+      "tabIndividual": "個別調整",
+      "tabRarity": "レアリティ別",
+      "totalWeight": "合計重み",
+      "activeCards": "配布中カード",
+      "weight": "重み",
+      "probability": "確率",
+      "save": "一括保存",
+      "saving": "保存中...",
+      "saveFailed": "確率の更新に失敗しました",
+      "noActiveCards": "配布中のカードがありません",
+      "cardsModified": "件変更",
+      "raritiesModified": "レアリティ変更",
+      "confirmClose": "未保存の変更があります。閉じますか？",
+      "rarityDescription": "レアリティごとに倍率を調整し、同じレアリティの全カードの重みを一括変更します。",
+      "cardsCount": "枚",
+      "originalWeight": "元の重み",
+      "multiplier": "倍率",
+      "newWeight": "新しい重み"
+    },
     "emoteImport": {
       "title": "エモートからカードを作成",
       "description": "チャンネルのエモートを選択してカードを作成します。既にカードになっているエモートは除外されます。",
@@ -164,6 +186,14 @@
     },
     "cardTypes": "({count} 種類)",
     "cardCount": "x{count}"
+  },
+  "streamerCollection": {
+    "title": "{streamerName} のコレクション",
+    "empty": {
+      "line1": "この配信者のカードはまだ持っていません。",
+      "line2": "チャネルポイントを使ってカードをゲットしましょう！"
+    },
+    "viewFullCollection": "← すべてのコレクションを見る"
   },
   "dashboard": {
     "title": "ダッシュボード",
@@ -279,7 +309,9 @@
     "preview": "プレビュー",
     "runDemo": "DEMOを実行",
     "demoNote": "※ DEMOボタンで設定されたカードが表示されます。カードがない場合はデモカードが表示されます。",
-    "urlUpdated": "オーバーレイURLが更新されました"
+    "urlUpdated": "オーバーレイURLが更新されました",
+    "collectionUrl": "コレクションページURL",
+    "collectionUrlDescription": "視聴者がこの配信者のコレクションを確認できるページです。チャットやSNSで共有できます。"
   },
   "settingsPage": {
     "title": "配信設定",

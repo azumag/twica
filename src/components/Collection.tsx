@@ -1,6 +1,8 @@
 import Image from "next/image";
+import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import Stats from "./Stats";
+import ExpandableDescription from "./ExpandableDescription";
 import type { Streamer, Card } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
 import type { Rarity } from "@/types/database";
@@ -61,20 +63,27 @@ export default async function Collection({ cardsByStreamer, stats }: CollectionP
           return Object.values(cardsByStreamer).map(({ streamer, cards }) => (
           <div key={streamer.id} className="mb-8">
             <div className="mb-4 flex items-center gap-3">
-              {streamer.twitch_profile_image_url && (
-                // unoptimized: Twitch CDNから取得済みの画像のため、Vercel Image Transformationsをスキップしてコスト削減
-                <Image
-                  src={streamer.twitch_profile_image_url}
-                  alt={streamer.twitch_display_name}
-                  width={40}
-                  height={40}
-                  className="h-10 w-10 rounded-full"
-                  unoptimized
-                />
-              )}
-              <h3 className="text-xl font-semibold text-white">
-                {streamer.twitch_display_name}
-              </h3>
+              {/* Streamer name and icon are clickable links to individual collection page */}
+              {/* 配信者名とアイコンは個別コレクションページへのリンク */}
+              <Link
+                href={`/collection/${streamer.id}`}
+                className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+              >
+                {streamer.twitch_profile_image_url && (
+                  // unoptimized: Twitch CDNから取得済みの画像のため、Vercel Image Transformationsをスキップしてコスト削減
+                  <Image
+                    src={streamer.twitch_profile_image_url}
+                    alt={streamer.twitch_display_name}
+                    width={40}
+                    height={40}
+                    className="h-10 w-10 rounded-full"
+                    unoptimized
+                  />
+                )}
+                <h3 className="text-xl font-semibold text-white hover:text-purple-400 transition-colors">
+                  {streamer.twitch_display_name}
+                </h3>
+              </Link>
               <span className="text-sm text-gray-400">
                 {t("cardTypes", { count: cards.length })}
               </span>
@@ -123,11 +132,10 @@ export default async function Collection({ cardsByStreamer, stats }: CollectionP
                       )}
                     </div>
                     {/* 説明とカウント */}
+                    {/* Description (expandable) and count */}
                     <div className="p-3 pt-2">
                       {card.description && (
-                        <p className="text-sm text-gray-300 line-clamp-2 mb-1">
-                          {card.description}
-                        </p>
+                        <ExpandableDescription description={card.description} />
                       )}
                       {card.count > 1 && (
                         <div className="text-sm text-gray-400">

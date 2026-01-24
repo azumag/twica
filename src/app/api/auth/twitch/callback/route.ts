@@ -3,7 +3,7 @@ import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions } from '@/lib/constants'
+import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 import { getBaseUrl } from '@/lib/url-utils'
@@ -170,9 +170,28 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // 未同意の場合は利用規約ページへ、同意済みの場合はダッシュボードへリダイレクト
-    // Redirect to TOS page if not accepted, otherwise to dashboard
-    const redirectUrl = hasTosAccepted ? `${baseUrl}/dashboard` : `${baseUrl}/tos`
+    // Check for returnTo cookie (saved before login redirect)
+    // ログインリダイレクト前に保存されたreturnTo Cookieをチェック
+    const returnTo = cookieStore.get(COOKIE_NAMES.RETURN_TO)?.value
+
+    // Determine redirect URL:
+    // 1. If TOS not accepted -> TOS page
+    // 2. If returnTo cookie exists -> returnTo URL (if valid path starting with /)
+    // 3. Default -> dashboard
+    // リダイレクト先の決定:
+    // 1. TOS未同意 -> TOSページ
+    // 2. returnTo Cookieがある -> returnTo URL（/で始まる有効なパスの場合）
+    // 3. デフォルト -> ダッシュボード
+    let redirectUrl: string
+    if (!hasTosAccepted) {
+      redirectUrl = `${baseUrl}/tos`
+    } else if (returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//')) {
+      // Validate returnTo is a relative path (security: prevent open redirect)
+      // returnToが相対パスであることを検証（セキュリティ: オープンリダイレクト防止）
+      redirectUrl = `${baseUrl}${returnTo}`
+    } else {
+      redirectUrl = `${baseUrl}/dashboard`
+    }
 
     logger.info('Auth callback: Redirecting with session cookie', {
       twitchUserId: twitchUser.id,
@@ -195,6 +214,12 @@ export async function GET(request: NextRequest) {
 
     // Clear state cookie
     response.cookies.delete('twitch_auth_state')
+
+    // Clear returnTo cookie if it was used
+    // 使用されたreturnTo Cookieを削除
+    if (returnTo) {
+      response.cookies.set(COOKIE_NAMES.RETURN_TO, '', getDeleteCookieOptions())
+    }
 
     // Log the Set-Cookie header for debugging
     const setCookieHeader = response.headers.get('Set-Cookie')

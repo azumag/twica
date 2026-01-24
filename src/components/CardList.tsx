@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import ExpandableDescription from "./ExpandableDescription";
 
 interface CardListProps {
   // Array of cards to display
@@ -69,16 +70,32 @@ export default function CardList({
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-left">
+      {/* table-fixed で列幅を固定、列幅はヘッダーで明示指定 */}
+      {/* table-fixed locks column widths, explicitly set in header */}
+      <table className="w-full text-left table-fixed">
         <thead className="border-b border-gray-700 text-sm text-gray-400">
           <tr>
-            <th className="px-4 py-3">{t("table.image")}</th>
-            <th className="px-4 py-3">{t("table.name")}</th>
-            <th className="px-4 py-3">{t("table.rarity")}</th>
-            <th className="px-4 py-3">{t("table.weight")}</th>
-            <th className="px-4 py-3">{t("table.probability")}</th>
-            <th className="px-4 py-3">{t("table.status")}</th>
-            {showActions && <th className="px-4 py-3">{t("table.actions")}</th>}
+            {/* 画像列：固定幅 80px */}
+            {/* Image column: fixed width 80px */}
+            <th className="px-4 py-3 w-20">{t("table.image")}</th>
+            {/* 名前列：残りスペースを使用（最小200px） */}
+            {/* Name column: uses remaining space (min 200px) */}
+            <th className="px-4 py-3 min-w-[200px]">{t("table.name")}</th>
+            {/* レアリティ列：固定幅 100px */}
+            {/* Rarity column: fixed width 100px */}
+            <th className="px-4 py-3 w-24">{t("table.rarity")}</th>
+            {/* 重み列：固定幅 80px */}
+            {/* Weight column: fixed width 80px */}
+            <th className="px-4 py-3 w-20">{t("table.weight")}</th>
+            {/* 確率列：固定幅 80px */}
+            {/* Probability column: fixed width 80px */}
+            <th className="px-4 py-3 w-20">{t("table.probability")}</th>
+            {/* ステータス列：固定幅 100px */}
+            {/* Status column: fixed width 100px */}
+            <th className="px-4 py-3 w-24">{t("table.status")}</th>
+            {/* 操作列：固定幅 200px */}
+            {/* Actions column: fixed width 200px */}
+            {showActions && <th className="px-4 py-3 w-48">{t("table.actions")}</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-700">
@@ -120,15 +137,24 @@ export default function CardList({
                   </div>
                 </td>
 
-                {/* Card name and description */}
-                {/* カード名と説明 */}
+                {/* Card name and description (expandable if long) */}
+                {/* カード名と説明（長い場合は展開可能） */}
                 <td className="px-4 py-3">
-                  <div>
-                    <p className="font-medium text-white">{card.name}</p>
+                  <div className="overflow-hidden">
+                    {/* カード名は1行に省略 */}
+                    {/* Card name truncated to 1 line */}
+                    <p className="font-medium text-white truncate">{card.name}</p>
                     {card.description && (
-                      <p className="mt-0.5 text-xs text-gray-400 line-clamp-1">
-                        {card.description}
-                      </p>
+                      /* 説明文は2行に制限、展開時も最大高さ80pxに制限 */
+                      /* Limit description to 2 lines, max 80px height when expanded */
+                      <div className="mt-0.5">
+                        <ExpandableDescription
+                          description={card.description}
+                          maxLines={2}
+                          size="xs"
+                          maxExpandedHeight={80}
+                        />
+                      </div>
                     )}
                   </div>
                 </td>

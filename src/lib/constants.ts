@@ -14,6 +14,9 @@ export const COOKIE_NAMES = {
   SESSION: 'twica_session',
   AUTH_STATE: 'twitch_auth_state',
   CSRF_TOKEN: 'csrf_token',
+  // ログイン後にリダイレクトする先のURL（認証フロー用）
+  // URL to redirect to after login (for auth flow)
+  RETURN_TO: 'twica_return_to',
 }
 
 export const API_ROUTES = {
