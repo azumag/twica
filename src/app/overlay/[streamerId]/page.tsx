@@ -8,6 +8,18 @@ import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
 import { RARITIES, RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
 
+// OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
+// 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
+// setTimeoutでフォールバックする
+if (typeof window !== 'undefined' && typeof window.queueMicrotask !== 'function') {
+  // @ts-expect-error - ポリフィルのためwindowオブジェクトに直接代入
+  window.queueMicrotask = (callback: () => void) => {
+    Promise.resolve().then(callback).catch((err) => {
+      setTimeout(() => { throw err; }, 0);
+    });
+  };
+}
+
 /**
  * Get rarity information (label and color) for a given rarity value
  * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
@@ -225,13 +237,15 @@ export default function OverlayPage() {
       },
     });
 
+    // OBSブラウザソースのCEFは初期化が遅いことがあるため、
+    // タイムアウトを30秒に延長（通常ブラウザでは10秒で十分だが）
     connectionTimeoutRef.current = setTimeout(() => {
       if (connectionStatusRef.current === 'connecting') {
-        addDebugLog('Connection timeout after 10 seconds');
+        addDebugLog('Connection timeout after 30 seconds');
         setConnectionStatus('error');
-        setErrorMessage('Connection timeout');
+        setErrorMessage('Connection timeout - OBSの場合はブラウザソースを再作成してください');
       }
-    }, 10000);
+    }, 30000);
 
     cleanupRef.current = cleanup;
 
