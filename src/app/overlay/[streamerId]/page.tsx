@@ -121,6 +121,7 @@ export default function OverlayPage() {
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const isDebug = urlParams.get("debug") === "true";
+    // queueMicrotaskで非同期に実行してカスケードレンダーを回避
     queueMicrotask(() => {
       setOptions({
         imageOnly: urlParams.get("imageOnly") === "true",
@@ -137,20 +138,9 @@ export default function OverlayPage() {
       });
       if (isDebug) {
         // デバッグモードの場合、初期化ログを追加
-        const modeInfo = isCompat ? 'Debug mode enabled (compat mode)' : 'Debug mode enabled';
-        setDebugLogs(prev => [...prev, `[${new Date().toISOString()}] ${modeInfo}`]);
+        setDebugLogs(prev => [...prev, `[${new Date().toISOString()}] Debug mode enabled`]);
       }
-    };
-
-    // 互換モード（compat=true）の場合はqueueMicrotaskを使わずに直接実行
-    // OBSブラウザソースの古いCEFではqueueMicrotaskが問題を起こす可能性があるため
-    if (isCompat) {
-      // 互換モード：直接実行（カスケードレンダーの可能性があるが互換性を優先）
-      applyOptions();
-    } else {
-      // 通常モード：queueMicrotaskで非同期に実行してカスケードレンダーを回避
-      queueMicrotask(applyOptions);
-    }
+    });
   }, []);
 
   // 画像のアスペクト比を判定（縦長かどうか）と小さい画像かどうかを判定
@@ -229,8 +219,12 @@ export default function OverlayPage() {
 
   // Connect to Supabase Realtime for real-time events
   useEffect(() => {
-    addDebugLog(`Starting subscription for streamer: ${streamerId}`);
-    addDebugLog(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
+    // queueMicrotaskで非同期に実行してカスケードレンダーを回避
+    // addDebugLogはsetDebugLogsを呼び出すため、同期的に実行するとlintエラーになる
+    queueMicrotask(() => {
+      addDebugLog(`Starting subscription for streamer: ${streamerId}`);
+      addDebugLog(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
+    });
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
       addDebugLog(`Received payload: ${payload.type}`);

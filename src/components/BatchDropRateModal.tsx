@@ -283,7 +283,7 @@ export default function BatchDropRateModal({
         .find(row => row.startsWith("csrf_token="))
         ?.split("=")[1];
 
-      let updates: Array<{ id: string; dropRate: number }> = [];
+      const updates: Array<{ id: string; dropRate: number }> = [];
       // Track cards already added to avoid duplicates
       // 重複を避けるため追加済みカードを追跡
       const addedCardIds = new Set<string>();
