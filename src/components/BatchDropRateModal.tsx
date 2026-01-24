@@ -133,28 +133,30 @@ export default function BatchDropRateModal({
     return (dropRate / totalWeight) * 100;
   }, [totalWeight]);
 
-  // Check if any changes have been made (based on active tab)
-  // 変更があるかどうかをチェック（アクティブタブに基づく）
+  // Check if any changes have been made
+  // 変更があるかどうかをチェック
+  // Check both localDropRates changes and rarity multiplier changes
+  // localDropRatesの変更とレアリティ倍率の変更の両方をチェック
   const hasChanges = useMemo(() => {
-    if (activeTab === "individual") {
-      for (const card of activeCards) {
-        const localRate = localDropRates.get(card.id);
-        if (localRate !== undefined && localRate !== card.drop_rate) {
-          return true;
-        }
+    // Check if any card's localDropRate differs from original
+    // カードのlocalDropRateが元の値と異なるかチェック
+    for (const card of activeCards) {
+      const localRate = localDropRates.get(card.id);
+      if (localRate !== undefined && Math.abs(localRate - card.drop_rate) > 0.001) {
+        return true;
       }
-      return false;
-    } else {
-      // Rarity mode: check if any multiplier is not 1.0
-      // レアリティモード: 倍率が1.0でないものがあるかチェック
-      for (const [, multiplier] of rarityMultipliers) {
-        if (Math.abs(multiplier - 1.0) > 0.001) {
-          return true;
-        }
-      }
-      return false;
     }
-  }, [activeTab, activeCards, localDropRates, rarityMultipliers]);
+
+    // Also check rarity multipliers (for rarity mode without reset)
+    // レアリティ倍率もチェック（リセットなしのレアリティモード用）
+    for (const [, multiplier] of rarityMultipliers) {
+      if (Math.abs(multiplier - 1.0) > 0.001) {
+        return true;
+      }
+    }
+
+    return false;
+  }, [activeCards, localDropRates, rarityMultipliers]);
 
   // Get modified card IDs for visual highlighting (individual mode)
   // 視覚的ハイライト用に変更されたカードIDを取得（個別モード）
@@ -201,6 +203,59 @@ export default function BatchDropRateModal({
     });
   };
 
+  /**
+   * Reset all cards to weight 100% (1.0)
+   * 全カードの重みを100%（1.0）にリセット
+   * This works in both individual and rarity modes by directly setting localDropRates
+   */
+  const handleResetAll = () => {
+    // Set all cards to weight 1.0 (100%)
+    // 全カードの重みを1.0（100%）に設定
+    setLocalDropRates(prev => {
+      const next = new Map(prev);
+      activeCards.forEach(card => {
+        next.set(card.id, 1.0);
+      });
+      return next;
+    });
+
+    // Also reset all rarity multipliers to 1.0 for rarity mode
+    // レアリティモード用に全レアリティの倍率も1.0にリセット
+    setRarityMultipliers(prev => {
+      const next = new Map(prev);
+      RARITIES.forEach(r => {
+        next.set(r.value, 1.0);
+      });
+      return next;
+    });
+  };
+
+  /**
+   * Reset all cards of a specific rarity to weight 100% (1.0)
+   * 特定レアリティの全カードの重みを100%（1.0）にリセット
+   */
+  const handleResetRarity = (rarity: Rarity) => {
+    // Set all cards of this rarity to weight 1.0 (100%)
+    // このレアリティの全カードの重みを1.0（100%）に設定
+    setLocalDropRates(prev => {
+      const next = new Map(prev);
+      activeCards
+        .filter(card => card.rarity === rarity)
+        .forEach(card => {
+          next.set(card.id, 1.0);
+        });
+      return next;
+    });
+
+    // Also reset the multiplier for this rarity
+    // このレアリティの倍率も1.0にリセット
+    setRarityMultipliers(prev => {
+      const next = new Map(prev);
+      next.set(rarity, 1.0);
+      return next;
+    });
+  };
+
   // Handle close with unsaved changes confirmation
   // 未保存の変更がある場合は確認ダイアログを表示してクローズ
   const handleClose = () => {
@@ -229,23 +284,34 @@ export default function BatchDropRateModal({
         ?.split("=")[1];
 
       let updates: Array<{ id: string; dropRate: number }> = [];
+      // Track cards already added to avoid duplicates
+      // 重複を避けるため追加済みカードを追跡
+      const addedCardIds = new Set<string>();
 
-      if (activeTab === "individual") {
-        // Individual mode: only update changed cards
-        // 個別モード: 変更されたカードのみ更新
-        updates = activeCards
-          .filter(card => modifiedCardIds.has(card.id))
-          .map(card => ({
+      // First, add all cards with direct localDropRates changes (from reset or individual mode)
+      // まず、localDropRatesが直接変更されたカードを追加（リセットまたは個別モードから）
+      for (const card of activeCards) {
+        const localRate = localDropRates.get(card.id);
+        if (localRate !== undefined && Math.abs(localRate - card.drop_rate) > 0.001) {
+          updates.push({
             id: card.id,
-            dropRate: localDropRates.get(card.id) ?? card.drop_rate,
-          }));
-      } else {
-        // Rarity mode: apply multipliers to all cards of modified rarities
-        // レアリティモード: 変更されたレアリティの全カードに倍率を適用
+            dropRate: localRate,
+          });
+          addedCardIds.add(card.id);
+        }
+      }
+
+      // Then, add cards from rarity multiplier changes (if in rarity mode and not already added)
+      // 次に、レアリティ倍率変更からのカードを追加（レアリティモードで未追加のもの）
+      if (activeTab === "rarity") {
         for (const [rarity, multiplier] of rarityMultipliers) {
           if (Math.abs(multiplier - 1.0) > 0.001) {
             const rarityCards = activeCards.filter(c => c.rarity === rarity);
             for (const card of rarityCards) {
+              // Skip if already added via localDropRates
+              // localDropRatesで既に追加済みの場合はスキップ
+              if (addedCardIds.has(card.id)) continue;
+
               // Apply multiplier to original drop rate, clamped to 0-1 range
               // 元のドロップレートに倍率を適用、0-1範囲に制限
               const newRate = Math.min(1, Math.max(0, card.drop_rate * multiplier));
@@ -253,6 +319,7 @@ export default function BatchDropRateModal({
                 id: card.id,
                 dropRate: newRate,
               });
+              addedCardIds.add(card.id);
             }
           }
         }
@@ -351,28 +418,39 @@ export default function BatchDropRateModal({
 
           {/* Summary bar */}
           {/* サマリーバー */}
-          <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400">{t("batchDropRate.totalWeight")}:</span>
-              <span className="text-white font-medium">{(totalWeight * 100).toFixed(1)}%</span>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-4 text-sm">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400">{t("batchDropRate.totalWeight")}:</span>
+                <span className="text-white font-medium">{(totalWeight * 100).toFixed(1)}%</span>
+              </div>
+              <div className="h-4 w-px bg-gray-600" />
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400">{t("batchDropRate.activeCards")}:</span>
+                <span className="text-white font-medium">{activeCards.length}</span>
+              </div>
+              {hasChanges && (
+                <>
+                  <div className="h-4 w-px bg-gray-600" />
+                  <div className="flex items-center gap-2">
+                    <span className="text-yellow-400">
+                      {activeTab === "individual"
+                        ? `${modifiedCardIds.size} ${t("batchDropRate.cardsModified")}`
+                        : `${modifiedRarities.size} ${t("batchDropRate.raritiesModified")}`}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
-            <div className="h-4 w-px bg-gray-600" />
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400">{t("batchDropRate.activeCards")}:</span>
-              <span className="text-white font-medium">{activeCards.length}</span>
-            </div>
-            {hasChanges && (
-              <>
-                <div className="h-4 w-px bg-gray-600" />
-                <div className="flex items-center gap-2">
-                  <span className="text-yellow-400">
-                    {activeTab === "individual"
-                      ? `${modifiedCardIds.size} ${t("batchDropRate.cardsModified")}`
-                      : `${modifiedRarities.size} ${t("batchDropRate.raritiesModified")}`}
-                  </span>
-                </div>
-              </>
-            )}
+            {/* Reset all button - resets all card weights to 100% */}
+            {/* 全てリセットボタン - 全カードの重みを100%にリセット */}
+            <button
+              type="button"
+              onClick={handleResetAll}
+              className="rounded-lg border border-orange-500 px-3 py-1 text-sm text-orange-400 hover:bg-orange-500 hover:text-white transition"
+            >
+              {t("batchDropRate.resetAll")}
+            </button>
           </div>
         </div>
 
@@ -511,6 +589,16 @@ export default function BatchDropRateModal({
                         <div className="text-sm text-gray-400">
                           {t("batchDropRate.originalWeight")}: {(stats.originalWeight * 100).toFixed(1)}%
                         </div>
+                        {/* Reset rarity button - resets all cards of this rarity to weight 100% */}
+                        {/* レアリティリセットボタン - このレアリティの全カードの重みを100%にリセット */}
+                        <button
+                          type="button"
+                          onClick={() => handleResetRarity(rarity)}
+                          className="rounded border border-orange-500 px-2 py-0.5 text-xs text-orange-400 hover:bg-orange-500 hover:text-white transition"
+                          title={t("batchDropRate.resetTooltip")}
+                        >
+                          {t("batchDropRate.resetRarity")}
+                        </button>
                       </div>
                     </div>
 

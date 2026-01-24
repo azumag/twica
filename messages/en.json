@@ -156,7 +156,10 @@
       "cardsCount": "cards",
       "originalWeight": "Original",
       "multiplier": "Multiplier",
-      "newWeight": "New Weight"
+      "newWeight": "New Weight",
+      "resetAll": "Reset All (Weight 100)",
+      "resetRarity": "Reset",
+      "resetTooltip": "Reset all cards in this rarity to 100% weight"
     },
     "emoteImport": {
       "title": "Create Cards from Emotes",
@@ -303,7 +306,16 @@
       "effects": "Show Effects",
       "effectsDescription": "Show sparkle effects for legendary cards",
       "smallMode": "Small Image Mode",
-      "smallModeDescription": "Smaller display for images under 400x400 (auto-applied)"
+      "smallModeDescription": "Smaller display for images under 400x400 (auto-applied)",
+      "portraitInfoSection": "Portrait Image Info (Below Image)",
+      "portraitShowName": "Show Name",
+      "portraitShowNameDescription": "Display card name below portrait image",
+      "portraitShowRarity": "Show Rarity",
+      "portraitShowRarityDescription": "Display rarity badge below portrait image",
+      "portraitShowDescription": "Show Description",
+      "portraitShowDescriptionDescription": "Display description text below portrait image",
+      "portraitShowUsername": "Show Username",
+      "portraitShowUsernameDescription": "Display username above portrait image"
     },
     "generatedUrl": "Generated URL",
     "preview": "Preview",

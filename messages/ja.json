@@ -156,7 +156,10 @@
       "cardsCount": "枚",
       "originalWeight": "元の重み",
       "multiplier": "倍率",
-      "newWeight": "新しい重み"
+      "newWeight": "新しい重み",
+      "resetAll": "全てリセット（重み100）",
+      "resetRarity": "リセット",
+      "resetTooltip": "このレアリティの全カードの重みを100%にリセット"
     },
     "emoteImport": {
       "title": "エモートからカードを作成",
@@ -303,7 +306,16 @@
       "effects": "エフェクト表示",
       "effectsDescription": "レジェンダリーカードのキラキラエフェクトを表示",
       "smallMode": "小さい画像モード",
-      "smallModeDescription": "400x400未満の画像用に縮小表示（自動適用）"
+      "smallModeDescription": "400x400未満の画像用に縮小表示（自動適用）",
+      "portraitInfoSection": "縦長画像の付帯情報（画像の下に表示）",
+      "portraitShowName": "カード名を表示",
+      "portraitShowNameDescription": "縦長画像の下にカード名を表示",
+      "portraitShowRarity": "レアリティを表示",
+      "portraitShowRarityDescription": "縦長画像の下にレアリティバッジを表示",
+      "portraitShowDescription": "説明を表示",
+      "portraitShowDescriptionDescription": "縦長画像の下に説明文を表示",
+      "portraitShowUsername": "ユーザー名を表示",
+      "portraitShowUsernameDescription": "縦長画像の上にユーザー名を表示"
     },
     "generatedUrl": "生成されたURL",
     "preview": "プレビュー",
