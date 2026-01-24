@@ -5,6 +5,9 @@ import { logger } from '@/lib/logger'
 import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
 import { setCSRFToken, validateCSRFToken, hashToken, clearCSRFToken, hashIP, sanitizeURL } from '@/lib/csrf'
 
+// Mock interface for cookie store with essential methods needed for testing
+// Note: We use 'any' when passing to mockResolvedValue since the full RequestCookies
+// type requires MapIterator which is complex to mock properly in tests
 interface MockCookieStore {
   get: ReturnType<typeof vi.fn>
   set: ReturnType<typeof vi.fn>
@@ -47,18 +50,28 @@ vi.mock('@/lib/sentry/error-handler')
 const mockCookies = vi.mocked(cookies)
 const mockLogger = vi.mocked(logger)
 
+// Helper function to create a mock cookie store with essential methods for testing
+function createMockCookieStore(overrides: {
+  get?: ReturnType<typeof vi.fn>
+  set?: ReturnType<typeof vi.fn>
+  delete?: ReturnType<typeof vi.fn>
+} = {}): MockCookieStore {
+  return {
+    get: overrides.get ?? vi.fn(),
+    set: overrides.set ?? vi.fn(),
+    delete: overrides.delete ?? vi.fn(),
+  }
+}
+
 describe('CSRF Protection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.stubEnv('CSRF_TOKEN_SALT', 'test-salt-for-csrf-token-hashing')
 
-    const mockCookieStore = {
-      get: vi.fn(),
-      set: vi.fn(),
-      delete: vi.fn(),
-    }
+    const mockCookieStore = createMockCookieStore()
 
-    mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
   })
 
   describe('hashToken', () => {
@@ -90,11 +103,12 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn().mockReturnValue({ value: JSON.stringify(sessionData) }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const token = await setCSRFToken()
 
@@ -135,7 +149,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -146,8 +160,9 @@ describe('CSRF Protection', () => {
           return undefined
         }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const token = await setCSRFToken()
 
@@ -156,11 +171,12 @@ describe('CSRF Protection', () => {
     })
 
     it('should throw error when no session found', async () => {
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn().mockReturnValue(undefined),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       await expect(setCSRFToken()).rejects.toThrow('No session found')
     })
@@ -183,7 +199,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -194,8 +210,9 @@ describe('CSRF Protection', () => {
           return undefined
         }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com')
 
@@ -216,7 +233,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -224,8 +241,9 @@ describe('CSRF Protection', () => {
           return undefined
         }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com')
 
@@ -247,7 +265,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -258,8 +276,9 @@ describe('CSRF Protection', () => {
           return undefined
         }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com')
 
@@ -275,11 +294,12 @@ describe('CSRF Protection', () => {
     })
 
     it('should reject when no session found', async () => {
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn().mockReturnValue(undefined),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com')
 
@@ -304,7 +324,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -315,8 +335,9 @@ describe('CSRF Protection', () => {
           return undefined
         }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com', {
         headers: { 'origin': 'https://example.com' }
@@ -342,7 +363,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -353,8 +374,9 @@ describe('CSRF Protection', () => {
           return undefined
         }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com')
       const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
@@ -393,7 +415,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -404,8 +426,9 @@ describe('CSRF Protection', () => {
           return undefined
         }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com/api/test', {
         headers: { 'referer': 'https://example.com/page' }
@@ -431,7 +454,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -442,8 +465,9 @@ describe('CSRF Protection', () => {
           return undefined
         }),
         set: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com')
       const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
@@ -480,7 +504,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -489,8 +513,9 @@ describe('CSRF Protection', () => {
         }),
         set: vi.fn(),
         delete: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       await clearCSRFToken()
 
@@ -525,7 +550,7 @@ describe('CSRF Protection', () => {
         version: 1
       }
 
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn((name) => {
           if (name === COOKIE_NAMES.SESSION) {
             return { value: JSON.stringify(sessionData) }
@@ -534,8 +559,9 @@ describe('CSRF Protection', () => {
         }),
         set: vi.fn(),
         delete: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       await clearCSRFToken()
 
@@ -553,12 +579,13 @@ describe('CSRF Protection', () => {
     })
 
     it('should handle case when no session exists', async () => {
-      const mockCookieStore = {
+      const mockCookieStore = createMockCookieStore({
         get: vi.fn().mockReturnValue(undefined),
         set: vi.fn(),
         delete: vi.fn(),
-      }
-      mockCookies.mockResolvedValue(mockCookieStore as unknown as MockCookieStore)
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockCookies.mockResolvedValue(mockCookieStore as any)
 
       await clearCSRFToken()
 
