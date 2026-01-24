@@ -156,7 +156,10 @@
       "cardsCount": "cards",
       "originalWeight": "Original",
       "multiplier": "Multiplier",
-      "newWeight": "New Weight"
+      "newWeight": "New Weight",
+      "resetAll": "Reset All (Weight 100)",
+      "resetRarity": "Reset",
+      "resetTooltip": "Reset all cards in this rarity to 100% weight"
     },
     "emoteImport": {
       "title": "Create Cards from Emotes",
@@ -186,6 +189,14 @@
     },
     "cardTypes": "({count} types)",
     "cardCount": "x{count}"
+  },
+  "streamerCollection": {
+    "title": "{streamerName}'s Collection",
+    "empty": {
+      "line1": "You don't have any cards from this streamer yet.",
+      "line2": "Use channel points to get cards!"
+    },
+    "viewFullCollection": "← View Full Collection"
   },
   "dashboard": {
     "title": "Dashboard",
@@ -295,13 +306,24 @@
       "effects": "Show Effects",
       "effectsDescription": "Show sparkle effects for legendary cards",
       "smallMode": "Small Image Mode",
-      "smallModeDescription": "Smaller display for images under 400x400 (auto-applied)"
+      "smallModeDescription": "Smaller display for images under 400x400 (auto-applied)",
+      "portraitInfoSection": "Portrait Image Info (Below Image)",
+      "portraitShowName": "Show Name",
+      "portraitShowNameDescription": "Display card name below portrait image",
+      "portraitShowRarity": "Show Rarity",
+      "portraitShowRarityDescription": "Display rarity badge below portrait image",
+      "portraitShowDescription": "Show Description",
+      "portraitShowDescriptionDescription": "Display description text below portrait image",
+      "portraitShowUsername": "Show Username",
+      "portraitShowUsernameDescription": "Display username above portrait image"
     },
     "generatedUrl": "Generated URL",
     "preview": "Preview",
     "runDemo": "Run DEMO",
     "demoNote": "* DEMO button shows your configured cards. Demo cards are shown if you have no cards.",
-    "urlUpdated": "Overlay URL has been updated"
+    "urlUpdated": "Overlay URL has been updated",
+    "collectionUrl": "Collection Page URL",
+    "collectionUrlDescription": "A page where viewers can view their collection from this streamer. Share it on chat or social media."
   },
   "settingsPage": {
     "title": "Stream Settings",

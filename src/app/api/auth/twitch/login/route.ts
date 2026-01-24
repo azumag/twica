@@ -6,7 +6,7 @@ import { handleAuthError } from '@/lib/auth-error-handler'
 import { randomUUID } from 'crypto'
 import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
-import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS } from '@/lib/constants'
+import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
 
 export async function GET(request: Request) {
@@ -46,6 +46,22 @@ export async function GET(request: Request) {
     cookieStore.set('twitch_auth_state', state, STATE_COOKIE_OPTIONS)
 
     const authUrl = getTwitchAuthUrl(redirectUri, state)
+
+    // Check if direct redirect is requested (for server-side redirects)
+    // サーバーサイドリダイレクト用に直接リダイレクトが要求されているかチェック
+    const url = new URL(request.url)
+    const shouldRedirect = url.searchParams.get('redirect') === 'true'
+    const returnTo = url.searchParams.get('returnTo')
+
+    // Store returnTo URL in cookie if provided (for post-login redirect)
+    // returnTo URLが指定されている場合はCookieに保存（ログイン後のリダイレクト用）
+    if (returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//')) {
+      cookieStore.set(COOKIE_NAMES.RETURN_TO, returnTo, STATE_COOKIE_OPTIONS)
+    }
+
+    if (shouldRedirect) {
+      return NextResponse.redirect(authUrl)
+    }
 
     return NextResponse.json({ authUrl })
   } catch (error) {

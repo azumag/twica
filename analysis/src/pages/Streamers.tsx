@@ -3,20 +3,36 @@ import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { DataTable } from '../components/DataTable'
 import { StreamerPopup } from '../components/StreamerPopup'
-import { Streamer } from '../types/database'
+import { Streamer, BlobFile } from '../types/database'
 
-// Extended streamer type with card statistics
+// Extended streamer type with card statistics and storage usage
+// ストリーマーのカード統計とストレージ使用量を含む拡張型
 interface StreamerWithStats extends Streamer {
   card_count: number
+  // ストレージ使用量（バイト単位）- カード画像のファイルサイズ合計
+  storage_bytes: number
+}
+
+/**
+ * Formats byte count into human-readable string (KB, MB, GB)
+ * バイト数を人間が読みやすい形式（KB, MB, GB）にフォーマット
+ */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
 // ソート順の定義
-type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'name_asc'
+type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'name_asc' | 'storage_desc'
 
 /**
  * Streamers page - Displays all registered streamers with their card collections
- * Shows active status, EventSub configuration, and card statistics
+ * Shows active status, EventSub configuration, card statistics, and storage usage
  * ストリーマー名をクリックするとポップアップでTwitchリンクが表示される
+ * ストレージ使用量は各ストリーマーのカード画像サイズの合計を表示
  * 検索フォームでユーザー名・表示名でフィルタリング可能
  */
 export function Streamers() {
@@ -42,34 +58,55 @@ export function Streamers() {
   }, [sortOrder, hideZeroCards, searchQuery])
 
   /**
-   * Fetches all streamers with card counts
+   * Fetches all streamers with card counts and storage usage
    * Supabaseのリレーション機能を使って効率的にカード数を取得
-   * 全カードを取得するのではなく、カウントのみを取得することで
-   * Supabaseの1000件制限の影響を受けない
+   * ストレージ使用量は cards.image_url と blob_files.url を紐付けて計算
    */
   async function fetchStreamers() {
     setLoading(true)
     try {
-      // Supabaseのリレーション機能でストリーマーとカード数を同時に取得
-      // cards(count) は外部キー制約を利用してカード数のみを取得する
-      const { data, error } = await supabase
-        .from('streamers')
-        .select('*, cards(count)')
-        .order('created_at', { ascending: false })
+      // Supabaseのリレーション機能でストリーマーとカード情報を同時に取得
+      // cards(count) はカード数のみ、cards:cards(image_url) は画像URLを取得
+      // blob_filesテーブルからファイルサイズ情報も並行して取得
+      const [streamersResult, blobFilesResult] = await Promise.all([
+        supabase
+          .from('streamers')
+          .select('*, cards(count), card_images:cards(image_url)')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('blob_files')
+          .select('url, file_size'),
+      ])
 
-      if (error) throw error
+      if (streamersResult.error) throw streamersResult.error
 
-      // 型定義: Supabaseのリレーションカウント結果の形式
-      type StreamerWithCardCount = Streamer & {
+      // blob_filesのURLをキーにしてファイルサイズを高速に参照できるMapを作成
+      const blobFilesData = (blobFilesResult.data || []) as Pick<BlobFile, 'url' | 'file_size'>[]
+      const fileSizeByUrl = new Map<string, number>()
+      blobFilesData.forEach((blob) => {
+        fileSizeByUrl.set(blob.url, blob.file_size)
+      })
+
+      // 型定義: Supabaseのリレーション結果の形式
+      type StreamerWithRelations = Streamer & {
         cards: { count: number }[]
+        card_images: { image_url: string | null }[]
       }
 
-      // Supabaseのリレーションカウントの結果を変換
-      // cards: [{ count: number }] の形式で返ってくる
-      const rawData = data as unknown as StreamerWithCardCount[]
+      // Supabaseのリレーション結果を変換
+      const rawData = streamersResult.data as unknown as StreamerWithRelations[]
       const streamersWithStats: StreamerWithStats[] = (rawData || []).map((streamer) => {
         // Supabaseのリレーションカウントは { count: number } の配列として返る
         const cardCount = streamer.cards?.[0]?.count ?? 0
+
+        // 各カード画像のファイルサイズを合計してストレージ使用量を算出
+        const storageBytes = (streamer.card_images || []).reduce((total, card) => {
+          if (card.image_url) {
+            const fileSize = fileSizeByUrl.get(card.image_url) || 0
+            return total + fileSize
+          }
+          return total
+        }, 0)
 
         return {
           id: streamer.id,
@@ -83,6 +120,7 @@ export function Streamers() {
           created_at: streamer.created_at,
           updated_at: streamer.updated_at,
           card_count: cardCount,
+          storage_bytes: storageBytes,
         }
       })
 
@@ -154,6 +192,17 @@ export function Streamers() {
       ),
     },
     {
+      // Storage column - displays total file size of all card images for this streamer
+      // ストレージ列 - このストリーマーの全カード画像のファイルサイズ合計を表示
+      key: 'storage',
+      header: 'Storage',
+      render: (streamer: StreamerWithStats) => (
+        <span className={`text-sm ${streamer.storage_bytes > 0 ? 'text-blue-600 font-medium' : 'text-gray-400'}`}>
+          {formatBytes(streamer.storage_bytes)}
+        </span>
+      ),
+    },
+    {
       key: 'eventsub',
       header: 'EventSub',
       render: (streamer: StreamerWithStats) => (
@@ -188,10 +237,12 @@ export function Streamers() {
     },
   ]
 
-  // Calculate summary statistics（全データに基づく）
+  // Calculate summary statistics including total storage usage
+  // 全ストリーマーの統計情報を計算（ストレージ使用量を含む）
   const activeStreamers = streamers.filter((s) => s.is_active).length
   const configuredStreamers = streamers.filter((s) => s.channel_point_reward_id).length
   const totalCards = streamers.reduce((sum, s) => sum + s.card_count, 0)
+  const totalStorage = streamers.reduce((sum, s) => sum + s.storage_bytes, 0)
   const streamersWithCards = streamers.filter((s) => s.card_count > 0).length
 
   /**
@@ -223,6 +274,8 @@ export function Streamers() {
           return b.card_count - a.card_count
         case 'card_count_asc':
           return a.card_count - b.card_count
+        case 'storage_desc':
+          return b.storage_bytes - a.storage_bytes
         case 'name_asc':
           return a.twitch_display_name.localeCompare(b.twitch_display_name)
         case 'created_at_desc':
@@ -242,8 +295,8 @@ export function Streamers() {
         <p className="text-gray-500 mt-1">Manage and view all registered streamers</p>
       </div>
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      {/* Summary Stats - includes total storage usage across all streamers */}
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Streamers</p>
           <p className="text-2xl font-bold">{streamers.length}</p>
@@ -259,6 +312,10 @@ export function Streamers() {
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Cards</p>
           <p className="text-2xl font-bold">{totalCards}</p>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4">
+          <p className="text-sm text-gray-500">Total Storage</p>
+          <p className="text-2xl font-bold text-purple-600">{formatBytes(totalStorage)}</p>
         </div>
       </div>
 
@@ -318,6 +375,7 @@ export function Streamers() {
             >
               <option value="card_count_desc">カード数 (多い順)</option>
               <option value="card_count_asc">カード数 (少ない順)</option>
+              <option value="storage_desc">ストレージ (大きい順)</option>
               <option value="name_asc">名前 (A-Z)</option>
               <option value="created_at_desc">登録日 (新しい順)</option>
             </select>

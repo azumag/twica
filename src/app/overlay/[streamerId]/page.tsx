@@ -8,6 +8,17 @@ import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
 import { RARITIES, RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
 
+// OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
+// 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
+// setTimeoutでフォールバックする
+if (typeof window !== 'undefined' && typeof window.queueMicrotask !== 'function') {
+  window.queueMicrotask = (callback: () => void) => {
+    Promise.resolve().then(callback).catch((err) => {
+      setTimeout(() => { throw err; }, 0);
+    });
+  };
+}
+
 /**
  * Get rarity information (label and color) for a given rarity value
  * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
@@ -35,6 +46,10 @@ interface SparklePosition {
  * - effects: レジェンダリーのキラキラエフェクト表示（デフォルト: true）
  * - smallMode: 小さい画像用の縮小表示モード
  * - debug: デバッグモード（接続状態の詳細表示）
+ * - portraitShowName: 縦長画像でカード名を表示（画像の下）
+ * - portraitShowRarity: 縦長画像でレアリティを表示（画像の下）
+ * - portraitShowDescription: 縦長画像で説明を表示（画像の下）
+ * - portraitShowUsername: 縦長画像でユーザー名を表示（画像の上）
  */
 interface OverlayOptions {
   imageOnly: boolean;
@@ -42,6 +57,11 @@ interface OverlayOptions {
   effects: boolean;
   smallMode: boolean;
   debug: boolean;
+  // 縦長画像の付帯情報表示オプション（画像に被らず表示）
+  portraitShowName: boolean;
+  portraitShowRarity: boolean;
+  portraitShowDescription: boolean;
+  portraitShowUsername: boolean;
 }
 
 // Generate sparkle positions outside of render
@@ -70,6 +90,11 @@ export default function OverlayPage() {
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
     debug: false,        // デバッグモード（接続状態の詳細表示）
+    // 縦長画像の付帯情報オプション（デフォルトでレアリティのみ表示）
+    portraitShowName: false,
+    portraitShowRarity: true,
+    portraitShowDescription: false,
+    portraitShowUsername: false,
   });
   // デバッグ用の詳細な接続ログ
   // OBSブラウザソースでの接続問題を調査するために使用
@@ -91,12 +116,12 @@ export default function OverlayPage() {
   // URLパラメータからオーバーレイオプションを解析
   // Parse overlay options from URL parameters
   // autoPortrait, smallMode, effectsはデフォルトでtrue（falseの場合のみURLパラメータで明示）
+  // portraitShowRarityはデフォルトでtrue、それ以外はfalse
   // queueMicrotaskを使用してsetStateを非同期に実行し、カスケードレンダーを回避
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    // 非同期に実行してuseEffect内での同期的なsetState呼び出しを回避
-    // Defer setState to avoid synchronous state update in effect body
     const isDebug = urlParams.get("debug") === "true";
+    // queueMicrotaskで非同期に実行してカスケードレンダーを回避
     queueMicrotask(() => {
       setOptions({
         imageOnly: urlParams.get("imageOnly") === "true",
@@ -104,6 +129,12 @@ export default function OverlayPage() {
         effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
         smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
         debug: isDebug,
+        // 縦長画像の付帯情報オプション
+        // pName, pRarity, pDesc, pUser（短縮パラメータ名）
+        portraitShowName: urlParams.get("pName") === "true",              // デフォルトはfalse
+        portraitShowRarity: urlParams.get("pRarity") !== "false",         // デフォルトはtrue
+        portraitShowDescription: urlParams.get("pDesc") === "true",       // デフォルトはfalse
+        portraitShowUsername: urlParams.get("pUser") === "true",          // デフォルトはfalse
       });
       if (isDebug) {
         // デバッグモードの場合、初期化ログを追加
@@ -188,8 +219,12 @@ export default function OverlayPage() {
 
   // Connect to Supabase Realtime for real-time events
   useEffect(() => {
-    addDebugLog(`Starting subscription for streamer: ${streamerId}`);
-    addDebugLog(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
+    // queueMicrotaskで非同期に実行してカスケードレンダーを回避
+    // addDebugLogはsetDebugLogsを呼び出すため、同期的に実行するとlintエラーになる
+    queueMicrotask(() => {
+      addDebugLog(`Starting subscription for streamer: ${streamerId}`);
+      addDebugLog(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
+    });
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
       addDebugLog(`Received payload: ${payload.type}`);
@@ -225,13 +260,15 @@ export default function OverlayPage() {
       },
     });
 
+    // OBSブラウザソースのCEFは初期化が遅いことがあるため、
+    // タイムアウトを30秒に延長（通常ブラウザでは10秒で十分だが）
     connectionTimeoutRef.current = setTimeout(() => {
       if (connectionStatusRef.current === 'connecting') {
-        addDebugLog('Connection timeout after 10 seconds');
+        addDebugLog('Connection timeout after 30 seconds');
         setConnectionStatus('error');
-        setErrorMessage('Connection timeout');
+        setErrorMessage('Connection timeout - OBSの場合はブラウザソースを再作成してください');
       }
-    }, 10000);
+    }, 30000);
 
     cleanupRef.current = cleanup;
 
@@ -354,7 +391,19 @@ export default function OverlayPage() {
         {shouldShowImageOnly ? (
           // 画像のみ表示モード（imageOnlyまたはautoPortraitでポートレイト画像の場合）
           // Image only mode: shows just the image without card frame
-          <div className="relative">
+          // autoPortraitの場合は付帯情報オプションで追加情報を表示可能
+          <div className="relative flex flex-col items-center">
+            {/* ユーザー名（画像の上、オプションで表示） */}
+            {/* Username above image (optional) */}
+            {options.autoPortrait && isPortraitImage && options.portraitShowUsername && (
+              <div className="mb-2 px-4 py-1 rounded-lg bg-gray-800/90 text-center">
+                <span className={`text-gray-300 ${shouldUseSmallMode ? "text-xs" : "text-sm"}`}>
+                  {result.userTwitchUsername} が引いたカード
+                </span>
+              </div>
+            )}
+
+            {/* 画像 */}
             {result.card.image_url ? (
               <Image
                 src={result.card.image_url}
@@ -369,6 +418,39 @@ export default function OverlayPage() {
                 <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
               </div>
             )}
+
+            {/* 付帯情報（画像の下、オプションで表示） */}
+            {/* Info section below image (optional, for autoPortrait mode) */}
+            {options.autoPortrait && isPortraitImage && (
+              options.portraitShowName || options.portraitShowRarity || options.portraitShowDescription
+            ) && (
+              <div className={`mt-2 px-4 py-2 rounded-lg bg-gray-800/90 ${shouldUseSmallMode ? "max-w-[192px]" : "max-w-[320px]"}`}>
+                {/* カード名とレアリティ */}
+                {(options.portraitShowName || options.portraitShowRarity) && (
+                  <div className="flex items-center justify-center gap-2 flex-wrap">
+                    {options.portraitShowName && (
+                      <span className={`text-white font-semibold ${shouldUseSmallMode ? "text-sm" : "text-base"}`}>
+                        {result.card.name}
+                      </span>
+                    )}
+                    {options.portraitShowRarity && (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-white ${shouldUseSmallMode ? "text-[10px]" : "text-xs"} ${rarityInfo.color}`}
+                      >
+                        {rarityInfo.label}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {/* 説明文 */}
+                {options.portraitShowDescription && result.card.description && (
+                  <p className={`text-gray-300 text-center line-clamp-2 ${shouldUseSmallMode ? "text-xs mt-1" : "text-sm mt-2"}`}>
+                    {result.card.description}
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Sparkle Effects for Legendary (if enabled) */}
             {shouldShowEffects && (
               <div className="pointer-events-none absolute inset-0">

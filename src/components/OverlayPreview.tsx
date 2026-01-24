@@ -14,6 +14,12 @@ interface OverlayOptions {
   autoPortrait: boolean;    // 縦長画像を自動検出してオリジナル表示
   effects: boolean;         // レジェンダリーのキラキラエフェクト表示
   smallMode: boolean;       // 小さい画像用の縮小表示モード
+  // 縦長画像の付帯情報表示オプション（画像に被らず下に表示）
+  // Portrait image info options (displayed below image, not overlapping)
+  portraitShowName: boolean;        // 縦長画像でカード名を表示
+  portraitShowRarity: boolean;      // 縦長画像でレアリティを表示
+  portraitShowDescription: boolean; // 縦長画像で説明を表示
+  portraitShowUsername: boolean;    // 縦長画像でユーザー名を表示
 }
 
 interface OverlayPreviewProps {
@@ -51,6 +57,12 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
+    // 縦長画像の付帯情報はデフォルトでレアリティのみ表示
+    // Portrait info defaults to showing rarity only
+    portraitShowName: false,
+    portraitShowRarity: true,
+    portraitShowDescription: false,
+    portraitShowUsername: false,
   });
 
   // URL更新メッセージの表示状態
@@ -71,12 +83,19 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   // 現在のオプションからURLパラメータを生成（ユーザー向けURL用）
   // Generate URL parameters from current options (for user-facing URL)
   // autoPortrait, smallMode, effectsはデフォルトでtrue（falseの場合のみURLパラメータで明示）
+  // portraitShowRarityはデフォルトでtrue、それ以外はfalse
   const buildUrlParams = useCallback(() => {
     const params = new URLSearchParams();
     if (options.imageOnly) params.set("imageOnly", "true");
     if (!options.autoPortrait) params.set("autoPortrait", "false");  // デフォルトtrue、falseの場合のみ出力
     if (!options.effects) params.set("effects", "false");             // デフォルトtrue、falseの場合のみ出力
     if (!options.smallMode) params.set("smallMode", "false");        // デフォルトtrue、falseの場合のみ出力
+    // 縦長画像の付帯情報オプション
+    // Portrait info options
+    if (options.portraitShowName) params.set("pName", "true");               // デフォルトfalse、trueの場合のみ出力
+    if (!options.portraitShowRarity) params.set("pRarity", "false");         // デフォルトtrue、falseの場合のみ出力
+    if (options.portraitShowDescription) params.set("pDesc", "true");        // デフォルトfalse、trueの場合のみ出力
+    if (options.portraitShowUsername) params.set("pUser", "true");           // デフォルトfalse、trueの場合のみ出力
     return params.toString();
   }, [options]);
 
@@ -84,6 +103,10 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   const overlayUrl = `${baseUrl}/overlay/${streamerId}`;
   const urlParams = buildUrlParams();
   const overlayUrlWithParams = urlParams ? `${overlayUrl}?${urlParams}` : overlayUrl;
+
+  // コレクションページURLを生成
+  // Generate collection page URL
+  const collectionUrl = `${baseUrl}/collection/${streamerId}`;
 
   // オプション変更時にURL更新メッセージを表示
   // 初回レンダリング時は表示しない
@@ -187,6 +210,26 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
         <CopyButton text={overlayUrlWithParams} />
       </div>
 
+      {/* コレクションページURL */}
+      {/* Collection page URL */}
+      <div className="mt-4">
+        <h3 className="mb-2 text-sm font-medium text-gray-300">
+          {t("collectionUrl")}
+        </h3>
+        <p className="mb-2 text-xs text-gray-400">
+          {t("collectionUrlDescription")}
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            readOnly
+            value={collectionUrl}
+            className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
+          />
+          <CopyButton text={collectionUrl} />
+        </div>
+      </div>
+
       {/* URL更新メッセージ - 高さを常に確保してレイアウトシフトを防ぐ */}
       {/* Use fixed height and opacity transition to prevent layout shift */}
       <p
@@ -263,6 +306,73 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
             </div>
           </label>
         </div>
+
+        {/* 縦長画像の付帯情報設定セクション（autoPortraitが有効な場合のみ表示） */}
+        {/* Portrait image info section (only shown when autoPortrait is enabled) */}
+        {options.autoPortrait && (
+          <div className="mt-6 pt-4 border-t border-gray-600">
+            <h4 className="mb-3 text-sm font-medium text-gray-300">
+              {t("options.portraitInfoSection")}
+            </h4>
+            <div className="space-y-3 pl-2">
+              {/* portraitShowUsername option */}
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.portraitShowUsername}
+                  onChange={() => toggleOption("portraitShowUsername")}
+                  className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500"
+                />
+                <div>
+                  <span className="text-white text-sm">{t("options.portraitShowUsername")}</span>
+                  <p className="text-xs text-gray-400">{t("options.portraitShowUsernameDescription")}</p>
+                </div>
+              </label>
+
+              {/* portraitShowName option */}
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.portraitShowName}
+                  onChange={() => toggleOption("portraitShowName")}
+                  className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500"
+                />
+                <div>
+                  <span className="text-white text-sm">{t("options.portraitShowName")}</span>
+                  <p className="text-xs text-gray-400">{t("options.portraitShowNameDescription")}</p>
+                </div>
+              </label>
+
+              {/* portraitShowRarity option */}
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.portraitShowRarity}
+                  onChange={() => toggleOption("portraitShowRarity")}
+                  className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500"
+                />
+                <div>
+                  <span className="text-white text-sm">{t("options.portraitShowRarity")}</span>
+                  <p className="text-xs text-gray-400">{t("options.portraitShowRarityDescription")}</p>
+                </div>
+              </label>
+
+              {/* portraitShowDescription option */}
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.portraitShowDescription}
+                  onChange={() => toggleOption("portraitShowDescription")}
+                  className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500"
+                />
+                <div>
+                  <span className="text-white text-sm">{t("options.portraitShowDescription")}</span>
+                  <p className="text-xs text-gray-400">{t("options.portraitShowDescriptionDescription")}</p>
+                </div>
+              </label>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
