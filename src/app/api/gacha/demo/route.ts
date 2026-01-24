@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { createClient } from "@supabase/supabase-js";
+import { broadcastGachaResult, GachaBroadcastPayload } from "@/lib/realtime";
 
 // Demo cards for testing overlay (used when streamer has no cards)
 // 配信者がカードを持っていない場合に使用されるデモカード
@@ -74,19 +75,23 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
  * デモガチャエンドポイント - 認証なしでオーバーレイをテスト
  * 配信者のカードがあればそれを、なければデモカードを返す
  *
- * @param request - POST request with optional streamerId and cardId in body
+ * @param request - POST request with optional streamerId, cardId, and broadcast in body
  *   - streamerId: 配信者ID（指定された場合、その配信者のカードを優先して返す）
  *   - cardId: カードID（指定された場合、そのカードを直接返す。"random"または未指定でランダム選択）
+ *   - broadcast: boolean（trueの場合、Supabase RealtimeでOBSに送信）
  */
 export async function POST(request: NextRequest) {
   try {
-    // リクエストボディからstreamerId, cardIdを取得（オプション）
+    // リクエストボディからstreamerId, cardId, broadcastを取得（オプション）
+    // Parse streamerId, cardId, and broadcast from request body (all optional)
     let streamerId: string | null = null;
     let cardId: string | null = null;
+    let broadcast: boolean = false;
     try {
       const body = await request.json();
       streamerId = body.streamerId || null;
       cardId = body.cardId || null;
+      broadcast = body.broadcast === true;
     } catch {
       // JSONパースエラーは無視（パラメータなしとして処理）
     }
@@ -94,6 +99,39 @@ export async function POST(request: NextRequest) {
     // Supabaseクライアントの初期化
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    // ブロードキャストとレスポンス返却を行うヘルパー関数
+    // Helper function to optionally broadcast and return response
+    const respondWithCard = async (card: Card, targetStreamerId: string | null) => {
+      const userTwitchUsername = "DemoUser";
+
+      // broadcast=trueかつstreamerIdが指定されている場合、OBSにリアルタイム送信
+      // Broadcast to OBS via Supabase Realtime if broadcast=true and streamerId is provided
+      if (broadcast && targetStreamerId) {
+        const payload: GachaBroadcastPayload = {
+          type: "gacha",
+          card: {
+            id: card.id,
+            name: card.name,
+            description: card.description,
+            image_url: card.image_url,
+            rarity: card.rarity,
+          },
+          userTwitchUsername,
+        };
+
+        try {
+          await broadcastGachaResult(targetStreamerId, payload);
+          logger.info(`Demo broadcast sent to streamer ${targetStreamerId}`);
+        } catch (broadcastError) {
+          // ブロードキャストエラーはログに記録するが、レスポンスは返す
+          // Log broadcast errors but still return response
+          logger.error("Failed to broadcast demo result:", { broadcastError });
+        }
+      }
+
+      return NextResponse.json({ card, userTwitchUsername });
+    };
 
     // 特定のカードIDが指定されている場合、そのカードを直接取得
     // If specific cardId is provided, fetch that card directly
@@ -107,10 +145,7 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (!error && card) {
-        return NextResponse.json({
-          card,
-          userTwitchUsername: "DemoUser",
-        });
+        return respondWithCard(card, streamerId);
       }
       // カードが見つからない場合はランダム選択にフォールバック
     }
@@ -132,10 +167,7 @@ export async function POST(request: NextRequest) {
         // Select random card from streamer's cards
         const randomCard = cards[Math.floor(Math.random() * cards.length)];
 
-        return NextResponse.json({
-          card: randomCard,
-          userTwitchUsername: "DemoUser",
-        });
+        return respondWithCard(randomCard, streamerId);
       }
     }
 
@@ -152,10 +184,7 @@ export async function POST(request: NextRequest) {
       updated_at: new Date().toISOString(),
     };
 
-    return NextResponse.json({
-      card,
-      userTwitchUsername: "DemoUser",
-    });
+    return respondWithCard(card, streamerId);
   } catch (error) {
     logger.error("Demo gacha error:", { error });
     return NextResponse.json(

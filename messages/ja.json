@@ -319,7 +319,14 @@
     },
     "generatedUrl": "生成されたURL",
     "preview": "プレビュー",
-    "runDemo": "DEMOを実行",
+    "previewDemo": "プレビューDEMO",
+    "obsDemo": "OBS DEMO",
+    "demoHelpTitle": "デモの種類",
+    "demoHelpContent": {
+      "previewDemo": "管理画面のプレビュー枠内のみに表示されます。OBSには反映されません。",
+      "obsDemo": "OBSに設定したオーバーレイにも表示されます。接続テストに使用してください。"
+    },
+    "close": "閉じる",
     "demoNote": "※ DEMOボタンで設定されたカードが表示されます。カードがない場合はデモカードが表示されます。",
     "urlUpdated": "オーバーレイURLが更新されました",
     "collectionUrl": "コレクションページURL",

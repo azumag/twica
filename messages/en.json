@@ -319,7 +319,14 @@
     },
     "generatedUrl": "Generated URL",
     "preview": "Preview",
-    "runDemo": "Run DEMO",
+    "previewDemo": "Preview DEMO",
+    "obsDemo": "OBS DEMO",
+    "demoHelpTitle": "Demo Types",
+    "demoHelpContent": {
+      "previewDemo": "Shows only in the preview area on this page. Not reflected in OBS.",
+      "obsDemo": "Shows in OBS overlay as well. Use for connection testing."
+    },
+    "close": "Close",
     "demoNote": "* DEMO button shows your configured cards. Demo cards are shown if you have no cards.",
     "urlUpdated": "Overlay URL has been updated",
     "collectionUrl": "Collection Page URL",

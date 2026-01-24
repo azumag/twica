@@ -80,6 +80,14 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   // 実行中状態の管理（重複実行防止）
   const [isExecuting, setIsExecuting] = useState(false);
 
+  // OBS DEMOの実行中状態
+  // OBS Demo execution state
+  const [isObsDemoExecuting, setIsObsDemoExecuting] = useState(false);
+
+  // デモヘルプモーダルの表示状態
+  // Demo help modal visibility state
+  const [showDemoHelp, setShowDemoHelp] = useState(false);
+
   // 現在のオプションからURLパラメータを生成（ユーザー向けURL用）
   // Generate URL parameters from current options (for user-facing URL)
   // autoPortrait, smallMode, effectsはデフォルトでtrue（falseの場合のみURLパラメータで明示）
@@ -128,9 +136,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
     return () => clearTimeout(timer);
   }, [options]);
 
-  // DEMOを実行（iframe内のオーバーレイにメッセージを送信）
+  // プレビューDEMOを実行（iframe内のオーバーレイにメッセージを送信）
   // 選択されたカードID（またはランダム）でデモを実行
-  // Trigger demo in iframe by refreshing with demo param and optional cardId
+  // Trigger preview demo in iframe by refreshing with demo param and optional cardId
   const triggerDemo = useCallback(() => {
     if (iframeRef.current) {
       // iframeをリロードしてdemoパラメータ付きで再読み込み
@@ -142,6 +150,30 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
       iframeRef.current.src = demoUrl;
     }
   }, [overlayUrl, urlParams, selectedCardId]);
+
+  // OBS DEMOを実行（Supabase Realtimeでブロードキャスト）
+  // OBSに設定したオーバーレイにも反映される
+  // Trigger OBS demo via Supabase Realtime broadcast
+  const triggerObsDemo = useCallback(async () => {
+    if (isObsDemoExecuting) return;
+
+    setIsObsDemoExecuting(true);
+    try {
+      await fetch("/api/gacha/demo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          streamerId,
+          cardId: selectedCardId !== "random" ? selectedCardId : undefined,
+          broadcast: true,
+        }),
+      });
+    } catch (error) {
+      console.error("Failed to trigger OBS demo:", error);
+    } finally {
+      setIsObsDemoExecuting(false);
+    }
+  }, [streamerId, selectedCardId, isObsDemoExecuting]);
 
   // 実際にガチャを引く（DBに記録される本番のガチャAPI呼び出し）
   // Execute real gacha (calls production gacha API and records to DB)
@@ -408,13 +440,39 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
             </select>
           )}
 
-          {/* デモボタン（全環境で表示） */}
-          {/* Demo button (shown in all environments) */}
+          {/* プレビューデモボタン（プレビュー枠内のみ表示） */}
+          {/* Preview demo button (shows only in preview area) */}
           <button
             onClick={triggerDemo}
             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 transition-colors whitespace-nowrap"
           >
-            {t("runDemo")}
+            {t("previewDemo")}
+          </button>
+
+          {/* OBSデモボタン（Supabase RealtimeでOBSにも送信） */}
+          {/* OBS demo button (broadcasts via Supabase Realtime to OBS) */}
+          <button
+            onClick={triggerObsDemo}
+            disabled={isObsDemoExecuting}
+            className={`rounded-lg px-4 py-2 text-sm text-white transition-colors whitespace-nowrap ${
+              isObsDemoExecuting
+                ? "bg-gray-600 cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700"
+            }`}
+          >
+            {isObsDemoExecuting ? "..." : t("obsDemo")}
+          </button>
+
+          {/* ヘルプアイコン（デモの違いを説明するモーダルを表示） */}
+          {/* Help icon button (shows modal explaining demo differences) */}
+          <button
+            onClick={() => setShowDemoHelp(true)}
+            className="w-6 h-6 rounded-full bg-gray-600 text-xs text-gray-300 hover:bg-gray-500 hover:text-white transition-colors flex items-center justify-center"
+            title={t("demoHelpTitle")}
+          >
+            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+            </svg>
           </button>
 
           {/* 実際に引くボタン（Vercelプレビュー環境でのみ表示） */}
@@ -451,6 +509,44 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
         <p className="text-xs text-gray-500 mt-1">
           ※「実際に引く」はプレビュー環境専用です。DBに記録され、履歴に残ります。
         </p>
+      )}
+
+      {/* デモヘルプモーダル */}
+      {/* Demo help modal explaining the difference between preview and OBS demo */}
+      {showDemoHelp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-gray-800 rounded-xl p-6 max-w-md mx-4 shadow-xl">
+            <h3 className="text-lg font-semibold text-white mb-4">
+              {t("demoHelpTitle")}
+            </h3>
+            <div className="space-y-4">
+              {/* プレビューDEMOの説明 */}
+              <div>
+                <h4 className="text-purple-400 font-medium mb-1">
+                  {t("previewDemo")}
+                </h4>
+                <p className="text-sm text-gray-300">
+                  {t("demoHelpContent.previewDemo")}
+                </p>
+              </div>
+              {/* OBS DEMOの説明 */}
+              <div>
+                <h4 className="text-blue-400 font-medium mb-1">
+                  {t("obsDemo")}
+                </h4>
+                <p className="text-sm text-gray-300">
+                  {t("demoHelpContent.obsDemo")}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowDemoHelp(false)}
+              className="mt-6 w-full rounded-lg bg-gray-700 px-4 py-2 text-sm text-white hover:bg-gray-600 transition-colors"
+            >
+              {t("close")}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

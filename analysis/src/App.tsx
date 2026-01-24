@@ -5,6 +5,7 @@ import { Users } from './pages/Users'
 import { UserCards } from './pages/UserCards'
 import { Streamers } from './pages/Streamers'
 import { StreamerCards } from './pages/StreamerCards'
+import { StreamerGachaHistory } from './pages/StreamerGachaHistory'
 import { Gacha } from './pages/Gacha'
 import { Battles } from './pages/Battles'
 
@@ -24,6 +25,8 @@ function App() {
         <Route path="streamers" element={<Streamers />} />
         {/* ストリーマーごとのカード一覧ページ */}
         <Route path="streamers/:streamerId/cards" element={<StreamerCards />} />
+        {/* ストリーマーごとのガチャ履歴ページ */}
+        <Route path="streamers/:streamerId/gacha" element={<StreamerGachaHistory />} />
         <Route path="gacha" element={<Gacha />} />
         <Route path="battles" element={<Battles />} />
       </Route>
