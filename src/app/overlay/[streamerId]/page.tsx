@@ -12,7 +12,6 @@ import { RARITIES, RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
 // setTimeoutでフォールバックする
 if (typeof window !== 'undefined' && typeof window.queueMicrotask !== 'function') {
-  // @ts-expect-error - ポリフィルのためwindowオブジェクトに直接代入
   window.queueMicrotask = (callback: () => void) => {
     Promise.resolve().then(callback).catch((err) => {
       setTimeout(() => { throw err; }, 0);
