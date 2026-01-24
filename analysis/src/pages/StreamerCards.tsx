@@ -262,16 +262,26 @@ export function StreamerCards() {
             </div>
           )}
         </div>
-        {/* Twitchリンク */}
+        {/* アクションボタン群 */}
         {streamer && (
-          <a
-            href={`https://twitch.tv/${streamer.twitch_username}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm font-medium"
-          >
-            Twitchで見る ↗
-          </a>
+          <div className="flex items-center space-x-2">
+            {/* ガチャ履歴ページへのリンク */}
+            <button
+              onClick={() => navigate(`/streamers/${streamerId}/gacha`)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+            >
+              ガチャ履歴
+            </button>
+            {/* Twitchリンク */}
+            <a
+              href={`https://twitch.tv/${streamer.twitch_username}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm font-medium"
+            >
+              Twitchで見る ↗
+            </a>
+          </div>
         )}
       </div>
 
