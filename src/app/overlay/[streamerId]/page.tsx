@@ -47,6 +47,7 @@ interface SparklePosition {
  * - effects: レジェンダリーのキラキラエフェクト表示（デフォルト: true）
  * - smallMode: 小さい画像用の縮小表示モード
  * - debug: デバッグモード（接続状態の詳細表示）
+ * - compat: 互換モード（queueMicrotaskを使わない、OBSブラウザソース向け）
  */
 interface OverlayOptions {
   imageOnly: boolean;
@@ -54,6 +55,7 @@ interface OverlayOptions {
   effects: boolean;
   smallMode: boolean;
   debug: boolean;
+  compat: boolean;
 }
 
 // Generate sparkle positions outside of render
@@ -82,6 +84,7 @@ export default function OverlayPage() {
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
     debug: false,        // デバッグモード（接続状態の詳細表示）
+    compat: false,       // 互換モード（queueMicrotaskを使わない）
   });
   // デバッグ用の詳細な接続ログ
   // OBSブラウザソースでの接続問題を調査するために使用
@@ -103,25 +106,39 @@ export default function OverlayPage() {
   // URLパラメータからオーバーレイオプションを解析
   // Parse overlay options from URL parameters
   // autoPortrait, smallMode, effectsはデフォルトでtrue（falseの場合のみURLパラメータで明示）
-  // queueMicrotaskを使用してsetStateを非同期に実行し、カスケードレンダーを回避
+  // compat=trueの場合はqueueMicrotaskを使わずに直接setStateを呼ぶ（OBSブラウザソース互換モード）
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    // 非同期に実行してuseEffect内での同期的なsetState呼び出しを回避
-    // Defer setState to avoid synchronous state update in effect body
     const isDebug = urlParams.get("debug") === "true";
-    queueMicrotask(() => {
-      setOptions({
-        imageOnly: urlParams.get("imageOnly") === "true",
-        autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
-        effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
-        smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
-        debug: isDebug,
-      });
+    const isCompat = urlParams.get("compat") === "true";
+
+    const newOptions: OverlayOptions = {
+      imageOnly: urlParams.get("imageOnly") === "true",
+      autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
+      effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
+      smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
+      debug: isDebug,
+      compat: isCompat,
+    };
+
+    const applyOptions = () => {
+      setOptions(newOptions);
       if (isDebug) {
         // デバッグモードの場合、初期化ログを追加
-        setDebugLogs(prev => [...prev, `[${new Date().toISOString()}] Debug mode enabled`]);
+        const modeInfo = isCompat ? 'Debug mode enabled (compat mode)' : 'Debug mode enabled';
+        setDebugLogs(prev => [...prev, `[${new Date().toISOString()}] ${modeInfo}`]);
       }
-    });
+    };
+
+    // 互換モード（compat=true）の場合はqueueMicrotaskを使わずに直接実行
+    // OBSブラウザソースの古いCEFではqueueMicrotaskが問題を起こす可能性があるため
+    if (isCompat) {
+      // 互換モード：直接実行（カスケードレンダーの可能性があるが互換性を優先）
+      applyOptions();
+    } else {
+      // 通常モード：queueMicrotaskで非同期に実行してカスケードレンダーを回避
+      queueMicrotask(applyOptions);
+    }
   }, []);
 
   // 画像のアスペクト比を判定（縦長かどうか）と小さい画像かどうかを判定
