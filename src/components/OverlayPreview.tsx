@@ -463,14 +463,16 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
             {isObsDemoExecuting ? "..." : t("obsDemo")}
           </button>
 
-          {/* ヘルプボタン（デモの違いを説明するモーダルを表示） */}
-          {/* Help button (shows modal explaining demo differences) */}
+          {/* ヘルプアイコン（デモの違いを説明するモーダルを表示） */}
+          {/* Help icon button (shows modal explaining demo differences) */}
           <button
             onClick={() => setShowDemoHelp(true)}
-            className="rounded-lg bg-gray-600 px-3 py-2 text-sm text-white hover:bg-gray-500 transition-colors"
+            className="w-6 h-6 rounded-full bg-gray-600 text-xs text-gray-300 hover:bg-gray-500 hover:text-white transition-colors flex items-center justify-center"
             title={t("demoHelpTitle")}
           >
-            ?
+            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+            </svg>
           </button>
 
           {/* 実際に引くボタン（Vercelプレビュー環境でのみ表示） */}
