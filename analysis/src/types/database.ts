@@ -261,6 +261,31 @@ export interface Database {
           updated_at?: string
         }
       }
+      // Storage tracking tables for monitoring blob file usage per user/streamer
+      // blob_filesはカード画像のストレージ情報を管理し、URLをキーにファイルサイズを記録
+      blob_files: {
+        Row: {
+          url: string
+          user_prefix: string
+          file_size: number
+          storage_type: 'r2' | 'vercel'
+          created_at: string
+        }
+        Insert: {
+          url: string
+          user_prefix: string
+          file_size: number
+          storage_type: 'r2' | 'vercel'
+          created_at?: string
+        }
+        Update: {
+          url?: string
+          user_prefix?: string
+          file_size?: number
+          storage_type?: 'r2' | 'vercel'
+          created_at?: string
+        }
+      }
     }
     Views: {
       [_ in never]: never
@@ -282,6 +307,7 @@ export type UserCard = Database['public']['Tables']['user_cards']['Row']
 export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
 export type Battle = Database['public']['Tables']['battles']['Row']
 export type BattleStats = Database['public']['Tables']['battle_stats']['Row']
+export type BlobFile = Database['public']['Tables']['blob_files']['Row']
 
 // Extended types with relations for dashboard views
 export type CardWithStreamer = Card & {

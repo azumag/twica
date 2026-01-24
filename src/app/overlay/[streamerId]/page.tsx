@@ -8,6 +8,17 @@ import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
 import { RARITIES, RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
 
+// OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
+// 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
+// setTimeoutでフォールバックする
+if (typeof window !== 'undefined' && typeof window.queueMicrotask !== 'function') {
+  window.queueMicrotask = (callback: () => void) => {
+    Promise.resolve().then(callback).catch((err) => {
+      setTimeout(() => { throw err; }, 0);
+    });
+  };
+}
+
 /**
  * Get rarity information (label and color) for a given rarity value
  * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
@@ -109,8 +120,6 @@ export default function OverlayPage() {
   // queueMicrotaskを使用してsetStateを非同期に実行し、カスケードレンダーを回避
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    // 非同期に実行してuseEffect内での同期的なsetState呼び出しを回避
-    // Defer setState to avoid synchronous state update in effect body
     const isDebug = urlParams.get("debug") === "true";
     queueMicrotask(() => {
       setOptions({
@@ -128,9 +137,20 @@ export default function OverlayPage() {
       });
       if (isDebug) {
         // デバッグモードの場合、初期化ログを追加
-        setDebugLogs(prev => [...prev, `[${new Date().toISOString()}] Debug mode enabled`]);
+        const modeInfo = isCompat ? 'Debug mode enabled (compat mode)' : 'Debug mode enabled';
+        setDebugLogs(prev => [...prev, `[${new Date().toISOString()}] ${modeInfo}`]);
       }
-    });
+    };
+
+    // 互換モード（compat=true）の場合はqueueMicrotaskを使わずに直接実行
+    // OBSブラウザソースの古いCEFではqueueMicrotaskが問題を起こす可能性があるため
+    if (isCompat) {
+      // 互換モード：直接実行（カスケードレンダーの可能性があるが互換性を優先）
+      applyOptions();
+    } else {
+      // 通常モード：queueMicrotaskで非同期に実行してカスケードレンダーを回避
+      queueMicrotask(applyOptions);
+    }
   }, []);
 
   // 画像のアスペクト比を判定（縦長かどうか）と小さい画像かどうかを判定
@@ -246,13 +266,15 @@ export default function OverlayPage() {
       },
     });
 
+    // OBSブラウザソースのCEFは初期化が遅いことがあるため、
+    // タイムアウトを30秒に延長（通常ブラウザでは10秒で十分だが）
     connectionTimeoutRef.current = setTimeout(() => {
       if (connectionStatusRef.current === 'connecting') {
-        addDebugLog('Connection timeout after 10 seconds');
+        addDebugLog('Connection timeout after 30 seconds');
         setConnectionStatus('error');
-        setErrorMessage('Connection timeout');
+        setErrorMessage('Connection timeout - OBSの場合はブラウザソースを再作成してください');
       }
-    }, 10000);
+    }, 30000);
 
     cleanupRef.current = cleanup;
 
