@@ -187,6 +187,14 @@
     "cardTypes": "({count} 種類)",
     "cardCount": "x{count}"
   },
+  "streamerCollection": {
+    "title": "{streamerName} のコレクション",
+    "empty": {
+      "line1": "この配信者のカードはまだ持っていません。",
+      "line2": "チャネルポイントを使ってカードをゲットしましょう！"
+    },
+    "viewFullCollection": "← すべてのコレクションを見る"
+  },
   "dashboard": {
     "title": "ダッシュボード",
     "streamerSettings": "配信者設定",
@@ -301,7 +309,9 @@
     "preview": "プレビュー",
     "runDemo": "DEMOを実行",
     "demoNote": "※ DEMOボタンで設定されたカードが表示されます。カードがない場合はデモカードが表示されます。",
-    "urlUpdated": "オーバーレイURLが更新されました"
+    "urlUpdated": "オーバーレイURLが更新されました",
+    "collectionUrl": "コレクションページURL",
+    "collectionUrlDescription": "視聴者がこの配信者のコレクションを確認できるページです。チャットやSNSで共有できます。"
   },
   "settingsPage": {
     "title": "配信設定",

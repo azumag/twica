@@ -47,6 +47,15 @@ export async function GET(request: Request) {
 
     const authUrl = getTwitchAuthUrl(redirectUri, state)
 
+    // Check if direct redirect is requested (for server-side redirects)
+    // サーバーサイドリダイレクト用に直接リダイレクトが要求されているかチェック
+    const url = new URL(request.url)
+    const shouldRedirect = url.searchParams.get('redirect') === 'true'
+
+    if (shouldRedirect) {
+      return NextResponse.redirect(authUrl)
+    }
+
     return NextResponse.json({ authUrl })
   } catch (error) {
     reportAuthError(error, {

@@ -196,3 +196,103 @@ export async function getRecentGachaHistory(): Promise<GachaHistoryWithCard[]> {
 
   return (history || []) as unknown as GachaHistoryWithCard[];
 }
+
+/**
+ * Internal function to fetch user cards for a specific streamer from database
+ * 内部関数: 特定の配信者のユーザーカードをデータベースから取得
+ */
+async function fetchUserCardsForStreamerFromDB(
+  twitchUserId: string,
+  streamerId: string
+): Promise<CardWithDetails[]> {
+  const startTotal = Date.now();
+  const supabaseAdmin = getSupabaseAdmin();
+
+  // Get user with their cards for the specific streamer
+  // 特定の配信者のカードのみを取得
+  const startQuery = Date.now();
+  const { data: user } = await supabaseAdmin
+    .from("users")
+    .select(`
+      id,
+      user_cards (
+        card_id,
+        cards!inner (
+          *,
+          streamers!inner (*)
+        )
+      )
+    `)
+    .eq("twitch_user_id", twitchUserId)
+    .single();
+  logger.info(`[Perf] getUserCardsForStreamer query: ${Date.now() - startQuery}ms`);
+
+  if (!user || !user.user_cards) {
+    logger.info(`[Perf] getUserCardsForStreamer total (no data): ${Date.now() - startTotal}ms`);
+    return [];
+  }
+
+  const cardMap = new Map<string, CardWithDetails>();
+
+  for (const uc of user.user_cards) {
+    const card = uc.cards as unknown as Card & { streamers: Streamer };
+    if (!card) continue;
+
+    // Filter by streamer ID
+    // 配信者IDでフィルタリング
+    if (card.streamers.id !== streamerId) continue;
+
+    const existing = cardMap.get(card.id);
+    if (existing) {
+      existing.count++;
+    } else {
+      cardMap.set(card.id, {
+        ...card,
+        streamer: card.streamers,
+        count: 1,
+      });
+    }
+  }
+
+  logger.info(`[Perf] getUserCardsForStreamer total: ${Date.now() - startTotal}ms`);
+  return Array.from(cardMap.values());
+}
+
+/**
+ * Get user's card collection for a specific streamer - cached with Next.js cache (30 seconds TTL)
+ * 特定の配信者のユーザーカードコレクション取得 - Next.jsキャッシュ使用（30秒TTL）
+ */
+export const getUserCardsForStreamer = cache(async (
+  twitchUserId: string,
+  streamerId: string
+): Promise<CardWithDetails[]> => {
+  const start = Date.now();
+
+  // Use Next.js cache with 30 second revalidation
+  // Next.jsキャッシュを使用（30秒で再検証）
+  const cachedFetch = unstable_cache(
+    async () => fetchUserCardsForStreamerFromDB(twitchUserId, streamerId),
+    [`user-cards-${twitchUserId}-${streamerId}`],
+    { revalidate: 30, tags: [`user-cards-${twitchUserId}-${streamerId}`] }
+  );
+
+  const result = await cachedFetch();
+  logger.info(`[Perf] getUserCardsForStreamer (with cache): ${Date.now() - start}ms`);
+  return result;
+});
+
+/**
+ * Get streamer info by ID
+ * 配信者IDから配信者情報を取得
+ */
+export const getStreamerById = cache(async (streamerId: string): Promise<Streamer | null> => {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: streamer } = await supabaseAdmin
+    .from("streamers")
+    .select("*")
+    .eq("id", streamerId)
+    .single();
+
+  return streamer;
+});

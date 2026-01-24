@@ -85,6 +85,10 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   const urlParams = buildUrlParams();
   const overlayUrlWithParams = urlParams ? `${overlayUrl}?${urlParams}` : overlayUrl;
 
+  // コレクションページURLを生成
+  // Generate collection page URL
+  const collectionUrl = `${baseUrl}/collection/${streamerId}`;
+
   // オプション変更時にURL更新メッセージを表示
   // 初回レンダリング時は表示しない
   // queueMicrotaskを使用してsetStateを非同期に実行し、カスケードレンダーを回避
@@ -185,6 +189,26 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
           className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
         />
         <CopyButton text={overlayUrlWithParams} />
+      </div>
+
+      {/* コレクションページURL */}
+      {/* Collection page URL */}
+      <div className="mt-4">
+        <h3 className="mb-2 text-sm font-medium text-gray-300">
+          {t("collectionUrl")}
+        </h3>
+        <p className="mb-2 text-xs text-gray-400">
+          {t("collectionUrlDescription")}
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            readOnly
+            value={collectionUrl}
+            className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
+          />
+          <CopyButton text={collectionUrl} />
+        </div>
       </div>
 
       {/* URL更新メッセージ - 高さを常に確保してレイアウトシフトを防ぐ */}

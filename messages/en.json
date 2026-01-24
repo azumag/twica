@@ -187,6 +187,14 @@
     "cardTypes": "({count} types)",
     "cardCount": "x{count}"
   },
+  "streamerCollection": {
+    "title": "{streamerName}'s Collection",
+    "empty": {
+      "line1": "You don't have any cards from this streamer yet.",
+      "line2": "Use channel points to get cards!"
+    },
+    "viewFullCollection": "← View Full Collection"
+  },
   "dashboard": {
     "title": "Dashboard",
     "streamerSettings": "Streamer Settings",
@@ -301,7 +309,9 @@
     "preview": "Preview",
     "runDemo": "Run DEMO",
     "demoNote": "* DEMO button shows your configured cards. Demo cards are shown if you have no cards.",
-    "urlUpdated": "Overlay URL has been updated"
+    "urlUpdated": "Overlay URL has been updated",
+    "collectionUrl": "Collection Page URL",
+    "collectionUrlDescription": "A page where viewers can view their collection from this streamer. Share it on chat or social media."
   },
   "settingsPage": {
     "title": "Stream Settings",
