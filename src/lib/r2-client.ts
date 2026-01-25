@@ -13,7 +13,6 @@ import { logger } from './logger';
  * - R2_PUBLIC_URL: R2パブリックURL (例: https://pub-xxx.r2.dev または カスタムドメイン)
  *
  * 効果音用環境変数（すべて必須）:
- * - R2_SOUND_ENDPOINT: 効果音バケット用エンドポイントURL
  * - R2_SOUND_ACCESS_KEY_ID: 効果音バケット用アクセスキーID
  * - R2_SOUND_SECRET_ACCESS_KEY: 効果音バケット用シークレットアクセスキー
  * - R2_SOUND_BUCKET_NAME: 効果音バケット名
@@ -68,7 +67,7 @@ export function getR2Bucket(): string {
 
 /**
  * 効果音バケット用R2クライアントを取得（シングルトン）
- * 画像バケットとは別の認証情報を使用
+ * エンドポイントは共通、認証情報のみ別
  * @throws 必要な環境変数が未設定の場合にエラー
  */
 export function getR2SoundClient(): S3Client {
@@ -76,12 +75,16 @@ export function getR2SoundClient(): S3Client {
     return r2SoundClientInstance;
   }
 
-  const endpoint = process.env.R2_SOUND_ENDPOINT;
+  // エンドポイントは画像バケットと共通
+  const endpoint = process.env.R2_ENDPOINT;
   const accessKeyId = process.env.R2_SOUND_ACCESS_KEY_ID;
   const secretAccessKey = process.env.R2_SOUND_SECRET_ACCESS_KEY;
 
-  if (!endpoint || !accessKeyId || !secretAccessKey) {
-    throw new Error('Missing R2 sound environment variables: R2_SOUND_ENDPOINT, R2_SOUND_ACCESS_KEY_ID, R2_SOUND_SECRET_ACCESS_KEY');
+  if (!endpoint) {
+    throw new Error('Missing R2_ENDPOINT environment variable');
+  }
+  if (!accessKeyId || !secretAccessKey) {
+    throw new Error('Missing R2 sound environment variables: R2_SOUND_ACCESS_KEY_ID, R2_SOUND_SECRET_ACCESS_KEY');
   }
 
   r2SoundClientInstance = new S3Client({
