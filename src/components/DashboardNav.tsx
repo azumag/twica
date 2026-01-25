@@ -133,12 +133,19 @@ export default function DashboardNav({ isStreamer }: DashboardNavProps) {
   /**
    * Check if a navigation item is currently active
    * Exact match for /dashboard, startsWith for other routes
+   * Special case: /collection/* paths also activate the collection nav item
    * ナビゲーション項目が現在アクティブかどうかを確認
    * /dashboardは完全一致、その他のルートはstartsWithで判定
+   * 特殊ケース: /collection/* パスもコレクションナビ項目をアクティブにする
    */
   const isActive = (href: string) => {
     if (href === "/dashboard") {
       return pathname === "/dashboard";
+    }
+    // /collection/[streamerId] paths should also activate the collection nav item
+    // /collection/[streamerId] パスでもコレクションナビ項目をアクティブにする
+    if (href === "/dashboard/collection" && pathname.startsWith("/collection/")) {
+      return true;
     }
     return pathname.startsWith(href);
   };
