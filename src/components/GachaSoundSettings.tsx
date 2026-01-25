@@ -276,33 +276,36 @@ export default function GachaSoundSettings({
       </p>
 
       <div className="space-y-4">
-        {/* ファイルアップロード */}
-        <div>
-          <label className="mb-1 block text-sm text-gray-300">
-            {t("form.selectFile")}
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => `.${ext}`).join(",")}
-              onChange={handleFileUpload}
-              disabled={uploading}
-              className="block w-full text-sm text-gray-400
-                file:mr-4 file:rounded-lg file:border-0
-                file:bg-purple-600 file:px-4 file:py-2
-                file:text-sm file:font-medium file:text-white
-                hover:file:bg-purple-700 file:disabled:opacity-50
-                file:cursor-pointer file:disabled:cursor-not-allowed"
-            />
+        {/* ファイルアップロード: 既存ファイルがない場合のみ表示 */}
+        {/* 新しいファイルをアップロードするには、先に既存ファイルを削除する必要がある */}
+        {!soundUrl && (
+          <div>
+            <label className="mb-1 block text-sm text-gray-300">
+              {t("form.selectFile")}
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => `.${ext}`).join(",")}
+                onChange={handleFileUpload}
+                disabled={uploading}
+                className="block w-full text-sm text-gray-400
+                  file:mr-4 file:rounded-lg file:border-0
+                  file:bg-purple-600 file:px-4 file:py-2
+                  file:text-sm file:font-medium file:text-white
+                  hover:file:bg-purple-700 file:disabled:opacity-50
+                  file:cursor-pointer file:disabled:cursor-not-allowed"
+              />
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              {t("form.fileRequirements", {
+                formats: SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => ext.toUpperCase()).join(", "),
+                maxSize: "1MB",
+              })}
+            </p>
           </div>
-          <p className="mt-1 text-xs text-gray-500">
-            {t("form.fileRequirements", {
-              formats: SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => ext.toUpperCase()).join(", "),
-              maxSize: "1MB",
-            })}
-          </p>
-        </div>
+        )}
 
         {/* 現在の効果音 */}
         {soundUrl && (

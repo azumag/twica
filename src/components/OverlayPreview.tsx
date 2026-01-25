@@ -14,6 +14,7 @@ interface OverlayOptions {
   autoPortrait: boolean;    // 縦長画像を自動検出してオリジナル表示
   effects: boolean;         // レジェンダリーのキラキラエフェクト表示
   smallMode: boolean;       // 小さい画像用の縮小表示モード
+  displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
   // 縦長画像の付帯情報表示オプション（画像に被らず下に表示）
   // Portrait image info options (displayed below image, not overlapping)
   portraitShowName: boolean;        // 縦長画像でカード名を表示
@@ -57,6 +58,7 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
+    displayDuration: 6,  // カードの表示時間（秒）、デフォルト6秒
     // 縦長画像の付帯情報はデフォルトでレアリティのみ表示
     // Portrait info defaults to showing rarity only
     portraitShowName: false,
@@ -88,6 +90,10 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   // Demo help modal visibility state
   const [showDemoHelp, setShowDemoHelp] = useState(false);
 
+  // オーバーレイカスタマイズセクションの折りたたみ状態
+  // Collapsible state for overlay customization section
+  const [isCustomizationExpanded, setIsCustomizationExpanded] = useState(false);
+
   // 現在のオプションからURLパラメータを生成（ユーザー向けURL用）
   // Generate URL parameters from current options (for user-facing URL)
   // autoPortrait, smallMode, effectsはデフォルトでtrue（falseの場合のみURLパラメータで明示）
@@ -98,6 +104,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
     if (!options.autoPortrait) params.set("autoPortrait", "false");  // デフォルトtrue、falseの場合のみ出力
     if (!options.effects) params.set("effects", "false");             // デフォルトtrue、falseの場合のみ出力
     if (!options.smallMode) params.set("smallMode", "false");        // デフォルトtrue、falseの場合のみ出力
+    // カードの表示時間（デフォルト6秒、それ以外の場合のみ出力）
+    // Display duration in seconds (default 6, only output if different)
+    if (options.displayDuration !== 6) params.set("duration", String(options.displayDuration));
     // 縦長画像の付帯情報オプション
     // Portrait info options
     if (options.portraitShowName) params.set("pName", "true");               // デフォルトfalse、trueの場合のみ出力
@@ -242,26 +251,6 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
         <CopyButton text={overlayUrlWithParams} />
       </div>
 
-      {/* コレクションページURL */}
-      {/* Collection page URL */}
-      <div className="mt-4">
-        <h3 className="mb-2 text-sm font-medium text-gray-300">
-          {t("collectionUrl")}
-        </h3>
-        <p className="mb-2 text-xs text-gray-400">
-          {t("collectionUrlDescription")}
-        </p>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            readOnly
-            value={collectionUrl}
-            className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
-          />
-          <CopyButton text={collectionUrl} />
-        </div>
-      </div>
-
       {/* URL更新メッセージ - 高さを常に確保してレイアウトシフトを防ぐ */}
       {/* Use fixed height and opacity transition to prevent layout shift */}
       <p
@@ -272,12 +261,38 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
         {t("urlUpdated")}
       </p>
 
-      {/* オーバーレイカスタマイズオプション */}
+      {/* オーバーレイカスタマイズオプション（折りたたみ可能） */}
+      {/* Overlay customization options (collapsible section) */}
       <div className="mt-6 pt-6 border-t border-gray-700">
-        <h3 className="mb-3 text-lg font-semibold text-white">
-          {t("title")}
-        </h3>
-        <p className="text-sm text-gray-400 mb-4">
+        {/* 折りたたみヘッダー - クリックで展開/折りたたみ */}
+        {/* Collapsible header - click to expand/collapse */}
+        <button
+          type="button"
+          onClick={() => setIsCustomizationExpanded(!isCustomizationExpanded)}
+          className="w-full flex items-center justify-between text-left cursor-pointer hover:bg-gray-700/30 rounded-lg p-2 -m-2 transition-colors"
+        >
+          <h3 className="text-lg font-semibold text-white">
+            {t("title")}
+          </h3>
+          {/* 折りたたみ矢印アイコン - 展開時は下向き、折りたたみ時は右向き */}
+          {/* Chevron icon - points down when expanded, right when collapsed */}
+          <svg
+            className={`w-5 h-5 text-gray-400 transition-transform duration-200 ${
+              isCustomizationExpanded ? "rotate-180" : ""
+            }`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {/* 折りたたみ可能なコンテンツ部分 */}
+        {/* Collapsible content section */}
+        {isCustomizationExpanded && (
+          <>
+        <p className="text-sm text-gray-400 mb-4 mt-3">
           {t("description")}
         </p>
 
@@ -337,6 +352,29 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
               <p className="text-xs text-gray-400">{t("options.smallModeDescription")}</p>
             </div>
           </label>
+
+          {/* displayDuration option - カードの表示時間設定 */}
+          {/* Card display duration setting with slider */}
+          <div className="pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-white">{t("options.displayDuration")}</span>
+              <span className="text-sm text-purple-400 font-medium">{options.displayDuration}{t("options.seconds")}</span>
+            </div>
+            <input
+              type="range"
+              min="2"
+              max="15"
+              step="1"
+              value={options.displayDuration}
+              onChange={(e) => setOptions(prev => ({ ...prev, displayDuration: Number(e.target.value) }))}
+              className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-600"
+            />
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>2{t("options.seconds")}</span>
+              <span>15{t("options.seconds")}</span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">{t("options.displayDurationDescription")}</p>
+          </div>
         </div>
 
         {/* 縦長画像の付帯情報設定セクション（autoPortraitが有効な場合のみ表示） */}
@@ -405,6 +443,30 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
             </div>
           </div>
         )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+
+  // コレクションページURLセクション（OBSブラウザソースとは別欄）
+  // Collection page URL section (separate from OBS browser source)
+  const collectionUrlSection = (
+    <div className="rounded-xl bg-gray-800 p-6 h-full">
+      <h2 className="mb-4 text-xl font-semibold text-white">
+        {t("collectionUrl")}
+      </h2>
+      <p className="mb-4 text-sm text-gray-400">
+        {t("collectionUrlDescription")}
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          readOnly
+          value={collectionUrl}
+          className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
+        />
+        <CopyButton text={collectionUrl} />
       </div>
     </div>
   );
@@ -562,6 +624,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
           {urlSection}
           {sideContent}
         </div>
+        {/* コレクションページURLセクション（別欄として表示） */}
+        {/* Collection page URL section (displayed as separate section) */}
+        {collectionUrlSection}
         {/* プレビューは全幅で下に配置 */}
         {/* Preview section spans full width below */}
         {previewSection}
@@ -572,6 +637,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   return (
     <div className={showPreview ? "space-y-8" : ""}>
       {urlSection}
+      {/* コレクションページURLセクション（別欄として表示） */}
+      {/* Collection page URL section (displayed as separate section) */}
+      {collectionUrlSection}
       {previewSection}
     </div>
   );
