@@ -31,6 +31,48 @@ async function getAppAccessToken(): Promise<string> {
   return data.access_token;
 }
 
+// ページネーション対応でEventSubサブスクリプションを全件取得
+// Twitch APIは一度に最大100件しか返さないため、cursorを使って全ページを取得
+interface EventSubSubscription {
+  id: string;
+  status: string;
+  type: string;
+  condition: { broadcaster_user_id: string; reward_id?: string };
+  transport: { method: string; callback: string };
+  created_at: string;
+}
+
+async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubscription[]> {
+  const allData: EventSubSubscription[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const url = cursor
+      ? `${TWITCH_API_URL}/eventsub/subscriptions?after=${cursor}`
+      : `${TWITCH_API_URL}/eventsub/subscriptions`;
+
+    const response = await fetch(url, {
+      headers: {
+        "Authorization": `Bearer ${appAccessToken}`,
+        "Client-Id": process.env.TWITCH_CLIENT_ID!,
+      },
+    });
+
+    if (!response.ok) {
+      logger.error(`Failed to fetch subscriptions page: ${response.status}`);
+      break;
+    }
+
+    const data = await response.json();
+    allData.push(...data.data);
+    cursor = data.pagination?.cursor;
+
+    logger.info(`Fetched ${data.data.length} subscriptions, total so far: ${allData.length}, hasMore: ${!!cursor}`);
+  } while (cursor);
+
+  return allData;
+}
+
 export async function POST(request: NextRequest) {
   const session = await getSession();
 
@@ -82,72 +124,51 @@ export async function POST(request: NextRequest) {
     // Callback URL for EventSub
     const callbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
 
-    // Check existing subscriptions
-    const existingResponse = await fetch(
-      `${TWITCH_API_URL}/eventsub/subscriptions`,
-      {
-        headers: {
-          "Authorization": `Bearer ${appAccessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
-        },
-      }
+    // ページネーション対応で全サブスクリプションを取得
+    const allSubscriptions = await getAllSubscriptions(appAccessToken);
+
+    // 既存サブスクリプション数と状態をログに記録
+    const mySubscriptions = allSubscriptions.filter(
+      (sub) =>
+        sub.type === "channel.channel_points_custom_reward_redemption.add" &&
+        sub.condition.broadcaster_user_id === session.twitchUserId
+    );
+    logger.info(
+      `Existing EventSub subscriptions for broadcaster=${session.twitchUserId}: count=${mySubscriptions.length} (total in system: ${allSubscriptions.length})`,
+      { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id, callback: s.transport.callback })) }
     );
 
-    if (existingResponse.ok) {
-      const existingData = await existingResponse.json();
-
-      // 既存サブスクリプション数と状態をログに記録
-      const mySubscriptions = existingData.data.filter(
-        (sub: { type: string; condition: { broadcaster_user_id: string }; status: string }) =>
-          sub.type === "channel.channel_points_custom_reward_redemption.add" &&
-          sub.condition.broadcaster_user_id === session.twitchUserId
-      );
-      logger.info(
-        `Existing EventSub subscriptions for broadcaster=${session.twitchUserId}: count=${mySubscriptions.length}`,
-        { subscriptions: mySubscriptions.map((s: { id: string; status: string; condition: { reward_id: string } }) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id })) }
-      );
-
-      // Delete existing subscriptions for this broadcaster
-      // 既存のサブスクリプションを削除（同じreward_idのものがあると409エラーになるため）
-      for (const sub of existingData.data) {
-        if (
-          sub.type === "channel.channel_points_custom_reward_redemption.add" &&
-          sub.condition.broadcaster_user_id === session.twitchUserId
-        ) {
-          logger.info(`Deleting existing EventSub: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}`);
-          const deleteResponse = await fetch(
-            `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-            {
-              method: "DELETE",
-              headers: {
-                "Authorization": `Bearer ${appAccessToken}`,
-                "Client-Id": process.env.TWITCH_CLIENT_ID!,
-              },
-            }
-          );
-
-          // 削除結果を確認（204は成功、404は既に削除済み）
-          if (!deleteResponse.ok && deleteResponse.status !== 404) {
-            const deleteError = await deleteResponse.json().catch(() => ({}));
-            logger.error(
-              `Failed to delete existing EventSub: id=${sub.id}, status=${deleteResponse.status}`,
-              deleteError
-            );
-            // 削除に失敗した場合でも続行するが、警告をログに残す
-          } else {
-            logger.info(`Successfully deleted EventSub: id=${sub.id}`);
-          }
+    // Delete existing subscriptions for this broadcaster
+    // 既存のサブスクリプションを削除（同じreward_idのものがあると409エラーになるため）
+    for (const sub of mySubscriptions) {
+      logger.info(`Deleting existing EventSub: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}, callback=${sub.transport.callback}`);
+      const deleteResponse = await fetch(
+        `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
+        {
+          method: "DELETE",
+          headers: {
+            "Authorization": `Bearer ${appAccessToken}`,
+            "Client-Id": process.env.TWITCH_CLIENT_ID!,
+          },
         }
-      }
-
-      // 削除後に少し待機（Twitch API側の反映を待つ）
-      await new Promise(resolve => setTimeout(resolve, 500));
-    } else {
-      // 既存サブスクリプション取得失敗もログに記録
-      logger.warn(
-        `Failed to get existing EventSub subscriptions: status=${existingResponse.status}`,
-        await existingResponse.json().catch(() => ({}))
       );
+
+      // 削除結果を確認（204は成功、404は既に削除済み）
+      if (!deleteResponse.ok && deleteResponse.status !== 404) {
+        const deleteError = await deleteResponse.json().catch(() => ({}));
+        logger.error(
+          `Failed to delete existing EventSub: id=${sub.id}, status=${deleteResponse.status}`,
+          deleteError
+        );
+        // 削除に失敗した場合でも続行するが、警告をログに残す
+      } else {
+        logger.info(`Successfully deleted EventSub: id=${sub.id}`);
+      }
+    }
+
+    // 削除後に少し待機（Twitch API側の反映を待つ）
+    if (mySubscriptions.length > 0) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     // Create new subscription
@@ -187,128 +208,113 @@ export async function POST(request: NextRequest) {
           { error }
         );
 
-        // 既存のサブスクリプションを再取得
-        const recheckResponse = await fetch(
-          `${TWITCH_API_URL}/eventsub/subscriptions`,
-          {
-            headers: {
-              "Authorization": `Bearer ${appAccessToken}`,
-              "Client-Id": process.env.TWITCH_CLIENT_ID!,
-            },
-          }
+        // ページネーション対応で既存のサブスクリプションを再取得
+        const allRecheckSubs = await getAllSubscriptions(appAccessToken);
+
+        // すべてのサブスクリプションをログに記録（デバッグ用）
+        const allMySubs = allRecheckSubs.filter(
+          (sub) =>
+            sub.type === "channel.channel_points_custom_reward_redemption.add" &&
+            sub.condition.broadcaster_user_id === session.twitchUserId
+        );
+        logger.info(
+          `All EventSub subscriptions after 409: count=${allMySubs.length} (total in system: ${allRecheckSubs.length})`,
+          { subscriptions: allMySubs.map((s) => ({
+            id: s.id,
+            status: s.status,
+            rewardId: s.condition.reward_id,
+            callback: s.transport?.callback,
+          })) }
         );
 
-        if (recheckResponse.ok) {
-          const recheckData = await recheckResponse.json();
+        const existingSub = allMySubs.find(
+          (sub) => sub.condition.reward_id === rewardId
+        );
 
-          // すべてのサブスクリプションをログに記録（デバッグ用）
-          const allMySubs = recheckData.data.filter(
-            (sub: { type: string; condition: { broadcaster_user_id: string } }) =>
-              sub.type === "channel.channel_points_custom_reward_redemption.add" &&
-              sub.condition.broadcaster_user_id === session.twitchUserId
-          );
+        if (existingSub) {
+          // 既存のサブスクリプションが見つかった場合、それを返す（200 OK）
           logger.info(
-            `All EventSub subscriptions after 409: count=${allMySubs.length}`,
-            { subscriptions: allMySubs.map((s: { id: string; status: string; condition: { reward_id: string }; transport?: { callback?: string } }) => ({
-              id: s.id,
-              status: s.status,
-              rewardId: s.condition.reward_id,
-              callback: s.transport?.callback,
-            })) }
+            `Found existing EventSub subscription: id=${existingSub.id}, status=${existingSub.status}`,
+            { existingSub }
           );
 
-          const existingSub = recheckData.data.find(
-            (sub: { type: string; condition: { broadcaster_user_id: string; reward_id: string } }) =>
-              sub.type === "channel.channel_points_custom_reward_redemption.add" &&
-              sub.condition.broadcaster_user_id === session.twitchUserId &&
-              sub.condition.reward_id === rewardId
-          );
-
-          if (existingSub) {
-            // 既存のサブスクリプションが見つかった場合、それを返す（200 OK）
-            logger.info(
-              `Found existing EventSub subscription: id=${existingSub.id}, status=${existingSub.status}`,
-              { existingSub }
+          // callback URLが異なる場合は警告
+          if (existingSub.transport?.callback !== callbackUrl) {
+            logger.warn(
+              `Existing subscription has different callback URL: expected=${callbackUrl}, actual=${existingSub.transport?.callback}`
             );
-
-            // callback URLが異なる場合は警告
-            if (existingSub.transport?.callback !== callbackUrl) {
-              logger.warn(
-                `Existing subscription has different callback URL: expected=${callbackUrl}, actual=${existingSub.transport?.callback}`
-              );
-            }
-
-            return NextResponse.json({
-              success: true,
-              subscription: existingSub,
-              message: "既存のサブスクリプションを使用しています",
-            });
           }
 
-          // 同じbroadcasterの他のサブスクリプションが見つかった場合
-          // それらを削除して再試行する
-          if (allMySubs.length > 0) {
-            logger.info(`Found ${allMySubs.length} subscriptions for other rewards, attempting cleanup`);
+          return NextResponse.json({
+            success: true,
+            subscription: existingSub,
+            message: "既存のサブスクリプションを使用しています",
+          });
+        }
 
-            for (const sub of allMySubs) {
-              const delResponse = await fetch(
-                `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-                {
-                  method: "DELETE",
-                  headers: {
-                    "Authorization": `Bearer ${appAccessToken}`,
-                    "Client-Id": process.env.TWITCH_CLIENT_ID!,
-                  },
-                }
-              );
-              logger.info(`Cleanup delete: id=${sub.id}, status=${delResponse.status}`);
-            }
+        // 同じbroadcasterの他のサブスクリプションが見つかった場合
+        // それらを削除して再試行する
+        if (allMySubs.length > 0) {
+          logger.info(`Found ${allMySubs.length} subscriptions for other rewards, attempting cleanup`);
 
-            // 削除後に待機して再試行
-            await new Promise(resolve => setTimeout(resolve, 1000));
-
-            // 再試行
-            const retryResponse = await fetch(
-              `${TWITCH_API_URL}/eventsub/subscriptions`,
+          for (const sub of allMySubs) {
+            const delResponse = await fetch(
+              `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
               {
-                method: "POST",
+                method: "DELETE",
                 headers: {
                   "Authorization": `Bearer ${appAccessToken}`,
                   "Client-Id": process.env.TWITCH_CLIENT_ID!,
-                  "Content-Type": "application/json",
                 },
-                body: JSON.stringify({
-                  type: "channel.channel_points_custom_reward_redemption.add",
-                  version: "1",
-                  condition: {
-                    broadcaster_user_id: session.twitchUserId,
-                    reward_id: rewardId,
-                  },
-                  transport: {
-                    method: "webhook",
-                    callback: callbackUrl,
-                    secret: process.env.TWITCH_EVENTSUB_SECRET,
-                  },
-                }),
               }
             );
+            logger.info(`Cleanup delete: id=${sub.id}, status=${delResponse.status}`);
+          }
 
-            if (retryResponse.ok) {
-              const retryData = await retryResponse.json();
-              logger.info(`Retry successful: subscriptionId=${retryData.data[0]?.id}`);
-              return NextResponse.json({
-                success: true,
-                subscription: retryData.data[0],
-                message: "クリーンアップ後に登録しました",
-              });
-            } else {
-              const retryError = await retryResponse.json();
-              logger.error(`Retry failed: status=${retryResponse.status}`, retryError);
+          // 削除後に待機して再試行
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // 再試行
+          const retryResponse = await fetch(
+            `${TWITCH_API_URL}/eventsub/subscriptions`,
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${appAccessToken}`,
+                "Client-Id": process.env.TWITCH_CLIENT_ID!,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                type: "channel.channel_points_custom_reward_redemption.add",
+                version: "1",
+                condition: {
+                  broadcaster_user_id: session.twitchUserId,
+                  reward_id: rewardId,
+                },
+                transport: {
+                  method: "webhook",
+                  callback: callbackUrl,
+                  secret: process.env.TWITCH_EVENTSUB_SECRET,
+                },
+              }),
             }
+          );
+
+          if (retryResponse.ok) {
+            const retryData = await retryResponse.json();
+            logger.info(`Retry successful: subscriptionId=${retryData.data[0]?.id}`);
+            return NextResponse.json({
+              success: true,
+              subscription: retryData.data[0],
+              message: "クリーンアップ後に登録しました",
+            });
+          } else {
+            const retryError = await retryResponse.json();
+            logger.error(`Retry failed: status=${retryResponse.status}`, retryError);
           }
         }
 
-        // 既存のサブスクリプションが見つからない場合でも、成功として扱う
+        // 既存のサブスクリプションが見つからない場合でも、警告として扱う
         // （ユーザーにリトライを促す）
         logger.warn(
           `409 conflict but subscription not found, returning partial success`,

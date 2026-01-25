@@ -31,7 +31,54 @@ async function getAppAccessToken(): Promise<string> {
   return data.access_token;
 }
 
-// すべてのEventSubサブスクリプションを取得（デバッグ用）
+// すべてのEventSubサブスクリプションを取得（デバッグ用・ページネーション対応）
+async function getAllSubscriptions(appAccessToken: string): Promise<{
+  total: number;
+  data: Array<{
+    id: string;
+    status: string;
+    type: string;
+    condition: { broadcaster_user_id: string; reward_id?: string };
+    transport: { method: string; callback: string };
+    created_at: string;
+  }>;
+}> {
+  const allData: Array<{
+    id: string;
+    status: string;
+    type: string;
+    condition: { broadcaster_user_id: string; reward_id?: string };
+    transport: { method: string; callback: string };
+    created_at: string;
+  }> = [];
+  let cursor: string | undefined;
+  let total = 0;
+
+  do {
+    const url = cursor
+      ? `${TWITCH_API_URL}/eventsub/subscriptions?after=${cursor}`
+      : `${TWITCH_API_URL}/eventsub/subscriptions`;
+
+    const response = await fetch(url, {
+      headers: {
+        "Authorization": `Bearer ${appAccessToken}`,
+        "Client-Id": process.env.TWITCH_CLIENT_ID!,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch subscriptions: ${response.status}`);
+    }
+
+    const data = await response.json();
+    total = data.total;
+    allData.push(...data.data);
+    cursor = data.pagination?.cursor;
+  } while (cursor);
+
+  return { total, data: allData };
+}
+
 export async function GET(request: NextRequest) {
   const session = await getSession();
 
@@ -42,30 +89,12 @@ export async function GET(request: NextRequest) {
   try {
     const appAccessToken = await getAppAccessToken();
 
-    const response = await fetch(
-      `${TWITCH_API_URL}/eventsub/subscriptions`,
-      {
-        headers: {
-          "Authorization": `Bearer ${appAccessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      const error = await response.json();
-      return NextResponse.json(
-        { error: "Failed to get subscriptions", details: error },
-        { status: response.status }
-      );
-    }
-
-    const data = await response.json();
+    // ページネーションを使ってすべてのサブスクリプションを取得
+    const { total, data } = await getAllSubscriptions(appAccessToken);
 
     // このbroadcasterのサブスクリプションのみフィルタ
-    const mySubscriptions = data.data.filter(
-      (sub: { condition: { broadcaster_user_id: string } }) =>
-        sub.condition.broadcaster_user_id === session.twitchUserId
+    const mySubscriptions = data.filter(
+      (sub) => sub.condition.broadcaster_user_id === session.twitchUserId
     );
 
     // 全サブスクリプション情報を返す（デバッグ用）
