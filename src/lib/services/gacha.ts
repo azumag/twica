@@ -137,15 +137,11 @@ export class GachaService {
     eventId?: string
   ): Promise<Result<GachaResult>> {
     try {
-      // Fetch streamer and additional channel points in a single query
-      // streamerと追加チャネルポイントを1クエリで取得（効率化）
+      // Fetch streamer (main reward ID only for backward compatibility)
+      // streamerを取得（後方互換性のためメイン報酬IDのみ）
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select(`
-          id,
-          channel_point_reward_id,
-          streamer_additional_gacha_rewards (reward_id)
-        `)
+        .select('id, channel_point_reward_id')
         .eq('twitch_user_id', event.broadcaster_user_id)
         .single()
 
@@ -153,53 +149,61 @@ export class GachaService {
         return err('Streamer not found')
       }
 
-      // Check if the reward ID matches the main or any additional channel point
-      // メインまたは追加チャネルポイントのいずれかに一致するかチェック
-      const isValidReward = this.isValidGachaReward(
-        streamer.channel_point_reward_id,
-        streamer.streamer_additional_gacha_rewards,
-        event.reward.id
-      )
-
-      if (!isValidReward) {
-        return err('Reward ID mismatch')
+      // Check main reward ID first (most common case, no extra query)
+      // まずメインの報酬IDをチェック（最も一般的なケース、追加クエリなし）
+      if (streamer.channel_point_reward_id === event.reward.id) {
+        return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
       }
 
-      return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+      // Main reward ID doesn't match, check additional channel points
+      // メインと一致しない場合のみ、追加チャネルポイントをチェック
+      const isAdditionalValid = await this.checkAdditionalReward(streamer.id, event.reward.id)
+      if (isAdditionalValid) {
+        return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+      }
+
+      return err('Reward ID mismatch')
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }
   }
 
   /**
-   * Check if the given reward ID is valid for gacha (synchronous, no DB query)
-   * 指定された報酬IDがガチャに有効かどうかをチェック（同期処理、DBクエリなし）
+   * Check if the reward ID exists in additional channel points table
+   * 追加チャネルポイントテーブルに報酬IDが存在するかチェック
    *
-   * Valid if:
-   * - Matches the main channel_point_reward_id, OR
-   * - Matches any reward_id in the additional rewards array
+   * Returns false if:
+   * - Table doesn't exist (migration not applied) - maintains backward compatibility
+   * - No matching record found
    *
-   * 有効な場合:
-   * - メインの channel_point_reward_id と一致する、または
-   * - 追加チャネルポイント配列の reward_id のいずれかと一致する
+   * 以下の場合はfalseを返す:
+   * - テーブルが存在しない（マイグレーション未適用）- 後方互換性を維持
+   * - 一致するレコードがない
    */
-  private isValidGachaReward(
-    mainRewardId: string | null,
-    additionalRewards: { reward_id: string }[] | null,
+  private async checkAdditionalReward(
+    streamerId: string,
     eventRewardId: string
-  ): boolean {
-    // Check main reward ID first (most common case)
-    // まずメインの報酬IDをチェック（最も一般的なケース）
-    if (mainRewardId === eventRewardId) {
-      return true
-    }
+  ): Promise<boolean> {
+    try {
+      const { data: additionalReward, error } = await this.supabase
+        .from('streamer_additional_gacha_rewards')
+        .select('id')
+        .eq('streamer_id', streamerId)
+        .eq('reward_id', eventRewardId)
+        .maybeSingle()
 
-    // Check additional channel points (already fetched, no extra query)
-    // 追加チャネルポイントをチェック（既に取得済み、追加クエリなし）
-    if (additionalRewards && additionalRewards.length > 0) {
-      return additionalRewards.some(r => r.reward_id === eventRewardId)
-    }
+      // If error (e.g., table doesn't exist), return false for backward compatibility
+      // エラーの場合（テーブルが存在しない等）、後方互換性のためfalseを返す
+      if (error) {
+        logger.warn('Additional rewards check failed (table may not exist):', error.message)
+        return false
+      }
 
-    return false
+      return additionalReward !== null
+    } catch {
+      // Any unexpected error: fall back to main reward only behavior
+      // 予期しないエラー: メイン報酬のみの動作にフォールバック
+      return false
+    }
   }
 }
