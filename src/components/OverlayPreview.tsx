@@ -88,6 +88,10 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   // Demo help modal visibility state
   const [showDemoHelp, setShowDemoHelp] = useState(false);
 
+  // オーバーレイカスタマイズセクションの折りたたみ状態
+  // Collapsible state for overlay customization section
+  const [isCustomizationExpanded, setIsCustomizationExpanded] = useState(false);
+
   // 現在のオプションからURLパラメータを生成（ユーザー向けURL用）
   // Generate URL parameters from current options (for user-facing URL)
   // autoPortrait, smallMode, effectsはデフォルトでtrue（falseの場合のみURLパラメータで明示）
@@ -272,12 +276,38 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
         {t("urlUpdated")}
       </p>
 
-      {/* オーバーレイカスタマイズオプション */}
+      {/* オーバーレイカスタマイズオプション（折りたたみ可能） */}
+      {/* Overlay customization options (collapsible section) */}
       <div className="mt-6 pt-6 border-t border-gray-700">
-        <h3 className="mb-3 text-lg font-semibold text-white">
-          {t("title")}
-        </h3>
-        <p className="text-sm text-gray-400 mb-4">
+        {/* 折りたたみヘッダー - クリックで展開/折りたたみ */}
+        {/* Collapsible header - click to expand/collapse */}
+        <button
+          type="button"
+          onClick={() => setIsCustomizationExpanded(!isCustomizationExpanded)}
+          className="w-full flex items-center justify-between text-left cursor-pointer hover:bg-gray-700/30 rounded-lg p-2 -m-2 transition-colors"
+        >
+          <h3 className="text-lg font-semibold text-white">
+            {t("title")}
+          </h3>
+          {/* 折りたたみ矢印アイコン - 展開時は下向き、折りたたみ時は右向き */}
+          {/* Chevron icon - points down when expanded, right when collapsed */}
+          <svg
+            className={`w-5 h-5 text-gray-400 transition-transform duration-200 ${
+              isCustomizationExpanded ? "rotate-180" : ""
+            }`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {/* 折りたたみ可能なコンテンツ部分 */}
+        {/* Collapsible content section */}
+        {isCustomizationExpanded && (
+          <>
+        <p className="text-sm text-gray-400 mb-4 mt-3">
           {t("description")}
         </p>
 
@@ -404,6 +434,8 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
               </label>
             </div>
           </div>
+        )}
+          </>
         )}
       </div>
     </div>
