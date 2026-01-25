@@ -93,6 +93,31 @@ export default function GachaSoundSettings({
 
       if (response.ok) {
         const data = await response.json();
+        const oldSoundUrl = soundUrl;
+
+        // 既存の効果音ファイルがある場合はR2から削除
+        // 新しいファイルのアップロード成功後に削除することで、失敗時もデータを失わない
+        if (oldSoundUrl) {
+          try {
+            const deleteResponse = await fetch("/api/upload/sound", {
+              method: "DELETE",
+              credentials: "include",
+              headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-Token": getCsrfTokenFromCookie(),
+              },
+              body: JSON.stringify({ url: oldSoundUrl }),
+            });
+            if (!deleteResponse.ok) {
+              // 削除に失敗してもアップロードは成功しているので、ログのみ出力
+              logger.warn("Failed to delete old sound file:", oldSoundUrl);
+            }
+          } catch (deleteError) {
+            // 削除エラーでも新しいファイルのアップロードは成功しているので続行
+            logger.warn("Error deleting old sound file:", deleteError);
+          }
+        }
+
         setSoundUrl(data.url);
         setMessage(t("messages.uploadSuccess"));
         setIsError(false);
