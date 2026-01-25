@@ -48,7 +48,14 @@ export async function POST(request: NextRequest) {
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { streamerId, channelPointRewardId, channelPointRewardName } = body;
+    const {
+      streamerId,
+      channelPointRewardId,
+      channelPointRewardName,
+      // ガチャ効果音設定（オプション）
+      gachaSoundUrl,
+      gachaSoundEnabled,
+    } = body;
 
     // Verify ownership
     const { data: streamer } = await supabaseAdmin
@@ -62,12 +69,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
+    // 更新するフィールドを動的に構築
+    // チャネルポイント設定と効果音設定の両方に対応
+    const updateData: Record<string, unknown> = {};
+
+    // チャネルポイント報酬設定（従来の機能）
+    if (channelPointRewardId !== undefined) {
+      updateData.channel_point_reward_id = channelPointRewardId;
+    }
+    if (channelPointRewardName !== undefined) {
+      updateData.channel_point_reward_name = channelPointRewardName;
+    }
+
+    // ガチャ効果音設定
+    // gachaSoundUrl: 効果音ファイルのURL（nullで削除）
+    if (gachaSoundUrl !== undefined) {
+      updateData.gacha_sound_url = gachaSoundUrl;
+    }
+    // gachaSoundEnabled: 効果音の有効/無効フラグ
+    if (gachaSoundEnabled !== undefined) {
+      updateData.gacha_sound_enabled = gachaSoundEnabled;
+    }
+
+    // 更新するフィールドがない場合はエラー
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
     const { error } = await supabaseAdmin
       .from("streamers")
-      .update({
-        channel_point_reward_id: channelPointRewardId,
-        channel_point_reward_name: channelPointRewardName,
-      })
+      .update(updateData)
       .eq("id", streamerId);
 
     if (error) {

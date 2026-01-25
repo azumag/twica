@@ -23,6 +23,10 @@ export interface Database {
           channel_point_reward_id: string | null
           channel_point_reward_name: string | null
           is_active: boolean
+          // ガチャ効果音URL - R2に保存された音声ファイルのURL
+          gacha_sound_url: string | null
+          // ガチャ効果音の有効/無効フラグ
+          gacha_sound_enabled: boolean
           created_at: string
           updated_at: string
         }
@@ -35,6 +39,8 @@ export interface Database {
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
           is_active?: boolean
+          gacha_sound_url?: string | null
+          gacha_sound_enabled?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -47,6 +53,8 @@ export interface Database {
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
           is_active?: boolean
+          gacha_sound_url?: string | null
+          gacha_sound_enabled?: boolean
           created_at?: string
           updated_at?: string
         }

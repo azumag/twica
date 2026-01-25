@@ -232,6 +232,12 @@ export const ERROR_MESSAGES = {
   UNABLE_TO_UPLOAD: 'Unable to upload file',
   FILE_CONTENT_MISMATCH: 'File content does not match extension',
 
+  // Sound upload errors
+  // 効果音アップロードエラー
+  INVALID_SOUND_FILE_TYPE: 'Invalid sound file type. Only MP3, WAV, WebM, and OGG are allowed',
+  SOUND_FILE_SIZE_EXCEEDED: 'Sound file size exceeds 1MB limit',
+  SOUND_CONTENT_MISMATCH: 'Sound file content does not match extension',
+
   // General errors
   INTERNAL_ERROR: 'Internal server error',
   OPERATION_FAILED: 'Operation failed',
@@ -357,6 +363,27 @@ export const UPLOAD_CONFIG = {
   // Global storage limit disabled - set to very large value
   // グローバルストレージ制限を撤廃 - 非常に大きな値を設定
   GLOBAL_STORAGE_LIMIT: Number.MAX_SAFE_INTEGER, // No global limit
+} as const
+
+/**
+ * 効果音アップロード設定
+ * ガチャ時に再生される効果音のアップロード制限
+ * 画像アップロードとは別の設定で管理
+ */
+export const SOUND_UPLOAD_CONFIG = {
+  // ファイルサイズ上限: 1MB（効果音は短時間の音声を想定）
+  MAX_FILE_SIZE: 1 * 1024 * 1024,
+  // 許可する音声MIMEタイプ
+  ALLOWED_TYPES: ['audio/mpeg', 'audio/wav', 'audio/webm', 'audio/ogg'] as const,
+  // 許可する拡張子
+  ALLOWED_EXTENSIONS: ['mp3', 'wav', 'webm', 'ogg'] as const,
+  // 拡張子からMIMEタイプへのマッピング
+  EXT_TO_MIME_TYPE: {
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    webm: 'audio/webm',
+    ogg: 'audio/ogg',
+  } as const,
 } as const
 
 export const STORAGE_LIMIT_MESSAGES = {
