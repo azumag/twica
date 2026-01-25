@@ -108,7 +108,10 @@ export default function ChannelPointSettings({
     }
   };
 
-  const fetchEventSubStatus = useCallback(async () => {
+  // targetRewardIdを引数で受け取ることで、保存直後に最新のrewardIdで比較できる
+  // 引数が省略された場合はselectedRewardIdを使用（初期ロード時など）
+  const fetchEventSubStatus = useCallback(async (targetRewardId?: string) => {
+    const rewardIdToCheck = targetRewardId ?? selectedRewardId;
     try {
       const response = await fetch("/api/twitch/eventsub/subscribe", {
         credentials: "include",
@@ -117,13 +120,12 @@ export default function ChannelPointSettings({
         const subs = await response.json();
         setSubscriptions(subs);
 
-        // Check if we have an active subscription for the selected reward
-        // selectedRewardIdを使用することで、保存後に最新の選択状態でステータスを判定できる
-        // currentRewardId（props）は古い値を保持しているため使用しない
+        // Check if we have an active subscription for the target reward
+        // 引数で渡されたrewardIdを使うことで、保存直後でも正しく判定できる
         const activeSub = subs.find(
           (sub: EventSubSubscription) =>
             sub.status === "enabled" &&
-            sub.condition.reward_id === selectedRewardId
+            sub.condition.reward_id === rewardIdToCheck
         );
 
         if (activeSub) {
@@ -217,13 +219,13 @@ export default function ChannelPointSettings({
       if (eventSubData.success) {
         setMessage(eventSubData.message || t("messages.saveSuccess"));
         setEventSubStatus("pending");
-        // Refresh status
-        await fetchEventSubStatus();
+        // Refresh status - 保存した報酬IDを明示的に渡して正しく比較
+        await fetchEventSubStatus(selectedRewardId);
       } else if (eventSubData.warning) {
         // 警告状態：サブスクリプションの確認が必要
         setMessage(eventSubData.message || "状態を確認してください");
         setEventSubStatus("pending");
-        await fetchEventSubStatus();
+        await fetchEventSubStatus(selectedRewardId);
       } else if (eventSubResponse.status === 429) {
         setMessage(eventSubData.error || t("messages.rateLimit"));
       } else {
