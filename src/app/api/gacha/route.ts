@@ -8,6 +8,8 @@ import { setUserContext, setRequestContext } from "@/lib/sentry/user-context";
 import { GACHA_COST, ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
+import { broadcastGachaResult, GachaBroadcastPayload } from "@/lib/realtime";
+import { logger } from "@/lib/logger";
 import type { GachaSuccessResponse, GachaErrorResponse, ApiRateLimitResponse } from "@/types/api";
 
 export async function POST(request: NextRequest) {
@@ -102,6 +104,29 @@ export async function POST(request: NextRequest) {
         { error: errorMessage },
         { status: 500 }
       );
+    }
+
+    // ガチャ成功時、オーバーレイにリアルタイム通知を送信
+    // Broadcast gacha result to overlay via Supabase Realtime
+    const payload: GachaBroadcastPayload = {
+      type: "gacha",
+      card: {
+        id: result.data.card.id,
+        name: result.data.card.name,
+        description: result.data.card.description,
+        image_url: result.data.card.image_url,
+        rarity: result.data.card.rarity,
+      },
+      userTwitchUsername: result.data.userTwitchUsername,
+    };
+
+    try {
+      await broadcastGachaResult(streamerId, payload);
+      logger.info(`Gacha result broadcast sent to streamer ${streamerId}`);
+    } catch (broadcastError) {
+      // ブロードキャストエラーはログに記録するが、ガチャ自体は成功扱い
+      // Log broadcast errors but still return success (gacha was executed successfully)
+      logger.error("Failed to broadcast gacha result:", { broadcastError });
     }
 
     return NextResponse.json<GachaSuccessResponse>({
