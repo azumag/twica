@@ -137,11 +137,15 @@ export class GachaService {
     eventId?: string
   ): Promise<Result<GachaResult>> {
     try {
-      // Fetch streamer (main reward ID only for backward compatibility)
-      // streamerを取得（後方互換性のためメイン報酬IDのみ）
+      // Fetch streamer and additional channel points in a single query
+      // streamerと追加チャネルポイントを1クエリで取得
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, channel_point_reward_id')
+        .select(`
+          id,
+          channel_point_reward_id,
+          streamer_additional_gacha_rewards (reward_id)
+        `)
         .eq('twitch_user_id', event.broadcaster_user_id)
         .single()
 
@@ -149,61 +153,22 @@ export class GachaService {
         return err('Streamer not found')
       }
 
-      // Check main reward ID first (most common case, no extra query)
-      // まずメインの報酬IDをチェック（最も一般的なケース、追加クエリなし）
+      // Check main reward ID first (most common case)
+      // まずメインの報酬IDをチェック（最も一般的なケース）
       if (streamer.channel_point_reward_id === event.reward.id) {
         return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
       }
 
-      // Main reward ID doesn't match, check additional channel points
-      // メインと一致しない場合のみ、追加チャネルポイントをチェック
-      const isAdditionalValid = await this.checkAdditionalReward(streamer.id, event.reward.id)
-      if (isAdditionalValid) {
+      // Check additional channel points
+      // 追加チャネルポイントをチェック
+      const additionalRewards = streamer.streamer_additional_gacha_rewards as { reward_id: string }[] | null
+      if (additionalRewards?.some(r => r.reward_id === event.reward.id)) {
         return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
       }
 
       return err('Reward ID mismatch')
     } catch (error) {
       return err(`Unexpected error: ${error}`)
-    }
-  }
-
-  /**
-   * Check if the reward ID exists in additional channel points table
-   * 追加チャネルポイントテーブルに報酬IDが存在するかチェック
-   *
-   * Returns false if:
-   * - Table doesn't exist (migration not applied) - maintains backward compatibility
-   * - No matching record found
-   *
-   * 以下の場合はfalseを返す:
-   * - テーブルが存在しない（マイグレーション未適用）- 後方互換性を維持
-   * - 一致するレコードがない
-   */
-  private async checkAdditionalReward(
-    streamerId: string,
-    eventRewardId: string
-  ): Promise<boolean> {
-    try {
-      const { data: additionalReward, error } = await this.supabase
-        .from('streamer_additional_gacha_rewards')
-        .select('id')
-        .eq('streamer_id', streamerId)
-        .eq('reward_id', eventRewardId)
-        .maybeSingle()
-
-      // If error (e.g., table doesn't exist), return false for backward compatibility
-      // エラーの場合（テーブルが存在しない等）、後方互換性のためfalseを返す
-      if (error) {
-        logger.warn('Additional rewards check failed (table may not exist):', error.message)
-        return false
-      }
-
-      return additionalReward !== null
-    } catch {
-      // Any unexpected error: fall back to main reward only behavior
-      // 予期しないエラー: メイン報酬のみの動作にフォールバック
-      return false
     }
   }
 }
