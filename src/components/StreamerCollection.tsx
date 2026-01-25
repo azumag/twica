@@ -85,7 +85,9 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
             cards={cards}
             streamerId={streamer.id}
             translations={{
-              cardCount: (count: number) => t("cardCount", { count }),
+              // Pass template string instead of function (Server -> Client serialization)
+              // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
+              cardCountTemplate: t("cardCount", { count: "{count}" }),
               noImage: tCommon("noImage"),
             }}
           />

@@ -34,10 +34,12 @@ interface SortedCardGridProps {
   // Streamer ID for linking to card detail pages
   // カード詳細ページへのリンク用配信者ID
   streamerId: string;
-  // Translation strings
-  // 翻訳文字列
+  // Translation strings - must be serializable (no functions)
+  // 翻訳文字列 - シリアライズ可能である必要あり（関数不可）
   translations: {
-    cardCount: (count: number) => string;
+    // Template for card count display, e.g., "x{count}"
+    // カード枚数表示用テンプレート、例: "x{count}"
+    cardCountTemplate: string;
     noImage: string;
   };
 }
@@ -134,7 +136,7 @@ export default function SortedCardGrid({
               color: rarityInfo.color,
             }}
             count={card.count}
-            countLabel={translations.cardCount(card.count)}
+            countLabel={translations.cardCountTemplate.replace("{count}", String(card.count))}
             priority={isPriority}
             noImageText={translations.noImage}
             descriptionComponent={
