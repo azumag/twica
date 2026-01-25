@@ -78,6 +78,8 @@ export class GachaService {
 
       // If user doesn't exist, create one
       // ユーザーが存在しない場合は作成
+      // twitch_display_nameはNOT NULL制約があるため、usernameをデフォルト値として使用
+      // （EventSubからはuser_nameとして表示名が渡されるが、通常のガチャではユーザー名のみ）
       let user = userCheckResult.data
       if (!user) {
         const { data: newUser, error: createError } = await this.supabase
@@ -85,6 +87,7 @@ export class GachaService {
           .upsert({
             twitch_user_id: userTwitchId,
             twitch_username: userTwitchUsername,
+            twitch_display_name: userTwitchUsername,
           }, {
             onConflict: 'twitch_user_id',
             ignoreDuplicates: true,
