@@ -341,8 +341,9 @@ export const SECURITY_HEADERS = {
   X_XSS_PROTECTION: '1; mode=block',
   // Development CSP includes 'unsafe-eval' for Next.js fast refresh and dev tools
   // 開発用CSPにはNext.jsのfast refreshと開発ツールのため'unsafe-eval'を含む
-  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
-  CSP_PRODUCTION: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https: wss:; font-src 'self' data:; worker-src 'self' blob:;",
+  // media-src: R2バケットからの効果音再生を許可
+  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
+  CSP_PRODUCTION: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: wss:; font-src 'self' data:; worker-src 'self' blob:;",
   HSTS: 'max-age=31536000; includeSubDomains; preload',
 } as const
 

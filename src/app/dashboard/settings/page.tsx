@@ -73,7 +73,7 @@ export default async function SettingsPage() {
             <GachaSoundSettings
               streamerId={streamerData.streamer.id}
               currentSoundUrl={streamerData.streamer.gacha_sound_url ?? null}
-              currentSoundEnabled={streamerData.streamer.gacha_sound_enabled ?? true}
+              currentSoundEnabled={streamerData.streamer.gacha_sound_enabled ?? false}
             />
           </>
         }
