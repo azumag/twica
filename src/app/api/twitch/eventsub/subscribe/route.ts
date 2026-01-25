@@ -4,11 +4,16 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { logger } from "@/lib/logger";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
 // Get app access token for EventSub subscriptions
+// アプリケーション認証用のアクセストークンを取得する
+// Twitch OAuth2のclient_credentialsフローを使用
 async function getAppAccessToken(): Promise<string> {
+  logger.info("[EventSub] Getting app access token...");
+
   const response = await fetch("https://id.twitch.tv/oauth2/token", {
     method: "POST",
     headers: {
@@ -22,10 +27,13 @@ async function getAppAccessToken(): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error("Failed to get app access token");
+    const errorText = await response.text();
+    logger.error(`[EventSub] Failed to get app access token: status=${response.status}, body=${errorText}`);
+    throw new Error(`Failed to get app access token: ${response.status} - ${errorText}`);
   }
 
   const data = await response.json();
+  logger.info("[EventSub] App access token obtained successfully");
   return data.access_token;
 }
 
@@ -75,12 +83,16 @@ export async function POST(request: NextRequest) {
     }
 
     // Get app access token
+    // EventSubの操作にはアプリケーション認証トークンが必要
     const appAccessToken = await getAppAccessToken();
 
     // Callback URL for EventSub
+    // Twitch からのWebhook通知を受け取るURL
     const callbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
+    logger.info(`[EventSub] Callback URL: ${callbackUrl}`);
 
     // Check existing subscriptions
+    // 既存のサブスクリプションを確認して、同一ブロードキャスターの古いものを削除する
     const existingResponse = await fetch(
       `${TWITCH_API_URL}/eventsub/subscriptions`,
       {
@@ -142,16 +154,32 @@ export async function POST(request: NextRequest) {
 
     if (!subscribeResponse.ok) {
       const error = await subscribeResponse.json();
-      return handleApiError(error, "EventSub subscription error");
+      // EventSub登録失敗時の詳細をログに記録
+      // Twitch APIのエラーレスポンスには通常 message フィールドが含まれる
+      logger.error(`[EventSub] Subscription failed: status=${subscribeResponse.status}, error=${JSON.stringify(error)}`);
+      logger.error(`[EventSub] Request details: broadcaster_user_id=${session.twitchUserId}, reward_id=${rewardId}, callback=${callbackUrl}`);
+
+      // クライアントにも詳細なエラー情報を返す（デバッグ用）
+      return NextResponse.json(
+        {
+          error: "EventSub subscription failed",
+          details: error,
+          status: subscribeResponse.status,
+          callbackUrl: callbackUrl,
+        },
+        { status: subscribeResponse.status }
+      );
     }
 
     const subscriptionData = await subscribeResponse.json();
+    logger.info(`[EventSub] Subscription created successfully: id=${subscriptionData.data[0]?.id}, status=${subscriptionData.data[0]?.status}`);
 
     return NextResponse.json({
       success: true,
       subscription: subscriptionData.data[0],
     });
   } catch (error) {
+    logger.error(`[EventSub] Unexpected error in POST: ${error}`);
     return handleApiError(error, "EventSub Subscribe API");
   }
 }

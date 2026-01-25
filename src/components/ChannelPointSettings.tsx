@@ -242,6 +242,7 @@ export default function ChannelPointSettings({
         setMessage(t("messages.saveSuccess"));
         setEventSubStatus("pending");
         // Refresh status
+        // ステータスを更新して最新の状態を取得
         await fetchEventSubStatus();
       } else if (eventSubResponse.status === 429) {
         const errorData = await eventSubResponse.json();
@@ -249,7 +250,10 @@ export default function ChannelPointSettings({
       } else {
         const errorData = await eventSubResponse.json();
         logger.error("EventSub error:", errorData);
-        setMessage(t("messages.eventsubFailed"));
+        // EventSub登録失敗時の詳細エラーを表示
+        // Twitch APIのエラーメッセージがあれば表示、なければデフォルトメッセージ
+        const detailMessage = errorData.details?.message || errorData.error || t("messages.eventsubFailed");
+        setMessage(`${t("messages.eventsubFailed")}: ${detailMessage} (callback: ${errorData.callbackUrl || "unknown"})`);
         setEventSubStatus("error");
       }
     } catch {

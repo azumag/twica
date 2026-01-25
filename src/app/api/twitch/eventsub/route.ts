@@ -6,6 +6,7 @@ import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
+import { logger } from "@/lib/logger";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
@@ -44,6 +45,7 @@ export async function POST(request: NextRequest) {
   try {
     data = JSON.parse(body);
   } catch (e) {
+    logger.error("[EventSub] Failed to parse JSON body");
     return handleApiError(e, "EventSub JSON parsing");
   }
 
@@ -52,7 +54,13 @@ export async function POST(request: NextRequest) {
   const messageType = request.headers.get("twitch-eventsub-message-type") || "";
   const signature = request.headers.get("twitch-eventsub-message-signature") || "";
 
+  // EventSubリクエストを受信した際のログ
+  // メッセージタイプによって検証・通知・取り消しの3種類がある
+  logger.info(`[EventSub] Received request: messageType=${messageType}, messageId=${messageId}`);
+
   if (!verifyTwitchSignature(messageId, timestamp, body, signature)) {
+    // 署名検証失敗 - 不正なリクエストまたはシークレットの不一致
+    logger.error(`[EventSub] Signature verification failed: messageId=${messageId}, messageType=${messageType}`);
     return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
   }
 
@@ -88,6 +96,9 @@ export async function POST(request: NextRequest) {
   }
 
   if (messageType === MESSAGE_TYPE_VERIFICATION) {
+    // Webhook検証リクエストを受信
+    // TwitchはEventSub登録時に検証リクエストを送信し、challengeの返却を期待する
+    logger.info(`[EventSub] Received verification request, challenge=${data.challenge?.substring(0, 20)}...`);
     return new NextResponse(data.challenge, {
       status: 200,
       headers: { "Content-Type": "text/plain" },
