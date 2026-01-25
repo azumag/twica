@@ -200,6 +200,10 @@
     },
     "viewFullCollection": "← View Full Collection"
   },
+  "cardDetail": {
+    "backToCollection": "Back to Collection",
+    "ownedCount": "Owned: {count}"
+  },
   "dashboard": {
     "title": "Dashboard",
     "streamerSettings": "Streamer Settings",
