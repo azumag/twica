@@ -47,7 +47,7 @@ export function getR2Client(): S3Client {
 }
 
 /**
- * R2バケット名を取得
+ * R2バケット名を取得（画像用）
  */
 export function getR2Bucket(): string {
   const bucket = process.env.R2_BUCKET_NAME;
@@ -55,6 +55,20 @@ export function getR2Bucket(): string {
     throw new Error('Missing R2_BUCKET_NAME environment variable');
   }
   return bucket;
+}
+
+/**
+ * R2効果音バケット名を取得
+ * R2_SOUND_BUCKET_NAMEが設定されていない場合はR2_BUCKET_NAMEにフォールバック
+ * これにより、画像と効果音を別バケットで管理可能
+ */
+export function getR2SoundBucket(): string {
+  const soundBucket = process.env.R2_SOUND_BUCKET_NAME;
+  if (soundBucket) {
+    return soundBucket;
+  }
+  // フォールバック: 効果音専用バケットが未設定の場合は画像バケットを使用
+  return getR2Bucket();
 }
 
 /**
@@ -103,6 +117,40 @@ export async function uploadToR2(
 }
 
 /**
+ * R2効果音バケットにファイルをアップロード
+ * 画像バケットとは別のバケットに保存することで、ストレージを分離管理
+ * @param fileName - ファイル名（キー）
+ * @param buffer - ファイルデータ
+ * @param contentType - MIMEタイプ（audio/mpeg, audio/wav等）
+ * @returns アップロードされたファイルの公開URL
+ */
+export async function uploadSoundToR2(
+  fileName: string,
+  buffer: Buffer,
+  contentType: string
+): Promise<string> {
+  const client = getR2Client();
+  const bucket = getR2SoundBucket();
+  const publicUrl = getR2PublicUrl();
+
+  try {
+    await client.send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: fileName,
+      Body: buffer,
+      ContentType: contentType,
+    }));
+
+    const url = `${publicUrl}/${fileName}`;
+    logger.info(`[R2 Sound] Uploaded sound file: ${fileName}, size: ${buffer.length} bytes`);
+    return url;
+  } catch (error) {
+    logger.error('[R2 Sound] Failed to upload sound file:', error);
+    throw error;
+  }
+}
+
+/**
  * R2からファイルを削除
  * @param fileName - ファイル名（キー）
  */
@@ -118,6 +166,26 @@ export async function deleteFromR2(fileName: string): Promise<void> {
     logger.info(`[R2] Deleted file: ${fileName}`);
   } catch (error) {
     logger.error('[R2] Failed to delete file:', error);
+    throw error;
+  }
+}
+
+/**
+ * R2効果音バケットからファイルを削除
+ * @param fileName - ファイル名（キー）
+ */
+export async function deleteSoundFromR2(fileName: string): Promise<void> {
+  const client = getR2Client();
+  const bucket = getR2SoundBucket();
+
+  try {
+    await client.send(new DeleteObjectCommand({
+      Bucket: bucket,
+      Key: fileName,
+    }));
+    logger.info(`[R2 Sound] Deleted sound file: ${fileName}`);
+  } catch (error) {
+    logger.error('[R2 Sound] Failed to delete sound file:', error);
     throw error;
   }
 }
@@ -157,6 +225,48 @@ export async function uploadToR2WithRetry(
       // 指数バックオフでリトライ
       const delay = Math.pow(2, attempt) * 1000;
       logger.warn(`[R2] Upload failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms:`, errorMessage);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  return { error: 'Max retries exceeded' };
+}
+
+/**
+ * リトライ付きR2効果音アップロード
+ * 一時的なエラー（ネットワーク障害など）の場合にリトライを行う
+ * @param fileName - ファイル名（キー）
+ * @param buffer - ファイルデータ
+ * @param contentType - MIMEタイプ
+ * @param maxRetries - 最大リトライ回数（デフォルト: 3）
+ * @returns アップロードされたファイルの公開URL、またはエラー
+ */
+export async function uploadSoundToR2WithRetry(
+  fileName: string,
+  buffer: Buffer,
+  contentType: string,
+  maxRetries: number = 3
+): Promise<{ url: string } | { error: string }> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const url = await uploadSoundToR2(fileName, buffer, contentType);
+      return { url };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // 一時的なエラーかどうかを判定
+      const transientErrors = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'service unavailable', '503', 'NetworkingError'];
+      const isTransient = transientErrors.some(err =>
+        errorMessage.toLowerCase().includes(err.toLowerCase())
+      );
+
+      if (!isTransient || attempt === maxRetries) {
+        return { error: errorMessage };
+      }
+
+      // 指数バックオフでリトライ
+      const delay = Math.pow(2, attempt) * 1000;
+      logger.warn(`[R2 Sound] Upload failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms:`, errorMessage);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

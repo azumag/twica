@@ -227,6 +227,43 @@
     "you": "You",
     "cpu": "CPU"
   },
+  "gachaSoundSettings": {
+    "title": "Gacha Sound Effect Settings",
+    "description": "Set the sound effect that plays during gacha animation.",
+    "status": {
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    },
+    "form": {
+      "selectFile": "Select sound file",
+      "fileRequirements": "Supported: {formats} | Max size: {maxSize}",
+      "currentSound": "Current sound",
+      "enableSound": "Enable sound effect",
+      "uploadFirst": "Please upload a file first"
+    },
+    "buttons": {
+      "play": "Play",
+      "stop": "Stop",
+      "delete": "Delete"
+    },
+    "messages": {
+      "uploadSuccess": "Sound effect uploaded",
+      "uploading": "Uploading...",
+      "saving": "Saving...",
+      "enabled": "Sound effect enabled",
+      "disabled": "Sound effect disabled",
+      "deleted": "Sound effect deleted"
+    },
+    "errors": {
+      "fileTooLarge": "File size exceeds 1MB limit",
+      "invalidFileType": "Unsupported file format (MP3, WAV, WebM, OGG only)",
+      "uploadFailed": "Upload failed",
+      "saveFailed": "Failed to save settings",
+      "deleteFailed": "Failed to delete",
+      "rateLimit": "Too many requests. Please wait and try again."
+    },
+    "confirmDelete": "Delete this sound effect?"
+  },
   "channelPointSettings": {
     "title": "Card Redemption Settings",
     "status": {

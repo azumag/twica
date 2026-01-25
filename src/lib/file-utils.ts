@@ -1,4 +1,4 @@
-import { UPLOAD_CONFIG } from '@/lib/constants';
+import { UPLOAD_CONFIG, SOUND_UPLOAD_CONFIG } from '@/lib/constants';
 
 export function getFileTypeFromBuffer(buffer: Buffer): string {
   if (buffer.length < 2) {
@@ -36,8 +36,58 @@ export function getFileTypeFromBuffer(buffer: Buffer): string {
   return 'application/octet-stream';
 }
 
+/**
+ * 音声ファイルのMIMEタイプをマジックナンバーから判定
+ * MP3, WAV, WebM, OGGをサポート
+ * 効果音アップロード時にファイル内容の検証に使用
+ */
+export function getSoundFileTypeFromBuffer(buffer: Buffer): string {
+  if (buffer.length < 12) {
+    return 'application/octet-stream';
+  }
+
+  // MP3: ID3タグ (0x49 0x44 0x33) または MPEGフレームヘッダー (0xFF 0xFB/0xFA/0xF3/0xF2)
+  // ID3タグはMP3ファイルのメタデータ（曲名、アーティスト名等）を格納
+  if (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) {
+    return 'audio/mpeg';
+  }
+  // MPEGフレームシンクワード: 0xFF + フレームヘッダーの開始
+  if (buffer[0] === 0xFF && (buffer[1] === 0xFB || buffer[1] === 0xFA || buffer[1] === 0xF3 || buffer[1] === 0xF2)) {
+    return 'audio/mpeg';
+  }
+
+  // WAV: "RIFF....WAVE" フォーマット
+  // RIFF (Resource Interchange File Format) はMicrosoftのマルチメディアファイル形式
+  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+      buffer[8] === 0x57 && buffer[9] === 0x41 && buffer[10] === 0x56 && buffer[11] === 0x45) {
+    return 'audio/wav';
+  }
+
+  // WebM: EBMLヘッダー (0x1A 0x45 0xDF 0xA3)
+  // WebMはMatroskaベースの動画/音声コンテナフォーマット
+  if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) {
+    return 'audio/webm';
+  }
+
+  // OGG: "OggS" マジックナンバー
+  // Ogg Vorbisはオープンソースの音声圧縮フォーマット
+  if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) {
+    return 'audio/ogg';
+  }
+
+  return 'application/octet-stream';
+}
+
 export function isValidExtension(ext: string): ext is typeof UPLOAD_CONFIG.ALLOWED_EXTENSIONS[number] {
   return UPLOAD_CONFIG.ALLOWED_EXTENSIONS.includes(ext as typeof UPLOAD_CONFIG.ALLOWED_EXTENSIONS[number]);
+}
+
+/**
+ * 効果音ファイルの拡張子が許可されているかを検証
+ * MP3, WAV, WebM, OGGのみ許可
+ */
+export function isValidSoundExtension(ext: string): ext is typeof SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS[number] {
+  return SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.includes(ext as typeof SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS[number]);
 }
 
 export function getFileExtension(fileName: string): string {

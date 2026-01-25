@@ -104,14 +104,49 @@ export default function OverlayPage() {
   // 画像が小さい（400x400未満）かどうかを判定するためのState
   // 小さい画像の場合はsmallModeを自動適用するために使用
   const [isSmallImage, setIsSmallImage] = useState(false);
+  // ガチャ効果音設定
+  // streamerから取得した効果音URLと有効/無効状態を保持
+  const [soundSettings, setSoundSettings] = useState<{
+    soundUrl: string | null;
+    soundEnabled: boolean;
+  }>({ soundUrl: null, soundEnabled: true });
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 効果音再生用のオーディオ要素への参照
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
   }, [connectionStatus]);
+
+  // 効果音設定を取得
+  // オーバーレイ初期化時にstreamerの効果音設定をAPIから取得
+  // 認証不要のパブリックエンドポイントを使用
+  useEffect(() => {
+    const fetchSoundSettings = async () => {
+      try {
+        const response = await fetch(`/api/streamer/${streamerId}/sound-settings`);
+        if (response.ok) {
+          const data = await response.json();
+          setSoundSettings({
+            soundUrl: data.soundUrl,
+            soundEnabled: data.soundEnabled ?? true,
+          });
+          // 効果音URLが設定されている場合、Audio要素を作成してプリロード
+          // OBSブラウザソースでの再生遅延を軽減するため
+          if (data.soundUrl && data.soundEnabled) {
+            audioRef.current = new Audio(data.soundUrl);
+            audioRef.current.preload = "auto";
+          }
+        }
+      } catch (error) {
+        logger.error("Failed to fetch sound settings:", error);
+      }
+    };
+    fetchSoundSettings();
+  }, [streamerId]);
 
   // URLパラメータからオーバーレイオプションを解析
   // Parse overlay options from URL parameters
@@ -178,6 +213,38 @@ export default function OverlayPage() {
     });
   }, []);
 
+  /**
+   * 効果音を再生
+   * OBSブラウザソースでの再生に対応するため、
+   * Audio要素を使用して再生を試行
+   */
+  const playGachaSound = useCallback(() => {
+    // 効果音が無効または未設定の場合はスキップ
+    if (!soundSettings.soundEnabled || !soundSettings.soundUrl) {
+      return;
+    }
+
+    try {
+      // プリロード済みのAudio要素がある場合はそれを使用
+      if (audioRef.current) {
+        audioRef.current.currentTime = 0;
+        audioRef.current.play().catch((error) => {
+          // OBSブラウザソースでは自動再生制限により失敗する場合がある
+          // ユーザー操作がないと再生できないが、オーバーレイでは無視
+          logger.warn("Failed to play gacha sound:", error);
+        });
+      } else if (soundSettings.soundUrl) {
+        // フォールバック: 新しいAudio要素を作成して再生
+        const audio = new Audio(soundSettings.soundUrl);
+        audio.play().catch((error) => {
+          logger.warn("Failed to play gacha sound (fallback):", error);
+        });
+      }
+    } catch (error) {
+      logger.error("Error playing gacha sound:", error);
+    }
+  }, [soundSettings.soundEnabled, soundSettings.soundUrl]);
+
   // Display gacha result with animation
   const displayResult = useCallback(async (data: GachaResult) => {
     // Clear any existing animation
@@ -198,6 +265,11 @@ export default function OverlayPage() {
     animationTimeoutRef.current = setTimeout(() => {
       setShowCard(true);
 
+      // 効果音を再生（カード表示と同時）
+      // OBSブラウザソースでは自動再生制限があるため、
+      // 再生に失敗しても処理は継続
+      playGachaSound();
+
       // Hide after display
       animationTimeoutRef.current = setTimeout(() => {
         setShowCard(false);
@@ -206,7 +278,7 @@ export default function OverlayPage() {
         }, 500);
       }, 6000);
     }, 100);
-  }, [checkImageAspectRatio]);
+  }, [checkImageAspectRatio, playGachaSound]);
 
   // デバッグログを追加するヘルパー関数
   // OBSブラウザソースでの接続問題を調査するために使用

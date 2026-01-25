@@ -227,6 +227,43 @@
     "you": "あなた",
     "cpu": "CPU"
   },
+  "gachaSoundSettings": {
+    "title": "ガチャ効果音設定",
+    "description": "ガチャ演出時に再生される効果音を設定できます。",
+    "status": {
+      "enabled": "有効",
+      "disabled": "無効"
+    },
+    "form": {
+      "selectFile": "効果音ファイルを選択",
+      "fileRequirements": "対応形式: {formats} | 最大サイズ: {maxSize}",
+      "currentSound": "現在の効果音",
+      "enableSound": "効果音を有効にする",
+      "uploadFirst": "先にファイルをアップロードしてください"
+    },
+    "buttons": {
+      "play": "再生",
+      "stop": "停止",
+      "delete": "削除"
+    },
+    "messages": {
+      "uploadSuccess": "効果音をアップロードしました",
+      "uploading": "アップロード中...",
+      "saving": "保存中...",
+      "enabled": "効果音を有効にしました",
+      "disabled": "効果音を無効にしました",
+      "deleted": "効果音を削除しました"
+    },
+    "errors": {
+      "fileTooLarge": "ファイルサイズが1MBを超えています",
+      "invalidFileType": "対応していないファイル形式です（MP3, WAV, WebM, OGGのみ）",
+      "uploadFailed": "アップロードに失敗しました",
+      "saveFailed": "設定の保存に失敗しました",
+      "deleteFailed": "削除に失敗しました",
+      "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。"
+    },
+    "confirmDelete": "この効果音を削除しますか？"
+  },
   "channelPointSettings": {
     "title": "カード引き換え設定",
     "status": {
