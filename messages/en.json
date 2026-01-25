@@ -287,7 +287,11 @@
       "createRewardFailed": "Failed to create reward",
       "saveFailed": "Failed to save settings",
       "saveSuccess": "Saved (EventSub registration complete)",
-      "eventsubFailed": "Settings saved, but EventSub registration failed. Please verify the URL is accessible externally."
+      "eventsubFailed": "Settings saved, but EventSub registration failed. Please verify the URL is accessible externally.",
+      "additionalRewardAdded": "Channel point added",
+      "additionalRewardFailed": "Failed to add channel point",
+      "additionalRewardRemoved": "Channel point removed",
+      "additionalRewardRemoveFailed": "Failed to remove channel point"
     },
     "form": {
       "selectReward": "Select channel point reward for card redemption",
@@ -298,14 +302,23 @@
       "allRewards": "All Rewards",
       "eventsubStatus": "EventSub Status",
       "noSubscriptions": "No EventSub subscriptions. Click save to register.",
-      "localTunnelNote": "* Local environment requires ngrok or similar tunnel"
+      "localTunnelNote": "* Local environment requires ngrok or similar tunnel",
+      "additionalRewards": "Additional Channel Points",
+      "additionalRewardsDescription": "In addition to the main channel point, you can configure additional channel points that also trigger card draws.",
+      "unknownReward": "Unknown channel point",
+      "noAdditionalRewardsAvailable": "No additional channel points available.",
+      "setMainRewardFirst": "Please set the main channel point first."
     },
     "buttons": {
       "createReward": "Create TwiCa Reward (100 points)",
-      "saveEventSub": "Save & Register EventSub"
+      "saveEventSub": "Save & Register EventSub",
+      "creating": "Creating...",
+      "addAdditional": "Add",
+      "remove": "Remove"
     },
     "options": {
       "selectReward": "-- Select Reward --",
+      "selectAdditionalReward": "-- Select Channel Point to Add --",
       "points": "points",
       "disabled": "[Disabled]"
     }

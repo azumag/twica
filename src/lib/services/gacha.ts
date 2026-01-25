@@ -137,9 +137,15 @@ export class GachaService {
     eventId?: string
   ): Promise<Result<GachaResult>> {
     try {
+      // Fetch streamer and additional channel points in a single query
+      // streamerと追加チャネルポイントを1クエリで取得
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, channel_point_reward_id')
+        .select(`
+          id,
+          channel_point_reward_id,
+          streamer_additional_gacha_rewards (reward_id)
+        `)
         .eq('twitch_user_id', event.broadcaster_user_id)
         .single()
 
@@ -147,11 +153,20 @@ export class GachaService {
         return err('Streamer not found')
       }
 
-      if (streamer.channel_point_reward_id !== event.reward.id) {
-        return err('Reward ID mismatch')
+      // Check main reward ID first (most common case)
+      // まずメインの報酬IDをチェック（最も一般的なケース）
+      if (streamer.channel_point_reward_id === event.reward.id) {
+        return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
       }
 
-      return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+      // Check additional channel points
+      // 追加チャネルポイントをチェック
+      const additionalRewards = streamer.streamer_additional_gacha_rewards as { reward_id: string }[] | null
+      if (additionalRewards?.some(r => r.reward_id === event.reward.id)) {
+        return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+      }
+
+      return err('Reward ID mismatch')
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }
