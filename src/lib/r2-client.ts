@@ -59,16 +59,15 @@ export function getR2Bucket(): string {
 
 /**
  * R2効果音バケット名を取得
- * R2_SOUND_BUCKET_NAMEが設定されていない場合はR2_BUCKET_NAMEにフォールバック
- * これにより、画像と効果音を別バケットで管理可能
+ * 画像バケットとは別に管理するため、専用の環境変数が必須
+ * @throws R2_SOUND_BUCKET_NAMEが未設定の場合にエラー
  */
 export function getR2SoundBucket(): string {
   const soundBucket = process.env.R2_SOUND_BUCKET_NAME;
-  if (soundBucket) {
-    return soundBucket;
+  if (!soundBucket) {
+    throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
   }
-  // フォールバック: 効果音専用バケットが未設定の場合は画像バケットを使用
-  return getR2Bucket();
+  return soundBucket;
 }
 
 /**
