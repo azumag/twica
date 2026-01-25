@@ -291,7 +291,9 @@
       "additionalRewardAdded": "Channel point added",
       "additionalRewardFailed": "Failed to add channel point",
       "additionalRewardRemoved": "Channel point removed",
-      "additionalRewardRemoveFailed": "Failed to remove channel point"
+      "additionalRewardRemoveFailed": "Failed to remove channel point",
+      "removeFailed": "Failed to remove settings",
+      "removeSuccess": "Settings removed successfully"
     },
     "form": {
       "selectReward": "Select channel point reward for card redemption",
@@ -307,7 +309,8 @@
       "additionalRewardsDescription": "In addition to the main channel point, you can configure additional channel points that also trigger card draws.",
       "unknownReward": "Unknown channel point",
       "noAdditionalRewardsAvailable": "No additional channel points available.",
-      "setMainRewardFirst": "Please set the main channel point first."
+      "setMainRewardFirst": "Please set the main channel point first.",
+      "currentSetting": "Current setting"
     },
     "buttons": {
       "createReward": "Create TwiCa Reward (100 points)",
@@ -315,7 +318,8 @@
       "creating": "Creating...",
       "addAdditional": "Add",
       "remove": "Remove",
-      "clear": "Clear"
+      "clear": "Clear",
+      "removeReward": "Remove Setting"
     },
     "options": {
       "selectReward": "-- Select Reward --",

@@ -156,6 +156,99 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// Delete EventSub subscription for a specific reward
+// 特定の報酬のEventSubサブスクリプションを削除
+export async function DELETE(request: NextRequest) {
+  const session = await getSession();
+
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.eventsubSubscribePost, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(rateLimitResult.limit),
+          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+          "X-RateLimit-Reset": String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
+  if (!session || !canUseStreamerFeatures(session)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
+  }
+
+  try {
+    const { searchParams } = new URL(request.url);
+    const rewardId = searchParams.get("rewardId");
+
+    // Get app access token
+    const appAccessToken = await getAppAccessToken();
+
+    // Get existing subscriptions
+    const existingResponse = await fetch(
+      `${TWITCH_API_URL}/eventsub/subscriptions`,
+      {
+        headers: {
+          "Authorization": `Bearer ${appAccessToken}`,
+          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+        },
+      }
+    );
+
+    if (!existingResponse.ok) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.FAILED_TO_GET_SUBSCRIPTIONS },
+        { status: existingResponse.status }
+      );
+    }
+
+    const existingData = await existingResponse.json();
+    let deletedCount = 0;
+
+    // Delete subscriptions for this broadcaster (and optionally for specific reward)
+    // この配信者のサブスクリプションを削除（オプションで特定の報酬のみ）
+    for (const sub of existingData.data) {
+      if (
+        sub.type === "channel.channel_points_custom_reward_redemption.add" &&
+        sub.condition.broadcaster_user_id === session.twitchUserId
+      ) {
+        // rewardIdが指定されている場合は、そのrewardIdのみ削除
+        // If rewardId is specified, only delete that rewardId's subscription
+        if (rewardId && sub.condition.reward_id !== rewardId) {
+          continue;
+        }
+
+        const deleteResponse = await fetch(
+          `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
+          {
+            method: "DELETE",
+            headers: {
+              "Authorization": `Bearer ${appAccessToken}`,
+              "Client-Id": process.env.TWITCH_CLIENT_ID!,
+            },
+          }
+        );
+
+        if (deleteResponse.ok || deleteResponse.status === 204) {
+          deletedCount++;
+        }
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      deletedCount,
+    });
+  } catch (error) {
+    return handleApiError(error, "EventSub Delete Subscription API");
+  }
+}
+
 // Get current subscriptions
 export async function GET(request: Request) {
   const session = await getSession();

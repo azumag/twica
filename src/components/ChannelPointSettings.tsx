@@ -66,6 +66,9 @@ export default function ChannelPointSettings({
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
   const [addingAdditional, setAddingAdditional] = useState(false);
   const [removingAdditional, setRemovingAdditional] = useState<string | null>(null);
+  // メイン報酬解除中フラグ
+  // Main reward removal in progress flag
+  const [removing, setRemoving] = useState(false);
 
   const fetchRewards = async () => {
     setLoading(true);
@@ -303,6 +306,75 @@ export default function ChannelPointSettings({
     }
   };
 
+  // メイン報酬設定を解除
+  // Remove main reward setting from server
+  const handleRemoveReward = async () => {
+    setRemoving(true);
+    setMessage("");
+
+    try {
+      // まずEventSubサブスクリプションを削除
+      // First delete EventSub subscription
+      const eventSubResponse = await fetch(
+        `/api/twitch/eventsub/subscribe?rewardId=${encodeURIComponent(currentRewardId!)}`,
+        {
+          method: "DELETE",
+          credentials: "include",
+        }
+      );
+
+      if (!eventSubResponse.ok && eventSubResponse.status !== 404) {
+        if (eventSubResponse.status === 429) {
+          const errorData = await eventSubResponse.json();
+          setMessage(errorData.error || t("messages.rateLimit"));
+          return;
+        }
+        // サブスクリプション削除に失敗しても設定の解除は続行
+        // Continue with settings removal even if subscription deletion fails
+        logger.warn("Failed to delete EventSub subscription, continuing with settings removal");
+      }
+
+      // サーバーから設定を解除（nullを保存）
+      // Remove settings from server (save null)
+      const settingsResponse = await fetch("/api/streamer/settings", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          streamerId,
+          channelPointRewardId: null,
+          channelPointRewardName: null,
+        }),
+      });
+
+      if (settingsResponse.status === 429) {
+        const errorData = await settingsResponse.json();
+        setMessage(errorData.error || t("messages.rateLimit"));
+        return;
+      }
+
+      if (!settingsResponse.ok) {
+        setMessage(t("messages.removeFailed"));
+        return;
+      }
+
+      setMessage(t("messages.removeSuccess"));
+      // UIの状態もクリア
+      // Clear UI state as well
+      setSelectedRewardId("");
+      setSelectedRewardName("");
+      setEventSubStatus("none");
+      await fetchEventSubStatus();
+      // ページをリロードして最新の状態を反映
+      // Reload page to reflect the latest state
+      window.location.reload();
+    } catch {
+      setMessage(t("messages.errorOccurred"));
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   // 追加報酬を削除
   // Remove additional reward
   const handleRemoveAdditionalReward = async (rewardId: string) => {
@@ -440,12 +512,33 @@ export default function ChannelPointSettings({
                </div>
                <button
                  onClick={() => {
+                   // ドロップダウンの選択をクリアするだけ（保存前）
+                   // Clear dropdown selection only (before save)
                    setSelectedRewardId("");
                    setSelectedRewardName("");
                  }}
                  className="ml-3 shrink-0 rounded bg-gray-600 px-2 py-1 text-xs text-gray-300 hover:bg-gray-500"
                >
                  {t("buttons.clear")}
+               </button>
+             </div>
+           )}
+
+           {/* 保存済み設定の解除ボタン - サーバーから設定を削除 */}
+           {/* Remove saved settings button - delete settings from server */}
+           {currentRewardId && (
+             <div className="flex items-center justify-between rounded-lg bg-yellow-500/10 p-3">
+               <div className="min-w-0 flex-1">
+                 <p className="text-sm text-yellow-300">
+                   {t("form.currentSetting")}: <span className="text-white">{currentRewardName}</span>
+                 </p>
+               </div>
+               <button
+                 onClick={handleRemoveReward}
+                 disabled={removing}
+                 className="ml-3 shrink-0 rounded bg-red-600/20 px-3 py-1 text-sm text-red-400 hover:bg-red-600/30 disabled:opacity-50"
+               >
+                 {removing ? tCommon("loading") : t("buttons.removeReward")}
                </button>
              </div>
            )}

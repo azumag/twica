@@ -291,7 +291,9 @@
       "additionalRewardAdded": "引き換えチャネルポイントを追加しました",
       "additionalRewardFailed": "引き換えチャネルポイントの追加に失敗しました",
       "additionalRewardRemoved": "引き換えチャネルポイントを削除しました",
-      "additionalRewardRemoveFailed": "引き換えチャネルポイントの削除に失敗しました"
+      "additionalRewardRemoveFailed": "引き換えチャネルポイントの削除に失敗しました",
+      "removeFailed": "設定の解除に失敗しました",
+      "removeSuccess": "設定を解除しました"
     },
     "form": {
       "selectReward": "カード引き換えに使用するチャネルポイント報酬を選択",
@@ -307,7 +309,8 @@
       "additionalRewardsDescription": "メインのチャネルポイントに加えて、別のチャネルポイントでもカードを引けるように設定できます。",
       "unknownReward": "不明なチャネルポイント",
       "noAdditionalRewardsAvailable": "追加できるチャネルポイントがありません。",
-      "setMainRewardFirst": "まずメインのチャネルポイントを設定してください。"
+      "setMainRewardFirst": "まずメインのチャネルポイントを設定してください。",
+      "currentSetting": "現在の設定"
     },
     "buttons": {
       "createReward": "TwiCa用報酬を作成（100ポイント）",
@@ -315,7 +318,8 @@
       "creating": "作成中...",
       "addAdditional": "追加",
       "remove": "削除",
-      "clear": "解除"
+      "clear": "解除",
+      "removeReward": "設定を解除"
     },
     "options": {
       "selectReward": "-- 報酬を選択 --",
