@@ -141,10 +141,15 @@ export default function ChannelPointSettings({
       }
   }, [selectedRewardId]);
 
+  // 初期ロード時のみ実行
+  // currentRewardId（props）を渡すことで、DBに保存されている報酬IDでステータスを確認
+  // 依存配列を空にすることで、保存後の再実行を防ぐ
   useEffect(() => {
     fetchRewards();
-    fetchEventSubStatus();
-  }, [fetchEventSubStatus]);
+    // 初期ロード時はpropsのcurrentRewardIdを使用
+    fetchEventSubStatus(currentRewardId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleCreateReward = async () => {
     setCreating(true);
