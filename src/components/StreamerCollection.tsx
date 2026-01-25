@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import Stats from "./Stats";
 import ExpandableDescription from "./ExpandableDescription";
+import CollectionCard from "./CollectionCard";
 import type { Streamer, Card } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
 import type { Rarity } from "@/types/database";
@@ -83,6 +84,12 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
             </p>
           </div>
         ) : (
+          // Grid layout for cards - uses responsive columns
+          // Small images (< 400px) are automatically displayed in compact cards
+          // via the CollectionCard component's image size detection
+          // カード用グリッドレイアウト - レスポンシブな列数を使用
+          // 小さい画像（400px未満）はCollectionCardコンポーネントの
+          // 画像サイズ検出により自動的にコンパクトカードで表示される
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {cards.map((card, index) => {
               const rarityInfo = getRarityInfo(card.rarity);
@@ -90,53 +97,27 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
               // 最初の4枚のカードはLCP最適化のためpriority設定
               const isPriority = index < 4;
               return (
-                <div
+                <CollectionCard
                   key={card.id}
-                  className="group relative overflow-hidden rounded-lg bg-gray-700"
-                >
-                  {/* 名前とレアリティを一番上に配置 */}
-                  <div className="p-3 pb-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-white truncate">{card.name}</h3>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
-                      >
-                        {rarityInfo.label}
-                      </span>
-                    </div>
-                  </div>
-                  {/* 正方形画像（トリミング） */}
-                  <div className="aspect-square bg-gray-600">
-                    {card.image_url ? (
-                      // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
-                      <Image
-                        src={card.image_url}
-                        alt={card.name}
-                        width={300}
-                        height={300}
-                        className="w-full h-full object-cover"
-                        priority={isPriority}
-                        unoptimized
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-gray-500">
-                        {tCommon("noImage")}
-                      </div>
-                    )}
-                  </div>
-                  {/* 説明とカウント */}
-                  {/* Description (expandable) and count */}
-                  <div className="p-3 pt-2">
-                    {card.description && (
+                  id={card.id}
+                  name={card.name}
+                  imageUrl={card.image_url}
+                  description={card.description}
+                  rarity={card.rarity}
+                  rarityInfo={{
+                    label: rarityInfo.label,
+                    color: rarityInfo.color,
+                  }}
+                  count={card.count}
+                  countLabel={t("cardCount", { count: card.count })}
+                  priority={isPriority}
+                  noImageText={tCommon("noImage")}
+                  descriptionComponent={
+                    card.description ? (
                       <ExpandableDescription description={card.description} />
-                    )}
-                    {card.count > 1 && (
-                      <div className="text-sm text-gray-400">
-                        {t("cardCount", { count: card.count })}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                    ) : undefined
+                  }
+                />
               );
             })}
           </div>
