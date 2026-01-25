@@ -4,6 +4,8 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { logger } from "@/lib/logger";
+import { reportError } from "@/lib/sentry/error-handler";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -94,12 +96,24 @@ export async function POST(request: NextRequest) {
     if (existingResponse.ok) {
       const existingData = await existingResponse.json();
 
+      // 既存サブスクリプション数と状態をログに記録
+      const mySubscriptions = existingData.data.filter(
+        (sub: { type: string; condition: { broadcaster_user_id: string }; status: string }) =>
+          sub.type === "channel.channel_points_custom_reward_redemption.add" &&
+          sub.condition.broadcaster_user_id === session.twitchUserId
+      );
+      logger.info(
+        `Existing EventSub subscriptions for broadcaster=${session.twitchUserId}: count=${mySubscriptions.length}`,
+        { subscriptions: mySubscriptions.map((s: { id: string; status: string; condition: { reward_id: string } }) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id })) }
+      );
+
       // Delete existing subscriptions for this broadcaster
       for (const sub of existingData.data) {
         if (
           sub.type === "channel.channel_points_custom_reward_redemption.add" &&
           sub.condition.broadcaster_user_id === session.twitchUserId
         ) {
+          logger.info(`Deleting existing EventSub: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}`);
           await fetch(
             `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
             {
@@ -112,6 +126,12 @@ export async function POST(request: NextRequest) {
           );
         }
       }
+    } else {
+      // 既存サブスクリプション取得失敗もログに記録
+      logger.warn(
+        `Failed to get existing EventSub subscriptions: status=${existingResponse.status}`,
+        await existingResponse.json().catch(() => ({}))
+      );
     }
 
     // Create new subscription
@@ -142,10 +162,33 @@ export async function POST(request: NextRequest) {
 
     if (!subscribeResponse.ok) {
       const error = await subscribeResponse.json();
+      // EventSub登録失敗の詳細をログに記録
+      logger.error(
+        `EventSub subscription failed: status=${subscribeResponse.status}, broadcaster=${session.twitchUserId}, rewardId=${rewardId}`,
+        {
+          error,
+          callbackUrl,
+          status: subscribeResponse.status,
+        }
+      );
+      reportError(new Error(`EventSub subscription failed: ${error.message || JSON.stringify(error)}`), {
+        context: "EventSub Subscribe",
+        type: "eventsub",
+        twitchUserId: session.twitchUserId,
+        rewardId,
+        callbackUrl,
+        errorDetails: error,
+      });
       return handleApiError(error, "EventSub subscription error");
     }
 
     const subscriptionData = await subscribeResponse.json();
+
+    // EventSub登録成功をログに記録
+    logger.info(
+      `EventSub subscription created: broadcaster=${session.twitchUserId}, rewardId=${rewardId}, subscriptionId=${subscriptionData.data[0]?.id}`,
+      { status: subscriptionData.data[0]?.status }
+    );
 
     return NextResponse.json({
       success: true,
@@ -210,7 +253,23 @@ export async function GET(request: Request) {
         sub.condition.broadcaster_user_id === session.twitchUserId
     );
 
-    return NextResponse.json(mySubscriptions);
+    // 現在の設定されているcallback URLをデバッグ情報として追加
+    const expectedCallbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
+
+    // 各サブスクリプションのcallback URLと期待値が一致するかチェック
+    const subscriptionsWithDebug = mySubscriptions.map((sub: {
+      id: string;
+      status: string;
+      transport?: { callback?: string };
+    }) => ({
+      ...sub,
+      debug: {
+        expectedCallbackUrl,
+        callbackMatch: sub.transport?.callback === expectedCallbackUrl,
+      },
+    }));
+
+    return NextResponse.json(subscriptionsWithDebug);
   } catch (error) {
     return handleApiError(error, "EventSub Get Subscriptions API");
   }

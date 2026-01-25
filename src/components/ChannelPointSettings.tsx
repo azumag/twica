@@ -20,6 +20,13 @@ interface EventSubSubscription {
     broadcaster_user_id: string;
     reward_id?: string;
   };
+  transport?: {
+    callback?: string;
+  };
+  debug?: {
+    expectedCallbackUrl: string;
+    callbackMatch: boolean;
+  };
 }
 
 interface ChannelPointSettingsProps {
@@ -355,6 +362,23 @@ export default function ChannelPointSettings({
                            <li>しばらく待ってから「更新」ボタンを押してください</li>
                            <li>解決しない場合は、報酬を再設定してみてください</li>
                          </ul>
+                       </div>
+                     )}
+                     {/* Callback URL mismatch warning */}
+                     {/* Callback URL不一致の警告 */}
+                     {sub.debug && !sub.debug.callbackMatch && (
+                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                         <p className="font-medium">Callback URL不一致</p>
+                         <p className="mt-1 text-red-400/80">
+                           登録されているCallback URLと現在のアプリURLが一致しません。
+                           EventSubを再登録してください。
+                         </p>
+                         <p className="mt-1 text-red-400/60 break-all">
+                           現在: {sub.transport?.callback || "不明"}
+                         </p>
+                         <p className="text-red-400/60 break-all">
+                           期待: {sub.debug.expectedCallbackUrl}
+                         </p>
                        </div>
                      )}
                    </div>

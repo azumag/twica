@@ -6,6 +6,8 @@ import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
+import { logger } from "@/lib/logger";
+import { reportError } from "@/lib/sentry/error-handler";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
@@ -88,6 +90,13 @@ export async function POST(request: NextRequest) {
   }
 
   if (messageType === MESSAGE_TYPE_VERIFICATION) {
+    // Webhook検証リクエストを受信したことをログに記録
+    const subscription = data.subscription;
+    logger.info(
+      `EventSub verification received: type=${subscription?.type}, broadcaster=${subscription?.condition?.broadcaster_user_id}`,
+      { challenge: data.challenge ? "present" : "missing" }
+    );
+
     return new NextResponse(data.challenge, {
       status: 200,
       headers: { "Content-Type": "text/plain" },
@@ -95,6 +104,28 @@ export async function POST(request: NextRequest) {
   }
 
   if (messageType === MESSAGE_TYPE_REVOCATION) {
+    // EventSubが無効化された理由をログに記録
+    // Revocation reasons: authorization_revoked, user_removed, notification_failures_exceeded, version_removed
+    const subscription = data.subscription;
+    const revocationReason = subscription?.status || "unknown";
+    const subscriptionType = subscription?.type || "unknown";
+    const broadcasterId = subscription?.condition?.broadcaster_user_id || "unknown";
+
+    logger.warn(
+      `EventSub revocation received: reason=${revocationReason}, type=${subscriptionType}, broadcaster=${broadcasterId}`,
+      { subscription }
+    );
+
+    // Sentryにも報告して追跡可能にする
+    reportError(new Error(`EventSub revocation: ${revocationReason}`), {
+      context: "EventSub Revocation",
+      type: "eventsub",
+      revocationReason,
+      subscriptionType,
+      broadcasterId,
+      subscriptionId: subscription?.id,
+    });
+
     return NextResponse.json({ received: true });
   }
 
