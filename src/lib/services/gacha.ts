@@ -137,9 +137,15 @@ export class GachaService {
     eventId?: string
   ): Promise<Result<GachaResult>> {
     try {
+      // Fetch streamer and additional channel points in a single query
+      // streamerと追加チャネルポイントを1クエリで取得（効率化）
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, channel_point_reward_id')
+        .select(`
+          id,
+          channel_point_reward_id,
+          streamer_additional_gacha_rewards (reward_id)
+        `)
         .eq('twitch_user_id', event.broadcaster_user_id)
         .single()
 
@@ -147,11 +153,11 @@ export class GachaService {
         return err('Streamer not found')
       }
 
-      // Check if the reward ID matches the main reward OR any additional reward
-      // メインの報酬ID または 追加報酬のいずれかに一致するかチェック
-      const isValidReward = await this.isValidGachaReward(
-        streamer.id,
+      // Check if the reward ID matches the main or any additional channel point
+      // メインまたは追加チャネルポイントのいずれかに一致するかチェック
+      const isValidReward = this.isValidGachaReward(
         streamer.channel_point_reward_id,
+        streamer.streamer_additional_gacha_rewards,
         event.reward.id
       )
 
@@ -166,44 +172,34 @@ export class GachaService {
   }
 
   /**
-   * Check if the given reward ID is valid for gacha
-   * 指定された報酬IDがガチャに有効かどうかをチェック
+   * Check if the given reward ID is valid for gacha (synchronous, no DB query)
+   * 指定された報酬IDがガチャに有効かどうかをチェック（同期処理、DBクエリなし）
    *
    * Valid if:
    * - Matches the main channel_point_reward_id, OR
-   * - Matches any reward_id in streamer_additional_gacha_rewards table
+   * - Matches any reward_id in the additional rewards array
    *
    * 有効な場合:
    * - メインの channel_point_reward_id と一致する、または
-   * - streamer_additional_gacha_rewards テーブルの reward_id のいずれかと一致する
+   * - 追加チャネルポイント配列の reward_id のいずれかと一致する
    */
-  private async isValidGachaReward(
-    streamerId: string,
+  private isValidGachaReward(
     mainRewardId: string | null,
+    additionalRewards: { reward_id: string }[] | null,
     eventRewardId: string
-  ): Promise<boolean> {
-    // First check the main reward ID (most common case)
+  ): boolean {
+    // Check main reward ID first (most common case)
     // まずメインの報酬IDをチェック（最も一般的なケース）
     if (mainRewardId === eventRewardId) {
       return true
     }
 
-    // Check additional rewards table
-    // 追加報酬テーブルをチェック
-    const { data: additionalReward, error } = await this.supabase
-      .from('streamer_additional_gacha_rewards')
-      .select('id')
-      .eq('streamer_id', streamerId)
-      .eq('reward_id', eventRewardId)
-      .maybeSingle()
-
-    if (error) {
-      logger.warn('Error checking additional rewards:', error.message)
-      return false
+    // Check additional channel points (already fetched, no extra query)
+    // 追加チャネルポイントをチェック（既に取得済み、追加クエリなし）
+    if (additionalRewards && additionalRewards.length > 0) {
+      return additionalRewards.some(r => r.reward_id === eventRewardId)
     }
 
-    // If a matching additional reward is found, the reward is valid
-    // 一致する追加報酬が見つかった場合、その報酬は有効
-    return additionalReward !== null
+    return false
   }
 }

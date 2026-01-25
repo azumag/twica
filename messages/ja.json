@@ -288,10 +288,10 @@
       "saveFailed": "設定の保存に失敗しました",
       "saveSuccess": "保存しました（EventSub登録完了）",
       "eventsubFailed": "設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。",
-      "additionalRewardAdded": "追加報酬を登録しました",
-      "additionalRewardFailed": "追加報酬の登録に失敗しました",
-      "additionalRewardRemoved": "追加報酬を削除しました",
-      "additionalRewardRemoveFailed": "追加報酬の削除に失敗しました"
+      "additionalRewardAdded": "引き換えチャネルポイントを追加しました",
+      "additionalRewardFailed": "引き換えチャネルポイントの追加に失敗しました",
+      "additionalRewardRemoved": "引き換えチャネルポイントを削除しました",
+      "additionalRewardRemoveFailed": "引き換えチャネルポイントの削除に失敗しました"
     },
     "form": {
       "selectReward": "カード引き換えに使用するチャネルポイント報酬を選択",
@@ -303,11 +303,11 @@
       "eventsubStatus": "EventSub ステータス",
       "noSubscriptions": "EventSubサブスクリプションがありません。保存ボタンを押して登録してください。",
       "localTunnelNote": "※ ローカル環境ではngrokなどのトンネルが必要です",
-      "additionalRewards": "追加ガチャ報酬",
-      "additionalRewardsDescription": "メインの報酬に加えて、追加の報酬でもガチャを引けるように設定できます。",
-      "unknownReward": "不明な報酬",
-      "noAdditionalRewardsAvailable": "追加できる報酬がありません。",
-      "setMainRewardFirst": "まずメインの報酬を設定してください。"
+      "additionalRewards": "引き換えチャネルポイント追加",
+      "additionalRewardsDescription": "メインのチャネルポイントに加えて、別のチャネルポイントでもカードを引けるように設定できます。",
+      "unknownReward": "不明なチャネルポイント",
+      "noAdditionalRewardsAvailable": "追加できるチャネルポイントがありません。",
+      "setMainRewardFirst": "まずメインのチャネルポイントを設定してください。"
     },
     "buttons": {
       "createReward": "TwiCa用報酬を作成（100ポイント）",
@@ -318,7 +318,7 @@
     },
     "options": {
       "selectReward": "-- 報酬を選択 --",
-      "selectAdditionalReward": "-- 追加する報酬を選択 --",
+      "selectAdditionalReward": "-- 追加するチャネルポイントを選択 --",
       "points": "ポイント",
       "disabled": "[無効]"
     }
