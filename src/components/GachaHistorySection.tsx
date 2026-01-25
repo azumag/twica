@@ -71,12 +71,14 @@ export default function GachaHistorySection({
               <div key={entry.id} className="flex items-center gap-4 p-4">
                 <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-gray-700">
                   {entry.cards.image_url ? (
+                    // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                     <Image
                       src={entry.cards.image_url}
                       alt={entry.cards.name}
                       width={48}
                       height={48}
                       className="h-full w-full object-cover"
+                      unoptimized
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center text-xl">

@@ -114,6 +114,7 @@ export default async function DashboardPage() {
                 >
                   <div className="aspect-square bg-gray-700">
                     {card.image_url ? (
+                      // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                       <Image
                         src={card.image_url}
                         alt={card.name}
@@ -121,6 +122,7 @@ export default async function DashboardPage() {
                         height={200}
                         className="h-full w-full object-cover"
                         priority={isPriority}
+                        unoptimized
                       />
                     ) : (
                       <div className="flex h-full items-center justify-center text-4xl text-gray-600">

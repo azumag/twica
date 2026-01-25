@@ -118,12 +118,14 @@ export default function AnimatedBattle({
                 shakeUser ? 'animate-bounce' : ''
               }`}>
                 {userCard.image_url ? (
+                  // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                   <Image
                     src={userCard.image_url}
                     alt={userCard.name}
                     width={128}
                     height={128}
                     className="h-full w-full object-cover rounded-lg"
+                    unoptimized
                   />
                 ) : (
                   <div className="text-4xl">🎴</div>
@@ -168,12 +170,14 @@ export default function AnimatedBattle({
                 shakeOpponent ? 'animate-bounce' : ''
               }`}>
                 {opponentCard.image_url ? (
+                  // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                   <Image
                     src={opponentCard.image_url}
                     alt={opponentCard.name}
                     width={128}
                     height={128}
                     className="h-full w-full object-cover rounded-lg"
+                    unoptimized
                   />
                 ) : (
                   <div className="text-4xl">🎴</div>

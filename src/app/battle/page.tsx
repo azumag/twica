@@ -181,12 +181,14 @@ export default function BattlePage() {
                     >
                       <div className="aspect-[3/4] bg-gray-700">
                         {userCard.card.image_url ? (
+                          // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                           <Image
                             src={userCard.card.image_url}
                             alt={userCard.card.name}
                             width={200}
                             height={300}
                             className="h-full w-full object-cover"
+                            unoptimized
                           />
                         ) : (
                           <div className="flex h-full items-center justify-center text-4xl">
@@ -222,12 +224,14 @@ export default function BattlePage() {
                     <div className="flex items-center gap-4 mb-4">
                       <div className="h-20 w-20 bg-gray-700 rounded-lg flex items-center justify-center">
                         {selectedCard.card.image_url ? (
+                          // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                           <Image
                             src={selectedCard.card.image_url}
                             alt={selectedCard.card.name}
                             width={80}
                             height={80}
                             className="h-full w-full object-cover rounded-lg"
+                            unoptimized
                           />
                         ) : (
                           <div className="text-2xl">🎴</div>
@@ -292,12 +296,14 @@ export default function BattlePage() {
                     <div className="flex items-center gap-4 mb-4">
                       <div className="h-24 w-24 bg-gray-700 rounded-lg flex items-center justify-center">
                         {battleResult.userCard.image_url ? (
+                          // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                           <Image
                             src={battleResult.userCard.image_url}
                             alt={battleResult.userCard.name}
                             width={96}
                             height={96}
                             className="h-full w-full object-cover rounded-lg"
+                            unoptimized
                           />
                         ) : (
                           <div className="text-3xl">🎴</div>
@@ -316,12 +322,14 @@ export default function BattlePage() {
                     <div className="flex items-center gap-4 mb-4">
                       <div className="h-24 w-24 bg-gray-700 rounded-lg flex items-center justify-center">
                         {battleResult.opponentCard.image_url ? (
+                          // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                           <Image
                             src={battleResult.opponentCard.image_url}
                             alt={battleResult.opponentCard.name}
                             width={96}
                             height={96}
                             className="h-full w-full object-cover rounded-lg"
+                            unoptimized
                           />
                         ) : (
                           <div className="text-3xl">🎴</div>
