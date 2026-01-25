@@ -5,17 +5,26 @@ import { logger } from './logger';
  * R2 Client Configuration
  * Cloudflare R2はS3互換APIを提供するため、AWS SDKを使用
  *
- * 環境変数:
+ * 画像用環境変数:
  * - R2_ENDPOINT: R2エンドポイントURL (例: https://<account_id>.r2.cloudflarestorage.com)
  * - R2_ACCESS_KEY_ID: R2アクセスキーID
  * - R2_SECRET_ACCESS_KEY: R2シークレットアクセスキー
  * - R2_BUCKET_NAME: R2バケット名
  * - R2_PUBLIC_URL: R2パブリックURL (例: https://pub-xxx.r2.dev または カスタムドメイン)
+ *
+ * 効果音用環境変数（すべて必須）:
+ * - R2_SOUND_ENDPOINT: 効果音バケット用エンドポイントURL
+ * - R2_SOUND_ACCESS_KEY_ID: 効果音バケット用アクセスキーID
+ * - R2_SOUND_SECRET_ACCESS_KEY: 効果音バケット用シークレットアクセスキー
+ * - R2_SOUND_BUCKET_NAME: 効果音バケット名
+ * - R2_SOUND_PUBLIC_URL: 効果音バケットのパブリックURL
  */
 
 // R2クライアントをシングルトンパターンで管理
 // リクエストごとにクライアントを作成するとコストがかかるため
 let r2ClientInstance: S3Client | null = null;
+// 効果音バケット用の別クライアント（別アカウント/別認証情報に対応）
+let r2SoundClientInstance: S3Client | null = null;
 
 /**
  * R2クライアントを取得（シングルトン）
@@ -58,6 +67,36 @@ export function getR2Bucket(): string {
 }
 
 /**
+ * 効果音バケット用R2クライアントを取得（シングルトン）
+ * 画像バケットとは別の認証情報を使用
+ * @throws 必要な環境変数が未設定の場合にエラー
+ */
+export function getR2SoundClient(): S3Client {
+  if (r2SoundClientInstance) {
+    return r2SoundClientInstance;
+  }
+
+  const endpoint = process.env.R2_SOUND_ENDPOINT;
+  const accessKeyId = process.env.R2_SOUND_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.R2_SOUND_SECRET_ACCESS_KEY;
+
+  if (!endpoint || !accessKeyId || !secretAccessKey) {
+    throw new Error('Missing R2 sound environment variables: R2_SOUND_ENDPOINT, R2_SOUND_ACCESS_KEY_ID, R2_SOUND_SECRET_ACCESS_KEY');
+  }
+
+  r2SoundClientInstance = new S3Client({
+    region: 'auto',
+    endpoint,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+  });
+
+  return r2SoundClientInstance;
+}
+
+/**
  * R2効果音バケット名を取得
  * 画像バケットとは別に管理するため、専用の環境変数が必須
  * @throws R2_SOUND_BUCKET_NAMEが未設定の場合にエラー
@@ -68,6 +107,19 @@ export function getR2SoundBucket(): string {
     throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
   }
   return soundBucket;
+}
+
+/**
+ * 効果音バケットのパブリックURLを取得
+ * @throws R2_SOUND_PUBLIC_URLが未設定の場合にエラー
+ */
+export function getR2SoundPublicUrl(): string {
+  const publicUrl = process.env.R2_SOUND_PUBLIC_URL;
+  if (!publicUrl) {
+    throw new Error('Missing R2_SOUND_PUBLIC_URL environment variable');
+  }
+  // 末尾のスラッシュを除去して統一
+  return publicUrl.replace(/\/$/, '');
 }
 
 /**
@@ -117,7 +169,7 @@ export async function uploadToR2(
 
 /**
  * R2効果音バケットにファイルをアップロード
- * 画像バケットとは別のバケットに保存することで、ストレージを分離管理
+ * 画像バケットとは完全に別のバケット・認証情報を使用
  * @param fileName - ファイル名（キー）
  * @param buffer - ファイルデータ
  * @param contentType - MIMEタイプ（audio/mpeg, audio/wav等）
@@ -128,9 +180,9 @@ export async function uploadSoundToR2(
   buffer: Buffer,
   contentType: string
 ): Promise<string> {
-  const client = getR2Client();
+  const client = getR2SoundClient();
   const bucket = getR2SoundBucket();
-  const publicUrl = getR2PublicUrl();
+  const publicUrl = getR2SoundPublicUrl();
 
   try {
     await client.send(new PutObjectCommand({
@@ -171,10 +223,11 @@ export async function deleteFromR2(fileName: string): Promise<void> {
 
 /**
  * R2効果音バケットからファイルを削除
+ * 画像バケットとは完全に別のバケット・認証情報を使用
  * @param fileName - ファイル名（キー）
  */
 export async function deleteSoundFromR2(fileName: string): Promise<void> {
-  const client = getR2Client();
+  const client = getR2SoundClient();
   const bucket = getR2SoundBucket();
 
   try {
