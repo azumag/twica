@@ -429,13 +429,24 @@ export default function ChannelPointSettings({
            )}
 
            {selectedRewardId && (
-             <div className="rounded-lg bg-gray-700 p-3">
-               <p className="text-sm text-gray-400">
-                 {t("form.selected")} <span className="text-white">{selectedRewardName}</span>
-               </p>
-               <p className="mt-1 text-xs text-gray-500">
-                 {t("form.id")} {selectedRewardId}
-               </p>
+             <div className="flex items-center justify-between rounded-lg bg-gray-700 p-3">
+               <div className="min-w-0 flex-1">
+                 <p className="truncate text-sm text-gray-400">
+                   {t("form.selected")} <span className="text-white">{selectedRewardName}</span>
+                 </p>
+                 <p className="mt-1 truncate text-xs text-gray-500">
+                   {t("form.id")} {selectedRewardId}
+                 </p>
+               </div>
+               <button
+                 onClick={() => {
+                   setSelectedRewardId("");
+                   setSelectedRewardName("");
+                 }}
+                 className="ml-3 shrink-0 rounded bg-gray-600 px-2 py-1 text-xs text-gray-300 hover:bg-gray-500"
+               >
+                 {t("buttons.clear")}
+               </button>
              </div>
            )}
 
@@ -485,80 +496,80 @@ export default function ChannelPointSettings({
             )}
            </div>
 
-           {/* Additional Rewards Section */}
-           {/* 追加報酬セクション - メインの報酬とは別に追加の報酬を設定できる */}
-           <div className="rounded-lg bg-gray-700/50 p-4">
-             <h3 className="mb-2 text-sm font-medium text-gray-300">
-               {t("form.additionalRewards")}
-             </h3>
-             <p className="mb-3 text-xs text-gray-500">
-               {t("form.additionalRewardsDescription")}
-             </p>
-
-             {/* Registered additional rewards list */}
-             {/* 登録済みの追加報酬一覧 */}
-             {additionalRewards.length > 0 && (
-               <div className="mb-3 space-y-2">
-                 {additionalRewards.map((reward) => (
-                   <div
-                     key={reward.id}
-                     className="flex items-center justify-between rounded bg-gray-600/50 px-3 py-2"
-                   >
-                     <div>
-                       <span className="text-sm text-gray-200">
-                         {reward.reward_name || t("form.unknownReward")}
-                       </span>
-                       <span className="ml-2 text-xs text-gray-500">
-                         ({reward.reward_id.slice(0, 8)}...)
-                       </span>
-                     </div>
-                     <button
-                       onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
-                       disabled={removingAdditional === reward.reward_id}
-                       className="rounded bg-red-600/20 px-2 py-1 text-xs text-red-400 hover:bg-red-600/30 disabled:opacity-50"
-                     >
-                       {removingAdditional === reward.reward_id
-                         ? tCommon("loading")
-                         : t("buttons.remove")}
-                     </button>
-                   </div>
-                 ))}
-               </div>
-             )}
-
-             {/* Add additional reward form */}
-             {/* 追加報酬の追加フォーム */}
-             {availableForAdditional.length > 0 ? (
-               <div className="flex items-center gap-2">
-                 <select
-                   value={selectedAdditionalRewardId}
-                   onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
-                   className="flex-1 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200"
-                 >
-                   <option value="">{t("options.selectAdditionalReward")}</option>
-                   {availableForAdditional.map((reward) => (
-                     <option key={reward.id} value={reward.id}>
-                       {reward.title} ({reward.cost} {t("options.points")})
-                       {!reward.is_enabled && t("options.disabled")}
-                     </option>
-                   ))}
-                 </select>
-                 <button
-                   onClick={handleAddAdditionalReward}
-                   disabled={addingAdditional || !selectedAdditionalRewardId}
-                   className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
-                 >
-                   {addingAdditional ? tCommon("loading") : t("buttons.addAdditional")}
-                 </button>
-               </div>
-             ) : (
-               <p className="text-xs text-gray-500">
-                 {currentRewardId
-                   ? t("form.noAdditionalRewardsAvailable")
-                   : t("form.setMainRewardFirst")}
+           {/* Additional Rewards Section - Only show when main reward is saved */}
+           {/* 追加報酬セクション - メインの報酬が保存されている場合のみ表示 */}
+           {currentRewardId && (
+             <div className="rounded-lg bg-gray-700/50 p-4">
+               <h3 className="mb-2 text-sm font-medium text-gray-300">
+                 {t("form.additionalRewards")}
+               </h3>
+               <p className="mb-3 text-xs text-gray-500">
+                 {t("form.additionalRewardsDescription")}
                </p>
-             )}
-           </div>
+
+               {/* Registered additional rewards list */}
+               {/* 登録済みの追加報酬一覧 */}
+               {additionalRewards.length > 0 && (
+                 <div className="mb-3 space-y-2">
+                   {additionalRewards.map((reward) => (
+                     <div
+                       key={reward.id}
+                       className="flex items-center justify-between gap-2 rounded bg-gray-600/50 px-3 py-2"
+                     >
+                       <div className="min-w-0 flex-1">
+                         <span className="block truncate text-sm text-gray-200">
+                           {reward.reward_name || t("form.unknownReward")}
+                         </span>
+                         <span className="text-xs text-gray-500">
+                           ({reward.reward_id.slice(0, 8)}...)
+                         </span>
+                       </div>
+                       <button
+                         onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
+                         disabled={removingAdditional === reward.reward_id}
+                         className="shrink-0 rounded bg-red-600/20 px-2 py-1 text-xs text-red-400 hover:bg-red-600/30 disabled:opacity-50"
+                       >
+                         {removingAdditional === reward.reward_id
+                           ? tCommon("loading")
+                           : t("buttons.remove")}
+                       </button>
+                     </div>
+                   ))}
+                 </div>
+               )}
+
+               {/* Add additional reward form */}
+               {/* 追加報酬の追加フォーム */}
+               {availableForAdditional.length > 0 ? (
+                 <div className="flex items-center gap-2">
+                   <select
+                     value={selectedAdditionalRewardId}
+                     onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
+                     className="min-w-0 flex-1 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200"
+                   >
+                     <option value="">{t("options.selectAdditionalReward")}</option>
+                     {availableForAdditional.map((reward) => (
+                       <option key={reward.id} value={reward.id}>
+                         {reward.title} ({reward.cost} {t("options.points")})
+                         {!reward.is_enabled && t("options.disabled")}
+                       </option>
+                     ))}
+                   </select>
+                   <button
+                     onClick={handleAddAdditionalReward}
+                     disabled={addingAdditional || !selectedAdditionalRewardId}
+                     className="shrink-0 rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+                   >
+                     {addingAdditional ? tCommon("loading") : t("buttons.addAdditional")}
+                   </button>
+                 </div>
+               ) : (
+                 <p className="text-xs text-gray-500">
+                   {t("form.noAdditionalRewardsAvailable")}
+                 </p>
+               )}
+             </div>
+           )}
 
            <div className="flex items-center gap-4">
              <button
