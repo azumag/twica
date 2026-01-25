@@ -265,6 +265,31 @@ export interface Database {
           updated_at?: string
         }
       }
+      // 追加ガチャ報酬テーブル - メインの報酬とは別に追加の報酬を管理
+      // Additional gacha rewards table - manages additional rewards separate from main reward
+      streamer_additional_gacha_rewards: {
+        Row: {
+          id: string
+          streamer_id: string
+          reward_id: string
+          reward_name: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          streamer_id: string
+          reward_id: string
+          reward_name?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          streamer_id?: string
+          reward_id?: string
+          reward_name?: string | null
+          created_at?: string
+        }
+      }
     }
     Views: {
       [_ in never]: never
@@ -288,6 +313,8 @@ export type Battle = Database['public']['Tables']['battles']['Row'] & {
   opponent_card_data?: OpponentCardData | null
 }
 export type BattleStats = Database['public']['Tables']['battle_stats']['Row']
+// 追加ガチャ報酬の型 - Additional gacha reward type
+export type StreamerAdditionalGachaReward = Database['public']['Tables']['streamer_additional_gacha_rewards']['Row']
 
 // Extended types with relations
 export type CardWithStreamer = Card & {

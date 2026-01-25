@@ -22,6 +22,16 @@ interface EventSubSubscription {
   };
 }
 
+// 追加ガチャ報酬の型定義
+// Type definition for additional gacha rewards
+interface AdditionalGachaReward {
+  id: string;
+  streamer_id: string;
+  reward_id: string;
+  reward_name: string | null;
+  created_at: string;
+}
+
 interface ChannelPointSettingsProps {
   streamerId: string;
   currentRewardId: string | null;
@@ -50,6 +60,12 @@ export default function ChannelPointSettings({
   const [error, setError] = useState("");
   const [eventSubStatus, setEventSubStatus] = useState<"none" | "pending" | "active" | "error">("none");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
+  // 追加報酬関連の状態
+  // State for additional rewards
+  const [additionalRewards, setAdditionalRewards] = useState<AdditionalGachaReward[]>([]);
+  const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
+  const [addingAdditional, setAddingAdditional] = useState(false);
+  const [removingAdditional, setRemovingAdditional] = useState<string | null>(null);
 
   const fetchRewards = async () => {
     setLoading(true);
@@ -130,10 +146,27 @@ export default function ChannelPointSettings({
       }
   }, [currentRewardId]);
 
+  // 追加報酬一覧を取得
+  // Fetch additional rewards list
+  const fetchAdditionalRewards = useCallback(async () => {
+    try {
+      const response = await fetch("/api/twitch/eventsub/additional-rewards", {
+        credentials: "include",
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setAdditionalRewards(data);
+      }
+    } catch {
+      logger.error("Failed to fetch additional rewards");
+    }
+  }, []);
+
   useEffect(() => {
     fetchRewards();
     fetchEventSubStatus();
-  }, [fetchEventSubStatus]);
+    fetchAdditionalRewards();
+  }, [fetchEventSubStatus, fetchAdditionalRewards]);
 
   const handleCreateReward = async () => {
     setCreating(true);
@@ -230,6 +263,86 @@ export default function ChannelPointSettings({
     const reward = rewards.find((r) => r.id === rewardId);
     setSelectedRewardName(reward?.title || "");
   };
+
+  // 追加報酬を登録
+  // Add additional reward
+  const handleAddAdditionalReward = async () => {
+    if (!selectedAdditionalRewardId) return;
+
+    setAddingAdditional(true);
+    setMessage("");
+
+    try {
+      const reward = rewards.find((r) => r.id === selectedAdditionalRewardId);
+      const response = await fetch("/api/twitch/eventsub/additional-rewards", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rewardId: selectedAdditionalRewardId,
+          rewardName: reward?.title || null,
+        }),
+      });
+
+      if (response.ok) {
+        setMessage(t("messages.additionalRewardAdded"));
+        setSelectedAdditionalRewardId("");
+        await fetchAdditionalRewards();
+        await fetchEventSubStatus();
+      } else if (response.status === 429) {
+        const errorData = await response.json();
+        setMessage(errorData.error || t("messages.rateLimit"));
+      } else {
+        const errorData = await response.json();
+        setMessage(errorData.error || t("messages.additionalRewardFailed"));
+      }
+    } catch {
+      setMessage(t("messages.errorOccurred"));
+    } finally {
+      setAddingAdditional(false);
+    }
+  };
+
+  // 追加報酬を削除
+  // Remove additional reward
+  const handleRemoveAdditionalReward = async (rewardId: string) => {
+    setRemovingAdditional(rewardId);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/twitch/eventsub/additional-rewards?rewardId=${encodeURIComponent(rewardId)}`,
+        {
+          method: "DELETE",
+          credentials: "include",
+        }
+      );
+
+      if (response.ok) {
+        setMessage(t("messages.additionalRewardRemoved"));
+        await fetchAdditionalRewards();
+        await fetchEventSubStatus();
+      } else if (response.status === 429) {
+        const errorData = await response.json();
+        setMessage(errorData.error || t("messages.rateLimit"));
+      } else {
+        setMessage(t("messages.additionalRewardRemoveFailed"));
+      }
+    } catch {
+      setMessage(t("messages.errorOccurred"));
+    } finally {
+      setRemovingAdditional(null);
+    }
+  };
+
+  // 追加報酬として選択可能な報酬をフィルタリング
+  // Filter rewards available for additional selection
+  const availableForAdditional = rewards.filter(
+    (r) =>
+      r.id !== selectedRewardId && // メイン報酬は除外
+      r.id !== currentRewardId && // 現在のメイン報酬も除外
+      !additionalRewards.some((ar) => ar.reward_id === r.id) // 既に追加済みは除外
+  );
 
   const getEventSubStatusBadge = () => {
     switch (eventSubStatus) {
@@ -372,6 +485,81 @@ export default function ChannelPointSettings({
             )}
            </div>
 
+           {/* Additional Rewards Section */}
+           {/* 追加報酬セクション - メインの報酬とは別に追加の報酬を設定できる */}
+           <div className="rounded-lg bg-gray-700/50 p-4">
+             <h3 className="mb-2 text-sm font-medium text-gray-300">
+               {t("form.additionalRewards")}
+             </h3>
+             <p className="mb-3 text-xs text-gray-500">
+               {t("form.additionalRewardsDescription")}
+             </p>
+
+             {/* Registered additional rewards list */}
+             {/* 登録済みの追加報酬一覧 */}
+             {additionalRewards.length > 0 && (
+               <div className="mb-3 space-y-2">
+                 {additionalRewards.map((reward) => (
+                   <div
+                     key={reward.id}
+                     className="flex items-center justify-between rounded bg-gray-600/50 px-3 py-2"
+                   >
+                     <div>
+                       <span className="text-sm text-gray-200">
+                         {reward.reward_name || t("form.unknownReward")}
+                       </span>
+                       <span className="ml-2 text-xs text-gray-500">
+                         ({reward.reward_id.slice(0, 8)}...)
+                       </span>
+                     </div>
+                     <button
+                       onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
+                       disabled={removingAdditional === reward.reward_id}
+                       className="rounded bg-red-600/20 px-2 py-1 text-xs text-red-400 hover:bg-red-600/30 disabled:opacity-50"
+                     >
+                       {removingAdditional === reward.reward_id
+                         ? tCommon("loading")
+                         : t("buttons.remove")}
+                     </button>
+                   </div>
+                 ))}
+               </div>
+             )}
+
+             {/* Add additional reward form */}
+             {/* 追加報酬の追加フォーム */}
+             {availableForAdditional.length > 0 ? (
+               <div className="flex items-center gap-2">
+                 <select
+                   value={selectedAdditionalRewardId}
+                   onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
+                   className="flex-1 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200"
+                 >
+                   <option value="">{t("options.selectAdditionalReward")}</option>
+                   {availableForAdditional.map((reward) => (
+                     <option key={reward.id} value={reward.id}>
+                       {reward.title} ({reward.cost} {t("options.points")})
+                       {!reward.is_enabled && t("options.disabled")}
+                     </option>
+                   ))}
+                 </select>
+                 <button
+                   onClick={handleAddAdditionalReward}
+                   disabled={addingAdditional || !selectedAdditionalRewardId}
+                   className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+                 >
+                   {addingAdditional ? tCommon("loading") : t("buttons.addAdditional")}
+                 </button>
+               </div>
+             ) : (
+               <p className="text-xs text-gray-500">
+                 {currentRewardId
+                   ? t("form.noAdditionalRewardsAvailable")
+                   : t("form.setMainRewardFirst")}
+               </p>
+             )}
+           </div>
+
            <div className="flex items-center gap-4">
              <button
                onClick={handleSave}
@@ -381,7 +569,7 @@ export default function ChannelPointSettings({
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
              <button
-               onClick={() => { fetchRewards(); fetchEventSubStatus(); }}
+               onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); }}
                className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
              >
                {tCommon("refresh")}

@@ -287,7 +287,11 @@
       "createRewardFailed": "報酬の作成に失敗しました",
       "saveFailed": "設定の保存に失敗しました",
       "saveSuccess": "保存しました（EventSub登録完了）",
-      "eventsubFailed": "設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。"
+      "eventsubFailed": "設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。",
+      "additionalRewardAdded": "追加報酬を登録しました",
+      "additionalRewardFailed": "追加報酬の登録に失敗しました",
+      "additionalRewardRemoved": "追加報酬を削除しました",
+      "additionalRewardRemoveFailed": "追加報酬の削除に失敗しました"
     },
     "form": {
       "selectReward": "カード引き換えに使用するチャネルポイント報酬を選択",
@@ -298,14 +302,23 @@
       "allRewards": "全報酬",
       "eventsubStatus": "EventSub ステータス",
       "noSubscriptions": "EventSubサブスクリプションがありません。保存ボタンを押して登録してください。",
-      "localTunnelNote": "※ ローカル環境ではngrokなどのトンネルが必要です"
+      "localTunnelNote": "※ ローカル環境ではngrokなどのトンネルが必要です",
+      "additionalRewards": "追加ガチャ報酬",
+      "additionalRewardsDescription": "メインの報酬に加えて、追加の報酬でもガチャを引けるように設定できます。",
+      "unknownReward": "不明な報酬",
+      "noAdditionalRewardsAvailable": "追加できる報酬がありません。",
+      "setMainRewardFirst": "まずメインの報酬を設定してください。"
     },
     "buttons": {
       "createReward": "TwiCa用報酬を作成（100ポイント）",
-      "saveEventSub": "保存 & EventSub登録"
+      "saveEventSub": "保存 & EventSub登録",
+      "creating": "作成中...",
+      "addAdditional": "追加",
+      "remove": "削除"
     },
     "options": {
       "selectReward": "-- 報酬を選択 --",
+      "selectAdditionalReward": "-- 追加する報酬を選択 --",
       "points": "ポイント",
       "disabled": "[無効]"
     }
