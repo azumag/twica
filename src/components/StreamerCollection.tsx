@@ -2,17 +2,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import Stats from "./Stats";
-import ExpandableDescription from "./ExpandableDescription";
+import SortedCardGrid from "./SortedCardGrid";
 import type { Streamer, Card } from "@/types/database";
-import { RARITIES } from "@/lib/constants";
-import type { Rarity } from "@/types/database";
-
-/**
- * Get rarity information (label and color) for a given rarity value
- * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
- */
-const getRarityInfo = (rarity: Rarity) =>
-  RARITIES.find((r) => r.value === rarity) || RARITIES[0];
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -74,6 +65,7 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
         <Stats stats={stats} />
 
         {/* Cards */}
+        {/* カード一覧 - SortedCardGridコンポーネントを使用して小さい画像を末尾にソート */}
         {cards.length === 0 ? (
           <div className="rounded-xl bg-gray-800 p-8 text-center">
             <p className="text-gray-400">
@@ -83,63 +75,22 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
             </p>
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {cards.map((card, index) => {
-              const rarityInfo = getRarityInfo(card.rarity);
-              // First 4 cards get priority for LCP optimization
-              // 最初の4枚のカードはLCP最適化のためpriority設定
-              const isPriority = index < 4;
-              return (
-                <div
-                  key={card.id}
-                  className="group relative overflow-hidden rounded-lg bg-gray-700"
-                >
-                  {/* 名前とレアリティを一番上に配置 */}
-                  <div className="p-3 pb-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-white truncate">{card.name}</h3>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
-                      >
-                        {rarityInfo.label}
-                      </span>
-                    </div>
-                  </div>
-                  {/* 正方形画像（トリミング） */}
-                  <div className="aspect-square bg-gray-600">
-                    {card.image_url ? (
-                      // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
-                      <Image
-                        src={card.image_url}
-                        alt={card.name}
-                        width={300}
-                        height={300}
-                        className="w-full h-full object-cover"
-                        priority={isPriority}
-                        unoptimized
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-gray-500">
-                        {tCommon("noImage")}
-                      </div>
-                    )}
-                  </div>
-                  {/* 説明とカウント */}
-                  {/* Description (expandable) and count */}
-                  <div className="p-3 pt-2">
-                    {card.description && (
-                      <ExpandableDescription description={card.description} />
-                    )}
-                    {card.count > 1 && (
-                      <div className="text-sm text-gray-400">
-                        {t("cardCount", { count: card.count })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          // SortedCardGrid: Displays cards with automatic sorting
+          // Small images (< 400px) are moved to the end of the grid
+          // Portrait images are displayed without frame
+          // SortedCardGrid: カードを自動ソートして表示
+          // 小さい画像（400px未満）はグリッドの末尾に移動
+          // 縦長画像は枠なしで表示
+          <SortedCardGrid
+            cards={cards}
+            streamerId={streamer.id}
+            translations={{
+              // Pass template string instead of function (Server -> Client serialization)
+              // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
+              cardCountTemplate: t("cardCount", { count: "{count}" }),
+              noImage: tCommon("noImage"),
+            }}
+          />
         )}
 
         {/* Back link to full collection */}

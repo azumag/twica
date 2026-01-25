@@ -296,3 +296,70 @@ export const getStreamerById = cache(async (streamerId: string): Promise<Streame
 
   return streamer;
 });
+
+/**
+ * Get a specific user's card with details
+ * Returns the card with count (how many the user owns) if the user owns it, null otherwise
+ * 特定のユーザーのカード情報を詳細付きで取得
+ * ユーザーが所有している場合はカウント（所有枚数）付きで返し、所有していない場合はnullを返す
+ */
+export const getUserCardDetail = cache(async (
+  twitchUserId: string,
+  streamerId: string,
+  cardId: string
+): Promise<CardWithDetails | null> => {
+  const start = Date.now();
+  const supabaseAdmin = getSupabaseAdmin();
+
+  // Get the card with streamer info to verify it belongs to the streamer
+  // カードと配信者情報を取得して、配信者のものかどうかを確認
+  const { data: card } = await supabaseAdmin
+    .from("cards")
+    .select(`
+      *,
+      streamers (*)
+    `)
+    .eq("id", cardId)
+    .eq("streamer_id", streamerId)
+    .single();
+
+  if (!card) {
+    logger.info(`[Perf] getUserCardDetail (card not found): ${Date.now() - start}ms`);
+    return null;
+  }
+
+  // Get user's ownership count for this card
+  // このカードのユーザー所有枚数を取得
+  const { data: user } = await supabaseAdmin
+    .from("users")
+    .select(`
+      id,
+      user_cards!inner (
+        card_id
+      )
+    `)
+    .eq("twitch_user_id", twitchUserId)
+    .single();
+
+  // Count how many of this specific card the user owns
+  // ユーザーがこの特定のカードを何枚所有しているかをカウント
+  const count = user?.user_cards?.filter(
+    (uc: { card_id: string }) => uc.card_id === cardId
+  ).length || 0;
+
+  // If user doesn't own this card, return null
+  // ユーザーがこのカードを所有していない場合はnullを返す
+  if (count === 0) {
+    logger.info(`[Perf] getUserCardDetail (user doesn't own card): ${Date.now() - start}ms`);
+    return null;
+  }
+
+  logger.info(`[Perf] getUserCardDetail: ${Date.now() - start}ms`);
+
+  const cardWithStreamer = card as unknown as Card & { streamers: Streamer };
+  return {
+    ...cardWithStreamer,
+    streamer: cardWithStreamer.streamers,
+    count,
+  };
+});

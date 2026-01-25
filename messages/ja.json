@@ -200,6 +200,10 @@
     },
     "viewFullCollection": "← すべてのコレクションを見る"
   },
+  "cardDetail": {
+    "backToCollection": "コレクションに戻る",
+    "ownedCount": "所有枚数: {count}枚"
+  },
   "dashboard": {
     "title": "ダッシュボード",
     "streamerSettings": "配信者設定",
