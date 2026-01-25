@@ -14,6 +14,7 @@ interface OverlayOptions {
   autoPortrait: boolean;    // 縦長画像を自動検出してオリジナル表示
   effects: boolean;         // レジェンダリーのキラキラエフェクト表示
   smallMode: boolean;       // 小さい画像用の縮小表示モード
+  displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
   // 縦長画像の付帯情報表示オプション（画像に被らず下に表示）
   // Portrait image info options (displayed below image, not overlapping)
   portraitShowName: boolean;        // 縦長画像でカード名を表示
@@ -57,6 +58,7 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
+    displayDuration: 6,  // カードの表示時間（秒）、デフォルト6秒
     // 縦長画像の付帯情報はデフォルトでレアリティのみ表示
     // Portrait info defaults to showing rarity only
     portraitShowName: false,
@@ -102,6 +104,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
     if (!options.autoPortrait) params.set("autoPortrait", "false");  // デフォルトtrue、falseの場合のみ出力
     if (!options.effects) params.set("effects", "false");             // デフォルトtrue、falseの場合のみ出力
     if (!options.smallMode) params.set("smallMode", "false");        // デフォルトtrue、falseの場合のみ出力
+    // カードの表示時間（デフォルト6秒、それ以外の場合のみ出力）
+    // Display duration in seconds (default 6, only output if different)
+    if (options.displayDuration !== 6) params.set("duration", String(options.displayDuration));
     // 縦長画像の付帯情報オプション
     // Portrait info options
     if (options.portraitShowName) params.set("pName", "true");               // デフォルトfalse、trueの場合のみ出力
@@ -367,6 +372,29 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
               <p className="text-xs text-gray-400">{t("options.smallModeDescription")}</p>
             </div>
           </label>
+
+          {/* displayDuration option - カードの表示時間設定 */}
+          {/* Card display duration setting with slider */}
+          <div className="pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-white">{t("options.displayDuration")}</span>
+              <span className="text-sm text-purple-400 font-medium">{options.displayDuration}{t("options.seconds")}</span>
+            </div>
+            <input
+              type="range"
+              min="2"
+              max="15"
+              step="1"
+              value={options.displayDuration}
+              onChange={(e) => setOptions(prev => ({ ...prev, displayDuration: Number(e.target.value) }))}
+              className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-600"
+            />
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>2{t("options.seconds")}</span>
+              <span>15{t("options.seconds")}</span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">{t("options.displayDurationDescription")}</p>
+          </div>
         </div>
 
         {/* 縦長画像の付帯情報設定セクション（autoPortraitが有効な場合のみ表示） */}

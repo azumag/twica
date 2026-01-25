@@ -56,6 +56,7 @@ interface OverlayOptions {
   autoPortrait: boolean;
   effects: boolean;
   smallMode: boolean;
+  displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
   debug: boolean;
   // 縦長画像の付帯情報表示オプション（画像に被らず表示）
   portraitShowName: boolean;
@@ -89,6 +90,7 @@ export default function OverlayPage() {
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
+    displayDuration: 6,  // カードの表示時間（秒）、デフォルト6秒
     debug: false,        // デバッグモード（接続状態の詳細表示）
     // 縦長画像の付帯情報オプション（デフォルトでレアリティのみ表示）
     portraitShowName: false,
@@ -156,6 +158,12 @@ export default function OverlayPage() {
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const isDebug = urlParams.get("debug") === "true";
+    // カードの表示時間をURLパラメータから取得（デフォルト6秒、2-15秒の範囲に制限）
+    // Get display duration from URL parameter (default 6 seconds, clamped to 2-15 range)
+    const durationParam = urlParams.get("duration");
+    const displayDuration = durationParam
+      ? Math.min(15, Math.max(2, parseInt(durationParam, 10) || 6))
+      : 6;
     // queueMicrotaskで非同期に実行してカスケードレンダーを回避
     queueMicrotask(() => {
       setOptions({
@@ -163,6 +171,7 @@ export default function OverlayPage() {
         autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
         effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
         smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
+        displayDuration,  // カードの表示時間（秒）
         debug: isDebug,
         // 縦長画像の付帯情報オプション
         // pName, pRarity, pDesc, pUser（短縮パラメータ名）
@@ -271,14 +280,16 @@ export default function OverlayPage() {
       playGachaSound();
 
       // Hide after display
+      // 表示時間はoptions.displayDurationで設定（秒をミリ秒に変換）
+      // Display duration is configurable via options.displayDuration (converted from seconds to ms)
       animationTimeoutRef.current = setTimeout(() => {
         setShowCard(false);
         animationTimeoutRef.current = setTimeout(() => {
           setResult(null);
         }, 500);
-      }, 6000);
+      }, options.displayDuration * 1000);
     }, 100);
-  }, [checkImageAspectRatio, playGachaSound]);
+  }, [checkImageAspectRatio, playGachaSound, options.displayDuration]);
 
   // デバッグログを追加するヘルパー関数
   // OBSブラウザソースでの接続問題を調査するために使用
