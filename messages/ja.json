@@ -314,7 +314,8 @@
       "saveEventSub": "保存 & EventSub登録",
       "creating": "作成中...",
       "addAdditional": "追加",
-      "remove": "削除"
+      "remove": "削除",
+      "clear": "解除"
     },
     "options": {
       "selectReward": "-- 報酬を選択 --",
