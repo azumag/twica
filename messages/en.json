@@ -187,8 +187,10 @@
       "line1": "You don't have any cards yet.",
       "line2": "Use streamer's channel points to get cards!"
     },
-    "cardTypes": "({count} types)",
-    "cardCount": "x{count}"
+    "cardTypes": "{count} types",
+    "totalCount": "{count} cards",
+    "cardCount": "x{count}",
+    "viewCollection": "View Collection"
   },
   "streamerCollection": {
     "title": "{streamerName}'s Collection",
