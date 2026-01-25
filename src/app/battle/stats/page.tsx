@@ -183,12 +183,14 @@ export default function BattleStatsPage() {
                       <div className="flex items-center gap-4">
                         <div className="h-16 w-16 bg-gray-700 rounded-lg flex items-center justify-center flex-shrink-0">
                           {card.cardImage ? (
+                            // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                             <Image
                               src={card.cardImage}
                               alt={card.cardName}
                               width={64}
                               height={64}
                               className="h-full w-full object-cover rounded-lg"
+                              unoptimized
                             />
                           ) : (
                             <div className="text-2xl">🎴</div>
