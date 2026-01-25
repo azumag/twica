@@ -87,10 +87,11 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
           // Grid layout for cards - uses responsive columns
           // Small images (< 400px) are automatically displayed in compact cards
           // via the CollectionCard component's image size detection
+          // items-start: グリッドアイテムを上揃えにして、コンパクトカードの高さを維持
           // カード用グリッドレイアウト - レスポンシブな列数を使用
           // 小さい画像（400px未満）はCollectionCardコンポーネントの
           // 画像サイズ検出により自動的にコンパクトカードで表示される
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 items-start">
             {cards.map((card, index) => {
               const rarityInfo = getRarityInfo(card.rarity);
               // First 4 cards get priority for LCP optimization

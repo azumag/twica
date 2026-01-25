@@ -106,8 +106,10 @@ export default function CollectionCard({
   // 画像サイズに基づいてカードサイズのクラスを決定
   // Small cards use reduced dimensions to better display small images like emotes
   // 小さいカードはエモートなどの小さい画像をより良く表示するために縮小されたサイズを使用
+  // h-fit: カードの高さをコンテンツに合わせる（グリッド内で縦も小さくなる）
+  // self-start: グリッドセル内で上揃えにする
   const cardClasses = isSmallImage && sizeChecked
-    ? "group relative overflow-hidden rounded-lg bg-gray-700 max-w-[160px] mx-auto"
+    ? "group relative overflow-hidden rounded-lg bg-gray-700 max-w-[160px] h-fit self-start mx-auto"
     : "group relative overflow-hidden rounded-lg bg-gray-700";
 
   // Image container classes - smaller for small images
