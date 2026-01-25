@@ -209,18 +209,24 @@ export default function ChannelPointSettings({
         }),
       });
 
-      if (eventSubResponse.ok) {
-        setMessage(t("messages.saveSuccess"));
+      const eventSubData = await eventSubResponse.json();
+
+      // レスポンスのsuccessフィールドで判定（ステータスコードではなく）
+      if (eventSubData.success) {
+        setMessage(eventSubData.message || t("messages.saveSuccess"));
         setEventSubStatus("pending");
         // Refresh status
         await fetchEventSubStatus();
+      } else if (eventSubData.warning) {
+        // 警告状態：サブスクリプションの確認が必要
+        setMessage(eventSubData.message || "状態を確認してください");
+        setEventSubStatus("pending");
+        await fetchEventSubStatus();
       } else if (eventSubResponse.status === 429) {
-        const errorData = await eventSubResponse.json();
-        setMessage(errorData.error || t("messages.rateLimit"));
+        setMessage(eventSubData.error || t("messages.rateLimit"));
       } else {
-        const errorData = await eventSubResponse.json();
-        logger.error("EventSub error:", errorData);
-        setMessage(t("messages.eventsubFailed"));
+        logger.error("EventSub error:", eventSubData);
+        setMessage(eventSubData.error || t("messages.eventsubFailed"));
         setEventSubStatus("error");
       }
     } catch {
