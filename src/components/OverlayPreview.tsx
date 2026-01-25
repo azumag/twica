@@ -251,26 +251,6 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
         <CopyButton text={overlayUrlWithParams} />
       </div>
 
-      {/* コレクションページURL */}
-      {/* Collection page URL */}
-      <div className="mt-4">
-        <h3 className="mb-2 text-sm font-medium text-gray-300">
-          {t("collectionUrl")}
-        </h3>
-        <p className="mb-2 text-xs text-gray-400">
-          {t("collectionUrlDescription")}
-        </p>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            readOnly
-            value={collectionUrl}
-            className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
-          />
-          <CopyButton text={collectionUrl} />
-        </div>
-      </div>
-
       {/* URL更新メッセージ - 高さを常に確保してレイアウトシフトを防ぐ */}
       {/* Use fixed height and opacity transition to prevent layout shift */}
       <p
@@ -469,6 +449,28 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
     </div>
   );
 
+  // コレクションページURLセクション（OBSブラウザソースとは別欄）
+  // Collection page URL section (separate from OBS browser source)
+  const collectionUrlSection = (
+    <div className="rounded-xl bg-gray-800 p-6 h-full">
+      <h2 className="mb-4 text-xl font-semibold text-white">
+        {t("collectionUrl")}
+      </h2>
+      <p className="mb-4 text-sm text-gray-400">
+        {t("collectionUrlDescription")}
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          readOnly
+          value={collectionUrl}
+          className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
+        />
+        <CopyButton text={collectionUrl} />
+      </div>
+    </div>
+  );
+
   // アクティブなカードのみフィルタリング（デモ/ガチャで使用）
   // Filter only active cards for demo/gacha
   const activeCards = cards.filter(card => card.is_active);
@@ -622,6 +624,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
           {urlSection}
           {sideContent}
         </div>
+        {/* コレクションページURLセクション（別欄として表示） */}
+        {/* Collection page URL section (displayed as separate section) */}
+        {collectionUrlSection}
         {/* プレビューは全幅で下に配置 */}
         {/* Preview section spans full width below */}
         {previewSection}
@@ -632,6 +637,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   return (
     <div className={showPreview ? "space-y-8" : ""}>
       {urlSection}
+      {/* コレクションページURLセクション（別欄として表示） */}
+      {/* Collection page URL section (displayed as separate section) */}
+      {collectionUrlSection}
       {previewSection}
     </div>
   );
