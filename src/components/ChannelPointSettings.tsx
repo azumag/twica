@@ -112,12 +112,14 @@ export default function ChannelPointSettings({
   // 引数が省略された場合はselectedRewardIdを使用（初期ロード時など）
   const fetchEventSubStatus = useCallback(async (targetRewardId?: string) => {
     const rewardIdToCheck = targetRewardId ?? selectedRewardId;
+    logger.info("[EventSub] fetchEventSubStatus called", { targetRewardId, selectedRewardId, rewardIdToCheck });
     try {
       const response = await fetch("/api/twitch/eventsub/subscribe", {
         credentials: "include",
       });
       if (response.ok) {
         const subs = await response.json();
+        logger.info("[EventSub] API response", { subsCount: subs.length, subs: subs.map((s: EventSubSubscription) => ({ id: s.id, status: s.status, reward_id: s.condition.reward_id })) });
         setSubscriptions(subs);
 
         // Check if we have an active subscription for the target reward
@@ -128,11 +130,16 @@ export default function ChannelPointSettings({
             sub.condition.reward_id === rewardIdToCheck
         );
 
+        logger.info("[EventSub] Status check", { activeSub: !!activeSub, rewardIdToCheck, subsLength: subs.length });
+
         if (activeSub) {
+          logger.info("[EventSub] Setting status to ACTIVE");
           setEventSubStatus("active");
         } else if (subs.length > 0) {
+          logger.info("[EventSub] Setting status to PENDING");
           setEventSubStatus("pending");
         } else {
+          logger.info("[EventSub] Setting status to NONE");
           setEventSubStatus("none");
         }
       }
