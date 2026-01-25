@@ -117,11 +117,13 @@ export default function ChannelPointSettings({
         const subs = await response.json();
         setSubscriptions(subs);
 
-        // Check if we have an active subscription for the current reward
+        // Check if we have an active subscription for the selected reward
+        // selectedRewardIdを使用することで、保存後に最新の選択状態でステータスを判定できる
+        // currentRewardId（props）は古い値を保持しているため使用しない
         const activeSub = subs.find(
           (sub: EventSubSubscription) =>
             sub.status === "enabled" &&
-            sub.condition.reward_id === currentRewardId
+            sub.condition.reward_id === selectedRewardId
         );
 
         if (activeSub) {
@@ -135,7 +137,7 @@ export default function ChannelPointSettings({
       } catch {
         logger.error("Failed to fetch EventSub status");
       }
-  }, [currentRewardId]);
+  }, [selectedRewardId]);
 
   useEffect(() => {
     fetchRewards();
