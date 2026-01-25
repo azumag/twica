@@ -187,8 +187,10 @@
       "line1": "まだカードを持っていません。",
       "line2": "配信者のチャネルポイントを使ってカードをゲットしましょう！"
     },
-    "cardTypes": "({count} 種類)",
-    "cardCount": "x{count}"
+    "cardTypes": "{count}種類",
+    "totalCount": "{count}枚",
+    "cardCount": "x{count}",
+    "viewCollection": "コレクションを見る"
   },
   "streamerCollection": {
     "title": "{streamerName} のコレクション",
