@@ -392,29 +392,13 @@ export async function GET(request: Request) {
   try {
     const appAccessToken = await getAppAccessToken();
 
-    const response = await fetch(
-      `${TWITCH_API_URL}/eventsub/subscriptions`,
-      {
-        headers: {
-          "Authorization": `Bearer ${appAccessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      const error = await response.json();
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.FAILED_TO_GET_SUBSCRIPTIONS, details: error },
-        { status: response.status }
-      );
-    }
-
-    const data = await response.json();
+    // ページネーション対応で全サブスクリプションを取得
+    // 1ページ目だけだと、サブスクリプションが多い場合に見つからない問題がある
+    const allSubscriptions = await getAllSubscriptions(appAccessToken);
 
     // Filter to only this broadcaster's subscriptions
-    const mySubscriptions = data.data.filter(
-      (sub: { condition: { broadcaster_user_id: string } }) =>
+    const mySubscriptions = allSubscriptions.filter(
+      (sub) =>
         sub.condition.broadcaster_user_id === session.twitchUserId
     );
 
