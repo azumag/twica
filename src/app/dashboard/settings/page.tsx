@@ -4,6 +4,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import OverlayPreview from "@/components/OverlayPreview";
+import GachaSoundSettings from "@/components/GachaSoundSettings";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -61,11 +62,20 @@ export default async function SettingsPage() {
         baseUrl={process.env.NEXT_PUBLIC_APP_URL || ""}
         cards={streamerData.cards}
         sideContent={
-          <ChannelPointSettings
-            streamerId={streamerData.streamer.id}
-            currentRewardId={streamerData.streamer.channel_point_reward_id}
-            currentRewardName={streamerData.streamer.channel_point_reward_name}
-          />
+          <>
+            <ChannelPointSettings
+              streamerId={streamerData.streamer.id}
+              currentRewardId={streamerData.streamer.channel_point_reward_id}
+              currentRewardName={streamerData.streamer.channel_point_reward_name}
+            />
+            {/* ガチャ効果音設定 */}
+            {/* Gacha sound effect settings */}
+            <GachaSoundSettings
+              streamerId={streamerData.streamer.id}
+              currentSoundUrl={streamerData.streamer.gacha_sound_url ?? null}
+              currentSoundEnabled={streamerData.streamer.gacha_sound_enabled ?? false}
+            />
+          </>
         }
       />
     </div>
