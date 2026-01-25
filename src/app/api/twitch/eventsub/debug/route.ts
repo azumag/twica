@@ -31,28 +31,21 @@ async function getAppAccessToken(): Promise<string> {
   return data.access_token;
 }
 
+// EventSubサブスクリプションの型定義（デバッグ用）
+type EventSubSubscription = {
+  id: string;
+  status: string;
+  type: string;
+  condition: { broadcaster_user_id: string; reward_id?: string };
+  transport: { method: string; callback: string };
+  created_at: string;
+};
+
 // すべてのEventSubサブスクリプションを取得（デバッグ用・ページネーション対応）
-async function getAllSubscriptions(appAccessToken: string): Promise<{
-  total: number;
-  data: Array<{
-    id: string;
-    status: string;
-    type: string;
-    condition: { broadcaster_user_id: string; reward_id?: string };
-    transport: { method: string; callback: string };
-    created_at: string;
-  }>;
-}> {
-  const allData: Array<{
-    id: string;
-    status: string;
-    type: string;
-    condition: { broadcaster_user_id: string; reward_id?: string };
-    transport: { method: string; callback: string };
-    created_at: string;
-  }> = [];
+// subscribe/route.tsと同様に配列を返すように統一
+async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubscription[]> {
+  const allData: EventSubSubscription[] = [];
   let cursor: string | undefined;
-  let total = 0;
 
   do {
     const url = cursor
@@ -71,12 +64,12 @@ async function getAllSubscriptions(appAccessToken: string): Promise<{
     }
 
     const data = await response.json();
-    total = data.total;
     allData.push(...data.data);
     cursor = data.pagination?.cursor;
   } while (cursor);
 
-  return { total, data: allData };
+  // 配列を返す（totalはallData.lengthから取得可能）
+  return allData;
 }
 
 export async function GET(request: NextRequest) {
@@ -90,27 +83,21 @@ export async function GET(request: NextRequest) {
     const appAccessToken = await getAppAccessToken();
 
     // ページネーションを使ってすべてのサブスクリプションを取得
-    const { total, data } = await getAllSubscriptions(appAccessToken);
+    const allSubscriptions = await getAllSubscriptions(appAccessToken);
 
     // このbroadcasterのサブスクリプションのみフィルタ
-    const mySubscriptions = data.filter(
+    const mySubscriptions = allSubscriptions.filter(
       (sub) => sub.condition.broadcaster_user_id === session.twitchUserId
     );
 
     // 全サブスクリプション情報を返す（デバッグ用）
+    // totalはallSubscriptions.lengthから取得（subscribe/route.tsと同じ方式）
     return NextResponse.json({
       broadcasterId: session.twitchUserId,
       clientId: process.env.TWITCH_CLIENT_ID,
       expectedCallbackUrl: `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`,
-      total: data.total,
-      mySubscriptions: mySubscriptions.map((sub: {
-        id: string;
-        status: string;
-        type: string;
-        condition: { broadcaster_user_id: string; reward_id?: string };
-        transport: { method: string; callback: string };
-        created_at: string;
-      }) => ({
+      total: allSubscriptions.length,
+      mySubscriptions: mySubscriptions.map((sub: EventSubSubscription) => ({
         id: sub.id,
         status: sub.status,
         type: sub.type,
