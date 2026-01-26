@@ -163,11 +163,25 @@ export default function ChannelPointSettings({
             sub.condition.reward_id === rewardIdToCheck
         );
 
-        logger.info("[EventSub] Status check", { activeSub: !!activeSub, rewardIdToCheck, subsLength: subs.length });
+        // Check for failed subscriptions
+        // 失敗したサブスクリプションをチェック
+        const failedStatuses = [
+          "webhook_callback_verification_failed",
+          "notification_failures_exceeded",
+          "authorization_revoked",
+        ];
+        const hasFailedSub = subs.some(
+          (sub: EventSubSubscription) => failedStatuses.includes(sub.status)
+        );
+
+        logger.info("[EventSub] Status check", { activeSub: !!activeSub, hasFailedSub, rewardIdToCheck, subsLength: subs.length });
 
         if (activeSub) {
           logger.info("[EventSub] Setting status to ACTIVE");
           setEventSubStatus("active");
+        } else if (hasFailedSub) {
+          logger.info("[EventSub] Setting status to ERROR (failed subscription found)");
+          setEventSubStatus("error");
         } else if (subs.length > 0) {
           logger.info("[EventSub] Setting status to PENDING");
           setEventSubStatus("pending");
@@ -622,7 +636,13 @@ export default function ChannelPointSettings({
                            </>
                          ) : t("form.allRewards")}
                        </span>
-                       <span className={sub.status === "enabled" ? "text-green-400" : "text-yellow-400"}>
+                       <span className={
+                         sub.status === "enabled"
+                           ? "text-green-400"
+                           : ["webhook_callback_verification_failed", "notification_failures_exceeded", "authorization_revoked"].includes(sub.status)
+                             ? "text-red-400"
+                             : "text-yellow-400"
+                       }>
                          {sub.status}
                        </span>
                      </div>
@@ -639,6 +659,48 @@ export default function ChannelPointSettings({
                            <li>サーバーが正常に動作しているか確認してください</li>
                            <li>しばらく待ってから「更新」ボタンを押してください</li>
                            <li>解決しない場合は、報酬を再設定してみてください</li>
+                         </ul>
+                       </div>
+                     )}
+                     {/* Explanation for failed verification status */}
+                     {/* 検証失敗状態の説明 */}
+                     {sub.status === "webhook_callback_verification_failed" && (
+                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                         <p className="font-medium">Webhook検証失敗</p>
+                         <p className="mt-1 text-red-400/80">
+                           TwitchからのWebhook検証に失敗しました。
+                         </p>
+                         <ul className="mt-1 list-inside list-disc text-red-400/70">
+                           <li>サーバーが外部からアクセス可能か確認してください</li>
+                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
+                         </ul>
+                       </div>
+                     )}
+                     {/* Explanation for notification failures exceeded */}
+                     {/* 通知失敗超過の説明 */}
+                     {sub.status === "notification_failures_exceeded" && (
+                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                         <p className="font-medium">通知失敗が多発</p>
+                         <p className="mt-1 text-red-400/80">
+                           Twitchからの通知が何度も失敗したため、サブスクリプションが無効化されました。
+                         </p>
+                         <ul className="mt-1 list-inside list-disc text-red-400/70">
+                           <li>サーバーの状態を確認してください</li>
+                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
+                         </ul>
+                       </div>
+                     )}
+                     {/* Explanation for authorization revoked */}
+                     {/* 認証取り消しの説明 */}
+                     {sub.status === "authorization_revoked" && (
+                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                         <p className="font-medium">認証が取り消されました</p>
+                         <p className="mt-1 text-red-400/80">
+                           Twitchの認証が取り消されたため、サブスクリプションが無効化されました。
+                         </p>
+                         <ul className="mt-1 list-inside list-disc text-red-400/70">
+                           <li>再度ログインしてください</li>
+                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
                          </ul>
                        </div>
                      )}
