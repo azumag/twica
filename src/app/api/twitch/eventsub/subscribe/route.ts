@@ -144,18 +144,18 @@ export async function POST(request: NextRequest) {
       { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id, callback: s.transport.callback })) }
     );
 
-    // 追加報酬の場合は、同じreward_idのサブスクリプションのみ削除（他のサブスクリプションは保持）
-    // メイン報酬の場合は、全てのサブスクリプションを削除して再登録
-    // For additional rewards, only delete subscription with the same reward_id (keep others)
-    // For main reward, delete all existing subscriptions and re-register
-    const subscriptionsToDelete = isAdditional
-      ? mySubscriptions.filter((sub) => sub.condition.reward_id === rewardId)
-      : mySubscriptions;
+    // 登録する報酬IDと一致するサブスクリプションのみ削除（他の報酬のサブスクリプションは保持）
+    // メイン報酬でも追加報酬でも同じロジック：対象の報酬のみ削除して再登録
+    // Only delete subscription matching the reward_id being registered (keep other rewards)
+    // Same logic for both main and additional rewards: delete only the target reward and re-register
+    const subscriptionsToDelete = mySubscriptions.filter(
+      (sub) => sub.condition.reward_id === rewardId
+    );
 
-    // Delete existing subscriptions based on the mode
-    // モードに基づいて既存のサブスクリプションを削除
+    // Delete existing subscription for the target reward only
+    // 対象報酬のサブスクリプションのみ削除
     for (const sub of subscriptionsToDelete) {
-      logger.info(`Deleting existing EventSub: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}, callback=${sub.transport.callback}, isAdditional=${isAdditional}`);
+      logger.info(`Deleting existing EventSub for target reward: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}, callback=${sub.transport.callback}`);
       const deleteResponse = await fetch(
         `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
         {
