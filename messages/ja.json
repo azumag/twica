@@ -302,7 +302,14 @@
     },
     "buttons": {
       "createReward": "TwiCa用報酬を作成（100ポイント）",
-      "saveEventSub": "保存 & EventSub登録"
+      "saveEventSub": "保存 & EventSub登録",
+      "disconnect": "設定解除",
+      "disconnecting": "解除中..."
+    },
+    "messages2": {
+      "disconnectSuccess": "チャネルポイント連携を解除しました",
+      "disconnectFailed": "設定の解除に失敗しました",
+      "disconnectConfirm": "チャネルポイント連携を解除しますか？EventSubサブスクリプションも削除されます。"
     },
     "options": {
       "selectReward": "-- 報酬を選択 --",

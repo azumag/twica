@@ -368,6 +368,104 @@ export async function POST(request: NextRequest) {
   }
 }
 
+/**
+ * DELETE: チャネルポイント連携を解除する
+ * EventSubサブスクリプション（channel.channel_points_custom_reward_redemption.add タイプ）を削除
+ * Delete channel point integration by removing EventSub subscriptions
+ */
+export async function DELETE(request: NextRequest) {
+  const session = await getSession();
+
+  // レートリミットチェック（POST と同じリミットを適用）
+  // Apply same rate limit as POST to prevent abuse
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.eventsubSubscribePost, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(rateLimitResult.limit),
+          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+          "X-RateLimit-Reset": String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
+  // ストリーマー権限チェック
+  // Verify streamer permissions
+  if (!session || !canUseStreamerFeatures(session)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
+  }
+
+  try {
+    const appAccessToken = await getAppAccessToken();
+
+    // 対象ユーザーのサブスクリプションを取得
+    // Get subscriptions for this user using user_id filter
+    const userSubscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
+
+    // channel_points_custom_reward_redemption.add タイプのみフィルタ
+    // Filter to only channel point redemption subscriptions
+    const mySubscriptions = userSubscriptions.filter(
+      (sub) => sub.type === "channel.channel_points_custom_reward_redemption.add"
+    );
+
+    logger.info(
+      `Deleting EventSub subscriptions for broadcaster=${session.twitchUserId}: found ${mySubscriptions.length} subscriptions`,
+      { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id })) }
+    );
+
+    // 各サブスクリプションを削除
+    // Delete each subscription
+    const results = [];
+    for (const sub of mySubscriptions) {
+      const deleteResponse = await fetch(
+        `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
+        {
+          method: "DELETE",
+          headers: {
+            "Authorization": `Bearer ${appAccessToken}`,
+            "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
+          },
+        }
+      );
+
+      // 204: 成功、404: 既に削除済み（どちらも成功扱い）
+      // 204: Success, 404: Already deleted (both count as success)
+      const success = deleteResponse.status === 204 || deleteResponse.status === 404;
+      results.push({
+        id: sub.id,
+        success,
+        status: deleteResponse.status,
+      });
+
+      if (success) {
+        logger.info(`Successfully deleted EventSub subscription: id=${sub.id}`);
+      } else {
+        logger.error(`Failed to delete EventSub subscription: id=${sub.id}, status=${deleteResponse.status}`);
+      }
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    logger.info(`EventSub deletion complete: ${successCount}/${mySubscriptions.length} subscriptions deleted`);
+
+    return NextResponse.json({
+      success: true,
+      message: `Deleted ${successCount}/${mySubscriptions.length} subscriptions`,
+      deletedCount: successCount,
+      totalCount: mySubscriptions.length,
+      results,
+    });
+  } catch (error) {
+    logger.error("EventSub Unsubscribe API error:", error);
+    return handleApiError(error, "EventSub Unsubscribe API");
+  }
+}
+
 // Get current subscriptions
 export async function GET(request: Request) {
   const session = await getSession();

@@ -251,10 +251,17 @@ export default function CollectionCard({
     </>
   );
 
+  // prefetch={false}: Disable automatic prefetching to prevent N+1 API calls
+  // Each card link would trigger a server-side fetch of getUserCardDetail() on hover/viewport
+  // With 50 cards, this causes 150+ database queries just from prefetching
+  // prefetch={false}: 自動プリフェッチを無効化してN+1 API呼び出しを防止
+  // 各カードリンクはホバー/ビューポート時にgetUserCardDetail()のサーバー側フェッチを発生させる
+  // 50枚のカードがある場合、プリフェッチだけで150以上のDBクエリが発生する
   return (
     <Link
       href={`/collection/${streamerId}/card/${id}`}
       className={getCardClasses()}
+      prefetch={false}
     >
       {cardContent}
     </Link>
