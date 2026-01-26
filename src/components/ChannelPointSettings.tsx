@@ -643,7 +643,15 @@ export default function ChannelPointSettings({
                              ? "text-red-400"
                              : "text-yellow-400"
                        }>
-                         {sub.status}
+                         {/* Display user-friendly status text */}
+                         {/* ユーザーフレンドリーなステータステキストを表示 */}
+                         {sub.status === "enabled"
+                           ? "有効"
+                           : sub.status === "webhook_callback_verification_pending"
+                             ? "接続確認中"
+                             : ["webhook_callback_verification_failed", "notification_failures_exceeded", "authorization_revoked"].includes(sub.status)
+                               ? "失敗：時間をおいて再設定してください"
+                               : sub.status}
                        </span>
                      </div>
                      {/* Explanation for pending verification status */}
