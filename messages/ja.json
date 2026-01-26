@@ -315,6 +315,19 @@
       "selectReward": "-- 報酬を選択 --",
       "points": "ポイント",
       "disabled": "[無効]"
+    },
+    "additionalRewards": {
+      "title": "追加の引き換え設定",
+      "description": "複数のチャネルポイント報酬で同じガチャをトリガーできます",
+      "selectToAdd": "-- 追加する報酬を選択 --",
+      "remove": "削除",
+      "addSuccess": "追加報酬を登録しました",
+      "removeSuccess": "追加報酬を削除しました",
+      "addFailed": "追加報酬の登録に失敗しました",
+      "removeFailed": "追加報酬の削除に失敗しました",
+      "removeConfirm": "この追加報酬を削除しますか？EventSubサブスクリプションも削除されます。",
+      "cannotUseAsMain": "この報酬は追加報酬として登録されています。先に追加報酬から削除してください。",
+      "cannotUseAsAdditional": "この報酬はメイン報酬として設定されています。"
     }
   },
   "gachaHistory": {

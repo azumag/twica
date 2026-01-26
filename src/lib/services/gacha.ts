@@ -129,6 +129,12 @@ export class GachaService {
     }
   }
 
+  /**
+   * Execute gacha for EventSub channel point redemption
+   * Checks both main reward and additional rewards for matching reward ID
+   * EventSubチャネルポイント引き換え用のガチャ実行
+   * メイン報酬と追加報酬の両方で報酬IDの一致をチェック
+   */
   async executeGachaForEventSub(
     event: {
       broadcaster_user_id: string
@@ -150,11 +156,35 @@ export class GachaService {
         return err('Streamer not found')
       }
 
-      if (streamer.channel_point_reward_id !== event.reward.id) {
-        return err('Reward ID mismatch')
+      // Check if the reward ID matches the main reward
+      // メイン報酬のIDと一致するかチェック
+      if (streamer.channel_point_reward_id === event.reward.id) {
+        return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
       }
 
-      return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+      // Check if the reward ID matches any additional reward
+      // 追加報酬のいずれかと一致するかチェック
+      const { data: additionalReward, error: additionalError } = await this.supabase
+        .from('streamer_additional_gacha_rewards')
+        .select('id')
+        .eq('streamer_id', streamer.id)
+        .eq('reward_id', event.reward.id)
+        .single()
+
+      if (additionalError && additionalError.code !== 'PGRST116') {
+        // PGRST116 = no rows found, which is expected if reward is not registered
+        // PGRST116 = 行が見つからない、これは報酬が登録されていない場合に期待される
+        logger.warn(`Error checking additional reward: ${additionalError.message}`)
+      }
+
+      if (additionalReward) {
+        // Additional reward matched, execute gacha
+        // 追加報酬が一致したのでガチャを実行
+        logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}`)
+        return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+      }
+
+      return err('Reward ID mismatch')
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }

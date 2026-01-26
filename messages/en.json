@@ -315,6 +315,19 @@
       "selectReward": "-- Select Reward --",
       "points": "points",
       "disabled": "[Disabled]"
+    },
+    "additionalRewards": {
+      "title": "Additional Redemption Settings",
+      "description": "Trigger the same gacha with multiple channel point rewards",
+      "selectToAdd": "-- Select reward to add --",
+      "remove": "Remove",
+      "addSuccess": "Additional reward registered",
+      "removeSuccess": "Additional reward removed",
+      "addFailed": "Failed to register additional reward",
+      "removeFailed": "Failed to remove additional reward",
+      "removeConfirm": "Remove this additional reward? EventSub subscription will also be removed.",
+      "cannotUseAsMain": "This reward is registered as an additional reward. Please remove it from additional rewards first.",
+      "cannotUseAsAdditional": "This reward is already set as the main reward."
     }
   },
   "gachaHistory": {

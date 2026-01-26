@@ -12,6 +12,15 @@ interface TwitchReward {
   is_enabled: boolean;
 }
 
+// Additional reward stored in DB
+// DBに保存された追加報酬
+interface AdditionalReward {
+  id: string;
+  reward_id: string;
+  reward_name: string | null;
+  created_at: string;
+}
+
 interface EventSubSubscription {
   id: string;
   status: string;
@@ -59,6 +68,17 @@ export default function ChannelPointSettings({
   const [error, setError] = useState("");
   const [eventSubStatus, setEventSubStatus] = useState<"none" | "pending" | "active" | "error">("none");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
+  // Additional rewards state
+  // 追加報酬の状態管理
+  const [additionalRewards, setAdditionalRewards] = useState<AdditionalReward[]>([]);
+  const [addingAdditional, setAddingAdditional] = useState(false);
+  const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
+  // Track if registration failed (webhook unreachable)
+  // 登録失敗を追跡（Webhookに到達できなかった場合）
+  const [registrationFailed, setRegistrationFailed] = useState(false);
+  // Track the saved main reward ID (to detect changes for cleanup)
+  // 保存済みのメイン報酬IDを追跡（変更検出とクリーンアップ用）
+  const [savedMainRewardId, setSavedMainRewardId] = useState(currentRewardId || "");
 
   const fetchRewards = async () => {
     setLoading(true);
@@ -110,6 +130,23 @@ export default function ChannelPointSettings({
     }
   };
 
+  // Fetch additional rewards from DB
+  // DBから追加報酬を取得
+  const fetchAdditionalRewards = useCallback(async () => {
+    try {
+      const response = await fetch("/api/streamer/additional-rewards", {
+        credentials: "include",
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setAdditionalRewards(data);
+        logger.info("[AdditionalRewards] Fetched additional rewards", { count: data.length });
+      }
+    } catch {
+      logger.error("Failed to fetch additional rewards");
+    }
+  }, []);
+
   // targetRewardIdを引数で受け取ることで、保存直後に最新のrewardIdで比較できる
   // 引数が省略された場合はselectedRewardIdを使用（初期ロード時など）
   const fetchEventSubStatus = useCallback(async (targetRewardId?: string) => {
@@ -132,11 +169,25 @@ export default function ChannelPointSettings({
             sub.condition.reward_id === rewardIdToCheck
         );
 
-        logger.info("[EventSub] Status check", { activeSub: !!activeSub, rewardIdToCheck, subsLength: subs.length });
+        // Check for failed subscriptions
+        // 失敗したサブスクリプションをチェック
+        const failedStatuses = [
+          "webhook_callback_verification_failed",
+          "notification_failures_exceeded",
+          "authorization_revoked",
+        ];
+        const hasFailedSub = subs.some(
+          (sub: EventSubSubscription) => failedStatuses.includes(sub.status)
+        );
+
+        logger.info("[EventSub] Status check", { activeSub: !!activeSub, hasFailedSub, rewardIdToCheck, subsLength: subs.length });
 
         if (activeSub) {
           logger.info("[EventSub] Setting status to ACTIVE");
           setEventSubStatus("active");
+        } else if (hasFailedSub) {
+          logger.info("[EventSub] Setting status to ERROR (failed subscription found)");
+          setEventSubStatus("error");
         } else if (subs.length > 0) {
           logger.info("[EventSub] Setting status to PENDING");
           setEventSubStatus("pending");
@@ -157,6 +208,11 @@ export default function ChannelPointSettings({
     fetchRewards();
     // 初期ロード時はpropsのcurrentRewardIdを使用
     fetchEventSubStatus(currentRewardId || undefined);
+    // Fetch additional rewards if main reward is set
+    // メイン報酬が設定されている場合は追加報酬も取得
+    if (currentRewardId) {
+      fetchAdditionalRewards();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -194,6 +250,32 @@ export default function ChannelPointSettings({
     setMessage("");
 
     try {
+      // Validate: Cannot use a reward that is already an additional reward
+      // バリデーション: 追加報酬として既に登録されているものはメイン報酬に設定できない
+      const isAlreadyAdditional = additionalRewards.some(
+        (ar) => ar.reward_id === selectedRewardId
+      );
+      if (isAlreadyAdditional) {
+        setMessage(t("additionalRewards.cannotUseAsMain"));
+        setSaving(false);
+        return;
+      }
+
+      // Check if main reward is being changed - need to delete old subscription first
+      // メイン報酬が変更される場合、古いサブスクリプションを先に削除する必要がある
+      if (savedMainRewardId && savedMainRewardId !== selectedRewardId) {
+        const existingOldSub = subscriptions.find(
+          (sub) => sub.condition.reward_id === savedMainRewardId
+        );
+        if (existingOldSub) {
+          logger.info(`Main reward changing from ${savedMainRewardId} to ${selectedRewardId}, deleting old subscription`);
+          await fetch(`/api/twitch/eventsub/subscribe?rewardId=${savedMainRewardId}`, {
+            method: "DELETE",
+            credentials: "include",
+          });
+        }
+      }
+
       // Save settings
       const settingsResponse = await fetch("/api/streamer/settings", {
         method: "POST",
@@ -233,19 +315,26 @@ export default function ChannelPointSettings({
       if (eventSubData.success) {
         setMessage(eventSubData.message || t("messages.saveSuccess"));
         setEventSubStatus("pending");
+        setRegistrationFailed(false);
+        setSavedMainRewardId(selectedRewardId);
         // Refresh status - 保存した報酬IDを明示的に渡して正しく比較
         await fetchEventSubStatus(selectedRewardId);
       } else if (eventSubData.warning) {
         // 警告状態：サブスクリプションの確認が必要
         setMessage(eventSubData.message || "状態を確認してください");
         setEventSubStatus("pending");
+        setRegistrationFailed(false);
+        setSavedMainRewardId(selectedRewardId);
         await fetchEventSubStatus(selectedRewardId);
       } else if (eventSubResponse.status === 429) {
         setMessage(eventSubData.error || t("messages.rateLimit"));
       } else {
+        // Registration failed - webhook unreachable or other error
+        // 登録失敗 - Webhookに到達できないか、その他のエラー
         logger.error("EventSub error:", eventSubData);
         setMessage(eventSubData.error || t("messages.eventsubFailed"));
         setEventSubStatus("error");
+        setRegistrationFailed(true);
       }
     } catch {
       setMessage(t("messages.errorOccurred"));
@@ -260,6 +349,117 @@ export default function ChannelPointSettings({
 
     const reward = rewards.find((r) => r.id === rewardId);
     setSelectedRewardName(reward?.title || "");
+  };
+
+  /**
+   * Add an additional reward
+   * 追加報酬を登録する
+   */
+  const handleAddAdditionalReward = async () => {
+    if (!selectedAdditionalRewardId) return;
+
+    setAddingAdditional(true);
+    setMessage("");
+
+    try {
+      const selectedReward = rewards.find((r) => r.id === selectedAdditionalRewardId);
+      const rewardName = selectedReward?.title || "";
+
+      // 1. Register EventSub subscription for the additional reward
+      // 追加報酬用のEventSubサブスクリプションを登録
+      const eventSubResponse = await fetch("/api/twitch/eventsub/subscribe", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rewardId: selectedAdditionalRewardId,
+          isAdditional: true,
+        }),
+      });
+
+      const eventSubData = await eventSubResponse.json();
+
+      if (!eventSubData.success && !eventSubData.warning) {
+        setMessage(eventSubData.error || t("additionalRewards.addFailed"));
+        setAddingAdditional(false);
+        return;
+      }
+
+      // 2. Save to DB
+      // DBに保存
+      const dbResponse = await fetch("/api/streamer/additional-rewards", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rewardId: selectedAdditionalRewardId,
+          rewardName: rewardName,
+        }),
+      });
+
+      const dbData = await dbResponse.json();
+
+      if (!dbResponse.ok) {
+        setMessage(dbData.error || t("additionalRewards.addFailed"));
+        setAddingAdditional(false);
+        return;
+      }
+
+      // 3. Update state
+      // 状態を更新
+      setMessage(t("additionalRewards.addSuccess"));
+      setSelectedAdditionalRewardId("");
+      await fetchAdditionalRewards();
+      await fetchEventSubStatus(selectedRewardId);
+
+    } catch {
+      setMessage(t("messages.errorOccurred"));
+    } finally {
+      setAddingAdditional(false);
+    }
+  };
+
+  /**
+   * Remove an additional reward
+   * 追加報酬を削除する
+   */
+  const handleRemoveAdditionalReward = async (rewardId: string) => {
+    if (!window.confirm(t("additionalRewards.removeConfirm"))) {
+      return;
+    }
+
+    setMessage("");
+
+    try {
+      // 1. Delete EventSub subscription for this reward
+      // この報酬のEventSubサブスクリプションを削除
+      await fetch(`/api/twitch/eventsub/subscribe?rewardId=${rewardId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      // 2. Delete from DB
+      // DBから削除
+      const dbResponse = await fetch(`/api/streamer/additional-rewards?rewardId=${rewardId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      if (!dbResponse.ok) {
+        const dbData = await dbResponse.json();
+        setMessage(dbData.error || t("additionalRewards.removeFailed"));
+        return;
+      }
+
+      // 3. Update state
+      // 状態を更新
+      setMessage(t("additionalRewards.removeSuccess"));
+      await fetchAdditionalRewards();
+      await fetchEventSubStatus(selectedRewardId);
+
+    } catch {
+      setMessage(t("messages.errorOccurred"));
+    }
   };
 
   /**
@@ -291,7 +491,14 @@ export default function ChannelPointSettings({
         // Continue to clear DB settings even if EventSub deletion fails
       }
 
-      // 2. DB設定をクリア（channel_point_reward_id と channel_point_reward_name を null に）
+      // 2. 追加報酬をDBから全て削除
+      // Delete all additional rewards from DB
+      await fetch("/api/streamer/additional-rewards?deleteAll=true", {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      // 3. DB設定をクリア（channel_point_reward_id と channel_point_reward_name を null に）
       // Clear DB settings by setting channel_point_reward_id and channel_point_reward_name to null
       const settingsResponse = await fetch("/api/streamer/settings", {
         method: "POST",
@@ -310,12 +517,14 @@ export default function ChannelPointSettings({
         return;
       }
 
-      // 3. UIの状態をリセット
+      // 4. UIの状態をリセット
       // Reset UI state after successful disconnection
       setSelectedRewardId("");
       setSelectedRewardName("");
+      setSavedMainRewardId("");
       setEventSubStatus("none");
       setSubscriptions([]);
+      setAdditionalRewards([]);
       setMessage(t("messages2.disconnectSuccess"));
 
     } catch (err) {
@@ -324,6 +533,32 @@ export default function ChannelPointSettings({
     } finally {
       setDisconnecting(false);
     }
+  };
+
+  /**
+   * Get reward name by reward ID
+   * 報酬IDから報酬名を取得するヘルパー関数
+   * Checks: 1) Main reward, 2) Twitch rewards list, 3) Additional rewards DB
+   */
+  const getRewardNameById = (rewardId: string): string | null => {
+    // Check if it's the main reward
+    // メイン報酬かチェック
+    if (rewardId === selectedRewardId && selectedRewardName) {
+      return selectedRewardName;
+    }
+    // Check in Twitch rewards list
+    // Twitch報酬リストをチェック
+    const twitchReward = rewards.find((r) => r.id === rewardId);
+    if (twitchReward) {
+      return twitchReward.title;
+    }
+    // Check in additional rewards from DB
+    // DBの追加報酬をチェック
+    const additionalReward = additionalRewards.find((r) => r.reward_id === rewardId);
+    if (additionalReward?.reward_name) {
+      return additionalReward.reward_name;
+    }
+    return null;
   };
 
   const getEventSubStatusBadge = () => {
@@ -386,12 +621,18 @@ export default function ChannelPointSettings({
                className="w-full rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
              >
                <option value="">{t("options.selectReward")}</option>
-               {rewards.map((reward) => (
-                 <option key={reward.id} value={reward.id}>
-                   {reward.title} ({reward.cost} {t("options.points")})
-                   {!reward.is_enabled && t("options.disabled")}
-                 </option>
-               ))}
+               {rewards
+                 .filter((reward) =>
+                   // Exclude rewards that are already registered as additional rewards
+                   // 追加報酬として既に登録されているものを除外
+                   !additionalRewards.some((ar) => ar.reward_id === reward.id)
+                 )
+                 .map((reward) => (
+                   <option key={reward.id} value={reward.id}>
+                     {reward.title} ({reward.cost} {t("options.points")})
+                     {!reward.is_enabled && t("options.disabled")}
+                   </option>
+                 ))}
              </select>
            </div>
 
@@ -430,10 +671,33 @@ export default function ChannelPointSettings({
                    <div key={sub.id}>
                      <div className="flex items-center justify-between text-xs">
                        <span className="text-gray-400">
-                         {sub.condition.reward_id ? `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...` : t("form.allRewards")}
+                         {sub.condition.reward_id ? (
+                           <>
+                             {/* Display reward name if available, otherwise show truncated ID */}
+                             {/* 報酬名があれば表示、なければ短縮IDを表示 */}
+                             {getRewardNameById(sub.condition.reward_id) || `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...`}
+                             <span className="ml-1 text-gray-500">
+                               ({sub.condition.reward_id.slice(0, 8)}...)
+                             </span>
+                           </>
+                         ) : t("form.allRewards")}
                        </span>
-                       <span className={sub.status === "enabled" ? "text-green-400" : "text-yellow-400"}>
-                         {sub.status}
+                       <span className={
+                         sub.status === "enabled"
+                           ? "text-green-400"
+                           : ["webhook_callback_verification_failed", "notification_failures_exceeded", "authorization_revoked"].includes(sub.status)
+                             ? "text-red-400"
+                             : "text-yellow-400"
+                       }>
+                         {/* Display user-friendly status text */}
+                         {/* ユーザーフレンドリーなステータステキストを表示 */}
+                         {sub.status === "enabled"
+                           ? "有効"
+                           : sub.status === "webhook_callback_verification_pending"
+                             ? "接続確認中"
+                             : ["webhook_callback_verification_failed", "notification_failures_exceeded", "authorization_revoked"].includes(sub.status)
+                               ? "失敗：時間をおいて再設定してください"
+                               : sub.status}
                        </span>
                      </div>
                      {/* Explanation for pending verification status */}
@@ -449,6 +713,48 @@ export default function ChannelPointSettings({
                            <li>サーバーが正常に動作しているか確認してください</li>
                            <li>しばらく待ってから「更新」ボタンを押してください</li>
                            <li>解決しない場合は、報酬を再設定してみてください</li>
+                         </ul>
+                       </div>
+                     )}
+                     {/* Explanation for failed verification status */}
+                     {/* 検証失敗状態の説明 */}
+                     {sub.status === "webhook_callback_verification_failed" && (
+                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                         <p className="font-medium">Webhook検証失敗</p>
+                         <p className="mt-1 text-red-400/80">
+                           TwitchからのWebhook検証に失敗しました。
+                         </p>
+                         <ul className="mt-1 list-inside list-disc text-red-400/70">
+                           <li>サーバーが外部からアクセス可能か確認してください</li>
+                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
+                         </ul>
+                       </div>
+                     )}
+                     {/* Explanation for notification failures exceeded */}
+                     {/* 通知失敗超過の説明 */}
+                     {sub.status === "notification_failures_exceeded" && (
+                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                         <p className="font-medium">通知失敗が多発</p>
+                         <p className="mt-1 text-red-400/80">
+                           Twitchからの通知が何度も失敗したため、サブスクリプションが無効化されました。
+                         </p>
+                         <ul className="mt-1 list-inside list-disc text-red-400/70">
+                           <li>サーバーの状態を確認してください</li>
+                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
+                         </ul>
+                       </div>
+                     )}
+                     {/* Explanation for authorization revoked */}
+                     {/* 認証取り消しの説明 */}
+                     {sub.status === "authorization_revoked" && (
+                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                         <p className="font-medium">認証が取り消されました</p>
+                         <p className="mt-1 text-red-400/80">
+                           Twitchの認証が取り消されたため、サブスクリプションが無効化されました。
+                         </p>
+                         <ul className="mt-1 list-inside list-disc text-red-400/70">
+                           <li>再度ログインしてください</li>
+                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
                          </ul>
                        </div>
                      )}
@@ -472,6 +778,19 @@ export default function ChannelPointSettings({
                    </div>
                  ))}
                </div>
+             ) : registrationFailed ? (
+               /* Registration failed - webhook unreachable */
+               /* 登録失敗 - Webhookに到達できなかった */
+               <div className="rounded bg-red-500/10 p-3 text-xs text-red-300">
+                 <p className="font-medium">接続失敗</p>
+                 <p className="mt-1 text-red-400/80">
+                   EventSubの登録に失敗しました。Webhookエンドポイントに到達できませんでした。
+                 </p>
+                 <ul className="mt-1 list-inside list-disc text-red-400/70">
+                   <li>サーバーが外部からアクセス可能か確認してください</li>
+                   <li>時間をおいて「保存 & EventSub登録」ボタンで再登録してください</li>
+                 </ul>
+               </div>
              ) : (
                <p className="text-xs text-gray-500">
                  {t("form.noSubscriptions")}
@@ -484,6 +803,79 @@ export default function ChannelPointSettings({
             )}
            </div>
 
+           {/* Additional Rewards Section - Only shown when main reward is active */}
+           {/* 追加報酬セクション - メイン報酬がアクティブな場合のみ表示 */}
+           {selectedRewardId && eventSubStatus === "active" && (
+             <div className="rounded-lg bg-gray-700/50 p-4">
+               <h3 className="mb-2 text-sm font-medium text-gray-300">
+                 {t("additionalRewards.title")}
+               </h3>
+               <p className="mb-3 text-xs text-gray-400">
+                 {t("additionalRewards.description")}
+               </p>
+
+               {/* List of additional rewards */}
+               {/* 追加報酬一覧 */}
+               {additionalRewards.length > 0 && (
+                 <div className="mb-3 space-y-2">
+                   {additionalRewards.map((reward) => (
+                     <div
+                       key={reward.id}
+                       className="flex items-center justify-between rounded bg-gray-600/50 px-3 py-2"
+                     >
+                       <div>
+                         <span className="text-sm text-gray-200">
+                           {reward.reward_name || reward.reward_id.slice(0, 8) + "..."}
+                         </span>
+                         <span className="ml-2 text-xs text-gray-400">
+                           ({reward.reward_id.slice(0, 8)}...)
+                         </span>
+                       </div>
+                       <button
+                         onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
+                         className="text-xs text-red-400 hover:text-red-300"
+                       >
+                         {t("additionalRewards.remove")}
+                       </button>
+                     </div>
+                   ))}
+                 </div>
+               )}
+
+               {/* Add new additional reward */}
+               {/* 新しい追加報酬を追加 */}
+               <div className="flex items-center gap-2">
+                 <select
+                   value={selectedAdditionalRewardId}
+                   onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
+                   className="flex-1 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200"
+                 >
+                   <option value="">{t("additionalRewards.selectToAdd")}</option>
+                   {rewards
+                     .filter((r) =>
+                       // Exclude main reward and already added additional rewards
+                       // メイン報酬と既に追加済みの追加報酬を除外
+                       r.id !== selectedRewardId &&
+                       !additionalRewards.some((ar) => ar.reward_id === r.id)
+                     )
+                     .map((reward) => (
+                       <option key={reward.id} value={reward.id}>
+                         {reward.title} ({reward.cost} {t("options.points")})
+                         {!reward.is_enabled && t("options.disabled")}
+                       </option>
+                     ))}
+                 </select>
+                 <button
+                   onClick={handleAddAdditionalReward}
+                   disabled={addingAdditional || !selectedAdditionalRewardId}
+                   className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+                 >
+                   {addingAdditional ? tCommon("loading") : tCommon("add")}
+                 </button>
+               </div>
+             </div>
+           )}
+
            <div className="flex flex-wrap items-center gap-4">
              <button
                onClick={handleSave}
@@ -493,7 +885,7 @@ export default function ChannelPointSettings({
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
              <button
-               onClick={() => { fetchRewards(); fetchEventSubStatus(); }}
+               onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); setRegistrationFailed(false); }}
                className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
              >
                {tCommon("refresh")}
@@ -514,7 +906,13 @@ export default function ChannelPointSettings({
                   className={
                     // Check if message is a success message by comparing with translated values
                     // 翻訳された値と比較して成功メッセージかどうかを確認
-                    [t("messages.rewardCreated"), t("messages.saveSuccess"), t("messages2.disconnectSuccess")].includes(message)
+                    [
+                      t("messages.rewardCreated"),
+                      t("messages.saveSuccess"),
+                      t("messages2.disconnectSuccess"),
+                      t("additionalRewards.addSuccess"),
+                      t("additionalRewards.removeSuccess"),
+                    ].includes(message)
                       ? "text-green-400"
                       : "text-red-400"
                   }

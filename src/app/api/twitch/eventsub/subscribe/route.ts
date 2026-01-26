@@ -105,7 +105,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { rewardId } = body;
+    const { rewardId, isAdditional } = body;
 
     if (!rewardId) {
       return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
@@ -144,10 +144,18 @@ export async function POST(request: NextRequest) {
       { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id, callback: s.transport.callback })) }
     );
 
-    // Delete existing subscriptions for this broadcaster
-    // 既存のサブスクリプションを削除（同じreward_idのものがあると409エラーになるため）
-    for (const sub of mySubscriptions) {
-      logger.info(`Deleting existing EventSub: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}, callback=${sub.transport.callback}`);
+    // 登録する報酬IDと一致するサブスクリプションのみ削除（他の報酬のサブスクリプションは保持）
+    // メイン報酬でも追加報酬でも同じロジック：対象の報酬のみ削除して再登録
+    // Only delete subscription matching the reward_id being registered (keep other rewards)
+    // Same logic for both main and additional rewards: delete only the target reward and re-register
+    const subscriptionsToDelete = mySubscriptions.filter(
+      (sub) => sub.condition.reward_id === rewardId
+    );
+
+    // Delete existing subscription for the target reward only
+    // 対象報酬のサブスクリプションのみ削除
+    for (const sub of subscriptionsToDelete) {
+      logger.info(`Deleting existing EventSub for target reward: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}, callback=${sub.transport.callback}`);
       const deleteResponse = await fetch(
         `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
         {
@@ -173,7 +181,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 削除後に少し待機（Twitch API側の反映を待つ）
-    if (mySubscriptions.length > 0) {
+    if (subscriptionsToDelete.length > 0) {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
 
@@ -372,6 +380,10 @@ export async function POST(request: NextRequest) {
  * DELETE: チャネルポイント連携を解除する
  * EventSubサブスクリプション（channel.channel_points_custom_reward_redemption.add タイプ）を削除
  * Delete channel point integration by removing EventSub subscriptions
+ *
+ * Query parameters:
+ * - ?rewardId=xxx: Delete subscription for specific reward ID only
+ * - (no params): Delete all channel point subscriptions for the broadcaster
  */
 export async function DELETE(request: NextRequest) {
   const session = await getSession();
@@ -403,6 +415,8 @@ export async function DELETE(request: NextRequest) {
 
   try {
     const appAccessToken = await getAppAccessToken();
+    const url = new URL(request.url);
+    const specificRewardId = url.searchParams.get("rewardId");
 
     // 対象ユーザーのサブスクリプションを取得
     // Get subscriptions for this user using user_id filter
@@ -410,14 +424,25 @@ export async function DELETE(request: NextRequest) {
 
     // channel_points_custom_reward_redemption.add タイプのみフィルタ
     // Filter to only channel point redemption subscriptions
-    const mySubscriptions = userSubscriptions.filter(
+    let mySubscriptions = userSubscriptions.filter(
       (sub) => sub.type === "channel.channel_points_custom_reward_redemption.add"
     );
 
-    logger.info(
-      `Deleting EventSub subscriptions for broadcaster=${session.twitchUserId}: found ${mySubscriptions.length} subscriptions`,
-      { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id })) }
-    );
+    // If rewardId is specified, filter to only that reward
+    // rewardIdが指定されている場合は、その報酬のみにフィルタ
+    if (specificRewardId) {
+      mySubscriptions = mySubscriptions.filter(
+        (sub) => sub.condition.reward_id === specificRewardId
+      );
+      logger.info(
+        `Deleting EventSub subscription for specific reward: broadcaster=${session.twitchUserId}, rewardId=${specificRewardId}, found ${mySubscriptions.length} subscriptions`
+      );
+    } else {
+      logger.info(
+        `Deleting all EventSub subscriptions for broadcaster=${session.twitchUserId}: found ${mySubscriptions.length} subscriptions`,
+        { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id })) }
+      );
+    }
 
     // 各サブスクリプションを削除
     // Delete each subscription
@@ -439,12 +464,13 @@ export async function DELETE(request: NextRequest) {
       const success = deleteResponse.status === 204 || deleteResponse.status === 404;
       results.push({
         id: sub.id,
+        rewardId: sub.condition.reward_id,
         success,
         status: deleteResponse.status,
       });
 
       if (success) {
-        logger.info(`Successfully deleted EventSub subscription: id=${sub.id}`);
+        logger.info(`Successfully deleted EventSub subscription: id=${sub.id}, rewardId=${sub.condition.reward_id}`);
       } else {
         logger.error(`Failed to delete EventSub subscription: id=${sub.id}, status=${deleteResponse.status}`);
       }
