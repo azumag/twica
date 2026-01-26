@@ -73,6 +73,9 @@ export default function ChannelPointSettings({
   const [additionalRewards, setAdditionalRewards] = useState<AdditionalReward[]>([]);
   const [addingAdditional, setAddingAdditional] = useState(false);
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
+  // Track if registration failed (webhook unreachable)
+  // 登録失敗を追跡（Webhookに到達できなかった場合）
+  const [registrationFailed, setRegistrationFailed] = useState(false);
 
   const fetchRewards = async () => {
     setLoading(true);
@@ -283,19 +286,24 @@ export default function ChannelPointSettings({
       if (eventSubData.success) {
         setMessage(eventSubData.message || t("messages.saveSuccess"));
         setEventSubStatus("pending");
+        setRegistrationFailed(false);
         // Refresh status - 保存した報酬IDを明示的に渡して正しく比較
         await fetchEventSubStatus(selectedRewardId);
       } else if (eventSubData.warning) {
         // 警告状態：サブスクリプションの確認が必要
         setMessage(eventSubData.message || "状態を確認してください");
         setEventSubStatus("pending");
+        setRegistrationFailed(false);
         await fetchEventSubStatus(selectedRewardId);
       } else if (eventSubResponse.status === 429) {
         setMessage(eventSubData.error || t("messages.rateLimit"));
       } else {
+        // Registration failed - webhook unreachable or other error
+        // 登録失敗 - Webhookに到達できないか、その他のエラー
         logger.error("EventSub error:", eventSubData);
         setMessage(eventSubData.error || t("messages.eventsubFailed"));
         setEventSubStatus("error");
+        setRegistrationFailed(true);
       }
     } catch {
       setMessage(t("messages.errorOccurred"));
@@ -732,6 +740,19 @@ export default function ChannelPointSettings({
                    </div>
                  ))}
                </div>
+             ) : registrationFailed ? (
+               /* Registration failed - webhook unreachable */
+               /* 登録失敗 - Webhookに到達できなかった */
+               <div className="rounded bg-red-500/10 p-3 text-xs text-red-300">
+                 <p className="font-medium">接続失敗</p>
+                 <p className="mt-1 text-red-400/80">
+                   EventSubの登録に失敗しました。Webhookエンドポイントに到達できませんでした。
+                 </p>
+                 <ul className="mt-1 list-inside list-disc text-red-400/70">
+                   <li>サーバーが外部からアクセス可能か確認してください</li>
+                   <li>時間をおいて「保存 & EventSub登録」ボタンで再登録してください</li>
+                 </ul>
+               </div>
              ) : (
                <p className="text-xs text-gray-500">
                  {t("form.noSubscriptions")}
@@ -826,7 +847,7 @@ export default function ChannelPointSettings({
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
              <button
-               onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); }}
+               onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); setRegistrationFailed(false); }}
                className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
              >
                {tCommon("refresh")}
