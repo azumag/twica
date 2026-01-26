@@ -281,8 +281,8 @@
     "form": {
       "enableAnnouncement": "チャット通知を有効にする",
       "customTemplate": "カスタムテンプレート（任意）",
-      "templatePlaceholder": "@{user} が【{rarity}】{card} を獲得しました！",
-      "placeholderHelp": "使用可能なプレースホルダー: {user}=ユーザー名, {card}=カード名, {rarity}=レアリティ, {num}=所持枚数, {detail}=カード説明"
+      "templatePlaceholder": "@'{'user'}' が【'{'rarity'}'】'{'card'}' を獲得しました！",
+      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'detail'}'=カード説明"
     },
     "buttons": {
       "reauthorize": "Twitchで再認証",

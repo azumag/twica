@@ -281,8 +281,8 @@
     "form": {
       "enableAnnouncement": "Enable chat announcements",
       "customTemplate": "Custom Template (optional)",
-      "templatePlaceholder": "@{user} got a [{rarity}] {card}!",
-      "placeholderHelp": "Available placeholders: {user}=username, {card}=card name, {rarity}=rarity, {num}=owned count, {detail}=card description"
+      "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
+      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'detail'}'=card description"
     },
     "buttons": {
       "reauthorize": "Re-authorize with Twitch",
