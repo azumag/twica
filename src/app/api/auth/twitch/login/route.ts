@@ -70,6 +70,8 @@ export async function GET(request: Request) {
       action: 'login',
     })
     
-    return handleAuthError(error, 'unknown_error', { route: 'twitch_login' })
+    // Return JSON for API routes since the frontend expects JSON response
+    // フロントエンドがJSONレスポンスを期待しているため、APIルート用にJSONを返す
+    return handleAuthError(error, 'unknown_error', { route: 'twitch_login' }, { returnJson: true })
   }
 }

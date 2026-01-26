@@ -48,7 +48,7 @@ export async function exchangeCodeForTokens(
   code: string,
   redirectUri: string
 ): Promise<TwitchTokens> {
-  const clientId = getEnvVar('TWITCH_CLIENT_ID', true)!
+  const clientId = getEnvVar('NEXT_PUBLIC_TWITCH_CLIENT_ID', true)!
   const clientSecret = getEnvVar('TWITCH_CLIENT_SECRET', true)!
 
   const response = await fetch(TWITCH_TOKEN_URL, {
@@ -75,7 +75,7 @@ export async function exchangeCodeForTokens(
 }
 
 export async function getTwitchUser(accessToken: string): Promise<TwitchUser> {
-  const clientId = getEnvVar('TWITCH_CLIENT_ID', true)!
+  const clientId = getEnvVar('NEXT_PUBLIC_TWITCH_CLIENT_ID', true)!
 
   const response = await fetch(`${TWITCH_API_URL}/users`, {
     headers: {
@@ -97,7 +97,7 @@ export async function getTwitchUser(accessToken: string): Promise<TwitchUser> {
 export async function refreshTwitchToken(
   refreshToken: string
 ): Promise<TwitchTokens> {
-  const clientId = getEnvVar('TWITCH_CLIENT_ID', true)!
+  const clientId = getEnvVar('NEXT_PUBLIC_TWITCH_CLIENT_ID', true)!
   const clientSecret = getEnvVar('TWITCH_CLIENT_SECRET', true)!
 
   const response = await fetch(TWITCH_TOKEN_URL, {

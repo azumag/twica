@@ -82,7 +82,7 @@ export async function GET(request: Request) {
       {
         headers: {
           "Authorization": `Bearer ${accessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+          "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
         },
       }
     );

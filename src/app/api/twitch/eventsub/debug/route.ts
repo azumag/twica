@@ -17,7 +17,7 @@ async function getAppAccessToken(): Promise<string> {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({
-      client_id: process.env.TWITCH_CLIENT_ID!,
+      client_id: process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
       client_secret: process.env.TWITCH_CLIENT_SECRET!,
       grant_type: "client_credentials",
     }),
@@ -55,7 +55,7 @@ async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubs
     const response = await fetch(url, {
       headers: {
         "Authorization": `Bearer ${appAccessToken}`,
-        "Client-Id": process.env.TWITCH_CLIENT_ID!,
+        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
       },
     });
 
@@ -94,7 +94,7 @@ export async function GET(request: NextRequest) {
     // totalはallSubscriptions.lengthから取得（subscribe/route.tsと同じ方式）
     return NextResponse.json({
       broadcasterId: session.twitchUserId,
-      clientId: process.env.TWITCH_CLIENT_ID,
+      clientId: process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID,
       expectedCallbackUrl: `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`,
       total: allSubscriptions.length,
       mySubscriptions: mySubscriptions.map((sub: EventSubSubscription) => ({
@@ -133,7 +133,7 @@ export async function DELETE(request: NextRequest) {
         {
           headers: {
             "Authorization": `Bearer ${appAccessToken}`,
-            "Client-Id": process.env.TWITCH_CLIENT_ID!,
+            "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
           },
         }
       );
@@ -156,7 +156,7 @@ export async function DELETE(request: NextRequest) {
             method: "DELETE",
             headers: {
               "Authorization": `Bearer ${appAccessToken}`,
-              "Client-Id": process.env.TWITCH_CLIENT_ID!,
+              "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
             },
           }
         );
@@ -185,7 +185,7 @@ export async function DELETE(request: NextRequest) {
         method: "DELETE",
         headers: {
           "Authorization": `Bearer ${appAccessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+          "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
         },
       }
     );

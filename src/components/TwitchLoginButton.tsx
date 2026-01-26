@@ -23,9 +23,30 @@ export function TwitchLoginButton({ className = '', showIcon = false }: TwitchLo
     setIsLoading(true)
     try {
       const response = await fetch('/api/auth/twitch/login')
+
+      // Check if response is OK and content-type is JSON
+      // APIからのレスポンスが正常でJSONであることを確認
+      const contentType = response.headers.get('content-type')
+      if (!response.ok || !contentType?.includes('application/json')) {
+        // If the response is a redirect or HTML error page, log details and show error
+        // リダイレクトやHTMLエラーページの場合、詳細をログに記録してエラーを表示
+        logger.error('Login API returned non-JSON response:', {
+          status: response.status,
+          contentType,
+          url: response.url,
+        })
+        setIsLoading(false)
+        return
+      }
+
       const data = await response.json()
       if (data.authUrl) {
         window.location.href = data.authUrl
+      } else if (data.error) {
+        // Handle JSON error response from API
+        // APIからのJSONエラーレスポンスを処理
+        logger.error('Login API error:', { error: data.error })
+        setIsLoading(false)
       }
     } catch (error) {
       logger.error('Login error:', { error })

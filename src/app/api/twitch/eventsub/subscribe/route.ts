@@ -17,7 +17,7 @@ async function getAppAccessToken(): Promise<string> {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({
-      client_id: process.env.TWITCH_CLIENT_ID!,
+      client_id: process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
       client_secret: process.env.TWITCH_CLIENT_SECRET!,
       grant_type: "client_credentials",
     }),
@@ -54,7 +54,7 @@ async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubs
     const response = await fetch(url, {
       headers: {
         "Authorization": `Bearer ${appAccessToken}`,
-        "Client-Id": process.env.TWITCH_CLIENT_ID!,
+        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
       },
     });
 
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
           method: "DELETE",
           headers: {
             "Authorization": `Bearer ${appAccessToken}`,
-            "Client-Id": process.env.TWITCH_CLIENT_ID!,
+            "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
           },
         }
       );
@@ -178,7 +178,7 @@ export async function POST(request: NextRequest) {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${appAccessToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID!,
+          "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -264,7 +264,7 @@ export async function POST(request: NextRequest) {
                 method: "DELETE",
                 headers: {
                   "Authorization": `Bearer ${appAccessToken}`,
-                  "Client-Id": process.env.TWITCH_CLIENT_ID!,
+                  "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
                 },
               }
             );
@@ -281,7 +281,7 @@ export async function POST(request: NextRequest) {
               method: "POST",
               headers: {
                 "Authorization": `Bearer ${appAccessToken}`,
-                "Client-Id": process.env.TWITCH_CLIENT_ID!,
+                "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
                 "Content-Type": "application/json",
               },
               body: JSON.stringify({

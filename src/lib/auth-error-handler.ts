@@ -89,13 +89,25 @@ const AUTH_ERROR_MAP: Record<string, AuthErrorDetails> = {
   },
 }
 
+/**
+ * Handle authentication errors with appropriate response format
+ * 認証エラーを適切なレスポンス形式で処理する
+ *
+ * @param error - The error object
+ * @param errorType - The type of error for lookup in AUTH_ERROR_MAP
+ * @param context - Additional context for logging
+ * @param options - Response options
+ * @param options.returnJson - If true, return JSON response instead of redirect (for API routes)
+ *                             trueの場合、リダイレクトではなくJSONレスポンスを返す（APIルート用）
+ */
 export function handleAuthError(
   error: unknown,
   errorType: string,
-  context?: Record<string, unknown>
+  context?: Record<string, unknown>,
+  options?: { returnJson?: boolean }
 ): NextResponse {
   const errorDetails = AUTH_ERROR_MAP[errorType] || AUTH_ERROR_MAP.unknown_error
-  
+
   if (errorDetails.shouldLog) {
     logger.error(`${errorDetails.message}:`, {
       error,
@@ -103,13 +115,25 @@ export function handleAuthError(
       context,
       stack: error instanceof Error ? error.stack : undefined,
     })
-    
+
     // Send to Sentry with additional context
     reportAuthError(error, {
       provider: 'twitch',
       action: errorType.replace(/_/g, '-'),
       userId: context?.twitchUserId as string || undefined,
     })
+  }
+
+  // Return JSON for API routes (fetch requests that expect JSON)
+  // APIルート用にJSONを返す（JSONを期待するfetchリクエスト用）
+  if (options?.returnJson) {
+    return NextResponse.json(
+      {
+        error: errorDetails.type,
+        message: errorDetails.userMessage,
+      },
+      { status: errorDetails.statusCode }
+    )
   }
 
   return NextResponse.redirect(

@@ -7,7 +7,6 @@ export interface EnvConfig {
 export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_APP_URL', required: true },
   { name: 'NEXT_PUBLIC_TWITCH_CLIENT_ID', required: true },
-  { name: 'TWITCH_CLIENT_ID', required: true },
   { name: 'TWITCH_CLIENT_SECRET', required: true },
   { name: 'TWITCH_EVENTSUB_SECRET', required: true },
   { name: 'NEXT_PUBLIC_SUPABASE_URL', required: true },
