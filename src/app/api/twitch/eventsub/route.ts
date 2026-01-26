@@ -286,6 +286,11 @@ async function sendChatAnnouncement(
     // カウント取得失敗は無視
   }
 
+  // コレクションページURLを構築
+  // Build collection page URL
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://twica.live';
+  const collectionUrl = `${baseUrl}/collection/${streamer.id}`;
+
   // メッセージのプレースホルダーを構築
   // Build message placeholders
   const placeholders: ChatMessagePlaceholders = {
@@ -294,6 +299,7 @@ async function sendChatAnnouncement(
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,
+    url: collectionUrl,
   };
 
   // チャットサービスでメッセージを構築・送信
