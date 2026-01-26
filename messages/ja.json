@@ -278,6 +278,8 @@
       "disabled": "無効"
     },
     "scopeWarning": "この機能を使用するには、Twitchアカウントに追加の権限が必要です。下のボタンから再認証してください。",
+    "demoNote": "※ プレビューDEMO、OBS DEMOではチャット送信は行われません。実際のチャネルポイント交換時にのみ送信されます。",
+    "noLineBreakNote": "※ Twitchチャットは改行に対応していません。改行を含むメッセージは1行で送信されます。",
     "form": {
       "enableAnnouncement": "チャット通知を有効にする",
       "customTemplate": "カスタムテンプレート（任意）",
@@ -288,7 +290,8 @@
       "reauthorize": "Twitchで再認証",
       "reauthorizing": "再認証中...",
       "saveTemplate": "テンプレートを保存",
-      "saving": "保存中..."
+      "saving": "保存中...",
+      "chatDemo": "チャットデモ"
     },
     "messages": {
       "checkingScope": "権限を確認中...",
@@ -297,6 +300,11 @@
     "errors": {
       "saveFailed": "設定の保存に失敗しました",
       "reauthorizeFailed": "再認証に失敗しました"
+    },
+    "demo": {
+      "title": "チャットメッセージプレビュー",
+      "description": "実際に送信されるメッセージのプレビューです（サンプルデータ使用）",
+      "close": "閉じる"
     }
   },
   "channelPointSettings": {

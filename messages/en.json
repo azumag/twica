@@ -278,6 +278,8 @@
       "disabled": "Disabled"
     },
     "scopeWarning": "This feature requires additional Twitch permissions. Please re-authorize using the button below.",
+    "demoNote": "* Preview DEMO and OBS DEMO do not send chat messages. Messages are only sent during actual channel point redemptions.",
+    "noLineBreakNote": "* Twitch chat does not support line breaks. Messages with line breaks will be sent as a single line.",
     "form": {
       "enableAnnouncement": "Enable chat announcements",
       "customTemplate": "Custom Template (optional)",
@@ -288,7 +290,8 @@
       "reauthorize": "Re-authorize with Twitch",
       "reauthorizing": "Re-authorizing...",
       "saveTemplate": "Save Template",
-      "saving": "Saving..."
+      "saving": "Saving...",
+      "chatDemo": "Chat Demo"
     },
     "messages": {
       "checkingScope": "Checking permissions...",
@@ -297,6 +300,11 @@
     "errors": {
       "saveFailed": "Failed to save settings",
       "reauthorizeFailed": "Re-authorization failed"
+    },
+    "demo": {
+      "title": "Chat Message Preview",
+      "description": "Preview of the message that will be sent (using sample data)",
+      "close": "Close"
     }
   },
   "channelPointSettings": {

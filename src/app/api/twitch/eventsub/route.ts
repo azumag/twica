@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin";
 import crypto from "crypto";
 import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
@@ -262,11 +262,13 @@ async function sendChatAnnouncement(
 
   // ユーザーがこのカードを何枚所持しているか取得（オプション）
   // Get how many of this card the user owns (optional)
-  const supabaseAdmin = getSupabaseAdmin();
+  // Use no-cache client to ensure fresh data after gacha execution
+  // ガチャ実行後の最新データを取得するためキャッシュ無効クライアントを使用
+  const supabaseAdminNoCache = getSupabaseAdminNoCache();
   let cardCount: number | undefined;
   try {
     // usersテーブルからユーザーIDを取得
-    const { data: user } = await supabaseAdmin
+    const { data: user } = await supabaseAdminNoCache
       .from('users')
       .select('id')
       .eq('twitch_user_id', userId)
@@ -274,7 +276,7 @@ async function sendChatAnnouncement(
 
     if (user) {
       // user_cardsテーブルから所持枚数を取得
-      const { count } = await supabaseAdmin
+      const { count } = await supabaseAdminNoCache
         .from('user_cards')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user.id)

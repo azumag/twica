@@ -45,6 +45,10 @@ export default function ChatAnnouncementSettings({
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
 
+  // チャットデモ用のstate
+  // State for chat demo
+  const [showDemoModal, setShowDemoModal] = useState(false);
+
   // スコープ確認用のstate
   // State for scope check
   const [hasScope, setHasScope] = useState<boolean | null>(null);
@@ -198,6 +202,37 @@ export default function ChatAnnouncementSettings({
     await saveSettings(enabled, template);
   }, [enabled, template]);
 
+  /**
+   * デモ用のサンプルメッセージを生成
+   * Generate sample message for demo preview
+   */
+  const buildDemoMessage = useCallback((): string => {
+    // デフォルトテンプレート
+    const defaultTemplate = "@{user} が【{rarity}】{card} を獲得しました！";
+    const activeTemplate = template || defaultTemplate;
+
+    // サンプルデータでプレースホルダーを置換
+    // Replace placeholders with sample data
+    const sampleData = {
+      user: "SampleUser",
+      card: "レジェンダリーカード",
+      rarity: "レジェンダリー",
+      num: "3",
+      detail: "特別なカードの説明文です",
+      url: `https://twica.live/collection/${streamerId}`,
+    };
+
+    let result = activeTemplate;
+    result = result.replace(/\{user\}/g, sampleData.user);
+    result = result.replace(/\{card\}/g, sampleData.card);
+    result = result.replace(/\{rarity\}/g, sampleData.rarity);
+    result = result.replace(/\{num\}/g, sampleData.num);
+    result = result.replace(/\{detail\}/g, sampleData.detail);
+    result = result.replace(/\{url\}/g, sampleData.url);
+
+    return result;
+  }, [template, streamerId]);
+
   // スコープ確認中のローディング表示
   // Loading display while checking scope
   if (checkingScope) {
@@ -234,8 +269,14 @@ export default function ChatAnnouncementSettings({
         </span>
       </div>
 
-      <p className="mb-4 text-sm text-gray-400">
+      <p className="mb-2 text-sm text-gray-400">
         {t("description")}
+      </p>
+      <p className="mb-2 text-xs text-gray-500">
+        {t("demoNote")}
+      </p>
+      <p className="mb-4 text-xs text-gray-500">
+        {t("noLineBreakNote")}
       </p>
 
       {/* スコープ未取得時の警告と再認証ボタン */}
@@ -293,14 +334,26 @@ export default function ChatAnnouncementSettings({
           </p>
         </div>
 
-        {/* テンプレート保存ボタン */}
-        <button
-          onClick={handleSaveTemplate}
-          disabled={saving || !hasScope}
-          className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
-        >
-          {saving ? t("buttons.saving") : t("buttons.saveTemplate")}
-        </button>
+        {/* ボタン群 */}
+        <div className="flex gap-2">
+          {/* テンプレート保存ボタン */}
+          <button
+            onClick={handleSaveTemplate}
+            disabled={saving || !hasScope}
+            className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+          >
+            {saving ? t("buttons.saving") : t("buttons.saveTemplate")}
+          </button>
+
+          {/* チャットデモボタン */}
+          <button
+            onClick={() => setShowDemoModal(true)}
+            disabled={!hasScope}
+            className="rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-500 disabled:opacity-50"
+          >
+            {t("buttons.chatDemo")}
+          </button>
+        </div>
 
         {/* ステータスメッセージ */}
         {message && (
@@ -309,6 +362,33 @@ export default function ChatAnnouncementSettings({
           </p>
         )}
       </div>
+
+      {/* チャットデモモーダル */}
+      {/* Chat demo modal */}
+      {showDemoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="mx-4 w-full max-w-md rounded-lg bg-gray-800 p-6 shadow-xl">
+            <h3 className="mb-2 text-lg font-semibold text-white">
+              {t("demo.title")}
+            </h3>
+            <p className="mb-4 text-xs text-gray-400">
+              {t("demo.description")}
+            </p>
+            {/* プレビューメッセージ */}
+            <div className="mb-4 rounded-lg bg-gray-700 p-4">
+              <p className="break-words text-sm text-white">
+                {buildDemoMessage()}
+              </p>
+            </div>
+            <button
+              onClick={() => setShowDemoModal(false)}
+              className="w-full rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700"
+            >
+              {t("demo.close")}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
