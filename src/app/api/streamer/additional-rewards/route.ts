@@ -63,7 +63,13 @@ export async function GET(request: NextRequest) {
       return handleDatabaseError(error, "Additional Rewards API: GET");
     }
 
-    return NextResponse.json(rewards || []);
+    // キャッシュを無効化して、削除後も常に最新のデータを返す
+    // Disable caching to ensure fresh data is returned after deletions
+    return NextResponse.json(rewards || [], {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+      },
+    });
   } catch (error) {
     return handleApiError(error, "Additional Rewards API: GET");
   }
