@@ -176,8 +176,11 @@ async function handleRedemption(messageId: string, event: {
     };
 
     // Get streamer data for broadcast and chat announcement settings
+    // Use no-cache client to ensure settings changes are reflected immediately
     // ブロードキャスト用とチャット通知設定用にストリーマーデータを取得
-    const { data: streamer } = await supabaseAdmin
+    // 設定変更が即座に反映されるようキャッシュ無効クライアントを使用
+    const supabaseAdminNoCache = getSupabaseAdminNoCache();
+    const { data: streamer } = await supabaseAdminNoCache
       .from("streamers")
       .select("id, chat_announcement_enabled, chat_announcement_template")
       .eq("twitch_user_id", event.broadcaster_user_id)
