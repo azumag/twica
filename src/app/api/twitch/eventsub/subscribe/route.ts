@@ -31,8 +31,10 @@ async function getAppAccessToken(): Promise<string> {
   return data.access_token;
 }
 
-// ページネーション対応でEventSubサブスクリプションを全件取得
+// ページネーション対応でEventSubサブスクリプションを取得
 // Twitch APIは一度に最大100件しか返さないため、cursorを使って全ページを取得
+// user_idパラメータを使用することで、特定ユーザーのサブスクリプションのみを効率的に取得
+// これにより全件取得→メモリ内フィルタリングが不要になり、APIコールとデータ転送量を削減
 interface EventSubSubscription {
   id: string;
   status: string;
@@ -42,14 +44,18 @@ interface EventSubSubscription {
   created_at: string;
 }
 
-async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubscription[]> {
+async function getSubscriptionsByUserId(
+  appAccessToken: string,
+  userId: string
+): Promise<EventSubSubscription[]> {
   const allData: EventSubSubscription[] = [];
   let cursor: string | undefined;
 
   do {
-    const url = cursor
-      ? `${TWITCH_API_URL}/eventsub/subscriptions?after=${cursor}`
-      : `${TWITCH_API_URL}/eventsub/subscriptions`;
+    // user_idパラメータでフィルタリングし、対象ユーザーのサブスクリプションのみを取得
+    // Twitch API側でフィルタリングされるため、全件取得より効率的
+    const baseUrl = `${TWITCH_API_URL}/eventsub/subscriptions?user_id=${userId}`;
+    const url = cursor ? `${baseUrl}&after=${cursor}` : baseUrl;
 
     const response = await fetch(url, {
       headers: {
@@ -67,7 +73,7 @@ async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubs
     allData.push(...data.data);
     cursor = data.pagination?.cursor;
 
-    logger.info(`Fetched ${data.data.length} subscriptions, total so far: ${allData.length}, hasMore: ${!!cursor}`);
+    logger.info(`Fetched ${data.data.length} subscriptions for user=${userId}, total so far: ${allData.length}, hasMore: ${!!cursor}`);
   } while (cursor);
 
   return allData;
@@ -124,17 +130,17 @@ export async function POST(request: NextRequest) {
     // Callback URL for EventSub
     const callbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
 
-    // ページネーション対応で全サブスクリプションを取得
-    const allSubscriptions = await getAllSubscriptions(appAccessToken);
+    // user_idパラメータで対象ユーザーのサブスクリプションのみを取得
+    // Twitch API側でフィルタリングされるため、全件取得より効率的
+    const userSubscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
 
     // 既存サブスクリプション数と状態をログに記録
-    const mySubscriptions = allSubscriptions.filter(
-      (sub) =>
-        sub.type === "channel.channel_points_custom_reward_redemption.add" &&
-        sub.condition.broadcaster_user_id === session.twitchUserId
+    // channel_points_custom_reward_redemption.addタイプのサブスクリプションをフィルタリング
+    const mySubscriptions = userSubscriptions.filter(
+      (sub) => sub.type === "channel.channel_points_custom_reward_redemption.add"
     );
     logger.info(
-      `Existing EventSub subscriptions for broadcaster=${session.twitchUserId}: count=${mySubscriptions.length} (total in system: ${allSubscriptions.length})`,
+      `Existing EventSub subscriptions for broadcaster=${session.twitchUserId}: count=${mySubscriptions.length} (total for user: ${userSubscriptions.length})`,
       { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id, callback: s.transport.callback })) }
     );
 
@@ -208,17 +214,15 @@ export async function POST(request: NextRequest) {
           { error }
         );
 
-        // ページネーション対応で既存のサブスクリプションを再取得
-        const allRecheckSubs = await getAllSubscriptions(appAccessToken);
+        // user_idパラメータで対象ユーザーのサブスクリプションを再取得
+        const recheckUserSubs = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
 
-        // すべてのサブスクリプションをログに記録（デバッグ用）
-        const allMySubs = allRecheckSubs.filter(
-          (sub) =>
-            sub.type === "channel.channel_points_custom_reward_redemption.add" &&
-            sub.condition.broadcaster_user_id === session.twitchUserId
+        // channel_points_custom_reward_redemption.addタイプのサブスクリプションをフィルタリング（デバッグ用）
+        const allMySubs = recheckUserSubs.filter(
+          (sub) => sub.type === "channel.channel_points_custom_reward_redemption.add"
         );
         logger.info(
-          `All EventSub subscriptions after 409: count=${allMySubs.length} (total in system: ${allRecheckSubs.length})`,
+          `All EventSub subscriptions after 409: count=${allMySubs.length} (total for user: ${recheckUserSubs.length})`,
           { subscriptions: allMySubs.map((s) => ({
             id: s.id,
             status: s.status,
@@ -392,15 +396,10 @@ export async function GET(request: Request) {
   try {
     const appAccessToken = await getAppAccessToken();
 
-    // ページネーション対応で全サブスクリプションを取得
-    // 1ページ目だけだと、サブスクリプションが多い場合に見つからない問題がある
-    const allSubscriptions = await getAllSubscriptions(appAccessToken);
-
-    // Filter to only this broadcaster's subscriptions
-    const mySubscriptions = allSubscriptions.filter(
-      (sub) =>
-        sub.condition.broadcaster_user_id === session.twitchUserId
-    );
+    // user_idパラメータで対象ユーザーのサブスクリプションのみを取得
+    // Twitch API側でフィルタリングされるため、全件取得→メモリ内フィルタリングが不要
+    // これによりAPIコールとデータ転送量を大幅に削減
+    const mySubscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
 
     // 現在の設定されているcallback URLをデバッグ情報として追加
     const expectedCallbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
