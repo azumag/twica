@@ -481,6 +481,32 @@ export default function ChannelPointSettings({
     }
   };
 
+  /**
+   * Get reward name by reward ID
+   * 報酬IDから報酬名を取得するヘルパー関数
+   * Checks: 1) Main reward, 2) Twitch rewards list, 3) Additional rewards DB
+   */
+  const getRewardNameById = (rewardId: string): string | null => {
+    // Check if it's the main reward
+    // メイン報酬かチェック
+    if (rewardId === selectedRewardId && selectedRewardName) {
+      return selectedRewardName;
+    }
+    // Check in Twitch rewards list
+    // Twitch報酬リストをチェック
+    const twitchReward = rewards.find((r) => r.id === rewardId);
+    if (twitchReward) {
+      return twitchReward.title;
+    }
+    // Check in additional rewards from DB
+    // DBの追加報酬をチェック
+    const additionalReward = additionalRewards.find((r) => r.reward_id === rewardId);
+    if (additionalReward?.reward_name) {
+      return additionalReward.reward_name;
+    }
+    return null;
+  };
+
   const getEventSubStatusBadge = () => {
     switch (eventSubStatus) {
       case "active":
@@ -585,7 +611,16 @@ export default function ChannelPointSettings({
                    <div key={sub.id}>
                      <div className="flex items-center justify-between text-xs">
                        <span className="text-gray-400">
-                         {sub.condition.reward_id ? `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...` : t("form.allRewards")}
+                         {sub.condition.reward_id ? (
+                           <>
+                             {/* Display reward name if available, otherwise show truncated ID */}
+                             {/* 報酬名があれば表示、なければ短縮IDを表示 */}
+                             {getRewardNameById(sub.condition.reward_id) || `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...`}
+                             <span className="ml-1 text-gray-500">
+                               ({sub.condition.reward_id.slice(0, 8)}...)
+                             </span>
+                           </>
+                         ) : t("form.allRewards")}
                        </span>
                        <span className={sub.status === "enabled" ? "text-green-400" : "text-yellow-400"}>
                          {sub.status}
