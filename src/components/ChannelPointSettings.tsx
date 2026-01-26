@@ -134,8 +134,11 @@ export default function ChannelPointSettings({
   // DBから追加報酬を取得
   const fetchAdditionalRewards = useCallback(async () => {
     try {
+      // キャッシュを無効化して常に最新のデータを取得
+      // Disable cache to always fetch fresh data after additions/deletions
       const response = await fetch("/api/streamer/additional-rewards", {
         credentials: "include",
+        cache: "no-store",
       });
       if (response.ok) {
         const data = await response.json();
