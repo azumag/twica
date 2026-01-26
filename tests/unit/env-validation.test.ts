@@ -35,7 +35,8 @@ describe('requiredEnvVars', () => {
     const twitchVars = requiredEnvVars.filter(v =>
       v.name.includes('TWITCH') || v.name.includes('NEXT_PUBLIC_TWITCH')
     )
-    expect(twitchVars.length).toBeGreaterThanOrEqual(4)
+    // Changed from 4 to 3: TWITCH_CLIENT_ID was consolidated into NEXT_PUBLIC_TWITCH_CLIENT_ID
+    expect(twitchVars.length).toBeGreaterThanOrEqual(3)
   })
 })
 
