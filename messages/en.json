@@ -302,7 +302,14 @@
     },
     "buttons": {
       "createReward": "Create TwiCa Reward (100 points)",
-      "saveEventSub": "Save & Register EventSub"
+      "saveEventSub": "Save & Register EventSub",
+      "disconnect": "Disconnect",
+      "disconnecting": "Disconnecting..."
+    },
+    "messages2": {
+      "disconnectSuccess": "Channel point connection removed",
+      "disconnectFailed": "Failed to disconnect settings",
+      "disconnectConfirm": "Are you sure you want to disconnect channel points? This will also remove EventSub subscriptions."
     },
     "options": {
       "selectReward": "-- Select Reward --",

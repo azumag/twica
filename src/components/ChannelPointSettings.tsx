@@ -53,6 +53,8 @@ export default function ChannelPointSettings({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
+  // disconnecting: 設定解除処理中かどうかを管理
+  const [disconnecting, setDisconnecting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [eventSubStatus, setEventSubStatus] = useState<"none" | "pending" | "active" | "error">("none");
@@ -260,6 +262,70 @@ export default function ChannelPointSettings({
     setSelectedRewardName(reward?.title || "");
   };
 
+  /**
+   * チャネルポイント連携を解除する
+   * EventSubサブスクリプションを削除し、DBの設定をクリアする
+   * Disconnect channel point integration by removing EventSub subscriptions and clearing DB settings
+   */
+  const handleDisconnect = async () => {
+    // 確認ダイアログを表示
+    // Show confirmation dialog before proceeding with disconnection
+    if (!window.confirm(t("messages2.disconnectConfirm"))) {
+      return;
+    }
+
+    setDisconnecting(true);
+    setMessage("");
+
+    try {
+      // 1. EventSubサブスクリプションを全て削除
+      // Delete all EventSub subscriptions for this broadcaster using the proper subscribe endpoint
+      const eventSubResponse = await fetch("/api/twitch/eventsub/subscribe", {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      if (!eventSubResponse.ok) {
+        logger.error("Failed to delete EventSub subscriptions", await eventSubResponse.json());
+        // EventSub削除に失敗しても、DB設定のクリアは続行する
+        // Continue to clear DB settings even if EventSub deletion fails
+      }
+
+      // 2. DB設定をクリア（channel_point_reward_id と channel_point_reward_name を null に）
+      // Clear DB settings by setting channel_point_reward_id and channel_point_reward_name to null
+      const settingsResponse = await fetch("/api/streamer/settings", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          streamerId,
+          channelPointRewardId: null,
+          channelPointRewardName: null,
+        }),
+      });
+
+      if (!settingsResponse.ok) {
+        const errorData = await settingsResponse.json();
+        setMessage(errorData.error || t("messages2.disconnectFailed"));
+        return;
+      }
+
+      // 3. UIの状態をリセット
+      // Reset UI state after successful disconnection
+      setSelectedRewardId("");
+      setSelectedRewardName("");
+      setEventSubStatus("none");
+      setSubscriptions([]);
+      setMessage(t("messages2.disconnectSuccess"));
+
+    } catch (err) {
+      logger.error("Failed to disconnect:", err);
+      setMessage(t("messages2.disconnectFailed"));
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
   const getEventSubStatusBadge = () => {
     switch (eventSubStatus) {
       case "active":
@@ -418,7 +484,7 @@ export default function ChannelPointSettings({
             )}
            </div>
 
-           <div className="flex items-center gap-4">
+           <div className="flex flex-wrap items-center gap-4">
              <button
                onClick={handleSave}
                disabled={saving || !selectedRewardId}
@@ -432,12 +498,23 @@ export default function ChannelPointSettings({
              >
                {tCommon("refresh")}
              </button>
+             {/* 設定解除ボタン: EventSubが設定されている場合のみ表示 */}
+             {/* Disconnect button: Only shown when EventSub is configured */}
+             {(eventSubStatus === "active" || eventSubStatus === "pending" || subscriptions.length > 0) && (
+               <button
+                 onClick={handleDisconnect}
+                 disabled={disconnecting}
+                 className="rounded-lg border border-red-600 px-4 py-2 text-red-400 hover:bg-red-600/20 disabled:opacity-50"
+               >
+                 {disconnecting ? t("buttons.disconnecting") : t("buttons.disconnect")}
+               </button>
+             )}
               {message && (
                 <span
                   className={
                     // Check if message is a success message by comparing with translated values
                     // 翻訳された値と比較して成功メッセージかどうかを確認
-                    [t("messages.rewardCreated"), t("messages.saveSuccess")].includes(message)
+                    [t("messages.rewardCreated"), t("messages.saveSuccess"), t("messages2.disconnectSuccess")].includes(message)
                       ? "text-green-400"
                       : "text-red-400"
                   }
