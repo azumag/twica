@@ -317,7 +317,7 @@
       "disabled": "[無効]"
     },
     "additionalRewards": {
-      "title": "追加報酬設定",
+      "title": "追加の引き換え設定",
       "description": "複数のチャネルポイント報酬で同じガチャをトリガーできます",
       "selectToAdd": "-- 追加する報酬を選択 --",
       "remove": "削除",

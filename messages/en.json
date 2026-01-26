@@ -317,7 +317,7 @@
       "disabled": "[Disabled]"
     },
     "additionalRewards": {
-      "title": "Additional Rewards",
+      "title": "Additional Redemption Settings",
       "description": "Trigger the same gacha with multiple channel point rewards",
       "selectToAdd": "-- Select reward to add --",
       "remove": "Remove",
