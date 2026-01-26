@@ -76,6 +76,9 @@ export default function ChannelPointSettings({
   // Track if registration failed (webhook unreachable)
   // 登録失敗を追跡（Webhookに到達できなかった場合）
   const [registrationFailed, setRegistrationFailed] = useState(false);
+  // Track the saved main reward ID (to detect changes for cleanup)
+  // 保存済みのメイン報酬IDを追跡（変更検出とクリーンアップ用）
+  const [savedMainRewardId, setSavedMainRewardId] = useState(currentRewardId || "");
 
   const fetchRewards = async () => {
     setLoading(true);
@@ -247,6 +250,21 @@ export default function ChannelPointSettings({
     setMessage("");
 
     try {
+      // Check if main reward is being changed - need to delete old subscription first
+      // メイン報酬が変更される場合、古いサブスクリプションを先に削除する必要がある
+      if (savedMainRewardId && savedMainRewardId !== selectedRewardId) {
+        const existingOldSub = subscriptions.find(
+          (sub) => sub.condition.reward_id === savedMainRewardId
+        );
+        if (existingOldSub) {
+          logger.info(`Main reward changing from ${savedMainRewardId} to ${selectedRewardId}, deleting old subscription`);
+          await fetch(`/api/twitch/eventsub/subscribe?rewardId=${savedMainRewardId}`, {
+            method: "DELETE",
+            credentials: "include",
+          });
+        }
+      }
+
       // Save settings
       const settingsResponse = await fetch("/api/streamer/settings", {
         method: "POST",
@@ -287,6 +305,7 @@ export default function ChannelPointSettings({
         setMessage(eventSubData.message || t("messages.saveSuccess"));
         setEventSubStatus("pending");
         setRegistrationFailed(false);
+        setSavedMainRewardId(selectedRewardId);
         // Refresh status - 保存した報酬IDを明示的に渡して正しく比較
         await fetchEventSubStatus(selectedRewardId);
       } else if (eventSubData.warning) {
@@ -294,6 +313,7 @@ export default function ChannelPointSettings({
         setMessage(eventSubData.message || "状態を確認してください");
         setEventSubStatus("pending");
         setRegistrationFailed(false);
+        setSavedMainRewardId(selectedRewardId);
         await fetchEventSubStatus(selectedRewardId);
       } else if (eventSubResponse.status === 429) {
         setMessage(eventSubData.error || t("messages.rateLimit"));
@@ -490,6 +510,7 @@ export default function ChannelPointSettings({
       // Reset UI state after successful disconnection
       setSelectedRewardId("");
       setSelectedRewardName("");
+      setSavedMainRewardId("");
       setEventSubStatus("none");
       setSubscriptions([]);
       setAdditionalRewards([]);
