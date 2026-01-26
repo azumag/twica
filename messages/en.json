@@ -270,6 +270,35 @@
     },
     "confirmDelete": "Delete this sound effect?"
   },
+  "chatAnnouncementSettings": {
+    "title": "Chat Announcement Settings",
+    "description": "Automatically post gacha results to Twitch chat. Messages are sent from your streamer account.",
+    "status": {
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    },
+    "scopeWarning": "This feature requires additional Twitch permissions. Please re-authorize using the button below.",
+    "form": {
+      "enableAnnouncement": "Enable chat announcements",
+      "customTemplate": "Custom Template (optional)",
+      "templatePlaceholder": "@{user} got a [{rarity}] {card}!",
+      "placeholderHelp": "Available placeholders: {user}=username, {card}=card name, {rarity}=rarity, {num}=owned count, {detail}=card description"
+    },
+    "buttons": {
+      "reauthorize": "Re-authorize with Twitch",
+      "reauthorizing": "Re-authorizing...",
+      "saveTemplate": "Save Template",
+      "saving": "Saving..."
+    },
+    "messages": {
+      "checkingScope": "Checking permissions...",
+      "saved": "Settings saved"
+    },
+    "errors": {
+      "saveFailed": "Failed to save settings",
+      "reauthorizeFailed": "Re-authorization failed"
+    }
+  },
   "channelPointSettings": {
     "title": "Card Redemption Settings",
     "status": {

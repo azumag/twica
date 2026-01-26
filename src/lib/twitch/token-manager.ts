@@ -144,3 +144,72 @@ export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
     throw error;
   }
 }
+
+/**
+ * ユーザーが特定のTwitchスコープを持っているかチェック
+ * Check if a user has a specific Twitch scope granted
+ * @param twitchUserId - TwitchユーザーID
+ * @param scope - 確認するスコープ（例: 'user:write:chat'）
+ * @returns スコープが付与されている場合はtrue
+ */
+export async function hasScope(twitchUserId: string, scope: string): Promise<boolean> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: user, error } = await supabaseAdmin
+    .from('users')
+    .select('twitch_scopes')
+    .eq('twitch_user_id', twitchUserId)
+    .single();
+
+  if (error) {
+    // PGRST116 means no rows returned - user not found
+    if (error.code === 'PGRST116') {
+      logger.warn('User not found when checking scope', { twitchUserId, scope });
+      return false;
+    }
+    // PGRST204 means column not found - twitch_scopes column may not exist
+    if (error.code === 'PGRST204') {
+      logger.warn('twitch_scopes column not found in schema', { twitchUserId, scope });
+      return false;
+    }
+    logger.error('Database error checking scope', { twitchUserId, scope, error });
+    return false;
+  }
+
+  // twitch_scopesがnullまたは空配列の場合、追加スコープは付与されていない
+  // If twitch_scopes is null or empty, no additional scopes have been granted
+  if (!user?.twitch_scopes || user.twitch_scopes.length === 0) {
+    return false;
+  }
+
+  return user.twitch_scopes.includes(scope);
+}
+
+/**
+ * ユーザーのTwitchスコープをデータベースに保存
+ * Save Twitch scopes to database for a user
+ * @param twitchUserId - TwitchユーザーID
+ * @param scopes - 保存するスコープの配列
+ */
+export async function saveTwitchScopes(twitchUserId: string, scopes: string[]): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({
+      twitch_scopes: scopes,
+    })
+    .eq('twitch_user_id', twitchUserId);
+
+  if (error) {
+    // PGRST204 means column not found - twitch_scopes column may not exist yet
+    if (error.code === 'PGRST204') {
+      logger.warn('twitch_scopes column not found in schema, skipping save', { twitchUserId, error });
+      return;
+    }
+    logger.error('Failed to save Twitch scopes', { twitchUserId, scopes, error });
+    throw error;
+  }
+
+  logger.info('Saved Twitch scopes for user', { twitchUserId, scopeCount: scopes.length });
+}

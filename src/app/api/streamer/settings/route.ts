@@ -55,6 +55,10 @@ export async function POST(request: NextRequest) {
       // ガチャ効果音設定（オプション）
       gachaSoundUrl,
       gachaSoundEnabled,
+      // チャット通知設定（オプション）
+      // Chat announcement settings (optional)
+      chatAnnouncementEnabled,
+      chatAnnouncementTemplate,
     } = body;
 
     // Verify ownership
@@ -89,6 +93,17 @@ export async function POST(request: NextRequest) {
     // gachaSoundEnabled: 効果音の有効/無効フラグ
     if (gachaSoundEnabled !== undefined) {
       updateData.gacha_sound_enabled = gachaSoundEnabled;
+    }
+
+    // チャット通知設定
+    // Chat announcement settings
+    // chatAnnouncementEnabled: チャット通知の有効/無効フラグ
+    if (chatAnnouncementEnabled !== undefined) {
+      updateData.chat_announcement_enabled = chatAnnouncementEnabled;
+    }
+    // chatAnnouncementTemplate: カスタムテンプレート（nullでデフォルト使用）
+    if (chatAnnouncementTemplate !== undefined) {
+      updateData.chat_announcement_template = chatAnnouncementTemplate;
     }
 
     // 更新するフィールドがない場合はエラー

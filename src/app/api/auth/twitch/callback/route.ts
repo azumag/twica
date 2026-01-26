@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
+import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from '@/lib/constants'
@@ -97,6 +98,18 @@ export async function GET(request: NextRequest) {
         }, {
           onConflict: 'twitch_user_id',
         })
+
+      // トークン交換時に付与されたスコープをDBに保存
+      // Save the scopes granted during token exchange to the database
+      // tokens.scopeはスコープの配列として返される
+      if (tokens.scope && tokens.scope.length > 0) {
+        await saveTwitchScopes(twitchUser.id, tokens.scope)
+        logger.info('Auth callback: Saved Twitch scopes', {
+          twitchUserId: twitchUser.id,
+          scopeCount: tokens.scope.length,
+          scopes: tokens.scope,
+        })
+      }
     } catch (error) {
       return handleAuthError(
         error,

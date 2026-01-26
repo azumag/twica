@@ -8,6 +8,10 @@ import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
+import { TwitchChatService, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
+import { hasScope } from "@/lib/twitch/token-manager";
+import { ADDITIONAL_SCOPES } from "@/lib/twitch/auth";
+import type { GachaCard } from "@/lib/services/gacha";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
@@ -171,21 +175,139 @@ async function handleRedemption(messageId: string, event: {
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
-    // Get streamer ID for broadcast
-    // ブロードキャスト用にストリーマーIDを取得
+    // Get streamer data for broadcast and chat announcement settings
+    // ブロードキャスト用とチャット通知設定用にストリーマーデータを取得
     const { data: streamer } = await supabaseAdmin
       .from("streamers")
-      .select("id")
+      .select("id, chat_announcement_enabled, chat_announcement_template")
       .eq("twitch_user_id", event.broadcaster_user_id)
       .single();
 
     if (streamer) {
+      // Realtime通知（既存機能）
       await broadcastGachaResult(streamer.id, gachaResult, {
         maxRetries: 3,
         retryDelay: 1000,
       });
+
+      // チャット通知（新機能）- 非同期で実行、失敗しても処理継続
+      // Chat announcement (new feature) - async execution, continues on failure
+      sendChatAnnouncement(
+        event.broadcaster_user_id,
+        streamer,
+        result.data.card,
+        event.user_name,
+        event.user_id
+      ).catch(err => {
+        // チャット送信失敗はログのみ、ガチャ処理はブロックしない
+        // Chat send failure is logged only, does not block gacha processing
+        logger.warn('Chat announcement failed', {
+          error: err,
+          broadcasterTwitchUserId: event.broadcaster_user_id,
+          streamerId: streamer.id,
+        });
+      });
     }
   } catch (error) {
     return handleApiError(error, "EventSub redemption");
+  }
+}
+
+/**
+ * チャット通知を送信する
+ * Send chat announcement for gacha result
+ *
+ * @param broadcasterTwitchUserId - 配信者のTwitchユーザーID
+ * @param streamer - 配信者の設定情報
+ * @param card - 獲得したカード（GachaCard型 - gacha serviceから返される）
+ * @param userName - ガチャを引いたユーザー名
+ * @param userId - ガチャを引いたユーザーのTwitch ID
+ */
+async function sendChatAnnouncement(
+  broadcasterTwitchUserId: string,
+  streamer: {
+    id: string;
+    chat_announcement_enabled: boolean;
+    chat_announcement_template: string | null;
+  },
+  card: GachaCard,
+  userName: string,
+  userId: string
+): Promise<void> {
+  // チャット通知が無効の場合はスキップ
+  // Skip if chat announcement is disabled
+  if (!streamer.chat_announcement_enabled) {
+    return;
+  }
+
+  // user:write:chatスコープが付与されているかチェック
+  // Check if user:write:chat scope is granted
+  const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE);
+  if (!hasChatScope) {
+    logger.info('Chat announcement skipped - missing scope', {
+      broadcasterTwitchUserId,
+      streamerId: streamer.id,
+    });
+    return;
+  }
+
+  // レアリティの日本語/英語変換マップ
+  // Rarity translation map
+  const rarityMap: Record<string, string> = {
+    common: 'コモン',
+    rare: 'レア',
+    epic: 'エピック',
+    legendary: 'レジェンダリー',
+  };
+
+  // ユーザーがこのカードを何枚所持しているか取得（オプション）
+  // Get how many of this card the user owns (optional)
+  const supabaseAdmin = getSupabaseAdmin();
+  let cardCount: number | undefined;
+  try {
+    // usersテーブルからユーザーIDを取得
+    const { data: user } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('twitch_user_id', userId)
+      .single();
+
+    if (user) {
+      // user_cardsテーブルから所持枚数を取得
+      const { count } = await supabaseAdmin
+        .from('user_cards')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('card_id', card.id);
+
+      cardCount = count ?? undefined;
+    }
+  } catch {
+    // カウント取得失敗は無視
+  }
+
+  // メッセージのプレースホルダーを構築
+  // Build message placeholders
+  const placeholders: ChatMessagePlaceholders = {
+    user: userName,
+    card: card.name,
+    rarity: rarityMap[card.rarity] || card.rarity,
+    detail: card.description || undefined,
+    num: cardCount,
+  };
+
+  // チャットサービスでメッセージを構築・送信
+  // Build and send message using chat service
+  const chatService = new TwitchChatService();
+  const message = chatService.buildMessage(streamer.chat_announcement_template, placeholders);
+
+  const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
+
+  if (success) {
+    logger.info('Chat announcement sent', {
+      broadcasterTwitchUserId,
+      streamerId: streamer.id,
+      cardName: card.name,
+    });
   }
 }

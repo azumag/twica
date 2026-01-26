@@ -5,6 +5,7 @@ import { getStreamerData } from "@/lib/dashboard-data";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import OverlayPreview from "@/components/OverlayPreview";
 import GachaSoundSettings from "@/components/GachaSoundSettings";
+import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -74,6 +75,13 @@ export default async function SettingsPage() {
               streamerId={streamerData.streamer.id}
               currentSoundUrl={streamerData.streamer.gacha_sound_url ?? null}
               currentSoundEnabled={streamerData.streamer.gacha_sound_enabled ?? false}
+            />
+            {/* チャット通知設定 */}
+            {/* Chat announcement settings */}
+            <ChatAnnouncementSettings
+              streamerId={streamerData.streamer.id}
+              currentEnabled={streamerData.streamer.chat_announcement_enabled ?? false}
+              currentTemplate={streamerData.streamer.chat_announcement_template ?? null}
             />
           </>
         }

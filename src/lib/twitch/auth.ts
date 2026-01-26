@@ -22,22 +22,48 @@ export interface TwitchTokens {
   scope: string[]
 }
 
+// デフォルトスコープ（ログイン時に必ず付与される基本スコープ）
+// Default scopes that are always requested during login
 export const AUTH_SCOPES = [
   'user:read:email',
   'channel:read:redemptions',
   'channel:manage:redemptions',
 ].join(' ')
 
+// 追加スコープ定義（オプション機能用、再認証で取得）
+// Additional scopes for optional features, obtained via re-authentication
+export const ADDITIONAL_SCOPES = {
+  // Twitchチャットへの書き込み権限（ガチャ結果のチャット通知に必要）
+  // Permission to write to Twitch chat (required for gacha result announcements)
+  CHAT_WRITE: 'user:write:chat',
+} as const
+
+/**
+ * Twitch OAuth認証URLを生成
+ * @param redirectUri - コールバックURL
+ * @param state - CSRF防止用のstate値
+ * @param additionalScopes - 追加で要求するスコープ（オプション機能用）
+ * @returns Twitch認証ページのURL
+ */
 export function getTwitchAuthUrl(
   redirectUri: string,
-  state: string
+  state: string,
+  additionalScopes?: string[]
 ): string {
   const clientId = getEnvVar('NEXT_PUBLIC_TWITCH_CLIENT_ID', true)!
+
+  // デフォルトスコープと追加スコープを結合
+  // Combine default scopes with additional scopes
+  let scopes = AUTH_SCOPES
+  if (additionalScopes && additionalScopes.length > 0) {
+    scopes = `${AUTH_SCOPES} ${additionalScopes.join(' ')}`
+  }
+
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: AUTH_SCOPES,
+    scope: scopes,
     state: state,
   })
 
