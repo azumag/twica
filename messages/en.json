@@ -315,6 +315,17 @@
       "selectReward": "-- Select Reward --",
       "points": "points",
       "disabled": "[Disabled]"
+    },
+    "additionalRewards": {
+      "title": "Additional Rewards",
+      "description": "Trigger the same gacha with multiple channel point rewards",
+      "selectToAdd": "-- Select reward to add --",
+      "remove": "Remove",
+      "addSuccess": "Additional reward registered",
+      "removeSuccess": "Additional reward removed",
+      "addFailed": "Failed to register additional reward",
+      "removeFailed": "Failed to remove additional reward",
+      "removeConfirm": "Remove this additional reward? EventSub subscription will also be removed."
     }
   },
   "gachaHistory": {

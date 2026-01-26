@@ -12,6 +12,15 @@ interface TwitchReward {
   is_enabled: boolean;
 }
 
+// Additional reward stored in DB
+// DBに保存された追加報酬
+interface AdditionalReward {
+  id: string;
+  reward_id: string;
+  reward_name: string | null;
+  created_at: string;
+}
+
 interface EventSubSubscription {
   id: string;
   status: string;
@@ -59,6 +68,11 @@ export default function ChannelPointSettings({
   const [error, setError] = useState("");
   const [eventSubStatus, setEventSubStatus] = useState<"none" | "pending" | "active" | "error">("none");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
+  // Additional rewards state
+  // 追加報酬の状態管理
+  const [additionalRewards, setAdditionalRewards] = useState<AdditionalReward[]>([]);
+  const [addingAdditional, setAddingAdditional] = useState(false);
+  const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
 
   const fetchRewards = async () => {
     setLoading(true);
@@ -110,6 +124,23 @@ export default function ChannelPointSettings({
     }
   };
 
+  // Fetch additional rewards from DB
+  // DBから追加報酬を取得
+  const fetchAdditionalRewards = useCallback(async () => {
+    try {
+      const response = await fetch("/api/streamer/additional-rewards", {
+        credentials: "include",
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setAdditionalRewards(data);
+        logger.info("[AdditionalRewards] Fetched additional rewards", { count: data.length });
+      }
+    } catch {
+      logger.error("Failed to fetch additional rewards");
+    }
+  }, []);
+
   // targetRewardIdを引数で受け取ることで、保存直後に最新のrewardIdで比較できる
   // 引数が省略された場合はselectedRewardIdを使用（初期ロード時など）
   const fetchEventSubStatus = useCallback(async (targetRewardId?: string) => {
@@ -157,6 +188,11 @@ export default function ChannelPointSettings({
     fetchRewards();
     // 初期ロード時はpropsのcurrentRewardIdを使用
     fetchEventSubStatus(currentRewardId || undefined);
+    // Fetch additional rewards if main reward is set
+    // メイン報酬が設定されている場合は追加報酬も取得
+    if (currentRewardId) {
+      fetchAdditionalRewards();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -263,6 +299,117 @@ export default function ChannelPointSettings({
   };
 
   /**
+   * Add an additional reward
+   * 追加報酬を登録する
+   */
+  const handleAddAdditionalReward = async () => {
+    if (!selectedAdditionalRewardId) return;
+
+    setAddingAdditional(true);
+    setMessage("");
+
+    try {
+      const selectedReward = rewards.find((r) => r.id === selectedAdditionalRewardId);
+      const rewardName = selectedReward?.title || "";
+
+      // 1. Register EventSub subscription for the additional reward
+      // 追加報酬用のEventSubサブスクリプションを登録
+      const eventSubResponse = await fetch("/api/twitch/eventsub/subscribe", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rewardId: selectedAdditionalRewardId,
+          isAdditional: true,
+        }),
+      });
+
+      const eventSubData = await eventSubResponse.json();
+
+      if (!eventSubData.success && !eventSubData.warning) {
+        setMessage(eventSubData.error || t("additionalRewards.addFailed"));
+        setAddingAdditional(false);
+        return;
+      }
+
+      // 2. Save to DB
+      // DBに保存
+      const dbResponse = await fetch("/api/streamer/additional-rewards", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rewardId: selectedAdditionalRewardId,
+          rewardName: rewardName,
+        }),
+      });
+
+      const dbData = await dbResponse.json();
+
+      if (!dbResponse.ok) {
+        setMessage(dbData.error || t("additionalRewards.addFailed"));
+        setAddingAdditional(false);
+        return;
+      }
+
+      // 3. Update state
+      // 状態を更新
+      setMessage(t("additionalRewards.addSuccess"));
+      setSelectedAdditionalRewardId("");
+      await fetchAdditionalRewards();
+      await fetchEventSubStatus(selectedRewardId);
+
+    } catch {
+      setMessage(t("messages.errorOccurred"));
+    } finally {
+      setAddingAdditional(false);
+    }
+  };
+
+  /**
+   * Remove an additional reward
+   * 追加報酬を削除する
+   */
+  const handleRemoveAdditionalReward = async (rewardId: string) => {
+    if (!window.confirm(t("additionalRewards.removeConfirm"))) {
+      return;
+    }
+
+    setMessage("");
+
+    try {
+      // 1. Delete EventSub subscription for this reward
+      // この報酬のEventSubサブスクリプションを削除
+      await fetch(`/api/twitch/eventsub/subscribe?rewardId=${rewardId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      // 2. Delete from DB
+      // DBから削除
+      const dbResponse = await fetch(`/api/streamer/additional-rewards?rewardId=${rewardId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      if (!dbResponse.ok) {
+        const dbData = await dbResponse.json();
+        setMessage(dbData.error || t("additionalRewards.removeFailed"));
+        return;
+      }
+
+      // 3. Update state
+      // 状態を更新
+      setMessage(t("additionalRewards.removeSuccess"));
+      await fetchAdditionalRewards();
+      await fetchEventSubStatus(selectedRewardId);
+
+    } catch {
+      setMessage(t("messages.errorOccurred"));
+    }
+  };
+
+  /**
    * チャネルポイント連携を解除する
    * EventSubサブスクリプションを削除し、DBの設定をクリアする
    * Disconnect channel point integration by removing EventSub subscriptions and clearing DB settings
@@ -291,7 +438,14 @@ export default function ChannelPointSettings({
         // Continue to clear DB settings even if EventSub deletion fails
       }
 
-      // 2. DB設定をクリア（channel_point_reward_id と channel_point_reward_name を null に）
+      // 2. 追加報酬をDBから全て削除
+      // Delete all additional rewards from DB
+      await fetch("/api/streamer/additional-rewards?deleteAll=true", {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      // 3. DB設定をクリア（channel_point_reward_id と channel_point_reward_name を null に）
       // Clear DB settings by setting channel_point_reward_id and channel_point_reward_name to null
       const settingsResponse = await fetch("/api/streamer/settings", {
         method: "POST",
@@ -310,12 +464,13 @@ export default function ChannelPointSettings({
         return;
       }
 
-      // 3. UIの状態をリセット
+      // 4. UIの状態をリセット
       // Reset UI state after successful disconnection
       setSelectedRewardId("");
       setSelectedRewardName("");
       setEventSubStatus("none");
       setSubscriptions([]);
+      setAdditionalRewards([]);
       setMessage(t("messages2.disconnectSuccess"));
 
     } catch (err) {
@@ -484,6 +639,79 @@ export default function ChannelPointSettings({
             )}
            </div>
 
+           {/* Additional Rewards Section - Only shown when main reward is active */}
+           {/* 追加報酬セクション - メイン報酬がアクティブな場合のみ表示 */}
+           {selectedRewardId && eventSubStatus === "active" && (
+             <div className="rounded-lg bg-gray-700/50 p-4">
+               <h3 className="mb-2 text-sm font-medium text-gray-300">
+                 {t("additionalRewards.title")}
+               </h3>
+               <p className="mb-3 text-xs text-gray-400">
+                 {t("additionalRewards.description")}
+               </p>
+
+               {/* List of additional rewards */}
+               {/* 追加報酬一覧 */}
+               {additionalRewards.length > 0 && (
+                 <div className="mb-3 space-y-2">
+                   {additionalRewards.map((reward) => (
+                     <div
+                       key={reward.id}
+                       className="flex items-center justify-between rounded bg-gray-600/50 px-3 py-2"
+                     >
+                       <div>
+                         <span className="text-sm text-gray-200">
+                           {reward.reward_name || reward.reward_id.slice(0, 8) + "..."}
+                         </span>
+                         <span className="ml-2 text-xs text-gray-400">
+                           ({reward.reward_id.slice(0, 8)}...)
+                         </span>
+                       </div>
+                       <button
+                         onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
+                         className="text-xs text-red-400 hover:text-red-300"
+                       >
+                         {t("additionalRewards.remove")}
+                       </button>
+                     </div>
+                   ))}
+                 </div>
+               )}
+
+               {/* Add new additional reward */}
+               {/* 新しい追加報酬を追加 */}
+               <div className="flex items-center gap-2">
+                 <select
+                   value={selectedAdditionalRewardId}
+                   onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
+                   className="flex-1 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200"
+                 >
+                   <option value="">{t("additionalRewards.selectToAdd")}</option>
+                   {rewards
+                     .filter((r) =>
+                       // Exclude main reward and already added additional rewards
+                       // メイン報酬と既に追加済みの追加報酬を除外
+                       r.id !== selectedRewardId &&
+                       !additionalRewards.some((ar) => ar.reward_id === r.id)
+                     )
+                     .map((reward) => (
+                       <option key={reward.id} value={reward.id}>
+                         {reward.title} ({reward.cost} {t("options.points")})
+                         {!reward.is_enabled && t("options.disabled")}
+                       </option>
+                     ))}
+                 </select>
+                 <button
+                   onClick={handleAddAdditionalReward}
+                   disabled={addingAdditional || !selectedAdditionalRewardId}
+                   className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+                 >
+                   {addingAdditional ? tCommon("loading") : tCommon("add")}
+                 </button>
+               </div>
+             </div>
+           )}
+
            <div className="flex flex-wrap items-center gap-4">
              <button
                onClick={handleSave}
@@ -493,7 +721,7 @@ export default function ChannelPointSettings({
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
              <button
-               onClick={() => { fetchRewards(); fetchEventSubStatus(); }}
+               onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); }}
                className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
              >
                {tCommon("refresh")}
@@ -514,7 +742,13 @@ export default function ChannelPointSettings({
                   className={
                     // Check if message is a success message by comparing with translated values
                     // 翻訳された値と比較して成功メッセージかどうかを確認
-                    [t("messages.rewardCreated"), t("messages.saveSuccess"), t("messages2.disconnectSuccess")].includes(message)
+                    [
+                      t("messages.rewardCreated"),
+                      t("messages.saveSuccess"),
+                      t("messages2.disconnectSuccess"),
+                      t("additionalRewards.addSuccess"),
+                      t("additionalRewards.removeSuccess"),
+                    ].includes(message)
                       ? "text-green-400"
                       : "text-red-400"
                   }
