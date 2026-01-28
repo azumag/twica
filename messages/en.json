@@ -79,6 +79,7 @@
       "errorOccurred": "An error occurred ({status})",
       "uploadLimited": "Upload feature is limited",
       "imageUsage": "Image usage: {usage} / {limit}",
+      "storageLimitReason": "Image Upload Storage Notice\n\nThe current image storage limit is 10MB per account. If you exceed the limit, please delete unnecessary images or consider using URLs to reference images stored on external services (URL references do not count toward the storage limit).\n\nWe are grateful that more users than expected are enjoying the service. This storage limit is a necessary measure to keep the service free. We appreciate your understanding. If we receive many requests for increased storage, we will consider introducing paid plans in the future.",
       "refreshing": "Refreshing",
       "imageUrlInvalidAspectRatio": "Image URL must be portrait (vertical) or square (current: {width}x{height})",
       "imageUrlResolutionExceeded": "Image URL resolution exceeds limit. Max width: 1920px, max height: 2682px (current: {width}x{height})",

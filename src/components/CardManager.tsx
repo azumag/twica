@@ -195,6 +195,8 @@ export default function CardManager({
   // Storage status for upload limits
   // アップロード制限用のストレージ状態
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  // ?アイコンクリックで容量制限の理由説明を表示するためのトグル状態
+  const [showStorageHelp, setShowStorageHelp] = useState(false);
   // Loading state for storage status refresh
   // ストレージ状態更新中のローディング状態
   const [storageLoading, setStorageLoading] = useState(false);
@@ -907,6 +909,15 @@ export default function CardManager({
           ) : (
             <div className="text-sm text-gray-400 flex items-center gap-2">
               <p>{t("messages.imageUsage", { usage: storageStatus.userUsageFormatted, limit: storageStatus.userLimitFormatted })}</p>
+              {/* ?アイコン: クリックで容量制限の理由を表示 */}
+              <button
+                type="button"
+                onClick={() => setShowStorageHelp((v) => !v)}
+                className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-500 text-gray-400 hover:text-gray-200 hover:border-gray-300 text-[10px] leading-none transition-colors"
+                aria-label={t("messages.uploadLimited")}
+              >
+                ?
+              </button>
               {storageLoading && (
                 <span className="inline-flex items-center gap-1 text-purple-400">
                   <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -917,6 +928,10 @@ export default function CardManager({
                 </span>
               )}
             </div>
+          )}
+          {/* 容量制限の説明テキスト: ?アイコンクリックで表示/非表示を切り替え */}
+          {showStorageHelp && !storageStatus.uploadDisabled && (
+            <p className="mt-2 text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message || t("messages.storageLimitReason")}</p>
           )}
         </div>
       )}
