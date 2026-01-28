@@ -1,0 +1,56 @@
+# Cloudflare Pages configuration for TwiCa
+# TwiCa用のCloudflare Pages設定
+#
+# This file configures the Cloudflare Workers runtime for the Next.js app
+# when deployed to Cloudflare Pages.
+#
+# このファイルはCloudflare Pagesにデプロイされた際の
+# Next.jsアプリのCloudflare Workersランタイムを設定します。
+
+name = "twica"
+compatibility_date = "2024-01-01"
+
+# Enable Node.js compatibility mode for crypto and other Node.js APIs
+# cryptoやその他のNode.js APIのためにNode.js互換モードを有効化
+compatibility_flags = ["nodejs_compat"]
+
+# KV Namespace binding for distributed rate limiting
+# 分散レート制限用のKV名前空間バインディング
+#
+# To create and bind KV namespaces:
+# KV名前空間の作成とバインドの手順:
+#
+# 1. Create the KV namespace:
+#    wrangler kv:namespace create "RATE_LIMIT_KV"
+#
+# 2. Copy the id from the output and paste below
+#    出力からidをコピーして以下に貼り付け
+#
+# 3. For preview/development, also create a preview namespace:
+#    wrangler kv:namespace create "RATE_LIMIT_KV" --preview
+#
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT_KV"
+# id = "your-kv-namespace-id"
+# preview_id = "your-preview-kv-namespace-id"
+
+# Environment variables are configured in Cloudflare Pages dashboard
+# 環境変数はCloudflare Pagesダッシュボードで設定
+#
+# Required environment variables:
+# 必要な環境変数:
+# - NEXT_PUBLIC_SUPABASE_URL
+# - NEXT_PUBLIC_SUPABASE_ANON_KEY
+# - NEXT_PUBLIC_TWITCH_CLIENT_ID
+# - NEXT_PUBLIC_APP_URL
+# - TWITCH_CLIENT_ID
+# - TWITCH_CLIENT_SECRET
+# - TWITCH_EVENTSUB_SECRET
+# - SUPABASE_SERVICE_ROLE_KEY
+# - R2_ENDPOINT
+# - R2_ACCESS_KEY_ID
+# - R2_SECRET_ACCESS_KEY
+# - R2_BUCKET_NAME
+# - R2_PUBLIC_URL
+# - CSRF_TOKEN_SALT
+# - NEXT_PUBLIC_SENTRY_DSN

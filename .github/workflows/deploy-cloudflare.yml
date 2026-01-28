@@ -1,0 +1,82 @@
+# Cloudflare Pages Deployment Workflow
+# Cloudflare Pagesデプロイメントワークフロー
+#
+# This workflow builds and deploys the Next.js app to Cloudflare Pages
+# using @cloudflare/next-on-pages.
+#
+# このワークフローは@cloudflare/next-on-pagesを使用して
+# Next.jsアプリをCloudflare Pagesにビルド・デプロイします。
+#
+# Prerequisites:
+# 前提条件:
+# 1. Create a Cloudflare Pages project named "twica"
+#    「twica」という名前のCloudflare Pagesプロジェクトを作成
+# 2. Set the following secrets in GitHub repository settings:
+#    GitHubリポジトリ設定で以下のシークレットを設定:
+#    - CLOUDFLARE_API_TOKEN: API token with Pages edit permissions
+#    - CLOUDFLARE_ACCOUNT_ID: Your Cloudflare account ID
+
+name: Deploy to Cloudflare Pages
+
+on:
+  # Uncomment to enable automatic deployment on push to main
+  # mainへのプッシュ時に自動デプロイを有効にするにはコメント解除
+  # push:
+  #   branches: [main]
+
+  # Manual trigger for testing
+  # テスト用の手動トリガー
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build with @cloudflare/next-on-pages
+        run: npm run pages:build
+        env:
+          # Build-time environment variables
+          # ビルド時の環境変数
+          NEXT_PUBLIC_VERSION: ${{ github.sha }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://dummy.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'dummy_anon_key' }}
+          NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID || 'dummy_client_id' }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || '' }}
+          # Server-side secrets (needed at build time for some configurations)
+          # サーバーサイドシークレット（一部の設定でビルド時に必要）
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID || 'dummy_client_id' }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET || 'dummy_client_secret' }}
+          TWITCH_EVENTSUB_SECRET: ${{ secrets.TWITCH_EVENTSUB_SECRET || 'dummy_eventsub_secret' }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'dummy_service_role_key' }}
+          # Sentry build integration
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG || 'azumaya' }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT || 'twica' }}
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: twica
+          directory: .vercel/output/static
+          # Uncomment to set the branch for preview deployments
+          # プレビューデプロイメント用のブランチを設定するにはコメント解除
+          # branch: ${{ github.head_ref || github.ref_name }}
