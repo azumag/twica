@@ -826,11 +826,12 @@ export default function ChannelPointSettings({
                        key={reward.id}
                        className="flex items-center justify-between rounded bg-gray-600/50 px-3 py-2"
                      >
-                       <div>
-                         <span className="text-sm text-gray-200">
+                       {/* テキストが長い場合にコンテナからはみ出さないようにする */}
+                       <div className="min-w-0 flex-1 overflow-hidden">
+                         <span className="text-sm text-gray-200 break-all">
                            {reward.reward_name || reward.reward_id.slice(0, 8) + "..."}
                          </span>
-                         <span className="ml-2 text-xs text-gray-400">
+                         <span className="ml-2 text-xs text-gray-400 whitespace-nowrap">
                            ({reward.reward_id.slice(0, 8)}...)
                          </span>
                        </div>
