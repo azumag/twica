@@ -36,34 +36,5 @@ export function handleBlobError(error: unknown, context: string, additionalInfo?
   return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
 }
 
-export async function uploadWithRetry(
-  fileName: string,
-  buffer: Buffer,
-  options: { access: 'public' } & { token?: string },
-  maxRetries: number = 3
-): Promise<{ url: string } | { error: string }> {
-  const { put } = await import('@vercel/blob')
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      // Cast options to PutBlobOptions to satisfy type requirements
-      const blob = await put(fileName, buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, options as Parameters<typeof put>[2])
-      return { url: blob.url }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-
-      const transientErrors = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'service unavailable', '503']
-      const isTransient = transientErrors.some(err => errorMessage.toLowerCase().includes(err.toLowerCase()))
-
-      if (!isTransient || attempt === maxRetries) {
-        throw error
-      }
-
-      const delay = Math.pow(2, attempt) * 1000
-      logger.warn(`Upload failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms:`, errorMessage)
-      await new Promise(resolve => setTimeout(resolve, delay))
-    }
-  }
-
-  throw new Error('Max retries exceeded')
-}
+// Note: uploadWithRetry function was removed - R2 upload with retry is now in r2-client.ts
+// 注意: uploadWithRetry関数は削除されました - R2アップロード（リトライ付き）はr2-client.tsにあります

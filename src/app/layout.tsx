@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-// Vercel Analytics - ユーザー行動とパフォーマンスデータを収集してVercel Dashboardで可視化
-import { Analytics } from "@vercel/analytics/next";
 // next-intl - 国際化サポートのプロバイダーとサーバーサイドユーティリティ
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
@@ -49,8 +48,15 @@ export default async function RootLayout({
             {children}
           </ErrorBoundary>
         </NextIntlClientProvider>
-        {/* Vercel Analytics: ページビューとWeb Vitalsを自動収集 */}
-        <Analytics />
+        {/* Cloudflare Web Analytics: ページビューを自動収集
+            環境変数NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKENが設定されている場合のみ有効 */}
+        {process.env.NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN && (
+          <Script
+            defer
+            src="https://static.cloudflareinsights.com/beacon.min.js"
+            data-cf-beacon={`{"token": "${process.env.NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN}"}`}
+          />
+        )}
       </body>
     </html>
   );
