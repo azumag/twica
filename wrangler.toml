@@ -50,24 +50,21 @@ preview_id = "6604c73cdb474d6a8a50b8afd4076d5f"
 # R2 Bucket bindings for image and sound storage
 # 画像・効果音ストレージ用のR2バケットバインディング
 #
-# To create R2 buckets:
-# R2バケットの作成手順:
+# Production uses twica-prod / twica-sound-prod,
+# preview (wrangler dev / --env preview) uses twica-dev / twica-sound-dev.
+# preview_bucket_name によりデプロイ環境ごとに自動切り替え。
 #
-# 1. Create the image bucket:
-#    wrangler r2 bucket create twica-images
-#
-# 2. Create the sound bucket:
-#    wrangler r2 bucket create twica-sounds
-#
-# Note: bucket_name values below must match actual R2 bucket names in your account
-# 注意: 以下のbucket_name値は実際のR2バケット名と一致させること
+# 本番環境は twica-prod / twica-sound-prod を使用し、
+# プレビュー環境は twica-dev / twica-sound-dev を使用する。
 [[r2_buckets]]
 binding = "R2_IMAGES"
-bucket_name = "twica-images"
+bucket_name = "twica-prod"
+preview_bucket_name = "twica-dev"
 
 [[r2_buckets]]
 binding = "R2_SOUNDS"
-bucket_name = "twica-sounds"
+bucket_name = "twica-sound-prod"
+preview_bucket_name = "twica-sound-dev"
 
 # Environment variables are configured in Cloudflare Pages dashboard
 # 環境変数はCloudflare Pagesダッシュボードで設定
@@ -92,3 +89,39 @@ bucket_name = "twica-sounds"
 # 注意: R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY は
 # Workers環境では不要（上記のネイティブバインディング経由でR2にアクセス）。
 # `next dev` でのローカル開発では引き続き必要。
+
+# ============================================================
+# Preview environment configuration
+# プレビュー環境設定
+# ============================================================
+#
+# Deployed as a separate Worker named "twica-preview" via:
+#   npm run workers:deploy:preview
+#
+# [env.preview] overrides (not merges) the top-level bindings,
+# so all KV and R2 bindings must be explicitly re-declared here.
+# [env.preview] はトップレベルのバインディングをマージではなく上書きするため、
+# KV・R2 すべてを明示的に再宣言する必要がある。
+#
+# compatibility_date, compatibility_flags, [assets] are inherited
+# from the top-level configuration automatically.
+# compatibility_date, compatibility_flags, [assets] はトップレベルから自動継承される。
+[env.preview]
+
+# KV Namespace for rate limiting in preview environment
+# プレビュー環境用レート制限KV名前空間（トップレベルの preview_id と同じ値）
+[[env.preview.kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "6604c73cdb474d6a8a50b8afd4076d5f"
+
+# R2 Bucket for image storage in preview environment (twica-dev)
+# プレビュー環境用画像ストレージR2バケット（twica-dev）
+[[env.preview.r2_buckets]]
+binding = "R2_IMAGES"
+bucket_name = "twica-dev"
+
+# R2 Bucket for sound effect storage in preview environment (twica-sound-dev)
+# プレビュー環境用効果音ストレージR2バケット（twica-sound-dev）
+[[env.preview.r2_buckets]]
+binding = "R2_SOUNDS"
+bucket_name = "twica-sound-dev"

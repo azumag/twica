@@ -16,6 +16,7 @@
     "workers:build": "npx opennextjs-cloudflare build",
     "workers:dev": "npx wrangler dev",
     "workers:deploy": "npx opennextjs-cloudflare deploy",
+    "workers:deploy:preview": "npx opennextjs-cloudflare deploy --env preview",
     "migrate:vercel-to-r2": "node scripts/migrate-vercel-blob-to-r2.js",
     "migrate:vercel-to-r2:dry": "node scripts/migrate-vercel-blob-to-r2.js --dry-run"
   },

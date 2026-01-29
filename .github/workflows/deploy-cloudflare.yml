@@ -1,32 +1,58 @@
-# Cloudflare Pages Deployment Workflow
-# Cloudflare Pagesデプロイメントワークフロー
+# Cloudflare Workers Deployment Workflow
+# Cloudflare Workersデプロイメントワークフロー
 #
-# This workflow builds and deploys the Next.js app to Cloudflare Pages
-# using @cloudflare/next-on-pages.
+# Automatically deploys the Next.js app to Cloudflare Workers
+# using OpenNext (@opennextjs/cloudflare).
 #
-# このワークフローは@cloudflare/next-on-pagesを使用して
-# Next.jsアプリをCloudflare Pagesにビルド・デプロイします。
+# OpenNext（@opennextjs/cloudflare）を使用して
+# Next.jsアプリをCloudflare Workersに自動デプロイする。
 #
-# Prerequisites:
-# 前提条件:
-# 1. Create a Cloudflare Pages project named "twica"
-#    「twica」という名前のCloudflare Pagesプロジェクトを作成
-# 2. Set the following secrets in GitHub repository settings:
-#    GitHubリポジトリ設定で以下のシークレットを設定:
-#    - CLOUDFLARE_API_TOKEN: API token with Pages edit permissions
+# - preview branch → twica-preview Worker (preview environment)
+# - main branch    → twica Worker (production environment, commented out by default)
+#
+# Prerequisites / 前提条件:
+#
+# 1. GitHub repository secrets (shared across environments):
+#    リポジトリレベルの Secrets（全環境共通）:
+#    - CLOUDFLARE_API_TOKEN: API token with Workers edit permissions
 #    - CLOUDFLARE_ACCOUNT_ID: Your Cloudflare account ID
+#
+# 2. GitHub Environments: Create "preview" and "production" environments
+#    in Settings → Environments, each with the following secrets:
+#    GitHub Environments: Settings → Environments で "preview" と "production" を作成し、
+#    それぞれに以下の Secrets を設定:
+#    - NEXT_PUBLIC_APP_URL          (e.g. preview: https://twica-preview.xxx.workers.dev)
+#    - NEXT_PUBLIC_SUPABASE_URL
+#    - NEXT_PUBLIC_SUPABASE_ANON_KEY
+#    - NEXT_PUBLIC_TWITCH_CLIENT_ID
 
-name: Deploy to Cloudflare Pages
+name: Deploy to Cloudflare Workers
 
 on:
-  # Uncomment to enable automatic deployment on push to main
-  # mainへのプッシュ時に自動デプロイを有効にするにはコメント解除
-  # push:
-  #   branches: [main]
+  push:
+    branches: [preview]
+    # Uncomment to also auto-deploy production on push to main
+    # mainへのプッシュ時にも本番自動デプロイするにはコメント解除
+    # branches: [main, preview]
 
-  # Manual trigger for testing
-  # テスト用の手動トリガー
+  # Manual trigger allows deploying any branch to either environment
+  # 手動トリガーで任意のブランチをどちらの環境にもデプロイ可能
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "preview"
+        type: choice
+        options:
+          - preview
+          - production
+
+# Prevent concurrent deployments to the same environment
+# 同一環境への同時デプロイを防止
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -35,7 +61,27 @@ jobs:
       contents: read
       deployments: write
 
+    # GitHub Environment を動的に選択することで、環境ごとの Secrets が自動的に解決される。
+    # workflow_dispatch の場合は手動選択、push の場合はブランチ名で判定。
+    # Dynamically select the GitHub Environment so that per-environment
+    # Secrets are resolved automatically. workflow_dispatch uses the manual
+    # selection; push events are determined by branch name.
+    environment: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+
     steps:
+      # デプロイコマンドを環境に応じて決定する。
+      # preview → `workers:deploy:preview`、production → `workers:deploy`。
+      # Determine the deploy command based on the resolved environment.
+      # preview → `workers:deploy:preview`, production → `workers:deploy`.
+      - name: Determine deploy command
+        id: env
+        run: |
+          if [ "${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}" = "preview" ]; then
+            echo "deploy_cmd=npm run workers:deploy:preview" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_cmd=npm run workers:deploy" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -48,35 +94,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build with @cloudflare/next-on-pages
-        run: npm run pages:build
+      # NEXT_PUBLIC_* 変数はビルド時にクライアントJSにインライン化されるため、
+      # ここで設定する必要がある。各値は GitHub Environment の Secrets から取得され、
+      # preview / production で異なる値が自動的に使われる。
+      # サーバー側のシークレットは Cloudflare Worker Secrets として
+      # wrangler / ダッシュボード経由で設定済みのため、ビルド時には不要。
+      #
+      # NEXT_PUBLIC_* variables are inlined into client JS at build time,
+      # so they must be set here. Values are pulled from the GitHub Environment
+      # Secrets, automatically resolving to the correct per-environment values.
+      # Server-side secrets are configured as Cloudflare Worker Secrets
+      # via wrangler / dashboard and are NOT needed at build time.
+      - name: Build
+        run: npm run workers:build
         env:
-          # Build-time environment variables
-          # ビルド時の環境変数
-          NEXT_PUBLIC_VERSION: ${{ github.sha }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://dummy.supabase.co' }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'dummy_anon_key' }}
-          NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID || 'dummy_client_id' }}
-          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
-          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || '' }}
-          # Server-side secrets (needed at build time for some configurations)
-          # サーバーサイドシークレット（一部の設定でビルド時に必要）
-          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID || 'dummy_client_id' }}
-          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET || 'dummy_client_secret' }}
-          TWITCH_EVENTSUB_SECRET: ${{ secrets.TWITCH_EVENTSUB_SECRET || 'dummy_eventsub_secret' }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'dummy_service_role_key' }}
-          # Sentry build integration
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG || 'azumaya' }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT || 'twica' }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID }}
 
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: twica
-          directory: .vercel/output/static
-          # Uncomment to set the branch for preview deployments
-          # プレビューデプロイメント用のブランチを設定するにはコメント解除
-          # branch: ${{ github.head_ref || github.ref_name }}
+      # Wrangler は CLOUDFLARE_API_TOKEN 環境変数で認証する。
+      # Wrangler authenticates via CLOUDFLARE_API_TOKEN env var.
+      - name: Deploy
+        run: ${{ steps.env.outputs.deploy_cmd }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
