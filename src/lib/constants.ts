@@ -148,7 +148,8 @@ export const CSRF_CONFIG = {
   ALLOW_LOCAL_ORIGINS: process.env.CSRF_ALLOW_ALL_LOCAL === 'true' && process.env.NODE_ENV === 'development',
   ALLOWED_ORIGINS: (() => {
     const origins: string[] = []
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    // Cloudflare Workers のローカル開発サーバーはポート 8787 を使用
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:8787'
 
     try {
       const url = new URL(appUrl)
@@ -167,13 +168,11 @@ export const CSRF_CONFIG = {
       }
 
       // 開発環境では localhost と 127.0.0.1 を追加
-      // NEXT_PUBLIC_APP_URL が ngrok 等の外部 URL でも localhost でアクセスできるようにする
       if (process.env.NODE_ENV === 'development') {
         origins.push(`http://127.0.0.1:${port}`)
         origins.push(`http://[::1]:${port}`)
-        // localhost も追加（ポート 3000, 3001 など一般的なポート）
-        origins.push('http://localhost:3000')
-        origins.push('http://localhost:3001')
+        // Cloudflare Workers のローカル開発サーバーのデフォルトポート
+        origins.push('http://localhost:8787')
         origins.push(`http://localhost:${port}`)
       }
     } catch (error) {
@@ -509,7 +508,7 @@ export const UI_STRINGS = {
       ALL_REWARDS: '全報酬',
       EVENTSUB_STATUS: 'EventSub ステータス',
       NO_SUBSCRIPTIONS: 'EventSubサブスクリプションがありません。保存ボタンを押して登録してください。',
-      LOCAL_TUNNEL_NOTE: '※ ローカル環境ではngrokなどのトンネルが必要です',
+      LOCAL_TUNNEL_NOTE: '※ EventSubはローカル環境では利用できません',
     },
     BUTTONS: {
       CREATING: '作成中...',

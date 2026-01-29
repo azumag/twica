@@ -38,7 +38,8 @@ export async function GET(request: NextRequest) {
     return handleAuthError(
       new Error('Missing OAuth parameters'),
       'missing_params',
-      { code: !!code, state: !!state }
+      { code: !!code, state: !!state },
+      { baseUrl }
     )
   }
 
@@ -50,7 +51,8 @@ export async function GET(request: NextRequest) {
     return handleAuthError(
       new Error('Invalid state parameter'),
       'invalid_state',
-      { storedState: !!storedState, stateMatch: storedState === state }
+      { storedState: !!storedState, stateMatch: storedState === state },
+      { baseUrl }
     )
   }
 
@@ -66,7 +68,8 @@ export async function GET(request: NextRequest) {
       return handleAuthError(
         error,
         'twitch_auth_failed',
-        { code: code.substring(0, 10) + '...' }
+        { code: code.substring(0, 10) + '...' },
+        { baseUrl }
       )
     }
 
@@ -77,7 +80,8 @@ export async function GET(request: NextRequest) {
       return handleAuthError(
         error,
         'twitch_user_fetch_failed',
-        { twitchUserId: tokens.access_token.substring(0, 10) + '...' }
+        { twitchUserId: tokens.access_token.substring(0, 10) + '...' },
+        { baseUrl }
       )
     }
 
@@ -138,7 +142,8 @@ export async function GET(request: NextRequest) {
       return handleAuthError(
         error,
         'database_error',
-        { operation: 'upsert_user', twitchUserId: twitchUser.id }
+        { operation: 'upsert_user', twitchUserId: twitchUser.id },
+        { baseUrl }
       )
     }
 
@@ -158,7 +163,8 @@ export async function GET(request: NextRequest) {
         return handleAuthError(
           error,
           'database_error',
-          { operation: 'upsert_streamer', twitchUserId: twitchUser.id }
+          { operation: 'upsert_streamer', twitchUserId: twitchUser.id },
+          { baseUrl }
         )
       }
     }
@@ -267,6 +273,6 @@ export async function GET(request: NextRequest) {
 
     return response
   } catch (error) {
-    return handleAuthError(error, 'unknown_error')
+    return handleAuthError(error, 'unknown_error', undefined, { baseUrl })
   }
 }

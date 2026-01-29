@@ -8,6 +8,7 @@ import { API_ROUTES } from '@/lib/constants'
 import { logger } from '@/lib/logger'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { randomBytesHex } from '@/lib/crypto-utils'
+import { getBaseUrl } from '@/lib/url-utils'
 
 // 有効な追加スコープのリスト（セキュリティ: 許可されたスコープのみ受け付ける）
 // List of valid additional scopes (security: only accept allowed scopes)
@@ -49,7 +50,9 @@ export async function POST(request: Request) {
     // Use Web Crypto API for random bytes generation (Cloudflare Workers compatible)
     // Web Crypto APIを使用してランダムバイトを生成（Cloudflare Workers互換）
     const state = randomBytesHex(32)
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    // リクエストの host ヘッダーから動的にベースURLを取得
+    // Cloudflare Workers では NEXT_PUBLIC_APP_URL がビルド時にインライン化されるため
+    const baseUrl = getBaseUrl(request)
     const redirectUri = `${baseUrl}${API_ROUTES.AUTH_TWITCH_CALLBACK}`
 
     // 追加スコープがある場合はそれを含めた認証URLを生成

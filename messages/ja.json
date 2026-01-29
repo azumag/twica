@@ -336,7 +336,7 @@
       "allRewards": "全報酬",
       "eventsubStatus": "EventSub ステータス",
       "noSubscriptions": "EventSubサブスクリプションがありません。保存ボタンを押して登録してください。",
-      "localTunnelNote": "※ ローカル環境ではngrokなどのトンネルが必要です"
+      "localTunnelNote": "※ EventSubはローカル環境では利用できません"
     },
     "buttons": {
       "createReward": "TwiCa用報酬を作成（100ポイント）",

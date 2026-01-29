@@ -3,9 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node scripts/start-dev.js",
+    "dev": "npx wrangler dev",
     "dev:next": "TURBOPACK=0 next dev",
-    "dev:local": "TURBOPACK=0 next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -47,7 +46,7 @@
     "eslint-config-next": "16.1.6",
     "happy-dom": "^20.3.3",
     "jsdom": "^27.0.1",
-    "ngrok": "^5.0.0-beta.2",
+
     "supabase": "^2.72.8",
     "tailwindcss": "^4",
     "typescript": "^5",
