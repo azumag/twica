@@ -12,7 +12,7 @@ export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_SUPABASE_URL', required: true },
   { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', required: true },
   { name: 'SUPABASE_SERVICE_ROLE_KEY', required: true },
-  { name: 'BLOB_READ_WRITE_TOKEN', required: true },
+  // BLOB_READ_WRITE_TOKEN は Vercel Blob 用で、Cloudflare R2 ネイティブバインディング移行後は不要
   { name: 'CSRF_TOKEN_SALT', required: true },
 ]
 
