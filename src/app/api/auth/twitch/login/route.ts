@@ -3,14 +3,18 @@ import { getTwitchAuthUrl } from '@/lib/twitch/auth'
 import { cookies } from 'next/headers'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { randomUUID } from 'crypto'
 import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
 
+// Web Crypto APIのcrypto.randomUUID()を使用（Cloudflare Workers互換）
+// Using Web Crypto API crypto.randomUUID() for Cloudflare Workers compatibility
+
 export async function GET(request: Request) {
-  const requestId = randomUUID()
+  // Use Web Crypto API (Cloudflare Workers compatible)
+  // Web Crypto APIを使用（Cloudflare Workers互換）
+  const requestId = crypto.randomUUID()
   setRequestContext(requestId, '/api/auth/twitch/login')
   clearUserContext()
 
@@ -38,8 +42,9 @@ export async function GET(request: Request) {
     const baseUrl = getBaseUrl(request)
     const redirectUri = `${baseUrl}/api/auth/twitch/callback`
 
-    // Generate state for CSRF protection
-    const state = randomUUID()
+    // Generate state for CSRF protection (Web Crypto API)
+    // CSRF保護用のstateを生成（Web Crypto API）
+    const state = crypto.randomUUID()
 
     // Store state in cookie
     const cookieStore = await cookies()

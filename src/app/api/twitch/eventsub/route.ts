@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin";
-import crypto from "crypto";
 import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
@@ -17,28 +16,62 @@ const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
 
-// Verify Twitch EventSub signature using HMAC-SHA256
-// Twitch EventSubの署名をHMAC-SHA256で検証
-function verifyTwitchSignature(
+/**
+ * Verify Twitch EventSub signature using HMAC-SHA256 (Web Crypto API)
+ * Twitch EventSubの署名をHMAC-SHA256で検証（Web Crypto API使用）
+ *
+ * Web Crypto APIを使用することでCloudflare Workers/Edge Runtimeでも動作可能
+ * This uses Web Crypto API for compatibility with Cloudflare Workers/Edge Runtime
+ */
+async function verifyTwitchSignature(
   messageId: string,
   timestamp: string,
   body: string,
   signature: string
-): boolean {
+): Promise<boolean> {
   const secret = process.env.TWITCH_EVENTSUB_SECRET;
   if (!secret || !signature) return false;
 
-  const message = messageId + timestamp + body;
-  const expectedSignature = "sha256=" + crypto
-    .createHmac("sha256", secret)
-    .update(message)
-    .digest("hex");
-
   try {
-    return crypto.timingSafeEqual(
-      Buffer.from(expectedSignature),
-      Buffer.from(signature)
+    const encoder = new TextEncoder();
+    const message = messageId + timestamp + body;
+
+    // Import the secret as an HMAC key
+    // シークレットをHMACキーとしてインポート
+    const keyData = encoder.encode(secret);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
     );
+
+    // Generate the HMAC signature
+    // HMAC署名を生成
+    const messageData = encoder.encode(message);
+    const signatureBuffer = await crypto.subtle.sign('HMAC', key, messageData);
+    const signatureArray = Array.from(new Uint8Array(signatureBuffer));
+    const expectedSignature = 'sha256=' + signatureArray
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+
+    // Constant-time comparison to prevent timing attacks
+    // タイミング攻撃を防ぐための定数時間比較
+    if (expectedSignature.length !== signature.length) {
+      return false;
+    }
+
+    let isValid = true;
+    for (let i = 0; i < expectedSignature.length; i++) {
+      if (expectedSignature[i] !== signature[i]) {
+        isValid = false;
+        // Don't break early to maintain constant time
+        // 定数時間を維持するため早期breakしない
+      }
+    }
+
+    return isValid;
   } catch {
     return false;
   }
@@ -58,7 +91,9 @@ export async function POST(request: NextRequest) {
   const messageType = request.headers.get("twitch-eventsub-message-type") || "";
   const signature = request.headers.get("twitch-eventsub-message-signature") || "";
 
-  if (!verifyTwitchSignature(messageId, timestamp, body, signature)) {
+  // Verify signature asynchronously (Web Crypto API is async)
+  // 署名を非同期で検証（Web Crypto APIは非同期）
+  if (!await verifyTwitchSignature(messageId, timestamp, body, signature)) {
     return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
   }
 

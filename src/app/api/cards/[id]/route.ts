@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { del } from "@vercel/blob";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -157,8 +156,10 @@ export async function PUT(
         logger.warn(`Failed to remove old image from DB: ${oldImageUrl}`, dbError);
       }
 
-      // Delete from storage (R2 or Vercel Blob)
-      // ストレージから削除（R2またはVercel Blob）
+      // Delete from storage (R2)
+      // ストレージから削除（R2）
+      // Note: Vercel Blob deletion removed - only R2 is supported now
+      // 注意: Vercel Blob削除を削除 - R2のみサポート
       try {
         if (isR2Url(oldImageUrl)) {
           const key = getR2KeyFromUrl(oldImageUrl);
@@ -167,8 +168,9 @@ export async function PUT(
             logger.info(`Deleted old R2 image on update: ${oldImageUrl}`);
           }
         } else if (isVercelBlobUrl(oldImageUrl)) {
-          await del(oldImageUrl);
-          logger.info(`Deleted old Vercel Blob image on update: ${oldImageUrl}`);
+          // Vercel Blob URLs are no longer actively deleted
+          // Migration to R2 should have moved these files
+          logger.warn(`Vercel Blob URL found but deletion skipped: ${oldImageUrl}`);
         }
       } catch (storageError) {
         logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
@@ -269,9 +271,10 @@ export async function DELETE(
             logger.info(`Deleted R2 image: ${card.image_url}`);
           }
         } else if (isVercelBlobUrl(card.image_url)) {
-          // Vercel Blobから削除（既存データ用）
-          await del(card.image_url);
-          logger.info(`Deleted Vercel Blob image: ${card.image_url}`);
+          // Vercel Blob URLs are no longer actively deleted
+          // Migration to R2 should have moved these files
+          // Vercel Blob URLは削除しない（R2移行済みのはず）
+          logger.warn(`Vercel Blob URL found but deletion skipped: ${card.image_url}`);
         }
       } catch (storageError) {
         // Log but don't fail the card deletion if storage deletion fails

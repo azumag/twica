@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createHash } from 'crypto';
 import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { handleApiError, handleBlobError } from '@/lib/error-handler';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
@@ -8,6 +7,7 @@ import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } f
 import { logger } from '@/lib/logger';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client';
+import { sha256Prefix } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
 
 interface ValidateRequestResult {
@@ -146,15 +146,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // ファイル名生成: sound_{userPrefix}_{uniqueSuffix}.{ext}
     // "sound_"プレフィックスで画像ファイルと区別
-    const userPrefix = createHash('sha256')
-      .update(session!.twitchUserId)
-      .digest('hex')
-      .substring(0, 8);
-
-    const uniqueSuffix = createHash('sha256')
-      .update(`${session!.twitchUserId}-sound-${Date.now()}`)
-      .digest('hex')
-      .substring(0, 8);
+    // Web Crypto APIを使用（Cloudflare Workers互換）
+    const userPrefix = await sha256Prefix(session!.twitchUserId);
+    const uniqueSuffix = await sha256Prefix(`${session!.twitchUserId}-sound-${Date.now()}`);
 
     fileName = `sound_${userPrefix}_${uniqueSuffix}.${ext}`;
 
@@ -235,10 +229,8 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
 
     // ファイル名からユーザープレフィックスを検証
     // 自分のファイルのみ削除可能にするためのセキュリティチェック
-    const userPrefix = createHash('sha256')
-      .update(session!.twitchUserId)
-      .digest('hex')
-      .substring(0, 8);
+    // Web Crypto APIを使用（Cloudflare Workers互換）
+    const userPrefix = await sha256Prefix(session!.twitchUserId);
 
     // "sound_"プレフィックス + ユーザープレフィックスの形式を検証
     if (!fileName.startsWith(`sound_${userPrefix}_`)) {

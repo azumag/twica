@@ -7,7 +7,7 @@ import { getTwitchAuthUrl, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
 import { API_ROUTES } from '@/lib/constants'
 import { logger } from '@/lib/logger'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
-import { randomBytes } from 'crypto'
+import { randomBytesHex } from '@/lib/crypto-utils'
 
 // 有効な追加スコープのリスト（セキュリティ: 許可されたスコープのみ受け付ける）
 // List of valid additional scopes (security: only accept allowed scopes)
@@ -46,7 +46,9 @@ export async function POST(request: Request) {
     await deleteTwitchTokens(session.twitchUserId)
     logger.info(`Deleted Twitch tokens for user: ${session.twitchUserId}`)
 
-    const state = randomBytes(32).toString('hex')
+    // Use Web Crypto API for random bytes generation (Cloudflare Workers compatible)
+    // Web Crypto APIを使用してランダムバイトを生成（Cloudflare Workers互換）
+    const state = randomBytesHex(32)
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
     const redirectUri = `${baseUrl}${API_ROUTES.AUTH_TWITCH_CALLBACK}`
 

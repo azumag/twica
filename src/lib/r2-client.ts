@@ -1,132 +1,55 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+/**
+ * R2 Client - Cloudflare R2 Native Bindings with S3 SDK Fallback
+ * Cloudflare R2ネイティブバインディング（S3 SDKフォールバック付き）
+ *
+ * In Cloudflare Workers environment, uses native R2 bindings (zero SDK overhead).
+ * In local development (`next dev`), falls back to @aws-sdk/client-s3 via
+ * environment variables (R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY).
+ *
+ * Cloudflare Workers環境ではネイティブR2バインディングを使用（SDKオーバーヘッドゼロ）。
+ * ローカル開発（`next dev`）では環境変数経由で@aws-sdk/client-s3にフォールバック。
+ *
+ * See: https://github.com/azumag/twica/issues/235
+ */
+
 import { logger } from './logger';
 
 /**
- * R2 Client Configuration
- * Cloudflare R2はS3互換APIを提供するため、AWS SDKを使用
+ * Minimal R2Bucket interface matching Cloudflare Workers R2 API.
+ * Avoids requiring @cloudflare/workers-types in tsconfig.
+ * Cloudflare Workers R2 APIの最小限のインターフェース定義。
+ * tsconfigに@cloudflare/workers-typesを要求しないようにする。
+ */
+interface R2BucketLike {
+  put(key: string, value: ArrayBuffer | ArrayBufferView | string | ReadableStream | Blob, options?: { httpMetadata?: { contentType?: string } }): Promise<unknown>;
+  delete(key: string | string[]): Promise<void>;
+}
+
+/**
+ * Get a native R2 bucket binding from Cloudflare Workers environment.
+ * Returns null when not running in Workers (e.g. local `next dev`).
  *
- * 画像用環境変数:
- * - R2_ENDPOINT: R2エンドポイントURL (例: https://<account_id>.r2.cloudflarestorage.com)
- * - R2_ACCESS_KEY_ID: R2アクセスキーID
- * - R2_SECRET_ACCESS_KEY: R2シークレットアクセスキー
- * - R2_BUCKET_NAME: R2バケット名
- * - R2_PUBLIC_URL: R2パブリックURL (例: https://pub-xxx.r2.dev または カスタムドメイン)
- *
- * 効果音用環境変数（すべて必須）:
- * - R2_SOUND_ACCESS_KEY_ID: 効果音バケット用アクセスキーID
- * - R2_SOUND_SECRET_ACCESS_KEY: 効果音バケット用シークレットアクセスキー
- * - R2_SOUND_BUCKET_NAME: 効果音バケット名
- * - R2_SOUND_PUBLIC_URL: 効果音バケットのパブリックURL
+ * Cloudflare Workers環境からネイティブR2バケットバインディングを取得。
+ * Workers以外の環境（例: ローカル`next dev`）ではnullを返す。
  */
-
-// R2クライアントをシングルトンパターンで管理
-// リクエストごとにクライアントを作成するとコストがかかるため
-let r2ClientInstance: S3Client | null = null;
-// 効果音バケット用の別クライアント（別アカウント/別認証情報に対応）
-let r2SoundClientInstance: S3Client | null = null;
-
-/**
- * R2クライアントを取得（シングルトン）
- * 初回呼び出し時にクライアントを初期化し、以降は同じインスタンスを返す
- */
-export function getR2Client(): S3Client {
-  if (r2ClientInstance) {
-    return r2ClientInstance;
+async function getR2Binding(bindingName: 'R2_IMAGES' | 'R2_SOUNDS'): Promise<R2BucketLike | null> {
+  try {
+    // Dynamic import to avoid bundling @opennextjs/cloudflare in local dev
+    // ローカル開発時に@opennextjs/cloudflareをバンドルしないよう動的インポート
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare');
+    const ctx = await getCloudflareContext({ async: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const binding = (ctx.env as any)[bindingName] as R2BucketLike | undefined;
+    return binding ?? null;
+  } catch {
+    // Not running in Cloudflare Workers environment
+    // Cloudflare Workers環境では実行されていない
+    return null;
   }
-
-  const endpoint = process.env.R2_ENDPOINT;
-  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-
-  if (!endpoint || !accessKeyId || !secretAccessKey) {
-    throw new Error('Missing R2 environment variables: R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY');
-  }
-
-  r2ClientInstance = new S3Client({
-    region: 'auto',
-    endpoint,
-    credentials: {
-      accessKeyId,
-      secretAccessKey,
-    },
-  });
-
-  return r2ClientInstance;
 }
 
 /**
- * R2バケット名を取得（画像用）
- */
-export function getR2Bucket(): string {
-  const bucket = process.env.R2_BUCKET_NAME;
-  if (!bucket) {
-    throw new Error('Missing R2_BUCKET_NAME environment variable');
-  }
-  return bucket;
-}
-
-/**
- * 効果音バケット用R2クライアントを取得（シングルトン）
- * エンドポイントは共通、認証情報のみ別
- * @throws 必要な環境変数が未設定の場合にエラー
- */
-export function getR2SoundClient(): S3Client {
-  if (r2SoundClientInstance) {
-    return r2SoundClientInstance;
-  }
-
-  // エンドポイントは画像バケットと共通
-  const endpoint = process.env.R2_ENDPOINT;
-  const accessKeyId = process.env.R2_SOUND_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.R2_SOUND_SECRET_ACCESS_KEY;
-
-  if (!endpoint) {
-    throw new Error('Missing R2_ENDPOINT environment variable');
-  }
-  if (!accessKeyId || !secretAccessKey) {
-    throw new Error('Missing R2 sound environment variables: R2_SOUND_ACCESS_KEY_ID, R2_SOUND_SECRET_ACCESS_KEY');
-  }
-
-  r2SoundClientInstance = new S3Client({
-    region: 'auto',
-    endpoint,
-    credentials: {
-      accessKeyId,
-      secretAccessKey,
-    },
-  });
-
-  return r2SoundClientInstance;
-}
-
-/**
- * R2効果音バケット名を取得
- * 画像バケットとは別に管理するため、専用の環境変数が必須
- * @throws R2_SOUND_BUCKET_NAMEが未設定の場合にエラー
- */
-export function getR2SoundBucket(): string {
-  const soundBucket = process.env.R2_SOUND_BUCKET_NAME;
-  if (!soundBucket) {
-    throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
-  }
-  return soundBucket;
-}
-
-/**
- * 効果音バケットのパブリックURLを取得
- * @throws R2_SOUND_PUBLIC_URLが未設定の場合にエラー
- */
-export function getR2SoundPublicUrl(): string {
-  const publicUrl = process.env.R2_SOUND_PUBLIC_URL;
-  if (!publicUrl) {
-    throw new Error('Missing R2_SOUND_PUBLIC_URL environment variable');
-  }
-  // 末尾のスラッシュを除去して統一
-  return publicUrl.replace(/\/$/, '');
-}
-
-/**
- * R2パブリックURLを取得
+ * R2パブリックURLを取得（画像用）
  */
 export function getR2PublicUrl(): string {
   const publicUrl = process.env.R2_PUBLIC_URL;
@@ -138,7 +61,74 @@ export function getR2PublicUrl(): string {
 }
 
 /**
- * R2にファイルをアップロード
+ * 効果音バケットのパブリックURLを取得
+ */
+export function getR2SoundPublicUrl(): string {
+  const publicUrl = process.env.R2_SOUND_PUBLIC_URL;
+  if (!publicUrl) {
+    throw new Error('Missing R2_SOUND_PUBLIC_URL environment variable');
+  }
+  // 末尾のスラッシュを除去して統一
+  return publicUrl.replace(/\/$/, '');
+}
+
+// ============================================================================
+// S3 SDK Fallback for local development (`next dev`)
+// ローカル開発（`next dev`）用のS3 SDKフォールバック
+// ============================================================================
+
+/**
+ * Lazily import S3 SDK only for local development.
+ * Wrapped in a function to avoid loading SDK in Workers environment.
+ * ローカル開発時のみS3 SDKを遅延インポート。
+ * Workers環境でSDKを読み込まないように関数でラップ。
+ */
+async function s3Upload(bucket: string, key: string, body: Buffer | Uint8Array, contentType: string, clientType: 'images' | 'sounds'): Promise<void> {
+  const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+
+  const endpoint = process.env.R2_ENDPOINT;
+  const accessKeyId = clientType === 'sounds'
+    ? process.env.R2_SOUND_ACCESS_KEY_ID
+    : process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = clientType === 'sounds'
+    ? process.env.R2_SOUND_SECRET_ACCESS_KEY
+    : process.env.R2_SECRET_ACCESS_KEY;
+
+  if (!endpoint || !accessKeyId || !secretAccessKey) {
+    throw new Error(`Missing R2 environment variables for ${clientType} (R2_ENDPOINT, R2_*_ACCESS_KEY_ID, R2_*_SECRET_ACCESS_KEY)`);
+  }
+
+  const client = new S3Client({ region: 'auto', endpoint, credentials: { accessKeyId, secretAccessKey } });
+  await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: contentType }));
+}
+
+async function s3Delete(bucket: string, key: string, clientType: 'images' | 'sounds'): Promise<void> {
+  const { S3Client, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+
+  const endpoint = process.env.R2_ENDPOINT;
+  const accessKeyId = clientType === 'sounds'
+    ? process.env.R2_SOUND_ACCESS_KEY_ID
+    : process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = clientType === 'sounds'
+    ? process.env.R2_SOUND_SECRET_ACCESS_KEY
+    : process.env.R2_SECRET_ACCESS_KEY;
+
+  if (!endpoint || !accessKeyId || !secretAccessKey) {
+    throw new Error(`Missing R2 environment variables for ${clientType} (R2_ENDPOINT, R2_*_ACCESS_KEY_ID, R2_*_SECRET_ACCESS_KEY)`);
+  }
+
+  const client = new S3Client({ region: 'auto', endpoint, credentials: { accessKeyId, secretAccessKey } });
+  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+}
+
+// ============================================================================
+// Public API - Same interface as before, but uses native bindings when available
+// パブリックAPI - 同じインターフェースだが、利用可能な場合はネイティブバインディングを使用
+// ============================================================================
+
+/**
+ * R2にファイルをアップロード（画像用）
+ * Workers環境ではネイティブバインディング、ローカルではS3 SDKを使用
  * @param fileName - ファイル名（キー）
  * @param buffer - ファイルデータ
  * @param contentType - MIMEタイプ
@@ -146,20 +136,24 @@ export function getR2PublicUrl(): string {
  */
 export async function uploadToR2(
   fileName: string,
-  buffer: Buffer,
+  buffer: Buffer | Uint8Array,
   contentType: string
 ): Promise<string> {
-  const client = getR2Client();
-  const bucket = getR2Bucket();
   const publicUrl = getR2PublicUrl();
 
   try {
-    await client.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: fileName,
-      Body: buffer,
-      ContentType: contentType,
-    }));
+    const binding = await getR2Binding('R2_IMAGES');
+    if (binding) {
+      // Native R2 binding (Cloudflare Workers) - no SDK overhead
+      // ネイティブR2バインディング（Cloudflare Workers）- SDKオーバーヘッドなし
+      await binding.put(fileName, buffer, { httpMetadata: { contentType } });
+    } else {
+      // S3 SDK fallback for local development
+      // ローカル開発用S3 SDKフォールバック
+      const bucket = process.env.R2_BUCKET_NAME;
+      if (!bucket) throw new Error('Missing R2_BUCKET_NAME environment variable');
+      await s3Upload(bucket, fileName, buffer, contentType, 'images');
+    }
 
     const url = `${publicUrl}/${fileName}`;
     logger.info(`[R2] Uploaded file: ${fileName}, size: ${buffer.length} bytes`);
@@ -172,7 +166,7 @@ export async function uploadToR2(
 
 /**
  * R2効果音バケットにファイルをアップロード
- * 画像バケットとは完全に別のバケット・認証情報を使用
+ * Workers環境ではネイティブバインディング、ローカルではS3 SDKを使用
  * @param fileName - ファイル名（キー）
  * @param buffer - ファイルデータ
  * @param contentType - MIMEタイプ（audio/mpeg, audio/wav等）
@@ -180,20 +174,22 @@ export async function uploadToR2(
  */
 export async function uploadSoundToR2(
   fileName: string,
-  buffer: Buffer,
+  buffer: Buffer | Uint8Array,
   contentType: string
 ): Promise<string> {
-  const client = getR2SoundClient();
-  const bucket = getR2SoundBucket();
   const publicUrl = getR2SoundPublicUrl();
 
   try {
-    await client.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: fileName,
-      Body: buffer,
-      ContentType: contentType,
-    }));
+    const binding = await getR2Binding('R2_SOUNDS');
+    if (binding) {
+      // Native R2 binding (Cloudflare Workers)
+      await binding.put(fileName, buffer, { httpMetadata: { contentType } });
+    } else {
+      // S3 SDK fallback for local development
+      const bucket = process.env.R2_SOUND_BUCKET_NAME;
+      if (!bucket) throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
+      await s3Upload(bucket, fileName, buffer, contentType, 'sounds');
+    }
 
     const url = `${publicUrl}/${fileName}`;
     logger.info(`[R2 Sound] Uploaded sound file: ${fileName}, size: ${buffer.length} bytes`);
@@ -205,18 +201,22 @@ export async function uploadSoundToR2(
 }
 
 /**
- * R2からファイルを削除
+ * R2からファイルを削除（画像用）
+ * Workers環境ではネイティブバインディング、ローカルではS3 SDKを使用
  * @param fileName - ファイル名（キー）
  */
 export async function deleteFromR2(fileName: string): Promise<void> {
-  const client = getR2Client();
-  const bucket = getR2Bucket();
-
   try {
-    await client.send(new DeleteObjectCommand({
-      Bucket: bucket,
-      Key: fileName,
-    }));
+    const binding = await getR2Binding('R2_IMAGES');
+    if (binding) {
+      // Native R2 binding (Cloudflare Workers)
+      await binding.delete(fileName);
+    } else {
+      // S3 SDK fallback for local development
+      const bucket = process.env.R2_BUCKET_NAME;
+      if (!bucket) throw new Error('Missing R2_BUCKET_NAME environment variable');
+      await s3Delete(bucket, fileName, 'images');
+    }
     logger.info(`[R2] Deleted file: ${fileName}`);
   } catch (error) {
     logger.error('[R2] Failed to delete file:', error);
@@ -226,18 +226,21 @@ export async function deleteFromR2(fileName: string): Promise<void> {
 
 /**
  * R2効果音バケットからファイルを削除
- * 画像バケットとは完全に別のバケット・認証情報を使用
+ * Workers環境ではネイティブバインディング、ローカルではS3 SDKを使用
  * @param fileName - ファイル名（キー）
  */
 export async function deleteSoundFromR2(fileName: string): Promise<void> {
-  const client = getR2SoundClient();
-  const bucket = getR2SoundBucket();
-
   try {
-    await client.send(new DeleteObjectCommand({
-      Bucket: bucket,
-      Key: fileName,
-    }));
+    const binding = await getR2Binding('R2_SOUNDS');
+    if (binding) {
+      // Native R2 binding (Cloudflare Workers)
+      await binding.delete(fileName);
+    } else {
+      // S3 SDK fallback for local development
+      const bucket = process.env.R2_SOUND_BUCKET_NAME;
+      if (!bucket) throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
+      await s3Delete(bucket, fileName, 'sounds');
+    }
     logger.info(`[R2 Sound] Deleted sound file: ${fileName}`);
   } catch (error) {
     logger.error('[R2 Sound] Failed to delete sound file:', error);
@@ -246,8 +249,9 @@ export async function deleteSoundFromR2(fileName: string): Promise<void> {
 }
 
 /**
- * リトライ付きR2アップロード
- * 一時的なエラー（ネットワーク障害など）の場合にリトライを行う
+ * リトライ付きR2アップロード（画像用）
+ * R2ネイティブバインディングはCloudflare内部通信のためエラー率が低いが、
+ * S3 SDKフォールバック時のネットワークエラーに備えてリトライを維持
  * @param fileName - ファイル名（キー）
  * @param buffer - ファイルデータ
  * @param contentType - MIMEタイプ
@@ -256,7 +260,7 @@ export async function deleteSoundFromR2(fileName: string): Promise<void> {
  */
 export async function uploadToR2WithRetry(
   fileName: string,
-  buffer: Buffer,
+  buffer: Buffer | Uint8Array,
   contentType: string,
   maxRetries: number = 3
 ): Promise<{ url: string } | { error: string }> {
@@ -289,7 +293,8 @@ export async function uploadToR2WithRetry(
 
 /**
  * リトライ付きR2効果音アップロード
- * 一時的なエラー（ネットワーク障害など）の場合にリトライを行う
+ * R2ネイティブバインディングはCloudflare内部通信のためエラー率が低いが、
+ * S3 SDKフォールバック時のネットワークエラーに備えてリトライを維持
  * @param fileName - ファイル名（キー）
  * @param buffer - ファイルデータ
  * @param contentType - MIMEタイプ
@@ -298,7 +303,7 @@ export async function uploadToR2WithRetry(
  */
 export async function uploadSoundToR2WithRetry(
   fileName: string,
-  buffer: Buffer,
+  buffer: Buffer | Uint8Array,
   contentType: string,
   maxRetries: number = 3
 ): Promise<{ url: string } | { error: string }> {

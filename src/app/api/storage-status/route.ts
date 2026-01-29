@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { createHash } from 'crypto';
 import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { getStorageUsage, formatBytes } from '@/lib/storage-usage';
 import { handleApiError } from '@/lib/error-handler';
 import { STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
+import { sha256Prefix } from '@/lib/crypto-utils';
 
 export async function GET() {
   try {
@@ -18,10 +18,8 @@ export async function GET() {
 
     // Generate user prefix for tracking their uploads
     // ユーザーのアップロードを追跡するためのプレフィックスを生成
-    const userPrefix = createHash('sha256')
-      .update(session.twitchUserId)
-      .digest('hex')
-      .substring(0, 8);
+    // Web Crypto APIを使用（Cloudflare Workers互換）
+    const userPrefix = await sha256Prefix(session.twitchUserId);
 
     const usage = await getStorageUsage(userPrefix);
 

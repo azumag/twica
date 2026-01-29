@@ -1,13 +1,7 @@
-import * as Sentry from "@sentry/nextjs";
-
+// Next.js instrumentation hook
+// Sentry was removed to reduce bundle size for Cloudflare Workers deployment.
+// See: https://github.com/azumag/twica/issues/235
+// To re-enable error monitoring, implement @sentry/cloudflare or Cloudflare Tail Workers.
 export async function register() {
-  if (process.env.NEXT_RUNTIME === "nodejs") {
-    await import("../sentry.server.config");
-  }
-
-  if (process.env.NEXT_RUNTIME === "edge") {
-    await import("../sentry.edge.config");
-  }
+  // No-op: Sentry server/edge initialization removed for Cloudflare Workers compatibility
 }
-
-export const onRequestError = Sentry.captureRequestError;
