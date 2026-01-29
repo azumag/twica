@@ -1,7 +1,6 @@
 'use client'
 
 import React, { Component, ErrorInfo, ReactNode } from 'react'
-import * as Sentry from '@sentry/nextjs'
 
 interface Props {
   children: ReactNode
@@ -24,13 +23,8 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    Sentry.captureException(error, {
-      contexts: {
-        react: {
-          componentStack: errorInfo.componentStack,
-        },
-      },
-    })
+    // Log to console; Sentry removed for Cloudflare Workers bundle size reduction
+    console.error('[ErrorBoundary]', error, errorInfo.componentStack)
   }
 
   render() {

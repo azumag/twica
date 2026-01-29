@@ -47,6 +47,28 @@ binding = "RATE_LIMIT_KV"
 id = "2dadcd9aa89b466d9c860a8930d458fa"
 preview_id = "6604c73cdb474d6a8a50b8afd4076d5f"
 
+# R2 Bucket bindings for image and sound storage
+# 画像・効果音ストレージ用のR2バケットバインディング
+#
+# To create R2 buckets:
+# R2バケットの作成手順:
+#
+# 1. Create the image bucket:
+#    wrangler r2 bucket create twica-images
+#
+# 2. Create the sound bucket:
+#    wrangler r2 bucket create twica-sounds
+#
+# Note: bucket_name values below must match actual R2 bucket names in your account
+# 注意: 以下のbucket_name値は実際のR2バケット名と一致させること
+[[r2_buckets]]
+binding = "R2_IMAGES"
+bucket_name = "twica-images"
+
+[[r2_buckets]]
+binding = "R2_SOUNDS"
+bucket_name = "twica-sounds"
+
 # Environment variables are configured in Cloudflare Pages dashboard
 # 環境変数はCloudflare Pagesダッシュボードで設定
 #
@@ -60,10 +82,13 @@ preview_id = "6604c73cdb474d6a8a50b8afd4076d5f"
 # - TWITCH_CLIENT_SECRET
 # - TWITCH_EVENTSUB_SECRET
 # - SUPABASE_SERVICE_ROLE_KEY
-# - R2_ENDPOINT
-# - R2_ACCESS_KEY_ID
-# - R2_SECRET_ACCESS_KEY
-# - R2_BUCKET_NAME
-# - R2_PUBLIC_URL
+# - R2_PUBLIC_URL (public URL for image R2 bucket)
+# - R2_SOUND_PUBLIC_URL (public URL for sound R2 bucket)
 # - CSRF_TOKEN_SALT
-# - NEXT_PUBLIC_SENTRY_DSN
+#
+# Note: R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY are no longer needed
+# in Workers environment (R2 is accessed via native bindings above).
+# These are still needed for local development with `next dev`.
+# 注意: R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY は
+# Workers環境では不要（上記のネイティブバインディング経由でR2にアクセス）。
+# `next dev` でのローカル開発では引き続き必要。

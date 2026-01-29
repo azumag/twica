@@ -8,7 +8,6 @@ import Header from '@/components/Header'
 import Link from 'next/link'
 import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
 import { fetchSession } from '@/lib/api-client'
-import * as Sentry from '@sentry/nextjs'
 import { type Session } from '@/lib/session'
 
 interface CardStats {
@@ -63,7 +62,7 @@ export default function BattleStatsPage() {
           setStats(battleStats)
         }
       } catch (error) {
-        Sentry.captureException(error)
+        console.error('[BattleStatsPage]', error)
       } finally {
         setLoading(false)
       }

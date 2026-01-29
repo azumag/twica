@@ -20,8 +20,6 @@
     "migrate:vercel-to-r2:dry": "node scripts/migrate-vercel-blob-to-r2.js --dry-run"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.972.0",
-    "@sentry/nextjs": "^10.34.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.90.0",
     "next": "16.1.6",
@@ -31,6 +29,7 @@
     "react-image-crop": "^11.0.10"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3.972.0",
     "@opennextjs/cloudflare": "^1.16.1",
     "@vercel/blob": "^0.27.1",
     "@tailwindcss/postcss": "^4",
