@@ -66,6 +66,11 @@ binding = "R2_SOUNDS"
 bucket_name = "twica-sound-prod"
 preview_bucket_name = "twica-sound-dev"
 
+# Environment variables that must survive deploys (Dashboard-only vars get overwritten)
+# デプロイ時に上書きされないよう、Dashboard のみで設定していた変数をここに明示する
+[vars]
+NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
+
 # Environment variables are configured in Cloudflare Pages dashboard
 # 環境変数はCloudflare Pagesダッシュボードで設定
 #
@@ -107,6 +112,11 @@ preview_bucket_name = "twica-sound-dev"
 # from the top-level configuration automatically.
 # compatibility_date, compatibility_flags, [assets] はトップレベルから自動継承される。
 [env.preview]
+
+# Preview environment uses a separate Twitch application for isolation
+# プレビュー環境は本番と異なるTwitchアプリケーションを使用する
+[env.preview.vars]
+NEXT_PUBLIC_TWITCH_CLIENT_ID = "k40qdqew0buz3cjshwp6fbr5pmuayw"
 
 # KV Namespace for rate limiting in preview environment
 # プレビュー環境用レート制限KV名前空間（トップレベルの preview_id と同じ値）
