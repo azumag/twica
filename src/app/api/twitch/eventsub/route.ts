@@ -228,15 +228,19 @@ async function handleRedemption(messageId: string, event: {
         retryDelay: 1000,
       });
 
-      // チャット通知（新機能）- 非同期で実行、失敗しても処理継続
-      // Chat announcement (new feature) - async execution, continues on failure
-      sendChatAnnouncement(
-        event.broadcaster_user_id,
-        streamer,
-        result.data.card,
-        event.user_name,
-        event.user_id
-      ).catch(err => {
+      // チャット通知 - awaitで完了を待つ（Cloudflare Workersではレスポンス返却後に
+      // バックグラウンドPromiseが打ち切られるため、fire-and-forgetは使えない）
+      // Chat announcement - must await because Cloudflare Workers terminates
+      // background promises after response is sent (no waitUntil available)
+      try {
+        await sendChatAnnouncement(
+          event.broadcaster_user_id,
+          streamer,
+          result.data.card,
+          event.user_name,
+          event.user_id
+        );
+      } catch (err) {
         // チャット送信失敗はログのみ、ガチャ処理はブロックしない
         // Chat send failure is logged only, does not block gacha processing
         logger.warn('Chat announcement failed', {
@@ -244,7 +248,7 @@ async function handleRedemption(messageId: string, event: {
           broadcasterTwitchUserId: event.broadcaster_user_id,
           streamerId: streamer.id,
         });
-      });
+      }
     }
   } catch (error) {
     return handleApiError(error, "EventSub redemption");
