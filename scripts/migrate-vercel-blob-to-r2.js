@@ -34,7 +34,8 @@
  */
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-require('dotenv').config({ path: '.env.local' });
+// 移行スクリプト専用のenvファイルを使用（.env.local はNext.jsビルド時に読み込まれるため避ける）
+require('dotenv').config({ path: '.env.migration' });
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createClient } = require('@supabase/supabase-js');
