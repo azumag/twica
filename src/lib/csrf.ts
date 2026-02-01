@@ -236,7 +236,9 @@ export async function validateCSRFToken(
     }
   }
 
-  if (origin && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(origin)) {
+  // リクエストURL自体のoriginと一致する場合は同一オリジンリクエストなので許可する
+  // （例: workers.dev URLからのリクエストでNEXT_PUBLIC_APP_URLがカスタムドメインの場合）
+  if (origin && origin !== expectedOrigin && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(origin)) {
     const isLocal = CSRF_CONFIG.ALLOW_LOCAL_ORIGINS && isLocalOrigin(origin)
 
     if (!isLocal) {
