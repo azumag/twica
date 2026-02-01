@@ -122,19 +122,21 @@ export default function OverlayPage() {
   const displayResultRef = useRef<(data: GachaResult) => void>(() => {});
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // AudioContext ベースの効果音再生
-  // ブラウザの自動再生ポリシーにより、ユーザー操作なしにaudio.play()は失敗する
-  // AudioContextを使い、ユーザーの初回クリックでresumeすることで音声を有効化する
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioBufferRef = useRef<AudioBuffer | null>(null);
-  // 音声がブラウザのAutoplayポリシーでブロックされているかどうか
+  // 効果音再生用のオーディオ要素への参照
+  // HTMLAudioElementを使用（R2パブリックURLはCORSヘッダーがないためfetch不可、
+  // audioタグはCORS不要で読み込める）
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // ユーザー操作により音声再生がアンロック済みかどうか
+  // ブラウザの自動再生ポリシーにより、最初のユーザー操作までplay()は失敗する
+  const audioUnlockedRef = useRef(false);
+  // 音声がブラウザのAutoplayポリシーでブロックされているかどうか（UI表示用）
   const [audioBlocked, setAudioBlocked] = useState(false);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
   }, [connectionStatus]);
 
-  // 効果音設定を取得し、AudioContextで音声バッファをプリロード
+  // 効果音設定を取得し、HTMLAudioElementでプリロード
   // オーバーレイ初期化時にstreamerの効果音設定をAPIから取得
   // 認証不要のパブリックエンドポイントを使用
   useEffect(() => {
@@ -147,27 +149,24 @@ export default function OverlayPage() {
             soundUrl: data.soundUrl,
             soundEnabled: data.soundEnabled ?? true,
           });
-
-          // AudioContextを作成し、音声データをプリフェッチ・デコード
-          // AudioContext.decodeAudioData() でバッファに変換しておくことで
-          // 再生時の遅延を最小化する
+          // 効果音URLが設定されている場合、Audio要素を作成してプリロード
+          // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）
           if (data.soundUrl && data.soundEnabled) {
-            try {
-              const ctx = new AudioContext();
-              audioContextRef.current = ctx;
+            const audio = new Audio(data.soundUrl);
+            audio.preload = "auto";
+            audioRef.current = audio;
 
-              // AudioContextが suspended 状態（自動再生ポリシーによりブロック）の場合を検出
-              if (ctx.state === "suspended") {
-                setAudioBlocked(true);
-              }
-
-              // 音声データをフェッチしてデコード（プリロード）
-              const audioResponse = await fetch(data.soundUrl);
-              const arrayBuffer = await audioResponse.arrayBuffer();
-              audioBufferRef.current = await ctx.decodeAudioData(arrayBuffer);
-            } catch (audioError) {
-              logger.warn("Failed to preload audio buffer:", audioError);
-            }
+            // 自動再生可能かテスト（ブロックされていればUI表示用フラグを立てる）
+            audio.play().then(() => {
+              // 再生成功 → 即座に停止（プリロード目的）
+              audio.pause();
+              audio.currentTime = 0;
+              audioUnlockedRef.current = true;
+            }).catch(() => {
+              // NotAllowedError: 自動再生ポリシーによりブロック
+              // ユーザー操作後にアンロックされる
+              setAudioBlocked(true);
+            });
           }
         }
       } catch (error) {
@@ -175,35 +174,33 @@ export default function OverlayPage() {
       }
     };
     fetchSoundSettings();
-
-    return () => {
-      // AudioContextのクリーンアップ
-      if (audioContextRef.current) {
-        audioContextRef.current.close().catch(() => {});
-      }
-    };
   }, [streamerId]);
 
-  // ユーザー操作でAudioContextのロックを解除するグローバルハンドラー
-  // ブラウザの自動再生ポリシーにより、AudioContextは最初 suspended 状態になる
-  // ユーザーがページをクリック/タッチすると resume() でロック解除し、以降の再生を可能にする
+  // ユーザー操作でHTMLAudioElementの再生をアンロックするハンドラー
+  // ブラウザの自動再生ポリシーにより、最初のユーザー操作までplay()は失敗する
+  // click/touchイベント内でplay()→pause()を呼ぶことで、以降の再生が可能になる
   // OBSブラウザソースでは「操作」ボタンから1回クリックすればOK
   useEffect(() => {
-    const unlockAudio = async () => {
-      const ctx = audioContextRef.current;
-      if (ctx && ctx.state === "suspended") {
-        try {
-          await ctx.resume();
+    const unlockAudio = () => {
+      if (audioUnlockedRef.current) return;
+      const audio = audioRef.current;
+      if (audio) {
+        // ユーザー操作のコンテキスト内でplay()を呼ぶことでブラウザのロックを解除
+        // Calling play() within user gesture context unlocks browser's autoplay restriction
+        audio.play().then(() => {
+          audio.pause();
+          audio.currentTime = 0;
+          audioUnlockedRef.current = true;
           setAudioBlocked(false);
-          logger.info("AudioContext resumed after user interaction");
-        } catch (e) {
-          logger.warn("Failed to resume AudioContext:", e);
-        }
+          logger.info("Audio unlocked after user interaction");
+        }).catch(() => {
+          // まだアンロックできない場合は次のクリックで再試行
+        });
       }
     };
 
-    document.addEventListener("click", unlockAudio, { once: true });
-    document.addEventListener("touchstart", unlockAudio, { once: true });
+    document.addEventListener("click", unlockAudio);
+    document.addEventListener("touchstart", unlockAudio);
 
     return () => {
       document.removeEventListener("click", unlockAudio);
@@ -284,10 +281,10 @@ export default function OverlayPage() {
   }, []);
 
   /**
-   * 効果音を再生（AudioContext API使用）
-   * プリデコード済みの AudioBuffer を AudioContext 経由で再生する
-   * AudioContextがresumed状態であれば即座に再生される
-   * suspended状態の場合はresume()を試みてから再生する
+   * 効果音を再生（HTMLAudioElement使用）
+   * プリロード済みのAudio要素を使って再生する
+   * ユーザー操作によるアンロック後であれば即座に再生される
+   * 未アンロック時は再生失敗するがエラーは無視する
    */
   const playGachaSound = useCallback(() => {
     // 効果音が無効または未設定の場合はスキップ
@@ -295,33 +292,14 @@ export default function OverlayPage() {
       return;
     }
 
-    const ctx = audioContextRef.current;
-    const buffer = audioBufferRef.current;
-
-    if (!ctx || !buffer) {
-      logger.warn("AudioContext or buffer not ready, skipping sound");
-      return;
-    }
-
     try {
-      // suspended状態の場合はresumeを試みる
-      // （ユーザー操作後であればresumeが成功する）
-      const playBuffer = () => {
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
-        source.start(0);
-      };
-
-      if (ctx.state === "suspended") {
-        ctx.resume().then(() => {
-          setAudioBlocked(false);
-          playBuffer();
-        }).catch((error) => {
-          logger.warn("Failed to resume AudioContext for playback:", error);
+      if (audioRef.current) {
+        // プリロード済みのAudio要素を使用して再生
+        audioRef.current.currentTime = 0;
+        audioRef.current.play().catch(() => {
+          // 自動再生ポリシーによりブロックされた場合は無視
+          // ユーザーがページをクリックすればアンロックされ、次回から再生可能
         });
-      } else {
-        playBuffer();
       }
     } catch (error) {
       logger.error("Error playing gacha sound:", error);
