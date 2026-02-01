@@ -54,7 +54,7 @@ describe('POST /api/streamer/settings', () => {
 
   it('should update streamer settings with valid data', async () => {
     const mockSupabase = createSupabaseMock()
-      .withSingleResponse({
+      .withMaybeSingleResponse({
         id: 'streamer123',
         twitch_user_id: 'streamer123',
       })

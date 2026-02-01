@@ -10,7 +10,7 @@ type MockSupabaseAdmin = {
   from: ReturnType<typeof vi.fn>;
   select: ReturnType<typeof vi.fn>;
   eq: ReturnType<typeof vi.fn>;
-  single: ReturnType<typeof vi.fn>;
+  maybeSingle: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
 };
 
@@ -25,7 +25,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'valid-token',
             twitch_refresh_token: 'refresh-token',
@@ -47,7 +47,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: null,
           error: null,
         }),
@@ -60,14 +60,15 @@ describe('Twitch Token Manager', () => {
       expect(token).toBeNull();
     });
 
-    it('ユーザーが見つからない場合（PGRST116）は null を返す', async () => {
+    // maybeSingle()ではユーザーが見つからない場合、error=nullかつdata=nullが返る
+    it('ユーザーが見つからない場合は null を返す', async () => {
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: null,
-          error: { code: 'PGRST116', message: 'No rows returned' },
+          error: null,
         }),
         update: vi.fn().mockReturnThis(),
       };
@@ -78,12 +79,12 @@ describe('Twitch Token Manager', () => {
       expect(token).toBeNull();
     });
 
-    it('データベースエラー（PGRST116以外）は例外をスローする', async () => {
+    it('データベースエラーは例外をスローする', async () => {
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValue({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: null,
           error: { code: 'PGRST000', message: 'Database connection failed' },
         }),
@@ -100,7 +101,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        single: vi.fn().mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValueOnce({
           data: {
             twitch_access_token: 'expired-token',
             twitch_refresh_token: 'refresh-token',

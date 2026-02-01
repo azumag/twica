@@ -5,12 +5,18 @@ import { DataTable } from '../components/DataTable'
 import { StreamerPopup } from '../components/StreamerPopup'
 import { Streamer, BlobFile } from '../types/database'
 
+// チャット通知の送信に必要なTwitch OAuthスコープ
+const CHAT_WRITE_SCOPE = 'user:write:chat'
+
 // Extended streamer type with card statistics and storage usage
 // ストリーマーのカード統計とストレージ使用量を含む拡張型
 interface StreamerWithStats extends Streamer {
   card_count: number
   // ストレージ使用量（バイト単位）- カード画像のファイルサイズ合計
   storage_bytes: number
+  // usersテーブルのtwitch_scopesにuser:write:chatが含まれているか
+  // チャット通知の送信にはこのスコープが必要
+  has_chat_scope: boolean
 }
 
 /**
@@ -44,6 +50,12 @@ export function Streamers() {
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
   // カード数0のストリーマーを非表示にするフラグ
   const [hideZeroCards, setHideZeroCards] = useState(false)
+  // チャット通知ONのストリーマーのみ表示するフラグ
+  const [filterChatEnabled, setFilterChatEnabled] = useState(false)
+  // カスタムテンプレート設定済みのストリーマーのみ表示するフラグ
+  const [filterHasTemplate, setFilterHasTemplate] = useState(false)
+  // Chat通知ONだが権限(user:write:chat)が未付与のストリーマーのみ表示するフラグ
+  const [filterMissingScope, setFilterMissingScope] = useState(false)
   // ページネーション状態
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -55,7 +67,7 @@ export function Streamers() {
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
     setCurrentPage(1)
-  }, [sortOrder, hideZeroCards, searchQuery])
+  }, [sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, searchQuery])
 
   /**
    * Fetches all streamers with card counts and storage usage
@@ -65,9 +77,8 @@ export function Streamers() {
   async function fetchStreamers() {
     setLoading(true)
     try {
-      // Supabaseのリレーション機能でストリーマーとカード情報を同時に取得
+      // ストリーマーとblob_filesを並行取得（第1段階）
       // cards(count) はカード数のみ、cards:cards(image_url) は画像URLを取得
-      // blob_filesテーブルからファイルサイズ情報も並行して取得
       const [streamersResult, blobFilesResult] = await Promise.all([
         supabase
           .from('streamers')
@@ -79,6 +90,32 @@ export function Streamers() {
       ])
 
       if (streamersResult.error) throw streamersResult.error
+
+      // ストリーマーのtwitch_user_id一覧を抽出して、対応するusersのみクエリする（第2段階）
+      // Supabaseのデフォルト上限は1000行のため、全usersを取得すると漏れが発生する
+      // ストリーマー数は少ないのでin()フィルタで確実に全件取得できる
+      const streamerTwitchIds = (streamersResult.data || []).map(
+        (s: { twitch_user_id: string }) => s.twitch_user_id
+      )
+      const userScopesByTwitchId = new Map<string, string[]>()
+      if (streamerTwitchIds.length > 0) {
+        const usersResult = await supabase
+          .from('users')
+          .select('twitch_user_id, twitch_scopes')
+          .in('twitch_user_id', streamerTwitchIds)
+
+        if (usersResult.error) {
+          console.warn('Users query error (twitch_scopes取得失敗):', usersResult.error)
+        }
+        const usersData = usersResult.data || []
+        console.log(`Streamer users with scopes loaded: ${usersData.length}/${streamerTwitchIds.length}件`)
+
+        // twitch_user_idをキーにしてuser:write:chatスコープの有無を参照するMapを作成
+        // ストリーマーがチャット通知を送信するにはこのスコープが必要
+        ;(usersData as { twitch_user_id: string; twitch_scopes: string[] }[]).forEach((user) => {
+          userScopesByTwitchId.set(user.twitch_user_id, user.twitch_scopes || [])
+        })
+      }
 
       // blob_filesのURLをキーにしてファイルサイズを高速に参照できるMapを作成
       const blobFilesData = (blobFilesResult.data || []) as Pick<BlobFile, 'url' | 'file_size'>[]
@@ -108,6 +145,11 @@ export function Streamers() {
           return total
         }, 0)
 
+        // ストリーマーに対応するユーザーのスコープを確認
+        // user:write:chat スコープがあればチャット通知の送信権限あり
+        const userScopes = userScopesByTwitchId.get(streamer.twitch_user_id) || []
+        const hasChatScope = userScopes.includes(CHAT_WRITE_SCOPE)
+
         return {
           id: streamer.id,
           twitch_user_id: streamer.twitch_user_id,
@@ -117,10 +159,15 @@ export function Streamers() {
           channel_point_reward_id: streamer.channel_point_reward_id,
           channel_point_reward_name: streamer.channel_point_reward_name,
           is_active: streamer.is_active,
+          gacha_sound_url: streamer.gacha_sound_url,
+          gacha_sound_enabled: streamer.gacha_sound_enabled,
+          chat_announcement_enabled: streamer.chat_announcement_enabled,
+          chat_announcement_template: streamer.chat_announcement_template,
           created_at: streamer.created_at,
           updated_at: streamer.updated_at,
           card_count: cardCount,
           storage_bytes: storageBytes,
+          has_chat_scope: hasChatScope,
         }
       })
 
@@ -218,6 +265,69 @@ export function Streamers() {
       ),
     },
     {
+      // チャット通知設定の有効/無効を表示するカラム
+      // 通知ONなのにuser:write:chatスコープが無い場合は警告アイコンを表示
+      key: 'chat_announcement',
+      header: 'Chat通知',
+      render: (streamer: StreamerWithStats) => (
+        <div className="flex items-center gap-1">
+          <span
+            className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+              streamer.chat_announcement_enabled
+                ? 'bg-green-100 text-green-800'
+                : 'bg-gray-100 text-gray-800'
+            }`}
+          >
+            {streamer.chat_announcement_enabled ? 'ON' : 'OFF'}
+          </span>
+          {/* 通知ONだが権限がない場合に警告表示 */}
+          {streamer.chat_announcement_enabled && !streamer.has_chat_scope && (
+            <span
+              className="text-amber-500"
+              title="通知ONですがuser:write:chatスコープが未付与のため送信できません"
+            >
+              ⚠
+            </span>
+          )}
+        </div>
+      ),
+    },
+    {
+      // Chat権限(user:write:chatスコープ)の有無を表示するカラム
+      // usersテーブルのtwitch_scopesから判定
+      key: 'chat_scope',
+      header: 'Chat権限',
+      render: (streamer: StreamerWithStats) => (
+        <span
+          className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+            streamer.has_chat_scope
+              ? 'bg-blue-100 text-blue-800'
+              : 'bg-gray-100 text-gray-800'
+          }`}
+        >
+          {streamer.has_chat_scope ? '付与済み' : '未付与'}
+        </span>
+      ),
+    },
+    {
+      // カスタムテンプレート設定の有無を表示するカラム
+      // chat_announcement_template が null でなければカスタム設定済み
+      key: 'custom_template',
+      header: 'カスタムテンプレート',
+      render: (streamer: StreamerWithStats) => (
+        <span
+          className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+            streamer.chat_announcement_template
+              ? 'bg-purple-100 text-purple-800'
+              : 'bg-gray-100 text-gray-800'
+          }`}
+          title={streamer.chat_announcement_template || 'デフォルトテンプレート使用'}
+        >
+          {streamer.chat_announcement_template ? '設定あり' : '未設定'}
+        </span>
+      ),
+    },
+    {
       key: 'reward_name',
       header: 'Reward Name',
       render: (streamer: StreamerWithStats) => (
@@ -244,6 +354,12 @@ export function Streamers() {
   const totalCards = streamers.reduce((sum, s) => sum + s.card_count, 0)
   const totalStorage = streamers.reduce((sum, s) => sum + s.storage_bytes, 0)
   const streamersWithCards = streamers.filter((s) => s.card_count > 0).length
+  // チャット通知ONのストリーマー数
+  const chatEnabledStreamers = streamers.filter((s) => s.chat_announcement_enabled).length
+  // カスタムテンプレート設定済みのストリーマー数
+  const customTemplateStreamers = streamers.filter((s) => s.chat_announcement_template).length
+  // Chat通知ONだがuser:write:chatスコープが未付与のストリーマー数（要対応）
+  const chatEnabledNoScope = streamers.filter((s) => s.chat_announcement_enabled && !s.has_chat_scope).length
 
   /**
    * フィルターとソートを適用したストリーマー一覧を生成
@@ -265,6 +381,21 @@ export function Streamers() {
     // フィルター: カード数0を非表示にする場合
     if (hideZeroCards) {
       result = result.filter((s) => s.card_count > 0)
+    }
+
+    // フィルター: チャット通知ONのストリーマーのみ表示
+    if (filterChatEnabled) {
+      result = result.filter((s) => s.chat_announcement_enabled)
+    }
+
+    // フィルター: カスタムテンプレート設定済みのストリーマーのみ表示
+    if (filterHasTemplate) {
+      result = result.filter((s) => s.chat_announcement_template)
+    }
+
+    // フィルター: Chat通知ONだが権限(user:write:chat)未付与のストリーマーのみ表示
+    if (filterMissingScope) {
+      result = result.filter((s) => s.chat_announcement_enabled && !s.has_chat_scope)
     }
 
     // ソート
@@ -296,7 +427,7 @@ export function Streamers() {
       </div>
 
       {/* Summary Stats - includes total storage usage across all streamers */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Streamers</p>
           <p className="text-2xl font-bold">{streamers.length}</p>
@@ -317,7 +448,32 @@ export function Streamers() {
           <p className="text-sm text-gray-500">Total Storage</p>
           <p className="text-2xl font-bold text-purple-600">{formatBytes(totalStorage)}</p>
         </div>
+        {/* チャット通知をONにしているストリーマー数 */}
+        <div className="bg-white rounded-lg shadow p-4">
+          <p className="text-sm text-gray-500">Chat通知 ON</p>
+          <p className="text-2xl font-bold text-green-600">{chatEnabledStreamers}</p>
+        </div>
+        {/* カスタムテンプレートを設定済みのストリーマー数 */}
+        <div className="bg-white rounded-lg shadow p-4">
+          <p className="text-sm text-gray-500">カスタムテンプレート</p>
+          <p className="text-2xl font-bold text-purple-600">{customTemplateStreamers}</p>
+        </div>
       </div>
+
+      {/* Chat通知ONなのに権限がないストリーマーがいる場合に警告バナーを表示 */}
+      {chatEnabledNoScope > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center gap-3">
+          <span className="text-amber-500 text-xl">⚠</span>
+          <div>
+            <p className="text-sm font-medium text-amber-800">
+              Chat通知ONだが権限(user:write:chat)が未付与: {chatEnabledNoScope}件
+            </p>
+            <p className="text-xs text-amber-600 mt-0.5">
+              該当ストリーマーはチャット通知が送信されません。再認証が必要です。
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* 検索フォーム */}
       <div className="bg-white rounded-lg shadow p-4">
@@ -391,6 +547,45 @@ export function Streamers() {
             />
             <span className="text-sm text-gray-600">
               カード0件を非表示
+            </span>
+          </label>
+
+          {/* チャット通知ONのみ表示トグル */}
+          <label className="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={filterChatEnabled}
+              onChange={(e) => setFilterChatEnabled(e.target.checked)}
+              className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
+            />
+            <span className="text-sm text-gray-600">
+              Chat通知ONのみ
+            </span>
+          </label>
+
+          {/* カスタムテンプレート設定済みのみ表示トグル */}
+          <label className="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={filterHasTemplate}
+              onChange={(e) => setFilterHasTemplate(e.target.checked)}
+              className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+            />
+            <span className="text-sm text-gray-600">
+              カスタムテンプレートありのみ
+            </span>
+          </label>
+
+          {/* Chat通知ONだが権限未付与のみ表示トグル */}
+          <label className="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={filterMissingScope}
+              onChange={(e) => setFilterMissingScope(e.target.checked)}
+              className="w-4 h-4 text-amber-500 border-gray-300 rounded focus:ring-amber-500"
+            />
+            <span className="text-sm text-amber-600 font-medium">
+              通知ON・権限なし
             </span>
           </label>
 

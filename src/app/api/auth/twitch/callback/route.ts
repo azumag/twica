@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
-import { saveTwitchScopes } from '@/lib/twitch/token-manager'
+import { exchangeCodeForTokens, getTwitchUser, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
+import { saveTwitchScopes, mergeTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from '@/lib/constants'
@@ -121,12 +121,30 @@ export async function GET(request: NextRequest) {
       // Save the scopes granted during token exchange to the database
       // tokens.scopeはスコープの配列として返される
       if (tokens.scope && tokens.scope.length > 0) {
-        await saveTwitchScopes(twitchUser.id, tokens.scope)
-        logger.info('Auth callback: Saved Twitch scopes', {
-          twitchUserId: twitchUser.id,
-          scopeCount: tokens.scope.length,
-          scopes: tokens.scope,
-        })
+        // 追加スコープ（user:write:chatなど）がトークンに含まれているか判定
+        // 含まれている = 再認証フロー、含まれていない = 通常ログイン
+        const additionalScopeValues = Object.values(ADDITIONAL_SCOPES) as string[]
+        const isReauth = tokens.scope.some(s => additionalScopeValues.includes(s))
+
+        if (isReauth) {
+          // 再認証: ユーザーが明示的にスコープを選択した結果なので全置換
+          await saveTwitchScopes(twitchUser.id, tokens.scope)
+          logger.info('Auth callback: Saved Twitch scopes (reauth, full replace)', {
+            twitchUserId: twitchUser.id,
+            scopeCount: tokens.scope.length,
+            scopes: tokens.scope,
+          })
+        } else {
+          // 通常ログイン: デフォルトスコープのみ返されるため、
+          // 既存の追加スコープを保持しつつマージ保存する
+          // これにより再認証で取得したuser:write:chatなどが失われない
+          await mergeTwitchScopes(twitchUser.id, tokens.scope)
+          logger.info('Auth callback: Merged Twitch scopes (normal login, preserving additional)', {
+            twitchUserId: twitchUser.id,
+            scopeCount: tokens.scope.length,
+            scopes: tokens.scope,
+          })
+        }
       }
     } catch (error) {
       // エラー詳細をログ出力（wrangler tailで確認可能）
