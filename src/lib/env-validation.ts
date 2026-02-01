@@ -32,7 +32,9 @@ export function validateEnvVars(): { valid: boolean; missing: string[] } {
 }
 
 export function getEnvVar(name: string, required: boolean = false): string | undefined {
-  const value = process.env[name]
+  // 環境変数に改行や空白が混入する場合があるため（Cloudflareダッシュボードでのペースト時など）
+  // 前後の空白・改行を除去する
+  const value = process.env[name]?.trim()
 
   if (required && !value) {
     throw new Error(`Required environment variable ${name} is not set`)

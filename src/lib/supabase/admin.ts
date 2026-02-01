@@ -16,8 +16,10 @@ export function getSupabaseAdmin(): SupabaseClient {
     return supabaseAdmin
   }
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
+  // 環境変数に改行や空白が混入する場合があるため（Cloudflareダッシュボードでのペースト時など）
+  // JWTには空白文字が含まれないため、すべての空白・改行を除去する
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.replace(/\s/g, '')
 
   if (!url || !key) {
     throw new Error('Missing Supabase environment variables')
@@ -37,8 +39,10 @@ export function getSupabaseAdmin(): SupabaseClient {
  * （例：最新のカード所持枚数が必要なチャット通知）
  */
 export function getSupabaseAdminNoCache(): SupabaseClient {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
+  // 環境変数に改行や空白が混入する場合があるため（Cloudflareダッシュボードでのペースト時など）
+  // JWTには空白文字が含まれないため、すべての空白・改行を除去する
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.replace(/\s/g, '')
 
   if (!url || !key) {
     throw new Error('Missing Supabase environment variables')
