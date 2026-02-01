@@ -276,6 +276,9 @@ export const rateLimits = {
   authCallback: createRatelimit(10, 60 * 1000),
   authLogout: createRatelimit(10, 60 * 1000),
   authReauth: createRatelimit(3, 60 * 1000),
+  // スコープ確認は読み取り専用の低リスク操作なので、authReauthより緩い制限を設定
+  // check-scope is a read-only low-risk operation, so use a more generous limit than authReauth
+  authCheckScope: createRatelimit(20, 60 * 1000),
   eventsub: createRatelimit(1000, 60 * 1000),
   twitchRewardsGet: createRatelimit(50, 60 * 1000),
   twitchRewardsPost: createRatelimit(20, 60 * 1000),
