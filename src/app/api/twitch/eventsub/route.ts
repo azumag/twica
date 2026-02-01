@@ -272,9 +272,25 @@ async function sendChatAnnouncement(
   userName: string,
   userId: string
 ): Promise<void> {
+  // 関数呼び出しを記録（デバッグ用：この関数が呼ばれたことを確認するため）
+  // Log function entry to confirm this function is being called
+  logger.info('sendChatAnnouncement called', {
+    broadcasterTwitchUserId,
+    streamerId: streamer.id,
+    chatAnnouncementEnabled: streamer.chat_announcement_enabled,
+    cardName: card.name,
+    userName,
+  });
+
   // チャット通知が無効の場合はスキップ
   // Skip if chat announcement is disabled
   if (!streamer.chat_announcement_enabled) {
+    // 無効状態を明示的にログ出力（以前は無言リターンでデバッグ困難だった）
+    // Explicitly log disabled state (previously returned silently, making debugging impossible)
+    logger.info('Chat announcement skipped - feature disabled', {
+      broadcasterTwitchUserId,
+      streamerId: streamer.id,
+    });
     return;
   }
 
@@ -351,6 +367,14 @@ async function sendChatAnnouncement(
 
   if (success) {
     logger.info('Chat announcement sent', {
+      broadcasterTwitchUserId,
+      streamerId: streamer.id,
+      cardName: card.name,
+    });
+  } else {
+    // sendChatMessage が false を返した場合のログ（API呼び出し失敗）
+    // Log when sendChatMessage returns false (API call failure)
+    logger.warn('Chat announcement failed - sendChatMessage returned false', {
       broadcasterTwitchUserId,
       streamerId: streamer.id,
       cardName: card.name,

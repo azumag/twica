@@ -67,6 +67,14 @@ export function getTwitchAuthUrl(
     state: state,
   })
 
+  // 追加スコープがある場合はforce_verifyを有効化
+  // ユーザーが新しいスコープの同意画面を必ず表示するようにする
+  // Without force_verify, Twitch may auto-approve with existing scopes
+  // and skip the consent screen for new scopes
+  if (additionalScopes && additionalScopes.length > 0) {
+    params.set('force_verify', 'true')
+  }
+
   return `${TWITCH_AUTH_URL}?${params.toString()}`
 }
 
