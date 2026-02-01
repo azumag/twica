@@ -73,6 +73,12 @@ export interface RealtimeError {
   isExpected?: boolean
 }
 
+// 接続中の一時的なステータス（エラーではない）
+// Temporary statuses during connection (not errors)
+const CONNECTING_STATUSES = ['SUBSCRIBING']
+
+// 正常な切断ステータス（エラーではない）
+// Expected close statuses (not errors)
 const EXPECTED_CLOSE_STATUSES = ['CLOSED', 'TIMED_OUT', 'CHANNEL_ERROR']
 
 export async function broadcastGachaResult(
@@ -205,6 +211,11 @@ export function subscribeToGachaResults(
             retryCount = 0
             logger.info(`Successfully subscribed to gacha:${streamerId}`)
             onSuccess?.()
+          } else if (CONNECTING_STATUSES.includes(status)) {
+            // 接続中の一時的なステータス（リトライカウントを増やさない）
+            // Temporary connecting status - don't count as error
+            logger.info(`Connection in progress for gacha:${streamerId}, status: ${status}`)
+            onStatusChange?.(`CONNECTING: ${status}`)
           } else {
             const isExpected = EXPECTED_CLOSE_STATUSES.includes(status)
             isSubscribed = false
