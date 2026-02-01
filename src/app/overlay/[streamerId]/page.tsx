@@ -122,14 +122,19 @@ export default function OverlayPage() {
   const displayResultRef = useRef<(data: GachaResult) => void>(() => {});
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // 効果音再生用のオーディオ要素への参照
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // AudioContext ベースの効果音再生
+  // ブラウザの自動再生ポリシーにより、ユーザー操作なしにaudio.play()は失敗する
+  // AudioContextを使い、ユーザーの初回クリックでresumeすることで音声を有効化する
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioBufferRef = useRef<AudioBuffer | null>(null);
+  // 音声がブラウザのAutoplayポリシーでブロックされているかどうか
+  const [audioBlocked, setAudioBlocked] = useState(false);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
   }, [connectionStatus]);
 
-  // 効果音設定を取得
+  // 効果音設定を取得し、AudioContextで音声バッファをプリロード
   // オーバーレイ初期化時にstreamerの効果音設定をAPIから取得
   // 認証不要のパブリックエンドポイントを使用
   useEffect(() => {
@@ -142,11 +147,27 @@ export default function OverlayPage() {
             soundUrl: data.soundUrl,
             soundEnabled: data.soundEnabled ?? true,
           });
-          // 効果音URLが設定されている場合、Audio要素を作成してプリロード
-          // OBSブラウザソースでの再生遅延を軽減するため
+
+          // AudioContextを作成し、音声データをプリフェッチ・デコード
+          // AudioContext.decodeAudioData() でバッファに変換しておくことで
+          // 再生時の遅延を最小化する
           if (data.soundUrl && data.soundEnabled) {
-            audioRef.current = new Audio(data.soundUrl);
-            audioRef.current.preload = "auto";
+            try {
+              const ctx = new AudioContext();
+              audioContextRef.current = ctx;
+
+              // AudioContextが suspended 状態（自動再生ポリシーによりブロック）の場合を検出
+              if (ctx.state === "suspended") {
+                setAudioBlocked(true);
+              }
+
+              // 音声データをフェッチしてデコード（プリロード）
+              const audioResponse = await fetch(data.soundUrl);
+              const arrayBuffer = await audioResponse.arrayBuffer();
+              audioBufferRef.current = await ctx.decodeAudioData(arrayBuffer);
+            } catch (audioError) {
+              logger.warn("Failed to preload audio buffer:", audioError);
+            }
           }
         }
       } catch (error) {
@@ -154,7 +175,41 @@ export default function OverlayPage() {
       }
     };
     fetchSoundSettings();
+
+    return () => {
+      // AudioContextのクリーンアップ
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {});
+      }
+    };
   }, [streamerId]);
+
+  // ユーザー操作でAudioContextのロックを解除するグローバルハンドラー
+  // ブラウザの自動再生ポリシーにより、AudioContextは最初 suspended 状態になる
+  // ユーザーがページをクリック/タッチすると resume() でロック解除し、以降の再生を可能にする
+  // OBSブラウザソースでは「操作」ボタンから1回クリックすればOK
+  useEffect(() => {
+    const unlockAudio = async () => {
+      const ctx = audioContextRef.current;
+      if (ctx && ctx.state === "suspended") {
+        try {
+          await ctx.resume();
+          setAudioBlocked(false);
+          logger.info("AudioContext resumed after user interaction");
+        } catch (e) {
+          logger.warn("Failed to resume AudioContext:", e);
+        }
+      }
+    };
+
+    document.addEventListener("click", unlockAudio, { once: true });
+    document.addEventListener("touchstart", unlockAudio, { once: true });
+
+    return () => {
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("touchstart", unlockAudio);
+    };
+  }, []);
 
   // URLパラメータからオーバーレイオプションを解析
   // Parse overlay options from URL parameters
@@ -229,9 +284,10 @@ export default function OverlayPage() {
   }, []);
 
   /**
-   * 効果音を再生
-   * OBSブラウザソースでの再生に対応するため、
-   * Audio要素を使用して再生を試行
+   * 効果音を再生（AudioContext API使用）
+   * プリデコード済みの AudioBuffer を AudioContext 経由で再生する
+   * AudioContextがresumed状態であれば即座に再生される
+   * suspended状態の場合はresume()を試みてから再生する
    */
   const playGachaSound = useCallback(() => {
     // 効果音が無効または未設定の場合はスキップ
@@ -239,21 +295,33 @@ export default function OverlayPage() {
       return;
     }
 
+    const ctx = audioContextRef.current;
+    const buffer = audioBufferRef.current;
+
+    if (!ctx || !buffer) {
+      logger.warn("AudioContext or buffer not ready, skipping sound");
+      return;
+    }
+
     try {
-      // プリロード済みのAudio要素がある場合はそれを使用
-      if (audioRef.current) {
-        audioRef.current.currentTime = 0;
-        audioRef.current.play().catch((error) => {
-          // OBSブラウザソースでは自動再生制限により失敗する場合がある
-          // ユーザー操作がないと再生できないが、オーバーレイでは無視
-          logger.warn("Failed to play gacha sound:", error);
+      // suspended状態の場合はresumeを試みる
+      // （ユーザー操作後であればresumeが成功する）
+      const playBuffer = () => {
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start(0);
+      };
+
+      if (ctx.state === "suspended") {
+        ctx.resume().then(() => {
+          setAudioBlocked(false);
+          playBuffer();
+        }).catch((error) => {
+          logger.warn("Failed to resume AudioContext for playback:", error);
         });
-      } else if (soundSettings.soundUrl) {
-        // フォールバック: 新しいAudio要素を作成して再生
-        const audio = new Audio(soundSettings.soundUrl);
-        audio.play().catch((error) => {
-          logger.warn("Failed to play gacha sound (fallback):", error);
-        });
+      } else {
+        playBuffer();
       }
     } catch (error) {
       logger.error("Error playing gacha sound:", error);
@@ -431,6 +499,17 @@ export default function OverlayPage() {
           <div className="fixed top-4 right-4 max-w-sm rounded bg-red-600 p-4 text-sm text-white">
             <div className="mb-2 font-bold">接続エラー</div>
             <div>{errorMessage}</div>
+          </div>
+        )}
+        {/* 音声がブラウザの自動再生ポリシーでブロックされている場合の表示 */}
+        {/* ブラウザで直接閲覧時に表示。OBSでは「操作」ボタンから1回クリックで解除 */}
+        {audioBlocked && soundSettings.soundEnabled && soundSettings.soundUrl && (
+          <div className="fixed top-4 left-4 rounded bg-yellow-600/90 px-3 py-2 text-xs text-white cursor-pointer"
+            onClick={() => {
+              // クリックイベントはdocumentのunlockAudioハンドラーでも処理される
+            }}
+          >
+            Click to enable sound / クリックで効果音を有効化
           </div>
         )}
         {/* デバッグモード：接続状態の詳細ログを表示 */}
