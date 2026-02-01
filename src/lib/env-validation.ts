@@ -12,7 +12,7 @@ export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_SUPABASE_URL', required: true },
   { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', required: true },
   { name: 'SUPABASE_SERVICE_ROLE_KEY', required: true },
-  { name: 'BLOB_READ_WRITE_TOKEN', required: true },
+  // BLOB_READ_WRITE_TOKEN は Vercel Blob 用で、Cloudflare R2 ネイティブバインディング移行後は不要
   { name: 'CSRF_TOKEN_SALT', required: true },
 ]
 
@@ -32,7 +32,9 @@ export function validateEnvVars(): { valid: boolean; missing: string[] } {
 }
 
 export function getEnvVar(name: string, required: boolean = false): string | undefined {
-  const value = process.env[name]
+  // 環境変数に改行や空白が混入する場合があるため（Cloudflareダッシュボードでのペースト時など）
+  // 前後の空白・改行を除去する
+  const value = process.env[name]?.trim()
 
   if (required && !value) {
     throw new Error(`Required environment variable ${name} is not set`)
@@ -58,19 +60,26 @@ export function validateCSRFTokenSalt(): { valid: boolean; error?: string } {
   return { valid: true }
 }
 
-// Gacha cost validation
-const gachaCost = parseInt(process.env.GACHA_COST || '100', 10)
-if (isNaN(gachaCost) || gachaCost < 1 || gachaCost > 10000) {
-  throw new Error('GACHA_COST must be a number between 1 and 10000')
-}
+// ビルドフェーズ (next build) ではランタイム専用の環境変数がまだ存在しないため、
+// モジュール読み込み時の検証をスキップする。
+// 秘密鍵は Cloudflare secrets で管理し、ランタイムに populateProcessEnv で注入される。
+const isBuilding = process.env.NEXT_PHASE === 'phase-production-build'
 
-// CSRF token salt validation
-const csrfSaltValidation = validateCSRFTokenSalt()
-if (!csrfSaltValidation.valid && process.env.NODE_ENV !== 'test' && !process.env.CI) {
-  throw new Error(`CSRF token salt validation failed: ${csrfSaltValidation.error}`)
-}
+if (!isBuilding && process.env.NODE_ENV !== 'test' && !process.env.CI) {
+  // Gacha cost validation
+  const gachaCost = parseInt(process.env.GACHA_COST || '100', 10)
+  if (isNaN(gachaCost) || gachaCost < 1 || gachaCost > 10000) {
+    throw new Error('GACHA_COST must be a number between 1 and 10000')
+  }
 
-const { valid, missing } = validateEnvVars()
-if (!valid && process.env.NODE_ENV !== 'test' && !process.env.CI) {
-  throw new Error(`Missing required environment variables: ${missing.join(', ')}`)
+  // CSRF token salt validation
+  const csrfSaltValidation = validateCSRFTokenSalt()
+  if (!csrfSaltValidation.valid) {
+    throw new Error(`CSRF token salt validation failed: ${csrfSaltValidation.error}`)
+  }
+
+  const { valid, missing } = validateEnvVars()
+  if (!valid) {
+    throw new Error(`Missing required environment variables: ${missing.join(', ')}`)
+  }
 }

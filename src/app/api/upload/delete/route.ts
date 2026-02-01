@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { del } from "@vercel/blob";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
@@ -88,7 +87,9 @@ export async function POST(request: NextRequest) {
       logger.warn('Failed to remove blob file from DB:', dbError);
     }
 
-    // ストレージから削除（R2またはVercel Blob）
+    // ストレージから削除（R2のみ）
+    // Note: Vercel Blob deletion removed - only R2 is supported now
+    // 注意: Vercel Blob削除を削除 - R2のみサポート
     if (isR2Url(url)) {
       // R2から削除
       const key = getR2KeyFromUrl(url);
@@ -99,10 +100,10 @@ export async function POST(request: NextRequest) {
         logger.warn(`Could not extract key from R2 URL: ${url}`);
       }
     } else if (isVercelBlobUrl(url)) {
-      // Vercel Blobから削除（既存データ用）
-      // del() は無料なので操作数制限を気にする必要はない
-      await del(url);
-      logger.info(`Deleted Vercel Blob: ${url}`);
+      // Vercel Blob URLs are no longer actively deleted
+      // Migration to R2 should have moved these files
+      // Vercel Blob URLは削除しない（R2移行済みのはず）
+      logger.warn(`Vercel Blob URL found but deletion skipped: ${url}`);
     }
 
     return NextResponse.json({ success: true });

@@ -99,12 +99,14 @@ const AUTH_ERROR_MAP: Record<string, AuthErrorDetails> = {
  * @param options - Response options
  * @param options.returnJson - If true, return JSON response instead of redirect (for API routes)
  *                             trueの場合、リダイレクトではなくJSONレスポンスを返す（APIルート用）
+ * @param options.baseUrl - Base URL for redirect (Cloudflare Workers では NEXT_PUBLIC_APP_URL が
+ *                          ビルド時にインライン化されるため、リクエストから取得した baseUrl を渡す)
  */
 export function handleAuthError(
   error: unknown,
   errorType: string,
   context?: Record<string, unknown>,
-  options?: { returnJson?: boolean }
+  options?: { returnJson?: boolean; baseUrl?: string }
 ): NextResponse {
   const errorDetails = AUTH_ERROR_MAP[errorType] || AUTH_ERROR_MAP.unknown_error
 
@@ -136,8 +138,11 @@ export function handleAuthError(
     )
   }
 
+  // Cloudflare Workers では NEXT_PUBLIC_APP_URL がビルド時にインライン化されるため、
+  // options.baseUrl が渡されていればそちらを優先する
+  const redirectBase = options?.baseUrl || process.env.NEXT_PUBLIC_APP_URL
   return NextResponse.redirect(
-    `${process.env.NEXT_PUBLIC_APP_URL}/?error=${encodeURIComponent(errorDetails.userMessage)}`
+    `${redirectBase}/?error=${encodeURIComponent(errorDetails.userMessage)}`
   )
 }
 

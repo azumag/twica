@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createHash } from 'crypto';
 import { getSession } from '@/lib/session';
 import { handleApiError, handleBlobError } from '@/lib/error-handler';
 import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
@@ -10,6 +9,7 @@ import { logger } from '@/lib/logger';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadToR2WithRetry } from '@/lib/r2-client';
 import { getStorageUsageFromDB, recordBlobFile } from '@/lib/storage-db';
+import { sha256Prefix } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
 
 interface ValidateRequestResult {
@@ -103,10 +103,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // Check storage limits before processing file
   // ファイル処理前にストレージ制限をチェック
   // DB経由で使用量を取得（list()を使わないため操作数を節約）
-  const userPrefix = createHash('sha256')
-    .update(session!.twitchUserId)
-    .digest('hex')
-    .substring(0, 8);
+  // Web Crypto APIを使用してユーザープレフィックスを生成
+  const userPrefix = await sha256Prefix(session!.twitchUserId);
 
   const storageUsage = await getStorageUsageFromDB(userPrefix);
 
@@ -158,15 +156,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // User prefix for tracking uploads per user (must match storage-db.ts)
     // ユーザー別アップロード追跡用プレフィックス（storage-db.tsと一致させる）
-    const userPrefixForFile = createHash('sha256')
-      .update(session!.twitchUserId)
-      .digest('hex')
-      .substring(0, 8);
-
-    const uniqueSuffix = createHash('sha256')
-      .update(`${session!.twitchUserId}-${Date.now()}`)
-      .digest('hex')
-      .substring(0, 8);
+    // Web Crypto APIを使用（Cloudflare Workers互換）
+    const userPrefixForFile = await sha256Prefix(session!.twitchUserId);
+    const uniqueSuffix = await sha256Prefix(`${session!.twitchUserId}-${Date.now()}`);
 
     // Format: {userPrefix}_{uniqueSuffix}.{ext}
     fileName = `${userPrefixForFile}_${uniqueSuffix}.${ext}`;

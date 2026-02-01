@@ -3,7 +3,6 @@
 import { useEffect } from 'react'
 import { useTranslations } from 'next-intl'
 import { TwitchLoginResponse } from '@/types/auth'
-import * as Sentry from '@sentry/nextjs'
 
 /**
  * Component that redirects to Twitch login page
@@ -25,7 +24,8 @@ export function TwitchLoginRedirect() {
         }
       } catch (error) {
         if (isMounted) {
-          Sentry.captureException(error)
+          // Sentry removed for Cloudflare Workers bundle size reduction
+          console.error('[TwitchLoginRedirect]', error)
         }
       }
     }

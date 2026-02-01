@@ -115,15 +115,28 @@ export default function OverlayPage() {
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
+  // displayResultとaddDebugLogをrefで保持することで、
+  // subscriptionのuseEffectが不要に再実行されることを防ぐ
+  // （soundSettings変更 → playGachaSound再生成 → displayResult再生成 のチェーンで
+  //  subscriptionが破棄・再作成される問題を回避）
+  const displayResultRef = useRef<(data: GachaResult) => void>(() => {});
+  const addDebugLogRef = useRef<(message: string) => void>(() => {});
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 効果音再生用のオーディオ要素への参照
+  // HTMLAudioElementを使用（R2パブリックURLはCORSヘッダーがないためfetch不可、
+  // audioタグはCORS不要で読み込める）
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // ユーザー操作により音声再生がアンロック済みかどうか
+  // ブラウザの自動再生ポリシーにより、最初のユーザー操作までplay()は失敗する
+  const audioUnlockedRef = useRef(false);
+  // 音声がブラウザのAutoplayポリシーでブロックされているかどうか（UI表示用）
+  const [audioBlocked, setAudioBlocked] = useState(false);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
   }, [connectionStatus]);
 
-  // 効果音設定を取得
+  // 効果音設定を取得し、HTMLAudioElementでプリロード
   // オーバーレイ初期化時にstreamerの効果音設定をAPIから取得
   // 認証不要のパブリックエンドポイントを使用
   useEffect(() => {
@@ -137,10 +150,23 @@ export default function OverlayPage() {
             soundEnabled: data.soundEnabled ?? true,
           });
           // 効果音URLが設定されている場合、Audio要素を作成してプリロード
-          // OBSブラウザソースでの再生遅延を軽減するため
+          // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）
           if (data.soundUrl && data.soundEnabled) {
-            audioRef.current = new Audio(data.soundUrl);
-            audioRef.current.preload = "auto";
+            const audio = new Audio(data.soundUrl);
+            audio.preload = "auto";
+            audioRef.current = audio;
+
+            // 自動再生可能かテスト（ブロックされていればUI表示用フラグを立てる）
+            audio.play().then(() => {
+              // 再生成功 → 即座に停止（プリロード目的）
+              audio.pause();
+              audio.currentTime = 0;
+              audioUnlockedRef.current = true;
+            }).catch(() => {
+              // NotAllowedError: 自動再生ポリシーによりブロック
+              // ユーザー操作後にアンロックされる
+              setAudioBlocked(true);
+            });
           }
         }
       } catch (error) {
@@ -149,6 +175,38 @@ export default function OverlayPage() {
     };
     fetchSoundSettings();
   }, [streamerId]);
+
+  // ユーザー操作でHTMLAudioElementの再生をアンロックするハンドラー
+  // ブラウザの自動再生ポリシーにより、最初のユーザー操作までplay()は失敗する
+  // click/touchイベント内でplay()→pause()を呼ぶことで、以降の再生が可能になる
+  // OBSブラウザソースでは「操作」ボタンから1回クリックすればOK
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (audioUnlockedRef.current) return;
+      const audio = audioRef.current;
+      if (audio) {
+        // ユーザー操作のコンテキスト内でplay()を呼ぶことでブラウザのロックを解除
+        // Calling play() within user gesture context unlocks browser's autoplay restriction
+        audio.play().then(() => {
+          audio.pause();
+          audio.currentTime = 0;
+          audioUnlockedRef.current = true;
+          setAudioBlocked(false);
+          logger.info("Audio unlocked after user interaction");
+        }).catch(() => {
+          // まだアンロックできない場合は次のクリックで再試行
+        });
+      }
+    };
+
+    document.addEventListener("click", unlockAudio);
+    document.addEventListener("touchstart", unlockAudio);
+
+    return () => {
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("touchstart", unlockAudio);
+    };
+  }, []);
 
   // URLパラメータからオーバーレイオプションを解析
   // Parse overlay options from URL parameters
@@ -223,9 +281,10 @@ export default function OverlayPage() {
   }, []);
 
   /**
-   * 効果音を再生
-   * OBSブラウザソースでの再生に対応するため、
-   * Audio要素を使用して再生を試行
+   * 効果音を再生（HTMLAudioElement使用）
+   * プリロード済みのAudio要素を使って再生する
+   * ユーザー操作によるアンロック後であれば即座に再生される
+   * 未アンロック時は再生失敗するがエラーは無視する
    */
   const playGachaSound = useCallback(() => {
     // 効果音が無効または未設定の場合はスキップ
@@ -234,19 +293,12 @@ export default function OverlayPage() {
     }
 
     try {
-      // プリロード済みのAudio要素がある場合はそれを使用
       if (audioRef.current) {
+        // プリロード済みのAudio要素を使用して再生
         audioRef.current.currentTime = 0;
-        audioRef.current.play().catch((error) => {
-          // OBSブラウザソースでは自動再生制限により失敗する場合がある
-          // ユーザー操作がないと再生できないが、オーバーレイでは無視
-          logger.warn("Failed to play gacha sound:", error);
-        });
-      } else if (soundSettings.soundUrl) {
-        // フォールバック: 新しいAudio要素を作成して再生
-        const audio = new Audio(soundSettings.soundUrl);
-        audio.play().catch((error) => {
-          logger.warn("Failed to play gacha sound (fallback):", error);
+        audioRef.current.play().catch(() => {
+          // 自動再生ポリシーによりブロックされた場合は無視
+          // ユーザーがページをクリックすればアンロックされ、次回から再生可能
         });
       }
     } catch (error) {
@@ -291,6 +343,11 @@ export default function OverlayPage() {
     }, 100);
   }, [checkImageAspectRatio, playGachaSound, options.displayDuration]);
 
+  // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）
+  useEffect(() => {
+    displayResultRef.current = displayResult;
+  }, [displayResult]);
+
   // デバッグログを追加するヘルパー関数
   // OBSブラウザソースでの接続問題を調査するために使用
   const addDebugLog = useCallback((message: string) => {
@@ -300,26 +357,31 @@ export default function OverlayPage() {
     setDebugLogs(prev => [...prev.slice(-19), logEntry]); // 最新20件を保持
   }, []);
 
-  // Connect to Supabase Realtime for real-time events
+  // refを最新のcallbackで更新
   useEffect(() => {
-    // queueMicrotaskで非同期に実行してカスケードレンダーを回避
-    // addDebugLogはsetDebugLogsを呼び出すため、同期的に実行するとlintエラーになる
+    addDebugLogRef.current = addDebugLog;
+  }, [addDebugLog]);
+
+  // Connect to Supabase Realtime for real-time events
+  // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
+  // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
+  useEffect(() => {
     queueMicrotask(() => {
-      addDebugLog(`Starting subscription for streamer: ${streamerId}`);
-      addDebugLog(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
+      addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
+      addDebugLogRef.current(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
     });
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
-      addDebugLog(`Received payload: ${payload.type}`);
+      addDebugLogRef.current(`Received payload: ${payload.type}`);
       if (payload.type === 'gacha' && payload.card) {
-        displayResult({
+        displayResultRef.current({
           card: payload.card as unknown as Card,
           userTwitchUsername: payload.userTwitchUsername,
         });
       }
     }, {
       onError: (error) => {
-        addDebugLog(`Connection error: ${error.message} (expected: ${error.isExpected})`);
+        addDebugLogRef.current(`Connection error: ${error.message} (expected: ${error.isExpected})`);
         if (error.isExpected) {
           setConnectionStatus('disconnected');
           setErrorMessage(null);
@@ -329,7 +391,7 @@ export default function OverlayPage() {
         }
       },
       onSuccess: () => {
-        addDebugLog('Connection successful - SUBSCRIBED');
+        addDebugLogRef.current('Connection successful - SUBSCRIBED');
         setConnectionStatus('connected');
         if (connectionTimeoutRef.current) {
           clearTimeout(connectionTimeoutRef.current);
@@ -337,17 +399,13 @@ export default function OverlayPage() {
         }
       },
       onStatusChange: (status) => {
-        // デバッグ用：接続ステータスの変化を追跡
-        // OBSブラウザソースでの接続問題を調査するために使用
-        addDebugLog(`Connection status: ${status}`);
+        addDebugLogRef.current(`Connection status: ${status}`);
       },
     });
 
-    // OBSブラウザソースのCEFは初期化が遅いことがあるため、
-    // タイムアウトを30秒に延長（通常ブラウザでは10秒で十分だが）
     connectionTimeoutRef.current = setTimeout(() => {
       if (connectionStatusRef.current === 'connecting') {
-        addDebugLog('Connection timeout after 30 seconds');
+        addDebugLogRef.current('Connection timeout after 30 seconds');
         setConnectionStatus('error');
         setErrorMessage('Connection timeout - OBSの場合はブラウザソースを再作成してください');
       }
@@ -366,7 +424,8 @@ export default function OverlayPage() {
         clearTimeout(animationTimeoutRef.current);
       }
     };
-  }, [streamerId, displayResult, addDebugLog]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- displayResult/addDebugLog are accessed via refs to prevent subscription churn
+  }, [streamerId]);
 
   // Demo function for testing
   // デモ機能 - 配信者のカードがあればそれを、なければデモカードを表示
@@ -418,6 +477,17 @@ export default function OverlayPage() {
           <div className="fixed top-4 right-4 max-w-sm rounded bg-red-600 p-4 text-sm text-white">
             <div className="mb-2 font-bold">接続エラー</div>
             <div>{errorMessage}</div>
+          </div>
+        )}
+        {/* 音声がブラウザの自動再生ポリシーでブロックされている場合の表示 */}
+        {/* ブラウザで直接閲覧時に表示。OBSでは「操作」ボタンから1回クリックで解除 */}
+        {audioBlocked && soundSettings.soundEnabled && soundSettings.soundUrl && (
+          <div className="fixed top-4 left-4 rounded bg-yellow-600/90 px-3 py-2 text-xs text-white cursor-pointer"
+            onClick={() => {
+              // クリックイベントはdocumentのunlockAudioハンドラーでも処理される
+            }}
+          >
+            Click to enable sound / クリックで効果音を有効化
           </div>
         )}
         {/* デバッグモード：接続状態の詳細ログを表示 */}

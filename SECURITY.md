@@ -6,48 +6,27 @@ This document tracks known security vulnerabilities and mitigation strategies in
 
 ### Current Vulnerabilities
 
-#### undici < 6.23.0 (GHSA-g9mf-h72j-4rw9)
+#### undici < 6.23.0 (GHSA-g9mf-h72j-4rw9) - RESOLVED
 
-**Status:** Open  
-**CVSS Score:** 3.7 (Low)  
-**CVE:** GHSA-g9mf-h72j-4rw9  
-**Affected Package:** @vercel/blob >= 0.0.3  
-**Direct Dependency:** undici < 6.23.0  
-**Current Version:** @vercel/blob@2.0.0 (undici@5.29.0)
+**Status:** Resolved (Migration to R2 complete)
+**CVSS Score:** 3.7 (Low)
+**CVE:** GHSA-g9mf-h72j-4rw9
+**Previous Affected Package:** @vercel/blob
 
-**Description:**
+**Resolution:**
+The application has migrated from Vercel Blob to Cloudflare R2 for storage.
+- @vercel/blob is now a devDependency only used for migration scripts
+- Production builds do not include @vercel/blob
+- The migration script (`npm run migrate:vercel-to-r2`) can be used to migrate existing files
+- After migration is complete, @vercel/blob can be removed entirely
+
+**Original Description:**
 An unbounded decompression chain in HTTP responses on Node.js Fetch API via Content-Encoding leads to resource exhaustion.
 
-**Attack Vector:**
-An attacker can send specially crafted HTTP responses with excessive Content-Encoding headers causing undici's decompressor to consume unbounded memory and CPU, potentially leading to:
-- Denial of Service (DoS) attacks
-- Resource exhaustion
-- Potential server crashes
-
-**Impact on Application:**
-The @vercel/blob package is used for file upload functionality and blob storage. An attacker could exploit this vulnerability by:
-- Uploading specially crafted files
-- Triggering requests through any HTTP operations using undici (used internally by Next.js fetch)
-
-**Mitigation Strategies:**
-1. **Request timeout and size limits:** Already implemented for file uploads
-   - File size validation in upload API
-   - Rate limiting on upload endpoint
-
-2. **Resource monitoring:** Monitor server resources for abnormal patterns
-
-3. **Network request limits:** Rate limiting is implemented across all API endpoints
-
-**Remediation Timeline:**
-- Monitor @vercel/blob releases for updates
-- Update to latest version when undici >= 6.23.0 is available
-- Run `npm audit fix --force` when fix is available
-
-**Testing Required After Fix:**
-1. Run `npm audit` to verify no vulnerabilities remain
-2. Test file upload functionality thoroughly
-3. Verify blob storage operations work correctly
-4. Monitor for any breaking changes
+**Current Mitigation:**
+1. @vercel/blob is no longer used in production code
+2. All new uploads go directly to Cloudflare R2
+3. File upload validation and rate limiting remain in place
 
 ### Security Best Practices
 

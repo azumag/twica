@@ -38,7 +38,8 @@ export async function GET(request: NextRequest) {
     return handleAuthError(
       new Error('Missing OAuth parameters'),
       'missing_params',
-      { code: !!code, state: !!state }
+      { code: !!code, state: !!state },
+      { baseUrl }
     )
   }
 
@@ -50,7 +51,8 @@ export async function GET(request: NextRequest) {
     return handleAuthError(
       new Error('Invalid state parameter'),
       'invalid_state',
-      { storedState: !!storedState, stateMatch: storedState === state }
+      { storedState: !!storedState, stateMatch: storedState === state },
+      { baseUrl }
     )
   }
 
@@ -66,7 +68,8 @@ export async function GET(request: NextRequest) {
       return handleAuthError(
         error,
         'twitch_auth_failed',
-        { code: code.substring(0, 10) + '...' }
+        { code: code.substring(0, 10) + '...' },
+        { baseUrl }
       )
     }
 
@@ -77,7 +80,8 @@ export async function GET(request: NextRequest) {
       return handleAuthError(
         error,
         'twitch_user_fetch_failed',
-        { twitchUserId: tokens.access_token.substring(0, 10) + '...' }
+        { twitchUserId: tokens.access_token.substring(0, 10) + '...' },
+        { baseUrl }
       )
     }
 
@@ -85,7 +89,9 @@ export async function GET(request: NextRequest) {
     const canBeStreamer = twitchUser.broadcaster_type === 'affiliate' || twitchUser.broadcaster_type === 'partner'
 
     try {
-      await supabaseAdmin
+      // upsertのエラーを明示的にチェック（Supabase JSはエラー時にthrowせずerrorオブジェクトを返す）
+      // Explicitly check upsert error (Supabase JS returns error object instead of throwing)
+      const { error: upsertError } = await supabaseAdmin
         .from('users')
         .upsert({
           twitch_user_id: twitchUser.id,
@@ -99,6 +105,18 @@ export async function GET(request: NextRequest) {
           onConflict: 'twitch_user_id',
         })
 
+      if (upsertError) {
+        logger.error('Auth callback: User upsert failed', {
+          twitchUserId: twitchUser.id,
+          error: upsertError,
+          code: upsertError.code,
+          message: upsertError.message,
+          details: upsertError.details,
+          hint: upsertError.hint,
+        })
+        throw upsertError
+      }
+
       // トークン交換時に付与されたスコープをDBに保存
       // Save the scopes granted during token exchange to the database
       // tokens.scopeはスコープの配列として返される
@@ -111,10 +129,21 @@ export async function GET(request: NextRequest) {
         })
       }
     } catch (error) {
+      // エラー詳細をログ出力（wrangler tailで確認可能）
+      // Log error details for debugging via wrangler tail
+      logger.error('Auth callback: Database error details', {
+        twitchUserId: twitchUser.id,
+        errorName: error instanceof Error ? error.name : 'unknown',
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorCode: (error as { code?: string })?.code,
+        errorDetails: (error as { details?: string })?.details,
+        errorHint: (error as { hint?: string })?.hint,
+      })
       return handleAuthError(
         error,
         'database_error',
-        { operation: 'upsert_user', twitchUserId: twitchUser.id }
+        { operation: 'upsert_user', twitchUserId: twitchUser.id },
+        { baseUrl }
       )
     }
 
@@ -134,7 +163,8 @@ export async function GET(request: NextRequest) {
         return handleAuthError(
           error,
           'database_error',
-          { operation: 'upsert_streamer', twitchUserId: twitchUser.id }
+          { operation: 'upsert_streamer', twitchUserId: twitchUser.id },
+          { baseUrl }
         )
       }
     }
@@ -243,6 +273,6 @@ export async function GET(request: NextRequest) {
 
     return response
   } catch (error) {
-    return handleAuthError(error, 'unknown_error')
+    return handleAuthError(error, 'unknown_error', undefined, { baseUrl })
   }
 }

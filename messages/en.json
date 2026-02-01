@@ -336,7 +336,7 @@
       "allRewards": "All Rewards",
       "eventsubStatus": "EventSub Status",
       "noSubscriptions": "No EventSub subscriptions. Click save to register.",
-      "localTunnelNote": "* Local environment requires ngrok or similar tunnel"
+      "localTunnelNote": "* EventSub is not available in local environment"
     },
     "buttons": {
       "createReward": "Create TwiCa Reward (100 points)",

@@ -21,9 +21,11 @@ export async function GET(request: NextRequest) {
   try {
     const session = await getSession()
     const identifier = await getRateLimitIdentifier(request, session?.twitchUserId)
-    // authReauthと同じレート制限を使用（スコープ確認も認証関連の操作）
-    // Use same rate limit as authReauth (scope check is also an auth-related operation)
-    const result = await checkRateLimit(rateLimits.authReauth, identifier)
+    // スコープ確認は読み取り専用の低リスク操作なので、authReauthより緩い専用の制限を使用
+    // authReauthと共有するとページロード時のcheckScopeだけでreauth用の枠を消費してしまうため
+    // Use dedicated rate limit for scope checking (read-only, low-risk)
+    // Sharing with authReauth would exhaust reauth quota just from page load scope checks
+    const result = await checkRateLimit(rateLimits.authCheckScope, identifier)
 
     if (!result.success) {
       return NextResponse.json({ error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED }, { status: 429 })

@@ -32,8 +32,11 @@ function getSupabaseRealtimeClient(): SupabaseClient {
     return supabaseRealtime
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
+  // 環境変数に改行や空白が混入する場合があるため（Cloudflareダッシュボードでのペースト時など）
+  // JWTには空白文字が含まれないため、すべての空白・改行を除去する
+  // trim()では中間の改行を除去できないため replace で全除去
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.replace(/\s/g, '')
 
   if (!supabaseUrl || !supabaseKey) {
     if (process.env.CI || process.env.NODE_ENV === 'test') {
@@ -178,6 +181,21 @@ export function subscribeToGachaResults(
     if (retryTimeout) {
       clearTimeout(retryTimeout)
       retryTimeout = null
+    }
+
+    // リトライ時に前回のチャンネルをクリーンアップ
+    // 古いチャンネルのコールバックが残るとretryCountが想定より早く増加するため
+    // Clean up previous channel before creating a new one to prevent
+    // stale callbacks from incrementing retryCount unexpectedly
+    if (channel && client) {
+      try {
+        client.removeChannel(channel)
+      } catch {
+        // クリーンアップ失敗は非致命的、ログのみ
+        logger.info(`Previous channel cleanup for gacha:${streamerId}`)
+      }
+      channel = null
+      isSubscribed = false
     }
 
     // デバッグ用：サブスクリプション開始を通知

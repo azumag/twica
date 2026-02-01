@@ -4,29 +4,24 @@
 
 /**
  * リクエストからベースURLを取得する
- * 開発環境・プレビュー環境ではリクエストのホストヘッダーから動的に生成
- * 本番環境では NEXT_PUBLIC_APP_URL を使用
+ * リクエストの host ヘッダーから動的に生成する。
+ * host ヘッダーが取得できない場合は NEXT_PUBLIC_APP_URL にフォールバック。
+ *
+ * Cloudflare Workers 環境では NEXT_PUBLIC_* 変数はビルド時にインライン化されるため、
+ * ランタイムのシークレットで上書きできない。そのためリクエストヘッダーから
+ * 動的に取得することで、プレビュー環境・本番環境を問わず正しいURLを返す。
  *
  * @param request - HTTPリクエスト
- * @returns ベースURL（例: http://localhost:3000, https://example.com）
+ * @returns ベースURL（例: http://localhost:8787, https://example.com）
  */
 export function getBaseUrl(request: Request): string {
-  // 本番環境では NEXT_PUBLIC_APP_URL を使用
-  // ただし、Vercelのプレビュー環境（VERCEL_ENV === 'preview'）では
-  // リクエストのホストから動的に取得する
-  // これは、プレビュー環境（preview.twica.bluemoon.works）でOAuth認証の
-  // リダイレクトURIが正しく設定されるようにするため
-  const isVercelPreview = process.env.VERCEL_ENV === 'preview'
-
-  if (process.env.NODE_ENV === 'production' && !isVercelPreview) {
-    return process.env.NEXT_PUBLIC_APP_URL || ''
-  }
-
-  // 開発環境・プレビュー環境ではリクエストのホストから動的に取得
+  // リクエストの host ヘッダーから動的に取得
+  // Cloudflare Workers / Vercel いずれの環境でも正しく動作する
   const host = request.headers.get('host')
   if (!host) {
     // フォールバック: NEXT_PUBLIC_APP_URL を使用
-    return process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    // Cloudflare Workers のローカル開発サーバーはポート 8787 を使用
+    return process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:8787'
   }
 
   // プロトコルを判定
@@ -35,10 +30,14 @@ export function getBaseUrl(request: Request): string {
   const forwardedProto = request.headers.get('x-forwarded-proto')
   let protocol: string
 
-  if (forwardedProto) {
-    protocol = forwardedProto
-  } else if (host.includes('localhost') || host.includes('127.0.0.1') || host.includes('::1')) {
+  if (host.includes('localhost') || host.includes('127.0.0.1') || host.includes('::1')) {
+    // ローカル開発環境は常に HTTP を使用
+    // wrangler dev が内部的に x-forwarded-proto: https を設定するため、
+    // localhost チェックを x-forwarded-proto より優先しないと
+    // redirect_uri が https://localhost:8787/... になりブラウザが接続できない
     protocol = 'http'
+  } else if (forwardedProto) {
+    protocol = forwardedProto
   } else {
     // デフォルトは https
     protocol = 'https'
