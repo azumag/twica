@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
       .from("streamers")
       .select("id")
       .eq("twitch_user_id", session.twitchUserId)
-      .single();
+      .maybeSingle();
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
@@ -132,7 +132,7 @@ export async function POST(request: NextRequest) {
       .from("streamers")
       .select("id, channel_point_reward_id")
       .eq("twitch_user_id", session.twitchUserId)
-      .single();
+      .maybeSingle();
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
@@ -166,7 +166,7 @@ export async function POST(request: NextRequest) {
         reward_name: rewardName || null,
       })
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) {
       // Handle unique constraint violation (reward already added)
@@ -232,7 +232,7 @@ export async function DELETE(request: NextRequest) {
       .from("streamers")
       .select("id")
       .eq("twitch_user_id", session.twitchUserId)
-      .single();
+      .maybeSingle();
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });

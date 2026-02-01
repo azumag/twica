@@ -195,7 +195,7 @@ export async function GET(request: NextRequest) {
         .from('users')
         .select('tos_accepted_at')
         .eq('twitch_user_id', twitchUser.id)
-        .single()
+        .maybeSingle()
 
       hasTosAccepted = userData?.tos_accepted_at !== null
 

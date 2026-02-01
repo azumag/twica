@@ -152,14 +152,10 @@ export async function removeBlobFile(url: string): Promise<BlobFileInfo | null> 
       .from('blob_files')
       .select('user_prefix, file_size, storage_type')
       .eq('url', url)
-      .single();
+      .maybeSingle();
 
+    // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
     if (selectError) {
-      // ファイルが見つからない場合（404）は正常なケースとして処理
-      if (selectError.code === 'PGRST116') {
-        logger.warn(`[StorageDB] Blob file not found in DB: ${url}`);
-        return null;
-      }
       logger.error('[StorageDB] Failed to get blob file record:', selectError);
       throw new Error(`Failed to get blob file: ${selectError.message}`);
     }

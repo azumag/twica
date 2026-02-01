@@ -69,7 +69,7 @@ export class GachaService {
           .from('users')
           .select('id')
           .eq('twitch_user_id', userTwitchId)
-          .single()
+          .maybeSingle()
       ])
 
       if (historyResult.error) {
@@ -93,7 +93,7 @@ export class GachaService {
             ignoreDuplicates: true,
           })
           .select('id')
-          .single()
+          .maybeSingle()
 
         if (createError) {
           logger.warn('Failed to create user:', createError.message)
@@ -150,7 +150,7 @@ export class GachaService {
         .from('streamers')
         .select('id, channel_point_reward_id')
         .eq('twitch_user_id', event.broadcaster_user_id)
-        .single()
+        .maybeSingle()
 
       if (streamerError || !streamer) {
         return err('Streamer not found')
@@ -169,11 +169,10 @@ export class GachaService {
         .select('id')
         .eq('streamer_id', streamer.id)
         .eq('reward_id', event.reward.id)
-        .single()
+        .maybeSingle()
 
-      if (additionalError && additionalError.code !== 'PGRST116') {
-        // PGRST116 = no rows found, which is expected if reward is not registered
-        // PGRST116 = 行が見つからない、これは報酬が登録されていない場合に期待される
+      // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
+      if (additionalError) {
         logger.warn(`Error checking additional reward: ${additionalError.message}`)
       }
 

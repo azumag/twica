@@ -111,7 +111,7 @@ export async function POST(request: NextRequest) {
       .select("id")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
-      .single();
+      .maybeSingle();
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
@@ -135,7 +135,7 @@ export async function POST(request: NextRequest) {
         drop_rate: dropRate,
       })
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) {
       return handleDatabaseError(error, "Cards API: Failed to create card");
@@ -280,7 +280,7 @@ export async function GET(request: NextRequest) {
       .select("id")
       .eq("id", streamerId)
       .eq("twitch_user_id", session?.twitchUserId)
-      .single();
+      .maybeSingle();
 
     if (streamerError || !streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });

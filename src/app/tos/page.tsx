@@ -27,7 +27,7 @@ export default async function TosPage() {
         .from('users')
         .select('tos_accepted_at')
         .eq('twitch_user_id', session.twitchUserId)
-        .single();
+        .maybeSingle();
 
       hasAccepted = userData?.tos_accepted_at !== null;
     } catch {

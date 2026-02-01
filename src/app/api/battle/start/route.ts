@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
       .from('users')
       .select('id, twitch_user_id')
       .eq('twitch_user_id', session.twitchUserId)
-      .single()
+      .maybeSingle()
 
     if (userError || !userData) {
       return handleDatabaseError(userError ?? new Error('User not found'), "Battle Start API: Failed to fetch user data")
@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
       `)
       .eq('id', userCardId)
       .eq('user_id', userData.id)
-      .single()
+      .maybeSingle()
 
     if (userCardError || !userCardData) {
       return handleDatabaseError(userCardError ?? new Error('Card not found or not owned by user'), "Battle Start API: Failed to fetch user card")
@@ -177,7 +177,7 @@ export async function POST(request: NextRequest) {
         battle_log: battleResult.logs
       })
       .select()
-      .single()
+      .maybeSingle()
       
     if (battleData) {
       setGameContext({ 

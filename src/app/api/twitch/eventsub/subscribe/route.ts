@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
       .from("streamers")
       .select("id")
       .eq("twitch_user_id", session.twitchUserId)
-      .single();
+      .maybeSingle();
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });

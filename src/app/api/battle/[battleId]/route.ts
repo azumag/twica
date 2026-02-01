@@ -99,7 +99,7 @@ export async function GET(
       .from('users')
       .select('id, twitch_user_id')
       .eq('twitch_user_id', session.twitchUserId)
-      .single()
+      .maybeSingle()
 
     if (userError || !userData) {
       return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
@@ -150,7 +150,7 @@ export async function GET(
       `)
       .eq('id', battleId)
       .eq('user_id', userData.id)
-      .single()
+      .maybeSingle()
 
     if (battleError || !battleData) {
       return handleDatabaseError(battleError ?? new Error('Battle not found'), "Failed to fetch battle data")

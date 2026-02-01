@@ -34,7 +34,7 @@ export async function GET(
       .from("streamers")
       .select("gacha_sound_url, gacha_sound_enabled")
       .eq("id", streamerId)
-      .single();
+      .maybeSingle();
 
     if (error) {
       return handleDatabaseError(error, "Streamer Sound Settings API");

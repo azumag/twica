@@ -118,7 +118,7 @@ export async function PUT(
       .from("cards")
       .select("streamer_id, image_url, streamers!inner(twitch_user_id)")
       .eq("id", id)
-      .single();
+      .maybeSingle();
 
     const twitchUserId = extractTwitchUserId(card?.streamers);
 
@@ -182,7 +182,7 @@ export async function PUT(
       .update(updateData)
       .eq("id", id)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) {
       return handleDatabaseError(error, "Failed to update card");
@@ -243,7 +243,7 @@ export async function DELETE(
       .from("cards")
       .select("streamer_id, image_url, streamers!inner(twitch_user_id)")
       .eq("id", id)
-      .single();
+      .maybeSingle();
 
     const twitchUserId = extractTwitchUserId(card?.streamers);
 
