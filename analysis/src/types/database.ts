@@ -27,6 +27,16 @@ export interface Database {
           channel_point_reward_id: string | null
           channel_point_reward_name: string | null
           is_active: boolean
+          // ガチャ効果音URL - R2に保存された音声ファイルのURL
+          gacha_sound_url: string | null
+          // ガチャ効果音の有効/無効フラグ
+          gacha_sound_enabled: boolean
+          // チャット通知の有効/無効フラグ（デフォルトはfalse、オプトイン方式）
+          // Whether to post gacha results to Twitch chat (opt-in, default false)
+          chat_announcement_enabled: boolean
+          // チャット通知のカスタムテンプレート（nullの場合はデフォルトテンプレートを使用）
+          // Custom message template for chat announcements (null uses default)
+          chat_announcement_template: string | null
           created_at: string
           updated_at: string
         }
@@ -39,6 +49,10 @@ export interface Database {
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
           is_active?: boolean
+          gacha_sound_url?: string | null
+          gacha_sound_enabled?: boolean
+          chat_announcement_enabled?: boolean
+          chat_announcement_template?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -51,6 +65,10 @@ export interface Database {
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
           is_active?: boolean
+          gacha_sound_url?: string | null
+          gacha_sound_enabled?: boolean
+          chat_announcement_enabled?: boolean
+          chat_announcement_template?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -124,6 +142,9 @@ export interface Database {
           // 利用規約同意日時 - NULLの場合は未同意
           // Terms of Service acceptance timestamp - NULL means not yet accepted
           tos_accepted_at: string | null
+          // Twitch OAuthで付与されたスコープ一覧（PostgreSQL TEXT配列）
+          // user:write:chat があればチャット通知の送信権限あり
+          twitch_scopes: string[]
           created_at: string
           updated_at: string
         }
@@ -134,6 +155,7 @@ export interface Database {
           twitch_display_name: string
           twitch_profile_image_url?: string | null
           tos_accepted_at?: string | null
+          twitch_scopes?: string[]
           created_at?: string
           updated_at?: string
         }
@@ -144,6 +166,7 @@ export interface Database {
           twitch_display_name?: string
           twitch_profile_image_url?: string | null
           tos_accepted_at?: string | null
+          twitch_scopes?: string[]
           created_at?: string
           updated_at?: string
         }

@@ -82,6 +82,7 @@ export function Users() {
           twitch_display_name: user.twitch_display_name,
           twitch_profile_image_url: user.twitch_profile_image_url,
           tos_accepted_at: user.tos_accepted_at,
+          twitch_scopes: user.twitch_scopes ?? [],
           created_at: user.created_at,
           updated_at: user.updated_at,
           card_count: cardCount,
