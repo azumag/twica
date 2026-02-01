@@ -30,10 +30,10 @@ name: Deploy to Cloudflare Workers
 
 on:
   push:
-    branches: [preview]
+    # branches: [preview]
     # Uncomment to also auto-deploy production on push to main
     # mainへのプッシュ時にも本番自動デプロイするにはコメント解除
-    # branches: [main, preview]
+    branches: [main, preview]
 
   # Manual trigger allows deploying any branch to either environment
   # 手動トリガーで任意のブランチをどちらの環境にもデプロイ可能
