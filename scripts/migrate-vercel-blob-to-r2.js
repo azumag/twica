@@ -33,8 +33,8 @@
  *   - BLOB_READ_WRITE_TOKEN: Vercel Blobトークン（--delete-source使用時のみ必要）
  */
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 // 移行スクリプト専用のenvファイルを使用（.env.local はNext.jsビルド時に読み込まれるため避ける）
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 require('dotenv').config({ path: '.env.migration' });
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports

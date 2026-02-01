@@ -193,14 +193,20 @@ export function getRateLimitStorage(): RateLimitStorage {
 /**
  * Internal rate limit check implementation
  * 内部レート制限チェック実装
+ *
+ * @param name - エンドポイント識別名（キーの一部として使用し、エンドポイントごとに独立したカウンタを保持する）
+ *               Endpoint name used as part of the storage key to maintain independent counters per endpoint
  */
 async function checkRateLimitInternal(
+  name: string,
   limit: number,
   windowMs: number,
   identifier: string
 ): Promise<RateLimitResult> {
   const now = Date.now();
-  const key = `ratelimit:${identifier}`;
+  // エンドポイント名をキーに含めることで、異なるエンドポイント間でカウンタが共有されないようにする
+  // Include endpoint name in key so counters are not shared across different endpoints
+  const key = `ratelimit:${name}:${identifier}`;
 
   try {
     const existing = await currentStorage.get(key);
@@ -249,11 +255,16 @@ async function checkRateLimitInternal(
 /**
  * Create a rate limiter with specified limits
  * 指定された制限でレートリミッターを作成
+ *
+ * @param name - エンドポイント識別名（ストレージキーのプレフィックスとして使用）
+ *               Endpoint name used as prefix in storage key to isolate counters per endpoint
+ * @param limit - ウィンドウ内の最大リクエスト数 / Max requests within window
+ * @param windowMs - レート制限ウィンドウ（ミリ秒） / Rate limit window in milliseconds
  */
-function createRatelimit(limit: number, windowMs: number): RateLimiter {
+function createRatelimit(name: string, limit: number, windowMs: number): RateLimiter {
   return {
     limit: async (identifier: string): Promise<RateLimitResult> => {
-      return checkRateLimitInternal(limit, windowMs, identifier);
+      return checkRateLimitInternal(name, limit, windowMs, identifier);
     },
   };
 }
@@ -263,29 +274,29 @@ function createRatelimit(limit: number, windowMs: number): RateLimiter {
  * 各エンドポイント用の事前定義されたレートリミッター
  */
 export const rateLimits = {
-  upload: createRatelimit(10, 60 * 1000),
-  cardsPost: createRatelimit(20, 60 * 1000),
-  cardsGet: createRatelimit(100, 60 * 1000),
-  cardsId: createRatelimit(100, 60 * 1000),
-  streamerSettings: createRatelimit(10, 60 * 1000),
-  gacha: createRatelimit(30, 60 * 1000),
-  battleStart: createRatelimit(20, 60 * 1000),
-  battleGet: createRatelimit(100, 60 * 1000),
-  battleStats: createRatelimit(50, 60 * 1000),
-  authLogin: createRatelimit(5, 60 * 1000),
-  authCallback: createRatelimit(10, 60 * 1000),
-  authLogout: createRatelimit(10, 60 * 1000),
-  authReauth: createRatelimit(3, 60 * 1000),
+  upload: createRatelimit("upload", 10, 60 * 1000),
+  cardsPost: createRatelimit("cardsPost", 20, 60 * 1000),
+  cardsGet: createRatelimit("cardsGet", 100, 60 * 1000),
+  cardsId: createRatelimit("cardsId", 100, 60 * 1000),
+  streamerSettings: createRatelimit("streamerSettings", 10, 60 * 1000),
+  gacha: createRatelimit("gacha", 30, 60 * 1000),
+  battleStart: createRatelimit("battleStart", 20, 60 * 1000),
+  battleGet: createRatelimit("battleGet", 100, 60 * 1000),
+  battleStats: createRatelimit("battleStats", 50, 60 * 1000),
+  authLogin: createRatelimit("authLogin", 5, 60 * 1000),
+  authCallback: createRatelimit("authCallback", 10, 60 * 1000),
+  authLogout: createRatelimit("authLogout", 10, 60 * 1000),
+  authReauth: createRatelimit("authReauth", 3, 60 * 1000),
   // スコープ確認は読み取り専用の低リスク操作なので、authReauthより緩い制限を設定
   // check-scope is a read-only low-risk operation, so use a more generous limit than authReauth
-  authCheckScope: createRatelimit(20, 60 * 1000),
-  eventsub: createRatelimit(1000, 60 * 1000),
-  twitchRewardsGet: createRatelimit(50, 60 * 1000),
-  twitchRewardsPost: createRatelimit(20, 60 * 1000),
-  eventsubSubscribePost: createRatelimit(10, 60 * 1000),
-  eventsubSubscribeGet: createRatelimit(50, 60 * 1000),
-  gachaHistoryDelete: createRatelimit(30, 60 * 1000),
-  debugSession: createRatelimit(10, 60 * 1000),
+  authCheckScope: createRatelimit("authCheckScope", 20, 60 * 1000),
+  eventsub: createRatelimit("eventsub", 1000, 60 * 1000),
+  twitchRewardsGet: createRatelimit("twitchRewardsGet", 50, 60 * 1000),
+  twitchRewardsPost: createRatelimit("twitchRewardsPost", 20, 60 * 1000),
+  eventsubSubscribePost: createRatelimit("eventsubSubscribePost", 10, 60 * 1000),
+  eventsubSubscribeGet: createRatelimit("eventsubSubscribeGet", 50, 60 * 1000),
+  gachaHistoryDelete: createRatelimit("gachaHistoryDelete", 30, 60 * 1000),
+  debugSession: createRatelimit("debugSession", 10, 60 * 1000),
 } as const;
 
 /**
@@ -310,7 +321,9 @@ export async function checkRateLimit(
     logger.error("Rate limit check failed:", error);
 
     if (limit && windowMs) {
-      return checkRateLimitInternal(limit, windowMs, identifier);
+      // フォールバック時はidentifierをそのままname代わりに使用（エラー時の安全策）
+      // Use identifier as name fallback during error recovery
+      return checkRateLimitInternal("fallback", limit, windowMs, identifier);
     }
 
     return {
