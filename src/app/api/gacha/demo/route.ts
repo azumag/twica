@@ -142,7 +142,7 @@ export async function POST(request: NextRequest) {
         .from("cards")
         .select("*")
         .eq("id", cardId)
-        .single();
+        .maybeSingle();
 
       if (!error && card) {
         return respondWithCard(card, streamerId);

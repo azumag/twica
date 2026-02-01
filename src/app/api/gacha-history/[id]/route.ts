@@ -60,7 +60,7 @@ export async function DELETE(
       .from("gacha_history")
       .select("user_twitch_id")
       .eq("id", id)
-      .single();
+      .maybeSingle();
 
     if (fetchError || !history) {
       return handleDatabaseError(fetchError, "Fetching gacha history for deletion");

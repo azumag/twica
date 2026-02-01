@@ -201,7 +201,7 @@ async function handleRedemption(messageId: string, event: {
     .from('gacha_history')
     .select('id')
     .eq('event_id', messageId)
-    .single();
+    .maybeSingle();
 
   if (existingHistory) {
     logger.info('[handleRedemption] Skipped - already processed', { messageId });
@@ -241,7 +241,7 @@ async function handleRedemption(messageId: string, event: {
       .from("streamers")
       .select("id, chat_announcement_enabled, chat_announcement_template")
       .eq("twitch_user_id", event.broadcaster_user_id)
-      .single();
+      .maybeSingle();
 
     logger.info('[handleRedemption] Streamer query result', {
       found: !!streamer,
@@ -370,7 +370,7 @@ async function sendChatAnnouncement(
       .from('users')
       .select('id')
       .eq('twitch_user_id', userId)
-      .single();
+      .maybeSingle();
 
     if (user) {
       // user_cardsテーブルから所持枚数を取得

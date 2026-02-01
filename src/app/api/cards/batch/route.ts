@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
       .select("id")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
-      .single();
+      .maybeSingle();
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });

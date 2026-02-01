@@ -89,7 +89,7 @@ export async function GET() {
       .from('users')
       .select('tos_accepted_at')
       .eq('twitch_user_id', session.twitchUserId)
-      .single()
+      .maybeSingle()
 
     if (error) {
       logger.error('Failed to check TOS acceptance', {

@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
       .from('users')
       .select('id, twitch_user_id')
       .eq('twitch_user_id', session.twitchUserId)
-      .single()
+      .maybeSingle()
 
     if (userError || !userData) {
       return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
@@ -75,9 +75,10 @@ export async function GET(request: NextRequest) {
       .from('battle_stats')
       .select('id, total_battles, wins, losses, draws, win_rate, updated_at')
       .eq('user_id', userData.id)
-      .single()
+      .maybeSingle()
 
-    if (statsError && statsError.code !== 'PGRST116') { // PGRST116 is "not found"
+    // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
+    if (statsError) {
       return handleDatabaseError(statsError, "Failed to fetch battle stats")
     }
 

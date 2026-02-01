@@ -20,15 +20,9 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
     .from('users')
     .select('twitch_access_token, twitch_refresh_token, twitch_token_expires_at')
     .eq('twitch_user_id', twitchUserId)
-    .single();
+    .maybeSingle();
 
   if (dbError) {
-    // PGRST116 means no rows returned - user not found, which is an expected case
-    if (dbError.code === 'PGRST116') {
-      logger.warn('User not found in database', { twitchUserId });
-      return null;
-    }
-
     // PGRST204 means column not found - token columns may not exist in schema
     if (dbError.code === 'PGRST204') {
       logger.warn('Twitch token columns not found in schema', { twitchUserId, error: dbError });
@@ -36,6 +30,7 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
     }
 
     // Other database errors are unexpected and should be thrown
+    // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
     logger.error('Database error fetching user tokens', { twitchUserId, error: dbError });
     throw new TwitchTokenError(
       'Failed to fetch user tokens from database',
@@ -159,19 +154,15 @@ export async function hasScope(twitchUserId: string, scope: string): Promise<boo
     .from('users')
     .select('twitch_scopes')
     .eq('twitch_user_id', twitchUserId)
-    .single();
+    .maybeSingle();
 
   if (error) {
-    // PGRST116 means no rows returned - user not found
-    if (error.code === 'PGRST116') {
-      logger.warn('User not found when checking scope', { twitchUserId, scope });
-      return false;
-    }
     // PGRST204 means column not found - twitch_scopes column may not exist
     if (error.code === 'PGRST204') {
       logger.warn('twitch_scopes column not found in schema', { twitchUserId, scope });
       return false;
     }
+    // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
     logger.error('Database error checking scope', { twitchUserId, scope, error });
     return false;
   }

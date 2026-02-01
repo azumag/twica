@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
       .from('users')
       .select('id, twitch_user_id')
       .eq('twitch_user_id', session.twitchUserId)
-      .single()
+      .maybeSingle()
 
     if (userError || !userData) {
       return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")

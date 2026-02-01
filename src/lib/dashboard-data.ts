@@ -32,7 +32,7 @@ export const getStreamerData = cache(async (twitchUserId: string) => {
       cards (*)
     `)
     .eq("twitch_user_id", twitchUserId)
-    .single();
+    .maybeSingle();
 
   if (!streamer) return null;
 
@@ -67,7 +67,7 @@ export const getStreamerDataPaginated = cache(async (
     .from("streamers")
     .select("*")
     .eq("twitch_user_id", twitchUserId)
-    .single();
+    .maybeSingle();
 
   if (!streamer) return null;
 
@@ -129,7 +129,7 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
       )
     `)
     .eq("twitch_user_id", twitchUserId)
-    .single();
+    .maybeSingle();
   logger.info(`[Perf] getUserCards query: ${Date.now() - startQuery}ms`);
 
   if (!user || !user.user_cards) {
@@ -224,7 +224,7 @@ async function fetchUserCardsForStreamerFromDB(
       )
     `)
     .eq("twitch_user_id", twitchUserId)
-    .single();
+    .maybeSingle();
   logger.info(`[Perf] getUserCardsForStreamer query: ${Date.now() - startQuery}ms`);
 
   if (!user || !user.user_cards) {
@@ -292,7 +292,7 @@ export const getStreamerById = cache(async (streamerId: string): Promise<Streame
     .from("streamers")
     .select("*")
     .eq("id", streamerId)
-    .single();
+    .maybeSingle();
 
   return streamer;
 });
@@ -321,7 +321,7 @@ export const getUserCardDetail = cache(async (
     `)
     .eq("id", cardId)
     .eq("streamer_id", streamerId)
-    .single();
+    .maybeSingle();
 
   if (!card) {
     logger.info(`[Perf] getUserCardDetail (card not found): ${Date.now() - start}ms`);
@@ -339,7 +339,7 @@ export const getUserCardDetail = cache(async (
       )
     `)
     .eq("twitch_user_id", twitchUserId)
-    .single();
+    .maybeSingle();
 
   // Count how many of this specific card the user owns
   // ユーザーがこの特定のカードを何枚所有しているかをカウント
