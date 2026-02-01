@@ -121,6 +121,13 @@ export async function POST(request: NextRequest) {
     const subscriptionType = data.subscription.type;
     const event = data.event;
 
+    // EventSub通知受信を記録（webhookが到達していることを確認するため）
+    logger.info('[EventSub] Notification received', {
+      messageId,
+      subscriptionType,
+      broadcasterUserId: event?.broadcaster_user_id,
+    });
+
     if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
       await handleRedemption(messageId, event);
     }
@@ -178,6 +185,14 @@ async function handleRedemption(messageId: string, event: {
   user_name: string;
   reward: { id: string; title: string };
 }) {
+  // handleRedemption開始ログ（デバッグ：この関数が呼ばれたことを確認）
+  logger.info('[handleRedemption] START', {
+    messageId,
+    broadcasterUserId: event.broadcaster_user_id,
+    userName: event.user_name,
+    rewardTitle: event.reward.title,
+  });
+
   const supabaseAdmin = getSupabaseAdmin();
 
   // Idempotency check - skip if this event was already processed
@@ -189,6 +204,7 @@ async function handleRedemption(messageId: string, event: {
     .single();
 
   if (existingHistory) {
+    logger.info('[handleRedemption] Skipped - already processed', { messageId });
     return;
   }
 
@@ -199,8 +215,14 @@ async function handleRedemption(messageId: string, event: {
     if (!result.success) {
       // Error in gacha but don't throw, as webhook should return 200
       // ガチャでエラーが発生してもthrowしない。webhookは200を返す必要がある
+      logger.warn('[handleRedemption] Gacha execution failed', { messageId });
       return;
     }
+
+    logger.info('[handleRedemption] Gacha success', {
+      messageId,
+      cardName: result.data.card.name,
+    });
 
     // Notify overlay via Supabase Realtime
     // Supabase Realtimeを通じてオーバーレイに通知
@@ -215,17 +237,28 @@ async function handleRedemption(messageId: string, event: {
     // ブロードキャスト用とチャット通知設定用にストリーマーデータを取得
     // 設定変更が即座に反映されるようキャッシュ無効クライアントを使用
     const supabaseAdminNoCache = getSupabaseAdminNoCache();
-    const { data: streamer } = await supabaseAdminNoCache
+    const { data: streamer, error: streamerError } = await supabaseAdminNoCache
       .from("streamers")
       .select("id, chat_announcement_enabled, chat_announcement_template")
       .eq("twitch_user_id", event.broadcaster_user_id)
       .single();
+
+    logger.info('[handleRedemption] Streamer query result', {
+      found: !!streamer,
+      streamerId: streamer?.id,
+      chatAnnouncementEnabled: streamer?.chat_announcement_enabled,
+      error: streamerError?.message,
+    });
 
     if (streamer) {
       // Realtime通知（既存機能）
       await broadcastGachaResult(streamer.id, gachaResult, {
         maxRetries: 3,
         retryDelay: 1000,
+      });
+
+      logger.info('[handleRedemption] Broadcast done, starting chat announcement', {
+        streamerId: streamer.id,
       });
 
       // チャット通知 - awaitで完了を待つ（Cloudflare Workersではレスポンス返却後に
@@ -240,17 +273,24 @@ async function handleRedemption(messageId: string, event: {
           event.user_name,
           event.user_id
         );
+        logger.info('[handleRedemption] Chat announcement completed');
       } catch (err) {
         // チャット送信失敗はログのみ、ガチャ処理はブロックしない
         // Chat send failure is logged only, does not block gacha processing
-        logger.warn('Chat announcement failed', {
-          error: err,
+        logger.warn('[handleRedemption] Chat announcement threw error', {
+          error: err instanceof Error ? err.message : String(err),
           broadcasterTwitchUserId: event.broadcaster_user_id,
           streamerId: streamer.id,
         });
       }
     }
+
+    logger.info('[handleRedemption] END', { messageId });
   } catch (error) {
+    logger.error('[handleRedemption] Unhandled error', {
+      messageId,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return handleApiError(error, "EventSub redemption");
   }
 }
