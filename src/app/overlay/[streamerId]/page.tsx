@@ -115,6 +115,12 @@ export default function OverlayPage() {
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
+  // displayResultとaddDebugLogをrefで保持することで、
+  // subscriptionのuseEffectが不要に再実行されることを防ぐ
+  // （soundSettings変更 → playGachaSound再生成 → displayResult再生成 のチェーンで
+  //  subscriptionが破棄・再作成される問題を回避）
+  const displayResultRef = useRef<(data: GachaResult) => void>(() => {});
+  const addDebugLogRef = useRef<(message: string) => void>(() => {});
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 効果音再生用のオーディオ要素への参照
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -291,6 +297,11 @@ export default function OverlayPage() {
     }, 100);
   }, [checkImageAspectRatio, playGachaSound, options.displayDuration]);
 
+  // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）
+  useEffect(() => {
+    displayResultRef.current = displayResult;
+  }, [displayResult]);
+
   // デバッグログを追加するヘルパー関数
   // OBSブラウザソースでの接続問題を調査するために使用
   const addDebugLog = useCallback((message: string) => {
@@ -300,26 +311,31 @@ export default function OverlayPage() {
     setDebugLogs(prev => [...prev.slice(-19), logEntry]); // 最新20件を保持
   }, []);
 
-  // Connect to Supabase Realtime for real-time events
+  // refを最新のcallbackで更新
   useEffect(() => {
-    // queueMicrotaskで非同期に実行してカスケードレンダーを回避
-    // addDebugLogはsetDebugLogsを呼び出すため、同期的に実行するとlintエラーになる
+    addDebugLogRef.current = addDebugLog;
+  }, [addDebugLog]);
+
+  // Connect to Supabase Realtime for real-time events
+  // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
+  // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
+  useEffect(() => {
     queueMicrotask(() => {
-      addDebugLog(`Starting subscription for streamer: ${streamerId}`);
-      addDebugLog(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
+      addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
+      addDebugLogRef.current(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
     });
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
-      addDebugLog(`Received payload: ${payload.type}`);
+      addDebugLogRef.current(`Received payload: ${payload.type}`);
       if (payload.type === 'gacha' && payload.card) {
-        displayResult({
+        displayResultRef.current({
           card: payload.card as unknown as Card,
           userTwitchUsername: payload.userTwitchUsername,
         });
       }
     }, {
       onError: (error) => {
-        addDebugLog(`Connection error: ${error.message} (expected: ${error.isExpected})`);
+        addDebugLogRef.current(`Connection error: ${error.message} (expected: ${error.isExpected})`);
         if (error.isExpected) {
           setConnectionStatus('disconnected');
           setErrorMessage(null);
@@ -329,7 +345,7 @@ export default function OverlayPage() {
         }
       },
       onSuccess: () => {
-        addDebugLog('Connection successful - SUBSCRIBED');
+        addDebugLogRef.current('Connection successful - SUBSCRIBED');
         setConnectionStatus('connected');
         if (connectionTimeoutRef.current) {
           clearTimeout(connectionTimeoutRef.current);
@@ -337,17 +353,13 @@ export default function OverlayPage() {
         }
       },
       onStatusChange: (status) => {
-        // デバッグ用：接続ステータスの変化を追跡
-        // OBSブラウザソースでの接続問題を調査するために使用
-        addDebugLog(`Connection status: ${status}`);
+        addDebugLogRef.current(`Connection status: ${status}`);
       },
     });
 
-    // OBSブラウザソースのCEFは初期化が遅いことがあるため、
-    // タイムアウトを30秒に延長（通常ブラウザでは10秒で十分だが）
     connectionTimeoutRef.current = setTimeout(() => {
       if (connectionStatusRef.current === 'connecting') {
-        addDebugLog('Connection timeout after 30 seconds');
+        addDebugLogRef.current('Connection timeout after 30 seconds');
         setConnectionStatus('error');
         setErrorMessage('Connection timeout - OBSの場合はブラウザソースを再作成してください');
       }
@@ -366,7 +378,8 @@ export default function OverlayPage() {
         clearTimeout(animationTimeoutRef.current);
       }
     };
-  }, [streamerId, displayResult, addDebugLog]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- displayResult/addDebugLog are accessed via refs to prevent subscription churn
+  }, [streamerId]);
 
   // Demo function for testing
   // デモ機能 - 配信者のカードがあればそれを、なければデモカードを表示
