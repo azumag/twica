@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setSecurityHeaders } from '@/lib/security-headers'
+import { ERROR_MESSAGES } from '@/lib/constants'
 import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
 
 /**
@@ -86,13 +87,13 @@ export async function middleware(request: NextRequest) {
       const ip = getClientIp(request)
       const identifier = `global:${ip}`
       const rateLimitResult = await checkRateLimit(
-        rateLimits.eventsub,
+        rateLimits.global,
         identifier
       )
 
       if (!rateLimitResult.success) {
         const errorResponse = NextResponse.json(
-          { error: 'Too many requests' },
+          { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
           {
             status: 429,
             headers: {

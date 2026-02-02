@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
 /**
  * POST /api/tos/accept
@@ -18,7 +19,7 @@ export async function POST(request: NextRequest) {
       // 未認証の場合は401エラーを返す
       // Return 401 if user is not authenticated
       return NextResponse.json(
-        { error: 'Unauthorized' },
+        { error: ERROR_MESSAGES.UNAUTHORIZED },
         { status: 401 }
       )
     }
@@ -59,7 +60,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     logger.error('Error in TOS accept API', { error })
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: ERROR_MESSAGES.INTERNAL_ERROR },
       { status: 500 }
     )
   }
@@ -76,7 +77,7 @@ export async function GET() {
 
     if (!session) {
       return NextResponse.json(
-        { error: 'Unauthorized' },
+        { error: ERROR_MESSAGES.UNAUTHORIZED },
         { status: 401 }
       )
     }
@@ -109,7 +110,7 @@ export async function GET() {
   } catch (error) {
     logger.error('Error in TOS check API', { error })
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: ERROR_MESSAGES.INTERNAL_ERROR },
       { status: 500 }
     )
   }
