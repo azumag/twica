@@ -2,7 +2,7 @@ import { cookies } from 'next/headers'
 
 import { logger } from './logger'
 import { reportSecurityError } from './sentry/error-handler'
-import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from './constants'
+import { COOKIE_NAMES, CSRF_CONFIG, DEBUG_MODE, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from './constants'
 import { parseSession } from './session'
 
 export async function hashIP(ip: string | null): Promise<string> {
@@ -34,24 +34,37 @@ function generateCSRFToken(): string {
 }
 
 /**
+ * Development-only fallback salt generated once per process startup.
+ * Using a random salt per process prevents the rainbow table attack vector
+ * that existed with the previous hardcoded 'default-salt' value (SEC-01).
+ * Dev sessions are invalidated on server restart, which is acceptable
+ * since this only applies when CSRF_TOKEN_SALT env var is not configured.
+ */
+const devFallbackSalt: string = (() => {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+})()
+
+/**
  * トークンのハッシュを生成（SHA-256、Web Crypto API）
+ * Production requires CSRF_TOKEN_SALT env var (throws if missing).
+ * Development uses a per-process random salt as fallback to avoid
+ * the security risk of a hardcoded default salt value.
  */
 export async function hashToken(token: string): Promise<string> {
-  const salt = process.env.CSRF_TOKEN_SALT
+  const configuredSalt = process.env.CSRF_TOKEN_SALT
 
-  if (!salt) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('CSRF_TOKEN_SALT environment variable is required in production')
-    }
-
-    logger.warn('CSRF_TOKEN_SALT is not set, using default salt. Please set CSRF_TOKEN_SALT in your .env file')
-    const encoder = new TextEncoder()
-    const data = encoder.encode(token + 'default-salt')
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-    const hashArray = Array.from(new Uint8Array(hashBuffer))
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+  if (!configuredSalt && process.env.NODE_ENV === 'production') {
+    throw new Error('CSRF_TOKEN_SALT environment variable is required in production')
   }
 
+  if (!configuredSalt) {
+    logger.warn('CSRF_TOKEN_SALT is not set. Using random per-process salt. Set CSRF_TOKEN_SALT in .env for consistent sessions across restarts.')
+  }
+
+  // Use configured salt in production, per-process random salt in development
+  const salt = configuredSalt || devFallbackSalt
   const encoder = new TextEncoder()
   const data = encoder.encode(token + salt)
   const hashBuffer = await crypto.subtle.digest('SHA-256', data)
@@ -332,14 +345,23 @@ export async function validateCSRFToken(
 
     return { valid: true }
   } catch (error) {
-    if (error instanceof Error && error.name === 'RangeError') {
-      logger.warn('CSRF validation failed: Buffer length mismatch', {
-        userId: session.twitchUserId,
-      })
+    if (DEBUG_MODE) {
+      // Development: log detailed error info for debugging
+      if (error instanceof Error && error.name === 'RangeError') {
+        logger.info('CSRF validation failed: Buffer length mismatch', {
+          userId: session.twitchUserId,
+          error: error.message,
+        })
+      } else {
+        logger.error('CSRF validation failed: Unexpected error', {
+          userId: session.twitchUserId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     } else {
-      logger.error('CSRF validation failed: Unexpected error', {
+      // Production: log minimal info to avoid leaking internal details
+      logger.warn('CSRF validation failed', {
         userId: session.twitchUserId,
-        error: error instanceof Error ? error.message : 'Unknown error',
       })
     }
 

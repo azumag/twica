@@ -69,6 +69,22 @@ export const DEBUG_CONFIG = {
 } as const
 
 /**
+ * Whether the app is running in debug/development mode.
+ * Controls verbose logging and error detail exposure.
+ */
+export const DEBUG_MODE = process.env.NODE_ENV !== 'production'
+
+/**
+ * HTTP method constants to avoid magic strings throughout the codebase.
+ */
+export const HTTP_METHODS = {
+  GET: 'GET',
+  POST: 'POST',
+  PUT: 'PUT',
+  DELETE: 'DELETE',
+} as const
+
+/**
  * Cookieドメインを取得
  * 明示的にドメインを設定せず、ブラウザのデフォルト動作に任せる
  * これにより、Cookieは現在のホストに対して設定され、同一オリジンからのリクエストで自動的に送信される
