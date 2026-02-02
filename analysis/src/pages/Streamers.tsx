@@ -3,16 +3,31 @@ import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { DataTable } from '../components/DataTable'
 import { StreamerPopup } from '../components/StreamerPopup'
-import { Streamer, BlobFile } from '../types/database'
+import { Streamer } from '../types/database'
 
 // チャット通知の送信に必要なTwitch OAuthスコープ
 const CHAT_WRITE_SCOPE = 'user:write:chat'
+
+/**
+ * SHA-256ハッシュの先頭8文字を取得（ユーザープレフィックス用）
+ * blob_filesテーブルのuser_prefixと同じ方式で生成
+ * アップロード時にsha256Prefix(twitchUserId)でプレフィックスが生成されるため、
+ * ストリーマーのtwitch_user_idから同じプレフィックスを計算して突き合わせる
+ */
+async function sha256Prefix(data: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const dataBuffer = encoder.encode(data)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  const hash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+  return hash.substring(0, 8)
+}
 
 // Extended streamer type with card statistics and storage usage
 // ストリーマーのカード統計とストレージ使用量を含む拡張型
 interface StreamerWithStats extends Streamer {
   card_count: number
-  // ストレージ使用量（バイト単位）- カード画像のファイルサイズ合計
+  // ストレージ使用量（バイト単位）- blob_filesのuser_prefix集計による実使用量
   storage_bytes: number
   // usersテーブルのtwitch_scopesにuser:write:chatが含まれているか
   // チャット通知の送信にはこのスコープが必要
@@ -38,7 +53,7 @@ type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'nam
  * Streamers page - Displays all registered streamers with their card collections
  * Shows active status, EventSub configuration, card statistics, and storage usage
  * ストリーマー名をクリックするとポップアップでTwitchリンクが表示される
- * ストレージ使用量は各ストリーマーのカード画像サイズの合計を表示
+ * ストレージ使用量はblob_filesのuser_prefixに基づく実使用量を表示
  * 検索フォームでユーザー名・表示名でフィルタリング可能
  */
 export function Streamers() {
@@ -72,21 +87,25 @@ export function Streamers() {
   /**
    * Fetches all streamers with card counts and storage usage
    * Supabaseのリレーション機能を使って効率的にカード数を取得
-   * ストレージ使用量は cards.image_url と blob_files.url を紐付けて計算
+   * ストレージ使用量はstorage_usageテーブル（集計済み）から取得
+   * 本番のstorage-status APIと同じデータソースを使用することで正確な値を表示
+   * blob_filesの全行再集計ではSupabaseのデフォルト行数上限(1000行)で途中切れが発生するため不採用
    */
   async function fetchStreamers() {
     setLoading(true)
     try {
-      // ストリーマーとblob_filesを並行取得（第1段階）
-      // cards(count) はカード数のみ、cards:cards(image_url) は画像URLを取得
-      const [streamersResult, blobFilesResult] = await Promise.all([
+      // ストリーマーとstorage_usageを並行取得（第1段階）
+      // cards(count) はカード数のみ取得
+      // storage_usageはuser_prefixごとの集計済みバイト数を保持（本番APIと同じデータソース）
+      const [streamersResult, storageUsageResult] = await Promise.all([
         supabase
           .from('streamers')
-          .select('*, cards(count), card_images:cards(image_url)')
+          .select('*, cards(count)')
           .order('created_at', { ascending: false }),
         supabase
-          .from('blob_files')
-          .select('url, file_size'),
+          .from('storage_usage')
+          .select('user_prefix, bytes_used')
+          .neq('user_prefix', '_global_'),
       ])
 
       if (streamersResult.error) throw streamersResult.error
@@ -117,17 +136,28 @@ export function Streamers() {
         })
       }
 
-      // blob_filesのURLをキーにしてファイルサイズを高速に参照できるMapを作成
-      const blobFilesData = (blobFilesResult.data || []) as Pick<BlobFile, 'url' | 'file_size'>[]
-      const fileSizeByUrl = new Map<string, number>()
-      blobFilesData.forEach((blob) => {
-        fileSizeByUrl.set(blob.url, blob.file_size)
+      // storage_usageテーブルからuser_prefixごとの使用量Mapを構築
+      // storage_usageはアップロード/削除時にRPCで自動更新される集計済みテーブルのため、
+      // blob_filesの全行スキャン（1000行制限あり）より正確かつ高速
+      const storageUsageData = (storageUsageResult.data || []) as { user_prefix: string; bytes_used: number }[]
+      const storageSizeByPrefix = new Map<string, number>()
+      storageUsageData.forEach((row) => {
+        storageSizeByPrefix.set(row.user_prefix, row.bytes_used)
       })
+
+      // 各ストリーマーのtwitch_user_idからSHA256プレフィックスを計算
+      // storage_usageのuser_prefixと突き合わせるために必要
+      const prefixByTwitchId = new Map<string, string>()
+      await Promise.all(
+        streamerTwitchIds.map(async (twitchId: string) => {
+          const prefix = await sha256Prefix(twitchId)
+          prefixByTwitchId.set(twitchId, prefix)
+        })
+      )
 
       // 型定義: Supabaseのリレーション結果の形式
       type StreamerWithRelations = Streamer & {
         cards: { count: number }[]
-        card_images: { image_url: string | null }[]
       }
 
       // Supabaseのリレーション結果を変換
@@ -136,14 +166,9 @@ export function Streamers() {
         // Supabaseのリレーションカウントは { count: number } の配列として返る
         const cardCount = streamer.cards?.[0]?.count ?? 0
 
-        // 各カード画像のファイルサイズを合計してストレージ使用量を算出
-        const storageBytes = (streamer.card_images || []).reduce((total, card) => {
-          if (card.image_url) {
-            const fileSize = fileSizeByUrl.get(card.image_url) || 0
-            return total + fileSize
-          }
-          return total
-        }, 0)
+        // user_prefix（SHA256先頭8文字）でblob_filesの合計サイズを参照
+        const userPrefix = prefixByTwitchId.get(streamer.twitch_user_id) || ''
+        const storageBytes = storageSizeByPrefix.get(userPrefix) || 0
 
         // ストリーマーに対応するユーザーのスコープを確認
         // user:write:chat スコープがあればチャット通知の送信権限あり

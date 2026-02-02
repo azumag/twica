@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { getStorageUsage, formatBytes } from '@/lib/storage-usage';
 import { handleApiError } from '@/lib/error-handler';
-import { STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
+import { ERROR_MESSAGES, STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
 import { sha256Prefix } from '@/lib/crypto-utils';
 
 export async function GET() {
@@ -11,7 +11,7 @@ export async function GET() {
 
     if (!session || !canUseStreamerFeatures(session)) {
       return NextResponse.json(
-        { error: 'Unauthorized' },
+        { error: ERROR_MESSAGES.UNAUTHORIZED },
         { status: 401 }
       );
     }

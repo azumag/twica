@@ -284,6 +284,29 @@ export interface Database {
           updated_at?: string
         }
       }
+      // ユーザーごとの集計済みストレージ使用量テーブル
+      // recordBlobFile/removeBlobFileの呼び出し時にRPCで自動更新される
+      // '_global_'はグローバル合計を表す特殊なuser_prefix
+      storage_usage: {
+        Row: {
+          user_prefix: string
+          bytes_used: number
+          blob_count: number
+          updated_at: string
+        }
+        Insert: {
+          user_prefix: string
+          bytes_used?: number
+          blob_count?: number
+          updated_at?: string
+        }
+        Update: {
+          user_prefix?: string
+          bytes_used?: number
+          blob_count?: number
+          updated_at?: string
+        }
+      }
       // Storage tracking tables for monitoring blob file usage per user/streamer
       // blob_filesはカード画像のストレージ情報を管理し、URLをキーにファイルサイズを記録
       blob_files: {
