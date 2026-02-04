@@ -108,7 +108,18 @@ export class TwitchChatService {
         // トークンが実際にはuser:write:chatを持っていないケースへの自己修復
         // On 401 with missing scope, remove the scope from DB to fix token/scope mismatch.
         // Self-healing for cases where the token doesn't actually have user:write:chat.
-        if (response.status === 401 && errorBody.message?.includes('user:write:chat')) {
+        //
+        // Twitch APIのスコープ不足時のエラーメッセージは複数パターンがある:
+        // - "User access token requires the user:write:chat scope." (実際に観測済み)
+        // - "Insufficient authorization in token" (Twitch公式ドキュメントの汎用形式)
+        // Both known Twitch error messages for insufficient scope are handled:
+        // - Explicit scope name in message (observed in production)
+        // - Generic "Insufficient authorization" (per Twitch API docs)
+        const isScopeError = response.status === 401 && (
+          errorBody.message?.includes('user:write:chat') ||
+          errorBody.message?.includes('Insufficient authorization')
+        )
+        if (isScopeError) {
           try {
             await removeScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
             logger.warn('Removed invalid user:write:chat scope from DB (self-healing)', {
