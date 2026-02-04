@@ -177,6 +177,59 @@ export async function hasScope(twitchUserId: string, scope: string): Promise<boo
 }
 
 /**
+ * ユーザーのTwitchスコープから特定のスコープを削除する
+ * トークンが実際にはスコープを持っていないことが判明した場合（401エラー等）に使用
+ * Remove a specific scope from a user's Twitch scopes in the database.
+ * Used when it's discovered the token doesn't actually have the scope (e.g., 401 error)
+ * @param twitchUserId - TwitchユーザーID
+ * @param scope - 削除するスコープ（例: 'user:write:chat'）
+ */
+export async function removeScope(twitchUserId: string, scope: string): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: user, error: fetchError } = await supabaseAdmin
+    .from('users')
+    .select('twitch_scopes')
+    .eq('twitch_user_id', twitchUserId)
+    .maybeSingle();
+
+  if (fetchError) {
+    if (fetchError.code === 'PGRST204') {
+      return;
+    }
+    logger.error('Failed to fetch scopes for removal', { twitchUserId, scope, error: fetchError });
+    return;
+  }
+
+  if (!user?.twitch_scopes || !user.twitch_scopes.includes(scope)) {
+    return;
+  }
+
+  // 指定スコープを除外した配列で更新
+  // Update with the scope filtered out
+  const updatedScopes = user.twitch_scopes.filter((s: string) => s !== scope);
+
+  const { error: updateError } = await supabaseAdmin
+    .from('users')
+    .update({ twitch_scopes: updatedScopes })
+    .eq('twitch_user_id', twitchUserId);
+
+  if (updateError) {
+    if (updateError.code === 'PGRST204') {
+      return;
+    }
+    logger.error('Failed to remove scope', { twitchUserId, scope, error: updateError });
+    return;
+  }
+
+  logger.info('Removed invalid scope from user', {
+    twitchUserId,
+    removedScope: scope,
+    remainingScopes: updatedScopes,
+  });
+}
+
+/**
  * ユーザーのTwitchスコープをデータベースに保存（全置換）
  * 再認証時に使用: ユーザーが明示的にスコープを選択した結果を保存する
  * Save Twitch scopes to database for a user (full replace)

@@ -1,5 +1,6 @@
 import { getEnvVar } from '@/lib/env-validation'
-import { getTwitchAccessToken } from './token-manager'
+import { getTwitchAccessToken, removeScope } from './token-manager'
+import { ADDITIONAL_SCOPES } from './auth'
 import { logger } from '@/lib/logger'
 
 const TWITCH_API_URL = 'https://api.twitch.tv/helix'
@@ -102,6 +103,25 @@ export class TwitchChatService {
           error: errorBody,
           broadcasterTwitchUserId,
         })
+
+        // 401かつスコープ不足の場合、DBからスコープを削除して不整合を解消する
+        // トークンが実際にはuser:write:chatを持っていないケースへの自己修復
+        // On 401 with missing scope, remove the scope from DB to fix token/scope mismatch.
+        // Self-healing for cases where the token doesn't actually have user:write:chat.
+        if (response.status === 401 && errorBody.message?.includes('user:write:chat')) {
+          try {
+            await removeScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
+            logger.warn('Removed invalid user:write:chat scope from DB (self-healing)', {
+              broadcasterTwitchUserId,
+            })
+          } catch (removeScopeError) {
+            logger.error('Failed to remove invalid scope during self-healing', {
+              broadcasterTwitchUserId,
+              error: removeScopeError,
+            })
+          }
+        }
+
         return false
       }
 

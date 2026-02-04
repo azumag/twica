@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getTwitchAuthUrl } from '@/lib/twitch/auth'
+import { getTwitchAuthUrl, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
 import { cookies } from 'next/headers'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { handleAuthError } from '@/lib/auth-error-handler'
@@ -7,6 +7,9 @@ import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
+import { getSession } from '@/lib/session'
+import { getSupabaseAdmin } from '@/lib/supabase/admin'
+import { logger } from '@/lib/logger'
 
 // Web Crypto APIのcrypto.randomUUID()を使用（Cloudflare Workers互換）
 // Using Web Crypto API crypto.randomUUID() for Cloudflare Workers compatibility
@@ -50,7 +53,51 @@ export async function GET(request: Request) {
     const cookieStore = await cookies()
     cookieStore.set('twitch_auth_state', state, STATE_COOKIE_OPTIONS)
 
-    const authUrl = getTwitchAuthUrl(redirectUri, state)
+    // 既存セッションがある場合、以前取得済みの追加スコープをOAuthリクエストに含める
+    // これにより通常ログインでも新トークンにuser:write:chat等が付与され、
+    // DBのtwitch_scopesと実際のトークンの不整合を防ぐ
+    // If user has existing session, include previously granted additional scopes
+    // in the OAuth request so the new token retains them (e.g., user:write:chat)
+    let preservedScopes: string[] = []
+    try {
+      const session = await getSession()
+      if (session?.twitchUserId) {
+        const supabaseAdmin = getSupabaseAdmin()
+        const { data: user } = await supabaseAdmin
+          .from('users')
+          .select('twitch_scopes')
+          .eq('twitch_user_id', session.twitchUserId)
+          .maybeSingle()
+
+        if (user?.twitch_scopes) {
+          // 有効な追加スコープのみ抽出（デフォルトスコープは既にAUTH_SCOPESに含まれる）
+          // Extract only valid additional scopes (default scopes already in AUTH_SCOPES)
+          const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
+          preservedScopes = user.twitch_scopes.filter(
+            (s: string) => validAdditionalScopes.includes(s)
+          )
+
+          if (preservedScopes.length > 0) {
+            logger.info('Login: preserving additional scopes from existing session', {
+              twitchUserId: session.twitchUserId,
+              preservedScopes,
+            })
+          }
+        }
+      }
+    } catch {
+      // スコープ取得失敗はログイン処理をブロックしない
+      // Scope lookup failure should not block the login flow
+    }
+
+    // forceVerify: falseで同意画面を強制しない（既存スコープの保持のみなので再同意不要）
+    // forceVerify: false skips forced consent screen (just preserving already-granted scopes)
+    const authUrl = getTwitchAuthUrl(
+      redirectUri,
+      state,
+      preservedScopes.length > 0 ? preservedScopes : undefined,
+      preservedScopes.length > 0 ? { forceVerify: false } : undefined
+    )
 
     // Check if direct redirect is requested (for server-side redirects)
     // サーバーサイドリダイレクト用に直接リダイレクトが要求されているかチェック
