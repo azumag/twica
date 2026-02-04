@@ -43,12 +43,17 @@ export const ADDITIONAL_SCOPES = {
  * @param redirectUri - コールバックURL
  * @param state - CSRF防止用のstate値
  * @param additionalScopes - 追加で要求するスコープ（オプション機能用）
+ * @param options - 追加オプション
+ * @param options.forceVerify - force_verifyの明示的制御。
+ *   trueまたは未指定(additionalScopes有り時): Twitchの同意画面を強制表示。
+ *   false: 同意画面を強制しない（通常ログインで既存スコープを保持する場合に使用）。
  * @returns Twitch認証ページのURL
  */
 export function getTwitchAuthUrl(
   redirectUri: string,
   state: string,
-  additionalScopes?: string[]
+  additionalScopes?: string[],
+  options?: { forceVerify?: boolean }
 ): string {
   const clientId = getEnvVar('NEXT_PUBLIC_TWITCH_CLIENT_ID', true)!
 
@@ -67,11 +72,17 @@ export function getTwitchAuthUrl(
     state: state,
   })
 
-  // 追加スコープがある場合はforce_verifyを有効化
-  // ユーザーが新しいスコープの同意画面を必ず表示するようにする
-  // Without force_verify, Twitch may auto-approve with existing scopes
-  // and skip the consent screen for new scopes
-  if (additionalScopes && additionalScopes.length > 0) {
+  // force_verifyの制御:
+  // - options.forceVerifyがfalseなら同意画面を強制しない（既存スコープ保持時）
+  // - options.forceVerifyがtrueまたは未指定でadditionalScopesがある場合は強制表示
+  // Control force_verify:
+  // - If options.forceVerify is explicitly false, skip (preserving existing scopes on login)
+  // - If true or unset with additionalScopes, force consent screen for new scope grants
+  const shouldForceVerify = options?.forceVerify === false
+    ? false
+    : (additionalScopes && additionalScopes.length > 0)
+
+  if (shouldForceVerify) {
     params.set('force_verify', 'true')
   }
 

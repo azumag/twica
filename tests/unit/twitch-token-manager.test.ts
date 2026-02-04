@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getTwitchAccessToken, saveTwitchTokens, deleteTwitchTokens } from '@/lib/twitch/token-manager';
+import { getTwitchAccessToken, saveTwitchTokens, deleteTwitchTokens, removeScope } from '@/lib/twitch/token-manager';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { refreshTwitchToken } from '@/lib/twitch/auth';
 
@@ -179,6 +179,91 @@ describe('Twitch Token Manager', () => {
           twitch_token_expires_at: null,
         })
       );
+    });
+  });
+
+  describe('removeScope', () => {
+    it('指定スコープをtwitch_scopesから削除する', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            twitch_scopes: ['user:read:email', 'channel:read:redemptions', 'user:write:chat'],
+          },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      await removeScope('123456789', 'user:write:chat');
+
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith({
+        twitch_scopes: ['user:read:email', 'channel:read:redemptions'],
+      });
+    });
+
+    it('スコープが存在しない場合はDB更新しない', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            twitch_scopes: ['user:read:email', 'channel:read:redemptions'],
+          },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      await removeScope('123456789', 'user:write:chat');
+
+      // update は select/eq チェーンの一部として呼ばれないことを確認
+      // from は select チェーンで1回呼ばれるが、update チェーンでは呼ばれない
+      expect(mockSupabaseAdmin.update).not.toHaveBeenCalled();
+    });
+
+    it('twitch_scopesがnullの場合はDB更新しない', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: { twitch_scopes: null },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      await removeScope('123456789', 'user:write:chat');
+
+      expect(mockSupabaseAdmin.update).not.toHaveBeenCalled();
+    });
+
+    it('DBフェッチエラー時は例外をスローせず静かに返す', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: null,
+          error: { code: 'PGRST000', message: 'Connection failed' },
+        }),
+        update: vi.fn().mockReturnThis(),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      // 例外がスローされないことを確認
+      await expect(removeScope('123456789', 'user:write:chat')).resolves.toBeUndefined();
     });
   });
 });
