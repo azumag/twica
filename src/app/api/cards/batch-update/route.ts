@@ -136,9 +136,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify all cards belong to this streamer
-    // 全カードがこの配信者に属しているか確認
+    // 同一IDが複数含まれると、RPC関数のROW_COUNTと期待件数が不一致になり
+    // 誤って「部分更新」と判定されるため、重複を事前に排除
     const cardIds = updates.map(u => u.id);
+    const uniqueCardIds = new Set(cardIds);
+    if (uniqueCardIds.size !== cardIds.length) {
+      return NextResponse.json(
+        { error: "同じカードIDが複数含まれています" },
+        { status: 400 }
+      );
+    }
     const { data: existingCards } = await supabaseAdmin
       .from("cards")
       .select("id")
@@ -152,29 +159,33 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Perform batch update using multiple single updates
-    // Supabase doesn't support true batch updates, so we use a transaction-like approach
-    // 複数の単一更新を使用してバッチ更新を実行
-    // Supabaseは真のバッチ更新をサポートしていないため、トランザクション的なアプローチを使用
-    const updatePromises = updates.map(update =>
-      supabaseAdmin
-        .from("cards")
-        .update({ drop_rate: update.dropRate })
-        .eq("id", update.id)
-        .eq("streamer_id", streamerId)
+    // RPC関数を使って全カードのdrop_rateを1回のDB呼び出しで一括更新
+    // 従来は各カードごとに個別のSupabase UPDATE（=個別のHTTP fetch）を発行していたが、
+    // Cloudflare Workersのサブリクエスト上限（50回/リクエスト）を超過するため、
+    // PostgreSQLストアドプロシージャで1リクエストに集約
+    const rpcPayload = updates.map(u => ({ id: u.id, drop_rate: u.dropRate }));
+    const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc(
+      "batch_update_card_drop_rates",
+      {
+        p_streamer_id: streamerId,
+        p_updates: rpcPayload,
+      }
     );
 
-    const results = await Promise.all(updatePromises);
-
-    // Check for any errors
-    // エラーがないかチェック
-    const errors = results.filter(r => r.error);
-    if (errors.length > 0) {
-      return handleDatabaseError(errors[0].error!, "Cards Batch Update API: Failed to update cards");
+    if (rpcError) {
+      return handleDatabaseError(rpcError, "Cards Batch Update API: Failed to update cards");
     }
 
-    // Fetch updated cards to return
-    // 更新されたカードを取得して返す
+    // RPC関数が返す更新件数と期待件数を照合し、一部のカードが更新されなかった場合を検出
+    const updatedCount = rpcResult?.updated_count ?? 0;
+    if (updatedCount !== updates.length) {
+      return handleDatabaseError(
+        { message: `Expected ${updates.length} updates but only ${updatedCount} succeeded`, details: "", hint: "", code: "" },
+        "Cards Batch Update API: Partial update detected"
+      );
+    }
+
+    // 更新後のカードデータを取得して返す
     const { data: updatedCards, error: fetchError } = await supabaseAdmin
       .from("cards")
       .select()
