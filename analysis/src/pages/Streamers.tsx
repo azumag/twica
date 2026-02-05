@@ -54,12 +54,12 @@ type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'nam
  * Shows active status, EventSub configuration, card statistics, and storage usage
  * ストリーマー名をクリックするとポップアップでTwitchリンクが表示される
  * ストレージ使用量はblob_filesのuser_prefixに基づく実使用量を表示
- * 検索フォームでユーザー名・表示名でフィルタリング可能
+ * 検索フォームでユーザー名・表示名・Twitch User IDでフィルタリング可能
  */
 export function Streamers() {
   const [streamers, setStreamers] = useState<StreamerWithStats[]>([])
   const [loading, setLoading] = useState(true)
-  // 検索クエリ（ユーザー名・表示名でフィルタリング）
+  // 検索クエリ（ユーザー名・表示名・Twitch User IDでフィルタリング）
   const [searchQuery, setSearchQuery] = useState('')
   // ソート順（デフォルト: カード数の多い順）
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
@@ -393,13 +393,15 @@ export function Streamers() {
   const filteredAndSortedStreamers = (() => {
     let result = streamers
 
-    // フィルター: 検索クエリ（ユーザー名または表示名に部分一致）
+    // フィルター: 検索クエリ（ユーザー名、表示名、またはTwitch User IDに部分一致）
+    // broadcasterTwitchUserIdで配信者を特定する運用ケースに対応
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim()
       result = result.filter(
         (s) =>
           s.twitch_username.toLowerCase().includes(query) ||
-          s.twitch_display_name.toLowerCase().includes(query)
+          s.twitch_display_name.toLowerCase().includes(query) ||
+          s.twitch_user_id.includes(query)
       )
     }
 
@@ -522,7 +524,7 @@ export function Streamers() {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="ストリーマー名で検索..."
+            placeholder="ストリーマー名 または Twitch User ID で検索..."
             className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-10 pr-4 text-gray-900 placeholder-gray-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
           />
           {/* 検索クエリをクリアするボタン */}
