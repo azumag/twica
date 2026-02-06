@@ -101,7 +101,7 @@
 - [x] **Critical-2**: `addCommentToIssue` の失敗時に `markErrorsAsProcessed` が実行されないように修正
 - [x] **Medium-3**: `GITHUB_REPO_OWNER` と `GITHUB_REPO_NAME` のバリデーション追加
 - [x] **Medium-4**: `src/lib/error-handler.ts` の末尾に改行を追加
-- [ ] **Medium-5**: エラーハンドラとエラーレポーターのテスト追加
+- [x] **Medium-5**: エラーハンドラとエラーレポーターのテスト追加
 
 ---
 
