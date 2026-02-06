@@ -10,7 +10,8 @@ type MockSupabaseAdmin = {
   from: ReturnType<typeof vi.fn>;
   select: ReturnType<typeof vi.fn>;
   eq: ReturnType<typeof vi.fn>;
-  maybeSingle: ReturnType<typeof vi.fn>;
+  maybeSingle?: ReturnType<typeof vi.fn>;
+  single?: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
 };
 

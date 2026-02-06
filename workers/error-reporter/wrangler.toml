@@ -1,0 +1,32 @@
+# Error Reporter Cron Worker
+# エラーレポーター定期実行Worker
+#
+# Supabase errors テーブルから未処理エラーを取得し、
+# GitHub Issue を自動作成する。Tail Workers (有料) の無料代替。
+#
+# See: https://github.com/azumag/twica/issues/239
+
+name = "twica-error-reporter"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# 5分ごとに実行（Free プランで最大3トリガー/worker まで無料）
+[triggers]
+crons = ["*/5 * * * *"]
+
+# 公開可能な変数（wrangler.toml に直接記載）
+[vars]
+GITHUB_REPO_OWNER = "azumag"
+GITHUB_REPO_NAME = "twica"
+
+# 機密変数（Cloudflare Dashboard または wrangler secret put で設定）
+# Required secrets:
+# - SUPABASE_URL: Supabase プロジェクト URL (e.g. https://xxx.supabase.co)
+# - SUPABASE_SERVICE_ROLE_KEY: Supabase service role キー
+# - GITHUB_TOKEN: GitHub Fine-grained PAT (scopes: Issues read/write)
+
+# Preview 環境: preview ブランチからのデプロイ用
+# preview環境のエラーはproductionと区別してトラッキングされる
+[env.preview]
+name = "twica-error-reporter-preview"
