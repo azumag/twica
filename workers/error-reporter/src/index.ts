@@ -302,7 +302,7 @@ export default {
    * 4. Supabase でエラーを処理済みマーク
    */
   async scheduled(
-    _event: ScheduledEvent,
+    _event: ScheduledController,
     env: Env,
     _ctx: ExecutionContext
   ): Promise<void> {

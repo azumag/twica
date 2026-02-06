@@ -23,7 +23,7 @@ const makeErrorRecord = (overrides = {}) => ({
   ...overrides,
 });
 
-const mockEvent = {} as ScheduledEvent;
+const mockEvent = {} as ScheduledController;
 const mockCtx = { waitUntil: vi.fn() } as unknown as ExecutionContext;
 
 describe('error-reporter worker', () => {
