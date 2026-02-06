@@ -17,7 +17,9 @@
     "workers:deploy": "npx opennextjs-cloudflare deploy",
     "workers:deploy:preview": "npx opennextjs-cloudflare deploy --env preview",
     "migrate:vercel-to-r2": "node scripts/migrate-vercel-blob-to-r2.js",
-    "migrate:vercel-to-r2:dry": "node scripts/migrate-vercel-blob-to-r2.js --dry-run"
+    "migrate:vercel-to-r2:dry": "node scripts/migrate-vercel-blob-to-r2.js --dry-run",
+    "error-reporter:deploy": "cd workers/error-reporter && npx wrangler deploy",
+    "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",

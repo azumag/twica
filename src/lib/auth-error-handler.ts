@@ -102,12 +102,12 @@ const AUTH_ERROR_MAP: Record<string, AuthErrorDetails> = {
  * @param options.baseUrl - Base URL for redirect (Cloudflare Workers では NEXT_PUBLIC_APP_URL が
  *                          ビルド時にインライン化されるため、リクエストから取得した baseUrl を渡す)
  */
-export function handleAuthError(
+export async function handleAuthError(
   error: unknown,
   errorType: string,
   context?: Record<string, unknown>,
   options?: { returnJson?: boolean; baseUrl?: string }
-): NextResponse {
+): Promise<NextResponse> {
   const errorDetails = AUTH_ERROR_MAP[errorType] || AUTH_ERROR_MAP.unknown_error
 
   if (errorDetails.shouldLog) {
@@ -118,8 +118,9 @@ export function handleAuthError(
       stack: error instanceof Error ? error.stack : undefined,
     })
 
-    // Send to Sentry with additional context
-    reportAuthError(error, {
+    // await: Cloudflare Workers ではレスポンス完了後に未完了の非同期タスクがキャンセルされるため
+    // Supabase へのエラーログ記録を確実に完了させる
+    await reportAuthError(error, {
       provider: 'twitch',
       action: errorType.replace(/_/g, '-'),
       userId: context?.twitchUserId as string || undefined,

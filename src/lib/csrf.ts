@@ -322,7 +322,9 @@ export async function validateCSRFToken(
         timestamp: new Date().toISOString(),
       })
 
-      reportSecurityError(new Error('CSRF token mismatch'), {
+      // await: Cloudflare Workers ではレスポンス完了後に未完了の非同期タスクがキャンセルされるため
+      // Supabase へのエラーログ記録を確実に完了させる
+      await reportSecurityError(new Error('CSRF token mismatch'), {
         action: 'csrf_validation',
         userId: session.twitchUserId,
       })

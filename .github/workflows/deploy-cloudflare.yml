@@ -120,3 +120,17 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Error Reporter Cron Worker のデプロイ
+      # Supabase errors テーブルの未処理エラーを定期的に GitHub Issue 化する。
+      # Secrets (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GITHUB_TOKEN) は
+      # Cloudflare Dashboard で事前設定が必要。
+      # preview と production で別々の Worker としてデプロイすることで、
+      # 環境ごとのエラーを分離してトラッキングする。
+      # See: https://github.com/azumag/twica/issues/239
+      - name: Deploy Error Reporter Cron Worker
+        working-directory: workers/error-reporter
+        run: ${{ steps.env.outputs.deploy_cmd == 'npm run workers:deploy:preview' && 'npx wrangler deploy --env preview' || 'npx wrangler deploy' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

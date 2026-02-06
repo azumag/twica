@@ -109,7 +109,9 @@ export async function broadcastGachaResult(
 
         if (attemptCount > maxRetries) {
           logger.error(`Failed to broadcast gacha result for streamer ${streamerId} after ${maxRetries} attempts:`, error)
-          reportRealtimeError(error, {
+          // await: サーバーサイドで実行されるため、Cloudflare Workers のリクエスト完了前に
+          // Supabase へのエラーログ記録を確実に完了させる
+          await reportRealtimeError(error, {
             action: 'broadcast',
             streamerId,
             retryCount: attemptCount - 1,
@@ -213,10 +215,12 @@ export function subscribeToGachaResults(
             callback(payload.payload as GachaBroadcastPayload)
           } catch (error) {
             logger.error(`Error processing gacha result payload:`, error)
-            reportRealtimeError(error, {
+            // クライアントサイドの同期コールバック内のため await 不可
+            // .catch() でunhandled promise rejectionを防止
+            void reportRealtimeError(error, {
               action: 'process_payload',
               streamerId,
-            })
+            }).catch(e => console.warn('[Error Tracking] Failed to report:', e))
           }
         })
         .subscribe((status, err) => {
@@ -249,12 +253,13 @@ export function subscribeToGachaResults(
               logger.info(`Expected connection closure for gacha:${streamerId}, status: ${status}`)
             } else {
               logger.warn(`Connection issue for gacha:${streamerId}, status: ${status}`)
-              reportRealtimeError(err, {
+              // クライアントサイドの同期コールバック内のため await 不可
+              void reportRealtimeError(err, {
                 action: 'subscribe',
                 streamerId,
                 status,
                 retryCount,
-              })
+              }).catch(e => console.warn('[Error Tracking] Failed to report:', e))
             }
 
             onError?.(error)
@@ -278,10 +283,11 @@ export function subscribeToGachaResults(
         })
     } catch (error) {
       logger.error(`Failed to subscribe to gacha:${streamerId}:`, error)
-      reportRealtimeError(error, {
+      // 同期関数 subscribe() 内のため await 不可
+      void reportRealtimeError(error, {
         action: 'subscribe',
         streamerId,
-      })
+      }).catch(e => console.warn('[Error Tracking] Failed to report:', e))
 
       const realtimeError: RealtimeError = {
         type: 'subscription',
