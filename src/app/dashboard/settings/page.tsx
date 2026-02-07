@@ -9,6 +9,7 @@ import OverlayPreview from "@/components/OverlayPreview";
 import GachaSoundSettings from "@/components/GachaSoundSettings";
 import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
+import VoteCampaignReshowSetting from "@/components/VoteCampaignReshowSetting";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -61,6 +62,9 @@ export default async function SettingsPage() {
           {t("description")}
         </p>
       </div>
+
+      {/* キャンペーンパネル再表示設定（非表示設定済みかつ未適用の場合のみ表示） */}
+      <VoteCampaignReshowSetting visible={showVoteCampaign} />
 
       {/* OBSブラウザソースURLとカード引換設定を横並びに配置、プレビューは下に全幅で表示 */}
       {/* URL settings and channel point settings side by side, preview below full width */}

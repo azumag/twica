@@ -410,6 +410,9 @@ export const VOTE_CAMPAIGN_CONFIG = {
   MEMO: '2026選挙応援' as const,
 } as const
 
+/** localStorageキー: ユーザーが投票キャンペーンパネルを「今後表示しない」にした場合に 'true' を保存 */
+export const VOTE_CAMPAIGN_DISMISS_KEY = 'vote-campaign-dismissed'
+
 export const STORAGE_LIMIT_MESSAGES = {
   // User limit message: increased to 10MB
   // ユーザー制限メッセージ: 10MBに増加
