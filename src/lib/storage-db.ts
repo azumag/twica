@@ -6,9 +6,11 @@
  * これにより操作数制限（2,000/月）を大幅に節約できる
  */
 
+import { cache } from 'react';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { UPLOAD_CONFIG, VOTE_CAMPAIGN_CONFIG } from './constants';
 import { logger } from './logger';
+import { reportError } from './sentry/error-handler';
 
 // グローバル使用量を識別する特殊プレフィックス
 const GLOBAL_PREFIX = '_global_';
@@ -234,6 +236,7 @@ export async function getStorageBonusBytes(twitchUserId: string): Promise<number
   } catch (error) {
     // ボーナス取得失敗時はゼロとする（ユーザーに不利にしない）
     logger.error('[StorageDB] Failed to get storage bonus:', error);
+    try { reportError(error instanceof Error ? error : new Error(String(error))); } catch { /* ignore */ }
     return 0;
   }
 }
@@ -265,6 +268,7 @@ export async function hasStorageBonusByTwitchUserId(
     return !!data;
   } catch (error) {
     logger.error('[StorageDB] Failed to check storage bonus by twitch_user_id:', error);
+    try { reportError(error instanceof Error ? error : new Error(String(error))); } catch { /* ignore */ }
     return false;
   }
 }
@@ -272,11 +276,12 @@ export async function hasStorageBonusByTwitchUserId(
 /**
  * 投票キャンペーンボタンの表示判定
  * キャンペーン期間内 かつ 未適用の場合にtrueを返す
+ * cache()でリクエスト単位のキャッシュを適用し、同一リクエスト内での重複DB呼び出しを防止
  *
  * @param twitchUserId - Twitch ユーザーID
  * @returns キャンペーンボタンを表示すべき場合true
  */
-export async function shouldShowVoteCampaign(twitchUserId: string): Promise<boolean> {
+export const shouldShowVoteCampaign = cache(async function shouldShowVoteCampaign(twitchUserId: string): Promise<boolean> {
   const now = new Date();
   if (now < VOTE_CAMPAIGN_CONFIG.START_DATE || now > VOTE_CAMPAIGN_CONFIG.END_DATE) {
     return false;
@@ -286,7 +291,7 @@ export async function shouldShowVoteCampaign(twitchUserId: string): Promise<bool
     VOTE_CAMPAIGN_CONFIG.TYPE,
     VOTE_CAMPAIGN_CONFIG.MEMO
   ));
-}
+})
 
 /**
  * 全ユーザーのストレージ使用量サマリーを取得（管理用）

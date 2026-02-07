@@ -6,13 +6,15 @@ import { useRouter } from 'next/navigation'
 interface VoteCampaignButtonProps {
   // サーバー側で判定された「キャンペーン期間内かつ未適用」フラグ
   visible: boolean
+  // ボーナス容量（MB）。サーバー側のVOTE_CAMPAIGN_CONFIG.BONUS_MBから渡す
+  bonusMb: number
 }
 
 /**
  * 「投票行ったよ」キャンペーンボタン
  * 期間限定・1回限り。クリックで+5MBのストレージ容量ボーナスを付与
  */
-export default function VoteCampaignButton({ visible }: VoteCampaignButtonProps) {
+export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignButtonProps) {
   const router = useRouter()
   const [isLoading, setIsLoading] = useState(false)
   const [applied, setApplied] = useState(false)
@@ -27,18 +29,11 @@ export default function VoteCampaignButton({ visible }: VoteCampaignButtonProps)
     setError(null)
 
     try {
-      // CookieからCSRFトークンを取得
-      const csrfToken = document.cookie
-        .split('; ')
-        .find(row => row.startsWith('csrf_token='))
-        ?.split('=')[1] || ''
-
+      // CSRF保護はサーバー側でHttpOnly Cookieから直接トークンを読み取るため、
+      // クライアントからのX-CSRF-Tokenヘッダー送信は不要（credentials: 'include'でCookieが送信される）
       const response = await fetch('/api/storage-bonus/vote-campaign', {
         method: 'POST',
         credentials: 'include',
-        headers: {
-          'X-CSRF-Token': csrfToken,
-        },
       })
 
       if (response.ok) {
@@ -67,7 +62,7 @@ export default function VoteCampaignButton({ visible }: VoteCampaignButtonProps)
     return (
       <div className="mb-8 rounded-xl bg-gradient-to-r from-green-900/50 to-emerald-900/50 border border-green-600/50 p-6">
         <p className="text-sm font-medium text-green-300">
-          +5MB のストレージボーナスが適用されました！
+          +{bonusMb}MB のストレージボーナスが適用されました！
         </p>
       </div>
     )
@@ -79,7 +74,7 @@ export default function VoteCampaignButton({ visible }: VoteCampaignButtonProps)
         選挙行ったよ/行こうかな キャンペーン
       </h3>
       <p className="mb-3 text-sm text-gray-300">
-        ボタンを押すと画像アップロード容量が +5MB されます（1回限り）<br />
+        ボタンを押すと画像アップロード容量が +{bonusMb}MB されます（1回限り）<br />
         ※ 将来アフィリエイト・パートナーになった際にも恩恵を受けられます
       </p>
 

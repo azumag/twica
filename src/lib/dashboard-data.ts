@@ -38,11 +38,11 @@ export const getStreamerData = cache(async (twitchUserId: string) => {
   if (!streamer) return null;
 
   // Extract and sort cards (newest first)
-  // カードを抽出してソート（新しい順）
-  const cards = normalizeDropRate(streamer.cards || [])
+  // Supabaseのリレーション型はdrop_rateがunknownになるため、Card[]にキャストしてから正規化
+  const cards = normalizeDropRate((streamer.cards || []) as Card[])
     .sort((a, b) =>
-      new Date((b as Record<string, unknown>).created_at as string).getTime() - new Date((a as Record<string, unknown>).created_at as string).getTime()
-    ) as Card[];
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
 
   // Return without the nested cards to match expected interface
   // 期待されるインターフェースに合わせてネストされたcardsを除外して返す

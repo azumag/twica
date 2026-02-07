@@ -10,6 +10,11 @@ vi.mock('@/lib/session')
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/logger')
 vi.mock('@/lib/sentry/error-handler')
+vi.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: vi.fn().mockResolvedValue({ success: true, limit: 5, remaining: 4, reset: Date.now() + 60000 }),
+  rateLimits: { voteCampaign: {} },
+  getRateLimitIdentifier: vi.fn().mockResolvedValue('user:user123'),
+}))
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
   return {
@@ -321,5 +326,110 @@ describe('getStorageBonusBytes', () => {
     const { getStorageBonusBytes } = await import('@/lib/storage-db')
     const result = await getStorageBonusBytes('nonexistent-user')
     expect(result).toBe(0)
+  })
+})
+
+describe('POST /api/storage-bonus/vote-campaign - rate limit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({
+      twitchUserId: 'user123',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+    })
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    vi.useFakeTimers()
+    const campaignMidpoint = new Date(
+      (VOTE_CAMPAIGN_CONFIG.START_DATE.getTime() + VOTE_CAMPAIGN_CONFIG.END_DATE.getTime()) / 2
+    )
+    vi.setSystemTime(campaignMidpoint)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('should return 429 when rate limit exceeded', async () => {
+    const { checkRateLimit } = await import('@/lib/rate-limit')
+    const resetTime = Date.now() + 30000
+    vi.mocked(checkRateLimit).mockResolvedValue({
+      success: false,
+      limit: 5,
+      remaining: 0,
+      reset: resetTime,
+    })
+
+    const response = await POST(createRequest())
+    expect(response.status).toBe(429)
+    expect(response.headers.get('Retry-After')).toBeTruthy()
+  })
+
+  it('should include Retry-After header with correct value', async () => {
+    const { checkRateLimit } = await import('@/lib/rate-limit')
+    const resetTime = Date.now() + 45000
+    vi.mocked(checkRateLimit).mockResolvedValue({
+      success: false,
+      limit: 5,
+      remaining: 0,
+      reset: resetTime,
+    })
+
+    const response = await POST(createRequest())
+    const retryAfter = Number(response.headers.get('Retry-After'))
+    expect(retryAfter).toBe(45) // 45000ms = 45秒
+  })
+})
+
+describe('POST /api/storage-bonus/vote-campaign - boundary values', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    // レート制限モックをリセット（fake timersでDate.now()が変わるため再設定が必要）
+    const { checkRateLimit } = await import('@/lib/rate-limit')
+    vi.mocked(checkRateLimit).mockResolvedValue({ success: true, limit: 5, remaining: 4, reset: Date.now() + 60000 })
+    mockGetSession.mockResolvedValue({
+      twitchUserId: 'user123',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+    })
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('should return 200 at exactly START_DATE (boundary: period starts)', async () => {
+    vi.setSystemTime(VOTE_CAMPAIGN_CONFIG.START_DATE)
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    const mockClient = createMockClient({
+      existingStreamer: { id: 'existing-streamer-uuid' },
+    })
+    vi.mocked(getSupabaseAdmin).mockReturnValue(mockClient as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const response = await POST(createRequest())
+    expect(response.status).toBe(200)
+  })
+
+  it('should return 200 at exactly END_DATE (boundary: period still active)', async () => {
+    vi.setSystemTime(VOTE_CAMPAIGN_CONFIG.END_DATE)
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    const mockClient = createMockClient({
+      existingStreamer: { id: 'existing-streamer-uuid' },
+    })
+    vi.mocked(getSupabaseAdmin).mockReturnValue(mockClient as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const response = await POST(createRequest())
+    expect(response.status).toBe(200)
   })
 })

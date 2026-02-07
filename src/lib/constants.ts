@@ -406,6 +406,7 @@ export const VOTE_CAMPAIGN_CONFIG = {
   BONUS_MB: 5,
   // DB記録用の識別子
   TYPE: 'campaign' as const,
+  // WARNING: MEMOはUNIQUE制約 (streamer_id, type, memo) の一部。変更すると同一ユーザーへの二重適用が発生する
   MEMO: '2026選挙応援' as const,
 } as const
 

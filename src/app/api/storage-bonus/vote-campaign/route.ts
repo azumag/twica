@@ -25,16 +25,6 @@ import type { ApiRateLimitResponse } from '@/types/api'
  * - 将来ユーザーがアフィリエイトになった時、既存レコードが更新され、ボーナスが有効になる
  */
 export async function POST(request: NextRequest) {
-  // レート制限チェック（DoS対策）
-  const identifier = await getRateLimitIdentifier(request)
-  const rateLimit = await checkRateLimit(rateLimits.voteCampaign, identifier)
-  if (!rateLimit.success) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED } as ApiRateLimitResponse,
-      { status: 429, headers: { 'Retry-After': String(Math.ceil(((rateLimit.reset ?? Date.now() + 60000) - Date.now()) / 1000)) } }
-    )
-  }
-
   // CSRF検証
   const csrfValidation = await validateCSRFToken(request)
   if (!csrfValidation.valid) {
@@ -49,6 +39,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: ERROR_MESSAGES.UNAUTHORIZED },
       { status: 401 }
+    )
+  }
+
+  // レート制限チェック（認証後にユーザーID単位で制限し、NAT環境での誤ブロックを防止）
+  const identifier = await getRateLimitIdentifier(request, session.twitchUserId)
+  const rateLimit = await checkRateLimit(rateLimits.voteCampaign, identifier)
+  if (!rateLimit.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED } as ApiRateLimitResponse,
+      { status: 429, headers: { 'Retry-After': String(Math.ceil(((rateLimit.reset ?? Date.now() + 60000) - Date.now()) / 1000)) } }
     )
   }
 
@@ -132,7 +132,8 @@ export async function POST(request: NextRequest) {
       return handleApiError(error, 'Election Campaign API')
     }
 
-    logger.info(`[ElectionCampaign] Bonus applied: twitchUserId=${session.twitchUserId}, streamerId=${streamerId}, bonusMb=${VOTE_CAMPAIGN_CONFIG.BONUS_MB}`)
+    // ユーザーIDは末尾4文字のみ表示して機密情報の漏洩リスクを軽減
+    logger.info(`[ElectionCampaign] Bonus applied: twitchUserId=***${session.twitchUserId.slice(-4)}, bonusMb=${VOTE_CAMPAIGN_CONFIG.BONUS_MB}`)
 
     return NextResponse.json({ success: true })
   } catch (error) {
