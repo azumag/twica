@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
+import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { LanguageSwitcherSettings } from "@/components/LanguageSwitcher";
+import VoteCampaignReshowSetting from "@/components/VoteCampaignReshowSetting";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -22,6 +24,9 @@ export default async function AccountSettingsPage() {
     redirect("/");
   }
 
+  // キャンペーン期間内かつ未適用かを判定（再表示ボタンの表示制御に使用）
+  const showVoteCampaign = await shouldShowVoteCampaign(session.twitchUserId);
+
   return (
     <div>
       {/* Page header */}
@@ -30,6 +35,9 @@ export default async function AccountSettingsPage() {
         <h1 className="text-3xl font-bold text-white">{t("title")}</h1>
         <p className="mt-2 text-gray-400">{t("description")}</p>
       </div>
+
+      {/* キャンペーンパネル再表示設定（非表示設定済みかつ未適用の場合のみ表示） */}
+      <VoteCampaignReshowSetting visible={showVoteCampaign} />
 
       {/* Settings sections */}
       {/* 設定セクション */}

@@ -302,6 +302,8 @@ export const rateLimits = {
   eventsubSubscribeGet: createRatelimit("eventsubSubscribeGet", 50, 60 * 1000),
   gachaHistoryDelete: createRatelimit("gachaHistoryDelete", 30, 60 * 1000),
   debugSession: createRatelimit("debugSession", 10, 60 * 1000),
+  // 投票キャンペーンは1ユーザー1回だが、DoS対策として制限（分あたり5回）
+  voteCampaign: createRatelimit("voteCampaign", 5, 60 * 1000),
 } as const;
 
 /**

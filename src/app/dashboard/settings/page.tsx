@@ -2,10 +2,13 @@ import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
+import { shouldShowVoteCampaign } from "@/lib/storage-db";
+import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import OverlayPreview from "@/components/OverlayPreview";
 import GachaSoundSettings from "@/components/GachaSoundSettings";
 import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
+import VoteCampaignButton from "@/components/VoteCampaignButton";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -33,9 +36,11 @@ export default async function SettingsPage() {
     redirect("/dashboard");
   }
 
-  // Fetch streamer data for settings
-  // 設定用に配信者データを取得
-  const streamerData = await getStreamerData(session.twitchUserId);
+  // 配信者データ取得とキャンペーン判定を並列実行してレイテンシ削減
+  const [streamerData, showVoteCampaign] = await Promise.all([
+    getStreamerData(session.twitchUserId),
+    shouldShowVoteCampaign(session.twitchUserId),
+  ]);
 
   if (!streamerData) {
     redirect("/dashboard");
@@ -43,6 +48,9 @@ export default async function SettingsPage() {
 
   return (
     <div>
+      {/* 投票キャンペーンボタン（期間内かつ未適用の場合のみ表示） */}
+      <VoteCampaignButton visible={showVoteCampaign} bonusMb={VOTE_CAMPAIGN_CONFIG.BONUS_MB} />
+
       {/* Page header */}
       {/* ページヘッダー */}
       <div className="mb-8">

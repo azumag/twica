@@ -21,7 +21,11 @@ vi.mock('@/lib/r2-client', () => ({
 // Mock storage-db to avoid unmocked supabase/admin dependency
 // ストレージDBをモックしてsupabase/adminの未モック依存を回避
 vi.mock('@/lib/storage-db', () => ({
-  getStorageUsageFromDB: vi.fn().mockResolvedValue({
+  recordBlobFile: vi.fn().mockResolvedValue(undefined),
+}))
+// Mock storage-usage to provide storage limit info
+vi.mock('@/lib/storage-usage', () => ({
+  getStorageUsage: vi.fn().mockResolvedValue({
     userUsage: 0,
     globalUsage: 0,
     userLimitReached: false,
@@ -29,7 +33,6 @@ vi.mock('@/lib/storage-db', () => ({
     userLimitBytes: 100 * 1024 * 1024,
     globalLimitBytes: 1000 * 1024 * 1024,
   }),
-  recordBlobFile: vi.fn().mockResolvedValue(undefined),
 }))
 
 const mockCookies = vi.mocked(cookies)

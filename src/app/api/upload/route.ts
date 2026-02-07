@@ -8,7 +8,8 @@ import { getFileTypeFromBuffer, getFileExtension, isValidExtension } from '@/lib
 import { logger } from '@/lib/logger';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadToR2WithRetry } from '@/lib/r2-client';
-import { getStorageUsageFromDB, recordBlobFile } from '@/lib/storage-db';
+import { recordBlobFile } from '@/lib/storage-db';
+import { getStorageUsage } from '@/lib/storage-usage';
 import { sha256Prefix } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
 
@@ -101,12 +102,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // Check storage limits before processing file
-  // ファイル処理前にストレージ制限をチェック
-  // DB経由で使用量を取得（list()を使わないため操作数を節約）
+  // ファイル処理前にストレージ制限をチェック（ボーナス容量も加味）
   // Web Crypto APIを使用してユーザープレフィックスを生成
   const userPrefix = await sha256Prefix(session!.twitchUserId);
 
-  const storageUsage = await getStorageUsageFromDB(userPrefix);
+  const storageUsage = await getStorageUsage(userPrefix, session!.twitchUserId);
 
   if (storageUsage.globalLimitReached) {
     return NextResponse.json(

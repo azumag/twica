@@ -6,9 +6,11 @@
  * これにより操作数制限（2,000/月）を大幅に節約できる
  */
 
+import { cache } from 'react';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
-import { UPLOAD_CONFIG } from './constants';
+import { UPLOAD_CONFIG, VOTE_CAMPAIGN_CONFIG } from './constants';
 import { logger } from './logger';
+import { reportError } from './sentry/error-handler';
 
 // グローバル使用量を識別する特殊プレフィックス
 const GLOBAL_PREFIX = '_global_';
@@ -200,6 +202,96 @@ export async function removeBlobFile(url: string): Promise<BlobFileInfo | null> 
     throw error;
   }
 }
+
+/**
+ * 配信者のストレージボーナス合計を取得（バイト単位）
+ * streamer_storage_bonus テーブルから該当streamerの全ボーナスを合計
+ *
+ * @param twitchUserId - Twitch ユーザーID
+ * @returns ボーナス合計（バイト単位）、ボーナスなしまたはエラー時は0
+ */
+export async function getStorageBonusBytes(twitchUserId: string): Promise<number> {
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+
+    // streamersテーブル経由でstreamer_storage_bonusをリレーションで取得
+    const { data, error } = await supabaseAdmin
+      .from('streamers')
+      .select('streamer_storage_bonus(amount_mb)')
+      .eq('twitch_user_id', twitchUserId)
+      .maybeSingle();
+
+    if (error || !data) {
+      return 0;
+    }
+
+    const bonuses = data.streamer_storage_bonus as Array<{ amount_mb: number }> | null;
+    if (!bonuses || bonuses.length === 0) {
+      return 0;
+    }
+
+    // MB → bytes に変換して合計
+    const totalMb = bonuses.reduce((sum, b) => sum + b.amount_mb, 0);
+    return totalMb * 1024 * 1024;
+  } catch (error) {
+    // ボーナス取得失敗時はゼロとする（ユーザーに不利にしない）
+    logger.error('[StorageDB] Failed to get storage bonus:', error);
+    try { reportError(error instanceof Error ? error : new Error(String(error))); } catch { /* ignore */ }
+    return 0;
+  }
+}
+
+/**
+ * TwitchユーザーIDで指定されたストレージボーナスが既に適用済みかチェック
+ * 非配信者でも将来の恩恵を受けられるようにするため、twitch_user_id で検索
+ *
+ * @param twitchUserId - Twitch ユーザーID
+ * @param type - ボーナスの種類
+ * @param memo - 管理用メモ
+ * @returns 適用済みの場合true
+ */
+export async function hasStorageBonusByTwitchUserId(
+  twitchUserId: string,
+  type: string,
+  memo: string
+): Promise<boolean> {
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    // streamers テーブル経由で streamer_storage_bonus を検索
+    const { data } = await supabaseAdmin
+      .from('streamers')
+      .select('streamer_storage_bonus!inner(id)')
+      .eq('twitch_user_id', twitchUserId)
+      .eq('streamer_storage_bonus.type', type)
+      .eq('streamer_storage_bonus.memo', memo)
+      .maybeSingle();
+    return !!data;
+  } catch (error) {
+    logger.error('[StorageDB] Failed to check storage bonus by twitch_user_id:', error);
+    try { reportError(error instanceof Error ? error : new Error(String(error))); } catch { /* ignore */ }
+    return false;
+  }
+}
+
+/**
+ * 投票キャンペーンボタンの表示判定
+ * キャンペーン期間内 かつ 未適用の場合にtrueを返す
+ * cache()でリクエスト単位のキャッシュを適用し、同一リクエスト内での重複DB呼び出しを防止
+ *
+ * @param twitchUserId - Twitch ユーザーID
+ * @returns キャンペーンボタンを表示すべき場合true
+ */
+export const shouldShowVoteCampaign = cache(async function shouldShowVoteCampaign(twitchUserId: string): Promise<boolean> {
+  const now = new Date();
+  if (now < VOTE_CAMPAIGN_CONFIG.START_DATE || now > VOTE_CAMPAIGN_CONFIG.END_DATE) {
+    return false;
+  }
+  return !(await hasStorageBonusByTwitchUserId(
+    twitchUserId,
+    VOTE_CAMPAIGN_CONFIG.TYPE,
+    VOTE_CAMPAIGN_CONFIG.MEMO
+  ));
+})
 
 /**
  * 全ユーザーのストレージ使用量サマリーを取得（管理用）

@@ -305,6 +305,34 @@ export interface Database {
           created_at?: string
         }
       }
+      // ストリーマーごとのストレージ容量ボーナステーブル
+      // キャンペーンやプロモーション等で追加容量を付与するために使用
+      streamer_storage_bonus: {
+        Row: {
+          id: string
+          streamer_id: string
+          amount_mb: number
+          type: string
+          memo: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          streamer_id: string
+          amount_mb: number
+          type: string
+          memo?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          streamer_id?: string
+          amount_mb?: number
+          type?: string
+          memo?: string
+          created_at?: string
+        }
+      }
     }
     Views: {
       [_ in never]: never
@@ -331,6 +359,8 @@ export type BattleStats = Database['public']['Tables']['battle_stats']['Row']
 // Helper type for additional gacha rewards
 // 追加ガチャ報酬のヘルパー型
 export type StreamerAdditionalGachaReward = Database['public']['Tables']['streamer_additional_gacha_rewards']['Row']
+// ストレージボーナスのヘルパー型
+export type StreamerStorageBonus = Database['public']['Tables']['streamer_storage_bonus']['Row']
 
 // Extended types with relations
 export type CardWithStreamer = Card & {

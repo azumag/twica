@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { selectWeightedCard } from '@/lib/gacha'
+import { normalizeDropRate } from '@/lib/card-utils'
 import { Result, ok, err } from '@/types/result'
 import { logger } from '@/lib/logger'
 
@@ -40,7 +41,7 @@ export class GachaService {
 
       // Select a card based on drop rates
       // ドロップ率に基づいてカードを選択
-      const selectedCard = selectWeightedCard(cards)
+      const selectedCard = selectWeightedCard(normalizeDropRate(cards))
 
       if (!selectedCard) {
         return err('Failed to select card')

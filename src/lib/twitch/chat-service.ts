@@ -138,10 +138,17 @@ export class TwitchChatService {
         // Report to Supabase so the Cron Worker can create a GitHub Issue
         // 自己修復の後に配置（自己修復が確実に実行されるようにするため）
         // Placed after self-healing to ensure healing runs regardless of reporting outcome
-        await reportApiError('/helix/chat/messages', 'POST',
-          new Error(`Twitch API ${response.status}: ${errorBody.message || 'Unknown error'}`),
-          { broadcasterTwitchUserId, status: response.status, twitchError: errorBody.error }
-        )
+        // try-catch で囲む: reportApiError の失敗が return false をブロックしないようにする
+        // Wrapped in try-catch so reportApiError failure doesn't prevent return false
+        try {
+          await reportApiError('/helix/chat/messages', 'POST',
+            new Error(`Twitch API ${response.status}: ${errorBody.message || 'Unknown error'}`),
+            { broadcasterTwitchUserId, status: response.status, twitchError: errorBody.error }
+          )
+        } catch {
+          // reportApiError 自体の失敗はベストエフォート — メインフローをブロックしない
+          // reportApiError failure is best-effort — must not block main flow
+        }
 
         return false
       }
@@ -155,10 +162,17 @@ export class TwitchChatService {
     } catch (error) {
       // ネットワークエラーなど予期しない例外をSupabaseに記録
       // reportError 内部で console.error も出力される
-      await reportError(error, {
-        context: 'chat-service:sendChatMessage',
-        broadcasterTwitchUserId,
-      })
+      // try-catch で囲む: reportError の失敗で例外が sendChatMessage 外に漏れないようにする
+      // Wrapped in try-catch so reportError failure doesn't leak exceptions to callers
+      try {
+        await reportError(error, {
+          context: 'chat-service:sendChatMessage',
+          broadcasterTwitchUserId,
+        })
+      } catch {
+        // reportError 自体の失敗はベストエフォート — 必ず return false に到達させる
+        // reportError failure is best-effort — must always reach return false
+      }
       return false
     }
   }

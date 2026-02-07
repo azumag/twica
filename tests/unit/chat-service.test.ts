@@ -262,7 +262,19 @@ describe('TwitchChatService', () => {
 
       const result = await service.sendChatMessage('123456789', 'test message');
 
-      // reportApiError が失敗しても、外側の catch で捕捉されて false を返す
+      // reportApiError が失敗しても try-catch で捕捉され false を返す
+      expect(result).toBe(false);
+    });
+
+    it('ネットワークエラー時に reportError が reject しても sendChatMessage は false を返す', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockRejectedValue(new Error('Network error'));
+      // reportError 自体も失敗するケース
+      vi.mocked(reportError).mockRejectedValue(new Error('Supabase down'));
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      // 外側 catch 内の reportError が失敗しても例外が漏れず false を返す
       expect(result).toBe(false);
     });
   });

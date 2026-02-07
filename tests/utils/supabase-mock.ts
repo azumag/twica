@@ -4,6 +4,7 @@ import { vi } from 'vitest'
 export interface MockQueryBuilder<T = unknown> {
   select: (columns?: string) => MockQueryBuilder<T>
   insert: (data: Partial<T> | Partial<T>[]) => MockQueryBuilder<T>
+  upsert: (data: Partial<T> | Partial<T>[], options?: { onConflict?: string; ignoreDuplicates?: boolean }) => MockQueryBuilder<T>
   update: (data: Partial<T>) => MockQueryBuilder<T>
   delete: () => MockQueryBuilder<T>
   eq: (column: string, value: unknown) => MockQueryBuilder<T>
@@ -44,7 +45,7 @@ export function createMockQueryBuilder<T = unknown>(
   const query = {} as MockQueryBuilder<T>
 
   const chainableMethods = [
-    'select', 'insert', 'update', 'delete',
+    'select', 'insert', 'upsert', 'update', 'delete',
     'eq', 'neq', 'gt', 'gte', 'lt', 'lte',
     'like', 'ilike', 'in', 'is',
     'order', 'limit', 'range'
