@@ -21,6 +21,8 @@ export default function VoteCampaignReshowSetting({ visible }: VoteCampaignResho
   const [dismissed, setDismissed] = useState<boolean | null>(null)
 
   useEffect(() => {
+    // localStorageはクライアントサイドでのみ利用可能なため、マウント後に読み取る
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDismissed(localStorage.getItem(VOTE_CAMPAIGN_DISMISS_KEY) === 'true')
   }, [])
 
