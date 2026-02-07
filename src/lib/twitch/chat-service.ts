@@ -2,6 +2,7 @@ import { getEnvVar } from '@/lib/env-validation'
 import { getTwitchAccessToken, removeScope } from './token-manager'
 import { ADDITIONAL_SCOPES } from './auth'
 import { logger } from '@/lib/logger'
+import { reportApiError, reportError } from '@/lib/sentry/error-handler'
 
 const TWITCH_API_URL = 'https://api.twitch.tv/helix'
 
@@ -98,16 +99,14 @@ export class TwitchChatService {
 
       if (!response.ok) {
         const errorBody: TwitchApiError = await response.json().catch(() => ({}))
-        logger.error('Failed to send chat message', {
-          status: response.status,
-          error: errorBody,
-          broadcasterTwitchUserId,
-        })
 
         // 401かつスコープ不足の場合、DBからスコープを削除して不整合を解消する
         // トークンが実際にはuser:write:chatを持っていないケースへの自己修復
         // On 401 with missing scope, remove the scope from DB to fix token/scope mismatch.
         // Self-healing for cases where the token doesn't actually have user:write:chat.
+        //
+        // 自己修復をエラー報告より先に実行する（エラー報告の失敗が自己修復をブロックしないため）
+        // Execute self-healing before error reporting so reporting failure doesn't block healing.
         //
         // Twitch APIのスコープ不足時のエラーメッセージは複数パターンがある:
         // - "User access token requires the user:write:chat scope." (実際に観測済み)
@@ -126,12 +125,23 @@ export class TwitchChatService {
               broadcasterTwitchUserId,
             })
           } catch (removeScopeError) {
-            logger.error('Failed to remove invalid scope during self-healing', {
+            // 自己修復失敗をSupabaseに記録（繰り返し発生する可能性があるため追跡が重要）
+            // reportError 内部で console.error も出力される
+            await reportError(removeScopeError, {
+              context: 'chat-service:removeScope:self-healing',
               broadcasterTwitchUserId,
-              error: removeScopeError,
             })
           }
         }
+
+        // Supabase に記録し、Cron Worker 経由で GitHub Issue を自動作成する
+        // Report to Supabase so the Cron Worker can create a GitHub Issue
+        // 自己修復の後に配置（自己修復が確実に実行されるようにするため）
+        // Placed after self-healing to ensure healing runs regardless of reporting outcome
+        await reportApiError('/helix/chat/messages', 'POST',
+          new Error(`Twitch API ${response.status}: ${errorBody.message || 'Unknown error'}`),
+          { broadcasterTwitchUserId, status: response.status, twitchError: errorBody.error }
+        )
 
         return false
       }
@@ -143,8 +153,10 @@ export class TwitchChatService {
 
       return true
     } catch (error) {
-      logger.error('Error sending chat message', {
-        error,
+      // ネットワークエラーなど予期しない例外をSupabaseに記録
+      // reportError 内部で console.error も出力される
+      await reportError(error, {
+        context: 'chat-service:sendChatMessage',
         broadcasterTwitchUserId,
       })
       return false

@@ -32,8 +32,8 @@
 // userId は Supabase Auth の UUID であり PII に該当するため除外
 const SENSITIVE_KEYS = [
   'password', 'token', 'authorization', 'cookie', 'secret',
-  'apikey', 'userid', 'api_key', 'access_token', 'refresh_token',
-  'client_secret', 'credential', 'private_key',
+  'apikey', 'userid', 'username', 'api_key', 'access_token', 'refresh_token',
+  'client_secret', 'credential', 'private_key', 'email', 'ip_address',
 ]
 
 /**
