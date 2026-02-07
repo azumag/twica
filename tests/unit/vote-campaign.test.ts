@@ -207,7 +207,7 @@ describe('POST /api/storage-bonus/vote-campaign', () => {
         if (table === 'streamers' && callCount === 2) {
           // insert: 23505エラー
           const insertQuery = createMockQueryBuilder()
-          const raceError = { code: '23505', message: 'duplicate key value' }
+          const raceError = { code: '23505', message: 'duplicate key value', name: 'PostgrestError' }
           ;(insertQuery.insert as ReturnType<typeof vi.fn>).mockReturnValue({
             select: vi.fn().mockReturnValue({
               single: vi.fn().mockResolvedValue(createMockResponse(null, raceError)),

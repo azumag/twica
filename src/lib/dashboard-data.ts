@@ -40,9 +40,9 @@ export const getStreamerData = cache(async (twitchUserId: string) => {
   // Extract and sort cards (newest first)
   // カードを抽出してソート（新しい順）
   const cards = normalizeDropRate(streamer.cards || [])
-    .sort((a: { created_at: string }, b: { created_at: string }) =>
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
+    .sort((a, b) =>
+      new Date((b as Record<string, unknown>).created_at as string).getTime() - new Date((a as Record<string, unknown>).created_at as string).getTime()
+    ) as Card[];
 
   // Return without the nested cards to match expected interface
   // 期待されるインターフェースに合わせてネストされたcardsを除外して返す

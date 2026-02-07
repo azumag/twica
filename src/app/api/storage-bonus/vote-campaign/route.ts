@@ -26,12 +26,12 @@ import type { ApiRateLimitResponse } from '@/types/api'
  */
 export async function POST(request: NextRequest) {
   // レート制限チェック（DoS対策）
-  const identifier = getRateLimitIdentifier(request)
+  const identifier = await getRateLimitIdentifier(request)
   const rateLimit = await checkRateLimit(rateLimits.voteCampaign, identifier)
   if (!rateLimit.success) {
     return NextResponse.json(
-      { error: ERROR_MESSAGES.RATE_LIMIT } as ApiRateLimitResponse,
-      { status: 429, headers: { 'Retry-After': String(Math.ceil((rateLimit.reset - Date.now()) / 1000)) } }
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED } as ApiRateLimitResponse,
+      { status: 429, headers: { 'Retry-After': String(Math.ceil(((rateLimit.reset ?? Date.now() + 60000) - Date.now()) / 1000)) } }
     )
   }
 
