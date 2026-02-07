@@ -4,7 +4,9 @@ import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUserCards } from "@/lib/dashboard-data";
 import { RARITY_ORDER, RARITIES } from "@/lib/constants";
+import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import Stats from "@/components/Stats";
+import VoteCampaignButton from "@/components/VoteCampaignButton";
 // Streamer type is used by getUserCards internally but not needed in this file
 // Streamer型はgetUserCards内部で使用されるが、このファイルでは不要
 
@@ -36,6 +38,9 @@ export default async function DashboardPage() {
   // ユーザーのカードコレクションを取得（streamerDataは概要ページでは不要）
   const userCards = await getUserCards(session.twitchUserId);
 
+  // 「投票行ったよ」キャンペーンボタンの表示判定（全ユーザー向け）
+  const showVoteCampaign = await shouldShowVoteCampaign(session.twitchUserId);
+
   // Sort cards by rarity (legendary first)
   // レアリティでソート（レジェンダリーが先頭）
   userCards.sort((a, b) => {
@@ -66,6 +71,9 @@ export default async function DashboardPage() {
 
   return (
     <div>
+      {/* 投票キャンペーンボタン（全ユーザー向け、期間内かつ未適用の場合のみ表示） */}
+      <VoteCampaignButton visible={showVoteCampaign} />
+
       {/* Non-streamer info */}
       {/* 非配信者向け情報 */}
       {!isStreamer && (

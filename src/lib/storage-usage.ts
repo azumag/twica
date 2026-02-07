@@ -12,7 +12,7 @@
 
 import { UPLOAD_CONFIG } from './constants';
 import { logger } from './logger';
-import { getStorageUsageFromDB } from './storage-db';
+import { getStorageUsageFromDB, getStorageBonusBytes } from './storage-db';
 
 export interface StorageUsage {
   userUsage: number;
@@ -31,24 +31,30 @@ export interface StorageUsage {
  * これにより操作数制限（2,000/月）を大幅に節約できる。
  *
  * @param userPrefix - ユーザー識別用のプレフィックス（8文字のハッシュ）
+ * @param twitchUserId - Twitch ユーザーID（指定時はストレージボーナスを加味）
  * @returns ストレージ使用量情報
  */
-export async function getStorageUsage(userPrefix?: string): Promise<StorageUsage> {
+export async function getStorageUsage(userPrefix?: string, twitchUserId?: string): Promise<StorageUsage> {
   try {
     // userPrefixが指定されていない場合は空文字を使用
     // この場合、ユーザー個別の使用量は0として扱う
     const prefix = userPrefix || '';
 
-    const dbUsage = await getStorageUsageFromDB(prefix);
+    // DB使用量とストレージボーナスを並列取得してレイテンシを削減
+    const [dbUsage, bonusBytes] = await Promise.all([
+      getStorageUsageFromDB(prefix),
+      twitchUserId ? getStorageBonusBytes(twitchUserId) : Promise.resolve(0),
+    ]);
+    const effectiveLimit = UPLOAD_CONFIG.USER_STORAGE_LIMIT + bonusBytes;
 
-    logger.info(`[StorageUsage] User: ${prefix}, User Usage: ${dbUsage.userUsage}, Global Usage: ${dbUsage.globalUsage}`);
+    logger.info(`[StorageUsage] User: ${prefix}, User Usage: ${dbUsage.userUsage}, Global Usage: ${dbUsage.globalUsage}, Bonus: ${bonusBytes}`);
 
     return {
       userUsage: dbUsage.userUsage,
       globalUsage: dbUsage.globalUsage,
-      userLimitReached: dbUsage.userLimitReached,
+      userLimitReached: dbUsage.userUsage >= effectiveLimit,
       globalLimitReached: dbUsage.globalLimitReached,
-      userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
+      userLimitBytes: effectiveLimit,
       globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
     };
   } catch (error) {

@@ -388,6 +388,27 @@ export const SOUND_UPLOAD_CONFIG = {
   } as const,
 } as const
 
+/**
+ * 選挙キャンペーン設定
+ * 期間限定で「選挙行ったよ/行こうかな」ボタンを押すとストレージ容量が+5MBされるキャンペーン
+ * キャンペーン期間外はボタンが非表示になる
+ *
+ * - 投票済証の提示など証拠は不要（自己申告）
+ * - 選挙権のない方でも、将来得ることがあれば投票行こうかなと思えば誰でもOK
+ * - 投票率向上を願うキャンペーン（特定の政党・候補者を応援するものではない）
+ */
+export const VOTE_CAMPAIGN_CONFIG = {
+  // キャンペーン開始日時（JST 2026-02-08 00:00:00 = UTC 2026-02-07 15:00:00）
+  START_DATE: new Date('2026-02-07T15:00:00Z'),
+  // キャンペーン終了日時（JST 2026-02-15 23:59:59 = UTC 2026-02-15 14:59:59）
+  END_DATE: new Date('2026-02-15T14:59:59Z'),
+  // ボーナス容量（MB）
+  BONUS_MB: 5,
+  // DB記録用の識別子
+  TYPE: 'campaign' as const,
+  MEMO: '2026選挙応援' as const,
+} as const
+
 export const STORAGE_LIMIT_MESSAGES = {
   // User limit message: increased to 10MB
   // ユーザー制限メッセージ: 10MBに増加

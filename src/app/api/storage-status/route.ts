@@ -21,7 +21,7 @@ export async function GET() {
     // Web Crypto APIを使用（Cloudflare Workers互換）
     const userPrefix = await sha256Prefix(session.twitchUserId);
 
-    const usage = await getStorageUsage(userPrefix);
+    const usage = await getStorageUsage(userPrefix, session.twitchUserId);
 
     return NextResponse.json({
       userUsage: usage.userUsage,

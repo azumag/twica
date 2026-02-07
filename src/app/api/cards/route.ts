@@ -13,6 +13,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
+import { normalizeDropRate } from "@/lib/card-utils";
 import { logger } from "@/lib/logger";
 import type { ApiRateLimitResponse } from "@/types/api";
 
@@ -215,7 +216,7 @@ async function fetchCardsFromDB(
 
   logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${cards?.length || 0} cards)`);
 
-  return { cards: cards || [], count };
+  return { cards: normalizeDropRate(cards || []), count };
 }
 
 export async function GET(request: NextRequest) {
