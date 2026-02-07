@@ -147,6 +147,8 @@ describe('sentry/error-handler', () => {
         access_token: 'tok',
         refresh_token: 'ref',
         api_key: 'key',
+        email: 'user@example.com',
+        safeName: 'visible',
       });
 
       const insertArg = mockInsert.mock.calls[0][0];
@@ -155,7 +157,9 @@ describe('sentry/error-handler', () => {
       expect(insertArg.context.access_token).toBe('[REDACTED]');
       expect(insertArg.context.refresh_token).toBe('[REDACTED]');
       expect(insertArg.context.api_key).toBe('[REDACTED]');
-      expect(insertArg.context.username).toBe('public');
+      expect(insertArg.context.username).toBe('[REDACTED]');
+      expect(insertArg.context.email).toBe('[REDACTED]');
+      expect(insertArg.context.safeName).toBe('visible');
     });
 
     it('ネストしたオブジェクトも再帰的にサニタイズする', async () => {

@@ -162,9 +162,10 @@ export async function POST(request: NextRequest) {
       { subscription }
     );
 
-    // Sentryにも報告して追跡可能にする
-    reportError(new Error(`EventSub revocation: ${revocationReason}`), {
-      context: "EventSub Revocation",
+    // Supabaseに記録してGitHub Issue化する（awaitしないとWorkers打ち切りで記録されない）
+    // Must await — Cloudflare Workers terminates background promises after response
+    await reportError(new Error(`EventSub revocation: ${revocationReason}`), {
+      context: "eventsub:revocation",
       type: "eventsub",
       revocationReason,
       subscriptionType,
@@ -216,6 +217,14 @@ async function handleRedemption(messageId: string, event: {
       // Error in gacha but don't throw, as webhook should return 200
       // ガチャでエラーが発生してもthrowしない。webhookは200を返す必要がある
       logger.warn('[handleRedemption] Gacha execution failed', { messageId });
+      // ガチャ失敗はユーザー影響が大きいためSupabaseに記録してGitHub Issue化する
+      // Gacha failure directly impacts users, so report to Supabase for GitHub Issue tracking
+      await reportError(new Error(`Gacha execution failed: ${result.error}`), {
+        context: 'eventsub:handleRedemption',
+        messageId,
+        broadcasterUserId: event.broadcaster_user_id,
+        gachaError: result.error,
+      });
       return;
     }
 
@@ -279,6 +288,13 @@ async function handleRedemption(messageId: string, event: {
         // Chat send failure is logged only, does not block gacha processing
         logger.warn('[handleRedemption] Chat announcement threw error', {
           error: err instanceof Error ? err.message : String(err),
+          broadcasterTwitchUserId: event.broadcaster_user_id,
+          streamerId: streamer.id,
+        });
+        // チャット通知の例外（DB クエリ失敗等）も追跡する
+        // Track chat announcement exceptions (e.g. DB query failures)
+        await reportError(err, {
+          context: 'eventsub:sendChatAnnouncement',
           broadcasterTwitchUserId: event.broadcaster_user_id,
           streamerId: streamer.id,
         });
