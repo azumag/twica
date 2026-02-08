@@ -110,7 +110,7 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
       </h3>
       <p className="mb-3 text-sm text-gray-300">
         ボタンを押すと画像アップロード容量が +{bonusMb}MB されます（1回限り）<br />
-        ※ 将来アフィリエイト・パートナーになった際にも恩恵を受けられます
+        ※ 現在チャネルポイントが使えないユーザ様でも、将来アフィリエイト・パートナーになった際に容量追加されます。
       </p>
 
       {error && (
@@ -151,7 +151,7 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
 
       <div className="mt-4 space-y-2 text-xs text-gray-400 leading-relaxed">
         <p>
-          ＊ 投票済証の提示など証拠を求めることはありません。自己申告です。また、現在選挙権のない方でも、将来得ることがあれば投票行こうかな、と思って頂ければ、どなたでもOKです。
+          ＊ 投票済証の提示など証拠を求めることはありません。投票したか否かを確認するためのものではありません。また、現在選挙権のない方でも、将来得ることがあれば投票行こうかな、と思って頂ければ、どなたでもOKです。
         </p>
         <p>
           ＊ 本応援は、投票率が上がって欲しいな、という思いで開催しております。特定の政党や候補者を応援するものではありません。
