@@ -80,7 +80,7 @@ describe('sentry/error-handler', () => {
       expect(insertArg.stack_trace).toBeTruthy();
     });
 
-    it('非 Error の場合、String() で変換して記録する', async () => {
+    it('非 Error の文字列は extractErrorMessage 経由でそのまま記録する', async () => {
       await reportError('string error');
 
       expect(mockInsert).toHaveBeenCalledWith(
@@ -180,6 +180,78 @@ describe('sentry/error-handler', () => {
       const insertArg = mockInsert.mock.calls[0][0];
       expect(insertArg.context.items[0].userId).toBe('[REDACTED]');
       expect(insertArg.context.items[0].name).toBe('test');
+    });
+  });
+
+  describe('プレーンオブジェクト型エラーの処理 (Issue #262)', () => {
+    it('PostgrestError 形式のオブジェクトから message を抽出する', async () => {
+      const postgrestError = { code: '23505', message: 'duplicate key value', details: null, hint: null };
+      await reportError(postgrestError);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error_type: '[Warning]',
+          message: 'duplicate key value',
+          stack_trace: null,
+        })
+      );
+    });
+
+    it('message プロパティがないオブジェクトは JSON.stringify でフォールバックする', async () => {
+      const unknownObj = { code: 500, detail: 'something went wrong' };
+      await reportError(unknownObj);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error_type: '[Warning]',
+          message: JSON.stringify(unknownObj),
+          stack_trace: null,
+        })
+      );
+    });
+
+    it('reportApiError でもプレーンオブジェクトの message を抽出する', async () => {
+      const postgrestError = { code: '42P01', message: 'relation does not exist', details: null, hint: null };
+      await reportApiError('/api/streamers', 'POST', postgrestError);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error_type: '[API Error]',
+          message: 'POST /api/streamers: relation does not exist',
+        })
+      );
+    });
+
+    it('null が渡された場合は "null" として記録する', async () => {
+      await reportError(null);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'null',
+        })
+      );
+    });
+
+    it('undefined が渡された場合は "undefined" として記録する', async () => {
+      await reportError(undefined);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'undefined',
+        })
+      );
+    });
+
+    it('循環参照オブジェクトは "[Unserializable object]" として記録する', async () => {
+      const circular: Record<string, unknown> = { name: 'test' };
+      circular.self = circular;
+      await reportError(circular);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '[Unserializable object]',
+        })
+      );
     });
   });
 

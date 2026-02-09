@@ -63,6 +63,27 @@ function sanitizeContext(obj: Record<string, unknown>): Record<string, unknown> 
   return sanitized
 }
 
+/**
+ * unknown 型のエラーから可読なメッセージを抽出する。
+ * Supabase PostgrestError のようなプレーンオブジェクト（Error 非継承）でも
+ * message プロパティがあれば取得し、なければ JSON.stringify でフォールバック。
+ * See: https://github.com/azumag/twica/issues/262
+ */
+function extractErrorMessage(error: unknown): string {
+  // 注: この関数は report*Error 関数の else 分岐（error instanceof Error が false の場合）でのみ呼ばれる
+  if (error && typeof error === 'object') {
+    if ('message' in error && typeof (error as Record<string, unknown>).message === 'string') {
+      return (error as Record<string, unknown>).message as string
+    }
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return '[Unserializable object]'
+    }
+  }
+  return String(error)
+}
+
 // PostgreSQL TEXT 型は最大1GBだが、実用的な上限として定数化
 const MAX_MESSAGE_LENGTH = 10000
 const MAX_STACK_LENGTH = 50000
@@ -101,8 +122,9 @@ export async function reportError(error: Error | unknown, context?: Record<strin
     console.error('[Error]', error.message, context ?? '')
     await logErrorToSupabase('[Error]', error.message, error.stack || null, context || {})
   } else {
-    console.warn('[Warning]', String(error), context ?? '')
-    await logErrorToSupabase('[Warning]', String(error), null, context || {})
+    const msg = extractErrorMessage(error)
+    console.warn('[Warning]', msg, context ?? '')
+    await logErrorToSupabase('[Warning]', msg, null, context || {})
   }
 }
 
@@ -113,8 +135,9 @@ export async function reportApiError(endpoint: string, method: string, error: Er
     console.error(`[API Error] ${label}:`, error.message, additionalContext ?? '')
     await logErrorToSupabase('[API Error]', `${label}: ${error.message}`, error.stack || null, ctx)
   } else {
-    console.error(`[API Error] ${label}:`, String(error), additionalContext ?? '')
-    await logErrorToSupabase('[API Error]', `${label}: ${String(error)}`, null, ctx)
+    const msg = extractErrorMessage(error)
+    console.error(`[API Error] ${label}:`, msg, additionalContext ?? '')
+    await logErrorToSupabase('[API Error]', `${label}: ${msg}`, null, ctx)
   }
 }
 
@@ -123,8 +146,9 @@ export async function reportAuthError(error: Error | unknown, context: { provide
     console.error('[Auth Error]', error.message, context)
     await logErrorToSupabase('[Auth Error]', error.message, error.stack || null, context)
   } else {
-    console.error('[Auth Error]', String(error), context)
-    await logErrorToSupabase('[Auth Error]', String(error), null, context)
+    const msg = extractErrorMessage(error)
+    console.error('[Auth Error]', msg, context)
+    await logErrorToSupabase('[Auth Error]', msg, null, context)
   }
 }
 
@@ -133,8 +157,9 @@ export async function reportGachaError(error: Error | unknown, context: { stream
     console.error('[Gacha Error]', error.message, context)
     await logErrorToSupabase('[Gacha Error]', error.message, error.stack || null, context)
   } else {
-    console.error('[Gacha Error]', String(error), context)
-    await logErrorToSupabase('[Gacha Error]', String(error), null, context)
+    const msg = extractErrorMessage(error)
+    console.error('[Gacha Error]', msg, context)
+    await logErrorToSupabase('[Gacha Error]', msg, null, context)
   }
 }
 
@@ -143,8 +168,9 @@ export async function reportBattleError(error: Error | unknown, context: { battl
     console.error('[Battle Error]', error.message, context)
     await logErrorToSupabase('[Battle Error]', error.message, error.stack || null, context)
   } else {
-    console.error('[Battle Error]', String(error), context)
-    await logErrorToSupabase('[Battle Error]', String(error), null, context)
+    const msg = extractErrorMessage(error)
+    console.error('[Battle Error]', msg, context)
+    await logErrorToSupabase('[Battle Error]', msg, null, context)
   }
 }
 
@@ -162,8 +188,9 @@ export async function reportRealtimeError(error: unknown, context: { action?: st
     console.error('[Realtime Error]', error.message, context)
     await logErrorToSupabase('[Realtime Error]', error.message, error.stack || null, context)
   } else {
-    console.error('[Realtime Error]', String(error), context)
-    await logErrorToSupabase('[Realtime Error]', String(error), null, context)
+    const msg = extractErrorMessage(error)
+    console.error('[Realtime Error]', msg, context)
+    await logErrorToSupabase('[Realtime Error]', msg, null, context)
   }
 }
 
@@ -172,7 +199,8 @@ export async function reportSecurityError(error: Error | unknown, context: { act
     console.error('[Security Error]', error.message, context)
     await logErrorToSupabase('[Security Error]', error.message, error.stack || null, context)
   } else {
-    console.error('[Security Error]', String(error), context)
-    await logErrorToSupabase('[Security Error]', String(error), null, context)
+    const msg = extractErrorMessage(error)
+    console.error('[Security Error]', msg, context)
+    await logErrorToSupabase('[Security Error]', msg, null, context)
   }
 }
