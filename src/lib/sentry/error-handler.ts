@@ -28,13 +28,20 @@
  * - サーバーサイドでのみ Supabase クライアントをロードする
  */
 
-// context に含まれる可能性のある機密情報キー（小文字で照合）
+// context に含まれる可能性のある機密情報キー（小文字で照合、部分一致）
+// OWASP Logging Cheat Sheet および業界標準ロギングライブラリを参考に選定
 // userId は Supabase Auth の UUID であり PII に該当するため除外
 const SENSITIVE_KEYS = [
   'password', 'token', 'authorization', 'cookie', 'secret',
   'apikey', 'userid', 'username', 'api_key', 'access_token', 'refresh_token',
   'client_secret', 'credential', 'private_key', 'email', 'ip_address',
+  'session_id', 'sessionid', 'otp', 'auth_code',
+  'csrf_token', 'xsrf_token',
 ]
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
 
 /**
  * context オブジェクトから機密情報を除外する。
@@ -48,19 +55,61 @@ function sanitizeContext(obj: Record<string, unknown>): Record<string, unknown> 
     } else if (Array.isArray(value)) {
       // 配列内のオブジェクトも再帰的にサニタイズ
       // 例: [{ userId: 'abc' }] → [{ userId: '[REDACTED]' }]
-      sanitized[key] = value.map(item => {
-        if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
-          return sanitizeContext(item as Record<string, unknown>)
-        }
-        return item
-      })
-    } else if (typeof value === 'object' && value !== null) {
-      sanitized[key] = sanitizeContext(value as Record<string, unknown>)
+      sanitized[key] = value.map(item => isRecord(item) ? sanitizeContext(item) : item)
+    } else if (isRecord(value)) {
+      sanitized[key] = sanitizeContext(value)
     } else {
       sanitized[key] = value
     }
   }
   return sanitized
+}
+
+/**
+ * unknown 型のエラーから可読なメッセージを抽出する。
+ * Supabase PostgrestError のようなプレーンオブジェクト（Error 非継承）でも
+ * message プロパティがあれば取得し、なければ JSON.stringify でフォールバック。
+ * JSON.stringify 時は SENSITIVE_KEYS を除外し、循環参照も安全に処理する。
+ * See: https://github.com/azumag/twica/issues/262
+ */
+function extractErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object') {
+    // TypeScript 4.9+ の in narrowing で message プロパティに直接アクセス
+    // Note: message はエラー説明文（例: "duplicate key value"）であり、
+    // 呼び出し元が機密情報を含めない前提。値のスキャンは false positive リスクが高いため行わない。
+    if ('message' in error && typeof error.message === 'string') {
+      return error.message
+    }
+    // message がないオブジェクトは JSON.stringify でフォールバック
+    // 機密情報キーを除外し、循環参照を安全に処理
+    const seen = new WeakSet()
+    try {
+      return JSON.stringify(error, (key, value) => {
+        if (key && SENSITIVE_KEYS.some(k => key.toLowerCase().includes(k))) {
+          return '[REDACTED]'
+        }
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) return '[Circular]'
+          seen.add(value)
+        }
+        return value
+      })
+    } catch {
+      return '[Unserializable object]'
+    }
+  }
+  return String(error)
+}
+
+/**
+ * error から message と stack を統一的に解決する。
+ * 全 report*Error 関数の if/else 分岐を集約し DRY 原則を維持する。
+ */
+function resolveErrorInfo(error: unknown): { message: string; stack: string | null; isErrorInstance: boolean } {
+  if (error instanceof Error) {
+    return { message: error.message, stack: error.stack || null, isErrorInstance: true }
+  }
+  return { message: extractErrorMessage(error), stack: null, isErrorInstance: false }
 }
 
 // PostgreSQL TEXT 型は最大1GBだが、実用的な上限として定数化
@@ -97,55 +146,38 @@ async function logErrorToSupabase(
 }
 
 export async function reportError(error: Error | unknown, context?: Record<string, unknown>) {
-  if (error instanceof Error) {
-    console.error('[Error]', error.message, context ?? '')
-    await logErrorToSupabase('[Error]', error.message, error.stack || null, context || {})
-  } else {
-    console.warn('[Warning]', String(error), context ?? '')
-    await logErrorToSupabase('[Warning]', String(error), null, context || {})
-  }
+  const info = resolveErrorInfo(error)
+  // Error インスタンスは [Error] + console.error、それ以外は [Warning] + console.warn
+  const label = info.isErrorInstance ? '[Error]' : '[Warning]'
+  const log = info.isErrorInstance ? console.error : console.warn
+  log(label, info.message, context ?? '')
+  await logErrorToSupabase(label, info.message, info.stack, context || {})
 }
 
 export async function reportApiError(endpoint: string, method: string, error: Error | unknown, additionalContext?: Record<string, unknown>) {
   const label = `${method} ${endpoint}`
   const ctx = { endpoint, method, ...additionalContext }
-  if (error instanceof Error) {
-    console.error(`[API Error] ${label}:`, error.message, additionalContext ?? '')
-    await logErrorToSupabase('[API Error]', `${label}: ${error.message}`, error.stack || null, ctx)
-  } else {
-    console.error(`[API Error] ${label}:`, String(error), additionalContext ?? '')
-    await logErrorToSupabase('[API Error]', `${label}: ${String(error)}`, null, ctx)
-  }
+  const { message, stack } = resolveErrorInfo(error)
+  console.error(`[API Error] ${label}:`, message, additionalContext ?? '')
+  await logErrorToSupabase('[API Error]', `${label}: ${message}`, stack, ctx)
 }
 
 export async function reportAuthError(error: Error | unknown, context: { provider?: string; action?: string; userId?: string }) {
-  if (error instanceof Error) {
-    console.error('[Auth Error]', error.message, context)
-    await logErrorToSupabase('[Auth Error]', error.message, error.stack || null, context)
-  } else {
-    console.error('[Auth Error]', String(error), context)
-    await logErrorToSupabase('[Auth Error]', String(error), null, context)
-  }
+  const { message, stack } = resolveErrorInfo(error)
+  console.error('[Auth Error]', message, context)
+  await logErrorToSupabase('[Auth Error]', message, stack, context)
 }
 
 export async function reportGachaError(error: Error | unknown, context: { streamerId?: string; userId?: string; cost?: number }) {
-  if (error instanceof Error) {
-    console.error('[Gacha Error]', error.message, context)
-    await logErrorToSupabase('[Gacha Error]', error.message, error.stack || null, context)
-  } else {
-    console.error('[Gacha Error]', String(error), context)
-    await logErrorToSupabase('[Gacha Error]', String(error), null, context)
-  }
+  const { message, stack } = resolveErrorInfo(error)
+  console.error('[Gacha Error]', message, context)
+  await logErrorToSupabase('[Gacha Error]', message, stack, context)
 }
 
 export async function reportBattleError(error: Error | unknown, context: { battleId?: string; userId?: string; round?: number }) {
-  if (error instanceof Error) {
-    console.error('[Battle Error]', error.message, context)
-    await logErrorToSupabase('[Battle Error]', error.message, error.stack || null, context)
-  } else {
-    console.error('[Battle Error]', String(error), context)
-    await logErrorToSupabase('[Battle Error]', String(error), null, context)
-  }
+  const { message, stack } = resolveErrorInfo(error)
+  console.error('[Battle Error]', message, context)
+  await logErrorToSupabase('[Battle Error]', message, stack, context)
 }
 
 export async function reportRealtimeError(error: unknown, context: { action?: string; streamerId?: string; status?: string; retryCount?: number; isExpected?: boolean }) {
@@ -158,21 +190,13 @@ export async function reportRealtimeError(error: unknown, context: { action?: st
     return
   }
 
-  if (error instanceof Error) {
-    console.error('[Realtime Error]', error.message, context)
-    await logErrorToSupabase('[Realtime Error]', error.message, error.stack || null, context)
-  } else {
-    console.error('[Realtime Error]', String(error), context)
-    await logErrorToSupabase('[Realtime Error]', String(error), null, context)
-  }
+  const { message, stack } = resolveErrorInfo(error)
+  console.error('[Realtime Error]', message, context)
+  await logErrorToSupabase('[Realtime Error]', message, stack, context)
 }
 
 export async function reportSecurityError(error: Error | unknown, context: { action?: string; userId?: string; [key: string]: unknown }) {
-  if (error instanceof Error) {
-    console.error('[Security Error]', error.message, context)
-    await logErrorToSupabase('[Security Error]', error.message, error.stack || null, context)
-  } else {
-    console.error('[Security Error]', String(error), context)
-    await logErrorToSupabase('[Security Error]', String(error), null, context)
-  }
+  const { message, stack } = resolveErrorInfo(error)
+  console.error('[Security Error]', message, context)
+  await logErrorToSupabase('[Security Error]', message, stack, context)
 }

@@ -20,8 +20,8 @@ import type { ApiRateLimitResponse } from '@/types/api'
  * - 選挙権の有無は問わない（将来得る可能性があれば誰でもOK）
  *
  * 仕様:
- * - streamersテーブルにレコードがない場合は作成（broadcaster_type = ''）
- * - 既存レコードがある場合はそのまま使用（broadcaster_type等を上書きしない）
+ * - streamersテーブルにレコードがない場合は作成（最小限の情報のみ）
+ * - 既存レコードがある場合はそのまま使用（上書きしない）
  * - 将来ユーザーがアフィリエイトになった時、既存レコードが更新され、ボーナスが有効になる
  */
 export async function POST(request: NextRequest) {
@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
     const supabaseAdmin = getSupabaseAdmin()
 
     // streamer_idを取得。既存レコードがあればそのまま使用し、
-    // 存在しない場合のみ新規作成（既存の broadcaster_type 等を上書きしない）
+    // 存在しない場合のみ新規作成（既存レコードを上書きしない）
     const { data: existing } = await supabaseAdmin
       .from('streamers')
       .select('id')
@@ -77,13 +77,15 @@ export async function POST(request: NextRequest) {
       streamerId = existing.id
     } else {
       // 将来アフィリエイトになった時のために、今のうちにレコードを作成しておく
+      // 非配信者のstreamersレコードが存在しても、配信者機能はsession.broadcasterTypeで
+      // ガードされるため意図しない有効化は起きない。アフィリエイト昇格時は
+      // auth callbackのupsert(onConflict: twitch_user_id)で正常に統合される
       const { data: created, error: insertError } = await supabaseAdmin
         .from('streamers')
         .insert({
           twitch_user_id: session.twitchUserId,
           twitch_username: session.twitchUsername,
           twitch_display_name: session.twitchDisplayName,
-          broadcaster_type: '',
         })
         .select('id')
         .single()
