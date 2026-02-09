@@ -162,6 +162,23 @@ describe('sentry/error-handler', () => {
       expect(insertArg.context.safeName).toBe('visible');
     });
 
+    it('追加の SENSITIVE_KEYS (session_id, csrf_token 等) も除外される', async () => {
+      await reportError(new Error('test'), {
+        session_id: 'sess_abc',
+        csrf_token: 'csrf123',
+        otp: '123456',
+        auth_code: 'code',
+        safeProp: 'visible',
+      });
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.session_id).toBe('[REDACTED]');
+      expect(insertArg.context.csrf_token).toBe('[REDACTED]');
+      expect(insertArg.context.otp).toBe('[REDACTED]');
+      expect(insertArg.context.auth_code).toBe('[REDACTED]');
+      expect(insertArg.context.safeProp).toBe('visible');
+    });
+
     it('ネストしたオブジェクトも再帰的にサニタイズする', async () => {
       await reportError(new Error('test'), {
         nested: { password: 'secret', safe: 'ok' },

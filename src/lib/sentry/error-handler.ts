@@ -28,13 +28,20 @@
  * - サーバーサイドでのみ Supabase クライアントをロードする
  */
 
-// context に含まれる可能性のある機密情報キー（小文字で照合）
+// context に含まれる可能性のある機密情報キー（小文字で照合、部分一致）
+// OWASP Logging Cheat Sheet および業界標準ロギングライブラリを参考に選定
 // userId は Supabase Auth の UUID であり PII に該当するため除外
 const SENSITIVE_KEYS = [
   'password', 'token', 'authorization', 'cookie', 'secret',
   'apikey', 'userid', 'username', 'api_key', 'access_token', 'refresh_token',
   'client_secret', 'credential', 'private_key', 'email', 'ip_address',
+  'session_id', 'sessionid', 'otp', 'auth_code',
+  'csrf_token', 'xsrf_token',
 ]
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
 
 /**
  * context オブジェクトから機密情報を除外する。
@@ -48,14 +55,9 @@ function sanitizeContext(obj: Record<string, unknown>): Record<string, unknown> 
     } else if (Array.isArray(value)) {
       // 配列内のオブジェクトも再帰的にサニタイズ
       // 例: [{ userId: 'abc' }] → [{ userId: '[REDACTED]' }]
-      sanitized[key] = value.map(item => {
-        if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
-          return sanitizeContext(item as Record<string, unknown>)
-        }
-        return item
-      })
-    } else if (typeof value === 'object' && value !== null) {
-      sanitized[key] = sanitizeContext(value as Record<string, unknown>)
+      sanitized[key] = value.map(item => isRecord(item) ? sanitizeContext(item) : item)
+    } else if (isRecord(value)) {
+      sanitized[key] = sanitizeContext(value)
     } else {
       sanitized[key] = value
     }
