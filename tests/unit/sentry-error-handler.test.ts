@@ -242,16 +242,33 @@ describe('sentry/error-handler', () => {
       );
     });
 
-    it('循環参照オブジェクトは "[Unserializable object]" として記録する', async () => {
+    it('循環参照オブジェクトは "[Circular]" マーカー付きで記録する', async () => {
       const circular: Record<string, unknown> = { name: 'test' };
       circular.self = circular;
       await reportError(circular);
 
-      expect(mockInsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: '[Unserializable object]',
-        })
-      );
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.message).toContain('"name":"test"');
+      expect(insertArg.message).toContain('[Circular]');
+    });
+
+    it('JSON.stringify フォールバック時に機密情報キーは除外される', async () => {
+      const objWithSecret = { code: 500, token: 'secret-value', detail: 'fail' };
+      await reportError(objWithSecret);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.message).not.toContain('secret-value');
+      expect(insertArg.message).toContain('[REDACTED]');
+      expect(insertArg.message).toContain('"detail":"fail"');
+    });
+
+    it('message プロパティが文字列でないオブジェクトは JSON.stringify でフォールバックする', async () => {
+      const objWithNumericMessage = { message: 42, detail: 'info' };
+      await reportError(objWithNumericMessage);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.message).toContain('"message":42');
+      expect(insertArg.message).toContain('"detail":"info"');
     });
   });
 
