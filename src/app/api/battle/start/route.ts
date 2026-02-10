@@ -226,7 +226,6 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     // reportBattleError が [Battle Error] タイプで Supabase 記録 + console.error を行う
-    // handleApiError は内部で logger.error → Supabase 記録するため二重報告になる
     if (session) {
       await reportBattleError(error, {
         battleId: undefined, // Not created yet due to error

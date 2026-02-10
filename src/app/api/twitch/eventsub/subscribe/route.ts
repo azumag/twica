@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { rewardId, isAdditional } = body;
+    const { rewardId } = body;
 
     if (!rewardId) {
       return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });

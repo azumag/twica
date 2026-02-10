@@ -376,7 +376,6 @@ export default function ChannelPointSettings({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           rewardId: selectedAdditionalRewardId,
-          isAdditional: true,
         }),
       });
 

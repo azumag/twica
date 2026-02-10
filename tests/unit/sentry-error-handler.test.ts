@@ -199,6 +199,23 @@ describe('sentry/error-handler', () => {
       expect(insertArg.context.items[0].userId).toBe('[REDACTED]');
       expect(insertArg.context.items[0].name).toBe('test');
     });
+
+    it('複合キー（broadcasterUserId 等）は完全一致キーでマスクしない', async () => {
+      await reportError(new Error('test'), {
+        userId: 'should-be-redacted',
+        broadcasterUserId: 'visible-for-debug',
+        twitchUsername: 'visible-for-debug',
+        username: 'should-be-redacted',
+      });
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      // 完全一致: userId, username はマスク
+      expect(insertArg.context.userId).toBe('[REDACTED]');
+      expect(insertArg.context.username).toBe('[REDACTED]');
+      // 複合キー: broadcasterUserId, twitchUsername はデバッグ用に保持
+      expect(insertArg.context.broadcasterUserId).toBe('visible-for-debug');
+      expect(insertArg.context.twitchUsername).toBe('visible-for-debug');
+    });
   });
 
   describe('プレーンオブジェクト型エラーの処理 (Issue #262)', () => {
@@ -377,14 +394,14 @@ describe('sentry/error-handler', () => {
       await expect(logErrorFromLogger('test', [new Error('e')])).resolves.toBeUndefined();
     });
 
-    it('複数の Error が渡された場合は最後のものが使用される', async () => {
+    it('複数の Error が渡された場合は最初のものが使用される（原因エラー優先）', async () => {
       const error1 = new Error('first error');
       const error2 = new Error('second error');
       await logErrorFromLogger('Multiple:', [error1, error2]);
 
       expect(mockInsert).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: 'Multiple: second error',
+          message: 'Multiple: first error',
         })
       );
     });

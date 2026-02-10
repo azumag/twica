@@ -1,18 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { handleApiError, handleDatabaseError, handleBlobError } from '@/lib/error-handler';
 
-// sentry/error-handler のモック
+// sentry/error-handler のモック（logErrorFromLogger を error-handler.ts が直接使用する）
 vi.mock('@/lib/sentry/error-handler', () => ({
+  logErrorFromLogger: vi.fn().mockResolvedValue(undefined),
   reportApiError: vi.fn().mockResolvedValue(undefined),
   reportError: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('@/lib/logger', () => ({
-  logger: {
-    error: vi.fn(),
-    warn: vi.fn(),
-    info: vi.fn(),
-  },
 }));
 
 describe('error-handler', () => {
