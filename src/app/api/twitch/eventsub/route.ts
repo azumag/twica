@@ -303,11 +303,7 @@ async function handleRedemption(messageId: string, event: {
 
     logger.info('[handleRedemption] END', { messageId });
   } catch (error) {
-    logger.error('[handleRedemption] Unhandled error', {
-      messageId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return handleApiError(error, "EventSub redemption");
+    return handleApiError(error, `EventSub redemption (messageId=${messageId})`);
   }
 }
 

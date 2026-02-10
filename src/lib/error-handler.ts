@@ -1,30 +1,26 @@
 import { NextResponse } from 'next/server'
 import { logger } from './logger'
-import { reportApiError, reportError } from './sentry/error-handler'
 import { ERROR_MESSAGES } from './constants'
 
-// report*Error() が async になったため、await してから NextResponse を返す
-// 呼び出し元は `return handleApiError(error, ctx)` パターンで、
-// async 関数内の return は Promise を自動的に await するため変更不要
-// See: https://github.com/azumag/twica/issues/239
+// logger.error() が Supabase errors テーブルに自動記録するため、
+// 個別の reportApiError()/reportError() 呼び出しは不要。
+// await logger.error() で Supabase 記録完了を待機し、
+// Cloudflare Workers でレスポンス返却前に記録を確定させる。
+// See: https://github.com/azumag/twica/issues/262
 
 export async function handleApiError(error: unknown, context: string): Promise<NextResponse> {
-  logger.error(`${context}:`, error)
-  await reportApiError(context, 'API', error)
-
+  await logger.error(`${context}:`, error)
   return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
 }
 
 export async function handleDatabaseError(error: unknown, context: string): Promise<NextResponse> {
-  logger.error(`${context}:`, error)
-  await reportError(error, { context, type: 'database' })
+  await logger.error(`${context}:`, error)
   return NextResponse.json({ error: 'Database error' }, { status: 500 })
 }
 
 export async function handleBlobError(error: unknown, context: string, additionalInfo?: Record<string, unknown>): Promise<NextResponse> {
   const errorMessage = error instanceof Error ? error.message : String(error)
-  logger.error(`${context}: ${errorMessage}`, additionalInfo)
-  await reportError(error, { context, type: 'blob', ...additionalInfo })
+  await logger.error(`${context}: ${errorMessage}`, error, additionalInfo)
 
   if (errorMessage.includes('quota') || errorMessage.includes('limit') || errorMessage.includes('507')) {
     return NextResponse.json({ error: 'Storage quota exceeded' }, { status: 507 })

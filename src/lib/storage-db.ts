@@ -10,7 +10,6 @@ import { cache } from 'react';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { UPLOAD_CONFIG, VOTE_CAMPAIGN_CONFIG } from './constants';
 import { logger } from './logger';
-import { reportError } from './sentry/error-handler';
 
 // グローバル使用量を識別する特殊プレフィックス
 const GLOBAL_PREFIX = '_global_';
@@ -235,8 +234,8 @@ export async function getStorageBonusBytes(twitchUserId: string): Promise<number
     return totalMb * 1024 * 1024;
   } catch (error) {
     // ボーナス取得失敗時はゼロとする（ユーザーに不利にしない）
+    // logger.error が自動的に Supabase に記録するため reportError は不要
     logger.error('[StorageDB] Failed to get storage bonus:', error);
-    try { reportError(error instanceof Error ? error : new Error(String(error))); } catch { /* ignore */ }
     return 0;
   }
 }
@@ -268,7 +267,6 @@ export async function hasStorageBonusByTwitchUserId(
     return !!data;
   } catch (error) {
     logger.error('[StorageDB] Failed to check storage bonus by twitch_user_id:', error);
-    try { reportError(error instanceof Error ? error : new Error(String(error))); } catch { /* ignore */ }
     return false;
   }
 }

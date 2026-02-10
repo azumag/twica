@@ -5,7 +5,6 @@ import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { logger } from "@/lib/logger";
-import { reportError } from "@/lib/sentry/error-handler";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -339,24 +338,8 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // EventSub登録失敗の詳細をログに記録
-      logger.error(
-        `EventSub subscription failed: status=${subscribeResponse.status}, broadcaster=${session.twitchUserId}, rewardId=${rewardId}`,
-        {
-          error,
-          callbackUrl,
-          status: subscribeResponse.status,
-        }
-      );
-      reportError(new Error(`EventSub subscription failed: ${error.message || JSON.stringify(error)}`), {
-        context: "EventSub Subscribe",
-        type: "eventsub",
-        twitchUserId: session.twitchUserId,
-        rewardId,
-        callbackUrl,
-        errorDetails: error,
-      });
-      return handleApiError(error, "EventSub subscription error");
+      // handleApiError 内部で await logger.error() → Supabase 記録を行う
+      return handleApiError(error, `EventSub subscription failed: status=${subscribeResponse.status}, broadcaster=${session.twitchUserId}, rewardId=${rewardId}`);
     }
 
     const subscriptionData = await subscribeResponse.json();
@@ -487,7 +470,6 @@ export async function DELETE(request: NextRequest) {
       results,
     });
   } catch (error) {
-    logger.error("EventSub Unsubscribe API error:", error);
     return handleApiError(error, "EventSub Unsubscribe API");
   }
 }

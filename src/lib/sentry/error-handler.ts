@@ -200,3 +200,40 @@ export async function reportSecurityError(error: Error | unknown, context: { act
   console.error('[Security Error]', message, context)
   await logErrorToSupabase('[Security Error]', message, stack, context)
 }
+
+/**
+ * logger.error から呼ばれる Supabase 記録専用関数。
+ * console 出力は logger.error 側で行うため、ここでは Supabase 記録のみ。
+ * args から Error と context を自動抽出する。
+ */
+export async function logErrorFromLogger(message: string, args: unknown[]): Promise<void> {
+  try {
+    let stack: string | null = null
+    const context: Record<string, unknown> = {}
+    let errorDetail = ''
+
+    for (const arg of args) {
+      if (arg instanceof Error) {
+        errorDetail = arg.message
+        stack = arg.stack || null
+      } else if (arg && typeof arg === 'object') {
+        const obj = arg as Record<string, unknown>
+        // { error: ... } パターンからエラー詳細を抽出
+        if ('error' in obj && obj.error != null && !errorDetail) {
+          if (obj.error instanceof Error) {
+            errorDetail = (obj.error as Error).message
+            stack = (obj.error as Error).stack || null
+          } else {
+            errorDetail = extractErrorMessage(obj.error)
+          }
+        }
+        Object.assign(context, obj)
+      }
+    }
+
+    const fullMessage = errorDetail ? `${message} ${errorDetail}` : message
+    await logErrorToSupabase('[Error]', fullMessage, stack, context)
+  } catch {
+    // Supabase 報告失敗はメイン処理を阻害しない
+  }
+}

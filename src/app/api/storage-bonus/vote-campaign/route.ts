@@ -101,11 +101,9 @@ export async function POST(request: NextRequest) {
           if (retried) {
             streamerId = retried.id
           } else {
-            logger.error('[ElectionCampaign] Failed to retry fetch streamer after race condition:', retryError)
-            return handleApiError(insertError, 'Election Campaign API (insert streamer)')
+            return handleApiError(retryError ?? insertError, 'Election Campaign API (retry fetch streamer after race condition)')
           }
         } else {
-          logger.error('[ElectionCampaign] Failed to insert streamer record:', insertError)
           return handleApiError(insertError, 'Election Campaign API (insert streamer)')
         }
       } else {

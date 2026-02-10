@@ -7,6 +7,7 @@ import {
   reportBattleError,
   reportRealtimeError,
   reportSecurityError,
+  logErrorFromLogger,
 } from '@/lib/sentry/error-handler';
 
 // Supabase admin のモック
@@ -309,6 +310,94 @@ describe('sentry/error-handler', () => {
 
       const insertArg = mockInsert.mock.calls[0][0];
       expect(insertArg.message.length).toBe(10000);
+    });
+  });
+
+  describe('logErrorFromLogger — logger.error からの Supabase 報告', () => {
+    it('Error オブジェクトを args から抽出して記録する', async () => {
+      const error = new Error('db connection failed');
+      await logErrorFromLogger('Query error:', [error]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error_type: '[Error]',
+          message: 'Query error: db connection failed',
+        })
+      );
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.stack_trace).toBeTruthy();
+    });
+
+    it('{ error: Error } パターンからエラーを抽出する', async () => {
+      const error = new Error('token expired');
+      await logErrorFromLogger('Auth failed:', [{ error, userId: 'u1' }]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error_type: '[Error]',
+          message: 'Auth failed: token expired',
+        })
+      );
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.stack_trace).toBeTruthy();
+    });
+
+    it('{ error: PostgrestError } パターンからメッセージを抽出する', async () => {
+      const postgrestError = { code: '23505', message: 'duplicate key', details: null, hint: null };
+      await logErrorFromLogger('Insert failed:', [{ error: postgrestError }]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Insert failed: duplicate key',
+        })
+      );
+    });
+
+    it('Error がない場合はメッセージのみ記録する', async () => {
+      await logErrorFromLogger('Something went wrong', [{ status: 500 }]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error_type: '[Error]',
+          message: 'Something went wrong',
+          stack_trace: null,
+        })
+      );
+    });
+
+    it('context オブジェクトを Supabase に渡す', async () => {
+      await logErrorFromLogger('Failed:', [new Error('oops'), { endpoint: '/api/test' }]);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.endpoint).toBe('/api/test');
+    });
+
+    it('Supabase 報告失敗でも例外を投げない', async () => {
+      mockInsert.mockRejectedValueOnce(new Error('Supabase down'));
+      await expect(logErrorFromLogger('test', [new Error('e')])).resolves.toBeUndefined();
+    });
+
+    it('複数の Error が渡された場合は最後のものが使用される', async () => {
+      const error1 = new Error('first error');
+      const error2 = new Error('second error');
+      await logErrorFromLogger('Multiple:', [error1, error2]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Multiple: second error',
+        })
+      );
+    });
+
+    it('args が空の場合はメッセージのみ記録する', async () => {
+      await logErrorFromLogger('No args', []);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'No args',
+          stack_trace: null,
+        })
+      );
     });
   });
 });
