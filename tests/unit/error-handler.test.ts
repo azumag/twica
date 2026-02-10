@@ -4,8 +4,6 @@ import { handleApiError, handleDatabaseError, handleBlobError } from '@/lib/erro
 // sentry/error-handler のモック（logErrorFromLogger を error-handler.ts が直接使用する）
 vi.mock('@/lib/sentry/error-handler', () => ({
   logErrorFromLogger: vi.fn().mockResolvedValue(undefined),
-  reportApiError: vi.fn().mockResolvedValue(undefined),
-  reportError: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('error-handler', () => {

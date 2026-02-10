@@ -5,27 +5,29 @@ import { ERROR_MESSAGES } from './constants'
 // Cloudflare Workers ではレスポンス返却後にバックグラウンド Promise が打ち切られるため、
 // Supabase 記録完了を await で確保する。logger.error（fire-and-forget）ではなく
 // logErrorFromLogger を直接使用することで、記録の確実性を担保する。
+async function logAndRecordError(
+  message: string,
+  error: unknown,
+  additionalInfo?: Record<string, unknown>
+): Promise<void> {
+  const args: unknown[] = additionalInfo ? [error, additionalInfo] : [error]
+  console.error(`[ERROR] ${message}`, ...args)
+  await logErrorFromLogger(message, args)
+}
 
 export async function handleApiError(error: unknown, context: string): Promise<NextResponse> {
-  const msg = `${context}:`
-  console.error(`[ERROR] ${msg}`, error)
-  await logErrorFromLogger(msg, [error])
+  await logAndRecordError(`${context}:`, error)
   return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
 }
 
 export async function handleDatabaseError(error: unknown, context: string): Promise<NextResponse> {
-  const msg = `${context}:`
-  console.error(`[ERROR] ${msg}`, error)
-  await logErrorFromLogger(msg, [error])
+  await logAndRecordError(`${context}:`, error)
   return NextResponse.json({ error: 'Database error' }, { status: 500 })
 }
 
 export async function handleBlobError(error: unknown, context: string, additionalInfo?: Record<string, unknown>): Promise<NextResponse> {
   const errorMessage = error instanceof Error ? error.message : String(error)
-  const msg = `${context}: ${errorMessage}`
-  const args: unknown[] = additionalInfo ? [error, additionalInfo] : [error]
-  console.error(`[ERROR] ${msg}`, ...args)
-  await logErrorFromLogger(msg, args)
+  await logAndRecordError(`${context}: ${errorMessage}`, error, additionalInfo)
 
   if (errorMessage.includes('quota') || errorMessage.includes('limit') || errorMessage.includes('507')) {
     return NextResponse.json({ error: 'Storage quota exceeded' }, { status: 507 })

@@ -34,9 +34,10 @@
 // 部分一致キー: キー名に含まれていれば常にマスク
 // 完全一致キー: 完全一致のみマスク（broadcasterUserId 等のデバッグ情報を保持）
 const PARTIAL_SENSITIVE_KEYS = [
-  'password', 'token', 'authorization', 'cookie', 'secret',
-  'apikey', 'api_key', 'access_token', 'refresh_token',
-  'client_secret', 'credential', 'private_key',
+  'password', 'passwd', 'pwd', 'token', 'authorization', 'bearer',
+  'cookie', 'secret', 'apikey', 'api_key', 'api-key',
+  'access_token', 'refresh_token', 'client_secret',
+  'credential', 'private_key',
   'session_id', 'sessionid', 'otp', 'auth_code',
   'csrf_token', 'xsrf_token',
 ]
