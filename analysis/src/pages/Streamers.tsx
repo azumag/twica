@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { DataTable } from '../components/DataTable'
@@ -7,6 +7,11 @@ import { Streamer } from '../types/database'
 
 // チャット通知の送信に必要なTwitch OAuthスコープ
 const CHAT_WRITE_SCOPE = 'user:write:chat'
+
+// 投票キャンペーンの識別子（2026選挙応援キャンペーン）
+// キャンペーン終了後はこの定数とクエリを削除すること
+const VOTE_CAMPAIGN_TYPE = 'campaign' as const
+const VOTE_CAMPAIGN_MEMO = '2026選挙応援' as const
 
 /**
  * SHA-256ハッシュの先頭8文字を取得（ユーザープレフィックス用）
@@ -32,6 +37,8 @@ interface StreamerWithStats extends Streamer {
   // usersテーブルのtwitch_scopesにuser:write:chatが含まれているか
   // チャット通知の送信にはこのスコープが必要
   has_chat_scope: boolean
+  // 投票キャンペーンボーナスを有効化しているか
+  has_vote_campaign_bonus: boolean
 }
 
 /**
@@ -71,6 +78,8 @@ export function Streamers() {
   const [filterHasTemplate, setFilterHasTemplate] = useState(false)
   // Chat通知ONだが権限(user:write:chat)が未付与のストリーマーのみ表示するフラグ
   const [filterMissingScope, setFilterMissingScope] = useState(false)
+  // 投票キャンペーン有効化済みのストリーマーのみ表示するフラグ
+  const [filterVoteCampaign, setFilterVoteCampaign] = useState(false)
   // ページネーション状態
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -82,7 +91,7 @@ export function Streamers() {
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
     setCurrentPage(1)
-  }, [sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, searchQuery])
+  }, [sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, searchQuery])
 
   /**
    * Fetches all streamers with card counts and storage usage
@@ -94,10 +103,11 @@ export function Streamers() {
   async function fetchStreamers() {
     setLoading(true)
     try {
-      // ストリーマーとstorage_usageを並行取得（第1段階）
+      // ストリーマーとstorage_usageとstorage_bonusを並行取得（第1段階）
       // cards(count) はカード数のみ取得
       // storage_usageはuser_prefixごとの集計済みバイト数を保持（本番APIと同じデータソース）
-      const [streamersResult, storageUsageResult] = await Promise.all([
+      // streamer_storage_bonusから投票キャンペーンボーナス適用済みストリーマーを取得
+      const [streamersResult, storageUsageResult, storageBonusResult] = await Promise.all([
         supabase
           .from('streamers')
           .select('*, cards(count)')
@@ -106,9 +116,23 @@ export function Streamers() {
           .from('storage_usage')
           .select('user_prefix, bytes_used')
           .neq('user_prefix', '_global_'),
+        supabase
+          .from('streamer_storage_bonus')
+          .select('streamer_id')
+          .eq('type', VOTE_CAMPAIGN_TYPE)
+          .eq('memo', VOTE_CAMPAIGN_MEMO),
       ])
 
+      // 全てのクエリのエラーチェック
       if (streamersResult.error) throw streamersResult.error
+      if (storageUsageResult.error) {
+        console.error('Failed to fetch storage usage:', storageUsageResult.error)
+        // 続行は可能だが、ストレージ情報が0になることを記録
+      }
+      if (storageBonusResult.error) {
+        console.error('Failed to fetch vote campaign bonus:', storageBonusResult.error)
+        // 続行は可能だが、投票キャンペーン情報が空になることを記録
+      }
 
       // ストリーマーのtwitch_user_id一覧を抽出して、対応するusersのみクエリする（第2段階）
       // Supabaseのデフォルト上限は1000行のため、全usersを取得すると漏れが発生する
@@ -145,6 +169,12 @@ export function Streamers() {
         storageSizeByPrefix.set(row.user_prefix, row.bytes_used)
       })
 
+      // 投票キャンペーン適用済みストリーマーのIDセット構築
+      const voteCampaignBonusData = (storageBonusResult.data || []) as { streamer_id: string }[]
+      const voteCampaignStreamerIdSet = new Set(
+        voteCampaignBonusData.map(row => row.streamer_id)
+      )
+
       // 各ストリーマーのtwitch_user_idからSHA256プレフィックスを計算
       // storage_usageのuser_prefixと突き合わせるために必要
       const prefixByTwitchId = new Map<string, string>()
@@ -175,6 +205,9 @@ export function Streamers() {
         const userScopes = userScopesByTwitchId.get(streamer.twitch_user_id) || []
         const hasChatScope = userScopes.includes(CHAT_WRITE_SCOPE)
 
+        // 投票キャンペーンボーナスの有無を確認
+        const hasVoteCampaignBonus = voteCampaignStreamerIdSet.has(streamer.id)
+
         return {
           id: streamer.id,
           twitch_user_id: streamer.twitch_user_id,
@@ -193,6 +226,7 @@ export function Streamers() {
           card_count: cardCount,
           storage_bytes: storageBytes,
           has_chat_scope: hasChatScope,
+          has_vote_campaign_bonus: hasVoteCampaignBonus,
         }
       })
 
@@ -353,6 +387,23 @@ export function Streamers() {
       ),
     },
     {
+      // 投票キャンペーンボーナスの有無を表示するカラム
+      // streamer_storage_bonusテーブルにtype='campaign', memo='2026選挙応援'のレコードがあればボーナス適用済み
+      key: 'vote_campaign',
+      header: '投票キャンペーン',
+      render: (streamer: StreamerWithStats) => (
+        <span
+          className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+            streamer.has_vote_campaign_bonus
+              ? 'bg-pink-100 text-pink-800'
+              : 'bg-gray-100 text-gray-800'
+          }`}
+        >
+          {streamer.has_vote_campaign_bonus ? '有効化済み' : '未使用'}
+        </span>
+      ),
+    },
+    {
       key: 'reward_name',
       header: 'Reward Name',
       render: (streamer: StreamerWithStats) => (
@@ -385,12 +436,15 @@ export function Streamers() {
   const customTemplateStreamers = streamers.filter((s) => s.chat_announcement_template).length
   // Chat通知ONだがuser:write:chatスコープが未付与のストリーマー数（要対応）
   const chatEnabledNoScope = streamers.filter((s) => s.chat_announcement_enabled && !s.has_chat_scope).length
+  // 投票キャンペーンボーナスを有効化したユーザー数
+  const voteCampaignUsers = streamers.filter((s) => s.has_vote_campaign_bonus).length
 
   /**
    * フィルターとソートを適用したストリーマー一覧を生成
    * 検索クエリ、カード数フィルター、ソート順を適用
+   * パフォーマンス最適化のためuseMemoでメモ化
    */
-  const filteredAndSortedStreamers = (() => {
+  const filteredAndSortedStreamers = useMemo(() => {
     let result = streamers
 
     // フィルター: 検索クエリ（ユーザー名、表示名、またはTwitch User IDに部分一致）
@@ -425,6 +479,11 @@ export function Streamers() {
       result = result.filter((s) => s.chat_announcement_enabled && !s.has_chat_scope)
     }
 
+    // フィルター: 投票キャンペーン有効化済みのストリーマーのみ表示
+    if (filterVoteCampaign) {
+      result = result.filter((s) => s.has_vote_campaign_bonus)
+    }
+
     // ソート
     result = [...result].sort((a, b) => {
       switch (sortOrder) {
@@ -443,7 +502,7 @@ export function Streamers() {
     })
 
     return result
-  })()
+  }, [streamers, searchQuery, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, sortOrder])
 
   return (
     <div className="space-y-6">
@@ -454,7 +513,7 @@ export function Streamers() {
       </div>
 
       {/* Summary Stats - includes total storage usage across all streamers */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Streamers</p>
           <p className="text-2xl font-bold">{streamers.length}</p>
@@ -484,6 +543,11 @@ export function Streamers() {
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">カスタムテンプレート</p>
           <p className="text-2xl font-bold text-purple-600">{customTemplateStreamers}</p>
+        </div>
+        {/* 投票キャンペーンボーナスを有効化したユーザー数 */}
+        <div className="bg-white rounded-lg shadow p-4">
+          <p className="text-sm text-gray-500">投票キャンペーン</p>
+          <p className="text-2xl font-bold text-pink-600">{voteCampaignUsers}</p>
         </div>
       </div>
 
@@ -613,6 +677,19 @@ export function Streamers() {
             />
             <span className="text-sm text-amber-600 font-medium">
               通知ON・権限なし
+            </span>
+          </label>
+
+          {/* 投票キャンペーン有効化済みのみ表示トグル */}
+          <label className="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={filterVoteCampaign}
+              onChange={(e) => setFilterVoteCampaign(e.target.checked)}
+              className="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500"
+            />
+            <span className="text-sm text-gray-600">
+              投票キャンペーンのみ
             </span>
           </label>
 
