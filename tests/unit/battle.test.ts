@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { 
   generateCardStats, 
   toBattleCard, 
@@ -9,9 +9,15 @@ import {
 import type { Card, BattleCard, Rarity, SkillType } from '@/types/database'
 
 // Mock Math.random for predictable testing
+// オリジナルを保持し afterAll で復元（他テストへの影響を防止）
+const originalMath = global.Math
 const mockMath = Object.create(global.Math)
 mockMath.random = vi.fn()
 global.Math = mockMath
+
+afterAll(() => {
+  global.Math = originalMath
+})
 
 describe('generateCardStats', () => {
   beforeEach(() => {
