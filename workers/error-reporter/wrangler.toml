@@ -25,8 +25,3 @@ GITHUB_REPO_NAME = "twica"
 # - SUPABASE_URL: Supabase プロジェクト URL (e.g. https://xxx.supabase.co)
 # - SUPABASE_SERVICE_ROLE_KEY: Supabase service role キー
 # - GITHUB_TOKEN: GitHub Fine-grained PAT (scopes: Issues read/write)
-
-# Preview 環境: preview ブランチからのデプロイ用
-# preview環境のエラーはproductionと区別してトラッキングされる
-[env.preview]
-name = "twica-error-reporter-preview"

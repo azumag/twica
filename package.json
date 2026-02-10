@@ -12,6 +12,8 @@
     "test:integration": "vitest run tests/integration",
     "test:all": "vitest run",
     "test:unit:ui": "vitest ui",
+    "test:cleanup": "pkill -9 -f vitest || true",
+    "test:agent": "npm run test:cleanup && vitest run --no-watch --no-file-parallelism --pool=forks --poolOptions.forks.singleFork=true --bail 1 && npm run test:cleanup",
     "workers:build": "npx opennextjs-cloudflare build",
     "workers:dev": "npx wrangler dev",
     "workers:deploy": "npx opennextjs-cloudflare deploy",

@@ -3,7 +3,7 @@ import { getSession } from '@/lib/session'
 import { toBattleCard, playBattle, generateCPUOpponent } from '@/lib/battle'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
-import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
+import { handleDatabaseError } from '@/lib/error-handler'
 import { reportBattleError } from '@/lib/sentry/error-handler'
 import { setUserContext, setRequestContext, setGameContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES } from '@/lib/constants'
@@ -225,16 +225,17 @@ export async function POST(request: NextRequest) {
     })
 
   } catch (error) {
+    // reportBattleError が [Battle Error] タイプで Supabase 記録 + console.error を行う
     if (session) {
-      reportBattleError(error, {
+      await reportBattleError(error, {
         battleId: undefined, // Not created yet due to error
         userId: session.twitchUserId,
         round: undefined, // Battle hasn't started
       })
     } else {
-      reportBattleError(error, {})
+      await reportBattleError(error, {})
     }
-    
-    return handleApiError(error, "Battle Start API: General")
+
+    return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
   }
 }

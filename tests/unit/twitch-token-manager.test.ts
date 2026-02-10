@@ -13,6 +13,7 @@ type MockSupabaseAdmin = {
   maybeSingle?: ReturnType<typeof vi.fn>;
   single?: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
+  insert: ReturnType<typeof vi.fn>;
 };
 
 describe('Twitch Token Manager', () => {
@@ -35,6 +36,7 @@ describe('Twitch Token Manager', () => {
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -53,6 +55,7 @@ describe('Twitch Token Manager', () => {
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -72,6 +75,7 @@ describe('Twitch Token Manager', () => {
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -90,6 +94,7 @@ describe('Twitch Token Manager', () => {
           error: { code: 'PGRST000', message: 'Database connection failed' },
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -111,6 +116,7 @@ describe('Twitch Token Manager', () => {
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -136,6 +142,7 @@ describe('Twitch Token Manager', () => {
         eq: vi.fn().mockReturnThis(),
         single: vi.fn().mockResolvedValue({ data: null, error: null }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -166,6 +173,7 @@ describe('Twitch Token Manager', () => {
         eq: vi.fn().mockReturnThis(),
         single: vi.fn().mockResolvedValue({ data: null, error: null }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -196,6 +204,7 @@ describe('Twitch Token Manager', () => {
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -219,6 +228,7 @@ describe('Twitch Token Manager', () => {
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -240,6 +250,7 @@ describe('Twitch Token Manager', () => {
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -259,6 +270,7 @@ describe('Twitch Token Manager', () => {
           error: { code: 'PGRST000', message: 'Connection failed' },
         }),
         update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);

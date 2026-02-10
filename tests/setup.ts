@@ -30,4 +30,6 @@ vi.mock('@/lib/supabase/server', () => ({
 
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: vi.fn(() => createMockSupabaseClient()),
+  // logger.error → logErrorFromLogger → logErrorToSupabase で使用される
+  getSupabaseAdmin: vi.fn(() => createMockSupabaseClient()),
 }))

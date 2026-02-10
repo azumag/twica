@@ -28,16 +28,23 @@
  * - サーバーサイドでのみ Supabase クライアントをロードする
  */
 
-// context に含まれる可能性のある機密情報キー（小文字で照合、部分一致）
+// context に含まれる可能性のある機密情報キー（小文字で照合）
 // OWASP Logging Cheat Sheet および業界標準ロギングライブラリを参考に選定
-// userId は Supabase Auth の UUID であり PII に該当するため除外
-const SENSITIVE_KEYS = [
-  'password', 'token', 'authorization', 'cookie', 'secret',
-  'apikey', 'userid', 'username', 'api_key', 'access_token', 'refresh_token',
-  'client_secret', 'credential', 'private_key', 'email', 'ip_address',
+//
+// 部分一致キー: キー名に含まれていれば常にマスク
+// 完全一致キー: 完全一致のみマスク（broadcasterUserId 等のデバッグ情報を保持）
+const PARTIAL_SENSITIVE_KEYS = [
+  'password', 'passwd', 'pwd', 'token', 'authorization', 'bearer',
+  'cookie', 'secret', 'apikey', 'api_key', 'api-key',
+  'access_token', 'refresh_token', 'client_secret',
+  'credential', 'private_key',
   'session_id', 'sessionid', 'otp', 'auth_code',
   'csrf_token', 'xsrf_token',
 ]
+// userId/username は PII に該当するが、broadcasterUserId 等の
+// 複合キーまでマスクするとデバッグに支障をきたすため完全一致のみ
+const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address']
+
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -47,10 +54,19 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * context オブジェクトから機密情報を除外する。
  * GitHub Issue に context がそのまま記載されるため、PII 漏洩を防止。
  */
+function isSensitiveKey(key: string): boolean {
+  const lowerKey = key.toLowerCase()
+  // 完全一致キー: userId はマスクするが broadcasterUserId はマスクしない
+  if (EXACT_SENSITIVE_KEYS.some(k => lowerKey === k)) return true
+  // 部分一致キー: password, token, secret 等はキー名に含まれていれば常にマスク
+  if (PARTIAL_SENSITIVE_KEYS.some(k => lowerKey.includes(k))) return true
+  return false
+}
+
 function sanitizeContext(obj: Record<string, unknown>): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(obj)) {
-    if (SENSITIVE_KEYS.some(k => key.toLowerCase().includes(k))) {
+    if (isSensitiveKey(key)) {
       sanitized[key] = '[REDACTED]'
     } else if (Array.isArray(value)) {
       // 配列内のオブジェクトも再帰的にサニタイズ
@@ -69,7 +85,7 @@ function sanitizeContext(obj: Record<string, unknown>): Record<string, unknown> 
  * unknown 型のエラーから可読なメッセージを抽出する。
  * Supabase PostgrestError のようなプレーンオブジェクト（Error 非継承）でも
  * message プロパティがあれば取得し、なければ JSON.stringify でフォールバック。
- * JSON.stringify 時は SENSITIVE_KEYS を除外し、循環参照も安全に処理する。
+ * JSON.stringify 時は機密情報キーを除外し、循環参照も安全に処理する。
  * See: https://github.com/azumag/twica/issues/262
  */
 function extractErrorMessage(error: unknown): string {
@@ -85,7 +101,7 @@ function extractErrorMessage(error: unknown): string {
     const seen = new WeakSet()
     try {
       return JSON.stringify(error, (key, value) => {
-        if (key && SENSITIVE_KEYS.some(k => key.toLowerCase().includes(k))) {
+        if (key && isSensitiveKey(key)) {
           return '[REDACTED]'
         }
         if (typeof value === 'object' && value !== null) {
@@ -199,4 +215,44 @@ export async function reportSecurityError(error: Error | unknown, context: { act
   const { message, stack } = resolveErrorInfo(error)
   console.error('[Security Error]', message, context)
   await logErrorToSupabase('[Security Error]', message, stack, context)
+}
+
+/**
+ * logger.error から呼ばれる Supabase 記録専用関数。
+ * console 出力は logger.error 側で行うため、ここでは Supabase 記録のみ。
+ * args から Error と context を自動抽出する。
+ */
+export async function logErrorFromLogger(message: string, args: unknown[]): Promise<void> {
+  try {
+    let stack: string | null = null
+    const context: Record<string, unknown> = {}
+    let errorDetail = ''
+
+    for (const arg of args) {
+      if (arg instanceof Error) {
+        // 最初の Error を採用（原因エラーは通常先頭に渡される）
+        if (!errorDetail) {
+          errorDetail = arg.message
+          stack = arg.stack || null
+        }
+      } else if (arg && typeof arg === 'object') {
+        const obj = arg as Record<string, unknown>
+        // { error: ... } パターンからエラー詳細を抽出
+        if ('error' in obj && obj.error != null && !errorDetail) {
+          if (obj.error instanceof Error) {
+            errorDetail = (obj.error as Error).message
+            stack = (obj.error as Error).stack || null
+          } else {
+            errorDetail = extractErrorMessage(obj.error)
+          }
+        }
+        Object.assign(context, obj)
+      }
+    }
+
+    const fullMessage = errorDetail ? `${message} ${errorDetail}` : message
+    await logErrorToSupabase('[Error]', fullMessage, stack, context)
+  } catch {
+    // Supabase 報告失敗はメイン処理を阻害しない
+  }
 }

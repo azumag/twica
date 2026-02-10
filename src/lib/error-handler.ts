@@ -1,30 +1,33 @@
 import { NextResponse } from 'next/server'
-import { logger } from './logger'
-import { reportApiError, reportError } from './sentry/error-handler'
+import { logErrorFromLogger } from './sentry/error-handler'
 import { ERROR_MESSAGES } from './constants'
 
-// report*Error() が async になったため、await してから NextResponse を返す
-// 呼び出し元は `return handleApiError(error, ctx)` パターンで、
-// async 関数内の return は Promise を自動的に await するため変更不要
-// See: https://github.com/azumag/twica/issues/239
+// Cloudflare Workers ではレスポンス返却後にバックグラウンド Promise が打ち切られるため、
+// Supabase 記録完了を await で確保する。logger.error（fire-and-forget）ではなく
+// logErrorFromLogger を直接使用することで、記録の確実性を担保する。
+async function logAndRecordError(
+  message: string,
+  error: unknown,
+  additionalInfo?: Record<string, unknown>
+): Promise<void> {
+  const args: unknown[] = additionalInfo ? [error, additionalInfo] : [error]
+  console.error(`[ERROR] ${message}`, ...args)
+  await logErrorFromLogger(message, args)
+}
 
 export async function handleApiError(error: unknown, context: string): Promise<NextResponse> {
-  logger.error(`${context}:`, error)
-  await reportApiError(context, 'API', error)
-
+  await logAndRecordError(`${context}:`, error)
   return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
 }
 
 export async function handleDatabaseError(error: unknown, context: string): Promise<NextResponse> {
-  logger.error(`${context}:`, error)
-  await reportError(error, { context, type: 'database' })
+  await logAndRecordError(`${context}:`, error)
   return NextResponse.json({ error: 'Database error' }, { status: 500 })
 }
 
 export async function handleBlobError(error: unknown, context: string, additionalInfo?: Record<string, unknown>): Promise<NextResponse> {
   const errorMessage = error instanceof Error ? error.message : String(error)
-  logger.error(`${context}: ${errorMessage}`, additionalInfo)
-  await reportError(error, { context, type: 'blob', ...additionalInfo })
+  await logAndRecordError(`${context}: ${errorMessage}`, error, additionalInfo)
 
   if (errorMessage.includes('quota') || errorMessage.includes('limit') || errorMessage.includes('507')) {
     return NextResponse.json({ error: 'Storage quota exceeded' }, { status: 507 })

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GachaService } from "@/lib/services/gacha";
-import { handleApiError } from "@/lib/error-handler";
 import { getSession } from "@/lib/session";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { reportGachaError } from "@/lib/sentry/error-handler";
@@ -133,16 +132,17 @@ export async function POST(request: NextRequest) {
       card: result.data.card
     });
   } catch (error) {
+    // reportGachaError が [Gacha Error] タイプで Supabase 記録 + console.error を行う
     if (session) {
-      reportGachaError(error, {
+      await reportGachaError(error, {
         streamerId: body && typeof body === 'object' && 'streamerId' in body ? String(body.streamerId) : undefined,
         userId: session?.twitchUserId,
         cost: GACHA_COST,
       })
     } else {
-      reportGachaError(error, {})
+      await reportGachaError(error, {})
     }
-    
-    return handleApiError(error, "Gacha API");
+
+    return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 });
   }
 }
