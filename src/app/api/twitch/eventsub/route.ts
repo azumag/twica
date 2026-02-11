@@ -7,10 +7,10 @@ import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
-import { TwitchChatService, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
+import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
 import { hasScope } from "@/lib/twitch/token-manager";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/auth";
-import type { GachaCard } from "@/lib/services/gacha";
+import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
@@ -129,7 +129,24 @@ export async function POST(request: NextRequest) {
     });
 
     if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
-      await handleRedemption(messageId, event);
+      // ガチャ実行のみawaitし、通知処理はwaitUntil()で遅延実行してCPU時間を削減
+      // Only await gacha execution; defer notifications via waitUntil() to reduce CPU time
+      const result = await handleRedemption(messageId, event);
+      if (result) {
+        try {
+          // Cloudflare Workers の waitUntil() でレスポンス返却後にバックグラウンド実行
+          const { getCloudflareContext } = await import('@opennextjs/cloudflare');
+          const { ctx } = await getCloudflareContext({ async: true });
+          ctx.waitUntil(postRedemptionNotify(result));
+        } catch (e) {
+          // ローカル開発等で getCloudflareContext が使えない場合は同期フォールバック
+          // Fallback to sync execution when getCloudflareContext is unavailable (local dev)
+          logger.warn('[EventSub] waitUntil unavailable, falling back to sync', {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          await postRedemptionNotify(result);
+        }
+      }
     }
 
     return NextResponse.json({ received: true });
@@ -179,14 +196,75 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ error: ERROR_MESSAGES.UNKNOWN_MESSAGE_TYPE }, { status: 400 });
 }
 
+/** postRedemptionNotify に渡すデータ（streamer.id を streamerId として再利用し冗長を排除） */
+interface RedemptionNotifyData {
+  gachaResult: {
+    type: "gacha";
+    card: GachaCard;
+    userTwitchUsername: string;
+  };
+  broadcasterTwitchUserId: string;
+  streamer: EventSubStreamerInfo;
+  userId: string;
+}
+
+/**
+ * ガチャ結果確定後の通知処理（ブロードキャスト + チャット通知）
+ * waitUntil() でレスポンス返却後にバックグラウンド実行される。
+ * broadcastとchatは独立しているためPromise.allSettledで並列実行する。
+ *
+ * Post-redemption notifications (broadcast + chat) run after response via waitUntil().
+ * broadcast and chat are independent, so execute in parallel with Promise.allSettled.
+ */
+async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
+  const results = await Promise.allSettled([
+    // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
+    broadcastGachaResult(data.streamer.id, data.gachaResult, {
+      maxRetries: 1,
+      retryDelay: 500,
+    }),
+    sendChatAnnouncement(
+      data.broadcasterTwitchUserId,
+      data.streamer,
+      data.gachaResult.card,
+      data.gachaResult.userTwitchUsername,
+      data.userId
+    ),
+  ]);
+
+  // 通知失敗をログ出力 + エラー追跡
+  for (const [i, result] of results.entries()) {
+    if (result.status === 'rejected') {
+      const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
+      logger.warn(`[postRedemptionNotify] ${label} failed`, {
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        streamerId: data.streamer.id,
+      });
+      await reportError(result.reason, {
+        context: `eventsub:postRedemptionNotify:${label}`,
+        streamerId: data.streamer.id,
+        broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+      });
+    }
+  }
+}
+
+/**
+ * ガチャ実行とデータ準備を行い、通知に必要なデータを返す。
+ * 通知処理自体は呼び出し元で waitUntil() により遅延実行される。
+ *
+ * Execute gacha and prepare data for notifications.
+ * Actual notification is deferred by caller via waitUntil().
+ *
+ * @returns 通知データ（通知不要な場合はnull）
+ */
 async function handleRedemption(messageId: string, event: {
   broadcaster_user_id: string;
   user_id: string;
   user_login: string;
   user_name: string;
   reward: { id: string; title: string };
-}) {
-  // handleRedemption開始ログ（デバッグ：この関数が呼ばれたことを確認）
+}): Promise<RedemptionNotifyData | null> {
   logger.info('[handleRedemption] START', {
     messageId,
     broadcasterUserId: event.broadcaster_user_id,
@@ -206,7 +284,7 @@ async function handleRedemption(messageId: string, event: {
 
   if (existingHistory) {
     logger.info('[handleRedemption] Skipped - already processed', { messageId });
-    return;
+    return null;
   }
 
   try {
@@ -214,18 +292,14 @@ async function handleRedemption(messageId: string, event: {
     const result = await gachaService.executeGachaForEventSub(event, messageId);
 
     if (!result.success) {
-      // Error in gacha but don't throw, as webhook should return 200
-      // ガチャでエラーが発生してもthrowしない。webhookは200を返す必要がある
       logger.warn('[handleRedemption] Gacha execution failed', { messageId });
-      // ガチャ失敗はユーザー影響が大きいためSupabaseに記録してGitHub Issue化する
-      // Gacha failure directly impacts users, so report to Supabase for GitHub Issue tracking
       await reportError(new Error(`Gacha execution failed: ${result.error}`), {
         context: 'eventsub:handleRedemption',
         messageId,
         broadcasterUserId: event.broadcaster_user_id,
         gachaError: result.error,
       });
-      return;
+      return null;
     }
 
     logger.info('[handleRedemption] Gacha success', {
@@ -233,77 +307,33 @@ async function handleRedemption(messageId: string, event: {
       cardName: result.data.card.name,
     });
 
-    // Notify overlay via Supabase Realtime
-    // Supabase Realtimeを通じてオーバーレイに通知
+    // ストリーマー情報は executeGachaForEventSub のクエリ統合で取得済み
+    // Streamer info already fetched in the unified query within executeGachaForEventSub
+    const streamer = result.data.streamer;
+    if (!streamer) {
+      logger.warn('[handleRedemption] No streamer info in gacha result', { messageId });
+      return null;
+    }
+
     const gachaResult = {
       type: "gacha" as const,
       card: result.data.card,
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
-    // Get streamer data for broadcast and chat announcement settings
-    // Use no-cache client to ensure settings changes are reflected immediately
-    // ブロードキャスト用とチャット通知設定用にストリーマーデータを取得
-    // 設定変更が即座に反映されるようキャッシュ無効クライアントを使用
-    const supabaseAdminNoCache = getSupabaseAdminNoCache();
-    const { data: streamer, error: streamerError } = await supabaseAdminNoCache
-      .from("streamers")
-      .select("id, chat_announcement_enabled, chat_announcement_template")
-      .eq("twitch_user_id", event.broadcaster_user_id)
-      .maybeSingle();
-
-    logger.info('[handleRedemption] Streamer query result', {
-      found: !!streamer,
-      streamerId: streamer?.id,
-      chatAnnouncementEnabled: streamer?.chat_announcement_enabled,
-      error: streamerError?.message,
-    });
-
-    if (streamer) {
-      // Realtime通知（既存機能）
-      await broadcastGachaResult(streamer.id, gachaResult, {
-        maxRetries: 3,
-        retryDelay: 1000,
-      });
-
-      logger.info('[handleRedemption] Broadcast done, starting chat announcement', {
-        streamerId: streamer.id,
-      });
-
-      // チャット通知 - awaitで完了を待つ（Cloudflare Workersではレスポンス返却後に
-      // バックグラウンドPromiseが打ち切られるため、fire-and-forgetは使えない）
-      // Chat announcement - must await because Cloudflare Workers terminates
-      // background promises after response is sent (no waitUntil available)
-      try {
-        await sendChatAnnouncement(
-          event.broadcaster_user_id,
-          streamer,
-          result.data.card,
-          event.user_name,
-          event.user_id
-        );
-        logger.info('[handleRedemption] Chat announcement completed');
-      } catch (err) {
-        // チャット送信失敗はログのみ、ガチャ処理はブロックしない
-        // Chat send failure is logged only, does not block gacha processing
-        logger.warn('[handleRedemption] Chat announcement threw error', {
-          error: err instanceof Error ? err.message : String(err),
-          broadcasterTwitchUserId: event.broadcaster_user_id,
-          streamerId: streamer.id,
-        });
-        // チャット通知の例外（DB クエリ失敗等）も追跡する
-        // Track chat announcement exceptions (e.g. DB query failures)
-        await reportError(err, {
-          context: 'eventsub:sendChatAnnouncement',
-          broadcasterTwitchUserId: event.broadcaster_user_id,
-          streamerId: streamer.id,
-        });
-      }
-    }
-
     logger.info('[handleRedemption] END', { messageId });
+
+    return {
+      gachaResult,
+      broadcasterTwitchUserId: event.broadcaster_user_id,
+      streamer,
+      userId: event.user_id,
+    };
   } catch (error) {
-    return handleApiError(error, `EventSub redemption (messageId=${messageId})`);
+    // awaitしないとCloudflare Workersがレスポンス返却後にPromiseを打ち切り、
+    // Supabaseへのエラー記録が失われる
+    await handleApiError(error, `EventSub redemption (messageId=${messageId})`);
+    return null;
   }
 }
 
@@ -370,32 +400,32 @@ async function sendChatAnnouncement(
     legendary: 'レジェンダリー',
   };
 
-  // ユーザーがこのカードを何枚所持しているか取得（オプション）
-  // Get how many of this card the user owns (optional)
-  // Use no-cache client to ensure fresh data after gacha execution
-  // ガチャ実行後の最新データを取得するためキャッシュ無効クライアントを使用
-  const supabaseAdminNoCache = getSupabaseAdminNoCache();
+  // テンプレートに {num} プレースホルダーが含まれる場合のみカード所持枚数を取得
+  // waitUntil内のwall time短縮のため、不要なDBクエリ（users + user_cards）をスキップ
+  // Skip card count queries when template doesn't use {num} to reduce wall time in waitUntil
+  const effectiveTemplate = streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
   let cardCount: number | undefined;
-  try {
-    // usersテーブルからユーザーIDを取得
-    const { data: user } = await supabaseAdminNoCache
-      .from('users')
-      .select('id')
-      .eq('twitch_user_id', userId)
-      .maybeSingle();
+  if (effectiveTemplate.includes('{num}')) {
+    const supabaseAdminNoCache = getSupabaseAdminNoCache();
+    try {
+      const { data: user } = await supabaseAdminNoCache
+        .from('users')
+        .select('id')
+        .eq('twitch_user_id', userId)
+        .maybeSingle();
 
-    if (user) {
-      // user_cardsテーブルから所持枚数を取得
-      const { count } = await supabaseAdminNoCache
-        .from('user_cards')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .eq('card_id', card.id);
+      if (user) {
+        const { count } = await supabaseAdminNoCache
+          .from('user_cards')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', user.id)
+          .eq('card_id', card.id);
 
-      cardCount = count ?? undefined;
+        cardCount = count ?? undefined;
+      }
+    } catch {
+      // カウント取得失敗は無視
     }
-  } catch {
-    // カウント取得失敗は無視
   }
 
   // コレクションページURLを構築
