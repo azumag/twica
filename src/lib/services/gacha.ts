@@ -13,9 +13,21 @@ export interface GachaCard {
   drop_rate: number
 }
 
+/**
+ * EventSub用ストリーマー情報（チャット通知設定を含む）
+ * executeGachaForEventSub でストリーマークエリを1回に統合するために使用
+ */
+export interface EventSubStreamerInfo {
+  id: string
+  chat_announcement_enabled: boolean
+  chat_announcement_template: string | null
+}
+
 export interface GachaResult {
   card: GachaCard
   userTwitchUsername: string
+  /** EventSub経由の場合のみ設定。クエリ統合のためガチャ結果と一緒に返す */
+  streamer?: EventSubStreamerInfo
 }
 
 export class GachaService {
@@ -132,9 +144,12 @@ export class GachaService {
 
   /**
    * Execute gacha for EventSub channel point redemption
-   * Checks both main reward and additional rewards for matching reward ID
+   * Checks both main reward and additional rewards for matching reward ID.
+   * Streamer query includes chat announcement settings to avoid a second query in route.ts.
+   *
    * EventSubチャネルポイント引き換え用のガチャ実行
-   * メイン報酬と追加報酬の両方で報酬IDの一致をチェック
+   * メイン報酬と追加報酬の両方で報酬IDの一致をチェック。
+   * route.ts での2回目のクエリを排除するため、チャット通知設定も同時に取得する。
    */
   async executeGachaForEventSub(
     event: {
@@ -147,9 +162,10 @@ export class GachaService {
     eventId?: string
   ): Promise<Result<GachaResult>> {
     try {
+      // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
       const { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, channel_point_reward_id')
+        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
         .eq('twitch_user_id', event.broadcaster_user_id)
         .maybeSingle()
 
@@ -157,10 +173,24 @@ export class GachaService {
         return err('Streamer not found')
       }
 
+      // ガチャ実行用のヘルパー: 結果にストリーマー情報を付加して返す
+      const executeAndAttachStreamer = async (): Promise<Result<GachaResult>> => {
+        const result = await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+        if (!result.success) return result
+        return ok({
+          ...result.data,
+          streamer: {
+            id: streamer.id,
+            chat_announcement_enabled: streamer.chat_announcement_enabled,
+            chat_announcement_template: streamer.chat_announcement_template,
+          },
+        })
+      }
+
       // Check if the reward ID matches the main reward
       // メイン報酬のIDと一致するかチェック
       if (streamer.channel_point_reward_id === event.reward.id) {
-        return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+        return await executeAndAttachStreamer()
       }
 
       // Check if the reward ID matches any additional reward
@@ -181,7 +211,7 @@ export class GachaService {
         // Additional reward matched, execute gacha
         // 追加報酬が一致したのでガチャを実行
         logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}`)
-        return await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+        return await executeAndAttachStreamer()
       }
 
       return err('Reward ID mismatch')
