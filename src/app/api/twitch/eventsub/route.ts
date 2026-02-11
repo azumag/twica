@@ -7,7 +7,7 @@ import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
-import { TwitchChatService, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
+import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
 import { hasScope } from "@/lib/twitch/token-manager";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/auth";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
@@ -196,9 +196,8 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ error: ERROR_MESSAGES.UNKNOWN_MESSAGE_TYPE }, { status: 400 });
 }
 
-/** postRedemptionNotify に渡すデータ（gachaResult 内の card/username を再利用し冗長を排除） */
+/** postRedemptionNotify に渡すデータ（streamer.id を streamerId として再利用し冗長を排除） */
 interface RedemptionNotifyData {
-  streamerId: string;
   gachaResult: {
     type: "gacha";
     card: GachaCard;
@@ -220,7 +219,7 @@ interface RedemptionNotifyData {
 async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   const results = await Promise.allSettled([
     // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
-    broadcastGachaResult(data.streamerId, data.gachaResult, {
+    broadcastGachaResult(data.streamer.id, data.gachaResult, {
       maxRetries: 1,
       retryDelay: 500,
     }),
@@ -239,11 +238,11 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
       const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
       logger.warn(`[postRedemptionNotify] ${label} failed`, {
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-        streamerId: data.streamerId,
+        streamerId: data.streamer.id,
       });
       await reportError(result.reason, {
         context: `eventsub:postRedemptionNotify:${label}`,
-        streamerId: data.streamerId,
+        streamerId: data.streamer.id,
         broadcasterTwitchUserId: data.broadcasterTwitchUserId,
       });
     }
@@ -325,14 +324,15 @@ async function handleRedemption(messageId: string, event: {
     logger.info('[handleRedemption] END', { messageId });
 
     return {
-      streamerId: streamer.id,
       gachaResult,
       broadcasterTwitchUserId: event.broadcaster_user_id,
       streamer,
       userId: event.user_id,
     };
   } catch (error) {
-    handleApiError(error, `EventSub redemption (messageId=${messageId})`);
+    // awaitしないとCloudflare Workersがレスポンス返却後にPromiseを打ち切り、
+    // Supabaseへのエラー記録が失われる
+    await handleApiError(error, `EventSub redemption (messageId=${messageId})`);
     return null;
   }
 }
@@ -400,32 +400,32 @@ async function sendChatAnnouncement(
     legendary: 'レジェンダリー',
   };
 
-  // ユーザーがこのカードを何枚所持しているか取得（オプション）
-  // Get how many of this card the user owns (optional)
-  // Use no-cache client to ensure fresh data after gacha execution
-  // ガチャ実行後の最新データを取得するためキャッシュ無効クライアントを使用
-  const supabaseAdminNoCache = getSupabaseAdminNoCache();
+  // テンプレートに {num} プレースホルダーが含まれる場合のみカード所持枚数を取得
+  // waitUntil内のwall time短縮のため、不要なDBクエリ（users + user_cards）をスキップ
+  // Skip card count queries when template doesn't use {num} to reduce wall time in waitUntil
+  const effectiveTemplate = streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
   let cardCount: number | undefined;
-  try {
-    // usersテーブルからユーザーIDを取得
-    const { data: user } = await supabaseAdminNoCache
-      .from('users')
-      .select('id')
-      .eq('twitch_user_id', userId)
-      .maybeSingle();
+  if (effectiveTemplate.includes('{num}')) {
+    const supabaseAdminNoCache = getSupabaseAdminNoCache();
+    try {
+      const { data: user } = await supabaseAdminNoCache
+        .from('users')
+        .select('id')
+        .eq('twitch_user_id', userId)
+        .maybeSingle();
 
-    if (user) {
-      // user_cardsテーブルから所持枚数を取得
-      const { count } = await supabaseAdminNoCache
-        .from('user_cards')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .eq('card_id', card.id);
+      if (user) {
+        const { count } = await supabaseAdminNoCache
+          .from('user_cards')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', user.id)
+          .eq('card_id', card.id);
 
-      cardCount = count ?? undefined;
+        cardCount = count ?? undefined;
+      }
+    } catch {
+      // カウント取得失敗は無視
     }
-  } catch {
-    // カウント取得失敗は無視
   }
 
   // コレクションページURLを構築
