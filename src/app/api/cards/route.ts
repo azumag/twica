@@ -223,7 +223,9 @@ export async function GET(request: NextRequest) {
   const streamerId = searchParams.get("streamerId");
   // Pagination parameters
   // ページネーションパラメータ
-  const limit = Math.min(parseInt(searchParams.get("limit") || "12", 10), 50);
+  // CardManager requests limit=1000 to load all cards for management view
+  // カード管理画面では全カード取得のためlimit=1000でリクエストされる
+  const limit = Math.min(parseInt(searchParams.get("limit") || "12", 10), 1000);
   const offset = parseInt(searchParams.get("offset") || "0", 10);
 
   // Sorting parameters (default: created_at desc)
