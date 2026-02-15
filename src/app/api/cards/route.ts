@@ -199,20 +199,18 @@ async function fetchCardsFromDB(
     // Legacy behavior handled in caller
   }
 
-  // Apply sorting
-  // 並び替えを適用
+  // Apply sorting - all fields use DB-side sorting for correct pagination
+  // 並び替えを適用 - ページネーション整合性のため全フィールドDB側でソート
   const ascending = sortDirection === "asc";
-  query = query.order(sortField, { ascending });
-
-  // Apply pagination
-  // ページネーションを適用
+  // Use rarity_order generated column (CASE-based: legendary=1, epic=2, rare=3, common=4)
+  // instead of rarity text column which sorts alphabetically
+  // rarityテキストカラムはアルファベット順になるため、rarity_order generated columnを使用
+  const dbSortField = sortField === "rarity" ? "rarity_order" : sortField;
+  query = query.order(dbSortField, { ascending });
   query = query.range(offset, offset + limit - 1);
 
   const { data: cards, error, count } = await query;
-
-  if (error) {
-    throw error;
-  }
+  if (error) throw error;
 
   logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${cards?.length || 0} cards)`);
 
