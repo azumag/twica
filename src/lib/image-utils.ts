@@ -4,6 +4,10 @@
  * URL形式: https://<CF_PROXIED_DOMAIN>/cdn-cgi/image/<OPTIONS>/<ORIGINAL_URL>
  * onerror=redirect により、無料枠超過時はオリジナル画像へ自動フォールバック
  *
+ * 重要: 同一ゾーン（bluemoon.works）上の画像のみ変換対象とする。
+ * 異なるオリジン（r2.dev等）の画像を変換しようとすると 403 Forbidden になり、
+ * onerror=redirect は変換処理前の 403 には効かないため、画像が表示されなくなる。
+ *
  * 注意: NEXT_PUBLIC_APP_URL はNext.jsビルド時にインライン化される。
  * preview/production で異なるURLを使う場合はビルドごとに正しい値を設定すること。
  *
@@ -20,17 +24,22 @@ const PRESETS = {
 
 export type ImagePreset = keyof typeof PRESETS;
 
+// CF Images Transformations で変換可能なドメイン（同一ゾーン内のみ）
+// "Resize images from any origin" を有効にしない限り、
+// 異なるオリジンの画像は 403 Forbidden になる
+const TRANSFORMABLE_DOMAIN = ".bluemoon.works";
+
 /**
  * Cloudflare Images Transformations を使った最適化URLを生成
  *
  * - NEXT_PUBLIC_CF_IMAGES_ENABLED=true かつ NEXT_PUBLIC_APP_URL が https:// の場合のみ変換
- * - CFプロキシ配下にないホスト（staging等）では /cdn-cgi/image/ が存在せず404になるため、
- *   明示的なフラグで有効化する設計
+ * - 同一ゾーン（bluemoon.works）上の画像URLのみ変換対象
+ * - 外部ドメイン（r2.dev、Twitch CDN等）の画像はオリジナルURLを返す
  * - null/空文字列の場合はそのまま返す
  *
  * @param url - オリジナル画像URL
  * @param preset - 変換プリセット ('thumbnail' | 'icon')
- * @returns 最適化された画像URL、または無効環境ではオリジナルURL
+ * @returns 最適化された画像URL、または変換不可の場合はオリジナルURL
  */
 export function getOptimizedImageUrl(url: string, preset: ImagePreset): string;
 export function getOptimizedImageUrl(url: string | null, preset: ImagePreset): string | null;
@@ -47,6 +56,17 @@ export function getOptimizedImageUrl(
 
   // CFプロキシ配下でない環境（localhost/http、またはフラグ未設定）ではスキップ
   if (!enabled || !appUrl.startsWith("https://")) {
+    return url;
+  }
+
+  // 同一ゾーン外の画像は変換不可（403 Forbidden になるため）
+  try {
+    const hostname = new URL(url).hostname;
+    if (!hostname.endsWith(TRANSFORMABLE_DOMAIN)) {
+      return url;
+    }
+  } catch {
+    // 不正なURLはそのまま返す
     return url;
   }
 
