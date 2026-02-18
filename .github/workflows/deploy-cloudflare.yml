@@ -112,6 +112,7 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID }}
+          NEXT_PUBLIC_CF_IMAGES_ENABLED: ${{ secrets.NEXT_PUBLIC_CF_IMAGES_ENABLED }}
 
       # Wrangler は CLOUDFLARE_API_TOKEN 環境変数で認証する。
       # Wrangler authenticates via CLOUDFLARE_API_TOKEN env var.
