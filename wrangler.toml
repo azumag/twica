@@ -119,14 +119,6 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 # compatibility_date, compatibility_flags, [assets] はトップレベルから自動継承される。
 [env.preview]
 
-# Custom domain for preview environment (required for CF Images Transformations)
-# プレビュー環境用カスタムドメイン（CF Images Transformationsに必要）
-# workers.dev ドメインでは /cdn-cgi/image/ が利用できないため、
-# bluemoon.works ゾーン配下のカスタムドメインを使用する
-# 注意: opennextjs-cloudflare deploy はこの設定を反映しないため、
-# Cloudflare ダッシュボードで手動設定済み
-custom_domains = ["preview.twica.bluemoon.works"]
-
 # Observability for preview environment
 # プレビュー環境でもログ・トレースを有効化
 [env.preview.observability]
