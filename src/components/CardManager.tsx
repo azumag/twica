@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UPLOAD_CONFIG } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import ImageCropper, { type CropMode, CROP_MODES } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
@@ -1342,12 +1343,8 @@ export default function CardManager({
                       {/* 正方形画像（トリミング） */}
                       <div className="aspect-square bg-gray-600">
                         {card.image_url ? (
-                          /* unoptimized: User-uploaded images are already optimized (400x400 JPEG) */
-                          /* Skip Vercel Image Transformations to reduce usage costs */
-                          /* unoptimized: ユーザーアップロード画像は既に最適化済み(400x400 JPEG) */
-                          /* Vercel Image Transformations をスキップして使用量を削減 */
                           <Image
-                            src={card.image_url}
+                            src={getOptimizedImageUrl(card.image_url, "thumbnail")}
                             alt={card.name}
                             width={300}
                             height={300}

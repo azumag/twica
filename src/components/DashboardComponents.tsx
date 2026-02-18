@@ -2,6 +2,7 @@
 
 import { RARITY_COLORS } from "@/lib/constants";
 import Image from "next/image";
+import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { useTranslations } from "next-intl";
 
 interface CardWithDetails {
@@ -44,9 +45,8 @@ export function CardGrid({ cards }: { cards: CardWithDetails[] }) {
             </span>
           </div>
           {card.image_url && (
-            // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
             <Image
-              src={card.image_url}
+              src={getOptimizedImageUrl(card.image_url, "thumbnail")}
               alt={card.name}
               width={200}
               height={200}

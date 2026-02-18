@@ -5,6 +5,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUserCards } from "@/lib/dashboard-data";
 import { RARITY_ORDER, RARITIES, VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
+import { getOptimizedImageUrl } from "@/lib/image-utils";
 import Stats from "@/components/Stats";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 // Streamer type is used by getUserCards internally but not needed in this file
@@ -121,9 +122,8 @@ export default async function DashboardPage() {
                 >
                   <div className="aspect-square bg-gray-700">
                     {card.image_url ? (
-                      // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                       <Image
-                        src={card.image_url}
+                        src={getOptimizedImageUrl(card.image_url, "thumbnail")}
                         alt={card.name}
                         width={200}
                         height={200}

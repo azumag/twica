@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { getOptimizedImageUrl } from "@/lib/image-utils";
 
 interface BatchDropRateModalProps {
   isOpen: boolean;
@@ -484,7 +485,7 @@ export default function BatchDropRateModal({
                       <div className="w-10 h-10 rounded bg-gray-600 overflow-hidden shrink-0">
                         {card.image_url ? (
                           <Image
-                            src={card.image_url}
+                            src={getOptimizedImageUrl(card.image_url, "icon")}
                             alt={card.name}
                             width={40}
                             height={40}
