@@ -245,6 +245,10 @@ export async function logErrorFromLogger(message: string, args: unknown[]): Prom
           } else {
             errorDetail = extractErrorMessage(obj.error)
           }
+        } else if (!errorDetail && 'message' in obj && typeof obj.message === 'string' && obj.message !== '') {
+          // error プロパティがない場合、オブジェクト自体が PostgrestError 等のエラーと判定
+          // See: https://github.com/azumag/twica/issues/262
+          errorDetail = obj.message
         }
         Object.assign(context, obj)
       }

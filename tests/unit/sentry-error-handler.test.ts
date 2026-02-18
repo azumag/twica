@@ -370,6 +370,48 @@ describe('sentry/error-handler', () => {
       );
     });
 
+    it('PostgrestError が直接 args に渡された場合もメッセージを抽出する', async () => {
+      const postgrestError = { code: '23505', message: 'duplicate key', details: null, hint: null };
+      await logErrorFromLogger('Insert failed:', [postgrestError]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Insert failed: duplicate key',
+        })
+      );
+    });
+
+    it('message が空文字列のオブジェクトは errorDetail に設定されない', async () => {
+      await logErrorFromLogger('Insert failed:', [{ code: '23505', message: '' }]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Insert failed:',
+        })
+      );
+    });
+
+    it('error と message 両方あるオブジェクトは error が優先される', async () => {
+      const inner = { code: '23505', message: 'from error key', details: null, hint: null };
+      await logErrorFromLogger('Failed:', [{ error: inner, message: 'from top level' }]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Failed: from error key',
+        })
+      );
+    });
+
+    it('複数の message 持ちオブジェクトが渡された場合、最初のものが使用される', async () => {
+      await logErrorFromLogger('Multi:', [{ message: 'first' }, { message: 'second' }]);
+
+      expect(mockInsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Multi: first',
+        })
+      );
+    });
+
     it('Error がない場合はメッセージのみ記録する', async () => {
       await logErrorFromLogger('Something went wrong', [{ status: 500 }]);
 
