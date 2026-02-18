@@ -113,7 +113,9 @@ export async function exchangeCodeForTokens(
   if (!response.ok) {
     const errorBody = await response.text()
     logger.error('Token exchange failed:', { status: response.status, errorBody })
-    throw new Error('Authentication failed')
+    // Twitch APIの拒否理由（コード期限切れ、redirect URI不一致等）をエラーメッセージに含める
+    // 呼び出し元のhandleAuthError経由でSupabase/GitHub Issuesに詳細が記録される
+    throw new Error(`Authentication failed: ${response.status} ${errorBody}`)
   }
 
   return response.json()
@@ -132,7 +134,8 @@ export async function getTwitchUser(accessToken: string): Promise<TwitchUser> {
   if (!response.ok) {
     const errorBody = await response.text()
     logger.error('Failed to get Twitch user:', { status: response.status, errorBody })
-    throw new Error('Failed to get user information')
+    // Twitch APIのエラー詳細をメッセージに含め、呼び出し元で原因を特定可能にする
+    throw new Error(`Failed to get user information: ${response.status} ${errorBody}`)
   }
 
   const data = await response.json()
@@ -161,7 +164,8 @@ export async function refreshTwitchToken(
   if (!response.ok) {
     const errorBody = await response.text()
     logger.error('Token refresh failed:', { status: response.status, errorBody })
-    throw new Error('Failed to refresh authentication token')
+    // Twitch APIのエラー詳細をメッセージに含め、呼び出し元で原因を特定可能にする
+    throw new Error(`Failed to refresh authentication token: ${response.status} ${errorBody}`)
   }
 
   return response.json()
