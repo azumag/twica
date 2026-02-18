@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import { getOptimizedImageUrl } from "@/lib/image-utils";
 import ExpandableDescription from "./ExpandableDescription";
 
 interface CardListProps {
@@ -116,12 +117,8 @@ export default function CardList({
                 <td className="px-4 py-3">
                   <div className="h-12 w-12 overflow-hidden rounded bg-gray-600">
                     {card.image_url ? (
-                      // unoptimized: User-uploaded images are already optimized (400x400 JPEG)
-                      // Skip Vercel Image Transformations to reduce usage costs
-                      // unoptimized: ユーザーアップロード画像は既に最適化済み(400x400 JPEG)
-                      // Vercel Image Transformations をスキップして使用量を削減
                       <Image
-                        src={card.image_url}
+                        src={getOptimizedImageUrl(card.image_url, "icon")}
                         alt={card.name}
                         width={48}
                         height={48}

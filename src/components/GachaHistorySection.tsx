@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { GachaHistory, Card } from "@/types/database";
 import { logger } from "@/lib/logger";
+import { getOptimizedImageUrl } from "@/lib/image-utils";
 
 
 interface GachaHistoryWithCard extends GachaHistory {
@@ -71,9 +72,8 @@ export default function GachaHistorySection({
               <div key={entry.id} className="flex items-center gap-4 p-4">
                 <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-gray-700">
                   {entry.cards.image_url ? (
-                    // unoptimized: ImageCropperで最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                     <Image
-                      src={entry.cards.image_url}
+                      src={getOptimizedImageUrl(entry.cards.image_url, "icon")}
                       alt={entry.cards.name}
                       width={48}
                       height={48}

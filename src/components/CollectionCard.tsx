@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import type { Rarity } from "@/types/database";
+import { getOptimizedImageUrl } from "@/lib/image-utils";
 
 /**
  * Props for the CollectionCard component
@@ -179,7 +180,7 @@ export default function CollectionCard({
         <div className={getImageContainerClasses()}>
           {imageUrl ? (
             <Image
-              src={imageUrl}
+              src={getOptimizedImageUrl(imageUrl, "thumbnail")}
               alt={name}
               width={300}
               height={420}
@@ -214,12 +215,8 @@ export default function CollectionCard({
           {/* 正方形画像（トリミング） */}
           <div className={getImageContainerClasses()}>
             {imageUrl ? (
-              // unoptimized: Images are already optimized during upload
-              // Skip Vercel Image Transformations to reduce costs
-              // unoptimized: アップロード時に既に最適化済み
-              // Vercel Image Transformations をスキップしてコスト削減
               <Image
-                src={imageUrl}
+                src={getOptimizedImageUrl(imageUrl, "thumbnail")}
                 alt={name}
                 width={imageWidth}
                 height={imageHeight}
