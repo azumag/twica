@@ -23,12 +23,14 @@ export type ImagePreset = keyof typeof PRESETS;
 /**
  * Cloudflare Images Transformations を使った最適化URLを生成
  *
- * - NEXT_PUBLIC_APP_URL が https:// の場合のみ変換URL生成（開発環境はスキップ）
+ * - NEXT_PUBLIC_CF_IMAGES_ENABLED=true かつ NEXT_PUBLIC_APP_URL が https:// の場合のみ変換
+ * - CFプロキシ配下にないホスト（staging等）では /cdn-cgi/image/ が存在せず404になるため、
+ *   明示的なフラグで有効化する設計
  * - null/空文字列の場合はそのまま返す
  *
  * @param url - オリジナル画像URL
  * @param preset - 変換プリセット ('thumbnail' | 'icon')
- * @returns 最適化された画像URL、または開発環境ではオリジナルURL
+ * @returns 最適化された画像URL、または無効環境ではオリジナルURL
  */
 export function getOptimizedImageUrl(url: string, preset: ImagePreset): string;
 export function getOptimizedImageUrl(url: string | null, preset: ImagePreset): string | null;
@@ -36,14 +38,15 @@ export function getOptimizedImageUrl(
   url: string | null,
   preset: ImagePreset
 ): string | null {
-  if (!url) return null;
+  // null → null, "" → "" でそれぞれの型契約を維持
+  if (!url) return url;
 
-  // NEXT_PUBLIC_APP_URL はビルド時にインライン化される（Cloudflare Workers環境）
+  // NEXT_PUBLIC_* はビルド時にインライン化される（Cloudflare Workers環境）
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "";
+  const enabled = process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED === "true";
 
-  // 開発環境(localhost/http)では変換をスキップしてオリジナルURLを返す
-  // Cloudflare Images Transformations はCFプロキシ経由のみ動作するため
-  if (!appUrl.startsWith("https://")) {
+  // CFプロキシ配下でない環境（localhost/http、またはフラグ未設定）ではスキップ
+  if (!enabled || !appUrl.startsWith("https://")) {
     return url;
   }
 

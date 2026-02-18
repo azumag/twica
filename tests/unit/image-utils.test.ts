@@ -1,21 +1,28 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
 describe("getOptimizedImageUrl", () => {
-  const originalEnv = process.env.NEXT_PUBLIC_APP_URL;
+  const originalAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const originalEnabled = process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED;
 
   afterEach(() => {
     // 環境変数を元に戻す
-    if (originalEnv !== undefined) {
-      process.env.NEXT_PUBLIC_APP_URL = originalEnv;
+    if (originalAppUrl !== undefined) {
+      process.env.NEXT_PUBLIC_APP_URL = originalAppUrl;
     } else {
       delete process.env.NEXT_PUBLIC_APP_URL;
     }
+    if (originalEnabled !== undefined) {
+      process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED = originalEnabled;
+    } else {
+      delete process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED;
+    }
   });
 
-  describe("本番環境 (https)", () => {
+  describe("本番環境 (https + enabled)", () => {
     beforeEach(() => {
       process.env.NEXT_PUBLIC_APP_URL = "https://twica.example.com";
+      process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED = "true";
     });
 
     it("thumbnailプリセットで正しいURLを生成する", () => {
@@ -54,16 +61,32 @@ describe("getOptimizedImageUrl", () => {
   describe("開発環境 (localhost)", () => {
     beforeEach(() => {
       process.env.NEXT_PUBLIC_APP_URL = "http://localhost:8787";
+      process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED = "true";
     });
 
-    it("オリジナルURLをそのまま返す", () => {
+    it("HTTPではオリジナルURLをそのまま返す", () => {
+      const url = "https://image.twica.bluemoon.works/cards/test.jpg";
+      const result = getOptimizedImageUrl(url, "thumbnail");
+
+      expect(result).toBe(url);
+    });
+  });
+
+  describe("フラグ未設定 (HTTPS but not enabled)", () => {
+    beforeEach(() => {
+      process.env.NEXT_PUBLIC_APP_URL = "https://staging.example.com";
+      delete process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED;
+    });
+
+    it("フラグ未設定ではオリジナルURLをそのまま返す", () => {
       const url = "https://image.twica.bluemoon.works/cards/test.jpg";
       const result = getOptimizedImageUrl(url, "thumbnail");
 
       expect(result).toBe(url);
     });
 
-    it("iconプリセットでもオリジナルURLをそのまま返す", () => {
+    it("フラグがfalseでもオリジナルURLをそのまま返す", () => {
+      process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED = "false";
       const url = "https://image.twica.bluemoon.works/cards/test.jpg";
       const result = getOptimizedImageUrl(url, "icon");
 
@@ -74,6 +97,7 @@ describe("getOptimizedImageUrl", () => {
   describe("環境変数未設定", () => {
     beforeEach(() => {
       delete process.env.NEXT_PUBLIC_APP_URL;
+      delete process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED;
     });
 
     it("オリジナルURLをそのまま返す", () => {
@@ -87,20 +111,23 @@ describe("getOptimizedImageUrl", () => {
   describe("null/空URLの処理", () => {
     beforeEach(() => {
       process.env.NEXT_PUBLIC_APP_URL = "https://twica.example.com";
+      process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED = "true";
     });
 
     it("nullの場合はnullを返す", () => {
       expect(getOptimizedImageUrl(null, "thumbnail")).toBeNull();
     });
 
-    it("空文字列の場合はnullを返す", () => {
-      expect(getOptimizedImageUrl("", "icon")).toBeNull();
+    it("空文字列の場合は空文字列を返す（型契約: string → string）", () => {
+      const result: string = getOptimizedImageUrl("", "icon");
+      expect(result).toBe("");
     });
   });
 
   describe("エッジケース", () => {
     beforeEach(() => {
       process.env.NEXT_PUBLIC_APP_URL = "https://twica.example.com";
+      process.env.NEXT_PUBLIC_CF_IMAGES_ENABLED = "true";
     });
 
     it("クエリパラメータ付きURLもそのまま結合される", () => {
