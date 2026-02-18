@@ -123,9 +123,8 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 # プレビュー環境用カスタムドメイン（CF Images Transformationsに必要）
 # workers.dev ドメインでは /cdn-cgi/image/ が利用できないため、
 # bluemoon.works ゾーン配下のカスタムドメインを使用する
-routes = [
-  { pattern = "preview.twica.bluemoon.works", zone_id = "ef481558735d8421b8d4c2dec9ffe660" }
-]
+# custom_domains はデプロイ時に DNS レコード (CNAME) も自動作成される
+custom_domains = ["preview.twica.bluemoon.works"]
 
 # Observability for preview environment
 # プレビュー環境でもログ・トレースを有効化
