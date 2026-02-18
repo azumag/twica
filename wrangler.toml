@@ -123,10 +123,9 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 # プレビュー環境用カスタムドメイン（CF Images Transformationsに必要）
 # workers.dev ドメインでは /cdn-cgi/image/ が利用できないため、
 # bluemoon.works ゾーン配下のカスタムドメインを使用する
-# 注意: opennextjs-cloudflare deploy はこの設定を無視するため、
-# Cloudflare ダッシュボード（Workers → twica-preview → Settings → Domains & Routes）で
-# preview.twica.bluemoon.works を手動追加すること
-# custom_domains = ["preview.twica.bluemoon.works"]
+# 注意: opennextjs-cloudflare deploy はこの設定を反映しないため、
+# Cloudflare ダッシュボードで手動設定済み
+custom_domains = ["preview.twica.bluemoon.works"]
 
 # Observability for preview environment
 # プレビュー環境でもログ・トレースを有効化
