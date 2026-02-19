@@ -98,14 +98,10 @@ export const getSession = cache(async (): Promise<Session | null> => {
     const session = parseSession(sessionCookie)
 
     if (session.expiresAt && Date.now() > session.expiresAt) {
-      logger.warn('[Session] Session expired, clearing')
-      await clearSession();
-      try {
-        const { clearCSRFToken } = await import('./csrf')
-        await clearCSRFToken()
-      } catch {
-        // CSRFトークンクリアはセッションクリアの失敗を意味しない
-      }
+      logger.warn('[Session] Session expired')
+      // Cookie cleanup is handled by middleware (updateSession)
+      // ミドルウェア（updateSession）でCookieクリアを処理するため、ここではCookie操作しない
+      // Server ComponentからのCookie書き込みはNext.jsで禁止されている
       logger.info(`[Perf] getSession (expired): ${Date.now() - start}ms`);
       return null;
     }
