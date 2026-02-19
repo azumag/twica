@@ -301,6 +301,12 @@ export const rateLimits = {
   eventsubSubscribePost: createRatelimit("eventsubSubscribePost", 10, 60 * 1000),
   eventsubSubscribeGet: createRatelimit("eventsubSubscribeGet", 50, 60 * 1000),
   gachaHistoryDelete: createRatelimit("gachaHistoryDelete", 30, 60 * 1000),
+  // ガチャ履歴閲覧は読み取り専用のため比較的緩い制限
+  // Gacha history viewing is read-only, so use a generous limit
+  gachaHistoryGet: createRatelimit("gachaHistoryGet", 60, 60 * 1000),
+  // ガチャ統計は集計処理があるため少し厳しめ
+  // Gacha stats involves aggregation, so use a slightly stricter limit
+  gachaStatsGet: createRatelimit("gachaStatsGet", 30, 60 * 1000),
   debugSession: createRatelimit("debugSession", 10, 60 * 1000),
   // 投票キャンペーンは1ユーザー1回だが、DoS対策として制限（分あたり5回）
   voteCampaign: createRatelimit("voteCampaign", 5, 60 * 1000),

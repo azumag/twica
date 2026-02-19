@@ -27,6 +27,8 @@
     "overview": "概要",
     "cardManagement": "カード管理",
     "settings": "配信設定",
+    "gachaHistory": "ガチャ履歴",
+    "stats": "統計",
     "collection": "マイコレクション"
   },
   "rarity": {
@@ -629,6 +631,51 @@
     "language": {
       "title": "言語設定",
       "description": "表示言語を選択してください。"
+    }
+  },
+  "gachaHistoryPage": {
+    "title": "ガチャ履歴",
+    "streamerDescription": "チャンネルの全ガチャ履歴を確認できます。フィルタで絞り込みが可能です。",
+    "viewerDescription": "あなたのガチャ履歴を確認できます。",
+    "emptyMessage": "ガチャ履歴がありません。",
+    "totalResults": "全 {count} 件",
+    "unknownUser": "不明",
+    "tabs": {
+      "channel": "チャンネル履歴",
+      "personal": "自分の履歴"
+    },
+    "filters": {
+      "username": "ユーザー名",
+      "usernamePlaceholder": "ユーザー名で検索",
+      "rarity": "レアリティ",
+      "allRarities": "すべてのレアリティ",
+      "from": "開始日",
+      "to": "終了日",
+      "apply": "検索",
+      "reset": "リセット"
+    }
+  },
+  "gachaStatsPage": {
+    "title": "ガチャ統計",
+    "description": "カードの排出率と統計情報を確認できます。",
+    "period": {
+      "7d": "7日間",
+      "30d": "30日間"
+    },
+    "totalDraws": "総ガチャ回数",
+    "draws": "回",
+    "noData": "この期間にはガチャデータがありません。",
+    "dropRateTable": {
+      "cardName": "カード名",
+      "rarity": "レアリティ",
+      "configuredRate": "設定排出率",
+      "actualRate": "実際の排出率",
+      "drawCount": "排出回数"
+    },
+    "raritySummary": "レアリティ別サマリー",
+    "fullPeriodStats": {
+      "title": "全期間統計について",
+      "message": "全期間統計については、集計にかかるサーバーコストが大きいため、本サービスのマネタイズの見通しが立ち次第、着手するか判断します。"
     }
   }
 }
