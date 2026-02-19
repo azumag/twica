@@ -27,6 +27,8 @@
     "overview": "Overview",
     "cardManagement": "Card Management",
     "settings": "Stream Settings",
+    "gachaHistory": "Gacha History",
+    "stats": "Stats",
     "collection": "My Collection"
   },
   "rarity": {
@@ -629,6 +631,47 @@
     "language": {
       "title": "Language",
       "description": "Select your preferred display language."
+    }
+  },
+  "gachaHistoryPage": {
+    "title": "Gacha History",
+    "streamerDescription": "View all gacha history for your channel. Use filters to narrow down results.",
+    "viewerDescription": "View your gacha history.",
+    "emptyMessage": "No gacha history found.",
+    "totalResults": "{count} results",
+    "unknownUser": "Unknown",
+    "filters": {
+      "username": "Username",
+      "usernamePlaceholder": "Search by username",
+      "rarity": "Rarity",
+      "allRarities": "All Rarities",
+      "from": "From",
+      "to": "To",
+      "apply": "Search",
+      "reset": "Reset"
+    }
+  },
+  "gachaStatsPage": {
+    "title": "Gacha Stats",
+    "description": "View card drop rates and statistics.",
+    "period": {
+      "7d": "7 Days",
+      "30d": "30 Days"
+    },
+    "totalDraws": "Total Draws",
+    "draws": "draws",
+    "noData": "No gacha data for this period.",
+    "dropRateTable": {
+      "cardName": "Card Name",
+      "rarity": "Rarity",
+      "configuredRate": "Configured Rate",
+      "actualRate": "Actual Rate",
+      "drawCount": "Draw Count"
+    },
+    "raritySummary": "Rarity Summary",
+    "fullPeriodStats": {
+      "title": "About Full Period Stats",
+      "message": "Full period statistics require significant server resources for aggregation. We will decide whether to implement this feature once a monetization plan is in place."
     }
   }
 }

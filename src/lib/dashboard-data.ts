@@ -200,6 +200,262 @@ export async function getRecentGachaHistory(): Promise<GachaHistoryWithCard[]> {
 }
 
 /**
+ * Gacha history filter options for streamer queries
+ * 配信者向けガチャ履歴フィルタオプション
+ */
+interface GachaHistoryFilters {
+  page?: number;
+  perPage?: number;
+  username?: string;
+  rarity?: string;
+  from?: string;
+  to?: string;
+}
+
+/**
+ * Paginated gacha history result
+ * ページネーション付きガチャ履歴結果
+ */
+interface PaginatedGachaHistory {
+  history: GachaHistoryWithCard[];
+  pagination: {
+    page: number;
+    perPage: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+/**
+ * Get gacha history for a streamer with pagination and filters
+ * Supports filtering by username, rarity, and date range
+ * 配信者向け: ページネーション・フィルタ付きガチャ履歴取得
+ * ユーザー名、レアリティ、期間でのフィルタリングをサポート
+ */
+export async function getGachaHistoryForStreamer(
+  streamerId: string,
+  filters: GachaHistoryFilters = {}
+): Promise<PaginatedGachaHistory> {
+  const { page = 1, perPage = 20, username, rarity, from, to } = filters;
+  const supabaseAdmin = getSupabaseAdmin();
+
+  // Use !inner join when filtering by rarity to ensure correct count
+  // レアリティフィルタ時は !inner JOINで正確なcountを保証
+  const joinType = rarity ? "cards!inner(*)" : "cards(*)";
+  let query = supabaseAdmin
+    .from("gacha_history")
+    .select(`*, ${joinType}`, { count: "exact" })
+    .eq("streamer_id", streamerId);
+
+  // Apply filters / フィルタを適用
+  if (username) {
+    // Escape LIKE pattern characters to prevent unintended matching
+    // LIKEパターン文字をエスケープして意図しないマッチを防止
+    const escaped = username.replace(/%/g, "\\%").replace(/_/g, "\\_");
+    query = query.ilike("user_twitch_username", `%${escaped}%`);
+  }
+  if (rarity) {
+    query = query.eq("cards.rarity", rarity);
+  }
+  if (from) {
+    query = query.gte("redeemed_at", from);
+  }
+  if (to) {
+    // Use "less than next day" instead of "less than or equal to end-of-day"
+    // to cleanly include the entire "to" date
+    // Note: dates are interpreted in UTC. For non-UTC users, boundary dates
+    // may shift by a few hours. This is acceptable for approximate date filtering.
+    // 「次の日未満」を使用して "to" 日付全体を含める
+    // 注: 日付はUTCで解釈される。非UTCユーザーでは境界日が数時間ずれる可能性があるが、
+    // 大まかな日付フィルタとしては許容範囲。
+    const nextDay = new Date(`${to}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    query = query.lt("redeemed_at", nextDay.toISOString());
+  }
+
+  // Apply pagination and ordering
+  // ページネーションと並び順を適用
+  const offset = (page - 1) * perPage;
+  query = query
+    .order("redeemed_at", { ascending: false })
+    .range(offset, offset + perPage - 1);
+
+  const { data, count } = await query;
+  const total = count || 0;
+
+  return {
+    history: (data || []) as unknown as GachaHistoryWithCard[],
+    pagination: {
+      page,
+      perPage,
+      total,
+      totalPages: Math.ceil(total / perPage),
+    },
+  };
+}
+
+/**
+ * Get gacha history for a specific user with pagination
+ * 視聴者向け: ページネーション付きの自分のガチャ履歴取得
+ */
+export async function getGachaHistoryForUser(
+  userTwitchId: string,
+  filters: { page?: number; perPage?: number } = {}
+): Promise<PaginatedGachaHistory> {
+  const { page = 1, perPage = 20 } = filters;
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const offset = (page - 1) * perPage;
+  const { data, count } = await supabaseAdmin
+    .from("gacha_history")
+    .select("*, cards(*)", { count: "exact" })
+    .eq("user_twitch_id", userTwitchId)
+    .order("redeemed_at", { ascending: false })
+    .range(offset, offset + perPage - 1);
+
+  const total = count || 0;
+
+  return {
+    history: (data || []) as unknown as GachaHistoryWithCard[],
+    pagination: {
+      page,
+      perPage,
+      total,
+      totalPages: Math.ceil(total / perPage),
+    },
+  };
+}
+
+/**
+ * Gacha statistics result for a streamer
+ * 配信者向けガチャ統計結果
+ */
+export interface GachaStatsResult {
+  totalDraws: number;
+  cardStats: Array<{
+    cardId: string;
+    cardName: string;
+    rarity: string;
+    imageUrl: string | null;
+    configuredRate: number;
+    actualCount: number;
+    actualRate: number;
+  }>;
+  rarityStats: Array<{
+    rarity: string;
+    count: number;
+    rate: number;
+  }>;
+}
+
+/**
+ * Get gacha statistics for a streamer within a given period
+ * Query gacha_history filtered by streamer_id and date range,
+ * then compare actual draw counts against configured drop_rate
+ * 配信者向け: 指定期間のガチャ統計を取得
+ * streamer_idと期間でガチャ履歴をフィルタし、
+ * 実際の排出回数と設定された排出率を比較
+ */
+export async function getGachaStats(
+  streamerId: string,
+  period: "7d" | "30d"
+): Promise<GachaStatsResult> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const now = new Date();
+  const daysAgo = period === "7d" ? 7 : 30;
+  const fromDate = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+
+  // Run all 3 independent queries in parallel to reduce latency
+  // 3つの独立したクエリを並列実行してレイテンシを削減
+  const [countResult, historyResult, cardsResult] = await Promise.all([
+    // 1. Get total draw count using count-only query (avoids 1000-row limit)
+    // count-onlyクエリで正確な総ガチャ回数を取得（1000行制限を回避）
+    supabaseAdmin
+      .from("gacha_history")
+      .select("id", { count: "exact", head: true })
+      .eq("streamer_id", streamerId)
+      .gte("redeemed_at", fromDate.toISOString()),
+    // 2. Fetch history with card_id to count draws per card
+    // card_idのみ取得してカードごとの排出回数を集計
+    // For very active streamers (>10000 draws/period), counts may be approximate.
+    // 非常にアクティブな配信者（期間内10000回超）の場合、カウントは近似値になる可能性がある。
+    supabaseAdmin
+      .from("gacha_history")
+      .select("card_id, cards(rarity)")
+      .eq("streamer_id", streamerId)
+      .gte("redeemed_at", fromDate.toISOString())
+      .limit(10000),
+    // 3. Fetch all active cards to include cards with 0 draws
+    // 排出0回のカードも含めるため、配信者の全アクティブカードを取得
+    supabaseAdmin
+      .from("cards")
+      .select("id, name, rarity, image_url, drop_rate")
+      .eq("streamer_id", streamerId)
+      .eq("is_active", true),
+  ]);
+
+  const totalDraws = countResult.count;
+  const history = historyResult.data;
+  const allCards = cardsResult.data;
+
+  const safeTotal = totalDraws || 0;
+
+  // Count draws per card
+  // カードごとの排出回数を集計
+  const drawCounts = new Map<string, number>();
+  for (const h of history || []) {
+    drawCounts.set(h.card_id, (drawCounts.get(h.card_id) || 0) + 1);
+  }
+
+  // Calculate total configured weight for percentage calculation
+  // パーセンテージ計算用に設定重みの合計を算出
+  const totalWeight = (allCards || []).reduce(
+    (sum, c) => sum + (c.drop_rate || 0),
+    0
+  );
+
+  // Build per-card stats
+  // カードごとの統計を構築
+  const cardStats = (allCards || []).map((card) => {
+    const actualCount = drawCounts.get(card.id) || 0;
+    return {
+      cardId: card.id,
+      cardName: card.name,
+      rarity: card.rarity,
+      imageUrl: card.image_url,
+      // Configured rate as percentage of total weight
+      // 全体の重みに対する設定率（パーセンテージ）
+      configuredRate: totalWeight > 0 ? (card.drop_rate / totalWeight) * 100 : 0,
+      actualCount,
+      actualRate: safeTotal > 0 ? (actualCount / safeTotal) * 100 : 0,
+    };
+  });
+
+  // Build rarity-level stats
+  // レアリティレベルの統計を構築
+  const rarityMap = new Map<string, number>();
+  for (const h of history || []) {
+    const card = h.cards as unknown as { rarity: string } | null;
+    if (card) {
+      rarityMap.set(card.rarity, (rarityMap.get(card.rarity) || 0) + 1);
+    }
+  }
+
+  const rarityStats = ["legendary", "epic", "rare", "common"].map(
+    (rarity) => {
+      const count = rarityMap.get(rarity) || 0;
+      return {
+        rarity,
+        count,
+        rate: safeTotal > 0 ? (count / safeTotal) * 100 : 0,
+      };
+    }
+  );
+
+  return { totalDraws: safeTotal, cardStats, rarityStats };
+}
+
+/**
  * Internal function to fetch user cards for a specific streamer from database
  * 内部関数: 特定の配信者のユーザーカードをデータベースから取得
  */
