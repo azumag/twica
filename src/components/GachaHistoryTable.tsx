@@ -15,6 +15,9 @@ import type { GachaHistory, Card, Rarity } from "@/types/database";
  */
 type GachaHistoryEntry = GachaHistory & {
   cards: Pick<Card, "id" | "name" | "image_url" | "rarity">;
+  // Streamer info joined for personal history view
+  // 自分の履歴表示用にJOINされた配信者情報
+  streamers?: { twitch_display_name: string } | null;
 };
 
 interface PaginationData {
@@ -204,6 +207,10 @@ export default function GachaHistoryTable({
                         <span>
                           {entry.user_twitch_username || t("unknownUser")}
                         </span>
+                      )}
+                      {/* Show channel name in personal view / 自分の履歴ではチャンネル名を表示 */}
+                      {!showChannelFeatures && entry.streamers && (
+                        <span>{entry.streamers.twitch_display_name}</span>
                       )}
                       <span>
                         {new Date(entry.redeemed_at).toLocaleString(locale)}

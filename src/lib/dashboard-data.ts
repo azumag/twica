@@ -306,9 +306,11 @@ export async function getGachaHistoryForUser(
   const supabaseAdmin = getSupabaseAdmin();
 
   const offset = (page - 1) * perPage;
+  // Join streamers to show which channel the gacha was drawn on
+  // どのチャンネルでガチャを引いたかを表示するため streamers を JOIN
   const { data, count } = await supabaseAdmin
     .from("gacha_history")
-    .select("*, cards(*)", { count: "exact" })
+    .select("*, cards(*), streamers(twitch_display_name)", { count: "exact" })
     .eq("user_twitch_id", userTwitchId)
     .order("redeemed_at", { ascending: false })
     .range(offset, offset + perPage - 1);
