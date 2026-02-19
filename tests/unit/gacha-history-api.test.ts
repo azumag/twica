@@ -185,6 +185,56 @@ describe("GET /api/gacha-history", () => {
     expect(body.pagination.total).toBe(0);
   });
 
+  it("returns personal history for streamer with view=personal", async () => {
+    const session = {
+      twitchUserId: "streamer1",
+      twitchUsername: "streamer1",
+      twitchDisplayName: "Streamer 1",
+      twitchProfileImageUrl: "",
+      broadcasterType: "affiliate",
+      expiresAt: Date.now() + 100000,
+      version: 1,
+    };
+    mockGetSession.mockResolvedValue(session);
+    mockCanUseStreamerFeatures.mockReturnValue(true);
+
+    // Should use getGachaHistoryForUser path (no streamer lookup needed)
+    // getGachaHistoryForUser パスを使用する（配信者検索は不要）
+    const historyQuery = createMockQueryBuilder();
+    const historyResponse = {
+      data: [
+        {
+          id: "h1",
+          user_twitch_id: "streamer1",
+          user_twitch_username: "streamer1",
+          card_id: "c1",
+          streamer_id: "other-streamer",
+          redeemed_at: "2026-01-01T00:00:00Z",
+          cards: { id: "c1", name: "Card1", rarity: "rare", image_url: null },
+        },
+      ],
+      error: null,
+      count: 1,
+    };
+    (historyQuery as unknown as Record<string, unknown>).then = (
+      resolve: (value: unknown) => void
+    ) => {
+      resolve(historyResponse);
+      return historyQuery;
+    };
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn(() => historyQuery),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(createRequest({ view: "personal" }));
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.history).toHaveLength(1);
+    expect(body.pagination.total).toBe(1);
+  });
+
   it("returns 404 when streamer not found", async () => {
     const session = {
       twitchUserId: "streamer1",

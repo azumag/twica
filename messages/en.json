@@ -640,6 +640,10 @@
     "emptyMessage": "No gacha history found.",
     "totalResults": "{count} results",
     "unknownUser": "Unknown",
+    "tabs": {
+      "channel": "Channel History",
+      "personal": "My History"
+    },
     "filters": {
       "username": "Username",
       "usernamePlaceholder": "Search by username",

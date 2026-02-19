@@ -77,8 +77,11 @@ export async function GET(request: NextRequest) {
     );
 
     const isStreamer = canUseStreamerFeatures(session);
+    // Allow streamers to view their own personal history with view=personal
+    // 配信者が view=personal で自分の履歴を閲覧可能にする
+    const view = searchParams.get("view");
 
-    if (isStreamer) {
+    if (isStreamer && view !== "personal") {
       // Streamer: get their streamer_id and fetch channel history
       // 配信者: streamer_idを取得し、チャンネル履歴を取得
       const supabaseAdmin = getSupabaseAdmin();

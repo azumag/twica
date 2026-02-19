@@ -640,6 +640,10 @@
     "emptyMessage": "ガチャ履歴がありません。",
     "totalResults": "全 {count} 件",
     "unknownUser": "不明",
+    "tabs": {
+      "channel": "チャンネル履歴",
+      "personal": "自分の履歴"
+    },
     "filters": {
       "username": "ユーザー名",
       "usernamePlaceholder": "ユーザー名で検索",
