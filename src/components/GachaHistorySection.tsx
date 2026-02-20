@@ -37,10 +37,15 @@ export default function GachaHistorySection({
   const tCard = useTranslations("cardManager");
   const tCommon = useTranslations("common");
   const [history, setHistory] = useState<GachaHistoryWithCard[]>(recentGacha);
+  // 削除処理中のアイテムIDを保持し、連続クリックを防止
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const handleDelete = async (historyId: string) => {
+    // 別の削除処理が進行中の場合はスキップ
+    if (deletingId) return;
     if (!confirm(tCard("confirmations.deleteCard"))) return;
 
+    setDeletingId(historyId);
     try {
       const response = await fetch(`/api/gacha-history/${historyId}`, {
         method: "DELETE",
@@ -52,9 +57,14 @@ export default function GachaHistorySection({
         const errorData = await response.json();
         alert(tCard("messages.operationFailed", { msg: errorData.error || tCard("messages.rateLimit") }));
         logger.error("Rate limit exceeded:", errorData);
+      } else {
+        alert(tCard("messages.operationFailed", { msg: `HTTP ${response.status}` }));
       }
     } catch (error) {
       logger.error("Failed to delete gacha history:", error);
+      alert(tCard("messages.operationFailed", { msg: String(error) }));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -100,9 +110,10 @@ export default function GachaHistorySection({
                  {isStreamer && (
                    <button
                      onClick={() => handleDelete(entry.id)}
-                     className="rounded bg-red-500 px-3 py-1 text-xs text-white hover:bg-red-600 transition-colors"
+                     disabled={deletingId !== null}
+                     className="rounded bg-red-500 px-3 py-1 text-xs text-white hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                    >
-                     {tCommon("delete")}
+                     {deletingId === entry.id ? "..." : tCommon("delete")}
                    </button>
                 )}
               </div>

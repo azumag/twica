@@ -274,8 +274,11 @@ async function handleRedemption(messageId: string, event: {
 
   const supabaseAdmin = getSupabaseAdmin();
 
-  // Idempotency check - skip if this event was already processed
-  // 冪等性チェック：既に処理済みのイベントはスキップ
+  // 事前の冪等性チェック：既に処理済みのイベントはスキップ
+  // RPC内でもON CONFLICTで重複を検知するが、事前チェックがないと
+  // ストリーマー設定やカード構成が変わった後のリトライで
+  // "Reward ID mismatch" や "No cards available" として誤報告されるため、
+  // この事前SELECTは必要（レビュー指摘 P2）
   const { data: existingHistory } = await supabaseAdmin
     .from('gacha_history')
     .select('id')
@@ -292,6 +295,12 @@ async function handleRedemption(messageId: string, event: {
     const result = await gachaService.executeGachaForEventSub(event, messageId);
 
     if (!result.success) {
+      // EventSub重複通知は正常系（リトライによる再送）なのでエラー報告しない
+      // Duplicate event is expected (EventSub retry) - don't report as error
+      if (result.error === 'Duplicate event') {
+        logger.info('[handleRedemption] Skipped - duplicate event (RPC)', { messageId });
+        return null;
+      }
       logger.warn('[handleRedemption] Gacha execution failed', { messageId });
       await reportError(new Error(`Gacha execution failed: ${result.error}`), {
         context: 'eventsub:handleRedemption',

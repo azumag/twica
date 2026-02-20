@@ -3,6 +3,7 @@ import { selectWeightedCard } from '@/lib/gacha'
 import { normalizeDropRate } from '@/lib/card-utils'
 import { Result, ok, err } from '@/types/result'
 import { logger } from '@/lib/logger'
+import { reportError } from '@/lib/sentry/error-handler'
 
 export interface GachaCard {
   id: string
@@ -59,78 +60,41 @@ export class GachaService {
         return err('Failed to select card')
       }
 
-      // Execute gacha history recording and user check in parallel to reduce CPU time
-      // CPU時間削減のため、ガチャ履歴記録とユーザー確認を並列実行
-      const [historyResult, userCheckResult] = await Promise.all([
-        // Record gacha history (with idempotency using upsert)
-        // ガチャ履歴を記録（冪等性のためupsertを使用）
-        this.supabase
-          .from('gacha_history')
-          .upsert({
-            event_id: eventId || null,
-            user_twitch_id: userTwitchId,
-            user_twitch_username: userTwitchUsername,
-            card_id: selectedCard.id,
-            streamer_id: streamerId,
-          }, {
-            onConflict: 'event_id',
-            ignoreDuplicates: true,
-          }),
-        // Check if user exists (SELECT only, no UPDATE)
-        // ユーザーの存在確認（SELECTのみ、UPDATEなし）
-        this.supabase
-          .from('users')
-          .select('id')
-          .eq('twitch_user_id', userTwitchId)
-          .maybeSingle()
-      ])
+      // gacha_history, users, user_cards を1トランザクションでアトミックに実行
+      // 従来は3回の個別DB操作で中間状態（履歴あり・カード未付与）が発生しえた
+      const { data: rpcResult, error: rpcError } = await this.supabase
+        .rpc('execute_gacha_transaction', {
+          p_event_id: eventId || null,
+          p_user_twitch_id: userTwitchId,
+          p_user_twitch_username: userTwitchUsername,
+          p_card_id: selectedCard.id,
+          p_streamer_id: streamerId,
+        })
 
-      if (historyResult.error) {
-        return err(`Failed to record history: ${historyResult.error.message}`)
+      if (rpcError) {
+        // RPC関数が未デプロイの場合（マイグレーション前）は旧ロジックにフォールバック
+        // 無停止デプロイ時にアプリコードが先にデプロイされても、
+        // ユーザーのチャンネルポイントが消費されカード未付与になることを防ぐ
+        // TODO: マイグレーション適用確認後にフォールバックを削除
+        if (rpcError.code === '42883') {
+          logger.warn('execute_gacha_transaction not found, falling back to legacy operations', {
+            streamerId, userTwitchId, eventId,
+          })
+          return this.executeGachaLegacy(streamerId, userTwitchId, userTwitchUsername, selectedCard, eventId)
+        }
+
+        await reportError(new Error(`Gacha RPC failed: ${rpcError.message}`), {
+          context: 'gacha:executeGacha:rpc',
+          streamerId,
+          userTwitchId,
+          eventId,
+        })
+        return err(`Failed to execute gacha transaction: ${rpcError.message}`)
       }
 
-      // If user doesn't exist, create one
-      // ユーザーが存在しない場合は作成
-      // twitch_display_nameはNOT NULL制約があるため、usernameをデフォルト値として使用
-      // （EventSubからはuser_nameとして表示名が渡されるが、通常のガチャではユーザー名のみ）
-      let user = userCheckResult.data
-      if (!user) {
-        const { data: newUser, error: createError } = await this.supabase
-          .from('users')
-          .upsert({
-            twitch_user_id: userTwitchId,
-            twitch_username: userTwitchUsername,
-            twitch_display_name: userTwitchUsername,
-          }, {
-            onConflict: 'twitch_user_id',
-            ignoreDuplicates: true,
-          })
-          .select('id')
-          .maybeSingle()
-
-        if (createError) {
-          logger.warn('Failed to create user:', createError.message)
-        } else {
-          user = newUser
-        }
-      }
-
-      if (user) {
-        // Use insert instead of upsert - upsert with composite key doesn't work correctly
-        // upsertではなくinsertを使用 - 複合キーでのupsertは正しく動作しない
-        const { error: collectionError } = await this.supabase
-          .from('user_cards')
-          .insert({
-            user_id: user.id,
-            card_id: selectedCard.id,
-            obtained_at: new Date().toISOString(),
-          })
-
-        // Ignore duplicate key error (23505)
-        // 重複キーエラー（23505）は無視
-        if (collectionError && collectionError.code !== '23505') {
-          logger.warn('Failed to add to collection:', collectionError.message)
-        }
+      // EventSub重複通知の場合（event_idが既に処理済み）
+      if (rpcResult?.is_duplicate) {
+        return err('Duplicate event')
       }
 
       return ok({
@@ -140,6 +104,66 @@ export class GachaService {
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }
+  }
+
+  /**
+   * RPC関数未デプロイ時のフォールバック: 旧ロジック（個別DB操作）でガチャを実行
+   * マイグレーション適用前のデプロイ中間状態でユーザーへのカード未付与を防ぐ
+   * アトミック性は保証されないが、カード付与されないよりは良い
+   * TODO: マイグレーション適用確認後にこのメソッドを削除
+   */
+  private async executeGachaLegacy(
+    streamerId: string, userTwitchId: string, userTwitchUsername: string,
+    selectedCard: GachaCard, eventId?: string
+  ): Promise<Result<GachaResult>> {
+    // gacha_history upsert（冪等性のためevent_idで重複チェック）
+    const { error: historyError } = await this.supabase
+      .from('gacha_history')
+      .upsert({
+        event_id: eventId || null,
+        user_twitch_id: userTwitchId,
+        user_twitch_username: userTwitchUsername,
+        card_id: selectedCard.id,
+        streamer_id: streamerId,
+      }, {
+        onConflict: 'event_id',
+        ignoreDuplicates: true,
+      })
+
+    if (historyError) {
+      return err(`Failed to record history: ${historyError.message}`)
+    }
+
+    // users upsert
+    const { data: user } = await this.supabase
+      .from('users')
+      .upsert({
+        twitch_user_id: userTwitchId,
+        twitch_username: userTwitchUsername,
+        twitch_display_name: userTwitchUsername,
+      }, {
+        onConflict: 'twitch_user_id',
+        ignoreDuplicates: true,
+      })
+      .select('id')
+      .maybeSingle()
+
+    // user_cards insert
+    if (user) {
+      const { error: collectionError } = await this.supabase
+        .from('user_cards')
+        .insert({
+          user_id: user.id,
+          card_id: selectedCard.id,
+          obtained_at: new Date().toISOString(),
+        })
+
+      if (collectionError && collectionError.code !== '23505') {
+        logger.warn('Legacy fallback: Failed to add to collection:', collectionError.message)
+      }
+    }
+
+    return ok({ card: selectedCard, userTwitchUsername })
   }
 
   /**
