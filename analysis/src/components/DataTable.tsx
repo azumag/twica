@@ -14,6 +14,8 @@ interface Column<T> {
 interface PaginationConfig {
   currentPage: number
   pageSize: number
+  // サーバーサイドページネーション用: 設定時はdata.lengthではなくこの値を使い、data.slice()をスキップ
+  totalItems?: number
   onPageChange: (page: number) => void
   // ページサイズ変更（オプション）
   onPageSizeChange?: (size: number) => void
@@ -49,87 +51,14 @@ export function DataTable<T>({
   onRowClick,
   pagination,
 }: DataTableProps<T>) {
-  // ページネーションが有効な場合、表示データを計算
-  const totalItems = data.length
+  // サーバーサイドページネーション: totalItems指定時はデータは既にページング済みなのでslice不要
+  const isServerPagination = pagination?.totalItems !== undefined
+  const totalItems = isServerPagination ? pagination!.totalItems! : data.length
   const totalPages = pagination ? Math.ceil(totalItems / pagination.pageSize) : 1
   const startIndex = pagination ? (pagination.currentPage - 1) * pagination.pageSize : 0
   const endIndex = pagination ? startIndex + pagination.pageSize : totalItems
-  const displayData = pagination ? data.slice(startIndex, endIndex) : data
+  const displayData = isServerPagination ? data : (pagination ? data.slice(startIndex, endIndex) : data)
 
-  // ページネーションコンポーネント
-  const PaginationControls = () => {
-    if (!pagination || totalItems === 0) return null
-
-    const { currentPage, pageSize, onPageChange, onPageSizeChange, pageSizeOptions } = pagination
-    const canGoPrev = currentPage > 1
-    const canGoNext = currentPage < totalPages
-
-    return (
-      <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex flex-wrap items-center justify-between gap-4">
-        {/* 表示件数情報 */}
-        <div className="text-sm text-gray-500">
-          {totalItems}件中 {startIndex + 1}-{Math.min(endIndex, totalItems)}件を表示
-        </div>
-
-        <div className="flex items-center gap-4">
-          {/* ページサイズ選択 */}
-          {onPageSizeChange && pageSizeOptions && (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-500">表示:</span>
-              <select
-                value={pageSize}
-                onChange={(e) => onPageSizeChange(Number(e.target.value))}
-                className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {pageSizeOptions.map((size) => (
-                  <option key={size} value={size}>
-                    {size}件
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* ページナビゲーション */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => onPageChange(1)}
-              disabled={!canGoPrev}
-              className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-              title="最初のページ"
-            >
-              «
-            </button>
-            <button
-              onClick={() => onPageChange(currentPage - 1)}
-              disabled={!canGoPrev}
-              className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              前へ
-            </button>
-            <span className="text-sm text-gray-700 px-2">
-              {currentPage} / {totalPages}
-            </span>
-            <button
-              onClick={() => onPageChange(currentPage + 1)}
-              disabled={!canGoNext}
-              className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              次へ
-            </button>
-            <button
-              onClick={() => onPageChange(totalPages)}
-              disabled={!canGoNext}
-              className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-              title="最後のページ"
-            >
-              »
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -171,6 +100,9 @@ export function DataTable<T>({
     )
   }
 
+  const canGoPrev = pagination ? pagination.currentPage > 1 : false
+  const canGoNext = pagination ? pagination.currentPage < totalPages : false
+
   return (
     <div className="bg-white rounded-lg shadow">
       <div className="overflow-x-auto">
@@ -188,7 +120,6 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {/* ページネーションが有効な場合はdisplayData、そうでなければ全データを表示 */}
             {displayData.map((item, index) => (
               <tr
                 key={keyExtractor(item)}
@@ -210,8 +141,67 @@ export function DataTable<T>({
           </tbody>
         </table>
       </div>
-      {/* ページネーションコントロール */}
-      <PaginationControls />
+      {/* ページネーションコントロール（インラインJSX — レンダリング関数内でコンポーネント定義するとアンマウント/マウントが繰り返されるため） */}
+      {pagination && totalItems > 0 && (
+        <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex flex-wrap items-center justify-between gap-4">
+          <div className="text-sm text-gray-500">
+            {totalItems}件中 {startIndex + 1}-{Math.min(endIndex, totalItems)}件を表示
+          </div>
+          <div className="flex items-center gap-4">
+            {pagination.onPageSizeChange && pagination.pageSizeOptions && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-500">表示:</span>
+                <select
+                  value={pagination.pageSize}
+                  onChange={(e) => pagination.onPageSizeChange!(Number(e.target.value))}
+                  className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {pagination.pageSizeOptions.map((size) => (
+                    <option key={size} value={size}>
+                      {size}件
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => pagination.onPageChange(1)}
+                disabled={!canGoPrev}
+                className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="最初のページ"
+              >
+                &laquo;
+              </button>
+              <button
+                onClick={() => pagination.onPageChange(pagination.currentPage - 1)}
+                disabled={!canGoPrev}
+                className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                前へ
+              </button>
+              <span className="text-sm text-gray-700 px-2">
+                {pagination.currentPage} / {totalPages}
+              </span>
+              <button
+                onClick={() => pagination.onPageChange(pagination.currentPage + 1)}
+                disabled={!canGoNext}
+                className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                次へ
+              </button>
+              <button
+                onClick={() => pagination.onPageChange(totalPages)}
+                disabled={!canGoNext}
+                className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="最後のページ"
+              >
+                &raquo;
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

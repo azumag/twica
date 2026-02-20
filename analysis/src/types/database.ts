@@ -332,6 +332,70 @@ export interface Database {
           created_at?: string
         }
       }
+      // お知らせテーブル - 管理者がユーザー向けに投稿するお知らせ
+      announcements: {
+        Row: {
+          id: string
+          title: string
+          body: string
+          severity: 'info' | 'warning' | 'critical'
+          is_published: boolean
+          published_at: string | null
+          expires_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          title: string
+          body: string
+          severity?: 'info' | 'warning' | 'critical'
+          is_published?: boolean
+          published_at?: string | null
+          expires_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          title?: string
+          body?: string
+          severity?: 'info' | 'warning' | 'critical'
+          is_published?: boolean
+          published_at?: string | null
+          expires_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      // お知らせ既読管理テーブル - ユーザーごとの既読状態を追跡
+      announcement_reads: {
+        Row: {
+          id: string
+          announcement_id: string
+          twitch_user_id: string
+          read_at: string
+        }
+        Insert: {
+          id?: string
+          announcement_id: string
+          twitch_user_id: string
+          read_at?: string
+        }
+        Update: {
+          id?: string
+          announcement_id?: string
+          twitch_user_id?: string
+          read_at?: string
+        }
+        Relationships: [{
+          foreignKeyName: 'announcement_reads_announcement_id_fkey'
+          columns: ['announcement_id']
+          referencedRelation: 'announcements'
+          referencedColumns: ['id']
+        }]
+      }
       // ストリーマーごとのストレージ容量ボーナステーブル
       // キャンペーンやプロモーション等で追加容量を付与するために使用
       streamer_storage_bonus: {
@@ -383,6 +447,9 @@ export type Battle = Database['public']['Tables']['battles']['Row']
 export type BattleStats = Database['public']['Tables']['battle_stats']['Row']
 export type BlobFile = Database['public']['Tables']['blob_files']['Row']
 export type StreamerStorageBonus = Database['public']['Tables']['streamer_storage_bonus']['Row']
+// お知らせのヘルパー型
+export type Announcement = Database['public']['Tables']['announcements']['Row']
+export type AnnouncementRead = Database['public']['Tables']['announcement_reads']['Row']
 
 // Extended types with relations for dashboard views
 export type CardWithStreamer = Card & {

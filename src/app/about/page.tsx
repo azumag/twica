@@ -191,6 +191,9 @@ export default async function AboutPage() {
               <Link href="/about" className="text-sm text-gray-500 hover:text-gray-300">
                 {tFooter("about")}
               </Link>
+              <Link href="/privacy" className="text-sm text-gray-500 hover:text-gray-300">
+                {tFooter("privacy")}
+              </Link>
             </div>
           </div>
         </div>
