@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
+import AutoLinkText from '@/components/AutoLinkText'
 
 interface AnnouncementItem {
   id: string
@@ -102,9 +103,10 @@ export default function AnnouncementBanner({ announcements }: AnnouncementBanner
               <h3 className="mb-2 text-lg font-semibold text-white">
                 {announcement.title}
               </h3>
-              <p className={`text-sm whitespace-pre-wrap ${severityTextColors[announcement.severity]}`}>
-                {announcement.body}
-              </p>
+              <AutoLinkText
+                text={announcement.body}
+                className={`text-sm whitespace-pre-wrap ${severityTextColors[announcement.severity]}`}
+              />
             </div>
             <div className="flex shrink-0 flex-col items-start gap-1 sm:items-end">
               <button
