@@ -243,6 +243,9 @@ export default async function GuidePage() {
               <Link href="/privacy" className="text-sm text-gray-500 hover:text-gray-300">
                 {tFooter("privacy")}
               </Link>
+              <Link href="/releases" className="text-sm text-gray-500 hover:text-gray-300">
+                {tFooter("releaseNotes")}
+              </Link>
             </div>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
+import { getUnreadAnnouncements } from "@/lib/announcements";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
@@ -30,9 +31,14 @@ export default async function CollectionLayout({
   // ユーザーが配信者機能を持っているか確認（アフィリエイト/パートナー）
   const isStreamer = canUseStreamerFeatures(session);
 
+  // Get unread announcements count for header badge
+  // ヘッダーのバッジ表示用に未読お知らせ数を取得
+  const unreadAnnouncements = await getUnreadAnnouncements(session.twitchUserId);
+  const unreadAnnouncementsCount = unreadAnnouncements.length;
+
   return (
     <div className="min-h-screen bg-gray-900">
-      <Header session={session} />
+      <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
 
       <div className="container mx-auto px-4 py-6">
         {/* Navigation bar - same as dashboard, with collection item active */}

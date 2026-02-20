@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
-import DevelopmentNotice from "@/components/DevelopmentNotice";
 import { TwitchLoginButtonWithIcon } from "@/components/TwitchLoginButton";
 import TopPageHeader from "@/components/TopPageHeader";
 
@@ -31,7 +30,6 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
   return (
     // overflow-x-hidden: モバイルで横スクロールを防止
     <div className="min-h-screen overflow-x-hidden bg-gray-900">
-      <DevelopmentNotice />
       {/* エラーメッセージ表示 - 認証エラー等でリダイレクトされた場合に表示 */}
       {error && (
         <div className="bg-red-900/50 border-b border-red-700">
@@ -180,6 +178,9 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
               </Link>
               <Link href="/privacy" className="text-sm text-gray-500 hover:text-gray-300">
                 {tFooter("privacy")}
+              </Link>
+              <Link href="/releases" className="text-sm text-gray-500 hover:text-gray-300">
+                {tFooter("releaseNotes")}
               </Link>
             </div>
           </div>
