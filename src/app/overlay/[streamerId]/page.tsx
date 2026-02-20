@@ -115,6 +115,12 @@ export default function OverlayPage() {
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
+  // ガチャ結果キュー: アニメーション中に到着した結果をバッファし順番に表示する
+  // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
+  const queueRef = useRef<GachaResult[]>([]);
+  const isDisplayingRef = useRef(false);
+  // processQueueの再帰呼び出し用ref（useCallback内で自身を参照するため）
+  const processQueueRef = useRef<() => void>(() => {});
   // displayResultとaddDebugLogをrefで保持することで、
   // subscriptionのuseEffectが不要に再実行されることを防ぐ
   // （soundSettings変更 → playGachaSound再生成 → displayResult再生成 のチェーンで
@@ -306,47 +312,64 @@ export default function OverlayPage() {
     }
   }, [soundSettings.soundEnabled, soundSettings.soundUrl]);
 
-  // Display gacha result with animation
-  const displayResult = useCallback(async (data: GachaResult) => {
-    // Clear any existing animation
-    if (animationTimeoutRef.current) {
-      clearTimeout(animationTimeoutRef.current);
+  /**
+   * キューから1件取り出して表示し、終了後に次のアイテムを処理する
+   * Process one item from the queue, then recursively process the next.
+   * 再帰呼び出しはprocessQueueRef経由で行い、useCallbackのクロージャが
+   * 古いバージョンを参照する問題を回避する
+   */
+  const processQueue = useCallback(async () => {
+    const next = queueRef.current.shift();
+    if (!next) {
+      isDisplayingRef.current = false;
+      return;
     }
+    isDisplayingRef.current = true;
 
     // 画像のアスペクト比をチェック（autoPortraitモード用）
-    // 画像ロードが完了するまで待機してから表示を開始
-    await checkImageAspectRatio(data.card.image_url);
+    await checkImageAspectRatio(next.card.image_url);
 
-    // Generate sparkle positions
     setSparklePositions(generateSparklePositions());
-    setResult(data);
+    setResult(next);
     setShowCard(false);
 
     // Show card after brief delay
     animationTimeoutRef.current = setTimeout(() => {
       setShowCard(true);
-
-      // 効果音を再生（カード表示と同時）
-      // OBSブラウザソースでは自動再生制限があるため、
-      // 再生に失敗しても処理は継続
       playGachaSound();
 
-      // Hide after display
-      // 表示時間はoptions.displayDurationで設定（秒をミリ秒に変換）
-      // Display duration is configurable via options.displayDuration (converted from seconds to ms)
+      // Hide after display, then process next queued item
       animationTimeoutRef.current = setTimeout(() => {
         setShowCard(false);
         animationTimeoutRef.current = setTimeout(() => {
           setResult(null);
+          // ref経由で最新のprocessQueueを呼び出し（再帰）
+          processQueueRef.current();
         }, 500);
       }, options.displayDuration * 1000);
     }, 100);
   }, [checkImageAspectRatio, playGachaSound, options.displayDuration]);
 
+  // processQueueRefを最新のcallbackで更新
+  useEffect(() => {
+    processQueueRef.current = processQueue;
+  }, [processQueue]);
+
+  /**
+   * 新しいガチャ結果をキューに追加し、未再生なら再生を開始する
+   * Enqueue a new gacha result; start playback if idle
+   */
+  const enqueueResult = useCallback((data: GachaResult) => {
+    queueRef.current.push(data);
+    if (!isDisplayingRef.current) {
+      processQueue();
+    }
+  }, [processQueue]);
+
   // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）
   useEffect(() => {
-    displayResultRef.current = displayResult;
-  }, [displayResult]);
+    displayResultRef.current = enqueueResult;
+  }, [enqueueResult]);
 
   // デバッグログを追加するヘルパー関数
   // OBSブラウザソースでの接続問題を調査するために使用
@@ -414,6 +437,9 @@ export default function OverlayPage() {
     cleanupRef.current = cleanup;
 
     return () => {
+      // キューをクリアして未再生アイテムを破棄
+      queueRef.current = [];
+      isDisplayingRef.current = false;
       if (connectionTimeoutRef.current) {
         clearTimeout(connectionTimeoutRef.current);
       }
@@ -443,12 +469,12 @@ export default function OverlayPage() {
 
       if (response.ok) {
         const data = await response.json();
-        displayResult(data);
+        enqueueResult(data);
       }
     } catch (error) {
       logger.error("Demo gacha error:", error);
     }
-  }, [displayResult, streamerId]);
+  }, [enqueueResult, streamerId]);
 
   // Check URL for demo param and optional cardId
   // URLパラメータでdemo=trueの場合にデモを実行、cardIdが指定されていればそのカードを表示
