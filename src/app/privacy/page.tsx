@@ -2,40 +2,22 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import TosAcceptButton from "@/components/TosAcceptButton";
 
 export const metadata: Metadata = {
-  title: "Terms of Service - TwiCa",
-  description: "TwiCa Terms of Service. Service overview, user responsibilities, and usage restrictions.",
+  title: "Privacy Policy - TwiCa",
+  description: "TwiCa Privacy Policy. Information about data collection, usage, and protection.",
 };
 
-export default async function TosPage() {
+/**
+ * Privacy policy page
+ * プライバシーポリシーページ
+ */
+export default async function PrivacyPage() {
   const session = await getSession();
-  const t = await getTranslations("tosPage");
+  const t = await getTranslations("privacyPage");
   const tHeader = await getTranslations("header");
   const tFooter = await getTranslations("footer");
   const tGuidePage = await getTranslations("guidePage");
-
-  // ログインユーザーの場合、TOS同意状態を確認
-  // Check TOS acceptance status for logged-in users
-  let hasAccepted = false;
-  if (session) {
-    try {
-      const supabaseAdmin = getSupabaseAdmin();
-      const { data: userData } = await supabaseAdmin
-        .from('users')
-        .select('tos_accepted_at')
-        .eq('twitch_user_id', session.twitchUserId)
-        .maybeSingle();
-
-      hasAccepted = userData?.tos_accepted_at !== null;
-    } catch {
-      // エラーの場合は未同意として扱う
-      // Treat as not accepted on error
-      hasAccepted = false;
-    }
-  }
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -73,52 +55,51 @@ export default async function TosPage() {
             {t("intro")}
           </p>
 
+          {/* 第1条 収集する情報 */}
           <section className="mb-8 rounded-xl bg-gray-800 p-6">
             <h2 className="mb-4 text-xl font-semibold text-white">
               {t("article1.title")}
             </h2>
-            <p className="text-gray-400">
-              {t("article1.content")}
+            <p className="mb-4 text-gray-400">
+              {t("article1.intro")}
             </p>
+            <ul className="ml-6 list-disc space-y-2 text-gray-400">
+              <li>{t("article1.item1")}</li>
+              <li>{t("article1.item2")}</li>
+              <li>{t("article1.item3")}</li>
+              <li>{t("article1.item4")}</li>
+            </ul>
           </section>
 
+          {/* 第2条 情報の利用目的 */}
           <section className="mb-8 rounded-xl bg-gray-800 p-6">
             <h2 className="mb-4 text-xl font-semibold text-white">
               {t("article2.title")}
             </h2>
             <ul className="ml-6 list-disc space-y-2 text-gray-400">
-              <li>
-                {t("article2.item1")}
-              </li>
-              <li>
-                {t("article2.item2")}
-              </li>
-              <li>
-                {t("article2.item3")}
-              </li>
+              <li>{t("article2.item1")}</li>
+              <li>{t("article2.item2")}</li>
+              <li>{t("article2.item3")}</li>
+              <li>{t("article2.item4")}</li>
             </ul>
           </section>
 
+          {/* 第3条 第三者サービス */}
           <section className="mb-8 rounded-xl bg-gray-800 p-6">
             <h2 className="mb-4 text-xl font-semibold text-white">
               {t("article3.title")}
             </h2>
+            <p className="mb-4 text-gray-400">
+              {t("article3.intro")}
+            </p>
             <ul className="ml-6 list-disc space-y-2 text-gray-400">
-              <li>
-                {t("article3.item1")}
-              </li>
-              <li>
-                {t("article3.item2")}
-                <ul className="ml-6 mt-2 list-disc">
-                  <li>{t("article3.prohibited1")}</li>
-                  <li>{t("article3.prohibited2")}</li>
-                  <li>{t("article3.prohibited3")}</li>
-                  <li>{t("article3.prohibited4")}</li>
-                </ul>
-              </li>
+              <li>{t("article3.item1")}</li>
+              <li>{t("article3.item2")}</li>
+              <li>{t("article3.item3")}</li>
             </ul>
           </section>
 
+          {/* 第4条 Cookieの使用 */}
           <section className="mb-8 rounded-xl bg-gray-800 p-6">
             <h2 className="mb-4 text-xl font-semibold text-white">
               {t("article4.title")}
@@ -128,23 +109,21 @@ export default async function TosPage() {
             </p>
           </section>
 
+          {/* 第5条 情報の共有と開示 */}
           <section className="mb-8 rounded-xl bg-gray-800 p-6">
             <h2 className="mb-4 text-xl font-semibold text-white">
               {t("article5.title")}
             </h2>
+            <p className="mb-4 text-gray-400">
+              {t("article5.intro")}
+            </p>
             <ul className="ml-6 list-disc space-y-2 text-gray-400">
-              <li>
-                {t("article5.item1")}
-              </li>
-              <li>
-                {t("article5.item2")}
-              </li>
-              <li>
-                {t("article5.item3")}
-              </li>
+              <li>{t("article5.item1")}</li>
+              <li>{t("article5.item2")}</li>
             </ul>
           </section>
 
+          {/* 第6条 データの保管と削除 */}
           <section className="mb-8 rounded-xl bg-gray-800 p-6">
             <h2 className="mb-4 text-xl font-semibold text-white">
               {t("article6.title")}
@@ -154,26 +133,33 @@ export default async function TosPage() {
             </p>
           </section>
 
+          {/* 第7条 ポリシーの変更 */}
           <section className="mb-8 rounded-xl bg-gray-800 p-6">
             <h2 className="mb-4 text-xl font-semibold text-white">
               {t("article7.title")}
             </h2>
             <p className="text-gray-400">
               {t("article7.content")}
-              <Link href="/about" className="text-purple-400 hover:text-purple-300">
-                {t("article7.operatorInfoLink")}
-              </Link>
-              {t("article7.contentEnd")}
             </p>
           </section>
 
-          {/* 利用規約同意ボタン - ログインユーザーで未同意の場合のみ表示 */}
-          {/* TOS acceptance button - shown only for logged-in users who haven't accepted */}
-          <TosAcceptButton isLoggedIn={!!session} hasAccepted={hasAccepted} />
+          {/* 第8条 お問い合わせ先 */}
+          <section className="mb-8 rounded-xl bg-gray-800 p-6">
+            <h2 className="mb-4 text-xl font-semibold text-white">
+              {t("article8.title")}
+            </h2>
+            <p className="text-gray-400">
+              {t("article8.content")}
+              <Link href="/about" className="text-purple-400 hover:text-purple-300">
+                {t("article8.operatorInfoLink")}
+              </Link>
+              {t("article8.contentEnd")}
+            </p>
+          </section>
 
           <div className="mt-12 border-t border-gray-700 pt-8">
             <p className="text-gray-500">
-              {t("lastUpdated", { date: "2026-01-17" })}
+              {t("lastUpdated", { date: "2026-02-21" })}
             </p>
           </div>
         </article>

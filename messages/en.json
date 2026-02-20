@@ -29,7 +29,8 @@
     "settings": "Stream Settings",
     "gachaHistory": "Gacha History",
     "stats": "Stats",
-    "collection": "My Collection"
+    "collection": "My Collection",
+    "announcements": "Announcements"
   },
   "rarity": {
     "common": "Common",
@@ -618,7 +619,8 @@
   "footer": {
     "guide": "Guide",
     "tos": "Terms of Service",
-    "about": "About"
+    "about": "About",
+    "privacy": "Privacy Policy"
   },
   "header": {
     "dashboard": "Dashboard",
@@ -654,6 +656,69 @@
       "apply": "Search",
       "reset": "Reset"
     }
+  },
+  "announcementBanner": {
+    "markAsRead": "Mark as read",
+    "marking": "Processing...",
+    "error": "An error occurred"
+  },
+  "announcementsPage": {
+    "title": "Announcements",
+    "readAnnouncements": "Read announcements",
+    "read": "Read",
+    "empty": "No announcements."
+  },
+  "privacyPage": {
+    "title": "Privacy Policy",
+    "metaDescription": "TwiCa Privacy Policy. Information about data collection, usage, and protection.",
+    "intro": "This Privacy Policy (\"Policy\") describes how TwiCa (\"Service\") handles personal information.",
+    "article1": {
+      "title": "Article 1: Information We Collect",
+      "intro": "The Service collects the following information:",
+      "item1": "Twitch account information (user ID, username, display name, profile image URL)",
+      "item2": "Twitch authentication credentials (access tokens and refresh tokens required for OAuth)",
+      "item3": "Service usage data (gacha history, card collection data, Terms of Service acceptance timestamp)",
+      "item4": "Access data (page view analytics via Cloudflare Web Analytics)"
+    },
+    "article2": {
+      "title": "Article 2: How We Use Your Information",
+      "item1": "User authentication and login session management",
+      "item2": "Providing gacha functionality and managing card collections",
+      "item3": "Twitch API integration (channel point reward management, chat announcements, etc.)",
+      "item4": "Access analytics for service improvement and operations"
+    },
+    "article3": {
+      "title": "Article 3: Third-Party Services",
+      "intro": "The Service uses the following third-party services. Please refer to each service's privacy policy for their handling of personal information.",
+      "item1": "Twitch (authentication and API integration) - subject to the Twitch Privacy Notice",
+      "item2": "Cloudflare (hosting and Web Analytics) - subject to the Cloudflare Privacy Policy",
+      "item3": "Supabase (database and personal data storage; data is stored on servers outside Japan) - subject to the Supabase Privacy Policy"
+    },
+    "article4": {
+      "title": "Article 4: Use of Cookies",
+      "content": "The Service uses cookies to maintain login sessions and save language preferences. These cookies are essential for the basic functionality of the Service and are not used for third-party cookies or advertising-based tracking."
+    },
+    "article5": {
+      "title": "Article 5: Information Sharing and Disclosure",
+      "intro": "The Service does not share collected personal information with third parties, except in the following cases:",
+      "item1": "When required by law to disclose information",
+      "item2": "When providing information to third-party services (as described in Article 3) to the extent necessary for service operations"
+    },
+    "article6": {
+      "title": "Article 6: Data Retention and Your Rights",
+      "content": "Collected information is retained for as long as necessary to provide the Service. You have the right to request disclosure, correction, suspension of use, or deletion of your personal information. To exercise these rights, please contact us through the About page."
+    },
+    "article7": {
+      "title": "Article 7: Changes to This Policy",
+      "content": "The operator may modify this Policy at any time. Modified Policy takes effect when posted on the Service."
+    },
+    "article8": {
+      "title": "Article 8: Contact",
+      "content": "For questions about our handling of personal information, please contact us through the ",
+      "operatorInfoLink": "About page",
+      "contentEnd": "."
+    },
+    "lastUpdated": "Last updated: {date}"
   },
   "gachaStatsPage": {
     "title": "Gacha Stats",
