@@ -2,6 +2,7 @@ import { getTranslations } from 'next-intl/server'
 import { getSession } from '@/lib/session'
 import { getAllAnnouncements } from '@/lib/announcements'
 import AnnouncementBanner from '@/components/AnnouncementBanner'
+import AutoLinkText from '@/components/AutoLinkText'
 
 /**
  * お知らせ履歴ページ
@@ -45,7 +46,10 @@ export default async function AnnouncementsPage() {
                   {t('read')}
                 </span>
               </div>
-              <p className="text-sm text-gray-500 whitespace-pre-wrap">{announcement.body}</p>
+              <AutoLinkText
+                text={announcement.body}
+                className="text-sm text-gray-500 whitespace-pre-wrap"
+              />
               <p className="mt-2 text-xs text-gray-600">
                 {new Date(announcement.created_at).toLocaleDateString()}
               </p>
