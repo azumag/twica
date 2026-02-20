@@ -102,7 +102,6 @@ export default async function ReleasesPage() {
                   <li>コレクションページが配信者一覧のサマリ表示に改善され、どの配信者のカードをどれだけ集めたか一目で確認可能に</li>
                   <li>配信者ごとのコレクションページを追加。ログイン後に直接アクセス可能</li>
                   <li>カード詳細ページを追加し、各カードの情報をじっくり閲覧可能に</li>
-                  <li>レアリティ順を含む複数の並び替え方法に対応</li>
                 </ul>
               </div>
 
@@ -135,9 +134,7 @@ export default async function ReleasesPage() {
                 <ul className="ml-4 list-disc space-y-2 text-gray-400">
                   <li>排出率の一括調整機能を追加（個別設定・レアリティ別の一括変更に対応）</li>
                   <li>縦長画像のアップロードに対応し、アスペクト比を選択可能に</li>
-                  <li>カードの複数コピーに対応</li>
-                  <li>カード一覧をレアリティ順に表示するよう変更</li>
-                  <li>配信者検索機能・リスト表示の改善</li>
+                  <li>カード一覧にレアリティ順を含む複数の並び替え方法に対応</li>
                   <li>カード説明文の展開表示に対応</li>
                 </ul>
               </div>
@@ -236,6 +233,15 @@ export default async function ReleasesPage() {
                   <li>ガチャ実行中に問題が発生しても、データが中途半端な状態にならないよう改善</li>
                   <li>データ取得処理の安定性を向上し、一部で発生していたエラーを解消</li>
                 </ul>
+              </div>
+
+              <div className="rounded-xl bg-gray-800 p-6">
+                <h3 className="mb-2 text-lg font-semibold text-white">
+                  ガチャ連続引き換えの安定化
+                </h3>
+                <p className="text-gray-400">
+                  チャンネルポイントの連続引き換え時に処理が重なって不安定になる問題を修正しました。引き換えを順次実行する仕組みを導入し、連続でガチャを引いても正しく動作するようになりました。
+                </p>
               </div>
             </div>
           </section>
