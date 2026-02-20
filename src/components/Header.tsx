@@ -59,7 +59,7 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
           {/* お知らせアイコン（ベル） - 未読がある場合はバッジ表示 */}
           <Link
             href="/dashboard/announcements"
-            className="relative rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
+            className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
             title={t("announcements")}
           >
             <svg
@@ -77,8 +77,8 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
               />
             </svg>
             {unreadAnnouncementsCount && unreadAnnouncementsCount > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-xs font-bold text-white">
-                {unreadAnnouncementsCount > 99 ? '99+' : unreadAnnouncementsCount}
+              <span className="absolute right-0 top-0 z-10 flex h-5 min-w-5 translate-x-1/3 -translate-y-1/3 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold tabular-nums text-white ring-2 ring-gray-900">
+                {unreadAnnouncementsCount > 99 ? "99+" : unreadAnnouncementsCount}
               </span>
             )}
             <span className="sr-only">{t("announcements")}</span>
