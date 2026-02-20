@@ -620,7 +620,8 @@
     "guide": "Guide",
     "tos": "Terms of Service",
     "about": "About",
-    "privacy": "Privacy Policy"
+    "privacy": "Privacy Policy",
+    "releaseNotes": "Release Notes"
   },
   "header": {
     "dashboard": "Dashboard",

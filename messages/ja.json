@@ -620,7 +620,8 @@
     "guide": "使い方",
     "tos": "利用規約",
     "about": "運営者情報",
-    "privacy": "プライバシーポリシー"
+    "privacy": "プライバシーポリシー",
+    "releaseNotes": "リリースノート"
   },
   "header": {
     "dashboard": "ダッシュボード",
