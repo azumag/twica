@@ -4,10 +4,8 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Session } from '@/lib/session'
 import type { UserCardWithDetails } from '@/types/database'
-import Header from '@/components/Header'
 import AnimatedBattle from '@/components/AnimatedBattle'
 import Image from 'next/image'
-import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
 import { fetchSession } from '@/lib/api-client'
 import { RARITY_COLORS } from '@/lib/constants'
 
@@ -135,22 +133,19 @@ export default function BattlePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+      <div className="flex items-center justify-center py-20">
         <div className="text-white">読み込み中...</div>
       </div>
     )
   }
 
   if (!session) {
-    return <TwitchLoginRedirect />
+    return null
   }
 
   return (
-    <div className="min-h-screen bg-gray-900">
-      <Header session={session} />
-
-      <main className="container mx-auto px-4 py-8">
-        <h1 className="mb-8 text-3xl font-bold text-white">カード対戦</h1>
+    <main className="container mx-auto px-4 py-8">
+      <h1 className="mb-8 text-3xl font-bold text-white">カード対戦</h1>
 
         {!showResult ? (
           /* Card Selection */
@@ -382,6 +377,5 @@ export default function BattlePage() {
           </div>
         )}
       </main>
-    </div>
   )
 }

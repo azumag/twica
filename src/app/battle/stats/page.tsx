@@ -3,10 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
-
-import Header from '@/components/Header'
 import Link from 'next/link'
-import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
 import { fetchSession } from '@/lib/api-client'
 import { type Session } from '@/lib/session'
 
@@ -112,30 +109,27 @@ export default function BattleStatsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+      <div className="flex items-center justify-center py-20">
         <div className="text-white">読み込み中...</div>
       </div>
     )
   }
 
   if (!session) {
-    return <TwitchLoginRedirect />
+    return null
   }
 
   return (
-    <div className="min-h-screen bg-gray-900">
-      <Header session={session} />
-
-      <main className="container mx-auto px-4 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <h1 className="text-3xl font-bold text-white">対戦記録</h1>
-          <Link
-            href="/battle"
-            className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
-          >
-            対戦ページへ
-          </Link>
-        </div>
+    <main className="container mx-auto px-4 py-8">
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-3xl font-bold text-white">対戦記録</h1>
+        <Link
+          href="/battle"
+          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+        >
+          対戦ページへ
+        </Link>
+      </div>
 
         {stats && (
           <div className="space-y-8">
@@ -293,6 +287,5 @@ export default function BattleStatsPage() {
           </div>
         )}
       </main>
-    </div>
   )
 }

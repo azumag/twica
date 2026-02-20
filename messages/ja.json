@@ -386,9 +386,6 @@
     "rare": "レア",
     "common": "コモン"
   },
-  "developmentNotice": {
-    "text": "⚠️ このサービスはβテスト中です。一部の機能が正常に動作しない場合があります。"
-  },
   "cardView": {
     "thumbnail": "サムネイル",
     "list": "リスト"
@@ -560,7 +557,7 @@
     },
     "about": {
       "title": "TwiCaについて",
-      "description": "TwiCaは、Twitch配信者と視聴者をつなぐカードコレクションシステムです。チャネルポイントを活用して、配信者オリジナルのカードを視聴者に配布できます。現在βテスト中のサービスとなります。"
+      "description": "TwiCaは、Twitch配信者と視聴者をつなぐカードコレクションシステムです。チャネルポイントを活用して、配信者オリジナルのカードを視聴者に配布できます。"
     }
   },
   "tosPage": {
@@ -626,7 +623,8 @@
   "header": {
     "dashboard": "ダッシュボード",
     "userSettings": "ユーザー設定",
-    "logout": "ログアウト"
+    "logout": "ログアウト",
+    "announcements": "お知らせ"
   },
   "accountPage": {
     "title": "ユーザー設定",

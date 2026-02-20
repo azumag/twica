@@ -386,9 +386,6 @@
     "rare": "Rare",
     "common": "Common"
   },
-  "developmentNotice": {
-    "text": "⚠️ This service is in beta testing. Some features may not work properly."
-  },
   "cardView": {
     "thumbnail": "Thumbnail",
     "list": "List"
@@ -560,7 +557,7 @@
     },
     "about": {
       "title": "About TwiCa",
-      "description": "TwiCa is a card collection system connecting Twitch streamers and viewers. Distribute original cards to viewers using channel points. Currently in beta testing."
+      "description": "TwiCa is a card collection system connecting Twitch streamers and viewers. Distribute original cards to viewers using channel points."
     }
   },
   "tosPage": {
@@ -626,7 +623,8 @@
   "header": {
     "dashboard": "Dashboard",
     "userSettings": "User Settings",
-    "logout": "Logout"
+    "logout": "Logout",
+    "announcements": "Announcements"
   },
   "accountPage": {
     "title": "User Settings",
