@@ -5,9 +5,11 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUserCards } from "@/lib/dashboard-data";
 import { RARITY_ORDER, RARITIES, VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
+import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import Stats from "@/components/Stats";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
+import AnnouncementBanner from "@/components/AnnouncementBanner";
 // Streamer type is used by getUserCards internally but not needed in this file
 // Streamer型はgetUserCards内部で使用されるが、このファイルでは不要
 
@@ -35,10 +37,11 @@ export default async function DashboardPage() {
 
   const isStreamer = canUseStreamerFeatures(session);
 
-  // カードコレクション取得とキャンペーン判定を並列実行してレイテンシ削減
-  const [userCards, showVoteCampaign] = await Promise.all([
+  // カードコレクション取得、キャンペーン判定、未読お知らせを並列実行してレイテンシ削減
+  const [userCards, showVoteCampaign, unreadAnnouncements] = await Promise.all([
     getUserCards(session.twitchUserId),
     shouldShowVoteCampaign(session.twitchUserId),
+    getUnreadAnnouncements(session.twitchUserId),
   ]);
 
   // Sort cards by rarity (legendary first)
@@ -71,6 +74,11 @@ export default async function DashboardPage() {
 
   return (
     <div>
+      {/* お知らせバナー（最も目立つ位置に配置） */}
+      {unreadAnnouncements.length > 0 && (
+        <AnnouncementBanner announcements={unreadAnnouncements} />
+      )}
+
       {/* 投票キャンペーンボタン（全ユーザー向け、期間内かつ未適用の場合のみ表示） */}
       <VoteCampaignButton visible={showVoteCampaign} bonusMb={VOTE_CAMPAIGN_CONFIG.BONUS_MB} />
 

@@ -305,6 +305,8 @@ export const rateLimits = {
   debugSession: createRatelimit("debugSession", 10, 60 * 1000),
   // 投票キャンペーンは1ユーザー1回だが、DoS対策として制限（分あたり5回）
   voteCampaign: createRatelimit("voteCampaign", 5, 60 * 1000),
+  // お知らせ既読はupsertで冪等だが、DoS対策として制限（分あたり20回）
+  announcementRead: createRatelimit("announcementRead", 20, 60 * 1000),
 } as const;
 
 /**

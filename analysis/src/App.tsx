@@ -8,6 +8,7 @@ import { StreamerCards } from './pages/StreamerCards'
 import { StreamerGachaHistory } from './pages/StreamerGachaHistory'
 import { Gacha } from './pages/Gacha'
 import { Battles } from './pages/Battles'
+import { Announcements } from './pages/Announcements'
 
 /**
  * Main App component with routing configuration
@@ -29,6 +30,7 @@ function App() {
         <Route path="streamers/:streamerId/gacha" element={<StreamerGachaHistory />} />
         <Route path="gacha" element={<Gacha />} />
         <Route path="battles" element={<Battles />} />
+        <Route path="announcements" element={<Announcements />} />
       </Route>
     </Routes>
   )

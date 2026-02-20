@@ -15,6 +15,7 @@ const navItems: NavItem[] = [
   { path: '/streamers', label: 'Streamers', icon: '🎮' },
   { path: '/gacha', label: 'Gacha', icon: '🎰' },
   { path: '/battles', label: 'Battles', icon: '⚔️' },
+  { path: '/announcements', label: 'Announcements', icon: '📢' },
 ]
 
 /**
@@ -58,7 +59,7 @@ export function Layout() {
         {/* Footer with read-only notice */}
         <div className="p-4 border-t border-gray-700">
           <p className="text-xs text-gray-500">
-            Read-only access
+            Admin Panel
           </p>
         </div>
       </aside>
