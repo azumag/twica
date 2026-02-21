@@ -274,6 +274,11 @@ function createRatelimit(name: string, limit: number, windowMs: number): RateLim
  * 各エンドポイント用の事前定義されたレートリミッター
  */
 export const rateLimits = {
+  // グローバルAPIレート制限（ミドルウェアで全APIリクエストに適用）
+  // 個別エンドポイントのレート制限よりも緩い設定で、DDoS防御として機能する
+  // Global API rate limit applied to all API requests in middleware.
+  // More generous than individual endpoint limits, serves as DDoS protection.
+  global: createRatelimit("global", 1000, 60 * 1000),
   upload: createRatelimit("upload", 10, 60 * 1000),
   cardsPost: createRatelimit("cardsPost", 20, 60 * 1000),
   cardsGet: createRatelimit("cardsGet", 100, 60 * 1000),

@@ -17,6 +17,9 @@ export const COOKIE_NAMES = {
   // ログイン後にリダイレクトする先のURL（認証フロー用）
   // URL to redirect to after login (for auth flow)
   RETURN_TO: 'twica_return_to',
+  // スコープ復元失敗時のガード用Cookie（値はOAuth state）
+  // Guard cookie for scope restoration failure (value is the OAuth state)
+  SCOPE_RESTORE_FAILED: 'twica_scope_restore_failed',
 }
 
 export const API_ROUTES = {
