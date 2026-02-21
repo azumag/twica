@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
-import { saveTwitchScopes, mergeTwitchScopes } from '@/lib/twitch/token-manager'
+import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from '@/lib/constants'
@@ -126,25 +126,24 @@ export async function GET(request: NextRequest) {
         const additionalScopeValues = Object.values(ADDITIONAL_SCOPES) as string[]
         const isReauth = tokens.scope.some(s => additionalScopeValues.includes(s))
 
-        if (isReauth) {
-          // 再認証: ユーザーが明示的にスコープを選択した結果なので全置換
-          await saveTwitchScopes(twitchUser.id, tokens.scope)
-          logger.info('Auth callback: Saved Twitch scopes (reauth, full replace)', {
-            twitchUserId: twitchUser.id,
-            scopeCount: tokens.scope.length,
-            scopes: tokens.scope,
-          })
-        } else {
-          // 通常ログイン: デフォルトスコープのみ返されるため、
-          // 既存の追加スコープを保持しつつマージ保存する
-          // これにより再認証で取得したuser:write:chatなどが失われない
-          await mergeTwitchScopes(twitchUser.id, tokens.scope)
-          logger.info('Auth callback: Merged Twitch scopes (normal login, preserving additional)', {
-            twitchUserId: twitchUser.id,
-            scopeCount: tokens.scope.length,
-            scopes: tokens.scope,
-          })
-        }
+        // 常にトークンが実際に持つスコープで全置換する
+        // ログインルートで期限切れセッションからも追加スコープを復元してOAuthリクエストに含めるため、
+        // 通常ログインでもトークンにuser:write:chat等が含まれる
+        // 以前のmerge方式はDBのスコープとトークンの不整合を引き起こしていた:
+        // DBが「スコープあり」と言いつつトークンに無い→API 401→自己修復で削除→権限消失
+        //
+        // Always save exactly what the token has (full replace).
+        // The login route now recovers additional scopes from expired sessions and includes
+        // them in the OAuth request, so normal login tokens will include user:write:chat etc.
+        // The previous merge approach caused token/DB mismatches:
+        // DB said "scope exists" but token didn't have it → API 401 → self-healing removal
+        await saveTwitchScopes(twitchUser.id, tokens.scope)
+        logger.info('Auth callback: Saved Twitch scopes (full replace)', {
+          twitchUserId: twitchUser.id,
+          isReauth,
+          scopeCount: tokens.scope.length,
+          scopes: tokens.scope,
+        })
       }
     } catch (error) {
       // エラー詳細をログ出力（wrangler tailで確認可能）

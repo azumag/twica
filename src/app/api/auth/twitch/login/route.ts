@@ -53,20 +53,55 @@ export async function GET(request: Request) {
     const cookieStore = await cookies()
     cookieStore.set('twitch_auth_state', state, STATE_COOKIE_OPTIONS)
 
-    // 既存セッションがある場合、以前取得済みの追加スコープをOAuthリクエストに含める
+    // 以前取得済みの追加スコープをOAuthリクエストに含める
     // これにより通常ログインでも新トークンにuser:write:chat等が付与され、
     // DBのtwitch_scopesと実際のトークンの不整合を防ぐ
-    // If user has existing session, include previously granted additional scopes
-    // in the OAuth request so the new token retains them (e.g., user:write:chat)
+    // Include previously granted additional scopes in the OAuth request
+    // so the new token retains them (e.g., user:write:chat)
+    //
+    // getSession()は期限切れセッションをnullとして返すため、
+    // 期限切れCookieからもtwitchUserIdを抽出してスコープを復元する
+    // getSession() rejects expired sessions as null, so we also
+    // extract twitchUserId from expired cookies for scope preservation
     let preservedScopes: string[] = []
     try {
+      let twitchUserId: string | null = null
+
+      // 1. 有効なセッションからtwitchUserIdを取得
       const session = await getSession()
       if (session?.twitchUserId) {
+        twitchUserId = session.twitchUserId
+      }
+
+      // 2. セッション期限切れの場合、CookieからtwitchUserIdを直接抽出
+      // これが権限消失の主因: 期限切れセッションではgetSession()がnullを返し、
+      // 追加スコープがOAuthリクエストに含まれなかった
+      // This is the primary cause of permission loss: getSession() returns null
+      // for expired sessions, so additional scopes were not included in OAuth request
+      if (!twitchUserId) {
+        const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+        if (sessionCookie) {
+          try {
+            const parsed = JSON.parse(sessionCookie)
+            if (parsed.twitchUserId && typeof parsed.twitchUserId === 'string') {
+              twitchUserId = parsed.twitchUserId
+              logger.info('Login: extracted twitchUserId from expired session cookie', {
+                twitchUserId,
+              })
+            }
+          } catch {
+            // Cookie解析エラーは無視（破損したCookieは無害にスキップ）
+            // Ignore parse errors (corrupted cookies are safely skipped)
+          }
+        }
+      }
+
+      if (twitchUserId) {
         const supabaseAdmin = getSupabaseAdmin()
         const { data: user } = await supabaseAdmin
           .from('users')
           .select('twitch_scopes')
-          .eq('twitch_user_id', session.twitchUserId)
+          .eq('twitch_user_id', twitchUserId)
           .maybeSingle()
 
         if (user?.twitch_scopes) {
@@ -78,9 +113,10 @@ export async function GET(request: Request) {
           )
 
           if (preservedScopes.length > 0) {
-            logger.info('Login: preserving additional scopes from existing session', {
-              twitchUserId: session.twitchUserId,
+            logger.info('Login: preserving additional scopes', {
+              twitchUserId,
               preservedScopes,
+              fromExpiredSession: !session,
             })
           }
         }
