@@ -280,9 +280,11 @@ export async function GET(request: NextRequest) {
     // Clear state cookie
     response.cookies.delete('twitch_auth_state')
 
-    // Clear scope restoration guard cookie if present
-    // スコープ復元ガードCookieがあれば削除
-    if (scopeRestoreFailedState) {
+    // Clear scope restoration guard cookie only when state matches this flow
+    // 並行ログイン（複数タブ）で別フローのガードを誤って消さないよう、
+    // stateが一致するガードCookieのみ削除する
+    // Only delete this flow's guard cookie to avoid removing another tab's guard
+    if (scopeRestoreFailed) {
       response.cookies.set(COOKIE_NAMES.SCOPE_RESTORE_FAILED, '', getDeleteCookieOptions())
     }
 

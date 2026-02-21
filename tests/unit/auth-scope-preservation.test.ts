@@ -367,7 +367,7 @@ describe('Auth scope preservation: callback route', () => {
     expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
   })
 
-  it('ガードCookieはレスポンスで削除される', async () => {
+  it('ガードCookieはstate一致時のみ削除される', async () => {
     mockCookieStore.get.mockImplementation((name: string) => {
       if (name === 'twitch_auth_state') return { value: 'test-state-123' }
       if (name === 'twica_scope_restore_failed') return { value: 'test-state-123' }
@@ -387,5 +387,30 @@ describe('Auth scope preservation: callback route', () => {
       '',
       expect.any(Object),
     )
+  })
+
+  it('ガードCookieのstateが不一致の場合、Cookieは保持される（並行ログイン保護）', async () => {
+    // 別タブのloginで設定されたガードCookie（stateが異なる）
+    // この場合、別タブのcallbackがガードを利用できるよう削除しない
+    // Another tab's guard cookie (different state) should NOT be deleted
+    // so the other tab's callback can still use the guard
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      if (name === 'twica_scope_restore_failed') return { value: 'other-tab-state-789' }
+      return undefined
+    })
+
+    const { NextRequest, NextResponse } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    const response = await GET(request) as ReturnType<typeof NextResponse.redirect>
+
+    // ガードCookieが削除されないことを確認（別タブのガードを保持）
+    const deleteCall = (response.cookies.set as ReturnType<typeof vi.fn>).mock.calls.find(
+      (call: unknown[]) => call[0] === 'twica_scope_restore_failed'
+    )
+    expect(deleteCall).toBeUndefined()
   })
 })
