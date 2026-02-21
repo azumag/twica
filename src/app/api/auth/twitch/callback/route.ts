@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens, getTwitchUser, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
+import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
@@ -88,6 +88,11 @@ export async function GET(request: NextRequest) {
     // Check if user can be a streamer (affiliate or partner)
     const canBeStreamer = twitchUser.broadcaster_type === 'affiliate' || twitchUser.broadcaster_type === 'partner'
 
+    // スコープ復元ガードCookieを確認（login側でDB障害等によりスコープ復元に失敗した場合に設定される）
+    // Check scope restoration guard cookie (set by login route when scope restoration fails)
+    const scopeRestoreFailedState = cookieStore.get(COOKIE_NAMES.SCOPE_RESTORE_FAILED)?.value
+    const scopeRestoreFailed = scopeRestoreFailedState === state
+
     try {
       // upsertのエラーを明示的にチェック（Supabase JSはエラー時にthrowせずerrorオブジェクトを返す）
       // Explicitly check upsert error (Supabase JS returns error object instead of throwing)
@@ -117,26 +122,33 @@ export async function GET(request: NextRequest) {
         throw upsertError
       }
 
-      // トークン交換時に付与されたスコープをDBに保存
-      // Save the scopes granted during token exchange to the database
-      // tokens.scopeはスコープの配列として返される
+      // トークン交換時に付与されたスコープをDBに保存（全置換）
+      // ただし、login側でスコープ復元に失敗していた場合は全置換をスキップし
+      // 既存DBのスコープを保持する（DB障害時の追加スコープ消失を防止）
+      // Save token scopes to DB (full replace), but skip if scope restoration
+      // failed in the login route to prevent silent additional scope loss
       if (tokens.scope && tokens.scope.length > 0) {
-        // 追加スコープ（user:write:chatなど）がトークンに含まれているか判定
-        // 含まれている = 再認証フロー、含まれていない = 通常ログイン
-        const additionalScopeValues = Object.values(ADDITIONAL_SCOPES) as string[]
-        const isReauth = tokens.scope.some(s => additionalScopeValues.includes(s))
-
-        // トークンの実際のスコープで常にDB全置換する（以前のmerge方式は
-        // トークンにないスコープをDBに残し、API 401→権限消失を引き起こしていた）
-        // Always save exactly what the token has (full replace).
-        // The previous merge approach left stale scopes in DB → API 401 → permission loss
-        await saveTwitchScopes(twitchUser.id, tokens.scope)
-        logger.info('Auth callback: Saved Twitch scopes (full replace)', {
-          twitchUserId: twitchUser.id,
-          isReauth,
-          scopeCount: tokens.scope.length,
-          scopes: tokens.scope,
-        })
+        if (scopeRestoreFailed) {
+          // ガード発動: login側でDB障害等によりスコープ復元に失敗しているため、
+          // トークンに追加スコープが含まれていない可能性がある。全置換すると消失するのでスキップ
+          // Guard triggered: scope restoration failed in login route,
+          // token may be missing additional scopes. Skip full-replace to preserve DB state
+          logger.warn('Auth callback: Skipping scope save due to scope restoration failure in login', {
+            twitchUserId: twitchUser.id,
+            tokenScopes: tokens.scope,
+          })
+        } else {
+          // 通常フロー: トークンの実際のスコープで全置換
+          // login側でpreservedScopesがOAuthリクエストに含まれているため、トークンのスコープは正確
+          // Normal flow: full-replace with token's actual scopes
+          // Login route included preservedScopes in the OAuth request, so token scopes are accurate
+          await saveTwitchScopes(twitchUser.id, tokens.scope)
+          logger.info('Auth callback: Saved Twitch scopes (full replace)', {
+            twitchUserId: twitchUser.id,
+            scopeCount: tokens.scope.length,
+            scopes: tokens.scope,
+          })
+        }
       }
     } catch (error) {
       // エラー詳細をログ出力（wrangler tailで確認可能）
@@ -267,6 +279,12 @@ export async function GET(request: NextRequest) {
 
     // Clear state cookie
     response.cookies.delete('twitch_auth_state')
+
+    // Clear scope restoration guard cookie if present
+    // スコープ復元ガードCookieがあれば削除
+    if (scopeRestoreFailedState) {
+      response.cookies.set(COOKIE_NAMES.SCOPE_RESTORE_FAILED, '', getDeleteCookieOptions())
+    }
 
     // Clear returnTo cookie if it was used
     // 使用されたreturnTo Cookieを削除

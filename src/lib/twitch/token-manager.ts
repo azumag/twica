@@ -259,4 +259,3 @@ export async function saveTwitchScopes(twitchUserId: string, scopes: string[]): 
 
   logger.info('Saved Twitch scopes for user', { twitchUserId, scopeCount: scopes.length });
 }
-
