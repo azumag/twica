@@ -7,7 +7,7 @@ import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
-import { getSession } from '@/lib/session'
+import { getSession, parseSession } from '@/lib/session'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 
@@ -53,41 +53,91 @@ export async function GET(request: Request) {
     const cookieStore = await cookies()
     cookieStore.set('twitch_auth_state', state, STATE_COOKIE_OPTIONS)
 
-    // 既存セッションがある場合、以前取得済みの追加スコープをOAuthリクエストに含める
+    // 以前取得済みの追加スコープをOAuthリクエストに含める
     // これにより通常ログインでも新トークンにuser:write:chat等が付与され、
-    // DBのtwitch_scopesと実際のトークンの不整合を防ぐ
-    // If user has existing session, include previously granted additional scopes
-    // in the OAuth request so the new token retains them (e.g., user:write:chat)
+    // callbackでの全置換時にスコープが消失しない
+    // Include previously granted additional scopes in the OAuth request
+    // so the new token retains them and callback's full-replace is safe
     let preservedScopes: string[] = []
+    let scopeRestoreFailed = false
     try {
+      let twitchUserId: string | null = null
+
+      // 1. 有効なセッションからtwitchUserIdを取得
       const session = await getSession()
       if (session?.twitchUserId) {
+        twitchUserId = session.twitchUserId
+      }
+
+      // 2. セッション期限切れの場合、parseSession()で構造検証してからtwitchUserIdを取得
+      // getSession()は期限切れをnullとして返すが、Cookie自体は残っている
+      // parseSession()で全フィールドの型・存在を検証し、改ざん/破損を排除する
+      // For expired sessions, use parseSession() to validate cookie structure
+      // before trusting the twitchUserId (prevents use of tampered cookies)
+      if (!twitchUserId) {
+        const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+        if (sessionCookie) {
+          try {
+            const parsed = parseSession(sessionCookie)
+            twitchUserId = parsed.twitchUserId
+            logger.info('Login: extracted twitchUserId from expired session cookie', {
+              twitchUserId,
+            })
+          } catch {
+            // 構造検証失敗 = 破損/改ざんCookieなので無視
+            // Structure validation failed = corrupted/tampered cookie, skip safely
+          }
+        }
+      }
+
+      if (twitchUserId) {
         const supabaseAdmin = getSupabaseAdmin()
-        const { data: user } = await supabaseAdmin
+        const { data: user, error: dbError } = await supabaseAdmin
           .from('users')
           .select('twitch_scopes')
-          .eq('twitch_user_id', session.twitchUserId)
+          .eq('twitch_user_id', twitchUserId)
           .maybeSingle()
 
-        if (user?.twitch_scopes) {
-          // 有効な追加スコープのみ抽出（デフォルトスコープは既にAUTH_SCOPESに含まれる）
-          // Extract only valid additional scopes (default scopes already in AUTH_SCOPES)
+        if (dbError) {
+          // DB障害時: スコープ復元に失敗したことをcallbackに伝達する
+          // callbackで全置換すると追加スコープが消失するため、ガードが必要
+          // DB failure: signal to callback that scope restoration failed
+          // Without this guard, callback's full-replace would silently drop additional scopes
+          logger.warn('Login: scope preservation DB query failed', {
+            twitchUserId,
+            error: dbError.message,
+            code: dbError.code,
+          })
+          scopeRestoreFailed = true
+        } else if (user?.twitch_scopes) {
           const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
           preservedScopes = user.twitch_scopes.filter(
             (s: string) => validAdditionalScopes.includes(s)
           )
 
           if (preservedScopes.length > 0) {
-            logger.info('Login: preserving additional scopes from existing session', {
-              twitchUserId: session.twitchUserId,
+            logger.info('Login: preserving additional scopes', {
+              twitchUserId,
               preservedScopes,
+              fromExpiredSession: !session,
             })
           }
         }
       }
-    } catch {
-      // スコープ取得失敗はログイン処理をブロックしない
-      // Scope lookup failure should not block the login flow
+    } catch (error) {
+      // スコープ取得で予期しない例外が発生した場合もガードを設定
+      // Set guard on unexpected exceptions during scope restoration
+      logger.warn('Login: scope preservation failed unexpectedly', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      scopeRestoreFailed = true
+    }
+
+    // スコープ復元失敗時、callbackでの全置換を抑止するためガードCookieを設定
+    // OAuth stateに紐づけることで、reauth等の別フローに影響しない
+    // Set guard cookie on failure, tied to this OAuth state so it doesn't affect other flows
+    if (scopeRestoreFailed) {
+      cookieStore.set(COOKIE_NAMES.SCOPE_RESTORE_FAILED, state, STATE_COOKIE_OPTIONS)
     }
 
     // forceVerify: falseで同意画面を強制しない（既存スコープの保持のみなので再同意不要）
