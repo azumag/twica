@@ -74,10 +74,10 @@ export async function GET(request: Request) {
       }
 
       // 2. セッション期限切れの場合、CookieからtwitchUserIdを直接抽出
-      // これが権限消失の主因: 期限切れセッションではgetSession()がnullを返し、
-      // 追加スコープがOAuthリクエストに含まれなかった
-      // This is the primary cause of permission loss: getSession() returns null
-      // for expired sessions, so additional scopes were not included in OAuth request
+      // parseSession()は期限切れを拒否するため、twitchUserIdのみ直接JSON.parseで取得する
+      // Expired sessions caused permission loss: getSession() returned null,
+      // so additional scopes were not included in the OAuth request.
+      // parseSession() rejects expired sessions, so we parse twitchUserId directly.
       if (!twitchUserId) {
         const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
         if (sessionCookie) {

@@ -126,17 +126,10 @@ export async function GET(request: NextRequest) {
         const additionalScopeValues = Object.values(ADDITIONAL_SCOPES) as string[]
         const isReauth = tokens.scope.some(s => additionalScopeValues.includes(s))
 
-        // 常にトークンが実際に持つスコープで全置換する
-        // ログインルートで期限切れセッションからも追加スコープを復元してOAuthリクエストに含めるため、
-        // 通常ログインでもトークンにuser:write:chat等が含まれる
-        // 以前のmerge方式はDBのスコープとトークンの不整合を引き起こしていた:
-        // DBが「スコープあり」と言いつつトークンに無い→API 401→自己修復で削除→権限消失
-        //
+        // トークンの実際のスコープで常にDB全置換する（以前のmerge方式は
+        // トークンにないスコープをDBに残し、API 401→権限消失を引き起こしていた）
         // Always save exactly what the token has (full replace).
-        // The login route now recovers additional scopes from expired sessions and includes
-        // them in the OAuth request, so normal login tokens will include user:write:chat etc.
-        // The previous merge approach caused token/DB mismatches:
-        // DB said "scope exists" but token didn't have it → API 401 → self-healing removal
+        // The previous merge approach left stale scopes in DB → API 401 → permission loss
         await saveTwitchScopes(twitchUser.id, tokens.scope)
         logger.info('Auth callback: Saved Twitch scopes (full replace)', {
           twitchUserId: twitchUser.id,
