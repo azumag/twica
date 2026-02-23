@@ -4,6 +4,8 @@
 
 TwiCa をご利用いただきありがとうございます。ベータ期間中にいただいた多くのバグ報告や機能要望を本リリースに反映させていただきました。十分な機能と安定性を確認できたため、本リリースをもって正式版（v1.0）とさせていただきます。
 
+TwiCa はオープンソースプロジェクトです。開発の支援は [FANBOX](https://azumag.fanbox.cc/) にて受け付けています。
+
 ---
 
 ## 新機能
@@ -81,5 +83,53 @@ TwiCa をご利用いただきありがとうございます。ベータ期間�
 
 ---
 
+## コードの利用について
+
+TwiCa のソースコードは [GitHub](https://github.com/azumag/twica) で公開しています。自身の環境で動かしたい場合は、以下の手順でセットアップしてください。
+
+### 必要なもの
+
+- Node.js 18 以上
+- [Supabase](https://supabase.com/) プロジェクト
+- [Twitch Developer Console](https://dev.twitch.tv/console) で作成したアプリケーション
+- [Cloudflare](https://www.cloudflare.com/) アカウント（R2 ストレージ・Workers）
+
+### セットアップ手順
+
+```bash
+# 1. リポジトリをクローン
+git clone https://github.com/azumag/twica.git
+cd twica
+
+# 2. 依存パッケージをインストール
+npm install
+
+# 3. 環境変数を設定
+cp .env.local.example .env.development.local
+# .env.development.local を編集し、各サービスの認証情報を入力
+
+# 4. Supabase にマイグレーションを適用
+# supabase/migrations/ 内の SQL を順番に実行
+
+# 5. 開発サーバーを起動
+npm run dev
+```
+
+ブラウザで `http://localhost:8787` を開くとアプリケーションが表示されます。
+
+### 本番デプロイ
+
+Cloudflare Workers へデプロイする場合:
+
+```bash
+npm run workers:deploy
+```
+
+環境変数は Cloudflare ダッシュボードの Secrets で設定してください。詳細は `.env.local.example` のコメントを参照してください。
+
+---
+
 ベータ期間中にフィードバックをお寄せいただいた皆さまに、改めて感謝申し上げます。
 今後も TwiCa をよろしくお願いいたします。
+
+開発支援: [FANBOX](https://azumag.fanbox.cc/) | ソースコード: [GitHub](https://github.com/azumag/twica)
