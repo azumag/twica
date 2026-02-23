@@ -8,8 +8,6 @@ export default defineConfig({
     environment: 'happy-dom',
     globals: true,
     setupFiles: ['tests/setup.ts'],
-    // CSSインポートを空モジュールとして処理（CI環境でCSSローダーがないため）
-    css: false,
     // プロセスリーク対策: タイムアウトとクリーンアップ設定
     testTimeout: 30000, // 30秒でテストをタイムアウト
     hookTimeout: 10000, // 10秒でフックをタイムアウト

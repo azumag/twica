@@ -6,6 +6,13 @@ import {
   type PlanType,
 } from '@/lib/plan'
 
+// react-image-crop をモック（CI環境ではCSSインポートが失敗するため）
+vi.mock('react-image-crop', () => ({
+  default: vi.fn(),
+  centerCrop: vi.fn(),
+  makeAspectCrop: vi.fn(),
+}))
+vi.mock('react-image-crop/dist/ReactCrop.css', () => ({}))
 vi.mock('@/lib/logger')
 vi.mock('@/lib/discord/role-check', () => ({
   hasDiscordSubRole: vi.fn().mockResolvedValue(false),
