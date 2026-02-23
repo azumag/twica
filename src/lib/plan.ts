@@ -14,11 +14,28 @@ import { logger } from '@/lib/logger'
 export type PlanType = 'basic' | 'support' | 'patron'
 
 // プランごとの追加ストレージ容量（バイト）
-// basic: 追加なし, support: 500MB, patron: 1GB
+// basic: 追加なし, support: 250MB, patron: 500MB
 export const PLAN_STORAGE_BONUS: Record<PlanType, number> = {
   basic: 0,
-  support: 500 * 1024 * 1024,   // 500MB
-  patron: 1024 * 1024 * 1024,   // 1GB
+  support: 250 * 1024 * 1024,   // 250MB
+  patron: 500 * 1024 * 1024,    // 500MB
+}
+
+// プランごとのカード画像最大幅（ピクセル）
+// basic: 800px（標準）, support: 1920px（Full HD）, patron: 3840px（4K）
+export const PLAN_MAX_IMAGE_WIDTH: Record<PlanType, number> = {
+  basic: 800,
+  support: 1920,
+  patron: 3840,
+}
+
+// プランごとのアップロードファイルサイズ上限（バイト）
+// 高解像度画像はファイルサイズが大きくなるため、上位プランでは上限を引き上げ
+// patron(4K)はcanvas.toBlob(85%)で5MB超になりうるため10MBに設定
+export const PLAN_MAX_UPLOAD_SIZE: Record<PlanType, number> = {
+  basic: 1 * 1024 * 1024,     // 1MB
+  support: 5 * 1024 * 1024,   // 5MB（Full HD JPEG対応）
+  patron: 10 * 1024 * 1024,   // 10MB（4K JPEG対応）
 }
 
 // プランの優先度（高い値が優先）
