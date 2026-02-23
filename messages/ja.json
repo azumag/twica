@@ -741,5 +741,31 @@
       "title": "全期間統計について",
       "message": "全期間統計については、集計にかかるサーバーコストが大きいため、本サービスのマネタイズの見通しが立ち次第、着手するか判断します。"
     }
+  },
+  "supportPlan": {
+    "title": "支援プラン",
+    "currentPlan": "現在のプラン",
+    "description": "FANBOXなどで受け取った支援コードを入力して、プランを有効化できます。",
+    "defaultStorage": "デフォルト",
+    "storageBonus": "ストレージ追加容量",
+    "plans": {
+      "basic": "ベーシック",
+      "support": "サポーター",
+      "patron": "パトロン"
+    },
+    "form": {
+      "code": "支援コード",
+      "codePlaceholder": "コードを入力してください",
+      "fanboxId": "FANBOX ID",
+      "fanboxIdPlaceholder": "FANBOX のクリエイターID",
+      "optional": "任意",
+      "activate": "有効化",
+      "activating": "有効化中..."
+    },
+    "messages": {
+      "activated": "{plan}プランが有効化されました",
+      "activateFailed": "コードの有効化に失敗しました",
+      "networkError": "ネットワークエラーが発生しました"
+    }
   }
 }

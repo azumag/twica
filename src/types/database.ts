@@ -362,6 +362,68 @@ export interface Database {
           read_at?: string
         }
       }
+      // 支援プラン共有コードマスタ
+      // コードはSHA-256ハッシュで保存、status でコードの有効状態を管理
+      support_codes: {
+        Row: {
+          id: string
+          code_hash: string
+          plan_type: 'support' | 'patron'
+          status: 'active' | 'rotating' | 'revoked'
+          memo: string
+          activation_count: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          code_hash: string
+          plan_type: 'support' | 'patron'
+          status?: 'active' | 'rotating' | 'revoked'
+          memo?: string
+          activation_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          code_hash?: string
+          plan_type?: 'support' | 'patron'
+          status?: 'active' | 'rotating' | 'revoked'
+          memo?: string
+          activation_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+      }
+      // ユーザーの支援プランライセンス
+      // コードが有効な限りライセンスも有効（有効期限なし）
+      user_licenses: {
+        Row: {
+          id: string
+          twitch_user_id: string
+          code_id: string
+          plan_type: 'support' | 'patron'
+          fanbox_id: string | null
+          activated_at: string
+        }
+        Insert: {
+          id?: string
+          twitch_user_id: string
+          code_id: string
+          plan_type: 'support' | 'patron'
+          fanbox_id?: string | null
+          activated_at?: string
+        }
+        Update: {
+          id?: string
+          twitch_user_id?: string
+          code_id?: string
+          plan_type?: 'support' | 'patron'
+          fanbox_id?: string | null
+          activated_at?: string
+        }
+      }
       // ストリーマーごとのストレージ容量ボーナステーブル
       // キャンペーンやプロモーション等で追加容量を付与するために使用
       streamer_storage_bonus: {
@@ -421,6 +483,10 @@ export type StreamerStorageBonus = Database['public']['Tables']['streamer_storag
 // お知らせのヘルパー型
 export type Announcement = Database['public']['Tables']['announcements']['Row']
 export type AnnouncementRead = Database['public']['Tables']['announcement_reads']['Row']
+// 支援プラン関連のヘルパー型
+export type SupportCode = Database['public']['Tables']['support_codes']['Row']
+export type UserLicense = Database['public']['Tables']['user_licenses']['Row']
+export type { PlanType } from '@/lib/plan'
 
 // Extended types with relations
 export type CardWithStreamer = Card & {

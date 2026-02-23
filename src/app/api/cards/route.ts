@@ -14,6 +14,8 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { normalizeDropRate } from "@/lib/card-utils";
+import { getStorageUsage } from "@/lib/storage-usage";
+import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import type { ApiRateLimitResponse } from "@/types/api";
 
@@ -63,6 +65,17 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // プランダウングレード等でストレージ超過中の場合、新規カード作成を拒否
+    // 画像を含むカード作成時に、更なるストレージ消費を防止する
+    const userPrefix = await sha256Prefix(session.twitchUserId);
+    const storageUsage = await getStorageUsage(userPrefix, session.twitchUserId);
+    if (storageUsage.planOverLimit) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.PLAN_OVER_LIMIT },
+        { status: 507 }
+      );
+    }
+
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
     const { streamerId, name, description, imageUrl, rarity, dropRate } = body;

@@ -9,8 +9,8 @@ export const metadata: Metadata = {
 };
 
 /**
- * リリースノートページ (v1.26.0)
- * ベータ版から正式リリースへの変更内容を掲載
+ * リリースノートページ (v1.27.0)
+ * 支援プランシステムの追加
  */
 export default async function ReleasesPage() {
   const session = await getSession();
@@ -44,21 +44,74 @@ export default async function ReleasesPage() {
 
       <main className="container mx-auto max-w-4xl px-4 py-12">
         <article>
-          <div className="mb-8">
-            <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
-              v1.26.0
+          <h1 className="mb-10 text-3xl font-bold text-white">
+            TwiCa リリースノート
+          </h1>
+
+          {/* v1.27.0 - 支援プラン */}
+          <div className="mb-16">
+            <div className="mb-8">
+              <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
+                v1.27.0
+              </div>
+              <p className="mt-2 text-sm text-gray-500">2026-02-24</p>
             </div>
-            <h1 className="mt-3 text-3xl font-bold text-white">
-              TwiCa リリースノート
-            </h1>
-            <p className="mt-2 text-lg text-purple-400 font-medium">
-              ベータ版 → 正式リリース
-            </p>
+
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                支援プランシステム
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    支援プランの導入
+                  </h3>
+                  <p className="text-gray-400">
+                    FANBOX などで TwiCa を支援してくださっている方に、感謝の気持ちとしてストレージ容量の追加特典を提供するシステムを導入しました。支援コードを入力するだけで、プランが有効化されます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-3 text-lg font-semibold text-white">
+                    プラン一覧
+                  </h3>
+                  <ul className="ml-4 list-disc space-y-2 text-gray-400">
+                    <li><span className="text-blue-400 font-medium">サポーター</span> - ストレージ容量 +500MB</li>
+                    <li><span className="text-yellow-400 font-medium">パトロン</span> - ストレージ容量 +1GB</li>
+                  </ul>
+                  <p className="mt-3 text-sm text-gray-500">
+                    支援コードの入力はダッシュボードの「アカウント設定」から行えます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-3 text-lg font-semibold text-white">
+                    その他の改善
+                  </h3>
+                  <ul className="ml-4 list-disc space-y-2 text-gray-400">
+                    <li>アカウント設定ページに現在のプランと特典の表示を追加</li>
+                    <li>ストレージ容量超過時にカード管理画面でわかりやすい警告を表示</li>
+                  </ul>
+                </div>
+              </div>
+            </section>
           </div>
 
-          <p className="mb-10 text-gray-400 leading-relaxed">
-            TwiCa をご利用いただきありがとうございます。ベータ期間中にいただいた多くのバグ報告や機能要望を本リリースに反映させていただきました。十分な機能と安定性を確認できたため、本リリースをもって正式版とさせていただきます。
-          </p>
+          {/* v1.26.0 - 正式リリース */}
+          <div className="mb-16">
+            <div className="mb-8">
+              <div className="mb-2 inline-block rounded-full bg-gray-600 px-3 py-1 text-sm font-medium text-white">
+                v1.26.0
+              </div>
+              <p className="mt-2 text-lg text-gray-400 font-medium">
+                ベータ版 → 正式リリース
+              </p>
+            </div>
+
+            <p className="mb-10 text-gray-400 leading-relaxed">
+              TwiCa をご利用いただきありがとうございます。ベータ期間中にいただいた多くのバグ報告や機能要望を本リリースに反映させていただきました。十分な機能と安定性を確認できたため、本リリースをもって正式版とさせていただきます。
+            </p>
 
           {/* 新機能 */}
           <section className="mb-10">
@@ -253,6 +306,7 @@ export default async function ReleasesPage() {
             <p className="mt-1 text-gray-300">
               今後も TwiCa をよろしくお願いいたします。
             </p>
+          </div>
           </div>
         </article>
       </main>

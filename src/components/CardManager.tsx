@@ -24,6 +24,8 @@ interface StorageStatus {
   userLimitReached: boolean;
   globalLimitReached: boolean;
   uploadDisabled: boolean;
+  // プランダウングレード後のストレージ超過フラグ
+  planOverLimit?: boolean;
   message: string | null;
 }
 
@@ -897,6 +899,17 @@ export default function CardManager({
           </button>
         </div>
       </div>
+
+      {/* Plan over limit warning banner */}
+      {/* プラン容量超過警告バナー */}
+      {storageStatus?.planOverLimit && (
+        <div className="mb-4 rounded-lg bg-red-500/10 border border-red-500/30 p-4">
+          <p className="font-medium text-red-300 mb-1">{t("messages.uploadLimited")}</p>
+          <p className="text-sm text-red-400/80">
+            {storageStatus.message}
+          </p>
+        </div>
+      )}
 
       {/* Storage usage info displayed at panel level */}
       {/* ストレージ使用量をパネルレベルで表示 */}

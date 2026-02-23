@@ -237,6 +237,18 @@ export const ERROR_MESSAGES = {
   SOUND_FILE_SIZE_EXCEEDED: 'Sound file size exceeds 1MB limit',
   SOUND_CONTENT_MISMATCH: 'Sound file content does not match extension',
 
+  // Support code errors
+  // 支援コード関連エラー
+  INVALID_SUPPORT_CODE: 'Invalid support code',
+  SUPPORT_CODE_REVOKED: 'This support code has been revoked',
+  SUPPORT_CODE_ROTATING: 'This support code is no longer accepting new activations',
+  SUPPORT_CODE_ALREADY_ACTIVATED: 'You have already activated this code',
+  SUPPORT_CODE_REQUIRED: 'Support code is required',
+  SUPPORT_CODE_TOO_LONG: 'Support code is too long',
+  FANBOX_ID_TOO_LONG: 'FANBOX ID is too long',
+  // プランダウングレード等でストレージ超過時のエラー
+  PLAN_OVER_LIMIT: 'ストレージ容量を超過しています。プランをアップグレードするか、画像を削除してください。',
+
   // General errors
   INTERNAL_ERROR: 'Internal server error',
   OPERATION_FAILED: 'Operation failed',
@@ -412,6 +424,15 @@ export const VOTE_CAMPAIGN_CONFIG = {
 
 /** localStorageキー: ユーザーが投票キャンペーンパネルを「今後表示しない」にした場合に 'true' を保存 */
 export const VOTE_CAMPAIGN_DISMISS_KEY = 'vote-campaign-dismissed'
+
+/**
+ * 支援プラン設定
+ * コード入力のバリデーション制限値
+ */
+export const PLAN_CONFIG = {
+  CODE_MAX_LENGTH: 64,
+  FANBOX_ID_MAX_LENGTH: 100,
+} as const
 
 export const STORAGE_LIMIT_MESSAGES = {
   // User limit message: increased to 10MB

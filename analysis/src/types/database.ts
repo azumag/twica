@@ -465,3 +465,30 @@ export type GachaHistoryWithDetails = GachaHistory & {
   cards: Card
   streamers: Streamer
 }
+
+// 支援コードのステータス
+export type SupportCodeStatus = 'active' | 'rotating' | 'revoked'
+// 支援プランタイプ
+export type PlanType = 'basic' | 'support' | 'patron'
+
+// 支援コード（共有コードマスタ）
+export interface SupportCode {
+  id: string
+  code_hash: string
+  plan_type: PlanType
+  status: SupportCodeStatus
+  memo: string | null
+  activation_count: number
+  created_at: string
+  updated_at: string
+}
+
+// ユーザーライセンス（コードアクティベーション記録）
+export interface UserLicense {
+  id: string
+  twitch_user_id: string
+  code_id: string
+  plan_type: PlanType
+  fanbox_id: string | null
+  activated_at: string
+}

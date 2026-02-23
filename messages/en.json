@@ -741,5 +741,31 @@
       "title": "About Full Period Stats",
       "message": "Full period statistics require significant server resources for aggregation. We will decide whether to implement this feature once a monetization plan is in place."
     }
+  },
+  "supportPlan": {
+    "title": "Support Plan",
+    "currentPlan": "Current Plan",
+    "description": "Enter a support code received from FANBOX or other platforms to activate your plan.",
+    "defaultStorage": "Default",
+    "storageBonus": "Storage Bonus",
+    "plans": {
+      "basic": "Basic",
+      "support": "Supporter",
+      "patron": "Patron"
+    },
+    "form": {
+      "code": "Support Code",
+      "codePlaceholder": "Enter your support code",
+      "fanboxId": "FANBOX ID",
+      "fanboxIdPlaceholder": "Your FANBOX creator ID",
+      "optional": "Optional",
+      "activate": "Activate",
+      "activating": "Activating..."
+    },
+    "messages": {
+      "activated": "{plan} plan has been activated",
+      "activateFailed": "Failed to activate the code",
+      "networkError": "A network error occurred"
+    }
   }
 }

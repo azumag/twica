@@ -2,8 +2,10 @@ import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
+import { getUserPlan } from "@/lib/plan";
 import { LanguageSwitcherSettings } from "@/components/LanguageSwitcher";
 import VoteCampaignReshowSetting from "@/components/VoteCampaignReshowSetting";
+import SupportPlanSection from "@/components/SupportPlanSection";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -25,7 +27,11 @@ export default async function AccountSettingsPage() {
   }
 
   // キャンペーン期間内かつ未適用かを判定（再表示ボタンの表示制御に使用）
-  const showVoteCampaign = await shouldShowVoteCampaign(session.twitchUserId);
+  // プラン判定と投票キャンペーン判定を並列実行
+  const [showVoteCampaign, currentPlan] = await Promise.all([
+    shouldShowVoteCampaign(session.twitchUserId),
+    getUserPlan(session.twitchUserId),
+  ]);
 
   return (
     <div>
@@ -42,6 +48,10 @@ export default async function AccountSettingsPage() {
       {/* Settings sections */}
       {/* 設定セクション */}
       <div className="space-y-6">
+        {/* Support Plan Section */}
+        {/* 支援プランセクション */}
+        <SupportPlanSection currentPlan={currentPlan} />
+
         {/* Language Settings Section */}
         {/* 言語設定セクション */}
         <div className="rounded-xl bg-gray-800 p-6">

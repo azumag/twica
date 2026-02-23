@@ -307,6 +307,8 @@ export const rateLimits = {
   voteCampaign: createRatelimit("voteCampaign", 5, 60 * 1000),
   // お知らせ既読はupsertで冪等だが、DoS対策として制限（分あたり20回）
   announcementRead: createRatelimit("announcementRead", 20, 60 * 1000),
+  // 支援コードアクティベーション（1時間5回、Issue仕様に基づく総当り攻撃対策）
+  activateCode: createRatelimit("activateCode", 5, 3600 * 1000),
 } as const;
 
 /**
