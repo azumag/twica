@@ -26,6 +26,7 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
   const [code, setCode] = useState("");
   const [fanboxId, setFanboxId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [deactivating, setDeactivating] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   // アクティベーション成功後にプランを楽観的に更新
   const [activePlan, setActivePlan] = useState<PlanType>(currentPlan);
@@ -81,6 +82,42 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
     }
   };
 
+  const handleDeactivate = async () => {
+    if (!window.confirm(t("form.confirmDeactivate"))) return;
+
+    setDeactivating(true);
+    setMessage(null);
+
+    try {
+      const csrfToken = document.cookie
+        .split("; ")
+        .find(row => row.startsWith("csrf_token="))
+        ?.split("=")[1];
+
+      const response = await fetch("/api/support/deactivate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken || "",
+        },
+        credentials: "include",
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setMessage({ type: "success", text: t("messages.deactivated") });
+        setActivePlan((data.planType as PlanType) ?? "basic");
+      } else {
+        setMessage({ type: "error", text: data.error || t("messages.deactivateFailed") });
+      }
+    } catch {
+      setMessage({ type: "error", text: t("messages.networkError") });
+    } finally {
+      setDeactivating(false);
+    }
+  };
+
   const planStyle = PLAN_STYLES[activePlan];
   const storageBonus = PLAN_STORAGE_BONUS[activePlan];
 
@@ -119,7 +156,7 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
             placeholder={t("form.codePlaceholder")}
             maxLength={64}
             className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder-gray-400"
-            disabled={loading}
+            disabled={loading || deactivating}
           />
         </div>
         <div>
@@ -134,7 +171,7 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
             placeholder={t("form.fanboxIdPlaceholder")}
             maxLength={100}
             className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder-gray-400"
-            disabled={loading}
+            disabled={loading || deactivating}
           />
         </div>
 
@@ -151,12 +188,25 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
 
         <button
           type="submit"
-          disabled={loading || !code.trim()}
+          disabled={loading || deactivating || !code.trim()}
           className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? t("form.activating") : t("form.activate")}
         </button>
       </form>
+
+      {/* ベーシックへの復帰ボタン（basic以外の時のみ表示） */}
+      {activePlan !== "basic" && (
+        <div className="mt-4 border-t border-gray-700 pt-4">
+          <button
+            onClick={handleDeactivate}
+            disabled={loading || deactivating}
+            className="rounded-lg bg-gray-600 px-6 py-2 text-sm text-gray-300 hover:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {deactivating ? t("form.deactivating") : t("form.deactivate")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

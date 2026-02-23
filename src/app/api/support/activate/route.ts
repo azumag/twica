@@ -130,6 +130,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // RPCが上位ライセンスの削除を含めてアトミックに処理済みのため、
+    // result.plan_type が実効プランと一致する（余分なDB呼び出し不要）
     logger.info(`[SupportActivate] Code activated: twitchUserId=***${session.twitchUserId.slice(-4)}, planType=${result.plan_type}`)
 
     return NextResponse.json({

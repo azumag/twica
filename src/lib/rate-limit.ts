@@ -314,6 +314,8 @@ export const rateLimits = {
   announcementRead: createRatelimit("announcementRead", 20, 60 * 1000),
   // 支援コードアクティベーション（1時間5回、Issue仕様に基づく総当り攻撃対策）
   activateCode: createRatelimit("activateCode", 5, 3600 * 1000),
+  // プランダウングレード（1時間10回、activateとは独立したレート制限）
+  deactivatePlan: createRatelimit("deactivatePlan", 10, 3600 * 1000),
 } as const;
 
 /**

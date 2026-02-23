@@ -760,12 +760,17 @@
       "fanboxIdPlaceholder": "Your FANBOX creator ID",
       "optional": "Optional",
       "activate": "Activate",
-      "activating": "Activating..."
+      "activating": "Activating...",
+      "deactivate": "Reset to Basic",
+      "deactivating": "Resetting...",
+      "confirmDeactivate": "Reset to Basic plan? You will lose your current plan benefits (extra storage, etc.)."
     },
     "messages": {
       "activated": "{plan} plan has been activated",
       "activateFailed": "Failed to activate the code",
-      "networkError": "A network error occurred"
+      "networkError": "A network error occurred",
+      "deactivated": "Reset to Basic plan",
+      "deactivateFailed": "Failed to change plan"
     }
   }
 }

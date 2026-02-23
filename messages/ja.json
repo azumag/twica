@@ -760,12 +760,17 @@
       "fanboxIdPlaceholder": "FANBOX のクリエイターID",
       "optional": "任意",
       "activate": "有効化",
-      "activating": "有効化中..."
+      "activating": "有効化中...",
+      "deactivate": "ベーシックに戻す",
+      "deactivating": "変更中...",
+      "confirmDeactivate": "プランをベーシックに戻しますか？現在のプラン特典（追加ストレージ等）が失われます。"
     },
     "messages": {
       "activated": "{plan}プランが有効化されました",
       "activateFailed": "コードの有効化に失敗しました",
-      "networkError": "ネットワークエラーが発生しました"
+      "networkError": "ネットワークエラーが発生しました",
+      "deactivated": "ベーシックプランに戻しました",
+      "deactivateFailed": "プランの変更に失敗しました"
     }
   }
 }
