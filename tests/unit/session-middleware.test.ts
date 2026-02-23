@@ -5,12 +5,18 @@ import { COOKIE_NAMES } from '@/lib/constants'
 
 /**
  * Tests for middleware session cleanup logic.
- * Expired or malformed session cookies should be cleared in middleware,
- * because Server Components cannot modify cookies (Next.js restriction).
+ *
+ * Key behavior:
+ * - Expired session cookies are NOT deleted (preserved for scope restoration during re-login)
+ * - CSRF cookies ARE deleted when session expires (no longer needed)
+ * - Unparseable (corrupted/tampered) session cookies are deleted (security)
  *
  * ミドルウェアでのセッションクリーンアップロジックのテスト。
- * 期限切れまたは不正なセッションCookieはミドルウェアでクリアする必要がある。
- * Server ComponentではCookieの変更がNext.jsにより禁止されているため。
+ *
+ * 主な動作:
+ * - 期限切れセッションCookieは削除しない（再ログイン時のスコープ保持に必要）
+ * - CSRFトークンはセッション期限切れ時に削除する（不要のため）
+ * - パースできないCookieは削除する（セキュリティ対策）
  */
 describe('updateSession middleware', () => {
   const validSession = {
@@ -54,7 +60,11 @@ describe('updateSession middleware', () => {
     expect(setCookieHeader).toBeNull()
   })
 
-  it('should clear session and CSRF cookies when session is expired', async () => {
+  it('should preserve expired session cookie and only clear CSRF cookie', async () => {
+    // 期限切れセッションCookieはスコープ保持のために残す
+    // ログインルートのparseSession()がtwitchUserIdを抽出して追加スコープを保持するため
+    // Expired session cookie is preserved for scope preservation during re-login
+    // The login route's parseSession() extracts twitchUserId to preserve additional scopes
     const expiredSession = {
       ...validSession,
       expiresAt: Date.now() - 1000, // expired 1 second ago
@@ -64,11 +74,15 @@ describe('updateSession middleware', () => {
     })
     const response = await updateSession(request)
 
-    // Verify session cookie is cleared (maxAge=0)
+    // レスポンスにセッションCookieのSet-Cookieヘッダーが含まれない
+    // = ミドルウェアがCookieを書き換えない = ブラウザの既存Cookieがそのまま保持される
+    // response.cookies.get() returns undefined means no Set-Cookie header for this cookie
+    // = middleware doesn't modify it = browser's existing cookie is preserved
     const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
-    expect(sessionCookie?.value).toBe('')
+    expect(sessionCookie).toBeUndefined()
 
-    // Verify CSRF cookie is also cleared
+    // CSRFトークンは削除される（期限切れセッションでは不要）
+    // CSRF cookie should be cleared (not needed for expired session)
     const csrfCookie = response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)
     expect(csrfCookie?.value).toBe('')
   })
@@ -100,5 +114,28 @@ describe('updateSession middleware', () => {
     // No Set-Cookie headers should be added
     const setCookieHeader = response.headers.get('set-cookie')
     expect(setCookieHeader).toBeNull()
+  })
+
+  it('should preserve session cookie even when expired for a long time', async () => {
+    // 長期間経過した期限切れセッションもスコープ保持のために残す
+    // Even long-expired sessions are preserved for scope preservation
+    const longExpiredSession = {
+      ...validSession,
+      expiresAt: Date.now() - 20 * 24 * 60 * 60 * 1000, // expired 20 days ago
+    }
+    const request = createRequest({
+      [COOKIE_NAMES.SESSION]: JSON.stringify(longExpiredSession),
+    })
+    const response = await updateSession(request)
+
+    // レスポンスにSet-Cookieなし = ミドルウェアが書き換えない = 既存Cookie保持
+    // No Set-Cookie in response = middleware doesn't modify = existing cookie preserved
+    const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
+    expect(sessionCookie).toBeUndefined()
+
+    // CSRFトークンのみ削除される
+    // Only CSRF cookie should be cleared
+    const csrfCookie = response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)
+    expect(csrfCookie?.value).toBe('')
   })
 })

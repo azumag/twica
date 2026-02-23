@@ -12,14 +12,23 @@ import { COOKIE_NAMES, getDeleteCookieOptions } from '@/lib/constants'
  * 以前のsupabase.auth.getUser()呼び出しは、ページ遷移ごとにSupabaseへの
  * 不要なAPIリクエストを発生させ、大幅な遅延（1リクエストあたり約100-500ms）の原因となっていた。
  *
- * Additionally, expired session cookies are cleared here in middleware because
- * Server Components (layout/page) cannot modify cookies. clearSession() in
- * getSession() was causing "Cookies can only be modified in a Server Action
- * or Route Handler" errors.
+ * IMPORTANT: Expired session cookies are NOT deleted here.
+ * The login route's parseSession() fallback relies on the expired cookie
+ * to extract twitchUserId and preserve additional scopes (e.g., user:write:chat)
+ * during re-login. Deleting the expired cookie here would cause the login route
+ * to lose the twitchUserId, resulting in silent scope loss.
+ * The cookie's maxAge (COOKIE_MAX_AGE_SECONDS) is intentionally set longer than
+ * the session validity (MAX_AGE_SECONDS) to provide a grace period for scope preservation.
+ * getSession() already returns null for expired sessions, so keeping the cookie
+ * is safe — it only serves as a twitchUserId source for the login route.
  *
- * 期限切れセッションCookieのクリアもここで行う。Server Component（layout/page）では
- * Cookieの書き込みが禁止されているため、getSession()内のclearSession()呼び出しが
- * エラーを引き起こしていた。
+ * 重要: 期限切れセッションCookieはここで削除しない。
+ * ログインルートのparseSession()フォールバックが期限切れCookieからtwitchUserIdを
+ * 抽出し、追加スコープ（user:write:chat等）を保持するために使用する。
+ * ここで削除するとログインルートがtwitchUserIdを取得できず、スコープが暗黙的に消失する。
+ * CookieのmaxAge（COOKIE_MAX_AGE_SECONDS）はセッション有効期限（MAX_AGE_SECONDS）より
+ * 意図的に長く設定されており、スコープ保持のための猶予期間を提供する。
+ * getSession()は期限切れセッションにnullを返すため、Cookieを残しても安全。
  */
 export async function updateSession(request: NextRequest) {
   const response = NextResponse.next({ request })
@@ -29,15 +38,18 @@ export async function updateSession(request: NextRequest) {
     try {
       const parsed = JSON.parse(sessionCookie)
       if (typeof parsed.expiresAt === 'number' && Date.now() > parsed.expiresAt) {
-        // Clear expired session and CSRF cookies via middleware response
-        // ミドルウェアのレスポンス経由で期限切れセッション・CSRFのCookieをクリア
+        // セッション期限切れ時: CSRFトークンのみ削除。セッションCookieは保持する。
+        // セッションCookieを削除するとログイン時のスコープ保持ができなくなるため。
+        // On session expiry: only clear CSRF token. Keep session cookie for scope preservation.
+        // Deleting session cookie here would prevent scope preservation during re-login.
         const deleteOptions = getDeleteCookieOptions()
-        response.cookies.set(COOKIE_NAMES.SESSION, '', deleteOptions)
         response.cookies.set(COOKIE_NAMES.CSRF_TOKEN, '', deleteOptions)
       }
     } catch {
-      // Clear unparseable session and CSRF cookies
-      // パースできないセッションCookie・CSRFトークンもクリア
+      // パースできないCookieは改ざん/破損の可能性があるため両方削除（セキュリティ対策）
+      // スコープ保持にも使えないため、削除しても問題ない
+      // Clear unparseable cookies (both session and CSRF) as they may be tampered/corrupted
+      // They can't be used for scope preservation anyway
       const deleteOptions = getDeleteCookieOptions()
       response.cookies.set(COOKIE_NAMES.SESSION, '', deleteOptions)
       response.cookies.set(COOKIE_NAMES.CSRF_TOKEN, '', deleteOptions)
