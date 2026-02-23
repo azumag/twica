@@ -36,7 +36,7 @@ describe('PlanType with twitch_sub', () => {
     vi.doMock('@/lib/logger', () => ({
       logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
     }))
-    vi.doMock('react', () => ({ cache: (fn: Function) => fn }))
+    vi.doMock('react', () => ({ cache: (fn: (...args: unknown[]) => unknown) => fn }))
   }
 
   it('twitch_sub プランの定数値が patron と同等であること', async () => {
@@ -107,7 +107,7 @@ describe('PlanType with twitch_sub', () => {
     vi.doMock('@/lib/logger', () => ({
       logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
     }))
-    vi.doMock('react', () => ({ cache: (fn: Function) => fn }))
+    vi.doMock('react', () => ({ cache: (fn: (...args: unknown[]) => unknown) => fn }))
 
     const { getUserPlan } = await import('@/lib/plan')
     const plan = await getUserPlan('user-123')

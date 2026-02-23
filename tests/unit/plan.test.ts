@@ -6,7 +6,13 @@ import {
   type PlanType,
 } from '@/lib/plan'
 
+// react-image-crop の CSS import をモック（CI環境ではCSS loaderがないため）
+vi.mock('react-image-crop/dist/ReactCrop.css', () => ({}))
 vi.mock('@/lib/logger')
+vi.mock('@/lib/discord/role-check', () => ({
+  hasDiscordSubRole: vi.fn().mockResolvedValue(false),
+  isDiscordEnabled: vi.fn().mockReturnValue(false),
+}))
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
   return {
