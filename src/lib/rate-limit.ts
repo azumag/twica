@@ -316,6 +316,12 @@ export const rateLimits = {
   activateCode: createRatelimit("activateCode", 5, 3600 * 1000),
   // プランダウングレード（1時間10回、activateとは独立したレート制限）
   deactivatePlan: createRatelimit("deactivatePlan", 10, 3600 * 1000),
+  // 問い合わせ一覧取得（読み取り専用のため比較的緩い制限）
+  supportInquiriesGet: createRatelimit("supportInquiriesGet", 60, 60 * 1000),
+  // 問い合わせ投稿（スパム防止のため厳しめ: 1時間5件）
+  supportInquiriesPost: createRatelimit("supportInquiriesPost", 5, 3600 * 1000),
+  // 問い合わせ返信（スパム防止: 分あたり10回）
+  supportInquiryReply: createRatelimit("supportInquiryReply", 10, 60 * 1000),
 } as const;
 
 /**

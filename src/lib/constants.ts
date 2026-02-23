@@ -252,6 +252,16 @@ export const ERROR_MESSAGES = {
   // プランダウングレード等でストレージ超過時のエラー
   PLAN_OVER_LIMIT: 'ストレージ容量を超過しています。プランをアップグレードするか、画像を削除してください。',
 
+  // Support inquiry errors
+  INQUIRY_NOT_FOUND: 'Inquiry not found',
+  INQUIRY_CLOSED: 'This inquiry is closed and cannot receive replies',
+  INQUIRY_SUBJECT_REQUIRED: 'Subject is required',
+  INQUIRY_SUBJECT_TOO_LONG: 'Subject must not exceed 200 characters',
+  INQUIRY_BODY_REQUIRED: 'Body is required',
+  INQUIRY_BODY_TOO_LONG: 'Body must not exceed 2000 characters',
+  INQUIRY_INVALID_CATEGORY: 'Invalid category. Must be one of: bug, feature, other',
+  INQUIRY_SUPPORTER_ONLY: 'This feature is available for supporters only',
+
   // General errors
   INTERNAL_ERROR: 'Internal server error',
   OPERATION_FAILED: 'Operation failed',

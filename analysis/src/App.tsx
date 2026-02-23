@@ -10,6 +10,7 @@ import { Gacha } from './pages/Gacha'
 import { Battles } from './pages/Battles'
 import { Announcements } from './pages/Announcements'
 import { Licenses } from './pages/Licenses'
+import { SupportInquiries } from './pages/SupportInquiries'
 
 /**
  * Main App component with routing configuration
@@ -33,6 +34,7 @@ function App() {
         <Route path="battles" element={<Battles />} />
         <Route path="announcements" element={<Announcements />} />
         <Route path="licenses" element={<Licenses />} />
+        <Route path="inquiries" element={<SupportInquiries />} />
       </Route>
     </Routes>
   )

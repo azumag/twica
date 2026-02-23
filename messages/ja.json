@@ -30,7 +30,8 @@
     "gachaHistory": "ガチャ履歴",
     "stats": "統計",
     "collection": "マイコレクション",
-    "announcements": "お知らせ"
+    "announcements": "お知らせ",
+    "inquiries": "お問い合わせ"
   },
   "rarity": {
     "common": "コモン",
@@ -56,7 +57,7 @@
       "croppedImage": "トリミング済み画像",
       "selectCropMode": "トリミングサイズを選択",
       "cropModeDescription": "正方形の場合、表示時に名前・説明をカード枠に表示できます。オーバーレイ設定で表示非表示を選択できます。ポートレイトはそのまま表示されます。",
-      "cropNoteWithOptions": "（正方形800x800またはポートレイト800x1118にトリミング）"
+      "cropNoteWithOptions": "（正方形{square}またはポートレイト{portrait}にトリミング）"
     },
     "fileUpload": {
       "formats": "対応形式: JPEG, PNG | ",
@@ -223,7 +224,11 @@
       "viewAllCollection": "コレクションをすべて見る",
       "streamerInfo": "配信者機能について",
       "streamerInfoText": "チャネルポイント報酬やカード管理機能を使用するには、Twitchアフィリエイトまたはパートナーである必要があります。",
-      "quickLinks": "クイックリンク"
+      "quickLinks": "クイックリンク",
+      "storageOverLimit": "ストレージ容量を超過しています",
+      "storageOverLimitDescription": "プランをアップグレードするか、不要な画像を削除してください。現在、新しいカードの作成や画像のアップロードが制限されています。",
+      "storageUsage": "使用量: {usage} / {limit}",
+      "manageCards": "カード管理へ"
     }
   },
   "battle": {
@@ -740,6 +745,50 @@
     "fullPeriodStats": {
       "title": "全期間統計について",
       "message": "全期間統計については、集計にかかるサーバーコストが大きいため、本サービスのマネタイズの見通しが立ち次第、着手するか判断します。"
+    }
+  },
+  "inquiriesPage": {
+    "title": "お問い合わせ",
+    "description": "バグ報告や機能要望など、お気軽にお問い合わせください。",
+    "supporterOnly": "この機能はサポーター/パトロン限定です。",
+    "newInquiry": "新規お問い合わせ",
+    "form": {
+      "category": "カテゴリ",
+      "categoryBug": "バグ報告",
+      "categoryFeature": "機能要望",
+      "categoryOther": "その他",
+      "subject": "件名",
+      "subjectPlaceholder": "件名を入力（最大200文字）",
+      "body": "本文",
+      "bodyPlaceholder": "お問い合わせ内容を入力（最大2000文字）",
+      "submit": "送信",
+      "submitting": "送信中..."
+    },
+    "list": {
+      "empty": "お問い合わせはまだありません。",
+      "status": {
+        "open": "未対応",
+        "in_progress": "対応中",
+        "resolved": "解決済み",
+        "closed": "クローズ"
+      }
+    },
+    "detail": {
+      "backToList": "一覧に戻る",
+      "thread": "メッセージ",
+      "adminReply": "管理者",
+      "yourMessage": "あなた",
+      "replyPlaceholder": "返信を入力（最大2000文字）",
+      "reply": "返信",
+      "replying": "送信中...",
+      "closedNotice": "この問い合わせはクローズされています。"
+    },
+    "messages": {
+      "submitSuccess": "お問い合わせを送信しました",
+      "submitFailed": "送信に失敗しました",
+      "replySuccess": "返信を送信しました",
+      "replyFailed": "返信の送信に失敗しました",
+      "networkError": "ネットワークエラーが発生しました"
     }
   },
   "supportPlan": {

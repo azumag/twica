@@ -17,12 +17,18 @@ interface NavItem {
   // Whether this item requires streamer features (affiliate/partner)
   // この項目が配信者機能を必要とするかどうか
   streamerOnly?: boolean;
+  // Whether this item requires supporter plan (support/patron)
+  // この項目が支援者プラン（support/patron）を必要とするかどうか
+  supporterOnly?: boolean;
 }
 
 interface DashboardNavProps {
   // Whether the current user can use streamer features
   // 現在のユーザーが配信者機能を使用できるかどうか
   isStreamer: boolean;
+  // Whether the current user has a supporter plan (support/patron)
+  // 現在のユーザーが支援者プラン（support/patron）を持っているかどうか
+  isSupporter: boolean;
 }
 
 /**
@@ -31,7 +37,7 @@ interface DashboardNavProps {
  * ダッシュボードナビゲーションコンポーネント
  * ユーザー権限に基づいて条件付き項目を含むサイドバーナビゲーションを表示
  */
-export default function DashboardNav({ isStreamer }: DashboardNavProps) {
+export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavProps) {
   const pathname = usePathname();
   const t = useTranslations("navigation");
 
@@ -161,12 +167,33 @@ export default function DashboardNav({ isStreamer }: DashboardNavProps) {
         </svg>
       ),
     },
+    {
+      href: "/dashboard/inquiries",
+      labelKey: "inquiries",
+      supporterOnly: true,
+      icon: (
+        <svg
+          className="h-5 w-5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+          />
+        </svg>
+      ),
+    },
   ];
 
   // Filter navigation items based on user permissions
   // ユーザー権限に基づいてナビゲーション項目をフィルタリング
+  // streamerOnly/supporterOnly に基づいてフィルタリング
   const visibleNavItems = navItems.filter(
-    (item) => !item.streamerOnly || isStreamer
+    (item) => (!item.streamerOnly || isStreamer) && (!item.supporterOnly || isSupporter)
   );
 
   /**
