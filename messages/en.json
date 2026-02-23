@@ -800,7 +800,8 @@
     "plans": {
       "basic": "Basic",
       "support": "Supporter",
-      "patron": "Patron"
+      "patron": "Patron",
+      "twitch_sub": "Twitch Sub"
     },
     "form": {
       "code": "Support Code",
@@ -820,6 +821,27 @@
       "networkError": "A network error occurred",
       "deactivated": "Reset to Basic plan",
       "deactivateFailed": "Failed to change plan"
+    }
+  },
+  "discord": {
+    "title": "Discord Integration",
+    "description": "Link your Discord account to receive Twitch subscriber benefits.",
+    "linkButton": "Link Discord",
+    "unlinkButton": "Unlink",
+    "refreshButton": "Refresh Role",
+    "linked": "Linked",
+    "notLinked": "Not Linked",
+    "userId": "Discord ID",
+    "roleStatus": "Subscriber Role",
+    "roleActive": "Active",
+    "roleInactive": "Not Verified",
+    "unlinkConfirm": "Unlink Discord? You will lose your subscriber benefits.",
+    "messages": {
+      "unlinkSuccess": "Discord has been unlinked",
+      "unlinkFailed": "Failed to unlink Discord",
+      "refreshSuccess": "Role status updated",
+      "refreshFailed": "Failed to refresh role",
+      "networkError": "A network error occurred"
     }
   }
 }

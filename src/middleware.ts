@@ -50,6 +50,7 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
   '/api/auth/twitch/callback',
   '/api/twitch/eventsub',
   '/api/auth/twitch/login',
+  '/api/auth/discord/callback',
 ]
 
 export async function middleware(request: NextRequest) {

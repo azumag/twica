@@ -800,7 +800,8 @@
     "plans": {
       "basic": "ベーシック",
       "support": "サポーター",
-      "patron": "パトロン"
+      "patron": "パトロン",
+      "twitch_sub": "Twitchサブスク"
     },
     "form": {
       "code": "支援コード",
@@ -820,6 +821,27 @@
       "networkError": "ネットワークエラーが発生しました",
       "deactivated": "ベーシックプランに戻しました",
       "deactivateFailed": "プランの変更に失敗しました"
+    }
+  },
+  "discord": {
+    "title": "Discord連携",
+    "description": "Discordサーバーと連携して、Twitchサブスクライバー特典を受け取れます。",
+    "linkButton": "Discordと連携する",
+    "unlinkButton": "連携を解除",
+    "refreshButton": "ロール更新",
+    "linked": "連携済み",
+    "notLinked": "未連携",
+    "userId": "Discord ID",
+    "roleStatus": "サブスクライバーロール",
+    "roleActive": "有効",
+    "roleInactive": "未確認",
+    "unlinkConfirm": "Discord連携を解除しますか？サブスクライバー特典が無効になります。",
+    "messages": {
+      "unlinkSuccess": "Discord連携を解除しました",
+      "unlinkFailed": "連携解除に失敗しました",
+      "refreshSuccess": "ロール状態を更新しました",
+      "refreshFailed": "ロール更新に失敗しました",
+      "networkError": "ネットワークエラーが発生しました"
     }
   }
 }

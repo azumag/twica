@@ -14,6 +14,7 @@ const PLAN_STYLES: Record<PlanType, { color: string; bgColor: string }> = {
   basic: { color: "text-gray-400", bgColor: "bg-gray-600" },
   support: { color: "text-blue-400", bgColor: "bg-blue-600" },
   patron: { color: "text-yellow-400", bgColor: "bg-yellow-600" },
+  twitch_sub: { color: "text-purple-400", bgColor: "bg-purple-600" },
 };
 
 /**
@@ -195,8 +196,9 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
         </button>
       </form>
 
-      {/* ベーシックへの復帰ボタン（basic以外の時のみ表示） */}
-      {activePlan !== "basic" && (
+      {/* ベーシックへの復帰ボタン（basic以外かつtwitch_sub以外の時のみ表示）
+         twitch_subはDiscord連携で自動判定されるため、コード解除では無効化できない */}
+      {activePlan !== "basic" && activePlan !== "twitch_sub" && (
         <div className="mt-4 border-t border-gray-700 pt-4">
           <button
             onClick={handleDeactivate}

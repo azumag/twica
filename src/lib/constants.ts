@@ -20,12 +20,19 @@ export const COOKIE_NAMES = {
   // スコープ復元失敗時のガード用Cookie（値はOAuth state）
   // Guard cookie for scope restoration failure (value is the OAuth state)
   SCOPE_RESTORE_FAILED: 'twica_scope_restore_failed',
+  // Discord OAuth認証フロー用のCSRF state
+  // CSRF state for Discord OAuth flow
+  DISCORD_AUTH_STATE: 'discord_auth_state',
 }
 
 export const API_ROUTES = {
   AUTH_TWITCH_CALLBACK: '/api/auth/twitch/callback',
   AUTH_TWITCH_LOGIN: '/api/auth/twitch/login',
   AUTH_LOGOUT: '/api/auth/logout',
+  AUTH_DISCORD_LOGIN: '/api/auth/discord/login',
+  AUTH_DISCORD_CALLBACK: '/api/auth/discord/callback',
+  AUTH_DISCORD_UNLINK: '/api/auth/discord/unlink',
+  AUTH_DISCORD_REFRESH_ROLE: '/api/auth/discord/refresh-role',
 }
 
 export const SESSION_CONFIG = {

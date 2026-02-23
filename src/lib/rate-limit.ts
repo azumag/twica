@@ -322,6 +322,14 @@ export const rateLimits = {
   supportInquiriesPost: createRatelimit("supportInquiriesPost", 5, 3600 * 1000),
   // 問い合わせ返信（スパム防止: 分あたり10回）
   supportInquiryReply: createRatelimit("supportInquiryReply", 10, 60 * 1000),
+  // Discord OAuth ログイン（Twitch authLoginと同等）
+  discordLogin: createRatelimit("discordLogin", 5, 60 * 1000),
+  // Discord OAuth コールバック
+  discordCallback: createRatelimit("discordCallback", 10, 60 * 1000),
+  // Discord 連携解除（分あたり5回）
+  discordUnlink: createRatelimit("discordUnlink", 5, 60 * 1000),
+  // Discord ロール手動リフレッシュ（分あたり5回、Discord API負荷軽減）
+  discordRefreshRole: createRatelimit("discordRefreshRole", 5, 60 * 1000),
 } as const;
 
 /**

@@ -10,39 +10,45 @@
 import { cache } from 'react'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
+import { hasDiscordSubRole } from '@/lib/discord/role-check'
 
-export type PlanType = 'basic' | 'support' | 'patron'
+export type PlanType = 'basic' | 'support' | 'patron' | 'twitch_sub'
 
 // プランごとの追加ストレージ容量（バイト）
-// basic: 追加なし, support: 250MB, patron: 500MB
+// basic: 追加なし, support: 250MB, patron/twitch_sub: 500MB
 export const PLAN_STORAGE_BONUS: Record<PlanType, number> = {
   basic: 0,
-  support: 250 * 1024 * 1024,   // 250MB
-  patron: 500 * 1024 * 1024,    // 500MB
+  support: 250 * 1024 * 1024,       // 250MB
+  patron: 500 * 1024 * 1024,        // 500MB
+  twitch_sub: 500 * 1024 * 1024,    // 500MB（patron同等）
 }
 
 // プランごとのカード画像最大幅（ピクセル）
-// basic: 800px（標準）, support: 1920px（Full HD）, patron: 3840px（4K）
+// basic: 800px（標準）, support: 1920px（Full HD）, patron/twitch_sub: 3840px（4K）
 export const PLAN_MAX_IMAGE_WIDTH: Record<PlanType, number> = {
   basic: 800,
   support: 1920,
   patron: 3840,
+  twitch_sub: 3840,    // patron同等
 }
 
 // プランごとのアップロードファイルサイズ上限（バイト）
 // 高解像度画像はファイルサイズが大きくなるため、上位プランでは上限を引き上げ
-// patron(4K)はcanvas.toBlob(85%)で5MB超になりうるため10MBに設定
+// patron/twitch_sub(4K)はcanvas.toBlob(85%)で5MB超になりうるため10MBに設定
 export const PLAN_MAX_UPLOAD_SIZE: Record<PlanType, number> = {
   basic: 1 * 1024 * 1024,     // 1MB
   support: 5 * 1024 * 1024,   // 5MB（Full HD JPEG対応）
   patron: 10 * 1024 * 1024,   // 10MB（4K JPEG対応）
+  twitch_sub: 10 * 1024 * 1024, // 10MB（patron同等）
 }
 
 // プランの優先度（高い値が優先）
+// twitch_sub は patron と同等（priority: 2）
 const PLAN_PRIORITY: Record<PlanType, number> = {
   basic: 0,
   support: 1,
   patron: 2,
+  twitch_sub: 2,
 }
 
 /**
@@ -56,9 +62,36 @@ const PLAN_PRIORITY: Record<PlanType, number> = {
  */
 export const getUserPlan = cache(async function getUserPlan(twitchUserId: string): Promise<PlanType> {
   try {
+    // DBライセンス判定とDiscordロール判定を並列実行
+    // Discord環境変数未設定時は hasDiscordSubRole が即座に false を返す
+    const [licensePlan, hasDiscordSub] = await Promise.all([
+      getLicensePlan(twitchUserId),
+      hasDiscordSubRole(twitchUserId),
+    ])
+
+    // Discord サブスクロールがある場合は twitch_sub プランとして扱う
+    const discordPlan: PlanType = hasDiscordSub ? 'twitch_sub' : 'basic'
+
+    // 最高優先度のプランを返す
+    if (PLAN_PRIORITY[discordPlan] > PLAN_PRIORITY[licensePlan]) {
+      return discordPlan
+    }
+    return licensePlan
+  } catch (error) {
+    // プラン判定失敗時はbasicとする（ユーザーに不利にしない方が安全）
+    logger.error('[Plan] Error getting user plan:', error)
+    return 'basic'
+  }
+})
+
+/**
+ * DBライセンスベースのプラン判定（従来のロジック）
+ * user_licenses と support_codes(status) をJOINし、有効なコードに紐づくライセンスのみ有効とする。
+ */
+async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
+  try {
     const supabaseAdmin = getSupabaseAdmin()
 
-    // user_licenses から support_codes を内部結合し、有効なコードのライセンスのみ取得
     const { data, error } = await supabaseAdmin
       .from('user_licenses')
       .select('plan_type, support_codes!inner(status)')
@@ -66,7 +99,7 @@ export const getUserPlan = cache(async function getUserPlan(twitchUserId: string
       .in('support_codes.status', ['active', 'rotating'])
 
     if (error) {
-      logger.error('[Plan] Failed to get user plan:', error)
+      logger.error('[Plan] Failed to get license plan:', error)
       return 'basic'
     }
 
@@ -85,11 +118,10 @@ export const getUserPlan = cache(async function getUserPlan(twitchUserId: string
 
     return highestPlan
   } catch (error) {
-    // プラン判定失敗時はbasicとする（ユーザーに不利にしない方が安全）
-    logger.error('[Plan] Error getting user plan:', error)
+    logger.error('[Plan] Error getting license plan:', error)
     return 'basic'
   }
-})
+}
 
 /**
  * プランに基づく追加ストレージバイト数を取得
