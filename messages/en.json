@@ -823,9 +823,31 @@
       "deactivateFailed": "Failed to change plan"
     }
   },
+  "twitchSub": {
+    "title": "Twitch Subscription Check",
+    "description": "If you subscribe to azumagbanjo's Twitch channel, Patron-level benefits are automatically applied.",
+    "status": "Subscription Status",
+    "statusActive": "Active",
+    "statusInactive": "Not Verified",
+    "scopeWarning": "Additional Twitch permissions are required to check your subscription status. Please re-authorize using the button below.",
+    "buttons": {
+      "reauthorize": "Grant Permission",
+      "reauthorizing": "Authorizing...",
+      "checkSubscription": "Check Subscription",
+      "checking": "Checking..."
+    },
+    "messages": {
+      "subActive": "Subscription confirmed. Plan benefits are active.",
+      "subInactive": "No active subscription found.",
+      "needsReauth": "Insufficient permissions. Please re-authorize.",
+      "checkFailed": "Check failed. Please try again later.",
+      "reauthorizeFailed": "Re-authorization failed.",
+      "networkError": "A network error occurred."
+    }
+  },
   "discord": {
     "title": "Discord Integration",
-    "description": "Link your Discord account to receive Twitch subscriber benefits.",
+    "description": "A bonus perk for subscribers of azumagbanjo's Twitch channel. Three steps: ① Subscribe to the Twitch channel, ② Join the Discord server to receive the subscriber role, ③ Link Discord here — then the plan is applied automatically, no code required.",
     "linkButton": "Link Discord",
     "unlinkButton": "Unlink",
     "refreshButton": "Refresh Role",

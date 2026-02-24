@@ -17,21 +17,20 @@ describe('PlanType with twitch_sub', () => {
 
   function setupMocks(options: {
     licenses?: unknown[]
-    hasDiscordSub?: boolean
-    discordEnabled?: boolean
+    hasTwitchSub?: boolean
   }) {
-    const { licenses = [], hasDiscordSub = false, discordEnabled = true } = options
+    const { licenses = [], hasTwitchSub = false } = options
 
     vi.doMock('@/lib/supabase/admin', () => ({
       getSupabaseAdmin: vi.fn(() => ({
         from: vi.fn(() => createLicenseQueryBuilder(licenses)),
       })),
     }))
-    vi.doMock('@/lib/discord/role-check', () => ({
-      hasDiscordSubRole: hasDiscordSub
+    // plan.ts は hasTwitchSub のみを使用（Discord連携は廃止済み）
+    vi.doMock('@/lib/twitch/sub-check', () => ({
+      hasTwitchSub: hasTwitchSub
         ? vi.fn().mockResolvedValue(true)
         : vi.fn().mockResolvedValue(false),
-      isDiscordEnabled: vi.fn().mockReturnValue(discordEnabled),
     }))
     vi.doMock('@/lib/logger', () => ({
       logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
@@ -40,7 +39,7 @@ describe('PlanType with twitch_sub', () => {
   }
 
   it('twitch_sub プランの定数値が patron と同等であること', async () => {
-    setupMocks({ discordEnabled: false })
+    setupMocks({})
 
     const { PLAN_STORAGE_BONUS, PLAN_MAX_IMAGE_WIDTH, PLAN_MAX_UPLOAD_SIZE } = await import('@/lib/plan')
 
@@ -49,8 +48,8 @@ describe('PlanType with twitch_sub', () => {
     expect(PLAN_MAX_UPLOAD_SIZE.twitch_sub).toBe(PLAN_MAX_UPLOAD_SIZE.patron)
   })
 
-  it('Discord連携でサブスクロールがある場合は twitch_sub を返す', async () => {
-    setupMocks({ licenses: [], hasDiscordSub: true })
+  it('Twitchサブスクがある場合は twitch_sub を返す', async () => {
+    setupMocks({ licenses: [], hasTwitchSub: true })
 
     const { getUserPlan } = await import('@/lib/plan')
     const plan = await getUserPlan('user-123')
@@ -58,22 +57,22 @@ describe('PlanType with twitch_sub', () => {
     expect(plan).toBe('twitch_sub')
   })
 
-  it('patronライセンス保持者はDiscordサブスクがあってもpatronを返す', async () => {
+  it('patronライセンス保持者はTwitchサブスクがあってもpatronを返す', async () => {
     setupMocks({
       licenses: [{ plan_type: 'patron', support_codes: { status: 'active' } }],
-      hasDiscordSub: true,
+      hasTwitchSub: true,
     })
 
     const { getUserPlan } = await import('@/lib/plan')
     const plan = await getUserPlan('user-123')
 
     // patron(2) と twitch_sub(2) は同優先度。
-    // discordPlan(twitch_sub)の優先度(2) > licensePlan(patron)の優先度(2) は偽なので patron が返る
+    // subPlan(twitch_sub)の優先度(2) > licensePlan(patron)の優先度(2) は偽なので patron が返る
     expect(plan).toBe('patron')
   })
 
-  it('Discord連携なしでライセンスなしの場合は basic を返す', async () => {
-    setupMocks({ licenses: [], hasDiscordSub: false })
+  it('Twitchサブスクなしでライセンスなしの場合は basic を返す', async () => {
+    setupMocks({ licenses: [], hasTwitchSub: false })
 
     const { getUserPlan } = await import('@/lib/plan')
     const plan = await getUserPlan('user-123')
@@ -81,10 +80,10 @@ describe('PlanType with twitch_sub', () => {
     expect(plan).toBe('basic')
   })
 
-  it('supportライセンスのみでDiscordサブスクがある場合は twitch_sub を返す', async () => {
+  it('supportライセンスのみでTwitchサブスクがある場合は twitch_sub を返す', async () => {
     setupMocks({
       licenses: [{ plan_type: 'support', support_codes: { status: 'active' } }],
-      hasDiscordSub: true,
+      hasTwitchSub: true,
     })
 
     const { getUserPlan } = await import('@/lib/plan')
@@ -94,15 +93,14 @@ describe('PlanType with twitch_sub', () => {
     expect(plan).toBe('twitch_sub')
   })
 
-  it('Discord判定でエラーが発生してもbasicにフォールバックする', async () => {
+  it('Twitchサブスク判定でエラーが発生してもbasicにフォールバックする', async () => {
     vi.doMock('@/lib/supabase/admin', () => ({
       getSupabaseAdmin: vi.fn(() => ({
         from: vi.fn(() => createLicenseQueryBuilder([])),
       })),
     }))
-    vi.doMock('@/lib/discord/role-check', () => ({
-      hasDiscordSubRole: vi.fn().mockRejectedValue(new Error('Discord API error')),
-      isDiscordEnabled: vi.fn().mockReturnValue(true),
+    vi.doMock('@/lib/twitch/sub-check', () => ({
+      hasTwitchSub: vi.fn().mockRejectedValue(new Error('Twitch API error')),
     }))
     vi.doMock('@/lib/logger', () => ({
       logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },

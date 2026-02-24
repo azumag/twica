@@ -153,7 +153,7 @@ export default async function PlansPage() {
                   <span className="rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
                     Twitchサブスク
                   </span>
-                  <span className="text-sm text-gray-500">Discord連携</span>
+                  <span className="text-sm text-gray-500">自動適用</span>
                 </div>
                 <ul className="space-y-2 text-sm text-gray-400">
                   <li className="flex items-start gap-2">
@@ -173,9 +173,30 @@ export default async function PlansPage() {
                     <span>支援者向け問い合わせフォーム</span>
                   </li>
                 </ul>
-                <p className="mt-3 text-xs text-gray-500">
-                  TwiCa Discord サーバーのサブスクライバーロールを持つ方が対象です。アカウント設定から Discord 連携を行ってください。
-                </p>
+                {/* 適用方法の説明 */}
+                <div className="mt-4 rounded-lg bg-purple-900/20 border border-purple-700/30 p-3">
+                  <p className="text-xs text-purple-300 font-medium mb-2">適用方法</p>
+                  <ol className="space-y-1 text-xs text-gray-400">
+                    <li className="flex items-start gap-2">
+                      <span className="flex-shrink-0 text-purple-400 font-bold">1.</span>
+                      <span>
+                        <a
+                          href="https://www.twitch.tv/azumagbanjo"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-purple-400 hover:text-purple-300 underline"
+                        >
+                          azumagbanjo の Twitch チャンネル
+                        </a>
+                        をサブスクライブ
+                      </span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="flex-shrink-0 text-purple-400 font-bold">2.</span>
+                      <span>アカウント設定の「Twitchサブスク確認」から権限を付与して確認</span>
+                    </li>
+                  </ol>
+                </div>
               </div>
             </div>
           </section>
@@ -212,13 +233,50 @@ export default async function PlansPage() {
                 </a>
               </div>
 
+              {/* Twitchサブスクプランの説明 */}
               <div className="rounded-xl bg-gray-800 p-6">
                 <h3 className="mb-2 text-lg font-semibold text-white">
-                  Discord でサブスクライブする（Twitchサブスクプラン）
+                  Twitch チャンネルをサブスクライブする（Twitchサブスクプラン）
                 </h3>
-                <p className="text-gray-400">
-                  TwiCa Discord サーバーのサブスクライバーになると、コード不要で Twitchサブスクプランが自動適用されます。アカウント設定から Discord 連携を行うことで有効になります。
+                <p className="mb-4 text-gray-400">
+                  <a
+                    href="https://www.twitch.tv/azumagbanjo"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-purple-400 hover:text-purple-300 underline font-medium"
+                  >
+                    azumagbanjo の Twitch 配信チャンネル
+                  </a>
+                  のサブスクライバー向けおまけ特典です。サブスクライブ後、アカウント設定から権限を付与するだけで自動適用されます。
                 </p>
+                <ol className="mb-5 space-y-2 text-sm text-gray-400">
+                  <li className="flex items-start gap-3">
+                    <span className="flex-shrink-0 flex h-5 w-5 items-center justify-center rounded-full bg-purple-600 text-xs font-bold text-white">1</span>
+                    <span>
+                      <a
+                        href="https://www.twitch.tv/azumagbanjo"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-purple-400 hover:text-purple-300 underline"
+                      >
+                        azumagbanjo の Twitch チャンネル
+                      </a>
+                      をサブスクライブする
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-3">
+                    <span className="flex-shrink-0 flex h-5 w-5 items-center justify-center rounded-full bg-purple-600 text-xs font-bold text-white">2</span>
+                    <span>TwiCa のアカウント設定で「Twitchサブスク確認」から権限を付与 → プランが自動適用されます</span>
+                  </li>
+                </ol>
+                <a
+                  href="https://www.twitch.tv/azumagbanjo"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700"
+                >
+                  Twitch チャンネルを見る
+                </a>
               </div>
             </div>
           </section>

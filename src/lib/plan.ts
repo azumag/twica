@@ -10,7 +10,7 @@
 import { cache } from 'react'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
-import { hasDiscordSubRole } from '@/lib/discord/role-check'
+import { hasTwitchSub } from '@/lib/twitch/sub-check'
 
 export type PlanType = 'basic' | 'support' | 'patron' | 'twitch_sub'
 
@@ -62,19 +62,19 @@ const PLAN_PRIORITY: Record<PlanType, number> = {
  */
 export const getUserPlan = cache(async function getUserPlan(twitchUserId: string): Promise<PlanType> {
   try {
-    // DBライセンス判定とDiscordロール判定を並列実行
-    // Discord環境変数未設定時は hasDiscordSubRole が即座に false を返す
-    const [licensePlan, hasDiscordSub] = await Promise.all([
+    // DBライセンス判定・Twitchサブスク判定を並列実行
+    // hasTwitchSub は環境変数未設定時に即座に false を返すため、未設定環境でも安全
+    const [licensePlan, hasTwitchSubResult] = await Promise.all([
       getLicensePlan(twitchUserId),
-      hasDiscordSubRole(twitchUserId),
+      hasTwitchSub(twitchUserId),
     ])
 
-    // Discord サブスクロールがある場合は twitch_sub プランとして扱う
-    const discordPlan: PlanType = hasDiscordSub ? 'twitch_sub' : 'basic'
+    // Twitch サブスクがあれば twitch_sub プラン
+    const subPlan: PlanType = hasTwitchSubResult ? 'twitch_sub' : 'basic'
 
     // 最高優先度のプランを返す
-    if (PLAN_PRIORITY[discordPlan] > PLAN_PRIORITY[licensePlan]) {
-      return discordPlan
+    if (PLAN_PRIORITY[subPlan] > PLAN_PRIORITY[licensePlan]) {
+      return subPlan
     }
     return licensePlan
   } catch (error) {

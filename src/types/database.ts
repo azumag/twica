@@ -141,6 +141,9 @@ export interface Database {
           // 付与されたTwitchスコープの配列（既存ユーザーは空配列）
           // Array of granted Twitch OAuth scopes (empty for existing users until re-auth)
           twitch_scopes: string[]
+          // Twitch API によるサブスク確認のキャッシュ
+          twitch_sub_verified_at: string | null
+          twitch_has_sub: boolean
           created_at: string
           updated_at: string
         }
@@ -152,6 +155,8 @@ export interface Database {
           twitch_profile_image_url?: string | null
           tos_accepted_at?: string | null
           twitch_scopes?: string[]
+          twitch_sub_verified_at?: string | null
+          twitch_has_sub?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -163,6 +168,8 @@ export interface Database {
           twitch_profile_image_url?: string | null
           tos_accepted_at?: string | null
           twitch_scopes?: string[]
+          twitch_sub_verified_at?: string | null
+          twitch_has_sub?: boolean
           created_at?: string
           updated_at?: string
         }

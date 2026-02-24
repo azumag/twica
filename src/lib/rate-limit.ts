@@ -330,6 +330,8 @@ export const rateLimits = {
   discordUnlink: createRatelimit("discordUnlink", 5, 60 * 1000),
   // Discord ロール手動リフレッシュ（分あたり5回、Discord API負荷軽減）
   discordRefreshRole: createRatelimit("discordRefreshRole", 5, 60 * 1000),
+  // Twitch サブスク確認（分あたり5回、Twitch API負荷軽減）
+  twitchCheckSubscription: createRatelimit("twitchCheckSubscription", 5, 60 * 1000),
 } as const;
 
 /**

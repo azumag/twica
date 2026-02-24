@@ -823,9 +823,31 @@
       "deactivateFailed": "プランの変更に失敗しました"
     }
   },
+  "twitchSub": {
+    "title": "Twitchサブスク確認",
+    "description": "azumagbanjo の Twitch チャンネルをサブスクライブしている場合、パトロン同等の特典が自動適用されます。",
+    "status": "サブスク状態",
+    "statusActive": "有効",
+    "statusInactive": "未確認",
+    "scopeWarning": "サブスク状態を確認するには、Twitchアカウントに追加の権限が必要です。下のボタンから再認証してください。",
+    "buttons": {
+      "reauthorize": "権限を付与",
+      "reauthorizing": "認証中...",
+      "checkSubscription": "サブスク状態を確認",
+      "checking": "確認中..."
+    },
+    "messages": {
+      "subActive": "サブスクが確認されました。プランが適用されています。",
+      "subInactive": "サブスクが確認できませんでした。",
+      "needsReauth": "権限が不足しています。再認証してください。",
+      "checkFailed": "確認に失敗しました。しばらくしてから再試行してください。",
+      "reauthorizeFailed": "再認証に失敗しました。",
+      "networkError": "ネットワークエラーが発生しました。"
+    }
+  },
   "discord": {
     "title": "Discord連携",
-    "description": "Discordサーバーと連携して、Twitchサブスクライバー特典を受け取れます。",
+    "description": "azumagbanjo の Twitch チャンネルのサブスクライバー向けおまけ特典です。① Twitch チャンネルをサブスクライブ、② Discord サーバーに参加してロールを取得、③ こちらで Discord 連携 — の3ステップでコード不要でプランが適用されます。",
     "linkButton": "Discordと連携する",
     "unlinkButton": "連携を解除",
     "refreshButton": "ロール更新",

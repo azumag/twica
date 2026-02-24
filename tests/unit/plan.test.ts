@@ -7,9 +7,9 @@ import {
 } from '@/lib/plan'
 
 vi.mock('@/lib/logger')
-vi.mock('@/lib/discord/role-check', () => ({
-  hasDiscordSubRole: vi.fn().mockResolvedValue(false),
-  isDiscordEnabled: vi.fn().mockReturnValue(false),
+vi.mock('@/lib/twitch/sub-check', () => ({
+  hasTwitchSub: vi.fn().mockResolvedValue(false),
+  isTwitchSubCheckEnabled: vi.fn().mockReturnValue(false),
 }))
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()

@@ -7,21 +7,21 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { LanguageSwitcherSettings } from "@/components/LanguageSwitcher";
 import VoteCampaignReshowSetting from "@/components/VoteCampaignReshowSetting";
 import SupportPlanSection from "@/components/SupportPlanSection";
-import DiscordLinkSection from "@/components/DiscordLinkSection";
+import TwitchSubCheckSection from "@/components/TwitchSubCheckSection";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
 /**
- * Discord連携情報をDBから取得するヘルパー
+ * Twitchサブスク情報をDBから取得するヘルパー
  * エラー時はnullを返し、呼び出し元のレンダリングをブロックしない
  */
-async function getDiscordInfo(twitchUserId: string) {
+async function getTwitchSubInfo(twitchUserId: string) {
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const { data } = await supabaseAdmin
       .from("users")
-      .select("discord_user_id, discord_has_sub_role")
+      .select("twitch_has_sub")
       .eq("twitch_user_id", twitchUserId)
       .maybeSingle();
     return data;
@@ -34,11 +34,7 @@ async function getDiscordInfo(twitchUserId: string) {
  * User account settings page
  * ユーザーアカウント設定ページ
  */
-export default async function AccountSettingsPage({
-  searchParams,
-}: {
-  searchParams?: Promise<{ discord_error?: string }>;
-}) {
+export default async function AccountSettingsPage() {
   const t = await getTranslations("accountPage");
   const session = await getSession();
 
@@ -46,14 +42,11 @@ export default async function AccountSettingsPage({
     redirect("/");
   }
 
-  const params = await searchParams;
-  const discordError = params?.discord_error ?? null;
-
-  // プラン判定・投票キャンペーン判定・Discord情報取得を並列実行
-  const [showVoteCampaign, currentPlan, discordInfo] = await Promise.all([
+  // プラン判定・投票キャンペーン判定・Twitchサブスク情報取得を並列実行
+  const [showVoteCampaign, currentPlan, twitchSubInfo] = await Promise.all([
     shouldShowVoteCampaign(session.twitchUserId),
     getUserPlan(session.twitchUserId),
-    getDiscordInfo(session.twitchUserId),
+    getTwitchSubInfo(session.twitchUserId),
   ]);
 
   return (
@@ -69,11 +62,9 @@ export default async function AccountSettingsPage({
 
       {/* 設定セクション */}
       <div className="space-y-6">
-        {/* Discord連携セクション */}
-        <DiscordLinkSection
-          discordUserId={discordInfo?.discord_user_id ?? null}
-          discordSubVerified={discordInfo?.discord_has_sub_role === true}
-          initialError={discordError}
+        {/* Twitchサブスク確認セクション */}
+        <TwitchSubCheckSection
+          initialHasSub={twitchSubInfo?.twitch_has_sub === true}
         />
 
         {/* 言語設定セクション */}
