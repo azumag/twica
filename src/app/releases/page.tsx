@@ -9,8 +9,8 @@ export const metadata: Metadata = {
 };
 
 /**
- * リリースノートページ (v1.27.0)
- * 支援プランシステムの追加
+ * リリースノートページ
+ * v1.27.0: 支援プランシステム・Twitchサブスク確認・問い合わせフォーム
  */
 export default async function ReleasesPage() {
   const session = await getSession();
@@ -48,71 +48,16 @@ export default async function ReleasesPage() {
             TwiCa リリースノート
           </h1>
 
-          {/* v1.28.0 - Discord連携・問い合わせフォーム */}
-          <div className="mb-16">
-            <div className="mb-8">
-              <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
-                v1.28.0
-              </div>
-              <p className="mt-2 text-sm text-gray-500">2026-02-24</p>
-            </div>
-
-            <section className="mb-10">
-              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
-                新機能・改善
-              </h2>
-
-              <div className="space-y-6">
-                <div className="rounded-xl bg-gray-800 p-6">
-                  <h3 className="mb-2 text-lg font-semibold text-white">
-                    Discord 連携によるプラン自動適用
-                  </h3>
-                  <p className="text-gray-400">
-                    TwiCa の Discord サーバーをサブスクライブすると、支援コード不要で「Twitchサブスクプラン」が自動適用されるようになりました。アカウント設定から Discord 連携を行うことで有効になります。特典内容はパトロンプランと同等です。
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-gray-800 p-6">
-                  <h3 className="mb-2 text-lg font-semibold text-white">
-                    支援者向け問い合わせフォーム
-                  </h3>
-                  <p className="text-gray-400">
-                    サポーター・パトロン・Twitchサブスクプランをご利用の方向けに、専用の問い合わせフォームを追加しました。ダッシュボードの「問い合わせ」メニューからアクセスできます。
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-gray-800 p-6">
-                  <h3 className="mb-2 text-lg font-semibold text-white">
-                    プランのダウングレード機能
-                  </h3>
-                  <p className="text-gray-400">
-                    アカウント設定からプランをベーシックに戻せるようになりました。ダウングレード後は、そのプランの特典（追加ストレージ等）が失われます。
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-gray-800 p-6">
-                  <h3 className="mb-3 text-lg font-semibold text-white">
-                    その他の改善・修正
-                  </h3>
-                  <ul className="ml-4 list-disc space-y-2 text-gray-400">
-                    <li>ストレージ追加容量を修正: サポーター +250MB、パトロン +500MB（前バージョンの記載から変更）</li>
-                    <li>ログアウト後の再ログイン時に Twitch チャット通知のスコープが失われる問題を修正</li>
-                    <li>再認証フローの識別を改善し、スコープの引き継ぎを正確に制御</li>
-                  </ul>
-                </div>
-              </div>
-            </section>
-          </div>
-
-          {/* v1.27.0 - 支援プラン */}
+          {/* v1.27.0 - 支援プラン・Twitchサブスク確認・問い合わせフォーム */}
           <div className="mb-16">
             <div className="mb-8">
               <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
                 v1.27.0
               </div>
-              <p className="mt-2 text-sm text-gray-500">2026-02-24</p>
+              <p className="mt-2 text-sm text-gray-500">2026-02-25</p>
             </div>
 
+            {/* 支援プランシステム */}
             <section className="mb-10">
               <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
                 支援プランシステム
@@ -135,6 +80,7 @@ export default async function ReleasesPage() {
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
                     <li><span className="text-blue-400 font-medium">サポーター</span> - ストレージ容量 +250MB、Full HD（1920px幅）画像対応</li>
                     <li><span className="text-yellow-400 font-medium">パトロン</span> - ストレージ容量 +500MB、4K（3840px幅）画像対応</li>
+                    <li><span className="text-purple-400 font-medium">Twitchサブスクプラン</span> - Twitchチャンネルをサブスクしている方に自動適用（パトロン同等の特典）</li>
                   </ul>
                   <p className="mt-3 text-sm text-gray-500">
                     支援コードの入力はダッシュボードの「アカウント設定」から行えます。詳細は
@@ -153,8 +99,62 @@ export default async function ReleasesPage() {
                 </div>
 
                 <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    プランのダウングレード
+                  </h3>
+                  <p className="text-gray-400">
+                    アカウント設定からプランをベーシックに戻せます。ダウングレード後は、そのプランの特典（追加ストレージ等）が失われます。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            {/* Twitchサブスク確認 */}
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                Twitch サブスク確認
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    Twitch チャンネルサブスクによるプラン自動適用
+                  </h3>
+                  <p className="text-gray-400">
+                    Twitch チャンネルをサブスクライブしている方は、アカウント設定の「Twitchサブスク確認」からサブスク状態を確認するだけで、パトロン同等のプランが自動適用されます。支援コードの入力は不要です。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            {/* 支援者向け問い合わせフォーム */}
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                支援者向け問い合わせフォーム
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    専用の問い合わせ機能
+                  </h3>
+                  <p className="text-gray-400">
+                    サポーター・パトロン・Twitchサブスクプランをご利用の方向けに、専用の問い合わせフォームを追加しました。ダッシュボードの「問い合わせ」メニューからアクセスできます。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            {/* 今後の予定 */}
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                今後の予定
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-3 text-lg font-semibold text-white">
-                    今後実装予定のプラン特典
+                    実装予定のプラン特典
                   </h3>
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
                     <li>効果音の細かい設定（レアリティ別の効果音など）</li>
@@ -173,14 +173,34 @@ export default async function ReleasesPage() {
                     将来的にはクレジットカード決済による機能別のアンロックを検討しています。FANBOXよりも手頃な価格で個別機能を解放できる仕組みを目指していますが、法的手続き等の関係で実装にはもう少し時間がかかる見込みです。
                   </p>
                 </div>
+              </div>
+            </section>
 
+            {/* その他の改善・修正 */}
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                その他の改善・修正
+              </h2>
+
+              <div className="space-y-6">
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-3 text-lg font-semibold text-white">
-                    その他の改善
+                    改善
                   </h3>
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
                     <li>アカウント設定ページに現在のプランと特典の表示を追加</li>
                     <li>ストレージ容量超過時にカード管理画面でわかりやすい警告を表示</li>
+                    <li>サポートプランページ（/plans）を新規追加</li>
+                  </ul>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-3 text-lg font-semibold text-white">
+                    修正
+                  </h3>
+                  <ul className="ml-4 list-disc space-y-2 text-gray-400">
+                    <li>ログアウト後の再ログイン時に Twitch チャット通知のスコープが失われる問題を修正</li>
+                    <li>再認証フローの識別を改善し、スコープの引き継ぎを正確に制御</li>
                   </ul>
                 </div>
               </div>
