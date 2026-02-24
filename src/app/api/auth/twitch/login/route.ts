@@ -7,7 +7,7 @@ import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
-import { getSession } from '@/lib/session'
+import { getSession, parseSession } from '@/lib/session'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 
@@ -69,12 +69,9 @@ export async function GET(request: Request) {
         twitchUserId = session.twitchUserId
       }
 
-      // 2. ログアウト後のスコープ復元用最小Cookie（twitchUserIdのみ）から取得
-      // clearSession()がログアウト時に設定する専用Cookie。
-      // 全セッションデータの代わりにtwitchUserIdだけを保持するため改ざん耐性が高い
-      // (twitchUserIdはTwitch公開APIで誰でも取得可能な情報であり機密性なし)
-      // Read twitchUserId from the minimal scope-restore cookie set by clearSession() on logout.
-      // Using a dedicated minimal cookie avoids retaining full unsigned session data.
+      // 2. 明示ログアウト後のスコープ復元: SCOPE_RESTORE_USER_ID Cookie（twitchUserIdのみ）から取得
+      // clearSession()がログアウト時に設定する専用最小Cookie。
+      // Read twitchUserId from minimal scope-restore cookie set by clearSession() on explicit logout.
       if (!twitchUserId) {
         const scopeRestoreUid = cookieStore.get(COOKIE_NAMES.SCOPE_RESTORE_USER_ID)?.value
         if (scopeRestoreUid) {
@@ -82,6 +79,30 @@ export async function GET(request: Request) {
           logger.info('Login: extracted twitchUserId from scope restore cookie', {
             twitchUserId,
           })
+        }
+      }
+
+      // 3. 自然失効後のスコープ復元: 期限切れセッションCookieからtwitchUserIdを取得
+      // SCOPE_RESTORE_USER_ID はclearSession()でのみ設定されるため、セッションが明示ログアウト
+      // なしに7日経過で自然失効した場合はこのフォールバックが必要。
+      // parseSession()で全フィールドの型・存在を検証してからtwitchUserIdのみを使用する。
+      // Fallback for natural session expiry (no explicit logout before 7-day timeout):
+      // SCOPE_RESTORE_USER_ID is only set by clearSession(), so naturally-expired sessions
+      // must fall back to the session cookie. Use parseSession() to validate structure
+      // before trusting twitchUserId.
+      if (!twitchUserId) {
+        const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+        if (sessionCookie) {
+          try {
+            const parsed = parseSession(sessionCookie)
+            twitchUserId = parsed.twitchUserId
+            logger.info('Login: extracted twitchUserId from naturally expired session cookie', {
+              twitchUserId,
+            })
+          } catch {
+            // 構造検証失敗 = 破損/改ざんCookieなので無視
+            // Structure validation failed = corrupted/tampered cookie, skip safely
+          }
         }
       }
 

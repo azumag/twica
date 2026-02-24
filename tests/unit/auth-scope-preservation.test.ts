@@ -208,7 +208,7 @@ describe('Auth scope preservation: login route', () => {
     expect(mockFrom).not.toHaveBeenCalledWith('users')
   })
 
-  it('SCOPE_RESTORE_USER_ID CookieからtwitchUserIdを取得し、DBの追加スコープをOAuthリクエストに含める', async () => {
+  it('明示ログアウト後: SCOPE_RESTORE_USER_ID CookieからtwitchUserIdを取得し追加スコープをOAuthリクエストに含める', async () => {
     // ログアウト時にclearSession()が設定するSCOPE_RESTORE_USER_ID Cookieを模擬
     mockCookieStore.get.mockImplementation((name: string) => {
       if (name === 'twica_scope_restore_uid') return { value: 'user456' }
@@ -226,6 +226,43 @@ describe('Auth scope preservation: login route', () => {
     await GET(createMockRequest())
 
     // user:write:chatがOAuthリクエストに含まれることを確認
+    expect(getTwitchAuthUrl).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      ['user:write:chat'],
+      { forceVerify: false },
+    )
+  })
+
+  it('自然失効後（明示ログアウトなし）: 期限切れセッションCookieからtwitchUserIdを取得し追加スコープを復元する', async () => {
+    // SCOPE_RESTORE_USER_IDなし（明示ログアウトしていない）
+    // 期限切れセッションCookieのみ存在する（7日経過後）
+    const expiredSession = {
+      twitchUserId: 'user789',
+      twitchUsername: 'testuser3',
+      twitchDisplayName: 'Test User 3',
+      twitchProfileImageUrl: 'https://example.com/avatar3.png',
+      broadcasterType: 'affiliate',
+      expiresAt: Date.now() - 100000, // expired
+      version: 1,
+    }
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twica_session') return { value: JSON.stringify(expiredSession) }
+      return undefined
+    })
+    mockParseSession.mockReturnValue(expiredSession)
+
+    // DBに追加スコープがある
+    mockMaybeSingle.mockResolvedValue({
+      data: { twitch_scopes: ['user:read:email', 'user:write:chat'] },
+      error: null,
+    })
+
+    const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
+    const { GET } = await import('@/app/api/auth/twitch/login/route')
+    await GET(createMockRequest())
+
+    // user:write:chatがOAuthリクエストに含まれることを確認（自然失効でもスコープ復元される）
     expect(getTwitchAuthUrl).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
