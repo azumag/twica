@@ -26,9 +26,6 @@ export const COOKIE_NAMES = {
   // Discord OAuth認証フロー用のCSRF state
   // CSRF state for Discord OAuth flow
   DISCORD_AUTH_STATE: 'discord_auth_state',
-  // 再認証フロー判定用Cookie（値はOAuth state）
-  // Re-auth flow marker cookie (value is the OAuth state)
-  REAUTH_STATE: 'twica_reauth_state',
 }
 
 export const API_ROUTES = {
