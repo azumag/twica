@@ -4,7 +4,7 @@
 
 -- support_inquiries: 問い合わせ本体テーブル
 CREATE TABLE IF NOT EXISTS support_inquiries (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   -- 投稿者のTwitchユーザーID（usersテーブル未登録でも投稿可能にするためFKなし）
   twitch_user_id TEXT NOT NULL,
   -- 投稿時点の表示名スナップショット（表示名変更に影響されないよう保存）
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS support_inquiries (
 
 -- support_inquiry_messages: 後続メッセージ（ユーザー/管理者の返信）
 CREATE TABLE IF NOT EXISTS support_inquiry_messages (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   -- 親の問い合わせ（削除時にメッセージも連鎖削除）
   inquiry_id UUID NOT NULL REFERENCES support_inquiries(id) ON DELETE CASCADE,
   -- 送信者タイプ: user=ユーザー, admin=管理者
@@ -36,7 +36,6 @@ CREATE TABLE IF NOT EXISTS support_inquiry_messages (
 );
 
 -- updated_atの自動更新トリガー（00001_initial_schemaで定義済みの関数を再利用）
-DROP TRIGGER IF EXISTS update_support_inquiries_updated_at ON support_inquiries;
 CREATE TRIGGER update_support_inquiries_updated_at
   BEFORE UPDATE ON support_inquiries
   FOR EACH ROW
@@ -61,7 +60,6 @@ ON support_inquiry_messages(inquiry_id, created_at ASC);
 -- RLS: service_roleのみフルアクセス（サーバーサイド専用、既存パターン踏襲）
 ALTER TABLE support_inquiries ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Service role can manage support inquiries" ON support_inquiries;
 CREATE POLICY "Service role can manage support inquiries"
 ON support_inquiries
 FOR ALL
@@ -71,7 +69,6 @@ WITH CHECK (true);
 
 ALTER TABLE support_inquiry_messages ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Service role can manage support inquiry messages" ON support_inquiry_messages;
 CREATE POLICY "Service role can manage support inquiry messages"
 ON support_inquiry_messages
 FOR ALL

@@ -4,7 +4,7 @@
 -- has-many: 1人のストリーマーに複数のボーナスエントリを持てる
 
 CREATE TABLE IF NOT EXISTS streamer_storage_bonus (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   -- streamerテーブルへの外部キー（streamer削除時にcascade）
   streamer_id UUID NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
   -- ボーナス容量（MB単位、正の整数のみ）
@@ -26,7 +26,6 @@ ON streamer_storage_bonus(streamer_id);
 ALTER TABLE streamer_storage_bonus ENABLE ROW LEVEL SECURITY;
 
 -- service_roleはフルアクセス（サーバーサイド操作用）
-DROP POLICY IF EXISTS "Service role can manage storage bonus" ON streamer_storage_bonus;
 CREATE POLICY "Service role can manage storage bonus"
 ON streamer_storage_bonus
 FOR ALL

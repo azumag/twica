@@ -33,11 +33,11 @@ CREATE TABLE IF NOT EXISTS errors (
 
 -- 未処理エラーの検索を高速化（Cron Worker が毎5分クエリする対象）
 -- 部分インデックスで github_issue_created = FALSE のみ対象にし、サイズを最小化
-CREATE INDEX IF NOT EXISTS idx_errors_pending ON errors(github_issue_created, created_at DESC)
+CREATE INDEX idx_errors_pending ON errors(github_issue_created, created_at DESC)
   WHERE github_issue_created = FALSE;
 
 -- エラーの長期保存データ削減のため、古いレコードを定期削除する際に使用
-CREATE INDEX IF NOT EXISTS idx_errors_created_at ON errors(created_at);
+CREATE INDEX idx_errors_created_at ON errors(created_at);
 
 COMMENT ON TABLE errors IS 'エラーログ（GitHub Issue自動作成用）- Issue #239';
 COMMENT ON COLUMN errors.error_type IS 'エラー種別: [Error], [API Error], [Auth Error] 等';
@@ -47,7 +47,6 @@ COMMENT ON COLUMN errors.context IS 'エラーコンテキスト（JSON形式、
 -- メインWorker・Cron Worker ともに SUPABASE_SERVICE_ROLE_KEY を使用
 ALTER TABLE errors ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS service_role_errors ON errors;
 CREATE POLICY service_role_errors ON errors
   FOR ALL
   USING (auth.jwt() ->> 'role' = 'service_role')

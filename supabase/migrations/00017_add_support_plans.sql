@@ -11,7 +11,7 @@
 -- ========================================
 -- コードはSHA-256ハッシュとして保存（平文は管理画面生成時に一度だけ表示）
 -- status: 'active'=通常利用可, 'rotating'=既存ユーザーは有効だが新規アクティベーション不可, 'revoked'=無効化済み
-CREATE TABLE IF NOT EXISTS support_codes (
+CREATE TABLE support_codes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code_hash TEXT NOT NULL UNIQUE,
   plan_type TEXT NOT NULL CHECK (plan_type IN ('support', 'patron')),
@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS support_codes (
 );
 
 -- インデックス: コードハッシュでの検索を高速化
-CREATE INDEX IF NOT EXISTS idx_support_codes_code_hash ON support_codes (code_hash);
+CREATE INDEX idx_support_codes_code_hash ON support_codes (code_hash);
 -- インデックス: ステータスでのフィルタリング
-CREATE INDEX IF NOT EXISTS idx_support_codes_status ON support_codes (status);
+CREATE INDEX idx_support_codes_status ON support_codes (status);
 
 COMMENT ON TABLE support_codes IS '支援プランの共有コードマスタ。コードはSHA-256ハッシュで保存';
 COMMENT ON COLUMN support_codes.code_hash IS 'SHA-256ハッシュ化されたコード';
@@ -36,7 +36,7 @@ COMMENT ON COLUMN support_codes.status IS 'active=利用可, rotating=新規不�
 -- user_licenses テーブル（ユーザーのライセンス）
 -- ========================================
 -- twitch_user_idとcode_idの組み合わせで一意（同一コードを同一ユーザーが複数回使えない）
-CREATE TABLE IF NOT EXISTS user_licenses (
+CREATE TABLE user_licenses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   twitch_user_id TEXT NOT NULL,
   code_id UUID NOT NULL REFERENCES support_codes(id) ON DELETE CASCADE,
@@ -47,9 +47,9 @@ CREATE TABLE IF NOT EXISTS user_licenses (
 );
 
 -- インデックス: ユーザーIDでの検索（プラン判定時に使用）
-CREATE INDEX IF NOT EXISTS idx_user_licenses_twitch_user_id ON user_licenses (twitch_user_id);
+CREATE INDEX idx_user_licenses_twitch_user_id ON user_licenses (twitch_user_id);
 -- インデックス: コードIDでの逆引き（コード無効化時に使用）
-CREATE INDEX IF NOT EXISTS idx_user_licenses_code_id ON user_licenses (code_id);
+CREATE INDEX idx_user_licenses_code_id ON user_licenses (code_id);
 
 COMMENT ON TABLE user_licenses IS 'ユーザーの支援プランライセンス。コードが有効な限りライセンスも有効';
 COMMENT ON COLUMN user_licenses.fanbox_id IS 'FANBOX IDの参考情報（不正検知用）';
@@ -62,11 +62,9 @@ ALTER TABLE user_licenses ENABLE ROW LEVEL SECURITY;
 
 -- service_role のみアクセス可（API Route からのみ操作）
 -- anon/authenticated ユーザーは直接テーブルにアクセスできない
-DROP POLICY IF EXISTS "service_role_support_codes" ON support_codes;
 CREATE POLICY "service_role_support_codes" ON support_codes
   FOR ALL USING (auth.role() = 'service_role');
 
-DROP POLICY IF EXISTS "service_role_user_licenses" ON user_licenses;
 CREATE POLICY "service_role_user_licenses" ON user_licenses
   FOR ALL USING (auth.role() = 'service_role');
 

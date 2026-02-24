@@ -4,7 +4,7 @@
 
 -- announcements: お知らせ本体テーブル
 CREATE TABLE IF NOT EXISTS announcements (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   -- severity: 重要度レベル (info=通常, warning=注意, critical=重要)
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS announcements (
 
 -- announcement_reads: ユーザーごとの既読管理テーブル
 CREATE TABLE IF NOT EXISTS announcement_reads (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   announcement_id UUID NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
   -- usersテーブルに未登録のユーザーも既読にできるようFKなし
   twitch_user_id TEXT NOT NULL,
@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS announcement_reads (
 );
 
 -- updated_atの自動更新トリガー（00001_initial_schemaで定義済みの関数を再利用）
-DROP TRIGGER IF EXISTS update_announcements_updated_at ON announcements;
 CREATE TRIGGER update_announcements_updated_at
   BEFORE UPDATE ON announcements
   FOR EACH ROW
@@ -47,7 +46,6 @@ ON announcement_reads(announcement_id);
 -- RLS: service_roleのみフルアクセス（サーバーサイド専用、既存パターン00013踏襲）
 ALTER TABLE announcements ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Service role can manage announcements" ON announcements;
 CREATE POLICY "Service role can manage announcements"
 ON announcements
 FOR ALL
@@ -57,7 +55,6 @@ WITH CHECK (true);
 
 ALTER TABLE announcement_reads ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Service role can manage announcement reads" ON announcement_reads;
 CREATE POLICY "Service role can manage announcement reads"
 ON announcement_reads
 FOR ALL
