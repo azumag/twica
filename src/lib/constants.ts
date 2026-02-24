@@ -20,6 +20,9 @@ export const COOKIE_NAMES = {
   // スコープ復元失敗時のガード用Cookie（値はOAuth state）
   // Guard cookie for scope restoration failure (value is the OAuth state)
   SCOPE_RESTORE_FAILED: 'twica_scope_restore_failed',
+  // 再認証フロー判定用Cookie（値はOAuth state）
+  // Re-auth flow marker cookie (value is the OAuth state)
+  REAUTH_STATE: 'twica_reauth_state',
 }
 
 export const API_ROUTES = {
