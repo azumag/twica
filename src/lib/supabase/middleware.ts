@@ -38,21 +38,24 @@ export async function updateSession(request: NextRequest) {
     try {
       const parsed = JSON.parse(sessionCookie)
       if (typeof parsed.expiresAt === 'number' && Date.now() > parsed.expiresAt) {
-        // セッション期限切れ時: CSRFトークンのみ削除。セッションCookieは保持する。
-        // セッションCookieを削除するとログイン時のスコープ保持ができなくなるため。
-        // On session expiry: only clear CSRF token. Keep session cookie for scope preservation.
-        // Deleting session cookie here would prevent scope preservation during re-login.
-        const deleteOptions = getDeleteCookieOptions()
-        response.cookies.set(COOKIE_NAMES.CSRF_TOKEN, '', deleteOptions)
+        // セッション期限切れ時: CSRFトークンが存在する場合のみ削除。セッションCookieは保持する。
+        // リクエストにcsrf_tokenがない場合はSet-Cookieヘッダを出さない（キャッシュ効率維持）
+        // On session expiry: only clear CSRF token if it exists in request.
+        // Avoids unnecessary Set-Cookie headers that degrade CDN/browser cache efficiency.
+        if (request.cookies.get(COOKIE_NAMES.CSRF_TOKEN)) {
+          const deleteOptions = getDeleteCookieOptions()
+          response.cookies.set(COOKIE_NAMES.CSRF_TOKEN, '', deleteOptions)
+        }
       }
     } catch {
-      // パースできないCookieは改ざん/破損の可能性があるため両方削除（セキュリティ対策）
-      // スコープ保持にも使えないため、削除しても問題ない
-      // Clear unparseable cookies (both session and CSRF) as they may be tampered/corrupted
-      // They can't be used for scope preservation anyway
+      // パースできないCookieは改ざん/破損の可能性があるため削除（セキュリティ対策）
+      // csrf_tokenもリクエストに存在する場合のみ削除（不要なSet-Cookie抑制）
+      // Clear unparseable session cookie. Also clear CSRF token only if present in request.
       const deleteOptions = getDeleteCookieOptions()
       response.cookies.set(COOKIE_NAMES.SESSION, '', deleteOptions)
-      response.cookies.set(COOKIE_NAMES.CSRF_TOKEN, '', deleteOptions)
+      if (request.cookies.get(COOKIE_NAMES.CSRF_TOKEN)) {
+        response.cookies.set(COOKIE_NAMES.CSRF_TOKEN, '', deleteOptions)
+      }
     }
   }
 
