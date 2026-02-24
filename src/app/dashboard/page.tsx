@@ -7,6 +7,8 @@ import { RARITY_ORDER, RARITIES, VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { getStorageUsage, formatBytes } from "@/lib/storage-usage";
+import { sha256Prefix } from "@/lib/crypto-utils";
 import Stats from "@/components/Stats";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 import AnnouncementBanner from "@/components/AnnouncementBanner";
@@ -37,11 +39,18 @@ export default async function DashboardPage() {
 
   const isStreamer = canUseStreamerFeatures(session);
 
-  // カードコレクション取得、キャンペーン判定、未読お知らせを並列実行してレイテンシ削減
-  const [userCards, showVoteCampaign, unreadAnnouncements] = await Promise.all([
+  // カードコレクション取得、キャンペーン判定、未読お知らせ、ストレージ使用量を並列実行してレイテンシ削減
+  // ストレージ取得失敗時はnullにフォールバック（ページ表示をブロックしない）
+  const storagePromise = isStreamer
+    ? sha256Prefix(session.twitchUserId)
+        .then((prefix) => getStorageUsage(prefix, session.twitchUserId))
+        .catch((): null => null)
+    : Promise.resolve(null);
+  const [userCards, showVoteCampaign, unreadAnnouncements, storageUsage] = await Promise.all([
     getUserCards(session.twitchUserId),
     shouldShowVoteCampaign(session.twitchUserId),
     getUnreadAnnouncements(session.twitchUserId),
+    storagePromise,
   ]);
 
   // Sort cards by rarity (legendary first)
@@ -81,6 +90,35 @@ export default async function DashboardPage() {
 
       {/* 投票キャンペーンボタン（全ユーザー向け、期間内かつ未適用の場合のみ表示） */}
       <VoteCampaignButton visible={showVoteCampaign} bonusMb={VOTE_CAMPAIGN_CONFIG.BONUS_MB} />
+
+      {/* Storage over limit warning banner (for streamers) */}
+      {/* ストレージ容量超過警告バナー（配信者向け） */}
+      {storageUsage?.planOverLimit && (
+        <div className="mb-6 rounded-lg bg-red-500/10 border border-red-500/30 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-semibold text-red-300">
+                {t("overview.storageOverLimit")}
+              </p>
+              <p className="mt-1 text-sm text-red-400/80">
+                {t("overview.storageOverLimitDescription")}
+              </p>
+              <p className="mt-2 text-xs text-gray-400">
+                {t("overview.storageUsage", {
+                  usage: formatBytes(storageUsage.userUsage),
+                  limit: formatBytes(storageUsage.userLimitBytes),
+                })}
+              </p>
+            </div>
+            <Link
+              href="/dashboard/cards"
+              className="shrink-0 rounded-lg bg-red-600/20 px-3 py-1.5 text-sm text-red-300 hover:bg-red-600/30 transition-colors"
+            >
+              {t("overview.manageCards")}
+            </Link>
+          </div>
+        </div>
+      )}
 
       {/* Non-streamer info */}
       {/* 非配信者向け情報 */}

@@ -11,6 +11,7 @@ import { uploadToR2WithRetry } from '@/lib/r2-client';
 import { recordBlobFile } from '@/lib/storage-db';
 import { getStorageUsage } from '@/lib/storage-usage';
 import { sha256Prefix } from '@/lib/crypto-utils';
+import { getUserPlan, PLAN_MAX_UPLOAD_SIZE } from '@/lib/plan';
 import type { Session } from '@/lib/session';
 
 interface ValidateRequestResult {
@@ -52,7 +53,7 @@ async function validateRequest(request: NextRequest): Promise<ValidateRequestRes
   return { session };
 }
 
-async function validateFile(file: File | null): Promise<NextResponse | null> {
+async function validateFile(file: File | null, maxFileSize?: number): Promise<NextResponse | null> {
   if (!file) {
     return NextResponse.json({ error: ERROR_MESSAGES.NO_FILE_SELECTED }, { status: 400 });
   }
@@ -61,7 +62,8 @@ async function validateFile(file: File | null): Promise<NextResponse | null> {
     return NextResponse.json({ error: ERROR_MESSAGES.FILE_NAME_EMPTY }, { status: 400 });
   }
 
-  const validation = validateUpload(file);
+  // プラン別のmaxFileSizeが指定されている場合はそちらを使用
+  const validation = validateUpload(file, maxFileSize);
   if (!validation.valid) {
     return NextResponse.json(
       { error: getUploadErrorMessage(validation.error!) },
@@ -135,7 +137,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
 
-    const fileValidationError = await validateFile(file);
+    // プラン別のアップロードサイズ上限を適用
+    const plan = await getUserPlan(session!.twitchUserId);
+    const maxFileSize = PLAN_MAX_UPLOAD_SIZE[plan];
+
+    const fileValidationError = await validateFile(file, maxFileSize);
     if (fileValidationError) {
       return fileValidationError;
     }

@@ -86,6 +86,37 @@ export default async function ReleasesPage() {
                 </div>
 
                 <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    高画質カード登録
+                  </h3>
+                  <p className="text-gray-400">
+                    支援プランに応じて、カード画像の登録解像度が向上します。サポーターはFull HD（1920px幅、上限5MB）、パトロンは4K（3840px幅、上限10MB）まで対応します。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-3 text-lg font-semibold text-white">
+                    今後実装予定のプラン特典
+                  </h3>
+                  <ul className="ml-4 list-disc space-y-2 text-gray-400">
+                    <li>効果音の細かい設定（レアリティ別の効果音など）</li>
+                    <li>動画カード対応</li>
+                    <li>複数コレクション</li>
+                    <li>N連ガチャ</li>
+                    <li>全期間統計</li>
+                  </ul>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    今後の展望
+                  </h3>
+                  <p className="text-gray-400">
+                    将来的にはクレジットカード決済による機能別のアンロックを検討しています。FANBOXよりも手頃な価格で個別機能を解放できる仕組みを目指していますが、法的手続き等の関係で実装にはもう少し時間がかかる見込みです。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-3 text-lg font-semibold text-white">
                     その他の改善
                   </h3>

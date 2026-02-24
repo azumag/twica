@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import ReactCrop, { type Crop, centerCrop, makeAspectCrop } from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
 
@@ -8,30 +8,37 @@ import "react-image-crop/dist/ReactCrop.css";
 // トリミングモードの型：正方形またはポートレイト
 export type CropMode = "square" | "portrait";
 
-// Output dimensions configuration for each crop mode
-// 各トリミングモードの出力サイズ設定
-export const CROP_MODES = {
-  // Square mode: 800x800 pixels (1:1 aspect ratio)
-  // 正方形モード: 800x800ピクセル（1:1のアスペクト比）
-  square: {
-    width: 800,
-    height: 800,
-    aspect: 1, // 1:1 aspect ratio
-    label: "正方形",
-    labelEn: "Square",
-    dimensions: "800x800",
-  },
-  // Portrait mode: 800x1118 pixels (approximately 5:7 aspect ratio)
-  // ポートレイトモード: 800x1118ピクセル（約5:7のアスペクト比）
-  portrait: {
-    width: 800,
-    height: 1118,
-    aspect: 800 / 1118, // approximately 0.716
-    label: "ポートレイト",
-    labelEn: "Portrait",
-    dimensions: "800x1118",
-  },
-} as const;
+/**
+ * maxWidth に応じたトリミングモード設定を生成
+ * アスペクト比は固定（正方形=1:1, ポートレイト≈5:7）で、幅のみ変動
+ * @param maxWidth - カード画像の最大幅（ピクセル）
+ */
+export function getCropModes(maxWidth: number) {
+  // ポートレイトの高さはアスペクト比 800:1118 を維持して算出
+  const portraitHeight = Math.round(maxWidth * (1118 / 800));
+  return {
+    square: {
+      width: maxWidth,
+      height: maxWidth,
+      aspect: 1,
+      label: "正方形",
+      labelEn: "Square",
+      dimensions: `${maxWidth}x${maxWidth}`,
+    },
+    portrait: {
+      width: maxWidth,
+      height: portraitHeight,
+      aspect: maxWidth / portraitHeight,
+      label: "ポートレイト",
+      labelEn: "Portrait",
+      dimensions: `${maxWidth}x${portraitHeight}`,
+    },
+  };
+}
+
+// デフォルトの800px幅で後方互換性を維持
+// Backward compatible: default 800px width
+export const CROP_MODES = getCropModes(800);
 
 // Props for the ImageCropper component
 // ImageCropperコンポーネントのプロパティ
@@ -39,8 +46,8 @@ interface ImageCropperProps {
   // Source image file to crop
   // トリミング対象の画像ファイル
   imageFile: File;
-  // Crop mode: square (800x800) or portrait (800x1118)
-  // トリミングモード: 正方形(800x800)またはポートレイト(800x1118)
+  // Crop mode: square or portrait
+  // トリミングモード: 正方形またはポートレイト
   cropMode: CropMode;
   // Callback when cropping is confirmed, returns the cropped image as a Blob
   // トリミング確定時のコールバック、トリミング済み画像をBlobで返す
@@ -48,6 +55,9 @@ interface ImageCropperProps {
   // Callback when cancel button is clicked
   // キャンセルボタンクリック時のコールバック
   onCancel: () => void;
+  // Maximum image width in pixels (plan-based, default: 800)
+  // プラン別最大画像幅（デフォルト: 800px）
+  maxWidth?: number;
 }
 
 /**
@@ -82,10 +92,10 @@ function centerAspectCrop(mediaWidth: number, mediaHeight: number, aspect: numbe
  *
  * ユーザーが画像の領域を選択し、選択されたトリミングモードに基づいてトリミング画像を出力するコンポーネント
  */
-export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCancel }: ImageCropperProps) {
-  // Get crop mode configuration
-  // トリミングモードの設定を取得
-  const cropConfig = CROP_MODES[cropMode];
+export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCancel, maxWidth = 800 }: ImageCropperProps) {
+  // maxWidth に応じてトリミング設定を取得（プラン別解像度対応）
+  const cropModes = useMemo(() => getCropModes(maxWidth), [maxWidth]);
+  const cropConfig = cropModes[cropMode];
   // Current crop selection state
   // 現在のクロップ選択状態
   const [crop, setCrop] = useState<Crop>();

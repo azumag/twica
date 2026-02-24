@@ -327,6 +327,9 @@ export function Licenses() {
   // 統計サマリー
   const activeCodesCount = codes.filter(c => c.status === 'active').length
   const totalActivations = codes.reduce((sum, c) => sum + c.activation_count, 0)
+  // プランタイプ別ライセンス数
+  const supportLicenses = licenses.filter(l => l.plan_type === 'support').length
+  const patronLicenses = licenses.filter(l => l.plan_type === 'patron').length
 
   return (
     <div>
@@ -336,7 +339,7 @@ export function Licenses() {
       </div>
 
       {/* 統計サマリー */}
-      <div className="mb-6 grid grid-cols-4 gap-4">
+      <div className="mb-6 grid grid-cols-3 gap-4 sm:grid-cols-6">
         <div className="rounded-lg bg-white p-4 shadow">
           <p className="text-sm text-gray-500">Total Codes</p>
           <p className="text-2xl font-bold">{codes.length}</p>
@@ -352,6 +355,14 @@ export function Licenses() {
         <div className="rounded-lg bg-white p-4 shadow">
           <p className="text-sm text-gray-500">Active Licenses</p>
           <p className="text-2xl font-bold text-purple-600">{licenses.length}</p>
+        </div>
+        <div className="rounded-lg bg-white p-4 shadow">
+          <p className="text-sm text-gray-500">Supporter</p>
+          <p className="text-2xl font-bold text-blue-600">{supportLicenses}</p>
+        </div>
+        <div className="rounded-lg bg-white p-4 shadow">
+          <p className="text-sm text-gray-500">Patron</p>
+          <p className="text-2xl font-bold text-yellow-600">{patronLicenses}</p>
         </div>
       </div>
 

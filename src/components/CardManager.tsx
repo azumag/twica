@@ -8,7 +8,7 @@ import { RARITIES, UPLOAD_CONFIG } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
-import ImageCropper, { type CropMode, CROP_MODES } from "./ImageCropper";
+import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import BatchDropRateModal from "./BatchDropRateModal";
@@ -54,6 +54,9 @@ interface CardManagerProps {
   // Maximum number of cards to display (for preview mode)
   // 表示するカードの最大数（プレビューモード用）
   maxCards?: number;
+  // Plan-based max image width in pixels (default: 800)
+  // プラン別カード画像最大幅（デフォルト: 800px）
+  maxImageWidth?: number;
 }
 
 // Sorting field options
@@ -74,6 +77,7 @@ export default function CardManager({
   viewMode: initialViewMode = "thumbnail",
   showViewToggle = false,
   maxCards,
+  maxImageWidth = 800,
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -227,6 +231,9 @@ export default function CardManager({
   // Image URL validation loading state
   // 画像URL検証中のローディング状態
   const [imageUrlValidating, setImageUrlValidating] = useState(false);
+
+  // プラン別の動的クロップモード設定（maxImageWidthに応じてサイズが変動）
+  const planCropModes = useMemo(() => getCropModes(maxImageWidth), [maxImageWidth]);
 
   // Emote import modal state
   // エモートインポートモーダルの状態
@@ -607,17 +614,16 @@ export default function CardManager({
 
   /**
    * Validates image URL for aspect ratio and resolution limits
-   * Image must be portrait (height >= width) or square, max 1920x2682
-   * 画像URLのアスペクト比と解像度制限を検証
-   * 画像は縦長（高さ >= 幅）または正方形で、最大1920x2682
+   * Image must be portrait (height >= width) or square
+   * 画像URLのアスペクト比と解像度制限を検証（プラン別の最大幅に対応）
    */
   const validateImageUrl = useCallback(async (url: string): Promise<boolean> => {
     if (!url) return true;
 
-    // Constants for image URL validation limits
-    // 画像URL検証用の制限値
-    const MAX_WIDTH = 1920;
-    const MAX_HEIGHT = 2682;
+    // プラン別の最大幅に基づいて解像度上限を算出
+    // ポートレイトのアスペクト比(1118/800)を考慮した最大高さ
+    const MAX_WIDTH = maxImageWidth;
+    const MAX_HEIGHT = Math.round(maxImageWidth * (1118 / 800));
 
     setImageUrlValidating(true);
     setUploadError(null);
@@ -672,7 +678,7 @@ export default function CardManager({
 
       img.src = url;
     });
-  }, [t]);
+  }, [t, maxImageWidth]);
 
   const handleEdit = (card: Card) => {
     setEditingCard(card);
@@ -1043,7 +1049,7 @@ export default function CardManager({
                     <div className="flex-1">
                       <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
                       <p className="text-xs text-gray-400">
-                        {CROP_MODES[selectedCropMode].dimensions}px ({CROP_MODES[selectedCropMode].label})
+                        {planCropModes[selectedCropMode].dimensions}px ({planCropModes[selectedCropMode].label})
                       </p>
                     </div>
                     <button
@@ -1084,7 +1090,7 @@ export default function CardManager({
                     <p className="text-xs text-gray-500">
                       {/* File size limit removed since cropping compresses to JPEG */}
                       {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
-                      {t("fileUpload.formats")}{t("form.cropNoteWithOptions")}
+                      {t("fileUpload.formats")}{t("form.cropNoteWithOptions", { square: planCropModes.square.dimensions, portrait: planCropModes.portrait.dimensions })}
                     </p>
                     <input
                       type="url"
@@ -1529,8 +1535,8 @@ export default function CardManager({
                   </svg>
                 </div>
                 <div className="text-left">
-                  <p className="font-medium text-white">{CROP_MODES.square.label}</p>
-                  <p className="text-sm text-gray-400">{CROP_MODES.square.dimensions}px (JPEG)</p>
+                  <p className="font-medium text-white">{planCropModes.square.label}</p>
+                  <p className="text-sm text-gray-400">{planCropModes.square.dimensions}px (JPEG)</p>
                 </div>
               </button>
 
@@ -1547,8 +1553,8 @@ export default function CardManager({
                   </svg>
                 </div>
                 <div className="text-left">
-                  <p className="font-medium text-white">{CROP_MODES.portrait.label}</p>
-                  <p className="text-sm text-gray-400">{CROP_MODES.portrait.dimensions}px (JPEG)</p>
+                  <p className="font-medium text-white">{planCropModes.portrait.label}</p>
+                  <p className="text-sm text-gray-400">{planCropModes.portrait.dimensions}px (JPEG)</p>
                 </div>
               </button>
             </div>
@@ -1576,6 +1582,7 @@ export default function CardManager({
           cropMode={selectedCropMode}
           onCropComplete={handleCropComplete}
           onCancel={handleCropCancel}
+          maxWidth={maxImageWidth}
         />
       )}
 
