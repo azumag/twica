@@ -78,7 +78,7 @@ export default async function AccountSettingsPage() {
           <LanguageSwitcherSettings />
         </div>
 
-        {/* 支援プランセクション（コード入力） */}
+        {/* 支援セクション（コード入力） */}
         <SupportPlanSection currentPlan={currentPlan} />
       </div>
     </div>

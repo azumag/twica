@@ -23,9 +23,6 @@ export const COOKIE_NAMES = {
   // 再認証フロー判定用Cookie（値はOAuth state）
   // Re-auth flow marker cookie (value is the OAuth state)
   REAUTH_STATE: 'twica_reauth_state',
-  // Discord OAuth認証フロー用のCSRF state
-  // CSRF state for Discord OAuth flow
-  DISCORD_AUTH_STATE: 'discord_auth_state',
   // ログアウト後のスコープ復元用最小Cookie（twitchUserIdのみ格納）
   // 全セッションデータの代わりにtwitchUserIdだけを保持し、
   // loginルートが追加スコープ復元に使用する
@@ -38,10 +35,6 @@ export const API_ROUTES = {
   AUTH_TWITCH_CALLBACK: '/api/auth/twitch/callback',
   AUTH_TWITCH_LOGIN: '/api/auth/twitch/login',
   AUTH_LOGOUT: '/api/auth/logout',
-  AUTH_DISCORD_LOGIN: '/api/auth/discord/login',
-  AUTH_DISCORD_CALLBACK: '/api/auth/discord/callback',
-  AUTH_DISCORD_UNLINK: '/api/auth/discord/unlink',
-  AUTH_DISCORD_REFRESH_ROLE: '/api/auth/discord/refresh-role',
 }
 
 export const SESSION_CONFIG = {
@@ -270,7 +263,7 @@ export const ERROR_MESSAGES = {
   SUPPORT_CODE_TOO_LONG: 'Support code is too long',
   FANBOX_ID_TOO_LONG: 'FANBOX ID is too long',
   // プランダウングレード等でストレージ超過時のエラー
-  PLAN_OVER_LIMIT: 'ストレージ容量を超過しています。プランをアップグレードするか、画像を削除してください。',
+  PLAN_OVER_LIMIT: 'ストレージ容量を超過しています。支援特典をアップグレードするか、画像を削除してください。',
 
   // Support inquiry errors
   INQUIRY_NOT_FOUND: 'Inquiry not found',

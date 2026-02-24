@@ -226,7 +226,7 @@
       "streamerInfoText": "You must be a Twitch Affiliate or Partner to use channel point rewards and card management features.",
       "quickLinks": "Quick Links",
       "storageOverLimit": "Storage limit exceeded",
-      "storageOverLimitDescription": "Please upgrade your plan or delete unused images. New card creation and image uploads are currently restricted.",
+      "storageOverLimitDescription": "Please upgrade your support benefits or delete unused images. New card creation and image uploads are currently restricted.",
       "storageUsage": "Usage: {usage} / {limit}",
       "manageCards": "Manage Cards"
     }
@@ -750,7 +750,7 @@
   "inquiriesPage": {
     "title": "Inquiries",
     "description": "Feel free to contact us about bug reports, feature requests, and more.",
-    "supporterOnly": "This feature is available for Supporter/Patron plans only.",
+    "supporterOnly": "This feature is available for Josuke/Gohiiki benefits only.",
     "newInquiry": "New Inquiry",
     "form": {
       "category": "Category",
@@ -792,15 +792,15 @@
     }
   },
   "supportPlan": {
-    "title": "Support Plan",
-    "currentPlan": "Current Plan",
-    "description": "Enter a support code received from FANBOX or other platforms to activate your plan.",
+    "title": "Support Benefits",
+    "currentPlan": "Current Benefits",
+    "description": "Enter a support code received from FANBOX or other platforms to activate your benefits.",
     "defaultStorage": "Default",
     "storageBonus": "Storage Bonus",
     "plans": {
       "basic": "Basic",
-      "support": "Supporter",
-      "patron": "Patron",
+      "support": "Josuke",
+      "patron": "Gohiiki",
       "twitch_sub": "Twitch Sub"
     },
     "form": {
@@ -813,19 +813,19 @@
       "activating": "Activating...",
       "deactivate": "Reset to Basic",
       "deactivating": "Resetting...",
-      "confirmDeactivate": "Reset to Basic plan? You will lose your current plan benefits (extra storage, etc.)."
+      "confirmDeactivate": "Reset to Basic? You will lose your current benefits (extra storage, etc.)."
     },
     "messages": {
-      "activated": "{plan} plan has been activated",
+      "activated": "{plan} benefits have been activated",
       "activateFailed": "Failed to activate the code",
       "networkError": "A network error occurred",
-      "deactivated": "Reset to Basic plan",
-      "deactivateFailed": "Failed to change plan"
+      "deactivated": "Reset to Basic",
+      "deactivateFailed": "Failed to change benefits"
     }
   },
   "twitchSub": {
     "title": "Twitch Subscription Check",
-    "description": "If you subscribe to azumagbanjo's Twitch channel, Patron-level benefits are automatically applied.",
+    "description": "If you subscribe to azumagbanjo's Twitch channel, Gohiiki-level benefits are automatically applied.",
     "status": "Subscription Status",
     "statusActive": "Active",
     "statusInactive": "Not Verified",
@@ -837,34 +837,12 @@
       "checking": "Checking..."
     },
     "messages": {
-      "subActive": "Subscription confirmed. Plan benefits are active.",
+      "subActive": "Subscription confirmed. Benefits are active.",
       "subInactive": "No active subscription found.",
       "needsReauth": "Insufficient permissions. Please re-authorize.",
       "checkFailed": "Check failed. Please try again later.",
       "reauthorizeFailed": "Re-authorization failed.",
       "networkError": "A network error occurred."
-    }
-  },
-  "discord": {
-    "title": "Discord Integration",
-    "description": "A bonus perk for subscribers of azumagbanjo's Twitch channel. Three steps: ① Subscribe to the Twitch channel, ② Join the Discord server to receive the subscriber role, ③ Link Discord here — then the plan is applied automatically, no code required.",
-    "linkButton": "Link Discord",
-    "unlinkButton": "Unlink",
-    "refreshButton": "Refresh Role",
-    "linked": "Linked",
-    "notLinked": "Not Linked",
-    "userId": "Discord ID",
-    "roleStatus": "Subscriber Role",
-    "roleActive": "Active",
-    "roleInactive": "Not Verified",
-    "unlinkConfirm": "Unlink Discord? You will lose your subscriber benefits.",
-    "messages": {
-      "unlinkSuccess": "Discord has been unlinked",
-      "unlinkFailed": "Failed to unlink Discord",
-      "refreshSuccess": "Role status updated",
-      "refreshFailed": "Failed to refresh role",
-      "networkError": "A network error occurred",
-      "alreadyLinked": "This Discord account is already linked to another Twitch account"
     }
   }
 }

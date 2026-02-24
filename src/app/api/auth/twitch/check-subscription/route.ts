@@ -11,7 +11,6 @@ import { logger } from '@/lib/logger'
 
 /**
  * Twitch サブスク状態を手動確認する POST API
- * Discord の refresh-role と同一パターン。
  * キャッシュを無視して Twitch API に直接問い合わせ、結果を DB に保存する。
  */
 export async function POST(request: Request) {

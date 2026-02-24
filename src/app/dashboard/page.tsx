@@ -113,7 +113,7 @@ export default async function DashboardPage() {
                 href="/plans"
                 className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline"
               >
-                サポートプランについて
+                支援特典について
               </Link>
             </div>
             <Link

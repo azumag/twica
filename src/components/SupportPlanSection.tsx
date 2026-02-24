@@ -151,7 +151,7 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
           {t("description")}
           {" "}
           <a href="/plans" className="text-purple-400 hover:text-purple-300 underline">
-            サポートプランについて
+            支援特典について
           </a>
         </p>
         <div>
@@ -203,7 +203,7 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
       </form>
 
       {/* ベーシックへの復帰ボタン（basic以外かつtwitch_sub以外の時のみ表示）
-         twitch_subはDiscord連携で自動判定されるため、コード解除では無効化できない */}
+         twitch_subはTwitchサブスクで自動判定されるため、コード解除では無効化できない */}
       {activePlan !== "basic" && activePlan !== "twitch_sub" && (
         <div className="mt-4 border-t border-gray-700 pt-4">
           <button

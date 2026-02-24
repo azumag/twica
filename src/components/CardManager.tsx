@@ -915,7 +915,7 @@ export default function CardManager({
             {storageStatus.message}
           </p>
           <a href="/plans" className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
-            サポートプランについて
+            支援特典について
           </a>
         </div>
       )}
@@ -929,7 +929,7 @@ export default function CardManager({
               <p className="font-medium mb-1">{t("messages.uploadLimited")}</p>
               <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
               <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
-                サポートプランについて
+                支援特典について
               </a>
             </div>
           ) : (
@@ -960,7 +960,7 @@ export default function CardManager({
             <div className="mt-2">
               <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message || t("messages.storageLimitReason")}</p>
               <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
-                サポートプランについて
+                支援特典について
               </a>
             </div>
           )}

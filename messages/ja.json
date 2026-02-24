@@ -226,7 +226,7 @@
       "streamerInfoText": "チャネルポイント報酬やカード管理機能を使用するには、Twitchアフィリエイトまたはパートナーである必要があります。",
       "quickLinks": "クイックリンク",
       "storageOverLimit": "ストレージ容量を超過しています",
-      "storageOverLimitDescription": "プランをアップグレードするか、不要な画像を削除してください。現在、新しいカードの作成や画像のアップロードが制限されています。",
+      "storageOverLimitDescription": "支援特典をアップグレードするか、不要な画像を削除してください。現在、新しいカードの作成や画像のアップロードが制限されています。",
       "storageUsage": "使用量: {usage} / {limit}",
       "manageCards": "カード管理へ"
     }
@@ -750,7 +750,7 @@
   "inquiriesPage": {
     "title": "お問い合わせ",
     "description": "バグ報告や機能要望など、お気軽にお問い合わせください。",
-    "supporterOnly": "この機能はサポーター/パトロン限定です。",
+    "supporterOnly": "この機能は助太刀/ご贔屓限定です。",
     "newInquiry": "新規お問い合わせ",
     "form": {
       "category": "カテゴリ",
@@ -792,15 +792,15 @@
     }
   },
   "supportPlan": {
-    "title": "支援プラン",
-    "currentPlan": "現在のプラン",
-    "description": "FANBOXなどで受け取った支援コードを入力して、プランを有効化できます。",
+    "title": "支援",
+    "currentPlan": "現在の特典",
+    "description": "FANBOXなどで受け取った支援コードを入力して、特典を有効化できます。",
     "defaultStorage": "デフォルト",
     "storageBonus": "ストレージ追加容量",
     "plans": {
       "basic": "ベーシック",
-      "support": "サポーター",
-      "patron": "パトロン",
+      "support": "助太刀",
+      "patron": "ご贔屓",
       "twitch_sub": "Twitchサブスク"
     },
     "form": {
@@ -813,19 +813,19 @@
       "activating": "有効化中...",
       "deactivate": "ベーシックに戻す",
       "deactivating": "変更中...",
-      "confirmDeactivate": "プランをベーシックに戻しますか？現在のプラン特典（追加ストレージ等）が失われます。"
+      "confirmDeactivate": "ベーシックに戻しますか？現在の特典（追加ストレージ等）が失われます。"
     },
     "messages": {
-      "activated": "{plan}プランが有効化されました",
+      "activated": "{plan}の特典が有効化されました",
       "activateFailed": "コードの有効化に失敗しました",
       "networkError": "ネットワークエラーが発生しました",
-      "deactivated": "ベーシックプランに戻しました",
-      "deactivateFailed": "プランの変更に失敗しました"
+      "deactivated": "ベーシックに戻しました",
+      "deactivateFailed": "特典の変更に失敗しました"
     }
   },
   "twitchSub": {
     "title": "Twitchサブスク確認",
-    "description": "azumagbanjo の Twitch チャンネルをサブスクライブしている場合、パトロン同等の特典が自動適用されます。",
+    "description": "azumagbanjo の Twitch チャンネルをサブスクライブしている場合、ご贔屓同等の特典が自動適用されます。",
     "status": "サブスク状態",
     "statusActive": "有効",
     "statusInactive": "未確認",
@@ -837,34 +837,12 @@
       "checking": "確認中..."
     },
     "messages": {
-      "subActive": "サブスクが確認されました。プランが適用されています。",
+      "subActive": "サブスクが確認されました。特典が適用されています。",
       "subInactive": "サブスクが確認できませんでした。",
       "needsReauth": "権限が不足しています。再認証してください。",
       "checkFailed": "確認に失敗しました。しばらくしてから再試行してください。",
       "reauthorizeFailed": "再認証に失敗しました。",
       "networkError": "ネットワークエラーが発生しました。"
-    }
-  },
-  "discord": {
-    "title": "Discord連携",
-    "description": "azumagbanjo の Twitch チャンネルのサブスクライバー向けおまけ特典です。① Twitch チャンネルをサブスクライブ、② Discord サーバーに参加してロールを取得、③ こちらで Discord 連携 — の3ステップでコード不要でプランが適用されます。",
-    "linkButton": "Discordと連携する",
-    "unlinkButton": "連携を解除",
-    "refreshButton": "ロール更新",
-    "linked": "連携済み",
-    "notLinked": "未連携",
-    "userId": "Discord ID",
-    "roleStatus": "サブスクライバーロール",
-    "roleActive": "有効",
-    "roleInactive": "未確認",
-    "unlinkConfirm": "Discord連携を解除しますか？サブスクライバー特典が無効になります。",
-    "messages": {
-      "unlinkSuccess": "Discord連携を解除しました",
-      "unlinkFailed": "連携解除に失敗しました",
-      "refreshSuccess": "ロール状態を更新しました",
-      "refreshFailed": "ロール更新に失敗しました",
-      "networkError": "ネットワークエラーが発生しました",
-      "alreadyLinked": "このDiscordアカウントは既に別のTwitchアカウントに連携されています"
     }
   }
 }

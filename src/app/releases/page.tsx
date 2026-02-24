@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 
 /**
  * リリースノートページ
- * v1.27.0: 支援プランシステム・Twitchサブスク確認・問い合わせフォーム
+ * v1.27.0: 支援特典システム・Twitchサブスク確認・問い合わせフォーム
  */
 export default async function ReleasesPage() {
   const session = await getSession();
@@ -48,7 +48,7 @@ export default async function ReleasesPage() {
             TwiCa リリースノート
           </h1>
 
-          {/* v1.27.0 - 支援プラン・Twitchサブスク確認・問い合わせフォーム */}
+          {/* v1.27.0 - 支援特典・Twitchサブスク確認・問い合わせフォーム */}
           <div className="mb-16">
             <div className="mb-8">
               <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
@@ -57,34 +57,34 @@ export default async function ReleasesPage() {
               <p className="mt-2 text-sm text-gray-500">2026-02-25</p>
             </div>
 
-            {/* 支援プランシステム */}
+            {/* 支援特典システム */}
             <section className="mb-10">
               <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
-                支援プランシステム
+                支援特典システム
               </h2>
 
               <div className="space-y-6">
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-2 text-lg font-semibold text-white">
-                    支援プランの導入
+                    支援特典の導入
                   </h3>
                   <p className="text-gray-400">
-                    FANBOX などで TwiCa を支援してくださっている方に、感謝の気持ちとしてストレージ容量の追加特典を提供するシステムを導入しました。支援コードを入力するだけで、プランが有効化されます。
+                    FANBOX などで TwiCa を支援してくださっている方に、感謝の気持ちとしてストレージ容量の追加特典を提供するシステムを導入しました。支援コードを入力するだけで、特典が有効化されます。
                   </p>
                 </div>
 
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-3 text-lg font-semibold text-white">
-                    プラン一覧
+                    特典一覧
                   </h3>
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
-                    <li><span className="text-blue-400 font-medium">サポーター</span> - ストレージ容量 +250MB、Full HD（1920px幅）画像対応</li>
-                    <li><span className="text-yellow-400 font-medium">パトロン</span> - ストレージ容量 +500MB、4K（3840px幅）画像対応</li>
-                    <li><span className="text-purple-400 font-medium">Twitchサブスクプラン</span> - Twitchチャンネルをサブスクしている方に自動適用（パトロン同等の特典）</li>
+                    <li><span className="text-blue-400 font-medium">助太刀</span> - ストレージ容量 +250MB、Full HD（1920px幅）画像対応</li>
+                    <li><span className="text-yellow-400 font-medium">ご贔屓</span> - ストレージ容量 +500MB、4K（3840px幅）画像対応</li>
+                    <li><span className="text-purple-400 font-medium">Twitchサブスク特典</span> - azumagbanjo の Twitch チャンネルをサブスクしている方に自動適用（ご贔屓同等の特典）</li>
                   </ul>
                   <p className="mt-3 text-sm text-gray-500">
                     支援コードの入力はダッシュボードの「アカウント設定」から行えます。詳細は
-                    <a href="/plans" className="text-purple-400 hover:text-purple-300 underline ml-1">サポートプランについて</a>
+                    <a href="/plans" className="text-purple-400 hover:text-purple-300 underline ml-1">支援特典について</a>
                     をご覧ください。
                   </p>
                 </div>
@@ -94,16 +94,16 @@ export default async function ReleasesPage() {
                     高画質カード登録
                   </h3>
                   <p className="text-gray-400">
-                    支援プランに応じて、カード画像の登録解像度が向上します。サポーターはFull HD（1920px幅、上限5MB）、パトロンは4K（3840px幅、上限10MB）まで対応します。
+                    支援特典に応じて、カード画像の登録解像度が向上します。助太刀はFull HD（1920px幅、上限5MB）、ご贔屓は4K（3840px幅、上限10MB）まで対応します。
                   </p>
                 </div>
 
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-2 text-lg font-semibold text-white">
-                    プランのダウングレード
+                    特典の解除
                   </h3>
                   <p className="text-gray-400">
-                    アカウント設定からプランをベーシックに戻せます。ダウングレード後は、そのプランの特典（追加ストレージ等）が失われます。
+                    アカウント設定からベーシックに戻せます。解除後は、特典（追加ストレージ等）が失われます。
                   </p>
                 </div>
               </div>
@@ -118,10 +118,10 @@ export default async function ReleasesPage() {
               <div className="space-y-6">
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-2 text-lg font-semibold text-white">
-                    Twitch チャンネルサブスクによるプラン自動適用
+                    Twitch チャンネルサブスクによる特典自動適用
                   </h3>
                   <p className="text-gray-400">
-                    Twitch チャンネルをサブスクライブしている方は、アカウント設定の「Twitchサブスク確認」からサブスク状態を確認するだけで、パトロン同等のプランが自動適用されます。支援コードの入力は不要です。
+                    azumagbanjo の Twitch チャンネルをサブスクライブしている方は、アカウント設定の「Twitchサブスク確認」からサブスク状態を確認するだけで、ご贔屓同等の特典が自動適用されます。支援コードの入力は不要です。
                   </p>
                 </div>
               </div>
@@ -139,7 +139,7 @@ export default async function ReleasesPage() {
                     専用の問い合わせ機能
                   </h3>
                   <p className="text-gray-400">
-                    サポーター・パトロン・Twitchサブスクプランをご利用の方向けに、専用の問い合わせフォームを追加しました。ダッシュボードの「問い合わせ」メニューからアクセスできます。
+                    助太刀・ご贔屓・Twitchサブスク特典をご利用の方向けに、専用の問い合わせフォームを追加しました。ダッシュボードの「問い合わせ」メニューからアクセスできます。
                   </p>
                 </div>
               </div>
@@ -154,7 +154,7 @@ export default async function ReleasesPage() {
               <div className="space-y-6">
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-3 text-lg font-semibold text-white">
-                    実装予定のプラン特典
+                    実装予定の特典
                   </h3>
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
                     <li>効果音の細かい設定（レアリティ別の効果音など）</li>
@@ -188,9 +188,9 @@ export default async function ReleasesPage() {
                     改善
                   </h3>
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
-                    <li>アカウント設定ページに現在のプランと特典の表示を追加</li>
+                    <li>アカウント設定ページに現在の特典の表示を追加</li>
                     <li>ストレージ容量超過時にカード管理画面でわかりやすい警告を表示</li>
-                    <li>サポートプランページ（/plans）を新規追加</li>
+                    <li>支援特典ページ（/plans）を新規追加</li>
                   </ul>
                 </div>
 

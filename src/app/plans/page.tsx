@@ -4,13 +4,13 @@ import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
 
 export const metadata: Metadata = {
-  title: "サポートプランについて - TwiCa",
-  description: "TwiCa のサポートプラン一覧と特典をご確認ください。",
+  title: "支援特典について - TwiCa",
+  description: "TwiCa の支援特典一覧をご確認ください。",
 };
 
 /**
- * サポートプラン説明ページ
- * プラン一覧・特典・コードの取得・有効化方法を案内する
+ * 支援特典説明ページ
+ * 特典一覧・コードの取得・有効化方法を案内する
  */
 export default async function PlansPage() {
   const session = await getSession();
@@ -45,7 +45,7 @@ export default async function PlansPage() {
       <main className="container mx-auto max-w-4xl px-4 py-12">
         <article>
           <h1 className="mb-4 text-3xl font-bold text-white">
-            サポートプランについて
+            支援特典について
           </h1>
           <p className="mb-10 text-gray-400 leading-relaxed">
             TwiCa は無料でご利用いただけるサービスです。
@@ -60,10 +60,10 @@ export default async function PlansPage() {
             などで TwiCa を支援してくださった方には、感謝の気持ちとしてストレージ容量拡張などの特典をご提供しています。
           </p>
 
-          {/* プラン一覧 */}
+          {/* 特典一覧 */}
           <section className="mb-12">
             <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
-              プラン一覧
+              特典一覧
             </h2>
 
             <div className="grid gap-4 md:grid-cols-2">
@@ -91,11 +91,11 @@ export default async function PlansPage() {
                 </ul>
               </div>
 
-              {/* サポーター */}
+              {/* 助太刀 */}
               <div className="rounded-xl bg-gray-800 p-6 border border-blue-700/50">
                 <div className="mb-3 flex items-center gap-2">
                   <span className="rounded-full bg-blue-600 px-3 py-1 text-sm font-medium text-white">
-                    サポーター
+                    助太刀
                   </span>
                   <span className="text-sm text-gray-500">支援コード必要</span>
                 </div>
@@ -119,11 +119,11 @@ export default async function PlansPage() {
                 </ul>
               </div>
 
-              {/* パトロン */}
+              {/* ご贔屓 */}
               <div className="rounded-xl bg-gray-800 p-6 border border-yellow-700/50">
                 <div className="mb-3 flex items-center gap-2">
                   <span className="rounded-full bg-yellow-600 px-3 py-1 text-sm font-medium text-white">
-                    パトロン
+                    ご贔屓
                   </span>
                   <span className="text-sm text-gray-500">支援コード必要</span>
                 </div>
@@ -151,14 +151,14 @@ export default async function PlansPage() {
               <div className="rounded-xl bg-gray-800 p-6 border border-purple-700/50">
                 <div className="mb-3 flex items-center gap-2">
                   <span className="rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
-                    Twitchサブスク
+                    Twitchサブスク特典
                   </span>
                   <span className="text-sm text-gray-500">自動適用</span>
                 </div>
                 <ul className="space-y-2 text-sm text-gray-400">
                   <li className="flex items-start gap-2">
                     <span className="text-purple-400 mt-0.5">✓</span>
-                    <span>パトロンと同等の特典</span>
+                    <span>ご贔屓と同等の特典</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-purple-400 mt-0.5">✓</span>
@@ -233,10 +233,10 @@ export default async function PlansPage() {
                 </a>
               </div>
 
-              {/* Twitchサブスクプランの説明 */}
+              {/* Twitchサブスク特典の説明 */}
               <div className="rounded-xl bg-gray-800 p-6">
                 <h3 className="mb-2 text-lg font-semibold text-white">
-                  Twitch チャンネルをサブスクライブする（Twitchサブスクプラン）
+                  azumagbanjo の Twitch チャンネルをサブスクライブする
                 </h3>
                 <p className="mb-4 text-gray-400">
                   <a
@@ -266,7 +266,7 @@ export default async function PlansPage() {
                   </li>
                   <li className="flex items-start gap-3">
                     <span className="flex-shrink-0 flex h-5 w-5 items-center justify-center rounded-full bg-purple-600 text-xs font-bold text-white">2</span>
-                    <span>TwiCa のアカウント設定で「Twitchサブスク確認」から権限を付与 → プランが自動適用されます</span>
+                    <span>TwiCa のアカウント設定で「Twitchサブスク確認」から権限を付与 → 特典が自動適用されます</span>
                   </li>
                 </ol>
                 <a
@@ -299,7 +299,7 @@ export default async function PlansPage() {
                 </li>
                 <li className="flex items-start gap-3">
                   <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full bg-purple-600 text-xs font-bold text-white">3</span>
-                  <span>「支援プラン」セクションで支援コードを入力して「有効化」ボタンをクリック</span>
+                  <span>「支援」セクションで支援コードを入力して「有効化」ボタンをクリック</span>
                 </li>
               </ol>
               {session && (
@@ -318,7 +318,7 @@ export default async function PlansPage() {
           {/* 今後の展望 */}
           <section className="mb-12">
             <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
-              今後予定しているプラン特典
+              今後予定している特典
             </h2>
             <div className="rounded-xl bg-gray-800 p-6">
               <ul className="ml-4 list-disc space-y-2 text-gray-400">

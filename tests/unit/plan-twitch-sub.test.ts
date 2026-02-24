@@ -26,7 +26,6 @@ describe('PlanType with twitch_sub', () => {
         from: vi.fn(() => createLicenseQueryBuilder(licenses)),
       })),
     }))
-    // plan.ts は hasTwitchSub のみを使用（Discord連携は廃止済み）
     vi.doMock('@/lib/twitch/sub-check', () => ({
       hasTwitchSub: hasTwitchSub
         ? vi.fn().mockResolvedValue(true)
