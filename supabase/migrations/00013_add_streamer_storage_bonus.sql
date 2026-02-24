@@ -4,7 +4,7 @@
 -- has-many: 1人のストリーマーに複数のボーナスエントリを持てる
 
 CREATE TABLE IF NOT EXISTS streamer_storage_bonus (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   -- streamerテーブルへの外部キー（streamer削除時にcascade）
   streamer_id UUID NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
   -- ボーナス容量（MB単位、正の整数のみ）

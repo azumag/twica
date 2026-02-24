@@ -4,7 +4,7 @@
 
 -- support_inquiries: 問い合わせ本体テーブル
 CREATE TABLE IF NOT EXISTS support_inquiries (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   -- 投稿者のTwitchユーザーID（usersテーブル未登録でも投稿可能にするためFKなし）
   twitch_user_id TEXT NOT NULL,
   -- 投稿時点の表示名スナップショット（表示名変更に影響されないよう保存）
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS support_inquiries (
 
 -- support_inquiry_messages: 後続メッセージ（ユーザー/管理者の返信）
 CREATE TABLE IF NOT EXISTS support_inquiry_messages (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   -- 親の問い合わせ（削除時にメッセージも連鎖削除）
   inquiry_id UUID NOT NULL REFERENCES support_inquiries(id) ON DELETE CASCADE,
   -- 送信者タイプ: user=ユーザー, admin=管理者
