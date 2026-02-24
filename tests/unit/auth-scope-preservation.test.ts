@@ -63,6 +63,7 @@ vi.mock('@/lib/supabase/admin', () => ({
 }))
 
 // twitch auth
+const mockIsInvalidAuthorizationCodeError = vi.fn(() => false)
 vi.mock('@/lib/twitch/auth', () => ({
   getTwitchAuthUrl: vi.fn((_redirectUri: string, _state: string, additionalScopes?: string[]) =>
     `https://twitch.tv/authorize?scopes=${(additionalScopes ?? []).join(',')}`
@@ -70,6 +71,7 @@ vi.mock('@/lib/twitch/auth', () => ({
   ADDITIONAL_SCOPES: { CHAT_WRITE: 'user:write:chat' },
   exchangeCodeForTokens: vi.fn(),
   getTwitchUser: vi.fn(),
+  isInvalidAuthorizationCodeError: (...args: unknown[]) => mockIsInvalidAuthorizationCodeError(...args),
 }))
 
 // token-manager
@@ -86,8 +88,19 @@ vi.mock('@/lib/rate-limit', () => ({
 }))
 
 // error handlers and sentry
+const mockHandleAuthError = vi.fn((_err: unknown, code: string) => ({
+  type: 'error',
+  code,
+  cookies: {
+    set: vi.fn(),
+    delete: vi.fn(),
+  },
+  headers: {
+    get: vi.fn(),
+  },
+}))
 vi.mock('@/lib/auth-error-handler', () => ({
-  handleAuthError: vi.fn((_err: unknown, code: string) => ({ type: 'error', code })),
+  handleAuthError: (...args: unknown[]) => mockHandleAuthError(...args),
 }))
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportAuthError: vi.fn(),
@@ -341,6 +354,45 @@ describe('Auth scope preservation: callback route', () => {
     })
     // TOSチェック: users.tos_accepted_at取得
     setCallbackMaybeSingleResults()
+  })
+
+  it('無効な認証コード時は非ログ対象エラーで処理し、state Cookieを削除する', async () => {
+    const authError = new Error('Authentication failed: 400 {"status":400,"message":"Invalid authorization code"}')
+    exchangeCodeForTokens.mockRejectedValueOnce(authError)
+    mockIsInvalidAuthorizationCodeError.mockReturnValueOnce(true)
+
+    const errorResponse = {
+      type: 'error',
+      code: 'invalid_authorization_code',
+      cookies: {
+        set: vi.fn(),
+        delete: vi.fn(),
+      },
+      headers: {
+        get: vi.fn(),
+      },
+    }
+    mockHandleAuthError.mockResolvedValueOnce(errorResponse)
+
+    const { NextRequest } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    const response = await GET(request)
+
+    expect(mockHandleAuthError).toHaveBeenCalledWith(
+      authError,
+      'invalid_authorization_code',
+      { code: 'test-code...' },
+      { baseUrl: 'http://localhost:3000' },
+    )
+    expect(errorResponse.cookies.set).toHaveBeenCalledWith(
+      'twitch_auth_state',
+      '',
+      expect.any(Object),
+    )
+    expect(response).toBe(errorResponse)
   })
 
   it('スコープ復元失敗ガード発動時、saveTwitchScopesがスキップされる', async () => {

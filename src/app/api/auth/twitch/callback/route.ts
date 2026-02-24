@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
+import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError } from '@/lib/twitch/auth'
 import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
 
   // Verify state
   const cookieStore = await cookies()
-  const storedState = cookieStore.get('twitch_auth_state')?.value
+  const storedState = cookieStore.get(COOKIE_NAMES.AUTH_STATE)?.value
 
   if (!storedState || state !== storedState) {
     return handleAuthError(
@@ -65,12 +65,20 @@ export async function GET(request: NextRequest) {
     try {
       tokens = await exchangeCodeForTokens(code, redirectUri)
     } catch (error) {
-      return handleAuthError(
+      const errorType = isInvalidAuthorizationCodeError(error)
+        ? 'invalid_authorization_code'
+        : 'twitch_auth_failed'
+
+      const response = await handleAuthError(
         error,
-        'twitch_auth_failed',
+        errorType,
         { code: code.substring(0, 10) + '...' },
         { baseUrl }
       )
+
+      // Consume auth state on token exchange failure to avoid stale/replayed code retries.
+      response.cookies.set(COOKIE_NAMES.AUTH_STATE, '', getDeleteCookieOptions())
+      return response
     }
 
     let twitchUser
@@ -288,7 +296,7 @@ export async function GET(request: NextRequest) {
     response.cookies.set(COOKIE_NAMES.SESSION, sessionData, cookieOptions)
 
     // Clear state cookie
-    response.cookies.delete('twitch_auth_state')
+    response.cookies.delete(COOKIE_NAMES.AUTH_STATE)
 
     // Clear scope restoration guard cookie only when state matches this flow
     // 並行ログイン（複数タブ）で別フローのガードを誤って消さないよう、

@@ -22,6 +22,26 @@ export interface TwitchTokens {
   scope: string[]
 }
 
+export class TwitchOAuthTokenExchangeError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly errorBody: string,
+    public readonly isInvalidAuthorizationCode: boolean
+  ) {
+    super(message)
+    this.name = 'TwitchOAuthTokenExchangeError'
+  }
+}
+
+function isInvalidAuthorizationCodeResponse(status: number, errorBody: string): boolean {
+  return status === 400 && /invalid authorization code/i.test(errorBody)
+}
+
+export function isInvalidAuthorizationCodeError(error: unknown): boolean {
+  return error instanceof TwitchOAuthTokenExchangeError && error.isInvalidAuthorizationCode
+}
+
 // デフォルトスコープ（ログイン時に必ず付与される基本スコープ）
 // Default scopes that are always requested during login
 export const AUTH_SCOPES = [
@@ -112,10 +132,23 @@ export async function exchangeCodeForTokens(
 
   if (!response.ok) {
     const errorBody = await response.text()
-    logger.error('Token exchange failed:', { status: response.status, errorBody })
+    const invalidAuthorizationCode = isInvalidAuthorizationCodeResponse(response.status, errorBody)
+
+    if (invalidAuthorizationCode) {
+      // OAuth code is single-use and short-lived; retries/replays are expected client behavior.
+      // Log as warning to avoid noisy issue generation.
+      logger.warn('Token exchange rejected: invalid or expired authorization code', { status: response.status })
+    } else {
+      logger.error('Token exchange failed:', { status: response.status, errorBody })
+    }
     // Twitch APIの拒否理由（コード期限切れ、redirect URI不一致等）をエラーメッセージに含める
     // 呼び出し元のhandleAuthError経由でSupabase/GitHub Issuesに詳細が記録される
-    throw new Error(`Authentication failed: ${response.status} ${errorBody}`)
+    throw new TwitchOAuthTokenExchangeError(
+      `Authentication failed: ${response.status} ${errorBody}`,
+      response.status,
+      errorBody,
+      invalidAuthorizationCode
+    )
   }
 
   return response.json()

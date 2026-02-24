@@ -11,7 +11,7 @@ vi.mock('@/lib/env-validation', () => ({
 }))
 
 vi.mock('@/lib/logger', () => ({
-  logger: { error: vi.fn() },
+  logger: { error: vi.fn(), warn: vi.fn() },
 }))
 
 describe('exchangeCodeForTokens', () => {
@@ -50,6 +50,13 @@ describe('exchangeCodeForTokens', () => {
     await expect(
       exchangeCodeForTokens('expired-code', 'http://localhost/callback')
     ).rejects.toThrow('Authentication failed: 400 ' + errorBody)
+
+    const { logger } = await import('@/lib/logger')
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Token exchange rejected: invalid or expired authorization code',
+      { status: 400 }
+    )
+    expect(logger.error).not.toHaveBeenCalled()
   })
 
   it('異常系: 401 Unauthorizedのエラー情報が含まれる', async () => {
