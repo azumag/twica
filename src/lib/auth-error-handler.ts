@@ -17,6 +17,7 @@ enum AuthErrorType {
   // バリデーションエラー
   INVALID_STATE = 'invalid_state',
   MISSING_PARAMS = 'missing_params',
+  INVALID_AUTHORIZATION_CODE = 'invalid_authorization_code',
   
   // その他のエラー
   UNKNOWN_ERROR = 'unknown_error',
@@ -78,6 +79,13 @@ const AUTH_ERROR_MAP: Record<string, AuthErrorDetails> = {
     message: 'Missing required OAuth parameters',
     statusCode: 400,
     userMessage: '必要なパラメータが不足しています。再度ログインしてください。',
+    shouldLog: false,
+  },
+  invalid_authorization_code: {
+    type: 'invalid_authorization_code',
+    message: 'Invalid or expired OAuth authorization code',
+    statusCode: 400,
+    userMessage: '認証コードが無効か期限切れです。再度ログインしてください。',
     shouldLog: false,
   },
   unknown_error: {
