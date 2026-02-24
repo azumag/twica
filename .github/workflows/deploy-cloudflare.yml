@@ -26,7 +26,7 @@
 #    in Settings → Environments, each with the following secrets:
 #    GitHub Environments: Settings → Environments で "preview" と "production" を作成し、
 #    それぞれに以下の Secrets を設定:
-#    - SUPABASE_DB_URL               (direct connection URI, port 5432)
+#    - SUPABASE_DB_URL               (Session pooler URI, port 5432)
 #    - NEXT_PUBLIC_APP_URL          (e.g. preview: https://twica-preview.xxx.workers.dev)
 #    - NEXT_PUBLIC_SUPABASE_URL
 #    - NEXT_PUBLIC_SUPABASE_ANON_KEY
