@@ -12,7 +12,7 @@ import { logger } from '@/lib/logger'
 export class DiscordTokenError extends Error {
   constructor(
     message: string,
-    public readonly code: 'NO_TOKEN' | 'REFRESH_FAILED' | 'DATABASE_ERROR' | 'USER_NOT_FOUND',
+    public readonly code: 'NO_TOKEN' | 'REFRESH_FAILED' | 'DATABASE_ERROR' | 'USER_NOT_FOUND' | 'ALREADY_LINKED',
     public readonly originalError?: Error
   ) {
     super(message)
@@ -172,6 +172,19 @@ export async function saveDiscordTokens(
         error,
       })
       return
+    }
+    // 23505: UNIQUE制約違反 → 同一 Discord アカウントが別 Twitch アカウントに既にリンク済み
+    // 23505: unique_violation → this Discord account is already linked to another Twitch account
+    if (error.code === '23505') {
+      logger.warn('Discord account already linked to another user', {
+        twitchUserId,
+        discordUserId,
+        error,
+      })
+      throw new DiscordTokenError(
+        'This Discord account is already linked to another Twitch account',
+        'ALREADY_LINKED'
+      )
     }
     logger.error('Failed to save Discord tokens', { twitchUserId, discordUserId, error })
     throw error

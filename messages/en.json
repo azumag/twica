@@ -841,7 +841,8 @@
       "unlinkFailed": "Failed to unlink Discord",
       "refreshSuccess": "Role status updated",
       "refreshFailed": "Failed to refresh role",
-      "networkError": "A network error occurred"
+      "networkError": "A network error occurred",
+      "alreadyLinked": "This Discord account is already linked to another Twitch account"
     }
   }
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { exchangeDiscordCode, getDiscordUser, getGuildMember } from '@/lib/discord/auth'
-import { saveDiscordTokens } from '@/lib/discord/token-manager'
+import { saveDiscordTokens, DiscordTokenError } from '@/lib/discord/token-manager'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { getSession } from '@/lib/session'
 import { COOKIE_NAMES, ERROR_MESSAGES } from '@/lib/constants'
@@ -106,13 +106,22 @@ export async function GET(request: NextRequest) {
 
     // ロール確認結果をDBに記録（ロールの有無に関わらず更新）
     const supabaseAdmin = getSupabaseAdmin()
-    await supabaseAdmin
+    const { error: roleUpdateError } = await supabaseAdmin
       .from('users')
       .update({
         discord_sub_verified_at: new Date().toISOString(),
         discord_has_sub_role: hasSubRole,
       })
       .eq('twitch_user_id', session.twitchUserId)
+
+    if (roleUpdateError) {
+      // ロール記録失敗は致命的ではない（連携自体は成功済み）のでエラーログのみ
+      // Role update failure is non-fatal (linking already succeeded); log only
+      logger.warn('Discord callback: Failed to update role status in DB', {
+        twitchUserId: session.twitchUserId,
+        error: roleUpdateError,
+      })
+    }
 
     logger.info('Discord OAuth callback completed', {
       twitchUserId: session.twitchUserId,
@@ -125,6 +134,18 @@ export async function GET(request: NextRequest) {
     response.cookies.delete(COOKIE_NAMES.DISCORD_AUTH_STATE)
     return response
   } catch (error) {
+    // Discord アカウントが別ユーザーに既にリンク済みの場合、専用エラーパラメータでリダイレクト
+    if (error instanceof DiscordTokenError && error.code === 'ALREADY_LINKED') {
+      logger.warn('Discord callback: account already linked to another user', {
+        twitchUserId: session.twitchUserId,
+      })
+      const response = NextResponse.redirect(
+        `${baseUrl}/dashboard/account?discord_error=${encodeURIComponent('DISCORD_ALREADY_LINKED')}`
+      )
+      response.cookies.delete(COOKIE_NAMES.DISCORD_AUTH_STATE)
+      return response
+    }
+
     logger.error('Discord callback error:', {
       twitchUserId: session.twitchUserId,
       error: error instanceof Error ? error.message : String(error),

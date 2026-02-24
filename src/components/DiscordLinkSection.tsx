@@ -22,7 +22,15 @@ export default function DiscordLinkSection({
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(
-    initialError ? { type: "error", text: initialError } : null
+    initialError
+      ? {
+          type: "error",
+          text:
+            initialError === "DISCORD_ALREADY_LINKED"
+              ? t("messages.alreadyLinked")
+              : t("messages.networkError"),
+        }
+      : null
   );
 
   /** CSRFトークンをCookieから取得（SupportPlanSection.tsx と同一パターン） */

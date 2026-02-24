@@ -841,7 +841,8 @@
       "unlinkFailed": "連携解除に失敗しました",
       "refreshSuccess": "ロール状態を更新しました",
       "refreshFailed": "ロール更新に失敗しました",
-      "networkError": "ネットワークエラーが発生しました"
+      "networkError": "ネットワークエラーが発生しました",
+      "alreadyLinked": "このDiscordアカウントは既に別のTwitchアカウントに連携されています"
     }
   }
 }
