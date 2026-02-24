@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
+import { exchangeCodeForTokens, getTwitchUser, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
 import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
@@ -92,6 +92,10 @@ export async function GET(request: NextRequest) {
     // Check scope restoration guard cookie (set by login route when scope restoration fails)
     const scopeRestoreFailedState = cookieStore.get(COOKIE_NAMES.SCOPE_RESTORE_FAILED)?.value
     const scopeRestoreFailed = scopeRestoreFailedState === state
+    // 再認証フロー判定Cookie（reauth APIで設定）
+    // Re-auth flow marker cookie (set by reauth API)
+    const reauthState = cookieStore.get(COOKIE_NAMES.REAUTH_STATE)?.value
+    const isReauthFlow = reauthState === state
 
     try {
       // upsertのエラーを明示的にチェック（Supabase JSはエラー時にthrowせずerrorオブジェクトを返す）
@@ -122,11 +126,43 @@ export async function GET(request: NextRequest) {
         throw upsertError
       }
 
-      // トークン交換時に付与されたスコープをDBに保存（全置換）
-      // ただし、login側でスコープ復元に失敗していた場合は全置換をスキップし
-      // 既存DBのスコープを保持する（DB障害時の追加スコープ消失を防止）
-      // Save token scopes to DB (full replace), but skip if scope restoration
-      // failed in the login route to prevent silent additional scope loss
+      // 通常ログイン時のみ既存追加スコープを取得してマージに利用する。
+      // 再認証フローはユーザーの明示同意結果を反映するため、マージせず全置換する。
+      // For regular login only, fetch existing additional scopes for merge.
+      // Re-auth flow must reflect explicit user consent, so keep full replace.
+      let existingAdditionalScopes: string[] = []
+      if (!isReauthFlow) {
+        const { data: existingUser, error: existingScopeError } = await supabaseAdmin
+          .from('users')
+          .select('twitch_scopes')
+          .eq('twitch_user_id', twitchUser.id)
+          .maybeSingle()
+
+        if (existingScopeError && existingScopeError.code !== 'PGRST204') {
+          logger.error('Auth callback: Failed to fetch existing scopes for merge', {
+            twitchUserId: twitchUser.id,
+            error: existingScopeError,
+            code: existingScopeError.code,
+            message: existingScopeError.message,
+          })
+          throw existingScopeError
+        }
+
+        if (existingUser?.twitch_scopes) {
+          const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
+          existingAdditionalScopes = existingUser.twitch_scopes.filter(
+            (s: string) => validAdditionalScopes.includes(s)
+          )
+        }
+      }
+
+      // トークン交換時に付与されたスコープをDBに保存。
+      // 通常ログイン時は既存の追加スコープをマージし、ログアウト後ログインでも追加権限を保持する。
+      // ただしlogin側でスコープ復元に失敗していた場合は更新をスキップして既存DBを保持。
+      // Save token scopes to DB.
+      // On regular login, merge with existing additional scopes so relogin after logout
+      // does not drop previously granted optional permissions.
+      // If login-side scope restoration failed, skip update to preserve DB state.
       if (tokens.scope && tokens.scope.length > 0) {
         if (scopeRestoreFailed) {
           // ガード発動: login側でDB障害等によりスコープ復元に失敗しているため、
@@ -138,15 +174,24 @@ export async function GET(request: NextRequest) {
             tokenScopes: tokens.scope,
           })
         } else {
-          // 通常フロー: トークンの実際のスコープで全置換
-          // login側でpreservedScopesがOAuthリクエストに含まれているため、トークンのスコープは正確
-          // Normal flow: full-replace with token's actual scopes
-          // Login route included preservedScopes in the OAuth request, so token scopes are accurate
-          await saveTwitchScopes(twitchUser.id, tokens.scope)
-          logger.info('Auth callback: Saved Twitch scopes (full replace)', {
+          let scopesToSave = tokens.scope
+
+          if (!isReauthFlow && existingAdditionalScopes.length > 0) {
+            scopesToSave = Array.from(new Set([...tokens.scope, ...existingAdditionalScopes]))
+            logger.info('Auth callback: Merged existing additional scopes on regular login', {
+              twitchUserId: twitchUser.id,
+              tokenScopes: tokens.scope,
+              existingAdditionalScopes,
+              mergedScopes: scopesToSave,
+            })
+          }
+
+          await saveTwitchScopes(twitchUser.id, scopesToSave)
+          logger.info('Auth callback: Saved Twitch scopes', {
             twitchUserId: twitchUser.id,
-            scopeCount: tokens.scope.length,
-            scopes: tokens.scope,
+            scopeCount: scopesToSave.length,
+            scopes: scopesToSave,
+            isReauthFlow,
           })
         }
       }
@@ -286,6 +331,12 @@ export async function GET(request: NextRequest) {
     // Only delete this flow's guard cookie to avoid removing another tab's guard
     if (scopeRestoreFailed) {
       response.cookies.set(COOKIE_NAMES.SCOPE_RESTORE_FAILED, '', getDeleteCookieOptions())
+    }
+
+    // Clear re-auth marker cookie only when state matches this flow
+    // 並行フロー保護のため、state一致時のみ削除する
+    if (isReauthFlow) {
+      response.cookies.set(COOKIE_NAMES.REAUTH_STATE, '', getDeleteCookieOptions())
     }
 
     // Clear returnTo cookie if it was used
