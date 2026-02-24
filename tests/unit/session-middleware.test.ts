@@ -5,12 +5,18 @@ import { COOKIE_NAMES } from '@/lib/constants'
 
 /**
  * Tests for middleware session cleanup logic.
- * Expired or malformed session cookies should be cleared in middleware,
- * because Server Components cannot modify cookies (Next.js restriction).
+ *
+ * Key behavior:
+ * - Expired session cookies are NOT deleted (preserved for scope restoration during re-login)
+ * - CSRF cookies ARE deleted when session expires (no longer needed)
+ * - Unparseable (corrupted/tampered) session cookies are deleted (security)
  *
  * ミドルウェアでのセッションクリーンアップロジックのテスト。
- * 期限切れまたは不正なセッションCookieはミドルウェアでクリアする必要がある。
- * Server ComponentではCookieの変更がNext.jsにより禁止されているため。
+ *
+ * 主な動作:
+ * - 期限切れセッションCookieは削除しない（再ログイン時のスコープ保持に必要）
+ * - CSRFトークンはセッション期限切れ時に削除する（不要のため）
+ * - パースできないCookieは削除する（セキュリティ対策）
  */
 describe('updateSession middleware', () => {
   const validSession = {
@@ -54,23 +60,41 @@ describe('updateSession middleware', () => {
     expect(setCookieHeader).toBeNull()
   })
 
-  it('should clear session and CSRF cookies when session is expired', async () => {
+  it('should clear CSRF cookie when session is expired and csrf_token exists in request', async () => {
+    // 期限切れセッション + csrf_tokenあり → csrf_tokenのみ削除
     const expiredSession = {
       ...validSession,
       expiresAt: Date.now() - 1000, // expired 1 second ago
     }
     const request = createRequest({
       [COOKIE_NAMES.SESSION]: JSON.stringify(expiredSession),
+      [COOKIE_NAMES.CSRF_TOKEN]: 'existing-csrf-token',
     })
     const response = await updateSession(request)
 
-    // Verify session cookie is cleared (maxAge=0)
+    // セッションCookieは保持（スコープ保持のため）
     const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
-    expect(sessionCookie?.value).toBe('')
+    expect(sessionCookie).toBeUndefined()
 
-    // Verify CSRF cookie is also cleared
+    // CSRFトークンは削除される（期限切れセッションでは不要）
     const csrfCookie = response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)
     expect(csrfCookie?.value).toBe('')
+  })
+
+  it('should not emit Set-Cookie when session is expired but csrf_token is absent', async () => {
+    // 期限切れセッション + csrf_tokenなし → Set-Cookieヘッダを出さない（キャッシュ効率維持）
+    const expiredSession = {
+      ...validSession,
+      expiresAt: Date.now() - 1000,
+    }
+    const request = createRequest({
+      [COOKIE_NAMES.SESSION]: JSON.stringify(expiredSession),
+    })
+    const response = await updateSession(request)
+
+    // Set-Cookieヘッダが一切出ないことを確認
+    const setCookieHeader = response.headers.get('set-cookie')
+    expect(setCookieHeader).toBeNull()
   })
 
   it('should clear both session and CSRF cookies when cookie value is not valid JSON', async () => {
@@ -100,5 +124,42 @@ describe('updateSession middleware', () => {
     // No Set-Cookie headers should be added
     const setCookieHeader = response.headers.get('set-cookie')
     expect(setCookieHeader).toBeNull()
+  })
+
+  it('should preserve session cookie even when expired for a long time', async () => {
+    // 長期間経過した期限切れセッションもスコープ保持のために残す
+    const longExpiredSession = {
+      ...validSession,
+      expiresAt: Date.now() - 20 * 24 * 60 * 60 * 1000, // expired 20 days ago
+    }
+    const request = createRequest({
+      [COOKIE_NAMES.SESSION]: JSON.stringify(longExpiredSession),
+      [COOKIE_NAMES.CSRF_TOKEN]: 'old-csrf-token',
+    })
+    const response = await updateSession(request)
+
+    // セッションCookieは保持
+    const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
+    expect(sessionCookie).toBeUndefined()
+
+    // CSRFトークンのみ削除される
+    const csrfCookie = response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)
+    expect(csrfCookie?.value).toBe('')
+  })
+
+  it('should not emit Set-Cookie for unparseable session when csrf_token is absent', async () => {
+    // パース不可 + csrf_tokenなし → セッションCookieのみ削除、csrf_tokenのSet-Cookieは出さない
+    const request = createRequest({
+      [COOKIE_NAMES.SESSION]: 'invalid-json-value',
+    })
+    const response = await updateSession(request)
+
+    // セッションCookieは削除される
+    const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
+    expect(sessionCookie?.value).toBe('')
+
+    // csrf_tokenのSet-Cookieは出ない
+    const csrfCookie = response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)
+    expect(csrfCookie).toBeUndefined()
   })
 })

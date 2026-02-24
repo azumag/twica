@@ -99,9 +99,12 @@ export const getSession = cache(async (): Promise<Session | null> => {
 
     if (session.expiresAt && Date.now() > session.expiresAt) {
       logger.warn('[Session] Session expired')
-      // Cookie cleanup is handled by middleware (updateSession)
-      // ミドルウェア（updateSession）でCookieクリアを処理するため、ここではCookie操作しない
-      // Server ComponentからのCookie書き込みはNext.jsで禁止されている
+      // 期限切れセッションCookieはミドルウェアで削除しない（スコープ保持のため）。
+      // Cookie自体はCOOKIE_MAX_AGE_SECONDSの期限でブラウザが自動削除する。
+      // Server ComponentからのCookie書き込みはNext.jsで禁止されている。
+      // Expired session cookies are NOT deleted by middleware (preserved for scope restoration).
+      // The cookie is automatically cleaned up by the browser when COOKIE_MAX_AGE_SECONDS expires.
+      // Server Components cannot write cookies in Next.js.
       logger.info(`[Perf] getSession (expired): ${Date.now() - start}ms`);
       return null;
     }

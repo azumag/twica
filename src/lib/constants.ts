@@ -29,8 +29,15 @@ export const API_ROUTES = {
 }
 
 export const SESSION_CONFIG = {
-  MAX_AGE_SECONDS: 7 * 24 * 60 * 60,  // 7 days
+  MAX_AGE_SECONDS: 7 * 24 * 60 * 60,  // 7 days (session validity)
   MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
+  // CookieのmaxAgeはセッション有効期限より長く設定する。
+  // ログインルートのparseSession()が期限切れCookieからtwitchUserIdを抽出して
+  // 追加スコープ（user:write:chat等）を保持するために、この猶予期間が必要。
+  // Cookie maxAge is intentionally longer than session validity.
+  // The login route's parseSession() relies on the expired cookie to extract twitchUserId
+  // and preserve additional scopes (e.g., user:write:chat) during re-login.
+  COOKIE_MAX_AGE_SECONDS: 30 * 24 * 60 * 60,  // 30 days (cookie lifetime for scope preservation)
   COOKIE_PATH: '/',
 }
 
@@ -99,7 +106,13 @@ export function getSessionCookieOptions(): {
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax' as const,
     path: '/',
-    maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
+    // セッション有効期限(7日)より長いmaxAge(30日)を使用。
+    // getSession()はexpiresAtで有効期限を判定するため、Cookieが長く残っても安全。
+    // 期限切れCookieはログイン時のスコープ保持にのみ使用される。
+    // Use COOKIE_MAX_AGE_SECONDS (30d) instead of MAX_AGE_SECONDS (7d).
+    // getSession() checks expiresAt for session validity, so a longer cookie is safe.
+    // Expired cookies are only used for scope preservation during re-login.
+    maxAge: SESSION_CONFIG.COOKIE_MAX_AGE_SECONDS,
     ...(domain && { domain }),
   }
 }
@@ -125,15 +138,6 @@ export function getDeleteCookieOptions(): {
     ...(domain && { domain }),
   }
 }
-
-// 後方互換性のために残す（使用箇所は順次 getSessionCookieOptions() に置き換え）
-export const SESSION_COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax' as const,
-  path: '/',
-  maxAge: SESSION_CONFIG.MAX_AGE_SECONDS,
-} as const
 
 export const STATE_COOKIE_OPTIONS = {
   httpOnly: true,
