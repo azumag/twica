@@ -69,7 +69,7 @@ agent-browser snapshot
   - 助力: ブルー
   - ご贔屓: イエロー
   - Twitchサブスク: パープル
-- Twitchサブスク特典に「azumagbanjo の Twitch チャンネルをサブスクで有効」の説明文が表示される
+- Twitchサブスク特典に「作者：あずまぐ（@azumagbanjo）の Twitch チャンネルをサブスクで有効」の説明文が表示される
 
 **実装例:**
 ```bash

@@ -825,7 +825,7 @@
   },
   "twitchSub": {
     "title": "Twitchサブスク確認",
-    "description": "azumagbanjo の Twitch チャンネルをサブスクライブしている場合、ご贔屓同等の特典が自動適用されます。",
+    "description": "作者：あずまぐ（@azumagbanjo）の Twitch チャンネルをサブスクライブしている場合、ご贔屓同等の特典が自動適用されます。",
     "status": "サブスク状態",
     "statusActive": "有効",
     "statusInactive": "未確認",

@@ -186,7 +186,7 @@ export default async function PlansPage() {
                           rel="noopener noreferrer"
                           className="text-purple-400 hover:text-purple-300 underline"
                         >
-                          azumagbanjo の Twitch チャンネル
+                          作者：あずまぐ（@azumagbanjo）の Twitch チャンネル
                         </a>
                         をサブスクライブ
                       </span>
@@ -236,7 +236,7 @@ export default async function PlansPage() {
               {/* Twitchサブスク特典の説明 */}
               <div className="rounded-xl bg-gray-800 p-6">
                 <h3 className="mb-2 text-lg font-semibold text-white">
-                  azumagbanjo の Twitch チャンネルをサブスクライブする
+                  作者：あずまぐ（@azumagbanjo）の Twitch チャンネルをサブスクライブする
                 </h3>
                 <p className="mb-4 text-gray-400">
                   <a
@@ -245,7 +245,7 @@ export default async function PlansPage() {
                     rel="noopener noreferrer"
                     className="text-purple-400 hover:text-purple-300 underline font-medium"
                   >
-                    azumagbanjo の Twitch 配信チャンネル
+                    作者：あずまぐ（@azumagbanjo）の Twitch 配信チャンネル
                   </a>
                   のサブスクライバー向けおまけ特典です。サブスクライブ後、アカウント設定から権限を付与するだけで自動適用されます。
                 </p>
@@ -259,7 +259,7 @@ export default async function PlansPage() {
                         rel="noopener noreferrer"
                         className="text-purple-400 hover:text-purple-300 underline"
                       >
-                        azumagbanjo の Twitch チャンネル
+                        作者：あずまぐ（@azumagbanjo）の Twitch チャンネル
                       </a>
                       をサブスクライブする
                     </span>

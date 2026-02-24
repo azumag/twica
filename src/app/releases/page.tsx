@@ -80,7 +80,7 @@ export default async function ReleasesPage() {
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
                     <li><span className="text-blue-400 font-medium">助力</span> - ストレージ容量 +250MB、Full HD（1920px幅）画像対応</li>
                     <li><span className="text-yellow-400 font-medium">ご贔屓</span> - ストレージ容量 +500MB、4K（3840px幅）画像対応</li>
-                    <li><span className="text-purple-400 font-medium">Twitchサブスク特典</span> - <a href="https://www.twitch.tv/azumagbanjo" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">azumagbanjo の Twitch チャンネル</a>をサブスクしている方に自動適用（ご贔屓同等の特典）</li>
+                    <li><span className="text-purple-400 font-medium">Twitchサブスク特典</span> - <a href="https://www.twitch.tv/azumagbanjo" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">作者：あずまぐ（@azumagbanjo）の Twitch チャンネル</a>をサブスクしている方に自動適用（ご贔屓同等の特典）</li>
                   </ul>
                   <p className="mt-3 text-sm text-gray-500">
                     支援コードの入力はダッシュボードの「<a href="/dashboard/account" className="text-purple-400 hover:text-purple-300 underline">アカウント設定</a>」から行えます。詳細は
@@ -121,7 +121,7 @@ export default async function ReleasesPage() {
                     Twitch チャンネルサブスクによる特典自動適用
                   </h3>
                   <p className="text-gray-400">
-                    <a href="https://www.twitch.tv/azumagbanjo" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">azumagbanjo の Twitch チャンネル</a>をサブスクライブしている方は、アカウント設定の「Twitchサブスク確認」からサブスク状態を確認するだけで、ご贔屓同等の特典が自動適用されます。支援コードの入力は不要です。
+                    <a href="https://www.twitch.tv/azumagbanjo" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">作者：あずまぐ（@azumagbanjo）の Twitch チャンネル</a>をサブスクライブしている方は、アカウント設定の「Twitchサブスク確認」からサブスク状態を確認するだけで、ご贔屓同等の特典が自動適用されます。支援コードの入力は不要です。
                   </p>
                 </div>
               </div>
