@@ -11,7 +11,7 @@
 -- rarityカラムが更新されると自動的に再計算されるため、メンテナンス不要。
 -- DB側でソート・ページネーションが完結し、全件取得が不要になる。
 
-ALTER TABLE cards ADD COLUMN rarity_order SMALLINT GENERATED ALWAYS AS (
+ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity_order SMALLINT GENERATED ALWAYS AS (
   CASE rarity
     WHEN 'legendary' THEN 1
     WHEN 'epic' THEN 2
@@ -23,7 +23,7 @@ ALTER TABLE cards ADD COLUMN rarity_order SMALLINT GENERATED ALWAYS AS (
 
 -- Index for efficient sorting by rarity hierarchy
 -- レアリティ階層順ソートの効率化用インデックス
-CREATE INDEX idx_cards_rarity_order ON cards(rarity_order);
+CREATE INDEX IF NOT EXISTS idx_cards_rarity_order ON cards(rarity_order);
 
 -- Drop the old rarity text index as it's no longer used
 -- rarity text カラムのインデックスは不要になるため削除（rarity_orderを使用）

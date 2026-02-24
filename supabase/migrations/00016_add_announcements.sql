@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS announcement_reads (
 );
 
 -- updated_atの自動更新トリガー（00001_initial_schemaで定義済みの関数を再利用）
+DROP TRIGGER IF EXISTS update_announcements_updated_at ON announcements;
 CREATE TRIGGER update_announcements_updated_at
   BEFORE UPDATE ON announcements
   FOR EACH ROW
@@ -46,6 +47,7 @@ ON announcement_reads(announcement_id);
 -- RLS: service_roleのみフルアクセス（サーバーサイド専用、既存パターン00013踏襲）
 ALTER TABLE announcements ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Service role can manage announcements" ON announcements;
 CREATE POLICY "Service role can manage announcements"
 ON announcements
 FOR ALL
@@ -55,6 +57,7 @@ WITH CHECK (true);
 
 ALTER TABLE announcement_reads ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Service role can manage announcement reads" ON announcement_reads;
 CREATE POLICY "Service role can manage announcement reads"
 ON announcement_reads
 FOR ALL

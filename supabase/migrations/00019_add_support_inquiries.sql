@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS support_inquiry_messages (
 );
 
 -- updated_atの自動更新トリガー（00001_initial_schemaで定義済みの関数を再利用）
+DROP TRIGGER IF EXISTS update_support_inquiries_updated_at ON support_inquiries;
 CREATE TRIGGER update_support_inquiries_updated_at
   BEFORE UPDATE ON support_inquiries
   FOR EACH ROW
@@ -60,6 +61,7 @@ ON support_inquiry_messages(inquiry_id, created_at ASC);
 -- RLS: service_roleのみフルアクセス（サーバーサイド専用、既存パターン踏襲）
 ALTER TABLE support_inquiries ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Service role can manage support inquiries" ON support_inquiries;
 CREATE POLICY "Service role can manage support inquiries"
 ON support_inquiries
 FOR ALL
@@ -69,6 +71,7 @@ WITH CHECK (true);
 
 ALTER TABLE support_inquiry_messages ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Service role can manage support inquiry messages" ON support_inquiry_messages;
 CREATE POLICY "Service role can manage support inquiry messages"
 ON support_inquiry_messages
 FOR ALL

@@ -26,6 +26,7 @@ ON streamer_storage_bonus(streamer_id);
 ALTER TABLE streamer_storage_bonus ENABLE ROW LEVEL SECURITY;
 
 -- service_roleはフルアクセス（サーバーサイド操作用）
+DROP POLICY IF EXISTS "Service role can manage storage bonus" ON streamer_storage_bonus;
 CREATE POLICY "Service role can manage storage bonus"
 ON streamer_storage_bonus
 FOR ALL
