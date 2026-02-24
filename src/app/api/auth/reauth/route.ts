@@ -4,7 +4,7 @@ import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
 import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { getTwitchAuthUrl, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
-import { API_ROUTES } from '@/lib/constants'
+import { API_ROUTES, COOKIE_NAMES, STATE_COOKIE_OPTIONS } from '@/lib/constants'
 import { logger } from '@/lib/logger'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { randomBytesHex } from '@/lib/crypto-utils'
@@ -65,11 +65,17 @@ export async function POST(request: Request) {
       additionalScopes,
     })
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       loginUrl,
       state, // stateを返してクライアント側でCookieに保存できるようにする
     })
+
+    // callbackで再認証フローを識別するためにstateを保存
+    // Store state marker so callback can identify re-auth flow
+    response.cookies.set(COOKIE_NAMES.REAUTH_STATE, state, STATE_COOKIE_OPTIONS)
+
+    return response
   } catch (error) {
     return handleApiError(error, 'Re-auth API: POST')
   }
