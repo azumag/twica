@@ -263,6 +263,18 @@ describe('Auth scope preservation: login route', () => {
 describe('Auth scope preservation: callback route', () => {
   let exchangeCodeForTokens: ReturnType<typeof vi.fn>
   let getTwitchUser: ReturnType<typeof vi.fn>
+  const setCallbackMaybeSingleResults = (existingScopes: string[] | null) => {
+    mockMaybeSingle.mockReset()
+    mockMaybeSingle
+      .mockResolvedValueOnce({
+        data: { twitch_scopes: existingScopes },
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: { tos_accepted_at: '2024-01-01' },
+        error: null,
+      })
+  }
 
   beforeEach(async () => {
     vi.clearAllMocks()
@@ -304,11 +316,8 @@ describe('Auth scope preservation: callback route', () => {
       upsert: mockUpsert,
       update: mockUpdate,
     })
-    // TOS accepted
-    mockMaybeSingle.mockResolvedValue({
-      data: { tos_accepted_at: '2024-01-01' },
-      error: null,
-    })
+    // 1回目: users.twitch_scopes取得, 2回目: users.tos_accepted_at取得
+    setCallbackMaybeSingleResults(null)
   })
 
   it('スコープ復元失敗ガード発動時、saveTwitchScopesがスキップされる', async () => {
@@ -345,6 +354,47 @@ describe('Auth scope preservation: callback route', () => {
     await GET(request)
 
     // saveTwitchScopesが呼ばれることを確認
+    expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
+  })
+
+  it('通常ログインでは既存の追加スコープをマージして保存する', async () => {
+    setCallbackMaybeSingleResults(['user:write:chat'])
+
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      return undefined
+    })
+
+    const { NextRequest } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    await GET(request)
+
+    expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', [
+      'user:read:email',
+      'openid',
+      'user:write:chat',
+    ])
+  })
+
+  it('再認証フローでは既存追加スコープをマージせず全置換する', async () => {
+    setCallbackMaybeSingleResults(['user:write:chat'])
+
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      if (name === 'twica_reauth_state') return { value: 'test-state-123' }
+      return undefined
+    })
+
+    const { NextRequest } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    await GET(request)
+
     expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
   })
 
