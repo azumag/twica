@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers'
 import { cache } from 'react'
-import { BROADCASTER_TYPE, COOKIE_NAMES, getDeleteCookieOptions } from './constants'
+import { BROADCASTER_TYPE, COOKIE_NAMES, getDeleteCookieOptions, getSessionCookieOptions } from './constants'
 import { logger } from './logger'
 
 export interface Session {
@@ -131,6 +131,28 @@ export async function clearSession(): Promise<void> {
   })
 
   const cookieStore = await cookies()
-  // ドメイン設定されたCookieを確実に削除するため、maxAge=0で上書き
+  const existingCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+
+  if (existingCookie) {
+    try {
+      // ログアウト後スコープ復元のために twitchUserId のみ専用 Cookie に分離して保持する。
+      // 全セッションデータを保持すると署名なしで改ざんが可能なため、
+      // loginルートが必要とする twitchUserId だけを最小 Cookie に保存する。
+      // loginルートはこの Cookie から twitchUserId を取得し、
+      // DBの追加スコープ（user:write:chat等）を OAuthリクエストに含める。
+      //
+      // On logout, store only twitchUserId in a minimal dedicated cookie for scope restoration.
+      // Keeping the full session (unsigned) would allow tampering; the login route only needs
+      // twitchUserId to look up additional scopes (e.g., user:write:chat) from DB.
+      const parsed = parseSession(existingCookie)
+      cookieStore.set(COOKIE_NAMES.SCOPE_RESTORE_USER_ID, parsed.twitchUserId, getSessionCookieOptions())
+    } catch {
+      // Cookie解析失敗時はスコープ復元用Cookieを設定しない（追加スコープは失われるが安全側に倒す）
+      // Skip scope restore cookie on parse failure (additional scopes lost, but fail safe)
+    }
+  }
+
+  // セッションCookieをハードログアウト（削除）
+  // Hard logout: always delete session cookie
   cookieStore.set(COOKIE_NAMES.SESSION, '', getDeleteCookieOptions())
 }

@@ -26,6 +26,12 @@ export const COOKIE_NAMES = {
   // Discord OAuth認証フロー用のCSRF state
   // CSRF state for Discord OAuth flow
   DISCORD_AUTH_STATE: 'discord_auth_state',
+  // ログアウト後のスコープ復元用最小Cookie（twitchUserIdのみ格納）
+  // 全セッションデータの代わりにtwitchUserIdだけを保持し、
+  // loginルートが追加スコープ復元に使用する
+  // Minimal cookie for scope restoration after logout (stores only twitchUserId).
+  // Replaces full session cookie to minimize retained data.
+  SCOPE_RESTORE_USER_ID: 'twica_scope_restore_uid',
 }
 
 export const API_ROUTES = {
@@ -42,11 +48,11 @@ export const SESSION_CONFIG = {
   MAX_AGE_SECONDS: 7 * 24 * 60 * 60,  // 7 days (session validity)
   MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
   // CookieのmaxAgeはセッション有効期限より長く設定する。
-  // ログインルートのparseSession()が期限切れCookieからtwitchUserIdを抽出して
-  // 追加スコープ（user:write:chat等）を保持するために、この猶予期間が必要。
+  // ログアウト後のSCOPE_RESTORE_USER_ID Cookieもこの期間保持され、
+  // loginルートが追加スコープ（user:write:chat等）の復元に使用する。
   // Cookie maxAge is intentionally longer than session validity.
-  // The login route's parseSession() relies on the expired cookie to extract twitchUserId
-  // and preserve additional scopes (e.g., user:write:chat) during re-login.
+  // SCOPE_RESTORE_USER_ID cookie is kept for this duration so the login route
+  // can preserve additional scopes (e.g., user:write:chat) on re-login.
   COOKIE_MAX_AGE_SECONDS: 30 * 24 * 60 * 60,  // 30 days (cookie lifetime for scope preservation)
   COOKIE_PATH: '/',
 }

@@ -231,9 +231,11 @@ export async function removeScope(twitchUserId: string, scope: string): Promise<
 
 /**
  * ユーザーのTwitchスコープをデータベースに保存（全置換）
- * 再認証時に使用: ユーザーが明示的にスコープを選択した結果を保存する
- * Save Twitch scopes to database for a user (full replace)
- * Used during re-authentication: saves the user's explicit scope selection
+ * 通常ログイン・再認証フロー双方から呼ばれる。
+ * トークンの実スコープでDBを全置換することでDB/トークン乖離を防ぐ。
+ * Save Twitch scopes to database for a user (full replace).
+ * Called from both regular login and re-auth flows.
+ * Full replace keeps DB in sync with actual token scopes, preventing divergence.
  * @param twitchUserId - TwitchユーザーID
  * @param scopes - 保存するスコープの配列
  */
