@@ -33,6 +33,8 @@
 #      (Account Settings → Access Tokens で発行)
 #    - SUPABASE_PROJECT_REF: Supabase project reference ID
 #      (Project Settings → General で確認)
+#    - SUPABASE_DB_PASSWORD: Database password for migrations
+#      (Settings → Database → Reset database password で取得/再設定)
 
 name: Deploy to Cloudflare Workers
 
@@ -107,18 +109,20 @@ jobs:
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.76.14
 
       - name: Link Supabase project
         run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
 
       - name: Apply Supabase migrations
         run: supabase db push
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
