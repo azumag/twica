@@ -1,21 +1,10 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 // next-intl - 国際化サポートのプロバイダーとサーバーサイドユーティリティ
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "TwiCa - Twitch Channel Point Trading Cards",
@@ -38,9 +27,7 @@ export default async function RootLayout({
 
   return (
     <html lang={locale}>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className="antialiased">
         {/* i18n Provider - provides translations to all client components */}
         {/* i18nプロバイダー - 全クライアントコンポーネントに翻訳を提供 */}
         <NextIntlClientProvider messages={messages}>
