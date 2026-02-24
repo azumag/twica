@@ -202,7 +202,7 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
         </button>
       </form>
 
-      {/* ベーシックへの復帰ボタン（basic以外かつtwitch_sub以外の時のみ表示）
+      {/* 素地への復帰ボタン（basic以外かつtwitch_sub以外の時のみ表示）
          twitch_subはTwitchサブスクで自動判定されるため、コード解除では無効化できない */}
       {activePlan !== "basic" && activePlan !== "twitch_sub" && (
         <div className="mt-4 border-t border-gray-700 pt-4">

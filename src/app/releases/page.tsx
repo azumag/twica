@@ -103,7 +103,7 @@ export default async function ReleasesPage() {
                     特典の解除
                   </h3>
                   <p className="text-gray-400">
-                    アカウント設定からベーシックに戻せます。解除後は、特典（追加ストレージ等）が失われます。
+                    アカウント設定から素地に戻せます。解除後は、特典（追加ストレージ等）が失われます。
                   </p>
                 </div>
               </div>

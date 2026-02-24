@@ -67,18 +67,18 @@ export default async function PlansPage() {
             </h2>
 
             <div className="grid gap-4 md:grid-cols-2">
-              {/* ベーシック */}
+              {/* 素地 */}
               <div className="rounded-xl bg-gray-800 p-6 border border-gray-700">
                 <div className="mb-3 flex items-center gap-2">
                   <span className="rounded-full bg-gray-600 px-3 py-1 text-sm font-medium text-white">
-                    ベーシック
+                    素地
                   </span>
                   <span className="text-sm text-gray-500">無料</span>
                 </div>
                 <ul className="space-y-2 text-sm text-gray-400">
                   <li className="flex items-start gap-2">
                     <span className="text-gray-500 mt-0.5">•</span>
-                    <span>ストレージ容量: 10MB（基本）</span>
+                    <span>ストレージ容量: 10MB</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-gray-500 mt-0.5">•</span>

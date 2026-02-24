@@ -798,7 +798,7 @@
     "defaultStorage": "デフォルト",
     "storageBonus": "ストレージ追加容量",
     "plans": {
-      "basic": "ベーシック",
+      "basic": "素地",
       "support": "助力",
       "patron": "ご贔屓",
       "twitch_sub": "Twitchサブスク"
@@ -811,15 +811,15 @@
       "optional": "任意",
       "activate": "有効化",
       "activating": "有効化中...",
-      "deactivate": "ベーシックに戻す",
+      "deactivate": "素地に戻す",
       "deactivating": "変更中...",
-      "confirmDeactivate": "ベーシックに戻しますか？現在の特典（追加ストレージ等）が失われます。"
+      "confirmDeactivate": "素地に戻しますか？現在の特典（追加ストレージ等）が失われます。"
     },
     "messages": {
       "activated": "{plan}の特典が有効化されました",
       "activateFailed": "コードの有効化に失敗しました",
       "networkError": "ネットワークエラーが発生しました",
-      "deactivated": "ベーシックに戻しました",
+      "deactivated": "素地に戻しました",
       "deactivateFailed": "特典の変更に失敗しました"
     }
   },
