@@ -48,6 +48,62 @@ export default async function ReleasesPage() {
             TwiCa リリースノート
           </h1>
 
+          {/* v1.28.0 - Discord連携・問い合わせフォーム */}
+          <div className="mb-16">
+            <div className="mb-8">
+              <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
+                v1.28.0
+              </div>
+              <p className="mt-2 text-sm text-gray-500">2026-02-24</p>
+            </div>
+
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                新機能・改善
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    Discord 連携によるプラン自動適用
+                  </h3>
+                  <p className="text-gray-400">
+                    TwiCa の Discord サーバーをサブスクライブすると、支援コード不要で「Twitchサブスクプラン」が自動適用されるようになりました。アカウント設定から Discord 連携を行うことで有効になります。特典内容はパトロンプランと同等です。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    支援者向け問い合わせフォーム
+                  </h3>
+                  <p className="text-gray-400">
+                    サポーター・パトロン・Twitchサブスクプランをご利用の方向けに、専用の問い合わせフォームを追加しました。ダッシュボードの「問い合わせ」メニューからアクセスできます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    プランのダウングレード機能
+                  </h3>
+                  <p className="text-gray-400">
+                    アカウント設定からプランをベーシックに戻せるようになりました。ダウングレード後は、そのプランの特典（追加ストレージ等）が失われます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-3 text-lg font-semibold text-white">
+                    その他の改善・修正
+                  </h3>
+                  <ul className="ml-4 list-disc space-y-2 text-gray-400">
+                    <li>ストレージ追加容量を修正: サポーター +250MB、パトロン +500MB（前バージョンの記載から変更）</li>
+                    <li>ログアウト後の再ログイン時に Twitch チャット通知のスコープが失われる問題を修正</li>
+                    <li>再認証フローの識別を改善し、スコープの引き継ぎを正確に制御</li>
+                  </ul>
+                </div>
+              </div>
+            </section>
+          </div>
+
           {/* v1.27.0 - 支援プラン */}
           <div className="mb-16">
             <div className="mb-8">
@@ -77,11 +133,13 @@ export default async function ReleasesPage() {
                     プラン一覧
                   </h3>
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
-                    <li><span className="text-blue-400 font-medium">サポーター</span> - ストレージ容量 +500MB</li>
-                    <li><span className="text-yellow-400 font-medium">パトロン</span> - ストレージ容量 +1GB</li>
+                    <li><span className="text-blue-400 font-medium">サポーター</span> - ストレージ容量 +250MB、Full HD（1920px幅）画像対応</li>
+                    <li><span className="text-yellow-400 font-medium">パトロン</span> - ストレージ容量 +500MB、4K（3840px幅）画像対応</li>
                   </ul>
                   <p className="mt-3 text-sm text-gray-500">
-                    支援コードの入力はダッシュボードの「アカウント設定」から行えます。
+                    支援コードの入力はダッシュボードの「アカウント設定」から行えます。詳細は
+                    <a href="/plans" className="text-purple-400 hover:text-purple-300 underline ml-1">サポートプランについて</a>
+                    をご覧ください。
                   </p>
                 </div>
 

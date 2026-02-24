@@ -147,7 +147,13 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
 
       {/* コード入力フォーム */}
       <form onSubmit={handleActivate} className="space-y-4">
-        <p className="text-sm text-gray-400">{t("description")}</p>
+        <p className="text-sm text-gray-400">
+          {t("description")}
+          {" "}
+          <a href="/plans" className="text-purple-400 hover:text-purple-300 underline">
+            サポートプランについて
+          </a>
+        </p>
         <div>
           <label className="mb-1 block text-sm text-gray-300">{t("form.code")}</label>
           <input

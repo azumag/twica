@@ -914,6 +914,9 @@ export default function CardManager({
           <p className="text-sm text-red-400/80">
             {storageStatus.message}
           </p>
+          <a href="/plans" className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
+            サポートプランについて
+          </a>
         </div>
       )}
 
@@ -925,6 +928,9 @@ export default function CardManager({
             <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-3 text-sm text-yellow-300">
               <p className="font-medium mb-1">{t("messages.uploadLimited")}</p>
               <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
+              <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
+                サポートプランについて
+              </a>
             </div>
           ) : (
             <div className="text-sm text-gray-400 flex items-center gap-2">
@@ -951,7 +957,12 @@ export default function CardManager({
           )}
           {/* 容量制限の説明テキスト: ?アイコンクリックで表示/非表示を切り替え */}
           {showStorageHelp && !storageStatus.uploadDisabled && (
-            <p className="mt-2 text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message || t("messages.storageLimitReason")}</p>
+            <div className="mt-2">
+              <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message || t("messages.storageLimitReason")}</p>
+              <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
+                サポートプランについて
+              </a>
+            </div>
           )}
         </div>
       )}

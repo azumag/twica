@@ -109,6 +109,12 @@ export default async function DashboardPage() {
                   limit: formatBytes(storageUsage.userLimitBytes),
                 })}
               </p>
+              <Link
+                href="/plans"
+                className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline"
+              >
+                サポートプランについて
+              </Link>
             </div>
             <Link
               href="/dashboard/cards"

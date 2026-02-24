@@ -69,9 +69,6 @@ export default async function AccountSettingsPage({
 
       {/* 設定セクション */}
       <div className="space-y-6">
-        {/* 支援プランセクション */}
-        <SupportPlanSection currentPlan={currentPlan} />
-
         {/* Discord連携セクション */}
         <DiscordLinkSection
           discordUserId={discordInfo?.discord_user_id ?? null}
@@ -89,6 +86,9 @@ export default async function AccountSettingsPage({
           </p>
           <LanguageSwitcherSettings />
         </div>
+
+        {/* 支援プランセクション（コード入力） */}
+        <SupportPlanSection currentPlan={currentPlan} />
       </div>
     </div>
   );
