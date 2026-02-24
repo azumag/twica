@@ -106,6 +106,18 @@ export async function GET(request: Request) {
         }
       }
 
+      // Validate Twitch user ID format before using in DB query.
+      // Twitch IDは数字のみの文字列（最大15桁程度）。非数値が入る場合はCookie改ざん/
+      // データ破損の可能性があり、不要なDBクエリとログ汚染を防ぐためスキップする。
+      // Twitch user IDs are always numeric strings. Reject non-numeric values to prevent
+      // unnecessary DB queries and log pollution from tampered or corrupted cookies.
+      if (twitchUserId && !/^\d{1,20}$/.test(twitchUserId)) {
+        logger.warn('Login: invalid twitchUserId format, skipping scope restoration', {
+          format: 'non-numeric',
+        })
+        twitchUserId = null
+      }
+
       if (twitchUserId) {
         const supabaseAdmin = getSupabaseAdmin()
         const { data: user, error: dbError } = await supabaseAdmin
