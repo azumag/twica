@@ -78,7 +78,7 @@ export default async function ReleasesPage() {
                     特典一覧
                   </h3>
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
-                    <li><span className="text-blue-400 font-medium">助太刀</span> - ストレージ容量 +250MB、Full HD（1920px幅）画像対応</li>
+                    <li><span className="text-blue-400 font-medium">助力</span> - ストレージ容量 +250MB、Full HD（1920px幅）画像対応</li>
                     <li><span className="text-yellow-400 font-medium">ご贔屓</span> - ストレージ容量 +500MB、4K（3840px幅）画像対応</li>
                     <li><span className="text-purple-400 font-medium">Twitchサブスク特典</span> - azumagbanjo の Twitch チャンネルをサブスクしている方に自動適用（ご贔屓同等の特典）</li>
                   </ul>
@@ -94,7 +94,7 @@ export default async function ReleasesPage() {
                     高画質カード登録
                   </h3>
                   <p className="text-gray-400">
-                    支援特典に応じて、カード画像の登録解像度が向上します。助太刀はFull HD（1920px幅、上限5MB）、ご贔屓は4K（3840px幅、上限10MB）まで対応します。
+                    支援特典に応じて、カード画像の登録解像度が向上します。助力はFull HD（1920px幅、上限5MB）、ご贔屓は4K（3840px幅、上限10MB）まで対応します。
                   </p>
                 </div>
 
@@ -139,7 +139,7 @@ export default async function ReleasesPage() {
                     専用の問い合わせ機能
                   </h3>
                   <p className="text-gray-400">
-                    助太刀・ご贔屓・Twitchサブスク特典をご利用の方向けに、専用の問い合わせフォームを追加しました。ダッシュボードの「問い合わせ」メニューからアクセスできます。
+                    助力・ご贔屓・Twitchサブスク特典をご利用の方向けに、専用の問い合わせフォームを追加しました。ダッシュボードの「問い合わせ」メニューからアクセスできます。
                   </p>
                 </div>
               </div>

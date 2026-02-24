@@ -91,11 +91,11 @@ export default async function PlansPage() {
                 </ul>
               </div>
 
-              {/* 助太刀 */}
+              {/* 助力 */}
               <div className="rounded-xl bg-gray-800 p-6 border border-blue-700/50">
                 <div className="mb-3 flex items-center gap-2">
                   <span className="rounded-full bg-blue-600 px-3 py-1 text-sm font-medium text-white">
-                    助太刀
+                    助力
                   </span>
                   <span className="text-sm text-gray-500">支援コード必要</span>
                 </div>

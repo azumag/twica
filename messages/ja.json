@@ -750,7 +750,7 @@
   "inquiriesPage": {
     "title": "お問い合わせ",
     "description": "バグ報告や機能要望など、お気軽にお問い合わせください。",
-    "supporterOnly": "この機能は助太刀/ご贔屓限定です。",
+    "supporterOnly": "この機能は助力/ご贔屓限定です。",
     "newInquiry": "新規お問い合わせ",
     "form": {
       "category": "カテゴリ",
@@ -799,7 +799,7 @@
     "storageBonus": "ストレージ追加容量",
     "plans": {
       "basic": "ベーシック",
-      "support": "助太刀",
+      "support": "助力",
       "patron": "ご贔屓",
       "twitch_sub": "Twitchサブスク"
     },
