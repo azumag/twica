@@ -135,26 +135,24 @@ export async function clearSession(): Promise<void> {
 
   if (existingCookie) {
     try {
-      // ログアウト時はCookieを削除せず expiresAt=0 で無効化して保持する。
-      // loginルートは parseSession() で期限切れCookieからtwitchUserIdを抽出し、
-      // DBから追加スコープ（user:write:chat等）を読み取ってOAuthリクエストに含める。
-      // Cookieを削除すると次回ログイン時にtwitchUserIdが取得できず、
-      // 追加スコープがOAuth URLから抜け落ちてスコープが失われる。
+      // ログアウト後スコープ復元のために twitchUserId のみ専用 Cookie に分離して保持する。
+      // 全セッションデータを保持すると署名なしで改ざんが可能なため、
+      // loginルートが必要とする twitchUserId だけを最小 Cookie に保存する。
+      // loginルートはこの Cookie から twitchUserId を取得し、
+      // DBの追加スコープ（user:write:chat等）を OAuthリクエストに含める。
       //
-      // On logout, keep the cookie but invalidate it (expiresAt=0) instead of deleting.
-      // The login route uses parseSession() to read twitchUserId from expired cookies
-      // to fetch additional scopes (e.g., user:write:chat) from DB and include them
-      // in the OAuth request. Deleting the cookie prevents scope preservation on relogin.
+      // On logout, store only twitchUserId in a minimal dedicated cookie for scope restoration.
+      // Keeping the full session (unsigned) would allow tampering; the login route only needs
+      // twitchUserId to look up additional scopes (e.g., user:write:chat) from DB.
       const parsed = parseSession(existingCookie)
-      const invalidatedSession = JSON.stringify({ ...parsed, expiresAt: 0 })
-      cookieStore.set(COOKIE_NAMES.SESSION, invalidatedSession, getSessionCookieOptions())
-      return
+      cookieStore.set(COOKIE_NAMES.SCOPE_RESTORE_USER_ID, parsed.twitchUserId, getSessionCookieOptions())
     } catch {
-      // Cookie解析失敗時は削除にフォールバック
-      // Fallback to deletion if cookie can't be parsed (corrupted/invalid)
+      // Cookie解析失敗時はスコープ復元用Cookieを設定しない（追加スコープは失われるが安全側に倒す）
+      // Skip scope restore cookie on parse failure (additional scopes lost, but fail safe)
     }
   }
 
-  // フォールバック: Cookieを削除
+  // セッションCookieをハードログアウト（削除）
+  // Hard logout: always delete session cookie
   cookieStore.set(COOKIE_NAMES.SESSION, '', getDeleteCookieOptions())
 }

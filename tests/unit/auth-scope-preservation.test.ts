@@ -143,21 +143,11 @@ describe('Auth scope preservation: login route', () => {
   })
 
   it('DB障害時にスコープ復元失敗ガードCookieが設定される', async () => {
-    // 期限切れセッションCookieが存在し、parseSessionで検証成功する
-    const expiredSession = {
-      twitchUserId: 'user123',
-      twitchUsername: 'testuser',
-      twitchDisplayName: 'Test User',
-      twitchProfileImageUrl: 'https://example.com/avatar.png',
-      broadcasterType: 'affiliate',
-      expiresAt: Date.now() - 100000, // expired
-      version: 1,
-    }
+    // SCOPE_RESTORE_USER_ID CookieにtwitchUserIdが存在する（ログアウト後のスコープ復元用）
     mockCookieStore.get.mockImplementation((name: string) => {
-      if (name === 'twica_session') return { value: JSON.stringify(expiredSession) }
+      if (name === 'twica_scope_restore_uid') return { value: 'user123' }
       return undefined
     })
-    mockParseSession.mockReturnValue(expiredSession)
 
     // DBクエリがエラーを返す
     mockMaybeSingle.mockResolvedValue({
@@ -207,38 +197,23 @@ describe('Auth scope preservation: login route', () => {
     expect(scopeRestoreFailedCall).toBeUndefined()
   })
 
-  it('parseSession()で検証失敗した改ざんCookieはtwitchUserIdを抽出しない', async () => {
-    // 改ざんされたCookie（parseSessionが拒否する）
-    mockCookieStore.get.mockImplementation((name: string) => {
-      if (name === 'twica_session') return { value: '{"twitchUserId":"attacker123"}' }
-      return undefined
-    })
-    mockParseSession.mockImplementation(() => {
-      throw new Error('Invalid session format: missing required fields')
-    })
+  it('SCOPE_RESTORE_USER_ID Cookieが存在しない場合、twitchUserIdを抽出せずDBクエリを呼ばない', async () => {
+    // SCOPE_RESTORE_USER_ID Cookieなし（ログアウト前ログイン、または期限切れ後）
+    mockCookieStore.get.mockReturnValue(undefined)
 
     const { GET } = await import('@/app/api/auth/twitch/login/route')
     await GET(createMockRequest())
 
-    // DBクエリが呼ばれないことを確認（twitchUserIdが取得できなかったため）
+    // twitchUserIdが取得できないためDBクエリが呼ばれないことを確認
     expect(mockFrom).not.toHaveBeenCalledWith('users')
   })
 
-  it('期限切れセッションからparseSession()でtwitchUserIdを正しく抽出する', async () => {
-    const expiredSession = {
-      twitchUserId: 'user456',
-      twitchUsername: 'testuser2',
-      twitchDisplayName: 'Test User 2',
-      twitchProfileImageUrl: 'https://example.com/avatar2.png',
-      broadcasterType: 'partner',
-      expiresAt: Date.now() - 100000,
-      version: 1,
-    }
+  it('SCOPE_RESTORE_USER_ID CookieからtwitchUserIdを取得し、DBの追加スコープをOAuthリクエストに含める', async () => {
+    // ログアウト時にclearSession()が設定するSCOPE_RESTORE_USER_ID Cookieを模擬
     mockCookieStore.get.mockImplementation((name: string) => {
-      if (name === 'twica_session') return { value: JSON.stringify(expiredSession) }
+      if (name === 'twica_scope_restore_uid') return { value: 'user456' }
       return undefined
     })
-    mockParseSession.mockReturnValue(expiredSession)
 
     // DBに追加スコープがある
     mockMaybeSingle.mockResolvedValue({
@@ -353,8 +328,8 @@ describe('Auth scope preservation: callback route', () => {
     expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
   })
 
-  it('通常ログインではトークンのスコープをそのまま全置換で保存する（DBの追加スコープはマージしない）', async () => {
-    // DBにuser:write:chatがあってもマージせず、トークンのスコープのみ保存される
+  it('通常ログインではトークンのスコープのみで全置換する（callbackはDBの既存スコープを参照しない）', async () => {
+    // callbackルートはDBから既存スコープを取得しないため、トークンのスコープのみで全置換される
     mockCookieStore.get.mockImplementation((name: string) => {
       if (name === 'twitch_auth_state') return { value: 'test-state-123' }
       return undefined

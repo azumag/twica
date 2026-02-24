@@ -7,7 +7,7 @@ import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
-import { getSession, parseSession } from '@/lib/session'
+import { getSession } from '@/lib/session'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 
@@ -69,24 +69,19 @@ export async function GET(request: Request) {
         twitchUserId = session.twitchUserId
       }
 
-      // 2. セッション期限切れの場合、parseSession()で構造検証してからtwitchUserIdを取得
-      // getSession()は期限切れをnullとして返すが、Cookie自体は残っている
-      // parseSession()で全フィールドの型・存在を検証し、改ざん/破損を排除する
-      // For expired sessions, use parseSession() to validate cookie structure
-      // before trusting the twitchUserId (prevents use of tampered cookies)
+      // 2. ログアウト後のスコープ復元用最小Cookie（twitchUserIdのみ）から取得
+      // clearSession()がログアウト時に設定する専用Cookie。
+      // 全セッションデータの代わりにtwitchUserIdだけを保持するため改ざん耐性が高い
+      // (twitchUserIdはTwitch公開APIで誰でも取得可能な情報であり機密性なし)
+      // Read twitchUserId from the minimal scope-restore cookie set by clearSession() on logout.
+      // Using a dedicated minimal cookie avoids retaining full unsigned session data.
       if (!twitchUserId) {
-        const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
-        if (sessionCookie) {
-          try {
-            const parsed = parseSession(sessionCookie)
-            twitchUserId = parsed.twitchUserId
-            logger.info('Login: extracted twitchUserId from expired session cookie', {
-              twitchUserId,
-            })
-          } catch {
-            // 構造検証失敗 = 破損/改ざんCookieなので無視
-            // Structure validation failed = corrupted/tampered cookie, skip safely
-          }
+        const scopeRestoreUid = cookieStore.get(COOKIE_NAMES.SCOPE_RESTORE_USER_ID)?.value
+        if (scopeRestoreUid) {
+          twitchUserId = scopeRestoreUid
+          logger.info('Login: extracted twitchUserId from scope restore cookie', {
+            twitchUserId,
+          })
         }
       }
 

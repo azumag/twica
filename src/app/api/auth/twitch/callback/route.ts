@@ -304,6 +304,12 @@ export async function GET(request: NextRequest) {
       response.cookies.set(COOKIE_NAMES.REAUTH_STATE, '', getDeleteCookieOptions())
     }
 
+    // スコープ復元用Cookie（ログアウト後のtwitchUserId保持用）を削除
+    // 認証完了後はセッションCookieにtwitchUserIdが含まれるため不要
+    // Delete scope restore cookie (kept after logout for twitchUserId scope restoration)
+    // No longer needed once authenticated - twitchUserId is now in the session cookie
+    response.cookies.set(COOKIE_NAMES.SCOPE_RESTORE_USER_ID, '', getDeleteCookieOptions())
+
     // Clear returnTo cookie if it was used
     // 使用されたreturnTo Cookieを削除
     if (returnTo) {
