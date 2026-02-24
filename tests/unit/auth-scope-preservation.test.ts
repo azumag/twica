@@ -263,17 +263,13 @@ describe('Auth scope preservation: login route', () => {
 describe('Auth scope preservation: callback route', () => {
   let exchangeCodeForTokens: ReturnType<typeof vi.fn>
   let getTwitchUser: ReturnType<typeof vi.fn>
-  const setCallbackMaybeSingleResults = (existingScopes: string[] | null) => {
+  const setCallbackMaybeSingleResults = () => {
     mockMaybeSingle.mockReset()
-    mockMaybeSingle
-      .mockResolvedValueOnce({
-        data: { twitch_scopes: existingScopes },
-        error: null,
-      })
-      .mockResolvedValueOnce({
-        data: { tos_accepted_at: '2024-01-01' },
-        error: null,
-      })
+    // callbackルートはTOSチェックのみDB参照する（existingScopesクエリは削除済み）
+    mockMaybeSingle.mockResolvedValueOnce({
+      data: { tos_accepted_at: '2024-01-01' },
+      error: null,
+    })
   }
 
   beforeEach(async () => {
@@ -316,8 +312,8 @@ describe('Auth scope preservation: callback route', () => {
       upsert: mockUpsert,
       update: mockUpdate,
     })
-    // 1回目: users.twitch_scopes取得, 2回目: users.tos_accepted_at取得
-    setCallbackMaybeSingleResults(null)
+    // TOSチェック: users.tos_accepted_at取得
+    setCallbackMaybeSingleResults()
   })
 
   it('スコープ復元失敗ガード発動時、saveTwitchScopesがスキップされる', async () => {
@@ -357,9 +353,8 @@ describe('Auth scope preservation: callback route', () => {
     expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
   })
 
-  it('通常ログインでは既存の追加スコープをマージして保存する', async () => {
-    setCallbackMaybeSingleResults(['user:write:chat'])
-
+  it('通常ログインではトークンのスコープをそのまま全置換で保存する（DBの追加スコープはマージしない）', async () => {
+    // DBにuser:write:chatがあってもマージせず、トークンのスコープのみ保存される
     mockCookieStore.get.mockImplementation((name: string) => {
       if (name === 'twitch_auth_state') return { value: 'test-state-123' }
       return undefined
@@ -372,16 +367,11 @@ describe('Auth scope preservation: callback route', () => {
     const { GET } = await import('@/app/api/auth/twitch/callback/route')
     await GET(request)
 
-    expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', [
-      'user:read:email',
-      'openid',
-      'user:write:chat',
-    ])
+    // トークンに含まれるスコープのみで全置換（DBの既存スコープとマージしない）
+    expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
   })
 
-  it('再認証フローでは既存追加スコープをマージせず全置換する', async () => {
-    setCallbackMaybeSingleResults(['user:write:chat'])
-
+  it('再認証フローでもトークンのスコープのみ全置換する', async () => {
     mockCookieStore.get.mockImplementation((name: string) => {
       if (name === 'twitch_auth_state') return { value: 'test-state-123' }
       if (name === 'twica_reauth_state') return { value: 'test-state-123' }

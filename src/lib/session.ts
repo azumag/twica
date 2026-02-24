@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers'
 import { cache } from 'react'
-import { BROADCASTER_TYPE, COOKIE_NAMES, getDeleteCookieOptions } from './constants'
+import { BROADCASTER_TYPE, COOKIE_NAMES, getDeleteCookieOptions, getSessionCookieOptions } from './constants'
 import { logger } from './logger'
 
 export interface Session {
@@ -131,6 +131,30 @@ export async function clearSession(): Promise<void> {
   })
 
   const cookieStore = await cookies()
-  // ドメイン設定されたCookieを確実に削除するため、maxAge=0で上書き
+  const existingCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
+
+  if (existingCookie) {
+    try {
+      // ログアウト時はCookieを削除せず expiresAt=0 で無効化して保持する。
+      // loginルートは parseSession() で期限切れCookieからtwitchUserIdを抽出し、
+      // DBから追加スコープ（user:write:chat等）を読み取ってOAuthリクエストに含める。
+      // Cookieを削除すると次回ログイン時にtwitchUserIdが取得できず、
+      // 追加スコープがOAuth URLから抜け落ちてスコープが失われる。
+      //
+      // On logout, keep the cookie but invalidate it (expiresAt=0) instead of deleting.
+      // The login route uses parseSession() to read twitchUserId from expired cookies
+      // to fetch additional scopes (e.g., user:write:chat) from DB and include them
+      // in the OAuth request. Deleting the cookie prevents scope preservation on relogin.
+      const parsed = parseSession(existingCookie)
+      const invalidatedSession = JSON.stringify({ ...parsed, expiresAt: 0 })
+      cookieStore.set(COOKIE_NAMES.SESSION, invalidatedSession, getSessionCookieOptions())
+      return
+    } catch {
+      // Cookie解析失敗時は削除にフォールバック
+      // Fallback to deletion if cookie can't be parsed (corrupted/invalid)
+    }
+  }
+
+  // フォールバック: Cookieを削除
   cookieStore.set(COOKIE_NAMES.SESSION, '', getDeleteCookieOptions())
 }

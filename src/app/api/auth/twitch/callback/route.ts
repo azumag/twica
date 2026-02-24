@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens, getTwitchUser, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
+import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
 import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
@@ -126,42 +126,19 @@ export async function GET(request: NextRequest) {
         throw upsertError
       }
 
-      // 通常ログイン時のみ既存追加スコープを取得してマージに利用する。
-      // 再認証フローはユーザーの明示同意結果を反映するため、マージせず全置換する。
-      // For regular login only, fetch existing additional scopes for merge.
-      // Re-auth flow must reflect explicit user consent, so keep full replace.
-      let existingAdditionalScopes: string[] = []
-      if (!isReauthFlow) {
-        const { data: existingUser, error: existingScopeError } = await supabaseAdmin
-          .from('users')
-          .select('twitch_scopes')
-          .eq('twitch_user_id', twitchUser.id)
-          .maybeSingle()
-
-        if (existingScopeError && existingScopeError.code !== 'PGRST204') {
-          logger.error('Auth callback: Failed to fetch existing scopes for merge', {
-            twitchUserId: twitchUser.id,
-            error: existingScopeError,
-            code: existingScopeError.code,
-            message: existingScopeError.message,
-          })
-          throw existingScopeError
-        }
-
-        if (existingUser?.twitch_scopes) {
-          const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
-          existingAdditionalScopes = existingUser.twitch_scopes.filter(
-            (s: string) => validAdditionalScopes.includes(s)
-          )
-        }
-      }
-
-      // トークン交換時に付与されたスコープをDBに保存。
-      // 通常ログイン時は既存の追加スコープをマージし、ログアウト後ログインでも追加権限を保持する。
-      // ただしlogin側でスコープ復元に失敗していた場合は更新をスキップして既存DBを保持。
-      // Save token scopes to DB.
-      // On regular login, merge with existing additional scopes so relogin after logout
-      // does not drop previously granted optional permissions.
+      // トークン交換時に付与されたスコープをDBに全置換で保存する。
+      // loginルートがOAuthリクエストに既存スコープ（user:write:chat等）を含めるため、
+      // ユーザーのTwitch Grantにスコープが存在すれば新トークンにも含まれ保持される。
+      // トークンにないスコープをDBに残すとDB/トークン乖離が生じ401エラーの原因になるため、
+      // マージではなく全置換を使用する。
+      //
+      // Save token scopes to DB using full replace.
+      // The login route includes existing scopes in the OAuth request, so Twitch returns
+      // any previously-granted additional scopes in the new token. Full replace keeps DB
+      // in sync with actual token capabilities, preventing DB/token divergence that causes
+      // repeated 401 errors (token lacks scope but DB says it has it).
+      //
+      // login側でスコープ復元に失敗していた場合は更新をスキップして既存DBを保持。
       // If login-side scope restoration failed, skip update to preserve DB state.
       if (tokens.scope && tokens.scope.length > 0) {
         if (scopeRestoreFailed) {
@@ -174,23 +151,11 @@ export async function GET(request: NextRequest) {
             tokenScopes: tokens.scope,
           })
         } else {
-          let scopesToSave = tokens.scope
-
-          if (!isReauthFlow && existingAdditionalScopes.length > 0) {
-            scopesToSave = Array.from(new Set([...tokens.scope, ...existingAdditionalScopes]))
-            logger.info('Auth callback: Merged existing additional scopes on regular login', {
-              twitchUserId: twitchUser.id,
-              tokenScopes: tokens.scope,
-              existingAdditionalScopes,
-              mergedScopes: scopesToSave,
-            })
-          }
-
-          await saveTwitchScopes(twitchUser.id, scopesToSave)
+          await saveTwitchScopes(twitchUser.id, tokens.scope)
           logger.info('Auth callback: Saved Twitch scopes', {
             twitchUserId: twitchUser.id,
-            scopeCount: scopesToSave.length,
-            scopes: scopesToSave,
+            scopeCount: tokens.scope.length,
+            scopes: tokens.scope,
             isReauthFlow,
           })
         }
