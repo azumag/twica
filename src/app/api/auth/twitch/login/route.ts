@@ -69,18 +69,34 @@ export async function GET(request: Request) {
         twitchUserId = session.twitchUserId
       }
 
-      // 2. セッション期限切れの場合、parseSession()で構造検証してからtwitchUserIdを取得
-      // getSession()は期限切れをnullとして返すが、Cookie自体は残っている
-      // parseSession()で全フィールドの型・存在を検証し、改ざん/破損を排除する
-      // For expired sessions, use parseSession() to validate cookie structure
-      // before trusting the twitchUserId (prevents use of tampered cookies)
+      // 2. 明示ログアウト後のスコープ復元: SCOPE_RESTORE_USER_ID Cookie（twitchUserIdのみ）から取得
+      // clearSession()がログアウト時に設定する専用最小Cookie。
+      // Read twitchUserId from minimal scope-restore cookie set by clearSession() on explicit logout.
+      if (!twitchUserId) {
+        const scopeRestoreUid = cookieStore.get(COOKIE_NAMES.SCOPE_RESTORE_USER_ID)?.value
+        if (scopeRestoreUid) {
+          twitchUserId = scopeRestoreUid
+          logger.info('Login: extracted twitchUserId from scope restore cookie', {
+            twitchUserId,
+          })
+        }
+      }
+
+      // 3. 自然失効後のスコープ復元: 期限切れセッションCookieからtwitchUserIdを取得
+      // SCOPE_RESTORE_USER_ID はclearSession()でのみ設定されるため、セッションが明示ログアウト
+      // なしに7日経過で自然失効した場合はこのフォールバックが必要。
+      // parseSession()で全フィールドの型・存在を検証してからtwitchUserIdのみを使用する。
+      // Fallback for natural session expiry (no explicit logout before 7-day timeout):
+      // SCOPE_RESTORE_USER_ID is only set by clearSession(), so naturally-expired sessions
+      // must fall back to the session cookie. Use parseSession() to validate structure
+      // before trusting twitchUserId.
       if (!twitchUserId) {
         const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
         if (sessionCookie) {
           try {
             const parsed = parseSession(sessionCookie)
             twitchUserId = parsed.twitchUserId
-            logger.info('Login: extracted twitchUserId from expired session cookie', {
+            logger.info('Login: extracted twitchUserId from naturally expired session cookie', {
               twitchUserId,
             })
           } catch {
@@ -88,6 +104,18 @@ export async function GET(request: Request) {
             // Structure validation failed = corrupted/tampered cookie, skip safely
           }
         }
+      }
+
+      // Validate Twitch user ID format before using in DB query.
+      // Twitch IDは数字のみの文字列（最大15桁程度）。非数値が入る場合はCookie改ざん/
+      // データ破損の可能性があり、不要なDBクエリとログ汚染を防ぐためスキップする。
+      // Twitch user IDs are always numeric strings. Reject non-numeric values to prevent
+      // unnecessary DB queries and log pollution from tampered or corrupted cookies.
+      if (twitchUserId && !/^\d{1,20}$/.test(twitchUserId)) {
+        logger.warn('Login: invalid twitchUserId format, skipping scope restoration', {
+          format: 'non-numeric',
+        })
+        twitchUserId = null
       }
 
       if (twitchUserId) {
