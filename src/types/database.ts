@@ -493,7 +493,7 @@ export type AnnouncementRead = Database['public']['Tables']['announcement_reads'
 // 支援プラン関連のヘルパー型
 export type SupportCode = Database['public']['Tables']['support_codes']['Row']
 export type UserLicense = Database['public']['Tables']['user_licenses']['Row']
-export type { PlanType } from '@/lib/plan'
+export type { PlanType } from '@/lib/plan-constants'
 
 // Extended types with relations
 export type CardWithStreamer = Card & {

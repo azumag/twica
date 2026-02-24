@@ -5,51 +5,23 @@
  * user_licenses + support_codes をJOINして、ユーザーの有効なプランを判定する。
  * 上位プラン優先（patron > support > basic）。
  * cache() でリクエスト単位のキャッシュを適用し、同一リクエスト内での重複DB呼び出しを防止。
+ *
+ * 注意: 定数・型は plan-constants.ts に定義。
+ * クライアントコンポーネントからは plan-constants.ts を直接 import すること。
+ * plan.ts はサーバー専用モジュール（Supabase, Twitch API）に依存するため、
+ * クライアントバンドルに含めると env-validation のモジュール評価時バリデーションでクラッシュする。
  */
 
 import { cache } from 'react'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 import { hasTwitchSub } from '@/lib/twitch/sub-check'
+import { PLAN_PRIORITY, PLAN_STORAGE_BONUS } from '@/lib/plan-constants'
+import type { PlanType } from '@/lib/plan-constants'
 
-export type PlanType = 'basic' | 'support' | 'patron' | 'twitch_sub'
-
-// プランごとの追加ストレージ容量（バイト）
-// basic: 追加なし, support: 250MB, patron/twitch_sub: 500MB
-export const PLAN_STORAGE_BONUS: Record<PlanType, number> = {
-  basic: 0,
-  support: 250 * 1024 * 1024,       // 250MB
-  patron: 500 * 1024 * 1024,        // 500MB
-  twitch_sub: 500 * 1024 * 1024,    // 500MB（patron同等）
-}
-
-// プランごとのカード画像最大幅（ピクセル）
-// basic: 800px（標準）, support: 1920px（Full HD）, patron/twitch_sub: 3840px（4K）
-export const PLAN_MAX_IMAGE_WIDTH: Record<PlanType, number> = {
-  basic: 800,
-  support: 1920,
-  patron: 3840,
-  twitch_sub: 3840,    // patron同等
-}
-
-// プランごとのアップロードファイルサイズ上限（バイト）
-// 高解像度画像はファイルサイズが大きくなるため、上位プランでは上限を引き上げ
-// patron/twitch_sub(4K)はcanvas.toBlob(85%)で5MB超になりうるため10MBに設定
-export const PLAN_MAX_UPLOAD_SIZE: Record<PlanType, number> = {
-  basic: 1 * 1024 * 1024,     // 1MB
-  support: 5 * 1024 * 1024,   // 5MB（Full HD JPEG対応）
-  patron: 10 * 1024 * 1024,   // 10MB（4K JPEG対応）
-  twitch_sub: 10 * 1024 * 1024, // 10MB（patron同等）
-}
-
-// プランの優先度（高い値が優先）
-// twitch_sub は patron と同等（priority: 2）
-const PLAN_PRIORITY: Record<PlanType, number> = {
-  basic: 0,
-  support: 1,
-  patron: 2,
-  twitch_sub: 2,
-}
+// サーバー側コードからの既存 import を壊さないよう re-export
+export type { PlanType } from '@/lib/plan-constants'
+export { PLAN_STORAGE_BONUS, PLAN_MAX_IMAGE_WIDTH, PLAN_MAX_UPLOAD_SIZE } from '@/lib/plan-constants'
 
 /**
  * ユーザーの有効な最上位プランを判定

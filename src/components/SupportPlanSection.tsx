@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { useTranslations } from "next-intl";
-import type { PlanType } from "@/lib/plan";
-import { PLAN_STORAGE_BONUS } from "@/lib/plan";
+import type { PlanType } from "@/lib/plan-constants";
+import { PLAN_STORAGE_BONUS } from "@/lib/plan-constants";
 
 interface SupportPlanSectionProps {
   currentPlan: PlanType;
