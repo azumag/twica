@@ -109,11 +109,13 @@ export async function POST(request: Request) {
       .maybeSingle()
 
     let saved = true
+    let saveFailureCode: string | undefined
     if (persistError) {
       // PGRST204: スキーマ差分（カラム未適用等）で保存だけ失敗するケース。
       // 手動確認結果は返せるため、API全体は成功として扱う。
       if (persistError.code === 'PGRST204') {
         saved = false
+        saveFailureCode = persistError.code
         logger.warn('[TwitchSub] Persist skipped due to schema mismatch:', {
           twitchUserId: session.twitchUserId,
           code: persistError.code,
@@ -131,15 +133,42 @@ export async function POST(request: Request) {
           { status: 500 }
         )
       }
-    }
+    } else if (!persistedUser) {
+      // 環境/レスポンス設定により、更新成功でも返却行が空になるケースがある。
+      // その場合は再読込して実際に保存できたかを検証する。
+      const { data: latestUser, error: verifyError } = await supabaseAdmin
+        .from('users')
+        .select('twitch_has_sub, twitch_sub_verified_at')
+        .eq('twitch_user_id', session.twitchUserId)
+        .maybeSingle()
 
-    // 環境/レスポンス設定により、更新成功でも返却行が空になるケースがある。
-    // persistError が null であれば保存成功として扱う。
-    if (!persistedUser) {
-      saved = false
-      logger.warn('[TwitchSub] Persist succeeded but no row was returned:', {
-        twitchUserId: session.twitchUserId,
-      })
+      const verifiedAtMs = latestUser?.twitch_sub_verified_at
+        ? new Date(latestUser.twitch_sub_verified_at).getTime()
+        : NaN
+      const verifiedRecently = Number.isFinite(verifiedAtMs) && Math.abs(Date.now() - verifiedAtMs) < 2 * 60 * 1000
+
+      if (verifyError) {
+        saved = false
+        saveFailureCode = verifyError.code ?? 'VERIFY_READ_ERROR'
+        logger.warn('[TwitchSub] Persist verification failed:', {
+          twitchUserId: session.twitchUserId,
+          code: verifyError.code,
+          message: verifyError.message,
+        })
+      } else if (!latestUser || latestUser.twitch_has_sub !== hasSub || !verifiedRecently) {
+        saved = false
+        saveFailureCode = 'NO_ROW_RETURNED'
+        logger.warn('[TwitchSub] Persist not confirmed after read-back:', {
+          twitchUserId: session.twitchUserId,
+          latestUser,
+          expectedHasSub: hasSub,
+        })
+      } else {
+        logger.info('[TwitchSub] Persist confirmed by read-back after empty response row:', {
+          twitchUserId: session.twitchUserId,
+          hasSub,
+        })
+      }
     }
 
     logger.info('[TwitchSub] Subscription checked', {
@@ -147,7 +176,7 @@ export async function POST(request: Request) {
       hasSub,
     })
 
-    return NextResponse.json({ success: true, hasSub, saved })
+    return NextResponse.json({ success: true, hasSub, saved, saveFailureCode })
   } catch (error) {
     logger.error('[TwitchSub] check-subscription error:', { error })
     return NextResponse.json(

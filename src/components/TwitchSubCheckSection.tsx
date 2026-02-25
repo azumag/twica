@@ -115,7 +115,8 @@ export default function TwitchSubCheckSection({
 
       if (response.ok && data.success) {
         if (data.saved === false) {
-          setMessage({ type: "error", text: t("messages.saveFailed") });
+          const codeSuffix = data.saveFailureCode ? ` (${data.saveFailureCode})` : "";
+          setMessage({ type: "error", text: `${t("messages.saveFailed")}${codeSuffix}` });
         } else {
           setHasSub(data.hasSub);
           setMessage({
