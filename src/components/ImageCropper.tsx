@@ -73,9 +73,9 @@ function centerAspectCrop(mediaWidth: number, mediaHeight: number, aspect: numbe
     makeAspectCrop(
       {
         unit: "%",
-        // Start with a crop that covers 90% of the smaller dimension
-        // 小さい方の辺の90%をカバーするクロップから開始
-        width: 90,
+        // Start with a crop that covers 100% of the available area
+        // 利用可能な領域を最大限カバーするクロップから開始
+        width: 100,
       },
       aspect, // Aspect ratio based on crop mode
       mediaWidth,

@@ -979,7 +979,7 @@ export default function CardManager({
       {/* ストレージ使用量をパネルレベルで表示 */}
       {storageStatus && (
         <div className="mb-6">
-          {storageStatus.uploadDisabled && storageStatus.message ? (
+          {storageStatus.uploadDisabled && storageStatus.message && !storageStatus.planOverLimit ? (
             <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-3 text-sm text-yellow-300">
               <p className="font-medium mb-1">{t("messages.uploadLimited")}</p>
               <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
