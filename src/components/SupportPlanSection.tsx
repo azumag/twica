@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { PlanType } from "@/lib/plan-constants";
@@ -32,7 +32,9 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
   const [deactivating, setDeactivating] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   // アクティベーション成功後にプランを楽観的に更新
+  // router.refresh() でサーバーから新しい currentPlan が渡された場合も同期する
   const [activePlan, setActivePlan] = useState<PlanType>(currentPlan);
+  useEffect(() => { setActivePlan(currentPlan); }, [currentPlan]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return "0 MB";
