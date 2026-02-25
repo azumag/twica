@@ -173,29 +173,21 @@ export default async function PlansPage() {
                     <span>支援者向け問い合わせフォーム</span>
                   </li>
                 </ul>
-                {/* 適用方法の説明 */}
+                {/* 適用条件・方法の説明 */}
                 <div className="mt-4 rounded-lg bg-purple-900/20 border border-purple-700/30 p-3">
-                  <p className="text-xs text-purple-300 font-medium mb-2">適用方法</p>
-                  <ol className="space-y-1 text-xs text-gray-400">
-                    <li className="flex items-start gap-2">
-                      <span className="flex-shrink-0 text-purple-400 font-bold">1.</span>
-                      <span>
-                        <a
-                          href="https://www.twitch.tv/azumagbanjo"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-purple-400 hover:text-purple-300 underline"
-                        >
-                          作者：あずまぐ（@azumagbanjo）の Twitch チャンネル
-                        </a>
-                        をサブスクライブ
-                      </span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <span className="flex-shrink-0 text-purple-400 font-bold">2.</span>
-                      <span>アカウント設定の「Twitchサブスク確認」から権限を付与して確認</span>
-                    </li>
-                  </ol>
+                  <p className="text-xs text-gray-400 mb-2">
+                    <a
+                      href="https://www.twitch.tv/azumagbanjo"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-purple-400 hover:text-purple-300 underline"
+                    >
+                      作者：あずまぐ（@azumagbanjo）の Twitch チャンネル
+                    </a>
+                    をサブスクライブしている方へのおまけ特典です。
+                  </p>
+                  <p className="text-xs text-purple-300 font-medium mb-1">適用方法</p>
+                  <p className="text-xs text-gray-400">アカウント設定の「Twitchサブスク確認」から権限を付与して確認</p>
                 </div>
               </div>
             </div>
@@ -236,7 +228,7 @@ export default async function PlansPage() {
               {/* Twitchサブスク特典の説明 */}
               <div className="rounded-xl bg-gray-800 p-6">
                 <h3 className="mb-2 text-lg font-semibold text-white">
-                  作者：あずまぐ（@azumagbanjo）の Twitch チャンネルをサブスクライブする
+                  Twitchサブスク特典（おまけ）
                 </h3>
                 <p className="mb-4 text-gray-400">
                   <a
@@ -247,28 +239,12 @@ export default async function PlansPage() {
                   >
                     作者：あずまぐ（@azumagbanjo）の Twitch 配信チャンネル
                   </a>
-                  のサブスクライバー向けおまけ特典です。サブスクライブ後、アカウント設定から権限を付与するだけで自動適用されます。
+                  をサブスクライブしている方へのおまけ特典です。
                 </p>
-                <ol className="mb-5 space-y-2 text-sm text-gray-400">
-                  <li className="flex items-start gap-3">
-                    <span className="flex-shrink-0 flex h-5 w-5 items-center justify-center rounded-full bg-purple-600 text-xs font-bold text-white">1</span>
-                    <span>
-                      <a
-                        href="https://www.twitch.tv/azumagbanjo"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-purple-400 hover:text-purple-300 underline"
-                      >
-                        作者：あずまぐ（@azumagbanjo）の Twitch チャンネル
-                      </a>
-                      をサブスクライブする
-                    </span>
-                  </li>
-                  <li className="flex items-start gap-3">
-                    <span className="flex-shrink-0 flex h-5 w-5 items-center justify-center rounded-full bg-purple-600 text-xs font-bold text-white">2</span>
-                    <span>TwiCa のアカウント設定で「Twitchサブスク確認」から権限を付与 → 特典が自動適用されます</span>
-                  </li>
-                </ol>
+                <p className="mb-2 text-sm font-medium text-white">適用方法</p>
+                <p className="mb-5 text-sm text-gray-400">
+                  アカウント設定の「Twitchサブスク確認」から権限を付与して確認してください。特典が自動適用されます。
+                </p>
                 <a
                   href="https://www.twitch.tv/azumagbanjo"
                   target="_blank"
