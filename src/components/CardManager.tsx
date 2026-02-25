@@ -228,6 +228,11 @@ export default function CardManager({
   // Original file selected for cropping (before crop)
   // トリミング対象として選択されたオリジナルファイル（トリミング前）
   const [selectedFileForCrop, setSelectedFileForCrop] = useState<File | null>(null);
+  // アップロード画像の実際の幅（解像度フィルタリング用）
+  const [sourceImageWidth, setSourceImageWidth] = useState<number | null>(null);
+  // 画像サイズ読み取りの非同期コールバック無効化用カウンター
+  // Counter to invalidate stale async image dimension callbacks
+  const imageDimensionRequestId = useRef(0);
   // Cropped image file ready for upload
   // アップロード準備完了のトリミング済み画像ファイル
   const [croppedFile, setCroppedFile] = useState<File | null>(null);
@@ -240,6 +245,15 @@ export default function CardManager({
 
   // ユーザー選択幅に応じた動的クロップモード設定
   const planCropModes = useMemo(() => getCropModes(selectedWidth), [selectedWidth]);
+
+  // 画像サイズに基づく選択可能な解像度リスト
+  // Filter available widths to those not exceeding source image dimensions
+  const effectiveWidths = useMemo(() => {
+    const selectable = sourceImageWidth
+      ? availableWidths.filter((w) => w <= sourceImageWidth)
+      : availableWidths;
+    return selectable.length > 0 ? selectable : [Math.min(...availableWidths)];
+  }, [availableWidths, sourceImageWidth]);
 
   // Emote import modal state
   // エモートインポートモーダルの状態
@@ -520,11 +534,13 @@ export default function CardManager({
     setPendingDeleteUrl(null);
     // Reset cropping state
     // トリミング状態をリセット
+    imageDimensionRequestId.current++;
     setCropModalOpen(false);
     setCropModeModalOpen(false);
     setSelectedCropMode("square");
     setSelectedWidth(maxImageWidth);
     setSelectedFileForCrop(null);
+    setSourceImageWidth(null);
     setCroppedFile(null);
     // Clean up preview URL to prevent memory leaks
     // メモリリーク防止のためプレビューURLをクリーンアップ
@@ -550,11 +566,38 @@ export default function CardManager({
         setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
         return;
       }
-      // Store file and open crop mode selection modal first
-      // ファイルを保存し、まずトリミングモード選択モーダルを開く
-      setSelectedFileForCrop(file);
-      setSelectedWidth(maxImageWidth); // デフォルトはプラン最大幅にリセット
-      setCropModeModalOpen(true);
+      // 画像の実サイズを読み取ってからモーダルを開く
+      // Read actual image dimensions before opening the modal
+      const requestId = ++imageDimensionRequestId.current;
+      const img = document.createElement("img");
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        // キャンセルや再選択で無効化されたコールバックを無視
+        // Ignore stale callback from cancelled/re-selected file
+        if (requestId !== imageDimensionRequestId.current) return;
+        const imgWidth = img.naturalWidth;
+        setSourceImageWidth(imgWidth);
+        // 画像幅以下の解像度のうち最大のものをデフォルトに設定
+        // Default to the largest resolution that doesn't exceed image width
+        const validWidths = availableWidths.filter((w) => w <= imgWidth);
+        const defaultWidth = validWidths.length > 0
+          ? Math.max(...validWidths)
+          : Math.min(...availableWidths);
+        setSelectedWidth(defaultWidth);
+        setSelectedFileForCrop(file);
+        setCropModeModalOpen(true);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        if (requestId !== imageDimensionRequestId.current) return;
+        // 読み取り失敗時はフォールバック：従来通り全選択肢を表示
+        setSourceImageWidth(null);
+        setSelectedWidth(maxImageWidth);
+        setSelectedFileForCrop(file);
+        setCropModeModalOpen(true);
+      };
+      img.src = objectUrl;
     }
   };
 
@@ -573,8 +616,10 @@ export default function CardManager({
    * トリミングモード選択をキャンセル
    */
   const handleCropModeCancel = () => {
+    imageDimensionRequestId.current++;
     setCropModeModalOpen(false);
     setSelectedFileForCrop(null);
+    setSourceImageWidth(null);
     // Clear the file input
     // ファイル入力をクリア
     if (fileInputRef.current) {
@@ -611,8 +656,10 @@ export default function CardManager({
    * 画像トリミングのキャンセル処理
    */
   const handleCropCancel = () => {
+    imageDimensionRequestId.current++;
     setCropModalOpen(false);
     setSelectedFileForCrop(null);
+    setSourceImageWidth(null);
     // Clear the file input
     // ファイル入力をクリア
     if (fileInputRef.current) {
@@ -1541,13 +1588,13 @@ export default function CardManager({
                 {t("form.cropModeDescription")}
               </p>
 
-              {/* Resolution selector - only shown when multiple widths available */}
-              {/* 解像度セレクター - 複数の幅が選択可能な場合のみ表示 */}
-              {availableWidths.length > 1 && (
+              {/* Resolution selector - only shown when multiple selectable widths available */}
+              {/* 解像度セレクター - 画像サイズ以下の選択肢が複数ある場合のみ表示 */}
+              {effectiveWidths.length > 1 && (
                 <div className="mb-4">
                   <p className="text-sm text-gray-300 mb-2">{t("form.selectResolution")}</p>
                   <div className="flex gap-2">
-                    {availableWidths.map((w) => (
+                    {effectiveWidths.map((w) => (
                       <button
                         key={w}
                         type="button"
