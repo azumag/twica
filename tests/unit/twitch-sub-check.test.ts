@@ -16,8 +16,15 @@ function createQueryBuilder(options: {
   selectData?: unknown
   selectError?: unknown
   updateError?: unknown
+  /** update 後の .select().maybeSingle() が返すデータ（デフォルト: 更新成功） */
+  updateData?: unknown
 }) {
-  const { selectData = null, selectError = null, updateError = null } = options
+  const {
+    selectData = null,
+    selectError = null,
+    updateError = null,
+    updateData = { twitch_user_id: 'user-1' },
+  } = options
 
   return {
     select: vi.fn().mockReturnValue({
@@ -25,8 +32,15 @@ function createQueryBuilder(options: {
         maybeSingle: vi.fn().mockResolvedValue({ data: selectData, error: selectError }),
       }),
     }),
+    // update().eq().select().maybeSingle() チェーンに対応
+    // Supabase JS v2 は .update().eq() だけではマッチ0行でも error=null を返すため、
+    // .select().maybeSingle() で実際の更新行を確認するパターン
     update: vi.fn().mockReturnValue({
-      eq: vi.fn().mockResolvedValue({ error: updateError }),
+      eq: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          maybeSingle: vi.fn().mockResolvedValue({ data: updateData, error: updateError }),
+        }),
+      }),
     }),
   }
 }
@@ -45,6 +59,7 @@ describe('sub-check', () => {
     selectData?: unknown
     selectError?: unknown
     updateError?: unknown
+    updateData?: unknown
     accessToken?: string | null
   } = {}) {
     const {
@@ -53,10 +68,11 @@ describe('sub-check', () => {
       selectData = null,
       selectError = null,
       updateError = null,
+      updateData = { twitch_user_id: 'user-1' },
       accessToken = 'test-token',
     } = options
 
-    const queryBuilder = createQueryBuilder({ selectData, selectError, updateError })
+    const queryBuilder = createQueryBuilder({ selectData, selectError, updateError, updateData })
 
     vi.doMock('@/lib/env-validation', () => ({
       getEnvVar: vi.fn((key: string) => {
@@ -197,6 +213,78 @@ describe('sub-check', () => {
       const result = await hasTwitchSub('user-1')
       // 前回値 (true) を保持
       expect(result).toBe(true)
+    })
+
+    it('キャッシュ期限切れ + API 成功 + DB 更新0行でも API の結果を返す', async () => {
+      const expiredTime = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+      setupMocks({
+        selectData: {
+          twitch_scopes: ['user:read:subscriptions'],
+          twitch_sub_verified_at: expiredTime,
+          twitch_has_sub: false,
+        },
+        updateData: null, // 0行更新（ユーザー削除済み等）
+      })
+      mockFetch.mockResolvedValue({ ok: true, status: 200 })
+
+      const { logger } = await import('@/lib/logger')
+      const { hasTwitchSub } = await import('@/lib/twitch/sub-check')
+      const result = await hasTwitchSub('user-1')
+      // バックグラウンド処理なので API 結果をそのまま返す
+      expect(result).toBe(true)
+      expect(logger.error).toHaveBeenCalledWith(
+        '[TwitchSub] Failed to update sub cache:',
+        expect.objectContaining({ twitchUserId: 'user-1', updatedUser: null })
+      )
+    })
+
+    it('キャッシュ期限切れ + API 成功 + DB updateError でもAPI の結果を返す', async () => {
+      const expiredTime = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+      setupMocks({
+        selectData: {
+          twitch_scopes: ['user:read:subscriptions'],
+          twitch_sub_verified_at: expiredTime,
+          twitch_has_sub: false,
+        },
+        updateError: { message: 'DB connection error' },
+        updateData: null,
+      })
+      mockFetch.mockResolvedValue({ ok: true, status: 200 })
+
+      const { logger } = await import('@/lib/logger')
+      const { hasTwitchSub } = await import('@/lib/twitch/sub-check')
+      const result = await hasTwitchSub('user-1')
+      expect(result).toBe(true)
+      expect(logger.error).toHaveBeenCalledWith(
+        '[TwitchSub] Failed to update sub cache:',
+        expect.objectContaining({
+          twitchUserId: 'user-1',
+          error: { message: 'DB connection error' },
+        })
+      )
+    })
+
+    it('キャッシュ期限切れ + API エラー + タイムスタンプ更新失敗でもログ出力して前回値を返す', async () => {
+      const expiredTime = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+      setupMocks({
+        selectData: {
+          twitch_scopes: ['user:read:subscriptions'],
+          twitch_sub_verified_at: expiredTime,
+          twitch_has_sub: true,
+        },
+        updateData: null, // タイムスタンプ更新も0行
+      })
+      mockFetch.mockResolvedValue({ ok: false, status: 500 })
+
+      const { logger } = await import('@/lib/logger')
+      const { hasTwitchSub } = await import('@/lib/twitch/sub-check')
+      const result = await hasTwitchSub('user-1')
+      // 前回値を保持
+      expect(result).toBe(true)
+      expect(logger.error).toHaveBeenCalledWith(
+        '[TwitchSub] Failed to update error cache timestamp:',
+        expect.objectContaining({ twitchUserId: 'user-1', updatedTs: null })
+      )
     })
 
     it('twitch_sub_verified_at 未設定時は API を呼び出す', async () => {

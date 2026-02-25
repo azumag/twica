@@ -73,16 +73,20 @@ export async function hasTwitchSub(twitchUserId: string): Promise<boolean> {
 
     if (hasSub !== null) {
       // 正常結果: DB に保存（通常キャッシュ TTL で再検証）
-      const { error: updateError } = await supabaseAdmin
+      const { data: updatedUser, error: updateError } = await supabaseAdmin
         .from('users')
         .update({
           twitch_sub_verified_at: new Date().toISOString(),
           twitch_has_sub: hasSub,
         })
         .eq('twitch_user_id', twitchUserId)
+        .select('twitch_user_id')
+        .maybeSingle()
 
-      if (updateError) {
-        logger.warn('[TwitchSub] Failed to update sub cache:', { twitchUserId, error: updateError })
+      // キャッシュ更新失敗はリクエスト継続に影響しない（次回アクセス時に再試行される）
+      // ユーザー削除等で0行更新となっても、次回 hasTwitchSub() でユーザー未取得 → false で解消
+      if (updateError || !updatedUser) {
+        logger.error('[TwitchSub] Failed to update sub cache:', { twitchUserId, error: updateError, updatedUser })
       }
 
       return hasSub
@@ -92,15 +96,17 @@ export async function hasTwitchSub(twitchUserId: string): Promise<boolean> {
     // twitch_has_sub は前回値を保持（ユーザーに不利にしない）
     // 計算: now - (1h - 5min) = 55分前 → キャッシュ判定で「55分 < 60分 = 有効」→ 5分後に期限切れ
     const errorCacheTimestamp = new Date(Date.now() - (CACHE_DURATION_MS - ERROR_CACHE_DURATION_MS))
-    const { error: tsError } = await supabaseAdmin
+    const { data: updatedTs, error: tsError } = await supabaseAdmin
       .from('users')
       .update({
         twitch_sub_verified_at: errorCacheTimestamp.toISOString(),
       })
       .eq('twitch_user_id', twitchUserId)
+      .select('twitch_user_id')
+      .maybeSingle()
 
-    if (tsError) {
-      logger.warn('[TwitchSub] Failed to update error cache timestamp:', { twitchUserId, error: tsError })
+    if (tsError || !updatedTs) {
+      logger.error('[TwitchSub] Failed to update error cache timestamp:', { twitchUserId, error: tsError, updatedTs })
     }
 
     return user.twitch_has_sub === true
