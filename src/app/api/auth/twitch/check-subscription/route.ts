@@ -90,24 +90,29 @@ export async function POST(request: Request) {
     }
 
     // DB 更新（キャッシュ保存）
-    // Supabase JS v2 の .update().eq() はマッチ行が0件でも error=null を返すため、
-    // .select().maybeSingle() で実際に更新された行を確認する
+    // users 行が欠けている環境でも保存できるよう upsert を使用する。
     const supabaseAdmin = getSupabaseAdmin()
-    const { data: updatedUser, error: updateError } = await supabaseAdmin
+    const verifiedAt = new Date().toISOString()
+    const { data: persistedUser, error: persistError } = await supabaseAdmin
       .from('users')
-      .update({
-        twitch_sub_verified_at: new Date().toISOString(),
+      .upsert({
+        twitch_user_id: session.twitchUserId,
+        twitch_username: session.twitchUsername,
+        twitch_display_name: session.twitchDisplayName,
+        twitch_profile_image_url: session.twitchProfileImageUrl,
+        twitch_sub_verified_at: verifiedAt,
         twitch_has_sub: hasSub,
+      }, {
+        onConflict: 'twitch_user_id',
       })
-      .eq('twitch_user_id', session.twitchUserId)
       .select('twitch_user_id')
       .maybeSingle()
 
-    if (updateError || !updatedUser) {
+    if (persistError || !persistedUser) {
       logger.error('[TwitchSub] Failed to persist subscription result:', {
         twitchUserId: session.twitchUserId,
-        error: updateError,
-        updatedUser,
+        error: persistError,
+        persistedUser,
       })
       return NextResponse.json(
         { error: 'Failed to save subscription status' },
