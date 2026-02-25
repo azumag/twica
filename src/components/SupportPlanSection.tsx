@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { PlanType } from "@/lib/plan-constants";
 import { PLAN_STORAGE_BONUS } from "@/lib/plan-constants";
@@ -23,6 +24,7 @@ const PLAN_STYLES: Record<PlanType, { color: string; bgColor: string }> = {
  */
 export default function SupportPlanSection({ currentPlan }: SupportPlanSectionProps) {
   const t = useTranslations("supportPlan");
+  const router = useRouter();
 
   const [code, setCode] = useState("");
   const [fanboxId, setFanboxId] = useState("");
@@ -73,6 +75,8 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
         setActivePlan(data.planType as PlanType);
         setCode("");
         setFanboxId("");
+        // サーバーコンポーネント（カード管理等）にプラン変更を反映
+        router.refresh();
       } else {
         setMessage({ type: "error", text: data.error || t("messages.activateFailed") });
       }
@@ -109,6 +113,7 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
       if (response.ok && data.success) {
         setMessage({ type: "success", text: t("messages.deactivated") });
         setActivePlan((data.planType as PlanType) ?? "basic");
+        router.refresh();
       } else {
         setMessage({ type: "error", text: data.error || t("messages.deactivateFailed") });
       }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 
 interface TwitchSubCheckSectionProps {
@@ -27,6 +28,7 @@ export default function TwitchSubCheckSection({
   initialHasSub,
 }: TwitchSubCheckSectionProps) {
   const t = useTranslations("twitchSub");
+  const router = useRouter();
 
   const [hasScope, setHasScope] = useState<boolean | null>(null);
   const [checkingScope, setCheckingScope] = useState(true);
@@ -126,6 +128,8 @@ export default function TwitchSubCheckSection({
             type: "success",
             text: data.hasSub ? t("messages.subActive") : t("messages.subInactive"),
           });
+          // サーバーコンポーネント（カード管理等）にプラン変更を反映
+          router.refresh();
         }
       } else if (data.needsReauth) {
         setHasScope(false);
@@ -172,6 +176,7 @@ export default function TwitchSubCheckSection({
       if (response.ok && data.success) {
         setHasSub(false);
         setMessage({ type: "success", text: t("messages.disabled") });
+        router.refresh();
       } else {
         setMessage({ type: "error", text: data.error || t("messages.disableFailed") });
       }
