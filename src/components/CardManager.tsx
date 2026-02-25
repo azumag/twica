@@ -57,6 +57,9 @@ interface CardManagerProps {
   // Plan-based max image width in pixels (default: 800)
   // プラン別カード画像最大幅（デフォルト: 800px）
   maxImageWidth?: number;
+  // Plan-based available output widths (default: [800])
+  // プラン別選択可能な出力幅（デフォルト: [800]）
+  availableWidths?: number[];
 }
 
 // Sorting field options
@@ -78,6 +81,7 @@ export default function CardManager({
   showViewToggle = false,
   maxCards,
   maxImageWidth = 800,
+  availableWidths = [800],
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -217,6 +221,8 @@ export default function CardManager({
   // トリミングモード選択モーダルの状態（クロッパー表示前に表示）
   const [cropModeModalOpen, setCropModeModalOpen] = useState(false);
   // Selected crop mode: square (800x800) or portrait (800x1118)
+  // ユーザーが選択した出力解像度（デフォルトはプラン最大幅）
+  const [selectedWidth, setSelectedWidth] = useState<number>(maxImageWidth);
   // 選択されたトリミングモード: 正方形(800x800)またはポートレイト(800x1118)
   const [selectedCropMode, setSelectedCropMode] = useState<CropMode>("square");
   // Original file selected for cropping (before crop)
@@ -232,8 +238,8 @@ export default function CardManager({
   // 画像URL検証中のローディング状態
   const [imageUrlValidating, setImageUrlValidating] = useState(false);
 
-  // プラン別の動的クロップモード設定（maxImageWidthに応じてサイズが変動）
-  const planCropModes = useMemo(() => getCropModes(maxImageWidth), [maxImageWidth]);
+  // ユーザー選択幅に応じた動的クロップモード設定
+  const planCropModes = useMemo(() => getCropModes(selectedWidth), [selectedWidth]);
 
   // Emote import modal state
   // エモートインポートモーダルの状態
@@ -517,6 +523,7 @@ export default function CardManager({
     setCropModalOpen(false);
     setCropModeModalOpen(false);
     setSelectedCropMode("square");
+    setSelectedWidth(maxImageWidth);
     setSelectedFileForCrop(null);
     setCroppedFile(null);
     // Clean up preview URL to prevent memory leaks
@@ -546,6 +553,7 @@ export default function CardManager({
       // Store file and open crop mode selection modal first
       // ファイルを保存し、まずトリミングモード選択モーダルを開く
       setSelectedFileForCrop(file);
+      setSelectedWidth(maxImageWidth); // デフォルトはプラン最大幅にリセット
       setCropModeModalOpen(true);
     }
   };
@@ -655,7 +663,7 @@ export default function CardManager({
         // Check resolution limits
         // 解像度制限をチェック
         if (width > MAX_WIDTH || height > MAX_HEIGHT) {
-          setUploadError(t("messages.imageUrlResolutionExceeded", { width, height }));
+          setUploadError(t("messages.imageUrlResolutionExceeded", { maxWidth: MAX_WIDTH, maxHeight: MAX_HEIGHT, width, height }));
           setImageUrlValidating(false);
           setFormData(prev => ({ ...prev, imageUrl: "" }));
           resolve(false);
@@ -1518,7 +1526,7 @@ export default function CardManager({
                 type="button"
                 onClick={handleCropModeCancel}
                 className="text-gray-400 hover:text-white"
-                aria-label="閉じる"
+                aria-label={tCommon("cancel")}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1532,6 +1540,30 @@ export default function CardManager({
               <p className="text-sm text-gray-400 mb-4">
                 {t("form.cropModeDescription")}
               </p>
+
+              {/* Resolution selector - only shown when multiple widths available */}
+              {/* 解像度セレクター - 複数の幅が選択可能な場合のみ表示 */}
+              {availableWidths.length > 1 && (
+                <div className="mb-4">
+                  <p className="text-sm text-gray-300 mb-2">{t("form.selectResolution")}</p>
+                  <div className="flex gap-2">
+                    {availableWidths.map((w) => (
+                      <button
+                        key={w}
+                        type="button"
+                        onClick={() => setSelectedWidth(w)}
+                        className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                          selectedWidth === w
+                            ? "bg-purple-600 text-white"
+                            : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                        }`}
+                      >
+                        {w === 800 ? t("form.resolutionStandard") : w === 1920 ? t("form.resolutionFullHd") : t("form.resolution4k")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Square option */}
               {/* 正方形オプション */}
@@ -1593,7 +1625,7 @@ export default function CardManager({
           cropMode={selectedCropMode}
           onCropComplete={handleCropComplete}
           onCancel={handleCropCancel}
-          maxWidth={maxImageWidth}
+          maxWidth={selectedWidth}
         />
       )}
 

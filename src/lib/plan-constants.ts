@@ -36,6 +36,15 @@ export const PLAN_MAX_UPLOAD_SIZE: Record<PlanType, number> = {
   twitch_sub: 10 * 1024 * 1024, // 10MB（patron同等）
 }
 
+// プランごとの選択可能な出力幅（ピクセル）
+// basic: 800pxのみ, support: 800/1920px, patron/twitch_sub: 800/1920/3840px
+export const PLAN_AVAILABLE_WIDTHS: Record<PlanType, number[]> = {
+  basic: [800],
+  support: [800, 1920],
+  patron: [800, 1920, 3840],
+  twitch_sub: [800, 1920, 3840],
+}
+
 // プランの優先度（高い値が優先）
 // twitch_sub は patron と同等（priority: 2）
 export const PLAN_PRIORITY: Record<PlanType, number> = {

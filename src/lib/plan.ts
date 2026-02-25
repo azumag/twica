@@ -21,7 +21,7 @@ import type { PlanType } from '@/lib/plan-constants'
 
 // サーバー側コードからの既存 import を壊さないよう re-export
 export type { PlanType } from '@/lib/plan-constants'
-export { PLAN_STORAGE_BONUS, PLAN_MAX_IMAGE_WIDTH, PLAN_MAX_UPLOAD_SIZE } from '@/lib/plan-constants'
+export { PLAN_STORAGE_BONUS, PLAN_MAX_IMAGE_WIDTH, PLAN_MAX_UPLOAD_SIZE, PLAN_AVAILABLE_WIDTHS } from '@/lib/plan-constants'
 
 /**
  * ユーザーの有効な最上位プランを判定

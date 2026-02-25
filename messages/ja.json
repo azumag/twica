@@ -57,7 +57,11 @@
       "croppedImage": "トリミング済み画像",
       "selectCropMode": "トリミングサイズを選択",
       "cropModeDescription": "正方形の場合、表示時に名前・説明をカード枠に表示できます。オーバーレイ設定で表示非表示を選択できます。ポートレイトはそのまま表示されます。",
-      "cropNoteWithOptions": "（正方形{square}またはポートレイト{portrait}にトリミング）"
+      "cropNoteWithOptions": "（正方形{square}またはポートレイト{portrait}にトリミング）",
+      "selectResolution": "解像度を選択",
+      "resolutionStandard": "標準 (800px)",
+      "resolutionFullHd": "Full HD (1920px)",
+      "resolution4k": "4K (3840px)"
     },
     "fileUpload": {
       "formats": "対応形式: JPEG, PNG | ",
@@ -86,7 +90,7 @@
       "storageLimitReason": "画像アップロード容量に関するご案内\n\n現在、1アカウントあたりの画像容量上限は10MBとなっております。上限を超える場合は、不要な画像を削除していただくか、外部ストレージに保存した画像のURL引用をご検討ください（URL参照の場合は容量制限に含まれません）。\n\n予想を上回る多くの方にご利用いただいており、無料サービスを継続するための苦渋の措置となります。何卒ご理解いただけますと幸いです。なお、支援特典により容量を拡張できます。詳しくは「支援特典について」をご確認ください。",
       "refreshing": "更新中",
       "imageUrlInvalidAspectRatio": "画像URLの画像は縦長または正方形である必要があります（現在: {width}x{height}）",
-      "imageUrlResolutionExceeded": "画像URLの解像度が制限を超えています。横幅1920px、縦幅2682pxまでです（現在: {width}x{height}）",
+      "imageUrlResolutionExceeded": "画像URLの解像度が制限を超えています。横幅{maxWidth}px、縦幅{maxHeight}pxまでです（現在: {width}x{height}）",
       "imageUrlLoadFailed": "画像URLの読み込みに失敗しました。URLを確認してください。",
       "imageUrlValidating": "画像を検証中..."
     },
