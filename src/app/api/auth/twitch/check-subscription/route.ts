@@ -108,7 +108,7 @@ export async function POST(request: Request) {
       .select('twitch_user_id')
       .maybeSingle()
 
-    if (persistError || !persistedUser) {
+    if (persistError) {
       logger.error('[TwitchSub] Failed to persist subscription result:', {
         twitchUserId: session.twitchUserId,
         error: persistError,
@@ -118,6 +118,14 @@ export async function POST(request: Request) {
         { error: 'Failed to save subscription status' },
         { status: 500 }
       )
+    }
+
+    // 環境/レスポンス設定により、更新成功でも返却行が空になるケースがある。
+    // persistError が null であれば保存成功として扱う。
+    if (!persistedUser) {
+      logger.warn('[TwitchSub] Persist succeeded but no row was returned:', {
+        twitchUserId: session.twitchUserId,
+      })
     }
 
     logger.info('[TwitchSub] Subscription checked', {

@@ -1,0 +1,113 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { POST } from '@/app/api/auth/twitch/check-subscription/route'
+import { validateCSRFToken } from '@/lib/csrf'
+import { getSession } from '@/lib/session'
+import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
+import { hasScope } from '@/lib/twitch/token-manager'
+import { checkTwitchSubViaApi, isTwitchSubCheckEnabled } from '@/lib/twitch/sub-check'
+
+vi.mock('@/lib/csrf')
+vi.mock('@/lib/session')
+vi.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: vi.fn(),
+  getRateLimitIdentifier: vi.fn(),
+  rateLimits: { twitchCheckSubscription: {} },
+}))
+vi.mock('@/lib/twitch/token-manager', () => ({
+  hasScope: vi.fn(),
+  removeScope: vi.fn(),
+}))
+vi.mock('@/lib/twitch/sub-check', () => ({
+  checkTwitchSubViaApi: vi.fn(),
+  isTwitchSubCheckEnabled: vi.fn(),
+}))
+vi.mock('@/lib/supabase/admin', () => ({
+  getSupabaseAdmin: vi.fn(),
+}))
+vi.mock('@/lib/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}))
+
+const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
+const mockGetSession = vi.mocked(getSession)
+const mockCheckRateLimit = vi.mocked(checkRateLimit)
+const mockGetRateLimitIdentifier = vi.mocked(getRateLimitIdentifier)
+const mockHasScope = vi.mocked(hasScope)
+const mockCheckTwitchSubViaApi = vi.mocked(checkTwitchSubViaApi)
+const mockIsTwitchSubCheckEnabled = vi.mocked(isTwitchSubCheckEnabled)
+
+function createRequest(): Request {
+  return new Request('http://localhost:3000/api/auth/twitch/check-subscription', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': 'token',
+    },
+  })
+}
+
+function createSupabaseMock(result: { data: unknown; error: unknown }) {
+  const maybeSingle = vi.fn().mockResolvedValue(result)
+  const select = vi.fn().mockReturnValue({ maybeSingle })
+  const upsert = vi.fn().mockReturnValue({ select })
+  const from = vi.fn().mockReturnValue({ upsert })
+  return { from }
+}
+
+describe('POST /api/auth/twitch/check-subscription', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    mockGetSession.mockResolvedValue({
+      twitchUserId: '123456789',
+      twitchUsername: 'test-user',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/avatar.png',
+      broadcasterType: 'affiliate',
+      expiresAt: Date.now() + 60_000,
+      version: 1,
+    })
+    mockGetRateLimitIdentifier.mockResolvedValue('user:123456789')
+    mockCheckRateLimit.mockResolvedValue({ success: true, limit: 5, remaining: 4, reset: Date.now() + 60_000 })
+    mockHasScope.mockResolvedValue(true)
+    mockCheckTwitchSubViaApi.mockResolvedValue({ hasSub: true, authError: false })
+    mockIsTwitchSubCheckEnabled.mockReturnValue(true)
+  })
+
+  it('保存時に返却行が空でも成功を返す', async () => {
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(
+      createSupabaseMock({
+        data: null,
+        error: null,
+      }) as any
+    )
+
+    const response = await POST(createRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toEqual({ success: true, hasSub: true })
+  })
+
+  it('保存エラー時は500を返す', async () => {
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(
+      createSupabaseMock({
+        data: null,
+        error: { code: 'PGRST000', message: 'db error' },
+      }) as any
+    )
+
+    const response = await POST(createRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(500)
+    expect(body).toEqual({ error: 'Failed to save subscription status' })
+  })
+})
