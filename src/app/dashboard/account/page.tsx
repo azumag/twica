@@ -62,11 +62,6 @@ export default async function AccountSettingsPage() {
 
       {/* 設定セクション */}
       <div className="space-y-6">
-        {/* Twitchサブスク確認セクション */}
-        <TwitchSubCheckSection
-          initialHasSub={twitchSubInfo?.twitch_has_sub === true}
-        />
-
         {/* 言語設定セクション */}
         <div className="rounded-xl bg-gray-800 p-6">
           <h2 className="mb-4 text-xl font-semibold text-white">
@@ -80,6 +75,11 @@ export default async function AccountSettingsPage() {
 
         {/* 支援セクション（コード入力） */}
         <SupportPlanSection currentPlan={currentPlan} />
+
+        {/* Twitchサブスク確認セクション */}
+        <TwitchSubCheckSection
+          initialHasSub={twitchSubInfo?.twitch_has_sub === true}
+        />
       </div>
     </div>
   );
