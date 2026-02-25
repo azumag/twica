@@ -109,15 +109,25 @@ export async function POST(request: Request) {
       .maybeSingle()
 
     if (persistError) {
-      logger.error('[TwitchSub] Failed to persist subscription result:', {
-        twitchUserId: session.twitchUserId,
-        error: persistError,
-        persistedUser,
-      })
-      return NextResponse.json(
-        { error: 'Failed to save subscription status' },
-        { status: 500 }
-      )
+      // PGRST204: スキーマ差分（カラム未適用等）で保存だけ失敗するケース。
+      // 手動確認結果は返せるため、API全体は成功として扱う。
+      if (persistError.code === 'PGRST204') {
+        logger.warn('[TwitchSub] Persist skipped due to schema mismatch:', {
+          twitchUserId: session.twitchUserId,
+          code: persistError.code,
+          message: persistError.message,
+        })
+      } else {
+        logger.error('[TwitchSub] Failed to persist subscription result:', {
+          twitchUserId: session.twitchUserId,
+          error: persistError,
+          persistedUser,
+        })
+        return NextResponse.json(
+          { error: 'Failed to save subscription status' },
+          { status: 500 }
+        )
+      }
     }
 
     // 環境/レスポンス設定により、更新成功でも返却行が空になるケースがある。

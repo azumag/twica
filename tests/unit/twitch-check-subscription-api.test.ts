@@ -110,4 +110,20 @@ describe('POST /api/auth/twitch/check-subscription', () => {
     expect(response.status).toBe(500)
     expect(body).toEqual({ error: 'Failed to save subscription status' })
   })
+
+  it('PGRST204（スキーマ未適用）時は保存をスキップして成功を返す', async () => {
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(
+      createSupabaseMock({
+        data: null,
+        error: { code: 'PGRST204', message: 'column not found' },
+      }) as any
+    )
+
+    const response = await POST(createRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toEqual({ success: true, hasSub: true })
+  })
 })
