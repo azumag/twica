@@ -843,6 +843,7 @@
     "messages": {
       "subActive": "Subscription confirmed. Benefits are active.",
       "subInactive": "No active subscription found.",
+      "saveFailed": "Subscription check succeeded but saving failed. Please try again later.",
       "needsReauth": "Insufficient permissions. Please re-authorize.",
       "checkFailed": "Check failed. Please try again later.",
       "reauthorizeFailed": "Re-authorization failed.",

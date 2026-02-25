@@ -92,7 +92,7 @@ describe('POST /api/auth/twitch/check-subscription', () => {
     const body = await response.json()
 
     expect(response.status).toBe(200)
-    expect(body).toEqual({ success: true, hasSub: true })
+    expect(body).toEqual({ success: true, hasSub: true, saved: false })
   })
 
   it('保存エラー時は500を返す', async () => {
@@ -124,6 +124,22 @@ describe('POST /api/auth/twitch/check-subscription', () => {
     const body = await response.json()
 
     expect(response.status).toBe(200)
-    expect(body).toEqual({ success: true, hasSub: true })
+    expect(body).toEqual({ success: true, hasSub: true, saved: false })
+  })
+
+  it('保存成功時は saved=true を返す', async () => {
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(
+      createSupabaseMock({
+        data: { twitch_user_id: '123456789' },
+        error: null,
+      }) as any
+    )
+
+    const response = await POST(createRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toEqual({ success: true, hasSub: true, saved: true })
   })
 })

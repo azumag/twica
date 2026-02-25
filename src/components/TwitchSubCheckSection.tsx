@@ -114,11 +114,15 @@ export default function TwitchSubCheckSection({
       const data = await response.json();
 
       if (response.ok && data.success) {
-        setHasSub(data.hasSub);
-        setMessage({
-          type: "success",
-          text: data.hasSub ? t("messages.subActive") : t("messages.subInactive"),
-        });
+        if (data.saved === false) {
+          setMessage({ type: "error", text: t("messages.saveFailed") });
+        } else {
+          setHasSub(data.hasSub);
+          setMessage({
+            type: "success",
+            text: data.hasSub ? t("messages.subActive") : t("messages.subInactive"),
+          });
+        }
       } else if (data.needsReauth) {
         setHasScope(false);
         setMessage({ type: "error", text: t("messages.needsReauth") });

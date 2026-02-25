@@ -108,14 +108,17 @@ export async function POST(request: Request) {
       .select('twitch_user_id')
       .maybeSingle()
 
+    let saved = true
     if (persistError) {
       // PGRST204: スキーマ差分（カラム未適用等）で保存だけ失敗するケース。
       // 手動確認結果は返せるため、API全体は成功として扱う。
       if (persistError.code === 'PGRST204') {
+        saved = false
         logger.warn('[TwitchSub] Persist skipped due to schema mismatch:', {
           twitchUserId: session.twitchUserId,
           code: persistError.code,
           message: persistError.message,
+          supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
         })
       } else {
         logger.error('[TwitchSub] Failed to persist subscription result:', {
@@ -133,6 +136,7 @@ export async function POST(request: Request) {
     // 環境/レスポンス設定により、更新成功でも返却行が空になるケースがある。
     // persistError が null であれば保存成功として扱う。
     if (!persistedUser) {
+      saved = false
       logger.warn('[TwitchSub] Persist succeeded but no row was returned:', {
         twitchUserId: session.twitchUserId,
       })
@@ -143,7 +147,7 @@ export async function POST(request: Request) {
       hasSub,
     })
 
-    return NextResponse.json({ success: true, hasSub })
+    return NextResponse.json({ success: true, hasSub, saved })
   } catch (error) {
     logger.error('[TwitchSub] check-subscription error:', { error })
     return NextResponse.json(
