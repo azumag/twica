@@ -32,6 +32,7 @@ export default function TwitchSubCheckSection({
   const [checkingScope, setCheckingScope] = useState(true);
   const [hasSub, setHasSub] = useState(initialHasSub);
   const [checking, setChecking] = useState(false);
+  const [disabling, setDisabling] = useState(false);
   const [reauthorizing, setReauthorizing] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -98,6 +99,8 @@ export default function TwitchSubCheckSection({
    * サブスク状態を手動確認
    */
   const handleCheckSubscription = async () => {
+    if (disabling) return;
+
     setChecking(true);
     setMessage(null);
 
@@ -134,6 +137,48 @@ export default function TwitchSubCheckSection({
       setMessage({ type: "error", text: t("messages.networkError") });
     } finally {
       setChecking(false);
+    }
+  };
+
+  /**
+   * サブスク状態を手動で無効化
+   */
+  const handleDisableSubscription = async () => {
+    if (checking) return;
+
+    const confirmed = window.confirm(t("messages.confirmDisable"));
+    if (!confirmed) return;
+
+    setDisabling(true);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/auth/twitch/disable-subscription", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": getCsrfToken(),
+        },
+      });
+
+      let data: { success?: boolean; error?: string } = {};
+      try {
+        data = await response.json();
+      } catch {
+        // no-op: レスポンスボディが空/不正なら汎用エラー文言へフォールバック
+      }
+
+      if (response.ok && data.success) {
+        setHasSub(false);
+        setMessage({ type: "success", text: t("messages.disabled") });
+      } else {
+        setMessage({ type: "error", text: data.error || t("messages.disableFailed") });
+      }
+    } catch {
+      setMessage({ type: "error", text: t("messages.networkError") });
+    } finally {
+      setDisabling(false);
     }
   };
 
@@ -177,14 +222,27 @@ export default function TwitchSubCheckSection({
         </div>
       )}
 
-      {/* サブスク確認ボタン（スコープ付与済みの場合のみ有効） */}
-      <button
-        onClick={handleCheckSubscription}
-        disabled={checking || checkingScope || hasScope === false}
-        className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {checking ? t("buttons.checking") : t("buttons.checkSubscription")}
-      </button>
+      <div className="flex flex-wrap gap-2">
+        {/* サブスク確認ボタン（スコープ付与済みの場合のみ有効） */}
+        <button
+          onClick={handleCheckSubscription}
+          disabled={checking || disabling || checkingScope || hasScope === false}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {checking ? t("buttons.checking") : t("buttons.checkSubscription")}
+        </button>
+
+        {/* サブスク有効時のみ手動無効化ボタンを表示 */}
+        {hasSub && (
+          <button
+            onClick={handleDisableSubscription}
+            disabled={disabling || checking}
+            className="rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {disabling ? t("buttons.disabling") : t("buttons.disable")}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

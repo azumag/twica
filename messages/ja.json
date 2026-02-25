@@ -838,12 +838,17 @@
       "reauthorize": "権限を付与",
       "reauthorizing": "認証中...",
       "checkSubscription": "サブスク状態を確認",
-      "checking": "確認中..."
+      "checking": "確認中...",
+      "disable": "サブスクを無効化",
+      "disabling": "無効化中..."
     },
     "messages": {
       "subActive": "サブスクが確認されました。特典が適用されています。",
       "subInactive": "サブスクが確認できませんでした。",
       "saveFailed": "サブスク判定は成功しましたが保存に失敗しました。時間をおいて再試行してください。",
+      "confirmDisable": "サブスク状態を無効化しますか？\\n\\n再度有効化するには「サブスク状態を確認」ボタンを押してください。",
+      "disabled": "サブスク状態を無効化しました。",
+      "disableFailed": "サブスク状態の無効化に失敗しました。",
       "needsReauth": "権限が不足しています。再認証してください。",
       "checkFailed": "確認に失敗しました。しばらくしてから再試行してください。",
       "reauthorizeFailed": "再認証に失敗しました。",

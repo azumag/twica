@@ -838,12 +838,17 @@
       "reauthorize": "Grant Permission",
       "reauthorizing": "Authorizing...",
       "checkSubscription": "Check Subscription",
-      "checking": "Checking..."
+      "checking": "Checking...",
+      "disable": "Disable Subscription",
+      "disabling": "Disabling..."
     },
     "messages": {
       "subActive": "Subscription confirmed. Benefits are active.",
       "subInactive": "No active subscription found.",
       "saveFailed": "Subscription check succeeded but saving failed. Please try again later.",
+      "confirmDisable": "Disable your subscription status?\\n\\nTo re-enable it, click \"Check Subscription\" again.",
+      "disabled": "Subscription status has been disabled.",
+      "disableFailed": "Failed to disable subscription status.",
       "needsReauth": "Insufficient permissions. Please re-authorize.",
       "checkFailed": "Check failed. Please try again later.",
       "reauthorizeFailed": "Re-authorization failed.",

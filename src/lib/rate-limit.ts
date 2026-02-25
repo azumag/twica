@@ -324,6 +324,8 @@ export const rateLimits = {
   supportInquiryReply: createRatelimit("supportInquiryReply", 10, 60 * 1000),
   // Twitch サブスク確認（分あたり5回、Twitch API負荷軽減）
   twitchCheckSubscription: createRatelimit("twitchCheckSubscription", 5, 60 * 1000),
+  // Twitch サブスク手動無効化（分あたり5回）
+  twitchDisableSubscription: createRatelimit("twitchDisableSubscription", 5, 60 * 1000),
 } as const;
 
 /**
