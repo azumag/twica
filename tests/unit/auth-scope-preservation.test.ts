@@ -68,7 +68,7 @@ vi.mock('@/lib/twitch/auth', () => ({
   getTwitchAuthUrl: vi.fn((_redirectUri: string, _state: string, additionalScopes?: string[]) =>
     `https://twitch.tv/authorize?scopes=${(additionalScopes ?? []).join(',')}`
   ),
-  ADDITIONAL_SCOPES: { CHAT_WRITE: 'user:write:chat' },
+  ADDITIONAL_SCOPES: { CHAT_WRITE: 'user:write:chat', USER_READ_SUBSCRIPTIONS: 'user:read:subscriptions' },
   exchangeCodeForTokens: vi.fn(),
   getTwitchUser: vi.fn(),
   isInvalidAuthorizationCodeError: (...args: unknown[]) => mockIsInvalidAuthorizationCodeError(...args),
@@ -303,9 +303,17 @@ describe('Auth scope preservation: login route', () => {
 describe('Auth scope preservation: callback route', () => {
   let exchangeCodeForTokens: ReturnType<typeof vi.fn>
   let getTwitchUser: ReturnType<typeof vi.fn>
-  const setCallbackMaybeSingleResults = () => {
+  // callbackルートは2回DB参照する:
+  // 1. 既存スコープ保護チェック（twitch_scopes取得）
+  // 2. TOSチェック（tos_accepted_at取得）
+  const setCallbackMaybeSingleResults = (existingScopes: string[] | null = null) => {
     mockMaybeSingle.mockReset()
-    // callbackルートはTOSチェックのみDB参照する（existingScopesクエリは削除済み）
+    // 1回目: 既存スコープ保護チェック
+    mockMaybeSingle.mockResolvedValueOnce({
+      data: existingScopes !== null ? { twitch_scopes: existingScopes } : null,
+      error: null,
+    })
+    // 2回目: TOSチェック
     mockMaybeSingle.mockResolvedValueOnce({
       data: { tos_accepted_at: '2024-01-01' },
       error: null,
@@ -432,12 +440,14 @@ describe('Auth scope preservation: callback route', () => {
     expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
   })
 
-  it('通常ログインではトークンのスコープのみで全置換する（callbackはDBの既存スコープを参照しない）', async () => {
-    // callbackルートはDBから既存スコープを取得しないため、トークンのスコープのみで全置換される
+  it('通常ログインでDBに追加スコープがない場合、トークンのスコープで全置換する', async () => {
+    // DBに追加スコープがない → 保護不要 → トークンのスコープで全置換
     mockCookieStore.get.mockImplementation((name: string) => {
       if (name === 'twitch_auth_state') return { value: 'test-state-123' }
       return undefined
     })
+    // DBに追加スコープなし（デフォルトスコープのみ）
+    setCallbackMaybeSingleResults(['user:read:email'])
 
     const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
@@ -531,6 +541,124 @@ describe('Auth scope preservation: callback route', () => {
       (call: unknown[]) => call[0] === 'twica_scope_restore_failed'
     )
     expect(deleteCall).toBeUndefined()
+  })
+
+  it('別端末ログイン: DBに追加スコープがあるがトークンにない場合、スコープ保存がスキップされる', async () => {
+    // 別端末: Cookie無し → loginでスコープ復元されない → トークンにはデフォルト3スコープのみ
+    // DBにはuser:write:chatがある → 全置換すると消失 → スキップで保護
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      return undefined
+    })
+    // DBに追加スコープ（user:write:chat）がある
+    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
+
+    const { NextRequest } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    await GET(request)
+
+    // saveTwitchScopesがスキップされることを確認
+    expect(mockSaveTwitchScopes).not.toHaveBeenCalled()
+  })
+
+  it('別端末ログイン: DBに追加スコープがなくトークンにもない場合、通常通り全置換される', async () => {
+    // 別端末でもDBに追加スコープがなければ保護不要 → 全置換
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      return undefined
+    })
+    // DBに追加スコープなし
+    setCallbackMaybeSingleResults(['user:read:email'])
+
+    const { NextRequest } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    await GET(request)
+
+    expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
+  })
+
+  it('部分欠落: DBに2つの追加スコープがあるがトークンに1つだけの場合、スコープ保存がスキップされる', async () => {
+    // DBにchatとsubの両方がある、トークンにはchatのみ → sub欠落 → スキップ
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      return undefined
+    })
+    // DBにchat + sub両方ある
+    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat', 'user:read:subscriptions'])
+
+    // トークンにはchatのみ含まれている（subは欠落）
+    exchangeCodeForTokens.mockResolvedValue({
+      access_token: 'test-access-token',
+      refresh_token: 'test-refresh-token',
+      expires_in: 3600,
+      token_type: 'bearer',
+      scope: ['user:read:email', 'user:write:chat'],
+    })
+
+    const { NextRequest } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    await GET(request)
+
+    // sub欠落によりスキップ
+    expect(mockSaveTwitchScopes).not.toHaveBeenCalled()
+  })
+
+  it('DB既存スコープ読み取り失敗時、スコープ保存がスキップされる（fail-safe）', async () => {
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      return undefined
+    })
+    // DB読み取りエラー
+    mockMaybeSingle.mockReset()
+    mockMaybeSingle.mockResolvedValueOnce({
+      data: null,
+      error: { code: 'PGRST000', message: 'Connection failed' },
+    })
+    // TOSチェック
+    mockMaybeSingle.mockResolvedValueOnce({
+      data: { tos_accepted_at: '2024-01-01' },
+      error: null,
+    })
+
+    const { NextRequest } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    await GET(request)
+
+    // fail-safeによりスキップ
+    expect(mockSaveTwitchScopes).not.toHaveBeenCalled()
+  })
+
+  it('reauthフローでは追加スコープ欠落でもスキップしない（全置換）', async () => {
+    // reauthは明示的にスコープ取得するフローなのでスキップしない
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      if (name === 'twica_reauth_state') return { value: 'test-state-123' }
+      return undefined
+    })
+    // DBに追加スコープがある（通常ログインならスキップされるケース）
+    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
+
+    const { NextRequest } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    await GET(request)
+
+    // reauthフローなのでスキップせず全置換
+    expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
   })
 
   it('認証成功時にSCOPE_RESTORE_USER_ID Cookieが削除される', async () => {
