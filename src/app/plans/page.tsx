@@ -153,24 +153,12 @@ export default async function PlansPage() {
                   <span className="rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
                     Twitchサブスク特典
                   </span>
-                  <span className="text-sm text-gray-500">自動適用</span>
+                  <span className="text-sm text-gray-500">有効化が必要</span>
                 </div>
                 <ul className="space-y-2 text-sm text-gray-400">
                   <li className="flex items-start gap-2">
                     <span className="text-purple-400 mt-0.5">✓</span>
                     <span>ご贔屓と同等の特典</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-purple-400 mt-0.5">✓</span>
-                    <span>ストレージ <span className="text-purple-400 font-medium">+500MB</span></span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-purple-400 mt-0.5">✓</span>
-                    <span>カード画像最大幅: <span className="text-purple-400 font-medium">3840px（4K）</span></span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-purple-400 mt-0.5">✓</span>
-                    <span>支援者向け問い合わせフォーム</span>
                   </li>
                 </ul>
                 {/* 適用条件・方法の説明 */}
@@ -186,8 +174,8 @@ export default async function PlansPage() {
                     </a>
                     をサブスクライブしている方へのおまけ特典です。
                   </p>
-                  <p className="text-xs text-purple-300 font-medium mb-1">適用方法</p>
-                  <p className="text-xs text-gray-400">アカウント設定の「Twitchサブスク確認」から権限を付与して確認</p>
+                  <p className="text-xs text-purple-300 font-medium mb-1">有効化方法</p>
+                  <p className="text-xs text-gray-400">アカウント設定の「Twitchサブスク確認」から権限を付与して有効化</p>
                 </div>
               </div>
             </div>
@@ -241,9 +229,9 @@ export default async function PlansPage() {
                   </a>
                   をサブスクライブしている方へのおまけ特典です。
                 </p>
-                <p className="mb-2 text-sm font-medium text-white">適用方法</p>
+                <p className="mb-2 text-sm font-medium text-white">有効化方法</p>
                 <p className="mb-5 text-sm text-gray-400">
-                  アカウント設定の「Twitchサブスク確認」から権限を付与して確認してください。特典が自動適用されます。
+                  アカウント設定の「Twitchサブスク確認」から権限を付与して有効化してください。
                 </p>
                 <a
                   href="https://www.twitch.tv/azumagbanjo"
