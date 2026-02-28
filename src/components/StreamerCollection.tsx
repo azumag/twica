@@ -65,7 +65,7 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
         <Stats stats={stats} />
 
         {/* Cards */}
-        {/* カード一覧 - SortedCardGridコンポーネントを使用して小さい画像を末尾にソート */}
+        {/* カード一覧 */}
         {cards.length === 0 ? (
           <div className="rounded-xl bg-gray-800 p-8 text-center">
             <p className="text-gray-400">
@@ -75,12 +75,8 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
             </p>
           </div>
         ) : (
-          // SortedCardGrid: Displays cards with automatic sorting
-          // Small images (< 400px) are moved to the end of the grid
-          // Portrait images are displayed without frame
-          // SortedCardGrid: カードを自動ソートして表示
-          // 小さい画像（400px未満）はグリッドの末尾に移動
-          // 縦長画像は枠なしで表示
+          // SortedCardGrid: 全カード統一サイズ（正方形 + object-cover）のグリッド表示
+          // レアリティ順はサーバーサイドで事前ソート済み
           <SortedCardGrid
             cards={cards}
             streamerId={streamer.id}

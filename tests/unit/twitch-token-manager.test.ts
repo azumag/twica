@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getTwitchAccessToken, saveTwitchTokens, deleteTwitchTokens, removeScope, saveTwitchScopes, hasScope } from '@/lib/twitch/token-manager';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { getTwitchAccessToken, saveTwitchTokens, deleteTwitchTokens, removeScope, saveTwitchScopes, hasScope, validateTokenScopes } from '@/lib/twitch/token-manager';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { refreshTwitchToken } from '@/lib/twitch/auth';
 
@@ -414,6 +414,311 @@ describe('Twitch Token Manager', () => {
 
       const result = await hasScope('123456789', 'user:write:chat');
       expect(result).toBe(false);
+    });
+  });
+
+  describe('validateTokenScopes', () => {
+    const originalFetch = global.fetch;
+
+    beforeEach(() => {
+      global.fetch = vi.fn();
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('トークンが有効でスコープを含む場合、スコープ配列を返す', async () => {
+      // validateTokenScopesはDBから直接トークンを読み取る（リフレッシュしない）
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: { twitch_access_token: 'valid-token' },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ scopes: ['user:read:email', 'user:write:chat'] }),
+      } as Response);
+
+      const result = await validateTokenScopes('123456789');
+      expect(result).toEqual(['user:read:email', 'user:write:chat']);
+      // Twitch validate APIに正しいトークンで呼ばれることを確認
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://id.twitch.tv/oauth2/validate',
+        { headers: { 'Authorization': 'OAuth valid-token' } },
+      );
+    });
+
+    it('トークンが無効(401)の場合、空配列を返す', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: { twitch_access_token: 'invalid-token' },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ message: 'invalid access token' }),
+      } as Response);
+
+      const result = await validateTokenScopes('123456789');
+      expect(result).toEqual([]);
+    });
+
+    it('Twitch API 5xxの場合、nullを返す（DB信頼にフォールバック）', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: { twitch_access_token: 'valid-token' },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({}),
+      } as Response);
+
+      const result = await validateTokenScopes('123456789');
+      expect(result).toBeNull();
+    });
+
+    it('アクセストークンがない場合、nullを返す', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: null,
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      const result = await validateTokenScopes('123456789');
+      expect(result).toBeNull();
+      // fetch は呼ばれない
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('DBエラー時はnullを返す（例外をスローしない）', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: null,
+          error: { code: 'PGRST000', message: 'Connection failed' },
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      const result = await validateTokenScopes('123456789');
+      expect(result).toBeNull();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('refreshTwitchAccessToken - スコープ同期', () => {
+    it('リフレッシュ時にsaveTwitchScopesが呼ばれる', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            twitch_access_token: 'expired-token',
+            twitch_refresh_token: 'refresh-token',
+            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+          },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+      vi.mocked(refreshTwitchToken).mockResolvedValue({
+        access_token: 'new-token',
+        refresh_token: 'new-refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        scope: ['user:read:email', 'user:write:chat'],
+      });
+
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBe('new-token');
+
+      // saveTwitchScopes が呼ばれることを確認（update が2回呼ばれる: トークン保存 + スコープ保存）
+      // from が 'users' テーブルに対して呼ばれている
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith({
+        twitch_scopes: ['user:read:email', 'user:write:chat'],
+      });
+    });
+
+    it('saveTwitchScopes失敗時もトークンが正常に返る', async () => {
+      // 1回目のeqでトークン保存成功、2回目でスコープ保存失敗
+      let eqCallCount = 0;
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockImplementation(() => {
+          eqCallCount++;
+          if (eqCallCount === 1) {
+            // getTwitchAccessToken の select チェーン
+            return {
+              maybeSingle: vi.fn().mockResolvedValue({
+                data: {
+                  twitch_access_token: 'expired-token',
+                  twitch_refresh_token: 'refresh-token',
+                  twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+                },
+                error: null,
+              }),
+            };
+          }
+          if (eqCallCount === 2) {
+            // refreshTwitchAccessToken の update チェーン → 成功
+            return { error: null };
+          }
+          // saveTwitchScopes の update チェーン → 失敗
+          return { error: { code: 'PGRST000', message: 'Connection failed' } };
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+      vi.mocked(refreshTwitchToken).mockResolvedValue({
+        access_token: 'new-token',
+        refresh_token: 'new-refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        scope: ['user:read:email', 'user:write:chat'],
+      });
+
+      // saveTwitchScopes が失敗してもトークンは正常に返される
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBe('new-token');
+    });
+
+    it('DBの既存追加スコープとリフレッシュレスポンスのスコープがマージされる', async () => {
+      // DBに user:write:chat があるが、リフレッシュレスポンスには含まれないケース
+      // （別端末ログインで基本スコープだけでリフレッシュされた場合）
+      let maybeSingleCallCount = 0;
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockImplementation(() => {
+          maybeSingleCallCount++;
+          if (maybeSingleCallCount === 1) {
+            // getTwitchAccessToken: 期限切れトークン
+            return Promise.resolve({
+              data: {
+                twitch_access_token: 'expired-token',
+                twitch_refresh_token: 'refresh-token',
+                twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+              },
+              error: null,
+            });
+          }
+          // getExistingScopes: DBに既存の追加スコープあり
+          return Promise.resolve({
+            data: { twitch_scopes: ['user:read:email', 'user:write:chat'] },
+            error: null,
+          });
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+      vi.mocked(refreshTwitchToken).mockResolvedValue({
+        access_token: 'new-token',
+        refresh_token: 'new-refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        // リフレッシュレスポンスには基本スコープのみ（user:write:chatなし）
+        scope: ['user:read:email', 'channel:read:redemptions'],
+      });
+
+      const token = await getTwitchAccessToken('123456789');
+      expect(token).toBe('new-token');
+
+      // マージ結果: リフレッシュスコープ + DBの既存スコープ（user:write:chatが保護される）
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith({
+        twitch_scopes: expect.arrayContaining([
+          'user:read:email',
+          'channel:read:redemptions',
+          'user:write:chat',
+        ]),
+      });
+    });
+
+    it('リフレッシュレスポンスにスコープがない場合、saveTwitchScopesは呼ばれない', async () => {
+      const updateMock = vi.fn().mockReturnThis();
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            twitch_access_token: 'expired-token',
+            twitch_refresh_token: 'refresh-token',
+            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+          },
+          error: null,
+        }),
+        update: updateMock,
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+      vi.mocked(refreshTwitchToken).mockResolvedValue({
+        access_token: 'new-token',
+        refresh_token: 'new-refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        scope: [], // 空スコープ
+      });
+
+      await getTwitchAccessToken('123456789');
+
+      // update はトークン保存の1回だけ（スコープ保存は呼ばれない）
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      expect(updateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          twitch_access_token: 'new-token',
+        })
+      );
     });
   });
 });

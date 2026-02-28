@@ -1,5 +1,5 @@
 import { getEnvVar } from '@/lib/env-validation'
-import { getTwitchAccessToken, removeScope } from './token-manager'
+import { getTwitchAccessToken, hasScope } from './token-manager'
 import { ADDITIONAL_SCOPES } from './auth'
 import { logger } from '@/lib/logger'
 import { reportApiError, reportError } from '@/lib/sentry/error-handler'
@@ -68,6 +68,14 @@ export class TwitchChatService {
    */
   async sendChatMessage(broadcasterTwitchUserId: string, message: string): Promise<boolean> {
     try {
+      // 送信前にDBのスコープを確認（無駄なAPI呼び出し抑止）
+      // Check DB scope before sending to avoid unnecessary API calls (e.g., repeated 401s from EventSub)
+      const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
+      if (!hasChatScope) {
+        logger.info('Skipping chat message - user:write:chat scope not granted', { broadcasterTwitchUserId })
+        return false
+      }
+
       // 配信者本人のアクセストークンを取得（user:write:chatスコープが必要）
       // Get the broadcaster's access token (requires user:write:chat scope)
       const accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
@@ -100,38 +108,20 @@ export class TwitchChatService {
       if (!response.ok) {
         const errorBody: TwitchApiError = await response.json().catch(() => ({}))
 
-        // 401かつスコープ不足の場合、DBからスコープを削除して不整合を解消する
-        // トークンが実際にはuser:write:chatを持っていないケースへの自己修復
-        // On 401 with missing scope, remove the scope from DB to fix token/scope mismatch.
-        // Self-healing for cases where the token doesn't actually have user:write:chat.
-        //
-        // 自己修復をエラー報告より先に実行する（エラー報告の失敗が自己修復をブロックしないため）
-        // Execute self-healing before error reporting so reporting failure doesn't block healing.
-        //
-        // Twitch APIのスコープ不足時のエラーメッセージは複数パターンがある:
-        // - "User access token requires the user:write:chat scope." (実際に観測済み)
-        // - "Insufficient authorization in token" (Twitch公式ドキュメントの汎用形式)
-        // Both known Twitch error messages for insufficient scope are handled:
-        // - Explicit scope name in message (observed in production)
-        // - Generic "Insufficient authorization" (per Twitch API docs)
-        const isScopeError = response.status === 401 && (
+        // 401かつスコープ不足の場合、ログのみ出力しDBは変更しない
+        // sub-check.tsと同じ方針: 401/403でのスコープ除去は行わず、スコープ除去はユーザーの手動確認APIでのみ行う
+        // 別端末ログイン等でトークンにスコープがない場合、再認証で復旧するためDB保護が重要
+        // On 401 with missing scope, only log a warning without modifying DB.
+        // Follows sub-check.ts pattern: scope removal only via user-initiated verification API.
+        // When token lacks scope (e.g., login from another device), DB preservation allows recovery via re-auth.
+        if (response.status === 401 && (
           errorBody.message?.includes('user:write:chat') ||
           errorBody.message?.includes('Insufficient authorization')
-        )
-        if (isScopeError) {
-          try {
-            await removeScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
-            logger.warn('Removed invalid user:write:chat scope from DB (self-healing)', {
-              broadcasterTwitchUserId,
-            })
-          } catch (removeScopeError) {
-            // 自己修復失敗をSupabaseに記録（繰り返し発生する可能性があるため追跡が重要）
-            // reportError 内部で console.error も出力される
-            await reportError(removeScopeError, {
-              context: 'chat-service:removeScope:self-healing',
-              broadcasterTwitchUserId,
-            })
-          }
+        )) {
+          logger.warn('Twitch API returned 401 for chat scope - token/DB mismatch detected (DB preserved)', {
+            broadcasterTwitchUserId,
+            twitchError: errorBody.message,
+          })
         }
 
         // Supabase に記録し、Cron Worker 経由で GitHub Issue を自動作成する

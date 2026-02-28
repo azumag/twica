@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
-import { hasScope } from '@/lib/twitch/token-manager'
+import { hasScope, validateTokenScopes } from '@/lib/twitch/token-manager'
 import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
@@ -52,6 +52,24 @@ export async function GET(request: NextRequest) {
     // ユーザーがそのスコープを持っているかチェック
     // Check if the user has the requested scope
     const hasScopeResult = await hasScope(session.twitchUserId, scope)
+
+    // DBにスコープがある場合、トークンの実スコープも検証する
+    // DB/トークン乖離（別端末ログイン等）を検出し、UIに正しい状態を返す
+    // ⚠️ GETはread-only: DB更新はせず、レスポンスで乖離を通知するのみ
+    // When DB says scope exists, also verify against actual token scopes.
+    // Detects DB/token divergence (e.g., login from another device).
+    // GET is read-only: no DB mutation, only notifies divergence via response.
+    if (hasScopeResult) {
+      const tokenScopes = await validateTokenScopes(session.twitchUserId)
+      if (tokenScopes !== null && !tokenScopes.includes(scope)) {
+        // トークンにスコープがない → 乖離検出
+        // DB更新はせず（GETでの状態変更回避）、needsReauthフラグで通知
+        // Token lacks scope → divergence detected. No DB mutation (GET is read-only).
+        return NextResponse.json({ hasScope: false, needsReauth: true })
+      }
+      // tokenScopes === null: ネットワーク障害等 → DB結果を信頼
+      // tokenScopes === null: network failure etc. → trust DB result
+    }
 
     return NextResponse.json({ hasScope: hasScopeResult })
   } catch (error) {
