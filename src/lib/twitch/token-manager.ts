@@ -84,6 +84,27 @@ async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: stri
       throw error;
     }
 
+    // リフレッシュレスポンスにスコープが含まれていればDBとマージ同期（best-effort）
+    // リフレッシュトークンのレスポンスにはデフォルトスコープしか含まれない場合がある
+    // (例: 別端末ログインでuser:write:chatなしでリフレッシュされたトークン)
+    // 全置換するとDBの追加スコープが消失するため、既存スコープとマージする
+    // Best-effort scope merge on token refresh. Refresh response may only contain
+    // default scopes (e.g., token refreshed after login from another device without
+    // user:write:chat). Full replace would wipe additional scopes, so merge with existing.
+    if (tokens.scope && tokens.scope.length > 0) {
+      try {
+        const existingScopes = await getExistingScopes(twitchUserId);
+        // トークンの実スコープとDBの既存スコープをマージ（重複除去）
+        const mergedScopes = [...new Set([...tokens.scope, ...existingScopes])];
+        await saveTwitchScopes(twitchUserId, mergedScopes);
+      } catch (scopeSaveError) {
+        logger.warn('Failed to sync scopes on token refresh (best-effort)', {
+          twitchUserId,
+          error: scopeSaveError instanceof Error ? scopeSaveError.message : String(scopeSaveError),
+        });
+      }
+    }
+
     return tokens.access_token;
   } catch (error) {
     logger.error('Failed to refresh Twitch access token', { twitchUserId, error });
@@ -138,6 +159,23 @@ export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
     }
     throw error;
   }
+}
+
+/**
+ * ユーザーの既存Twitchスコープを取得する（内部ヘルパー）
+ * refreshTwitchAccessTokenでのマージ同期用
+ * Get existing Twitch scopes for a user (internal helper for merge sync on refresh)
+ */
+async function getExistingScopes(twitchUserId: string): Promise<string[]> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data: user, error } = await supabaseAdmin
+    .from('users')
+    .select('twitch_scopes')
+    .eq('twitch_user_id', twitchUserId)
+    .maybeSingle();
+
+  if (error || !user?.twitch_scopes) return [];
+  return user.twitch_scopes;
 }
 
 /**
@@ -260,4 +298,55 @@ export async function saveTwitchScopes(twitchUserId: string, scopes: string[]): 
   }
 
   logger.info('Saved Twitch scopes for user', { twitchUserId, scopeCount: scopes.length });
+}
+
+/**
+ * Twitch /oauth2/validate でトークンの実スコープを取得する
+ * check-scope APIからの参照用（DB更新は行わない、read-only）
+ * Fetch actual token scopes from Twitch /oauth2/validate endpoint.
+ * Read-only: used by check-scope API to detect DB/token divergence without modifying DB.
+ * @param twitchUserId - TwitchユーザーID
+ * @returns スコープ配列、トークン無効時は空配列、判定不能時はnull
+ */
+export async function validateTokenScopes(twitchUserId: string): Promise<string[] | null> {
+  try {
+    // DBからトークンを直接読み取る（リフレッシュしない）
+    // check-scope GETはread-onlyであるべきなので、getTwitchAccessToken()は使わない
+    // getTwitchAccessToken()は期限切れ時にリフレッシュ→DB書き込みを行うため
+    // Read token directly from DB without triggering refresh.
+    // check-scope GET must be read-only; getTwitchAccessToken() would refresh expired
+    // tokens and write to DB, violating the read-only contract.
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data: user, error: dbError } = await supabaseAdmin
+      .from('users')
+      .select('twitch_access_token')
+      .eq('twitch_user_id', twitchUserId)
+      .maybeSingle();
+
+    if (dbError || !user?.twitch_access_token) return null;
+
+    const response = await fetch('https://id.twitch.tv/oauth2/validate', {
+      headers: { 'Authorization': `OAuth ${user.twitch_access_token}` },
+    });
+
+    // 401/403 = トークン無効/期限切れ/スコープ不整合 → 空配列を返す（乖離検出）
+    // 401/403 = token invalid/expired/scope mismatch → return empty array (divergence detected)
+    if (response.status === 401 || response.status === 403) {
+      return [];
+    }
+    // ネットワークエラー/5xx = 判定不能 → nullで呼び出し元にDB信頼を委ねる
+    // Network error/5xx = unable to determine → return null so caller falls back to DB
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    return data.scopes ?? [];
+  } catch (error) {
+    // DBエラー/ネットワーク例外時 → nullで呼び出し元にDB信頼を委ねる
+    // On DB error/network exception → return null so caller falls back to DB
+    logger.warn('Failed to validate token scopes', {
+      twitchUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }

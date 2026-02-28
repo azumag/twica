@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TwitchChatService } from '@/lib/twitch/chat-service';
-import { getTwitchAccessToken, removeScope } from '@/lib/twitch/token-manager';
+import { getTwitchAccessToken, hasScope } from '@/lib/twitch/token-manager';
 import { reportApiError, reportError } from '@/lib/sentry/error-handler';
 
 vi.mock('@/lib/twitch/token-manager');
@@ -21,6 +21,8 @@ describe('TwitchChatService', () => {
     vi.clearAllMocks();
     // 各テストの独立性を保つため fetch mock を初期化
     global.fetch = vi.fn();
+    // デフォルトではスコープあり（個別テストでオーバーライド可能）
+    vi.mocked(hasScope).mockResolvedValue(true);
     service = new TwitchChatService();
   });
 
@@ -28,10 +30,40 @@ describe('TwitchChatService', () => {
     global.fetch = originalFetch;
   });
 
-  describe('sendChatMessage - self-healing', () => {
-    it('401 + スコープ名を含むエラーで removeScope が呼ばれる', async () => {
+  describe('sendChatMessage - hasScope事前チェック', () => {
+    it('hasScope=falseの場合、Twitch APIを呼ばずにfalseを返す', async () => {
+      vi.mocked(hasScope).mockResolvedValue(false);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(false);
+      expect(hasScope).toHaveBeenCalledWith('123456789', 'user:write:chat');
+      // Twitch APIもトークン取得も呼ばれない
+      expect(getTwitchAccessToken).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('hasScope=trueの場合、通常のAPI呼び出しフローに進む', async () => {
+      vi.mocked(hasScope).mockResolvedValue(true);
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
-      vi.mocked(removeScope).mockResolvedValue(undefined);
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+      } as Response);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(true);
+      expect(hasScope).toHaveBeenCalledWith('123456789', 'user:write:chat');
+      expect(getTwitchAccessToken).toHaveBeenCalled();
+    });
+  });
+
+  describe('sendChatMessage - 401エラー時のDB保護', () => {
+    it('401 + スコープエラーでもDBのスコープは削除されない（DB保護）', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
 
       // Twitch APIが401を返すケース（実際に観測されたエラー形式）
       vi.mocked(global.fetch).mockResolvedValue({
@@ -47,14 +79,12 @@ describe('TwitchChatService', () => {
       const result = await service.sendChatMessage('123456789', 'test message');
 
       expect(result).toBe(false);
-      expect(removeScope).toHaveBeenCalledWith('123456789', 'user:write:chat');
+      // removeScope は呼ばれない（インポートされていないことで保証）
     });
 
-    it('401 + "Insufficient authorization" エラーでも removeScope が呼ばれる', async () => {
+    it('401 + "Insufficient authorization" エラーでもDBのスコープは削除されない', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
-      vi.mocked(removeScope).mockResolvedValue(undefined);
 
-      // Twitch APIドキュメントの汎用エラー形式
       vi.mocked(global.fetch).mockResolvedValue({
         ok: false,
         status: 401,
@@ -68,66 +98,6 @@ describe('TwitchChatService', () => {
       const result = await service.sendChatMessage('123456789', 'test message');
 
       expect(result).toBe(false);
-      expect(removeScope).toHaveBeenCalledWith('123456789', 'user:write:chat');
-    });
-
-    it('401 だがスコープ無関係のエラーでは removeScope が呼ばれない', async () => {
-      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
-
-      // トークン自体が無効なケース（スコープ問題ではない）
-      vi.mocked(global.fetch).mockResolvedValue({
-        ok: false,
-        status: 401,
-        json: () => Promise.resolve({
-          error: 'Unauthorized',
-          status: 401,
-          message: 'OAuth token is missing',
-        }),
-      } as Response);
-
-      const result = await service.sendChatMessage('123456789', 'test message');
-
-      expect(result).toBe(false);
-      expect(removeScope).not.toHaveBeenCalled();
-    });
-
-    it('403 エラーでは removeScope が呼ばれない', async () => {
-      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
-
-      vi.mocked(global.fetch).mockResolvedValue({
-        ok: false,
-        status: 403,
-        json: () => Promise.resolve({
-          error: 'Forbidden',
-          status: 403,
-          message: 'User access token requires the user:write:chat scope.',
-        }),
-      } as Response);
-
-      const result = await service.sendChatMessage('123456789', 'test message');
-
-      expect(result).toBe(false);
-      expect(removeScope).not.toHaveBeenCalled();
-    });
-
-    it('removeScope が失敗しても sendChatMessage は false を返す（例外をスローしない）', async () => {
-      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
-      vi.mocked(removeScope).mockRejectedValue(new Error('DB error'));
-
-      vi.mocked(global.fetch).mockResolvedValue({
-        ok: false,
-        status: 401,
-        json: () => Promise.resolve({
-          error: 'Unauthorized',
-          status: 401,
-          message: 'User access token requires the user:write:chat scope.',
-        }),
-      } as Response);
-
-      const result = await service.sendChatMessage('123456789', 'test message');
-
-      expect(result).toBe(false);
-      expect(removeScope).toHaveBeenCalled();
     });
 
     it('アクセストークンがない場合は API を呼ばず false を返す', async () => {
@@ -137,10 +107,9 @@ describe('TwitchChatService', () => {
 
       expect(result).toBe(false);
       expect(global.fetch).not.toHaveBeenCalled();
-      expect(removeScope).not.toHaveBeenCalled();
     });
 
-    it('送信成功時は true を返し removeScope は呼ばれない', async () => {
+    it('送信成功時は true を返す', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
 
       vi.mocked(global.fetch).mockResolvedValue({
@@ -152,7 +121,6 @@ describe('TwitchChatService', () => {
       const result = await service.sendChatMessage('123456789', 'test message');
 
       expect(result).toBe(true);
-      expect(removeScope).not.toHaveBeenCalled();
     });
   });
 
@@ -216,10 +184,8 @@ describe('TwitchChatService', () => {
       expect(reportError).not.toHaveBeenCalled();
     });
 
-    it('self-healing 失敗時に reportApiError と reportError の両方が呼ばれる', async () => {
+    it('401スコープエラー時にもreportApiErrorが呼ばれる（DB変更なし）', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
-      const dbError = new Error('DB error');
-      vi.mocked(removeScope).mockRejectedValue(dbError);
 
       vi.mocked(global.fetch).mockResolvedValue({
         ok: false,
@@ -233,20 +199,12 @@ describe('TwitchChatService', () => {
 
       await service.sendChatMessage('123456789', 'test message');
 
-      // reportApiError (API失敗) の引数も検証
+      // reportApiError (API失敗) は呼ばれる
       expect(reportApiError).toHaveBeenCalledWith(
         '/helix/chat/messages',
         'POST',
         expect.any(Error),
         expect.objectContaining({ broadcasterTwitchUserId: '123456789', status: 401 }),
-      );
-      // reportError (self-healing失敗) の引数も検証
-      expect(reportError).toHaveBeenCalledWith(
-        dbError,
-        expect.objectContaining({
-          context: 'chat-service:removeScope:self-healing',
-          broadcasterTwitchUserId: '123456789',
-        }),
       );
     });
 

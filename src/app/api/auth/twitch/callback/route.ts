@@ -146,7 +146,7 @@ export async function GET(request: NextRequest) {
       // exist, so login route can't restore scopes → full replace would wipe additional scopes.
       //
       // DB/トークン乖離リスク: スキップ時、DBにスコープがあるがトークンには無い状態が残る。
-      // chat: 401時にremoveScope()で自己修復 (chat-service.ts)
+      // chat: check-scope APIでトークン検証し乖離検出 → 再認証誘導 (check-scope/route.ts)
       // sub: ユーザーの手動確認APIで401/403時にremoveScope() (check-subscription/route.ts)
       let skipScopeSave = false
       if (!isReauthFlow && !scopeRestoreFailed) {
