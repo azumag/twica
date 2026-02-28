@@ -30,7 +30,8 @@
     "gachaHistory": "Gacha History",
     "stats": "Stats",
     "collection": "My Collection",
-    "announcements": "Announcements"
+    "announcements": "Announcements",
+    "inquiries": "Inquiries"
   },
   "rarity": {
     "common": "Common",
@@ -56,7 +57,11 @@
       "croppedImage": "Cropped image",
       "selectCropMode": "Select Crop Size",
       "cropModeDescription": "For Square images, name and description can be shown in the card frame on display. You can toggle this in overlay settings. Portrait images are displayed as-is.",
-      "cropNoteWithOptions": "(Crop to Square 800x800 or Portrait 800x1118)"
+      "cropNoteWithOptions": "(Crop to Square {square} or Portrait {portrait})",
+      "selectResolution": "Select Resolution",
+      "resolutionStandard": "Standard (800px)",
+      "resolutionFullHd": "Full HD (1920px)",
+      "resolution4k": "4K (3840px)"
     },
     "fileUpload": {
       "formats": "Supported: JPEG, PNG | ",
@@ -85,7 +90,7 @@
       "storageLimitReason": "Image Upload Storage Notice\n\nThe current image storage limit is 10MB per account. If you exceed the limit, please delete unnecessary images or consider using URLs to reference images stored on external services (URL references do not count toward the storage limit).\n\nWe are grateful that more users than expected are enjoying the service. This storage limit is a necessary measure to keep the service free. We appreciate your understanding. If we receive many requests for increased storage, we will consider introducing paid plans in the future.",
       "refreshing": "Refreshing",
       "imageUrlInvalidAspectRatio": "Image URL must be portrait (vertical) or square (current: {width}x{height})",
-      "imageUrlResolutionExceeded": "Image URL resolution exceeds limit. Max width: 1920px, max height: 2682px (current: {width}x{height})",
+      "imageUrlResolutionExceeded": "Image URL resolution exceeds limit. Max width: {maxWidth}px, max height: {maxHeight}px (current: {width}x{height})",
       "imageUrlLoadFailed": "Failed to load image URL. Please check the URL.",
       "imageUrlValidating": "Validating image..."
     },
@@ -223,7 +228,11 @@
       "viewAllCollection": "View Full Collection",
       "streamerInfo": "About Streamer Features",
       "streamerInfoText": "You must be a Twitch Affiliate or Partner to use channel point rewards and card management features.",
-      "quickLinks": "Quick Links"
+      "quickLinks": "Quick Links",
+      "storageOverLimit": "Storage limit exceeded",
+      "storageOverLimitDescription": "Please upgrade your support benefits or delete unused images. New card creation and image uploads are currently restricted.",
+      "storageUsage": "Usage: {usage} / {limit}",
+      "manageCards": "Manage Cards"
     }
   },
   "battle": {
@@ -740,6 +749,110 @@
     "fullPeriodStats": {
       "title": "About Full Period Stats",
       "message": "Full period statistics require significant server resources for aggregation. We will decide whether to implement this feature once a monetization plan is in place."
+    }
+  },
+  "inquiriesPage": {
+    "title": "Inquiries",
+    "description": "Feel free to contact us about bug reports, feature requests, and more.",
+    "supporterOnly": "This feature is available for Josuke/Gohiiki benefits only.",
+    "newInquiry": "New Inquiry",
+    "form": {
+      "category": "Category",
+      "categoryBug": "Bug Report",
+      "categoryFeature": "Feature Request",
+      "categoryOther": "Other",
+      "subject": "Subject",
+      "subjectPlaceholder": "Enter subject (max 200 characters)",
+      "body": "Body",
+      "bodyPlaceholder": "Enter your inquiry (max 2000 characters)",
+      "submit": "Submit",
+      "submitting": "Submitting..."
+    },
+    "list": {
+      "empty": "No inquiries yet.",
+      "status": {
+        "open": "Open",
+        "in_progress": "In Progress",
+        "resolved": "Resolved",
+        "closed": "Closed"
+      }
+    },
+    "detail": {
+      "backToList": "Back to List",
+      "thread": "Messages",
+      "adminReply": "Admin",
+      "yourMessage": "You",
+      "replyPlaceholder": "Type your reply (max 2000 characters)",
+      "reply": "Reply",
+      "replying": "Sending...",
+      "closedNotice": "This inquiry has been closed."
+    },
+    "messages": {
+      "submitSuccess": "Inquiry submitted successfully",
+      "submitFailed": "Failed to submit inquiry",
+      "replySuccess": "Reply sent successfully",
+      "replyFailed": "Failed to send reply",
+      "networkError": "A network error occurred"
+    }
+  },
+  "supportPlan": {
+    "title": "Support Benefits",
+    "currentPlan": "Current Benefits",
+    "description": "Enter a support code received from FANBOX or other platforms to activate your benefits.",
+    "defaultStorage": "Default",
+    "storageBonus": "Storage Bonus",
+    "plans": {
+      "basic": "Basic",
+      "support": "Josuke",
+      "patron": "Gohiiki",
+      "twitch_sub": "Twitch Sub"
+    },
+    "form": {
+      "code": "Support Code",
+      "codePlaceholder": "Enter your support code",
+      "fanboxId": "FANBOX ID",
+      "fanboxIdPlaceholder": "Your FANBOX creator ID",
+      "optional": "Optional",
+      "activate": "Activate",
+      "activating": "Activating...",
+      "deactivate": "Reset to Basic",
+      "deactivating": "Resetting...",
+      "confirmDeactivate": "Reset to Basic? You will lose your current benefits (extra storage, etc.)."
+    },
+    "messages": {
+      "activated": "{plan} benefits have been activated",
+      "activateFailed": "Failed to activate the code",
+      "networkError": "A network error occurred",
+      "deactivated": "Reset to Basic",
+      "deactivateFailed": "Failed to change benefits"
+    }
+  },
+  "twitchSub": {
+    "title": "Twitch Subscription Check",
+    "description": "If you subscribe to azumagbanjo's Twitch channel, Gohiiki-level benefits are automatically applied.",
+    "status": "Subscription Status",
+    "statusActive": "Active",
+    "statusInactive": "Not Verified",
+    "scopeWarning": "Additional Twitch permissions are required to check your subscription status. Please re-authorize using the button below.",
+    "buttons": {
+      "reauthorize": "Grant Permission",
+      "reauthorizing": "Authorizing...",
+      "checkSubscription": "Check Subscription",
+      "checking": "Checking...",
+      "disable": "Disable Subscription",
+      "disabling": "Disabling..."
+    },
+    "messages": {
+      "subActive": "Subscription confirmed. Benefits are active.",
+      "subInactive": "No active subscription found.",
+      "saveFailed": "Subscription check succeeded but saving failed. Please try again later.",
+      "confirmDisable": "Disable your subscription status?\\n\\nTo re-enable it, click \"Check Subscription\" again.",
+      "disabled": "Subscription status has been disabled.",
+      "disableFailed": "Failed to disable subscription status.",
+      "needsReauth": "Insufficient permissions. Please re-authorize.",
+      "checkFailed": "Check failed. Please try again later.",
+      "reauthorizeFailed": "Re-authorization failed.",
+      "networkError": "A network error occurred."
     }
   }
 }

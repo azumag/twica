@@ -424,6 +424,76 @@ export interface Database {
           created_at?: string
         }
       }
+      // 問い合わせ本体テーブル - 支援者が投稿する問い合わせ
+      support_inquiries: {
+        Row: {
+          id: string
+          twitch_user_id: string
+          twitch_display_name: string
+          category: 'bug' | 'feature' | 'other'
+          subject: string
+          body: string
+          status: 'open' | 'in_progress' | 'resolved' | 'closed'
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          twitch_user_id: string
+          twitch_display_name: string
+          category: 'bug' | 'feature' | 'other'
+          subject: string
+          body: string
+          status?: 'open' | 'in_progress' | 'resolved' | 'closed'
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          twitch_user_id?: string
+          twitch_display_name?: string
+          category?: 'bug' | 'feature' | 'other'
+          subject?: string
+          body?: string
+          status?: 'open' | 'in_progress' | 'resolved' | 'closed'
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      // 問い合わせメッセージテーブル - ユーザー/管理者の返信
+      support_inquiry_messages: {
+        Row: {
+          id: string
+          inquiry_id: string
+          sender_type: 'user' | 'admin'
+          sender_id: string
+          body: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          inquiry_id: string
+          sender_type: 'user' | 'admin'
+          sender_id: string
+          body: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          inquiry_id?: string
+          sender_type?: 'user' | 'admin'
+          sender_id?: string
+          body?: string
+          created_at?: string
+        }
+        Relationships: [{
+          foreignKeyName: 'support_inquiry_messages_inquiry_id_fkey'
+          columns: ['inquiry_id']
+          referencedRelation: 'support_inquiries'
+          referencedColumns: ['id']
+        }]
+      }
     }
     Views: {
       [_ in never]: never
@@ -464,4 +534,59 @@ export type UserWithStats = User & {
 export type GachaHistoryWithDetails = GachaHistory & {
   cards: Card
   streamers: Streamer
+}
+
+// 問い合わせカテゴリ
+export type InquiryCategory = 'bug' | 'feature' | 'other'
+// 問い合わせステータス
+export type InquiryStatus = 'open' | 'in_progress' | 'resolved' | 'closed'
+
+// 問い合わせ本体
+export interface SupportInquiry {
+  id: string
+  twitch_user_id: string
+  twitch_display_name: string
+  category: InquiryCategory
+  subject: string
+  body: string
+  status: InquiryStatus
+  created_at: string
+  updated_at: string
+}
+
+// 問い合わせメッセージ（ユーザー/管理者の返信）
+export interface SupportInquiryMessage {
+  id: string
+  inquiry_id: string
+  sender_type: 'user' | 'admin'
+  sender_id: string
+  body: string
+  created_at: string
+}
+
+// 支援コードのステータス
+export type SupportCodeStatus = 'active' | 'rotating' | 'revoked'
+// 支援プランタイプ
+export type PlanType = 'basic' | 'support' | 'patron'
+
+// 支援コード（共有コードマスタ）
+export interface SupportCode {
+  id: string
+  code_hash: string
+  plan_type: PlanType
+  status: SupportCodeStatus
+  memo: string | null
+  activation_count: number
+  created_at: string
+  updated_at: string
+}
+
+// ユーザーライセンス（コードアクティベーション記録）
+export interface UserLicense {
+  id: string
+  twitch_user_id: string
+  code_id: string
+  plan_type: PlanType
+  fanbox_id: string | null
+  activated_at: string
 }

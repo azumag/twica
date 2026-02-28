@@ -12,18 +12,25 @@ interface ValidationResult {
   allowedTypes?: string[]
 }
 
+/**
+ * ファイルのバリデーション
+ * @param file - アップロード対象ファイル
+ * @param maxFileSize - オプショナル: プラン別の最大ファイルサイズ（未指定時はUPLOAD_CONFIG.MAX_FILE_SIZE）
+ */
 export function validateUpload(
-  file: File | null | undefined
+  file: File | null | undefined,
+  maxFileSize?: number
 ): ValidationResult {
   if (!file) {
     return { valid: false, error: 'NO_FILE' }
   }
 
-  if (file.size > UPLOAD_CONFIG.MAX_FILE_SIZE) {
+  const effectiveMaxSize = maxFileSize ?? UPLOAD_CONFIG.MAX_FILE_SIZE;
+  if (file.size > effectiveMaxSize) {
     return {
       valid: false,
       error: 'FILE_TOO_LARGE',
-      maxSize: UPLOAD_CONFIG.MAX_FILE_SIZE,
+      maxSize: effectiveMaxSize,
       allowedTypes: [...UPLOAD_CONFIG.ALLOWED_TYPES],
     }
   }
@@ -33,7 +40,7 @@ export function validateUpload(
     return {
       valid: false,
       error: 'INVALID_FILE_TYPE',
-      maxSize: UPLOAD_CONFIG.MAX_FILE_SIZE,
+      maxSize: effectiveMaxSize,
       allowedTypes: [...UPLOAD_CONFIG.ALLOWED_TYPES],
     }
   }

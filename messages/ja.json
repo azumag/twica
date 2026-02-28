@@ -30,7 +30,8 @@
     "gachaHistory": "ガチャ履歴",
     "stats": "統計",
     "collection": "マイコレクション",
-    "announcements": "お知らせ"
+    "announcements": "お知らせ",
+    "inquiries": "お問い合わせ"
   },
   "rarity": {
     "common": "コモン",
@@ -56,7 +57,11 @@
       "croppedImage": "トリミング済み画像",
       "selectCropMode": "トリミングサイズを選択",
       "cropModeDescription": "正方形の場合、表示時に名前・説明をカード枠に表示できます。オーバーレイ設定で表示非表示を選択できます。ポートレイトはそのまま表示されます。",
-      "cropNoteWithOptions": "（正方形800x800またはポートレイト800x1118にトリミング）"
+      "cropNoteWithOptions": "（正方形{square}またはポートレイト{portrait}にトリミング）",
+      "selectResolution": "解像度を選択",
+      "resolutionStandard": "標準 (800px)",
+      "resolutionFullHd": "Full HD (1920px)",
+      "resolution4k": "4K (3840px)"
     },
     "fileUpload": {
       "formats": "対応形式: JPEG, PNG | ",
@@ -82,10 +87,10 @@
       "errorOccurred": "エラーが発生しました ({status})",
       "uploadLimited": "アップロード機能が制限されています",
       "imageUsage": "画像使用量: {usage} / {limit}",
-      "storageLimitReason": "画像アップロード容量に関するご案内\n\n現在、1アカウントあたりの画像容量上限は10MBとなっております。上限を超える場合は、不要な画像を削除していただくか、外部ストレージに保存した画像のURL引用をご検討ください（URL参照の場合は容量制限に含まれません）。\n\n予想を上回る多くの方にご利用いただいており、無料サービスを継続するための苦渋の措置となります。何卒ご理解いただけますと幸いです。なお、容量拡張のご要望を多くいただく場合は、将来的に有料プランの導入も検討させていただきます。",
+      "storageLimitReason": "画像アップロード容量に関するご案内\n\n現在、1アカウントあたりの画像容量上限は10MBとなっております。上限を超える場合は、不要な画像を削除していただくか、外部ストレージに保存した画像のURL引用をご検討ください（URL参照の場合は容量制限に含まれません）。\n\n予想を上回る多くの方にご利用いただいており、無料サービスを継続するための苦渋の措置となります。何卒ご理解いただけますと幸いです。なお、支援特典により容量を拡張できます。詳しくは「支援特典について」をご確認ください。",
       "refreshing": "更新中",
       "imageUrlInvalidAspectRatio": "画像URLの画像は縦長または正方形である必要があります（現在: {width}x{height}）",
-      "imageUrlResolutionExceeded": "画像URLの解像度が制限を超えています。横幅1920px、縦幅2682pxまでです（現在: {width}x{height}）",
+      "imageUrlResolutionExceeded": "画像URLの解像度が制限を超えています。横幅{maxWidth}px、縦幅{maxHeight}pxまでです（現在: {width}x{height}）",
       "imageUrlLoadFailed": "画像URLの読み込みに失敗しました。URLを確認してください。",
       "imageUrlValidating": "画像を検証中..."
     },
@@ -223,7 +228,11 @@
       "viewAllCollection": "コレクションをすべて見る",
       "streamerInfo": "配信者機能について",
       "streamerInfoText": "チャネルポイント報酬やカード管理機能を使用するには、Twitchアフィリエイトまたはパートナーである必要があります。",
-      "quickLinks": "クイックリンク"
+      "quickLinks": "クイックリンク",
+      "storageOverLimit": "ストレージ容量を超過しています",
+      "storageOverLimitDescription": "支援特典をアップグレードするか、不要な画像を削除してください。現在、新しいカードの作成や画像のアップロードが制限されています。",
+      "storageUsage": "使用量: {usage} / {limit}",
+      "manageCards": "カード管理へ"
     }
   },
   "battle": {
@@ -740,6 +749,110 @@
     "fullPeriodStats": {
       "title": "全期間統計について",
       "message": "全期間統計については、集計にかかるサーバーコストが大きいため、本サービスのマネタイズの見通しが立ち次第、着手するか判断します。"
+    }
+  },
+  "inquiriesPage": {
+    "title": "お問い合わせ",
+    "description": "バグ報告や機能要望など、お気軽にお問い合わせください。",
+    "supporterOnly": "この機能は助力/ご贔屓限定です。",
+    "newInquiry": "新規お問い合わせ",
+    "form": {
+      "category": "カテゴリ",
+      "categoryBug": "バグ報告",
+      "categoryFeature": "機能要望",
+      "categoryOther": "その他",
+      "subject": "件名",
+      "subjectPlaceholder": "件名を入力（最大200文字）",
+      "body": "本文",
+      "bodyPlaceholder": "お問い合わせ内容を入力（最大2000文字）",
+      "submit": "送信",
+      "submitting": "送信中..."
+    },
+    "list": {
+      "empty": "お問い合わせはまだありません。",
+      "status": {
+        "open": "未対応",
+        "in_progress": "対応中",
+        "resolved": "解決済み",
+        "closed": "クローズ"
+      }
+    },
+    "detail": {
+      "backToList": "一覧に戻る",
+      "thread": "メッセージ",
+      "adminReply": "管理者",
+      "yourMessage": "あなた",
+      "replyPlaceholder": "返信を入力（最大2000文字）",
+      "reply": "返信",
+      "replying": "送信中...",
+      "closedNotice": "この問い合わせはクローズされています。"
+    },
+    "messages": {
+      "submitSuccess": "お問い合わせを送信しました",
+      "submitFailed": "送信に失敗しました",
+      "replySuccess": "返信を送信しました",
+      "replyFailed": "返信の送信に失敗しました",
+      "networkError": "ネットワークエラーが発生しました"
+    }
+  },
+  "supportPlan": {
+    "title": "支援",
+    "currentPlan": "現在の特典",
+    "description": "FANBOXなどで受け取った支援コードを入力して、特典を有効化できます。",
+    "defaultStorage": "デフォルト",
+    "storageBonus": "ストレージ追加容量",
+    "plans": {
+      "basic": "素地",
+      "support": "助力",
+      "patron": "ご贔屓",
+      "twitch_sub": "Twitchサブスク"
+    },
+    "form": {
+      "code": "支援コード",
+      "codePlaceholder": "コードを入力してください",
+      "fanboxId": "FANBOX ID",
+      "fanboxIdPlaceholder": "FANBOX のクリエイターID",
+      "optional": "任意",
+      "activate": "有効化",
+      "activating": "有効化中...",
+      "deactivate": "素地に戻す",
+      "deactivating": "変更中...",
+      "confirmDeactivate": "素地に戻しますか？現在の特典（追加ストレージ等）が失われます。"
+    },
+    "messages": {
+      "activated": "{plan}の特典が有効化されました",
+      "activateFailed": "コードの有効化に失敗しました",
+      "networkError": "ネットワークエラーが発生しました",
+      "deactivated": "素地に戻しました",
+      "deactivateFailed": "特典の変更に失敗しました"
+    }
+  },
+  "twitchSub": {
+    "title": "Twitchサブスク確認",
+    "description": "作者：あずまぐ（@azumagbanjo）の Twitch チャンネルをサブスクライブしている場合、ご贔屓同等の特典が自動適用されます。",
+    "status": "サブスク状態",
+    "statusActive": "有効",
+    "statusInactive": "未確認",
+    "scopeWarning": "サブスク状態を確認するには、Twitchアカウントに追加の権限が必要です。下のボタンから再認証してください。",
+    "buttons": {
+      "reauthorize": "権限を付与",
+      "reauthorizing": "認証中...",
+      "checkSubscription": "サブスク状態を確認",
+      "checking": "確認中...",
+      "disable": "サブスクを無効化",
+      "disabling": "無効化中..."
+    },
+    "messages": {
+      "subActive": "サブスクが確認されました。特典が適用されています。",
+      "subInactive": "サブスクが確認できませんでした。",
+      "saveFailed": "サブスク判定は成功しましたが保存に失敗しました。時間をおいて再試行してください。",
+      "confirmDisable": "サブスク状態を無効化しますか？\\n\\n再度有効化するには「サブスク状態を確認」ボタンを押してください。",
+      "disabled": "サブスク状態を無効化しました。",
+      "disableFailed": "サブスク状態の無効化に失敗しました。",
+      "needsReauth": "権限が不足しています。再認証してください。",
+      "checkFailed": "確認に失敗しました。しばらくしてから再試行してください。",
+      "reauthorizeFailed": "再認証に失敗しました。",
+      "networkError": "ネットワークエラーが発生しました。"
     }
   }
 }

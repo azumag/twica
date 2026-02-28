@@ -32,12 +32,16 @@ export async function GET() {
       globalLimitFormatted: formatBytes(usage.globalLimitBytes),
       userLimitReached: usage.userLimitReached,
       globalLimitReached: usage.globalLimitReached,
-      uploadDisabled: usage.userLimitReached || usage.globalLimitReached,
-      message: usage.globalLimitReached
-        ? STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED
-        : usage.userLimitReached
-          ? STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED
-          : null,
+      // planOverLimitの場合もアップロードを無効化
+      uploadDisabled: usage.userLimitReached || usage.globalLimitReached || usage.planOverLimit,
+      planOverLimit: usage.planOverLimit,
+      message: usage.planOverLimit
+        ? ERROR_MESSAGES.PLAN_OVER_LIMIT
+        : usage.globalLimitReached
+          ? STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED
+          : usage.userLimitReached
+            ? STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED
+            : null,
     });
   } catch (error) {
     return handleApiError(error, 'Storage Status API');

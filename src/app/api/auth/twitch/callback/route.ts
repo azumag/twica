@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError } from '@/lib/twitch/auth'
+import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
 import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
@@ -134,6 +134,67 @@ export async function GET(request: NextRequest) {
         throw upsertError
       }
 
+      // 既存追加スコープの保護（別端末ログイン対策）
+      // 通常ログイン（非reauth）でDBに追加スコープがあるが、
+      // トークンにそれら全てが含まれていない場合 → スコープ保存をスキップしてDB状態を保護。
+      // 別端末からのログインではCookieが無く、loginルートでスコープ復元されないため、
+      // 全置換すると追加スコープ（chat/sub等）がDBから消失してしまう。
+      //
+      // Protect existing additional scopes (cross-device login guard).
+      // On normal login (non-reauth), if DB has additional scopes but token doesn't include
+      // all of them, skip scope save to preserve DB state. On a different device, no cookies
+      // exist, so login route can't restore scopes → full replace would wipe additional scopes.
+      //
+      // DB/トークン乖離リスク: スキップ時、DBにスコープがあるがトークンには無い状態が残る。
+      // chat: 401時にremoveScope()で自己修復 (chat-service.ts)
+      // sub: ユーザーの手動確認APIで401/403時にremoveScope() (check-subscription/route.ts)
+      let skipScopeSave = false
+      if (!isReauthFlow && !scopeRestoreFailed) {
+        try {
+          const { data: existingUser, error: existingScopeError } = await supabaseAdmin
+            .from('users')
+            .select('twitch_scopes')
+            .eq('twitch_user_id', twitchUser.id)
+            .maybeSingle()
+
+          if (existingScopeError) {
+            // DB読み取り失敗: scopeRestoreFailedと同じくfail-safe(スキップ)で保護
+            skipScopeSave = true
+            logger.warn('Auth callback: Skipping scope save due to existing scope read failure', {
+              twitchUserId: twitchUser.id,
+              error: existingScopeError.message,
+            })
+          } else if (existingUser?.twitch_scopes) {
+            const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
+            const existingAdditional = (existingUser.twitch_scopes as string[]).filter(
+              (s: string) => validAdditionalScopes.includes(s)
+            )
+
+            if (existingAdditional.length > 0) {
+              const missingScopes = existingAdditional.filter(
+                (s: string) => !tokens.scope.includes(s)
+              )
+              if (missingScopes.length > 0) {
+                skipScopeSave = true
+                logger.warn('Auth callback: Skipping scope save to protect existing additional scopes', {
+                  twitchUserId: twitchUser.id,
+                  missingScopes,
+                  existingAdditional,
+                  tokenScopes: tokens.scope,
+                })
+              }
+            }
+          }
+        } catch (error) {
+          // 予期しない例外: fail-safe(スキップ)
+          skipScopeSave = true
+          logger.warn('Auth callback: Skipping scope save due to unexpected error', {
+            twitchUserId: twitchUser.id,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+
       // トークン交換時に付与されたスコープをDBに全置換で保存する。
       // loginルートがOAuthリクエストに既存スコープ（user:write:chat等）を含めるため、
       // ユーザーのTwitch Grantにスコープが存在すれば新トークンにも含まれ保持される。
@@ -145,16 +206,17 @@ export async function GET(request: NextRequest) {
       // any previously-granted additional scopes in the new token. Full replace keeps DB
       // in sync with actual token capabilities, preventing DB/token divergence that causes
       // repeated 401 errors (token lacks scope but DB says it has it).
-      //
-      // login側でスコープ復元に失敗していた場合は更新をスキップして既存DBを保持。
-      // If login-side scope restoration failed, skip update to preserve DB state.
       if (tokens.scope && tokens.scope.length > 0) {
         if (scopeRestoreFailed) {
           // ガード発動: login側でDB障害等によりスコープ復元に失敗しているため、
           // トークンに追加スコープが含まれていない可能性がある。全置換すると消失するのでスキップ
-          // Guard triggered: scope restoration failed in login route,
-          // token may be missing additional scopes. Skip full-replace to preserve DB state
           logger.warn('Auth callback: Skipping scope save due to scope restoration failure in login', {
+            twitchUserId: twitchUser.id,
+            tokenScopes: tokens.scope,
+          })
+        } else if (skipScopeSave) {
+          // 別端末ログイン保護: DB既存の追加スコープがトークンに含まれていないためスキップ
+          logger.warn('Auth callback: Scope save skipped to protect existing additional scopes', {
             twitchUserId: twitchUser.id,
             tokenScopes: tokens.scope,
           })

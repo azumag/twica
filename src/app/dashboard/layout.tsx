@@ -1,5 +1,6 @@
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUnreadAnnouncements } from "@/lib/announcements";
+import { getUserPlan } from "@/lib/plan";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
@@ -34,6 +35,11 @@ export default async function DashboardLayout({
   // ユーザーが配信者機能を持っているか確認（アフィリエイト/パートナー）
   const isStreamer = canUseStreamerFeatures(session);
 
+  // Check if user has a supporter plan (support/patron) for inquiry access
+  // 問い合わせ機能アクセス用に支援者プランを確認
+  const plan = await getUserPlan(session.twitchUserId);
+  const isSupporter = plan !== 'basic';
+
   // Get unread announcements count for header badge
   // ヘッダーのバッジ表示用に未読お知らせ数を取得
   const unreadAnnouncements = await getUnreadAnnouncements(session.twitchUserId);
@@ -47,7 +53,7 @@ export default async function DashboardLayout({
         {/* Navigation bar */}
         {/* ナビゲーションバー */}
         <div className="mb-6">
-          <DashboardNav isStreamer={isStreamer} />
+          <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
         </div>
 
         {/* Page content */}

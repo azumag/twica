@@ -8,7 +8,7 @@ import { RARITIES, UPLOAD_CONFIG } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
-import ImageCropper, { type CropMode, CROP_MODES } from "./ImageCropper";
+import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import BatchDropRateModal from "./BatchDropRateModal";
@@ -24,6 +24,8 @@ interface StorageStatus {
   userLimitReached: boolean;
   globalLimitReached: boolean;
   uploadDisabled: boolean;
+  // プランダウングレード後のストレージ超過フラグ
+  planOverLimit?: boolean;
   message: string | null;
 }
 
@@ -52,6 +54,12 @@ interface CardManagerProps {
   // Maximum number of cards to display (for preview mode)
   // 表示するカードの最大数（プレビューモード用）
   maxCards?: number;
+  // Plan-based max image width in pixels (default: 800)
+  // プラン別カード画像最大幅（デフォルト: 800px）
+  maxImageWidth?: number;
+  // Plan-based available output widths (default: [800])
+  // プラン別選択可能な出力幅（デフォルト: [800]）
+  availableWidths?: number[];
 }
 
 // Sorting field options
@@ -72,6 +80,8 @@ export default function CardManager({
   viewMode: initialViewMode = "thumbnail",
   showViewToggle = false,
   maxCards,
+  maxImageWidth = 800,
+  availableWidths = [800],
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -211,11 +221,18 @@ export default function CardManager({
   // トリミングモード選択モーダルの状態（クロッパー表示前に表示）
   const [cropModeModalOpen, setCropModeModalOpen] = useState(false);
   // Selected crop mode: square (800x800) or portrait (800x1118)
+  // ユーザーが選択した出力解像度（デフォルトはプラン最大幅）
+  const [selectedWidth, setSelectedWidth] = useState<number>(maxImageWidth);
   // 選択されたトリミングモード: 正方形(800x800)またはポートレイト(800x1118)
   const [selectedCropMode, setSelectedCropMode] = useState<CropMode>("square");
   // Original file selected for cropping (before crop)
   // トリミング対象として選択されたオリジナルファイル（トリミング前）
   const [selectedFileForCrop, setSelectedFileForCrop] = useState<File | null>(null);
+  // アップロード画像の実際の幅（解像度フィルタリング用）
+  const [sourceImageWidth, setSourceImageWidth] = useState<number | null>(null);
+  // 画像サイズ読み取りの非同期コールバック無効化用カウンター
+  // Counter to invalidate stale async image dimension callbacks
+  const imageDimensionRequestId = useRef(0);
   // Cropped image file ready for upload
   // アップロード準備完了のトリミング済み画像ファイル
   const [croppedFile, setCroppedFile] = useState<File | null>(null);
@@ -225,6 +242,18 @@ export default function CardManager({
   // Image URL validation loading state
   // 画像URL検証中のローディング状態
   const [imageUrlValidating, setImageUrlValidating] = useState(false);
+
+  // ユーザー選択幅に応じた動的クロップモード設定
+  const planCropModes = useMemo(() => getCropModes(selectedWidth), [selectedWidth]);
+
+  // 画像サイズに基づく選択可能な解像度リスト
+  // Filter available widths to those not exceeding source image dimensions
+  const effectiveWidths = useMemo(() => {
+    const selectable = sourceImageWidth
+      ? availableWidths.filter((w) => w <= sourceImageWidth)
+      : availableWidths;
+    return selectable.length > 0 ? selectable : [Math.min(...availableWidths)];
+  }, [availableWidths, sourceImageWidth]);
 
   // Emote import modal state
   // エモートインポートモーダルの状態
@@ -505,10 +534,13 @@ export default function CardManager({
     setPendingDeleteUrl(null);
     // Reset cropping state
     // トリミング状態をリセット
+    imageDimensionRequestId.current++;
     setCropModalOpen(false);
     setCropModeModalOpen(false);
     setSelectedCropMode("square");
+    setSelectedWidth(maxImageWidth);
     setSelectedFileForCrop(null);
+    setSourceImageWidth(null);
     setCroppedFile(null);
     // Clean up preview URL to prevent memory leaks
     // メモリリーク防止のためプレビューURLをクリーンアップ
@@ -534,10 +566,38 @@ export default function CardManager({
         setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
         return;
       }
-      // Store file and open crop mode selection modal first
-      // ファイルを保存し、まずトリミングモード選択モーダルを開く
-      setSelectedFileForCrop(file);
-      setCropModeModalOpen(true);
+      // 画像の実サイズを読み取ってからモーダルを開く
+      // Read actual image dimensions before opening the modal
+      const requestId = ++imageDimensionRequestId.current;
+      const img = document.createElement("img");
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        // キャンセルや再選択で無効化されたコールバックを無視
+        // Ignore stale callback from cancelled/re-selected file
+        if (requestId !== imageDimensionRequestId.current) return;
+        const imgWidth = img.naturalWidth;
+        setSourceImageWidth(imgWidth);
+        // 画像幅以下の解像度のうち最大のものをデフォルトに設定
+        // Default to the largest resolution that doesn't exceed image width
+        const validWidths = availableWidths.filter((w) => w <= imgWidth);
+        const defaultWidth = validWidths.length > 0
+          ? Math.max(...validWidths)
+          : Math.min(...availableWidths);
+        setSelectedWidth(defaultWidth);
+        setSelectedFileForCrop(file);
+        setCropModeModalOpen(true);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        if (requestId !== imageDimensionRequestId.current) return;
+        // 読み取り失敗時はフォールバック：従来通り全選択肢を表示
+        setSourceImageWidth(null);
+        setSelectedWidth(maxImageWidth);
+        setSelectedFileForCrop(file);
+        setCropModeModalOpen(true);
+      };
+      img.src = objectUrl;
     }
   };
 
@@ -556,8 +616,10 @@ export default function CardManager({
    * トリミングモード選択をキャンセル
    */
   const handleCropModeCancel = () => {
+    imageDimensionRequestId.current++;
     setCropModeModalOpen(false);
     setSelectedFileForCrop(null);
+    setSourceImageWidth(null);
     // Clear the file input
     // ファイル入力をクリア
     if (fileInputRef.current) {
@@ -594,8 +656,10 @@ export default function CardManager({
    * 画像トリミングのキャンセル処理
    */
   const handleCropCancel = () => {
+    imageDimensionRequestId.current++;
     setCropModalOpen(false);
     setSelectedFileForCrop(null);
+    setSourceImageWidth(null);
     // Clear the file input
     // ファイル入力をクリア
     if (fileInputRef.current) {
@@ -605,17 +669,16 @@ export default function CardManager({
 
   /**
    * Validates image URL for aspect ratio and resolution limits
-   * Image must be portrait (height >= width) or square, max 1920x2682
-   * 画像URLのアスペクト比と解像度制限を検証
-   * 画像は縦長（高さ >= 幅）または正方形で、最大1920x2682
+   * Image must be portrait (height >= width) or square
+   * 画像URLのアスペクト比と解像度制限を検証（プラン別の最大幅に対応）
    */
   const validateImageUrl = useCallback(async (url: string): Promise<boolean> => {
     if (!url) return true;
 
-    // Constants for image URL validation limits
-    // 画像URL検証用の制限値
-    const MAX_WIDTH = 1920;
-    const MAX_HEIGHT = 2682;
+    // プラン別の最大幅に基づいて解像度上限を算出
+    // ポートレイトのアスペクト比(1118/800)を考慮した最大高さ
+    const MAX_WIDTH = maxImageWidth;
+    const MAX_HEIGHT = Math.round(maxImageWidth * (1118 / 800));
 
     setImageUrlValidating(true);
     setUploadError(null);
@@ -647,7 +710,7 @@ export default function CardManager({
         // Check resolution limits
         // 解像度制限をチェック
         if (width > MAX_WIDTH || height > MAX_HEIGHT) {
-          setUploadError(t("messages.imageUrlResolutionExceeded", { width, height }));
+          setUploadError(t("messages.imageUrlResolutionExceeded", { maxWidth: MAX_WIDTH, maxHeight: MAX_HEIGHT, width, height }));
           setImageUrlValidating(false);
           setFormData(prev => ({ ...prev, imageUrl: "" }));
           resolve(false);
@@ -670,7 +733,7 @@ export default function CardManager({
 
       img.src = url;
     });
-  }, [t]);
+  }, [t, maxImageWidth]);
 
   const handleEdit = (card: Card) => {
     setEditingCard(card);
@@ -898,14 +961,31 @@ export default function CardManager({
         </div>
       </div>
 
+      {/* Plan over limit warning banner */}
+      {/* プラン容量超過警告バナー */}
+      {storageStatus?.planOverLimit && (
+        <div className="mb-4 rounded-lg bg-red-500/10 border border-red-500/30 p-4">
+          <p className="font-medium text-red-300 mb-1">{t("messages.uploadLimited")}</p>
+          <p className="text-sm text-red-400/80">
+            {storageStatus.message}
+          </p>
+          <a href="/plans" className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
+            支援特典について
+          </a>
+        </div>
+      )}
+
       {/* Storage usage info displayed at panel level */}
       {/* ストレージ使用量をパネルレベルで表示 */}
       {storageStatus && (
         <div className="mb-6">
-          {storageStatus.uploadDisabled && storageStatus.message ? (
+          {storageStatus.uploadDisabled && storageStatus.message && !storageStatus.planOverLimit ? (
             <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-3 text-sm text-yellow-300">
               <p className="font-medium mb-1">{t("messages.uploadLimited")}</p>
               <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
+              <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
+                支援特典について
+              </a>
             </div>
           ) : (
             <div className="text-sm text-gray-400 flex items-center gap-2">
@@ -932,7 +1012,12 @@ export default function CardManager({
           )}
           {/* 容量制限の説明テキスト: ?アイコンクリックで表示/非表示を切り替え */}
           {showStorageHelp && !storageStatus.uploadDisabled && (
-            <p className="mt-2 text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message || t("messages.storageLimitReason")}</p>
+            <div className="mt-2">
+              <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message || t("messages.storageLimitReason")}</p>
+              <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
+                支援特典について
+              </a>
+            </div>
           )}
         </div>
       )}
@@ -1030,7 +1115,7 @@ export default function CardManager({
                     <div className="flex-1">
                       <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
                       <p className="text-xs text-gray-400">
-                        {CROP_MODES[selectedCropMode].dimensions}px ({CROP_MODES[selectedCropMode].label})
+                        {planCropModes[selectedCropMode].dimensions}px ({planCropModes[selectedCropMode].label})
                       </p>
                     </div>
                     <button
@@ -1071,7 +1156,7 @@ export default function CardManager({
                     <p className="text-xs text-gray-500">
                       {/* File size limit removed since cropping compresses to JPEG */}
                       {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
-                      {t("fileUpload.formats")}{t("form.cropNoteWithOptions")}
+                      {t("fileUpload.formats")}{t("form.cropNoteWithOptions", { square: planCropModes.square.dimensions, portrait: planCropModes.portrait.dimensions })}
                     </p>
                     <input
                       type="url"
@@ -1488,7 +1573,7 @@ export default function CardManager({
                 type="button"
                 onClick={handleCropModeCancel}
                 className="text-gray-400 hover:text-white"
-                aria-label="閉じる"
+                aria-label={tCommon("cancel")}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1503,6 +1588,30 @@ export default function CardManager({
                 {t("form.cropModeDescription")}
               </p>
 
+              {/* Resolution selector - only shown when multiple selectable widths available */}
+              {/* 解像度セレクター - 画像サイズ以下の選択肢が複数ある場合のみ表示 */}
+              {effectiveWidths.length > 1 && (
+                <div className="mb-4">
+                  <p className="text-sm text-gray-300 mb-2">{t("form.selectResolution")}</p>
+                  <div className="flex gap-2">
+                    {effectiveWidths.map((w) => (
+                      <button
+                        key={w}
+                        type="button"
+                        onClick={() => setSelectedWidth(w)}
+                        className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                          selectedWidth === w
+                            ? "bg-purple-600 text-white"
+                            : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                        }`}
+                      >
+                        {w === 800 ? t("form.resolutionStandard") : w === 1920 ? t("form.resolutionFullHd") : t("form.resolution4k")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Square option */}
               {/* 正方形オプション */}
               <button
@@ -1516,8 +1625,8 @@ export default function CardManager({
                   </svg>
                 </div>
                 <div className="text-left">
-                  <p className="font-medium text-white">{CROP_MODES.square.label}</p>
-                  <p className="text-sm text-gray-400">{CROP_MODES.square.dimensions}px (JPEG)</p>
+                  <p className="font-medium text-white">{planCropModes.square.label}</p>
+                  <p className="text-sm text-gray-400">{planCropModes.square.dimensions}px (JPEG)</p>
                 </div>
               </button>
 
@@ -1534,8 +1643,8 @@ export default function CardManager({
                   </svg>
                 </div>
                 <div className="text-left">
-                  <p className="font-medium text-white">{CROP_MODES.portrait.label}</p>
-                  <p className="text-sm text-gray-400">{CROP_MODES.portrait.dimensions}px (JPEG)</p>
+                  <p className="font-medium text-white">{planCropModes.portrait.label}</p>
+                  <p className="text-sm text-gray-400">{planCropModes.portrait.dimensions}px (JPEG)</p>
                 </div>
               </button>
             </div>
@@ -1563,6 +1672,7 @@ export default function CardManager({
           cropMode={selectedCropMode}
           onCropComplete={handleCropComplete}
           onCancel={handleCropCancel}
+          maxWidth={selectedWidth}
         />
       )}
 

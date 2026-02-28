@@ -13,6 +13,7 @@
 import { UPLOAD_CONFIG } from './constants';
 import { logger } from './logger';
 import { getStorageUsageFromDB, getStorageBonusBytes } from './storage-db';
+import { getPlanStorageBytes } from './plan';
 
 export interface StorageUsage {
   userUsage: number;
@@ -21,6 +22,9 @@ export interface StorageUsage {
   globalLimitReached: boolean;
   userLimitBytes: number;
   globalLimitBytes: number;
+  // プランダウングレード時に容量超過している場合true
+  // true when user exceeds storage limit after plan downgrade
+  planOverLimit: boolean;
 }
 
 /**
@@ -40,14 +44,15 @@ export async function getStorageUsage(userPrefix?: string, twitchUserId?: string
     // この場合、ユーザー個別の使用量は0として扱う
     const prefix = userPrefix || '';
 
-    // DB使用量とストレージボーナスを並列取得してレイテンシを削減
-    const [dbUsage, bonusBytes] = await Promise.all([
+    // DB使用量、ストレージボーナス、プランボーナスを並列取得してレイテンシを削減
+    const [dbUsage, bonusBytes, planBytes] = await Promise.all([
       getStorageUsageFromDB(prefix),
       twitchUserId ? getStorageBonusBytes(twitchUserId) : Promise.resolve(0),
+      twitchUserId ? getPlanStorageBytes(twitchUserId) : Promise.resolve(0),
     ]);
-    const effectiveLimit = UPLOAD_CONFIG.USER_STORAGE_LIMIT + bonusBytes;
+    const effectiveLimit = UPLOAD_CONFIG.USER_STORAGE_LIMIT + bonusBytes + planBytes;
 
-    logger.info(`[StorageUsage] User: ${prefix}, User Usage: ${dbUsage.userUsage}, Global Usage: ${dbUsage.globalUsage}, Bonus: ${bonusBytes}`);
+    logger.info(`[StorageUsage] User: ${prefix}, User Usage: ${dbUsage.userUsage}, Global Usage: ${dbUsage.globalUsage}, Bonus: ${bonusBytes}, Plan: ${planBytes}`);
 
     return {
       userUsage: dbUsage.userUsage,
@@ -56,6 +61,8 @@ export async function getStorageUsage(userPrefix?: string, twitchUserId?: string
       globalLimitReached: dbUsage.globalLimitReached,
       userLimitBytes: effectiveLimit,
       globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
+      // プランダウングレード後にデフォルト制限を超過している場合にtrue
+      planOverLimit: dbUsage.userUsage > effectiveLimit,
     };
   } catch (error) {
     // If we can't check usage, assume limits are not reached to not block uploads
@@ -68,6 +75,7 @@ export async function getStorageUsage(userPrefix?: string, twitchUserId?: string
       globalLimitReached: false,
       userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
       globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
+      planOverLimit: false,
     };
   }
 }

@@ -4,6 +4,17 @@
 - 日本語で応答して
 - テストに失敗したら、作業に関係なくとも、subagentに委任して修正を行うこと
 
+## 実装計画立案時のルール
+- ユーザーに計画を提示する前に、 codex コマンドで計画のレビューを行うこと
+- 本質的でない指摘は無視しても良い
+```
+# initial plan review
+codex exec "please review: {plan_full_path}"
+
+# updated plan review
+codex exec resule --last "plan updated: {plan_full_path}"
+```
+
 ## Review
 - 作業内容は subagent を用いて厳しい自己レビューを実施すること
 - コードの重複や簡潔性、無駄なファイルを作っていないかどうか、使いやすさ、セキュリティリスク、コストなどのあらゆる点について厳しく指摘してください

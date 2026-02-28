@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
+import { getUserPlan, PLAN_MAX_IMAGE_WIDTH, PLAN_AVAILABLE_WIDTHS } from "@/lib/plan";
 import CardManager from "@/components/CardManager";
 import type { Card } from "@/types/database";
 
@@ -41,12 +42,19 @@ export default async function CardsPage() {
   // サーバーから全カードを渡す（ページネーションなし）
   const initialCards = streamerData.cards as Card[];
 
+  // プランに応じた最大画像幅を取得
+  const plan = await getUserPlan(session.twitchUserId);
+  const maxImageWidth = PLAN_MAX_IMAGE_WIDTH[plan];
+  const availableWidths = PLAN_AVAILABLE_WIDTHS[plan];
+
   return (
     <CardManager
       streamerId={streamerData.streamer.id}
       initialCards={initialCards}
       viewMode="list"
       showViewToggle={true}
+      maxImageWidth={maxImageWidth}
+      availableWidths={availableWidths}
     />
   );
 }

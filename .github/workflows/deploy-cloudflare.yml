@@ -7,8 +7,13 @@
 # OpenNext（@opennextjs/cloudflare）を使用して
 # Next.jsアプリをCloudflare Workersに自動デプロイする。
 #
+# Supabase migrations are applied automatically via `supabase db push --db-url`
+# before the build step. Each GitHub Environment holds its own SUPABASE_DB_URL.
+# Supabase マイグレーションは `supabase db push --db-url` でビルド前に自動適用される。
+# 各 GitHub Environment に SUPABASE_DB_URL を設定すること。
+#
 # - preview branch → twica-preview Worker (preview environment)
-# - main branch    → twica Worker (production environment, commented out by default)
+# - main branch    → twica Worker (production environment)
 #
 # Prerequisites / 前提条件:
 #
@@ -21,6 +26,7 @@
 #    in Settings → Environments, each with the following secrets:
 #    GitHub Environments: Settings → Environments で "preview" と "production" を作成し、
 #    それぞれに以下の Secrets を設定:
+#    - SUPABASE_DB_URL               (Session pooler URI, port 5432)
 #    - NEXT_PUBLIC_APP_URL          (e.g. preview: https://twica-preview.xxx.workers.dev)
 #    - NEXT_PUBLIC_SUPABASE_URL
 #    - NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -84,6 +90,28 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Supabase CLI をセットアップし、マイグレーションを適用する。
+      # Node.js / npm ci より前に配置し、マイグレーション失敗時に
+      # 不要な依存インストールを回避する。
+      # --db-url 方式により supabase link 不要・シークレット1つで動作する。
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.76.14
+
+      # production 環境へのマイグレーションは main ブランチからのみ許可。
+      # workflow_dispatch で非 main ブランチから production を選択した場合を防止する。
+      - name: Apply Supabase migrations
+        run: |
+          if [ "$RESOLVED_ENV" = "production" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Production migrations are only allowed from the main branch"
+            exit 1
+          fi
+          supabase db push --db-url "$SUPABASE_DB_URL" --yes
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RESOLVED_ENV: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

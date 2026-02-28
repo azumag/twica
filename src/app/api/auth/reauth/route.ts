@@ -5,6 +5,7 @@ import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { getTwitchAuthUrl, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
 import { API_ROUTES, COOKIE_NAMES, STATE_COOKIE_OPTIONS } from '@/lib/constants'
+import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { randomBytesHex } from '@/lib/crypto-utils'
@@ -29,13 +30,13 @@ export async function POST(request: Request) {
 
     // リクエストボディから追加スコープを取得（オプション）
     // Get additional scopes from request body (optional)
-    let additionalScopes: string[] = []
+    let requestedScopes: string[] = []
     try {
       const body = await request.json()
       if (body.additionalScopes && Array.isArray(body.additionalScopes)) {
         // 有効なスコープのみをフィルタリング（セキュリティ対策）
         // Filter to only valid scopes (security measure)
-        additionalScopes = body.additionalScopes.filter((scope: string) =>
+        requestedScopes = body.additionalScopes.filter((scope: string) =>
           VALID_ADDITIONAL_SCOPES.includes(scope)
         )
       }
@@ -44,8 +45,31 @@ export async function POST(request: Request) {
       // Ignore JSON parse errors (including empty body)
     }
 
-    await deleteTwitchTokens(session.twitchUserId)
-    logger.info(`Deleted Twitch tokens for user: ${session.twitchUserId}`)
+    // 既存の追加スコープも再認証要求に含める（user:write:chat などの消失防止）
+    // Include already granted additional scopes so re-auth does not drop existing permissions.
+    const supabaseAdmin = getSupabaseAdmin()
+    const { data: user, error: scopeFetchError } = await supabaseAdmin
+      .from('users')
+      .select('twitch_scopes')
+      .eq('twitch_user_id', session.twitchUserId)
+      .maybeSingle()
+
+    if (scopeFetchError && scopeFetchError.code !== 'PGRST204') {
+      logger.error('Re-auth scope fetch failed', {
+        twitchUserId: session.twitchUserId,
+        error: scopeFetchError.message,
+        code: scopeFetchError.code,
+      })
+      return NextResponse.json(
+        { error: 'Failed to prepare re-authorization. Please try again.' },
+        { status: 503 }
+      )
+    }
+
+    const preservedScopes = (user?.twitch_scopes ?? []).filter((scope: string) =>
+      VALID_ADDITIONAL_SCOPES.includes(scope)
+    )
+    const additionalScopes = Array.from(new Set([...preservedScopes, ...requestedScopes]))
 
     // Use Web Crypto API for random bytes generation (Cloudflare Workers compatible)
     // Web Crypto APIを使用してランダムバイトを生成（Cloudflare Workers互換）
@@ -59,9 +83,14 @@ export async function POST(request: Request) {
     // Generate auth URL with additional scopes if provided
     const loginUrl = getTwitchAuthUrl(redirectUri, state, additionalScopes.length > 0 ? additionalScopes : undefined)
 
+    await deleteTwitchTokens(session.twitchUserId)
+    logger.info(`Deleted Twitch tokens for user: ${session.twitchUserId}`)
+
     logger.info('Re-auth URL generated', {
       twitchUserId: session.twitchUserId,
       hasAdditionalScopes: additionalScopes.length > 0,
+      requestedScopes,
+      preservedScopes,
       additionalScopes,
     })
 
