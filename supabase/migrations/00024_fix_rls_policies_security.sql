@@ -52,17 +52,22 @@ CREATE POLICY "Service can view gacha history" ON gacha_history
 
 -- ========================================
 -- 00002_add_battle_features.sql のポリシー修正
+-- battles/battle_stats テーブルが存在しない環境ではスキップ
 -- ========================================
 
-DROP POLICY IF EXISTS "Service can manage battles" ON battles;
-CREATE POLICY "Service can manage battles" ON battles
-  FOR ALL TO service_role
-  USING (true) WITH CHECK (true);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'battles') THEN
+    EXECUTE 'DROP POLICY IF EXISTS "Service can manage battles" ON battles';
+    EXECUTE 'CREATE POLICY "Service can manage battles" ON battles FOR ALL TO service_role USING (true) WITH CHECK (true)';
+  END IF;
 
-DROP POLICY IF EXISTS "Service can manage battle_stats" ON battle_stats;
-CREATE POLICY "Service can manage battle_stats" ON battle_stats
-  FOR ALL TO service_role
-  USING (true) WITH CHECK (true);
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'battle_stats') THEN
+    EXECUTE 'DROP POLICY IF EXISTS "Service can manage battle_stats" ON battle_stats';
+    EXECUTE 'CREATE POLICY "Service can manage battle_stats" ON battle_stats FOR ALL TO service_role USING (true) WITH CHECK (true)';
+  END IF;
+END
+$$;
 
 -- ========================================
 -- 00004_add_twitch_tokens_to_users.sql のポリシー修正
