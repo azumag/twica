@@ -1003,11 +1003,17 @@ export default function CardManager({
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
         <div className="flex flex-col gap-2 sm:flex-row">
-          {/* Batch drop rate adjustment button */}
-          {/* 確率一括調整ボタン */}
+          {/* Batch drop rate adjustment button - disabled in auto mode */}
+          {/* 確率一括調整ボタン - 自動計算モード時は無効 */}
           <button
             onClick={() => setShowBatchDropRateModal(true)}
-            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
+            disabled={rarityWeights !== null}
+            title={rarityWeights !== null ? tRarityProbability("autoCalculated") : undefined}
+            className={`rounded-lg border px-4 py-2 transition whitespace-nowrap ${
+              rarityWeights !== null
+                ? "border-gray-600 text-gray-500 cursor-not-allowed"
+                : "border-purple-600 text-purple-400 hover:bg-purple-600 hover:text-white"
+            }`}
           >
             {t("batchDropRate.button")}
           </button>
