@@ -1150,22 +1150,45 @@ export default function CardManager({
                 </button>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="mb-1 block text-sm text-gray-300">
-                    {t("form.name")} *
-                  </label>
-                  <input
-                    type="text"
-                    name="name"
-                    required
-                    placeholder={t("form.namePlaceholder")}
-                    value={formData.name}
-                    onChange={(e) =>
-                      setFormData({ ...formData, name: e.target.value })
-                    }
-                    className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
-                  />
+                {/* 左カラム: カード名 + レアリティを縦積み */}
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <label className="mb-1 block text-sm text-gray-300">
+                      {t("form.name")} *
+                    </label>
+                    <input
+                      type="text"
+                      name="name"
+                      required
+                      placeholder={t("form.namePlaceholder")}
+                      value={formData.name}
+                      onChange={(e) =>
+                        setFormData({ ...formData, name: e.target.value })
+                      }
+                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm text-gray-300">
+                      {t("form.rarity")}
+                    </label>
+                    <select
+                      name="rarity"
+                      value={formData.rarity}
+                      onChange={(e) =>
+                        setFormData({ ...formData, rarity: e.target.value as Rarity })
+                      }
+                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                    >
+                      {RARITIES.map((r) => (
+                        <option key={r.value} value={r.value}>
+                          {tRarity(r.value)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
+                {/* 右カラム: 画像 */}
                 <div>
               <label className="mb-1 block text-sm text-gray-300">
                 {t("form.image")}
@@ -1299,28 +1322,9 @@ export default function CardManager({
                 )}
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">
-                {t("form.rarity")}
-              </label>
-              <select
-                name="rarity"
-                value={formData.rarity}
-                onChange={(e) =>
-                  setFormData({ ...formData, rarity: e.target.value as Rarity })
-                }
-                className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
-              >
-                {RARITIES.map((r) => (
-                  <option key={r.value} value={r.value}>
-                    {tRarity(r.value)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {/* 手動モード: 出現確率スライダー表示 / 自動モード: レアリティ内重みのみ表示 */}
+            {/* 手動モード: 出現確率スライダー / 自動モード: レアリティ内重み（1行レイアウト） */}
             {rarityWeights === null ? (
-            <div>
+            <div className="md:col-span-2">
               <div className="mb-1 flex items-center gap-2">
                 <label className="text-sm text-gray-300">
                   {t("form.dropRate")}
@@ -1362,9 +1366,8 @@ export default function CardManager({
               />
             </div>
             ) : (
-              <div>
+              <div className="md:col-span-2">
                 <label className="mb-1 block text-sm text-gray-300">{t("form.intraRarityWeight")}</label>
-                <p className="mb-1 text-xs text-gray-500">{t("form.intraRarityWeightHint")}</p>
                 <div className="flex items-center gap-3">
                   <input
                     type="range"
@@ -1392,26 +1395,21 @@ export default function CardManager({
                         setFormData({ ...formData, intraRarityWeight: val });
                       }
                     }}
-                    className="w-20 rounded bg-gray-600 px-2 py-1 text-right text-sm text-white"
+                    className="w-16 rounded bg-gray-600 px-2 py-1 text-right text-sm text-white"
                   />
+                  {/* レアリティ内シェアと全体確率のインラインプレビュー */}
+                  {(() => {
+                    const stats = calculateIntraRarityStats(formData.intraRarityWeight, formData.rarity);
+                    if (!stats) return null;
+                    return (
+                      <span className="flex items-center gap-2 text-xs text-gray-400 shrink-0">
+                        <span>{tRarity(formData.rarity)}: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
+                        <span className="text-gray-500">→</span>
+                        <span>{t("form.overallDropRate")}: <span className="text-green-400">{stats.overallPercent.toFixed(1)}%</span></span>
+                      </span>
+                    );
+                  })()}
                 </div>
-                {/* レアリティ内シェアと全体確率のプレビュー */}
-                {(() => {
-                  const stats = calculateIntraRarityStats(formData.intraRarityWeight, formData.rarity);
-                  if (!stats) return null;
-                  return (
-                    <div className="mt-2 flex items-center gap-3 text-sm">
-                      <span className="text-gray-400">
-                        {tRarity(formData.rarity)}{t("form.intraShareLabel")}: <span className="text-white font-medium">{stats.intraPercent.toFixed(1)}%</span>
-                        <span className="ml-1 text-gray-500">({stats.cardCount}{tRarityProbability("activeCards")})</span>
-                      </span>
-                      <span className="text-gray-500">→</span>
-                      <span className="text-gray-400">
-                        {t("form.overallDropRate")}: <span className="text-green-400 font-medium">{stats.overallPercent.toFixed(1)}%</span>
-                      </span>
-                    </div>
-                  );
-                })()}
               </div>
             )}
             <div className="md:col-span-2">
