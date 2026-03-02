@@ -7,6 +7,7 @@ import {
   validateRarity,
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
+import { logger } from "@/lib/logger";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
