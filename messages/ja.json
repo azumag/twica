@@ -190,6 +190,22 @@
       "createFailed": "カードの作成に失敗しました"
     }
   },
+  "rarityProbability": {
+    "title": "レアリティ別確率設定",
+    "description": "レアリティごとの排出確率を設定すると、カードの追加・削除時に重みが自動計算されます。",
+    "enable": "自動確率設定を有効にする",
+    "disable": "手動設定に戻す",
+    "total": "合計",
+    "totalWarning": "合計が100%ではありません",
+    "activeCards": "枚",
+    "perCard": "カードあたり",
+    "noCards": "0枚",
+    "save": "保存して適用",
+    "saving": "計算中...",
+    "saved": "確率を再計算しました",
+    "autoCalculated": "レアリティ設定に基づいて自動計算されます",
+    "batchOverrideWarning": "手動で変更した重みは、次回のカード追加・削除時に自動計算で上書きされます"
+  },
   "collection": {
     "title": "マイコレクション",
     "empty": {

@@ -3,9 +3,28 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { logger } from "@/lib/logger";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
+import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+
+function validateRarityWeightsInput(value: unknown): value is Record<string, number> | null {
+  if (value === null) {
+    return true;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  for (const rate of Object.values(value)) {
+    if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0 || rate > 100) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 export async function POST(request: NextRequest) {
   // Content-Type validation - must be the first check
@@ -59,7 +78,13 @@ export async function POST(request: NextRequest) {
       // Chat announcement settings (optional)
       chatAnnouncementEnabled,
       chatAnnouncementTemplate,
+      // レアリティ別自動確率設定（オプション）
+      rarityWeights,
     } = body;
+
+    if (rarityWeights !== undefined && !validateRarityWeightsInput(rarityWeights)) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
 
     // Verify ownership
     const { data: streamer } = await supabaseAdmin
@@ -106,6 +131,11 @@ export async function POST(request: NextRequest) {
       updateData.chat_announcement_template = chatAnnouncementTemplate;
     }
 
+    // rarityWeights: レアリティ別目標確率（nullで自動モード無効）
+    if (rarityWeights !== undefined) {
+      updateData.rarity_weights = rarityWeights;
+    }
+
     // 更新するフィールドがない場合はエラー
     if (Object.keys(updateData).length === 0) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
@@ -120,7 +150,22 @@ export async function POST(request: NextRequest) {
       return handleDatabaseError(error, "Streamer Settings API: PUT");
     }
 
-    return NextResponse.json({ success: true });
+    // 再計算はベストエフォート: 主操作（weights保存）は成功しているため、
+    // 再計算失敗でも500を返さない。次回のカード操作で再計算が走り自己修復する。
+    let recalculatedCards = null;
+    if (rarityWeights !== undefined) {
+      try {
+        recalculatedCards = await recalculateIfAutoMode(
+          supabaseAdmin,
+          streamerId,
+          rarityWeights
+        );
+      } catch (recalculationError) {
+        logger.error("Streamer Settings API: Recalculation failed after weight save", recalculationError);
+      }
+    }
+
+    return NextResponse.json({ success: true, recalculatedCards });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");
   }

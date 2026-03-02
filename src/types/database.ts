@@ -33,6 +33,9 @@ export interface Database {
           // チャット通知のカスタムテンプレート（nullの場合はデフォルトテンプレートを使用）
           // Custom message template for chat announcements (null uses default)
           chat_announcement_template: string | null
+          // レアリティ名をキーにした目標確率マップ（0-100）
+          // Dynamic rarity-to-target-percentage map (0-100)
+          rarity_weights: Record<string, number> | null
           created_at: string
           updated_at: string
         }
@@ -49,6 +52,7 @@ export interface Database {
           gacha_sound_enabled?: boolean
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
+          rarity_weights?: Record<string, number> | null
           created_at?: string
           updated_at?: string
         }
@@ -65,6 +69,7 @@ export interface Database {
           gacha_sound_enabled?: boolean
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
+          rarity_weights?: Record<string, number> | null
           created_at?: string
           updated_at?: string
         }

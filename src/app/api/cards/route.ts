@@ -17,6 +17,7 @@ import { normalizeDropRate } from "@/lib/card-utils";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
+import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -122,7 +123,7 @@ export async function POST(request: NextRequest) {
     // Verify streamer owns this streamer profile
     const { data: streamer } = await supabaseAdmin
       .from("streamers")
-      .select("id")
+      .select("id, rarity_weights")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
@@ -155,12 +156,28 @@ export async function POST(request: NextRequest) {
       return handleDatabaseError(error, "Cards API: Failed to create card");
     }
 
+    // 再計算はベストエフォート: カード作成は成功しているため、
+    // 再計算失敗でも500を返さない。次回のカード操作で再計算が走り自己修復する。
+    let recalculatedCards = null;
+    try {
+      recalculatedCards = await recalculateIfAutoMode(
+        supabaseAdmin,
+        streamerId,
+        streamer.rarity_weights
+      );
+    } catch (recalculationError) {
+      logger.error("Cards API: Recalculation failed after card creation", recalculationError);
+    }
+
     // Note: Cache invalidation is handled by TTL (30 seconds)
     // Short TTL ensures new cards appear quickly without manual invalidation
     // 注意: キャッシュ無効化はTTL（30秒）で処理
     // 短いTTLにより手動で無効化せずとも新しいカードがすぐに表示される
 
-    return NextResponse.json(card);
+    return NextResponse.json({
+      ...card,
+      recalculatedCards,
+    });
   } catch (error) {
     return handleApiError(error, "Cards API: POST");
   }

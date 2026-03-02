@@ -11,6 +11,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
+import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import type { ApiRateLimitResponse } from "@/types/api";
 import type { Rarity } from "@/types/database";
 
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest) {
     // 配信者がこのstreamerプロフィールを所有しているか確認
     const { data: streamer } = await supabaseAdmin
       .from("streamers")
-      .select("id")
+      .select("id, rarity_weights")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
@@ -174,10 +175,24 @@ export async function POST(request: NextRequest) {
       return handleDatabaseError(error, "Cards Batch API: Failed to create cards");
     }
 
+    // 再計算はベストエフォート: カード一括作成は成功しているため、
+    // 再計算失敗でも500を返さない。次回のカード操作で再計算が走り自己修復する。
+    let recalculatedCards = null;
+    try {
+      recalculatedCards = await recalculateIfAutoMode(
+        supabaseAdmin,
+        streamerId,
+        streamer.rarity_weights
+      );
+    } catch (recalculationError) {
+      logger.error("Cards Batch API: Recalculation failed after batch creation", recalculationError);
+    }
+
     return NextResponse.json({
       success: true,
       created: createdCards?.length || 0,
       cards: createdCards,
+      recalculatedCards,
     });
   } catch (error) {
     return handleApiError(error, "Cards Batch API: POST");

@@ -16,7 +16,23 @@ import { logger } from "@/lib/logger";
 import { deleteFromR2 } from "@/lib/r2-client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
+import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import type { ApiRateLimitResponse } from "@/types/api";
+
+function extractRarityWeights(streamers: unknown): Record<string, number> | null {
+  if (!streamers) return null;
+  if (Array.isArray(streamers)) {
+    const first = streamers[0];
+    if (first && typeof first === "object" && "rarity_weights" in first) {
+      return (first as { rarity_weights: Record<string, number> | null }).rarity_weights;
+    }
+    return null;
+  }
+  if (typeof streamers === "object" && "rarity_weights" in streamers) {
+    return (streamers as { rarity_weights: Record<string, number> | null }).rarity_weights;
+  }
+  return null;
+}
 
 export async function PUT(
   request: NextRequest,
@@ -116,7 +132,7 @@ export async function PUT(
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, streamers!inner(twitch_user_id)")
+      .select("streamer_id, image_url, rarity, is_active, streamers!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -125,6 +141,11 @@ export async function PUT(
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
+
+    const rarityWeights = extractRarityWeights(card.streamers);
+    const rarityChanged = rarity !== undefined && rarity !== card.rarity;
+    const activeChanged = isActive !== undefined && isActive !== card.is_active;
+    const shouldRecalculate = rarityWeights !== null && (rarityChanged || activeChanged);
 
     // NOTE: Drop rate validation removed because the system uses relative weights
     // The actual probability is calculated as: this_card_weight / total_weights
@@ -188,7 +209,25 @@ export async function PUT(
       return handleDatabaseError(error, "Failed to update card");
     }
 
-    return NextResponse.json(updatedCard);
+    // 再計算はベストエフォート: カード更新は成功しているため、
+    // 再計算失敗でも500を返さない。次回のカード操作で再計算が走り自己修復する。
+    let recalculatedCards = null;
+    if (shouldRecalculate) {
+      try {
+        recalculatedCards = await recalculateIfAutoMode(
+          supabaseAdmin,
+          card.streamer_id,
+          rarityWeights
+        );
+      } catch (recalculationError) {
+        logger.error("Cards API: Recalculation failed after card update", recalculationError);
+      }
+    }
+
+    return NextResponse.json({
+      ...updatedCard,
+      recalculatedCards,
+    });
   } catch (error) {
     return handleApiError(error, "Cards API: PUT");
   }
@@ -241,7 +280,7 @@ export async function DELETE(
     // 削除用にimage_url付きでカードを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, streamers!inner(twitch_user_id)")
+      .select("streamer_id, image_url, streamers!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -292,7 +331,23 @@ export async function DELETE(
       return handleDatabaseError(error, "Failed to delete card");
     }
 
-    return NextResponse.json({ success: true });
+    // 再計算はベストエフォート: カード削除は成功しているため、
+    // 再計算失敗でも500を返さない。次回のカード操作で再計算が走り自己修復する。
+    let recalculatedCards = null;
+    const rarityWeights = extractRarityWeights(card.streamers);
+    if (rarityWeights !== null) {
+      try {
+        recalculatedCards = await recalculateIfAutoMode(
+          supabaseAdmin,
+          card.streamer_id,
+          rarityWeights
+        );
+      } catch (recalculationError) {
+        logger.error("Cards API: Recalculation failed after card deletion", recalculationError);
+      }
+    }
+
+    return NextResponse.json({ success: true, recalculatedCards });
   } catch (error) {
     return handleApiError(error, "Cards API: DELETE");
   }

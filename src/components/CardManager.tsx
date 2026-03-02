@@ -13,6 +13,7 @@ import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import BatchDropRateModal from "./BatchDropRateModal";
 import ExpandableDescription from "./ExpandableDescription";
+import RarityProbabilityPanel from "./RarityProbabilityPanel";
 
 interface StorageStatus {
   userUsage: number;
@@ -60,6 +61,9 @@ interface CardManagerProps {
   // Plan-based available output widths (default: [800])
   // プラン別選択可能な出力幅（デフォルト: [800]）
   availableWidths?: number[];
+  // Initial rarity weights for auto mode (null = manual mode)
+  // 自動モード用の初期レアリティ確率設定（null=手動モード）
+  initialRarityWeights?: Record<string, number> | null;
 }
 
 // Sorting field options
@@ -82,13 +86,16 @@ export default function CardManager({
   maxCards,
   maxImageWidth = 800,
   availableWidths = [800],
+  initialRarityWeights = null,
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
   const tRarity = useTranslations("rarity");
+  const tRarityProbability = useTranslations("rarityProbability");
   const [cards, setCards] = useState<Card[]>(initialCards);
+  const [rarityWeights, setRarityWeights] = useState<Record<string, number> | null>(initialRarityWeights);
   const [loading, setLoading] = useState(false);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
@@ -413,7 +420,12 @@ export default function CardManager({
       // Add created cards to the list
       // 作成したカードをリストに追加
       if (result.cards) {
-        setCards(prev => [...result.cards, ...prev]);
+        setCards((prevCards) => {
+          const createdCards = result.cards as Card[];
+          const createdCardIds = new Set(createdCards.map((card) => card.id));
+          const merged = [...createdCards, ...prevCards.filter((card) => !createdCardIds.has(card.id))];
+          return mergeRecalculatedCards(merged, result.recalculatedCards as Card[] | null | undefined);
+        });
       }
 
       // Close modal and reset state
@@ -455,6 +467,27 @@ export default function CardManager({
       return prevCards.map(card => updatedMap.get(card.id) || card);
     });
   }, []);
+
+  const mergeRecalculatedCards = useCallback(
+    (baseCards: Card[], recalculatedCards: Card[] | null | undefined): Card[] => {
+      if (!recalculatedCards || recalculatedCards.length === 0) {
+        return baseCards;
+      }
+      const recalculatedMap = new Map(recalculatedCards.map((card) => [card.id, card]));
+      return baseCards.map((card) => recalculatedMap.get(card.id) || card);
+    },
+    []
+  );
+
+  const handleRarityWeightsApply = useCallback(
+    (nextRarityWeights: Record<string, number> | null, recalculatedCards: Card[] | null) => {
+      setRarityWeights(nextRarityWeights);
+      if (recalculatedCards) {
+        setCards((prevCards) => mergeRecalculatedCards(prevCards, recalculatedCards));
+      }
+    },
+    [mergeRecalculatedCards]
+  );
 
   // Calculate total weight and actual probability
   // 合計重みと実際の確率を計算
@@ -830,14 +863,29 @@ export default function CardManager({
       });
 
       if (response.ok) {
-        const updatedCard = await response.json();
+        const responseData = await response.json();
+        const recalculatedCards = Array.isArray(responseData.recalculatedCards)
+          ? (responseData.recalculatedCards as Card[])
+          : null;
+        const savedCardData = { ...(responseData as Record<string, unknown>) };
+        delete savedCardData.recalculatedCards;
+        const savedCard = savedCardData as unknown as Card;
+
         if (editingCard) {
-          setCards(cards.map((c) => (c.id === editingCard.id ? updatedCard : c)));
+          setCards((prevCards) => {
+            const replacedCards = prevCards.map((card) => (
+              card.id === editingCard.id ? savedCard : card
+            ));
+            return mergeRecalculatedCards(replacedCards, recalculatedCards);
+          });
           // Refresh storage status after update (old image may have been deleted)
           // 更新後にストレージ状態を更新（古い画像が削除された可能性があるため）
           fetchStorageStatus();
         } else {
-          setCards([updatedCard, ...cards]);
+          setCards((prevCards) => {
+            const nextCards = [savedCard, ...prevCards.filter((card) => card.id !== savedCard.id)];
+            return mergeRecalculatedCards(nextCards, recalculatedCards);
+          });
         }
         resetForm();
       } else if (response.status === 429) {
@@ -878,6 +926,21 @@ export default function CardManager({
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
         alert(`操作に失敗しました: ${errorData.error}`);
         logger.error("Toggle active failed:", errorData);
+      } else {
+        const responseData = await response.json();
+        const recalculatedCards = Array.isArray(responseData.recalculatedCards)
+          ? (responseData.recalculatedCards as Card[])
+          : null;
+        const updatedCardData = { ...(responseData as Record<string, unknown>) };
+        delete updatedCardData.recalculatedCards;
+        const updatedCard = updatedCardData as unknown as Card;
+
+        setCards((prevCards) => {
+          const replacedCards = prevCards.map((currentCard) => (
+            currentCard.id === card.id ? updatedCard : currentCard
+          ));
+          return mergeRecalculatedCards(replacedCards, recalculatedCards);
+        });
       }
     } catch (error) {
       setCards(originalCards);
@@ -914,6 +977,10 @@ export default function CardManager({
           logger.error("Delete failed:", errorData);
         }
       } else {
+        const result = await response.json().catch(() => null);
+        if (result && Array.isArray(result.recalculatedCards)) {
+          setCards((prevCards) => mergeRecalculatedCards(prevCards, result.recalculatedCards as Card[]));
+        }
         // Success: refresh storage status to reflect deleted image
         // 成功: 削除された画像を反映するためストレージ状態を更新
         fetchStorageStatus();
@@ -960,6 +1027,13 @@ export default function CardManager({
           </button>
         </div>
       </div>
+
+      <RarityProbabilityPanel
+        streamerId={streamerId}
+        cards={cards}
+        rarityWeights={rarityWeights}
+        onApply={handleRarityWeightsApply}
+      />
 
       {/* Plan over limit warning banner */}
       {/* プラン容量超過警告バナー */}
@@ -1212,45 +1286,53 @@ export default function CardManager({
               </select>
             </div>
             <div>
-              <div className="mb-1 flex items-center gap-2">
-                <label className="text-sm text-gray-300">
-                  {t("form.dropRate")}
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowDropRateInfo(true)}
-                  className="text-gray-400 hover:text-white"
-                  title={t("dropRateInfo.title")}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </button>
-              </div>
-              <div className="mb-2 flex items-center gap-3 text-sm">
-                <span className="text-gray-400">
-                  {t("dropRateInfo.weight")}: <span className="text-white font-medium">{(formData.dropRate * 100).toFixed(1)}%</span>
-                </span>
-                <span className="text-gray-500">→</span>
-                <span className="text-gray-400">
-                  {t("dropRateInfo.actualProbability")}: <span className="text-green-400 font-medium">{calculateActualProbability(formData.dropRate).toFixed(1)}%</span>
-                </span>
-              </div>
-              <input
-                type="range"
-                name="dropRate"
-                min="0"
-                max="1"
-                step="0.01"
-                value={formData.dropRate}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    dropRate: parseFloat(e.target.value),
-                  })
-                }
-                className="w-full"
-              />
+              {rarityWeights === null ? (
+                <>
+                  <div className="mb-1 flex items-center gap-2">
+                    <label className="text-sm text-gray-300">
+                      {t("form.dropRate")}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowDropRateInfo(true)}
+                      className="text-gray-400 hover:text-white"
+                      title={t("dropRateInfo.title")}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="mb-2 flex items-center gap-3 text-sm">
+                    <span className="text-gray-400">
+                      {t("dropRateInfo.weight")}: <span className="text-white font-medium">{(formData.dropRate * 100).toFixed(1)}%</span>
+                    </span>
+                    <span className="text-gray-500">→</span>
+                    <span className="text-gray-400">
+                      {t("dropRateInfo.actualProbability")}: <span className="text-green-400 font-medium">{calculateActualProbability(formData.dropRate).toFixed(1)}%</span>
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    name="dropRate"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={formData.dropRate}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        dropRate: parseFloat(e.target.value),
+                      })
+                    }
+                    className="w-full"
+                  />
+                </>
+              ) : (
+                <div className="rounded-lg border border-purple-600/40 bg-purple-500/10 px-3 py-2 text-sm text-purple-200">
+                  {tRarityProbability("autoCalculated")}
+                </div>
+              )}
             </div>
             <div className="md:col-span-2">
               <label className="mb-1 block text-sm text-gray-300">{t("form.description")}</label>
@@ -1684,6 +1766,7 @@ export default function CardManager({
         cards={cards}
         streamerId={streamerId}
         onSave={handleBatchDropRateSave}
+        warningMessage={rarityWeights ? tRarityProbability("batchOverrideWarning") : undefined}
       />
 
       {/* Emote Import Modal */}

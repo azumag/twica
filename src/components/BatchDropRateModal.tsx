@@ -14,6 +14,7 @@ interface BatchDropRateModalProps {
   cards: Card[];
   streamerId: string;
   onSave: (updatedCards: Card[]) => void;
+  warningMessage?: string;
 }
 
 // Tab type for switching between individual and rarity-based adjustment
@@ -36,6 +37,7 @@ export default function BatchDropRateModal({
   cards,
   streamerId,
   onSave,
+  warningMessage,
 }: BatchDropRateModalProps) {
   const t = useTranslations("cardManager");
   const tRarity = useTranslations("rarity");
@@ -473,6 +475,11 @@ export default function BatchDropRateModal({
               {t("batchDropRate.resetAll")}
             </button>
           </div>
+          {warningMessage && (
+            <div className="mt-3 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+              {warningMessage}
+            </div>
+          )}
         </div>
 
         {/* Modal Body - Scrollable content */}

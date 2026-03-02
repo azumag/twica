@@ -190,6 +190,22 @@
       "createFailed": "Failed to create cards"
     }
   },
+  "rarityProbability": {
+    "title": "Rarity Probability Settings",
+    "description": "Set target probabilities per rarity to auto-calculate card weights when cards are added or removed.",
+    "enable": "Enable Auto Probability Settings",
+    "disable": "Return to Manual Mode",
+    "total": "Total",
+    "totalWarning": "Total is not 100%",
+    "activeCards": " cards",
+    "perCard": "Per card",
+    "noCards": "0 cards",
+    "save": "Save and Apply",
+    "saving": "Calculating...",
+    "saved": "Probabilities recalculated",
+    "autoCalculated": "Automatically calculated from rarity settings",
+    "batchOverrideWarning": "Manually changed weights will be overwritten by auto-calculation on the next card add/remove."
+  },
   "collection": {
     "title": "My Collection",
     "empty": {
