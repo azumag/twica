@@ -1441,20 +1441,6 @@ export default function CardManager({
                     }
                     className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-gray-600 accent-purple-500"
                   />
-                  <input
-                    type="number"
-                    min="0.1"
-                    max="10"
-                    step="0.1"
-                    value={formData.intraRarityWeight}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      if (Number.isFinite(val) && val > 0) {
-                        setFormData({ ...formData, intraRarityWeight: val });
-                      }
-                    }}
-                    className="w-16 rounded bg-gray-600 px-2 py-1 text-right text-sm text-white"
-                  />
                   {/* レアリティ内シェアと全体確率のインラインプレビュー */}
                   {(() => {
                     const stats = calculateIntraRarityStats(formData.intraRarityWeight, formData.rarity);
