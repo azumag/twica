@@ -49,9 +49,13 @@ export default function BatchDropRateModal({
   // ドロップレート変更を追跡するローカル状態（個別モード）
   const [localDropRates, setLocalDropRates] = useState<Map<string, number>>(new Map());
 
-  // Local state for tracking rarity weight multipliers (rarity mode)
-  // レアリティ重み倍率を追跡するローカル状態（レアリティモード）
+  // Local state for tracking rarity weight (absolute weight per card, default=1.0)
+  // レアリティごとのカード重み（絶対値、デフォルト=1.0）
   const [rarityMultipliers, setRarityMultipliers] = useState<Map<Rarity, number>>(new Map());
+
+  // Store initial rarity multipliers to detect changes
+  // 変更検出用の初期レアリティ倍率を保存
+  const [initialRarityMultipliers, setInitialRarityMultipliers] = useState<Map<Rarity, number>>(new Map());
 
   const [saving, setSaving] = useState(false);
 
@@ -73,13 +77,24 @@ export default function BatchDropRateModal({
       });
       setLocalDropRates(initialRates);
 
-      // Initialize rarity multipliers to 1.0 (no change)
-      // レアリティ倍率を1.0（変更なし）で初期化
+      // Initialize rarity weights from actual card drop rates
+      // 実際のカードdrop_rateからレアリティ重みを初期化
+      // The multiplier represents the absolute weight per card (default=1.0)
+      // 倍率はカードあたりの絶対重みを表す（デフォルト=1.0）
       const initialMultipliers = new Map<Rarity, number>();
       RARITIES.forEach(r => {
-        initialMultipliers.set(r.value, 1.0);
+        const rarityCards = activeCards.filter(c => c.rarity === r.value);
+        if (rarityCards.length > 0) {
+          // Use average drop_rate as the effective weight
+          // 平均drop_rateを実効重みとして使用
+          const avgRate = rarityCards.reduce((sum, c) => sum + c.drop_rate, 0) / rarityCards.length;
+          initialMultipliers.set(r.value, avgRate);
+        } else {
+          initialMultipliers.set(r.value, 1.0);
+        }
       });
       setRarityMultipliers(initialMultipliers);
+      setInitialRarityMultipliers(new Map(initialMultipliers));
 
       // Reset to rarity tab (default view)
       // レアリティタブにリセット（デフォルト表示）
@@ -96,7 +111,9 @@ export default function BatchDropRateModal({
       const rarityCards = activeCards.filter(c => c.rarity === r.value);
       const originalWeight = rarityCards.reduce((sum, c) => sum + c.drop_rate, 0);
       const multiplier = rarityMultipliers.get(r.value) ?? 1.0;
-      const currentWeight = originalWeight * multiplier;
+      // currentWeight = numCards * multiplier (multiplier is absolute weight per card)
+      // 倍率はカードあたりの絶対重みなので、カード数×倍率で合計重みを算出
+      const currentWeight = rarityCards.length * multiplier;
 
       stats.set(r.value, {
         cards: rarityCards,
@@ -148,16 +165,17 @@ export default function BatchDropRateModal({
       }
     }
 
-    // Also check rarity multipliers (for rarity mode without reset)
-    // レアリティ倍率もチェック（リセットなしのレアリティモード用）
-    for (const [, multiplier] of rarityMultipliers) {
-      if (Math.abs(multiplier - 1.0) > 0.001) {
+    // Also check rarity multipliers against initial values
+    // レアリティ倍率を初期値と比較してチェック
+    for (const [rarity, multiplier] of rarityMultipliers) {
+      const initial = initialRarityMultipliers.get(rarity) ?? 1.0;
+      if (Math.abs(multiplier - initial) > 0.001) {
         return true;
       }
     }
 
     return false;
-  }, [activeCards, localDropRates, rarityMultipliers]);
+  }, [activeCards, localDropRates, rarityMultipliers, initialRarityMultipliers]);
 
   // Get modified card IDs for visual highlighting (individual mode)
   // 視覚的ハイライト用に変更されたカードIDを取得（個別モード）
@@ -177,12 +195,13 @@ export default function BatchDropRateModal({
   const modifiedRarities = useMemo(() => {
     const rarities = new Set<Rarity>();
     for (const [rarity, multiplier] of rarityMultipliers) {
-      if (Math.abs(multiplier - 1.0) > 0.001) {
+      const initial = initialRarityMultipliers.get(rarity) ?? 1.0;
+      if (Math.abs(multiplier - initial) > 0.001) {
         rarities.add(rarity);
       }
     }
     return rarities;
-  }, [rarityMultipliers]);
+  }, [rarityMultipliers, initialRarityMultipliers]);
 
   // Handle drop rate change (individual mode)
   // 出現確率変更を処理（個別モード）
@@ -302,20 +321,21 @@ export default function BatchDropRateModal({
         }
       }
 
-      // Then, add cards from rarity multiplier changes (if in rarity mode and not already added)
-      // 次に、レアリティ倍率変更からのカードを追加（レアリティモードで未追加のもの）
+      // Then, add cards from rarity weight changes (if in rarity mode and not already added)
+      // 次に、レアリティ重み変更からのカードを追加（レアリティモードで未追加のもの）
       if (activeTab === "rarity") {
         for (const [rarity, multiplier] of rarityMultipliers) {
-          if (Math.abs(multiplier - 1.0) > 0.001) {
+          const initial = initialRarityMultipliers.get(rarity) ?? 1.0;
+          if (Math.abs(multiplier - initial) > 0.001) {
             const rarityCards = activeCards.filter(c => c.rarity === rarity);
             for (const card of rarityCards) {
               // Skip if already added via localDropRates
               // localDropRatesで既に追加済みの場合はスキップ
               if (addedCardIds.has(card.id)) continue;
 
-              // Apply multiplier to original drop rate, clamped to 0-1 range
-              // 元のドロップレートに倍率を適用、0-1範囲に制限
-              const newRate = Math.min(1, Math.max(0, card.drop_rate * multiplier));
+              // Use multiplier directly as the new drop rate (absolute weight), clamped to 0-1
+              // 倍率を直接新しいdrop_rateとして使用（絶対重み）、0-1範囲に制限
+              const newRate = Math.min(1, Math.max(0, multiplier));
               updates.push({
                 id: card.id,
                 dropRate: newRate,
@@ -607,20 +627,20 @@ export default function BatchDropRateModal({
                     {/* 倍率スライダー */}
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
                       <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-sm text-gray-400">{t("batchDropRate.multiplier")}:</span>
-                        <span className={`text-sm font-medium w-12 text-right ${isModified ? "text-yellow-400" : "text-white"}`}>
-                          x{multiplier.toFixed(2)}
+                        <span className="text-sm text-gray-400">{t("batchDropRate.weight")}:</span>
+                        <span className={`text-sm font-medium w-16 text-right ${isModified ? "text-yellow-400" : "text-white"}`}>
+                          {(multiplier * 100).toFixed(1)}%
                         </span>
                       </div>
 
-                      {/* Slider */}
-                      {/* スライダー */}
+                      {/* Slider - absolute weight per card (0-100%) */}
+                      {/* スライダー - カードあたりの絶対重み（0-100%） */}
                       <div className="flex-1 w-full">
                         <input
                           type="range"
                           min="0"
-                          max="3"
-                          step="0.05"
+                          max="1"
+                          step="0.01"
                           value={multiplier}
                           onChange={(e) => handleRarityMultiplierChange(rarity, parseFloat(e.target.value))}
                           className="w-full"
