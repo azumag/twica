@@ -52,7 +52,7 @@
       "imageUrlPlaceholder": "または画像URLを入力",
       "rarity": "レアリティ",
       "dropRate": "出現確率",
-      "intraRarityWeight": "レアリティ内の重み",
+      "intraRarityWeight": "レアリティ内での排出確率",
       "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
       "intraShareLabel": "内シェア",
       "overallDropRate": "全体排出率",
@@ -173,7 +173,7 @@
       "resetAll": "全てリセット（重み100）",
       "resetRarity": "リセット",
       "resetTooltip": "このレアリティの全カードの重みを100%にリセット",
-      "intraWeight": "レアリティ内重み",
+      "intraWeight": "レアリティ内排出確率",
       "intraWeightHint": "レアリティ内での排出バランスを調整"
     },
     "emoteImport": {

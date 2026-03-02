@@ -52,7 +52,7 @@
       "imageUrlPlaceholder": "Or enter image URL",
       "rarity": "Rarity",
       "dropRate": "Drop Rate",
-      "intraRarityWeight": "Weight within Rarity",
+      "intraRarityWeight": "Drop Rate within Rarity",
       "intraRarityWeightHint": "Adjust drop balance among cards of the same rarity (default: 1.0)",
       "intraShareLabel": " share",
       "overallDropRate": "Overall drop rate",
@@ -173,7 +173,7 @@
       "resetAll": "Reset All (Weight 100)",
       "resetRarity": "Reset",
       "resetTooltip": "Reset all cards in this rarity to 100% weight",
-      "intraWeight": "Intra-rarity Weight",
+      "intraWeight": "Drop Rate in Rarity",
       "intraWeightHint": "Adjust drop balance within rarity"
     },
     "emoteImport": {

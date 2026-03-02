@@ -1150,8 +1150,8 @@ export default function CardManager({
                 </button>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
-                {/* 左カラム: カード名 + レアリティを縦積み */}
-                <div className="flex flex-col gap-3">
+                {/* 左カラム: カード名 + レアリティを縦積み（右の画像ペーンと高さを揃える） */}
+                <div className="flex flex-col justify-between">
                   <div>
                     <label className="mb-1 block text-sm text-gray-300">
                       {t("form.name")} *
