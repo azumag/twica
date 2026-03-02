@@ -1286,53 +1286,50 @@ export default function CardManager({
               </select>
             </div>
             <div>
-              {rarityWeights === null ? (
-                <>
-                  <div className="mb-1 flex items-center gap-2">
-                    <label className="text-sm text-gray-300">
-                      {t("form.dropRate")}
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setShowDropRateInfo(true)}
-                      className="text-gray-400 hover:text-white"
-                      title={t("dropRateInfo.title")}
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </button>
-                  </div>
-                  <div className="mb-2 flex items-center gap-3 text-sm">
-                    <span className="text-gray-400">
-                      {t("dropRateInfo.weight")}: <span className="text-white font-medium">{(formData.dropRate * 100).toFixed(1)}%</span>
-                    </span>
-                    <span className="text-gray-500">→</span>
-                    <span className="text-gray-400">
-                      {t("dropRateInfo.actualProbability")}: <span className="text-green-400 font-medium">{calculateActualProbability(formData.dropRate).toFixed(1)}%</span>
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    name="dropRate"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={formData.dropRate}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        dropRate: parseFloat(e.target.value),
-                      })
-                    }
-                    className="w-full"
-                  />
-                </>
-              ) : (
-                <div className="rounded-lg border border-purple-600/40 bg-purple-500/10 px-3 py-2 text-sm text-purple-200">
+              <div className="mb-1 flex items-center gap-2">
+                <label className="text-sm text-gray-300">
+                  {t("form.dropRate")}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowDropRateInfo(true)}
+                  className="text-gray-400 hover:text-white"
+                  title={t("dropRateInfo.title")}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </button>
+              </div>
+              {rarityWeights !== null && (
+                <p className="mb-1 text-xs text-purple-300">
                   {tRarityProbability("autoCalculated")}
-                </div>
+                </p>
               )}
+              <div className="mb-2 flex items-center gap-3 text-sm">
+                <span className="text-gray-400">
+                  {t("dropRateInfo.weight")}: <span className="text-white font-medium">{(formData.dropRate * 100).toFixed(1)}%</span>
+                </span>
+                <span className="text-gray-500">→</span>
+                <span className="text-gray-400">
+                  {t("dropRateInfo.actualProbability")}: <span className="text-green-400 font-medium">{calculateActualProbability(formData.dropRate).toFixed(1)}%</span>
+                </span>
+              </div>
+              <input
+                type="range"
+                name="dropRate"
+                min="0"
+                max="1"
+                step="0.01"
+                value={formData.dropRate}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    dropRate: parseFloat(e.target.value),
+                  })
+                }
+                className="w-full"
+              />
             </div>
             <div className="md:col-span-2">
               <label className="mb-1 block text-sm text-gray-300">{t("form.description")}</label>
