@@ -17,6 +17,8 @@ interface BatchDropRateModalProps {
   warningMessage?: string;
   // 自動計算モード時はレアリティ別タブを無効化し個別タブをデフォルトにする
   autoMode?: boolean;
+  // 自動モード時のレアリティ別確率設定（確率プレビュー表示用）
+  rarityWeights?: Record<string, number> | null;
 }
 
 // Tab type for switching between individual and rarity-based adjustment
@@ -41,6 +43,7 @@ export default function BatchDropRateModal({
   onSave,
   warningMessage,
   autoMode = false,
+  rarityWeights = null,
 }: BatchDropRateModalProps) {
   const t = useTranslations("cardManager");
   const tRarity = useTranslations("rarity");
@@ -646,6 +649,25 @@ export default function BatchDropRateModal({
                                 {(localIntraWeights.get(card.id) ?? (card.intra_rarity_weight ?? 1.0)).toFixed(1)}
                               </span>
                             </div>
+                            {/* レアリティ内シェアと全体確率のプレビュー */}
+                            {rarityWeights && (() => {
+                              const currentWeight = localIntraWeights.get(card.id) ?? (card.intra_rarity_weight ?? 1.0);
+                              const targetPercent = rarityWeights[card.rarity];
+                              if (!targetPercent || targetPercent <= 0) return null;
+                              // 同レアリティカードのintra weight合計（localIntraWeightsを使用）
+                              const sameRarityTotal = activeCards
+                                .filter(c => c.rarity === card.rarity)
+                                .reduce((sum, c) => sum + (localIntraWeights.get(c.id) ?? (c.intra_rarity_weight ?? 1.0)), 0);
+                              const intraPercent = sameRarityTotal > 0 ? (currentWeight / sameRarityTotal) * 100 : 0;
+                              const overallPercent = sameRarityTotal > 0 ? (targetPercent / 100) * (currentWeight / sameRarityTotal) * 100 : 0;
+                              return (
+                                <div className="flex items-center gap-2 text-xs">
+                                  <span className="text-gray-400">{intraPercent.toFixed(0)}%</span>
+                                  <span className="text-gray-500">→</span>
+                                  <span className="text-green-400">{overallPercent.toFixed(1)}%</span>
+                                </div>
+                              );
+                            })()}
                           </div>
                         </>
                       ) : (

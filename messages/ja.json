@@ -54,6 +54,8 @@
       "dropRate": "出現確率",
       "intraRarityWeight": "レアリティ内の重み",
       "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
+      "intraShareLabel": "内シェア",
+      "overallDropRate": "全体排出率",
       "description": "説明",
       "currentImage": "現在の画像",
       "croppedImage": "トリミング済み画像",

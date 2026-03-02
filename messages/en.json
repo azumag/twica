@@ -54,6 +54,8 @@
       "dropRate": "Drop Rate",
       "intraRarityWeight": "Weight within Rarity",
       "intraRarityWeightHint": "Adjust drop balance among cards of the same rarity (default: 1.0)",
+      "intraShareLabel": " share",
+      "overallDropRate": "Overall drop rate",
       "description": "Description",
       "currentImage": "Current image",
       "croppedImage": "Cropped image",

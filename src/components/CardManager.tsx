@@ -503,6 +503,34 @@ export default function CardManager({
     return (dropRate / totalWeight) * 100;
   };
 
+  // Calculate intra-rarity share and overall probability for auto mode preview
+  // 自動モード時のレアリティ内シェアと全体確率を計算
+  const calculateIntraRarityStats = useCallback((intraWeight: number, rarity: string) => {
+    if (!rarityWeights) return null;
+    const targetPercent = rarityWeights[rarity];
+    if (targetPercent === undefined || targetPercent <= 0) return null;
+
+    // Sum intra weights for all active cards in the same rarity (excluding the editing card)
+    // 同レアリティの全アクティブカードのintra weightを合算（編集中カードは除外）
+    const sameRarityCards = cards.filter(
+      c => c.is_active && c.rarity === rarity && (!editingCard || c.id !== editingCard.id)
+    );
+    const othersIntraSum = sameRarityCards.reduce(
+      (sum, c) => sum + (c.intra_rarity_weight ?? 1.0), 0
+    );
+    const totalIntraWeight = othersIntraSum + intraWeight;
+    // Share within this rarity (e.g., 40% of Rare pool)
+    const intraPercent = totalIntraWeight > 0
+      ? (intraWeight / totalIntraWeight) * 100
+      : 0;
+    // Overall drop probability (e.g., 4% of all drops)
+    const overallPercent = totalIntraWeight > 0
+      ? (targetPercent / 100) * (intraWeight / totalIntraWeight) * 100
+      : 0;
+    const cardCount = sameRarityCards.length + 1; // +1 for current card
+    return { intraPercent, overallPercent, cardCount, targetPercent };
+  }, [cards, editingCard, rarityWeights]);
+
   // Delete image from Vercel Blob
   // Vercel Blobから画像を削除
   const deleteImage = async (url: string): Promise<boolean> => {
@@ -1290,6 +1318,8 @@ export default function CardManager({
                 ))}
               </select>
             </div>
+            {/* 手動モード: 出現確率スライダー表示 / 自動モード: レアリティ内重みのみ表示 */}
+            {rarityWeights === null ? (
             <div>
               <div className="mb-1 flex items-center gap-2">
                 <label className="text-sm text-gray-300">
@@ -1306,11 +1336,6 @@ export default function CardManager({
                   </svg>
                 </button>
               </div>
-              {rarityWeights !== null && (
-                <p className="mb-1 text-xs text-purple-300">
-                  {tRarityProbability("autoCalculated")}
-                </p>
-              )}
               <div className="mb-2 flex items-center gap-3 text-sm">
                 <span className="text-gray-400">
                   {t("dropRateInfo.weight")}: <span className="text-white font-medium">{(formData.dropRate * 100).toFixed(1)}%</span>
@@ -1336,8 +1361,7 @@ export default function CardManager({
                 className="w-full"
               />
             </div>
-            {/* レアリティ内重み: 自動計算モード時のみ表示 */}
-            {rarityWeights !== null && (
+            ) : (
               <div>
                 <label className="mb-1 block text-sm text-gray-300">{t("form.intraRarityWeight")}</label>
                 <p className="mb-1 text-xs text-gray-500">{t("form.intraRarityWeightHint")}</p>
@@ -1371,6 +1395,23 @@ export default function CardManager({
                     className="w-20 rounded bg-gray-600 px-2 py-1 text-right text-sm text-white"
                   />
                 </div>
+                {/* レアリティ内シェアと全体確率のプレビュー */}
+                {(() => {
+                  const stats = calculateIntraRarityStats(formData.intraRarityWeight, formData.rarity);
+                  if (!stats) return null;
+                  return (
+                    <div className="mt-2 flex items-center gap-3 text-sm">
+                      <span className="text-gray-400">
+                        {tRarity(formData.rarity)}{t("form.intraShareLabel")}: <span className="text-white font-medium">{stats.intraPercent.toFixed(1)}%</span>
+                        <span className="ml-1 text-gray-500">({stats.cardCount}{tRarityProbability("activeCards")})</span>
+                      </span>
+                      <span className="text-gray-500">→</span>
+                      <span className="text-gray-400">
+                        {t("form.overallDropRate")}: <span className="text-green-400 font-medium">{stats.overallPercent.toFixed(1)}%</span>
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
             )}
             <div className="md:col-span-2">
@@ -1807,6 +1848,7 @@ export default function CardManager({
         onSave={handleBatchDropRateSave}
         warningMessage={rarityWeights ? tRarityProbability("batchOverrideWarning") : undefined}
         autoMode={rarityWeights !== null}
+        rarityWeights={rarityWeights}
       />
 
       {/* Emote Import Modal */}
