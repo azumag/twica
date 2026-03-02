@@ -13,7 +13,8 @@ export async function recalculateIfAutoMode(
   streamerId: string,
   rarityWeights: Record<string, number> | null
 ): Promise<Card[] | null> {
-  if (!rarityWeights) {
+  // null = 未設定, {} = 手動モード明示 → いずれも自動再計算スキップ
+  if (!rarityWeights || Object.keys(rarityWeights).length === 0) {
     return null;
   }
 

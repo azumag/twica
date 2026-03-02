@@ -15,6 +15,14 @@ import BatchDropRateModal from "./BatchDropRateModal";
 import ExpandableDescription from "./ExpandableDescription";
 import RarityProbabilityPanel from "./RarityProbabilityPanel";
 
+/** Custom dropdown arrow style for appearance-none select boxes */
+const SELECT_ARROW_STYLE: React.CSSProperties = {
+  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%239ca3af'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3E%3C/svg%3E")`,
+  backgroundPosition: "right 0.5rem center",
+  backgroundSize: "1.25rem",
+  backgroundRepeat: "no-repeat",
+};
+
 interface StorageStatus {
   userUsage: number;
   globalUsage: number;
@@ -61,8 +69,8 @@ interface CardManagerProps {
   // Plan-based available output widths (default: [800])
   // プラン別選択可能な出力幅（デフォルト: [800]）
   availableWidths?: number[];
-  // Initial rarity weights for auto mode (null = manual mode)
-  // 自動モード用の初期レアリティ確率設定（null=手動モード）
+  // Initial rarity weights: null/undefined = unset (auto mode with defaults), {} = explicit manual mode, {weights} = auto mode
+  // レアリティ確率設定: null/undefined=未設定（自動モードデフォルト化）, {}=手動モード明示, {weights}=自動モード
   initialRarityWeights?: Record<string, number> | null;
 }
 
@@ -95,7 +103,16 @@ export default function CardManager({
   const tRarity = useTranslations("rarity");
   const tRarityProbability = useTranslations("rarityProbability");
   const [cards, setCards] = useState<Card[]>(initialCards);
-  const [rarityWeights, setRarityWeights] = useState<Record<string, number> | null>(initialRarityWeights);
+  // DB値の変換: null=未設定→デフォルト自動モード, {}=手動モード明示, {weights}=自動モード
+  const [rarityWeights, setRarityWeights] = useState<Record<string, number> | null>(() => {
+    if (initialRarityWeights === null || initialRarityWeights === undefined) {
+      return { common: 50, rare: 30, epic: 15, legendary: 5 };
+    }
+    if (Object.keys(initialRarityWeights).length === 0) {
+      return null; // {} = 手動モード明示のセンチネル
+    }
+    return initialRarityWeights;
+  });
   const [loading, setLoading] = useState(false);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
@@ -303,6 +320,46 @@ export default function CardManager({
   useEffect(() => {
     fetchStorageStatus();
   }, [fetchStorageStatus]);
+
+  // 未設定の配信者向けにデフォルトレアリティ重みをDBに自動保存（マウント時1回のみ）
+  const autoSavedWeightsRef = useRef(false);
+  useEffect(() => {
+    if (autoSavedWeightsRef.current) return;
+    if (initialRarityWeights !== null && initialRarityWeights !== undefined) return;
+    autoSavedWeightsRef.current = true;
+
+    const csrfToken = document.cookie
+      .split("; ")
+      .find(row => row.startsWith("csrf_token="))
+      ?.split("=")[1] || "";
+
+    fetch("/api/streamer/settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        streamerId,
+        rarityWeights: { common: 50, rare: 30, epic: 15, legendary: 5 },
+      }),
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data.recalculatedCards)) {
+          const recalculated = data.recalculatedCards as Card[];
+          setCards(prev => {
+            const recalculatedMap = new Map(recalculated.map(c => [c.id, c]));
+            return prev.map(card => recalculatedMap.get(card.id) || card);
+          });
+        }
+      })
+      .catch(() => {
+        // ベストエフォート: 失敗してもUIは自動モードのまま、次回カード操作で保存される
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * Fetch emotes from Twitch API
@@ -1134,7 +1191,7 @@ export default function CardManager({
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-gray-800 shadow-2xl">
-            <form onSubmit={handleSubmit} className="p-6">
+            <form onSubmit={handleSubmit} className="p-4 sm:p-6">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-white">
                   {editingCard ? t("editCard") : t("newCard")}
@@ -1178,7 +1235,8 @@ export default function CardManager({
                       onChange={(e) =>
                         setFormData({ ...formData, rarity: e.target.value as Rarity })
                       }
-                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                      className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
+                      style={SELECT_ARROW_STYLE}
                     >
                       {RARITIES.map((r) => (
                         <option key={r.value} value={r.value}>
@@ -1458,7 +1516,8 @@ export default function CardManager({
             <select
               value={sortField}
               onChange={(e) => setSortField(e.target.value as SortField)}
-              className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600"
+              className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
+              style={SELECT_ARROW_STYLE}
             >
               <option value="created_at">{t("sort.createdAt")}</option>
               <option value="rarity">{t("sort.rarity")}</option>
@@ -1498,7 +1557,8 @@ export default function CardManager({
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-              className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600"
+              className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
+              style={SELECT_ARROW_STYLE}
             >
               <option value="all">{t("filter.all")}</option>
               <option value="active">{t("filter.active")}</option>
@@ -2003,7 +2063,8 @@ export default function CardManager({
                   <select
                     value={emoteDefaultRarity}
                     onChange={(e) => setEmoteDefaultRarity(e.target.value as Rarity)}
-                    className="w-full rounded-lg bg-gray-700 px-3 py-2 text-white text-sm"
+                    className="w-full appearance-none rounded-lg bg-gray-700 px-3 py-2 pr-10 text-white text-sm"
+                    style={SELECT_ARROW_STYLE}
                   >
                     {RARITIES.map((r) => (
                       <option key={r.value} value={r.value}>

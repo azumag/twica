@@ -124,6 +124,10 @@ export default function RarityProbabilityPanel({
     setError(null);
 
     try {
+      // 手動モード切替時(null)は {} をセンチネルとしてDB保存
+      // DB上の null は「未設定」を意味し、次回ロード時に自動モードがデフォルト有効化される
+      const apiWeights = nextWeights === null ? {} : nextWeights;
+
       const response = await fetch("/api/streamer/settings", {
         method: "POST",
         headers: {
@@ -133,7 +137,7 @@ export default function RarityProbabilityPanel({
         credentials: "include",
         body: JSON.stringify({
           streamerId,
-          rarityWeights: nextWeights,
+          rarityWeights: apiWeights,
         }),
       });
 
