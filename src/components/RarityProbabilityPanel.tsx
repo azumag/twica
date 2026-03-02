@@ -46,7 +46,15 @@ export default function RarityProbabilityPanel({
   const t = useTranslations("rarityProbability");
   const tRarity = useTranslations("rarity");
   const [expanded, setExpanded] = useState(rarityWeights !== null);
-  const [draftWeights, setDraftWeights] = useState<Record<string, number>>({});
+  // rarityWeightsが設定済みならマウント時にdraftへ反映（初期表示でスライダーが0%になるのを防止）
+  const [draftWeights, setDraftWeights] = useState<Record<string, number>>(() => {
+    if (!rarityWeights) return {};
+    const initial: Record<string, number> = {};
+    for (const [key, value] of Object.entries(rarityWeights)) {
+      initial[key] = clampPercent(value);
+    }
+    return initial;
+  });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

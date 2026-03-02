@@ -1447,7 +1447,7 @@ export default function CardManager({
                     if (!stats) return null;
                     return (
                       <span className="flex items-center gap-2 text-xs text-gray-400 shrink-0">
-                        <span>{tRarity(formData.rarity)}: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
+                        <span>{tRarity(formData.rarity)}内: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
                         <span className="text-gray-500">→</span>
                         <span>{t("form.overallDropRate")}: <span className="text-green-400">{stats.overallPercent.toFixed(1)}%</span></span>
                       </span>
