@@ -19,7 +19,7 @@ export async function recalculateIfAutoMode(
 
   const { data: activeCards, error: activeCardsError } = await supabaseAdmin
     .from("cards")
-    .select("id, rarity, is_active")
+    .select("id, rarity, is_active, intra_rarity_weight")
     .eq("streamer_id", streamerId)
     .eq("is_active", true);
 
@@ -32,6 +32,8 @@ export async function recalculateIfAutoMode(
     return [];
   }
 
+  // drop_rateのみ更新。intra_rarity_weightはユーザーが設定した値をそのまま保持するため
+  // RPCペイロードには含めない（calculateDropRatesで読み取り済み）
   const rpcPayload = updates.map((update) => ({
     id: update.id,
     drop_rate: update.dropRate,

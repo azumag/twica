@@ -216,6 +216,7 @@ export const ERROR_MESSAGES = {
   STREAMER_ID_REQUIRED: 'streamerId is required',
   STREAMER_ID_MISSING: 'Missing streamerId',
   DROP_RATE_INVALID: 'Drop rate must be a number between 0 and 1',
+  INTRA_RARITY_WEIGHT_INVALID: 'Intra-rarity weight must be a positive number',
   CONTENT_TYPE_MISSING: 'Content-Type header is required',
   CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
   CARD_NAME_REQUIRED: 'Card name is required',

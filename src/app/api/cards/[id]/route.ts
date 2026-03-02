@@ -77,7 +77,7 @@ export async function PUT(
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive } = body;
+    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight } = body;
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -128,6 +128,16 @@ export async function PUT(
       }
     }
 
+    // intraRarityWeight は正の数値のみ許可
+    if (intraRarityWeight !== undefined) {
+      if (typeof intraRarityWeight !== "number" || !Number.isFinite(intraRarityWeight) || intraRarityWeight <= 0) {
+        return NextResponse.json(
+          { error: ERROR_MESSAGES.INTRA_RARITY_WEIGHT_INVALID },
+          { status: 400 }
+        );
+      }
+    }
+
     // Verify ownership and get current image_url for cleanup
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
     const { data: card } = await supabaseAdmin
@@ -145,7 +155,8 @@ export async function PUT(
     const rarityWeights = extractRarityWeights(card.streamers);
     const rarityChanged = rarity !== undefined && rarity !== card.rarity;
     const activeChanged = isActive !== undefined && isActive !== card.is_active;
-    const shouldRecalculate = rarityWeights !== null && (rarityChanged || activeChanged);
+    const intraWeightChanged = intraRarityWeight !== undefined;
+    const shouldRecalculate = rarityWeights !== null && (rarityChanged || activeChanged || intraWeightChanged);
 
     // NOTE: Drop rate validation removed because the system uses relative weights
     // The actual probability is calculated as: this_card_weight / total_weights
@@ -161,6 +172,7 @@ export async function PUT(
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
     if (rarity !== undefined) updateData.rarity = rarity;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
+    if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
     if (isActive !== undefined) updateData.is_active = isActive;
 
     // Delete old image if imageUrl is being changed to a different URL

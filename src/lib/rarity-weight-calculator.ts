@@ -2,6 +2,8 @@ export interface RarityWeightCardInput {
   id: string;
   rarity: string;
   is_active: boolean;
+  // レアリティ内重み（デフォルト1.0=均等配分）
+  intra_rarity_weight?: number;
 }
 
 export interface DropRateCalculationResult {
@@ -24,6 +26,8 @@ function isValidPercent(value: unknown): value is number {
  * - Only active cards are recalculated.
  * - Existing card rarities are detected dynamically (no fixed rarity list).
  * - If a card rarity is missing in rarityWeights, fallback to equal weight per active card.
+ * - intra_rarity_weight controls distribution within a rarity (default 1.0 = equal share).
+ *   Formula: card_rate = (rarity_pct / 100) * (card_intra_weight / sum_intra_weights_in_rarity)
  * - Result is rounded to 4 decimal places to match DECIMAL(5,4).
  */
 export function calculateDropRates(
@@ -35,25 +39,32 @@ export function calculateDropRates(
     return [];
   }
 
-  const rarityCounts = new Map<string, number>();
+  // レアリティごとのカード一覧とintra_rarity_weightの合計を集計
+  const rarityGroups = new Map<string, { cards: RarityWeightCardInput[]; totalIntraWeight: number }>();
   for (const card of activeCards) {
-    rarityCounts.set(card.rarity, (rarityCounts.get(card.rarity) || 0) + 1);
-  }
-
-  const fallbackPerCard = roundTo4(1 / activeCards.length);
-  const perRarityWeight = new Map<string, number>();
-
-  for (const [rarity, count] of rarityCounts.entries()) {
-    const targetPercent = rarityWeights[rarity];
-    if (isValidPercent(targetPercent)) {
-      perRarityWeight.set(rarity, roundTo4((targetPercent / 100) / count));
+    const intraWeight = card.intra_rarity_weight ?? 1.0;
+    const group = rarityGroups.get(card.rarity);
+    if (group) {
+      group.cards.push(card);
+      group.totalIntraWeight += intraWeight;
     } else {
-      perRarityWeight.set(rarity, fallbackPerCard);
+      rarityGroups.set(card.rarity, { cards: [card], totalIntraWeight: intraWeight });
     }
   }
 
-  return activeCards.map((card) => ({
-    id: card.id,
-    dropRate: perRarityWeight.get(card.rarity) ?? fallbackPerCard,
-  }));
+  const fallbackPerCard = roundTo4(1 / activeCards.length);
+
+  return activeCards.map((card) => {
+    const targetPercent = rarityWeights[card.rarity];
+    const group = rarityGroups.get(card.rarity);
+
+    if (!isValidPercent(targetPercent) || !group) {
+      return { id: card.id, dropRate: fallbackPerCard };
+    }
+
+    const intraWeight = card.intra_rarity_weight ?? 1.0;
+    // card_rate = (rarity_pct / 100) * (intra_weight / total_intra_weight_in_rarity)
+    const dropRate = roundTo4((targetPercent / 100) * (intraWeight / group.totalIntraWeight));
+    return { id: card.id, dropRate };
+  });
 }

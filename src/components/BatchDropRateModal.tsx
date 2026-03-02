@@ -53,6 +53,10 @@ export default function BatchDropRateModal({
   // ドロップレート変更を追跡するローカル状態（個別モード）
   const [localDropRates, setLocalDropRates] = useState<Map<string, number>>(new Map());
 
+  // Local state for intra-rarity weight changes (autoMode individual tab)
+  // レアリティ内重み変更のローカル状態（自動モード個別タブ）
+  const [localIntraWeights, setLocalIntraWeights] = useState<Map<string, number>>(new Map());
+
   // Local state for tracking rarity weight (absolute weight per card, default=1.0)
   // レアリティごとのカード重み（絶対値、デフォルト=1.0）
   const [rarityMultipliers, setRarityMultipliers] = useState<Map<Rarity, number>>(new Map());
@@ -80,6 +84,14 @@ export default function BatchDropRateModal({
         initialRates.set(card.id, card.drop_rate);
       });
       setLocalDropRates(initialRates);
+
+      // Initialize intra-rarity weights
+      // レアリティ内重みを初期化
+      const initialIntraWeights = new Map<string, number>();
+      activeCards.forEach(card => {
+        initialIntraWeights.set(card.id, card.intra_rarity_weight ?? 1.0);
+      });
+      setLocalIntraWeights(initialIntraWeights);
 
       // Initialize rarity weights from actual card drop rates
       // 実際のカードdrop_rateからレアリティ重みを初期化
@@ -177,8 +189,18 @@ export default function BatchDropRateModal({
       }
     }
 
+    // Check intra-rarity weight changes (autoMode)
+    // レアリティ内重みの変更をチェック（自動モード）
+    for (const card of activeCards) {
+      const localWeight = localIntraWeights.get(card.id);
+      const originalWeight = card.intra_rarity_weight ?? 1.0;
+      if (localWeight !== undefined && Math.abs(localWeight - originalWeight) > 0.001) {
+        return true;
+      }
+    }
+
     return false;
-  }, [activeCards, localDropRates, rarityMultipliers, initialRarityMultipliers]);
+  }, [activeCards, localDropRates, localIntraWeights, rarityMultipliers, initialRarityMultipliers]);
 
   // Get modified card IDs for visual highlighting (individual mode)
   // 視覚的ハイライト用に変更されたカードIDを取得（個別モード）
@@ -189,9 +211,15 @@ export default function BatchDropRateModal({
       if (localRate !== undefined && localRate !== card.drop_rate) {
         ids.add(card.id);
       }
+      // intra-rarity weightの変更もハイライト対象
+      const localWeight = localIntraWeights.get(card.id);
+      const originalWeight = card.intra_rarity_weight ?? 1.0;
+      if (localWeight !== undefined && Math.abs(localWeight - originalWeight) > 0.001) {
+        ids.add(card.id);
+      }
     }
     return ids;
-  }, [activeCards, localDropRates]);
+  }, [activeCards, localDropRates, localIntraWeights]);
 
   // Get modified rarities for visual highlighting (rarity mode)
   // 視覚的ハイライト用に変更されたレアリティを取得（レアリティモード）
@@ -251,6 +279,16 @@ export default function BatchDropRateModal({
       });
       return next;
     });
+
+    // Reset intra-rarity weights to 1.0
+    // レアリティ内重みも1.0にリセット
+    setLocalIntraWeights(prev => {
+      const next = new Map(prev);
+      activeCards.forEach(card => {
+        next.set(card.id, 1.0);
+      });
+      return next;
+    });
   };
 
   /**
@@ -306,14 +344,32 @@ export default function BatchDropRateModal({
         .find(row => row.startsWith("csrf_token="))
         ?.split("=")[1];
 
-      const updates: Array<{ id: string; dropRate: number }> = [];
+      const updates: Array<{ id: string; dropRate: number; intraRarityWeight?: number }> = [];
       // Track cards already added to avoid duplicates
       // 重複を避けるため追加済みカードを追跡
       const addedCardIds = new Set<string>();
 
+      // autoMode時: intraRarityWeight変更をupdatesに追加
+      // drop_rateは現在の値をそのまま送信（サーバー側で再計算される）
+      if (autoMode && activeTab === "individual") {
+        for (const card of activeCards) {
+          const localWeight = localIntraWeights.get(card.id);
+          const originalWeight = card.intra_rarity_weight ?? 1.0;
+          if (localWeight !== undefined && Math.abs(localWeight - originalWeight) > 0.001) {
+            updates.push({
+              id: card.id,
+              dropRate: card.drop_rate, // 現在の値をそのまま（再計算はサーバー側）
+              intraRarityWeight: localWeight,
+            });
+            addedCardIds.add(card.id);
+          }
+        }
+      }
+
       // First, add all cards with direct localDropRates changes (from reset or individual mode)
       // まず、localDropRatesが直接変更されたカードを追加（リセットまたは個別モードから）
       for (const card of activeCards) {
+        if (addedCardIds.has(card.id)) continue;
         const localRate = localDropRates.get(card.id);
         if (localRate !== undefined && Math.abs(localRate - card.drop_rate) > 0.001) {
           updates.push({
@@ -374,10 +430,24 @@ export default function BatchDropRateModal({
 
       const result = await response.json();
 
-      // Call onSave with updated cards
-      // 更新されたカードでonSaveを呼び出す
+      // Call onSave with updated cards, merging recalculated cards if available
+      // 更新されたカードでonSaveを呼び出し、再計算カードがあればマージ
       if (result.cards) {
-        onSave(result.cards);
+        let allUpdatedCards = result.cards as Card[];
+        // 再計算結果がある場合、drop_rateの更新をマージ
+        if (Array.isArray(result.recalculatedCards)) {
+          const recalculatedMap = new Map(
+            (result.recalculatedCards as Card[]).map(c => [c.id, c])
+          );
+          allUpdatedCards = allUpdatedCards.map(c => recalculatedMap.get(c.id) || c);
+          // 再計算対象で直接更新されなかったカードも含める
+          for (const rc of result.recalculatedCards as Card[]) {
+            if (!allUpdatedCards.some(c => c.id === rc.id)) {
+              allUpdatedCards.push(rc);
+            }
+          }
+        }
+        onSave(allUpdatedCards);
       }
 
       onClose();
@@ -496,6 +566,9 @@ export default function BatchDropRateModal({
             /* Individual card adjustment tab */
             /* 個別カード調整タブ */
             <div className="space-y-3">
+              {autoMode && (
+                <p className="text-sm text-gray-400 mb-2">{t("batchDropRate.intraWeightHint")}</p>
+              )}
               {activeCards.map((card) => {
                 const rarityInfo = getRarityInfo(card.rarity);
                 const currentRate = localDropRates.get(card.id) ?? card.drop_rate;
@@ -541,44 +614,71 @@ export default function BatchDropRateModal({
                       </div>
                     </div>
 
-                    {/* Drop rate controls */}
-                    {/* 出現確率コントロール */}
+                    {/* Controls: autoMode → intra-rarity weight, manual → drop rate */}
+                    {/* コントロール: 自動モード → レアリティ内重み、手動 → ドロップレート */}
                     <div className="flex-1 flex flex-col sm:flex-row items-start sm:items-center gap-3">
-                      {/* Slider */}
-                      {/* スライダー */}
-                      <div className="flex-1 w-full">
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.01"
-                          value={currentRate}
-                          onChange={(e) => handleDropRateChange(card.id, parseFloat(e.target.value))}
-                          className="w-full"
-                        />
-                      </div>
-
-                      {/* Weight display and probability display */}
-                      {/* 重み表示と確率表示 */}
-                      <div className="flex items-center gap-3 shrink-0">
-                        {/* Weight display (read-only) */}
-                        {/* 重み表示（読み取り専用） */}
-                        <div className="flex items-center gap-1 w-20">
-                          <span className="text-xs text-gray-400">{t("batchDropRate.weight")}:</span>
-                          <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-white"}`}>
-                            {(currentRate * 100).toFixed(1)}%
-                          </span>
-                        </div>
-
-                        {/* Probability display */}
-                        {/* 確率表示 */}
-                        <div className="flex items-center gap-1 w-20">
-                          <span className="text-xs text-gray-400">→</span>
-                          <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-green-400"}`}>
-                            {probability.toFixed(1)}%
-                          </span>
-                        </div>
-                      </div>
+                      {autoMode ? (
+                        <>
+                          {/* Intra-rarity weight slider (autoMode) */}
+                          {/* レアリティ内重みスライダー（自動モード） */}
+                          <div className="flex-1 w-full">
+                            <input
+                              type="range"
+                              min="0.1"
+                              max="10"
+                              step="0.1"
+                              value={localIntraWeights.get(card.id) ?? (card.intra_rarity_weight ?? 1.0)}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                setLocalIntraWeights(prev => {
+                                  const next = new Map(prev);
+                                  next.set(card.id, val);
+                                  return next;
+                                });
+                              }}
+                              className="w-full"
+                            />
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="flex items-center gap-1 w-24">
+                              <span className="text-xs text-gray-400">{t("batchDropRate.intraWeight")}:</span>
+                              <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-white"}`}>
+                                {(localIntraWeights.get(card.id) ?? (card.intra_rarity_weight ?? 1.0)).toFixed(1)}
+                              </span>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          {/* Drop rate slider (manual mode) */}
+                          {/* ドロップレートスライダー（手動モード） */}
+                          <div className="flex-1 w-full">
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={currentRate}
+                              onChange={(e) => handleDropRateChange(card.id, parseFloat(e.target.value))}
+                              className="w-full"
+                            />
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="flex items-center gap-1 w-20">
+                              <span className="text-xs text-gray-400">{t("batchDropRate.weight")}:</span>
+                              <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-white"}`}>
+                                {(currentRate * 100).toFixed(1)}%
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1 w-20">
+                              <span className="text-xs text-gray-400">→</span>
+                              <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-green-400"}`}>
+                                {probability.toFixed(1)}%
+                              </span>
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                 );

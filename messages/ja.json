@@ -52,6 +52,8 @@
       "imageUrlPlaceholder": "または画像URLを入力",
       "rarity": "レアリティ",
       "dropRate": "出現確率",
+      "intraRarityWeight": "レアリティ内の重み",
+      "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
       "description": "説明",
       "currentImage": "現在の画像",
       "croppedImage": "トリミング済み画像",
@@ -168,7 +170,9 @@
       "newWeight": "新しい重み",
       "resetAll": "全てリセット（重み100）",
       "resetRarity": "リセット",
-      "resetTooltip": "このレアリティの全カードの重みを100%にリセット"
+      "resetTooltip": "このレアリティの全カードの重みを100%にリセット",
+      "intraWeight": "レアリティ内重み",
+      "intraWeightHint": "レアリティ内での排出バランスを調整"
     },
     "emoteImport": {
       "title": "エモートからカードを作成",

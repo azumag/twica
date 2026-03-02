@@ -83,6 +83,8 @@ export interface Database {
           image_url: string | null
           rarity: Rarity
           drop_rate: number
+          // レアリティ内重み: 同レアリティ内での排出確率配分（デフォルト1.0=均等）
+          intra_rarity_weight: number
           is_active: boolean
           hp: number
           atk: number
@@ -102,6 +104,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           drop_rate?: number
+          intra_rarity_weight?: number
           is_active?: boolean
           hp?: number
           atk?: number
@@ -121,6 +124,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           drop_rate?: number
+          intra_rarity_weight?: number
           is_active?: boolean
           hp?: number
           atk?: number

@@ -26,6 +26,7 @@ interface BatchCardInput {
   rarity: Rarity;
   dropRate: number;
   description?: string;
+  intraRarityWeight?: number;
 }
 
 /**
@@ -156,14 +157,20 @@ export async function POST(request: NextRequest) {
 
     // Prepare cards for insertion
     // 挿入用にカードを準備
-    const cardsToInsert = cards.map((card) => ({
-      streamer_id: streamerId,
-      name: card.name,
-      description: card.description || "",
-      image_url: card.imageUrl,
-      rarity: card.rarity,
-      drop_rate: card.dropRate,
-    }));
+    const cardsToInsert = cards.map((card) => {
+      const row: Record<string, unknown> = {
+        streamer_id: streamerId,
+        name: card.name,
+        description: card.description || "",
+        image_url: card.imageUrl,
+        rarity: card.rarity,
+        drop_rate: card.dropRate,
+      };
+      if (card.intraRarityWeight !== undefined && Number.isFinite(card.intraRarityWeight) && card.intraRarityWeight > 0) {
+        row.intra_rarity_weight = card.intraRarityWeight;
+      }
+      return row;
+    });
 
     // Insert all cards at once
     // 全カードを一度に挿入

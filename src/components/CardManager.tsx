@@ -198,6 +198,7 @@ export default function CardManager({
     imageUrl: "",
     rarity: "common" as Rarity,
     dropRate: 0.25,
+    intraRarityWeight: 1.0,
   });
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -556,6 +557,7 @@ export default function CardManager({
       imageUrl: "",
       rarity: "common",
       dropRate: 0.25,
+      intraRarityWeight: 1.0,
     });
     setConfirmedImageUrl("");
     setUserModifiedImage(true);
@@ -776,6 +778,7 @@ export default function CardManager({
       imageUrl: card.image_url || "",
       rarity: card.rarity,
       dropRate: card.drop_rate,
+      intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
     setConfirmedImageUrl(card.image_url || "");
     // Hide URL input initially only when editing card with existing image
@@ -859,6 +862,8 @@ export default function CardManager({
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
           dropRate: formData.dropRate,
+          // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
+          ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
         }),
       });
 
@@ -1331,6 +1336,43 @@ export default function CardManager({
                 className="w-full"
               />
             </div>
+            {/* レアリティ内重み: 自動計算モード時のみ表示 */}
+            {rarityWeights !== null && (
+              <div>
+                <label className="mb-1 block text-sm text-gray-300">{t("form.intraRarityWeight")}</label>
+                <p className="mb-1 text-xs text-gray-500">{t("form.intraRarityWeightHint")}</p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="10"
+                    step="0.1"
+                    value={formData.intraRarityWeight}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        intraRarityWeight: parseFloat(e.target.value),
+                      })
+                    }
+                    className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-gray-600 accent-purple-500"
+                  />
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="10"
+                    step="0.1"
+                    value={formData.intraRarityWeight}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (Number.isFinite(val) && val > 0) {
+                        setFormData({ ...formData, intraRarityWeight: val });
+                      }
+                    }}
+                    className="w-20 rounded bg-gray-600 px-2 py-1 text-right text-sm text-white"
+                  />
+                </div>
+              </div>
+            )}
             <div className="md:col-span-2">
               <label className="mb-1 block text-sm text-gray-300">{t("form.description")}</label>
               <textarea
