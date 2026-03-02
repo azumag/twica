@@ -202,7 +202,7 @@ export default function RarityProbabilityPanel({
               <div className="space-y-3">
                 {rarityKeys.map((rarity) => {
                   const count = activeCounts.get(rarity) || 0;
-                  const perCard = count > 0 ? (draftWeights[rarity] ?? 0) / count : null;
+                  const value = draftWeights[rarity] ?? 0;
 
                   return (
                     <div key={rarity} className="rounded-lg bg-gray-800 p-3">
@@ -212,13 +212,14 @@ export default function RarityProbabilityPanel({
                           {count > 0 ? `${count}${t("activeCards")}` : t("noCards")}
                         </span>
                       </div>
-                      <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+                      <div className="flex items-center gap-3">
+                        {/* スライダー（メイン操作） */}
                         <input
-                          type="number"
+                          type="range"
                           min={0}
                           max={100}
                           step={0.1}
-                          value={draftWeights[rarity] ?? 0}
+                          value={value}
                           onChange={(event) => {
                             const nextValue = clampPercent(Number(event.target.value));
                             setDraftWeights((prev) => ({
@@ -226,14 +227,25 @@ export default function RarityProbabilityPanel({
                               [rarity]: nextValue,
                             }));
                           }}
-                          className="rounded bg-gray-700 px-3 py-2 text-sm text-white"
+                          className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-gray-600 accent-purple-500"
                         />
-                        <span className="text-sm text-gray-300">
-                          {((draftWeights[rarity] ?? 0)).toFixed(1)}%
-                        </span>
-                        <span className="text-xs text-green-400">
-                          {perCard === null ? t("noCards") : `${t("perCard")} ${(perCard).toFixed(2)}%`}
-                        </span>
+                        {/* 数値入力（微調整用） */}
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={0.1}
+                          value={value}
+                          onChange={(event) => {
+                            const nextValue = clampPercent(Number(event.target.value));
+                            setDraftWeights((prev) => ({
+                              ...prev,
+                              [rarity]: nextValue,
+                            }));
+                          }}
+                          className="w-20 rounded bg-gray-700 px-2 py-1 text-right text-sm text-white"
+                        />
+                        <span className="w-6 text-sm text-gray-400">%</span>
                       </div>
                     </div>
                   );
