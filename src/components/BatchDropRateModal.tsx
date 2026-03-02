@@ -15,6 +15,8 @@ interface BatchDropRateModalProps {
   streamerId: string;
   onSave: (updatedCards: Card[]) => void;
   warningMessage?: string;
+  // 自動計算モード時はレアリティ別タブを無効化し個別タブをデフォルトにする
+  autoMode?: boolean;
 }
 
 // Tab type for switching between individual and rarity-based adjustment
@@ -38,14 +40,14 @@ export default function BatchDropRateModal({
   streamerId,
   onSave,
   warningMessage,
+  autoMode = false,
 }: BatchDropRateModalProps) {
   const t = useTranslations("cardManager");
   const tRarity = useTranslations("rarity");
   const tCommon = useTranslations("common");
 
-  // Current tab state (default to rarity view)
-  // 現在のタブ状態（デフォルトはレアリティ表示）
-  const [activeTab, setActiveTab] = useState<TabType>("rarity");
+  // 自動計算モード時は個別タブをデフォルトにする
+  const [activeTab, setActiveTab] = useState<TabType>(autoMode ? "individual" : "rarity");
 
   // Local state for tracking drop rate changes (individual mode)
   // ドロップレート変更を追跡するローカル状態（個別モード）
@@ -98,11 +100,10 @@ export default function BatchDropRateModal({
       setRarityMultipliers(initialMultipliers);
       setInitialRarityMultipliers(new Map(initialMultipliers));
 
-      // Reset to rarity tab (default view)
-      // レアリティタブにリセット（デフォルト表示）
-      setActiveTab("rarity");
+      // 自動計算モード時は個別タブ、それ以外はレアリティタブをデフォルトにする
+      setActiveTab(autoMode ? "individual" : "rarity");
     }
-  }, [isOpen, activeCards]);
+  }, [isOpen, activeCards, autoMode]);
 
   // Calculate cards by rarity with their statistics
   // レアリティごとのカード統計を計算
@@ -419,10 +420,14 @@ export default function BatchDropRateModal({
           <div className="mt-4 flex border-b border-gray-700">
             <button
               onClick={() => setActiveTab("rarity")}
+              disabled={autoMode}
+              title={autoMode ? warningMessage : undefined}
               className={`px-4 py-2 text-sm font-medium transition ${
-                activeTab === "rarity"
-                  ? "text-purple-400 border-b-2 border-purple-400"
-                  : "text-gray-400 hover:text-white"
+                autoMode
+                  ? "text-gray-600 cursor-not-allowed"
+                  : activeTab === "rarity"
+                    ? "text-purple-400 border-b-2 border-purple-400"
+                    : "text-gray-400 hover:text-white"
               }`}
             >
               {t("batchDropRate.tabRarity")}
