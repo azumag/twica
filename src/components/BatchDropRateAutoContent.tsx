@@ -223,7 +223,6 @@ export default function BatchDropRateAutoContent({
             <p className="text-center text-gray-400">{t("batchDropRate.noActiveCards")}</p>
           ) : (
             <div className="space-y-3">
-              <p className="text-sm text-gray-400 mb-2">{t("batchDropRate.intraWeightHint")}</p>
               {activeCards.map((card) => {
                 const rarityInfo = getRarityInfo(card.rarity);
                 const currentWeight = localIntraWeights.get(card.id) ?? (card.intra_rarity_weight ?? 1.0);
