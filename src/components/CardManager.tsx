@@ -4,15 +4,23 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES, UPLOAD_CONFIG } from "@/lib/constants";
+import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
-import BatchDropRateModal from "./BatchDropRateModal";
+import DropRateSettingsModal from "./DropRateSettingsModal";
 import ExpandableDescription from "./ExpandableDescription";
+
+/** Custom dropdown arrow style for appearance-none select boxes */
+const SELECT_ARROW_STYLE: React.CSSProperties = {
+  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%239ca3af'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3E%3C/svg%3E")`,
+  backgroundPosition: "right 0.5rem center",
+  backgroundSize: "1.25rem",
+  backgroundRepeat: "no-repeat",
+};
 
 interface StorageStatus {
   userUsage: number;
@@ -60,6 +68,9 @@ interface CardManagerProps {
   // Plan-based available output widths (default: [800])
   // プラン別選択可能な出力幅（デフォルト: [800]）
   availableWidths?: number[];
+  // Initial rarity weights: null/undefined = unset (auto mode with defaults), {} = explicit manual mode, {weights} = auto mode
+  // レアリティ確率設定: null/undefined=未設定（自動モードデフォルト化）, {}=手動モード明示, {weights}=自動モード
+  initialRarityWeights?: Record<string, number> | null;
 }
 
 // Sorting field options
@@ -82,6 +93,7 @@ export default function CardManager({
   maxCards,
   maxImageWidth = 800,
   availableWidths = [800],
+  initialRarityWeights = null,
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -89,6 +101,16 @@ export default function CardManager({
   const tCommon = useTranslations("common");
   const tRarity = useTranslations("rarity");
   const [cards, setCards] = useState<Card[]>(initialCards);
+  // DB値の変換: null=未設定→デフォルト自動モード, {}=手動モード明示, {weights}=自動モード
+  const [rarityWeights, setRarityWeights] = useState<Record<string, number> | null>(() => {
+    if (initialRarityWeights === null || initialRarityWeights === undefined) {
+      return { ...DEFAULT_RARITY_WEIGHTS };
+    }
+    if (Object.keys(initialRarityWeights).length === 0) {
+      return null; // {} = 手動モード明示のセンチネル
+    }
+    return initialRarityWeights;
+  });
   const [loading, setLoading] = useState(false);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
@@ -191,6 +213,7 @@ export default function CardManager({
     imageUrl: "",
     rarity: "common" as Rarity,
     dropRate: 0.25,
+    intraRarityWeight: 1.0,
   });
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -295,6 +318,51 @@ export default function CardManager({
   useEffect(() => {
     fetchStorageStatus();
   }, [fetchStorageStatus]);
+
+  // 未設定の配信者向けにデフォルトレアリティ重みをDBに自動保存（マウント時1回のみ）
+  const autoSavedWeightsRef = useRef(false);
+  useEffect(() => {
+    if (autoSavedWeightsRef.current) return;
+    if (initialRarityWeights !== null && initialRarityWeights !== undefined) return;
+    autoSavedWeightsRef.current = true;
+
+    const csrfToken = document.cookie
+      .split("; ")
+      .find(row => row.startsWith("csrf_token="))
+      ?.split("=")[1] || "";
+
+    fetch("/api/streamer/settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        streamerId,
+        rarityWeights: DEFAULT_RARITY_WEIGHTS,
+      }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then(data => {
+        if (Array.isArray(data.recalculatedCards)) {
+          const recalculated = data.recalculatedCards as Card[];
+          setCards(prev => {
+            const recalculatedMap = new Map(recalculated.map(c => [c.id, c]));
+            return prev.map(card => recalculatedMap.get(card.id) || card);
+          });
+        }
+      })
+      .catch((err) => {
+        // 失敗時にフラグをリセット→次回マウントでリトライ可能にする
+        logger.error("Failed to auto-save default rarity weights:", err);
+        autoSavedWeightsRef.current = false;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * Fetch emotes from Twitch API
@@ -413,7 +481,12 @@ export default function CardManager({
       // Add created cards to the list
       // 作成したカードをリストに追加
       if (result.cards) {
-        setCards(prev => [...result.cards, ...prev]);
+        setCards((prevCards) => {
+          const createdCards = result.cards as Card[];
+          const createdCardIds = new Set(createdCards.map((card) => card.id));
+          const merged = [...createdCards, ...prevCards.filter((card) => !createdCardIds.has(card.id))];
+          return mergeRecalculatedCards(merged, result.recalculatedCards as Card[] | null | undefined);
+        });
       }
 
       // Close modal and reset state
@@ -456,6 +529,27 @@ export default function CardManager({
     });
   }, []);
 
+  const mergeRecalculatedCards = useCallback(
+    (baseCards: Card[], recalculatedCards: Card[] | null | undefined): Card[] => {
+      if (!recalculatedCards || recalculatedCards.length === 0) {
+        return baseCards;
+      }
+      const recalculatedMap = new Map(recalculatedCards.map((card) => [card.id, card]));
+      return baseCards.map((card) => recalculatedMap.get(card.id) || card);
+    },
+    []
+  );
+
+  const handleRarityWeightsApply = useCallback(
+    (nextRarityWeights: Record<string, number> | null, recalculatedCards: Card[] | null) => {
+      setRarityWeights(nextRarityWeights);
+      if (recalculatedCards) {
+        setCards((prevCards) => mergeRecalculatedCards(prevCards, recalculatedCards));
+      }
+    },
+    [mergeRecalculatedCards]
+  );
+
   // Calculate total weight and actual probability
   // 合計重みと実際の確率を計算
   const calculateActualProbability = (dropRate: number): number => {
@@ -468,6 +562,34 @@ export default function CardManager({
     if (totalWeight === 0) return 0;
     return (dropRate / totalWeight) * 100;
   };
+
+  // Calculate intra-rarity share and overall probability for auto mode preview
+  // 自動モード時のレアリティ内シェアと全体確率を計算
+  const calculateIntraRarityStats = useCallback((intraWeight: number, rarity: string) => {
+    if (!rarityWeights) return null;
+    const targetPercent = rarityWeights[rarity];
+    if (targetPercent === undefined || targetPercent <= 0) return null;
+
+    // Sum intra weights for all active cards in the same rarity (excluding the editing card)
+    // 同レアリティの全アクティブカードのintra weightを合算（編集中カードは除外）
+    const sameRarityCards = cards.filter(
+      c => c.is_active && c.rarity === rarity && (!editingCard || c.id !== editingCard.id)
+    );
+    const othersIntraSum = sameRarityCards.reduce(
+      (sum, c) => sum + (c.intra_rarity_weight ?? 1.0), 0
+    );
+    const totalIntraWeight = othersIntraSum + intraWeight;
+    // Share within this rarity (e.g., 40% of Rare pool)
+    const intraPercent = totalIntraWeight > 0
+      ? (intraWeight / totalIntraWeight) * 100
+      : 0;
+    // Overall drop probability (e.g., 4% of all drops)
+    const overallPercent = totalIntraWeight > 0
+      ? (targetPercent / 100) * (intraWeight / totalIntraWeight) * 100
+      : 0;
+    const cardCount = sameRarityCards.length + 1; // +1 for current card
+    return { intraPercent, overallPercent, cardCount, targetPercent };
+  }, [cards, editingCard, rarityWeights]);
 
   // Delete image from Vercel Blob
   // Vercel Blobから画像を削除
@@ -523,6 +645,7 @@ export default function CardManager({
       imageUrl: "",
       rarity: "common",
       dropRate: 0.25,
+      intraRarityWeight: 1.0,
     });
     setConfirmedImageUrl("");
     setUserModifiedImage(true);
@@ -743,6 +866,7 @@ export default function CardManager({
       imageUrl: card.image_url || "",
       rarity: card.rarity,
       dropRate: card.drop_rate,
+      intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
     setConfirmedImageUrl(card.image_url || "");
     // Hide URL input initially only when editing card with existing image
@@ -826,18 +950,35 @@ export default function CardManager({
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
           dropRate: formData.dropRate,
+          // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
+          ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
         }),
       });
 
       if (response.ok) {
-        const updatedCard = await response.json();
+        const responseData = await response.json();
+        const recalculatedCards = Array.isArray(responseData.recalculatedCards)
+          ? (responseData.recalculatedCards as Card[])
+          : null;
+        const savedCardData = { ...(responseData as Record<string, unknown>) };
+        delete savedCardData.recalculatedCards;
+        const savedCard = savedCardData as unknown as Card;
+
         if (editingCard) {
-          setCards(cards.map((c) => (c.id === editingCard.id ? updatedCard : c)));
+          setCards((prevCards) => {
+            const replacedCards = prevCards.map((card) => (
+              card.id === editingCard.id ? savedCard : card
+            ));
+            return mergeRecalculatedCards(replacedCards, recalculatedCards);
+          });
           // Refresh storage status after update (old image may have been deleted)
           // 更新後にストレージ状態を更新（古い画像が削除された可能性があるため）
           fetchStorageStatus();
         } else {
-          setCards([updatedCard, ...cards]);
+          setCards((prevCards) => {
+            const nextCards = [savedCard, ...prevCards.filter((card) => card.id !== savedCard.id)];
+            return mergeRecalculatedCards(nextCards, recalculatedCards);
+          });
         }
         resetForm();
       } else if (response.status === 429) {
@@ -878,6 +1019,21 @@ export default function CardManager({
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
         alert(`操作に失敗しました: ${errorData.error}`);
         logger.error("Toggle active failed:", errorData);
+      } else {
+        const responseData = await response.json();
+        const recalculatedCards = Array.isArray(responseData.recalculatedCards)
+          ? (responseData.recalculatedCards as Card[])
+          : null;
+        const updatedCardData = { ...(responseData as Record<string, unknown>) };
+        delete updatedCardData.recalculatedCards;
+        const updatedCard = updatedCardData as unknown as Card;
+
+        setCards((prevCards) => {
+          const replacedCards = prevCards.map((currentCard) => (
+            currentCard.id === card.id ? updatedCard : currentCard
+          ));
+          return mergeRecalculatedCards(replacedCards, recalculatedCards);
+        });
       }
     } catch (error) {
       setCards(originalCards);
@@ -914,6 +1070,10 @@ export default function CardManager({
           logger.error("Delete failed:", errorData);
         }
       } else {
+        const result = await response.json().catch(() => null);
+        if (result && Array.isArray(result.recalculatedCards)) {
+          setCards((prevCards) => mergeRecalculatedCards(prevCards, result.recalculatedCards as Card[]));
+        }
         // Success: refresh storage status to reflect deleted image
         // 成功: 削除された画像を反映するためストレージ状態を更新
         fetchStorageStatus();
@@ -936,13 +1096,13 @@ export default function CardManager({
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
         <div className="flex flex-col gap-2 sm:flex-row">
-          {/* Batch drop rate adjustment button */}
-          {/* 確率一括調整ボタン */}
+          {/* Drop rate settings button */}
+          {/* カード排出確率設定ボタン */}
           <button
             onClick={() => setShowBatchDropRateModal(true)}
             className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
           >
-            {t("batchDropRate.button")}
+            {t("dropRateSettings.button")}
           </button>
           {/* Emote import button */}
           {/* エモートインポートボタン */}
@@ -1027,7 +1187,7 @@ export default function CardManager({
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-gray-800 shadow-2xl">
-            <form onSubmit={handleSubmit} className="p-6">
+            <form onSubmit={handleSubmit} className="p-4 sm:p-6">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-white">
                   {editingCard ? t("editCard") : t("newCard")}
@@ -1043,22 +1203,46 @@ export default function CardManager({
                 </button>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="mb-1 block text-sm text-gray-300">
-                    {t("form.name")} *
-                  </label>
-                  <input
-                    type="text"
-                    name="name"
-                    required
-                    placeholder={t("form.namePlaceholder")}
-                    value={formData.name}
-                    onChange={(e) =>
-                      setFormData({ ...formData, name: e.target.value })
-                    }
-                    className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
-                  />
+                {/* 左カラム: カード名 + レアリティを縦積み（右の画像ペーンと高さを揃える） */}
+                <div className="flex flex-col justify-between">
+                  <div>
+                    <label className="mb-1 block text-sm text-gray-300">
+                      {t("form.name")} *
+                    </label>
+                    <input
+                      type="text"
+                      name="name"
+                      required
+                      placeholder={t("form.namePlaceholder")}
+                      value={formData.name}
+                      onChange={(e) =>
+                        setFormData({ ...formData, name: e.target.value })
+                      }
+                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm text-gray-300">
+                      {t("form.rarity")}
+                    </label>
+                    <select
+                      name="rarity"
+                      value={formData.rarity}
+                      onChange={(e) =>
+                        setFormData({ ...formData, rarity: e.target.value as Rarity })
+                      }
+                      className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
+                      style={SELECT_ARROW_STYLE}
+                    >
+                      {RARITIES.map((r) => (
+                        <option key={r.value} value={r.value}>
+                          {tRarity(r.value)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
+                {/* 右カラム: 画像 */}
                 <div>
               <label className="mb-1 block text-sm text-gray-300">
                 {t("form.image")}
@@ -1192,26 +1376,9 @@ export default function CardManager({
                 )}
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">
-                {t("form.rarity")}
-              </label>
-              <select
-                name="rarity"
-                value={formData.rarity}
-                onChange={(e) =>
-                  setFormData({ ...formData, rarity: e.target.value as Rarity })
-                }
-                className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
-              >
-                {RARITIES.map((r) => (
-                  <option key={r.value} value={r.value}>
-                    {tRarity(r.value)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
+            {/* 手動モード: 出現確率スライダー / 自動モード: レアリティ内重み（1行レイアウト） */}
+            {rarityWeights === null ? (
+            <div className="md:col-span-2">
               <div className="mb-1 flex items-center gap-2">
                 <label className="text-sm text-gray-300">
                   {t("form.dropRate")}
@@ -1252,6 +1419,39 @@ export default function CardManager({
                 className="w-full"
               />
             </div>
+            ) : (
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-sm text-gray-300">{t("form.intraRarityWeight")}</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="10"
+                    step="0.1"
+                    value={formData.intraRarityWeight}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        intraRarityWeight: parseFloat(e.target.value),
+                      })
+                    }
+                    className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-gray-600 accent-purple-500"
+                  />
+                  {/* レアリティ内シェアと全体確率のインラインプレビュー */}
+                  {(() => {
+                    const stats = calculateIntraRarityStats(formData.intraRarityWeight, formData.rarity);
+                    if (!stats) return null;
+                    return (
+                      <span className="flex items-center gap-2 text-xs text-gray-400 shrink-0">
+                        <span>{tRarity(formData.rarity)}内: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
+                        <span className="text-gray-500">→</span>
+                        <span>{t("form.overallDropRate")}: <span className="text-green-400">{stats.overallPercent.toFixed(1)}%</span></span>
+                      </span>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
             <div className="md:col-span-2">
               <label className="mb-1 block text-sm text-gray-300">{t("form.description")}</label>
               <textarea
@@ -1298,7 +1498,8 @@ export default function CardManager({
             <select
               value={sortField}
               onChange={(e) => setSortField(e.target.value as SortField)}
-              className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600"
+              className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
+              style={SELECT_ARROW_STYLE}
             >
               <option value="created_at">{t("sort.createdAt")}</option>
               <option value="rarity">{t("sort.rarity")}</option>
@@ -1338,7 +1539,8 @@ export default function CardManager({
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-              className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-white border border-gray-600"
+              className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
+              style={SELECT_ARROW_STYLE}
             >
               <option value="all">{t("filter.all")}</option>
               <option value="active">{t("filter.active")}</option>
@@ -1676,14 +1878,16 @@ export default function CardManager({
         />
       )}
 
-      {/* Batch Drop Rate Modal */}
-      {/* 確率一括調整モーダル */}
-      <BatchDropRateModal
+      {/* Drop Rate Settings Modal */}
+      {/* カード排出確率設定モーダル */}
+      <DropRateSettingsModal
         isOpen={showBatchDropRateModal}
         onClose={() => setShowBatchDropRateModal(false)}
         cards={cards}
         streamerId={streamerId}
-        onSave={handleBatchDropRateSave}
+        onCardsSave={handleBatchDropRateSave}
+        onRarityWeightsApply={handleRarityWeightsApply}
+        rarityWeights={rarityWeights}
       />
 
       {/* Emote Import Modal */}
@@ -1840,7 +2044,8 @@ export default function CardManager({
                   <select
                     value={emoteDefaultRarity}
                     onChange={(e) => setEmoteDefaultRarity(e.target.value as Rarity)}
-                    className="w-full rounded-lg bg-gray-700 px-3 py-2 text-white text-sm"
+                    className="w-full appearance-none rounded-lg bg-gray-700 px-3 py-2 pr-10 text-white text-sm"
+                    style={SELECT_ARROW_STYLE}
                   >
                     {RARITIES.map((r) => (
                       <option key={r.value} value={r.value}>

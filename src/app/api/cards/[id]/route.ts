@@ -16,7 +16,23 @@ import { logger } from "@/lib/logger";
 import { deleteFromR2 } from "@/lib/r2-client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
+import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import type { ApiRateLimitResponse } from "@/types/api";
+
+function extractRarityWeights(streamers: unknown): Record<string, number> | null {
+  if (!streamers) return null;
+  if (Array.isArray(streamers)) {
+    const first = streamers[0];
+    if (first && typeof first === "object" && "rarity_weights" in first) {
+      return (first as { rarity_weights: Record<string, number> | null }).rarity_weights;
+    }
+    return null;
+  }
+  if (typeof streamers === "object" && "rarity_weights" in streamers) {
+    return (streamers as { rarity_weights: Record<string, number> | null }).rarity_weights;
+  }
+  return null;
+}
 
 export async function PUT(
   request: NextRequest,
@@ -61,7 +77,7 @@ export async function PUT(
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive } = body;
+    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight } = body;
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -112,11 +128,21 @@ export async function PUT(
       }
     }
 
+    // intraRarityWeight は正の数値のみ許可
+    if (intraRarityWeight !== undefined) {
+      if (typeof intraRarityWeight !== "number" || !Number.isFinite(intraRarityWeight) || intraRarityWeight <= 0) {
+        return NextResponse.json(
+          { error: ERROR_MESSAGES.INTRA_RARITY_WEIGHT_INVALID },
+          { status: 400 }
+        );
+      }
+    }
+
     // Verify ownership and get current image_url for cleanup
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, streamers!inner(twitch_user_id)")
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -125,6 +151,13 @@ export async function PUT(
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
+
+    const rarityWeights = extractRarityWeights(card.streamers);
+    const rarityChanged = rarity !== undefined && rarity !== card.rarity;
+    const activeChanged = isActive !== undefined && isActive !== card.is_active;
+    // 値が実際に変わった場合のみ再計算（リクエストに存在するだけでは不十分）
+    const intraWeightChanged = intraRarityWeight !== undefined && intraRarityWeight !== (card.intra_rarity_weight ?? 1.0);
+    const shouldRecalculate = rarityWeights !== null && (rarityChanged || activeChanged || intraWeightChanged);
 
     // NOTE: Drop rate validation removed because the system uses relative weights
     // The actual probability is calculated as: this_card_weight / total_weights
@@ -140,6 +173,7 @@ export async function PUT(
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
     if (rarity !== undefined) updateData.rarity = rarity;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
+    if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
     if (isActive !== undefined) updateData.is_active = isActive;
 
     // Delete old image if imageUrl is being changed to a different URL
@@ -188,7 +222,25 @@ export async function PUT(
       return handleDatabaseError(error, "Failed to update card");
     }
 
-    return NextResponse.json(updatedCard);
+    // 再計算はベストエフォート: カード更新は成功しているため、
+    // 再計算失敗でも500を返さない。次回のカード操作で再計算が走り自己修復する。
+    let recalculatedCards = null;
+    if (shouldRecalculate) {
+      try {
+        recalculatedCards = await recalculateIfAutoMode(
+          supabaseAdmin,
+          card.streamer_id,
+          rarityWeights
+        );
+      } catch (recalculationError) {
+        logger.error("Cards API: Recalculation failed after card update", recalculationError);
+      }
+    }
+
+    return NextResponse.json({
+      ...updatedCard,
+      recalculatedCards,
+    });
   } catch (error) {
     return handleApiError(error, "Cards API: PUT");
   }
@@ -241,7 +293,7 @@ export async function DELETE(
     // 削除用にimage_url付きでカードを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, streamers!inner(twitch_user_id)")
+      .select("streamer_id, image_url, streamers!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -292,7 +344,23 @@ export async function DELETE(
       return handleDatabaseError(error, "Failed to delete card");
     }
 
-    return NextResponse.json({ success: true });
+    // 再計算はベストエフォート: カード削除は成功しているため、
+    // 再計算失敗でも500を返さない。次回のカード操作で再計算が走り自己修復する。
+    let recalculatedCards = null;
+    const rarityWeights = extractRarityWeights(card.streamers);
+    if (rarityWeights !== null) {
+      try {
+        recalculatedCards = await recalculateIfAutoMode(
+          supabaseAdmin,
+          card.streamer_id,
+          rarityWeights
+        );
+      } catch (recalculationError) {
+        logger.error("Cards API: Recalculation failed after card deletion", recalculationError);
+      }
+    }
+
+    return NextResponse.json({ success: true, recalculatedCards });
   } catch (error) {
     return handleApiError(error, "Cards API: DELETE");
   }

@@ -17,6 +17,7 @@ import { normalizeDropRate } from "@/lib/card-utils";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
+import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -78,7 +79,7 @@ export async function POST(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { streamerId, name, description, imageUrl, rarity, dropRate } = body;
+    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight } = body;
 
     const nameValidation = validateCardName(name)
     if (!nameValidation.valid) {
@@ -119,10 +120,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // intraRarityWeight は省略可能（デフォルト1.0）。指定時は正の数値のみ
+    if (intraRarityWeight !== undefined) {
+      if (typeof intraRarityWeight !== "number" || !Number.isFinite(intraRarityWeight) || intraRarityWeight <= 0) {
+        return NextResponse.json(
+          { error: ERROR_MESSAGES.INTRA_RARITY_WEIGHT_INVALID },
+          { status: 400 }
+        );
+      }
+    }
+
     // Verify streamer owns this streamer profile
     const { data: streamer } = await supabaseAdmin
       .from("streamers")
-      .select("id")
+      .select("id, rarity_weights")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
@@ -138,16 +149,21 @@ export async function POST(request: NextRequest) {
     // 実際の確率は「このカードの重み / 全体の重み」で計算される
     // 重みは相対的であり絶対的な割合ではないため、合計100%制限は不要
 
+    const insertData: Record<string, unknown> = {
+      streamer_id: streamerId,
+      name,
+      description,
+      image_url: imageUrl,
+      rarity,
+      drop_rate: dropRate,
+    };
+    if (intraRarityWeight !== undefined) {
+      insertData.intra_rarity_weight = intraRarityWeight;
+    }
+
     const { data: card, error } = await supabaseAdmin
       .from("cards")
-      .insert({
-        streamer_id: streamerId,
-        name,
-        description,
-        image_url: imageUrl,
-        rarity,
-        drop_rate: dropRate,
-      })
+      .insert(insertData)
       .select()
       .maybeSingle();
 
@@ -155,12 +171,28 @@ export async function POST(request: NextRequest) {
       return handleDatabaseError(error, "Cards API: Failed to create card");
     }
 
+    // 再計算はベストエフォート: カード作成は成功しているため、
+    // 再計算失敗でも500を返さない。次回のカード操作で再計算が走り自己修復する。
+    let recalculatedCards = null;
+    try {
+      recalculatedCards = await recalculateIfAutoMode(
+        supabaseAdmin,
+        streamerId,
+        streamer.rarity_weights
+      );
+    } catch (recalculationError) {
+      logger.error("Cards API: Recalculation failed after card creation", recalculationError);
+    }
+
     // Note: Cache invalidation is handled by TTL (30 seconds)
     // Short TTL ensures new cards appear quickly without manual invalidation
     // 注意: キャッシュ無効化はTTL（30秒）で処理
     // 短いTTLにより手動で無効化せずとも新しいカードがすぐに表示される
 
-    return NextResponse.json(card);
+    return NextResponse.json({
+      ...card,
+      recalculatedCards,
+    });
   } catch (error) {
     return handleApiError(error, "Cards API: POST");
   }

@@ -52,6 +52,10 @@
       "imageUrlPlaceholder": "または画像URLを入力",
       "rarity": "レアリティ",
       "dropRate": "出現確率",
+      "intraRarityWeight": "レアリティ内での排出確率",
+      "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
+      "intraShareLabel": "内シェア",
+      "overallDropRate": "全体排出率",
       "description": "説明",
       "currentImage": "現在の画像",
       "croppedImage": "トリミング済み画像",
@@ -145,6 +149,17 @@
       "note": "※ 配布停止中のカードは確率計算に含まれません。",
       "close": "閉じる"
     },
+    "dropRateSettings": {
+      "button": "カード排出確率設定",
+      "title": "カード排出確率設定",
+      "tabRarity": "レアリティ別設定",
+      "tabPerCard": "カードごとの調整",
+      "switchToManual": "カードごとに設定するモードに切り替える",
+      "switchToAuto": "自動モードに切り替える",
+      "confirmSwitchToManual": "レアリティ別の自動計算が無効になります。切り替えますか？",
+      "confirmSwitchToAuto": "レアリティ別確率設定が有効になり、全カードの確率が再計算されます。切り替えますか？",
+      "switchFailed": "モードの切り替えに失敗しました"
+    },
     "batchDropRate": {
       "button": "確率一括調整",
       "title": "確率一括調整",
@@ -168,7 +183,10 @@
       "newWeight": "新しい重み",
       "resetAll": "全てリセット（重み100）",
       "resetRarity": "リセット",
-      "resetTooltip": "このレアリティの全カードの重みを100%にリセット"
+      "resetTooltip": "このレアリティの全カードの重みを100%にリセット",
+      "intraWeight": "レアリティ内排出確率",
+      "intraWeightHint": "レアリティ内での排出バランスを調整",
+      "overallDropRate": "排出確率"
     },
     "emoteImport": {
       "title": "エモートからカードを作成",
@@ -188,6 +206,36 @@
       "createCards": "{count}件のカードを作成",
       "fetchFailed": "エモートの取得に失敗しました",
       "createFailed": "カードの作成に失敗しました"
+    }
+  },
+  "rarityProbability": {
+    "title": "レアリティ別確率設定",
+    "description": "レアリティごとの排出確率を設定すると、カードの追加・削除時に重みが自動計算されます。",
+    "enable": "自動確率設定を有効にする",
+    "disable": "カードごとに設定するモードに切り替える",
+    "total": "合計",
+    "totalWarning": "合計が100%ではありません",
+    "activeCards": "枚",
+    "perCard": "カードあたり",
+    "noCards": "0枚",
+    "save": "保存して適用",
+    "saving": "計算中...",
+    "saved": "確率を再計算しました",
+    "autoCalculated": "レアリティ設定に基づいて自動計算されます",
+    "batchOverrideWarning": "各カードの排出確率はレアリティ設定と重みから自動計算されます。カード追加・削除時に再計算されますが、各カードの重み設定は保持されます。",
+    "help": {
+      "title": "確率設定ガイド",
+      "autoModeTitle": "レアリティ別確率設定（デフォルト）",
+      "autoModeDesc1": "レアリティごとに排出確率の合計を設定します（例: コモン50%, レア30%, エピック15%, レジェンダリー5%）。",
+      "autoModeDesc2": "同じレアリティ内のカードは「レアリティ内での排出確率」スライダーで相対的な重みを調整できます。",
+      "autoModeDesc3": "カードの追加・削除時に、レアリティ比率を維持するよう全カードの最終確率が自動で再計算されます。各カードの重み設定はそのまま保持されます。",
+      "exampleTitle": "計算例",
+      "exampleDesc": "コモン = 50%, コモンカードが3枚（重み 1.0, 2.0, 1.0）の場合：",
+      "exampleA": "カードA: 50% × (1.0 ÷ 4.0) = 12.5%",
+      "exampleB": "カードB: 50% × (2.0 ÷ 4.0) = 25.0%",
+      "exampleC": "カードC: 50% × (1.0 ÷ 4.0) = 12.5%",
+      "perCardModeTitle": "カードごとに設定するモード",
+      "perCardModeDesc": "各カードの出現確率を個別に直接設定するモードです。カードの追加・削除時に自動再計算は行われません。"
     }
   },
   "collection": {

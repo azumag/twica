@@ -57,6 +57,14 @@ export const RARITIES = [
   { value: "legendary", label: "レジェンダリー", color: "bg-yellow-500" },
 ] as const;
 
+// レアリティ別デフォルト排出確率（%）。自動モード有効化時の初期値。
+export const DEFAULT_RARITY_WEIGHTS: Record<string, number> = {
+  common: 70,
+  rare: 20,
+  epic: 8,
+  legendary: 2,
+};
+
 export const RARITY_ORDER = ["legendary", "epic", "rare", "common"];
 
 export const RARITY_COLORS = {
@@ -216,6 +224,7 @@ export const ERROR_MESSAGES = {
   STREAMER_ID_REQUIRED: 'streamerId is required',
   STREAMER_ID_MISSING: 'Missing streamerId',
   DROP_RATE_INVALID: 'Drop rate must be a number between 0 and 1',
+  INTRA_RARITY_WEIGHT_INVALID: 'Intra-rarity weight must be a positive number',
   CONTENT_TYPE_MISSING: 'Content-Type header is required',
   CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
   CARD_NAME_REQUIRED: 'Card name is required',

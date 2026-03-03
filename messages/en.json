@@ -52,6 +52,10 @@
       "imageUrlPlaceholder": "Or enter image URL",
       "rarity": "Rarity",
       "dropRate": "Drop Rate",
+      "intraRarityWeight": "Drop Rate within Rarity",
+      "intraRarityWeightHint": "Adjust drop balance among cards of the same rarity (default: 1.0)",
+      "intraShareLabel": " share",
+      "overallDropRate": "Overall drop rate",
       "description": "Description",
       "currentImage": "Current image",
       "croppedImage": "Cropped image",
@@ -145,6 +149,17 @@
       "note": "* Paused cards are not included in probability calculation.",
       "close": "Close"
     },
+    "dropRateSettings": {
+      "button": "Drop Rate Settings",
+      "title": "Drop Rate Settings",
+      "tabRarity": "By Rarity",
+      "tabPerCard": "Per Card",
+      "switchToManual": "Switch to per-card mode",
+      "switchToAuto": "Switch to auto mode",
+      "confirmSwitchToManual": "Auto-calculation by rarity will be disabled. Switch?",
+      "confirmSwitchToAuto": "Rarity-based probability will be enabled and all card rates will be recalculated. Switch?",
+      "switchFailed": "Failed to switch mode"
+    },
     "batchDropRate": {
       "button": "Batch Drop Rate",
       "title": "Batch Drop Rate Adjustment",
@@ -168,7 +183,10 @@
       "newWeight": "New Weight",
       "resetAll": "Reset All (Weight 100)",
       "resetRarity": "Reset",
-      "resetTooltip": "Reset all cards in this rarity to 100% weight"
+      "resetTooltip": "Reset all cards in this rarity to 100% weight",
+      "intraWeight": "Drop Rate in Rarity",
+      "intraWeightHint": "Adjust drop balance within rarity",
+      "overallDropRate": "Drop Rate"
     },
     "emoteImport": {
       "title": "Create Cards from Emotes",
@@ -188,6 +206,36 @@
       "createCards": "Create {count} cards",
       "fetchFailed": "Failed to fetch emotes",
       "createFailed": "Failed to create cards"
+    }
+  },
+  "rarityProbability": {
+    "title": "Rarity Probability Settings",
+    "description": "Set target probabilities per rarity to auto-calculate card weights when cards are added or removed.",
+    "enable": "Enable Auto Probability Settings",
+    "disable": "Switch to per-card settings",
+    "total": "Total",
+    "totalWarning": "Total is not 100%",
+    "activeCards": " cards",
+    "perCard": "Per card",
+    "noCards": "0 cards",
+    "save": "Save and Apply",
+    "saving": "Calculating...",
+    "saved": "Probabilities recalculated",
+    "autoCalculated": "Automatically calculated from rarity settings",
+    "batchOverrideWarning": "Drop rates are auto-calculated from rarity settings and weights. They are recalculated when cards are added/removed, but each card's weight setting is preserved.",
+    "help": {
+      "title": "Probability Settings Guide",
+      "autoModeTitle": "Rarity-based Probability Settings (Default)",
+      "autoModeDesc1": "Set target drop rates per rarity (e.g., Common 50%, Rare 30%, Epic 15%, Legendary 5%).",
+      "autoModeDesc2": "Cards within the same rarity can have their relative weight adjusted via the \"Drop rate within rarity\" slider.",
+      "autoModeDesc3": "When cards are added or removed, all drop rates are automatically recalculated to maintain rarity ratios. Each card's weight setting is preserved.",
+      "exampleTitle": "Example",
+      "exampleDesc": "Common = 50%, 3 Common cards (weights 1.0, 2.0, 1.0):",
+      "exampleA": "Card A: 50% × (1.0 ÷ 4.0) = 12.5%",
+      "exampleB": "Card B: 50% × (2.0 ÷ 4.0) = 25.0%",
+      "exampleC": "Card C: 50% × (1.0 ÷ 4.0) = 12.5%",
+      "perCardModeTitle": "Per-card Settings Mode",
+      "perCardModeDesc": "Manually set drop rates for each card individually. No automatic recalculation occurs when cards are added or removed."
     }
   },
   "collection": {

@@ -6,6 +6,8 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
+import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+import { logger } from "@/lib/logger";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 /**
@@ -15,6 +17,7 @@ import type { ApiRateLimitResponse } from "@/types/api";
 interface DropRateUpdate {
   id: string;
   dropRate: number;
+  intraRarityWeight?: number;
 }
 
 /**
@@ -104,7 +107,7 @@ export async function POST(request: NextRequest) {
     // 配信者がこのstreamerプロフィールを所有しているか確認
     const { data: streamer } = await supabaseAdmin
       .from("streamers")
-      .select("id")
+      .select("id, rarity_weights")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
@@ -126,6 +129,12 @@ export async function POST(request: NextRequest) {
 
       if (typeof update.dropRate !== "number" || update.dropRate < 0 || update.dropRate > 1) {
         validationErrors.push(`更新${i + 1}: ${ERROR_MESSAGES.DROP_RATE_INVALID}`);
+      }
+
+      if (update.intraRarityWeight !== undefined) {
+        if (typeof update.intraRarityWeight !== "number" || !Number.isFinite(update.intraRarityWeight) || update.intraRarityWeight <= 0) {
+          validationErrors.push(`更新${i + 1}: ${ERROR_MESSAGES.INTRA_RARITY_WEIGHT_INVALID}`);
+        }
       }
     }
 
@@ -163,7 +172,13 @@ export async function POST(request: NextRequest) {
     // 従来は各カードごとに個別のSupabase UPDATE（=個別のHTTP fetch）を発行していたが、
     // Cloudflare Workersのサブリクエスト上限（50回/リクエスト）を超過するため、
     // PostgreSQLストアドプロシージャで1リクエストに集約
-    const rpcPayload = updates.map(u => ({ id: u.id, drop_rate: u.dropRate }));
+    const rpcPayload = updates.map(u => {
+      const payload: Record<string, unknown> = { id: u.id, drop_rate: u.dropRate };
+      if (u.intraRarityWeight !== undefined) {
+        payload.intra_rarity_weight = u.intraRarityWeight;
+      }
+      return payload;
+    });
     const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc(
       "batch_update_card_drop_rates",
       {
@@ -185,7 +200,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // intra_rarity_weight変更がある場合、自動再計算を実行
+    // 再計算はベストエフォート: バッチ更新は成功しているため、再計算失敗でも500を返さない
+    const hasIntraWeightChanges = updates.some(u => u.intraRarityWeight !== undefined);
+    let recalculatedCards = null;
+    if (hasIntraWeightChanges && streamer.rarity_weights) {
+      try {
+        recalculatedCards = await recalculateIfAutoMode(
+          supabaseAdmin,
+          streamerId,
+          streamer.rarity_weights
+        );
+      } catch (recalculationError) {
+        logger.error("Cards Batch Update API: Recalculation failed after intra-weight update", recalculationError);
+      }
+    }
+
     // 更新後のカードデータを取得して返す
+    // 再計算済みの場合はそちらを優先
     const { data: updatedCards, error: fetchError } = await supabaseAdmin
       .from("cards")
       .select()
@@ -200,6 +232,7 @@ export async function POST(request: NextRequest) {
       success: true,
       updated: updates.length,
       cards: updatedCards,
+      recalculatedCards,
     });
   } catch (error) {
     return handleApiError(error, "Cards Batch Update API: POST");

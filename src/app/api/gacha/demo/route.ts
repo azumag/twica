@@ -21,6 +21,7 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
     skill_type: "attack" as const,
     skill_name: "通常攻撃",
     skill_power: 100,
+    intra_rarity_weight: 1.0,
   },
   {
     name: "デモカード - レア",
@@ -36,6 +37,7 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
     skill_type: "defense" as const,
     skill_name: "防御強化",
     skill_power: 150,
+    intra_rarity_weight: 1.0,
   },
   {
     name: "デモカード - エピック",
@@ -51,6 +53,7 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
     skill_type: "heal" as const,
     skill_name: "回復",
     skill_power: 200,
+    intra_rarity_weight: 1.0,
   },
   {
     name: "デモカード - レジェンダリー",
@@ -66,6 +69,7 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
     skill_type: "special" as const,
     skill_name: "必殺技",
     skill_power: 300,
+    intra_rarity_weight: 1.0,
   },
 ];
 

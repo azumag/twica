@@ -80,7 +80,8 @@ describe('POST /api/streamer/settings', () => {
 
     expect(response.status).toBe(200)
     const data = await response.json()
-    expect(data).toEqual({ success: true })
+    expect(data.success).toBe(true)
+    expect(data.recalculatedCards).toBeNull()
     expect(getSupabaseAdmin).toHaveBeenCalled()
   })
 

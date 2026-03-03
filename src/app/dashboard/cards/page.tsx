@@ -51,6 +51,7 @@ export default async function CardsPage() {
     <CardManager
       streamerId={streamerData.streamer.id}
       initialCards={initialCards}
+      initialRarityWeights={streamerData.streamer.rarity_weights}
       viewMode="list"
       showViewToggle={true}
       maxImageWidth={maxImageWidth}
