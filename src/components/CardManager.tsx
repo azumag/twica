@@ -4,16 +4,15 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES, UPLOAD_CONFIG } from "@/lib/constants";
+import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
-import BatchDropRateModal from "./BatchDropRateModal";
+import DropRateSettingsModal from "./DropRateSettingsModal";
 import ExpandableDescription from "./ExpandableDescription";
-import RarityProbabilityPanel from "./RarityProbabilityPanel";
 
 /** Custom dropdown arrow style for appearance-none select boxes */
 const SELECT_ARROW_STYLE: React.CSSProperties = {
@@ -101,12 +100,11 @@ export default function CardManager({
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
   const tRarity = useTranslations("rarity");
-  const tRarityProbability = useTranslations("rarityProbability");
   const [cards, setCards] = useState<Card[]>(initialCards);
   // DB値の変換: null=未設定→デフォルト自動モード, {}=手動モード明示, {weights}=自動モード
   const [rarityWeights, setRarityWeights] = useState<Record<string, number> | null>(() => {
     if (initialRarityWeights === null || initialRarityWeights === undefined) {
-      return { common: 50, rare: 30, epic: 15, legendary: 5 };
+      return { ...DEFAULT_RARITY_WEIGHTS };
     }
     if (Object.keys(initialRarityWeights).length === 0) {
       return null; // {} = 手動モード明示のセンチネル
@@ -342,7 +340,7 @@ export default function CardManager({
       credentials: "include",
       body: JSON.stringify({
         streamerId,
-        rarityWeights: { common: 50, rare: 30, epic: 15, legendary: 5 },
+        rarityWeights: DEFAULT_RARITY_WEIGHTS,
       }),
     })
       .then(res => res.json())
@@ -1093,13 +1091,13 @@ export default function CardManager({
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
         <div className="flex flex-col gap-2 sm:flex-row">
-          {/* Batch drop rate adjustment button */}
-          {/* 確率一括調整ボタン */}
+          {/* Drop rate settings button */}
+          {/* カード排出確率設定ボタン */}
           <button
             onClick={() => setShowBatchDropRateModal(true)}
             className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
           >
-            {t("batchDropRate.button")}
+            {t("dropRateSettings.button")}
           </button>
           {/* Emote import button */}
           {/* エモートインポートボタン */}
@@ -1117,13 +1115,6 @@ export default function CardManager({
           </button>
         </div>
       </div>
-
-      <RarityProbabilityPanel
-        streamerId={streamerId}
-        cards={cards}
-        rarityWeights={rarityWeights}
-        onApply={handleRarityWeightsApply}
-      />
 
       {/* Plan over limit warning banner */}
       {/* プラン容量超過警告バナー */}
@@ -1882,16 +1873,15 @@ export default function CardManager({
         />
       )}
 
-      {/* Batch Drop Rate Modal */}
-      {/* 確率一括調整モーダル */}
-      <BatchDropRateModal
+      {/* Drop Rate Settings Modal */}
+      {/* カード排出確率設定モーダル */}
+      <DropRateSettingsModal
         isOpen={showBatchDropRateModal}
         onClose={() => setShowBatchDropRateModal(false)}
         cards={cards}
         streamerId={streamerId}
-        onSave={handleBatchDropRateSave}
-        warningMessage={rarityWeights ? tRarityProbability("batchOverrideWarning") : undefined}
-        autoMode={rarityWeights !== null}
+        onCardsSave={handleBatchDropRateSave}
+        onRarityWeightsApply={handleRarityWeightsApply}
         rarityWeights={rarityWeights}
       />
 

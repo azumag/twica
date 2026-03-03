@@ -149,6 +149,17 @@
       "note": "※ 配布停止中のカードは確率計算に含まれません。",
       "close": "閉じる"
     },
+    "dropRateSettings": {
+      "button": "カード排出確率設定",
+      "title": "カード排出確率設定",
+      "tabRarity": "レアリティ別設定",
+      "tabPerCard": "カードごとの調整",
+      "switchToManual": "カードごとに設定するモードに切り替える",
+      "switchToAuto": "自動モードに切り替える",
+      "confirmSwitchToManual": "レアリティ別の自動計算が無効になります。切り替えますか？",
+      "confirmSwitchToAuto": "レアリティ別確率設定が有効になり、全カードの確率が再計算されます。切り替えますか？",
+      "switchFailed": "モードの切り替えに失敗しました"
+    },
     "batchDropRate": {
       "button": "確率一括調整",
       "title": "確率一括調整",

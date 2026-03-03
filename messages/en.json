@@ -149,6 +149,17 @@
       "note": "* Paused cards are not included in probability calculation.",
       "close": "Close"
     },
+    "dropRateSettings": {
+      "button": "Drop Rate Settings",
+      "title": "Drop Rate Settings",
+      "tabRarity": "By Rarity",
+      "tabPerCard": "Per Card",
+      "switchToManual": "Switch to per-card mode",
+      "switchToAuto": "Switch to auto mode",
+      "confirmSwitchToManual": "Auto-calculation by rarity will be disabled. Switch?",
+      "confirmSwitchToAuto": "Rarity-based probability will be enabled and all card rates will be recalculated. Switch?",
+      "switchFailed": "Failed to switch mode"
+    },
     "batchDropRate": {
       "button": "Batch Drop Rate",
       "title": "Batch Drop Rate Adjustment",

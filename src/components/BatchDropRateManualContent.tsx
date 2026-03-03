@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import { getCsrfTokenFromCookie } from "@/lib/client-csrf";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
@@ -13,6 +14,7 @@ interface BatchDropRateManualContentProps {
   cards: Card[];
   streamerId: string;
   onSave: (updatedCards: Card[]) => void;
+  onSwitchToAutoMode: () => void;
 }
 
 type TabType = "individual" | "rarity";
@@ -30,6 +32,7 @@ export default function BatchDropRateManualContent({
   cards,
   streamerId,
   onSave,
+  onSwitchToAutoMode,
 }: BatchDropRateManualContentProps) {
   const t = useTranslations("cardManager");
   const tRarity = useTranslations("rarity");
@@ -195,10 +198,7 @@ export default function BatchDropRateManualContent({
     if (!hasChanges) return;
     setSaving(true);
     try {
-      const csrfToken = document.cookie
-        .split("; ")
-        .find(row => row.startsWith("csrf_token="))
-        ?.split("=")[1];
+      const csrfToken = getCsrfTokenFromCookie();
 
       const updates: Array<{ id: string; dropRate: number }> = [];
       const addedCardIds = new Set<string>();
@@ -276,7 +276,7 @@ export default function BatchDropRateManualContent({
         {/* ヘッダー */}
         <div className="p-6 border-b border-gray-700">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-white">{t("batchDropRate.title")}</h3>
+            <h3 className="text-lg font-semibold text-white">{t("dropRateSettings.title")}</h3>
             <button onClick={handleClose} className="text-gray-400 hover:text-white" aria-label="Close">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -472,20 +472,33 @@ export default function BatchDropRateManualContent({
 
         {/* フッター */}
         <div className="p-6 border-t border-gray-700 bg-gray-800/50">
-          <div className="flex justify-end gap-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
             <button
-              onClick={handleClose}
-              className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
+              type="button"
+              onClick={() => {
+                // 未保存変更がある場合は確認（モード切替で変更が失われるため）
+                if (hasChanges && !confirm(t("batchDropRate.confirmClose"))) return;
+                onSwitchToAutoMode();
+              }}
+              className="text-sm text-gray-400 hover:text-white transition text-left"
             >
-              {tCommon("cancel")}
+              {t("dropRateSettings.switchToAuto")}
             </button>
-            <button
-              onClick={handleSave}
-              disabled={!hasChanges || saving}
-              className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {saving ? t("batchDropRate.saving") : t("batchDropRate.save")}
-            </button>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={handleClose}
+                className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
+              >
+                {tCommon("cancel")}
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={!hasChanges || saving}
+                className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? t("batchDropRate.saving") : t("batchDropRate.save")}
+              </button>
+            </div>
           </div>
         </div>
       </div>
