@@ -343,7 +343,10 @@ export default function CardManager({
         rarityWeights: DEFAULT_RARITY_WEIGHTS,
       }),
     })
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
       .then(data => {
         if (Array.isArray(data.recalculatedCards)) {
           const recalculated = data.recalculatedCards as Card[];
@@ -353,8 +356,10 @@ export default function CardManager({
           });
         }
       })
-      .catch(() => {
-        // ベストエフォート: 失敗してもUIは自動モードのまま、次回カード操作で保存される
+      .catch((err) => {
+        // 失敗時にフラグをリセット→次回マウントでリトライ可能にする
+        logger.error("Failed to auto-save default rarity weights:", err);
+        autoSavedWeightsRef.current = false;
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -142,7 +142,7 @@ export async function PUT(
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, rarity, is_active, streamers!inner(twitch_user_id, rarity_weights)")
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -155,7 +155,8 @@ export async function PUT(
     const rarityWeights = extractRarityWeights(card.streamers);
     const rarityChanged = rarity !== undefined && rarity !== card.rarity;
     const activeChanged = isActive !== undefined && isActive !== card.is_active;
-    const intraWeightChanged = intraRarityWeight !== undefined;
+    // 値が実際に変わった場合のみ再計算（リクエストに存在するだけでは不十分）
+    const intraWeightChanged = intraRarityWeight !== undefined && intraRarityWeight !== (card.intra_rarity_weight ?? 1.0);
     const shouldRecalculate = rarityWeights !== null && (rarityChanged || activeChanged || intraWeightChanged);
 
     // NOTE: Drop rate validation removed because the system uses relative weights
