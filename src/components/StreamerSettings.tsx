@@ -67,6 +67,7 @@ export default async function StreamerSettings({ streamerData }: StreamerSetting
         <CardManager
           streamerId={streamerData.streamer.id}
           initialCards={streamerData.cards as Card[]}
+          initialRarityWeights={streamerData.streamer.rarity_weights}
         />
       </div>
     </section>
