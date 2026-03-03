@@ -59,10 +59,10 @@ export const RARITIES = [
 
 // レアリティ別デフォルト排出確率（%）。自動モード有効化時の初期値。
 export const DEFAULT_RARITY_WEIGHTS: Record<string, number> = {
-  common: 50,
-  rare: 30,
-  epic: 15,
-  legendary: 5,
+  common: 70,
+  rare: 20,
+  epic: 8,
+  legendary: 2,
 };
 
 export const RARITY_ORDER = ["legendary", "epic", "rare", "common"];
