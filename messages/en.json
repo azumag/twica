@@ -200,7 +200,7 @@
     "title": "Rarity Probability Settings",
     "description": "Set target probabilities per rarity to auto-calculate card weights when cards are added or removed.",
     "enable": "Enable Auto Probability Settings",
-    "disable": "Return to Manual Mode",
+    "disable": "Switch to per-card settings",
     "total": "Total",
     "totalWarning": "Total is not 100%",
     "activeCards": " cards",
