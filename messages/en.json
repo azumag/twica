@@ -210,7 +210,21 @@
     "saving": "Calculating...",
     "saved": "Probabilities recalculated",
     "autoCalculated": "Automatically calculated from rarity settings",
-    "batchOverrideWarning": "Manually changed weights will be overwritten by auto-calculation on the next card add/remove."
+    "batchOverrideWarning": "Drop rates are auto-calculated from rarity settings and weights. They are recalculated when cards are added/removed, but each card's weight setting is preserved.",
+    "help": {
+      "title": "Probability Settings Guide",
+      "autoModeTitle": "Rarity-based Probability Settings (Default)",
+      "autoModeDesc1": "Set target drop rates per rarity (e.g., Common 50%, Rare 30%, Epic 15%, Legendary 5%).",
+      "autoModeDesc2": "Cards within the same rarity can have their relative weight adjusted via the \"Drop rate within rarity\" slider.",
+      "autoModeDesc3": "When cards are added or removed, all drop rates are automatically recalculated to maintain rarity ratios. Each card's weight setting is preserved.",
+      "exampleTitle": "Example",
+      "exampleDesc": "Common = 50%, 3 Common cards (weights 1.0, 2.0, 1.0):",
+      "exampleA": "Card A: 50% × (1.0 ÷ 4.0) = 12.5%",
+      "exampleB": "Card B: 50% × (2.0 ÷ 4.0) = 25.0%",
+      "exampleC": "Card C: 50% × (1.0 ÷ 4.0) = 12.5%",
+      "perCardModeTitle": "Per-card Settings Mode",
+      "perCardModeDesc": "Manually set drop rates for each card individually. No automatic recalculation occurs when cards are added or removed."
+    }
   },
   "collection": {
     "title": "My Collection",

@@ -58,6 +58,7 @@ export default function RarityProbabilityPanel({
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   const rarityKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -178,9 +179,22 @@ export default function RarityProbabilityPanel({
         onClick={() => setExpanded((prev) => !prev)}
         className="flex w-full items-center justify-between px-4 py-3 text-left"
       >
-        <div>
-          <p className="font-medium text-white">{t("title")}</p>
-          <p className="text-xs text-gray-400">{t("description")}</p>
+        <div className="flex items-center gap-2">
+          <div>
+            <p className="font-medium text-white">{t("title")}</p>
+            <p className="text-xs text-gray-400">{t("description")}</p>
+          </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowHelp(true);
+            }}
+            className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-gray-500 text-gray-400 hover:text-gray-200 hover:border-gray-300 text-xs leading-none transition-colors shrink-0"
+            aria-label={t("help.title")}
+          >
+            ?
+          </button>
         </div>
         <span className="text-gray-400">{expanded ? "▲" : "▼"}</span>
       </button>
@@ -293,6 +307,55 @@ export default function RarityProbabilityPanel({
 
           {message && <p className="mt-3 text-sm text-green-400">{message}</p>}
           {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+        </div>
+      )}
+
+      {/* ヘルプモーダル */}
+      {showHelp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setShowHelp(false)}>
+          <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-xl bg-gray-800 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">{t("help.title")}</h3>
+              <button
+                type="button"
+                onClick={() => setShowHelp(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-5 text-sm text-gray-300">
+              {/* 自動モード説明 */}
+              <div>
+                <h4 className="mb-2 font-semibold text-purple-400">{t("help.autoModeTitle")}</h4>
+                <ul className="space-y-1.5 list-disc pl-4">
+                  <li>{t("help.autoModeDesc1")}</li>
+                  <li>{t("help.autoModeDesc2")}</li>
+                  <li>{t("help.autoModeDesc3")}</li>
+                </ul>
+              </div>
+
+              {/* 計算例 */}
+              <div className="rounded-lg bg-gray-700/50 p-3">
+                <p className="mb-2 font-medium text-gray-200">{t("help.exampleTitle")}</p>
+                <p className="mb-2 text-xs text-gray-400">{t("help.exampleDesc")}</p>
+                <div className="space-y-0.5 font-mono text-xs text-gray-300">
+                  <p>{t("help.exampleA")}</p>
+                  <p>{t("help.exampleB")}</p>
+                  <p>{t("help.exampleC")}</p>
+                </div>
+              </div>
+
+              {/* カードごとモード説明 */}
+              <div>
+                <h4 className="mb-2 font-semibold text-gray-200">{t("help.perCardModeTitle")}</h4>
+                <p>{t("help.perCardModeDesc")}</p>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
