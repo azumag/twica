@@ -174,7 +174,8 @@
       "resetRarity": "リセット",
       "resetTooltip": "このレアリティの全カードの重みを100%にリセット",
       "intraWeight": "レアリティ内排出確率",
-      "intraWeightHint": "レアリティ内での排出バランスを調整"
+      "intraWeightHint": "レアリティ内での排出バランスを調整",
+      "overallDropRate": "排出確率"
     },
     "emoteImport": {
       "title": "エモートからカードを作成",

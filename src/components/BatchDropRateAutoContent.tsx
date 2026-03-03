@@ -290,22 +290,15 @@ export default function BatchDropRateAutoContent({
                           className="w-full"
                         />
                       </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <div className="flex items-center gap-1 w-24">
-                          <span className="text-xs text-gray-400">{t("batchDropRate.intraWeight")}:</span>
-                          <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-white"}`}>
-                            {currentWeight.toFixed(1)}
+                      {/* 確率プレビュー */}
+                      {targetPercent > 0 && (
+                        <div className="flex items-center gap-2 text-sm shrink-0">
+                          <span className="text-xs text-gray-500">{t("batchDropRate.overallDropRate")}</span>
+                          <span className={`font-medium ${isModified ? "text-yellow-400" : "text-green-400"}`}>
+                            {overallPercent.toFixed(1)}%
                           </span>
                         </div>
-                        {/* レアリティ内シェアと全体確率のプレビュー */}
-                        {targetPercent > 0 && (
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="text-gray-400">{intraPercent.toFixed(0)}%</span>
-                            <span className="text-gray-500">&rarr;</span>
-                            <span className="text-green-400">{overallPercent.toFixed(1)}%</span>
-                          </div>
-                        )}
-                      </div>
+                      )}
                     </div>
                   </div>
                 );

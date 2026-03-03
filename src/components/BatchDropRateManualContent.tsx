@@ -308,11 +308,6 @@ export default function BatchDropRateManualContent({
           <div className="mt-4 flex flex-wrap items-center justify-between gap-4 text-sm">
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-2">
-                <span className="text-gray-400">{t("batchDropRate.totalWeight")}:</span>
-                <span className="text-white font-medium">{(totalWeight * 100).toFixed(1)}%</span>
-              </div>
-              <div className="h-4 w-px bg-gray-600" />
-              <div className="flex items-center gap-2">
                 <span className="text-gray-400">{t("batchDropRate.activeCards")}:</span>
                 <span className="text-white font-medium">{activeCards.length}</span>
               </div>
@@ -397,19 +392,11 @@ export default function BatchDropRateManualContent({
                           className="w-full"
                         />
                       </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <div className="flex items-center gap-1 w-20">
-                          <span className="text-xs text-gray-400">{t("batchDropRate.weight")}:</span>
-                          <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-white"}`}>
-                            {(currentRate * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1 w-20">
-                          <span className="text-xs text-gray-400">&rarr;</span>
-                          <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-green-400"}`}>
-                            {probability.toFixed(1)}%
-                          </span>
-                        </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-xs text-gray-500">{t("batchDropRate.overallDropRate")}</span>
+                        <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-green-400"}`}>
+                          {probability.toFixed(1)}%
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -446,9 +433,6 @@ export default function BatchDropRateManualContent({
                         </span>
                       </div>
                       <div className="flex items-center gap-4">
-                        <div className="text-sm text-gray-400">
-                          {t("batchDropRate.originalWeight")}: {(stats.originalWeight * 100).toFixed(1)}%
-                        </div>
                         <button
                           type="button"
                           onClick={() => handleResetRarity(rarity)}
@@ -461,12 +445,6 @@ export default function BatchDropRateManualContent({
                     </div>
 
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-sm text-gray-400">{t("batchDropRate.weight")}:</span>
-                        <span className={`text-sm font-medium w-16 text-right ${isModified ? "text-yellow-400" : "text-white"}`}>
-                          {(multiplier * 100).toFixed(1)}%
-                        </span>
-                      </div>
                       <div className="flex-1 w-full">
                         <input
                           type="range"
@@ -478,19 +456,11 @@ export default function BatchDropRateManualContent({
                           className="w-full"
                         />
                       </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <div className="text-sm">
-                          <span className="text-gray-400">{t("batchDropRate.newWeight")}: </span>
-                          <span className={`font-medium ${isModified ? "text-yellow-400" : "text-white"}`}>
-                            {(stats.currentWeight * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                        <span className="text-gray-500">&rarr;</span>
-                        <div className="text-sm">
-                          <span className={`font-medium ${isModified ? "text-yellow-400" : "text-green-400"}`}>
-                            {rarityProbability.toFixed(1)}%
-                          </span>
-                        </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-xs text-gray-500">{t("batchDropRate.overallDropRate")}</span>
+                        <span className={`text-sm font-medium ${isModified ? "text-yellow-400" : "text-green-400"}`}>
+                          {rarityProbability.toFixed(1)}%
+                        </span>
                       </div>
                     </div>
                   </div>
