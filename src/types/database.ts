@@ -440,6 +440,31 @@ export interface Database {
           activated_at?: string
         }
       }
+      // コレクションコンプリート達成記録テーブル
+      // 達成時点のtotal_cardsを記録し、カード追加後も過去コンプリートを表示可能にする
+      collection_completions: {
+        Row: {
+          id: string
+          twitch_user_id: string
+          streamer_id: string
+          total_cards: number
+          completed_at: string
+        }
+        Insert: {
+          id?: string
+          twitch_user_id: string
+          streamer_id: string
+          total_cards: number
+          completed_at?: string
+        }
+        Update: {
+          id?: string
+          twitch_user_id?: string
+          streamer_id?: string
+          total_cards?: number
+          completed_at?: string
+        }
+      }
       // ストリーマーごとのストレージ容量ボーナステーブル
       // キャンペーンやプロモーション等で追加容量を付与するために使用
       streamer_storage_bonus: {

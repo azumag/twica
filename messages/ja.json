@@ -247,7 +247,14 @@
     "cardTypes": "{count}種類",
     "totalCount": "{count}枚",
     "cardCount": "x{count}",
-    "viewCollection": "コレクションを見る"
+    "viewCollection": "コレクションを見る",
+    "unownedCard": "???"
+  },
+  "collectionProgress": {
+    "progress": "{owned}/{total}種類",
+    "complete": "コンプリート！",
+    "progressBar": "{percent}%",
+    "pastComplete": "全{totalCards}種時にコンプリート達成"
   },
   "streamerCollection": {
     "title": "{streamerName} のコレクション",

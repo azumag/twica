@@ -247,7 +247,14 @@
     "cardTypes": "{count} types",
     "totalCount": "{count} cards",
     "cardCount": "x{count}",
-    "viewCollection": "View Collection"
+    "viewCollection": "View Collection",
+    "unownedCard": "???"
+  },
+  "collectionProgress": {
+    "progress": "{owned}/{total} types",
+    "complete": "Complete!",
+    "progressBar": "{percent}%",
+    "pastComplete": "Previously completed all {totalCards} types"
   },
   "streamerCollection": {
     "title": "{streamerName}'s Collection",

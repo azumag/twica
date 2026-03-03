@@ -1,8 +1,14 @@
 import { redirect, notFound } from "next/navigation";
 import { getSession } from "@/lib/session";
-import { getUserCardsForStreamer, getStreamerById } from "@/lib/dashboard-data";
-import { RARITY_ORDER } from "@/lib/constants";
+import {
+  getUserCardsForStreamer,
+  getStreamerById,
+  getActiveCardsForStreamer,
+  getCollectionCompletions,
+  recordCollectionCompletion,
+} from "@/lib/dashboard-data";
 import StreamerCollection from "@/components/StreamerCollection";
+import type { StreamerCollectionCard } from "@/components/StreamerCollection";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -37,26 +43,57 @@ export default async function StreamerCollectionPage({
     notFound();
   }
 
-  // Fetch user's card collection for this streamer
-  // このユーザーがこの配信者から獲得したカードを取得
-  const userCards = await getUserCardsForStreamer(session.twitchUserId, streamerId);
+  // Fetch user's cards, all active cards, and completion history in parallel
+  // ユーザー所持カード・全アクティブカード・コンプリート履歴を並列取得
+  const [userCards, activeCards, completionHistory] = await Promise.all([
+    getUserCardsForStreamer(session.twitchUserId, streamerId),
+    getActiveCardsForStreamer(streamerId),
+    getCollectionCompletions(session.twitchUserId, streamerId),
+  ]);
 
-  // Sort cards by rarity (legendary first)
-  // レアリティでソート（レジェンダリーが先頭）
-  userCards.sort((a, b) => {
-    return RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity);
+  // Build full card list (owned + unowned) based on active cards
+  // アクティブカードを基準に、所持/未所持を統合した一覧を作成
+  const ownedCardMap = new Map(userCards.map((card) => [card.id, card]));
+  const cards: StreamerCollectionCard[] = activeCards.map((card) => {
+    const ownedCard = ownedCardMap.get(card.id);
+    return {
+      ...card,
+      count: ownedCard?.count || 0,
+      isOwned: !!ownedCard,
+    };
   });
+
+  const ownedCards = cards.filter((card) => card.isOwned);
 
   // Calculate collection statistics
   // コレクション統計を計算
   const stats = {
-    total: userCards.reduce((sum, c) => sum + c.count, 0),
-    unique: userCards.length,
-    legendary: userCards.filter((c) => c.rarity === "legendary").length,
-    epic: userCards.filter((c) => c.rarity === "epic").length,
-    rare: userCards.filter((c) => c.rarity === "rare").length,
-    common: userCards.filter((c) => c.rarity === "common").length,
+    total: ownedCards.reduce((sum, c) => sum + c.count, 0),
+    unique: ownedCards.length,
+    legendary: ownedCards.filter((c) => c.rarity === "legendary").length,
+    epic: ownedCards.filter((c) => c.rarity === "epic").length,
+    rare: ownedCards.filter((c) => c.rarity === "rare").length,
+    common: ownedCards.filter((c) => c.rarity === "common").length,
   };
 
-  return <StreamerCollection streamer={streamer} cards={userCards} stats={stats} />;
+  const progress = {
+    owned: ownedCards.length,
+    total: cards.length,
+  };
+
+  // コンプリート達成時、非ブロッキングでDBに記録
+  // fire-and-forget: ページ表示をブロックしない
+  if (progress.total > 0 && progress.owned >= progress.total) {
+    void recordCollectionCompletion(session.twitchUserId, streamerId, progress.total);
+  }
+
+  return (
+    <StreamerCollection
+      streamer={streamer}
+      cards={cards}
+      stats={stats}
+      progress={progress}
+      completionHistory={completionHistory}
+    />
+  );
 }

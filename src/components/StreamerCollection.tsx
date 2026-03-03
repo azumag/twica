@@ -3,16 +3,17 @@ import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import Stats from "./Stats";
 import SortedCardGrid from "./SortedCardGrid";
+import CollectionProgress from "./CollectionProgress";
 import type { Streamer, Card } from "@/types/database";
 
-interface CardWithDetails extends Card {
-  streamer: Streamer;
+export interface StreamerCollectionCard extends Card {
   count: number;
+  isOwned: boolean;
 }
 
 interface StreamerCollectionProps {
   streamer: Streamer;
-  cards: CardWithDetails[];
+  cards: StreamerCollectionCard[];
   stats: {
     total: number;
     unique: number;
@@ -21,6 +22,12 @@ interface StreamerCollectionProps {
     rare: number;
     common: number;
   };
+  progress: {
+    owned: number;
+    total: number;
+  };
+  // 過去のコンプリート達成履歴（デフォルト空配列で後方互換）
+  completionHistory?: { total_cards: number; completed_at: string }[];
 }
 
 /**
@@ -29,7 +36,13 @@ interface StreamerCollectionProps {
  * 配信者別コレクションコンポーネント（サーバーコンポーネント）
  * 特定の配信者のユーザーカードコレクションを表示
  */
-export default async function StreamerCollection({ streamer, cards, stats }: StreamerCollectionProps) {
+export default async function StreamerCollection({
+  streamer,
+  cards,
+  stats,
+  progress,
+  completionHistory = [],
+}: StreamerCollectionProps) {
   const t = await getTranslations("collection");
   const tStreamer = await getTranslations("streamerCollection");
   const tCommon = await getTranslations("common");
@@ -56,13 +69,14 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
               {tStreamer("title", { streamerName: streamer.twitch_display_name })}
             </h1>
             <p className="text-gray-400">
-              {t("cardTypes", { count: cards.length })}
+              {t("cardTypes", { count: progress.total })}
             </p>
           </div>
         </div>
 
         {/* Stats */}
         <Stats stats={stats} />
+        <CollectionProgress owned={progress.owned} total={progress.total} completionHistory={completionHistory} />
 
         {/* Cards */}
         {/* カード一覧 */}
@@ -85,6 +99,7 @@ export default async function StreamerCollection({ streamer, cards, stats }: Str
               // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
               cardCountTemplate: t("cardCount", { count: "{count}" }),
               noImage: tCommon("noImage"),
+              unownedCard: t("unownedCard"),
             }}
           />
         )}
