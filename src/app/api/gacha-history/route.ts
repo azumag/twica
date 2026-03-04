@@ -11,10 +11,12 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import {
   getGachaHistoryForStreamer,
   getGachaHistoryForUser,
+  getGachaUsersForStreamer,
 } from "@/lib/dashboard-data";
 
 const VALID_RARITIES = ["common", "rare", "epic", "legendary"];
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Parse integer with NaN fallback
@@ -33,7 +35,7 @@ function safeParseInt(value: string | null, defaultValue: number): number {
  * - Viewer: view only their own gacha history
  *
  * ガチャ履歴エンドポイント（ロールベースアクセス）:
- * - 配信者: 自チャンネルの全ガチャ履歴（フィルタ付き）
+ * - 配信者: 自チャネルの全ガチャ履歴（フィルタ付き）
  * - 視聴者: 自分のガチャ履歴のみ
  */
 export async function GET(request: NextRequest) {
@@ -82,8 +84,8 @@ export async function GET(request: NextRequest) {
     const view = searchParams.get("view");
 
     if (isStreamer && view !== "personal") {
-      // Streamer: get their streamer_id and fetch channel history
-      // 配信者: streamer_idを取得し、チャンネル履歴を取得
+      // Streamer: get their streamer_id
+      // 配信者: streamer_idを取得
       const supabaseAdmin = getSupabaseAdmin();
       const { data: streamer } = await supabaseAdmin
         .from("streamers")
@@ -98,7 +100,16 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      const username = searchParams.get("username") || undefined;
+      // Users view: return aggregated user list
+      // ユーザービュー: 集約されたユーザー一覧を返す
+      if (view === "users") {
+        const result = await getGachaUsersForStreamer(streamer.id, { page, perPage });
+        return NextResponse.json(result);
+      }
+
+      // Channel history view with filters
+      // チャネル履歴ビュー（フィルタ付き）
+      const username = searchParams.get("username")?.slice(0, 100) || undefined;
 
       // Validate rarity against whitelist, ignore invalid values
       // レアリティをホワイトリストで検証、不正な値は無視
@@ -107,6 +118,15 @@ export async function GET(request: NextRequest) {
         rawRarity && VALID_RARITIES.includes(rawRarity)
           ? rawRarity
           : undefined;
+
+      // Validate cardId (UUID format), ignore invalid values
+      // cardIdのバリデーション（UUID形式）、不正な値は無視
+      const rawCardId = searchParams.get("cardId");
+      const cardId = rawCardId && UUID_REGEX.test(rawCardId) ? rawCardId : undefined;
+
+      // Validate userId format / userIdフォーマットのバリデーション
+      const rawUserId = searchParams.get("userId");
+      const userId = rawUserId && /^\d+$/.test(rawUserId) ? rawUserId : undefined;
 
       // Validate date format (YYYY-MM-DD), ignore invalid values
       // 日付フォーマットの検証（YYYY-MM-DD）、不正な値は無視
@@ -120,6 +140,8 @@ export async function GET(request: NextRequest) {
         perPage,
         username,
         rarity,
+        cardId,
+        userId,
         from,
         to,
       });

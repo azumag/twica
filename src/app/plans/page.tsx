@@ -170,7 +170,7 @@ export default async function PlansPage() {
                       rel="noopener noreferrer"
                       className="text-purple-400 hover:text-purple-300 underline"
                     >
-                      作者：あずまぐ（@azumagbanjo）の Twitch チャンネル
+                      作者：あずまぐ（@azumagbanjo）の Twitch チャネル
                     </a>
                     をサブスクライブしている方へのおまけ特典です。
                   </p>
@@ -225,7 +225,7 @@ export default async function PlansPage() {
                     rel="noopener noreferrer"
                     className="text-purple-400 hover:text-purple-300 underline font-medium"
                   >
-                    作者：あずまぐ（@azumagbanjo）の Twitch 配信チャンネル
+                    作者：あずまぐ（@azumagbanjo）の Twitch 配信チャネル
                   </a>
                   をサブスクライブしている方へのおまけ特典です。
                 </p>
@@ -239,7 +239,7 @@ export default async function PlansPage() {
                   rel="noopener noreferrer"
                   className="inline-block rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700"
                 >
-                  Twitch チャンネルを見る
+                  Twitch チャネルを見る
                 </a>
               </div>
             </div>

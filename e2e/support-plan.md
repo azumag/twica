@@ -19,7 +19,7 @@
 **前提条件:** ブラウザが起動している（ログイン不要）
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/plans` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/plans` を開く
 2. ページタイトルを確認
 3. スクリーンショットを取得
 4. スナップショットで要素を確認
@@ -36,7 +36,7 @@
 
 **実装例:**
 ```bash
-agent-browser open https://twica.bluemoon.works/plans
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/plans
 agent-browser wait --load networkidle
 agent-browser get title
 agent-browser screenshot /tmp/tc1001-plans.png
@@ -69,11 +69,11 @@ agent-browser snapshot
   - 助力: ブルー
   - ご贔屓: イエロー
   - Twitchサブスク: パープル
-- Twitchサブスク特典に「作者：あずまぐ（@azumagbanjo）の Twitch チャンネルをサブスクで有効」の説明文が表示される
+- Twitchサブスク特典に「作者：あずまぐ（@azumagbanjo）の Twitch チャネルをサブスクで有効」の説明文が表示される
 
 **実装例:**
 ```bash
-agent-browser open https://twica.bluemoon.works/plans
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/plans
 agent-browser wait --load networkidle
 agent-browser snapshot
 ```
@@ -98,7 +98,7 @@ agent-browser snapshot
 
 **実装例:**
 ```bash
-agent-browser open https://twica.bluemoon.works/plans
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/plans
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 # FANBOXリンクのref確認
@@ -126,7 +126,7 @@ agent-browser get attr @eN href  # NはFANBOXリンクのref番号
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-viewer-prod.json
-agent-browser open https://twica.bluemoon.works/plans
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/plans
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 # 「アカウント設定へ」ボタンのref確認・href確認
@@ -151,7 +151,7 @@ agent-browser snapshot -i
 
 **実装例:**
 ```bash
-agent-browser open https://twica.bluemoon.works/plans
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/plans
 agent-browser wait --load networkidle
 agent-browser snapshot
 ```
@@ -168,7 +168,7 @@ agent-browser snapshot
 
 **テストステップ:**
 1. 認証状態をロードする
-2. `https://twica.bluemoon.works/dashboard/account` を開く
+2. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account` を開く
 3. スナップショットでセクションの順序を確認
 4. スクリーンショットを取得
 
@@ -179,7 +179,7 @@ agent-browser snapshot
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-viewer-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/account
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account
 agent-browser wait --load networkidle
 agent-browser screenshot /tmp/tc1011-account-order.png
 agent-browser snapshot
@@ -194,7 +194,7 @@ agent-browser snapshot
 **前提条件:** ログイン済みの認証状態
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/account` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account` を開く
 2. 支援セクションを確認
 3. 「支援特典について」リンクの存在を確認
 4. リンクのhrefを確認
@@ -208,14 +208,14 @@ agent-browser snapshot
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-viewer-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/account
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 # 「支援特典について」リンクをクリック
 agent-browser click @eN  # Nはリンクのref番号
 agent-browser wait --load networkidle
 agent-browser get url
-# → https://twica.bluemoon.works/plans であることを確認
+# → https://twica-preview.tsubasa-azumagakito.workers.dev/plans であることを確認
 ```
 
 ---
@@ -227,7 +227,7 @@ agent-browser get url
 **前提条件:** ログイン済みの認証状態
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/account` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account` を開く
 2. 支援セクションで現在の特典バッジを確認
 3. 追加ストレージ容量の表示を確認
 
@@ -243,7 +243,7 @@ agent-browser get url
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-viewer-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/account
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account
 agent-browser wait --load networkidle
 agent-browser snapshot
 agent-browser screenshot /tmp/tc1013-current-plan.png
@@ -258,7 +258,7 @@ agent-browser screenshot /tmp/tc1013-current-plan.png
 **前提条件:** ログイン済みの認証状態
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/account` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account` を開く
 2. 支援セクションのコード入力フォームに無効なコードを入力
 3. 「有効化」ボタンをクリック
 4. エラーメッセージが表示されることを確認
@@ -275,7 +275,7 @@ agent-browser screenshot /tmp/tc1013-current-plan.png
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-viewer-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/account
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 # コード入力フィールドにテキストを入力
@@ -297,7 +297,7 @@ agent-browser screenshot /tmp/tc1014-invalid-code.png
 - 有効な支援コード（管理ダッシュボードで事前発行）
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/account` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account` を開く
 2. 現在の特典が「素地」であることを確認
 3. コード入力フィールドに有効なコードを入力
 4. 「有効化」ボタンをクリック
@@ -322,7 +322,7 @@ agent-browser screenshot /tmp/tc1014-invalid-code.png
 - ログイン済みの認証状態（support または patron のユーザー）
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/account` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account` を開く
 2. 「素地に戻す」ボタンが表示されることを確認
 3. ボタンをクリック
 4. 確認ダイアログが表示されることを確認
@@ -344,7 +344,7 @@ agent-browser screenshot /tmp/tc1014-invalid-code.png
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-supporter-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/account
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/account
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 # 「素地に戻す」ボタンをクリック
@@ -371,7 +371,7 @@ agent-browser screenshot /tmp/tc1016-downgrade.png
 
 **テストステップ:**
 1. 配信者の認証状態をロードする
-2. `https://twica.bluemoon.works/dashboard` を開く
+2. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard` を開く
 3. 赤色のストレージ超過バナーが表示されている場合、内容を確認
 4. 「支援特典について」リンクの存在を確認
 
@@ -394,7 +394,7 @@ agent-browser screenshot /tmp/tc1016-downgrade.png
 
 **テストステップ:**
 1. 配信者の認証状態をロードする
-2. `https://twica.bluemoon.works/dashboard/cards` を開く
+2. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/cards` を開く
 3. ストレージ使用量の表示を確認
 4. `?` ボタンをクリックして容量制限の説明を表示
 5. 「支援特典について」リンクの確認
@@ -416,7 +416,7 @@ agent-browser screenshot /tmp/tc1016-downgrade.png
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-streamer-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/cards
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/cards
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 # ?ボタンをクリック
@@ -430,29 +430,29 @@ agent-browser screenshot /tmp/tc1022-storage-link.png
 
 ## 4. リリースノートページ
 
-### TC-1031: リリースノートv1.28.0セクションの表示
+### TC-1031: リリースノートv1.27.0セクションの表示
 
-**目的:** リリースノートページにv1.28.0の新機能が正しく掲載されていることを確認する
+**目的:** リリースノートページにv1.27.0の新機能が正しく掲載されていることを確認する
 
 **前提条件:** ブラウザが起動している（ログイン不要）
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/releases` を開く
-2. v1.28.0セクションの存在を確認
-3. v1.28.0の内容を確認
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/releases` を開く
+2. v1.27.0セクションの存在を確認（最新バージョンとして最上部に表示）
+3. v1.27.0の内容を確認
 
 **期待結果:**
-- ページ最上部（v1.27.0より上）に `v1.28.0` バッジが表示される
-- 日付 `2026-02-24` が表示される
-- 以下の項目が含まれる：
-  - 「Twitchサブスクによる特典自動適用」セクション
-  - 「支援者向け問い合わせフォーム」セクション
-  - 「特典の解除機能」セクション
-  - 「その他の改善・修正」セクション（ストレージ容量修正・スコープバグ修正）
+- ページ最上部に `v1.27.0` バッジが表示される
+- 日付 `2026-02-25` が表示される
+- 以下のセクションが含まれる：
+  - 「支援特典システム」セクション（支援コード・特典一覧・高画質登録・特典解除）
+  - 「Twitch サブスク確認」セクション（Twitchチャネルサブスクによる特典自動適用）
+  - 「支援者向け問い合わせフォーム」セクション（助力・ご贔屓・Twitchサブスク限定）
+  - 「その他の改善・修正」セクション（ストレージ容量超過警告・スコープバグ修正）
 
 **実装例:**
 ```bash
-agent-browser open https://twica.bluemoon.works/releases
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/releases
 agent-browser wait --load networkidle
 agent-browser snapshot
 agent-browser screenshot /tmp/tc1031-release-notes.png
@@ -467,7 +467,7 @@ agent-browser screenshot /tmp/tc1031-release-notes.png
 **前提条件:** ブラウザが起動している
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/releases` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/releases` を開く
 2. v1.27.0セクションの特典一覧を確認
 
 **期待結果:**
@@ -485,24 +485,24 @@ agent-browser screenshot /tmp/tc1031-release-notes.png
 **前提条件:** ブラウザが起動している
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/releases` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/releases` を開く
 2. v1.27.0セクション内の「支援特典について」リンクをクリック
 3. 遷移先URLを確認
 
 **期待結果:**
 - リンクが `/plans` を指している
-- クリックすると `https://twica.bluemoon.works/plans` に遷移する
+- クリックすると `https://twica-preview.tsubasa-azumagakito.workers.dev/plans` に遷移する
 
 **実装例:**
 ```bash
-agent-browser open https://twica.bluemoon.works/releases
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/releases
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 # 「支援特典について」リンクをクリック
 agent-browser click @eN
 agent-browser wait --load networkidle
 agent-browser get url
-# → https://twica.bluemoon.works/plans を確認
+# → https://twica-preview.tsubasa-azumagakito.workers.dev/plans を確認
 ```
 
 ---

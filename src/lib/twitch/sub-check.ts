@@ -2,7 +2,7 @@
  * Twitch サブスクライバー判定モジュール
  *
  * Twitch API の Check User Subscription エンドポイントで
- * 指定チャンネルのサブスク状態を判定する。
+ * 指定チャネルのサブスク状態を判定する。
  * getUserPlan() はキャッシュ済み DB 結果のみ参照し、API は直接呼ばない。
  *
  * キャッシュ戦略:
@@ -31,7 +31,7 @@ export function isTwitchSubCheckEnabled(): boolean {
 }
 
 /**
- * ユーザーが対象チャンネルをサブスクライブしているか判定
+ * ユーザーが対象チャネルをサブスクライブしているか判定
  *
  * 1. twitch_sub_verified_at が1時間以内 → twitch_has_sub のキャッシュ結果を返す
  * 2. キャッシュ期限切れ → Twitch API で確認し、結果を DB に保存

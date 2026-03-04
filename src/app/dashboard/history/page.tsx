@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
   getGachaHistoryForStreamer,
   getGachaHistoryForUser,
+  getActiveCardsForStreamer,
 } from "@/lib/dashboard-data";
 import GachaHistoryTable from "@/components/GachaHistoryTable";
 
@@ -12,7 +13,7 @@ import GachaHistoryTable from "@/components/GachaHistoryTable";
  * Streamer: shows all channel gacha history with filters
  * Viewer: shows their own gacha history
  * ガチャ履歴ページ
- * 配信者: フィルタ付きのチャンネル全ガチャ履歴
+ * 配信者: フィルタ付きのチャネル全ガチャ履歴
  * 視聴者: 自分のガチャ履歴
  */
 export default async function GachaHistoryPage() {
@@ -39,7 +40,16 @@ export default async function GachaHistoryPage() {
       return null;
     }
 
-    const result = await getGachaHistoryForStreamer(streamer.id);
+    // Fetch history and active cards in parallel
+    // 履歴とアクティブカードを並列取得
+    const [result, activeCards] = await Promise.all([
+      getGachaHistoryForStreamer(streamer.id),
+      getActiveCardsForStreamer(streamer.id),
+    ]);
+
+    // Card list for filter dropdown (id + name only)
+    // フィルタドロップダウン用のカード一覧（idとnameのみ）
+    const cardOptions = activeCards.map((c) => ({ id: c.id, name: c.name }));
 
     return (
       <div>
@@ -49,6 +59,8 @@ export default async function GachaHistoryPage() {
           initialHistory={result.history}
           initialPagination={result.pagination}
           isStreamer={true}
+          cards={cardOptions}
+          totalActiveCards={activeCards.length}
         />
       </div>
     );

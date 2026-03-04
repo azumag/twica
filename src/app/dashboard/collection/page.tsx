@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/session";
-import { getUserCards } from "@/lib/dashboard-data";
+import { getUserCards, getActiveCardsForStreamer } from "@/lib/dashboard-data";
 import { RARITY_ORDER } from "@/lib/constants";
 import Collection from "@/components/Collection";
 import type { Card, Streamer } from "@/types/database";
@@ -48,24 +48,53 @@ export default async function CollectionPage() {
         acc[streamerId] = {
           streamer: card.streamer,
           cards: [],
+          totalActive: 0,
+          ownedActive: 0,
         };
       }
       acc[streamerId].cards.push(card);
       return acc;
     },
-    {} as Record<string, { streamer: Streamer; cards: CardWithDetails[] }>
+    {} as Record<string, { streamer: Streamer; cards: CardWithDetails[]; totalActive: number; ownedActive: number }>
   );
 
-  // Calculate collection statistics
-  // コレクション統計を計算
-  const stats = {
-    total: userCards.reduce((sum, c) => sum + c.count, 0),
-    unique: userCards.length,
-    legendary: userCards.filter((c) => c.rarity === "legendary").length,
-    epic: userCards.filter((c) => c.rarity === "epic").length,
-    rare: userCards.filter((c) => c.rarity === "rare").length,
-    common: userCards.filter((c) => c.rarity === "common").length,
-  };
+  // Fetch active card totals per streamer in parallel for progress display
+  // 進捗表示用に、配信者ごとのアクティブカード総数とアクティブ所持数を並列取得
+  // Note: getUserCards() returns all owned cards including inactive ones,
+  // so we must intersect with active cards to get accurate progress counts.
+  // getUserCards() は非アクティブカードも含むため、進捗には
+  // アクティブカードとの交差で正確な所持数を算出する
+  const streamerIds = Object.keys(cardsByStreamer);
+  const activeCardData = await Promise.all(
+    streamerIds.map(async (streamerId) => {
+      const activeCards = await getActiveCardsForStreamer(streamerId);
+      const activeCardIds = new Set(activeCards.map((c) => c.id));
+      const activeOwnedCards = cardsByStreamer[streamerId].cards.filter(
+        (c) => activeCardIds.has(c.id)
+      );
+      return {
+        streamerId,
+        totalActive: activeCards.length,
+        ownedActive: activeOwnedCards.length,
+        activeOwnedCards,
+      };
+    })
+  );
+  for (const { streamerId, totalActive, ownedActive, activeOwnedCards } of activeCardData) {
+    // Align My Collection with streamer collection page behavior:
+    // only active cards that the user owns are shown and counted.
+    // マイコレクションを配信者別コレクションと揃えるため、
+    // 「配布中かつ所持」のカードのみ表示・集計する。
+    cardsByStreamer[streamerId].cards = activeOwnedCards;
+    cardsByStreamer[streamerId].totalActive = totalActive;
+    cardsByStreamer[streamerId].ownedActive = ownedActive;
 
-  return <Collection cardsByStreamer={cardsByStreamer} stats={stats} />;
+    // Hide streamers where user has no active owned cards
+    // ユーザーが配布中カードを1枚も所持していない配信者は非表示
+    if (activeOwnedCards.length === 0) {
+      delete cardsByStreamer[streamerId];
+    }
+  }
+
+  return <Collection cardsByStreamer={cardsByStreamer} />;
 }

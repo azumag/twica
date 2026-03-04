@@ -74,7 +74,7 @@ export class GachaService {
       if (rpcError) {
         // RPC関数が未デプロイの場合（マイグレーション前）は旧ロジックにフォールバック
         // 無停止デプロイ時にアプリコードが先にデプロイされても、
-        // ユーザーのチャンネルポイントが消費されカード未付与になることを防ぐ
+        // ユーザーのチャネルポイントが消費されカード未付与になることを防ぐ
         // TODO: マイグレーション適用確認後にフォールバックを削除
         if (rpcError.code === '42883') {
           logger.warn('execute_gacha_transaction not found, falling back to legacy operations', {

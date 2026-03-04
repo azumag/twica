@@ -1,4 +1,4 @@
-import { getTranslations } from "next-intl/server";
+import { getLocale, getTranslations } from "next-intl/server";
 
 interface CollectionProgressProps {
   // Number of unique card types the user owns
@@ -16,13 +16,14 @@ interface CollectionProgressProps {
  * コレクション進捗表示コンポーネント
  *
  * - 現在コンプリート中 → 「コンプリート！」表示
- * - 現在コンプリートでない + 過去履歴あり → 「全X種時にコンプリート達成」を表示
+ * - 過去履歴あり → 「全X種時にコンプリート達成（日時付き）」を表示
  */
 export default async function CollectionProgress({
   owned,
   total,
   completionHistory = [],
 }: CollectionProgressProps) {
+  const locale = await getLocale();
   const t = await getTranslations("collectionProgress");
 
   const safeOwned = Math.max(0, owned);
@@ -31,6 +32,27 @@ export default async function CollectionProgress({
   // データ不整合時に100%を超えないよう上限を設定
   const percent = safeTotal > 0 ? Math.min(100, Math.round((safeOwned / safeTotal) * 100)) : 0;
   const isComplete = safeTotal > 0 && safeOwned >= safeTotal;
+  const currentCompleteRecord = completionHistory.find(
+    (record) => record.total_cards === safeTotal
+  );
+  const pastCompletionHistory = completionHistory.filter(
+    (record) => !(isComplete && record.total_cards === safeTotal)
+  );
+
+  const formatDateTime = (value: string): string => {
+    const completedDate = new Date(value);
+    if (Number.isNaN(completedDate.getTime())) {
+      return value;
+    }
+    return new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(completedDate);
+  };
 
   return (
     <div
@@ -64,17 +86,29 @@ export default async function CollectionProgress({
       </div>
 
       {isComplete && (
-        <p className="mt-3 text-sm font-semibold text-emerald-300">
-          {t("complete")}
-        </p>
+        <div className="mt-3 space-y-1">
+          <p className="text-sm font-semibold text-emerald-300">
+            {t("complete")}
+          </p>
+          {currentCompleteRecord && (
+            <p className="text-xs text-emerald-200/90">
+              {t("currentCompleteAt", {
+                dateTime: formatDateTime(currentCompleteRecord.completed_at),
+              })}
+            </p>
+          )}
+        </div>
       )}
 
-      {/* 現在コンプリートでない場合のみ、過去のコンプリート達成履歴を表示 */}
-      {!isComplete && completionHistory.length > 0 && (
+      {/* 過去のコンプリート達成履歴を常に表示（履歴がある場合） */}
+      {pastCompletionHistory.length > 0 && (
         <div className="mt-3 space-y-1">
-          {completionHistory.slice(0, 3).map((record) => (
+          {pastCompletionHistory.map((record) => (
             <p key={`${record.total_cards}-${record.completed_at}`} className="text-xs text-amber-400">
-              {t("pastComplete", { totalCards: record.total_cards })}
+              {t("pastCompleteWithDateTime", {
+                totalCards: record.total_cards,
+                dateTime: formatDateTime(record.completed_at),
+              })}
             </p>
           ))}
         </div>

@@ -1,7 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
-import Stats from "./Stats";
 import type { Streamer, Card } from "@/types/database";
 
 interface CardWithDetails extends Card {
@@ -23,15 +22,12 @@ const calculateStreamerStats = (cards: CardWithDetails[]) => ({
 });
 
 interface CollectionProps {
-  cardsByStreamer: Record<string, { streamer: Streamer; cards: CardWithDetails[] }>;
-  stats: {
-    total: number;
-    unique: number;
-    legendary: number;
-    epic: number;
-    rare: number;
-    common: number;
-  };
+  cardsByStreamer: Record<string, {
+    streamer: Streamer;
+    cards: CardWithDetails[];
+    totalActive: number;
+    ownedActive: number;
+  }>;
 }
 
 /**
@@ -39,15 +35,14 @@ interface CollectionProps {
  * Displays summary of user's card collection by streamer
  * コレクションコンポーネント（サーバーコンポーネント）- 配信者ごとのコレクションサマリを表示
  */
-export default async function Collection({ cardsByStreamer, stats }: CollectionProps) {
+export default async function Collection({ cardsByStreamer }: CollectionProps) {
   const t = await getTranslations("collection");
   const tStats = await getTranslations("stats");
+  const tCollectionPage = await getTranslations("collectionPage");
+
   return (
     <section>
       <h2 className="mb-6 text-2xl font-semibold text-white">{t("title")}</h2>
-
-      {/* Overall Stats - 全体統計 */}
-      <Stats stats={stats} />
 
       {/* Streamer List with Summary - 配信者一覧とサマリ */}
       {Object.keys(cardsByStreamer).length === 0 ? (
@@ -60,10 +55,12 @@ export default async function Collection({ cardsByStreamer, stats }: CollectionP
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {Object.values(cardsByStreamer).map(({ streamer, cards }) => {
+          {Object.values(cardsByStreamer).map(({ streamer, cards, totalActive, ownedActive }) => {
             // Calculate rarity statistics for each streamer
             // 各配信者のレアリティ別統計を計算
             const streamerStats = calculateStreamerStats(cards);
+            const streamerCompletionPercent = totalActive > 0 ? Math.round((ownedActive / totalActive) * 100) : 0;
+            const safeStreamerCompletionPercent = Math.max(0, Math.min(100, streamerCompletionPercent));
             return (
               <div
                 key={streamer.id}
@@ -87,8 +84,23 @@ export default async function Collection({ cardsByStreamer, stats }: CollectionP
                       {streamer.twitch_display_name}
                     </h3>
                     <p className="text-sm text-gray-400">
-                      {t("cardTypes", { count: streamerStats.unique })} / {t("totalCount", { count: streamerStats.total })}
+                      {tCollectionPage("streamerOwnedCards", {
+                        total: streamerStats.total,
+                      })}
                     </p>
+                    <p className="text-xs text-gray-500">
+                      {tCollectionPage("streamerCompletionProgress", {
+                        owned: ownedActive,
+                        total: totalActive,
+                      })}
+                    </p>
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-700">
+                      <div
+                        className="h-full rounded-full bg-emerald-500/90 transition-all"
+                        style={{ width: `${safeStreamerCompletionPercent}%` }}
+                        aria-label={tCollectionPage("progressAria", { percent: safeStreamerCompletionPercent })}
+                      />
+                    </div>
                   </div>
                 </div>
 

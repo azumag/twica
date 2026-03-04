@@ -27,7 +27,7 @@
 
 **テストステップ:**
 1. 認証状態をロードする
-2. `https://twica.bluemoon.works/dashboard/inquiries` を開く
+2. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries` を開く
 3. ページの内容を確認
 
 **期待結果:**
@@ -39,7 +39,7 @@
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-viewer-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/inquiries
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries
 agent-browser wait --load networkidle
 agent-browser snapshot
 agent-browser screenshot /tmp/tc1401-basic-restricted.png
@@ -54,7 +54,7 @@ agent-browser screenshot /tmp/tc1401-basic-restricted.png
 **前提条件:** 未ログイン状態（認証状態ロードなし）
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/inquiries` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries` を開く
 2. リダイレクト先URLを確認
 
 **期待結果:**
@@ -63,10 +63,10 @@ agent-browser screenshot /tmp/tc1401-basic-restricted.png
 
 **実装例:**
 ```bash
-agent-browser open https://twica.bluemoon.works/dashboard/inquiries
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries
 agent-browser wait --load networkidle
 agent-browser get url
-# → https://twica.bluemoon.works/ へリダイレクトされていることを確認
+# → https://twica-preview.tsubasa-azumagakito.workers.dev/ へリダイレクトされていることを確認
 ```
 
 ---
@@ -82,7 +82,7 @@ agent-browser get url
 
 **テストステップ:**
 1. 支援者の認証状態をロードする
-2. `https://twica.bluemoon.works/dashboard/inquiries` を開く
+2. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries` を開く
 3. スナップショットで要素を確認
 4. スクリーンショットを取得
 
@@ -97,7 +97,7 @@ agent-browser get url
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-supporter-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/inquiries
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries
 agent-browser wait --load networkidle
 agent-browser snapshot
 agent-browser screenshot /tmp/tc1411-inquiries-page.png
@@ -115,7 +115,7 @@ agent-browser screenshot /tmp/tc1411-inquiries-page.png
 - ログイン済みの認証状態（支援者）
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/inquiries` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries` を開く
 2. カテゴリを「バグ報告」に設定
 3. 件名に「テスト問い合わせ」を入力
 4. 本文に「これはE2Eテストから送信された問い合わせです。」を入力
@@ -140,7 +140,7 @@ agent-browser screenshot /tmp/tc1411-inquiries-page.png
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-supporter-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/inquiries
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 
@@ -170,7 +170,7 @@ agent-browser screenshot /tmp/tc1412-inquiry-submitted.png
 - ログイン済みの認証状態（支援者）
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/inquiries` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries` を開く
 2. 件名・本文を空のまま「送信」ボタンをクリック
 3. バリデーションの結果を確認
 
@@ -210,7 +210,7 @@ agent-browser screenshot /tmp/tc1412-inquiry-submitted.png
 - ログイン済みの認証状態（問い合わせが存在する支援者）
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/inquiries` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries` を開く
 2. 問い合わせ一覧を確認
 
 **期待結果:**
@@ -226,7 +226,7 @@ agent-browser screenshot /tmp/tc1412-inquiry-submitted.png
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-supporter-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/inquiries
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries
 agent-browser wait --load networkidle
 agent-browser snapshot
 agent-browser screenshot /tmp/tc1421-inquiry-list.png
@@ -245,7 +245,7 @@ agent-browser screenshot /tmp/tc1421-inquiry-list.png
 - 問い合わせが1件以上存在する
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard/inquiries` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries` を開く
 2. 問い合わせカードをクリック
 3. 詳細ページのURLを確認
 4. ページの内容を確認
@@ -266,7 +266,7 @@ agent-browser screenshot /tmp/tc1421-inquiry-list.png
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-supporter-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/inquiries
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 # 最初の問い合わせカードをクリック
@@ -307,7 +307,7 @@ agent-browser screenshot /tmp/tc1431-inquiry-detail.png
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-supporter-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard/inquiries
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard/inquiries
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 agent-browser click @eN  # 最初の問い合わせカード
@@ -378,7 +378,7 @@ agent-browser get url
 **前提条件:** ログイン済みの認証状態
 
 **テストステップ:**
-1. `https://twica.bluemoon.works/dashboard` を開く
+1. `https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard` を開く
 2. サイドナビゲーションを確認
 
 **期待結果:**
@@ -388,7 +388,7 @@ agent-browser get url
 **実装例:**
 ```bash
 agent-browser state load .e2e-auth-state-supporter-prod.json
-agent-browser open https://twica.bluemoon.works/dashboard
+agent-browser open https://twica-preview.tsubasa-azumagakito.workers.dev/dashboard
 agent-browser wait --load networkidle
 agent-browser snapshot -i
 agent-browser screenshot /tmp/tc1441-nav-inquiries.png

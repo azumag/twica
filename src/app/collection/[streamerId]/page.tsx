@@ -51,39 +51,46 @@ export default async function StreamerCollectionPage({
     getCollectionCompletions(session.twitchUserId, streamerId),
   ]);
 
-  // Build full card list (owned + unowned) based on active cards
-  // アクティブカードを基準に、所持/未所持を統合した一覧を作成
+  // Build owned-only card list in active card order
+  // アクティブカード順を維持しつつ、所持カードのみを一覧化
   const ownedCardMap = new Map(userCards.map((card) => [card.id, card]));
-  const cards: StreamerCollectionCard[] = activeCards.map((card) => {
+  const cards: StreamerCollectionCard[] = activeCards.flatMap((card) => {
     const ownedCard = ownedCardMap.get(card.id);
-    return {
-      ...card,
-      count: ownedCard?.count || 0,
-      isOwned: !!ownedCard,
-    };
-  });
+    if (!ownedCard) return [];
 
-  const ownedCards = cards.filter((card) => card.isOwned);
+    return [{
+      ...card,
+      count: ownedCard.count,
+      isOwned: true,
+    }];
+  });
 
   // Calculate collection statistics
   // コレクション統計を計算
   const stats = {
-    total: ownedCards.reduce((sum, c) => sum + c.count, 0),
-    unique: ownedCards.length,
-    legendary: ownedCards.filter((c) => c.rarity === "legendary").length,
-    epic: ownedCards.filter((c) => c.rarity === "epic").length,
-    rare: ownedCards.filter((c) => c.rarity === "rare").length,
-    common: ownedCards.filter((c) => c.rarity === "common").length,
+    total: cards.reduce((sum, c) => sum + c.count, 0),
+    unique: cards.length,
+    legendary: cards.filter((c) => c.rarity === "legendary").length,
+    epic: cards.filter((c) => c.rarity === "epic").length,
+    rare: cards.filter((c) => c.rarity === "rare").length,
+    common: cards.filter((c) => c.rarity === "common").length,
   };
 
   const progress = {
-    owned: ownedCards.length,
-    total: cards.length,
+    owned: cards.length,
+    total: activeCards.length,
   };
+  const isCurrentComplete = progress.total > 0 && progress.owned >= progress.total;
+  const hasCurrentCompletionRecord = completionHistory.some(
+    (record) => record.total_cards === progress.total
+  );
+  const completionHistoryForDisplay = isCurrentComplete && !hasCurrentCompletionRecord
+    ? [{ total_cards: progress.total, completed_at: new Date().toISOString() }, ...completionHistory]
+    : completionHistory;
 
   // コンプリート達成時、非ブロッキングでDBに記録
   // fire-and-forget: ページ表示をブロックしない
-  if (progress.total > 0 && progress.owned >= progress.total) {
+  if (isCurrentComplete) {
     void recordCollectionCompletion(session.twitchUserId, streamerId, progress.total);
   }
 
@@ -93,7 +100,7 @@ export default async function StreamerCollectionPage({
       cards={cards}
       stats={stats}
       progress={progress}
-      completionHistory={completionHistory}
+      completionHistory={completionHistoryForDisplay}
     />
   );
 }

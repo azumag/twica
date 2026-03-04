@@ -209,6 +209,8 @@ interface GachaHistoryFilters {
   perPage?: number;
   username?: string;
   rarity?: string;
+  cardId?: string;
+  userId?: string;
   from?: string;
   to?: string;
 }
@@ -237,7 +239,7 @@ export async function getGachaHistoryForStreamer(
   streamerId: string,
   filters: GachaHistoryFilters = {}
 ): Promise<PaginatedGachaHistory> {
-  const { page = 1, perPage = 20, username, rarity, from, to } = filters;
+  const { page = 1, perPage = 20, username, rarity, cardId, userId, from, to } = filters;
   const supabaseAdmin = getSupabaseAdmin();
 
   // Use !inner join when filtering by rarity to ensure correct count
@@ -257,6 +259,12 @@ export async function getGachaHistoryForStreamer(
   }
   if (rarity) {
     query = query.eq("cards.rarity", rarity);
+  }
+  if (cardId) {
+    query = query.eq("card_id", cardId);
+  }
+  if (userId) {
+    query = query.eq("user_twitch_id", userId);
   }
   if (from) {
     query = query.gte("redeemed_at", from);
@@ -308,7 +316,7 @@ export async function getGachaHistoryForUser(
 
   const offset = (page - 1) * perPage;
   // Join streamers to show which channel the gacha was drawn on
-  // どのチャンネルでガチャを引いたかを表示するため streamers を JOIN
+  // どのチャネルでガチャを引いたかを表示するため streamers を JOIN
   const { data, count } = await supabaseAdmin
     .from("gacha_history")
     .select("*, cards(*), streamers(twitch_display_name)", { count: "exact" })
@@ -320,6 +328,122 @@ export async function getGachaHistoryForUser(
 
   return {
     history: (data || []) as unknown as GachaHistoryWithCard[],
+    pagination: {
+      page,
+      perPage,
+      total,
+      totalPages: Math.ceil(total / perPage),
+    },
+  };
+}
+
+/**
+ * Gacha user entry for the users tab
+ * ユーザータブ用のガチャユーザー情報
+ */
+export interface GachaUserEntry {
+  userTwitchId: string;
+  username: string;
+  drawCount: number;
+  uniqueCards: number;
+  /** Active cards the user has drawn at least once (unique by card ID) */
+  uniqueCardIds: string[];
+  lastDrawAt: string;
+}
+
+/**
+ * Get aggregated user list for a streamer's gacha history
+ * JS側で集約: ユニークユーザー一覧、各ユーザーのユニークカード数、ガチャ回数、最終日時
+ * 配信者向け: ガチャを引いたユーザー一覧を集約して返す
+ */
+export async function getGachaUsersForStreamer(
+  streamerId: string,
+  options: { page?: number; perPage?: number } = {}
+): Promise<{ users: GachaUserEntry[]; pagination: { page: number; perPage: number; total: number; totalPages: number } }> {
+  const { page = 1, perPage = 20 } = options;
+  const supabaseAdmin = getSupabaseAdmin();
+
+  // Fetch gacha history and active card IDs in parallel
+  // ガチャ履歴とアクティブカードIDを並列取得
+  // Note: 10,000件上限は getGachaStats と同じパターン。
+  // 超過する配信者では集計が近似値となる。
+  const [historyResult, activeCardsResult] = await Promise.all([
+    supabaseAdmin
+      .from("gacha_history")
+      .select("user_twitch_id, user_twitch_username, card_id, redeemed_at")
+      .eq("streamer_id", streamerId)
+      .order("redeemed_at", { ascending: false })
+      .limit(10000),
+    supabaseAdmin
+      .from("cards")
+      .select("id")
+      .eq("streamer_id", streamerId)
+      .eq("is_active", true),
+  ]);
+
+  const data = historyResult.data;
+  if (!data || data.length === 0) {
+    return {
+      users: [],
+      pagination: { page, perPage, total: 0, totalPages: 0 },
+    };
+  }
+
+  // Build active card ID set for filtering uniqueCards
+  // uniqueCards のフィルタリング用にアクティブカードIDセットを構築
+  const activeCardIds = new Set((activeCardsResult.data || []).map((c) => c.id));
+
+  // Aggregate by user / ユーザーごとに集約
+  const userMap = new Map<string, {
+    username: string;
+    drawCount: number;
+    cardIds: Set<string>;
+    lastDrawAt: string;
+  }>();
+
+  for (const row of data) {
+    const existing = userMap.get(row.user_twitch_id);
+    if (existing) {
+      existing.drawCount++;
+      // Only count active cards for collection progress
+      // コレクション進捗にはアクティブカードのみカウント
+      if (activeCardIds.has(row.card_id)) {
+        existing.cardIds.add(row.card_id);
+      }
+    } else {
+      const cardIds = new Set<string>();
+      if (activeCardIds.has(row.card_id)) {
+        cardIds.add(row.card_id);
+      }
+      userMap.set(row.user_twitch_id, {
+        username: row.user_twitch_username || "",
+        drawCount: 1,
+        cardIds,
+        lastDrawAt: row.redeemed_at,
+      });
+    }
+  }
+
+  // Convert to sorted array (by draw count descending)
+  // ガチャ回数の降順でソート
+  const allUsers: GachaUserEntry[] = Array.from(userMap.entries())
+    .map(([userTwitchId, info]) => ({
+      userTwitchId,
+      username: info.username,
+      drawCount: info.drawCount,
+      uniqueCards: info.cardIds.size,
+      uniqueCardIds: Array.from(info.cardIds),
+      lastDrawAt: info.lastDrawAt,
+    }))
+    .sort((a, b) => b.drawCount - a.drawCount);
+
+  // Client-side pagination / クライアント側ページネーション
+  const total = allUsers.length;
+  const offset = (page - 1) * perPage;
+  const paginatedUsers = allUsers.slice(offset, offset + perPage);
+
+  return {
+    users: paginatedUsers,
     pagination: {
       page,
       perPage,

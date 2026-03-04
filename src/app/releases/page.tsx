@@ -80,7 +80,7 @@ export default async function ReleasesPage() {
                   <ul className="ml-4 list-disc space-y-2 text-gray-400">
                     <li><span className="text-blue-400 font-medium">助力</span> - ストレージ容量 +250MB、Full HD（1920px幅）画像対応</li>
                     <li><span className="text-yellow-400 font-medium">ご贔屓</span> - ストレージ容量 +500MB、4K（3840px幅）画像対応</li>
-                    <li><span className="text-purple-400 font-medium">Twitchサブスク特典</span> - <a href="https://www.twitch.tv/azumagbanjo" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">作者：あずまぐ（@azumagbanjo）の Twitch チャンネル</a>をサブスクしている方に自動適用（ご贔屓同等の特典）</li>
+                    <li><span className="text-purple-400 font-medium">Twitchサブスク特典</span> - <a href="https://www.twitch.tv/azumagbanjo" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">作者：あずまぐ（@azumagbanjo）の Twitch チャネル</a>をサブスクしている方に自動適用（ご贔屓同等の特典）</li>
                   </ul>
                   <p className="mt-3 text-sm text-gray-500">
                     支援コードの入力はダッシュボードの「<a href="/dashboard/account" className="text-purple-400 hover:text-purple-300 underline">アカウント設定</a>」から行えます。詳細は
@@ -118,10 +118,10 @@ export default async function ReleasesPage() {
               <div className="space-y-6">
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-2 text-lg font-semibold text-white">
-                    Twitch チャンネルサブスクによる特典自動適用
+                    Twitch チャネルサブスクによる特典自動適用
                   </h3>
                   <p className="text-gray-400">
-                    <a href="https://www.twitch.tv/azumagbanjo" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">作者：あずまぐ（@azumagbanjo）の Twitch チャンネル</a>をサブスクライブしている方は、アカウント設定の「Twitchサブスク確認」からサブスク状態を確認するだけで、ご贔屓同等の特典が自動適用されます。支援コードの入力は不要です。
+                    <a href="https://www.twitch.tv/azumagbanjo" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">作者：あずまぐ（@azumagbanjo）の Twitch チャネル</a>をサブスクライブしている方は、アカウント設定の「Twitchサブスク確認」からサブスク状態を確認するだけで、ご贔屓同等の特典が自動適用されます。支援コードの入力は不要です。
                   </p>
                 </div>
               </div>
@@ -234,7 +234,7 @@ export default async function ReleasesPage() {
                   ガチャ履歴・統計ページ
                 </h3>
                 <p className="text-gray-400">
-                  ガチャの履歴や統計情報をいつでも確認できるようになりました。配信者は自身のチャンネルでの視聴者ごとのガチャ履歴も閲覧でき、どのカードがどれくらい引かれているかを把握できます。
+                  ガチャの履歴や統計情報をいつでも確認できるようになりました。配信者は自身のチャネルでの視聴者ごとのガチャ履歴も閲覧でき、どのカードがどれくらい引かれているかを把握できます。
                 </p>
               </div>
 
@@ -269,10 +269,10 @@ export default async function ReleasesPage() {
 
               <div className="rounded-xl bg-gray-800 p-6">
                 <h3 className="mb-2 text-lg font-semibold text-white">
-                  複数チャンネルポイント報酬の設定
+                  複数チャネルポイント報酬の設定
                 </h3>
                 <p className="text-gray-400">
-                  1つのチャンネルで複数のチャンネルポイント報酬をガチャに割り当てられるようになりました。報酬ごとに異なるガチャ体験を提供できます。不要になった連携はいつでも解除できます。
+                  1つのチャネルで複数のチャネルポイント報酬をガチャに割り当てられるようになりました。報酬ごとに異なるガチャ体験を提供できます。不要になった連携はいつでも解除できます。
                 </p>
               </div>
 
@@ -352,7 +352,7 @@ export default async function ReleasesPage() {
                   その他のパフォーマンス改善
                 </h3>
                 <ul className="ml-4 list-disc space-y-2 text-gray-400">
-                  <li>チャンネルポイント引き換え時の処理を高速化</li>
+                  <li>チャネルポイント引き換え時の処理を高速化</li>
                   <li>ページ読み込み時の不要な通信を抑制し、表示速度を改善</li>
                   <li>アプリケーション全体の軽量化を実施</li>
                 </ul>
@@ -383,7 +383,7 @@ export default async function ReleasesPage() {
                 <ul className="ml-4 list-disc space-y-2 text-gray-400">
                   <li>オーバーレイのリアルタイム通信が安定し、不要な再接続を抑制</li>
                   <li>ログインセッションの有効期限を正しく処理し、予期しないログアウトを防止</li>
-                  <li>チャンネルポイント連携のステータス管理を改善し、接続の信頼性が向上</li>
+                  <li>チャネルポイント連携のステータス管理を改善し、接続の信頼性が向上</li>
                 </ul>
               </div>
 
@@ -402,7 +402,7 @@ export default async function ReleasesPage() {
                   ガチャ連続引き換えの安定化
                 </h3>
                 <p className="text-gray-400">
-                  チャンネルポイントの連続引き換え時に処理が重なって不安定になる問題を修正しました。引き換えを順次実行する仕組みを導入し、連続でガチャを引いても正しく動作するようになりました。
+                  チャネルポイントの連続引き換え時に処理が重なって不安定になる問題を修正しました。引き換えを順次実行する仕組みを導入し、連続でガチャを引いても正しく動作するようになりました。
                 </p>
               </div>
             </div>
