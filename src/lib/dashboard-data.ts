@@ -794,11 +794,12 @@ export const getUserCardDetail = cache(async (
 });
 
 /**
- * Record a collection completion achievement (fire-and-forget)
+ * Record a collection completion achievement
  * UNIQUE制約により同一total_cardsでの重複挿入はスキップされる
- * ページ表示をブロックしないよう、呼び出し側で void で使用すること
+ * Cloudflare Workers では void 呼び出しだと応答後に破棄されるため、
+ * 呼び出し側で必ず await すること
  *
- * コレクションコンプリート達成をDBに記録する（fire-and-forget）
+ * コレクションコンプリート達成をDBに記録する
  */
 export async function recordCollectionCompletion(
   twitchUserId: string,
