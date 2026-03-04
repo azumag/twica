@@ -154,7 +154,7 @@
       "title": "カード排出確率設定",
       "tabRarity": "レアリティ別設定",
       "tabPerCard": "カードごとの調整",
-      "switchToManual": "カードごとに設定するモードに切り替える",
+      "switchToManual": "手動調整モードに切り替える",
       "switchToAuto": "自動モードに切り替える",
       "confirmSwitchToManual": "レアリティ別の自動計算が無効になります。切り替えますか？",
       "confirmSwitchToAuto": "レアリティ別確率設定が有効になり、全カードの確率が再計算されます。切り替えますか？",
@@ -181,7 +181,7 @@
       "originalWeight": "元の重み",
       "multiplier": "倍率",
       "newWeight": "新しい重み",
-      "resetAll": "全てリセット（重み100）",
+      "resetAll": "編集前の値に戻す",
       "resetRarity": "リセット",
       "resetTooltip": "このレアリティの全カードの重みを100%にリセット",
       "intraWeight": "レアリティ内排出確率",
@@ -190,7 +190,7 @@
     },
     "emoteImport": {
       "title": "エモートからカードを作成",
-      "description": "チャンネルのエモートを選択してカードを作成します。既にカードになっているエモートは除外されます。",
+      "description": "チャネルのエモートを選択してカードを作成します。既にカードになっているエモートは除外されます。",
       "loading": "エモートを読み込み中...",
       "allExisting": "全てのエモートが既にカードになっています",
       "selected": "{selected} / {total} 件選択中",
@@ -199,7 +199,7 @@
       "deselectAll": "選択解除",
       "alreadyExists": "既にカードとして存在します",
       "created": "作成済み",
-      "noEmotes": "チャンネルにエモートがありません。",
+      "noEmotes": "チャネルにエモートがありません。",
       "requiresAffiliate": "Twitchアフィリエイト/パートナーでエモートを設定してください。",
       "defaultRarity": "デフォルトレアリティ",
       "defaultWeight": "デフォルト重み: {weight}%",
@@ -212,7 +212,7 @@
     "title": "レアリティ別確率設定",
     "description": "レアリティごとの排出確率を設定すると、カードの追加・削除時に重みが自動計算されます。",
     "enable": "自動確率設定を有効にする",
-    "disable": "カードごとに設定するモードに切り替える",
+    "disable": "手動調整モードに切り替える",
     "total": "合計",
     "totalWarning": "合計が100%ではありません",
     "activeCards": "枚",
@@ -247,7 +247,17 @@
     "cardTypes": "{count}種類",
     "totalCount": "{count}枚",
     "cardCount": "x{count}",
-    "viewCollection": "コレクションを見る"
+    "viewCollection": "コレクションを見る",
+    "unownedCard": "???"
+  },
+  "collectionProgress": {
+    "progress": "{owned}/{total}種類",
+    "complete": "コンプリート！",
+    "currentCompleteAt": "達成日時: {dateTime}",
+    "progressBar": "{percent}%",
+    "pastComplete": "全{totalCards}種時にコンプリート達成",
+    "pastCompleteWithDate": "{date}: 全{totalCards}種時にコンプリート達成",
+    "pastCompleteWithDateTime": "{dateTime}: 全{totalCards}種時にコンプリート達成"
   },
   "streamerCollection": {
     "title": "{streamerName} のコレクション",
@@ -437,7 +447,7 @@
   },
   "stats": {
     "totalCards": "総カード数",
-    "unique": "ユニーク",
+    "unique": "種類取得",
     "legendary": "レジェンダリー",
     "epic": "エピック",
     "rare": "レア",
@@ -503,7 +513,10 @@
   },
   "collectionPage": {
     "title": "マイコレクション",
-    "description": "獲得したカードを確認できます。"
+    "description": "獲得したカードを確認できます。",
+    "streamerOwnedCards": "全体所持枚数: {total}枚",
+    "streamerCompletionProgress": "コンプリート進捗: {owned}/（全{total}種類）",
+    "progressAria": "コンプリート進捗 {percent}%"
   },
   "languageSwitcher": {
     "label": "言語",
@@ -623,7 +636,7 @@
     "intro": "この利用規約（以下「本規約」）は、TwiCa（以下「当サービス」）の利用に関する条件を定めるものです。ユーザーの皆さまには、本規約に従って当サービスをご利用いただきます。",
     "article1": {
       "title": "第1条 サービスの概要",
-      "content": "当サービスは、Twitch配信者向けのカードガチャシステムです。視聴者はチャンネルポイントを使ってガチャを引き、配信者が作成したオリジナルカードを収集できます。"
+      "content": "当サービスは、Twitch配信者向けのカードガチャシステムです。視聴者はチャネルポイントを使ってガチャを引き、配信者が作成したオリジナルカードを収集できます。"
     },
     "article2": {
       "title": "第2条 ユーザーの責任と義務",
@@ -693,14 +706,15 @@
   },
   "gachaHistoryPage": {
     "title": "ガチャ履歴",
-    "streamerDescription": "チャンネルの全ガチャ履歴を確認できます。フィルタで絞り込みが可能です。",
+    "streamerDescription": "チャネルの全ガチャ履歴を確認できます。フィルタで絞り込みが可能です。",
     "viewerDescription": "あなたのガチャ履歴を確認できます。",
     "emptyMessage": "ガチャ履歴がありません。",
     "totalResults": "全 {count} 件",
     "unknownUser": "不明",
     "tabs": {
-      "channel": "チャンネル履歴",
-      "personal": "自分の履歴"
+      "channel": "チャネル履歴",
+      "personal": "自分の履歴",
+      "users": "ユーザー履歴"
     },
     "filters": {
       "username": "ユーザー名",
@@ -709,8 +723,22 @@
       "allRarities": "すべてのレアリティ",
       "from": "開始日",
       "to": "終了日",
+      "cardName": "カード名",
+      "allCards": "すべてのカード",
       "apply": "検索",
       "reset": "リセット"
+    },
+    "users": {
+      "drawCount": "ガチャ回数: {count}回",
+      "lastDraw": "最終: {date}",
+      "collectionProgress": "{owned}/{total}種",
+      "userHistory": "{username} のガチャ履歴",
+      "close": "閉じる",
+      "showUniqueCards": "ユニークカード内訳を表示",
+      "hideUniqueCards": "ユニークカード内訳を隠す",
+      "missingUniqueCards": "足りていないカード（ユニーク）: {count}種",
+      "ownedUniqueCards": "足りているカード（ユニーク）: {count}種",
+      "none": "なし"
     }
   },
   "announcementBanner": {
@@ -877,7 +905,7 @@
   },
   "twitchSub": {
     "title": "Twitchサブスク確認",
-    "description": "作者：あずまぐ（@azumagbanjo）の Twitch チャンネルをサブスクライブしている場合、ご贔屓同等の特典が自動適用されます。",
+    "description": "作者：あずまぐ（@azumagbanjo）の Twitch チャネルをサブスクライブしている場合、ご贔屓同等の特典が自動適用されます。",
     "status": "サブスク状態",
     "statusActive": "有効",
     "statusInactive": "未確認",

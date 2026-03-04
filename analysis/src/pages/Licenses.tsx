@@ -52,8 +52,22 @@ export function Licenses() {
   const [licensesPage, setLicensesPage] = useState(1)
   const [licensesPageSize, setLicensesPageSize] = useState(20)
 
+  // Twitchサブスクユーザー一覧
+  interface TwitchSubUser {
+    twitch_user_id: string
+    twitch_display_name: string
+    twitch_sub_verified_at: string | null
+  }
+  const [twitchSubs, setTwitchSubs] = useState<TwitchSubUser[]>([])
+  const [twitchSubsLoading, setTwitchSubsLoading] = useState(true)
+  const [twitchSubsPage, setTwitchSubsPage] = useState(1)
+  const [twitchSubsPageSize, setTwitchSubsPageSize] = useState(20)
+
   // タブ切り替え
-  const [activeTab, setActiveTab] = useState<'codes' | 'licenses'>('codes')
+  const [activeTab, setActiveTab] = useState<'codes' | 'licenses' | 'twitch_subs'>('codes')
+
+  // Twitchサブスク数
+  const [twitchSubCount, setTwitchSubCount] = useState(0)
 
   // コード一覧を取得
   const fetchCodes = async () => {
@@ -112,9 +126,29 @@ export function Licenses() {
     }
   }
 
+  const fetchTwitchSubs = async () => {
+    setTwitchSubsLoading(true)
+    try {
+      const { data, count, error } = await supabase
+        .from('users')
+        .select('twitch_user_id, twitch_display_name, twitch_sub_verified_at', { count: 'exact' })
+        .eq('twitch_has_sub', true)
+        .order('twitch_sub_verified_at', { ascending: false })
+
+      if (error) throw error
+      setTwitchSubs((data || []) as TwitchSubUser[])
+      if (count !== null) setTwitchSubCount(count)
+    } catch (error) {
+      console.error('Failed to fetch twitch subs:', error)
+    } finally {
+      setTwitchSubsLoading(false)
+    }
+  }
+
   useEffect(() => {
     fetchCodes()
     fetchLicenses()
+    fetchTwitchSubs()
   }, [])
 
   // SHA-256ハッシュを計算（Web Crypto API）
@@ -339,7 +373,7 @@ export function Licenses() {
       </div>
 
       {/* 統計サマリー */}
-      <div className="mb-6 grid grid-cols-3 gap-4 sm:grid-cols-6">
+      <div className="mb-6 grid grid-cols-3 gap-4 sm:grid-cols-7">
         <div className="rounded-lg bg-white p-4 shadow">
           <p className="text-sm text-gray-500">Total Codes</p>
           <p className="text-2xl font-bold">{codes.length}</p>
@@ -364,6 +398,10 @@ export function Licenses() {
           <p className="text-sm text-gray-500">Patron</p>
           <p className="text-2xl font-bold text-yellow-600">{patronLicenses}</p>
         </div>
+        <div className="rounded-lg bg-white p-4 shadow">
+          <p className="text-sm text-gray-500">Twitch Sub</p>
+          <p className="text-2xl font-bold text-purple-500">{twitchSubCount}</p>
+        </div>
       </div>
 
       {/* タブ切り替え */}
@@ -387,6 +425,16 @@ export function Licenses() {
           }`}
         >
           User Licenses ({licenses.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('twitch_subs')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 ${
+            activeTab === 'twitch_subs'
+              ? 'border-purple-500 text-purple-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Twitch Subs ({twitchSubCount})
         </button>
       </div>
 
@@ -509,6 +557,50 @@ export function Licenses() {
             pageSize: licensesPageSize,
             onPageChange: setLicensesPage,
             onPageSizeChange: (size) => { setLicensesPageSize(size); setLicensesPage(1) },
+            pageSizeOptions: [10, 20, 50],
+          }}
+        />
+      )}
+
+      {/* Twitchサブスクタブ */}
+      {activeTab === 'twitch_subs' && (
+        <DataTable
+          columns={[
+            {
+              key: 'twitch_display_name',
+              header: 'User',
+              render: (item: TwitchSubUser) => (
+                <span className="font-medium">{item.twitch_display_name || item.twitch_user_id}</span>
+              ),
+            },
+            {
+              key: 'twitch_user_id',
+              header: 'Twitch ID',
+              render: (item: TwitchSubUser) => (
+                <span className="font-mono text-xs text-gray-500">{item.twitch_user_id}</span>
+              ),
+            },
+            {
+              key: 'twitch_sub_verified_at',
+              header: 'Verified At',
+              render: (item: TwitchSubUser) => (
+                <span className="text-sm text-gray-500">
+                  {item.twitch_sub_verified_at
+                    ? new Date(item.twitch_sub_verified_at).toLocaleString()
+                    : '-'}
+                </span>
+              ),
+            },
+          ]}
+          data={twitchSubs}
+          keyExtractor={(item: TwitchSubUser) => item.twitch_user_id}
+          loading={twitchSubsLoading}
+          emptyMessage="No Twitch subscribers found"
+          pagination={{
+            currentPage: twitchSubsPage,
+            pageSize: twitchSubsPageSize,
+            onPageChange: setTwitchSubsPage,
+            onPageSizeChange: (size) => { setTwitchSubsPageSize(size); setTwitchSubsPage(1) },
             pageSizeOptions: [10, 20, 50],
           }}
         />

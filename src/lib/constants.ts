@@ -622,7 +622,7 @@ export const UI_STRINGS = {
 
   STATS: {
     TOTAL_CARDS: '総カード数',
-    UNIQUE: 'ユニーク',
+    UNIQUE: '種類取得',
     LEGENDARY: 'レジェンダリー',
     EPIC: 'エピック',
     RARE: 'レア',

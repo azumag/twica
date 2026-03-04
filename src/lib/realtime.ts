@@ -185,8 +185,8 @@ export function subscribeToGachaResults(
       retryTimeout = null
     }
 
-    // リトライ時に前回のチャンネルをクリーンアップ
-    // 古いチャンネルのコールバックが残るとretryCountが想定より早く増加するため
+    // リトライ時に前回のチャネルをクリーンアップ
+    // 古いチャネルのコールバックが残るとretryCountが想定より早く増加するため
     // Clean up previous channel before creating a new one to prevent
     // stale callbacks from incrementing retryCount unexpectedly
     if (channel && client) {

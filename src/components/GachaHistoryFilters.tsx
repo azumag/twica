@@ -7,25 +7,30 @@ interface GachaHistoryFiltersProps {
   onFilterChange: (filters: {
     username?: string;
     rarity?: string;
+    cardId?: string;
     from?: string;
     to?: string;
   }) => void;
+  /** Available cards for card name filter / カード名フィルタ用のカード一覧 */
+  cards?: { id: string; name: string }[];
 }
 
 /**
  * Filter controls for streamer gacha history page
- * Provides username search, rarity selection, and date range inputs
+ * Provides username search, rarity selection, card name filter, and date range inputs
  * 配信者向けガチャ履歴フィルタコントロール
- * ユーザー名検索、レアリティ選択、期間指定の入力を提供
+ * ユーザー名検索、レアリティ選択、カード名フィルタ、期間指定の入力を提供
  */
 export default function GachaHistoryFilters({
   onFilterChange,
+  cards,
 }: GachaHistoryFiltersProps) {
   const t = useTranslations("gachaHistoryPage");
   const tRarity = useTranslations("rarity");
 
   const [username, setUsername] = useState("");
   const [rarity, setRarity] = useState("");
+  const [cardId, setCardId] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
@@ -33,6 +38,7 @@ export default function GachaHistoryFilters({
     onFilterChange({
       username: username || undefined,
       rarity: rarity || undefined,
+      cardId: cardId || undefined,
       from: from || undefined,
       to: to || undefined,
     });
@@ -41,6 +47,7 @@ export default function GachaHistoryFilters({
   const handleReset = () => {
     setUsername("");
     setRarity("");
+    setCardId("");
     setFrom("");
     setTo("");
     onFilterChange({});
@@ -48,7 +55,7 @@ export default function GachaHistoryFilters({
 
   return (
     <div className="mb-6 rounded-xl bg-gray-800 p-4">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className={`grid gap-3 sm:grid-cols-2 ${cards && cards.length > 0 ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
         {/* Username search / ユーザー名検索 */}
         <div>
           <label className="mb-1 block text-xs text-gray-400">
@@ -80,6 +87,27 @@ export default function GachaHistoryFilters({
             <option value="common">{tRarity("common")}</option>
           </select>
         </div>
+
+        {/* Card name select / カード名フィルタ */}
+        {cards && cards.length > 0 && (
+          <div>
+            <label className="mb-1 block text-xs text-gray-400">
+              {t("filters.cardName")}
+            </label>
+            <select
+              value={cardId}
+              onChange={(e) => setCardId(e.target.value)}
+              className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
+            >
+              <option value="">{t("filters.allCards")}</option>
+              {cards.map((card) => (
+                <option key={card.id} value={card.id}>
+                  {card.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Date from / 開始日 */}
         <div>

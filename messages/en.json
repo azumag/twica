@@ -247,7 +247,17 @@
     "cardTypes": "{count} types",
     "totalCount": "{count} cards",
     "cardCount": "x{count}",
-    "viewCollection": "View Collection"
+    "viewCollection": "View Collection",
+    "unownedCard": "???"
+  },
+  "collectionProgress": {
+    "progress": "{owned}/{total} types",
+    "complete": "Complete!",
+    "currentCompleteAt": "Achieved at: {dateTime}",
+    "progressBar": "{percent}%",
+    "pastComplete": "Previously completed all {totalCards} types",
+    "pastCompleteWithDate": "{date}: Previously completed all {totalCards} types",
+    "pastCompleteWithDateTime": "{dateTime}: Previously completed all {totalCards} types"
   },
   "streamerCollection": {
     "title": "{streamerName}'s Collection",
@@ -503,7 +513,13 @@
   },
   "collectionPage": {
     "title": "My Collection",
-    "description": "View your acquired cards."
+    "description": "View your acquired cards.",
+    "overallOwnedCards": "Total owned cards: {total}",
+    "overallCompletionProgress": "Completion progress: {owned}/(all {total} types)",
+    "streamerOwnedCards": "Total owned cards: {total}",
+    "streamerCompletionProgress": "Completion progress: {owned}/(all {total} types)",
+    "progressAria": "Completion progress {percent}%",
+    "completionBasisNote": "* Completion progress is based on currently active cards."
   },
   "languageSwitcher": {
     "label": "Language",
@@ -700,7 +716,8 @@
     "unknownUser": "Unknown",
     "tabs": {
       "channel": "Channel History",
-      "personal": "My History"
+      "personal": "My History",
+      "users": "User History"
     },
     "filters": {
       "username": "Username",
@@ -709,8 +726,22 @@
       "allRarities": "All Rarities",
       "from": "From",
       "to": "To",
+      "cardName": "Card Name",
+      "allCards": "All Cards",
       "apply": "Search",
       "reset": "Reset"
+    },
+    "users": {
+      "drawCount": "Draws: {count}",
+      "lastDraw": "Last: {date}",
+      "collectionProgress": "{owned}/{total} types",
+      "userHistory": "{username}'s History",
+      "close": "Close",
+      "showUniqueCards": "Show Unique Breakdown",
+      "hideUniqueCards": "Hide Unique Breakdown",
+      "missingUniqueCards": "Missing Cards (Unique): {count}",
+      "ownedUniqueCards": "Owned Cards (Unique): {count}",
+      "none": "None"
     }
   },
   "announcementBanner": {

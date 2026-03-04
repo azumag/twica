@@ -56,7 +56,7 @@ export const ADDITIONAL_SCOPES = {
   // Twitchチャットへの書き込み権限（ガチャ結果のチャット通知に必要）
   // Permission to write to Twitch chat (required for gacha result announcements)
   CHAT_WRITE: 'user:write:chat',
-  // Twitchサブスク確認権限（配信チャンネルのサブスクを確認しプランを自動適用）
+  // Twitchサブスク確認権限（配信チャネルのサブスクを確認しプランを自動適用）
   // Permission to check Twitch subscriptions (auto-apply plan for channel subscribers)
   USER_READ_SUBSCRIPTIONS: 'user:read:subscriptions',
 } as const

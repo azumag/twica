@@ -1,6 +1,6 @@
 import CollectionCard from "./CollectionCard";
 import ExpandableDescription from "./ExpandableDescription";
-import type { Rarity, Streamer, Card } from "@/types/database";
+import type { Rarity, Card } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
 
 /**
@@ -11,8 +11,8 @@ const getRarityInfo = (rarity: Rarity) =>
   RARITIES.find((r) => r.value === rarity) || RARITIES[0];
 
 interface CardWithDetails extends Card {
-  streamer: Streamer;
   count: number;
+  isOwned?: boolean;
 }
 
 interface SortedCardGridProps {
@@ -29,6 +29,7 @@ interface SortedCardGridProps {
     // カード枚数表示用テンプレート、例: "x{count}"
     cardCountTemplate: string;
     noImage: string;
+    unownedCard: string;
   };
 }
 
@@ -45,6 +46,7 @@ export default function SortedCardGrid({
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {cards.map((card, index) => {
+        const isOwned = card.isOwned ?? true;
         const rarityInfo = getRarityInfo(card.rarity);
         // First 4 cards get priority for LCP optimization
         // 最初の4枚のカードはLCP最適化のためpriority設定
@@ -54,18 +56,23 @@ export default function SortedCardGrid({
             key={card.id}
             id={card.id}
             streamerId={streamerId}
-            name={card.name}
+            name={isOwned ? card.name : translations.unownedCard}
             imageUrl={card.image_url}
             rarityInfo={{
               label: rarityInfo.label,
               color: rarityInfo.color,
             }}
-            count={card.count}
-            countLabel={translations.cardCountTemplate.replace("{count}", String(card.count))}
+            count={isOwned ? card.count : undefined}
+            countLabel={
+              isOwned
+                ? translations.cardCountTemplate.replace("{count}", String(card.count))
+                : undefined
+            }
             priority={isPriority}
             noImageText={translations.noImage}
+            isOwned={isOwned}
             descriptionComponent={
-              card.description ? (
+              isOwned && card.description ? (
                 <ExpandableDescription description={card.description} />
               ) : undefined
             }

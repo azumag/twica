@@ -3,6 +3,7 @@ import { unstable_cache } from "next/cache";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { logger } from "@/lib/logger";
 import { normalizeDropRate } from "@/lib/card-utils";
+import { reportError } from "@/lib/sentry/error-handler";
 import type { Card, Streamer, GachaHistory } from "@/types/database";
 
 interface CardWithDetails extends Card {
@@ -208,6 +209,8 @@ interface GachaHistoryFilters {
   perPage?: number;
   username?: string;
   rarity?: string;
+  cardId?: string;
+  userId?: string;
   from?: string;
   to?: string;
 }
@@ -236,7 +239,7 @@ export async function getGachaHistoryForStreamer(
   streamerId: string,
   filters: GachaHistoryFilters = {}
 ): Promise<PaginatedGachaHistory> {
-  const { page = 1, perPage = 20, username, rarity, from, to } = filters;
+  const { page = 1, perPage = 20, username, rarity, cardId, userId, from, to } = filters;
   const supabaseAdmin = getSupabaseAdmin();
 
   // Use !inner join when filtering by rarity to ensure correct count
@@ -256,6 +259,12 @@ export async function getGachaHistoryForStreamer(
   }
   if (rarity) {
     query = query.eq("cards.rarity", rarity);
+  }
+  if (cardId) {
+    query = query.eq("card_id", cardId);
+  }
+  if (userId) {
+    query = query.eq("user_twitch_id", userId);
   }
   if (from) {
     query = query.gte("redeemed_at", from);
@@ -307,7 +316,7 @@ export async function getGachaHistoryForUser(
 
   const offset = (page - 1) * perPage;
   // Join streamers to show which channel the gacha was drawn on
-  // どのチャンネルでガチャを引いたかを表示するため streamers を JOIN
+  // どのチャネルでガチャを引いたかを表示するため streamers を JOIN
   const { data, count } = await supabaseAdmin
     .from("gacha_history")
     .select("*, cards(*), streamers(twitch_display_name)", { count: "exact" })
@@ -319,6 +328,122 @@ export async function getGachaHistoryForUser(
 
   return {
     history: (data || []) as unknown as GachaHistoryWithCard[],
+    pagination: {
+      page,
+      perPage,
+      total,
+      totalPages: Math.ceil(total / perPage),
+    },
+  };
+}
+
+/**
+ * Gacha user entry for the users tab
+ * ユーザータブ用のガチャユーザー情報
+ */
+export interface GachaUserEntry {
+  userTwitchId: string;
+  username: string;
+  drawCount: number;
+  uniqueCards: number;
+  /** Active cards the user has drawn at least once (unique by card ID) */
+  uniqueCardIds: string[];
+  lastDrawAt: string;
+}
+
+/**
+ * Get aggregated user list for a streamer's gacha history
+ * JS側で集約: ユニークユーザー一覧、各ユーザーのユニークカード数、ガチャ回数、最終日時
+ * 配信者向け: ガチャを引いたユーザー一覧を集約して返す
+ */
+export async function getGachaUsersForStreamer(
+  streamerId: string,
+  options: { page?: number; perPage?: number } = {}
+): Promise<{ users: GachaUserEntry[]; pagination: { page: number; perPage: number; total: number; totalPages: number } }> {
+  const { page = 1, perPage = 20 } = options;
+  const supabaseAdmin = getSupabaseAdmin();
+
+  // Fetch gacha history and active card IDs in parallel
+  // ガチャ履歴とアクティブカードIDを並列取得
+  // Note: 10,000件上限は getGachaStats と同じパターン。
+  // 超過する配信者では集計が近似値となる。
+  const [historyResult, activeCardsResult] = await Promise.all([
+    supabaseAdmin
+      .from("gacha_history")
+      .select("user_twitch_id, user_twitch_username, card_id, redeemed_at")
+      .eq("streamer_id", streamerId)
+      .order("redeemed_at", { ascending: false })
+      .limit(10000),
+    supabaseAdmin
+      .from("cards")
+      .select("id")
+      .eq("streamer_id", streamerId)
+      .eq("is_active", true),
+  ]);
+
+  const data = historyResult.data;
+  if (!data || data.length === 0) {
+    return {
+      users: [],
+      pagination: { page, perPage, total: 0, totalPages: 0 },
+    };
+  }
+
+  // Build active card ID set for filtering uniqueCards
+  // uniqueCards のフィルタリング用にアクティブカードIDセットを構築
+  const activeCardIds = new Set((activeCardsResult.data || []).map((c) => c.id));
+
+  // Aggregate by user / ユーザーごとに集約
+  const userMap = new Map<string, {
+    username: string;
+    drawCount: number;
+    cardIds: Set<string>;
+    lastDrawAt: string;
+  }>();
+
+  for (const row of data) {
+    const existing = userMap.get(row.user_twitch_id);
+    if (existing) {
+      existing.drawCount++;
+      // Only count active cards for collection progress
+      // コレクション進捗にはアクティブカードのみカウント
+      if (activeCardIds.has(row.card_id)) {
+        existing.cardIds.add(row.card_id);
+      }
+    } else {
+      const cardIds = new Set<string>();
+      if (activeCardIds.has(row.card_id)) {
+        cardIds.add(row.card_id);
+      }
+      userMap.set(row.user_twitch_id, {
+        username: row.user_twitch_username || "",
+        drawCount: 1,
+        cardIds,
+        lastDrawAt: row.redeemed_at,
+      });
+    }
+  }
+
+  // Convert to sorted array (by draw count descending)
+  // ガチャ回数の降順でソート
+  const allUsers: GachaUserEntry[] = Array.from(userMap.entries())
+    .map(([userTwitchId, info]) => ({
+      userTwitchId,
+      username: info.username,
+      drawCount: info.drawCount,
+      uniqueCards: info.cardIds.size,
+      uniqueCardIds: Array.from(info.cardIds),
+      lastDrawAt: info.lastDrawAt,
+    }))
+    .sort((a, b) => b.drawCount - a.drawCount);
+
+  // Client-side pagination / クライアント側ページネーション
+  const total = allUsers.length;
+  const offset = (page - 1) * perPage;
+  const paginatedUsers = allUsers.slice(offset, offset + perPage);
+
+  return {
+    users: paginatedUsers,
     pagination: {
       page,
       perPage,
@@ -456,6 +581,50 @@ export async function getGachaStats(
 
   return { totalDraws: safeTotal, cardStats, rarityStats };
 }
+
+/**
+ * Internal function to fetch active cards for a specific streamer from database
+ * 内部関数: 特定配信者のアクティブカードをデータベースから取得
+ */
+async function fetchActiveCardsForStreamerFromDB(streamerId: string): Promise<Card[]> {
+  const startTotal = Date.now();
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const startQuery = Date.now();
+  // Use generated column rarity_order for stable rarity sorting
+  // generated columnのrarity_orderを使用してレアリティ順で安定ソート
+  const { data: cards } = await supabaseAdmin
+    .from("cards")
+    .select("*")
+    .eq("streamer_id", streamerId)
+    .eq("is_active", true)
+    .order("rarity_order", { ascending: true })
+    .order("created_at", { ascending: false });
+  logger.info(`[Perf] getActiveCardsForStreamer query: ${Date.now() - startQuery}ms`);
+
+  logger.info(`[Perf] getActiveCardsForStreamer total: ${Date.now() - startTotal}ms`);
+  return normalizeDropRate(cards || []);
+}
+
+/**
+ * Get active cards for a specific streamer - cached with Next.js cache (30 seconds TTL)
+ * 特定配信者のアクティブカード取得 - Next.jsキャッシュ使用（30秒TTL）
+ */
+export const getActiveCardsForStreamer = cache(async (
+  streamerId: string
+): Promise<Card[]> => {
+  const start = Date.now();
+
+  const cachedFetch = unstable_cache(
+    async () => fetchActiveCardsForStreamerFromDB(streamerId),
+    [`active-cards-${streamerId}`],
+    { revalidate: 30, tags: [`active-cards-${streamerId}`] }
+  );
+
+  const result = await cachedFetch();
+  logger.info(`[Perf] getActiveCardsForStreamer (with cache): ${Date.now() - start}ms`);
+  return result;
+});
 
 /**
  * Internal function to fetch user cards for a specific streamer from database
@@ -622,4 +791,70 @@ export const getUserCardDetail = cache(async (
     streamer: cardWithStreamer.streamers,
     count,
   };
+});
+
+/**
+ * Record a collection completion achievement (fire-and-forget)
+ * UNIQUE制約により同一total_cardsでの重複挿入はスキップされる
+ * ページ表示をブロックしないよう、呼び出し側で void で使用すること
+ *
+ * コレクションコンプリート達成をDBに記録する（fire-and-forget）
+ */
+export async function recordCollectionCompletion(
+  twitchUserId: string,
+  streamerId: string,
+  totalCards: number,
+): Promise<void> {
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    // upsert with ignoreDuplicates: UNIQUE制約違反時は静かにスキップ
+    const { error } = await supabaseAdmin
+      .from("collection_completions")
+      .upsert(
+        { twitch_user_id: twitchUserId, streamer_id: streamerId, total_cards: totalCards },
+        { onConflict: "twitch_user_id,streamer_id,total_cards", ignoreDuplicates: true },
+      );
+    if (error) {
+      logger.error(`Failed to record collection completion: ${error.message}`);
+      reportError(error, { context: "recordCollectionCompletion", twitchUserId, streamerId, totalCards });
+    }
+  } catch (err) {
+    // fire-and-forget: エラーでページ表示を壊さない
+    logger.error(`Unexpected error in recordCollectionCompletion: ${err}`);
+    reportError(err instanceof Error ? err : new Error(String(err)), {
+      context: "recordCollectionCompletion", twitchUserId, streamerId, totalCards,
+    });
+  }
+}
+
+/**
+ * Get past collection completion records for a user and streamer
+ * Returns records sorted by completed_at DESC (newest first)
+ *
+ * ユーザー×配信者の過去コンプリート達成記録を取得（新しい順）
+ */
+export const getCollectionCompletions = cache(async (
+  twitchUserId: string,
+  streamerId: string,
+): Promise<{ total_cards: number; completed_at: string }[]> => {
+  const cachedFetch = unstable_cache(
+    async () => {
+      const supabaseAdmin = getSupabaseAdmin();
+      const { data, error } = await supabaseAdmin
+        .from("collection_completions")
+        .select("total_cards, completed_at")
+        .eq("twitch_user_id", twitchUserId)
+        .eq("streamer_id", streamerId)
+        .order("completed_at", { ascending: false });
+      if (error) {
+        logger.error(`Failed to fetch collection completions: ${error.message}`);
+        return [];
+      }
+      return data || [];
+    },
+    [`collection-completions-${twitchUserId}-${streamerId}`],
+    { revalidate: 30, tags: [`collection-completions-${twitchUserId}-${streamerId}`] },
+  );
+
+  return cachedFetch();
 });
