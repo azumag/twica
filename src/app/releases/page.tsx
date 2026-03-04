@@ -10,6 +10,7 @@ export const metadata: Metadata = {
 
 /**
  * リリースノートページ
+ * v1.31.0: カード排出確率自動設定・コレクションコンプリート・ガチャ履歴フィルタ
  * v1.27.0: 支援特典システム・Twitchサブスク確認・問い合わせフォーム
  */
 export default async function ReleasesPage() {
@@ -48,10 +49,129 @@ export default async function ReleasesPage() {
             TwiCa リリースノート
           </h1>
 
-          {/* v1.27.0 - 支援特典・Twitchサブスク確認・問い合わせフォーム */}
+          {/* v1.31.0 - カード排出確率自動設定・コレクションコンプリート・ガチャ履歴フィルタ */}
           <div className="mb-16">
             <div className="mb-8">
               <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
+                v1.31.0
+              </div>
+              <p className="mt-2 text-sm text-gray-500">2026-03-04</p>
+            </div>
+
+            {/* カード排出確率の自動設定機能 */}
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                カード排出確率の自動設定機能
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    概要
+                  </h3>
+                  <p className="text-gray-400">
+                    レアリティごとに目標確率を設定するだけで、各カードの排出確率が自動計算されるようになりました。カードの追加・削除時も自動で再計算されるため、手動での調整が不要になります。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    レアリティ内の偏り設定
+                  </h3>
+                  <p className="text-gray-400">
+                    同じレアリティのカード間で「出やすさ」に差をつけることができます。各カードの確率プレビューで設定結果を確認でき、「?」アイコンから詳しいヘルプも参照できます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    互換性
+                  </h3>
+                  <p className="text-gray-400">
+                    既存の手動設定はそのまま維持されます。自動設定モードと手動モードはいつでも切り替え可能です。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-3 text-lg font-semibold text-white">
+                    既知の制限事項
+                  </h3>
+                  <ul className="ml-4 list-disc space-y-2 text-gray-400">
+                    <li>メタデータ編集時に不要な再計算が発生する場合があります（最適化予定）</li>
+                    <li>初回保存が失敗した場合の復旧手順が煩雑です（リトライ機構を追加予定）</li>
+                  </ul>
+                </div>
+              </div>
+            </section>
+
+            {/* コレクションコンプリート機能 */}
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                コレクションコンプリート機能
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    概要
+                  </h3>
+                  <p className="text-gray-400">
+                    コレクションの達成度を確認できるようになりました。全カードを集めるとゴールドの勲章が表示されます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    過去履歴
+                  </h3>
+                  <p className="text-gray-400">
+                    コンプリート達成の記録は永続的に保存されます。配信者がカード枚数を変更した後も、過去の達成記録はそのまま残ります。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    ⚠️ 注意事項
+                  </h3>
+                  <p className="text-gray-400">
+                    コンプリート達成はコレクションページを確認したタイミングで記録されます。ページを開かない限り、達成判定は行われません。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    配信者向け
+                  </h3>
+                  <p className="text-gray-400">
+                    ガチャ履歴のユーザー別ページから、各視聴者のコレクションコンプリート状況を確認できます。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            {/* ガチャ履歴フィルタ追加 */}
+            <section className="mb-10">
+              <h2 className="mb-6 text-2xl font-bold text-white border-b border-gray-700 pb-3">
+                ガチャ履歴フィルタ追加
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    登録カードから検索できるフィルタ
+                  </h3>
+                  <p className="text-gray-400">
+                    ガチャ履歴ページに、登録されているカードから絞り込み検索ができるフィルタ機能を追加しました。特定のカードの排出履歴を簡単に確認できます。
+                  </p>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          {/* v1.27.0 - 支援特典・Twitchサブスク確認・問い合わせフォーム */}
+          <div className="mb-16">
+            <div className="mb-8">
+              <div className="mb-2 inline-block rounded-full bg-gray-600 px-3 py-1 text-sm font-medium text-white">
                 v1.27.0
               </div>
               <p className="mt-2 text-sm text-gray-500">2026-02-25</p>

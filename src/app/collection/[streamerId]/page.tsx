@@ -88,10 +88,10 @@ export default async function StreamerCollectionPage({
     ? [{ total_cards: progress.total, completed_at: new Date().toISOString() }, ...completionHistory]
     : completionHistory;
 
-  // コンプリート達成時、非ブロッキングでDBに記録
-  // fire-and-forget: ページ表示をブロックしない
+  // コンプリート達成時にDBに記録（awaitしないとWorkers打ち切りで記録が失われる）
+  // upsert + ignoreDuplicates で高速、重複時はスキップされる
   if (isCurrentComplete) {
-    void recordCollectionCompletion(session.twitchUserId, streamerId, progress.total);
+    await recordCollectionCompletion(session.twitchUserId, streamerId, progress.total);
   }
 
   return (
