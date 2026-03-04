@@ -27,6 +27,8 @@ interface CollectionProps {
     cards: CardWithDetails[];
     totalActive: number;
     ownedActive: number;
+    isComplete?: boolean;
+    hasPastCompletion?: boolean;
   }>;
 }
 
@@ -55,7 +57,7 @@ export default async function Collection({ cardsByStreamer }: CollectionProps) {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {Object.values(cardsByStreamer).map(({ streamer, cards, totalActive, ownedActive }) => {
+          {Object.values(cardsByStreamer).map(({ streamer, cards, totalActive, ownedActive, isComplete, hasPastCompletion }) => {
             // Calculate rarity statistics for each streamer
             // 各配信者のレアリティ別統計を計算
             const streamerStats = calculateStreamerStats(cards);
@@ -80,8 +82,23 @@ export default async function Collection({ cardsByStreamer }: CollectionProps) {
                     />
                   )}
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-white truncate">
-                      {streamer.twitch_display_name}
+                    <h3 className="flex items-center gap-1 min-w-0 font-semibold text-white">
+                      <span className="truncate">{streamer.twitch_display_name}</span>
+                      {/* 勲章アイコン: ゴールド=現在コンプリート, アンバー=過去コンプリートのみ */}
+                      {isComplete && (
+                        <svg className="w-4 h-4 shrink-0 text-yellow-400" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M8 2l2 4h4l2-4H8z" opacity="0.7" />
+                          <circle cx="12" cy="14" r="7" />
+                          <path d="M12 9l1.5 3 3.5.5-2.5 2.5.5 3.5L12 16.5 9 18.5l.5-3.5L7 12.5l3.5-.5z" fill="white" opacity="0.3" />
+                        </svg>
+                      )}
+                      {!isComplete && hasPastCompletion && (
+                        <svg className="w-4 h-4 shrink-0 text-amber-400" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M8 2l2 4h4l2-4H8z" opacity="0.7" />
+                          <circle cx="12" cy="14" r="7" />
+                          <path d="M12 9l1.5 3 3.5.5-2.5 2.5.5 3.5L12 16.5 9 18.5l.5-3.5L7 12.5l3.5-.5z" fill="white" opacity="0.3" />
+                        </svg>
+                      )}
                     </h3>
                     <p className="text-sm text-gray-400">
                       {tCollectionPage("streamerOwnedCards", {

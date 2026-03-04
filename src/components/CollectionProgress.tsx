@@ -87,7 +87,13 @@ export default async function CollectionProgress({
 
       {isComplete && (
         <div className="mt-3 space-y-1">
-          <p className="text-sm font-semibold text-emerald-300">
+          <p className="flex items-center gap-1.5 text-sm font-semibold text-emerald-300">
+            {/* ゴールド勲章: 現在コンプリート中を示すメダルアイコン */}
+            <svg className="w-5 h-5 text-yellow-400" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M8 2l2 4h4l2-4H8z" opacity="0.7" />
+              <circle cx="12" cy="14" r="7" />
+              <path d="M12 9l1.5 3 3.5.5-2.5 2.5.5 3.5L12 16.5 9 18.5l.5-3.5L7 12.5l3.5-.5z" fill="white" opacity="0.3" />
+            </svg>
             {t("complete")}
           </p>
           {currentCompleteRecord && (
@@ -104,7 +110,13 @@ export default async function CollectionProgress({
       {pastCompletionHistory.length > 0 && (
         <div className="mt-3 space-y-1">
           {pastCompletionHistory.map((record) => (
-            <p key={`${record.total_cards}-${record.completed_at}`} className="text-xs text-amber-400">
+            <p key={`${record.total_cards}-${record.completed_at}`} className="flex items-center gap-1.5 text-xs text-amber-400">
+              {/* アンバー勲章: 過去コンプリート達成を示すメダルアイコン */}
+              <svg className="w-4 h-4 shrink-0 text-amber-400" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M8 2l2 4h4l2-4H8z" opacity="0.7" />
+                <circle cx="12" cy="14" r="7" />
+                <path d="M12 9l1.5 3 3.5.5-2.5 2.5.5 3.5L12 16.5 9 18.5l.5-3.5L7 12.5l3.5-.5z" fill="white" opacity="0.3" />
+              </svg>
               {t("pastCompleteWithDateTime", {
                 totalCards: record.total_cards,
                 dateTime: formatDateTime(record.completed_at),

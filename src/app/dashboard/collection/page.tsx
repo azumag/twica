@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/session";
-import { getUserCards, getActiveCardsForStreamer } from "@/lib/dashboard-data";
+import { getUserCards, getActiveCardsForStreamer, getCollectionCompletions } from "@/lib/dashboard-data";
 import { RARITY_ORDER } from "@/lib/constants";
 import Collection from "@/components/Collection";
 import type { Card, Streamer } from "@/types/database";
@@ -55,7 +55,7 @@ export default async function CollectionPage() {
       acc[streamerId].cards.push(card);
       return acc;
     },
-    {} as Record<string, { streamer: Streamer; cards: CardWithDetails[]; totalActive: number; ownedActive: number }>
+    {} as Record<string, { streamer: Streamer; cards: CardWithDetails[]; totalActive: number; ownedActive: number; isComplete?: boolean; hasPastCompletion?: boolean }>
   );
 
   // Fetch active card totals per streamer in parallel for progress display
@@ -67,7 +67,11 @@ export default async function CollectionPage() {
   const streamerIds = Object.keys(cardsByStreamer);
   const activeCardData = await Promise.all(
     streamerIds.map(async (streamerId) => {
-      const activeCards = await getActiveCardsForStreamer(streamerId);
+      // アクティブカード情報とコンプリート履歴を並列取得
+      const [activeCards, completionHistory] = await Promise.all([
+        getActiveCardsForStreamer(streamerId),
+        getCollectionCompletions(session.twitchUserId, streamerId),
+      ]);
       const activeCardIds = new Set(activeCards.map((c) => c.id));
       const activeOwnedCards = cardsByStreamer[streamerId].cards.filter(
         (c) => activeCardIds.has(c.id)
@@ -77,10 +81,11 @@ export default async function CollectionPage() {
         totalActive: activeCards.length,
         ownedActive: activeOwnedCards.length,
         activeOwnedCards,
+        completionHistory,
       };
     })
   );
-  for (const { streamerId, totalActive, ownedActive, activeOwnedCards } of activeCardData) {
+  for (const { streamerId, totalActive, ownedActive, activeOwnedCards, completionHistory } of activeCardData) {
     // Align My Collection with streamer collection page behavior:
     // only active cards that the user owns are shown and counted.
     // マイコレクションを配信者別コレクションと揃えるため、
@@ -88,6 +93,16 @@ export default async function CollectionPage() {
     cardsByStreamer[streamerId].cards = activeOwnedCards;
     cardsByStreamer[streamerId].totalActive = totalActive;
     cardsByStreamer[streamerId].ownedActive = ownedActive;
+
+    // コンプリート状態の判定
+    // isComplete: 現在のアクティブカード全種を所持しているか
+    // hasPastCompletion: 現在コンプリート中のレコード以外の達成履歴があるか
+    const isComplete = totalActive > 0 && ownedActive >= totalActive;
+    const hasPastCompletion = completionHistory.some(
+      (r) => !isComplete || r.total_cards !== totalActive
+    );
+    cardsByStreamer[streamerId].isComplete = isComplete;
+    cardsByStreamer[streamerId].hasPastCompletion = hasPastCompletion;
 
     // Hide streamers where user has no active owned cards
     // ユーザーが配布中カードを1枚も所持していない配信者は非表示
