@@ -59,6 +59,30 @@ describe('TwitchChatService', () => {
       expect(hasScope).toHaveBeenCalledWith('123456789', 'user:write:chat');
       expect(getTwitchAccessToken).toHaveBeenCalled();
     });
+
+    it('500文字を超える日本語メッセージは文字単位で切り詰めて送信する', async () => {
+      vi.mocked(hasScope).mockResolvedValue(true);
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+      } as Response);
+
+      await service.sendChatMessage('123456789', 'あ'.repeat(520));
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.twitch.tv/helix/chat/messages',
+        expect.objectContaining({
+          body: JSON.stringify({
+            broadcaster_id: '123456789',
+            sender_id: '123456789',
+            message: `${'あ'.repeat(497)}...`,
+          }),
+        }),
+      );
+    });
   });
 
   describe('sendChatMessage - 401エラー時のDB保護', () => {

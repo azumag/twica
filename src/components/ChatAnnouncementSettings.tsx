@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
+import { CARD_DESCRIPTION_MAX_CHARACTERS, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
+import { countCharacters } from "@/lib/text-utils";
 
 interface ChatAnnouncementSettingsProps {
   streamerId: string;
@@ -12,6 +14,38 @@ interface ChatAnnouncementSettingsProps {
   // カスタムテンプレート（nullの場合はデフォルト）
   // Custom template (null for default)
   currentTemplate: string | null;
+}
+
+const DEFAULT_CHAT_TEMPLATE = "@{user} が【{rarity}】{card} を獲得しました！";
+
+const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
+  user: 25,
+  card: 100,
+  rarity: 12,
+  num: 10,
+  detail: CARD_DESCRIPTION_MAX_CHARACTERS,
+} as const;
+
+function buildChatPreviewMessage(
+  template: string,
+  placeholders: {
+    user: string;
+    card: string;
+    rarity: string;
+    num: string;
+    detail: string;
+    url: string;
+  }
+): string {
+  return template
+    .replace(/\{user\}/g, placeholders.user)
+    .replace(/\{card\}/g, placeholders.card)
+    .replace(/\{rarity\}/g, placeholders.rarity)
+    .replace(/\{num\}/g, placeholders.num)
+    .replace(/\{detail\}/g, placeholders.detail)
+    .replace(/\{url\}/g, placeholders.url)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
@@ -54,6 +88,38 @@ export default function ChatAnnouncementSettings({
   const [hasScope, setHasScope] = useState<boolean | null>(null);
   const [checkingScope, setCheckingScope] = useState(true);
   const [reauthorizing, setReauthorizing] = useState(false);
+  const activeTemplate = template || DEFAULT_CHAT_TEMPLATE;
+
+  const demoMessage = useMemo(() => {
+    return buildChatPreviewMessage(activeTemplate, {
+      user: "SampleUser",
+      card: "レジェンダリーカード",
+      rarity: "レジェンダリー",
+      num: "3",
+      detail: "特別なカードの説明文です",
+      url: `https://twica.live/collection/${streamerId}`,
+    });
+  }, [activeTemplate, streamerId]);
+
+  const demoMessageCharacterCount = useMemo(
+    () => countCharacters(demoMessage),
+    [demoMessage]
+  );
+
+  const estimatedMaxMessageCharacterCount = useMemo(() => {
+    return countCharacters(
+      buildChatPreviewMessage(activeTemplate, {
+        user: "U".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.user),
+        card: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.card),
+        rarity: "レ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.rarity),
+        num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
+        detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
+        url: `https://twica.live/collection/${streamerId}`,
+      })
+    );
+  }, [activeTemplate, streamerId]);
+
+  const mayExceedChatLimit = estimatedMaxMessageCharacterCount > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
 
   // コンポーネントマウント時にスコープをチェック
   // Check scope on component mount
@@ -138,7 +204,7 @@ export default function ChatAnnouncementSettings({
    * 設定を保存
    * Save settings
    */
-  const saveSettings = async (newEnabled: boolean, newTemplate: string) => {
+  const saveSettings = useCallback(async (newEnabled: boolean, newTemplate: string) => {
     setSaving(true);
     setMessage("");
     setIsError(false);
@@ -176,7 +242,7 @@ export default function ChatAnnouncementSettings({
     } finally {
       setSaving(false);
     }
-  };
+  }, [streamerId, t]);
 
   /**
    * 有効/無効を切り替え
@@ -192,7 +258,7 @@ export default function ChatAnnouncementSettings({
       // Revert on failure
       setEnabled(!newEnabled);
     }
-  }, [enabled, template]);
+  }, [enabled, saveSettings, template]);
 
   /**
    * テンプレートを保存
@@ -200,39 +266,12 @@ export default function ChatAnnouncementSettings({
    */
   const handleSaveTemplate = useCallback(async () => {
     await saveSettings(enabled, template);
-  }, [enabled, template]);
+  }, [enabled, saveSettings, template]);
 
   /**
    * デモ用のサンプルメッセージを生成
    * Generate sample message for demo preview
    */
-  const buildDemoMessage = useCallback((): string => {
-    // デフォルトテンプレート
-    const defaultTemplate = "@{user} が【{rarity}】{card} を獲得しました！";
-    const activeTemplate = template || defaultTemplate;
-
-    // サンプルデータでプレースホルダーを置換
-    // Replace placeholders with sample data
-    const sampleData = {
-      user: "SampleUser",
-      card: "レジェンダリーカード",
-      rarity: "レジェンダリー",
-      num: "3",
-      detail: "特別なカードの説明文です",
-      url: `https://twica.live/collection/${streamerId}`,
-    };
-
-    let result = activeTemplate;
-    result = result.replace(/\{user\}/g, sampleData.user);
-    result = result.replace(/\{card\}/g, sampleData.card);
-    result = result.replace(/\{rarity\}/g, sampleData.rarity);
-    result = result.replace(/\{num\}/g, sampleData.num);
-    result = result.replace(/\{detail\}/g, sampleData.detail);
-    result = result.replace(/\{url\}/g, sampleData.url);
-
-    return result;
-  }, [template, streamerId]);
-
   // スコープ確認中のローディング表示
   // Loading display while checking scope
   if (checkingScope) {
@@ -332,6 +371,20 @@ export default function ChatAnnouncementSettings({
           <p className="mt-1 text-xs text-gray-500">
             {t("form.placeholderHelp")}
           </p>
+          <p className={`mt-1 text-xs ${demoMessageCharacterCount > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS ? "text-yellow-400" : "text-gray-500"}`}>
+            {t("form.previewLength", {
+              current: demoMessageCharacterCount,
+              max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
+            })}
+          </p>
+          {mayExceedChatLimit && (
+            <div className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
+              {t("messages.lengthWarning", {
+                estimated: estimatedMaxMessageCharacterCount,
+                max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
+              })}
+            </div>
+          )}
         </div>
 
         {/* ボタン群 */}
@@ -377,7 +430,7 @@ export default function ChatAnnouncementSettings({
             {/* プレビューメッセージ */}
             <div className="mb-4 rounded-lg bg-gray-700 p-4">
               <p className="break-words text-sm text-white">
-                {buildDemoMessage()}
+                {demoMessage}
               </p>
             </div>
             <button
