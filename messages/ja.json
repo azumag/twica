@@ -357,7 +357,8 @@
       "enableAnnouncement": "チャット通知を有効にする",
       "customTemplate": "カスタムテンプレート（任意）",
       "templatePlaceholder": "@'{'user'}' が【'{'rarity'}'】'{'card'}' を獲得しました！",
-      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL"
+      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL",
+      "previewLength": "プレビュー文字数: {current} / {max}文字"
     },
     "buttons": {
       "reauthorize": "Twitchで再認証",
@@ -368,7 +369,8 @@
     },
     "messages": {
       "checkingScope": "権限を確認中...",
-      "saved": "設定を保存しました"
+      "saved": "設定を保存しました",
+      "lengthWarning": "カード説明やURLが長い場合、送信メッセージが最大 {estimated} 文字程度になる可能性があります。{max}文字を超えた分は送信時に切り詰められます。"
     },
     "errors": {
       "saveFailed": "設定の保存に失敗しました",

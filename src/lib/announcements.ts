@@ -32,6 +32,64 @@ export interface AnnouncementWithReadStatus {
   read_at: string | null
 }
 
+interface AnnouncementVisibilityWindow {
+  published_at: string | null
+  expires_at: string | null
+}
+
+function parseAnnouncementTime(value: string | null): number | null {
+  if (!value) {
+    return null
+  }
+
+  const timestamp = Date.parse(value)
+  return Number.isNaN(timestamp) ? null : timestamp
+}
+
+export function isAnnouncementVisibleAt(
+  announcement: AnnouncementVisibilityWindow,
+  now: Date = new Date()
+): boolean {
+  const nowMs = now.getTime()
+  const publishedAtMs = parseAnnouncementTime(announcement.published_at)
+  const expiresAtMs = parseAnnouncementTime(announcement.expires_at)
+
+  if (announcement.published_at && publishedAtMs === null) {
+    return false
+  }
+
+  if (announcement.expires_at && expiresAtMs === null) {
+    return false
+  }
+
+  if (publishedAtMs !== null && publishedAtMs > nowMs) {
+    return false
+  }
+
+  if (expiresAtMs !== null && expiresAtMs < nowMs) {
+    return false
+  }
+
+  return true
+}
+
+export function hasAnnouncementBeenPublishedAt(
+  announcement: Pick<AnnouncementVisibilityWindow, 'published_at'>,
+  now: Date = new Date()
+): boolean {
+  const publishedAtMs = parseAnnouncementTime(announcement.published_at)
+
+  if (announcement.published_at && publishedAtMs === null) {
+    return false
+  }
+
+  if (publishedAtMs !== null && publishedAtMs > now.getTime()) {
+    return false
+  }
+
+  return true
+}
+
 /**
  * 未読のお知らせを取得（ダッシュボードバナー表示用）
  * 公開中 かつ 期限内 かつ 未読 のお知らせを取得する
@@ -42,15 +100,13 @@ export interface AnnouncementWithReadStatus {
 export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promise<UnreadAnnouncement[]> => {
   try {
     const supabase = getSupabaseAdmin()
-    const now = new Date().toISOString()
+    const now = new Date()
 
-    // 公開中かつ期限内のお知らせを取得
+    // 公開済みのお知らせを取得し、トップ表示向けの期限判定はサーバー側で厳密に行う
     const { data: announcements, error: annError } = await supabase
       .from('announcements')
-      .select('id, title, body, severity, published_at, created_at')
+      .select('id, title, body, severity, published_at, expires_at, created_at')
       .eq('is_published', true)
-      .or(`published_at.is.null,published_at.lte.${now}`)
-      .or(`expires_at.is.null,expires_at.gte.${now}`)
       .order('created_at', { ascending: false })
 
     if (annError) {
@@ -59,6 +115,14 @@ export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promis
     }
 
     if (!announcements || announcements.length === 0) {
+      return []
+    }
+
+    const visibleAnnouncements = announcements.filter((announcement) =>
+      isAnnouncementVisibleAt(announcement, now)
+    )
+
+    if (visibleAnnouncements.length === 0) {
       return []
     }
 
@@ -78,7 +142,16 @@ export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promis
     const readIds = new Set((reads || []).map(r => r.announcement_id))
 
     // 未読のお知らせのみ返す
-    return announcements.filter(a => !readIds.has(a.id))
+    return visibleAnnouncements
+      .filter(a => !readIds.has(a.id))
+      .map(a => ({
+        id: a.id,
+        title: a.title,
+        body: a.body,
+        severity: a.severity,
+        published_at: a.published_at,
+        created_at: a.created_at,
+      }))
   } catch (error) {
     logger.error('Error in getUnreadAnnouncements', { error })
     return []
@@ -94,15 +167,13 @@ export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promis
 export async function getAllAnnouncements(twitchUserId: string): Promise<AnnouncementWithReadStatus[]> {
   try {
     const supabase = getSupabaseAdmin()
-    const now = new Date().toISOString()
+    const now = new Date()
 
-    // 公開中かつ期限内のお知らせを取得（履歴ページでも公開済みのみ表示）
+    // 履歴ページ向けに公開済みのお知らせを取得
     const { data: announcements, error: annError } = await supabase
       .from('announcements')
       .select('id, title, body, severity, is_published, published_at, expires_at, created_at')
       .eq('is_published', true)
-      .or(`published_at.is.null,published_at.lte.${now}`)
-      .or(`expires_at.is.null,expires_at.gte.${now}`)
       .order('created_at', { ascending: false })
 
     if (annError) {
@@ -111,6 +182,14 @@ export async function getAllAnnouncements(twitchUserId: string): Promise<Announc
     }
 
     if (!announcements || announcements.length === 0) {
+      return []
+    }
+
+    const publishedAnnouncements = announcements.filter((announcement) =>
+      hasAnnouncementBeenPublishedAt(announcement, now)
+    )
+
+    if (publishedAnnouncements.length === 0) {
       return []
     }
 
@@ -123,7 +202,7 @@ export async function getAllAnnouncements(twitchUserId: string): Promise<Announc
     if (readError) {
       // 既読情報の取得に失敗した場合は全お知らせを既読扱いで返す
       logger.error('Failed to fetch announcement reads for history', { error: readError.message })
-      return announcements.map(a => ({
+      return publishedAnnouncements.map(a => ({
         id: a.id,
         title: a.title,
         body: a.body,
@@ -139,7 +218,7 @@ export async function getAllAnnouncements(twitchUserId: string): Promise<Announc
 
     const readMap = new Map((reads || []).map(r => [r.announcement_id, r.read_at]))
 
-    return announcements.map(a => ({
+    return publishedAnnouncements.map(a => ({
       id: a.id,
       title: a.title,
       body: a.body,

@@ -357,7 +357,8 @@
       "enableAnnouncement": "Enable chat announcements",
       "customTemplate": "Custom Template (optional)",
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
-      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'detail'}'=card description, '{'url'}'=collection URL"
+      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "previewLength": "Preview length: {current} / {max} characters"
     },
     "buttons": {
       "reauthorize": "Re-authorize with Twitch",
@@ -368,7 +369,8 @@
     },
     "messages": {
       "checkingScope": "Checking permissions...",
-      "saved": "Settings saved"
+      "saved": "Settings saved",
+      "lengthWarning": "If the card description or URL is long, the outgoing message may reach about {estimated} characters. Anything over {max} characters will be truncated when sent."
     },
     "errors": {
       "saveFailed": "Failed to save settings",

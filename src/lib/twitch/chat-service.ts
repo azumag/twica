@@ -3,6 +3,8 @@ import { getTwitchAccessToken, hasScope } from './token-manager'
 import { ADDITIONAL_SCOPES } from './auth'
 import { logger } from '@/lib/logger'
 import { reportApiError, reportError } from '@/lib/sentry/error-handler'
+import { countCharacters, truncateCharacters } from '@/lib/text-utils'
+import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from '@/lib/constants'
 
 const TWITCH_API_URL = 'https://api.twitch.tv/helix'
 
@@ -87,7 +89,9 @@ export class TwitchChatService {
 
       // メッセージを500文字に制限（Twitch APIの制限）
       // Truncate message to 500 characters (Twitch API limit)
-      const truncatedMessage = message.length > 500 ? message.substring(0, 497) + '...' : message
+      const truncatedMessage = countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS
+        ? `${truncateCharacters(message, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS - 3)}...`
+        : message
 
       // Twitch Helix API: POST /helix/chat/messages
       // sender_id と broadcaster_id を同じにすることで、配信者として投稿
@@ -143,10 +147,10 @@ export class TwitchChatService {
         return false
       }
 
-      logger.info('Chat message sent successfully', {
-        broadcasterTwitchUserId,
-        messageLength: truncatedMessage.length,
-      })
+        logger.info('Chat message sent successfully', {
+          broadcasterTwitchUserId,
+          messageLength: countCharacters(truncatedMessage),
+        })
 
       return true
     } catch (error) {

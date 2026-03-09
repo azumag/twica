@@ -208,7 +208,8 @@ export const CSRF_CONFIG = {
   })(),
 } as const
 
-export const CARD_DESCRIPTION_MAX_CHARACTERS = 900
+export const CARD_DESCRIPTION_MAX_CHARACTERS = 500
+export const TWITCH_CHAT_MESSAGE_MAX_CHARACTERS = 500
 
 export const ERROR_MESSAGES = {
   // Authentication errors
