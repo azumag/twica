@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from './supabase/admin'
-import { ERROR_MESSAGES, RARITIES } from './constants'
+import { CARD_DESCRIPTION_MAX_CHARACTERS, ERROR_MESSAGES, RARITIES } from './constants'
+import { countCharacters } from './text-utils'
 
 export async function validateDropRateSum(
   supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
@@ -60,7 +61,7 @@ export function validateCardDescription(description: unknown): { valid: boolean;
     return { valid: false, error: ERROR_MESSAGES.DESCRIPTION_TOO_LONG }
   }
 
-  if (description.length > 500) {
+  if (countCharacters(description) > CARD_DESCRIPTION_MAX_CHARACTERS) {
     return { valid: false, error: ERROR_MESSAGES.DESCRIPTION_TOO_LONG }
   }
 

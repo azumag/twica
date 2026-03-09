@@ -208,6 +208,8 @@ export const CSRF_CONFIG = {
   })(),
 } as const
 
+export const CARD_DESCRIPTION_MAX_CHARACTERS = 900
+
 export const ERROR_MESSAGES = {
   // Authentication errors
   UNAUTHORIZED: 'Unauthorized',
@@ -229,7 +231,7 @@ export const ERROR_MESSAGES = {
   CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
   CARD_NAME_REQUIRED: 'Card name is required',
   CARD_NAME_TOO_LONG: 'Card name must be between 1 and 100 characters',
-  DESCRIPTION_TOO_LONG: 'Description must not exceed 500 characters',
+  DESCRIPTION_TOO_LONG: `Description must not exceed ${CARD_DESCRIPTION_MAX_CHARACTERS} characters`,
   INVALID_IMAGE_URL: 'Invalid image URL format',
   INVALID_RARITY: 'Invalid rarity value. Must be one of: common, rare, epic, legendary',
 

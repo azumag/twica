@@ -4,10 +4,11 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS } from "@/lib/constants";
+import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
+import { countCharacters } from "@/lib/text-utils";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
@@ -215,6 +216,11 @@ export default function CardManager({
     dropRate: 0.25,
     intraRarityWeight: 1.0,
   });
+  const descriptionCharacterCount = useMemo(
+    () => countCharacters(formData.description),
+    [formData.description]
+  );
+  const isDescriptionTooLong = descriptionCharacterCount > CARD_DESCRIPTION_MAX_CHARACTERS;
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   // Separate state for confirmed image URL (only update on blur)
@@ -234,9 +240,6 @@ export default function CardManager({
   // Loading state for storage status refresh
   // ストレージ状態更新中のローディング状態
   const [storageLoading, setStorageLoading] = useState(false);
-  // Pending image deletion URL (deleted on form submit, not immediately)
-  // 削除予定の画像URL（即座に削除せず、フォーム送信時に削除）
-  const [pendingDeleteUrl, setPendingDeleteUrl] = useState<string | null>(null);
   // Image cropping modal state
   // 画像トリミングモーダルの状態
   const [cropModalOpen, setCropModalOpen] = useState(false);
@@ -591,45 +594,13 @@ export default function CardManager({
     return { intraPercent, overallPercent, cardCount, targetPercent };
   }, [cards, editingCard, rarityWeights]);
 
-  // Delete image from Vercel Blob
-  // Vercel Blobから画像を削除
-  const deleteImage = async (url: string): Promise<boolean> => {
-    try {
-      const response = await fetch("/api/upload/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ url }),
-      });
-      return response.ok;
-    } catch {
-      return false;
-    }
-  };
-
-  // Helper function to check if URL is a storage URL
-  // URLがストレージURLかどうかをチェックするヘルパー関数
-  const isStorageUrl = (url: string): boolean => {
-    return url.includes("blob.vercel-storage.com") ||
-           url.includes("public.blob.vercel-storage.com") ||
-           url.includes(".r2.dev") ||
-           url.includes("r2.cloudflarestorage.com") ||
-           url.includes("image.twica.bluemoon.works");
-  };
-
-  // Handle image removal (deferred until form submit)
-  // 画像削除処理（フォーム送信時まで遅延）
+  // Handle image removal and let the update API clean up the previous image if needed
+  // 画像削除処理。必要なら既存画像のクリーンアップは更新API側で行う
   const handleRemoveImage = () => {
     if (!confirmedImageUrl) return;
 
-    // Mark for deletion on submit if it's a storage URL
-    // ストレージURLの場合は送信時に削除するようマーク
-    if (isStorageUrl(confirmedImageUrl)) {
-      setPendingDeleteUrl(confirmedImageUrl);
-    }
-
-    // Clear UI immediately (actual deletion happens on submit)
-    // UIは即座にクリア（実際の削除は送信時）
+    // Clear UI immediately
+    // UIは即座にクリア
     setFormData({ ...formData, imageUrl: "" });
     setConfirmedImageUrl("");
     setUserModifiedImage(true);
@@ -652,9 +623,6 @@ export default function CardManager({
     setEditingCard(null);
     setShowForm(false);
     setUploadError(null);
-    // Clear pending deletion (cancelled by closing modal)
-    // 削除予定をクリア（モーダルを閉じてキャンセル）
-    setPendingDeleteUrl(null);
     // Reset cropping state
     // トリミング状態をリセット
     imageDimensionRequestId.current++;
@@ -877,6 +845,11 @@ export default function CardManager({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (isDescriptionTooLong) {
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -1461,14 +1434,32 @@ export default function CardManager({
                   setFormData({ ...formData, description: e.target.value })
                 }
                 rows={3}
-                className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                aria-invalid={isDescriptionTooLong}
+                className={`w-full rounded-lg px-4 py-2 text-white ${
+                  isDescriptionTooLong
+                    ? "bg-gray-600 ring-1 ring-red-500"
+                    : "bg-gray-600"
+                }`}
               />
+              <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+                <span className={isDescriptionTooLong ? "text-red-400" : "text-gray-400"}>
+                  {t("form.descriptionCount", {
+                    current: descriptionCharacterCount,
+                    max: CARD_DESCRIPTION_MAX_CHARACTERS,
+                  })}
+                </span>
+                {isDescriptionTooLong && (
+                  <span className="text-red-400">
+                    {t("messages.descriptionTooLong", { max: CARD_DESCRIPTION_MAX_CHARACTERS })}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
               <div className="mt-6 flex gap-4">
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || isDescriptionTooLong}
                   className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
                 >
                   {saving ? t("buttons.saving") : editingCard ? tCommon("update") : tCommon("add")}

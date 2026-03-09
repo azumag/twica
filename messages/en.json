@@ -57,6 +57,7 @@
       "intraShareLabel": " share",
       "overallDropRate": "Overall drop rate",
       "description": "Description",
+      "descriptionCount": "{current} / {max} characters",
       "currentImage": "Current image",
       "croppedImage": "Cropped image",
       "selectCropMode": "Select Crop Size",
@@ -93,6 +94,7 @@
       "imageUsage": "Image usage: {usage} / {limit}",
       "storageLimitReason": "Image Upload Storage Notice\n\nThe current image storage limit is 10MB per account. If you exceed the limit, please delete unnecessary images or consider using URLs to reference images stored on external services (URL references do not count toward the storage limit).\n\nWe are grateful that more users than expected are enjoying the service. This storage limit is a necessary measure to keep the service free. We appreciate your understanding. If we receive many requests for increased storage, we will consider introducing paid plans in the future.",
       "refreshing": "Refreshing",
+      "descriptionTooLong": "Description must be {max} characters or fewer.",
       "imageUrlInvalidAspectRatio": "Image URL must be portrait (vertical) or square (current: {width}x{height})",
       "imageUrlResolutionExceeded": "Image URL resolution exceeds limit. Max width: {maxWidth}px, max height: {maxHeight}px (current: {width}x{height})",
       "imageUrlLoadFailed": "Failed to load image URL. Please check the URL.",
@@ -466,6 +468,7 @@
   "overlaySettings": {
     "title": "Overlay Customization",
     "description": "Configure overlay display options. Changes are reflected in the OBS Browser Source URL.",
+    "autoSaved": "Your changes are automatically saved in this browser.",
     "options": {
       "imageOnly": "Image Only (even for square)",
       "imageOnlyDescription": "Show only the image without card frame or text, even for square images",
