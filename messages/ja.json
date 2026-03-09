@@ -57,6 +57,7 @@
       "intraShareLabel": "内シェア",
       "overallDropRate": "全体排出率",
       "description": "説明",
+      "descriptionCount": "{current} / {max}文字",
       "currentImage": "現在の画像",
       "croppedImage": "トリミング済み画像",
       "selectCropMode": "トリミングサイズを選択",
@@ -93,6 +94,7 @@
       "imageUsage": "画像使用量: {usage} / {limit}",
       "storageLimitReason": "画像アップロード容量に関するご案内\n\n現在、1アカウントあたりの画像容量上限は10MBとなっております。上限を超える場合は、不要な画像を削除していただくか、外部ストレージに保存した画像のURL引用をご検討ください（URL参照の場合は容量制限に含まれません）。\n\n予想を上回る多くの方にご利用いただいており、無料サービスを継続するための苦渋の措置となります。何卒ご理解いただけますと幸いです。なお、支援特典により容量を拡張できます。詳しくは「支援特典について」をご確認ください。",
       "refreshing": "更新中",
+      "descriptionTooLong": "説明は{max}文字以内で入力してください。",
       "imageUrlInvalidAspectRatio": "画像URLの画像は縦長または正方形である必要があります（現在: {width}x{height}）",
       "imageUrlResolutionExceeded": "画像URLの解像度が制限を超えています。横幅{maxWidth}px、縦幅{maxHeight}pxまでです（現在: {width}x{height}）",
       "imageUrlLoadFailed": "画像URLの読み込みに失敗しました。URLを確認してください。",
@@ -466,6 +468,7 @@
   "overlaySettings": {
     "title": "オーバーレイカスタマイズ",
     "description": "オーバーレイの表示オプションを設定できます。変更はOBSブラウザソースURLに反映されます。",
+    "autoSaved": "変更内容はこのブラウザに自動保存されます。",
     "options": {
       "imageOnly": "正方形でも画像のみ表示",
       "imageOnlyDescription": "正方形画像でもカード枠・テキストを非表示にして画像だけを表示",

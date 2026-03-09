@@ -23,6 +23,66 @@ interface OverlayOptions {
   portraitShowUsername: boolean;    // 縦長画像でユーザー名を表示
 }
 
+const DEFAULT_OVERLAY_OPTIONS: OverlayOptions = {
+  imageOnly: false,
+  autoPortrait: true,
+  effects: true,
+  smallMode: true,
+  displayDuration: 6,
+  portraitShowName: false,
+  portraitShowRarity: true,
+  portraitShowDescription: false,
+  portraitShowUsername: false,
+};
+
+const OVERLAY_OPTIONS_STORAGE_KEY_PREFIX = "twica:overlay-options:";
+
+function readStoredBoolean(value: unknown, fallback: boolean) {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function clampDisplayDuration(value: unknown) {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_OVERLAY_OPTIONS.displayDuration;
+  }
+  return Math.min(15, Math.max(2, parsed));
+}
+
+function parseStoredOptions(value: unknown): OverlayOptions {
+  if (!value || typeof value !== "object") {
+    return { ...DEFAULT_OVERLAY_OPTIONS };
+  }
+
+  const stored = value as Partial<Record<keyof OverlayOptions, unknown>>;
+
+  return {
+    imageOnly: readStoredBoolean(stored.imageOnly, DEFAULT_OVERLAY_OPTIONS.imageOnly),
+    autoPortrait: readStoredBoolean(stored.autoPortrait, DEFAULT_OVERLAY_OPTIONS.autoPortrait),
+    effects: readStoredBoolean(stored.effects, DEFAULT_OVERLAY_OPTIONS.effects),
+    smallMode: readStoredBoolean(stored.smallMode, DEFAULT_OVERLAY_OPTIONS.smallMode),
+    displayDuration: clampDisplayDuration(stored.displayDuration),
+    portraitShowName: readStoredBoolean(stored.portraitShowName, DEFAULT_OVERLAY_OPTIONS.portraitShowName),
+    portraitShowRarity: readStoredBoolean(stored.portraitShowRarity, DEFAULT_OVERLAY_OPTIONS.portraitShowRarity),
+    portraitShowDescription: readStoredBoolean(stored.portraitShowDescription, DEFAULT_OVERLAY_OPTIONS.portraitShowDescription),
+    portraitShowUsername: readStoredBoolean(stored.portraitShowUsername, DEFAULT_OVERLAY_OPTIONS.portraitShowUsername),
+  };
+}
+
+function areOverlayOptionsEqual(a: OverlayOptions, b: OverlayOptions) {
+  return (
+    a.imageOnly === b.imageOnly &&
+    a.autoPortrait === b.autoPortrait &&
+    a.effects === b.effects &&
+    a.smallMode === b.smallMode &&
+    a.displayDuration === b.displayDuration &&
+    a.portraitShowName === b.portraitShowName &&
+    a.portraitShowRarity === b.portraitShowRarity &&
+    a.portraitShowDescription === b.portraitShowDescription &&
+    a.portraitShowUsername === b.portraitShowUsername
+  );
+}
+
 interface OverlayPreviewProps {
   streamerId: string;
   baseUrl: string;
@@ -50,22 +110,12 @@ const isPreviewEnvironment = process.env.NEXT_PUBLIC_VERCEL_ENV === "preview";
 export default function OverlayPreview({ streamerId, baseUrl, showPreview = true, sideContent, cards = [] }: OverlayPreviewProps) {
   const t = useTranslations("overlaySettings");
   const tDashboard = useTranslations("dashboard");
+  const storageKey = `${OVERLAY_OPTIONS_STORAGE_KEY_PREFIX}${streamerId}`;
 
   // オーバーレイオプションの状態管理
   // autoPortraitとsmallModeはデフォルトでtrue（より良い表示体験のため）
-  const [options, setOptions] = useState<OverlayOptions>({
-    imageOnly: false,
-    autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
-    effects: true,
-    smallMode: true,     // デフォルトで小さい画像モードを有効化
-    displayDuration: 6,  // カードの表示時間（秒）、デフォルト6秒
-    // 縦長画像の付帯情報はデフォルトでレアリティのみ表示
-    // Portrait info defaults to showing rarity only
-    portraitShowName: false,
-    portraitShowRarity: true,
-    portraitShowDescription: false,
-    portraitShowUsername: false,
-  });
+  const [options, setOptions] = useState<OverlayOptions>(() => ({ ...DEFAULT_OVERLAY_OPTIONS }));
+  const [initializedStorageKey, setInitializedStorageKey] = useState<string | null>(null);
 
   // URL更新メッセージの表示状態
   const [showUrlUpdated, setShowUrlUpdated] = useState(false);
@@ -93,6 +143,58 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   // オーバーレイカスタマイズセクションの折りたたみ状態
   // Collapsible state for overlay customization section
   const [isCustomizationExpanded, setIsCustomizationExpanded] = useState(false);
+
+  useEffect(() => {
+    isFirstRender.current = true;
+    setShowUrlUpdated(false);
+  }, [storageKey]);
+
+  // ブラウザごとに最後に使ったオーバーレイ設定を復元する
+  // Restore the last-used overlay settings for this browser and streamer
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const storedOptions = window.localStorage.getItem(storageKey);
+      const nextOptions = storedOptions
+        ? parseStoredOptions(JSON.parse(storedOptions))
+        : { ...DEFAULT_OVERLAY_OPTIONS };
+
+      setOptions((currentOptions) => (
+        areOverlayOptionsEqual(currentOptions, nextOptions) ? currentOptions : nextOptions
+      ));
+    } catch (error) {
+      console.error("Failed to restore overlay options:", error);
+      try {
+        window.localStorage.removeItem(storageKey);
+      } catch {
+        // localStorage自体が使えない環境では何もしない
+      }
+      setOptions((currentOptions) => (
+        areOverlayOptionsEqual(currentOptions, DEFAULT_OVERLAY_OPTIONS)
+          ? currentOptions
+          : { ...DEFAULT_OVERLAY_OPTIONS }
+      ));
+    } finally {
+      setInitializedStorageKey(storageKey);
+    }
+  }, [storageKey]);
+
+  // オプション変更を自動保存する
+  // Persist overlay options automatically after initialization
+  useEffect(() => {
+    if (initializedStorageKey !== storageKey || typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(options));
+    } catch (error) {
+      console.error("Failed to persist overlay options:", error);
+    }
+  }, [initializedStorageKey, options, storageKey]);
 
   // 現在のオプションからURLパラメータを生成（ユーザー向けURL用）
   // Generate URL parameters from current options (for user-facing URL)
@@ -129,6 +231,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   // 初回レンダリング時は表示しない
   // queueMicrotaskを使用してsetStateを非同期に実行し、カスケードレンダーを回避
   useEffect(() => {
+    if (initializedStorageKey !== storageKey) {
+      return;
+    }
     if (isFirstRender.current) {
       isFirstRender.current = false;
       return;
@@ -143,7 +248,7 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
       setShowUrlUpdated(false);
     }, 3000);
     return () => clearTimeout(timer);
-  }, [options]);
+  }, [initializedStorageKey, options, storageKey]);
 
   // プレビューDEMOを実行（iframe内のオーバーレイにメッセージを送信）
   // 選択されたカードID（またはランダム）でデモを実行
@@ -294,6 +399,9 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
           <>
         <p className="text-sm text-gray-400 mb-4 mt-3">
           {t("description")}
+        </p>
+        <p className="text-xs text-gray-500 mb-4">
+          {t("autoSaved")}
         </p>
 
         <div className="space-y-3">
