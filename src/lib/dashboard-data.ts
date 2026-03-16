@@ -106,7 +106,25 @@ export const getStreamerDataPaginated = cache(async (
 })
 
 /**
+ * RPC get_user_card_counts の結果を CardWithDetails[] に変換する
+ * RPCはDB側でGROUP BY集計済みのため、JS側での集計は不要
+ * to_jsonb経由のDECIMAL→文字列変換に備えてnormalizeDropRateを適用
+ */
+function parseRpcCardCounts(rpcResult: unknown): CardWithDetails[] {
+  const rows = rpcResult as Array<{ count: number; card: Card; streamer: Streamer }>;
+  if (!Array.isArray(rows)) return [];
+  return normalizeDropRate(rows.map(row => ({
+    ...row.card,
+    streamer: row.streamer,
+    count: row.count,
+  })));
+}
+
+/**
  * Internal function to fetch user cards from database
+ * RPC get_user_card_counts でDB側集計を行い、PostgREST行数制限を根本的に回避する
+ * RPC未デプロイ時は直接クエリにフォールバック
+ *
  * 内部関数: データベースからユーザーカードを取得
  */
 async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetails[]> {
@@ -116,33 +134,56 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
   const supabaseAdmin = getSupabaseAdmin();
   logger.info(`[Perf] getSupabaseAdmin: ${Date.now() - startClient}ms`);
 
-  // Single query: get user with their cards using foreign key relations
-  // 1回のクエリ: 外部キーリレーションを使用してユーザーとカードを取得
+  // RPC: DB側でGROUP BY集計（ユニークカード種類数のみ返却、行数制限の影響なし）
   const startQuery = Date.now();
+  const { data: rpcResult, error: rpcError } = await supabaseAdmin
+    .rpc("get_user_card_counts", { p_twitch_user_id: twitchUserId });
+
+  if (!rpcError) {
+    logger.info(`[Perf] getUserCards RPC: ${Date.now() - startQuery}ms`);
+    const cards = parseRpcCardCounts(rpcResult);
+    logger.info(`[Perf] getUserCards total: ${Date.now() - startTotal}ms`);
+    return cards;
+  }
+
+  // RPCエラー時は直接クエリにフォールバック（DB一時障害でもカード空表示を防ぐ）
+  // TODO: マイグレーション適用確認後にフォールバックを削除
+  if (rpcError.code === "42883") {
+    logger.warn("get_user_card_counts not deployed, falling back to direct query");
+  } else {
+    reportError(new Error(`get_user_card_counts RPC failed: ${rpcError.message}`));
+  }
+
   const { data: user } = await supabaseAdmin
     .from("users")
-    .select(`
-      id,
-      user_cards (
-        card_id,
-        cards (
-          *,
-          streamers (*)
-        )
-      )
-    `)
+    .select("id")
     .eq("twitch_user_id", twitchUserId)
     .maybeSingle();
+
+  if (!user) {
+    logger.info(`[Perf] getUserCards total (no user): ${Date.now() - startTotal}ms`);
+    return [];
+  }
+
+  const { data: userCards } = await supabaseAdmin
+    .from("user_cards")
+    .select("card_id, cards(*, streamers(*))")
+    .eq("user_id", user.id)
+    .range(0, 9999);
   logger.info(`[Perf] getUserCards query: ${Date.now() - startQuery}ms`);
 
-  if (!user || !user.user_cards) {
+  if (!userCards || userCards.length === 0) {
     logger.info(`[Perf] getUserCards total (no data): ${Date.now() - startTotal}ms`);
     return [];
   }
 
+  if (userCards.length === 10000) {
+    reportError(new Error(`user_cards hit 10000 row limit for user ${twitchUserId}`));
+  }
+
   const cardMap = new Map<string, CardWithDetails>();
 
-  for (const uc of user.user_cards) {
+  for (const uc of userCards) {
     const card = uc.cards as unknown as Card & { streamers: Streamer };
     if (!card) continue;
 
@@ -628,6 +669,9 @@ export const getActiveCardsForStreamer = cache(async (
 
 /**
  * Internal function to fetch user cards for a specific streamer from database
+ * RPC get_user_card_counts (p_streamer_id付き) でDB側集計を行う
+ * RPC未デプロイ時は直接クエリにフォールバック
+ *
  * 内部関数: 特定の配信者のユーザーカードをデータベースから取得
  */
 async function fetchUserCardsForStreamerFromDB(
@@ -637,39 +681,58 @@ async function fetchUserCardsForStreamerFromDB(
   const startTotal = Date.now();
   const supabaseAdmin = getSupabaseAdmin();
 
-  // Get user with their cards for the specific streamer
-  // 特定の配信者のカードのみを取得
+  // RPC: DB側でGROUP BY集計 + streamer_idフィルタ
   const startQuery = Date.now();
+  const { data: rpcResult, error: rpcError } = await supabaseAdmin
+    .rpc("get_user_card_counts", {
+      p_twitch_user_id: twitchUserId,
+      p_streamer_id: streamerId,
+    });
+
+  if (!rpcError) {
+    logger.info(`[Perf] getUserCardsForStreamer RPC: ${Date.now() - startQuery}ms`);
+    const cards = parseRpcCardCounts(rpcResult);
+    logger.info(`[Perf] getUserCardsForStreamer total: ${Date.now() - startTotal}ms`);
+    return cards;
+  }
+
+  // RPCエラー時は直接クエリにフォールバック（DB一時障害でもカード空表示を防ぐ）
+  // TODO: マイグレーション適用確認後にフォールバックを削除
+  if (rpcError.code === "42883") {
+    logger.warn("get_user_card_counts not deployed, falling back to direct query");
+  } else {
+    reportError(new Error(`get_user_card_counts RPC failed: ${rpcError.message}`));
+  }
+
   const { data: user } = await supabaseAdmin
     .from("users")
-    .select(`
-      id,
-      user_cards (
-        card_id,
-        cards!inner (
-          *,
-          streamers!inner (*)
-        )
-      )
-    `)
+    .select("id")
     .eq("twitch_user_id", twitchUserId)
     .maybeSingle();
+
+  if (!user) {
+    logger.info(`[Perf] getUserCardsForStreamer total (no user): ${Date.now() - startTotal}ms`);
+    return [];
+  }
+
+  const { data: userCards } = await supabaseAdmin
+    .from("user_cards")
+    .select("card_id, cards!inner(*, streamers!inner(*))")
+    .eq("user_id", user.id)
+    .eq("cards.streamer_id", streamerId)
+    .range(0, 9999);
   logger.info(`[Perf] getUserCardsForStreamer query: ${Date.now() - startQuery}ms`);
 
-  if (!user || !user.user_cards) {
+  if (!userCards || userCards.length === 0) {
     logger.info(`[Perf] getUserCardsForStreamer total (no data): ${Date.now() - startTotal}ms`);
     return [];
   }
 
   const cardMap = new Map<string, CardWithDetails>();
 
-  for (const uc of user.user_cards) {
+  for (const uc of userCards) {
     const card = uc.cards as unknown as Card & { streamers: Streamer };
     if (!card) continue;
-
-    // Filter by streamer ID
-    // 配信者IDでフィルタリング
-    if (card.streamers.id !== streamerId) continue;
 
     const existing = cardMap.get(card.id);
     if (existing) {
@@ -757,28 +820,30 @@ export const getUserCardDetail = cache(async (
     return null;
   }
 
-  // Get user's ownership count for this card
-  // このカードのユーザー所有枚数を取得
+  // ユーザーの内部IDを取得
   const { data: user } = await supabaseAdmin
     .from("users")
-    .select(`
-      id,
-      user_cards!inner (
-        card_id
-      )
-    `)
+    .select("id")
     .eq("twitch_user_id", twitchUserId)
     .maybeSingle();
 
-  // Count how many of this specific card the user owns
-  // ユーザーがこの特定のカードを何枚所有しているかをカウント
-  const count = user?.user_cards?.filter(
-    (uc: { card_id: string }) => uc.card_id === cardId
-  ).length || 0;
+  if (!user) {
+    logger.info(`[Perf] getUserCardDetail (user not found): ${Date.now() - start}ms`);
+    return null;
+  }
+
+  // user_cards を直接カウント（データ転送なし、行数制限の影響なし）
+  const { count } = await supabaseAdmin
+    .from("user_cards")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", user.id)
+    .eq("card_id", cardId);
+
+  const ownershipCount = count ?? 0;
 
   // If user doesn't own this card, return null
   // ユーザーがこのカードを所有していない場合はnullを返す
-  if (count === 0) {
+  if (ownershipCount === 0) {
     logger.info(`[Perf] getUserCardDetail (user doesn't own card): ${Date.now() - start}ms`);
     return null;
   }
@@ -789,7 +854,7 @@ export const getUserCardDetail = cache(async (
   return {
     ...cardWithStreamer,
     streamer: cardWithStreamer.streamers,
-    count,
+    count: ownershipCount,
   };
 });
 

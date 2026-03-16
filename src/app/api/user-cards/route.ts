@@ -49,10 +49,12 @@ export async function GET(request: NextRequest) {
 
     // Get user's cards with details
     // ユーザーのカード詳細を取得
+    // .range(0, 9999) でPostgRESTデフォルト1000件制限を回避
     const { data: userCards, error: cardsError } = await supabaseAdmin
       .from('user_cards')
       .select('id, user_id, card_id, obtained_at')
       .eq('user_id', userData.id)
+      .range(0, 9999)
 
     if (cardsError) {
       return handleDatabaseError(cardsError, "Failed to fetch user cards")
