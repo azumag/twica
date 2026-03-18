@@ -394,7 +394,8 @@ export interface GachaUserEntry {
 
 /**
  * Get aggregated user list for a streamer's gacha history
- * JS側で集約: ユニークユーザー一覧、各ユーザーのユニークカード数、ガチャ回数、最終日時
+ * RPC get_gacha_users_for_streamer でDB側集計を行い、件数制限なしで正確なカード所有状況を返す
+ * RPC未デプロイ時はクライアント側集約にフォールバック（10,000件制限付き）
  * 配信者向け: ガチャを引いたユーザー一覧を集約して返す
  */
 export async function getGachaUsersForStreamer(
@@ -403,11 +404,45 @@ export async function getGachaUsersForStreamer(
 ): Promise<{ users: GachaUserEntry[]; pagination: { page: number; perPage: number; total: number; totalPages: number } }> {
   const { page = 1, perPage = 20 } = options;
   const supabaseAdmin = getSupabaseAdmin();
+  const offset = (page - 1) * perPage;
 
-  // Fetch gacha history and active card IDs in parallel
-  // ガチャ履歴とアクティブカードIDを並列取得
-  // Note: 10,000件上限は getGachaStats と同じパターン。
-  // 超過する配信者では集計が近似値となる。
+  // RPC: DB側でGROUP BY集約 + ページネーション（件数制限なし）
+  const { data: rpcResult, error: rpcError } = await supabaseAdmin
+    .rpc("get_gacha_users_for_streamer", {
+      p_streamer_id: streamerId,
+      p_limit: perPage,
+      p_offset: offset,
+    });
+
+  if (!rpcError && rpcResult) {
+    // RPC成功: DB側集約結果をGachaUserEntry[]に変換
+    // asキャストだが、SQL側でCOALESCEにより users/unique_card_ids は必ず配列を返す
+    const rpcData = rpcResult as { users: Array<{ user_twitch_id: string; username: string; draw_count: number; last_draw_at: string; unique_card_ids: string[] }>; total: number };
+    const rpcUsers = rpcData.users || [];
+    const users: GachaUserEntry[] = rpcUsers.map((u) => ({
+      userTwitchId: u.user_twitch_id,
+      username: u.username || "",
+      drawCount: u.draw_count,
+      uniqueCards: (u.unique_card_ids || []).length,
+      uniqueCardIds: u.unique_card_ids || [],
+      lastDrawAt: u.last_draw_at,
+    }));
+    const total = rpcData.total || 0;
+    return {
+      users,
+      pagination: { page, perPage, total, totalPages: Math.ceil(total / perPage) },
+    };
+  }
+
+  // RPCエラー時はクライアント側集約にフォールバック（マイグレーション未適用時の互換性維持）
+  // TODO: マイグレーション適用確認後にフォールバックを削除
+  if (rpcError?.code === "42883") {
+    logger.warn("get_gacha_users_for_streamer not deployed, falling back to client-side aggregation");
+  } else if (rpcError) {
+    reportError(new Error(`get_gacha_users_for_streamer RPC failed: ${rpcError.message}`));
+  }
+
+  // フォールバック: 既存のクライアント側集約ロジック（10,000件制限あり）
   const [historyResult, activeCardsResult] = await Promise.all([
     supabaseAdmin
       .from("gacha_history")
@@ -422,6 +457,11 @@ export async function getGachaUsersForStreamer(
       .eq("is_active", true),
   ]);
 
+  // フォールバックDBエラー時はreportErrorで検知可能にする
+  if (historyResult.error) {
+    reportError(new Error(`gacha_history fallback query failed: ${historyResult.error.message}`));
+  }
+
   const data = historyResult.data;
   if (!data || data.length === 0) {
     return {
@@ -430,11 +470,9 @@ export async function getGachaUsersForStreamer(
     };
   }
 
-  // Build active card ID set for filtering uniqueCards
-  // uniqueCards のフィルタリング用にアクティブカードIDセットを構築
   const activeCardIds = new Set((activeCardsResult.data || []).map((c) => c.id));
 
-  // Aggregate by user / ユーザーごとに集約
+  // ユーザーごとに集約
   const userMap = new Map<string, {
     username: string;
     drawCount: number;
@@ -446,8 +484,6 @@ export async function getGachaUsersForStreamer(
     const existing = userMap.get(row.user_twitch_id);
     if (existing) {
       existing.drawCount++;
-      // Only count active cards for collection progress
-      // コレクション進捗にはアクティブカードのみカウント
       if (activeCardIds.has(row.card_id)) {
         existing.cardIds.add(row.card_id);
       }
@@ -465,8 +501,6 @@ export async function getGachaUsersForStreamer(
     }
   }
 
-  // Convert to sorted array (by draw count descending)
-  // ガチャ回数の降順でソート
   const allUsers: GachaUserEntry[] = Array.from(userMap.entries())
     .map(([userTwitchId, info]) => ({
       userTwitchId,
@@ -478,10 +512,9 @@ export async function getGachaUsersForStreamer(
     }))
     .sort((a, b) => b.drawCount - a.drawCount);
 
-  // Client-side pagination / クライアント側ページネーション
   const total = allUsers.length;
-  const offset = (page - 1) * perPage;
-  const paginatedUsers = allUsers.slice(offset, offset + perPage);
+  const fallbackOffset = (page - 1) * perPage;
+  const paginatedUsers = allUsers.slice(fallbackOffset, fallbackOffset + perPage);
 
   return {
     users: paginatedUsers,
