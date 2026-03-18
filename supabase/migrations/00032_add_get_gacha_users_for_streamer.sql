@@ -56,7 +56,7 @@ BEGIN
   ) ud
   -- LEFT JOIN: user_cardsにレコードがないユーザー（旧データ）も含める
   LEFT JOIN LATERAL (
-    SELECT COALESCE(jsonb_agg(uc.card_id), '[]'::JSONB) AS card_ids
+    SELECT COALESCE(jsonb_agg(DISTINCT uc.card_id), '[]'::JSONB) AS card_ids
     FROM user_cards uc
     JOIN users u ON u.id = uc.user_id
     JOIN cards c ON c.id = uc.card_id
