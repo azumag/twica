@@ -19,9 +19,6 @@ const DEFAULT_DELAYS = [100, 300, 1000]
 // 502/503 はインフラ一時障害のためリトライ対象
 const RETRYABLE_STATUS_CODES = [502, 503]
 
-/** Supabase クエリ結果の最小型（data + error を含む任意の結果に対応） */
-type SupabaseResult<T> = T & { error: { message: string; code?: string } | null }
-
 /**
  * Supabase クエリ結果に対するリトライラッパー
  * { data, error } 形式のレスポンスで error.message に 502/503 が含まれる場合にリトライする。
