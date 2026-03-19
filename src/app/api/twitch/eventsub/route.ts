@@ -174,21 +174,30 @@ export async function POST(request: NextRequest) {
     const subscriptionType = subscription?.type || "unknown";
     const broadcasterId = subscription?.condition?.broadcaster_user_id || "unknown";
 
-    logger.warn(
-      `EventSub revocation received: reason=${revocationReason}, type=${subscriptionType}, broadcaster=${broadcasterId}`,
-      { subscription }
-    );
-
-    // Supabaseに記録してGitHub Issue化する（awaitしないとWorkers打ち切りで記録されない）
-    // Must await — Cloudflare Workers terminates background promises after response
-    await reportError(new Error(`EventSub revocation: ${revocationReason}`), {
-      context: "eventsub:revocation",
-      type: "eventsub",
-      revocationReason,
-      subscriptionType,
-      broadcasterId,
-      subscriptionId: subscription?.id,
-    });
+    // ユーザー起因のrevocationはGitHub Issue化せずログのみ (Issue #285)
+    // User-initiated revocations are expected behavior, not bugs
+    const EXPECTED_REVOCATIONS = ['authorization_revoked', 'user_removed'];
+    if (EXPECTED_REVOCATIONS.includes(revocationReason)) {
+      logger.info(
+        `EventSub revocation (user-initiated): reason=${revocationReason}, type=${subscriptionType}, broadcaster=${broadcasterId}`,
+        { subscription }
+      );
+    } else {
+      // インフラ問題等の予期しないrevocationはreportErrorでGitHub Issue化
+      // Unexpected revocations (e.g. notification_failures_exceeded) indicate infrastructure issues
+      logger.warn(
+        `EventSub revocation (unexpected): reason=${revocationReason}, type=${subscriptionType}, broadcaster=${broadcasterId}`,
+        { subscription }
+      );
+      await reportError(new Error(`EventSub revocation: ${revocationReason}`), {
+        context: "eventsub:revocation",
+        type: "eventsub",
+        revocationReason,
+        subscriptionType,
+        broadcasterId,
+        subscriptionId: subscription?.id,
+      });
+    }
 
     return NextResponse.json({ received: true });
   }
