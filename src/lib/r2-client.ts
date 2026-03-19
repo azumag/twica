@@ -272,7 +272,8 @@ export async function uploadToR2WithRetry(
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       // 一時的なエラーかどうかを判定
-      const transientErrors = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'service unavailable', '503', 'NetworkingError'];
+      // "Unspecified error" はR2ネイティブバインディングの一時障害 (Issue #349/#348)
+      const transientErrors = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'service unavailable', '503', 'NetworkingError', 'Unspecified error'];
       const isTransient = transientErrors.some(err =>
         errorMessage.toLowerCase().includes(err.toLowerCase())
       );
@@ -315,7 +316,8 @@ export async function uploadSoundToR2WithRetry(
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       // 一時的なエラーかどうかを判定
-      const transientErrors = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'service unavailable', '503', 'NetworkingError'];
+      // "Unspecified error" はR2ネイティブバインディングの一時障害 (Issue #349/#348)
+      const transientErrors = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'service unavailable', '503', 'NetworkingError', 'Unspecified error'];
       const isTransient = transientErrors.some(err =>
         errorMessage.toLowerCase().includes(err.toLowerCase())
       );
