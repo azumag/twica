@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import type { Database } from '@/types/database'
+import { logger } from '@/lib/logger'
 
 export async function createClient() {
   const cookieStore = await cookies()
@@ -20,8 +21,14 @@ export async function createClient() {
             cookiesToSet.forEach(({ name, value, options }) =>
               cookieStore.set(name, value, options)
             )
-          } catch {
-            // Server Component から呼ばれた場合は無視
+          } catch (error) {
+            // Server Component からの cookie 書き込みは Next.js で禁止されている (Issue #271)
+            // Supabase SSR がトークンリフレッシュ時に setAll() を呼ぶが、
+            // Server Component コンテキストでは失敗する。ログで可視化する。
+            logger.warn('[Supabase] Cookie set failed (likely Server Component context)', {
+              cookieNames: cookiesToSet.map(c => c.name),
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
         },
       },
