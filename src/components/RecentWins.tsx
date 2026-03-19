@@ -1,6 +1,7 @@
 import Image from "next/image";
 import { getTranslations } from "next-intl/server";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { RARITY_COLORS } from "@/lib/constants";
 
 interface RecentGachaEntry {
   id: string;
@@ -60,7 +61,7 @@ export default async function RecentWins({ recentGacha }: RecentWinsProps) {
                     {new Date(entry.redeemed_at).toLocaleString('ja-JP')}
                   </p>
                 </div>
-                <div className={`rounded-full px-2 py-0.5 text-xs text-white bg-yellow-500`}>
+                <div className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[entry.cards.rarity as keyof typeof RARITY_COLORS] || 'bg-gray-500'}`}>
                   {entry.cards.rarity}
                 </div>
               </div>
