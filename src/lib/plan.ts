@@ -14,6 +14,7 @@
 
 import { cache } from 'react'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
+import { withRetry } from '@/lib/supabase/retry'
 import { logger } from '@/lib/logger'
 import { hasTwitchSub } from '@/lib/twitch/sub-check'
 import { PLAN_PRIORITY, PLAN_STORAGE_BONUS } from '@/lib/plan-constants'
@@ -64,11 +65,15 @@ async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
   try {
     const supabaseAdmin = getSupabaseAdmin()
 
-    const { data, error } = await supabaseAdmin
-      .from('user_licenses')
-      .select('plan_type, support_codes!inner(status)')
-      .eq('twitch_user_id', twitchUserId)
-      .in('support_codes.status', ['active', 'rotating'])
+    // 502 一時障害に対するリトライ (Issue #339)
+    const { data, error } = await withRetry(
+      () => supabaseAdmin
+        .from('user_licenses')
+        .select('plan_type, support_codes!inner(status)')
+        .eq('twitch_user_id', twitchUserId)
+        .in('support_codes.status', ['active', 'rotating']),
+      'getLicensePlan',
+    )
 
     if (error) {
       logger.error('[Plan] Failed to get license plan:', error)
