@@ -301,6 +301,15 @@ async function handleRedemption(messageId: string, event: {
         logger.info('[handleRedemption] Skipped - duplicate event (RPC)', { messageId });
         return null;
       }
+      // カード未設定はユーザー設定の問題でありバグではない (Issue #277)
+      // "No cards available" is a streamer setup issue, not a system bug
+      if (result.error === 'No cards available for this streamer') {
+        logger.warn('[handleRedemption] No cards available - streamer setup issue', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+        });
+        return null;
+      }
       logger.warn('[handleRedemption] Gacha execution failed', { messageId });
       await reportError(new Error(`Gacha execution failed: ${result.error}`), {
         context: 'eventsub:handleRedemption',
