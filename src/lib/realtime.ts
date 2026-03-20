@@ -97,11 +97,13 @@ export async function broadcastGachaResult(
     let attemptCount = 0
     while (attemptCount <= maxRetries) {
       try {
-        await channel.send({
-          type: 'broadcast',
-          event: 'gacha_result',
-          payload,
-        })
+        // httpSend() を明示的に使用し REST API 経由で送信 (Issue #222)
+        // サーバーサイド(Cloudflare Workers)ではWebSocket不要のため、
+        // send() の自動フォールバック（deprecated）を回避する
+        const result = await channel.httpSend('gacha_result', payload)
+        if (!result.success) {
+          throw new Error(`Broadcast HTTP send failed: ${result.status} ${result.error}`)
+        }
         return
       } catch (error) {
         attemptCount++
