@@ -32,7 +32,7 @@ const RETRYABLE_MESSAGE_PATTERNS = ['bad gateway', 'service unavailable']
  * @param context - ログ用コンテキスト文字列
  * @param options - リトライオプション
  */
-export async function withRetry<T extends { error: { message: string; code?: string } | null }>(
+export async function withRetry<T extends { status?: number; statusText?: string; error: { message: string; code?: string } | null }>(
   queryFn: () => PromiseLike<T>,
   context: string,
   options?: RetryOptions,
@@ -47,13 +47,16 @@ export async function withRetry<T extends { error: { message: string; code?: str
       return result
     }
 
-    // ステータスコード数字またはテキストパターンでリトライ判定
-    const msg = result.error!.message.toLowerCase()
-    const isRetryable =
+    // HTTPステータスコード（PostgrestResponseBase.status）を最優先でチェック
+    // error.message/code のテキストパターンはフォールバックとして残す
+    const hasRetryableStatus = typeof result.status === 'number' && RETRYABLE_STATUS_CODES.includes(result.status)
+    const msg = result.error.message.toLowerCase()
+    const hasRetryableMessage =
       RETRYABLE_STATUS_CODES.some(code =>
         msg.includes(`${code}`) || result.error!.code === `${code}`
       ) ||
       RETRYABLE_MESSAGE_PATTERNS.some(pattern => msg.includes(pattern))
+    const isRetryable = hasRetryableStatus || hasRetryableMessage
 
     if (!isRetryable || attempt === maxRetries) {
       return result
@@ -61,6 +64,7 @@ export async function withRetry<T extends { error: { message: string; code?: str
 
     const delay = delays[Math.min(attempt, delays.length - 1)]
     logger.warn(`[Supabase Retry] ${context} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms`, {
+      status: result.status,
       error: result.error.message,
     })
     await new Promise(resolve => setTimeout(resolve, delay))
