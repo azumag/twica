@@ -19,9 +19,14 @@ const DEFAULT_DELAYS = [100, 300, 1000]
 // 502/503 はインフラ一時障害のためリトライ対象
 const RETRYABLE_STATUS_CODES = [502, 503]
 
+// Supabase/PostgREST が返すエラーメッセージのテキストパターン
+// ステータスコード数字が含まれない場合（"Bad Gateway" 等）にも対応
+const RETRYABLE_MESSAGE_PATTERNS = ['bad gateway', 'service unavailable']
+
 /**
  * Supabase クエリ結果に対するリトライラッパー
- * { data, error } 形式のレスポンスで error.message に 502/503 が含まれる場合にリトライする。
+ * { data, error } 形式のレスポンスで 502/503 相当のエラーの場合にリトライする。
+ * ステータスコード数字・テキストメッセージの両方でマッチする。
  *
  * @param queryFn - Supabase クエリを返す関数（await前のPromiseを返す）
  * @param context - ログ用コンテキスト文字列
@@ -42,11 +47,13 @@ export async function withRetry<T extends { error: { message: string; code?: str
       return result
     }
 
-    // エラーメッセージから HTTP ステータスコードを抽出してリトライ判定
-    const isRetryable = RETRYABLE_STATUS_CODES.some(code =>
-      result.error!.message.includes(`${code}`) ||
-      result.error!.code === `${code}`
-    )
+    // ステータスコード数字またはテキストパターンでリトライ判定
+    const msg = result.error!.message.toLowerCase()
+    const isRetryable =
+      RETRYABLE_STATUS_CODES.some(code =>
+        msg.includes(`${code}`) || result.error!.code === `${code}`
+      ) ||
+      RETRYABLE_MESSAGE_PATTERNS.some(pattern => msg.includes(pattern))
 
     if (!isRetryable || attempt === maxRetries) {
       return result
