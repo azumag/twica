@@ -8,6 +8,7 @@
 
 import { cache } from 'react'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
+import { withRetry } from '@/lib/supabase/retry'
 import { logger } from './logger'
 
 export interface UnreadAnnouncement {
@@ -103,11 +104,15 @@ export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promis
     const now = new Date()
 
     // 公開済みのお知らせを取得し、トップ表示向けの期限判定はサーバー側で厳密に行う
-    const { data: announcements, error: annError } = await supabase
-      .from('announcements')
-      .select('id, title, body, severity, published_at, expires_at, created_at')
-      .eq('is_published', true)
-      .order('created_at', { ascending: false })
+    // 502 一時障害に対するリトライ (Issue #326)
+    const { data: announcements, error: annError } = await withRetry(
+      () => supabase
+        .from('announcements')
+        .select('id, title, body, severity, published_at, expires_at, created_at')
+        .eq('is_published', true)
+        .order('created_at', { ascending: false }),
+      'getUnreadAnnouncements',
+    )
 
     if (annError) {
       logger.error('Failed to fetch announcements', { error: annError.message })
@@ -170,11 +175,15 @@ export async function getAllAnnouncements(twitchUserId: string): Promise<Announc
     const now = new Date()
 
     // 履歴ページ向けに公開済みのお知らせを取得
-    const { data: announcements, error: annError } = await supabase
-      .from('announcements')
-      .select('id, title, body, severity, is_published, published_at, expires_at, created_at')
-      .eq('is_published', true)
-      .order('created_at', { ascending: false })
+    // 502 一時障害に対するリトライ (Issue #326)
+    const { data: announcements, error: annError } = await withRetry(
+      () => supabase
+        .from('announcements')
+        .select('id, title, body, severity, is_published, published_at, expires_at, created_at')
+        .eq('is_published', true)
+        .order('created_at', { ascending: false }),
+      'getAllAnnouncements',
+    )
 
     if (annError) {
       logger.error('Failed to fetch all announcements', { error: annError.message })
