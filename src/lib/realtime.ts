@@ -110,15 +110,15 @@ export async function broadcastGachaResult(
         logger.warn(`Broadcast attempt ${attemptCount}/${maxRetries} failed:`, error)
 
         if (attemptCount > maxRetries) {
-          logger.error(`Failed to broadcast gacha result for streamer ${streamerId} after ${maxRetries} attempts:`, error)
-          // await: サーバーサイドで実行されるため、Cloudflare Workers のリクエスト完了前に
-          // Supabase へのエラーログ記録を確実に完了させる
-          await reportRealtimeError(error, {
-            action: 'broadcast',
-            streamerId,
+          // ブロードキャスト失敗はガチャ処理自体に影響しない（OBSオーバーレイへの通知のみ）
+          // 一時的な502/タイムアウトで大量のGitHub Issueが作成されるのを防ぐため、
+          // reportRealtimeError ではなく warn ログに留める (Issue #359-#365)
+          logger.warn(`[Broadcast] Failed after ${maxRetries} retries for streamer ${streamerId}`, {
+            error: error instanceof Error ? error.message : String(error),
             retryCount: attemptCount - 1,
           })
-          throw error
+          // throw しない: 呼び出し元(eventsub/gacha API)でのreportErrorによる重複Issue化を防止
+          return
         }
 
         const delay = attemptCount * retryDelay
