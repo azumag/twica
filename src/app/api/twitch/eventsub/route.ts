@@ -233,6 +233,9 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   ]);
 
   // 通知失敗をログ出力 + エラー追跡
+  // Note: broadcastGachaResult (i=0) は内部でリトライし失敗時も throw しない設計 (Issue #359-#365)
+  // そのため broadcast は 'rejected' にならず、失敗ログは broadcastGachaResult 内で warn として出力される
+  // chatAnnouncement (i=1) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
       const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
