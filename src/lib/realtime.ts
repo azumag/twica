@@ -90,8 +90,24 @@ export async function broadcastGachaResult(
   options: { maxRetries?: number; retryDelay?: number } = {}
 ): Promise<void> {
   const { maxRetries = 3, retryDelay = 1000 } = options
-  const client = getSupabaseRealtimeClient()
-  const channel = client.channel(`gacha:${streamerId}`)
+
+  // getSupabaseRealtimeClient() や client.channel() がリトライループ前に throw する可能性がある
+  // （環境変数不正、クライアント初期化失敗など）。これらのエラーも try/catch 内に含め、
+  // throw せずに warn ログに留めることで「ガチャ成功・ブロードキャスト失敗」の設計を維持する。
+  // 呼び出し元の外側 catch がガチャ全体の致命的エラーと誤認するのを防止する。
+  // Issue #359-#365: Codex review P2 "Restore local catch around broadcast call" 対応
+  let client: ReturnType<typeof getSupabaseRealtimeClient>
+  let channel: ReturnType<ReturnType<typeof getSupabaseRealtimeClient>['channel']>
+  try {
+    client = getSupabaseRealtimeClient()
+    channel = client.channel(`gacha:${streamerId}`)
+  } catch (initError) {
+    logger.warn(`[Broadcast] Failed to initialize realtime client for streamer ${streamerId}`, {
+      error: initError instanceof Error ? initError.message : String(initError),
+    })
+    // throw しない: ガチャ処理の成否に影響しない
+    return
+  }
 
   try {
     let attemptCount = 0
