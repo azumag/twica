@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers'
 import { cache } from 'react'
 import { BROADCASTER_TYPE, COOKIE_NAMES, getDeleteCookieOptions, getSessionCookieOptions } from './constants'
+import { constantTimeEqual, hmacSha256 } from './crypto-utils'
 import { logger } from './logger'
 
 export interface Session {
@@ -12,6 +13,69 @@ export interface Session {
   expiresAt: number // Unix timestamp (milliseconds)
   csrfTokenHash?: string
   version: number // Optimistic locking
+}
+
+/**
+ * セッションCookieにHMAC-SHA256署名を付与する
+ * Sign session cookie data with HMAC-SHA256.
+ *
+ * フォーマット: {base64url_payload}.{hex_signature}
+ * 環境変数 SESSION_COOKIE_SECRET が未設定の場合は署名なしで返却（後方互換性のため警告を出す）。
+ *
+ * Format: {base64url_payload}.{hex_signature}
+ * Falls back to unsigned payload if SESSION_COOKIE_SECRET is not set (logs warning for backward compat).
+ */
+export async function signSession(payload: string): Promise<string> {
+  const secret = process.env.SESSION_COOKIE_SECRET
+  if (!secret) {
+    // シークレット未設定時は警告を出して未署名のままにする（既存セッションの互換性維持）
+    // Warn and return unsigned if secret not configured (preserves existing sessions)
+    logger.warn('[Session] SESSION_COOKIE_SECRET not set - session cookie is unsigned. Set this env var to enable tamper protection.')
+    return payload
+  }
+  const signature = await hmacSha256(secret, payload)
+  return `${payload}.${signature}`
+}
+
+/**
+ * 署名付きセッションCookieを検証し、ペイロードを返す
+ * Verify a signed session cookie and return the raw payload.
+ *
+ * 署名検証に失敗した場合は例外を投げる。
+ * SESSION_COOKIE_SECRET 未設定の場合は署名なしとして扱う（後方互換性）。
+ *
+ * Throws on signature mismatch.
+ * Falls back to unsigned if SESSION_COOKIE_SECRET is not set (backward compat).
+ */
+export async function verifySession(signed: string): Promise<string> {
+  const secret = process.env.SESSION_COOKIE_SECRET
+  if (!secret) {
+    // シークレット未設定時は署名なしとして扱う
+    // Treat as unsigned if secret not configured
+    return signed
+  }
+
+  // {payload}.{signature} 形式を分割
+  const lastDot = signed.lastIndexOf('.')
+  if (lastDot === -1) {
+    // 署名なしの旧フォーマット（シークレット設定後の移行期間中に発生しうる）
+    // Unsigned legacy format (may occur during migration after secret is first set)
+    logger.warn('[Session] Session cookie has no signature - rejecting. User must re-login.')
+    throw new Error('Session cookie is not signed')
+  }
+
+  const payload = signed.substring(0, lastDot)
+  const providedSig = signed.substring(lastDot + 1)
+
+  // HMAC-SHA256で署名を再計算し、定数時間比較でタイミング攻撃を防ぐ
+  // Recompute signature and compare in constant time to prevent timing attacks
+  const expectedSig = await hmacSha256(secret, payload)
+  if (!constantTimeEqual(providedSig, expectedSig)) {
+    logger.warn('[Session] Session cookie signature mismatch - possible tampering detected.')
+    throw new Error('Session cookie signature invalid')
+  }
+
+  return payload
 }
 
 export function parseSession(raw: string): Session {
@@ -95,7 +159,10 @@ export const getSession = cache(async (): Promise<Session | null> => {
   }
 
   try {
-    const session = parseSession(sessionCookie)
+    // 署名検証: SESSION_COOKIE_SECRET が設定されている場合はHMAC-SHA256で検証する
+    // Verify signature if SESSION_COOKIE_SECRET is set (HMAC-SHA256)
+    const payload = await verifySession(sessionCookie)
+    const session = parseSession(payload)
 
     if (session.expiresAt && Date.now() > session.expiresAt) {
       logger.warn('[Session] Session expired')
@@ -144,7 +211,8 @@ export async function clearSession(): Promise<void> {
       // On logout, store only twitchUserId in a minimal dedicated cookie for scope restoration.
       // Keeping the full session (unsigned) would allow tampering; the login route only needs
       // twitchUserId to look up additional scopes (e.g., user:write:chat) from DB.
-      const parsed = parseSession(existingCookie)
+      const payload = await verifySession(existingCookie)
+      const parsed = parseSession(payload)
       cookieStore.set(COOKIE_NAMES.SCOPE_RESTORE_USER_ID, parsed.twitchUserId, getSessionCookieOptions())
     } catch {
       // Cookie解析失敗時はスコープ復元用Cookieを設定しない（追加スコープは失われるが安全側に倒す）

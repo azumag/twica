@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest'
-import { parseSession, canUseStreamerFeatures, Session } from '@/lib/session'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { parseSession, canUseStreamerFeatures, signSession, verifySession, Session } from '@/lib/session'
+
+vi.mock('@/lib/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
 
 describe('parseSession', () => {
   it('should parse valid session data', () => {
@@ -209,5 +213,73 @@ describe('canUseStreamerFeatures', () => {
 
   it('should return false for null session', () => {
     expect(canUseStreamerFeatures(null)).toBe(false)
+  })
+})
+
+describe('signSession / verifySession', () => {
+  const originalEnv = process.env.SESSION_COOKIE_SECRET
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.SESSION_COOKIE_SECRET
+    } else {
+      process.env.SESSION_COOKIE_SECRET = originalEnv
+    }
+  })
+
+  it('SESSION_COOKIE_SECRET 未設定時: signSession は元のペイロードをそのまま返す', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+    const payload = '{"foo":"bar"}'
+    const signed = await signSession(payload)
+    expect(signed).toBe(payload)
+  })
+
+  it('SESSION_COOKIE_SECRET 未設定時: verifySession は元の値をそのまま返す', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+    const payload = '{"foo":"bar"}'
+    const result = await verifySession(payload)
+    expect(result).toBe(payload)
+  })
+
+  it('SESSION_COOKIE_SECRET 設定時: signSession はペイロードにドット区切りの署名を付与する', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+    const payload = '{"foo":"bar"}'
+    const signed = await signSession(payload)
+    expect(signed).toContain('.')
+    const [signedPayload] = signed.split('.')
+    expect(signedPayload).toBe(payload)
+  })
+
+  it('SESSION_COOKIE_SECRET 設定時: verifySession は正しい署名を検証してペイロードを返す', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+    const payload = '{"foo":"bar"}'
+    const signed = await signSession(payload)
+    const result = await verifySession(signed)
+    expect(result).toBe(payload)
+  })
+
+  it('SESSION_COOKIE_SECRET 設定時: 署名が改ざんされた場合は例外を投げる', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+    const payload = '{"foo":"bar"}'
+    const signed = await signSession(payload)
+    const tampered = signed.replace(/.$/, signed.endsWith('a') ? 'b' : 'a')
+    await expect(verifySession(tampered)).rejects.toThrow('Session cookie signature invalid')
+  })
+
+  it('SESSION_COOKIE_SECRET 設定時: 署名なしの旧フォーマットは拒否して例外を投げる', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+    const payload = '{"foo":"bar"}'
+    await expect(verifySession(payload)).rejects.toThrow('Session cookie is not signed')
+  })
+
+  it('SESSION_COOKIE_SECRET 設定時: ペイロードが改ざんされた場合は例外を投げる', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+    const payload = '{"foo":"bar"}'
+    const signed = await signSession(payload)
+    // ペイロード部分を改ざん
+    const lastDot = signed.lastIndexOf('.')
+    const signature = signed.substring(lastDot)
+    const tamperedSigned = '{"foo":"tampered"}' + signature
+    await expect(verifySession(tamperedSigned)).rejects.toThrow('Session cookie signature invalid')
   })
 })
