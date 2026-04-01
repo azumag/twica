@@ -43,6 +43,7 @@ vi.mock('@/lib/session', () => ({
   // signSession: テストでは署名をスキップし、ペイロードをそのまま返す（crypto不要）
   // signSession: Return payload as-is in tests (no crypto needed)
   signSession: (payload: string) => Promise.resolve(payload),
+  verifySession: (payload: string) => Promise.resolve(payload),
 }))
 
 // supabase admin - チェーン可能なモック

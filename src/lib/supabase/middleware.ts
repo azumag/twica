@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { COOKIE_NAMES, getDeleteCookieOptions } from '@/lib/constants'
+import { parseSession, verifySession } from '@/lib/session-cookie'
 
 /**
  * Middleware session handler
@@ -36,7 +37,8 @@ export async function updateSession(request: NextRequest) {
   const sessionCookie = request.cookies.get(COOKIE_NAMES.SESSION)?.value
   if (sessionCookie) {
     try {
-      const parsed = JSON.parse(sessionCookie)
+      const payload = await verifySession(sessionCookie, { allowUnsignedLegacy: true })
+      const parsed = parseSession(payload)
       if (typeof parsed.expiresAt === 'number' && Date.now() > parsed.expiresAt) {
         // セッション期限切れ時: CSRFトークンが存在する場合のみ削除。セッションCookieは保持する。
         // リクエストにcsrf_tokenがない場合はSet-Cookieヘッダを出さない（キャッシュ効率維持）

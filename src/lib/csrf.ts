@@ -3,7 +3,7 @@ import { cookies } from 'next/headers'
 import { logger } from './logger'
 import { reportSecurityError } from './sentry/error-handler'
 import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from './constants'
-import { parseSession } from './session'
+import { parseSession, signSession, type Session, verifySession } from './session'
 
 export async function hashIP(ip: string | null): Promise<string> {
   if (!ip) return 'unknown'
@@ -67,6 +67,15 @@ function getCSRFTokenFromCookie(cookieStore: Awaited<ReturnType<typeof cookies>>
   return tokenCookie || null
 }
 
+async function readSessionFromCookieValue(sessionCookie: string): Promise<Session> {
+  const payload = await verifySession(sessionCookie)
+  return parseSession(payload)
+}
+
+async function serializeSessionCookie(session: Session): Promise<string> {
+  return signSession(JSON.stringify(session))
+}
+
 /**
  * セッションにCSRFトークンのハッシュを保存し、トークン自体はhttpOnly cookieに保存
  */
@@ -78,7 +87,7 @@ async function setCSRFTokenWithRetry(retryCount: number = 0): Promise<string> {
     throw new Error('No session found')
   }
 
-  const session = parseSession(sessionCookie)
+  const session = await readSessionFromCookieValue(sessionCookie)
   const userId = session.twitchUserId
 
   const existingToken = getCSRFTokenFromCookie(cookieStore)
@@ -95,7 +104,7 @@ async function setCSRFTokenWithRetry(retryCount: number = 0): Promise<string> {
     throw new Error('No session found')
   }
 
-  const currentSession = parseSession(currentSessionCookie)
+  const currentSession = await readSessionFromCookieValue(currentSessionCookie)
   
   // Check session expiration before version validation
   if (currentSession.expiresAt && Date.now() > currentSession.expiresAt) {
@@ -128,7 +137,8 @@ async function setCSRFTokenWithRetry(retryCount: number = 0): Promise<string> {
 
   // セッションとCSRFトークンは同じドメイン設定で保存
   const cookieOptions = getSessionCookieOptions()
-  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), cookieOptions)
+  const updatedSessionCookie = await serializeSessionCookie(updatedSession)
+  cookieStore.set(COOKIE_NAMES.SESSION, updatedSessionCookie, cookieOptions)
 
   // トークン自体もhttpOnly cookieに保存（JavaScriptからアクセス不可）
   cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, token, cookieOptions)
@@ -158,7 +168,13 @@ export async function validateCSRFToken(
     return { valid: false, error: 'セッションが見つかりません。再度ログインしてください。' }
   }
 
-  const session = parseSession(sessionCookie)
+  let session: Session
+  try {
+    session = await readSessionFromCookieValue(sessionCookie)
+  } catch {
+    logger.warn('CSRF validation failed: Invalid session cookie')
+    return { valid: false, error: 'セッションが見つかりません。再度ログインしてください。' }
+  }
 
   if (session.expiresAt && Date.now() > session.expiresAt) {
     logger.warn('CSRF validation failed: Session expired', {
@@ -183,7 +199,7 @@ export async function validateCSRFToken(
         logger.error('Failed to read session after CSRF token generation')
         return { valid: false, error: ERROR_MESSAGES.CSRF_TOKEN_INVALID }
       }
-      const updatedSession = parseSession(updatedSessionCookie)
+      const updatedSession = await readSessionFromCookieValue(updatedSessionCookie)
       sessionTokenHash = updatedSession.csrfTokenHash
 
       if (!sessionTokenHash) {
@@ -362,7 +378,13 @@ export async function clearCSRFToken(): Promise<void> {
     return
   }
 
-  const session = parseSession(sessionCookie)
+  let session: Session
+  try {
+    session = await readSessionFromCookieValue(sessionCookie)
+  } catch {
+    cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, '', getDeleteCookieOptions())
+    return
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { csrfTokenHash, ...sessionWithoutCsrf } = session
@@ -372,7 +394,8 @@ export async function clearCSRFToken(): Promise<void> {
   }
 
   // ドメイン設定を含むオプションで保存
-  cookieStore.set(COOKIE_NAMES.SESSION, JSON.stringify(updatedSession), getSessionCookieOptions())
+  const updatedSessionCookie = await serializeSessionCookie(updatedSession)
+  cookieStore.set(COOKIE_NAMES.SESSION, updatedSessionCookie, getSessionCookieOptions())
 
   // CSRFトークンクッキーを確実に削除（maxAge=0で上書き）
   cookieStore.set(COOKIE_NAMES.CSRF_TOKEN, '', getDeleteCookieOptions())
