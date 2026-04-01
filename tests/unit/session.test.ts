@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest'
-import { parseSession, canUseStreamerFeatures, Session } from '@/lib/session'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { parseSession, canUseStreamerFeatures, signSession, verifySession, Session } from '@/lib/session'
+
+vi.mock('@/lib/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}))
 
 describe('parseSession', () => {
   it('should parse valid session data', () => {
@@ -12,7 +20,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 1
     }
-    
+
     const session = parseSession(JSON.stringify(validSession))
     expect(session).toEqual(validSession)
   })
@@ -29,9 +37,8 @@ describe('parseSession', () => {
       twitchProfileImageUrl: 'https://example.com/image.png',
       broadcasterType: 'affiliate',
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-      // version is missing
     }
-    
+
     expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('missing required field')
   })
 
@@ -45,7 +52,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 1
     }
-    
+
     expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('twitchUserId must be a string')
   })
 
@@ -59,7 +66,7 @@ describe('parseSession', () => {
       expiresAt: 'invalid',
       version: 1
     }
-    
+
     expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('expiresAt must be a number')
   })
 
@@ -73,7 +80,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 'invalid'
     }
-    
+
     expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('version must be a number')
   })
 
@@ -87,7 +94,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 1.5
     }
-    
+
     expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('version must be an integer')
   })
 
@@ -101,7 +108,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 0
     }
-    
+
     expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('version must be greater than or equal to 1')
   })
 
@@ -115,7 +122,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: -1
     }
-    
+
     expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('version must be greater than or equal to 1')
   })
 
@@ -129,7 +136,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: Number.MAX_SAFE_INTEGER + 1
     }
-    
+
     expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('version exceeds maximum safe integer value')
   })
 
@@ -143,7 +150,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 1
     }
-    
+
     const session = parseSession(JSON.stringify(validSession))
     expect(session.version).toBe(1)
   })
@@ -158,7 +165,7 @@ describe('parseSession', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: Number.MAX_SAFE_INTEGER
     }
-    
+
     const session = parseSession(JSON.stringify(validSession))
     expect(session.version).toBe(Number.MAX_SAFE_INTEGER)
   })
@@ -175,7 +182,7 @@ describe('canUseStreamerFeatures', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 1
     }
-    
+
     expect(canUseStreamerFeatures(session)).toBe(true)
   })
 
@@ -189,7 +196,7 @@ describe('canUseStreamerFeatures', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 1
     }
-    
+
     expect(canUseStreamerFeatures(session)).toBe(true)
   })
 
@@ -203,11 +210,89 @@ describe('canUseStreamerFeatures', () => {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       version: 1
     }
-    
+
     expect(canUseStreamerFeatures(session)).toBe(false)
   })
 
   it('should return false for null session', () => {
     expect(canUseStreamerFeatures(null)).toBe(false)
+  })
+})
+
+describe('signSession / verifySession', () => {
+  const originalSecret = process.env.SESSION_COOKIE_SECRET
+
+  afterEach(() => {
+    if (originalSecret === undefined) {
+      delete process.env.SESSION_COOKIE_SECRET
+    } else {
+      process.env.SESSION_COOKIE_SECRET = originalSecret
+    }
+  })
+
+  it('should return the original payload when SESSION_COOKIE_SECRET is not set', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+
+    const payload = '{"foo":"bar"}'
+    const signed = await signSession(payload)
+
+    expect(signed).toBe(payload)
+  })
+
+  it('should add a dot-delimited signature when SESSION_COOKIE_SECRET is set', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+
+    const payload = '{"foo":"bar"}'
+    const signed = await signSession(payload)
+
+    expect(signed).toContain('.')
+    expect(await verifySession(signed)).toBe(payload)
+  })
+
+  it('should reject unsigned legacy cookies by default when SESSION_COOKIE_SECRET is set', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+
+    await expect(verifySession('{"foo":"bar"}')).rejects.toThrow('Session cookie is not signed')
+  })
+
+  it('should allow unsigned legacy cookies when explicitly requested', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+
+    await expect(
+      verifySession('{"foo":"bar"}', { allowUnsignedLegacy: true })
+    ).resolves.toBe('{"foo":"bar"}')
+  })
+
+  it('should reject signed-looking cookies when SESSION_COOKIE_SECRET is not set', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+
+    const payload = '{"foo":"bar"}'
+    const signedLooking = `${payload}.${'a'.repeat(64)}`
+
+    await expect(verifySession(signedLooking)).rejects.toThrow(
+      'Session cookie cannot be verified without SESSION_COOKIE_SECRET'
+    )
+  })
+
+  it('should reject tampered signed cookies', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+
+    const payload = '{"foo":"bar"}'
+    const signed = await signSession(payload)
+    const tampered = signed.replace(/.$/, signed.endsWith('a') ? 'b' : 'a')
+
+    await expect(verifySession(tampered)).rejects.toThrow('Session cookie signature invalid')
+  })
+
+  it('should treat unsigned payloads containing dots as legacy cookies', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+
+    const payload = JSON.stringify({
+      twitchProfileImageUrl: 'https://example.com/image.png',
+    })
+
+    await expect(
+      verifySession(payload, { allowUnsignedLegacy: true })
+    ).resolves.toBe(payload)
   })
 })
