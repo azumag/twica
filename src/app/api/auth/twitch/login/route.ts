@@ -7,7 +7,7 @@ import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
-import { getSession, parseSession } from '@/lib/session'
+import { getSession, parseSession, verifySession } from '@/lib/session'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 
@@ -85,16 +85,18 @@ export async function GET(request: Request) {
       // 3. 自然失効後のスコープ復元: 期限切れセッションCookieからtwitchUserIdを取得
       // SCOPE_RESTORE_USER_ID はclearSession()でのみ設定されるため、セッションが明示ログアウト
       // なしに7日経過で自然失効した場合はこのフォールバックが必要。
+      // 署名付きセッションは検証し、移行期間中の旧未署名Cookieもここだけは受け入れる。
       // parseSession()で全フィールドの型・存在を検証してからtwitchUserIdのみを使用する。
       // Fallback for natural session expiry (no explicit logout before 7-day timeout):
       // SCOPE_RESTORE_USER_ID is only set by clearSession(), so naturally-expired sessions
-      // must fall back to the session cookie. Use parseSession() to validate structure
-      // before trusting twitchUserId.
+      // must fall back to the session cookie. Verify signed cookies, and temporarily
+      // allow legacy unsigned cookies here so scope restoration keeps working.
       if (!twitchUserId) {
         const sessionCookie = cookieStore.get(COOKIE_NAMES.SESSION)?.value
         if (sessionCookie) {
           try {
-            const parsed = parseSession(sessionCookie)
+            const payload = await verifySession(sessionCookie, { allowUnsignedLegacy: true })
+            const parsed = parseSession(payload)
             twitchUserId = parsed.twitchUserId
             logger.info('Login: extracted twitchUserId from naturally expired session cookie', {
               twitchUserId,

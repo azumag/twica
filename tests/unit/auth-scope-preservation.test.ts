@@ -40,6 +40,8 @@ const mockParseSession = vi.fn()
 vi.mock('@/lib/session', () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
   parseSession: (...args: unknown[]) => mockParseSession(...args),
+  signSession: (payload: string) => Promise.resolve(payload),
+  verifySession: (payload: string) => Promise.resolve(payload),
 }))
 
 // supabase admin - チェーン可能なモック

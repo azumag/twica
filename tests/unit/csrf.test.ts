@@ -4,6 +4,7 @@ import { logger } from '@/lib/logger'
 
 import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
 import { setCSRFToken, validateCSRFToken, hashToken, clearCSRFToken, hashIP, sanitizeURL } from '@/lib/csrf'
+import { signSession, verifySession } from '@/lib/session'
 
 // Mock interface for cookie store with essential methods needed for testing
 // Note: We use 'any' when passing to mockResolvedValue since the full RequestCookies
@@ -66,6 +67,7 @@ function createMockCookieStore(overrides: {
 describe('CSRF Protection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.unstubAllEnvs()
     vi.stubEnv('CSRF_TOKEN_SALT', 'test-salt-for-csrf-token-hashing')
 
     const mockCookieStore = createMockCookieStore()
@@ -179,6 +181,36 @@ describe('CSRF Protection', () => {
     mockCookies.mockResolvedValue(mockCookieStore as any)
 
       await expect(setCSRFToken()).rejects.toThrow('No session found')
+    })
+
+    it('should write back a signed session cookie when SESSION_COOKIE_SECRET is set', async () => {
+      vi.stubEnv('SESSION_COOKIE_SECRET', 'test-secret-key-32-chars-abcdefgh')
+
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        version: 1,
+      }
+
+      const signedSession = await signSession(JSON.stringify(sessionData))
+      const mockCookieStore = createMockCookieStore({
+        get: vi.fn().mockReturnValue({ value: signedSession }),
+        set: vi.fn(),
+      })
+
+      mockCookies.mockResolvedValue(mockCookieStore as any)
+
+      await setCSRFToken()
+
+      const signedSessionValue = mockCookieStore.set.mock.calls[0][1]
+      const verifiedPayload = await verifySession(signedSessionValue)
+
+      expect(signedSessionValue).toContain('.')
+      expect(verifiedPayload).toContain('"csrfTokenHash"')
     })
   })
 
@@ -304,6 +336,43 @@ describe('CSRF Protection', () => {
       const request = new Request('https://example.com')
 
       const result = await validateCSRFToken(request)
+
+      expect(result.valid).toBe(false)
+      expect(result.error).toBe('セッションが見つかりません。再度ログインしてください。')
+    })
+
+    it('should reject unsigned legacy session cookies when signature enforcement is enabled', async () => {
+      vi.stubEnv('SESSION_COOKIE_SECRET', 'test-secret-key-32-chars-abcdefgh')
+
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: tokenHash,
+        version: 1,
+      }
+
+      const mockCookieStore = createMockCookieStore({
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: JSON.stringify(sessionData) }
+          }
+          if (name === COOKIE_NAMES.CSRF_TOKEN) {
+            return { value: token }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+      })
+
+      mockCookies.mockResolvedValue(mockCookieStore as any)
+
+      const result = await validateCSRFToken(new Request('https://example.com'))
 
       expect(result.valid).toBe(false)
       expect(result.error).toBe('セッションが見つかりません。再度ログインしてください。')
@@ -595,6 +664,44 @@ describe('CSRF Protection', () => {
         '',
         expect.objectContaining({ maxAge: 0 })
       )
+    })
+
+    it('should keep the session cookie signed when clearing CSRF state', async () => {
+      vi.stubEnv('SESSION_COOKIE_SECRET', 'test-secret-key-32-chars-abcdefgh')
+
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: 'session-hash',
+        version: 1,
+      }
+
+      const signedSession = await signSession(JSON.stringify(sessionData))
+      const mockCookieStore = createMockCookieStore({
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: signedSession }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+        delete: vi.fn(),
+      })
+
+      mockCookies.mockResolvedValue(mockCookieStore as any)
+
+      await clearCSRFToken()
+
+      const updatedSessionValue = mockCookieStore.set.mock.calls[0][1]
+      const verifiedPayload = await verifySession(updatedSessionValue)
+
+      expect(updatedSessionValue).toContain('.')
+      expect(verifiedPayload).toContain('"version":2')
+      expect(verifiedPayload).not.toContain('csrfTokenHash')
     })
   })
 

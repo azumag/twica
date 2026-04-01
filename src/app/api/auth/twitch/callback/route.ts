@@ -8,6 +8,7 @@ import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, 
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 import { getBaseUrl } from '@/lib/url-utils'
+import { signSession } from '@/lib/session'
 
 export async function GET(request: NextRequest) {
   // 開発環境ではリクエストのホストから動的にベースURLを取得
@@ -355,7 +356,8 @@ export async function GET(request: NextRequest) {
       secure: cookieOptions.secure,
     })
 
-    response.cookies.set(COOKIE_NAMES.SESSION, sessionData, cookieOptions)
+    const signedSessionData = await signSession(sessionData)
+    response.cookies.set(COOKIE_NAMES.SESSION, signedSessionData, cookieOptions)
 
     // Clear state cookie
     response.cookies.delete(COOKIE_NAMES.AUTH_STATE)

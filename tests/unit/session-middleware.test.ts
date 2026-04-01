@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 import { COOKIE_NAMES } from '@/lib/constants'
+import { signSession } from '@/lib/session-cookie'
 
 /**
  * Tests for middleware session cleanup logic.
@@ -19,6 +20,7 @@ import { COOKIE_NAMES } from '@/lib/constants'
  * - パースできないCookieは削除する（セキュリティ対策）
  */
 describe('updateSession middleware', () => {
+  const originalSecret = process.env.SESSION_COOKIE_SECRET
   const validSession = {
     twitchUserId: '12345',
     twitchUsername: 'testuser',
@@ -28,6 +30,14 @@ describe('updateSession middleware', () => {
     expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
     version: 1,
   }
+
+  beforeEach(() => {
+    if (originalSecret === undefined) {
+      delete process.env.SESSION_COOKIE_SECRET
+    } else {
+      process.env.SESSION_COOKIE_SECRET = originalSecret
+    }
+  })
 
   function createRequest(cookies?: Record<string, string>): NextRequest {
     const url = 'https://example.com/'
@@ -111,7 +121,7 @@ describe('updateSession middleware', () => {
     expect(csrfCookie?.value).toBe('')
   })
 
-  it('should not clear cookies when expiresAt is missing (treat as valid)', async () => {
+  it('should clear cookies when expiresAt is missing (invalid structure)', async () => {
     const sessionWithoutExpiry = {
       ...validSession,
       expiresAt: undefined,
@@ -121,9 +131,8 @@ describe('updateSession middleware', () => {
     })
     const response = await updateSession(request)
 
-    // No Set-Cookie headers should be added
-    const setCookieHeader = response.headers.get('set-cookie')
-    expect(setCookieHeader).toBeNull()
+    const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
+    expect(sessionCookie?.value).toBe('')
   })
 
   it('should preserve session cookie even when expired for a long time', async () => {
@@ -161,5 +170,43 @@ describe('updateSession middleware', () => {
     // csrf_tokenのSet-Cookieは出ない
     const csrfCookie = response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)
     expect(csrfCookie).toBeUndefined()
+  })
+
+  it('should pass through request when session is valid and signed', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+    const signedSession = await signSession(JSON.stringify(validSession))
+
+    const request = createRequest({
+      [COOKIE_NAMES.SESSION]: signedSession,
+    })
+    const response = await updateSession(request)
+
+    expect(response.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('should preserve legacy unsigned cookies when signature enforcement is enabled', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+
+    const request = createRequest({
+      [COOKIE_NAMES.SESSION]: JSON.stringify(validSession),
+    })
+    const response = await updateSession(request)
+
+    expect(response.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('should clear signed cookies when signature verification fails', async () => {
+    process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
+    const signedSession = await signSession(JSON.stringify(validSession))
+    const tamperedSession = signedSession.replace(/.$/, signedSession.endsWith('a') ? 'b' : 'a')
+
+    const request = createRequest({
+      [COOKIE_NAMES.SESSION]: tamperedSession,
+      [COOKIE_NAMES.CSRF_TOKEN]: 'some-csrf-token',
+    })
+    const response = await updateSession(request)
+
+    expect(response.cookies.get(COOKIE_NAMES.SESSION)?.value).toBe('')
+    expect(response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)?.value).toBe('')
   })
 })
