@@ -263,6 +263,17 @@ describe('signSession / verifySession', () => {
     ).resolves.toBe('{"foo":"bar"}')
   })
 
+  it('should reject signed-looking cookies when SESSION_COOKIE_SECRET is not set', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+
+    const payload = '{"foo":"bar"}'
+    const signedLooking = `${payload}.${'a'.repeat(64)}`
+
+    await expect(verifySession(signedLooking)).rejects.toThrow(
+      'Session cookie cannot be verified without SESSION_COOKIE_SECRET'
+    )
+  })
+
   it('should reject tampered signed cookies', async () => {
     process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
 

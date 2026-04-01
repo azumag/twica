@@ -195,6 +195,19 @@ describe('updateSession middleware', () => {
     expect(response.headers.get('set-cookie')).toBeNull()
   })
 
+  it('should clear signed-looking cookies when SESSION_COOKIE_SECRET is not set', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+
+    const request = createRequest({
+      [COOKIE_NAMES.SESSION]: `${JSON.stringify(validSession)}.${'a'.repeat(64)}`,
+      [COOKIE_NAMES.CSRF_TOKEN]: 'some-csrf-token',
+    })
+    const response = await updateSession(request)
+
+    expect(response.cookies.get(COOKIE_NAMES.SESSION)?.value).toBe('')
+    expect(response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)?.value).toBe('')
+  })
+
   it('should clear signed cookies when signature verification fails', async () => {
     process.env.SESSION_COOKIE_SECRET = 'test-secret-key-32-chars-abcdefgh'
     const signedSession = await signSession(JSON.stringify(validSession))
