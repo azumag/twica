@@ -26,6 +26,7 @@ interface StreamerCollectionProps {
     owned: number;
     total: number;
   };
+  visibleCardTypes: number;
   // 過去のコンプリート達成履歴（デフォルト空配列で後方互換）
   completionHistory?: { total_cards: number; completed_at: string }[];
 }
@@ -41,11 +42,13 @@ export default async function StreamerCollection({
   cards,
   stats,
   progress,
+  visibleCardTypes,
   completionHistory = [],
 }: StreamerCollectionProps) {
   const t = await getTranslations("collection");
   const tStreamer = await getTranslations("streamerCollection");
   const tCommon = await getTranslations("common");
+  const tCardManager = await getTranslations("cardManager");
 
   return (
     <div className="min-h-screen bg-gray-900 p-4 sm:p-6 lg:p-8">
@@ -69,7 +72,7 @@ export default async function StreamerCollection({
               {tStreamer("title", { streamerName: streamer.twitch_display_name })}
             </h1>
             <p className="text-gray-400">
-              {t("cardTypes", { count: progress.total })}
+              {t("cardTypes", { count: visibleCardTypes })}
             </p>
           </div>
         </div>
@@ -100,6 +103,7 @@ export default async function StreamerCollection({
               cardCountTemplate: t("cardCount", { count: "{count}" }),
               noImage: tCommon("noImage"),
               unownedCard: t("unownedCard"),
+              inactiveStatus: tCardManager("status.paused"),
             }}
           />
         )}

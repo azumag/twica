@@ -30,6 +30,7 @@ interface SortedCardGridProps {
     cardCountTemplate: string;
     noImage: string;
     unownedCard: string;
+    inactiveStatus: string;
   };
 }
 
@@ -71,6 +72,8 @@ export default function SortedCardGrid({
             priority={isPriority}
             noImageText={translations.noImage}
             isOwned={isOwned}
+            isInactive={isOwned && !card.is_active}
+            inactiveLabel={translations.inactiveStatus}
             descriptionComponent={
               isOwned && card.description ? (
                 <ExpandableDescription description={card.description} />
