@@ -8,7 +8,7 @@ export { parseSession, signSession, verifySession } from './session-cookie'
 
 export type Session = SessionPayload
 
-function isExpectedSessionCookieError(error: unknown): boolean {
+function isExpectedSessionCookieError(error: unknown): error is Error {
   if (!(error instanceof Error)) {
     return false
   }
