@@ -1,6 +1,6 @@
 import { getSession } from "@/lib/session";
 import { getUserCards, getActiveCardsForStreamer } from "@/lib/dashboard-data";
-import { RARITY_ORDER } from "@/lib/constants";
+import { countOwnedActiveCardTypes, sortCollectedCards } from "@/lib/collection-utils";
 import Collection from "@/components/Collection";
 import type { Card, Streamer } from "@/types/database";
 
@@ -35,13 +35,11 @@ export default async function CollectionPage() {
 
   // Sort cards by rarity (legendary first)
   // レアリティでソート（レジェンダリーが先頭）
-  userCards.sort((a, b) => {
-    return RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity);
-  });
+  const sortedUserCards = sortCollectedCards(userCards);
 
   // Group cards by streamer for organized display
   // 整理された表示のためにカードを配信者でグループ化
-  const cardsByStreamer = userCards.reduce(
+  const cardsByStreamer = sortedUserCards.reduce(
     (acc, card) => {
       const streamerId = card.streamer.id;
       if (!acc[streamerId]) {
@@ -69,23 +67,14 @@ export default async function CollectionPage() {
     streamerIds.map(async (streamerId) => {
       const activeCards = await getActiveCardsForStreamer(streamerId);
       const activeCardIds = new Set(activeCards.map((c) => c.id));
-      const activeOwnedCards = cardsByStreamer[streamerId].cards.filter(
-        (c) => activeCardIds.has(c.id)
-      );
       return {
         streamerId,
         totalActive: activeCards.length,
-        ownedActive: activeOwnedCards.length,
-        activeOwnedCards,
+        ownedActive: countOwnedActiveCardTypes(cardsByStreamer[streamerId].cards, activeCardIds),
       };
     })
   );
-  for (const { streamerId, totalActive, ownedActive, activeOwnedCards } of activeCardData) {
-    // Align My Collection with streamer collection page behavior:
-    // only active cards that the user owns are shown and counted.
-    // マイコレクションを配信者別コレクションと揃えるため、
-    // 「配布中かつ所持」のカードのみ表示・集計する。
-    cardsByStreamer[streamerId].cards = activeOwnedCards;
+  for (const { streamerId, totalActive, ownedActive } of activeCardData) {
     cardsByStreamer[streamerId].totalActive = totalActive;
     cardsByStreamer[streamerId].ownedActive = ownedActive;
 
@@ -93,12 +82,6 @@ export default async function CollectionPage() {
     // isComplete: 現在のアクティブカード全種を所持しているか
     const isComplete = totalActive > 0 && ownedActive >= totalActive;
     cardsByStreamer[streamerId].isComplete = isComplete;
-
-    // Hide streamers where user has no active owned cards
-    // ユーザーが配布中カードを1枚も所持していない配信者は非表示
-    if (activeOwnedCards.length === 0) {
-      delete cardsByStreamer[streamerId];
-    }
   }
 
   return <Collection cardsByStreamer={cardsByStreamer} />;

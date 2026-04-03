@@ -7,6 +7,7 @@ import {
   getCollectionCompletions,
   recordCollectionCompletion,
 } from "@/lib/dashboard-data";
+import { countOwnedActiveCardTypes, sortCollectedCards } from "@/lib/collection-utils";
 import StreamerCollection from "@/components/StreamerCollection";
 import type { StreamerCollectionCard } from "@/components/StreamerCollection";
 
@@ -51,19 +52,12 @@ export default async function StreamerCollectionPage({
     getCollectionCompletions(session.twitchUserId, streamerId),
   ]);
 
-  // Build owned-only card list in active card order
-  // アクティブカード順を維持しつつ、所持カードのみを一覧化
-  const ownedCardMap = new Map(userCards.map((card) => [card.id, card]));
-  const cards: StreamerCollectionCard[] = activeCards.flatMap((card) => {
-    const ownedCard = ownedCardMap.get(card.id);
-    if (!ownedCard) return [];
-
-    return [{
-      ...card,
-      count: ownedCard.count,
-      isOwned: true,
-    }];
-  });
+  const activeCardIds = new Set(activeCards.map((card) => card.id));
+  const cards: StreamerCollectionCard[] = sortCollectedCards(userCards).map((card) => ({
+    ...card,
+    count: card.count,
+    isOwned: true,
+  }));
 
   // Calculate collection statistics
   // コレクション統計を計算
@@ -77,7 +71,7 @@ export default async function StreamerCollectionPage({
   };
 
   const progress = {
-    owned: cards.length,
+    owned: countOwnedActiveCardTypes(cards, activeCardIds),
     total: activeCards.length,
   };
   const isCurrentComplete = progress.total > 0 && progress.owned >= progress.total;
@@ -100,6 +94,7 @@ export default async function StreamerCollectionPage({
       cards={cards}
       stats={stats}
       progress={progress}
+      visibleCardTypes={cards.length}
       completionHistory={completionHistoryForDisplay}
     />
   );

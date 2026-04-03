@@ -9,12 +9,14 @@ export { parseSession, signSession, verifySession } from './session-cookie'
 export type Session = SessionPayload
 
 function isExpectedSessionCookieError(error: unknown): error is Error {
-  return error instanceof Error && (
-    error.message === 'Session cookie is not signed'
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  return error.message === 'Session cookie is not signed'
     || error.message === 'Session cookie signature invalid'
     || error.message === 'Session cookie cannot be verified without SESSION_COOKIE_SECRET'
     || error.message.startsWith('Invalid session format:')
-  )
 }
 
 /**
