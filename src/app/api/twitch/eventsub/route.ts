@@ -263,7 +263,7 @@ async function handleRedemption(messageId: string, event: {
   user_id: string;
   user_login: string;
   user_name: string;
-  reward: { id: string; title: string };
+  reward: { id: string; title: string; cost?: number };
 }): Promise<RedemptionNotifyData | null> {
   logger.info('[handleRedemption] START', {
     messageId,

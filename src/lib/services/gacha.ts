@@ -34,7 +34,7 @@ export interface GachaResult {
 export class GachaService {
   private supabase = getSupabaseAdmin()
 
-  async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string, eventId?: string): Promise<Result<GachaResult>> {
+  async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string, eventId?: string, rewardCost?: number): Promise<Result<GachaResult>> {
     try {
       // Get active cards for this streamer
       // このストリーマーの有効なカードを取得
@@ -69,6 +69,7 @@ export class GachaService {
           p_user_twitch_username: userTwitchUsername,
           p_card_id: selectedCard.id,
           p_streamer_id: streamerId,
+          p_reward_cost: rewardCost ?? null,
         })
 
       if (rpcError) {
@@ -80,7 +81,7 @@ export class GachaService {
           logger.warn('execute_gacha_transaction not found, falling back to legacy operations', {
             streamerId, userTwitchId, eventId,
           })
-          return this.executeGachaLegacy(streamerId, userTwitchId, userTwitchUsername, selectedCard, eventId)
+          return this.executeGachaLegacy(streamerId, userTwitchId, userTwitchUsername, selectedCard, eventId, rewardCost)
         }
 
         await reportError(new Error(`Gacha RPC failed: ${rpcError.message}`), {
@@ -114,7 +115,7 @@ export class GachaService {
    */
   private async executeGachaLegacy(
     streamerId: string, userTwitchId: string, userTwitchUsername: string,
-    selectedCard: GachaCard, eventId?: string
+    selectedCard: GachaCard, eventId?: string, rewardCost?: number
   ): Promise<Result<GachaResult>> {
     // gacha_history upsert（冪等性のためevent_idで重複チェック）
     const { error: historyError } = await this.supabase
@@ -125,6 +126,7 @@ export class GachaService {
         user_twitch_username: userTwitchUsername,
         card_id: selectedCard.id,
         streamer_id: streamerId,
+        reward_cost: rewardCost ?? null,
       }, {
         onConflict: 'event_id',
         ignoreDuplicates: true,
@@ -181,7 +183,7 @@ export class GachaService {
       user_id: string
       user_login: string
       user_name: string
-      reward: { id: string }
+      reward: { id: string; cost?: number }
     },
     eventId?: string
   ): Promise<Result<GachaResult>> {
@@ -199,7 +201,7 @@ export class GachaService {
 
       // ガチャ実行用のヘルパー: 結果にストリーマー情報を付加して返す
       const executeAndAttachStreamer = async (): Promise<Result<GachaResult>> => {
-        const result = await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId)
+        const result = await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId, event.reward.cost)
         if (!result.success) return result
         return ok({
           ...result.data,
