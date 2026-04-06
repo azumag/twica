@@ -12,7 +12,10 @@ COMMENT ON COLUMN gacha_history.reward_cost IS
   'Twitchチャネルポイント引き換え時に消費したポイント数。EventSub経由以外の場合はNULL';
 
 -- execute_gacha_transaction RPC にポイント数パラメータを追加
--- 既存の関数をCREATE OR REPLACEで上書き（全パラメータ再定義が必要）
+-- パラメータ追加はシグネチャ変更になるため、旧関数をDROPして再作成する
+-- CREATE OR REPLACE では旧5引数版と新6引数版が共存してオーバーロード競合が起きる
+DROP FUNCTION IF EXISTS execute_gacha_transaction(TEXT, TEXT, TEXT, UUID, UUID);
+
 CREATE OR REPLACE FUNCTION execute_gacha_transaction(
   p_event_id TEXT,
   p_user_twitch_id TEXT,
@@ -58,7 +61,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION execute_gacha_transaction IS
+COMMENT ON FUNCTION execute_gacha_transaction(TEXT, TEXT, TEXT, UUID, UUID, INTEGER) IS
   'ガチャのDB操作（履歴記録・ユーザー作成・カード付与）を1トランザクションでアトミックに実行。event_id重複時はカード付与をスキップ';
 
 -- 実行権限をservice_roleのみに限定
