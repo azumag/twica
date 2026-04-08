@@ -310,27 +310,42 @@ export async function saveTwitchScopes(twitchUserId: string, scopes: string[]): 
  */
 export async function validateTokenScopes(twitchUserId: string): Promise<string[] | null> {
   try {
-    // DBからトークンを直接読み取る（リフレッシュしない）
+    // DBからトークンと有効期限を直接読み取る（リフレッシュしない）
     // check-scope GETはread-onlyであるべきなので、getTwitchAccessToken()は使わない
     // getTwitchAccessToken()は期限切れ時にリフレッシュ→DB書き込みを行うため
-    // Read token directly from DB without triggering refresh.
+    // Read token and expiry from DB without triggering refresh.
     // check-scope GET must be read-only; getTwitchAccessToken() would refresh expired
     // tokens and write to DB, violating the read-only contract.
     const supabaseAdmin = getSupabaseAdmin();
     const { data: user, error: dbError } = await supabaseAdmin
       .from('users')
-      .select('twitch_access_token')
+      .select('twitch_access_token, twitch_token_expires_at')
       .eq('twitch_user_id', twitchUserId)
       .maybeSingle();
 
     if (dbError || !user?.twitch_access_token) return null;
 
+    // トークンがローカルで期限切れならTwitch APIを叩かずnullを返す。
+    // 期限切れは通常の状態であり、スコープ失効とは異なる。
+    // nullを返すことでcheck-scope APIはDB側の結果を信頼する。
+    // 実際にスコープを使う機能(chat送信、sub確認)側で401時に個別対処される。
+    // If token is locally expired, return null without hitting Twitch API.
+    // Expiry is normal operation, not scope revocation. Returning null lets
+    // check-scope API trust the DB result. Actual scope usage (chat, sub check)
+    // handles 401 individually when the feature is invoked.
+    if (user.twitch_token_expires_at) {
+      const expiresAt = new Date(user.twitch_token_expires_at);
+      if (!isNaN(expiresAt.getTime()) && expiresAt <= new Date()) {
+        return null;
+      }
+    }
+
     const response = await fetch('https://id.twitch.tv/oauth2/validate', {
       headers: { 'Authorization': `OAuth ${user.twitch_access_token}` },
     });
 
-    // 401/403 = トークン無効/期限切れ/スコープ不整合 → 空配列を返す（乖離検出）
-    // 401/403 = token invalid/expired/scope mismatch → return empty array (divergence detected)
+    // 401/403（期限内トークンに対して）= revoke等の無効化 → 空配列で乖離検出
+    // 401/403 on a non-expired token = revoked/invalidated → return empty array
     if (response.status === 401 || response.status === 403) {
       return [];
     }
