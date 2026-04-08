@@ -119,14 +119,11 @@ export async function POST(request: NextRequest) {
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
-    try {
-      await broadcastGachaResult(streamerId, payload);
-      logger.info(`Gacha result broadcast sent to streamer ${streamerId}`);
-    } catch (broadcastError) {
-      // ブロードキャストエラーはログに記録するが、ガチャ自体は成功扱い
-      // Log broadcast errors but still return success (gacha was executed successfully)
-      logger.error("Failed to broadcast gacha result:", { broadcastError });
-    }
+    // broadcastGachaResult は内部でリトライし、失敗時も throw しない設計
+    // （OBSオーバーレイへの通知のみで、ガチャ処理の成否に影響しないため Issue #359-#365）
+    // 失敗ログは broadcastGachaResult 内で warn として出力される
+    await broadcastGachaResult(streamerId, payload);
+    logger.info(`Gacha result broadcast attempted for streamer ${streamerId}`);
 
     return NextResponse.json<GachaSuccessResponse>({
       card: result.data.card

@@ -428,14 +428,16 @@ describe('Twitch Token Manager', () => {
       global.fetch = originalFetch;
     });
 
-    it('トークンが有効でスコープを含む場合、スコープ配列を返す', async () => {
-      // validateTokenScopesはDBから直接トークンを読み取る（リフレッシュしない）
+    it('トークンが有効(期限内)でスコープを含む場合、スコープ配列を返す', async () => {
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
         maybeSingle: vi.fn().mockResolvedValue({
-          data: { twitch_access_token: 'valid-token' },
+          data: {
+            twitch_access_token: 'valid-token',
+            twitch_token_expires_at: new Date(Date.now() + 3600_000).toISOString(),
+          },
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
@@ -451,20 +453,44 @@ describe('Twitch Token Manager', () => {
 
       const result = await validateTokenScopes('123456789');
       expect(result).toEqual(['user:read:email', 'user:write:chat']);
-      // Twitch validate APIに正しいトークンで呼ばれることを確認
       expect(global.fetch).toHaveBeenCalledWith(
         'https://id.twitch.tv/oauth2/validate',
         { headers: { 'Authorization': 'OAuth valid-token' } },
       );
     });
 
-    it('トークンが無効(401)の場合、空配列を返す', async () => {
+    it('トークンが期限切れの場合、Twitch APIを叩かずnullを返す（DB信頼にフォールバック）', async () => {
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
         maybeSingle: vi.fn().mockResolvedValue({
-          data: { twitch_access_token: 'invalid-token' },
+          data: {
+            twitch_access_token: 'expired-token',
+            twitch_token_expires_at: new Date(Date.now() - 1000).toISOString(),
+          },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      const result = await validateTokenScopes('123456789');
+      expect(result).toBeNull();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('期限内トークンが無効(401/revoke)の場合、空配列を返す（乖離検出）', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            twitch_access_token: 'revoked-token',
+            twitch_token_expires_at: new Date(Date.now() + 3600_000).toISOString(),
+          },
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
@@ -482,13 +508,44 @@ describe('Twitch Token Manager', () => {
       expect(result).toEqual([]);
     });
 
+    it('twitch_token_expires_atがnullの場合、Twitch APIで検証する', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            twitch_access_token: 'token-no-expiry',
+            twitch_token_expires_at: null,
+          },
+          error: null,
+        }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ scopes: ['user:read:email'] }),
+      } as Response);
+
+      const result = await validateTokenScopes('123456789');
+      expect(result).toEqual(['user:read:email']);
+      expect(global.fetch).toHaveBeenCalled();
+    });
+
     it('Twitch API 5xxの場合、nullを返す（DB信頼にフォールバック）', async () => {
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
         maybeSingle: vi.fn().mockResolvedValue({
-          data: { twitch_access_token: 'valid-token' },
+          data: {
+            twitch_access_token: 'valid-token',
+            twitch_token_expires_at: new Date(Date.now() + 3600_000).toISOString(),
+          },
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
