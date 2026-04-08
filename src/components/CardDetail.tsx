@@ -34,6 +34,7 @@ interface CardDetailProps {
 export default async function CardDetail({ card, streamer }: CardDetailProps) {
   const t = await getTranslations("cardDetail");
   const tCollection = await getTranslations("collection");
+  const tCardManager = await getTranslations("cardManager");
 
   const rarityInfo = getRarityInfo(card.rarity);
 
@@ -80,8 +81,13 @@ export default async function CardDetail({ card, streamer }: CardDetailProps) {
           <div className="p-6">
             {/* Title and rarity */}
             {/* タイトルとレアリティ */}
-            <div className="flex items-start justify-between gap-4 mb-4">
-              <h1 className="text-2xl font-bold text-white">{card.name}</h1>
+            <div className="mb-4 flex flex-wrap items-start gap-2">
+              <h1 className="mr-auto text-2xl font-bold text-white">{card.name}</h1>
+              {!card.is_active && (
+                <span className="rounded-full bg-amber-500/15 px-3 py-1 text-sm font-medium text-amber-300 ring-1 ring-inset ring-amber-400/30">
+                  {tCardManager("status.paused")}
+                </span>
+              )}
               <span
                 className={`rounded-full px-3 py-1 text-white text-sm shrink-0 ${rarityInfo.color}`}
               >

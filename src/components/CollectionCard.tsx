@@ -40,6 +40,12 @@ interface CollectionCardProps {
   // Whether this card is owned by the current user (default: true for backward compatibility)
   // このカードを現在ユーザーが所持しているか（後方互換のためデフォルトtrue）
   isOwned?: boolean;
+  // Whether the card is no longer distributed
+  // このカードが現在配布停止中かどうか
+  isInactive?: boolean;
+  // Label to show when the card is inactive
+  // 配布停止中カードに表示するラベル
+  inactiveLabel?: string;
   // Description component to render (passed to avoid client-side i18n issues)
   // 描画する説明コンポーネント（クライアントサイドのi18n問題を避けるため渡す）
   descriptionComponent?: React.ReactNode;
@@ -61,21 +67,30 @@ export default function CollectionCard({
   priority = false,
   noImageText,
   isOwned = true,
+  isInactive = false,
+  inactiveLabel,
   descriptionComponent,
 }: CollectionCardProps) {
   const cardClassName = `group relative overflow-hidden rounded-lg bg-gray-700 transition-transform ${
     isOwned ? "cursor-pointer hover:scale-105" : "cursor-default"
-  }`;
+  } ${isInactive ? "ring-1 ring-amber-400/30" : ""}`;
 
   const cardBody = (
     <>
       {/* Card name and rarity badge at the top */}
       {/* 名前とレアリティを一番上に配置 */}
       <div className="p-3 pb-2">
-        <div className="flex items-center justify-between">
-          <h3 className={`font-semibold truncate text-base ${isOwned ? "text-white" : "text-white/70"}`}>
-            {name}
-          </h3>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h3 className={`font-semibold truncate text-base ${isOwned ? "text-white" : "text-white/70"}`}>
+              {name}
+            </h3>
+            {isInactive && inactiveLabel && (
+              <span className="mt-1 inline-flex rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-300 ring-1 ring-inset ring-amber-400/30">
+                {inactiveLabel}
+              </span>
+            )}
+          </div>
           <span
             className={`rounded-full px-2 py-0.5 text-white shrink-0 ml-2 text-xs ${rarityInfo.color}`}
           >
@@ -112,7 +127,7 @@ export default function CollectionCard({
             alt={name}
             width={300}
             height={300}
-            className={`w-full h-full object-cover ${isOwned ? "" : "grayscale opacity-50"}`}
+            className={`w-full h-full object-cover ${isOwned ? "" : "grayscale opacity-50"} ${isInactive ? "opacity-80 saturate-75" : ""}`}
             priority={priority}
             unoptimized
           />

@@ -356,6 +356,8 @@ export async function GET(request: NextRequest) {
       secure: cookieOptions.secure,
     })
 
+    // セッションCookieにHMAC-SHA256署名を付与して改ざん検知を有効にする
+    // Sign the session cookie with HMAC-SHA256 to enable tamper detection
     const signedSessionData = await signSession(sessionData)
     response.cookies.set(COOKIE_NAMES.SESSION, signedSessionData, cookieOptions)
 

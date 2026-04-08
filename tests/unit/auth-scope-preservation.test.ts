@@ -40,6 +40,8 @@ const mockParseSession = vi.fn()
 vi.mock('@/lib/session', () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
   parseSession: (...args: unknown[]) => mockParseSession(...args),
+  // signSession: テストでは署名をスキップし、ペイロードをそのまま返す（crypto不要）
+  // signSession: Return payload as-is in tests (no crypto needed)
   signSession: (payload: string) => Promise.resolve(payload),
   verifySession: (payload: string) => Promise.resolve(payload),
 }))

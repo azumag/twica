@@ -126,8 +126,8 @@ export async function verifySession(
 
   if (!secret) {
     if (split) {
-      logger.warn('[Session] SESSION_COOKIE_SECRET not set - signed session cookie accepted without verification.')
-      return split.payload
+      logger.warn('[Session] SESSION_COOKIE_SECRET not set - rejecting signed session cookie without verification.')
+      throw new Error('Session cookie cannot be verified without SESSION_COOKIE_SECRET')
     }
     return cookieValue
   }

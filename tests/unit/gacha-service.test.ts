@@ -65,6 +65,7 @@ describe('GachaService.executeGacha', () => {
       p_user_twitch_username: 'testuser',
       p_card_id: 'card-1',
       p_streamer_id: 'streamer-1',
+      p_reward_cost: null,
     })
   })
 

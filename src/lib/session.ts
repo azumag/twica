@@ -8,6 +8,17 @@ export { parseSession, signSession, verifySession } from './session-cookie'
 
 export type Session = SessionPayload
 
+function isExpectedSessionCookieError(error: unknown): error is Error {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  return error.message === 'Session cookie is not signed'
+    || error.message === 'Session cookie signature invalid'
+    || error.message === 'Session cookie cannot be verified without SESSION_COOKIE_SECRET'
+    || error.message.startsWith('Invalid session format:')
+}
+
 /**
  * Get session from cookies with request-level caching
  * Using React.cache() to avoid duplicate session reads within the same request.
@@ -45,7 +56,13 @@ export const getSession = cache(async (): Promise<Session | null> => {
     logger.info(`[Perf] getSession: ${Date.now() - start}ms`);
     return session
   } catch (error) {
-    logger.error('[Session] Failed to parse session cookie:', error);
+    if (isExpectedSessionCookieError(error)) {
+      logger.warn('[Session] Ignoring invalid session cookie', {
+        reason: error.message,
+      })
+    } else {
+      logger.error('[Session] Failed to parse session cookie:', error);
+    }
     logger.info(`[Perf] getSession (error): ${Date.now() - start}ms`);
     return null
   }
