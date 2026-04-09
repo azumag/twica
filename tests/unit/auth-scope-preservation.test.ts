@@ -547,9 +547,9 @@ describe('Auth scope preservation: callback route', () => {
     expect(deleteCall).toBeUndefined()
   })
 
-  it('別端末ログイン: DBに追加スコープがあるがトークンにない場合、スコープ保存がスキップされる', async () => {
-    // 別端末: Cookie無し → loginでスコープ復元されない → トークンにはデフォルト3スコープのみ
-    // DBにはuser:write:chatがある → 全置換すると消失 → スキップで保護
+  it('Cookie消失ログイン: DBに追加スコープがあるがトークンにない場合、不足スコープを含むOAuthに自動リダイレクトする', async () => {
+    // Cookie無し → loginでスコープ復元されない → トークンにはデフォルトスコープのみ
+    // DBにuser:write:chatがある → 不足スコープを含むOAuthフローに自動リダイレクト
     mockCookieStore.get.mockImplementation((name: string) => {
       if (name === 'twitch_auth_state') return { value: 'test-state-123' }
       return undefined
@@ -557,14 +557,28 @@ describe('Auth scope preservation: callback route', () => {
     // DBに追加スコープ（user:write:chat）がある
     setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
 
-    const { NextRequest } = await import('next/server')
+    const { NextRequest, NextResponse } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 
     const { GET } = await import('@/app/api/auth/twitch/callback/route')
-    await GET(request)
+    const response = await GET(request) as ReturnType<typeof NextResponse.redirect>
 
-    // saveTwitchScopesがスキップされることを確認
+    // Twitch OAuthにリダイレクトされること（user:write:chatを含む）
+    expect(response.type).toBe('redirect')
+    expect(response.url).toContain('user:write:chat')
+
+    // SCOPE_RECOVERYとAUTH_STATE cookieが設定されること
+    const cookieSetCalls = (response.cookies.set as ReturnType<typeof vi.fn>).mock.calls
+    const authStateCookie = cookieSetCalls.find((call: unknown[]) => call[0] === 'twitch_auth_state')
+    const scopeRecoveryCookie = cookieSetCalls.find((call: unknown[]) => call[0] === 'twica_scope_recovery')
+    expect(authStateCookie).toBeDefined()
+    expect(scopeRecoveryCookie).toBeDefined()
+    // 両方のcookieが同じstate値を持つこと
+    expect(authStateCookie![1]).toBe(scopeRecoveryCookie![1])
+
+    // DB未変更（upsertもsaveScopesも呼ばれない）
+    expect(mockUpsert).not.toHaveBeenCalled()
     expect(mockSaveTwitchScopes).not.toHaveBeenCalled()
   })
 
@@ -587,8 +601,8 @@ describe('Auth scope preservation: callback route', () => {
     expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
   })
 
-  it('部分欠落: DBに2つの追加スコープがあるがトークンに1つだけの場合、スコープ保存がスキップされる', async () => {
-    // DBにchatとsubの両方がある、トークンにはchatのみ → sub欠落 → スキップ
+  it('部分欠落: DBに2つの追加スコープがあるがトークンに1つだけの場合、全追加スコープを含むOAuthに自動リダイレクトする', async () => {
+    // DBにchatとsubの両方がある、トークンにはchatのみ → sub欠落 → リダイレクトで復元
     mockCookieStore.get.mockImplementation((name: string) => {
       if (name === 'twitch_auth_state') return { value: 'test-state-123' }
       return undefined
@@ -605,14 +619,20 @@ describe('Auth scope preservation: callback route', () => {
       scope: ['user:read:email', 'user:write:chat'],
     })
 
-    const { NextRequest } = await import('next/server')
+    const { NextRequest, NextResponse } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 
     const { GET } = await import('@/app/api/auth/twitch/callback/route')
-    await GET(request)
+    const response = await GET(request) as ReturnType<typeof NextResponse.redirect>
 
-    // sub欠落によりスキップ
+    // 全追加スコープ（chat + sub）を含むOAuthにリダイレクトされること
+    expect(response.type).toBe('redirect')
+    expect(response.url).toContain('user:write:chat')
+    expect(response.url).toContain('user:read:subscriptions')
+
+    // DB未変更
+    expect(mockUpsert).not.toHaveBeenCalled()
     expect(mockSaveTwitchScopes).not.toHaveBeenCalled()
   })
 
@@ -642,6 +662,58 @@ describe('Auth scope preservation: callback route', () => {
 
     // fail-safeによりスキップ
     expect(mockSaveTwitchScopes).not.toHaveBeenCalled()
+  })
+
+  it('スコープ自動復元2回目callback: SCOPE_RECOVERYがstate一致時、乖離チェックをスキップし通常通りスコープ保存する', async () => {
+    // 1回目callbackでSCOPE_RECOVERYを設定してリダイレクトした後の2回目callback
+    // 乖離チェックをスキップし、トークンのスコープを全置換で保存する
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      if (name === 'twica_scope_recovery') return { value: 'test-state-123' }
+      return undefined
+    })
+    // DBに追加スコープがある（通常ログインならリダイレクトされるケース）
+    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
+
+    const { NextRequest, NextResponse } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    const response = await GET(request) as ReturnType<typeof NextResponse.redirect>
+
+    // リダイレクトではなく通常のcallback完了（dashboardリダイレクト）
+    expect(response.url).toContain('/dashboard')
+    // スコープが全置換で保存される
+    expect(mockSaveTwitchScopes).toHaveBeenCalledWith('user123', ['user:read:email', 'openid'])
+    // SCOPE_RECOVERY cookieが削除される
+    const deleteCall = (response.cookies.set as ReturnType<typeof vi.fn>).mock.calls.find(
+      (call: unknown[]) => call[0] === 'twica_scope_recovery' && call[1] === ''
+    )
+    expect(deleteCall).toBeDefined()
+  })
+
+  it('SCOPE_RECOVERYのstate不一致時は通常の乖離チェックが行われる（並行フロー保護）', async () => {
+    // 別タブのSCOPE_RECOVERY cookieが存在するが、stateが異なる
+    mockCookieStore.get.mockImplementation((name: string) => {
+      if (name === 'twitch_auth_state') return { value: 'test-state-123' }
+      if (name === 'twica_scope_recovery') return { value: 'other-tab-state-456' }
+      return undefined
+    })
+    // DBに追加スコープがある → 乖離検出 → リダイレクト
+    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
+
+    const { NextRequest, NextResponse } = await import('next/server')
+    const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
+    const request = new NextRequest(url)
+
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    const response = await GET(request) as ReturnType<typeof NextResponse.redirect>
+
+    // state不一致なのでSCOPE_RECOVERYは無視され、乖離チェックが実行 → リダイレクト
+    expect(response.type).toBe('redirect')
+    expect(response.url).toContain('user:write:chat')
+    expect(mockUpsert).not.toHaveBeenCalled()
   })
 
   it('reauthフローでは追加スコープ欠落でもスキップしない（全置換）', async () => {

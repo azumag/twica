@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
+import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError, ADDITIONAL_SCOPES, getTwitchAuthUrl } from '@/lib/twitch/auth'
 import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from '@/lib/constants'
+import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions, STATE_COOKIE_OPTIONS } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 import { getBaseUrl } from '@/lib/url-utils'
@@ -105,6 +105,85 @@ export async function GET(request: NextRequest) {
     // Re-auth flow marker cookie (set by reauth API)
     const reauthState = cookieStore.get(COOKIE_NAMES.REAUTH_STATE)?.value
     const isReauthFlow = reauthState === state
+    // スコープ自動復元リダイレクト判定Cookie（1回目callbackで設定される）
+    // Auto scope recovery marker cookie (set by first callback when redirecting)
+    const scopeRecoveryState = cookieStore.get(COOKIE_NAMES.SCOPE_RECOVERY)?.value
+    const isScopeRecovery = scopeRecoveryState === state
+
+    // --- スコープ乖離チェック（upsert前） ---
+    // Cookie消失等でloginルートがスコープ復元できなかった場合、トークンにDBの追加スコープが
+    // 含まれていない可能性がある。upsert前に検出し、不足スコープを含むOAuthフローに
+    // 自動リダイレクトする。DB未変更のため、2回目OAuthが失敗/中断しても安全。
+    //
+    // Scope divergence check BEFORE upsert.
+    // When login route couldn't restore scopes (cookie loss), the token may lack DB's additional
+    // scopes. Detect before upsert and auto-redirect to OAuth with missing scopes.
+    // DB is unchanged, so if the 2nd OAuth fails/is interrupted, previous state is preserved.
+    let skipScopeSave = false
+    if (!isReauthFlow && !scopeRestoreFailed && !isScopeRecovery) {
+      try {
+        const { data: existingUser, error: existingScopeError } = await supabaseAdmin
+          .from('users')
+          .select('twitch_scopes')
+          .eq('twitch_user_id', twitchUser.id)
+          .maybeSingle()
+
+        if (existingScopeError) {
+          // DB読み取り失敗: fail-safe(スキップ)で保護。リダイレクトできない（スコープ不明）
+          // DB read failure: fail-safe skip. Cannot redirect (unknown scopes).
+          skipScopeSave = true
+          logger.warn('Auth callback: Skipping scope save due to existing scope read failure', {
+            twitchUserId: twitchUser.id,
+            error: existingScopeError.message,
+          })
+        } else if (existingUser?.twitch_scopes) {
+          const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
+          const existingAdditional = (existingUser.twitch_scopes as string[]).filter(
+            (s: string) => validAdditionalScopes.includes(s)
+          )
+
+          if (existingAdditional.length > 0) {
+            const missingScopes = existingAdditional.filter(
+              (s: string) => !tokens.scope.includes(s)
+            )
+            if (missingScopes.length > 0) {
+              // トークンにDB追加スコープが不足 → 不足スコープを含むOAuthフローに自動リダイレクト
+              // DBに何も書かずreturnするため、2回目OAuthが失敗しても旧状態が維持される。
+              // forceVerify: falseでユーザーが既に許可済みならTwitch同意画面を非表示。
+              // SCOPE_RECOVERYを設定し、2回目callbackで乖離チェックをスキップ（無限ループ防止）。
+              //
+              // Token missing DB additional scopes → auto-redirect to OAuth with missing scopes.
+              // No DB writes before return, so previous state is preserved if 2nd OAuth fails.
+              // forceVerify: false skips consent screen if user already authorized these scopes.
+              // SCOPE_RECOVERY cookie prevents infinite loop on 2nd callback.
+              logger.info('Auth callback: Auto-redirecting to restore missing scopes', {
+                twitchUserId: twitchUser.id,
+                missingScopes,
+                existingAdditional,
+                tokenScopes: tokens.scope,
+              })
+
+              const newState = crypto.randomUUID()
+              const redirectUri = `${baseUrl}/api/auth/twitch/callback`
+              const authUrl = getTwitchAuthUrl(redirectUri, newState, existingAdditional, { forceVerify: false })
+
+              const redirectResponse = NextResponse.redirect(authUrl)
+              redirectResponse.cookies.set(COOKIE_NAMES.AUTH_STATE, newState, STATE_COOKIE_OPTIONS)
+              redirectResponse.cookies.set(COOKIE_NAMES.SCOPE_RECOVERY, newState, STATE_COOKIE_OPTIONS)
+              return redirectResponse
+            }
+          }
+        }
+      } catch (error) {
+        // 予期しない例外: fail-safe(スキップ)。リダイレクトせずupsertに進む
+        // Unexpected exception: fail-safe skip. Proceed to upsert without redirect.
+        skipScopeSave = true
+        logger.warn('Auth callback: Skipping scope save due to unexpected error', {
+          twitchUserId: twitchUser.id,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
 
     try {
       // upsertのエラーを明示的にチェック（Supabase JSはエラー時にthrowせずerrorオブジェクトを返す）
@@ -135,67 +214,6 @@ export async function GET(request: NextRequest) {
         throw upsertError
       }
 
-      // 既存追加スコープの保護（別端末ログイン対策）
-      // 通常ログイン（非reauth）でDBに追加スコープがあるが、
-      // トークンにそれら全てが含まれていない場合 → スコープ保存をスキップしてDB状態を保護。
-      // 別端末からのログインではCookieが無く、loginルートでスコープ復元されないため、
-      // 全置換すると追加スコープ（chat/sub等）がDBから消失してしまう。
-      //
-      // Protect existing additional scopes (cross-device login guard).
-      // On normal login (non-reauth), if DB has additional scopes but token doesn't include
-      // all of them, skip scope save to preserve DB state. On a different device, no cookies
-      // exist, so login route can't restore scopes → full replace would wipe additional scopes.
-      //
-      // DB/トークン乖離リスク: スキップ時、DBにスコープがあるがトークンには無い状態が残る。
-      // chat: check-scope APIでトークン検証し乖離検出 → 再認証誘導 (check-scope/route.ts)
-      // sub: ユーザーの手動確認APIで401/403時にremoveScope() (check-subscription/route.ts)
-      let skipScopeSave = false
-      if (!isReauthFlow && !scopeRestoreFailed) {
-        try {
-          const { data: existingUser, error: existingScopeError } = await supabaseAdmin
-            .from('users')
-            .select('twitch_scopes')
-            .eq('twitch_user_id', twitchUser.id)
-            .maybeSingle()
-
-          if (existingScopeError) {
-            // DB読み取り失敗: scopeRestoreFailedと同じくfail-safe(スキップ)で保護
-            skipScopeSave = true
-            logger.warn('Auth callback: Skipping scope save due to existing scope read failure', {
-              twitchUserId: twitchUser.id,
-              error: existingScopeError.message,
-            })
-          } else if (existingUser?.twitch_scopes) {
-            const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
-            const existingAdditional = (existingUser.twitch_scopes as string[]).filter(
-              (s: string) => validAdditionalScopes.includes(s)
-            )
-
-            if (existingAdditional.length > 0) {
-              const missingScopes = existingAdditional.filter(
-                (s: string) => !tokens.scope.includes(s)
-              )
-              if (missingScopes.length > 0) {
-                skipScopeSave = true
-                logger.warn('Auth callback: Skipping scope save to protect existing additional scopes', {
-                  twitchUserId: twitchUser.id,
-                  missingScopes,
-                  existingAdditional,
-                  tokenScopes: tokens.scope,
-                })
-              }
-            }
-          }
-        } catch (error) {
-          // 予期しない例外: fail-safe(スキップ)
-          skipScopeSave = true
-          logger.warn('Auth callback: Skipping scope save due to unexpected error', {
-            twitchUserId: twitchUser.id,
-            error: error instanceof Error ? error.message : String(error),
-          })
-        }
-      }
-
       // トークン交換時に付与されたスコープをDBに全置換で保存する。
       // loginルートがOAuthリクエストに既存スコープ（user:write:chat等）を含めるため、
       // ユーザーのTwitch Grantにスコープが存在すれば新トークンにも含まれ保持される。
@@ -216,8 +234,9 @@ export async function GET(request: NextRequest) {
             tokenScopes: tokens.scope,
           })
         } else if (skipScopeSave) {
-          // 別端末ログイン保護: DB既存の追加スコープがトークンに含まれていないためスキップ
-          logger.warn('Auth callback: Scope save skipped to protect existing additional scopes', {
+          // DB読み取りエラー等のfail-safe: DB既存スコープを保護するためスキップ
+          // Fail-safe for DB read errors: skip to protect existing DB scopes
+          logger.warn('Auth callback: Scope save skipped due to fail-safe guard', {
             twitchUserId: twitchUser.id,
             tokenScopes: tokens.scope,
           })
@@ -228,6 +247,7 @@ export async function GET(request: NextRequest) {
             scopeCount: tokens.scope.length,
             scopes: tokens.scope,
             isReauthFlow,
+            isScopeRecovery,
           })
         }
       }
@@ -376,6 +396,12 @@ export async function GET(request: NextRequest) {
     // 並行フロー保護のため、state一致時のみ削除する
     if (isReauthFlow) {
       response.cookies.set(COOKIE_NAMES.REAUTH_STATE, '', getDeleteCookieOptions())
+    }
+
+    // Clear scope recovery marker cookie only when state matches this flow
+    // スコープ自動復元リダイレクトのマーカーCookieを削除（state一致時のみ）
+    if (isScopeRecovery) {
+      response.cookies.set(COOKIE_NAMES.SCOPE_RECOVERY, '', getDeleteCookieOptions())
     }
 
     // スコープ復元用Cookie（ログアウト後のtwitchUserId保持用）を削除
