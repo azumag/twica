@@ -686,32 +686,20 @@ describe('Twitch Token Manager', () => {
       expect(token).toBe('new-token');
     });
 
-    it('DBの既存追加スコープとリフレッシュレスポンスのスコープがマージされる', async () => {
+    it('リフレッシュレスポンスのスコープでDBが全置換される（マージではない）', async () => {
       // DBに user:write:chat があるが、リフレッシュレスポンスには含まれないケース
-      // （別端末ログインで基本スコープだけでリフレッシュされた場合）
-      let maybeSingleCallCount = 0;
+      // 全置換により、DBのstaleなスコープが除去されDB/トークン乖離が解消される
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockImplementation(() => {
-          maybeSingleCallCount++;
-          if (maybeSingleCallCount === 1) {
-            // getTwitchAccessToken: 期限切れトークン
-            return Promise.resolve({
-              data: {
-                twitch_access_token: 'expired-token',
-                twitch_refresh_token: 'refresh-token',
-                twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
-              },
-              error: null,
-            });
-          }
-          // getExistingScopes: DBに既存の追加スコープあり
-          return Promise.resolve({
-            data: { twitch_scopes: ['user:read:email', 'user:write:chat'] },
-            error: null,
-          });
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            twitch_access_token: 'expired-token',
+            twitch_refresh_token: 'refresh-token',
+            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+          },
+          error: null,
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
@@ -730,13 +718,9 @@ describe('Twitch Token Manager', () => {
       const token = await getTwitchAccessToken('123456789');
       expect(token).toBe('new-token');
 
-      // マージ結果: リフレッシュスコープ + DBの既存スコープ（user:write:chatが保護される）
+      // 全置換: リフレッシュレスポンスのスコープのみ（DBの既存user:write:chatは含まれない）
       expect(mockSupabaseAdmin.update).toHaveBeenCalledWith({
-        twitch_scopes: expect.arrayContaining([
-          'user:read:email',
-          'channel:read:redemptions',
-          'user:write:chat',
-        ]),
+        twitch_scopes: ['user:read:email', 'channel:read:redemptions'],
       });
     });
 

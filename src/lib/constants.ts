@@ -29,6 +29,13 @@ export const COOKIE_NAMES = {
   // Minimal cookie for scope restoration after logout (stores only twitchUserId).
   // Replaces full session cookie to minimize retained data.
   SCOPE_RESTORE_USER_ID: 'twica_scope_restore_uid',
+  // スコープ自動復元リダイレクト用Cookie（値はOAuth state）
+  // Cookie消失等でloginルートがスコープ復元できなかった場合、callbackが不足スコープを含む
+  // OAuthフローに自動リダイレクトする。2回目callbackでこのCookieを検出して乖離チェックをスキップ。
+  // Auto scope recovery redirect marker (value is OAuth state).
+  // When login route cannot restore scopes (cookie loss etc.), callback auto-redirects to
+  // a new OAuth flow with missing scopes. Second callback detects this cookie to skip divergence check.
+  SCOPE_RECOVERY: 'twica_scope_recovery',
 }
 
 export const API_ROUTES = {

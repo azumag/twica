@@ -84,19 +84,20 @@ async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: stri
       throw error;
     }
 
-    // リフレッシュレスポンスにスコープが含まれていればDBとマージ同期（best-effort）
-    // リフレッシュトークンのレスポンスにはデフォルトスコープしか含まれない場合がある
-    // (例: 別端末ログインでuser:write:chatなしでリフレッシュされたトークン)
-    // 全置換するとDBの追加スコープが消失するため、既存スコープとマージする
-    // Best-effort scope merge on token refresh. Refresh response may only contain
-    // default scopes (e.g., token refreshed after login from another device without
-    // user:write:chat). Full replace would wipe additional scopes, so merge with existing.
+    // リフレッシュレスポンスのスコープでDBを全置換する（best-effort）
+    // Twitchのrefreshレスポンスはトークンの実スコープを返す（公式ドキュメント準拠）。
+    // 以前はDBスコープとマージしていたが、トークンにないスコープがDBに残ると
+    // DB/トークン乖離が永続化し401エラーの原因になるため、全置換に変更。
+    // callbackの自動リダイレクト機構により、追加スコープはログイン時に復元される。
+    //
+    // Full replace DB scopes with refresh response scopes (best-effort).
+    // Twitch refresh response returns actual token scopes (per official docs).
+    // Previously merged with DB scopes, but stale DB scopes cause permanent
+    // DB/token divergence and repeated 401 errors. Full replace keeps DB in sync.
+    // Callback's auto-redirect mechanism recovers additional scopes on login.
     if (tokens.scope && tokens.scope.length > 0) {
       try {
-        const existingScopes = await getExistingScopes(twitchUserId);
-        // トークンの実スコープとDBの既存スコープをマージ（重複除去）
-        const mergedScopes = [...new Set([...tokens.scope, ...existingScopes])];
-        await saveTwitchScopes(twitchUserId, mergedScopes);
+        await saveTwitchScopes(twitchUserId, tokens.scope);
       } catch (scopeSaveError) {
         logger.warn('Failed to sync scopes on token refresh (best-effort)', {
           twitchUserId,
@@ -159,23 +160,6 @@ export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
     }
     throw error;
   }
-}
-
-/**
- * ユーザーの既存Twitchスコープを取得する（内部ヘルパー）
- * refreshTwitchAccessTokenでのマージ同期用
- * Get existing Twitch scopes for a user (internal helper for merge sync on refresh)
- */
-async function getExistingScopes(twitchUserId: string): Promise<string[]> {
-  const supabaseAdmin = getSupabaseAdmin();
-  const { data: user, error } = await supabaseAdmin
-    .from('users')
-    .select('twitch_scopes')
-    .eq('twitch_user_id', twitchUserId)
-    .maybeSingle();
-
-  if (error || !user?.twitch_scopes) return [];
-  return user.twitch_scopes;
 }
 
 /**
