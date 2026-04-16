@@ -26,6 +26,20 @@ function validateRarityWeightsInput(value: unknown): value is Record<string, num
   return true;
 }
 
+function hasValidRarityWeightsTotal(value: Record<string, number> | null): boolean {
+  if (value === null) {
+    return true;
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    return true;
+  }
+
+  const total = entries.reduce((sum, [, rate]) => sum + rate, 0);
+  return Math.abs(total - 100) <= 0.001;
+}
+
 export async function POST(request: NextRequest) {
   // Content-Type validation - must be the first check
   const contentTypeValidation = validateContentType(request, 'application/json')
@@ -84,6 +98,10 @@ export async function POST(request: NextRequest) {
 
     if (rarityWeights !== undefined && !validateRarityWeightsInput(rarityWeights)) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    if (rarityWeights !== undefined && !hasValidRarityWeightsTotal(rarityWeights)) {
+      return NextResponse.json({ error: "Rarity weights total must be 100%" }, { status: 400 });
     }
 
     // Verify ownership
