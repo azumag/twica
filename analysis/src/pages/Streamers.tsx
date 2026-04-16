@@ -53,6 +53,28 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
+/**
+ * Supabaseの1000行デフォルト制限を回避するバッチ取得ヘルパー
+ * 1000行ずつ.range()で取得し、全行を結合して返す
+ * buildQueryは呼び出すたびに新しいクエリを生成する関数（.range()は自動付与）
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchAllPaged(buildQuery: () => any): Promise<{ data: any[]; error: any }> {
+  const BATCH_SIZE = 1000
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const all: any[] = []
+  let from = 0
+  while (true) {
+    const { data, error } = await buildQuery().range(from, from + BATCH_SIZE - 1)
+    if (error) return { data: all, error }
+    if (!data || data.length === 0) break
+    all.push(...data)
+    if (data.length < BATCH_SIZE) break
+    from += BATCH_SIZE
+  }
+  return { data: all, error: null }
+}
+
 // ソート順の定義
 type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'name_asc' | 'storage_desc'
 
@@ -107,20 +129,19 @@ export function Streamers() {
       // cards(count) はカード数のみ取得
       // storage_usageはuser_prefixごとの集計済みバイト数を保持（本番APIと同じデータソース）
       // streamer_storage_bonusから投票キャンペーンボーナス適用済みストリーマーを取得
+      // fetchAllPagedで1000行制限を回避して全行取得
       const [streamersResult, storageUsageResult, storageBonusResult] = await Promise.all([
-        supabase
-          .from('streamers')
-          .select('*, cards(count)')
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('storage_usage')
-          .select('user_prefix, bytes_used')
-          .neq('user_prefix', '_global_'),
-        supabase
-          .from('streamer_storage_bonus')
-          .select('streamer_id')
-          .eq('type', VOTE_CAMPAIGN_TYPE)
-          .eq('memo', VOTE_CAMPAIGN_MEMO),
+        fetchAllPaged(() =>
+          supabase.from('streamers').select('*, cards(count)')
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: true }) // 安定ソート: created_atが同一の場合にページ間で行の重複/欠落を防ぐ
+        ),
+        fetchAllPaged(() =>
+          supabase.from('storage_usage').select('user_prefix, bytes_used').neq('user_prefix', '_global_')
+        ),
+        fetchAllPaged(() =>
+          supabase.from('streamer_storage_bonus').select('streamer_id').eq('type', VOTE_CAMPAIGN_TYPE).eq('memo', VOTE_CAMPAIGN_MEMO)
+        ),
       ])
 
       // 全てのクエリのエラーチェック
@@ -135,29 +156,34 @@ export function Streamers() {
       }
 
       // ストリーマーのtwitch_user_id一覧を抽出して、対応するusersのみクエリする（第2段階）
-      // Supabaseのデフォルト上限は1000行のため、全usersを取得すると漏れが発生する
-      // ストリーマー数は少ないのでin()フィルタで確実に全件取得できる
       const streamerTwitchIds = (streamersResult.data || []).map(
         (s: { twitch_user_id: string }) => s.twitch_user_id
       )
+      // ストリーマー数が多い場合、in()のURLサイズ制限とSupabase行数制限を回避するためバッチ取得
+      // 各バッチは並列実行でパフォーマンスを確保
       const userScopesByTwitchId = new Map<string, string[]>()
       if (streamerTwitchIds.length > 0) {
-        const usersResult = await supabase
-          .from('users')
-          .select('twitch_user_id, twitch_scopes')
-          .in('twitch_user_id', streamerTwitchIds)
-
-        if (usersResult.error) {
-          console.warn('Users query error (twitch_scopes取得失敗):', usersResult.error)
+        const IN_BATCH_SIZE = 500
+        const batches: string[][] = []
+        for (let i = 0; i < streamerTwitchIds.length; i += IN_BATCH_SIZE) {
+          batches.push(streamerTwitchIds.slice(i, i + IN_BATCH_SIZE))
         }
-        const usersData = usersResult.data || []
-        console.log(`Streamer users with scopes loaded: ${usersData.length}/${streamerTwitchIds.length}件`)
-
-        // twitch_user_idをキーにしてuser:write:chatスコープの有無を参照するMapを作成
-        // ストリーマーがチャット通知を送信するにはこのスコープが必要
-        ;(usersData as { twitch_user_id: string; twitch_scopes: string[] }[]).forEach((user) => {
-          userScopesByTwitchId.set(user.twitch_user_id, user.twitch_scopes || [])
-        })
+        const batchResults = await Promise.all(
+          batches.map((batch) =>
+            supabase.from('users').select('twitch_user_id, twitch_scopes').in('twitch_user_id', batch)
+          )
+        )
+        for (const usersResult of batchResults) {
+          if (usersResult.error) {
+            console.warn('Users query error (twitch_scopes取得失敗):', usersResult.error)
+            continue
+          }
+          const users = (usersResult.data || []) as { twitch_user_id: string; twitch_scopes: string[] }[]
+          users.forEach((user) => {
+            userScopesByTwitchId.set(user.twitch_user_id, user.twitch_scopes || [])
+          })
+        }
+        console.log(`Streamer users with scopes loaded: ${userScopesByTwitchId.size}/${streamerTwitchIds.length}件`)
       }
 
       // storage_usageテーブルからuser_prefixごとの使用量Mapを構築

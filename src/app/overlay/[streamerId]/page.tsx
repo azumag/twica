@@ -450,7 +450,6 @@ export default function OverlayPage() {
         clearTimeout(animationTimeoutRef.current);
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- displayResult/addDebugLog are accessed via refs to prevent subscription churn
   }, [streamerId]);
 
   // Demo function for testing
@@ -493,21 +492,9 @@ export default function OverlayPage() {
   if (!result) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-transparent">
-        {/* Connection status indicator */}
-        {connectionStatus === 'connecting' && (
-          <div className="fixed top-4 right-4 rounded bg-blue-600 px-4 py-2 text-sm text-white">
-            接続中...
-          </div>
-        )}
-        {connectionStatus === 'error' && errorMessage && (
-          <div className="fixed top-4 right-4 max-w-sm rounded bg-red-600 p-4 text-sm text-white">
-            <div className="mb-2 font-bold">接続エラー</div>
-            <div>{errorMessage}</div>
-          </div>
-        )}
         {/* 音声がブラウザの自動再生ポリシーでブロックされている場合の表示 */}
-        {/* ブラウザで直接閲覧時に表示。OBSでは「操作」ボタンから1回クリックで解除 */}
-        {audioBlocked && soundSettings.soundEnabled && soundSettings.soundUrl && (
+        {/* 通常の配信オーバーレイには運用メッセージを出さず、debug=true の調査時のみ表示する */}
+        {options.debug && audioBlocked && soundSettings.soundEnabled && soundSettings.soundUrl && (
           <div className="fixed top-4 left-4 rounded bg-yellow-600/90 px-3 py-2 text-xs text-white cursor-pointer"
             onClick={() => {
               // クリックイベントはdocumentのunlockAudioハンドラーでも処理される
@@ -525,6 +512,11 @@ export default function OverlayPage() {
             <div className="mb-2 text-yellow-400">
               Status: {connectionStatus} | StreamerId: {streamerId}
             </div>
+            {errorMessage && (
+              <div className="mb-2 text-yellow-300">
+                Last issue: {errorMessage}
+              </div>
+            )}
             <div className="mb-2 text-gray-400">
               User Agent: {typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 80) + '...' : 'N/A'}
             </div>

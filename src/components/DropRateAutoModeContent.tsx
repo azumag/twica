@@ -118,6 +118,7 @@ export default function DropRateAutoModeContent({
   const rarityTotal = useMemo(() => {
     return Object.values(draftWeights).reduce((sum, value) => sum + value, 0);
   }, [draftWeights]);
+  const isRarityTotalValid = Math.abs(rarityTotal - 100) <= 0.001;
 
   // カードごと: intra weight初期化
   useEffect(() => {
@@ -200,6 +201,11 @@ export default function DropRateAutoModeContent({
   // カードごとタブの未保存weight変更は意味を失う → 確認してからリセット
   const saveRarityWeights = async () => {
     if (perCardHasChanges && !confirm(t("batchDropRate.confirmClose"))) return;
+    if (!isRarityTotalValid) {
+      setRarityMessage(null);
+      setRarityError(tRarityProb("totalWarning"));
+      return;
+    }
     setRaritySaving(true);
     setRarityMessage(null);
     setRarityError(null);
@@ -451,7 +457,7 @@ export default function DropRateAutoModeContent({
                     {rarityTotal.toFixed(1)}%
                   </span>
                 </span>
-                {Math.abs(rarityTotal - 100) > 0.001 && (
+                {!isRarityTotalValid && (
                   <span className="rounded bg-yellow-500/20 px-2 py-1 text-xs text-yellow-300">
                     {tRarityProb("totalWarning")}
                   </span>
@@ -660,7 +666,7 @@ export default function DropRateAutoModeContent({
               {activeTab === "rarity" ? (
                 <button
                   onClick={saveRarityWeights}
-                  disabled={!rarityHasChanges || raritySaving}
+                  disabled={!rarityHasChanges || raritySaving || !isRarityTotalValid}
                   className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {raritySaving

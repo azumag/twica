@@ -85,6 +85,61 @@ describe('POST /api/streamer/settings', () => {
     expect(getSupabaseAdmin).toHaveBeenCalled()
   })
 
+  it('should reject rarity weights when total is not 100%', async () => {
+    const mockSupabase = createSupabaseMock().build()
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-CSRF-Token': 'test-csrf-token',
+      },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        rarityWeights: { common: 50, rare: 30, epic: 15, legendary: 15 },
+      }),
+    })
+
+    const response = await POST(request)
+
+    expect(response.status).toBe(400)
+    const data = await response.json()
+    expect(data.error).toBe('Rarity weights total must be 100%')
+  })
+
+  it('should allow empty rarity weights object for manual mode switch', async () => {
+    const mockSupabase = createSupabaseMock()
+      .withMaybeSingleResponse({
+        id: 'streamer123',
+        twitch_user_id: 'streamer123',
+      })
+      .build()
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-CSRF-Token': 'test-csrf-token',
+      },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        rarityWeights: {},
+      }),
+    })
+
+    const response = await POST(request)
+
+    expect(response.status).toBe(200)
+    const data = await response.json()
+    expect(data.success).toBe(true)
+  })
+
   it('should return 403 when CSRF token is invalid', async () => {
     mockValidateCSRFToken.mockResolvedValue({ valid: false })
 
