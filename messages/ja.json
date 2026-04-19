@@ -130,7 +130,10 @@
       "pause": "停止",
       "resumeDistribution": "配布再開",
       "pauseDistribution": "配布停止",
-      "fullDelete": "完全削除"
+      "fullDelete": "完全削除",
+      "enlargeImage": "{name} の画像を拡大",
+      "closeImage": "拡大画像を閉じる",
+      "enlargedImage": "カード画像の拡大表示"
     },
     "cardCount": {
       "nCards": "{count} 件のカード",

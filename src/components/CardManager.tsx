@@ -287,6 +287,14 @@ export default function CardManager({
   // Batch drop rate modal state
   // 確率一括調整モーダルの状態
   const [showBatchDropRateModal, setShowBatchDropRateModal] = useState(false);
+  // Zoomed card image modal state (opened when user clicks a thumbnail)
+  // Uses the original (pre-thumbnail) URL so users see the full-resolution image
+  // サムネイルクリック時に表示する拡大画像モーダルの状態
+  // サムネイル最適化前の元URLを保持し、高解像度のまま表示する
+  const [zoomedImage, setZoomedImage] = useState<{ url: string; name: string } | null>(null);
+  // Stores the thumbnail button that opened the modal so we can return focus when closed
+  // モーダルを開いた元のサムネイルボタンを保持し、閉じた際にフォーカスを戻すための参照
+  const zoomTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [emotes, setEmotes] = useState<TwitchEmote[]>([]);
   const [selectedEmotes, setSelectedEmotes] = useState<Set<string>>(new Set());
   const [loadingEmotes, setLoadingEmotes] = useState(false);
@@ -321,6 +329,24 @@ export default function CardManager({
   useEffect(() => {
     fetchStorageStatus();
   }, [fetchStorageStatus]);
+
+  // Close the zoom modal when Escape is pressed and restore focus to the trigger
+  // Escape キー押下時に拡大画像モーダルを閉じ、元のサムネイルへフォーカスを戻す
+  useEffect(() => {
+    if (!zoomedImage) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setZoomedImage(null);
+        const trigger = zoomTriggerRef.current;
+        zoomTriggerRef.current = null;
+        if (trigger) {
+          requestAnimationFrame(() => trigger.focus());
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [zoomedImage]);
 
   // 未設定の配信者向けにデフォルトレアリティ重みをDBに自動保存（マウント時1回のみ）
   const autoSavedWeightsRef = useRef(false);
@@ -1619,17 +1645,33 @@ export default function CardManager({
                         </div>
                       </div>
                       {/* 正方形画像（トリミング） */}
+                      {/* 画像がある場合のみクリック可能なボタンでラップし、拡大モーダルを開く */}
                       <div className="aspect-square bg-gray-600">
                         {card.image_url ? (
-                          <Image
-                            src={getOptimizedImageUrl(card.image_url, "thumbnail")}
-                            alt={card.name}
-                            width={300}
-                            height={300}
-                            className="w-full h-full object-cover"
-                            priority={isPriority}
-                            unoptimized
-                          />
+                          (() => {
+                            const imageUrl = card.image_url;
+                            return (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  zoomTriggerRef.current = e.currentTarget;
+                                  setZoomedImage({ url: imageUrl, name: card.name });
+                                }}
+                                className="block h-full w-full cursor-zoom-in overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
+                                aria-label={t("actions.enlargeImage", { name: card.name })}
+                              >
+                                <Image
+                                  src={getOptimizedImageUrl(imageUrl, "thumbnail")}
+                                  alt={card.name}
+                                  width={300}
+                                  height={300}
+                                  className="w-full h-full object-cover"
+                                  priority={isPriority}
+                                  unoptimized
+                                />
+                              </button>
+                            );
+                          })()
                         ) : (
                           <div className="flex h-full items-center justify-center text-gray-500">
                             {tCommon("noImage")}
@@ -2082,6 +2124,56 @@ export default function CardManager({
           </div>
         </div>
       )}
+
+      {/* Zoomed image modal - full-size preview triggered from thumbnail click */}
+      {/* 拡大画像モーダル - サムネイルクリックで大きな画像を表示 */}
+      {zoomedImage && (() => {
+        const closeZoom = () => {
+          setZoomedImage(null);
+          // モーダルを閉じたら元のサムネイルボタンへフォーカスを戻す（アクセシビリティ）
+          // Return focus to the originating thumbnail button for keyboard users
+          const trigger = zoomTriggerRef.current;
+          zoomTriggerRef.current = null;
+          if (trigger) {
+            // requestAnimationFrame: 再レンダリング後にフォーカスを戻す
+            requestAnimationFrame(() => trigger.focus());
+          }
+        };
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+            onClick={closeZoom}
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("actions.enlargedImage")}
+          >
+            <div className="relative max-h-full max-w-5xl" onClick={(e) => e.stopPropagation()}>
+              {/* CF Images Transformations の large プリセットで帯域最適化しつつ、object-contain でアスペクト比を維持 */}
+              {/* Use the CF Images 'large' preset to limit bandwidth; object-contain preserves the original aspect ratio */}
+              <Image
+                src={getOptimizedImageUrl(zoomedImage.url, "large")}
+                alt={zoomedImage.name}
+                width={1200}
+                height={1200}
+                className="h-auto max-h-[90vh] w-auto max-w-full object-contain"
+                unoptimized
+                priority
+              />
+              <button
+                type="button"
+                onClick={closeZoom}
+                autoFocus
+                className="absolute -top-3 -right-3 rounded-full bg-gray-800 p-2 text-white shadow-lg hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
+                aria-label={t("actions.closeImage")}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

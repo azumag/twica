@@ -130,7 +130,10 @@
       "pause": "Pause",
       "resumeDistribution": "Resume Distribution",
       "pauseDistribution": "Pause Distribution",
-      "fullDelete": "Delete Permanently"
+      "fullDelete": "Delete Permanently",
+      "enlargeImage": "Enlarge image for {name}",
+      "closeImage": "Close enlarged image",
+      "enlargedImage": "Enlarged card image"
     },
     "cardCount": {
       "nCards": "{count} cards",
