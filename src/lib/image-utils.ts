@@ -17,9 +17,11 @@
 // プリセット別の変換オプション
 // thumbnail: グリッド/一覧のサムネイル用 (300px)
 // icon: リスト表示の小アイコン用 (96px = 48px × 2 retina)
+// large: 拡大モーダル用 (1200px, 元画像の帯域節約目的で適用)
 const PRESETS = {
   thumbnail: "width=300,format=auto,quality=80,onerror=redirect",
   icon: "width=96,format=auto,quality=80,onerror=redirect",
+  large: "width=1200,format=auto,quality=85,onerror=redirect",
 } as const;
 
 export type ImagePreset = keyof typeof PRESETS;
