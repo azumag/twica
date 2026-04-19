@@ -26,6 +26,11 @@ interface CardListProps {
   // Whether to show action buttons (edit, delete, toggle)
   // アクションボタン（編集、削除、切り替え）を表示するかどうか
   showActions?: boolean;
+  // Callback when the thumbnail image is clicked (opens an enlarged view)
+  // Receives the card and the triggering button so the caller can restore focus after closing
+  // サムネイル画像クリック時のコールバック（拡大表示モーダルを開く）
+  // 呼び出し元でフォーカス復元できるよう、元ボタンも引数で渡す
+  onImageClick?: (card: Card, trigger: HTMLButtonElement) => void;
 }
 
 /**
@@ -46,6 +51,7 @@ export default function CardList({
   onDelete,
   onToggleActive,
   showActions = true,
+  onImageClick,
 }: CardListProps) {
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
@@ -117,15 +123,41 @@ export default function CardList({
                 <td className="px-4 py-3">
                   <div className="h-12 w-12 overflow-hidden rounded bg-gray-600">
                     {card.image_url ? (
-                      <Image
-                        src={getOptimizedImageUrl(card.image_url, "icon")}
-                        alt={card.name}
-                        width={48}
-                        height={48}
-                        className="h-full w-full object-cover"
-                        priority={isPriority}
-                        unoptimized
-                      />
+                      onImageClick ? (
+                        // 拡大表示ハンドラがある場合はボタンでラップし、クリックで拡大モーダルを開く
+                        // When the zoom handler is provided, wrap the image in a button to trigger the modal
+                        (() => {
+                          const imageUrl = card.image_url;
+                          return (
+                            <button
+                              type="button"
+                              onClick={(e) => onImageClick(card, e.currentTarget)}
+                              className="block h-full w-full cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
+                              aria-label={t("actions.enlargeImage", { name: card.name })}
+                            >
+                              <Image
+                                src={getOptimizedImageUrl(imageUrl, "icon")}
+                                alt={card.name}
+                                width={48}
+                                height={48}
+                                className="h-full w-full object-cover"
+                                priority={isPriority}
+                                unoptimized
+                              />
+                            </button>
+                          );
+                        })()
+                      ) : (
+                        <Image
+                          src={getOptimizedImageUrl(card.image_url, "icon")}
+                          alt={card.name}
+                          width={48}
+                          height={48}
+                          className="h-full w-full object-cover"
+                          priority={isPriority}
+                          unoptimized
+                        />
+                      )
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-gray-500 text-xs">
                         {tCommon("noImage")}
