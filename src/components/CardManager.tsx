@@ -1611,6 +1611,13 @@ export default function CardManager({
                 onDelete={handleDelete}
                 onToggleActive={handleToggleActive}
                 showActions={true}
+                onImageClick={(card, trigger) => {
+                  if (!card.image_url) return;
+                  // リスト表示のサムネイルクリックでも同じ拡大モーダルを使い、閉じたらフォーカスを戻す
+                  // Reuse the same zoom modal for list view so closing returns focus to the clicked thumbnail
+                  zoomTriggerRef.current = trigger;
+                  setZoomedImage({ url: card.image_url, name: card.name });
+                }}
               />
             ) : (
               /* Thumbnail grid view */
