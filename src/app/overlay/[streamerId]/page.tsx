@@ -39,6 +39,35 @@ interface OverlayPollingEvent {
   card: Pick<Card, "id" | "name" | "description" | "image_url" | "rarity">;
 }
 
+function fetchJsonWithXhrFallback<T>(url: string): Promise<T> {
+  return fetch(url)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json() as Promise<T>;
+    })
+    .catch((fetchError) => {
+      return new Promise<T>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", url, true);
+        xhr.responseType = "json";
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            const body = xhr.response ?? JSON.parse(xhr.responseText) as T;
+            resolve(body as T);
+          } else {
+            reject(new Error(`HTTP ${xhr.status}`));
+          }
+        };
+        xhr.onerror = () => reject(fetchError);
+        xhr.ontimeout = () => reject(new Error("XHR timeout"));
+        xhr.timeout = 10000;
+        xhr.send();
+      });
+    });
+}
+
 interface SparklePosition {
   left: string;
   top: string;
@@ -138,6 +167,7 @@ export default function OverlayPage() {
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollCursorRef = useRef(new Date().toISOString());
   const seenHistoryIdsRef = useRef<Set<string>>(new Set());
+  const lastPollingErrorLogRef = useRef(0);
   // 効果音再生用のオーディオ要素への参照
   // HTMLAudioElementを使用（R2パブリックURLはCORSヘッダーがないためfetch不可、
   // audioタグはCORS不要で読み込める）
@@ -392,17 +422,11 @@ export default function OverlayPage() {
     }
 
     try {
-      const response = await fetch(
-        `/api/overlay/${streamerId}/events?since=${encodeURIComponent(pollCursorRef.current)}`,
-        { cache: "no-store" }
-      );
+      const url = new URL(`/api/overlay/${streamerId}/events`, window.location.origin);
+      url.searchParams.set("since", pollCursorRef.current);
+      url.searchParams.set("_", String(Date.now()));
 
-      if (!response.ok) {
-        addDebugLogRef.current(`Polling fallback failed: ${response.status}`);
-        return;
-      }
-
-      const data = await response.json() as { events?: OverlayPollingEvent[] };
+      const data = await fetchJsonWithXhrFallback<{ events?: OverlayPollingEvent[] }>(url.toString());
       const events = data.events ?? [];
       for (const event of events) {
         if (seenHistoryIdsRef.current.has(event.id)) {
@@ -418,7 +442,12 @@ export default function OverlayPage() {
         });
       }
     } catch (error) {
-      logger.error("Overlay polling fallback error:", error);
+      const now = Date.now();
+      if (now - lastPollingErrorLogRef.current > 30000) {
+        lastPollingErrorLogRef.current = now;
+        logger.warn("Overlay polling fallback error:", error);
+        addDebugLogRef.current("Polling fallback network error; retrying");
+      }
     }
   }, [streamerId]);
 
