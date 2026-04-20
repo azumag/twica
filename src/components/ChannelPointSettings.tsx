@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
+import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/scopes";
+import { getCsrfTokenFromCookie } from "@/lib/client-csrf";
 
 
 interface TwitchReward {
@@ -68,6 +70,10 @@ export default function ChannelPointSettings({
   const [error, setError] = useState("");
   const [eventSubStatus, setEventSubStatus] = useState<"none" | "pending" | "active" | "error">("none");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
+  // チャネルポイント用スコープ不足でstep-up再認証が必要かどうか
+  // Whether step-up reauth is needed because channel point scopes are missing
+  const [needsReauth, setNeedsReauth] = useState(false);
+  const [reauthorizing, setReauthorizing] = useState(false);
   // Additional rewards state
   // 追加報酬の状態管理
   const [additionalRewards, setAdditionalRewards] = useState<AdditionalReward[]>([]);
@@ -80,19 +86,60 @@ export default function ChannelPointSettings({
   // 保存済みのメイン報酬IDを追跡（変更検出とクリーンアップ用）
   const [savedMainRewardId, setSavedMainRewardId] = useState(currentRewardId || "");
 
+  // チャネルポイント系スコープが付与済みか事前確認する。
+  // 初回ログインではこれらのスコープを要求しないため、
+  // 連携未設定のユーザーはここで step-up 再認証の導線に誘導される。
+  // Pre-check Channel Points scope grant. Initial login omits these scopes,
+  // so users who haven't opted in are redirected to step-up reauth via the CTA.
+  const checkChannelPointScope = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch(
+        `/api/auth/check-scope?scope=${encodeURIComponent(
+          "channel:read:redemptions"
+        )}`,
+        { credentials: "include" }
+      );
+      if (!response.ok) {
+        // 一時的な障害（rate limit等）: reauth CTAを出さずrewards APIに任せる。
+        // Transient failure (e.g. rate limit): fall through to rewards API.
+        return true;
+      }
+      const data = await response.json();
+      return Boolean(data.hasScope);
+    } catch (err) {
+      logger.error("Failed to check channel point scope:", err);
+      return true;
+    }
+  }, []);
+
   const fetchRewards = async () => {
     setLoading(true);
     setError("");
 
     try {
+      // スコープ未付与なら rewards API を呼ぶ前に CTA へ切替える。
+      // これにより Twitch 401 の汎用エラーに埋もれないようにする。
+      // Short-circuit to the reauth CTA before calling the rewards API when
+      // scopes are missing, so users never see a generic 401 error instead.
+      const hasScope = await checkChannelPointScope();
+      if (!hasScope) {
+        setNeedsReauth(true);
+        setLoading(false);
+        return;
+      }
+
       const response = await fetch("/api/twitch/rewards", {
         credentials: "include",
       });
 
       if (response.status === 401) {
         const errorData = await response.json();
+        // requiresReauth はトークン自体が失われたケース。
+        // スコープ不足は事前チェックで拾うため、ここではログイン誘導のみ。
+        // requiresReauth here means the token itself is gone; scope gaps are
+        // already handled by the pre-check above.
         if (errorData.requiresReauth) {
-          setError("報酬の取得に失敗しました。再度ログインしてください。");
+          setNeedsReauth(true);
         } else {
           setError(t("messages.fetchFailed"));
         }
@@ -563,6 +610,54 @@ export default function ChannelPointSettings({
     return null;
   };
 
+  /**
+   * チャネルポイント用スコープをstep-up再認証で取得する。
+   * チャネルポイント連携は初回ログインでは要求されないため、
+   * 配信者が連携を有効化する瞬間にこのフローで必要スコープを付与する。
+   *
+   * Trigger step-up OAuth to grant Channel Points scopes.
+   * Initial login does not request Channel Points scopes (least-privilege);
+   * streamers grant them here when they enable the Channel Points integration.
+   */
+  const handleReauthorize = useCallback(async () => {
+    setReauthorizing(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/auth/reauth", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": getCsrfTokenFromCookie(),
+        },
+        body: JSON.stringify({
+          additionalScopes: CHANNEL_POINT_SCOPES,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // state をCookieに保存してからリダイレクト（callbackでの検証用）
+        // Persist state to cookie before redirect (callback verifies state)
+        if (data.state) {
+          document.cookie = `twitch_auth_state=${data.state}; path=/; max-age=600; secure; samesite=lax`;
+        }
+        window.location.href = data.loginUrl;
+        return;
+      }
+
+      const errorData = await response.json().catch(() => ({}));
+      setError(errorData.error || t("messages.reauthorizeFailed"));
+    } catch (err) {
+      logger.error("Failed to reauthorize for channel points:", err);
+      setError(t("messages.reauthorizeFailed"));
+    } finally {
+      setReauthorizing(false);
+    }
+  }, [t]);
+
   const getEventSubStatusBadge = () => {
     switch (eventSubStatus) {
       case "active":
@@ -605,7 +700,31 @@ export default function ChannelPointSettings({
         {getEventSubStatusBadge()}
       </div>
 
-       {error ? (
+       {needsReauth ? (
+         // スコープ不足時のstep-up再認証導線。
+         // 初回ログインではチャネルポイント系スコープを要求しないため、
+         // 配信者が連携を有効化するこの画面で明示的に同意を求める。
+         // Step-up reauth CTA when channel point scopes are missing.
+         // Initial login omits these scopes (least-privilege); ask the streamer
+         // to grant them on this settings screen when enabling the integration.
+         <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
+           <p className="mb-3 text-sm text-yellow-300">
+             {t("messages.scopeRequired")}
+           </p>
+           <button
+             onClick={handleReauthorize}
+             disabled={reauthorizing}
+             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+           >
+             {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
+           </button>
+           {error && (
+             <p className="mt-3 text-sm text-red-400">
+               {error}
+             </p>
+           )}
+         </div>
+       ) : error ? (
          <div className="rounded-lg bg-red-500/20 p-4 text-red-300">
            {error}
          </div>

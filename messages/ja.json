@@ -402,7 +402,9 @@
       "createRewardFailed": "報酬の作成に失敗しました",
       "saveFailed": "設定の保存に失敗しました",
       "saveSuccess": "保存しました（EventSub登録完了）",
-      "eventsubFailed": "設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。"
+      "eventsubFailed": "設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。",
+      "scopeRequired": "チャネルポイント連携を有効化するには、Twitchでチャネルポイント報酬の読み取り・管理権限の許可が必要です。",
+      "reauthorizeFailed": "再認証に失敗しました。時間をおいて再度お試しください。"
     },
     "form": {
       "selectReward": "カード引き換えに使用するチャネルポイント報酬を選択",
@@ -419,7 +421,9 @@
       "createReward": "TwiCa用報酬を作成（100ポイント）",
       "saveEventSub": "保存 & EventSub登録",
       "disconnect": "設定解除",
-      "disconnecting": "解除中..."
+      "disconnecting": "解除中...",
+      "reauthorize": "チャネルポイント連携を有効化",
+      "reauthorizing": "リダイレクト中..."
     },
     "messages2": {
       "disconnectSuccess": "チャネルポイント連携を解除しました",
