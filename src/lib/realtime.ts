@@ -27,6 +27,12 @@ import { reportRealtimeError } from './sentry/error-handler'
 
 let supabaseRealtime: SupabaseClient | null = null
 
+const GACHA_CHANNEL_CONFIG = {
+  config: {
+    private: true,
+  },
+} as const
+
 function getSupabaseRealtimeClient(): SupabaseClient {
   if (supabaseRealtime) {
     return supabaseRealtime
@@ -108,7 +114,7 @@ export async function broadcastGachaResult(
   let channel: ReturnType<ReturnType<typeof getSupabaseRealtimeClient>['channel']>
   try {
     client = getSupabaseRealtimeClient()
-    channel = client.channel(`gacha:${streamerId}`)
+    channel = client.channel(`gacha:${streamerId}`, GACHA_CHANNEL_CONFIG)
   } catch (initError) {
     logger.warn(`[Broadcast] Failed to initialize realtime client for streamer ${streamerId}`, {
       error: initError instanceof Error ? initError.message : String(initError),
@@ -245,7 +251,7 @@ export function subscribeToGachaResults(
     try {
       client = getSupabaseRealtimeClient()
       onStatusChange?.('CLIENT_CREATED')
-      channel = client.channel(`gacha:${streamerId}`)
+      channel = client.channel(`gacha:${streamerId}`, GACHA_CHANNEL_CONFIG)
       onStatusChange?.('CHANNEL_CREATED')
 
       channel

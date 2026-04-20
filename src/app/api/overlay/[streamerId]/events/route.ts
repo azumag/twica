@@ -30,10 +30,28 @@ interface OverlayHistoryRow {
   cards: OverlayHistoryCard | OverlayHistoryCard[] | null;
 }
 
-function isValidDate(value: string | null): value is string {
-  if (!value) return false;
+function normalizeDateParam(value: string | null): string | null {
+  if (!value) return null;
+
   const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp);
+  if (Number.isFinite(timestamp)) {
+    return new Date(timestamp).toISOString();
+  }
+
+  // Cloudflare/OBS combinations can send Postgres timestamps with
+  // microseconds (6 fractional digits), which some runtimes reject.
+  const match = value.match(
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/
+  );
+  if (!match) return null;
+
+  const [, base, fraction = "", timezone] = match;
+  const normalizedFraction = fraction.padEnd(3, "0").slice(0, 3);
+  const normalized = `${base}.${normalizedFraction}${timezone}`;
+  const normalizedTimestamp = Date.parse(normalized);
+  return Number.isFinite(normalizedTimestamp)
+    ? new Date(normalizedTimestamp).toISOString()
+    : null;
 }
 
 function resolveCard(cards: OverlayHistoryRow["cards"]): OverlayHistoryCard | null {
@@ -64,8 +82,8 @@ export async function GET(
     }
 
     const { searchParams } = new URL(request.url);
-    const since = searchParams.get("since");
-    if (!isValidDate(since)) {
+    const since = normalizeDateParam(searchParams.get("since"));
+    if (!since) {
       return NextResponse.json(
         { error: "Invalid since parameter" },
         { status: 400 }

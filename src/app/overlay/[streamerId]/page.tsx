@@ -433,7 +433,10 @@ export default function OverlayPage() {
           continue;
         }
         seenHistoryIdsRef.current.add(event.id);
-        pollCursorRef.current = event.redeemedAt;
+        const redeemedAtMs = Date.parse(event.redeemedAt);
+        pollCursorRef.current = Number.isFinite(redeemedAtMs)
+          ? new Date(redeemedAtMs).toISOString()
+          : event.redeemedAt;
         addDebugLogRef.current(`Polling fallback received: ${event.id}`);
         displayResultRef.current({
           card: event.card as Card,
