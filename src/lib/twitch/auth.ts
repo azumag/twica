@@ -1,12 +1,12 @@
 import { getEnvVar } from '@/lib/env-validation'
 import { logger } from '@/lib/logger'
-
 // スコープ定数はクライアントコンポーネントからも参照されるため、
 // サーバー専用依存 (env-validation等) を含まない scopes.ts に分離している。
 // Scope constants live in a client-safe module; re-exported here so existing
 // server-side imports from '@/lib/twitch/auth' keep working unchanged.
-export { AUTH_SCOPES, ADDITIONAL_SCOPES, CHANNEL_POINT_SCOPES } from './scopes'
-import { AUTH_SCOPES } from './scopes'
+import { AUTH_SCOPES, ADDITIONAL_SCOPES, CHANNEL_POINT_SCOPES } from './scopes'
+
+export { AUTH_SCOPES, ADDITIONAL_SCOPES, CHANNEL_POINT_SCOPES }
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
 const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token'
