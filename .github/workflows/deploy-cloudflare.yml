@@ -29,7 +29,7 @@
 #    - SUPABASE_DB_URL               (Session pooler URI, port 5432)
 #    - NEXT_PUBLIC_APP_URL          (e.g. preview: https://twica-preview.xxx.workers.dev)
 #    - NEXT_PUBLIC_SUPABASE_URL
-#    - NEXT_PUBLIC_SUPABASE_ANON_KEY
+#    - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 #    - NEXT_PUBLIC_TWITCH_CLIENT_ID
 
 name: Deploy to Cloudflare Workers
@@ -138,6 +138,7 @@ jobs:
         env:
           NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID }}
           NEXT_PUBLIC_CF_IMAGES_ENABLED: ${{ secrets.NEXT_PUBLIC_CF_IMAGES_ENABLED }}
@@ -152,7 +153,7 @@ jobs:
 
       # Error Reporter Cron Worker のデプロイ（本番のみ）
       # Supabase errors テーブルの未処理エラーを定期的に GitHub Issue 化する。
-      # Secrets (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GITHUB_TOKEN) は
+      # Secrets (SUPABASE_URL, SUPABASE_SECRET_KEY, GITHUB_TOKEN) は
       # Cloudflare Dashboard で事前設定が必要。
       # See: https://github.com/azumag/twica/issues/239
       - name: Deploy Error Reporter Cron Worker

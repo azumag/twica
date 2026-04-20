@@ -1,4 +1,19 @@
-import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from 'vitest'
+
+const originalEnv = { ...process.env }
+
+function restoreEnv() {
+  for (const key of Object.keys(process.env)) {
+    if (!(key in originalEnv)) {
+      delete process.env[key]
+    }
+  }
+  Object.assign(process.env, originalEnv)
+}
+
+beforeEach(() => {
+  restoreEnv()
+})
 
 describe('requiredEnvVars', () => {
   it('contains NEXT_PUBLIC_APP_URL', async () => {
@@ -23,11 +38,14 @@ describe('requiredEnvVars', () => {
   })
 
   it('contains all required Supabase variables', async () => {
-    const { requiredEnvVars } = await import('@/lib/env-validation')
+    const { requiredEnvVars, requiredEnvVarGroups } = await import('@/lib/env-validation')
     const supabaseVars = requiredEnvVars.filter(v =>
       v.name.includes('SUPABASE') || v.name.includes('NEXT_PUBLIC_SUPABASE')
     )
-    expect(supabaseVars.length).toBeGreaterThanOrEqual(3)
+    const supabaseGroups = requiredEnvVarGroups.filter(v =>
+      v.names.some(name => name.includes('SUPABASE') || name.includes('NEXT_PUBLIC_SUPABASE'))
+    )
+    expect(supabaseVars.length + supabaseGroups.length).toBeGreaterThanOrEqual(3)
   })
 
   it('contains all required Twitch variables', async () => {
@@ -62,6 +80,32 @@ describe('validateEnvVars', () => {
     const result = validateEnvVars()
     expect(result.valid).toBe(false)
     expect(result.missing).toContain('NEXT_PUBLIC_APP_URL')
+  })
+
+  it('accepts new Supabase API key names without legacy keys', async () => {
+    const { validateEnvVars } = await import('@/lib/env-validation')
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_test'
+    process.env.SUPABASE_SECRET_KEY = 'sb_secret_test'
+
+    const result = validateEnvVars()
+
+    expect(result.valid).toBe(true)
+  })
+
+  it('reports Supabase key groups when neither new nor legacy keys are set', async () => {
+    const { validateEnvVars } = await import('@/lib/env-validation')
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY
+    delete process.env.SUPABASE_SECRET_KEY
+
+    const result = validateEnvVars()
+
+    expect(result.valid).toBe(false)
+    expect(result.missing).toContain('NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY')
+    expect(result.missing).toContain('SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY')
   })
 })
 

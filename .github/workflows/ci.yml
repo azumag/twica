@@ -71,11 +71,13 @@ jobs:
         env:
           NEXT_PUBLIC_VERSION: ${{ github.sha }}
           NEXT_PUBLIC_SUPABASE_URL: https://dummy.supabase.co
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: dummy_publishable_key
           NEXT_PUBLIC_SUPABASE_ANON_KEY: dummy_anon_key
           NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
           NEXT_PUBLIC_APP_URL: http://localhost:3000
           TWITCH_CLIENT_ID: dummy_client_id
           TWITCH_CLIENT_SECRET: dummy_client_secret
           TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
+          SUPABASE_SECRET_KEY: dummy_secret_key
           SUPABASE_SERVICE_ROLE_KEY: dummy_service_role_key
           BLOB_READ_WRITE_TOKEN: dummy_blob_token

@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { logger } from './logger'
 import { reportRealtimeError } from './sentry/error-handler'
+import { getSupabaseElevatedKey, getSupabasePublicKey } from './supabase/keys'
 
 /*
  * Supabase Realtime Connection Lifecycle
@@ -40,17 +41,12 @@ function getSupabaseRealtimeClient(): SupabaseClient {
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
   const isBrowser = typeof window !== 'undefined'
-  // 環境変数に改行や空白が混入する場合があるため（Cloudflareダッシュボードでのペースト時など）
-  // JWTには空白文字が含まれないため、すべての空白・改行を除去する
-  // trim()では中間の改行を除去できないため replace で全除去
-  // Browser subscriptions must use anon/publishable keys. Server-side broadcast
-  // can use the elevated service_role/secret key, falling back to the public key
-  // for local/dev environments where the server key is not configured.
-  const supabaseKey = (
-    isBrowser
-      ? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-      : process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  )?.replace(/\s/g, '')
+  // Browser subscriptions must use public keys. Server-side broadcast can use
+  // the elevated secret/service_role key, falling back to the public key for
+  // local/dev environments where the server key is not configured.
+  const supabaseKey = isBrowser
+    ? getSupabasePublicKey()
+    : getSupabaseElevatedKey() || getSupabasePublicKey()
 
   if (!supabaseUrl || !supabaseKey) {
     if (process.env.CI || process.env.NODE_ENV === 'test') {

@@ -10,11 +10,20 @@ export const requiredEnvVars: EnvConfig[] = [
   { name: 'TWITCH_CLIENT_SECRET', required: true },
   { name: 'TWITCH_EVENTSUB_SECRET', required: true },
   { name: 'NEXT_PUBLIC_SUPABASE_URL', required: true },
-  { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', required: true },
-  { name: 'SUPABASE_SERVICE_ROLE_KEY', required: true },
   // BLOB_READ_WRITE_TOKEN は Vercel Blob 用で、Cloudflare R2 ネイティブバインディング移行後は不要
   { name: 'CSRF_TOKEN_SALT', required: true },
 ]
+
+export const requiredEnvVarGroups = [
+  {
+    names: ['NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'],
+    label: 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  },
+  {
+    names: ['SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
+    label: 'SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY',
+  },
+] as const
 
 export function validateEnvVars(): { valid: boolean; missing: string[] } {
   const missing: string[] = []
@@ -22,6 +31,12 @@ export function validateEnvVars(): { valid: boolean; missing: string[] } {
   for (const config of requiredEnvVars) {
     if (config.required && !process.env[config.name]) {
       missing.push(config.name)
+    }
+  }
+
+  for (const group of requiredEnvVarGroups) {
+    if (!group.names.some(name => process.env[name])) {
+      missing.push(group.label)
     }
   }
 

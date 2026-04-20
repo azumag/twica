@@ -14,10 +14,15 @@
 
 interface Env {
   SUPABASE_URL: string
-  SUPABASE_SERVICE_ROLE_KEY: string
+  SUPABASE_SECRET_KEY?: string
+  SUPABASE_SERVICE_ROLE_KEY?: string
   GITHUB_TOKEN: string
   GITHUB_REPO_OWNER: string
   GITHUB_REPO_NAME: string
+}
+
+function getSupabaseApiKey(env: Env): string | undefined {
+  return env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY
 }
 
 /** Supabase errors テーブルのレコード型 */
@@ -244,12 +249,13 @@ async function markErrorsAsProcessed(
   // Supabase REST API の IN フィルタ: id=in.(uuid1,uuid2,...)
   const idFilter = `in.(${errorIds.join(',')})`
   const url = `${env.SUPABASE_URL}/rest/v1/errors?id=${idFilter}`
+  const supabaseKey = getSupabaseApiKey(env)
 
   const res = await fetch(url, {
     method: 'PATCH',
     headers: {
-      'apikey': env.SUPABASE_SERVICE_ROLE_KEY,
-      'Authorization': `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      'apikey': supabaseKey!,
+      'Authorization': `Bearer ${supabaseKey}`,
       'Content-Type': 'application/json',
       'Prefer': 'return=minimal',
     },
@@ -274,11 +280,12 @@ async function markErrorsAsProcessed(
  */
 async function fetchPendingErrors(env: Env): Promise<ErrorRecord[]> {
   const url = `${env.SUPABASE_URL}/rest/v1/errors?github_issue_created=eq.false&order=created_at.asc&limit=100`
+  const supabaseKey = getSupabaseApiKey(env)
 
   const res = await fetch(url, {
     headers: {
-      'apikey': env.SUPABASE_SERVICE_ROLE_KEY,
-      'Authorization': `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      'apikey': supabaseKey!,
+      'Authorization': `Bearer ${supabaseKey}`,
       'Accept': 'application/json',
     },
   })
@@ -308,8 +315,8 @@ export default {
   ): Promise<void> {
     try {
       // 環境変数バリデーション: 未設定の場合は早期リターン
-      if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY || !env.GITHUB_TOKEN) {
-        console.error('[Error Reporter] Missing required secrets. Set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GITHUB_TOKEN via wrangler secret put')
+      if (!env.SUPABASE_URL || !getSupabaseApiKey(env) || !env.GITHUB_TOKEN) {
+        console.error('[Error Reporter] Missing required secrets. Set SUPABASE_URL, SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY), GITHUB_TOKEN via wrangler secret put')
         return
       }
       // GITHUB_REPO_OWNER / GITHUB_REPO_NAME は wrangler.toml の [vars] で定義

@@ -3,6 +3,7 @@ import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { createClient } from "@supabase/supabase-js";
 import { broadcastGachaResult, GachaBroadcastPayload } from "@/lib/realtime";
+import { getSupabaseElevatedKey, getSupabasePublicKey } from "@/lib/supabase/keys";
 
 // Demo cards for testing overlay (used when streamer has no cards)
 // 配信者がカードを持っていない場合に使用されるデモカード
@@ -102,7 +103,7 @@ export async function POST(request: NextRequest) {
 
     // Supabaseクライアントの初期化
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const supabaseKey = getSupabaseElevatedKey() || getSupabasePublicKey();
 
     // ブロードキャストとレスポンス返却を行うヘルパー関数
     // Helper function to optionally broadcast and return response

@@ -23,5 +23,6 @@ GITHUB_REPO_NAME = "twica"
 # 機密変数（Cloudflare Dashboard または wrangler secret put で設定）
 # Required secrets:
 # - SUPABASE_URL: Supabase プロジェクト URL (e.g. https://xxx.supabase.co)
-# - SUPABASE_SERVICE_ROLE_KEY: Supabase service role キー
+# - SUPABASE_SECRET_KEY: Supabase secret キー
+# - SUPABASE_SERVICE_ROLE_KEY: legacy Supabase service role キー
 # - GITHUB_TOKEN: GitHub Fine-grained PAT (scopes: Issues read/write)
