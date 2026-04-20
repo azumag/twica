@@ -402,7 +402,9 @@
       "createRewardFailed": "Failed to create reward",
       "saveFailed": "Failed to save settings",
       "saveSuccess": "Saved (EventSub registration complete)",
-      "eventsubFailed": "Settings saved, but EventSub registration failed. Please verify the URL is accessible externally."
+      "eventsubFailed": "Settings saved, but EventSub registration failed. Please verify the URL is accessible externally.",
+      "scopeRequired": "To enable the Channel Points integration, please grant Twitch permission to read and manage your channel point rewards.",
+      "reauthorizeFailed": "Re-authentication failed. Please try again later."
     },
     "form": {
       "selectReward": "Select channel point reward for card redemption",
@@ -419,7 +421,9 @@
       "createReward": "Create TwiCa Reward (100 points)",
       "saveEventSub": "Save & Register EventSub",
       "disconnect": "Disconnect",
-      "disconnecting": "Disconnecting..."
+      "disconnecting": "Disconnecting...",
+      "reauthorize": "Enable Channel Points integration",
+      "reauthorizing": "Redirecting..."
     },
     "messages2": {
       "disconnectSuccess": "Channel point connection removed",

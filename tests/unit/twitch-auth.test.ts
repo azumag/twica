@@ -14,6 +14,61 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn() },
 }))
 
+describe('AUTH_SCOPES / ADDITIONAL_SCOPES (Issue #398: least privilege)', () => {
+  it('AUTH_SCOPES は本人確認に必要な user:read:email のみ', async () => {
+    const { AUTH_SCOPES } = await import('@/lib/twitch/auth')
+    expect(AUTH_SCOPES).toBe('user:read:email')
+  })
+
+  it('AUTH_SCOPES にチャネルポイント系スコープが含まれない', async () => {
+    const { AUTH_SCOPES } = await import('@/lib/twitch/auth')
+    expect(AUTH_SCOPES).not.toMatch(/channel:read:redemptions/)
+    expect(AUTH_SCOPES).not.toMatch(/channel:manage:redemptions/)
+  })
+
+  it('ADDITIONAL_SCOPES がチャネルポイント/チャット/サブスクの全step-upスコープを定義', async () => {
+    const { ADDITIONAL_SCOPES } = await import('@/lib/twitch/auth')
+    expect(Object.values(ADDITIONAL_SCOPES)).toEqual(
+      expect.arrayContaining([
+        'user:write:chat',
+        'user:read:subscriptions',
+        'channel:read:redemptions',
+        'channel:manage:redemptions',
+      ])
+    )
+  })
+
+  it('CHANNEL_POINT_SCOPES にチャネルポイント連携に必要な両スコープが含まれる', async () => {
+    const { CHANNEL_POINT_SCOPES } = await import('@/lib/twitch/auth')
+    expect(CHANNEL_POINT_SCOPES).toEqual([
+      'channel:read:redemptions',
+      'channel:manage:redemptions',
+    ])
+  })
+
+  it('getTwitchAuthUrl: 初回ログインURLにチャネルポイント系スコープが含まれない', async () => {
+    const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
+    const url = getTwitchAuthUrl('http://localhost/callback', 'test-state')
+    const parsed = new URL(url)
+    const scope = parsed.searchParams.get('scope') ?? ''
+    expect(scope).toBe('user:read:email')
+    expect(scope).not.toMatch(/channel:read:redemptions/)
+    expect(scope).not.toMatch(/channel:manage:redemptions/)
+  })
+
+  it('getTwitchAuthUrl: additionalScopesで渡せば channel point スコープを含む', async () => {
+    const { getTwitchAuthUrl, CHANNEL_POINT_SCOPES } = await import('@/lib/twitch/auth')
+    const url = getTwitchAuthUrl('http://localhost/callback', 'test-state', [
+      ...CHANNEL_POINT_SCOPES,
+    ])
+    const parsed = new URL(url)
+    const scope = parsed.searchParams.get('scope') ?? ''
+    expect(scope).toContain('user:read:email')
+    expect(scope).toContain('channel:read:redemptions')
+    expect(scope).toContain('channel:manage:redemptions')
+  })
+})
+
 describe('exchangeCodeForTokens', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
