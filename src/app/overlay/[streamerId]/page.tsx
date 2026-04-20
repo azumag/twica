@@ -29,6 +29,14 @@ const getRarityInfo = (rarity: Rarity) =>
 interface GachaResult {
   card: Card;
   userTwitchUsername: string;
+  historyId?: string;
+}
+
+interface OverlayPollingEvent {
+  id: string;
+  redeemedAt: string;
+  userTwitchUsername: string;
+  card: Pick<Card, "id" | "name" | "description" | "image_url" | "rarity">;
 }
 
 interface SparklePosition {
@@ -128,6 +136,8 @@ export default function OverlayPage() {
   const displayResultRef = useRef<(data: GachaResult) => void>(() => {});
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollCursorRef = useRef(new Date().toISOString());
+  const seenHistoryIdsRef = useRef<Set<string>>(new Set());
   // 効果音再生用のオーディオ要素への参照
   // HTMLAudioElementを使用（R2パブリックURLはCORSヘッダーがないためfetch不可、
   // audioタグはCORS不要で読み込める）
@@ -371,6 +381,70 @@ export default function OverlayPage() {
     displayResultRef.current = enqueueResult;
   }, [enqueueResult]);
 
+  /**
+   * Realtime が購読できない環境向けの polling fallback。
+   * Supabase Realtime の public channel join が CHANNEL_ERROR になる場合でも、
+   * ガチャ履歴から overlay 表示を継続できるようにする。
+   */
+  const pollOverlayEvents = useCallback(async () => {
+    if (connectionStatusRef.current === "connected") {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `/api/overlay/${streamerId}/events?since=${encodeURIComponent(pollCursorRef.current)}`,
+        { cache: "no-store" }
+      );
+
+      if (!response.ok) {
+        addDebugLogRef.current(`Polling fallback failed: ${response.status}`);
+        return;
+      }
+
+      const data = await response.json() as { events?: OverlayPollingEvent[] };
+      const events = data.events ?? [];
+      for (const event of events) {
+        if (seenHistoryIdsRef.current.has(event.id)) {
+          continue;
+        }
+        seenHistoryIdsRef.current.add(event.id);
+        pollCursorRef.current = event.redeemedAt;
+        addDebugLogRef.current(`Polling fallback received: ${event.id}`);
+        displayResultRef.current({
+          card: event.card as Card,
+          userTwitchUsername: event.userTwitchUsername,
+          historyId: event.id,
+        });
+      }
+    } catch (error) {
+      logger.error("Overlay polling fallback error:", error);
+    }
+  }, [streamerId]);
+
+  useEffect(() => {
+    let stopped = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const schedule = () => {
+      timeoutId = setTimeout(async () => {
+        await pollOverlayEvents();
+        if (!stopped) {
+          schedule();
+        }
+      }, 3000);
+    };
+
+    schedule();
+
+    return () => {
+      stopped = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [pollOverlayEvents]);
+
   // デバッグログを追加するヘルパー関数
   // OBSブラウザソースでの接続問題を調査するために使用
   const addDebugLog = useCallback((message: string) => {
@@ -397,6 +471,8 @@ export default function OverlayPage() {
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
       addDebugLogRef.current(`Received payload: ${payload.type}`);
       if (payload.type === 'gacha' && payload.card) {
+        // Avoid replaying the same event through polling if Realtime later drops.
+        pollCursorRef.current = new Date().toISOString();
         displayResultRef.current({
           card: payload.card as unknown as Card,
           userTwitchUsername: payload.userTwitchUsername,

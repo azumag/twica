@@ -307,6 +307,9 @@ export const rateLimits = {
   // ガチャ統計は集計処理があるため少し厳しめ
   // Gacha stats involves aggregation, so use a slightly stricter limit
   gachaStatsGet: createRatelimit("gachaStatsGet", 30, 60 * 1000),
+  // OBS overlay polling fallback. One browser source polling every few seconds
+  // should fit comfortably while still limiting accidental tight loops.
+  overlayEventsGet: createRatelimit("overlayEventsGet", 120, 60 * 1000),
   debugSession: createRatelimit("debugSession", 10, 60 * 1000),
   // 投票キャンペーンは1ユーザー1回だが、DoS対策として制限（分あたり5回）
   voteCampaign: createRatelimit("voteCampaign", 5, 60 * 1000),
