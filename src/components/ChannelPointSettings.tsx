@@ -3,7 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
-import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/auth";
+// クライアントコンポーネントからはサーバー専用の auth モジュールを経由せず、
+// 定数のみを持つ scopes モジュールを参照する。auth は env-validation を import し、
+// ブラウザ実行時にモジュール評価で例外を投げる可能性があるため。
+// Import scope literals from the client-safe module. Do NOT import from
+// '@/lib/twitch/auth' here: it pulls in env-validation which asserts on
+// server-only secrets at module load and would throw in the browser.
+import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/scopes";
 import { getCsrfTokenFromCookie } from "@/lib/client-csrf";
 
 
