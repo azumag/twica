@@ -33,10 +33,18 @@ function getSupabaseRealtimeClient(): SupabaseClient {
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
+  const isBrowser = typeof window !== 'undefined'
   // 環境変数に改行や空白が混入する場合があるため（Cloudflareダッシュボードでのペースト時など）
   // JWTには空白文字が含まれないため、すべての空白・改行を除去する
   // trim()では中間の改行を除去できないため replace で全除去
-  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.replace(/\s/g, '')
+  // Browser subscriptions must use anon/publishable keys. Server-side broadcast
+  // can use the elevated service_role/secret key, falling back to the public key
+  // for local/dev environments where the server key is not configured.
+  const supabaseKey = (
+    isBrowser
+      ? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      : process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  )?.replace(/\s/g, '')
 
   if (!supabaseUrl || !supabaseKey) {
     if (process.env.CI || process.env.NODE_ENV === 'test') {
@@ -158,6 +166,8 @@ const getRetryDelay = (retryCount: number, baseDelay: number): number => {
 }
 
 export interface SubscribeOptions {
+  // Defaults to unlimited retries for long-lived OBS browser sources.
+  // Pass a finite number only when the caller wants to stop reconnecting.
   maxRetries?: number
   retryDelay?: number
   onError?: (error: RealtimeError) => void
@@ -173,7 +183,7 @@ export function subscribeToGachaResults(
   options: SubscribeOptions = {}
 ): () => void {
   const {
-    maxRetries = 5,
+    maxRetries = Number.POSITIVE_INFINITY,
     retryDelay = 3000,
     onError,
     onSuccess,
@@ -183,21 +193,33 @@ export function subscribeToGachaResults(
   let client: SupabaseClient | null = null
   let channel: ReturnType<SupabaseClient['channel']> | null = null
   let retryCount = 0
-  let isSubscribed = false
+  let isDisposed = false
   let retryTimeout: ReturnType<typeof setTimeout> | null = null
+  let subscriptionGeneration = 0
+
+  const hasRetryLimit = Number.isFinite(maxRetries)
 
   const cleanup = () => {
+    isDisposed = true
+    subscriptionGeneration++
     if (retryTimeout) {
       clearTimeout(retryTimeout)
       retryTimeout = null
     }
-    if (channel && isSubscribed) {
+    if (channel) {
       client?.removeChannel(channel)
-      isSubscribed = false
+      channel = null
     }
   }
 
   const subscribe = () => {
+    if (isDisposed) {
+      return
+    }
+
+    subscriptionGeneration++
+    const currentGeneration = subscriptionGeneration
+
     if (retryTimeout) {
       clearTimeout(retryTimeout)
       retryTimeout = null
@@ -215,7 +237,6 @@ export function subscribeToGachaResults(
         logger.info(`Previous channel cleanup for gacha:${streamerId}`)
       }
       channel = null
-      isSubscribed = false
     }
 
     // デバッグ用：サブスクリプション開始を通知
@@ -229,6 +250,10 @@ export function subscribeToGachaResults(
 
       channel
         .on('broadcast', { event: 'gacha_result' }, (payload) => {
+          if (isDisposed || currentGeneration !== subscriptionGeneration) {
+            return
+          }
+
           try {
             callback(payload.payload as GachaBroadcastPayload)
           } catch (error) {
@@ -244,10 +269,13 @@ export function subscribeToGachaResults(
         .subscribe((status, err) => {
           // デバッグ用：すべてのステータス変化を通知
           // OBSブラウザソースでの接続問題を調査するために使用
+          if (isDisposed || currentGeneration !== subscriptionGeneration) {
+            return
+          }
+
           onStatusChange?.(`SUBSCRIBE_STATUS: ${status}`)
 
           if (status === 'SUBSCRIBED') {
-            isSubscribed = true
             retryCount = 0
             logger.info(`Successfully subscribed to gacha:${streamerId}`)
             onSuccess?.()
@@ -258,7 +286,6 @@ export function subscribeToGachaResults(
             onStatusChange?.(`CONNECTING: ${status}`)
           } else {
             const isExpected = EXPECTED_CLOSE_STATUSES.includes(status)
-            isSubscribed = false
 
             const error: RealtimeError = {
               type: 'connection',
@@ -282,13 +309,14 @@ export function subscribeToGachaResults(
 
             onError?.(error)
 
-            if (retryCount < maxRetries) {
+            if (!hasRetryLimit || retryCount < maxRetries) {
               retryCount++
               const delay = getRetryDelay(retryCount, retryDelay)
-              logger.info(`Retrying connection (attempt ${retryCount}/${maxRetries}) in ${Math.round(delay)}ms...`)
+              const retryLabel = hasRetryLimit ? `${retryCount}/${maxRetries}` : `${retryCount}`
+              logger.info(`Retrying connection (attempt ${retryLabel}) in ${Math.round(delay)}ms...`)
               retryTimeout = setTimeout(subscribe, delay)
             } else {
-              logger.error(`Max retries (${maxRetries}) reached for gacha:${streamerId}`)
+              logger.warn(`Max retries (${maxRetries}) reached for gacha:${streamerId}`)
               const maxRetriesError: RealtimeError = {
                 type: 'connection',
                 message: 'Max retries reached. Please refresh the page to reconnect.',
@@ -315,7 +343,7 @@ export function subscribeToGachaResults(
 
       onError?.(realtimeError)
 
-      if (retryCount < maxRetries) {
+      if (!hasRetryLimit || retryCount < maxRetries) {
         retryCount++
         const delay = getRetryDelay(retryCount, retryDelay)
         retryTimeout = setTimeout(subscribe, delay)

@@ -138,6 +138,12 @@ async function logErrorToSupabase(
   stackTrace: string | null,
   context: Record<string, unknown>
 ): Promise<void> {
+  // Client bundles import this module through logger/realtime code, but the
+  // Supabase error table requires server-only service-role credentials.
+  if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'test') {
+    return
+  }
+
   try {
     const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
     const supabase = getSupabaseAdmin()
