@@ -92,7 +92,7 @@ describe('sub-check', () => {
       getTwitchAccessToken: vi.fn().mockResolvedValue(accessToken),
     }))
 
-    vi.doMock('@/lib/twitch/auth', () => ({
+    vi.doMock('@/lib/twitch/scopes', () => ({
       ADDITIONAL_SCOPES: { USER_READ_SUBSCRIPTIONS: 'user:read:subscriptions' },
     }))
 

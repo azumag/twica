@@ -15,7 +15,7 @@
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getEnvVar } from '@/lib/env-validation'
 import { getTwitchAccessToken } from '@/lib/twitch/token-manager'
-import { ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
+import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { logger } from '@/lib/logger'
 
 // キャッシュ有効期間: 正常時1時間

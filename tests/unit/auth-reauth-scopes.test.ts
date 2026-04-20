@@ -10,10 +10,6 @@ vi.mock('@/lib/twitch/token-manager', () => ({
 }))
 vi.mock('@/lib/twitch/auth', () => ({
   getTwitchAuthUrl: vi.fn(() => 'https://id.twitch.tv/oauth2/authorize?mock=1'),
-  ADDITIONAL_SCOPES: {
-    CHAT_WRITE: 'user:write:chat',
-    USER_READ_SUBSCRIPTIONS: 'user:read:subscriptions',
-  },
 }))
 vi.mock('@/lib/logger', () => ({
   logger: {
@@ -152,6 +148,61 @@ describe('POST /api/auth/reauth scope merge', () => {
       'fixed-state',
       ['user:read:subscriptions', 'user:write:chat']
     )
+  })
+
+  it('チャネルポイント連携有効化の再認証で channel:read/manage:redemptions を要求する', async () => {
+    // Issue #398: 初回ログインのAUTH_SCOPESから削除されたチャネルポイント系スコープは、
+    // 配信者が連携を有効化する瞬間の step-up 再認証で明示的に要求される。
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(
+      mockUserScopesQuery({
+        data: { twitch_scopes: ['user:read:email'] },
+        error: null,
+      }) as any
+    )
+
+    const response = await POST(
+      createRequest(['channel:read:redemptions', 'channel:manage:redemptions'])
+    )
+
+    expect(response.status).toBe(200)
+
+    const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
+    expect(getTwitchAuthUrl).toHaveBeenCalledWith(
+      'https://example.com/api/auth/twitch/callback',
+      'fixed-state',
+      ['channel:read:redemptions', 'channel:manage:redemptions']
+    )
+  })
+
+  it('既存チャネルポイント権限は新規スコープ追加時も保持される', async () => {
+    // 既存ユーザーがchannel point系スコープをDB上に持っている場合、
+    // 別機能のstep-up再認証でも消失しないことを保証する。
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(
+      mockUserScopesQuery({
+        data: {
+          twitch_scopes: [
+            'user:read:email',
+            'channel:read:redemptions',
+            'channel:manage:redemptions',
+          ],
+        },
+        error: null,
+      }) as any
+    )
+
+    const response = await POST(createRequest(['user:write:chat']))
+
+    expect(response.status).toBe(200)
+
+    const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
+    const call = vi.mocked(getTwitchAuthUrl).mock.calls[0]
+    expect(call[2]).toEqual([
+      'channel:read:redemptions',
+      'channel:manage:redemptions',
+      'user:write:chat',
+    ])
   })
 
   it('スコープ取得のDBエラー時は再認証を中止し、トークン削除を行わない', async () => {

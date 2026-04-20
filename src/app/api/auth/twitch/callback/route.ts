@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError, ADDITIONAL_SCOPES, getTwitchAuthUrl } from '@/lib/twitch/auth'
+import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError, getTwitchAuthUrl } from '@/lib/twitch/auth'
+import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { saveTwitchScopes } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'

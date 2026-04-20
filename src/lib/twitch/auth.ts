@@ -1,5 +1,6 @@
 import { getEnvVar } from '@/lib/env-validation'
 import { logger } from '@/lib/logger'
+import { AUTH_SCOPES } from './scopes'
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
 const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token'
@@ -42,24 +43,12 @@ export function isInvalidAuthorizationCodeError(error: unknown): boolean {
   return error instanceof TwitchOAuthTokenExchangeError && error.isInvalidAuthorizationCode
 }
 
-// デフォルトスコープ（ログイン時に必ず付与される基本スコープ）
-// Default scopes that are always requested during login
-export const AUTH_SCOPES = [
-  'user:read:email',
-  'channel:read:redemptions',
-  'channel:manage:redemptions',
-].join(' ')
-
-// 追加スコープ定義（オプション機能用、再認証で取得）
-// Additional scopes for optional features, obtained via re-authentication
-export const ADDITIONAL_SCOPES = {
-  // Twitchチャットへの書き込み権限（ガチャ結果のチャット通知に必要）
-  // Permission to write to Twitch chat (required for gacha result announcements)
-  CHAT_WRITE: 'user:write:chat',
-  // Twitchサブスク確認権限（配信チャネルのサブスクを確認しプランを自動適用）
-  // Permission to check Twitch subscriptions (auto-apply plan for channel subscribers)
-  USER_READ_SUBSCRIPTIONS: 'user:read:subscriptions',
-} as const
+// スコープ定数は `@/lib/twitch/scopes` から import する。
+// auth.ts はサーバー専用（env-validation への依存あり）だが、scopes.ts は
+// クライアント安全なため、client component は scopes.ts から直接 import する。
+// Scope constants live in `@/lib/twitch/scopes`. This module (auth.ts) is
+// server-only via env-validation, while scopes.ts is client-safe, so client
+// components must import scope constants from scopes.ts directly.
 
 /**
  * Twitch OAuth認証URLを生成

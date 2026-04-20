@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { getTwitchAuthUrl, ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
+import { getTwitchAuthUrl } from '@/lib/twitch/auth'
+import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { cookies } from 'next/headers'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { handleAuthError } from '@/lib/auth-error-handler'
