@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
-import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/auth";
+import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/scopes";
 import { getCsrfTokenFromCookie } from "@/lib/client-csrf";
 
 

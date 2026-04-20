@@ -16,18 +16,18 @@ vi.mock('@/lib/logger', () => ({
 
 describe('AUTH_SCOPES / ADDITIONAL_SCOPES (Issue #398: least privilege)', () => {
   it('AUTH_SCOPES は本人確認に必要な user:read:email のみ', async () => {
-    const { AUTH_SCOPES } = await import('@/lib/twitch/auth')
+    const { AUTH_SCOPES } = await import('@/lib/twitch/scopes')
     expect(AUTH_SCOPES).toBe('user:read:email')
   })
 
   it('AUTH_SCOPES にチャネルポイント系スコープが含まれない', async () => {
-    const { AUTH_SCOPES } = await import('@/lib/twitch/auth')
+    const { AUTH_SCOPES } = await import('@/lib/twitch/scopes')
     expect(AUTH_SCOPES).not.toMatch(/channel:read:redemptions/)
     expect(AUTH_SCOPES).not.toMatch(/channel:manage:redemptions/)
   })
 
   it('ADDITIONAL_SCOPES がチャネルポイント/チャット/サブスクの全step-upスコープを定義', async () => {
-    const { ADDITIONAL_SCOPES } = await import('@/lib/twitch/auth')
+    const { ADDITIONAL_SCOPES } = await import('@/lib/twitch/scopes')
     expect(Object.values(ADDITIONAL_SCOPES)).toEqual(
       expect.arrayContaining([
         'user:write:chat',
@@ -39,7 +39,7 @@ describe('AUTH_SCOPES / ADDITIONAL_SCOPES (Issue #398: least privilege)', () => 
   })
 
   it('CHANNEL_POINT_SCOPES にチャネルポイント連携に必要な両スコープが含まれる', async () => {
-    const { CHANNEL_POINT_SCOPES } = await import('@/lib/twitch/auth')
+    const { CHANNEL_POINT_SCOPES } = await import('@/lib/twitch/scopes')
     expect(CHANNEL_POINT_SCOPES).toEqual([
       'channel:read:redemptions',
       'channel:manage:redemptions',
@@ -57,7 +57,8 @@ describe('AUTH_SCOPES / ADDITIONAL_SCOPES (Issue #398: least privilege)', () => 
   })
 
   it('getTwitchAuthUrl: additionalScopesで渡せば channel point スコープを含む', async () => {
-    const { getTwitchAuthUrl, CHANNEL_POINT_SCOPES } = await import('@/lib/twitch/auth')
+    const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
+    const { CHANNEL_POINT_SCOPES } = await import('@/lib/twitch/scopes')
     const url = getTwitchAuthUrl('http://localhost/callback', 'test-state', [
       ...CHANNEL_POINT_SCOPES,
     ])

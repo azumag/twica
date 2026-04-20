@@ -72,12 +72,6 @@ vi.mock('@/lib/twitch/auth', () => ({
   getTwitchAuthUrl: vi.fn((_redirectUri: string, _state: string, additionalScopes?: string[]) =>
     `https://twitch.tv/authorize?scopes=${(additionalScopes ?? []).join(',')}`
   ),
-  ADDITIONAL_SCOPES: {
-    CHAT_WRITE: 'user:write:chat',
-    USER_READ_SUBSCRIPTIONS: 'user:read:subscriptions',
-    CHANNEL_READ_REDEMPTIONS: 'channel:read:redemptions',
-    CHANNEL_MANAGE_REDEMPTIONS: 'channel:manage:redemptions',
-  },
   exchangeCodeForTokens: vi.fn(),
   getTwitchUser: vi.fn(),
   isInvalidAuthorizationCodeError: (...args: unknown[]) => mockIsInvalidAuthorizationCodeError(...args),

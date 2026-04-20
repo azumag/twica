@@ -1,6 +1,6 @@
 import { getEnvVar } from '@/lib/env-validation'
 import { getTwitchAccessToken, hasScope } from './token-manager'
-import { ADDITIONAL_SCOPES } from './auth'
+import { ADDITIONAL_SCOPES } from './scopes'
 import { logger } from '@/lib/logger'
 import { reportApiError, reportError } from '@/lib/sentry/error-handler'
 import { countCharacters, truncateCharacters } from '@/lib/text-utils'

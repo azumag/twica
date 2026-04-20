@@ -10,12 +10,6 @@ vi.mock('@/lib/twitch/token-manager', () => ({
 }))
 vi.mock('@/lib/twitch/auth', () => ({
   getTwitchAuthUrl: vi.fn(() => 'https://id.twitch.tv/oauth2/authorize?mock=1'),
-  ADDITIONAL_SCOPES: {
-    CHAT_WRITE: 'user:write:chat',
-    USER_READ_SUBSCRIPTIONS: 'user:read:subscriptions',
-    CHANNEL_READ_REDEMPTIONS: 'channel:read:redemptions',
-    CHANNEL_MANAGE_REDEMPTIONS: 'channel:manage:redemptions',
-  },
 }))
 vi.mock('@/lib/logger', () => ({
   logger: {

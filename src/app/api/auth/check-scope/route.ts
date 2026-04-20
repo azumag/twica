@@ -4,7 +4,7 @@ import { hasScope, validateTokenScopes } from '@/lib/twitch/token-manager'
 import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
-import { ADDITIONAL_SCOPES } from '@/lib/twitch/auth'
+import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 
 // 有効なスコープのリスト（セキュリティ: 許可されたスコープのみ確認可能）
 // List of valid scopes (security: only allow checking permitted scopes)

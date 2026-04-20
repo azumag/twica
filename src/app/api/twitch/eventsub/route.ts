@@ -9,7 +9,7 @@ import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
 import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
 import { hasScope } from "@/lib/twitch/token-manager";
-import { ADDITIONAL_SCOPES } from "@/lib/twitch/auth";
+import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
