@@ -11,6 +11,7 @@ import { logger } from '@/lib/logger'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { randomBytesHex } from '@/lib/crypto-utils'
 import { getBaseUrl } from '@/lib/url-utils'
+import { validateCSRFToken } from '@/lib/csrf'
 
 // 有効な追加スコープのリスト（セキュリティ: 許可されたスコープのみ受け付ける）
 // List of valid additional scopes (security: only accept allowed scopes)
@@ -18,6 +19,13 @@ const VALID_ADDITIONAL_SCOPES: string[] = Object.values(ADDITIONAL_SCOPES)
 
 export async function POST(request: Request) {
   try {
+    // 状態変更 API のため CSRF 検証をレートリミットより先に実行する。
+    // 既存トークン削除と再認証 URL 発行を伴うため GET クロスサイト誘導で発火させない。
+    const csrfValidation = await validateCSRFToken(request)
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 })
+    }
+
     const session = await getSession()
     const identifier = await getRateLimitIdentifier(request, session?.twitchUserId)
     const result = await checkRateLimit(rateLimits.authReauth, identifier)

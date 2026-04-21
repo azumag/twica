@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { LanguageSwitcherDark } from '@/components/LanguageSwitcher'
+import { LogoutButton } from '@/components/LogoutButton'
 
 interface SessionData {
   twitchUserId: string
@@ -102,12 +103,10 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
           <span className="hidden sm:inline">{t("dashboard")}</span>
         </Link>
 
-        {/* ログアウトリンク：スマホではアイコンのみ、sm以上でテキスト表示 */}
-        {/* API エンドポイントには Link ではなく通常の a タグを使用 */}
-        <a
-          href="/api/auth/logout"
-          className="rounded-lg border border-white/30 p-2 text-white hover:bg-white/10 sm:px-4 sm:py-2"
-          title={tAuth("logout")}
+        {/* ログアウトボタン：状態変更を POST に統一するため LogoutButton を使用 */}
+        <LogoutButton
+          className="rounded-lg border border-white/30 p-2 text-white hover:bg-white/10 disabled:opacity-50 sm:px-4 sm:py-2"
+          label={tAuth("logout")}
         >
           {/* スマホ：アイコン表示 */}
           <span className="sm:hidden">
@@ -115,7 +114,7 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
           </span>
           {/* sm以上：テキスト表示 */}
           <span className="hidden sm:inline">{tAuth("logout")}</span>
-        </a>
+        </LogoutButton>
       </div>
     )
   }

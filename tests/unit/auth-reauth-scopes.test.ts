@@ -3,8 +3,12 @@ import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/auth/reauth/route'
 import { getSession } from '@/lib/session'
 import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
+import { validateCSRFToken } from '@/lib/csrf'
 
 vi.mock('@/lib/session')
+vi.mock('@/lib/csrf', () => ({
+  validateCSRFToken: vi.fn(),
+}))
 vi.mock('@/lib/twitch/token-manager', () => ({
   deleteTwitchTokens: vi.fn(),
 }))
@@ -44,6 +48,7 @@ vi.mock('@/lib/supabase/admin', async (importOriginal) => {
 
 const mockGetSession = vi.mocked(getSession)
 const mockDeleteTwitchTokens = vi.mocked(deleteTwitchTokens)
+const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 
 function createRequest(additionalScopes: string[]): NextRequest {
   return new NextRequest('http://localhost:3000/api/auth/reauth', {
@@ -78,6 +83,7 @@ describe('POST /api/auth/reauth scope merge', () => {
       version: 1,
     })
     mockDeleteTwitchTokens.mockResolvedValue()
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
 
     const { checkRateLimit, getRateLimitIdentifier } = await import('@/lib/rate-limit')
     vi.mocked(checkRateLimit).mockResolvedValue({
@@ -203,6 +209,19 @@ describe('POST /api/auth/reauth scope merge', () => {
       'channel:manage:redemptions',
       'user:write:chat',
     ])
+  })
+
+  it('CSRFトークンが不正な場合は403を返し、トークン削除も行わない', async () => {
+    // Issue #399: 状態変更APIであるreauthは、CSRF検証が失敗した時点で早期リターンする。
+    mockValidateCSRFToken.mockResolvedValue({ valid: false, error: 'csrf invalid' })
+
+    const response = await POST(createRequest(['user:read:subscriptions']))
+
+    expect(response.status).toBe(403)
+
+    const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
+    expect(getTwitchAuthUrl).not.toHaveBeenCalled()
+    expect(mockDeleteTwitchTokens).not.toHaveBeenCalled()
   })
 
   it('スコープ取得のDBエラー時は再認証を中止し、トークン削除を行わない', async () => {
