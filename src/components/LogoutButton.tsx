@@ -17,13 +17,36 @@ interface LogoutButtonProps {
 export function LogoutButton({ className, label, children }: LogoutButtonProps) {
   const [isPending, startTransition] = useTransition()
 
+  const tryLogout = async (): Promise<Response> => {
+    return fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+    })
+  }
+
+  const refreshCsrfToken = async (): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/session', {
+        credentials: 'include',
+        cache: 'no-store',
+      })
+
+      return response.ok
+    } catch {
+      return false
+    }
+  }
+
   const handleLogout = () => {
     startTransition(async () => {
       try {
-        const response = await fetch('/api/auth/logout', {
-          method: 'POST',
-          credentials: 'include',
-        })
+        let response = await tryLogout()
+
+        // CSRF cookie だけが欠けている不整合セッションでは、/api/session で
+        // トークンを再発行してから一度だけ logout を再試行する。
+        if (response.status === 403 && await refreshCsrfToken()) {
+          response = await tryLogout()
+        }
 
         // 正常リダイレクト時のみ指定 URL へ遷移し、それ以外は reload で
         // サーバー側のセッション状態を真実として再評価する（403/429 でログアウト失敗時に
