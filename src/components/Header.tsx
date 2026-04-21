@@ -2,6 +2,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
+import { LogoutButton } from "@/components/LogoutButton";
 
 interface HeaderProps {
   session: Awaited<ReturnType<typeof getSession>>;
@@ -113,12 +114,10 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
             <span className="sr-only">{t("userSettings")}</span>
           </Link>
 
-          {/* ログアウトアイコン */}
-          {/* API エンドポイントには Link ではなく通常の a タグを使用 */}
-          <a
-            href="/api/auth/logout"
-            className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
-            title={t("logout")}
+          {/* ログアウトボタン: 状態変更を GET で起動しないため POST する LogoutButton を使用 */}
+          <LogoutButton
+            className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-800 hover:text-white disabled:opacity-50"
+            label={t("logout")}
           >
             <svg
               className="h-5 w-5"
@@ -134,8 +133,7 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
                 d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
               />
             </svg>
-            <span className="sr-only">{t("logout")}</span>
-          </a>
+          </LogoutButton>
         </div>
       </div>
     </header>

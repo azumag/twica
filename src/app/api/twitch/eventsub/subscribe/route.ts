@@ -5,6 +5,7 @@ import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { validateCSRFToken } from "@/lib/csrf";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -79,6 +80,16 @@ async function getSubscriptionsByUserId(
 }
 
 export async function POST(request: NextRequest) {
+  // 状態変更 API（EventSub 登録）のため CSRF 検証を最初に行う。
+  // 不正オリジンからのリクエストは認証/レートリミット処理の前に弾く。
+  const csrfValidation = await validateCSRFToken(request);
+  if (!csrfValidation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    );
+  }
+
   const session = await getSession();
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
@@ -369,6 +380,16 @@ export async function POST(request: NextRequest) {
  * - (no params): Delete all channel point subscriptions for the broadcaster
  */
 export async function DELETE(request: NextRequest) {
+  // 状態変更 API（EventSub 解除）のため CSRF 検証を最初に行う。
+  // 認証済みユーザーの Cookie を悪用したクロスサイト削除を防止する。
+  const csrfValidation = await validateCSRFToken(request);
+  if (!csrfValidation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    );
+  }
+
   const session = await getSession();
 
   // レートリミットチェック（POST と同じリミットを適用）
