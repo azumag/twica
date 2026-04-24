@@ -468,54 +468,69 @@ async function sendChatAnnouncement(
         })
       : null;
 
-    const [allCountResult, userCardCountsResult] = await Promise.all([
-      allCountPromise,
-      userCardCountsPromise,
-    ]);
+    // transient な transport / runtime 例外が throw されるとチャット通知全体が
+    // 飛んでしまうため、Promise.all を try/catch で囲みフォールバック挙動を担保する。
+    // PostgREST の `error` payload は下の if で個別にハンドリングする。
+    // Wrap the Promise.all so transient transport/runtime rejections don't abort
+    // the whole chat announcement. PostgREST `error` payloads are still handled below.
+    try {
+      const [allCountResult, userCardCountsResult] = await Promise.all([
+        allCountPromise,
+        userCardCountsPromise,
+      ]);
 
-    if (needsAllCount) {
-      if (allCountResult?.error) {
-        logger.warn('Failed to fetch {all} card count for chat announcement', {
-          streamerId: streamer.id,
-          error: allCountResult.error.message,
-        });
-      } else {
-        allCount = allCountResult?.count ?? 0;
-      }
-    }
-
-    if (needsCardCount || needsUniqueCount) {
-      if (userCardCountsResult?.error) {
-        logger.warn('Failed to fetch user card counts for chat announcement', {
-          streamerId: streamer.id,
-          userTwitchId: userId,
-          error: userCardCountsResult.error.message,
-        });
-        if (needsUniqueCount) {
-          // RPC 失敗時は 0 にフォールバックせず、未定義のままプレースホルダを空文字化
-          // On RPC failure, leave placeholders undefined so buildMessage strips them
-        }
-      } else {
-        // RPC は JSONB 配列を返し、各要素は { count, card: {..., is_active, id}, streamer }
-        // RPC returns a JSONB array; each row holds { count, card: {...}, streamer }
-        const rows = (userCardCountsResult?.data ?? []) as Array<{
-          count: number;
-          card: { id: string; is_active: boolean };
-        }>;
-
-        if (needsCardCount) {
-          // 現在当選したカードの所持数を検索
-          // Find the count for the card that just dropped
-          const currentCardRow = rows.find((row) => row.card?.id === card.id);
-          cardCount = currentCardRow?.count ?? 0;
-        }
-
-        if (needsUniqueCount) {
-          // アクティブカードのみ数えてコンプ進捗を算出
-          // Count only active cards to match the progress definition in dashboard UI
-          uniqueCount = rows.filter((row) => row.card?.is_active === true).length;
+      if (needsAllCount) {
+        if (allCountResult?.error) {
+          logger.warn('Failed to fetch {all} card count for chat announcement', {
+            streamerId: streamer.id,
+            error: allCountResult.error.message,
+          });
+        } else {
+          allCount = allCountResult?.count ?? 0;
         }
       }
+
+      if (needsCardCount || needsUniqueCount) {
+        if (userCardCountsResult?.error) {
+          logger.warn('Failed to fetch user card counts for chat announcement', {
+            streamerId: streamer.id,
+            userTwitchId: userId,
+            error: userCardCountsResult.error.message,
+          });
+          if (needsUniqueCount) {
+            // RPC 失敗時は 0 にフォールバックせず、未定義のままプレースホルダを空文字化
+            // On RPC failure, leave placeholders undefined so buildMessage strips them
+          }
+        } else {
+          // RPC は JSONB 配列を返し、各要素は { count, card: {..., is_active, id}, streamer }
+          // RPC returns a JSONB array; each row holds { count, card: {...}, streamer }
+          const rows = (userCardCountsResult?.data ?? []) as Array<{
+            count: number;
+            card: { id: string; is_active: boolean };
+          }>;
+
+          if (needsCardCount) {
+            // 現在当選したカードの所持数を検索
+            // Find the count for the card that just dropped
+            const currentCardRow = rows.find((row) => row.card?.id === card.id);
+            cardCount = currentCardRow?.count ?? 0;
+          }
+
+          if (needsUniqueCount) {
+            // アクティブカードのみ数えてコンプ進捗を算出
+            // Count only active cards to match the progress definition in dashboard UI
+            uniqueCount = rows.filter((row) => row.card?.is_active === true).length;
+          }
+        }
+      }
+    } catch (err) {
+      // transient 失敗時はプレースホルダを未定義のまま残し、通知は送信する
+      // On transient failure, leave placeholders undefined and still send the announcement
+      logger.warn('Chat announcement count queries threw; falling back to empty placeholders', {
+        streamerId: streamer.id,
+        userTwitchId: userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
