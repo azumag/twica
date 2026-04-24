@@ -31,6 +31,12 @@ export interface ChatMessagePlaceholders {
   // ユーザーがこのカードを何枚目に獲得したか（オプション）
   // How many of this card the user now owns (optional)
   num?: number
+  // コンプ進捗用: 配信者のアクティブカードのうちユーザーが所持しているユニーク種類数（オプション）
+  // Collection progress: number of unique active card types the user owns for this streamer (optional)
+  unique?: number
+  // コンプ進捗用: 配信者のアクティブカードの総種類数（オプション）
+  // Collection progress: total number of active card types for this streamer (optional)
+  all?: number
 }
 
 /**
@@ -210,6 +216,20 @@ export class TwitchChatService {
       message = message.replace(/\{num\}/g, String(placeholders.num))
     } else {
       message = message.replace(/\{num\}/g, '')
+    }
+
+    // コンプ進捗プレースホルダー: 値が渡された場合のみ置換、未指定時は削除
+    // Collection progress placeholders: substitute only when provided, otherwise strip
+    if (placeholders.unique !== undefined) {
+      message = message.replace(/\{unique\}/g, String(placeholders.unique))
+    } else {
+      message = message.replace(/\{unique\}/g, '')
+    }
+
+    if (placeholders.all !== undefined) {
+      message = message.replace(/\{all\}/g, String(placeholders.all))
+    } else {
+      message = message.replace(/\{all\}/g, '')
     }
 
     // 連続する空白を1つにまとめ、前後の空白を削除

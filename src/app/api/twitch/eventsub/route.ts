@@ -430,31 +430,107 @@ async function sendChatAnnouncement(
     legendary: 'レジェンダリー',
   };
 
-  // テンプレートに {num} プレースホルダーが含まれる場合のみカード所持枚数を取得
-  // waitUntil内のwall time短縮のため、不要なDBクエリ（users + user_cards）をスキップ
-  // Skip card count queries when template doesn't use {num} to reduce wall time in waitUntil
+  // テンプレートに含まれるプレースホルダーに応じてのみDBクエリを実行
+  // waitUntil内のwall time短縮のため、不要なDBクエリをスキップ
+  // Run DB queries only for placeholders that appear in the template to keep waitUntil wall-time short
   const effectiveTemplate = streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
+  const needsCardCount = /\{num\}/.test(effectiveTemplate);
+  const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
+  const needsAllCount = /\{all\}/.test(effectiveTemplate);
+
   let cardCount: number | undefined;
-  if (effectiveTemplate.includes('{num}')) {
+  let uniqueCount: number | undefined;
+  let allCount: number | undefined;
+
+  if (needsCardCount || needsUniqueCount || needsAllCount) {
     const supabaseAdminNoCache = getSupabaseAdminNoCache();
-    try {
-      const { data: user } = await supabaseAdminNoCache
-        .from('users')
-        .select('id')
-        .eq('twitch_user_id', userId)
-        .maybeSingle();
 
-      if (user) {
-        const { count } = await supabaseAdminNoCache
-          .from('user_cards')
+    // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
+    // {all}: count active cards for this streamer (user-independent)
+    const allCountPromise = needsAllCount
+      ? supabaseAdminNoCache
+          .from('cards')
           .select('id', { count: 'exact', head: true })
-          .eq('user_id', user.id)
-          .eq('card_id', card.id);
+          .eq('streamer_id', streamer.id)
+          .eq('is_active', true)
+      : null;
 
-        cardCount = count ?? undefined;
+    // {num} / {unique} は RPC `get_user_card_counts` で DB 側 GROUP BY 済みの
+    // ユーザー所持カード一覧を取得して求める（PostgREST の行数制限を根本的に回避）
+    // is_active フィルタは RPC が行わないため、ここでは JS 側で行う
+    // {num} / {unique}: use RPC returning pre-aggregated per-card counts.
+    // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
+    // RPC does not filter by is_active, so we filter on the client.
+    const userCardCountsPromise = (needsCardCount || needsUniqueCount)
+      ? supabaseAdminNoCache.rpc('get_user_card_counts', {
+          p_twitch_user_id: userId,
+          p_streamer_id: streamer.id,
+        })
+      : null;
+
+    // transient な transport / runtime 例外が throw されるとチャット通知全体が
+    // 飛んでしまうため、Promise.all を try/catch で囲みフォールバック挙動を担保する。
+    // PostgREST の `error` payload は下の if で個別にハンドリングする。
+    // Wrap the Promise.all so transient transport/runtime rejections don't abort
+    // the whole chat announcement. PostgREST `error` payloads are still handled below.
+    try {
+      const [allCountResult, userCardCountsResult] = await Promise.all([
+        allCountPromise,
+        userCardCountsPromise,
+      ]);
+
+      if (needsAllCount) {
+        if (allCountResult?.error) {
+          logger.warn('Failed to fetch {all} card count for chat announcement', {
+            streamerId: streamer.id,
+            error: allCountResult.error.message,
+          });
+        } else {
+          allCount = allCountResult?.count ?? 0;
+        }
       }
-    } catch {
-      // カウント取得失敗は無視
+
+      if (needsCardCount || needsUniqueCount) {
+        if (userCardCountsResult?.error) {
+          logger.warn('Failed to fetch user card counts for chat announcement', {
+            streamerId: streamer.id,
+            userTwitchId: userId,
+            error: userCardCountsResult.error.message,
+          });
+          if (needsUniqueCount) {
+            // RPC 失敗時は 0 にフォールバックせず、未定義のままプレースホルダを空文字化
+            // On RPC failure, leave placeholders undefined so buildMessage strips them
+          }
+        } else {
+          // RPC は JSONB 配列を返し、各要素は { count, card: {..., is_active, id}, streamer }
+          // RPC returns a JSONB array; each row holds { count, card: {...}, streamer }
+          const rows = (userCardCountsResult?.data ?? []) as Array<{
+            count: number;
+            card: { id: string; is_active: boolean };
+          }>;
+
+          if (needsCardCount) {
+            // 現在当選したカードの所持数を検索
+            // Find the count for the card that just dropped
+            const currentCardRow = rows.find((row) => row.card?.id === card.id);
+            cardCount = currentCardRow?.count ?? 0;
+          }
+
+          if (needsUniqueCount) {
+            // アクティブカードのみ数えてコンプ進捗を算出
+            // Count only active cards to match the progress definition in dashboard UI
+            uniqueCount = rows.filter((row) => row.card?.is_active === true).length;
+          }
+        }
+      }
+    } catch (err) {
+      // transient 失敗時はプレースホルダを未定義のまま残し、通知は送信する
+      // On transient failure, leave placeholders undefined and still send the announcement
+      logger.warn('Chat announcement count queries threw; falling back to empty placeholders', {
+        streamerId: streamer.id,
+        userTwitchId: userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -471,6 +547,8 @@ async function sendChatAnnouncement(
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,
+    unique: uniqueCount,
+    all: allCount,
     url: collectionUrl,
   };
 
