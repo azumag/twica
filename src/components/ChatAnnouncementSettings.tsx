@@ -23,6 +23,10 @@ const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   card: 100,
   rarity: 12,
   num: 10,
+  // コンプ進捗のユニーク/全種類数は現実的に4桁で十分
+  // Collection progress counts realistically fit in 4 digits
+  unique: 4,
+  all: 4,
   detail: CARD_DESCRIPTION_MAX_CHARACTERS,
 } as const;
 
@@ -33,6 +37,8 @@ function buildChatPreviewMessage(
     card: string;
     rarity: string;
     num: string;
+    unique: string;
+    all: string;
     detail: string;
     url: string;
   }
@@ -42,6 +48,8 @@ function buildChatPreviewMessage(
     .replace(/\{card\}/g, placeholders.card)
     .replace(/\{rarity\}/g, placeholders.rarity)
     .replace(/\{num\}/g, placeholders.num)
+    .replace(/\{unique\}/g, placeholders.unique)
+    .replace(/\{all\}/g, placeholders.all)
     .replace(/\{detail\}/g, placeholders.detail)
     .replace(/\{url\}/g, placeholders.url)
     .replace(/\s+/g, " ")
@@ -96,6 +104,8 @@ export default function ChatAnnouncementSettings({
       card: "レジェンダリーカード",
       rarity: "レジェンダリー",
       num: "3",
+      unique: "5",
+      all: "10",
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
     });
@@ -113,6 +123,8 @@ export default function ChatAnnouncementSettings({
         card: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.card),
         rarity: "レ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.rarity),
         num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
+        unique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.unique),
+        all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
         detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
         url: `https://twica.live/collection/${streamerId}`,
       })

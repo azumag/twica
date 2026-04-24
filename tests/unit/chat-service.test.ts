@@ -260,4 +260,53 @@ describe('TwitchChatService', () => {
       expect(result).toBe(false);
     });
   });
+
+  describe('buildMessage - コンプ進捗プレースホルダー ({unique}/{all})', () => {
+    const basePlaceholders = {
+      user: 'SampleUser',
+      card: 'Legendary Card',
+      rarity: 'レジェンダリー',
+    };
+
+    it('{unique} と {all} が値に置換される', () => {
+      const message = service.buildMessage(
+        'コンプ進捗: {unique}/{all}種類ゲット！',
+        { ...basePlaceholders, unique: 5, all: 10 }
+      );
+      expect(message).toBe('コンプ進捗: 5/10種類ゲット！');
+    });
+
+    it('unique=0 でも "0" として置換される（未所持状態）', () => {
+      const message = service.buildMessage(
+        '{user} は {unique}/{all}種類を所持しています',
+        { ...basePlaceholders, unique: 0, all: 10 }
+      );
+      expect(message).toBe('SampleUser は 0/10種類を所持しています');
+    });
+
+    it('unique/all 未指定時はプレースホルダーが空文字に置換される', () => {
+      const message = service.buildMessage(
+        '{user} が {card} を獲得！{unique}{all}',
+        basePlaceholders
+      );
+      // 末尾の空文字置換後、空白正規化で末尾スペースが落ちる
+      expect(message).toBe('SampleUser が Legendary Card を獲得！');
+    });
+
+    it('all のみ指定された場合でも {unique} は空文字に置換される', () => {
+      const message = service.buildMessage(
+        'カード総数: {all}種類',
+        { ...basePlaceholders, all: 10 }
+      );
+      expect(message).toBe('カード総数: 10種類');
+    });
+
+    it('既存プレースホルダーと併用できる', () => {
+      const message = service.buildMessage(
+        '@{user} が【{rarity}】{card}（{num}枚目 / コンプ {unique}/{all}）を獲得！',
+        { ...basePlaceholders, num: 3, unique: 5, all: 10 }
+      );
+      expect(message).toBe('@SampleUser が【レジェンダリー】Legendary Card（3枚目 / コンプ 5/10）を獲得！');
+    });
+  });
 });
