@@ -71,10 +71,14 @@ export async function GET(request: NextRequest) {
         ? 'invalid_authorization_code'
         : 'twitch_auth_failed'
 
+      // OAuth authorization code は短期有効だが Twitch 側で再交換可能な秘匿値のため、
+      // 部分出力も含めてログに残さない。エラーの種別と Twitch 側のレスポンスのみで切り分ける。
+      // The OAuth `code` is a short-lived but exchangeable secret — even a prefix
+      // could aid replay attacks if logs leak, so we omit it entirely.
       const response = await handleAuthError(
         error,
         errorType,
-        { code: code.substring(0, 10) + '...' },
+        undefined,
         { baseUrl }
       )
 
@@ -87,10 +91,14 @@ export async function GET(request: NextRequest) {
     try {
       twitchUser = await getTwitchUser(tokens.access_token)
     } catch (error) {
+      // この時点では Twitch user 情報が未取得のため twitchUserId は不明。
+      // access_token を context に部分出力しない（漏洩リスク）。
+      // We don't yet know the twitchUserId here, and access_token must never
+      // appear in logs (even as a prefix) — the issue's signature is enough.
       return handleAuthError(
         error,
         'twitch_user_fetch_failed',
-        { twitchUserId: tokens.access_token.substring(0, 10) + '...' },
+        undefined,
         { baseUrl }
       )
     }

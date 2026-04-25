@@ -392,10 +392,13 @@ describe('Auth scope preservation: callback route', () => {
     const { GET } = await import('@/app/api/auth/twitch/callback/route')
     const response = await GET(request)
 
+    // Issue #401: OAuth code は短期有効でも秘匿値のため、部分出力もログに残さない
+    // The OAuth code must never appear in logs — even a 10-char prefix could
+    // assist replay if logs leak. Context is now omitted entirely.
     expect(mockHandleAuthError).toHaveBeenCalledWith(
       authError,
       'invalid_authorization_code',
-      { code: 'test-code...' },
+      undefined,
       { baseUrl: 'http://localhost:3000' },
     )
     expect(errorResponse.cookies.set).toHaveBeenCalledWith(
