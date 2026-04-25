@@ -16,8 +16,7 @@
  */
 
 /**
- * Supabase errors テーブルにエラーを記録する。
- *
+ * Supabase errors テーブルへの記録方針:
  * - サーバーサイド (Cloudflare Workers) でのみ動作
  * - クライアントサイドでは getSupabaseAdmin() が失敗するため無視される
  * - Supabase への記録失敗はメインのエラー処理を阻害しない
@@ -26,96 +25,16 @@
  * dynamic import する理由:
  * - error-handler.ts はクライアント・サーバー両方からインポートされる
  * - サーバーサイドでのみ Supabase クライアントをロードする
+ *
+ * 機密情報マスキング:
+ * - sanitizeContext / extractErrorMessage は log-sanitizer.ts に集約
+ * - 同じユーティリティを logger.ts も使用しており、console 経路 / Supabase 経路で
+ *   同一ポリシーが適用される（Issue #401）
+ * - Sensitive-info masking lives in log-sanitizer so both the console pipeline
+ *   (logger) and the Supabase pipeline use the same redaction policy.
  */
 
-// context に含まれる可能性のある機密情報キー（小文字で照合）
-// OWASP Logging Cheat Sheet および業界標準ロギングライブラリを参考に選定
-//
-// 部分一致キー: キー名に含まれていれば常にマスク
-// 完全一致キー: 完全一致のみマスク（broadcasterUserId 等のデバッグ情報を保持）
-const PARTIAL_SENSITIVE_KEYS = [
-  'password', 'passwd', 'pwd', 'token', 'authorization', 'bearer',
-  'cookie', 'secret', 'apikey', 'api_key', 'api-key',
-  'access_token', 'refresh_token', 'client_secret',
-  'credential', 'private_key',
-  'session_id', 'sessionid', 'otp', 'auth_code',
-  'csrf_token', 'xsrf_token',
-]
-// userId/username は PII に該当するが、broadcasterUserId 等の
-// 複合キーまでマスクするとデバッグに支障をきたすため完全一致のみ
-const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address']
-
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-/**
- * context オブジェクトから機密情報を除外する。
- * GitHub Issue に context がそのまま記載されるため、PII 漏洩を防止。
- */
-function isSensitiveKey(key: string): boolean {
-  const lowerKey = key.toLowerCase()
-  // 完全一致キー: userId はマスクするが broadcasterUserId はマスクしない
-  if (EXACT_SENSITIVE_KEYS.some(k => lowerKey === k)) return true
-  // 部分一致キー: password, token, secret 等はキー名に含まれていれば常にマスク
-  if (PARTIAL_SENSITIVE_KEYS.some(k => lowerKey.includes(k))) return true
-  return false
-}
-
-function sanitizeContext(obj: Record<string, unknown>): Record<string, unknown> {
-  const sanitized: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(obj)) {
-    if (isSensitiveKey(key)) {
-      sanitized[key] = '[REDACTED]'
-    } else if (Array.isArray(value)) {
-      // 配列内のオブジェクトも再帰的にサニタイズ
-      // 例: [{ userId: 'abc' }] → [{ userId: '[REDACTED]' }]
-      sanitized[key] = value.map(item => isRecord(item) ? sanitizeContext(item) : item)
-    } else if (isRecord(value)) {
-      sanitized[key] = sanitizeContext(value)
-    } else {
-      sanitized[key] = value
-    }
-  }
-  return sanitized
-}
-
-/**
- * unknown 型のエラーから可読なメッセージを抽出する。
- * Supabase PostgrestError のようなプレーンオブジェクト（Error 非継承）でも
- * message プロパティがあれば取得し、なければ JSON.stringify でフォールバック。
- * JSON.stringify 時は機密情報キーを除外し、循環参照も安全に処理する。
- * See: https://github.com/azumag/twica/issues/262
- */
-function extractErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object') {
-    // TypeScript 4.9+ の in narrowing で message プロパティに直接アクセス
-    // Note: message はエラー説明文（例: "duplicate key value"）であり、
-    // 呼び出し元が機密情報を含めない前提。値のスキャンは false positive リスクが高いため行わない。
-    if ('message' in error && typeof error.message === 'string') {
-      return error.message
-    }
-    // message がないオブジェクトは JSON.stringify でフォールバック
-    // 機密情報キーを除外し、循環参照を安全に処理
-    const seen = new WeakSet()
-    try {
-      return JSON.stringify(error, (key, value) => {
-        if (key && isSensitiveKey(key)) {
-          return '[REDACTED]'
-        }
-        if (typeof value === 'object' && value !== null) {
-          if (seen.has(value)) return '[Circular]'
-          seen.add(value)
-        }
-        return value
-      })
-    } catch {
-      return '[Unserializable object]'
-    }
-  }
-  return String(error)
-}
+import { sanitizeContext, extractErrorMessage } from '@/lib/log-sanitizer'
 
 /**
  * error から message と stack を統一的に解決する。
@@ -167,12 +86,22 @@ async function logErrorToSupabase(
   }
 }
 
+// Issue #401: console 経路と Supabase 経路で同一マスキングポリシーを適用するため、
+// report*Error 系も console 出力前に context をサニタイズする。Cloudflare Workers logs /
+// wrangler tail に raw な OAuth token 等が漏れることを防止する。
+// Sanitize context for console output to enforce the same redaction policy
+// across both pipelines (Cloudflare Workers logs and Supabase errors table).
+function consoleContext(context: Record<string, unknown> | undefined): Record<string, unknown> | string {
+  if (!context) return ''
+  return sanitizeContext(context)
+}
+
 export async function reportError(error: Error | unknown, context?: Record<string, unknown>) {
   const info = resolveErrorInfo(error)
   // Error インスタンスは [Error] + console.error、それ以外は [Warning] + console.warn
   const label = info.isErrorInstance ? '[Error]' : '[Warning]'
   const log = info.isErrorInstance ? console.error : console.warn
-  log(label, info.message, context ?? '')
+  log(label, info.message, consoleContext(context))
   await logErrorToSupabase(label, info.message, info.stack, context || {})
 }
 
@@ -180,25 +109,25 @@ export async function reportApiError(endpoint: string, method: string, error: Er
   const label = `${method} ${endpoint}`
   const ctx = { endpoint, method, ...additionalContext }
   const { message, stack } = resolveErrorInfo(error)
-  console.error(`[API Error] ${label}:`, message, additionalContext ?? '')
+  console.error(`[API Error] ${label}:`, message, consoleContext(additionalContext))
   await logErrorToSupabase('[API Error]', `${label}: ${message}`, stack, ctx)
 }
 
 export async function reportAuthError(error: Error | unknown, context: { provider?: string; action?: string; userId?: string }) {
   const { message, stack } = resolveErrorInfo(error)
-  console.error('[Auth Error]', message, context)
+  console.error('[Auth Error]', message, sanitizeContext(context as Record<string, unknown>))
   await logErrorToSupabase('[Auth Error]', message, stack, context)
 }
 
 export async function reportGachaError(error: Error | unknown, context: { streamerId?: string; userId?: string; cost?: number }) {
   const { message, stack } = resolveErrorInfo(error)
-  console.error('[Gacha Error]', message, context)
+  console.error('[Gacha Error]', message, sanitizeContext(context as Record<string, unknown>))
   await logErrorToSupabase('[Gacha Error]', message, stack, context)
 }
 
 export async function reportBattleError(error: Error | unknown, context: { battleId?: string; userId?: string; round?: number }) {
   const { message, stack } = resolveErrorInfo(error)
-  console.error('[Battle Error]', message, context)
+  console.error('[Battle Error]', message, sanitizeContext(context as Record<string, unknown>))
   await logErrorToSupabase('[Battle Error]', message, stack, context)
 }
 
@@ -213,13 +142,13 @@ export async function reportRealtimeError(error: unknown, context: { action?: st
   }
 
   const { message, stack } = resolveErrorInfo(error)
-  console.error('[Realtime Error]', message, context)
+  console.error('[Realtime Error]', message, sanitizeContext(context as Record<string, unknown>))
   await logErrorToSupabase('[Realtime Error]', message, stack, context)
 }
 
 export async function reportSecurityError(error: Error | unknown, context: { action?: string; userId?: string; [key: string]: unknown }) {
   const { message, stack } = resolveErrorInfo(error)
-  console.error('[Security Error]', message, context)
+  console.error('[Security Error]', message, sanitizeContext(context))
   await logErrorToSupabase('[Security Error]', message, stack, context)
 }
 

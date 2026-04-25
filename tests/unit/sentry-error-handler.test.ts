@@ -216,6 +216,55 @@ describe('sentry/error-handler', () => {
       expect(insertArg.context.broadcasterUserId).toBe('visible-for-debug');
       expect(insertArg.context.twitchUsername).toBe('visible-for-debug');
     });
+
+    // Issue #401: Supabase 経路だけでなく console 経路にも同じマスキングを適用する
+    it('console 出力でも context のセンシティブキーは [REDACTED] になる', async () => {
+      const consoleErrorSpy = vi.mocked(console.error);
+      await reportError(new Error('boom'), {
+        access_token: 'tk',
+        twitchUserId: '123',
+      });
+
+      // console.error 呼び出しのうち、最後の引数が sanitized context オブジェクトになっている
+      const lastCall = consoleErrorSpy.mock.calls.at(-1);
+      const consoleContext = lastCall?.[2];
+      expect(consoleContext).toEqual({
+        access_token: '[REDACTED]',
+        twitchUserId: '123',
+      });
+    });
+
+    it('reportApiError も console 出力で additionalContext をマスクする', async () => {
+      const consoleErrorSpy = vi.mocked(console.error);
+      await reportApiError('/x', 'POST', new Error('e'), {
+        cookie: 'sid=abc',
+        endpoint_alias: 'X',
+      });
+
+      const lastCall = consoleErrorSpy.mock.calls.at(-1);
+      const consoleContext = lastCall?.[2];
+      expect(consoleContext).toEqual({
+        cookie: '[REDACTED]',
+        endpoint_alias: 'X',
+      });
+    });
+
+    it('reportAuthError も console 出力で context をマスクする', async () => {
+      const consoleErrorSpy = vi.mocked(console.error);
+      await reportAuthError(new Error('auth'), {
+        provider: 'twitch',
+        action: 'callback',
+        userId: 'should-be-redacted',
+      });
+
+      const lastCall = consoleErrorSpy.mock.calls.at(-1);
+      const consoleContext = lastCall?.[2];
+      expect(consoleContext).toMatchObject({
+        provider: 'twitch',
+        action: 'callback',
+        userId: '[REDACTED]',
+      });
+    });
   });
 
   describe('プレーンオブジェクト型エラーの処理 (Issue #262)', () => {
