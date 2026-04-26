@@ -5,7 +5,6 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
-import { getCsrfTokenFromCookie } from "@/lib/client-csrf";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
@@ -215,7 +214,6 @@ export default function DropRateAutoModeContent({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfTokenFromCookie(),
         },
         credentials: "include",
         body: JSON.stringify({
@@ -262,8 +260,6 @@ export default function DropRateAutoModeContent({
     if (rarityHasChanges && !confirm(t("batchDropRate.confirmClose"))) return;
     setPerCardSaving(true);
     try {
-      const csrfToken = getCsrfTokenFromCookie();
-
       const updates: Array<{
         id: string;
         dropRate: number;
@@ -293,7 +289,6 @@ export default function DropRateAutoModeContent({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
         },
         credentials: "include",
         body: JSON.stringify({ streamerId, updates }),

@@ -9,17 +9,6 @@ interface TwitchSubCheckSectionProps {
 }
 
 /**
- * CookieからCSRFトークンを取得
- */
-function getCsrfToken(): string {
-  if (typeof document === "undefined") return "";
-  return document.cookie
-    .split("; ")
-    .find(row => row.startsWith("csrf_token="))
-    ?.split("=")[1] || "";
-}
-
-/**
  * Twitch サブスク確認セクション - アカウント設定ページで使用
  * user:read:subscriptions スコープの再認証と、サブスク状態の手動確認を提供する。
  * ChatAnnouncementSettings の再認証パターンを踏襲。
@@ -73,7 +62,6 @@ export default function TwitchSubCheckSection({
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfToken(),
         },
         body: JSON.stringify({
           additionalScopes: ["user:read:subscriptions"],
@@ -112,7 +100,6 @@ export default function TwitchSubCheckSection({
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfToken(),
         },
       });
 
@@ -162,7 +149,6 @@ export default function TwitchSubCheckSection({
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfToken(),
         },
       });
 

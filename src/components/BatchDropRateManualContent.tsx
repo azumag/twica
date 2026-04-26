@@ -5,7 +5,6 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
-import { getCsrfTokenFromCookie } from "@/lib/client-csrf";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
@@ -198,8 +197,6 @@ export default function BatchDropRateManualContent({
     if (!hasChanges) return;
     setSaving(true);
     try {
-      const csrfToken = getCsrfTokenFromCookie();
-
       const updates: Array<{ id: string; dropRate: number }> = [];
       const addedCardIds = new Set<string>();
 
@@ -232,7 +229,7 @@ export default function BatchDropRateManualContent({
 
       const response = await fetch("/api/cards/batch-update", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken || "" },
+        headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ streamerId, updates }),
       });

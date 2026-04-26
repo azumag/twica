@@ -58,8 +58,8 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
     setError(null)
 
     try {
-      // CSRF保護はサーバー側でHttpOnly Cookieから直接トークンを読み取るため、
-      // クライアントからのX-CSRF-Tokenヘッダー送信は不要（credentials: 'include'でCookieが送信される）
+      // CSRF: HttpOnly Cookie + Origin/Referer 方式（src/lib/csrf.ts 参照）。
+      // Cookie はブラウザが same-origin で自動送信するためヘッダ経由でのトークン送信は不要。
       const response = await fetch('/api/storage-bonus/vote-campaign', {
         method: 'POST',
         credentials: 'include',

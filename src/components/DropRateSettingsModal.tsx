@@ -4,7 +4,6 @@ import { useState } from "react";
 import { useTranslations } from "next-intl";
 import type { Card } from "@/types/database";
 import { DEFAULT_RARITY_WEIGHTS } from "@/lib/constants";
-import { getCsrfTokenFromCookie } from "@/lib/client-csrf";
 import { logger } from "@/lib/logger";
 import DropRateAutoModeContent from "./DropRateAutoModeContent";
 import BatchDropRateManualContent from "./BatchDropRateManualContent";
@@ -60,7 +59,6 @@ export default function DropRateSettingsModal({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfTokenFromCookie(),
         },
         credentials: "include",
         body: JSON.stringify({ streamerId, rarityWeights: apiWeights }),

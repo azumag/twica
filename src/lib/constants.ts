@@ -173,7 +173,8 @@ export const STATE_COOKIE_OPTIONS = {
 
 export const CSRF_CONFIG = {
   TOKEN_LENGTH: 32,
-  HEADER_NAME: 'X-CSRF-Token',
+  // CSRF 検証は HttpOnly Cookie + Origin/Referer 方式（src/lib/csrf.ts 参照）。
+  // ヘッダ経由のトークン送信は採用していないため HEADER_NAME は意図的に存在しない。
   MAX_RETRY_COUNT: 3,
   RETRY_DELAY_MS: 50,
   ALLOW_LOCAL_ORIGINS: process.env.CSRF_ALLOW_ALL_LOCAL === 'true' && process.env.NODE_ENV === 'development',

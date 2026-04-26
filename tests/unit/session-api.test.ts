@@ -28,7 +28,7 @@ describe('GET /api/session', () => {
     vi.clearAllMocks()
   })
 
-  it('認証済みセッションでは CSRF トークンを再発行してレスポンスヘッダーに載せる', async () => {
+  it('認証済みセッションでは CSRF Cookie を遅延発行する（トークンはヘッダで返さない）', async () => {
     mockGetSession.mockResolvedValue({
       twitchUserId: '123',
       twitchUsername: 'user',
@@ -43,7 +43,29 @@ describe('GET /api/session', () => {
     const response = await GET()
 
     expect(response.status).toBe(200)
-    expect(response.headers.get('x-csrf-token')).toBe('fresh-csrf-token')
+    // Issue #400: HttpOnly Cookie 方式に統一したため、レスポンスヘッダで token は返さない。
+    expect(response.headers.get('x-csrf-token')).toBeNull()
+    expect(mockSetCSRFToken).toHaveBeenCalledTimes(1)
+    await expect(response.json()).resolves.toMatchObject({
+      twitchUserId: '123',
+    })
+  })
+
+  it('CSRF Cookie 発行が失敗してもレスポンス本体は返す', async () => {
+    mockGetSession.mockResolvedValue({
+      twitchUserId: '123',
+      twitchUsername: 'user',
+      twitchDisplayName: 'User',
+      twitchProfileImageUrl: 'https://example.com/avatar.png',
+      broadcasterType: 'affiliate',
+      expiresAt: Date.now() + 60_000,
+      version: 1,
+    })
+    mockSetCSRFToken.mockRejectedValueOnce(new Error('boom'))
+
+    const response = await GET()
+
+    expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({
       twitchUserId: '123',
     })

@@ -36,7 +36,6 @@ function createRequest(body: Record<string, unknown> = { code: 'test-code-123' }
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-CSRF-Token': 'test-csrf-token',
     },
     body: JSON.stringify(body),
   })

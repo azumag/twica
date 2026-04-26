@@ -30,7 +30,6 @@ function createRequest(): NextRequest {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-CSRF-Token': 'test-csrf-token',
     },
   })
 }

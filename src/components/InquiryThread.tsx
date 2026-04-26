@@ -50,18 +50,35 @@ export default function InquiryThread({
     setSuccess(false);
 
     try {
-      const csrfRes = await fetch("/api/session", { credentials: "include" });
-      const csrfToken = csrfRes.headers.get("x-csrf-token") || "";
-
-      const res = await fetch(`/api/support-inquiries/${inquiryId}/messages`, {
+      // CSRF: HttpOnly Cookie + Origin/Referer 検証方式（src/lib/csrf.ts 参照）。
+      // ブラウザが same-origin で自動送信する Cookie をサーバーが検証するため、
+      // クライアント側でトークンを取得・送信する必要はない。CSRF Cookie 未発行で
+      // 403 が返った場合のみ、/api/session を叩いて遅延発行してから 1 度だけ再試行する。
+      let res = await fetch(`/api/support-inquiries/${inquiryId}/messages`, {
         method: "POST",
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
         },
         body: JSON.stringify({ body: replyBody.trim() }),
       });
+
+      if (res.status === 403) {
+        const refresh = await fetch("/api/session", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (refresh.ok) {
+          res = await fetch(`/api/support-inquiries/${inquiryId}/messages`, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ body: replyBody.trim() }),
+          });
+        }
+      }
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
