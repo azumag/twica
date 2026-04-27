@@ -8,6 +8,19 @@ import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from '@/lib/constants'
 
 const TWITCH_API_URL = 'https://api.twitch.tv/helix'
 
+// 一時的な障害（Twitch API 5xx, 429 Rate Limit, ネットワーク例外）に対してのみリトライ。
+// 4xx (401/403/404) は永続的失敗として即座に返す。
+// 過剰なリトライは EventSub の DO CPU time を圧迫するため、最大2回（合計3試行）に抑える。
+// Retry only on transient failures (Twitch API 5xx / 429 / network exceptions).
+// 4xx (401/403/404) is treated as terminal failure. Capped at 2 retries (3 attempts total)
+// to avoid excessive DO CPU time on the EventSub path. See Issue #389.
+const CHAT_SEND_MAX_ATTEMPTS = 3
+// 250ms, 500ms。ジッターは付けない（並列度が低く herd 効果が小さいため）。
+const CHAT_SEND_RETRY_DELAYS_MS = [250, 500]
+const RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504])
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
 /**
  * チャット通知のプレースホルダー型
  * Placeholders available for chat announcement templates
@@ -75,106 +88,156 @@ export class TwitchChatService {
    * @returns 成功した場合はtrue、失敗した場合はfalse
    */
   async sendChatMessage(broadcasterTwitchUserId: string, message: string): Promise<boolean> {
-    try {
-      // 送信前にDBのスコープを確認（無駄なAPI呼び出し抑止）
-      // Check DB scope before sending to avoid unnecessary API calls (e.g., repeated 401s from EventSub)
-      const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
-      if (!hasChatScope) {
-        logger.info('Skipping chat message - user:write:chat scope not granted', { broadcasterTwitchUserId })
-        return false
-      }
+    // 送信前にDBのスコープを確認（無駄なAPI呼び出し抑止）
+    // Check DB scope before sending to avoid unnecessary API calls (e.g., repeated 401s from EventSub)
+    const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
+    if (!hasChatScope) {
+      logger.info('Skipping chat message - user:write:chat scope not granted', { broadcasterTwitchUserId })
+      return false
+    }
 
-      // 配信者本人のアクセストークンを取得（user:write:chatスコープが必要）
-      // Get the broadcaster's access token (requires user:write:chat scope)
-      const accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
+    // 配信者本人のアクセストークンを取得（user:write:chatスコープが必要）
+    // Get the broadcaster's access token (requires user:write:chat scope)
+    const accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
 
-      if (!accessToken) {
-        logger.warn('No access token available for broadcaster', { broadcasterTwitchUserId })
-        return false
-      }
+    if (!accessToken) {
+      logger.warn('No access token available for broadcaster', { broadcasterTwitchUserId })
+      return false
+    }
 
-      // メッセージを500文字に制限（Twitch APIの制限）
-      // Truncate message to 500 characters (Twitch API limit)
-      const truncatedMessage = countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS
-        ? `${truncateCharacters(message, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS - 3)}...`
-        : message
+    // メッセージを500文字に制限（Twitch APIの制限）
+    // Truncate message to 500 characters (Twitch API limit)
+    const truncatedMessage = countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS
+      ? `${truncateCharacters(message, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS - 3)}...`
+      : message
 
-      // Twitch Helix API: POST /helix/chat/messages
-      // sender_id と broadcaster_id を同じにすることで、配信者として投稿
-      const response = await fetch(`${TWITCH_API_URL}/chat/messages`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Client-Id': this.clientId,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          broadcaster_id: broadcasterTwitchUserId,
-          sender_id: broadcasterTwitchUserId,
-          message: truncatedMessage,
-        }),
-      })
+    const requestInit: RequestInit = {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Client-Id': this.clientId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        broadcaster_id: broadcasterTwitchUserId,
+        sender_id: broadcasterTwitchUserId,
+        message: truncatedMessage,
+      }),
+    }
 
-      if (!response.ok) {
-        const errorBody: TwitchApiError = await response.json().catch(() => ({}))
+    // 一時的な障害（5xx / 429 / ネットワーク例外）に対してのみ最大2回リトライ。
+    // 各試行の最終的な「エラーの素」を保持し、全試行失敗時に1度だけ報告する。
+    // Retry only on transient failures; record the last error to report once after exhaustion.
+    let lastResponse: Response | null = null
+    let lastResponseErrorBody: TwitchApiError | null = null
+    let lastException: unknown = null
 
-        // 401かつスコープ不足の場合、ログのみ出力しDBは変更しない
-        // sub-check.tsと同じ方針: 401/403でのスコープ除去は行わず、スコープ除去はユーザーの手動確認APIでのみ行う
-        // 別端末ログイン等でトークンにスコープがない場合、再認証で復旧するためDB保護が重要
-        // On 401 with missing scope, only log a warning without modifying DB.
-        // Follows sub-check.ts pattern: scope removal only via user-initiated verification API.
-        // When token lacks scope (e.g., login from another device), DB preservation allows recovery via re-auth.
-        if (response.status === 401 && (
-          errorBody.message?.includes('user:write:chat') ||
-          errorBody.message?.includes('Insufficient authorization')
-        )) {
-          logger.warn('Twitch API returned 401 for chat scope - token/DB mismatch detected (DB preserved)', {
-            broadcasterTwitchUserId,
-            twitchError: errorBody.message,
-          })
-        }
-
-        // Supabase に記録し、Cron Worker 経由で GitHub Issue を自動作成する
-        // Report to Supabase so the Cron Worker can create a GitHub Issue
-        // 自己修復の後に配置（自己修復が確実に実行されるようにするため）
-        // Placed after self-healing to ensure healing runs regardless of reporting outcome
-        // try-catch で囲む: reportApiError の失敗が return false をブロックしないようにする
-        // Wrapped in try-catch so reportApiError failure doesn't prevent return false
-        try {
-          await reportApiError('/helix/chat/messages', 'POST',
-            new Error(`Twitch API ${response.status}: ${errorBody.message || 'Unknown error'}`),
-            { broadcasterTwitchUserId, status: response.status, twitchError: errorBody.error }
-          )
-        } catch {
-          // reportApiError 自体の失敗はベストエフォート — メインフローをブロックしない
-          // reportApiError failure is best-effort — must not block main flow
-        }
-
-        return false
-      }
-
-        logger.info('Chat message sent successfully', {
-          broadcasterTwitchUserId,
-          messageLength: countCharacters(truncatedMessage),
-        })
-
-      return true
-    } catch (error) {
-      // ネットワークエラーなど予期しない例外をSupabaseに記録
-      // reportError 内部で console.error も出力される
-      // try-catch で囲む: reportError の失敗で例外が sendChatMessage 外に漏れないようにする
-      // Wrapped in try-catch so reportError failure doesn't leak exceptions to callers
+    for (let attempt = 1; attempt <= CHAT_SEND_MAX_ATTEMPTS; attempt++) {
       try {
-        await reportError(error, {
-          context: 'chat-service:sendChatMessage',
+        // Twitch Helix API: POST /helix/chat/messages
+        // sender_id と broadcaster_id を同じにすることで、配信者として投稿
+        const response = await fetch(`${TWITCH_API_URL}/chat/messages`, requestInit)
+
+        if (response.ok) {
+          logger.info('Chat message sent successfully', {
+            broadcasterTwitchUserId,
+            messageLength: countCharacters(truncatedMessage),
+            attempt,
+          })
+          return true
+        }
+
+        const errorBody: TwitchApiError = await response.json().catch(() => ({}))
+        lastResponse = response
+        lastResponseErrorBody = errorBody
+        lastException = null
+
+        // 4xx は永続的失敗とみなしリトライしない（401 スコープ・403 禁止・404 not found 等）。
+        // 429 と 5xx のみリトライ対象。
+        // 4xx is terminal (not retryable). Only 429 and 5xx are retried.
+        const isRetryable = RETRYABLE_HTTP_STATUSES.has(response.status) && attempt < CHAT_SEND_MAX_ATTEMPTS
+        if (!isRetryable) {
+          break
+        }
+
+        logger.warn('Twitch chat message transient failure - retrying', {
           broadcasterTwitchUserId,
+          status: response.status,
+          attempt,
+          nextDelayMs: CHAT_SEND_RETRY_DELAYS_MS[attempt - 1],
         })
+        await sleep(CHAT_SEND_RETRY_DELAYS_MS[attempt - 1])
+      } catch (error) {
+        // ネットワーク例外（fetch reject）はリトライ対象。最終試行のみ外で報告する。
+        // Network exception (fetch reject) is retryable; only the final one will be reported.
+        lastException = error
+        lastResponse = null
+        lastResponseErrorBody = null
+
+        if (attempt >= CHAT_SEND_MAX_ATTEMPTS) {
+          break
+        }
+
+        logger.warn('Twitch chat message network error - retrying', {
+          broadcasterTwitchUserId,
+          attempt,
+          nextDelayMs: CHAT_SEND_RETRY_DELAYS_MS[attempt - 1],
+          error: error instanceof Error ? error.message : String(error),
+        })
+        await sleep(CHAT_SEND_RETRY_DELAYS_MS[attempt - 1])
+      }
+    }
+
+    // 全試行が失敗。HTTPエラー or ネットワーク例外のいずれかを1度だけ報告する。
+    // All attempts exhausted. Report exactly once.
+    if (lastResponse !== null) {
+      const errorBody = lastResponseErrorBody ?? {}
+
+      // 401かつスコープ不足の場合、ログのみ出力しDBは変更しない
+      // sub-check.tsと同じ方針: 401/403でのスコープ除去は行わず、スコープ除去はユーザーの手動確認APIでのみ行う
+      // 別端末ログイン等でトークンにスコープがない場合、再認証で復旧するためDB保護が重要
+      // On 401 with missing scope, only log a warning without modifying DB.
+      // Follows sub-check.ts pattern: scope removal only via user-initiated verification API.
+      // When token lacks scope (e.g., login from another device), DB preservation allows recovery via re-auth.
+      if (lastResponse.status === 401 && (
+        errorBody.message?.includes('user:write:chat') ||
+        errorBody.message?.includes('Insufficient authorization')
+      )) {
+        logger.warn('Twitch API returned 401 for chat scope - token/DB mismatch detected (DB preserved)', {
+          broadcasterTwitchUserId,
+          twitchError: errorBody.message,
+        })
+      }
+
+      // Supabase に記録し、Cron Worker 経由で GitHub Issue を自動作成する
+      // Report to Supabase so the Cron Worker can create a GitHub Issue
+      // try-catch で囲む: reportApiError の失敗が return false をブロックしないようにする
+      // Wrapped in try-catch so reportApiError failure doesn't prevent return false
+      try {
+        await reportApiError('/helix/chat/messages', 'POST',
+          new Error(`Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`),
+          { broadcasterTwitchUserId, status: lastResponse.status, twitchError: errorBody.error }
+        )
       } catch {
-        // reportError 自体の失敗はベストエフォート — 必ず return false に到達させる
-        // reportError failure is best-effort — must always reach return false
+        // reportApiError 自体の失敗はベストエフォート — メインフローをブロックしない
+        // reportApiError failure is best-effort — must not block main flow
       }
       return false
     }
+
+    // ネットワーク例外パス。reportError 内部で console.error も出力される
+    // try-catch で囲む: reportError の失敗で例外が sendChatMessage 外に漏れないようにする
+    // Network exception path. Wrapped in try-catch so reportError failure doesn't leak.
+    try {
+      await reportError(lastException, {
+        context: 'chat-service:sendChatMessage',
+        broadcasterTwitchUserId,
+      })
+    } catch {
+      // reportError 自体の失敗はベストエフォート — 必ず return false に到達させる
+      // reportError failure is best-effort — must always reach return false
+    }
+    return false
   }
 
   /**
