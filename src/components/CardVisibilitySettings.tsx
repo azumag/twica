@@ -76,9 +76,19 @@ export default function CardVisibilitySettings({
   const handleToggleShowUnowned = useCallback(async () => {
     const next = !showUnowned;
     setShowUnowned(next);
-    const ok = await saveSettings({ showUnownedCards: next });
+    // 表示OFFに切り替える際は、詳細公開フラグも同時に false にしておく。
+    // 残しておくと、後で再度ONにした瞬間に意図せず詳細が公開状態になってしまうため。
+    // When turning visibility off, also reset the details flag so a later re-enable
+    // doesn't unexpectedly reveal images/descriptions due to stale DB state.
+    const payload = next
+      ? { showUnownedCards: true }
+      : { showUnownedCards: false, showUnownedCardDetails: false };
+    const ok = await saveSettings(payload);
     if (ok) {
       setMessage(next ? t("messages.shownEnabled") : t("messages.shownDisabled"));
+      if (!next) {
+        setShowDetails(false);
+      }
     } else {
       setShowUnowned(!next);
     }

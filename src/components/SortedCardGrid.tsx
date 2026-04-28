@@ -56,18 +56,31 @@ export default function SortedCardGrid({
         // First 4 cards get priority for LCP optimization
         // 最初の4枚のカードはLCP最適化のためpriority設定
         const isPriority = index < 4;
-        // 未所持カードで「詳細を隠す」設定の場合は image_url を null に伏せる。
-        // これにより画像領域は noImageText (例: "未所持") のみ表示される。
-        // When hiding unowned details, mask image_url so the image slot only renders the placeholder text.
-        const shouldMaskImage = !isOwned && hideUnownedDetails;
-        const effectiveImageUrl = shouldMaskImage ? null : card.image_url;
+
+        // 未所持カードの「詳細マスク」モード:
+        //   show_unowned_card_details=false (=hideUnownedDetails=true) のときに有効。
+        //   名前/画像/説明をプレースホルダーに置き換え、レアリティバッジのみ残す。
+        //
+        // 「詳細公開」モード (hideUnownedDetails=false) のときは未所持カードでも
+        //   名前・画像・説明を本来のまま表示する。所持済カードとの違いはロック表示と
+        //   グレースケール、所有数の非表示のみ。
+        //
+        // Issue #395 の要求:
+        //   - 視聴者は所持していないカードを「⑤???」のような形で見られる (placeholder)
+        //   - もしくは公開モードでは画像と説明まで含めて見られる
+        const maskUnownedDetails = !isOwned && hideUnownedDetails;
+        const displayName = maskUnownedDetails ? translations.unownedCard : card.name;
+        const displayImageUrl = maskUnownedDetails ? null : card.image_url;
+        const showDescription =
+          (isOwned || !hideUnownedDetails) && Boolean(card.description);
+
         return (
           <CollectionCard
             key={card.id}
             id={card.id}
             streamerId={streamerId}
-            name={isOwned ? card.name : translations.unownedCard}
-            imageUrl={effectiveImageUrl}
+            name={displayName}
+            imageUrl={displayImageUrl}
             rarityInfo={{
               label: rarityInfo.label,
               color: rarityInfo.color,
@@ -80,14 +93,14 @@ export default function SortedCardGrid({
             }
             priority={isPriority}
             noImageText={
-              shouldMaskImage ? translations.unownedCard : translations.noImage
+              maskUnownedDetails ? translations.unownedCard : translations.noImage
             }
             isOwned={isOwned}
             isInactive={isOwned && !card.is_active}
             inactiveLabel={translations.inactiveStatus}
             descriptionComponent={
-              isOwned && card.description ? (
-                <ExpandableDescription description={card.description} />
+              showDescription ? (
+                <ExpandableDescription description={card.description as string} />
               ) : undefined
             }
           />

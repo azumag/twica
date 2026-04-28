@@ -52,15 +52,25 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
       />
     )
     expect(screen.getByText('OwnedCard')).toBeInTheDocument()
-    expect(screen.getAllByRole('img')[0]).toHaveAttribute(
-      'alt',
-      'OwnedCard'
-    )
+    expect(screen.getByAltText('OwnedCard')).toBeInTheDocument()
   })
 
-  it('renders unowned card with masked name when hideUnownedDetails=false (legacy isOwned=false rendering)', () => {
+  it('reveals name/image/description for unowned cards when hideUnownedDetails=false (公開モード)', () => {
+    // show_unowned_card_details=true → hideUnownedDetails=false の経路。
+    // i18n ラベル「画像・説明を公開」の契約どおり、未所持カードでも本来の name / image_url
+    // / description が表示される必要がある（所持カードとの差はロックアイコンと所有数の非表示のみ）。
+    // The "reveal details" mode contract: name, image, and description must be visible
+    // even for unowned cards; only ownership-specific UI (count, lock styling) differs.
     const cards = [
-      { ...baseCard({ id: 'unowned-1', name: 'SecretCard' }), count: 0, isOwned: false },
+      {
+        ...baseCard({
+          id: 'unowned-1',
+          name: 'SecretCard',
+          description: 'カード説明テキスト',
+        }),
+        count: 0,
+        isOwned: false,
+      },
     ]
     render(
       <SortedCardGrid
@@ -70,15 +80,25 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
         translations={baseTranslations}
       />
     )
-    expect(screen.queryByText('SecretCard')).not.toBeInTheDocument()
-    expect(screen.getAllByText('???').length).toBeGreaterThan(0)
-    // 画像 (image_url が指定されているため <img> が描画される)
-    expect(screen.getAllByRole('img').length).toBe(1)
+    // 名前は本来のものが見える
+    expect(screen.getByText('SecretCard')).toBeInTheDocument()
+    // 画像も描画される（alt は本来の名前）
+    expect(screen.getByAltText('SecretCard')).toBeInTheDocument()
+    // 説明テキストも見える
+    expect(screen.getByText(/カード説明テキスト/)).toBeInTheDocument()
   })
 
-  it('hides unowned card image when hideUnownedDetails=true (placeholder only)', () => {
+  it('hides unowned card image / name / description when hideUnownedDetails=true (placeholder only)', () => {
     const cards = [
-      { ...baseCard({ id: 'unowned-1', name: 'SecretCard' }), count: 0, isOwned: false },
+      {
+        ...baseCard({
+          id: 'unowned-1',
+          name: 'SecretCard',
+          description: 'カード説明テキスト',
+        }),
+        count: 0,
+        isOwned: false,
+      },
     ]
     render(
       <SortedCardGrid
@@ -92,8 +112,30 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     expect(screen.queryByText('SecretCard')).not.toBeInTheDocument()
     // 画像領域は noImageText (= unownedCard) のプレースホルダーになる
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    // 説明テキストは漏れない
+    expect(screen.queryByText(/カード説明テキスト/)).not.toBeInTheDocument()
     // "???" は名前とプレースホルダーの両方で出るため、複数あって良い
     expect(screen.getAllByText('???').length).toBeGreaterThan(0)
+  })
+
+  it('always shows the rarity badge regardless of hideUnownedDetails (Issue #395 core requirement)', () => {
+    // Issue 本文の「⑤???」ように、レアリティ（または序列）は常に視聴者に出すのが要点。
+    // The rarity badge must always be visible — that is what makes "placeholder mode"
+    // useful at all (otherwise the placeholder would carry zero information).
+    const cards = [
+      { ...baseCard({ id: 'unowned-1', name: 'SecretCard', rarity: 'legendary' }), count: 0, isOwned: false },
+    ]
+    render(
+      <SortedCardGrid
+        cards={cards}
+        streamerId="streamer-1"
+        hideUnownedDetails
+        translations={baseTranslations}
+      />
+    )
+    // RARITIES のラベルは constants.ts に定義されている (legendary → "レジェンダリー")
+    // The rarity label comes from RARITIES constants, not i18n.
+    expect(screen.getByText("レジェンダリー")).toBeInTheDocument()
   })
 
   it('still shows owned card details even when hideUnownedDetails=true', () => {
