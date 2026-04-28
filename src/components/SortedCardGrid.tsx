@@ -22,6 +22,9 @@ interface SortedCardGridProps {
   // Streamer ID for linking to card detail pages
   // カード詳細ページへのリンク用配信者ID
   streamerId: string;
+  // 未所持カードの画像/説明を隠すか（プレースホルダー表示）
+  // Issue #395: when true, unowned cards render without image/description (rarity badge + "???" only).
+  hideUnownedDetails?: boolean;
   // Translation strings - must be serializable (no functions)
   // 翻訳文字列 - シリアライズ可能である必要あり（関数不可）
   translations: {
@@ -42,6 +45,7 @@ interface SortedCardGridProps {
 export default function SortedCardGrid({
   cards,
   streamerId,
+  hideUnownedDetails = false,
   translations,
 }: SortedCardGridProps) {
   return (
@@ -52,13 +56,18 @@ export default function SortedCardGrid({
         // First 4 cards get priority for LCP optimization
         // 最初の4枚のカードはLCP最適化のためpriority設定
         const isPriority = index < 4;
+        // 未所持カードで「詳細を隠す」設定の場合は image_url を null に伏せる。
+        // これにより画像領域は noImageText (例: "未所持") のみ表示される。
+        // When hiding unowned details, mask image_url so the image slot only renders the placeholder text.
+        const shouldMaskImage = !isOwned && hideUnownedDetails;
+        const effectiveImageUrl = shouldMaskImage ? null : card.image_url;
         return (
           <CollectionCard
             key={card.id}
             id={card.id}
             streamerId={streamerId}
             name={isOwned ? card.name : translations.unownedCard}
-            imageUrl={card.image_url}
+            imageUrl={effectiveImageUrl}
             rarityInfo={{
               label: rarityInfo.label,
               color: rarityInfo.color,
@@ -70,7 +79,9 @@ export default function SortedCardGrid({
                 : undefined
             }
             priority={isPriority}
-            noImageText={translations.noImage}
+            noImageText={
+              shouldMaskImage ? translations.unownedCard : translations.noImage
+            }
             isOwned={isOwned}
             isInactive={isOwned && !card.is_active}
             inactiveLabel={translations.inactiveStatus}

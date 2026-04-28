@@ -29,6 +29,10 @@ interface StreamerCollectionProps {
   visibleCardTypes: number;
   // 過去のコンプリート達成履歴（デフォルト空配列で後方互換）
   completionHistory?: { total_cards: number; completed_at: string }[];
+  // 未所持カードの画像/説明を隠すか（プレースホルダー表示にするか）
+  // Issue #395: streamer の show_unowned_card_details=false のときに true。
+  // When true, unowned cards are rendered as placeholders (no image / no description).
+  hideUnownedDetails?: boolean;
 }
 
 /**
@@ -44,6 +48,7 @@ export default async function StreamerCollection({
   progress,
   visibleCardTypes,
   completionHistory = [],
+  hideUnownedDetails = false,
 }: StreamerCollectionProps) {
   const t = await getTranslations("collection");
   const tStreamer = await getTranslations("streamerCollection");
@@ -97,6 +102,7 @@ export default async function StreamerCollection({
           <SortedCardGrid
             cards={cards}
             streamerId={streamer.id}
+            hideUnownedDetails={hideUnownedDetails}
             translations={{
               // Pass template string instead of function (Server -> Client serialization)
               // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）

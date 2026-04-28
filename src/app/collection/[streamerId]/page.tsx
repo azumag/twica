@@ -53,25 +53,46 @@ export default async function StreamerCollectionPage({
   ]);
 
   const activeCardIds = new Set(activeCards.map((card) => card.id));
-  const cards: StreamerCollectionCard[] = sortCollectedCards(userCards).map((card) => ({
+  const ownedCards: StreamerCollectionCard[] = sortCollectedCards(userCards).map((card) => ({
     ...card,
     count: card.count,
     isOwned: true,
   }));
 
-  // Calculate collection statistics
-  // コレクション統計を計算
+  // 未所持カードの視聴者向け表示（Issue #395）
+  // Unowned-card visibility for viewers (Issue #395):
+  //  - show_unowned_cards=false (default): viewer sees only owned cards (legacy behavior)
+  //  - show_unowned_cards=true: viewer also sees unowned active cards (sorted by rarity, after owned)
+  // 「未所持の詳細を隠す」表示制御は SortedCardGrid の props で行うため、ここではカード自体を含めるかだけを判定する。
+  // The "hide details" toggle is enforced in SortedCardGrid; here we only decide inclusion.
+  const ownedCardIds = new Set(ownedCards.map((card) => card.id));
+  const unownedCards: StreamerCollectionCard[] = streamer.show_unowned_cards
+    ? sortCollectedCards(
+        activeCards.filter((card) => !ownedCardIds.has(card.id))
+      ).map((card) => ({
+        ...card,
+        count: 0,
+        isOwned: false,
+      }))
+    : [];
+
+  // 所持カードを先頭に、未所持カードを後ろに連結
+  // Owned cards first, unowned cards appended after — keeps "your collection" at the top.
+  const cards: StreamerCollectionCard[] = [...ownedCards, ...unownedCards];
+
+  // Calculate collection statistics — 未所持カードはカウントしない（所持実績のみ）
+  // Stats summarize the viewer's actual ownership; unowned cards are excluded.
   const stats = {
-    total: cards.reduce((sum, c) => sum + c.count, 0),
-    unique: cards.length,
-    legendary: cards.filter((c) => c.rarity === "legendary").length,
-    epic: cards.filter((c) => c.rarity === "epic").length,
-    rare: cards.filter((c) => c.rarity === "rare").length,
-    common: cards.filter((c) => c.rarity === "common").length,
+    total: ownedCards.reduce((sum, c) => sum + c.count, 0),
+    unique: ownedCards.length,
+    legendary: ownedCards.filter((c) => c.rarity === "legendary").length,
+    epic: ownedCards.filter((c) => c.rarity === "epic").length,
+    rare: ownedCards.filter((c) => c.rarity === "rare").length,
+    common: ownedCards.filter((c) => c.rarity === "common").length,
   };
 
   const progress = {
-    owned: countOwnedActiveCardTypes(cards, activeCardIds),
+    owned: countOwnedActiveCardTypes(ownedCards, activeCardIds),
     total: activeCards.length,
   };
   const isCurrentComplete = progress.total > 0 && progress.owned >= progress.total;
@@ -94,8 +115,12 @@ export default async function StreamerCollectionPage({
       cards={cards}
       stats={stats}
       progress={progress}
+      // visibleCardTypes は「視聴者がページ上で見ている種類数」(所持 + 表示中の未所持)
+      // visibleCardTypes is the number of card types the viewer sees on this page.
       visibleCardTypes={cards.length}
       completionHistory={completionHistoryForDisplay}
+      // 未所持カードの画像/詳細を隠すかどうか（show_unowned_cards=false の場合は意味を持たない）
+      hideUnownedDetails={!streamer.show_unowned_card_details}
     />
   );
 }
