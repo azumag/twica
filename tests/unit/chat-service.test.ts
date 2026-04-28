@@ -16,11 +16,18 @@ vi.mock('@/lib/sentry/error-handler', () => ({
 describe('TwitchChatService', () => {
   let service: TwitchChatService;
   const originalFetch = global.fetch;
+  // リトライの指数バックオフ遅延をテスト時のみ即時解決し、テスト時間を短縮する。
+  // describe スコープ内で上書き／復元することで他テストファイルへの副作用を防ぐ。
+  // Stub setTimeout to immediate-fire only inside this describe; restored in afterEach
+  // so other test files are unaffected.
+  const originalSetTimeout = globalThis.setTimeout;
 
   beforeEach(() => {
     vi.clearAllMocks();
     // 各テストの独立性を保つため fetch mock を初期化
     global.fetch = vi.fn();
+    // @ts-expect-error - test-only stub: delay引数を無視してコールバックを即時実行
+    globalThis.setTimeout = (cb: () => void) => { cb(); return 0; };
     // デフォルトではスコープあり（個別テストでオーバーライド可能）
     vi.mocked(hasScope).mockResolvedValue(true);
     service = new TwitchChatService();
@@ -28,6 +35,7 @@ describe('TwitchChatService', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
   });
 
   describe('sendChatMessage - hasScope事前チェック', () => {
@@ -258,6 +266,154 @@ describe('TwitchChatService', () => {
 
       // 外側 catch 内の reportError が失敗しても例外が漏れず false を返す
       expect(result).toBe(false);
+    });
+  });
+
+  describe('sendChatMessage - 一時的失敗のリトライ (Issue #389)', () => {
+    it('500エラーでリトライし、2回目で成功した場合は true を返す', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'Internal Server Error', message: 'Unknown error' }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+        } as Response);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(true);
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      // リトライ成功時は reportApiError は呼ばれない
+      expect(reportApiError).not.toHaveBeenCalled();
+    });
+
+    it('500エラーが連続で起きた場合は最大3回試行し reportApiError が1度だけ呼ばれる', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: 'Internal Server Error', message: 'Unknown error' }),
+      } as Response);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(false);
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+      // すべて失敗した時のみ1回だけ通報
+      expect(reportApiError).toHaveBeenCalledTimes(1);
+      expect(reportApiError).toHaveBeenCalledWith(
+        '/helix/chat/messages',
+        'POST',
+        expect.any(Error),
+        expect.objectContaining({ broadcasterTwitchUserId: '123456789', status: 500 }),
+      );
+    });
+
+    it('502/503/504/429 でも同様にリトライ対象', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      for (const status of [502, 503, 504, 429]) {
+        vi.clearAllMocks();
+        vi.mocked(hasScope).mockResolvedValue(true);
+        vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce({
+            ok: false,
+            status,
+            json: () => Promise.resolve({ error: 'Service Unavailable' }),
+          } as Response)
+          .mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+          } as Response);
+
+        const result = await service.sendChatMessage('123456789', 'test message');
+
+        expect(result).toBe(true);
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      }
+    });
+
+    it('401はリトライしない（永続的失敗）', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({
+          error: 'Unauthorized',
+          status: 401,
+          message: 'User access token requires the user:write:chat scope.',
+        }),
+      } as Response);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(false);
+      // 401は1回で終わる（リトライしない）
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(reportApiError).toHaveBeenCalledTimes(1);
+    });
+
+    it('404もリトライしない（永続的失敗）', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: 'Not Found' }),
+      } as Response);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(false);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('ネットワーク例外もリトライ対象、最終的に reportError が1度だけ呼ばれる', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNRESET'));
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(false);
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(reportApiError).not.toHaveBeenCalled();
+    });
+
+    it('ネットワーク例外→500→200 のように混在しても最終的に成功すれば true', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      vi.mocked(global.fetch)
+        .mockRejectedValueOnce(new Error('ECONNRESET'))
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'Internal Server Error' }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+        } as Response);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(true);
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+      expect(reportApiError).not.toHaveBeenCalled();
+      expect(reportError).not.toHaveBeenCalled();
     });
   });
 
