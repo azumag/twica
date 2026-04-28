@@ -355,16 +355,10 @@ export default function CardManager({
     if (initialRarityWeights !== null && initialRarityWeights !== undefined) return;
     autoSavedWeightsRef.current = true;
 
-    const csrfToken = document.cookie
-      .split("; ")
-      .find(row => row.startsWith("csrf_token="))
-      ?.split("=")[1] || "";
-
     fetch("/api/streamer/settings", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-CSRF-Token": csrfToken,
       },
       credentials: "include",
       body: JSON.stringify({
@@ -471,13 +465,6 @@ export default function CardManager({
     setEmoteError(null);
 
     try {
-      // Get CSRF token from cookie
-      // CookieからCSRFトークンを取得
-      const csrfToken = document.cookie
-        .split("; ")
-        .find(row => row.startsWith("csrf_token="))
-        ?.split("=")[1];
-
       const selectedEmoteData = emotes.filter(e => selectedEmotes.has(e.id));
       const cardsToCreate = selectedEmoteData.map(emote => ({
         name: emote.name,
@@ -491,7 +478,6 @@ export default function CardManager({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken || "",
         },
         credentials: "include",
         body: JSON.stringify({

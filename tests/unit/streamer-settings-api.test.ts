@@ -67,7 +67,6 @@ describe('POST /api/streamer/settings', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'X-CSRF-Token': 'test-csrf-token',
       },
       body: JSON.stringify({
         streamerId: 'streamer123',
@@ -95,7 +94,6 @@ describe('POST /api/streamer/settings', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'X-CSRF-Token': 'test-csrf-token',
       },
       body: JSON.stringify({
         streamerId: 'streamer123',
@@ -125,7 +123,6 @@ describe('POST /api/streamer/settings', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'X-CSRF-Token': 'test-csrf-token',
       },
       body: JSON.stringify({
         streamerId: 'streamer123',
@@ -167,7 +164,6 @@ describe('POST /api/streamer/settings', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'X-CSRF-Token': 'test-csrf-token',
       },
       body: JSON.stringify({
         streamerId: 'streamer123',
@@ -192,7 +188,6 @@ describe('POST /api/streamer/settings', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'X-CSRF-Token': 'test-csrf-token',
       },
       body: JSON.stringify({
         streamerId: 'streamer123',
@@ -218,7 +213,6 @@ describe('POST /api/streamer/settings', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'X-CSRF-Token': 'test-csrf-token',
       },
       body: JSON.stringify({
         streamerId: 'streamer123',

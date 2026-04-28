@@ -110,7 +110,6 @@ function createRequest(body: Record<string, unknown>): NextRequest {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'X-CSRF-Token': 'test-csrf-token',
     },
     body: JSON.stringify(body),
   })

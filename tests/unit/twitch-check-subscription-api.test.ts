@@ -45,7 +45,6 @@ function createRequest(): Request {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-CSRF-Token': 'token',
     },
   })
 }

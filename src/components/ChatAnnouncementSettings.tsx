@@ -57,18 +57,6 @@ function buildChatPreviewMessage(
 }
 
 /**
- * CookieからCSRFトークンを取得するヘルパー関数
- * CSRF保護のためにすべてのAPI呼び出しで使用
- */
-function getCsrfTokenFromCookie(): string {
-  if (typeof document === "undefined") return "";
-  return document.cookie
-    .split("; ")
-    .find(row => row.startsWith("csrf_token="))
-    ?.split("=")[1] || "";
-}
-
-/**
  * チャット通知設定コンポーネント
  * ガチャ結果をTwitchチャットに通知する機能の設定UI
  * Settings component for Twitch chat announcements of gacha results
@@ -179,7 +167,6 @@ export default function ChatAnnouncementSettings({
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfTokenFromCookie(),
         },
         body: JSON.stringify({
           additionalScopes: ["user:write:chat"],
@@ -227,7 +214,6 @@ export default function ChatAnnouncementSettings({
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfTokenFromCookie(),
         },
         body: JSON.stringify({
           streamerId,

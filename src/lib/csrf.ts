@@ -1,3 +1,28 @@
+/**
+ * CSRF 保護: HttpOnly Cookie + Origin/Referer 方式（OWASP の "Double Submit Cookie" の派生）。
+ *
+ * 採用方針:
+ *   1. CSRF トークンを HttpOnly Cookie (`csrf_token`) として保存する。
+ *      JavaScript からは読めないため、XSS 経由でのトークン窃取耐性がある。
+ *   2. トークンの SHA-256 ハッシュ（Salt 付き）をサーバー側 session に保存する。
+ *      `validateCSRFToken()` は Cookie のトークンと session のハッシュを timing-safe に比較する。
+ *   3. 多層防御として、Origin / Referer ヘッダの一致も検証する。
+ *
+ * 採用しない方式（Synchronizer Token Pattern）:
+ *   - レスポンスでトークンを返し、クライアントが `X-CSRF-Token` ヘッダで送り返す方式は
+ *     採用していない。サーバーは `X-CSRF-Token` ヘッダを参照しないため、ヘッダ送信は無効。
+ *   - 過去にクライアント側で `document.cookie` から `csrf_token` を読もうとするコードや
+ *     `X-CSRF-Token` ヘッダを送信するコードがあったが、いずれも HttpOnly により値を取得
+ *     できず、サーバーも参照しないため死コードであった。Issue #400 で全削除した。
+ *
+ * クライアントへの要件:
+ *   - 同一オリジンへの fetch は Cookie が自動送信されるため、追加実装は不要。
+ *   - `credentials: 'include'` は同一オリジンでは省略可だが、共有コンポーネントでは
+ *     明示しておくと cross-origin で誤動作しにくい（既存実装に従う）。
+ *   - CSRF Cookie が欠落して 403 を受けた場合のみ、`/api/session` を一度叩くと
+ *     `setCSRFToken()` が遅延発行する Cookie が設定される。`LogoutButton.tsx` 参照。
+ */
+
 import { cookies } from 'next/headers'
 
 import { logger } from './logger'

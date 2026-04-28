@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cookies } from 'next/headers'
 import { logger } from '@/lib/logger'
 
-import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
+import { COOKIE_NAMES, ERROR_MESSAGES } from '@/lib/constants'
 import { setCSRFToken, validateCSRFToken, hashToken, clearCSRFToken, hashIP, sanitizeURL } from '@/lib/csrf'
 import { signSession, verifySession } from '@/lib/session'
 
@@ -21,7 +21,6 @@ vi.mock('@/lib/constants', async () => {
     ...actual,
     CSRF_CONFIG: {
       TOKEN_LENGTH: actual.CSRF_CONFIG.TOKEN_LENGTH,
-      HEADER_NAME: actual.CSRF_CONFIG.HEADER_NAME,
       MAX_RETRY_COUNT: actual.CSRF_CONFIG.MAX_RETRY_COUNT,
       RETRY_DELAY_MS: actual.CSRF_CONFIG.RETRY_DELAY_MS,
       ALLOW_LOCAL_ORIGINS: false,
@@ -243,10 +242,52 @@ describe('CSRF Protection', () => {
         }),
         set: vi.fn(),
       })
-  
+
     mockCookies.mockResolvedValue(mockCookieStore as any)
 
       const request = new Request('https://example.com')
+
+      const result = await validateCSRFToken(request)
+
+      expect(result.valid).toBe(true)
+    })
+
+    // Issue #400: CSRF 検証は HttpOnly Cookie + Origin/Referer 方式に統一済み。
+    // クライアントから X-CSRF-Token ヘッダが送られて来ても、サーバーはそれを参照
+    // せず、Cookie に正しいトークンが入っていれば検証が通ることを保証する。
+    it('should validate using cookie only and ignore X-CSRF-Token header', async () => {
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
+
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: tokenHash,
+        version: 1
+      }
+
+      const mockCookieStore = createMockCookieStore({
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: JSON.stringify(sessionData) }
+          }
+          if (name === COOKIE_NAMES.CSRF_TOKEN) {
+            return { value: token }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+      })
+
+      mockCookies.mockResolvedValue(mockCookieStore as any)
+
+      const request = new Request('https://example.com', {
+        headers: { 'X-CSRF-Token': 'totally-bogus-header-value' },
+      })
 
       const result = await validateCSRFToken(request)
 

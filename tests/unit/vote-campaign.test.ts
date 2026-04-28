@@ -29,9 +29,6 @@ const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 function createRequest(): NextRequest {
   return new NextRequest('http://localhost:3000/api/storage-bonus/vote-campaign', {
     method: 'POST',
-    headers: {
-      'X-CSRF-Token': 'test-csrf-token',
-    },
   })
 }
 

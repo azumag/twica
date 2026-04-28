@@ -7,7 +7,8 @@ import { useTranslations } from "next-intl";
 /**
  * 新規問い合わせ投稿フォーム
  * カテゴリ（バグ/機能要望/その他）+ 件名 + 本文を入力して送信
- * CSRF トークンを自動取得して POST リクエストに付与
+ * CSRF: HttpOnly Cookie + Origin/Referer 検証方式（src/lib/csrf.ts 参照）。
+ * Cookie はブラウザが same-origin で自動送信するため、手動でトークンを付与する必要はない。
  */
 export default function InquiryForm() {
   const t = useTranslations("inquiriesPage");
@@ -27,20 +28,27 @@ export default function InquiryForm() {
     setError(null);
     setSuccess(false);
 
-    try {
-      // CSRFトークン取得（lazy generation パターン）
-      const csrfRes = await fetch("/api/session", { credentials: "include" });
-      const csrfToken = csrfRes.headers.get("x-csrf-token") || "";
+    const buildPostInit = (): RequestInit => ({
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category, subject: subject.trim(), body: body.trim() }),
+    });
 
-      const res = await fetch("/api/support-inquiries", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-        },
-        body: JSON.stringify({ category, subject: subject.trim(), body: body.trim() }),
-      });
+    try {
+      // 通常は HttpOnly Cookie がブラウザにより自動送信される。
+      // 初回 POST で Cookie 未発行のときは 403 → /api/session で遅延発行 → 1 度だけ再試行。
+      let res = await fetch("/api/support-inquiries", buildPostInit());
+
+      if (res.status === 403) {
+        const refresh = await fetch("/api/session", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (refresh.ok) {
+          res = await fetch("/api/support-inquiries", buildPostInit());
+        }
+      }
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

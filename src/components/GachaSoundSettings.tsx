@@ -14,18 +14,6 @@ interface GachaSoundSettingsProps {
 }
 
 /**
- * CookieからCSRFトークンを取得するヘルパー関数
- * CSRF保護のためにすべてのAPI呼び出しで使用
- */
-function getCsrfTokenFromCookie(): string {
-  if (typeof document === "undefined") return "";
-  return document.cookie
-    .split("; ")
-    .find(row => row.startsWith("csrf_token="))
-    ?.split("=")[1] || "";
-}
-
-/**
  * ガチャ効果音設定コンポーネント
  * 効果音のアップロード、プレビュー再生、有効/無効切り替えを管理
  */
@@ -85,9 +73,6 @@ export default function GachaSoundSettings({
       const response = await fetch("/api/upload/sound", {
         method: "POST",
         credentials: "include",
-        headers: {
-          "X-CSRF-Token": getCsrfTokenFromCookie(),
-        },
         body: formData,
       });
 
@@ -132,7 +117,6 @@ export default function GachaSoundSettings({
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfTokenFromCookie(),
         },
         body: JSON.stringify({
           streamerId,
@@ -198,7 +182,6 @@ export default function GachaSoundSettings({
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfTokenFromCookie(),
         },
         body: JSON.stringify({ url: soundUrl }),
       });

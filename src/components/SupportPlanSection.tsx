@@ -51,17 +51,10 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
     setMessage(null);
 
     try {
-      // CSRFトークンをCookieから取得（既存パターンを踏襲）
-      const csrfToken = document.cookie
-        .split("; ")
-        .find(row => row.startsWith("csrf_token="))
-        ?.split("=")[1];
-
       const response = await fetch("/api/support/activate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken || "",
         },
         credentials: "include",
         body: JSON.stringify({
@@ -96,16 +89,10 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
     setMessage(null);
 
     try {
-      const csrfToken = document.cookie
-        .split("; ")
-        .find(row => row.startsWith("csrf_token="))
-        ?.split("=")[1];
-
       const response = await fetch("/api/support/deactivate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken || "",
         },
         credentials: "include",
       });
