@@ -385,6 +385,31 @@
       "close": "Close"
     }
   },
+  "cardVisibilitySettings": {
+    "title": "Unowned Card Visibility",
+    "description": "Choose whether viewers can see cards they haven't collected yet on your collection page.",
+    "status": {
+      "enabled": "Visible",
+      "disabled": "Hidden"
+    },
+    "form": {
+      "showUnowned": "Show unowned cards to viewers",
+      "showUnownedHelp": "When off, viewers see only cards they have collected (default).",
+      "showDetails": "Reveal image and description of unowned cards",
+      "showDetailsHelp": "When off, unowned cards show only their rarity; the image, name, and description are masked as placeholders.",
+      "requiresShowUnowned": "requires \"Show unowned cards\""
+    },
+    "messages": {
+      "shownEnabled": "Unowned cards will be shown to viewers",
+      "shownDisabled": "Unowned cards are hidden from viewers",
+      "detailsEnabled": "Unowned card details are now visible",
+      "detailsDisabled": "Unowned card details are now hidden",
+      "saving": "Saving..."
+    },
+    "errors": {
+      "saveFailed": "Failed to save settings"
+    }
+  },
   "channelPointSettings": {
     "title": "Card Redemption Settings",
     "status": {

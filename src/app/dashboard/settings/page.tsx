@@ -8,6 +8,7 @@ import ChannelPointSettings from "@/components/ChannelPointSettings";
 import OverlayPreview from "@/components/OverlayPreview";
 import GachaSoundSettings from "@/components/GachaSoundSettings";
 import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
+import CardVisibilitySettings from "@/components/CardVisibilitySettings";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
@@ -90,6 +91,15 @@ export default async function SettingsPage() {
               streamerId={streamerData.streamer.id}
               currentEnabled={streamerData.streamer.chat_announcement_enabled ?? false}
               currentTemplate={streamerData.streamer.chat_announcement_template ?? null}
+            />
+            {/* 未所持カード表示設定（Issue #395） */}
+            {/* Unowned-card visibility settings (Issue #395) */}
+            <CardVisibilitySettings
+              streamerId={streamerData.streamer.id}
+              currentShowUnowned={streamerData.streamer.show_unowned_cards ?? false}
+              currentShowUnownedDetails={
+                streamerData.streamer.show_unowned_card_details ?? false
+              }
             />
           </>
         }

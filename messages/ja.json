@@ -385,6 +385,31 @@
       "close": "閉じる"
     }
   },
+  "cardVisibilitySettings": {
+    "title": "未所持カードの表示設定",
+    "description": "視聴者向けコレクションページで、未所持カードを並べて見せるかどうかを設定します。",
+    "status": {
+      "enabled": "表示",
+      "disabled": "非表示"
+    },
+    "form": {
+      "showUnowned": "未所持カードを表示する",
+      "showUnownedHelp": "オフの場合、視聴者には所持済みのカードのみ表示されます（既定）。",
+      "showDetails": "未所持カードの画像・説明を公開する",
+      "showDetailsHelp": "オフの場合、未所持カードはレアリティのみ表示され、画像・名前・説明はプレースホルダーになります。",
+      "requiresShowUnowned": "「未所持カードを表示する」が必要"
+    },
+    "messages": {
+      "shownEnabled": "未所持カードを表示するよう設定しました",
+      "shownDisabled": "未所持カードを非表示にしました",
+      "detailsEnabled": "未所持カードの詳細を公開しました",
+      "detailsDisabled": "未所持カードの詳細を非公開にしました",
+      "saving": "保存中..."
+    },
+    "errors": {
+      "saveFailed": "設定の保存に失敗しました"
+    }
+  },
   "channelPointSettings": {
     "title": "カード引き換え設定",
     "status": {

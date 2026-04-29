@@ -36,6 +36,12 @@ export interface Database {
           // レアリティ名をキーにした目標確率マップ（0-100）
           // Dynamic rarity-to-target-percentage map (0-100)
           rarity_weights: Record<string, number> | null
+          // 視聴者向けコレクションページで未所持カードを表示するか（オプトイン、デフォルトfalse）
+          // Whether unowned cards are visible on the viewer collection page (opt-in, default false)
+          show_unowned_cards: boolean
+          // 未所持カード表示時に画像/説明まで公開するか（false=プレースホルダーのみ）
+          // When unowned cards are shown, whether to reveal card image/description
+          show_unowned_card_details: boolean
           created_at: string
           updated_at: string
         }
@@ -53,6 +59,8 @@ export interface Database {
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
           rarity_weights?: Record<string, number> | null
+          show_unowned_cards?: boolean
+          show_unowned_card_details?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -70,6 +78,8 @@ export interface Database {
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
           rarity_weights?: Record<string, number> | null
+          show_unowned_cards?: boolean
+          show_unowned_card_details?: boolean
           created_at?: string
           updated_at?: string
         }

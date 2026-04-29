@@ -94,6 +94,10 @@ export async function POST(request: NextRequest) {
       chatAnnouncementTemplate,
       // レアリティ別自動確率設定（オプション）
       rarityWeights,
+      // 未所持カード表示設定（オプション、Issue #395）
+      // Unowned-card visibility settings (optional, Issue #395)
+      showUnownedCards,
+      showUnownedCardDetails,
     } = body;
 
     if (rarityWeights !== undefined && !validateRarityWeightsInput(rarityWeights)) {
@@ -102,6 +106,15 @@ export async function POST(request: NextRequest) {
 
     if (rarityWeights !== undefined && !hasValidRarityWeightsTotal(rarityWeights)) {
       return NextResponse.json({ error: "Rarity weights total must be 100%" }, { status: 400 });
+    }
+
+    // 視聴者向け未所持カード表示の boolean 検証
+    // Booleans are validated strictly to avoid silent coercion of arbitrary inputs
+    if (showUnownedCards !== undefined && typeof showUnownedCards !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (showUnownedCardDetails !== undefined && typeof showUnownedCardDetails !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
     // Verify ownership
@@ -152,6 +165,15 @@ export async function POST(request: NextRequest) {
     // rarityWeights: レアリティ別目標確率（nullで自動モード無効）
     if (rarityWeights !== undefined) {
       updateData.rarity_weights = rarityWeights;
+    }
+
+    // 未所持カードの視聴者向け表示設定
+    // Unowned-card visibility settings for the viewer-facing collection page
+    if (showUnownedCards !== undefined) {
+      updateData.show_unowned_cards = showUnownedCards;
+    }
+    if (showUnownedCardDetails !== undefined) {
+      updateData.show_unowned_card_details = showUnownedCardDetails;
     }
 
     // 更新するフィールドがない場合はエラー

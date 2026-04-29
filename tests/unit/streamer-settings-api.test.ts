@@ -201,6 +201,110 @@ describe('POST /api/streamer/settings', () => {
     expect(data.error).toBe('Unauthorized')
   })
 
+  // Issue #395: 視聴者向け未所持カード表示設定
+  // The settings API must accept showUnownedCards / showUnownedCardDetails as
+  // independent booleans, validate non-boolean inputs strictly, and persist
+  // them via the existing dynamic updateData pattern.
+  describe('unowned card visibility settings (Issue #395)', () => {
+    it('should accept showUnownedCards/showUnownedCardDetails when both are booleans', async () => {
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          showUnownedCards: true,
+          showUnownedCardDetails: false,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.success).toBe(true)
+    })
+
+    it('should reject showUnownedCards when not a boolean', async () => {
+      const mockSupabase = createSupabaseMock().build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          // 文字列 "true" は truthy だが boolean ではないので 400 にしたい
+          showUnownedCards: 'true',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+
+    it('should reject showUnownedCardDetails when not a boolean', async () => {
+      const mockSupabase = createSupabaseMock().build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          showUnownedCardDetails: 1,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+
+    it('should accept independent showUnownedCardDetails toggle without showUnownedCards', async () => {
+      // 設定UIはトグル単位で部分送信するため、片方だけが届くケースが正常系
+      // The UI may send only one of the two booleans on toggle; both halves must work alone.
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          showUnownedCardDetails: true,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+  })
+
   it('should return 429 when rate limit exceeded', async () => {
     mockCheckRateLimit.mockResolvedValue({
       success: false,
