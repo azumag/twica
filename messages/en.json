@@ -670,6 +670,66 @@
       "description": "TwiCa is a card collection system connecting Twitch streamers and viewers. Distribute original cards to viewers using channel points."
     }
   },
+  "faqPage": {
+    "title": "FAQ",
+    "metaDescription": "Frequently asked questions about TwiCa. Learn the basics for viewers, streamers, and troubleshooting.",
+    "intro": "Common questions about using TwiCa are collected here. For full setup steps, also check the guide page.",
+    "viewer": {
+      "title": "For Viewers",
+      "login": {
+        "question": "Do I need to log in to draw gacha?",
+        "answer": "No. You can draw gacha from a TwiCa-enabled stream's channel point reward without logging in to TwiCa. Twitch login is required to view your collection."
+      },
+      "collection": {
+        "question": "Where can I see cards I received?",
+        "answer": "After logging in with Twitch, open My Collection from the dashboard. Gacha results are saved to your Twitch account."
+      },
+      "missingCards": {
+        "question": "What should I do if cards do not appear?",
+        "answer": "First confirm that the Twitch account you logged in with is the same account that drew the gacha. If it still does not appear, reload the page after a short wait."
+      }
+    },
+    "streamer": {
+      "title": "For Streamers",
+      "affiliate": {
+        "question": "Are there requirements for streamer features?",
+        "answer": "Channel point reward integration requires Twitch Affiliate or Partner status. Log in with an eligible account to use streamer features."
+      },
+      "setup": {
+        "question": "What should I set up first?",
+        "answer": "Create cards, select or create a channel point reward in Stream Settings, then save and register EventSub."
+      },
+      "overlay": {
+        "question": "What should I add to OBS?",
+        "answer": "Copy the OBS browser source URL shown in Stream Settings and add it as a browser source in OBS. The recommended size is 800x600."
+      },
+      "cards": {
+        "question": "How are card drop rates decided?",
+        "answer": "Drop rates are based on each card's weight. A card's chance is its weight divided by the total weight of all cards currently included in gacha."
+      }
+    },
+    "trouble": {
+      "title": "Troubleshooting",
+      "eventsub": {
+        "question": "Gacha does not run after a channel point redemption",
+        "answer": "Check the EventSub status in Stream Settings. If it is not connected, save and register it again. Also confirm that the Twitch reward is enabled."
+      },
+      "imageUpload": {
+        "question": "Image upload fails",
+        "answer": "Check the file type, file size, and image aspect ratio. If the image is too large, compress it and try uploading again."
+      },
+      "support": {
+        "question": "Where should I ask if the issue is not resolved?",
+        "answer": "Contact the operator through the social links or contact details on the About page. Streamer name, operation details, and time of occurrence help with investigation."
+      }
+    },
+    "contact": {
+      "title": "Still Need Help?",
+      "description": "If your issue needs individual support, contact us from the ",
+      "aboutLink": "About page",
+      "descriptionEnd": "."
+    }
+  },
   "tosPage": {
     "title": "Terms of Service",
     "metaDescription": "TwiCa Terms of Service. Service overview, user responsibilities, and usage restrictions.",
@@ -725,6 +785,7 @@
   },
   "footer": {
     "guide": "Guide",
+    "faq": "FAQ",
     "tos": "Terms of Service",
     "about": "About",
     "privacy": "Privacy Policy",

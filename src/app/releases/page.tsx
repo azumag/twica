@@ -544,9 +544,12 @@ export default async function ReleasesPage() {
         <div className="container mx-auto px-4 py-6">
           <div className="flex flex-col items-center justify-between gap-4 sm:flex-row">
             <p className="text-sm text-gray-500">&copy; 2025 TwiCa</p>
-            <div className="flex gap-6">
+            <div className="flex flex-wrap justify-center gap-6">
               <Link href="/guide" className="text-sm text-gray-500 hover:text-gray-300">
                 {tFooter("guide")}
+              </Link>
+              <Link href="/faq" className="text-sm text-gray-500 hover:text-gray-300">
+                {tFooter("faq")}
               </Link>
               <Link href="/tos" className="text-sm text-gray-500 hover:text-gray-300">
                 {tFooter("tos")}
