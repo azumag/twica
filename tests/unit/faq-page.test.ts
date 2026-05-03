@@ -18,7 +18,7 @@ describe("FAQ page", () => {
     expect(enMessages.faqPage.title).toBe("FAQ");
   });
 
-  it("links FAQ from the shared public footer pattern", () => {
+  it("renders the shared public footer on every public page", () => {
     const pages = [
       "src/app/page.tsx",
       "src/app/guide/page.tsx",
@@ -27,13 +27,27 @@ describe("FAQ page", () => {
       "src/app/tos/page.tsx",
       "src/app/releases/page.tsx",
       "src/app/plans/page.tsx",
+      "src/app/faq/page.tsx",
     ];
 
     for (const page of pages) {
       const source = readSource(page);
 
-      expect(source).toContain('href="/faq"');
-      expect(source).toContain('tFooter("faq")');
+      expect(source).toContain('import PublicFooter from "@/components/PublicFooter"');
+      expect(source).toContain("<PublicFooter />");
+      expect(source).not.toContain('getTranslations("footer")');
     }
+  });
+
+  it("keeps the public footer link set in one place", () => {
+    const source = readSource("src/components/PublicFooter.tsx");
+
+    expect(source).toContain("PUBLIC_FOOTER_LINKS");
+    expect(source).toContain('href: "/guide"');
+    expect(source).toContain('href: "/faq"');
+    expect(source).toContain('href: "/tos"');
+    expect(source).toContain('href: "/about"');
+    expect(source).toContain('href: "/privacy"');
+    expect(source).toContain('href: "/releases"');
   });
 });
