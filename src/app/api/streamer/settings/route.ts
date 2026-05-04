@@ -98,6 +98,9 @@ export async function POST(request: NextRequest) {
       // Unowned-card visibility settings (optional, Issue #395)
       showUnownedCards,
       showUnownedCardDetails,
+      // BOTアカウント連携解除（オプション）
+      // Disconnect optional BOT account used for chat announcements
+      disconnectBot,
     } = body;
 
     if (rarityWeights !== undefined && !validateRarityWeightsInput(rarityWeights)) {
@@ -114,6 +117,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (showUnownedCardDetails !== undefined && typeof showUnownedCardDetails !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -174,6 +180,15 @@ export async function POST(request: NextRequest) {
     }
     if (showUnownedCardDetails !== undefined) {
       updateData.show_unowned_card_details = showUnownedCardDetails;
+    }
+
+    if (disconnectBot === true) {
+      updateData.bot_twitch_user_id = null;
+      updateData.bot_twitch_username = null;
+      updateData.bot_twitch_display_name = null;
+      updateData.bot_twitch_access_token = null;
+      updateData.bot_twitch_refresh_token = null;
+      updateData.bot_twitch_token_expires_at = null;
     }
 
     // 更新するフィールドがない場合はエラー

@@ -371,7 +371,7 @@
   },
   "chatAnnouncementSettings": {
     "title": "Chat Announcement Settings",
-    "description": "Automatically post gacha results to Twitch chat. Messages are sent from your streamer account.",
+    "description": "Automatically post gacha results to Twitch chat. Connect a BOT account to send messages from that account.",
     "status": {
       "enabled": "Enabled",
       "disabled": "Disabled"
@@ -391,21 +391,33 @@
       "reauthorizing": "Re-authorizing...",
       "saveTemplate": "Save Template",
       "saving": "Saving...",
-      "chatDemo": "Chat Demo"
+      "chatDemo": "Chat Demo",
+      "connectBot": "Connect BOT",
+      "connectingBot": "Connecting...",
+      "disconnectBot": "Disconnect BOT",
+      "disconnectingBot": "Disconnecting..."
     },
     "messages": {
       "checkingScope": "Checking permissions...",
       "saved": "Settings saved",
-      "lengthWarning": "If the card description or URL is long, the outgoing message may reach about {estimated} characters. Anything over {max} characters will be truncated when sent."
+      "lengthWarning": "If the card description or URL is long, the outgoing message may reach about {estimated} characters. Anything over {max} characters will be truncated when sent.",
+      "botDisconnected": "BOT account disconnected"
     },
     "errors": {
       "saveFailed": "Failed to save settings",
-      "reauthorizeFailed": "Re-authorization failed"
+      "reauthorizeFailed": "Re-authorization failed",
+      "botConnectFailed": "Failed to start BOT connection",
+      "botDisconnectFailed": "Failed to disconnect BOT account"
     },
     "demo": {
       "title": "Chat Message Preview",
       "description": "Preview of the message that will be sent (using sample data)",
       "close": "Close"
+    },
+    "bot": {
+      "title": "Sender Account",
+      "description": "Without a BOT connection, messages are sent from your streamer account. Connect Twitch to send from a dedicated BOT.",
+      "connectedAs": "Sending as {name}"
     }
   },
   "cardVisibilitySettings": {

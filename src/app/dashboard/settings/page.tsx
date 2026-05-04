@@ -117,6 +117,14 @@ export default async function SettingsPage() {
               streamerId={streamerData.streamer.id}
               currentEnabled={streamerData.streamer.chat_announcement_enabled ?? false}
               currentTemplate={streamerData.streamer.chat_announcement_template ?? null}
+              botAccount={
+                streamerData.streamer.bot_twitch_user_id
+                  ? {
+                      username: streamerData.streamer.bot_twitch_username ?? null,
+                      displayName: streamerData.streamer.bot_twitch_display_name ?? null,
+                    }
+                  : null
+              }
             />
             {/* 未所持カード表示設定（Issue #395） */}
             {/* Unowned-card visibility settings (Issue #395) */}

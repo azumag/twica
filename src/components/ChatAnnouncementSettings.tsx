@@ -14,6 +14,10 @@ interface ChatAnnouncementSettingsProps {
   // カスタムテンプレート（nullの場合はデフォルト）
   // Custom template (null for default)
   currentTemplate: string | null;
+  botAccount?: {
+    username: string | null;
+    displayName: string | null;
+  } | null;
 }
 
 const DEFAULT_CHAT_TEMPLATE = "@{user} が【{rarity}】{card} を獲得しました！";
@@ -65,6 +69,7 @@ export default function ChatAnnouncementSettings({
   streamerId,
   currentEnabled,
   currentTemplate,
+  botAccount,
 }: ChatAnnouncementSettingsProps) {
   const t = useTranslations("chatAnnouncementSettings");
 
@@ -84,7 +89,12 @@ export default function ChatAnnouncementSettings({
   const [hasScope, setHasScope] = useState<boolean | null>(null);
   const [checkingScope, setCheckingScope] = useState(true);
   const [reauthorizing, setReauthorizing] = useState(false);
+  const [botConnected, setBotConnected] = useState(Boolean(botAccount));
+  const [botDisplayName, setBotDisplayName] = useState(botAccount?.displayName || botAccount?.username || "");
+  const [botConnecting, setBotConnecting] = useState(false);
+  const [botDisconnecting, setBotDisconnecting] = useState(false);
   const activeTemplate = template || DEFAULT_CHAT_TEMPLATE;
+  const canSendChat = hasScope || botConnected;
 
   const demoMessage = useMemo(() => {
     return buildChatPreviewMessage(activeTemplate, {
@@ -199,6 +209,73 @@ export default function ChatAnnouncementSettings({
     }
   }, [t]);
 
+  const handleConnectBot = useCallback(async () => {
+    setBotConnecting(true);
+    setMessage("");
+    setIsError(false);
+
+    try {
+      const response = await fetch("/api/auth/bot/connect", {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        window.location.href = data.loginUrl;
+        return;
+      }
+
+      const errorData = await response.json();
+      setMessage(errorData.error || t("errors.botConnectFailed"));
+      setIsError(true);
+    } catch (error) {
+      logger.error("BOT connect error:", error);
+      setMessage(t("errors.botConnectFailed"));
+      setIsError(true);
+    } finally {
+      setBotConnecting(false);
+    }
+  }, [t]);
+
+  const handleDisconnectBot = useCallback(async () => {
+    setBotDisconnecting(true);
+    setMessage("");
+    setIsError(false);
+
+    try {
+      const response = await fetch("/api/streamer/settings", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          streamerId,
+          disconnectBot: true,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        setMessage(errorData.error || t("errors.botDisconnectFailed"));
+        setIsError(true);
+        return;
+      }
+
+      setBotConnected(false);
+      setBotDisplayName("");
+      setMessage(t("messages.botDisconnected"));
+      setIsError(false);
+    } catch (error) {
+      logger.error("BOT disconnect error:", error);
+      setMessage(t("errors.botDisconnectFailed"));
+      setIsError(true);
+    } finally {
+      setBotDisconnecting(false);
+    }
+  }, [streamerId, t]);
+
   /**
    * 設定を保存
    * Save settings
@@ -292,17 +369,17 @@ export default function ChatAnnouncementSettings({
         {/* 有効/無効ステータス表示 */}
         <span
           className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${
-            enabled && hasScope
+            enabled && canSendChat
               ? "bg-green-500/20 text-green-400"
               : "bg-gray-500/20 text-gray-400"
           }`}
         >
           <span
             className={`h-2 w-2 rounded-full ${
-              enabled && hasScope ? "bg-green-500" : "bg-gray-500"
+              enabled && canSendChat ? "bg-green-500" : "bg-gray-500"
             }`}
           />
-          {enabled && hasScope ? t("status.enabled") : t("status.disabled")}
+          {enabled && canSendChat ? t("status.enabled") : t("status.disabled")}
         </span>
       </div>
 
@@ -318,7 +395,7 @@ export default function ChatAnnouncementSettings({
 
       {/* スコープ未取得時の警告と再認証ボタン */}
       {/* Warning and reauthorize button when scope is not granted */}
-      {!hasScope && (
+      {!canSendChat && (
         <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
           <p className="text-sm text-yellow-400 mb-3">
             {t("scopeWarning")}
@@ -333,7 +410,39 @@ export default function ChatAnnouncementSettings({
         </div>
       )}
 
-      <div className={`space-y-4 ${!hasScope ? "opacity-50 pointer-events-none" : ""}`}>
+      <div className="mb-4 rounded-lg border border-gray-700 bg-gray-900/40 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium text-white">
+              {t("bot.title")}
+            </p>
+            <p className="mt-1 text-xs text-gray-400">
+              {botConnected
+                ? t("bot.connectedAs", { name: botDisplayName })
+                : t("bot.description")}
+            </p>
+          </div>
+          {botConnected ? (
+            <button
+              onClick={handleDisconnectBot}
+              disabled={botDisconnecting}
+              className="rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-500 disabled:opacity-50"
+            >
+              {botDisconnecting ? t("buttons.disconnectingBot") : t("buttons.disconnectBot")}
+            </button>
+          ) : (
+            <button
+              onClick={handleConnectBot}
+              disabled={botConnecting}
+              className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+            >
+              {botConnecting ? t("buttons.connectingBot") : t("buttons.connectBot")}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className={`space-y-4 ${!canSendChat ? "opacity-50 pointer-events-none" : ""}`}>
         {/* 有効/無効切り替え */}
         <div className="flex items-center gap-3">
           <label className="relative inline-flex cursor-pointer items-center">
@@ -341,7 +450,7 @@ export default function ChatAnnouncementSettings({
               type="checkbox"
               checked={enabled}
               onChange={handleToggleEnabled}
-              disabled={saving || !hasScope}
+              disabled={saving || !canSendChat}
               className="peer sr-only"
             />
             <div
@@ -362,7 +471,7 @@ export default function ChatAnnouncementSettings({
             value={template}
             onChange={(e) => setTemplate(e.target.value)}
             placeholder={t("form.templatePlaceholder")}
-            disabled={!hasScope}
+            disabled={!canSendChat}
             rows={3}
             className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none disabled:opacity-50"
           />
@@ -390,7 +499,7 @@ export default function ChatAnnouncementSettings({
           {/* テンプレート保存ボタン */}
           <button
             onClick={handleSaveTemplate}
-            disabled={saving || !hasScope}
+            disabled={saving || !canSendChat}
             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
           >
             {saving ? t("buttons.saving") : t("buttons.saveTemplate")}
@@ -399,7 +508,7 @@ export default function ChatAnnouncementSettings({
           {/* チャットデモボタン */}
           <button
             onClick={() => setShowDemoModal(true)}
-            disabled={!hasScope}
+            disabled={!canSendChat}
             className="rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-500 disabled:opacity-50"
           >
             {t("buttons.chatDemo")}

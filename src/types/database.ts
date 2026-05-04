@@ -33,6 +33,14 @@ export interface Database {
           // チャット通知のカスタムテンプレート（nullの場合はデフォルトテンプレートを使用）
           // Custom message template for chat announcements (null uses default)
           chat_announcement_template: string | null
+          // チャット通知を送信する任意のBOTアカウント
+          // Optional BOT account used as the chat announcement sender
+          bot_twitch_user_id: string | null
+          bot_twitch_username: string | null
+          bot_twitch_display_name: string | null
+          bot_twitch_access_token: string | null
+          bot_twitch_refresh_token: string | null
+          bot_twitch_token_expires_at: string | null
           // レアリティ名をキーにした目標確率マップ（0-100）
           // Dynamic rarity-to-target-percentage map (0-100)
           rarity_weights: Record<string, number> | null
@@ -58,6 +66,12 @@ export interface Database {
           gacha_sound_enabled?: boolean
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
+          bot_twitch_user_id?: string | null
+          bot_twitch_username?: string | null
+          bot_twitch_display_name?: string | null
+          bot_twitch_access_token?: string | null
+          bot_twitch_refresh_token?: string | null
+          bot_twitch_token_expires_at?: string | null
           rarity_weights?: Record<string, number> | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
@@ -77,6 +91,12 @@ export interface Database {
           gacha_sound_enabled?: boolean
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
+          bot_twitch_user_id?: string | null
+          bot_twitch_username?: string | null
+          bot_twitch_display_name?: string | null
+          bot_twitch_access_token?: string | null
+          bot_twitch_refresh_token?: string | null
+          bot_twitch_token_expires_at?: string | null
           rarity_weights?: Record<string, number> | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean

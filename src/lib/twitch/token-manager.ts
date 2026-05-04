@@ -60,6 +60,99 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
   return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
 }
 
+export interface BotChatAccount {
+  senderId: string;
+  username: string | null;
+  displayName: string | null;
+  accessToken: string;
+}
+
+export async function getBotAccountForChat(broadcasterTwitchUserId: string): Promise<BotChatAccount | null> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: streamer, error: dbError } = await supabaseAdmin
+    .from('streamers')
+    .select(`
+      bot_twitch_user_id,
+      bot_twitch_username,
+      bot_twitch_display_name,
+      bot_twitch_access_token,
+      bot_twitch_refresh_token,
+      bot_twitch_token_expires_at
+    `)
+    .eq('twitch_user_id', broadcasterTwitchUserId)
+    .maybeSingle();
+
+  if (dbError) {
+    if (dbError.code === 'PGRST204') {
+      logger.warn('BOT account columns not found in streamers schema', { broadcasterTwitchUserId });
+      return null;
+    }
+    logger.error('Database error fetching BOT account', { broadcasterTwitchUserId, error: dbError });
+    throw new TwitchTokenError(
+      'Failed to fetch BOT account from database',
+      'DATABASE_ERROR',
+      dbError
+    );
+  }
+
+  if (
+    !streamer?.bot_twitch_user_id ||
+    !streamer.bot_twitch_access_token ||
+    !streamer.bot_twitch_refresh_token ||
+    !streamer.bot_twitch_token_expires_at
+  ) {
+    return null;
+  }
+
+  const expiresAt = new Date(streamer.bot_twitch_token_expires_at);
+  if (isNaN(expiresAt.getTime())) {
+    return null;
+  }
+
+  if (expiresAt > new Date()) {
+    return {
+      senderId: streamer.bot_twitch_user_id,
+      username: streamer.bot_twitch_username,
+      displayName: streamer.bot_twitch_display_name,
+      accessToken: streamer.bot_twitch_access_token,
+    };
+  }
+
+  try {
+    const tokens = await refreshTwitchToken(streamer.bot_twitch_refresh_token);
+    const refreshedExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+
+    const { error } = await supabaseAdmin
+      .from('streamers')
+      .update({
+        bot_twitch_access_token: tokens.access_token,
+        bot_twitch_refresh_token: tokens.refresh_token,
+        bot_twitch_token_expires_at: refreshedExpiresAt.toISOString(),
+      })
+      .eq('twitch_user_id', broadcasterTwitchUserId);
+
+    if (error && error.code !== 'PGRST204') {
+      throw error;
+    }
+    if (error?.code === 'PGRST204') {
+      logger.warn('BOT account columns not found in schema, returning refreshed token without saving', {
+        broadcasterTwitchUserId,
+      });
+    }
+
+    return {
+      senderId: streamer.bot_twitch_user_id,
+      username: streamer.bot_twitch_username,
+      displayName: streamer.bot_twitch_display_name,
+      accessToken: tokens.access_token,
+    };
+  } catch (error) {
+    logger.error('Failed to refresh BOT Twitch access token', { broadcasterTwitchUserId, error });
+    return null;
+  }
+}
+
 async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: string): Promise<string> {
   try {
     const tokens = await refreshTwitchToken(refreshToken);
