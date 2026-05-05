@@ -15,6 +15,14 @@ interface CardStat {
   configuredRate: number;
   actualCount: number;
   actualRate: number;
+  ownerCount: number;
+  owners: Array<{
+    userTwitchId: string;
+    username: string;
+    displayName: string;
+    ownedCount: number;
+    lastObtainedAt: string;
+  }>;
 }
 
 interface RarityStat {
@@ -205,6 +213,7 @@ export default function DropRateTable() {
                 <th className="p-3 text-right">
                   {t("dropRateTable.drawCount")}
                 </th>
+                <th className="p-3">{t("dropRateTable.owners")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
@@ -254,6 +263,35 @@ export default function DropRateTable() {
                   </td>
                   <td className="p-3 text-right text-gray-300">
                     {card.actualCount}
+                  </td>
+                  <td className="p-3">
+                    <div className="min-w-48 max-w-xs">
+                      <div className="text-sm font-medium text-white">
+                        {t("dropRateTable.ownerCount", {
+                          count: card.ownerCount,
+                        })}
+                      </div>
+                      {card.owners.length > 0 ? (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {card.owners.map((owner) => (
+                            <span
+                              key={owner.userTwitchId}
+                              className="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-200"
+                              title={owner.userTwitchId}
+                            >
+                              {owner.displayName || owner.username}
+                              {owner.ownedCount > 1
+                                ? ` x${owner.ownedCount}`
+                                : ""}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-xs text-gray-500">
+                          {t("dropRateTable.noOwners")}
+                        </div>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
