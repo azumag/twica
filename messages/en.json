@@ -915,6 +915,15 @@
     "totalDraws": "Total Draws",
     "draws": "draws",
     "noData": "No gacha data for this period.",
+    "channelPointRanking": {
+      "title": "Channel Point Usage Ranking",
+      "total": "Period total: {points} points",
+      "noData": "No channel point usage data for this period.",
+      "rank": "Rank",
+      "user": "User",
+      "points": "Points Used",
+      "redemptions": "Redemptions"
+    },
     "dropRateTable": {
       "cardName": "Card Name",
       "rarity": "Rarity",

@@ -114,7 +114,7 @@ describe("GET /api/gacha-stats", () => {
 
     // getGachaStats accesses gacha_history twice:
     // 1st: count-only query (select("id", { count: "exact", head: true }))
-    // 2nd: data query (select("card_id, cards(rarity)"))
+    // 2nd: data query (draw/card/point data for aggregation)
     // getGachaStats は gacha_history に2回アクセスする:
     // 1回目: count-only クエリ、2回目: データ取得クエリ
     const countQuery = createMockQueryBuilder();
@@ -131,6 +131,10 @@ describe("GET /api/gacha-stats", () => {
       data: [
         {
           card_id: "c1",
+          user_twitch_id: "viewer1",
+          user_twitch_username: "ViewerOne",
+          reward_cost: 100,
+          redeemed_at: "2026-01-01T00:00:00Z",
           cards: { rarity: "common" },
         },
       ],
@@ -165,6 +169,22 @@ describe("GET /api/gacha-stats", () => {
       return cardsQuery;
     };
 
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        total_points: 250,
+        ranking: [
+          {
+            user_twitch_id: "viewer1",
+            username: "ViewerOne",
+            total_points: 250,
+            redemption_count: 2,
+            last_redeemed_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+      error: null,
+    });
+
     // Track gacha_history call order to return count query first, then data query
     // gacha_history の呼び出し順を追跡し、最初にcountクエリ、次にデータクエリを返す
     let gachaHistoryCallCount = 0;
@@ -178,6 +198,7 @@ describe("GET /api/gacha-stats", () => {
         if (table === "cards") return cardsQuery;
         return createMockQueryBuilder();
       }),
+      rpc,
     } as unknown as ReturnType<typeof getSupabaseAdmin>);
 
     const res = await GET(createRequest({ period: "7d" }));
@@ -190,5 +211,148 @@ describe("GET /api/gacha-stats", () => {
     expect(body.cardStats[0].actualCount).toBe(1);
     expect(body.cardStats[0].actualRate).toBe(100);
     expect(body.rarityStats).toHaveLength(4);
+    expect(body.channelPointStats.totalPoints).toBe(250);
+    expect(body.channelPointStats.ranking).toEqual([
+      {
+        userTwitchId: "viewer1",
+        username: "ViewerOne",
+        totalPoints: 250,
+        redemptionCount: 2,
+        lastRedeemedAt: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    expect(rpc).toHaveBeenCalledWith("get_channel_point_usage_stats", {
+      p_streamer_id: "streamer-id-1",
+      p_from_date: expect.any(String),
+      p_limit: 10,
+    });
+  });
+
+  it("falls back to history rows when channel point stats RPC is not deployed", async () => {
+    const session = {
+      twitchUserId: "streamer1",
+      twitchUsername: "streamer1",
+      twitchDisplayName: "Streamer 1",
+      twitchProfileImageUrl: "",
+      broadcasterType: "affiliate",
+      expiresAt: Date.now() + 100000,
+      version: 1,
+    };
+    mockGetSession.mockResolvedValue(session);
+    mockCanUseStreamerFeatures.mockReturnValue(true);
+
+    const streamerQuery = createMockQueryBuilder();
+    (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
+      createMockResponse({ id: "streamer-id-1" })
+    );
+
+    const countQuery = createMockQueryBuilder();
+    (countQuery as unknown as Record<string, unknown>).then = (
+      resolve: (value: unknown) => void
+    ) => {
+      resolve({ data: null, error: null, count: 3 });
+      return countQuery;
+    };
+
+    const historyQuery = createMockQueryBuilder();
+    (historyQuery as unknown as Record<string, unknown>).then = (
+      resolve: (value: unknown) => void
+    ) => {
+      resolve({
+        data: [
+          {
+            card_id: "c1",
+            user_twitch_id: "viewer1",
+            user_twitch_username: "ViewerOne",
+            reward_cost: 100,
+            redeemed_at: "2026-01-01T00:00:00Z",
+            cards: { rarity: "common" },
+          },
+          {
+            card_id: "c1",
+            user_twitch_id: "viewer1",
+            user_twitch_username: "ViewerOne",
+            reward_cost: 200,
+            redeemed_at: "2026-01-02T00:00:00Z",
+            cards: { rarity: "common" },
+          },
+          {
+            card_id: "c2",
+            user_twitch_id: "viewer2",
+            user_twitch_username: "ViewerTwo",
+            reward_cost: 250,
+            redeemed_at: "2026-01-03T00:00:00Z",
+            cards: { rarity: "rare" },
+          },
+        ],
+        error: null,
+      });
+      return historyQuery;
+    };
+
+    const cardsQuery = createMockQueryBuilder();
+    (cardsQuery as unknown as Record<string, unknown>).then = (
+      resolve: (value: unknown) => void
+    ) => {
+      resolve({
+        data: [
+          {
+            id: "c1",
+            name: "Card1",
+            rarity: "common",
+            image_url: null,
+            drop_rate: 50,
+          },
+          {
+            id: "c2",
+            name: "Card2",
+            rarity: "rare",
+            image_url: null,
+            drop_rate: 50,
+          },
+        ],
+        error: null,
+      });
+      return cardsQuery;
+    };
+
+    let gachaHistoryCallCount = 0;
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === "streamers") return streamerQuery;
+        if (table === "gacha_history") {
+          gachaHistoryCallCount++;
+          return gachaHistoryCallCount === 1 ? countQuery : historyQuery;
+        }
+        if (table === "cards") return cardsQuery;
+        return createMockQueryBuilder();
+      }),
+      rpc: vi.fn().mockResolvedValue({
+        data: null,
+        error: { code: "42883", message: "function not found" },
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(createRequest({ period: "30d" }));
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.channelPointStats.totalPoints).toBe(550);
+    expect(body.channelPointStats.ranking).toEqual([
+      {
+        userTwitchId: "viewer1",
+        username: "ViewerOne",
+        totalPoints: 300,
+        redemptionCount: 2,
+        lastRedeemedAt: "2026-01-02T00:00:00Z",
+      },
+      {
+        userTwitchId: "viewer2",
+        username: "ViewerTwo",
+        totalPoints: 250,
+        redemptionCount: 1,
+        lastRedeemedAt: "2026-01-03T00:00:00Z",
+      },
+    ]);
   });
 });
