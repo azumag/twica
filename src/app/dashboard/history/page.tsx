@@ -1,4 +1,5 @@
 import { getTranslations } from "next-intl/server";
+import dynamic from "next/dynamic";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -6,7 +7,14 @@ import {
   getGachaHistoryForUser,
   getActiveCardsForStreamer,
 } from "@/lib/dashboard-data";
-import GachaHistoryTable from "@/components/GachaHistoryTable";
+
+const GachaHistoryTable = dynamic(() => import("@/components/GachaHistoryTable"), {
+  loading: () => (
+    <div className="rounded-lg border border-gray-700 bg-gray-800 p-6 text-sm text-gray-400">
+      Loading history...
+    </div>
+  ),
+});
 
 /**
  * Gacha History page

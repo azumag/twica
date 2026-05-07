@@ -1,15 +1,41 @@
 import { redirect } from "next/navigation";
+import dynamic from "next/dynamic";
 import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
-import ChannelPointSettings from "@/components/ChannelPointSettings";
-import OverlayPreview from "@/components/OverlayPreview";
-import GachaSoundSettings from "@/components/GachaSoundSettings";
-import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
-import CardVisibilitySettings from "@/components/CardVisibilitySettings";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
+
+const OverlayPreview = dynamic(() => import("@/components/OverlayPreview"), {
+  loading: () => (
+    <div className="rounded-lg border border-gray-700 bg-gray-800 p-6 text-sm text-gray-400">
+      Loading overlay preview...
+    </div>
+  ),
+});
+
+const ChannelPointSettings = dynamic(() => import("@/components/ChannelPointSettings"), {
+  loading: () => <SettingsPanelSkeleton />,
+});
+const GachaSoundSettings = dynamic(() => import("@/components/GachaSoundSettings"), {
+  loading: () => <SettingsPanelSkeleton />,
+});
+const ChatAnnouncementSettings = dynamic(() => import("@/components/ChatAnnouncementSettings"), {
+  loading: () => <SettingsPanelSkeleton />,
+});
+const CardVisibilitySettings = dynamic(() => import("@/components/CardVisibilitySettings"), {
+  loading: () => <SettingsPanelSkeleton />,
+});
+
+function SettingsPanelSkeleton() {
+  return (
+    <div className="rounded-lg border border-gray-700 bg-gray-800 p-4">
+      <div className="h-4 w-1/3 rounded bg-gray-700" />
+      <div className="mt-3 h-3 w-2/3 rounded bg-gray-700" />
+    </div>
+  );
+}
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
