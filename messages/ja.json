@@ -912,6 +912,15 @@
     "totalDraws": "総ガチャ回数",
     "draws": "回",
     "noData": "この期間にはガチャデータがありません。",
+    "channelPointRanking": {
+      "title": "チャネルポイント使用ランキング",
+      "total": "期間内合計: {points} ポイント",
+      "noData": "この期間にはチャネルポイント使用データがありません。",
+      "rank": "順位",
+      "user": "ユーザー",
+      "points": "使用ポイント",
+      "redemptions": "回数"
+    },
     "dropRateTable": {
       "cardName": "カード名",
       "rarity": "レアリティ",

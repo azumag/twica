@@ -216,26 +216,32 @@ export interface Database {
       gacha_history: {
         Row: {
           id: string
+          event_id: string | null
           user_twitch_id: string
           user_twitch_username: string | null
           card_id: string
           streamer_id: string
+          reward_cost: number | null
           redeemed_at: string
         }
         Insert: {
           id?: string
+          event_id?: string | null
           user_twitch_id: string
           user_twitch_username?: string | null
           card_id: string
           streamer_id: string
+          reward_cost?: number | null
           redeemed_at?: string
         }
         Update: {
           id?: string
+          event_id?: string | null
           user_twitch_id?: string
           user_twitch_username?: string | null
           card_id?: string
           streamer_id?: string
+          reward_cost?: number | null
           redeemed_at?: string
         }
       }
