@@ -5,6 +5,11 @@ import { setSecurityHeaders } from '@/lib/security-headers'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
 
+// Next.js 16 recommends proxy.ts, but Proxy always builds as Node.js runtime.
+// OpenNext Cloudflare 1.16.1 cannot deploy Node.js middleware, so this file
+// intentionally stays on the deprecated middleware.ts convention until the
+// Cloudflare adapter supports Proxy or an equivalent deploy path.
+
 /**
  * Detect locale from request (cookie or Accept-Language header)
  * リクエストからロケールを検出（CookieまたはAccept-Languageヘッダー）
