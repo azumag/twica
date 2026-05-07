@@ -1,9 +1,17 @@
 import { redirect } from "next/navigation";
+import dynamic from "next/dynamic";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
 import { getUserPlan, PLAN_MAX_IMAGE_WIDTH, PLAN_AVAILABLE_WIDTHS } from "@/lib/plan";
-import CardManager from "@/components/CardManager";
 import type { Card } from "@/types/database";
+
+const CardManager = dynamic(() => import("@/components/CardManager"), {
+  loading: () => (
+    <div className="rounded-lg border border-gray-700 bg-gray-800 p-6 text-sm text-gray-400">
+      Loading cards...
+    </div>
+  ),
+});
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要

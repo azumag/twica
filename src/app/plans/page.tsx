@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
+import PublicFooter from "@/components/PublicFooter";
 
 export const metadata: Metadata = {
   title: "支援特典について - TwiCa",
@@ -15,7 +16,6 @@ export const metadata: Metadata = {
 export default async function PlansPage() {
   const session = await getSession();
   const tHeader = await getTranslations("header");
-  const tFooter = await getTranslations("footer");
   const tGuidePage = await getTranslations("guidePage");
 
   return (
@@ -297,30 +297,7 @@ export default async function PlansPage() {
         </article>
       </main>
 
-      <footer className="border-t border-gray-800">
-        <div className="container mx-auto px-4 py-6">
-          <div className="flex flex-col items-center justify-between gap-4 sm:flex-row">
-            <p className="text-sm text-gray-500">&copy; 2025 TwiCa</p>
-            <div className="flex gap-6">
-              <Link href="/guide" className="text-sm text-gray-500 hover:text-gray-300">
-                {tFooter("guide")}
-              </Link>
-              <Link href="/tos" className="text-sm text-gray-500 hover:text-gray-300">
-                {tFooter("tos")}
-              </Link>
-              <Link href="/about" className="text-sm text-gray-500 hover:text-gray-300">
-                {tFooter("about")}
-              </Link>
-              <Link href="/privacy" className="text-sm text-gray-500 hover:text-gray-300">
-                {tFooter("privacy")}
-              </Link>
-              <Link href="/releases" className="text-sm text-gray-500 hover:text-gray-300">
-                {tFooter("releaseNotes")}
-              </Link>
-            </div>
-          </div>
-        </div>
-      </footer>
+      <PublicFooter />
     </div>
   );
 }

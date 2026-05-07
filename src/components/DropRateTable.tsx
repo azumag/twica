@@ -25,6 +25,16 @@ interface RarityStat {
 
 interface GachaStatsData {
   totalDraws: number;
+  channelPointStats: {
+    totalPoints: number;
+    ranking: Array<{
+      userTwitchId: string;
+      username: string;
+      totalPoints: number;
+      redemptionCount: number;
+      lastRedeemedAt: string | null;
+    }>;
+  };
   cardStats: CardStat[];
   rarityStats: RarityStat[];
 }
@@ -107,6 +117,58 @@ export default function DropRateTable() {
             <div className="text-sm text-gray-400">
               {t("totalDraws")} ({t(`period.${period}`)})
             </div>
+          </div>
+
+          {/* Channel point usage ranking / チャネルポイント使用ランキング */}
+          <div className="mb-6 overflow-hidden rounded-xl bg-gray-800">
+            <div className="border-b border-gray-700 p-4">
+              <h3 className="text-lg font-semibold text-white">
+                {t("channelPointRanking.title")}
+              </h3>
+              <p className="mt-1 text-sm text-gray-400">
+                {t("channelPointRanking.total", {
+                  points: stats.channelPointStats.totalPoints.toLocaleString(),
+                })}
+              </p>
+            </div>
+            {stats.channelPointStats.ranking.length === 0 ? (
+              <div className="p-4 text-sm text-gray-400">
+                {t("channelPointRanking.noData")}
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-700 text-left text-gray-400">
+                    <th className="w-14 p-3 text-right">
+                      {t("channelPointRanking.rank")}
+                    </th>
+                    <th className="p-3">{t("channelPointRanking.user")}</th>
+                    <th className="p-3 text-right">
+                      {t("channelPointRanking.points")}
+                    </th>
+                    <th className="p-3 text-right">
+                      {t("channelPointRanking.redemptions")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-700">
+                  {stats.channelPointStats.ranking.map((row, index) => (
+                    <tr key={row.userTwitchId}>
+                      <td className="p-3 text-right font-medium text-gray-300">
+                        {index + 1}
+                      </td>
+                      <td className="p-3 text-white">{row.username}</td>
+                      <td className="p-3 text-right font-medium text-white">
+                        {row.totalPoints.toLocaleString()}
+                      </td>
+                      <td className="p-3 text-right text-gray-300">
+                        {row.redemptionCount}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
           {/* Rarity summary / レアリティ別サマリー */}

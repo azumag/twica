@@ -533,6 +533,16 @@ export async function getGachaUsersForStreamer(
  */
 export interface GachaStatsResult {
   totalDraws: number;
+  channelPointStats: {
+    totalPoints: number;
+    ranking: Array<{
+      userTwitchId: string;
+      username: string;
+      totalPoints: number;
+      redemptionCount: number;
+      lastRedeemedAt: string | null;
+    }>;
+  };
   cardStats: Array<{
     cardId: string;
     cardName: string;
@@ -547,6 +557,85 @@ export interface GachaStatsResult {
     count: number;
     rate: number;
   }>;
+}
+
+interface ChannelPointUsageStatsRpcRow {
+  user_twitch_id: string;
+  username: string | null;
+  total_points: number | string;
+  redemption_count: number;
+  last_redeemed_at: string | null;
+}
+
+function parseChannelPointUsageStatsRpc(rpcResult: unknown): GachaStatsResult["channelPointStats"] | null {
+  if (!rpcResult || typeof rpcResult !== "object") return null;
+
+  const payload = rpcResult as {
+    total_points?: number | string | null;
+    ranking?: ChannelPointUsageStatsRpcRow[] | null;
+  };
+  if (!Array.isArray(payload.ranking)) return null;
+
+  return {
+    totalPoints: Number(payload.total_points || 0),
+    ranking: payload.ranking.map((row) => ({
+      userTwitchId: row.user_twitch_id,
+      username: row.username || row.user_twitch_id,
+      totalPoints: Number(row.total_points || 0),
+      redemptionCount: row.redemption_count,
+      lastRedeemedAt: row.last_redeemed_at,
+    })),
+  };
+}
+
+function buildChannelPointUsageStatsFromHistory(
+  history: Array<{
+    user_twitch_id: string;
+    user_twitch_username: string | null;
+    reward_cost: number | null;
+    redeemed_at: string;
+  }>
+): GachaStatsResult["channelPointStats"] {
+  const userMap = new Map<string, {
+    username: string;
+    totalPoints: number;
+    redemptionCount: number;
+    lastRedeemedAt: string | null;
+  }>();
+  let totalPoints = 0;
+
+  for (const entry of history) {
+    const rewardCost = entry.reward_cost || 0;
+    if (rewardCost <= 0) continue;
+
+    totalPoints += rewardCost;
+    const existing = userMap.get(entry.user_twitch_id);
+    if (existing) {
+      existing.totalPoints += rewardCost;
+      existing.redemptionCount += 1;
+      if (!existing.lastRedeemedAt || entry.redeemed_at > existing.lastRedeemedAt) {
+        existing.lastRedeemedAt = entry.redeemed_at;
+      }
+    } else {
+      userMap.set(entry.user_twitch_id, {
+        username: entry.user_twitch_username || entry.user_twitch_id,
+        totalPoints: rewardCost,
+        redemptionCount: 1,
+        lastRedeemedAt: entry.redeemed_at,
+      });
+    }
+  }
+
+  const ranking = Array.from(userMap.entries())
+    .map(([userTwitchId, entry]) => ({ userTwitchId, ...entry }))
+    .sort((a, b) => {
+      if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+      if (b.redemptionCount !== a.redemptionCount) return b.redemptionCount - a.redemptionCount;
+      return (b.lastRedeemedAt || "").localeCompare(a.lastRedeemedAt || "");
+    })
+    .slice(0, 10);
+
+  return { totalPoints, ranking };
 }
 
 /**
@@ -566,9 +655,9 @@ export async function getGachaStats(
   const daysAgo = period === "7d" ? 7 : 30;
   const fromDate = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
 
-  // Run all 3 independent queries in parallel to reduce latency
-  // 3つの独立したクエリを並列実行してレイテンシを削減
-  const [countResult, historyResult, cardsResult] = await Promise.all([
+  // Run independent queries in parallel to reduce latency
+  // 独立したクエリを並列実行してレイテンシを削減
+  const [countResult, historyResult, cardsResult, channelPointResult] = await Promise.all([
     // 1. Get total draw count using count-only query (avoids 1000-row limit)
     // count-onlyクエリで正確な総ガチャ回数を取得（1000行制限を回避）
     supabaseAdmin
@@ -582,7 +671,7 @@ export async function getGachaStats(
     // 非常にアクティブな配信者（期間内10000回超）の場合、カウントは近似値になる可能性がある。
     supabaseAdmin
       .from("gacha_history")
-      .select("card_id, cards(rarity)")
+      .select("card_id, user_twitch_id, user_twitch_username, reward_cost, redeemed_at, cards(rarity)")
       .eq("streamer_id", streamerId)
       .gte("redeemed_at", fromDate.toISOString())
       .limit(10000),
@@ -593,6 +682,12 @@ export async function getGachaStats(
       .select("id, name, rarity, image_url, drop_rate")
       .eq("streamer_id", streamerId)
       .eq("is_active", true),
+    supabaseAdmin
+      .rpc("get_channel_point_usage_stats", {
+        p_streamer_id: streamerId,
+        p_from_date: fromDate.toISOString(),
+        p_limit: 10,
+      }),
   ]);
 
   const totalDraws = countResult.count;
@@ -600,6 +695,9 @@ export async function getGachaStats(
   const allCards = cardsResult.data;
 
   const safeTotal = totalDraws || 0;
+  const channelPointStats =
+    parseChannelPointUsageStatsRpc(channelPointResult.data) ||
+    buildChannelPointUsageStatsFromHistory(history || []);
 
   // Count draws per card
   // カードごとの排出回数を集計
@@ -653,7 +751,7 @@ export async function getGachaStats(
     }
   );
 
-  return { totalDraws: safeTotal, cardStats, rarityStats };
+  return { totalDraws: safeTotal, channelPointStats, cardStats, rarityStats };
 }
 
 /**
