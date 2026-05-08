@@ -567,6 +567,53 @@ interface ChannelPointUsageStatsRpcRow {
   last_redeemed_at: string | null;
 }
 
+interface GachaDropStatsRpcCardRow {
+  card_id: string;
+  card_name: string;
+  rarity: string;
+  image_url: string | null;
+  configured_rate: number | string;
+  actual_count: number | string;
+  actual_rate: number | string;
+}
+
+interface GachaDropStatsRpcRarityRow {
+  rarity: string;
+  count: number | string;
+  rate: number | string;
+}
+
+function parseGachaDropStatsRpc(rpcResult: unknown): Omit<GachaStatsResult, "channelPointStats"> | null {
+  if (!rpcResult || typeof rpcResult !== "object") return null;
+
+  const payload = rpcResult as {
+    total_draws?: number | string | null;
+    card_stats?: GachaDropStatsRpcCardRow[] | null;
+    rarity_stats?: GachaDropStatsRpcRarityRow[] | null;
+  };
+  if (!Array.isArray(payload.card_stats) || !Array.isArray(payload.rarity_stats)) {
+    return null;
+  }
+
+  return {
+    totalDraws: Number(payload.total_draws || 0),
+    cardStats: payload.card_stats.map((row) => ({
+      cardId: row.card_id,
+      cardName: row.card_name,
+      rarity: row.rarity,
+      imageUrl: row.image_url,
+      configuredRate: Number(row.configured_rate || 0),
+      actualCount: Number(row.actual_count || 0),
+      actualRate: Number(row.actual_rate || 0),
+    })),
+    rarityStats: payload.rarity_stats.map((row) => ({
+      rarity: row.rarity,
+      count: Number(row.count || 0),
+      rate: Number(row.rate || 0),
+    })),
+  };
+}
+
 function parseChannelPointUsageStatsRpc(rpcResult: unknown): GachaStatsResult["channelPointStats"] | null {
   if (!rpcResult || typeof rpcResult !== "object") return null;
 
@@ -611,33 +658,12 @@ export async function getGachaStats(
   const daysAgo = period === "7d" ? 7 : 30;
   const fromDate = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
 
-  // Run independent queries in parallel to reduce latency
-  // 独立したクエリを並列実行してレイテンシを削減
-  const [countResult, historyResult, cardsResult, channelPointResult] = await Promise.all([
-    // 1. Get total draw count using count-only query (avoids 1000-row limit)
-    // count-onlyクエリで正確な総ガチャ回数を取得（1000行制限を回避）
+  const [dropStatsResult, channelPointResult] = await Promise.all([
     supabaseAdmin
-      .from("gacha_history")
-      .select("id", { count: "exact", head: true })
-      .eq("streamer_id", streamerId)
-      .gte("redeemed_at", fromDate.toISOString()),
-    // 2. Fetch history with card_id to count draws per card
-    // card_idのみ取得してカードごとの排出回数を集計
-    // For very active streamers (>10000 draws/period), counts may be approximate.
-    // 非常にアクティブな配信者（期間内10000回超）の場合、カウントは近似値になる可能性がある。
-    supabaseAdmin
-      .from("gacha_history")
-      .select("card_id, cards(rarity)")
-      .eq("streamer_id", streamerId)
-      .gte("redeemed_at", fromDate.toISOString())
-      .limit(10000),
-    // 3. Fetch all active cards to include cards with 0 draws
-    // 排出0回のカードも含めるため、配信者の全アクティブカードを取得
-    supabaseAdmin
-      .from("cards")
-      .select("id, name, rarity, image_url, drop_rate")
-      .eq("streamer_id", streamerId)
-      .eq("is_active", true),
+      .rpc("get_gacha_drop_stats", {
+        p_streamer_id: streamerId,
+        p_from_date: fromDate.toISOString(),
+      }),
     supabaseAdmin
       .rpc("get_channel_point_usage_stats", {
         p_streamer_id: streamerId,
@@ -646,68 +672,20 @@ export async function getGachaStats(
       }),
   ]);
 
-  const totalDraws = countResult.count;
-  const history = historyResult.data;
-  const allCards = cardsResult.data;
-
-  const safeTotal = totalDraws || 0;
+  const dropStats = parseGachaDropStatsRpc(dropStatsResult.data) || {
+    totalDraws: 0,
+    cardStats: [],
+    rarityStats: ["legendary", "epic", "rare", "common"].map((rarity) => ({
+      rarity,
+      count: 0,
+      rate: 0,
+    })),
+  };
   const channelPointStats =
     parseChannelPointUsageStatsRpc(channelPointResult.data) ||
     EMPTY_CHANNEL_POINT_STATS;
 
-  // Count draws per card
-  // カードごとの排出回数を集計
-  const drawCounts = new Map<string, number>();
-  for (const h of history || []) {
-    drawCounts.set(h.card_id, (drawCounts.get(h.card_id) || 0) + 1);
-  }
-
-  // Calculate total configured weight for percentage calculation
-  // パーセンテージ計算用に設定重みの合計を算出
-  const totalWeight = (allCards || []).reduce(
-    (sum, c) => sum + (c.drop_rate || 0),
-    0
-  );
-
-  // Build per-card stats
-  // カードごとの統計を構築
-  const cardStats = (allCards || []).map((card) => {
-    const actualCount = drawCounts.get(card.id) || 0;
-    return {
-      cardId: card.id,
-      cardName: card.name,
-      rarity: card.rarity,
-      imageUrl: card.image_url,
-      // Configured rate as percentage of total weight
-      // 全体の重みに対する設定率（パーセンテージ）
-      configuredRate: totalWeight > 0 ? (card.drop_rate / totalWeight) * 100 : 0,
-      actualCount,
-      actualRate: safeTotal > 0 ? (actualCount / safeTotal) * 100 : 0,
-    };
-  });
-
-  // Build rarity-level stats
-  // レアリティレベルの統計を構築
-  const rarityMap = new Map<string, number>();
-  for (const h of history || []) {
-    const card = h.cards as unknown as { rarity: string } | null;
-    if (card) {
-      rarityMap.set(card.rarity, (rarityMap.get(card.rarity) || 0) + 1);
-    }
-  }
-
-  const rarityStats = ["legendary", "epic", "rare", "common"].map(
-    (rarity) => {
-      const count = rarityMap.get(rarity) || 0;
-      return {
-        rarity,
-        count,
-        rate: safeTotal > 0 ? (count / safeTotal) * 100 : 0,
-      };
-    }
-  );
-
-  return { totalDraws: safeTotal, channelPointStats, cardStats, rarityStats };
+  return { ...dropStats, channelPointStats };
 }
 
 /**

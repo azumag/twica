@@ -112,86 +112,53 @@ describe("GET /api/gacha-stats", () => {
       createMockResponse({ id: "streamer-id-1" })
     );
 
-    // getGachaStats accesses gacha_history twice:
-    // 1st: count-only query (select("id", { count: "exact", head: true }))
-    // 2nd: data query (draw/card data for drop-rate aggregation)
-    // getGachaStats は gacha_history に2回アクセスする:
-    // 1回目: count-only クエリ、2回目: データ取得クエリ
-    const countQuery = createMockQueryBuilder();
-    const countResponse = { data: null, error: null, count: 1 };
-    (countQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve(countResponse);
-      return countQuery;
-    };
-
-    const historyQuery = createMockQueryBuilder();
-    const historyResponse = {
-      data: [
-        {
-          card_id: "c1",
-          cards: { rarity: "common" },
-        },
-      ],
-      error: null,
-    };
-    (historyQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve(historyResponse);
-      return historyQuery;
-    };
-
-    // Cards query (for allCards in getGachaStats)
-    // カードクエリ（getGachaStats内のallCards用）
-    const cardsQuery = createMockQueryBuilder();
-    const cardsResponse = {
-      data: [
-        {
-          id: "c1",
-          name: "Card1",
-          rarity: "common",
-          image_url: null,
-          drop_rate: 100,
-        },
-      ],
-      error: null,
-    };
-    (cardsQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve(cardsResponse);
-      return cardsQuery;
-    };
-
-    const rpc = vi.fn().mockResolvedValue({
-      data: {
-        total_points: 250,
-        ranking: [
-          {
-            user_twitch_id: "viewer1",
-            username: "ViewerOne",
-            total_points: 250,
-            redemption_count: 2,
-            last_redeemed_at: "2026-01-01T00:00:00Z",
+    const rpc = vi.fn((functionName: string) => {
+      if (functionName === "get_gacha_drop_stats") {
+        return Promise.resolve({
+          data: {
+            total_draws: 1001,
+            card_stats: [
+              {
+                card_id: "c1",
+                card_name: "Card1",
+                rarity: "common",
+                image_url: null,
+                configured_rate: 100,
+                actual_count: 1001,
+                actual_rate: 100,
+              },
+            ],
+            rarity_stats: [
+              { rarity: "legendary", count: 0, rate: 0 },
+              { rarity: "epic", count: 0, rate: 0 },
+              { rarity: "rare", count: 0, rate: 0 },
+              { rarity: "common", count: 1001, rate: 100 },
+            ],
           },
-        ],
-      },
-      error: null,
+          error: null,
+        });
+      }
+
+      return Promise.resolve({
+        data: {
+          total_points: 250,
+          ranking: [
+            {
+              user_twitch_id: "viewer1",
+              username: "ViewerOne",
+              total_points: 250,
+              redemption_count: 2,
+              last_redeemed_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+        },
+        error: null,
+      });
     });
 
-    // Track gacha_history call order to return count query first, then data query
-    // gacha_history の呼び出し順を追跡し、最初にcountクエリ、次にデータクエリを返す
-    let gachaHistoryCallCount = 0;
     mockGetSupabaseAdmin.mockReturnValue({
       from: vi.fn((table: string) => {
         if (table === "streamers") return streamerQuery;
-        if (table === "gacha_history") {
-          gachaHistoryCallCount++;
-          return gachaHistoryCallCount === 1 ? countQuery : historyQuery;
-        }
-        if (table === "cards") return cardsQuery;
         return createMockQueryBuilder();
       }),
       rpc,
@@ -201,10 +168,10 @@ describe("GET /api/gacha-stats", () => {
     expect(res.status).toBe(200);
 
     const body = await res.json();
-    expect(body.totalDraws).toBe(1);
+    expect(body.totalDraws).toBe(1001);
     expect(body.cardStats).toHaveLength(1);
     expect(body.cardStats[0].cardName).toBe("Card1");
-    expect(body.cardStats[0].actualCount).toBe(1);
+    expect(body.cardStats[0].actualCount).toBe(1001);
     expect(body.cardStats[0].actualRate).toBe(100);
     expect(body.rarityStats).toHaveLength(4);
     expect(body.channelPointStats.totalPoints).toBe(250);
@@ -221,6 +188,10 @@ describe("GET /api/gacha-stats", () => {
       p_streamer_id: "streamer-id-1",
       p_from_date: null,
       p_limit: 10,
+    });
+    expect(rpc).toHaveBeenCalledWith("get_gacha_drop_stats", {
+      p_streamer_id: "streamer-id-1",
+      p_from_date: expect.any(String),
     });
   });
 
@@ -242,73 +213,9 @@ describe("GET /api/gacha-stats", () => {
       createMockResponse({ id: "streamer-id-1" })
     );
 
-    const countQuery = createMockQueryBuilder();
-    (countQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve({ data: null, error: null, count: 3 });
-      return countQuery;
-    };
-
-    const historyQuery = createMockQueryBuilder();
-    (historyQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve({
-        data: [
-          {
-            card_id: "c1",
-            cards: { rarity: "common" },
-          },
-          {
-            card_id: "c1",
-            cards: { rarity: "common" },
-          },
-          {
-            card_id: "c2",
-            cards: { rarity: "rare" },
-          },
-        ],
-        error: null,
-      });
-      return historyQuery;
-    };
-
-    const cardsQuery = createMockQueryBuilder();
-    (cardsQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve({
-        data: [
-          {
-            id: "c1",
-            name: "Card1",
-            rarity: "common",
-            image_url: null,
-            drop_rate: 50,
-          },
-          {
-            id: "c2",
-            name: "Card2",
-            rarity: "rare",
-            image_url: null,
-            drop_rate: 50,
-          },
-        ],
-        error: null,
-      });
-      return cardsQuery;
-    };
-
-    let gachaHistoryCallCount = 0;
     mockGetSupabaseAdmin.mockReturnValue({
       from: vi.fn((table: string) => {
         if (table === "streamers") return streamerQuery;
-        if (table === "gacha_history") {
-          gachaHistoryCallCount++;
-          return gachaHistoryCallCount === 1 ? countQuery : historyQuery;
-        }
-        if (table === "cards") return cardsQuery;
         return createMockQueryBuilder();
       }),
       rpc: vi.fn().mockResolvedValue({
@@ -321,6 +228,8 @@ describe("GET /api/gacha-stats", () => {
     expect(res.status).toBe(200);
 
     const body = await res.json();
+    expect(body.totalDraws).toBe(0);
+    expect(body.cardStats).toEqual([]);
     expect(body.channelPointStats).toEqual({
       totalPoints: 0,
       ranking: [],

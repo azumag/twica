@@ -928,9 +928,10 @@
   "gachaStatsPage": {
     "title": "ガチャ統計",
     "description": "カードの排出率と統計情報を確認できます。",
-    "period": {
+    "tabs": {
       "7d": "7日間",
-      "30d": "30日間"
+      "30d": "30日間",
+      "channelPoints": "チャネルポイント"
     },
     "totalDraws": "総ガチャ回数",
     "draws": "回",
