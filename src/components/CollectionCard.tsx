@@ -25,6 +25,9 @@ interface CollectionCardProps {
     label: string;
     color: string;
   };
+  // Stable collection number for encyclopedia-style display
+  // 図鑑表示用の固定カード番号
+  collectionNumberLabel?: string;
   // Number of copies the user owns (optional, shown if > 1)
   // ユーザーが所有する枚数（任意、1より大きい場合に表示）
   count?: number;
@@ -62,6 +65,7 @@ export default function CollectionCard({
   name,
   imageUrl,
   rarityInfo,
+  collectionNumberLabel,
   count,
   countLabel,
   priority = false,
@@ -82,6 +86,11 @@ export default function CollectionCard({
       <div className="p-3 pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
+            {collectionNumberLabel && (
+              <div className="mb-1 text-xs font-semibold text-purple-300">
+                {collectionNumberLabel}
+              </div>
+            )}
             <h3 className={`font-semibold truncate text-base ${isOwned ? "text-white" : "text-white/70"}`}>
               {name}
             </h3>

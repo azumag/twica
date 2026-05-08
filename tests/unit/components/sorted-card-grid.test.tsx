@@ -37,9 +37,32 @@ const baseTranslations = {
   noImage: 'NoImage',
   unownedCard: '???',
   inactiveStatus: 'PAUSED',
+  cardNumberTemplate: '#{number}',
+  sortLabel: '並び替え',
+  sortByNumber: '番号順',
+  sortByRarity: 'レアリティ順',
 }
 
 describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
+  it('renders encyclopedia numbers and defaults to number order', () => {
+    const cards = [
+      { ...baseCard({ id: 'card-2', name: 'SecondCard', created_at: '2026-04-02T00:00:00Z' }), count: 1, isOwned: true, collectionNumber: 2 },
+      { ...baseCard({ id: 'card-1', name: 'FirstCard', created_at: '2026-04-01T00:00:00Z' }), count: 1, isOwned: true, collectionNumber: 1 },
+    ]
+    render(
+      <SortedCardGrid
+        cards={cards}
+        streamerId="streamer-1"
+        translations={baseTranslations}
+      />
+    )
+
+    expect(screen.getByText('#1')).toBeInTheDocument()
+    expect(screen.getByText('#2')).toBeInTheDocument()
+    const names = screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)
+    expect(names).toEqual(['FirstCard', 'SecondCard'])
+  })
+
   it('renders owned card with its name and image', () => {
     const cards = [
       { ...baseCard({ id: 'owned-1', name: 'OwnedCard' }), count: 2, isOwned: true },

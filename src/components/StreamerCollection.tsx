@@ -9,6 +9,7 @@ import type { Streamer, Card } from "@/types/database";
 export interface StreamerCollectionCard extends Card {
   count: number;
   isOwned: boolean;
+  collectionNumber?: number;
 }
 
 interface StreamerCollectionProps {
@@ -110,6 +111,10 @@ export default async function StreamerCollection({
               noImage: tCommon("noImage"),
               unownedCard: t("unownedCard"),
               inactiveStatus: tCardManager("status.paused"),
+              cardNumberTemplate: t("cardNumber"),
+              sortLabel: t("sort.label"),
+              sortByNumber: t("sort.number"),
+              sortByRarity: t("sort.rarity"),
             }}
           />
         )}

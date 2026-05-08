@@ -252,6 +252,12 @@
     "cardTypes": "{count} types",
     "totalCount": "{count} cards",
     "cardCount": "x{count}",
+    "cardNumber": "#{number}",
+    "sort": {
+      "label": "Sort",
+      "number": "Number",
+      "rarity": "Rarity"
+    },
     "viewCollection": "View Collection",
     "unownedCard": "???"
   },
