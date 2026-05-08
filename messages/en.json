@@ -45,12 +45,16 @@
     "editCard": "Edit Card",
     "newCard": "New Card",
     "importFromEmotes": "Import from Emotes",
+    "editCardNumbers": "Edit Numbers",
     "form": {
       "name": "Card Name",
       "namePlaceholder": "Card name",
       "image": "Image (File or URL)",
       "imageUrlPlaceholder": "Or enter image URL",
       "rarity": "Rarity",
+      "cardNumber": "Card Number",
+      "cardNumberPlaceholder": "e.g. 12",
+      "cardNumberHelp": "Leave blank to auto-number",
       "dropRate": "Drop Rate",
       "intraRarityWeight": "Drop Rate within Rarity",
       "intraRarityWeightHint": "Adjust drop balance among cards of the same rarity (default: 1.0)",
@@ -100,9 +104,22 @@
       "imageUrlLoadFailed": "Failed to load image URL. Please check the URL.",
       "imageUrlValidating": "Validating image..."
     },
+    "cardNumberEditor": {
+      "title": "Edit Card Numbers",
+      "description": "Update card numbers in one place. Leave blank to use auto-numbering.",
+      "save": "Save Numbers",
+      "saving": "Saving...",
+      "duplicate": "The same number is assigned to multiple cards: {number}",
+      "invalid": "Card number must be a positive integer.",
+      "noChanges": "No changes.",
+      "saved": "Card numbers saved.",
+      "auto": "Auto",
+      "numberLabel": "Number"
+    },
     "sort": {
       "createdAt": "Date Created",
       "rarity": "Rarity",
+      "cardNumber": "Card Number",
       "dropRate": "Drop Weight",
       "ascending": "Ascending",
       "descending": "Descending"
@@ -252,6 +269,12 @@
     "cardTypes": "{count} types",
     "totalCount": "{count} cards",
     "cardCount": "x{count}",
+    "cardNumber": "#{number}",
+    "sort": {
+      "label": "Sort",
+      "number": "Number",
+      "rarity": "Rarity"
+    },
     "viewCollection": "View Collection",
     "unownedCard": "???"
   },

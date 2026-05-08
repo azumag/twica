@@ -7,7 +7,11 @@ import {
   getCollectionCompletions,
   recordCollectionCompletion,
 } from "@/lib/dashboard-data";
-import { countOwnedActiveCardTypes, sortCollectedCards } from "@/lib/collection-utils";
+import {
+  countOwnedActiveCardTypes,
+  createCollectionNumberMap,
+  sortCollectedCards,
+} from "@/lib/collection-utils";
 import StreamerCollection from "@/components/StreamerCollection";
 import type { StreamerCollectionCard } from "@/components/StreamerCollection";
 
@@ -53,10 +57,12 @@ export default async function StreamerCollectionPage({
   ]);
 
   const activeCardIds = new Set(activeCards.map((card) => card.id));
+  const collectionNumberMap = createCollectionNumberMap([...activeCards, ...userCards]);
   const ownedCards: StreamerCollectionCard[] = sortCollectedCards(userCards).map((card) => ({
     ...card,
     count: card.count,
     isOwned: true,
+    collectionNumber: collectionNumberMap.get(card.id),
   }));
 
   // 未所持カードの視聴者向け表示（Issue #395）
@@ -73,6 +79,7 @@ export default async function StreamerCollectionPage({
         ...card,
         count: 0,
         isOwned: false,
+        collectionNumber: collectionNumberMap.get(card.id),
       }))
     : [];
 

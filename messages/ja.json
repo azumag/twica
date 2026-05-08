@@ -45,12 +45,16 @@
     "editCard": "カードを編集",
     "newCard": "新規カード",
     "importFromEmotes": "エモートからインポート",
+    "editCardNumbers": "番号をまとめて編集",
     "form": {
       "name": "カード名",
       "namePlaceholder": "カード名",
       "image": "画像 (ファイルまたはURL)",
       "imageUrlPlaceholder": "または画像URLを入力",
       "rarity": "レアリティ",
+      "cardNumber": "カード番号",
+      "cardNumberPlaceholder": "例: 12",
+      "cardNumberHelp": "空欄なら自動採番されます",
       "dropRate": "出現確率",
       "intraRarityWeight": "レアリティ内での排出確率",
       "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
@@ -100,9 +104,22 @@
       "imageUrlLoadFailed": "画像URLの読み込みに失敗しました。URLを確認してください。",
       "imageUrlValidating": "画像を検証中..."
     },
+    "cardNumberEditor": {
+      "title": "カード番号をまとめて編集",
+      "description": "番号だけをまとめて変更できます。空欄にすると自動採番になります。",
+      "save": "番号を保存",
+      "saving": "保存中...",
+      "duplicate": "同じ番号が複数のカードに指定されています: {number}",
+      "invalid": "カード番号は1以上の整数で入力してください。",
+      "noChanges": "変更はありません。",
+      "saved": "カード番号を保存しました。",
+      "auto": "自動",
+      "numberLabel": "番号"
+    },
     "sort": {
       "createdAt": "設定日",
       "rarity": "レアリティ",
+      "cardNumber": "カード番号",
       "dropRate": "出現重み",
       "ascending": "昇順",
       "descending": "降順"
@@ -252,6 +269,12 @@
     "cardTypes": "{count}種類",
     "totalCount": "{count}枚",
     "cardCount": "x{count}",
+    "cardNumber": "#{number}",
+    "sort": {
+      "label": "並び替え",
+      "number": "番号順",
+      "rarity": "レアリティ順"
+    },
     "viewCollection": "コレクションを見る",
     "unownedCard": "???"
   },

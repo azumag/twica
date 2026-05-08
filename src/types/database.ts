@@ -92,6 +92,7 @@ export interface Database {
           description: string | null
           image_url: string | null
           rarity: Rarity
+          card_number: number | null
           drop_rate: number
           // レアリティ内重み: 同レアリティ内での排出確率配分（デフォルト1.0=均等）
           intra_rarity_weight: number
@@ -113,6 +114,7 @@ export interface Database {
           description?: string | null
           image_url?: string | null
           rarity?: Rarity
+          card_number?: number | null
           drop_rate?: number
           intra_rarity_weight?: number
           is_active?: boolean
@@ -133,6 +135,7 @@ export interface Database {
           description?: string | null
           image_url?: string | null
           rarity?: Rarity
+          card_number?: number | null
           drop_rate?: number
           intra_rarity_weight?: number
           is_active?: boolean

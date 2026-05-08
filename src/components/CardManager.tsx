@@ -76,7 +76,16 @@ interface CardManagerProps {
 
 // Sorting field options
 // 並び替えフィールドの選択肢
-type SortField = "created_at" | "rarity" | "drop_rate";
+type SortField = "created_at" | "rarity" | "card_number" | "drop_rate";
+type CardFormData = {
+  name: string;
+  description: string;
+  imageUrl: string;
+  rarity: Rarity;
+  cardNumber: string;
+  dropRate: number;
+  intraRarityWeight: number;
+};
 
 // Sorting direction options
 // 並び替え方向の選択肢
@@ -208,11 +217,12 @@ export default function CardManager({
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<CardFormData>({
     name: "",
     description: "",
     imageUrl: "",
     rarity: "common" as Rarity,
+    cardNumber: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
   });
@@ -306,6 +316,13 @@ export default function CardManager({
   // Default drop rate for emote cards
   // エモートカードのデフォルト出現確率
   const [emoteDefaultDropRate, setEmoteDefaultDropRate] = useState(0.25);
+  const [showCardNumberEditor, setShowCardNumberEditor] = useState(false);
+  const [cardNumberDrafts, setCardNumberDrafts] = useState<Record<string, string>>({});
+  const [savingCardNumbers, setSavingCardNumbers] = useState(false);
+  const [cardNumberEditorMessage, setCardNumberEditorMessage] = useState<{
+    type: "error" | "success" | "info";
+    text: string;
+  } | null>(null);
 
   // Fetch storage status
   // ストレージ状態を取得
@@ -527,6 +544,125 @@ export default function CardManager({
     fetchEmotes();
   };
 
+  const cardNumberEditorCards = useMemo(() => {
+    return [...cards].sort((a, b) => {
+      const numberDiff = (a.card_number ?? Number.MAX_SAFE_INTEGER) - (b.card_number ?? Number.MAX_SAFE_INTEGER);
+      if (numberDiff !== 0) return numberDiff;
+      const createdAtDiff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      if (createdAtDiff !== 0) return createdAtDiff;
+      return a.id.localeCompare(b.id);
+    });
+  }, [cards]);
+
+  const openCardNumberEditor = () => {
+    setCardNumberDrafts(
+      Object.fromEntries(cards.map((card) => [card.id, card.card_number ? String(card.card_number) : ""]))
+    );
+    setCardNumberEditorMessage(null);
+    setShowCardNumberEditor(true);
+  };
+
+  const parseCardNumberDraft = (value: string): number | null | "invalid" => {
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    if (!/^\d+$/.test(trimmed)) return "invalid";
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) return "invalid";
+    return parsed;
+  };
+
+  const validateCardNumberDrafts = (): Array<{ card: Card; cardNumber: number | null }> | null => {
+    const seen = new Map<number, string>();
+    const updates: Array<{ card: Card; cardNumber: number | null }> = [];
+
+    for (const card of cards) {
+      const parsed = parseCardNumberDraft(cardNumberDrafts[card.id] ?? "");
+      if (parsed === "invalid") {
+        setCardNumberEditorMessage({ type: "error", text: t("cardNumberEditor.invalid") });
+        return null;
+      }
+      if (parsed !== null) {
+        if (seen.has(parsed)) {
+          setCardNumberEditorMessage({
+            type: "error",
+            text: t("cardNumberEditor.duplicate", { number: parsed }),
+          });
+          return null;
+        }
+        seen.set(parsed, card.id);
+      }
+      if ((card.card_number ?? null) !== parsed) {
+        updates.push({ card, cardNumber: parsed });
+      }
+    }
+
+    return updates;
+  };
+
+  const saveCardNumbers = async () => {
+    const updates = validateCardNumberDrafts();
+    if (!updates) return;
+    if (updates.length === 0) {
+      setCardNumberEditorMessage({ type: "info", text: t("cardNumberEditor.noChanges") });
+      return;
+    }
+
+    setSavingCardNumbers(true);
+    setCardNumberEditorMessage(null);
+    try {
+      const updateCardNumber = async (card: Card, cardNumber: number | null): Promise<Card> => {
+        const response = await fetch(`/api/cards/${card.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ cardNumber }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+          throw new Error(errorData.error || t("messages.errorOccurred", { status: response.status }));
+        }
+
+        const responseData = await response.json();
+        const savedCardData = { ...(responseData as Record<string, unknown>) };
+        delete savedCardData.recalculatedCards;
+        return savedCardData as unknown as Card;
+      };
+
+      const updatedCards: Card[] = [];
+      for (const update of updates) {
+        if (update.card.card_number !== null) {
+          await updateCardNumber(update.card, null);
+        }
+      }
+      for (const update of updates) {
+        if (update.cardNumber === null) {
+          updatedCards.push({ ...update.card, card_number: null });
+        } else {
+          updatedCards.push(await updateCardNumber(update.card, update.cardNumber));
+        }
+      }
+
+      handleBatchDropRateSave(updatedCards);
+      setCardNumberDrafts((prevDrafts) => {
+        const nextDrafts = { ...prevDrafts };
+        for (const card of updatedCards) {
+          nextDrafts[card.id] = card.card_number ? String(card.card_number) : "";
+        }
+        return nextDrafts;
+      });
+      setCardNumberEditorMessage({ type: "success", text: t("cardNumberEditor.saved") });
+    } catch (error) {
+      logger.error("Failed to save card numbers:", error);
+      setCardNumberEditorMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : t("messages.errorOccurred", { status: 500 }),
+      });
+    } finally {
+      setSavingCardNumbers(false);
+    }
+  };
+
   /**
    * Handle batch drop rate save
    * 確率一括調整の保存処理
@@ -627,6 +763,7 @@ export default function CardManager({
       description: "",
       imageUrl: "",
       rarity: "common",
+      cardNumber: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
     });
@@ -845,6 +982,7 @@ export default function CardManager({
       description: card.description || "",
       imageUrl: card.image_url || "",
       rarity: card.rarity,
+      cardNumber: card.card_number ? String(card.card_number) : "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
@@ -934,6 +1072,7 @@ export default function CardManager({
           description: formData.description,
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
+          cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
@@ -1098,6 +1237,12 @@ export default function CardManager({
             {t("importFromEmotes")}
           </button>
           <button
+            onClick={openCardNumberEditor}
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
+          >
+            {t("editCardNumbers")}
+          </button>
+          <button
             onClick={() => setShowForm(true)}
             className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 whitespace-nowrap"
           >
@@ -1207,24 +1352,49 @@ export default function CardManager({
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-sm text-gray-300">
-                      {t("form.rarity")}
-                    </label>
-                    <select
-                      name="rarity"
-                      value={formData.rarity}
-                      onChange={(e) =>
-                        setFormData({ ...formData, rarity: e.target.value as Rarity })
-                      }
-                      className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
-                      style={SELECT_ARROW_STYLE}
-                    >
-                      {RARITIES.map((r) => (
-                        <option key={r.value} value={r.value}>
-                          {tRarity(r.value)}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.rarity")}
+                        </label>
+                        <select
+                          name="rarity"
+                          value={formData.rarity}
+                          onChange={(e) =>
+                            setFormData({ ...formData, rarity: e.target.value as Rarity })
+                          }
+                          className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
+                          style={SELECT_ARROW_STYLE}
+                        >
+                          {RARITIES.map((r) => (
+                            <option key={r.value} value={r.value}>
+                              {tRarity(r.value)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.cardNumber")}
+                        </label>
+                        <input
+                          type="number"
+                          name="cardNumber"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          placeholder={t("form.cardNumberPlaceholder")}
+                          value={formData.cardNumber}
+                          onChange={(e) =>
+                            setFormData({ ...formData, cardNumber: e.target.value })
+                          }
+                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
+                        />
+                        <p className="mt-1 text-xs text-gray-300">
+                          {t("form.cardNumberHelp")}
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
                 {/* 右カラム: 画像 */}
@@ -1489,6 +1659,100 @@ export default function CardManager({
         </div>
       )}
 
+      {/* Card number bulk editor modal */}
+      {/* カード番号の一括編集モーダル */}
+      {showCardNumberEditor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-xl bg-gray-800 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-700 p-4 sm:p-6">
+              <div>
+                <h3 className="text-lg font-semibold text-white">{t("cardNumberEditor.title")}</h3>
+                <p className="mt-1 text-sm text-gray-300">{t("cardNumberEditor.description")}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCardNumberEditor(false)}
+                className="text-gray-400 hover:text-white"
+                aria-label={tCommon("cancel")}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="max-h-[60vh] overflow-y-auto p-4 sm:p-6">
+              {cardNumberEditorMessage && (
+                <div
+                  className={`mb-4 rounded-lg border px-3 py-2 text-sm ${
+                    cardNumberEditorMessage.type === "error"
+                      ? "border-red-500/40 bg-red-500/10 text-red-300"
+                      : cardNumberEditorMessage.type === "success"
+                        ? "border-green-500/40 bg-green-500/10 text-green-300"
+                        : "border-gray-500/40 bg-gray-700 text-gray-300"
+                  }`}
+                >
+                  {cardNumberEditorMessage.text}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {cardNumberEditorCards.map((card) => (
+                  <div
+                    key={card.id}
+                    className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-3 rounded-lg bg-gray-700/70 p-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-white">{card.name}</p>
+                      <p className="text-xs text-gray-400">
+                        {card.card_number ? `#${card.card_number}` : t("cardNumberEditor.auto")}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="sr-only" htmlFor={`card-number-${card.id}`}>
+                        {t("cardNumberEditor.numberLabel")}
+                      </label>
+                      <input
+                        id={`card-number-${card.id}`}
+                        type="number"
+                        min="1"
+                        step="1"
+                        inputMode="numeric"
+                        placeholder={t("cardNumberEditor.auto")}
+                        value={cardNumberDrafts[card.id] ?? ""}
+                        onChange={(e) => {
+                          setCardNumberDrafts((drafts) => ({ ...drafts, [card.id]: e.target.value }));
+                          setCardNumberEditorMessage(null);
+                        }}
+                        className="w-full rounded-lg bg-gray-600 px-3 py-2 text-white placeholder:text-gray-300"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 border-t border-gray-700 p-4 sm:p-6">
+              <button
+                type="button"
+                onClick={() => setShowCardNumberEditor(false)}
+                className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
+              >
+                {tCommon("cancel")}
+              </button>
+              <button
+                type="button"
+                onClick={saveCardNumbers}
+                disabled={savingCardNumbers}
+                className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
+              >
+                {savingCardNumbers ? t("cardNumberEditor.saving") : t("cardNumberEditor.save")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Sorting, filtering, and view toggle controls */}
       {/* 並び替え、フィルタリング、表示切り替えコントロール */}
       {cards.length > 0 && (
@@ -1506,6 +1770,7 @@ export default function CardManager({
             >
               <option value="created_at">{t("sort.createdAt")}</option>
               <option value="rarity">{t("sort.rarity")}</option>
+              <option value="card_number">{t("sort.cardNumber")}</option>
               <option value="drop_rate">{t("sort.dropRate")}</option>
             </select>
 
