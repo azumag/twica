@@ -567,6 +567,13 @@ interface ChannelPointUsageStatsRpcRow {
   last_redeemed_at: string | null;
 }
 
+interface ChannelPointUsageHistoryRow {
+  user_twitch_id: string;
+  user_twitch_username: string | null;
+  reward_cost: number | string | null;
+  redeemed_at: string | null;
+}
+
 interface GachaDropStatsRpcCardRow {
   card_id: string;
   card_name: string;
@@ -640,6 +647,73 @@ const EMPTY_CHANNEL_POINT_STATS: GachaStatsResult["channelPointStats"] = {
   ranking: [],
 };
 
+async function fetchChannelPointUsageStatsFromHistory(
+  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
+  streamerId: string,
+  limit = 10
+): Promise<GachaStatsResult["channelPointStats"]> {
+  const { data, error } = await supabaseAdmin
+    .from("gacha_history")
+    .select("user_twitch_id, user_twitch_username, reward_cost, redeemed_at")
+    .eq("streamer_id", streamerId)
+    .gt("reward_cost", 0)
+    .order("redeemed_at", { ascending: false })
+    .limit(10000);
+
+  if (error) {
+    reportError(new Error(`channel point usage fallback query failed: ${error.message}`));
+    return EMPTY_CHANNEL_POINT_STATS;
+  }
+
+  const usageByUser = new Map<string, {
+    username: string;
+    totalPoints: number;
+    redemptionCount: number;
+    lastRedeemedAt: string | null;
+  }>();
+  let totalPoints = 0;
+
+  for (const row of (data || []) as ChannelPointUsageHistoryRow[]) {
+    const rewardCost = Number(row.reward_cost || 0);
+    if (!row.user_twitch_id || rewardCost <= 0) continue;
+
+    totalPoints += rewardCost;
+    const existing = usageByUser.get(row.user_twitch_id);
+    if (existing) {
+      existing.totalPoints += rewardCost;
+      existing.redemptionCount += 1;
+      if (row.user_twitch_username) {
+        existing.username = row.user_twitch_username;
+      }
+      if (
+        row.redeemed_at &&
+        (!existing.lastRedeemedAt || row.redeemed_at > existing.lastRedeemedAt)
+      ) {
+        existing.lastRedeemedAt = row.redeemed_at;
+      }
+    } else {
+      usageByUser.set(row.user_twitch_id, {
+        username: row.user_twitch_username || row.user_twitch_id,
+        totalPoints: rewardCost,
+        redemptionCount: 1,
+        lastRedeemedAt: row.redeemed_at,
+      });
+    }
+  }
+
+  return {
+    totalPoints,
+    ranking: Array.from(usageByUser.entries())
+      .map(([userTwitchId, usage]) => ({ userTwitchId, ...usage }))
+      .sort((a, b) => {
+        if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+        if (b.redemptionCount !== a.redemptionCount) return b.redemptionCount - a.redemptionCount;
+        return (b.lastRedeemedAt || "").localeCompare(a.lastRedeemedAt || "");
+      })
+      .slice(0, Math.max(1, limit)),
+  };
+}
+
 
 /**
  * Get gacha statistics for a streamer within a given period
@@ -683,7 +757,15 @@ export async function getGachaStats(
   };
   const channelPointStats =
     parseChannelPointUsageStatsRpc(channelPointResult.data) ||
-    EMPTY_CHANNEL_POINT_STATS;
+    await fetchChannelPointUsageStatsFromHistory(supabaseAdmin, streamerId, 10);
+
+  if (!parseChannelPointUsageStatsRpc(channelPointResult.data)) {
+    if (channelPointResult.error?.code === "42883") {
+      logger.warn("get_channel_point_usage_stats not deployed, falling back to history aggregation");
+    } else if (channelPointResult.error) {
+      reportError(new Error(`get_channel_point_usage_stats RPC failed: ${channelPointResult.error.message}`));
+    }
+  }
 
   return { ...dropStats, channelPointStats };
 }
