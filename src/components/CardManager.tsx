@@ -1256,8 +1256,11 @@ export default function CardManager({
                           onChange={(e) =>
                             setFormData({ ...formData, cardNumber: e.target.value })
                           }
-                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
                         />
+                        <p className="mt-1 text-xs text-gray-300">
+                          {t("form.cardNumberHelp")}
+                        </p>
                       </div>
                     </div>
                   </div>
