@@ -17,6 +17,7 @@ import { deleteFromR2 } from "@/lib/r2-client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 function extractRarityWeights(streamers: unknown): Record<string, number> | null {
@@ -134,7 +135,7 @@ export async function PUT(
       (!Number.isInteger(cardNumber) || cardNumber <= 0)
     ) {
       return NextResponse.json(
-        { error: "Card number must be a positive integer" },
+        { error: CARD_NUMBER_MESSAGES.invalid },
         { status: 400 }
       );
     }
@@ -231,6 +232,12 @@ export async function PUT(
       .maybeSingle();
 
     if (error) {
+      if (isCardNumberConflictError(error)) {
+        return NextResponse.json(
+          { error: CARD_NUMBER_MESSAGES.duplicate },
+          { status: 409 }
+        );
+      }
       return handleDatabaseError(error, "Failed to update card");
     }
 

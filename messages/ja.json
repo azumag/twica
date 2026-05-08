@@ -45,6 +45,7 @@
     "editCard": "カードを編集",
     "newCard": "新規カード",
     "importFromEmotes": "エモートからインポート",
+    "editCardNumbers": "番号をまとめて編集",
     "form": {
       "name": "カード名",
       "namePlaceholder": "カード名",
@@ -102,6 +103,18 @@
       "imageUrlResolutionExceeded": "画像URLの解像度が制限を超えています。横幅{maxWidth}px、縦幅{maxHeight}pxまでです（現在: {width}x{height}）",
       "imageUrlLoadFailed": "画像URLの読み込みに失敗しました。URLを確認してください。",
       "imageUrlValidating": "画像を検証中..."
+    },
+    "cardNumberEditor": {
+      "title": "カード番号をまとめて編集",
+      "description": "番号だけをまとめて変更できます。空欄にすると自動採番になります。",
+      "save": "番号を保存",
+      "saving": "保存中...",
+      "duplicate": "同じ番号が複数のカードに指定されています: {number}",
+      "invalid": "カード番号は1以上の整数で入力してください。",
+      "noChanges": "変更はありません。",
+      "saved": "カード番号を保存しました。",
+      "auto": "自動",
+      "numberLabel": "番号"
     },
     "sort": {
       "createdAt": "設定日",

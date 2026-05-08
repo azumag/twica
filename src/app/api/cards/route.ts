@@ -18,6 +18,7 @@ import { getStorageUsage } from "@/lib/storage-usage";
 import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -126,7 +127,7 @@ export async function POST(request: NextRequest) {
       (!Number.isInteger(cardNumber) || cardNumber <= 0)
     ) {
       return NextResponse.json(
-        { error: "Card number must be a positive integer" },
+        { error: CARD_NUMBER_MESSAGES.invalid },
         { status: 400 }
       );
     }
@@ -180,6 +181,12 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
 
     if (error) {
+      if (isCardNumberConflictError(error)) {
+        return NextResponse.json(
+          { error: CARD_NUMBER_MESSAGES.duplicate },
+          { status: 409 }
+        );
+      }
       return handleDatabaseError(error, "Cards API: Failed to create card");
     }
 
