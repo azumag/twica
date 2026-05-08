@@ -51,6 +51,8 @@
       "image": "Image (File or URL)",
       "imageUrlPlaceholder": "Or enter image URL",
       "rarity": "Rarity",
+      "cardNumber": "Card Number",
+      "cardNumberPlaceholder": "Auto if blank",
       "dropRate": "Drop Rate",
       "intraRarityWeight": "Drop Rate within Rarity",
       "intraRarityWeightHint": "Adjust drop balance among cards of the same rarity (default: 1.0)",
@@ -103,6 +105,7 @@
     "sort": {
       "createdAt": "Date Created",
       "rarity": "Rarity",
+      "cardNumber": "Card Number",
       "dropRate": "Drop Weight",
       "ascending": "Ascending",
       "descending": "Descending"

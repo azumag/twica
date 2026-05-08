@@ -76,7 +76,16 @@ interface CardManagerProps {
 
 // Sorting field options
 // 並び替えフィールドの選択肢
-type SortField = "created_at" | "rarity" | "drop_rate";
+type SortField = "created_at" | "rarity" | "card_number" | "drop_rate";
+type CardFormData = {
+  name: string;
+  description: string;
+  imageUrl: string;
+  rarity: Rarity;
+  cardNumber: string;
+  dropRate: number;
+  intraRarityWeight: number;
+};
 
 // Sorting direction options
 // 並び替え方向の選択肢
@@ -208,11 +217,12 @@ export default function CardManager({
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<CardFormData>({
     name: "",
     description: "",
     imageUrl: "",
     rarity: "common" as Rarity,
+    cardNumber: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
   });
@@ -627,6 +637,7 @@ export default function CardManager({
       description: "",
       imageUrl: "",
       rarity: "common",
+      cardNumber: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
     });
@@ -845,6 +856,7 @@ export default function CardManager({
       description: card.description || "",
       imageUrl: card.image_url || "",
       rarity: card.rarity,
+      cardNumber: card.card_number ? String(card.card_number) : "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
@@ -934,6 +946,7 @@ export default function CardManager({
           description: formData.description,
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
+          cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
@@ -1207,24 +1220,46 @@ export default function CardManager({
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-sm text-gray-300">
-                      {t("form.rarity")}
-                    </label>
-                    <select
-                      name="rarity"
-                      value={formData.rarity}
-                      onChange={(e) =>
-                        setFormData({ ...formData, rarity: e.target.value as Rarity })
-                      }
-                      className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
-                      style={SELECT_ARROW_STYLE}
-                    >
-                      {RARITIES.map((r) => (
-                        <option key={r.value} value={r.value}>
-                          {tRarity(r.value)}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.rarity")}
+                        </label>
+                        <select
+                          name="rarity"
+                          value={formData.rarity}
+                          onChange={(e) =>
+                            setFormData({ ...formData, rarity: e.target.value as Rarity })
+                          }
+                          className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
+                          style={SELECT_ARROW_STYLE}
+                        >
+                          {RARITIES.map((r) => (
+                            <option key={r.value} value={r.value}>
+                              {tRarity(r.value)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.cardNumber")}
+                        </label>
+                        <input
+                          type="number"
+                          name="cardNumber"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          placeholder={t("form.cardNumberPlaceholder")}
+                          value={formData.cardNumber}
+                          onChange={(e) =>
+                            setFormData({ ...formData, cardNumber: e.target.value })
+                          }
+                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
                 {/* 右カラム: 画像 */}
@@ -1506,6 +1541,7 @@ export default function CardManager({
             >
               <option value="created_at">{t("sort.createdAt")}</option>
               <option value="rarity">{t("sort.rarity")}</option>
+              <option value="card_number">{t("sort.cardNumber")}</option>
               <option value="drop_rate">{t("sort.dropRate")}</option>
             </select>
 

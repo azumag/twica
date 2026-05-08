@@ -53,6 +53,20 @@ describe("collection-utils", () => {
       });
     });
 
+    it("honors manually assigned card numbers and fills gaps for the rest", () => {
+      const cards = [
+        { id: "card-a", created_at: "2026-03-01T00:00:00Z", card_number: null },
+        { id: "card-b", created_at: "2026-03-02T00:00:00Z", card_number: 5 },
+        { id: "card-c", created_at: "2026-03-03T00:00:00Z", card_number: null },
+      ];
+
+      expect(Object.fromEntries(createCollectionNumberMap(cards))).toEqual({
+        "card-a": 1,
+        "card-b": 5,
+        "card-c": 2,
+      });
+    });
+
     it("deduplicates repeated cards before numbering", () => {
       const cards = [
         { id: "card-a", created_at: "2026-03-01T00:00:00Z" },

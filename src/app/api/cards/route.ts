@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight } = body;
+    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber } = body;
 
     const nameValidation = validateCardName(name)
     if (!nameValidation.valid) {
@@ -120,6 +120,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (
+      cardNumber !== undefined &&
+      cardNumber !== null &&
+      (!Number.isInteger(cardNumber) || cardNumber <= 0)
+    ) {
+      return NextResponse.json(
+        { error: "Card number must be a positive integer" },
+        { status: 400 }
+      );
+    }
+
     // intraRarityWeight は省略可能（デフォルト1.0）。指定時は正の数値のみ
     if (intraRarityWeight !== undefined) {
       if (typeof intraRarityWeight !== "number" || !Number.isFinite(intraRarityWeight) || intraRarityWeight <= 0) {
@@ -155,6 +166,7 @@ export async function POST(request: NextRequest) {
       description,
       image_url: imageUrl,
       rarity,
+      card_number: cardNumber ?? null,
       drop_rate: dropRate,
     };
     if (intraRarityWeight !== undefined) {
@@ -200,7 +212,7 @@ export async function POST(request: NextRequest) {
 
 // Valid sort fields for cards
 // カードの有効な並び替えフィールド
-const VALID_SORT_FIELDS = ["created_at", "rarity", "drop_rate"] as const;
+const VALID_SORT_FIELDS = ["created_at", "rarity", "drop_rate", "card_number"] as const;
 type SortField = typeof VALID_SORT_FIELDS[number];
 
 // Valid sort directions
@@ -251,7 +263,7 @@ async function fetchCardsFromDB(
   // instead of rarity text column which sorts alphabetically
   // rarityテキストカラムはアルファベット順になるため、rarity_order generated columnを使用
   const dbSortField = sortField === "rarity" ? "rarity_order" : sortField;
-  query = query.order(dbSortField, { ascending });
+  query = query.order(dbSortField, { ascending, nullsFirst: false });
   query = query.range(offset, offset + limit - 1);
 
   const { data: cards, error, count } = await query;
