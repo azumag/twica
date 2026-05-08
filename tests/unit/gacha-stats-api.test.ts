@@ -195,7 +195,7 @@ describe("GET /api/gacha-stats", () => {
     });
   });
 
-  it("returns empty channel point stats when the materialized RPC is not deployed", async () => {
+  it("falls back to history aggregation when the channel point stats RPC is not deployed", async () => {
     const session = {
       twitchUserId: "streamer1",
       twitchUsername: "streamer1",
@@ -213,9 +213,37 @@ describe("GET /api/gacha-stats", () => {
       createMockResponse({ id: "streamer-id-1" })
     );
 
+    const historyRows = [
+      {
+        user_twitch_id: "viewer2",
+        user_twitch_username: "ViewerTwo",
+        reward_cost: 100,
+        redeemed_at: "2026-01-03T00:00:00Z",
+      },
+      {
+        user_twitch_id: "viewer1",
+        user_twitch_username: "ViewerOne",
+        reward_cost: 200,
+        redeemed_at: "2026-01-02T00:00:00Z",
+      },
+      {
+        user_twitch_id: "viewer2",
+        user_twitch_username: "ViewerTwo",
+        reward_cost: 100,
+        redeemed_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+    const historyQuery = createMockQueryBuilder();
+    Object.assign(historyQuery, {
+      then: Promise.resolve({ data: historyRows, error: null }).then.bind(
+        Promise.resolve({ data: historyRows, error: null })
+      ),
+    });
+
     mockGetSupabaseAdmin.mockReturnValue({
       from: vi.fn((table: string) => {
         if (table === "streamers") return streamerQuery;
+        if (table === "gacha_history") return historyQuery;
         return createMockQueryBuilder();
       }),
       rpc: vi.fn().mockResolvedValue({
@@ -231,8 +259,23 @@ describe("GET /api/gacha-stats", () => {
     expect(body.totalDraws).toBe(0);
     expect(body.cardStats).toEqual([]);
     expect(body.channelPointStats).toEqual({
-      totalPoints: 0,
-      ranking: [],
+      totalPoints: 400,
+      ranking: [
+        {
+          userTwitchId: "viewer2",
+          username: "ViewerTwo",
+          totalPoints: 200,
+          redemptionCount: 2,
+          lastRedeemedAt: "2026-01-03T00:00:00Z",
+        },
+        {
+          userTwitchId: "viewer1",
+          username: "ViewerOne",
+          totalPoints: 200,
+          redemptionCount: 1,
+          lastRedeemedAt: "2026-01-02T00:00:00Z",
+        },
+      ],
     });
   });
 });

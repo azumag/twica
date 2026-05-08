@@ -940,8 +940,9 @@
     "draws": "draws",
     "noData": "No gacha data for this period.",
     "channelPointRanking": {
-      "title": "Channel Point Usage Ranking (All Time)",
-      "total": "All-time total: {points} points",
+      "title": "Channel Point Usage Ranking (Since Tracking Started)",
+      "total": "Total since tracking started: {points} points",
+      "note": "Only redemptions after channel point cost tracking started are included. Earlier redemptions are not counted.",
       "noData": "No channel point usage data.",
       "rank": "Rank",
       "user": "User",

@@ -99,6 +99,9 @@ export default function DropRateTable() {
               points: stats.channelPointStats.totalPoints.toLocaleString(),
             })}
           </p>
+          <p className="mt-1 text-xs text-gray-500">
+            {t("channelPointRanking.note")}
+          </p>
         </div>
         {stats.channelPointStats.ranking.length === 0 ? (
           <div className="p-4 text-sm text-gray-400">
