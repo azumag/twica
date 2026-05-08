@@ -908,9 +908,10 @@
   "gachaStatsPage": {
     "title": "Gacha Stats",
     "description": "View card drop rates and statistics.",
-    "period": {
+    "tabs": {
       "7d": "7 Days",
-      "30d": "30 Days"
+      "30d": "30 Days",
+      "channelPoints": "Channel Points"
     },
     "totalDraws": "Total Draws",
     "draws": "draws",

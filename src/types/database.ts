@@ -546,7 +546,21 @@ export interface Database {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      get_gacha_drop_stats: {
+        Args: {
+          p_streamer_id: string
+          p_from_date: string
+        }
+        Returns: Json
+      }
+      get_channel_point_usage_stats: {
+        Args: {
+          p_streamer_id: string
+          p_from_date?: string | null
+          p_limit?: number
+        }
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never

@@ -39,6 +39,8 @@ interface GachaStatsData {
   rarityStats: RarityStat[];
 }
 
+type StatsTab = "7d" | "30d" | "channelPoints";
+
 /**
  * Drop rate comparison table for streamer statistics page
  * Shows configured vs actual drop rates with deviation highlighting
@@ -49,9 +51,10 @@ export default function DropRateTable() {
   const t = useTranslations("gachaStatsPage");
   const tRarity = useTranslations("rarity");
 
-  const [period, setPeriod] = useState<"7d" | "30d">("7d");
+  const [activeTab, setActiveTab] = useState<StatsTab>("7d");
   const [stats, setStats] = useState<GachaStatsData | null>(null);
   const [loading, setLoading] = useState(true);
+  const period = activeTab === "30d" ? "30d" : "7d";
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -261,18 +264,18 @@ export default function DropRateTable() {
   return (
     <div>
       {/* Period tabs / 期間タブ */}
-      <div className="mb-6 flex gap-2">
-        {(["7d", "30d"] as const).map((p) => (
+      <div className="mb-6 flex flex-wrap gap-2">
+        {(["7d", "30d", "channelPoints"] as const).map((tab) => (
           <button
-            key={p}
-            onClick={() => setPeriod(p)}
+            key={tab}
+            onClick={() => setActiveTab(tab)}
             className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-              period === p
+              activeTab === tab
                 ? "bg-purple-600 text-white"
                 : "border border-gray-600 text-gray-300 hover:bg-gray-700"
             }`}
           >
-            {t(`period.${p}`)}
+            {t(`tabs.${tab}`)}
           </button>
         ))}
       </div>
@@ -283,11 +286,10 @@ export default function DropRateTable() {
         </div>
       ) : !stats ? (
         <div className="py-12 text-center text-gray-400">{t("noData")}</div>
+      ) : activeTab === "channelPoints" ? (
+        renderChannelPointRanking()
       ) : (
-        <>
-          {renderChannelPointRanking()}
-          {renderPeriodStats()}
-        </>
+        renderPeriodStats()
       )}
 
       {/* Full period stats notice / 全期間統計についてのお知らせ */}
