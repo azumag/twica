@@ -252,6 +252,12 @@
     "cardTypes": "{count}種類",
     "totalCount": "{count}枚",
     "cardCount": "x{count}",
+    "cardNumber": "#{number}",
+    "sort": {
+      "label": "並び替え",
+      "number": "番号順",
+      "rarity": "レアリティ順"
+    },
     "viewCollection": "コレクションを見る",
     "unownedCard": "???"
   },
