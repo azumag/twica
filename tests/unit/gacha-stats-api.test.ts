@@ -114,7 +114,7 @@ describe("GET /api/gacha-stats", () => {
 
     // getGachaStats accesses gacha_history twice:
     // 1st: count-only query (select("id", { count: "exact", head: true }))
-    // 2nd: data query (draw/card/point data for aggregation)
+    // 2nd: data query (draw/card data for drop-rate aggregation)
     // getGachaStats は gacha_history に2回アクセスする:
     // 1回目: count-only クエリ、2回目: データ取得クエリ
     const countQuery = createMockQueryBuilder();
@@ -131,10 +131,6 @@ describe("GET /api/gacha-stats", () => {
       data: [
         {
           card_id: "c1",
-          user_twitch_id: "viewer1",
-          user_twitch_username: "ViewerOne",
-          reward_cost: 100,
-          redeemed_at: "2026-01-01T00:00:00Z",
           cards: { rarity: "common" },
         },
       ],
@@ -223,12 +219,12 @@ describe("GET /api/gacha-stats", () => {
     ]);
     expect(rpc).toHaveBeenCalledWith("get_channel_point_usage_stats", {
       p_streamer_id: "streamer-id-1",
-      p_from_date: expect.any(String),
+      p_from_date: null,
       p_limit: 10,
     });
   });
 
-  it("falls back to history rows when channel point stats RPC is not deployed", async () => {
+  it("returns empty channel point stats when the materialized RPC is not deployed", async () => {
     const session = {
       twitchUserId: "streamer1",
       twitchUsername: "streamer1",
@@ -262,26 +258,14 @@ describe("GET /api/gacha-stats", () => {
         data: [
           {
             card_id: "c1",
-            user_twitch_id: "viewer1",
-            user_twitch_username: "ViewerOne",
-            reward_cost: 100,
-            redeemed_at: "2026-01-01T00:00:00Z",
             cards: { rarity: "common" },
           },
           {
             card_id: "c1",
-            user_twitch_id: "viewer1",
-            user_twitch_username: "ViewerOne",
-            reward_cost: 200,
-            redeemed_at: "2026-01-02T00:00:00Z",
             cards: { rarity: "common" },
           },
           {
             card_id: "c2",
-            user_twitch_id: "viewer2",
-            user_twitch_username: "ViewerTwo",
-            reward_cost: 250,
-            redeemed_at: "2026-01-03T00:00:00Z",
             cards: { rarity: "rare" },
           },
         ],
@@ -337,22 +321,9 @@ describe("GET /api/gacha-stats", () => {
     expect(res.status).toBe(200);
 
     const body = await res.json();
-    expect(body.channelPointStats.totalPoints).toBe(550);
-    expect(body.channelPointStats.ranking).toEqual([
-      {
-        userTwitchId: "viewer1",
-        username: "ViewerOne",
-        totalPoints: 300,
-        redemptionCount: 2,
-        lastRedeemedAt: "2026-01-02T00:00:00Z",
-      },
-      {
-        userTwitchId: "viewer2",
-        username: "ViewerTwo",
-        totalPoints: 250,
-        redemptionCount: 1,
-        lastRedeemedAt: "2026-01-03T00:00:00Z",
-      },
-    ]);
+    expect(body.channelPointStats).toEqual({
+      totalPoints: 0,
+      ranking: [],
+    });
   });
 });

@@ -588,55 +588,11 @@ function parseChannelPointUsageStatsRpc(rpcResult: unknown): GachaStatsResult["c
   };
 }
 
-function buildChannelPointUsageStatsFromHistory(
-  history: Array<{
-    user_twitch_id: string;
-    user_twitch_username: string | null;
-    reward_cost: number | null;
-    redeemed_at: string;
-  }>
-): GachaStatsResult["channelPointStats"] {
-  const userMap = new Map<string, {
-    username: string;
-    totalPoints: number;
-    redemptionCount: number;
-    lastRedeemedAt: string | null;
-  }>();
-  let totalPoints = 0;
+const EMPTY_CHANNEL_POINT_STATS: GachaStatsResult["channelPointStats"] = {
+  totalPoints: 0,
+  ranking: [],
+};
 
-  for (const entry of history) {
-    const rewardCost = entry.reward_cost || 0;
-    if (rewardCost <= 0) continue;
-
-    totalPoints += rewardCost;
-    const existing = userMap.get(entry.user_twitch_id);
-    if (existing) {
-      existing.totalPoints += rewardCost;
-      existing.redemptionCount += 1;
-      if (!existing.lastRedeemedAt || entry.redeemed_at > existing.lastRedeemedAt) {
-        existing.lastRedeemedAt = entry.redeemed_at;
-      }
-    } else {
-      userMap.set(entry.user_twitch_id, {
-        username: entry.user_twitch_username || entry.user_twitch_id,
-        totalPoints: rewardCost,
-        redemptionCount: 1,
-        lastRedeemedAt: entry.redeemed_at,
-      });
-    }
-  }
-
-  const ranking = Array.from(userMap.entries())
-    .map(([userTwitchId, entry]) => ({ userTwitchId, ...entry }))
-    .sort((a, b) => {
-      if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-      if (b.redemptionCount !== a.redemptionCount) return b.redemptionCount - a.redemptionCount;
-      return (b.lastRedeemedAt || "").localeCompare(a.lastRedeemedAt || "");
-    })
-    .slice(0, 10);
-
-  return { totalPoints, ranking };
-}
 
 /**
  * Get gacha statistics for a streamer within a given period
@@ -671,7 +627,7 @@ export async function getGachaStats(
     // 非常にアクティブな配信者（期間内10000回超）の場合、カウントは近似値になる可能性がある。
     supabaseAdmin
       .from("gacha_history")
-      .select("card_id, user_twitch_id, user_twitch_username, reward_cost, redeemed_at, cards(rarity)")
+      .select("card_id, cards(rarity)")
       .eq("streamer_id", streamerId)
       .gte("redeemed_at", fromDate.toISOString())
       .limit(10000),
@@ -685,7 +641,7 @@ export async function getGachaStats(
     supabaseAdmin
       .rpc("get_channel_point_usage_stats", {
         p_streamer_id: streamerId,
-        p_from_date: fromDate.toISOString(),
+        p_from_date: null,
         p_limit: 10,
       }),
   ]);
@@ -697,7 +653,7 @@ export async function getGachaStats(
   const safeTotal = totalDraws || 0;
   const channelPointStats =
     parseChannelPointUsageStatsRpc(channelPointResult.data) ||
-    buildChannelPointUsageStatsFromHistory(history || []);
+    EMPTY_CHANNEL_POINT_STATS;
 
   // Count draws per card
   // カードごとの排出回数を集計
