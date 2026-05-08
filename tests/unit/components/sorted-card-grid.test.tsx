@@ -17,6 +17,7 @@ const baseCard = (overrides: Partial<Card>): Card => ({
   description: 'カードAの説明',
   image_url: 'https://example.com/card-a.png',
   rarity: 'common',
+  card_number: null,
   drop_rate: 25,
   intra_rarity_weight: 1,
   is_active: true,

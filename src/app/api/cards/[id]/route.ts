@@ -77,7 +77,7 @@ export async function PUT(
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight } = body;
+    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber } = body;
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -128,6 +128,17 @@ export async function PUT(
       }
     }
 
+    if (
+      cardNumber !== undefined &&
+      cardNumber !== null &&
+      (!Number.isInteger(cardNumber) || cardNumber <= 0)
+    ) {
+      return NextResponse.json(
+        { error: "Card number must be a positive integer" },
+        { status: 400 }
+      );
+    }
+
     // intraRarityWeight は正の数値のみ許可
     if (intraRarityWeight !== undefined) {
       if (typeof intraRarityWeight !== "number" || !Number.isFinite(intraRarityWeight) || intraRarityWeight <= 0) {
@@ -172,6 +183,7 @@ export async function PUT(
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
     if (rarity !== undefined) updateData.rarity = rarity;
+    if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
     if (isActive !== undefined) updateData.is_active = isActive;

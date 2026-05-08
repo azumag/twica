@@ -7,7 +7,9 @@ type SortableCollectionCard = Pick<Card, "id" | "rarity" | "created_at"> & {
   collectionNumber?: number;
 };
 
-type NumberableCollectionCard = Pick<Card, "id" | "created_at">;
+type NumberableCollectionCard = Pick<Card, "id" | "created_at"> & {
+  card_number?: number | null;
+};
 
 /**
  * Sort owned cards for collection views.
@@ -37,7 +39,9 @@ export function sortCollectedCards<T extends SortableCollectionCard>(
 
 /**
  * Build stable encyclopedia-style card numbers for a streamer's cards.
- * Older cards receive smaller numbers, and duplicate owned-card rows are ignored.
+ * Manually assigned card_number values are honored first.
+ * Remaining cards are filled into the next available numbers by oldest created_at first,
+ * and duplicate owned-card rows are ignored.
  */
 export function createCollectionNumberMap<T extends NumberableCollectionCard>(
   cards: T[]
@@ -60,7 +64,32 @@ export function createCollectionNumberMap<T extends NumberableCollectionCard>(
     return a.id.localeCompare(b.id);
   });
 
-  return new Map(sortedCards.map((card, index) => [card.id, index + 1]));
+  const numberMap = new Map<string, number>();
+  const usedNumbers = new Set<number>();
+
+  for (const card of sortedCards) {
+    if (
+      typeof card.card_number === "number" &&
+      Number.isInteger(card.card_number) &&
+      card.card_number > 0 &&
+      !usedNumbers.has(card.card_number)
+    ) {
+      numberMap.set(card.id, card.card_number);
+      usedNumbers.add(card.card_number);
+    }
+  }
+
+  let nextNumber = 1;
+  for (const card of sortedCards) {
+    if (numberMap.has(card.id)) continue;
+    while (usedNumbers.has(nextNumber)) {
+      nextNumber++;
+    }
+    numberMap.set(card.id, nextNumber);
+    usedNumbers.add(nextNumber);
+  }
+
+  return numberMap;
 }
 
 /**

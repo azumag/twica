@@ -124,7 +124,7 @@ describe('GET /api/cards', () => {
       }))
 
       // rarity ではなく rarity_order でDBソートされることを検証
-      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: true })
+      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: true, nullsFirst: false })
     })
 
     it('sortField=created_at の場合、created_at カラムでorder()が呼ばれる', async () => {
@@ -139,7 +139,7 @@ describe('GET /api/cards', () => {
         sortDirection: 'desc',
       }))
 
-      expect(cardsQuery.order).toHaveBeenCalledWith('created_at', { ascending: false })
+      expect(cardsQuery.order).toHaveBeenCalledWith('created_at', { ascending: false, nullsFirst: false })
     })
 
     it('sortField=drop_rate の場合、drop_rate カラムでorder()が呼ばれる', async () => {
@@ -154,7 +154,22 @@ describe('GET /api/cards', () => {
         sortDirection: 'asc',
       }))
 
-      expect(cardsQuery.order).toHaveBeenCalledWith('drop_rate', { ascending: true })
+      expect(cardsQuery.order).toHaveBeenCalledWith('drop_rate', { ascending: true, nullsFirst: false })
+    })
+
+    it('sortField=card_number の場合、card_number カラムでorder()が呼ばれる', async () => {
+      const { cardsQuery } = setupCardsMock({
+        streamer: { id: 'streamer-1' },
+        cards: [],
+      })
+
+      await GET(createRequest({
+        streamerId: 'streamer-1',
+        sortField: 'card_number',
+        sortDirection: 'asc',
+      }))
+
+      expect(cardsQuery.order).toHaveBeenCalledWith('card_number', { ascending: true, nullsFirst: false })
     })
 
     it('不正なsortFieldはcreated_atにフォールバックする', async () => {
@@ -169,7 +184,7 @@ describe('GET /api/cards', () => {
         sortDirection: 'desc',
       }))
 
-      expect(cardsQuery.order).toHaveBeenCalledWith('created_at', { ascending: false })
+      expect(cardsQuery.order).toHaveBeenCalledWith('created_at', { ascending: false, nullsFirst: false })
     })
   })
 
@@ -189,7 +204,7 @@ describe('GET /api/cards', () => {
 
       // DB側でページネーションが適用されることを検証
       expect(cardsQuery.range).toHaveBeenCalledWith(20, 29)
-      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: false })
+      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: false, nullsFirst: false })
     })
   })
 
@@ -206,7 +221,7 @@ describe('GET /api/cards', () => {
         sortDirection: 'asc',
       }))
 
-      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: true })
+      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: true, nullsFirst: false })
     })
 
     it('desc でレアリティソートした場合 ascending: false', async () => {
@@ -221,7 +236,7 @@ describe('GET /api/cards', () => {
         sortDirection: 'desc',
       }))
 
-      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: false })
+      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: false, nullsFirst: false })
     })
 
     it('不正なsortDirectionはdescにフォールバックする', async () => {
@@ -236,7 +251,7 @@ describe('GET /api/cards', () => {
         sortDirection: 'invalid',
       }))
 
-      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: false })
+      expect(cardsQuery.order).toHaveBeenCalledWith('rarity_order', { ascending: false, nullsFirst: false })
     })
   })
 
