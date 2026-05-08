@@ -45,6 +45,7 @@
     "editCard": "Edit Card",
     "newCard": "New Card",
     "importFromEmotes": "Import from Emotes",
+    "editCardNumbers": "Edit Numbers",
     "form": {
       "name": "Card Name",
       "namePlaceholder": "Card name",
@@ -102,6 +103,18 @@
       "imageUrlResolutionExceeded": "Image URL resolution exceeds limit. Max width: {maxWidth}px, max height: {maxHeight}px (current: {width}x{height})",
       "imageUrlLoadFailed": "Failed to load image URL. Please check the URL.",
       "imageUrlValidating": "Validating image..."
+    },
+    "cardNumberEditor": {
+      "title": "Edit Card Numbers",
+      "description": "Update card numbers in one place. Leave blank to use auto-numbering.",
+      "save": "Save Numbers",
+      "saving": "Saving...",
+      "duplicate": "The same number is assigned to multiple cards: {number}",
+      "invalid": "Card number must be a positive integer.",
+      "noChanges": "No changes.",
+      "saved": "Card numbers saved.",
+      "auto": "Auto",
+      "numberLabel": "Number"
     },
     "sort": {
       "createdAt": "Date Created",
