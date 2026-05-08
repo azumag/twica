@@ -245,6 +245,38 @@ export interface Database {
           redeemed_at?: string
         }
       }
+      channel_point_usage_stats: {
+        Row: {
+          streamer_id: string
+          user_twitch_id: string
+          username: string | null
+          total_points: number
+          redemption_count: number
+          last_redeemed_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          streamer_id: string
+          user_twitch_id: string
+          username?: string | null
+          total_points?: number
+          redemption_count?: number
+          last_redeemed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          streamer_id?: string
+          user_twitch_id?: string
+          username?: string | null
+          total_points?: number
+          redemption_count?: number
+          last_redeemed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+      }
       battles: {
         Row: {
           id: string
