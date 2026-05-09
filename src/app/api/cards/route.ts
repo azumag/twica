@@ -18,7 +18,7 @@ import { getStorageUsage } from "@/lib/storage-usage";
 import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -174,11 +174,22 @@ export async function POST(request: NextRequest) {
       insertData.intra_rarity_weight = intraRarityWeight;
     }
 
-    const { data: card, error } = await supabaseAdmin
+    let { data: card, error } = await supabaseAdmin
       .from("cards")
       .insert(insertData)
       .select()
       .maybeSingle();
+
+    if (error && isMissingCardNumberColumnError(error)) {
+      delete insertData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .insert(insertData)
+        .select()
+        .maybeSingle();
+      card = retryResult.data;
+      error = retryResult.error;
+    }
 
     if (error) {
       if (isCardNumberConflictError(error)) {
@@ -273,7 +284,27 @@ async function fetchCardsFromDB(
   query = query.order(dbSortField, { ascending, nullsFirst: false });
   query = query.range(offset, offset + limit - 1);
 
-  const { data: cards, error, count } = await query;
+  let { data: cards, error, count } = await query;
+  if (error && sortField === "card_number" && isMissingCardNumberColumnError(error)) {
+    const fallbackQuery = supabaseAdmin
+      .from("cards")
+      .select("*", { count: "exact" })
+      .eq("streamer_id", streamerId);
+
+    let filteredFallbackQuery = fallbackQuery;
+    if (statusFilter === "active") {
+      filteredFallbackQuery = filteredFallbackQuery.eq("is_active", true);
+    } else if (statusFilter === "inactive") {
+      filteredFallbackQuery = filteredFallbackQuery.eq("is_active", false);
+    }
+
+    const fallbackResult = await filteredFallbackQuery
+      .order("created_at", { ascending, nullsFirst: false })
+      .range(offset, offset + limit - 1);
+    cards = fallbackResult.data;
+    error = fallbackResult.error;
+    count = fallbackResult.count;
+  }
   if (error) throw error;
 
   logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${cards?.length || 0} cards)`);

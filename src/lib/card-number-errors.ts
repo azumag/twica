@@ -11,3 +11,19 @@ export function isCardNumberConflictError(error: unknown): boolean {
   const text = `${String(err.message || "")} ${String(err.details || "")}`;
   return text.includes("cards_streamer_card_number_unique") || text.includes("card_number");
 }
+
+export function isMissingCardNumberColumnError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
+  const text = [
+    err.message,
+    err.details,
+    err.hint,
+  ].map((value) => String(value || "")).join(" ");
+
+  return text.includes("card_number") && (
+    text.includes("schema cache") ||
+    text.includes("column") ||
+    err.code === "PGRST204"
+  );
+}
