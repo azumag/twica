@@ -17,7 +17,7 @@ import { deleteFromR2 } from "@/lib/r2-client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 function extractRarityWeights(streamers: unknown): Record<string, number> | null {
@@ -224,12 +224,24 @@ export async function PUT(
       }
     }
 
-    const { data: updatedCard, error } = await supabaseAdmin
+    let { data: updatedCard, error } = await supabaseAdmin
       .from("cards")
       .update(updateData)
       .eq("id", id)
       .select()
       .maybeSingle();
+
+    if (error && isMissingCardNumberColumnError(error) && "card_number" in updateData) {
+      delete updateData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .update(updateData)
+        .eq("id", id)
+        .select()
+        .maybeSingle();
+      updatedCard = retryResult.data;
+      error = retryResult.error;
+    }
 
     if (error) {
       if (isCardNumberConflictError(error)) {
