@@ -275,6 +275,18 @@
       "number": "番号順",
       "rarity": "レアリティ順"
     },
+    "duplicateExchange": {
+      "title": "ダブり交換",
+      "description": "2枚目以降のカードをカードストーンに変換できます。1枚はコレクションに残ります。",
+      "balance": "カードストーン: {count}",
+      "empty": "交換できるダブりカードはありません。",
+      "exchange": "砕く",
+      "exchanging": "交換中...",
+      "duplicateCount": "ダブり {count}枚",
+      "stoneValue": "{count}ストーン",
+      "success": "{count}カードストーンを獲得しました。",
+      "errorFallback": "ダブりカードの交換に失敗しました。"
+    },
     "viewCollection": "コレクションを見る",
     "unownedCard": "???"
   },

@@ -4,6 +4,7 @@ import {
   getUserCardsForStreamer,
   getStreamerById,
   getActiveCardsForStreamer,
+  getCardStoneBalance,
   getCollectionCompletions,
   recordCollectionCompletion,
 } from "@/lib/dashboard-data";
@@ -14,6 +15,14 @@ import {
 } from "@/lib/collection-utils";
 import StreamerCollection from "@/components/StreamerCollection";
 import type { StreamerCollectionCard } from "@/components/StreamerCollection";
+import type { Rarity } from "@/types/database";
+
+const CARD_STONE_VALUES: Record<Rarity, number> = {
+  common: 1,
+  rare: 3,
+  epic: 8,
+  legendary: 20,
+};
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -50,10 +59,11 @@ export default async function StreamerCollectionPage({
 
   // Fetch user's cards, all active cards, and completion history in parallel
   // ユーザー所持カード・全アクティブカード・コンプリート履歴を並列取得
-  const [userCards, activeCards, completionHistory] = await Promise.all([
+  const [userCards, activeCards, completionHistory, cardStoneBalance] = await Promise.all([
     getUserCardsForStreamer(session.twitchUserId, streamerId),
     getActiveCardsForStreamer(streamerId),
     getCollectionCompletions(session.twitchUserId, streamerId),
+    getCardStoneBalance(session.twitchUserId, streamerId),
   ]);
 
   const activeCardIds = new Set(activeCards.map((card) => card.id));
@@ -109,6 +119,16 @@ export default async function StreamerCollectionPage({
   const completionHistoryForDisplay = isCurrentComplete && !hasCurrentCompletionRecord
     ? [{ total_cards: progress.total, completed_at: new Date().toISOString() }, ...completionHistory]
     : completionHistory;
+  const duplicateExchangeCards = ownedCards
+    .filter((card) => card.count > 1)
+    .map((card) => ({
+      id: card.id,
+      name: card.name,
+      rarity: card.rarity,
+      count: card.count,
+      collectionNumber: card.collectionNumber,
+      stoneValue: CARD_STONE_VALUES[card.rarity],
+    }));
 
   // コンプリート達成時にDBに記録（awaitしないとWorkers打ち切りで記録が失われる）
   // upsert + ignoreDuplicates で高速、重複時はスキップされる
@@ -126,6 +146,8 @@ export default async function StreamerCollectionPage({
       // visibleCardTypes is the number of card types the viewer sees on this page.
       visibleCardTypes={cards.length}
       completionHistory={completionHistoryForDisplay}
+      cardStoneBalance={cardStoneBalance}
+      duplicateExchangeCards={duplicateExchangeCards}
       // 未所持カードの画像/詳細を隠すかどうか（show_unowned_cards=false の場合は意味を持たない）
       hideUnownedDetails={!streamer.show_unowned_card_details}
     />

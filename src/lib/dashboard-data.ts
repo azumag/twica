@@ -1006,6 +1006,40 @@ export const getUserCardDetail = cache(async (
 });
 
 /**
+ * Get the user's card stone balance for one streamer.
+ * 配信者ごとのカードストーン残高を取得する。
+ */
+export const getCardStoneBalance = cache(async (
+  twitchUserId: string,
+  streamerId: string
+): Promise<number> => {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data: user, error: userError } = await supabaseAdmin
+    .from("users")
+    .select("id")
+    .eq("twitch_user_id", twitchUserId)
+    .maybeSingle();
+
+  if (userError || !user) {
+    return 0;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("card_stone_balances")
+    .select("balance")
+    .eq("user_id", user.id)
+    .eq("streamer_id", streamerId)
+    .maybeSingle();
+
+  if (error) {
+    logger.error(`Failed to fetch card stone balance: ${error.message}`);
+    return 0;
+  }
+
+  return Number(data?.balance || 0);
+});
+
+/**
  * Record a collection completion achievement
  * UNIQUE制約により同一total_cardsでの重複挿入はスキップされる
  * Cloudflare Workers では void 呼び出しだと応答後に破棄されるため、

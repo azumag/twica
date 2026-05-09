@@ -275,6 +275,18 @@
       "number": "Number",
       "rarity": "Rarity"
     },
+    "duplicateExchange": {
+      "title": "Duplicate Exchange",
+      "description": "Convert extra copies into card stones. One copy stays in your collection.",
+      "balance": "Card stones: {count}",
+      "empty": "No duplicate cards are available to exchange.",
+      "exchange": "Exchange",
+      "exchanging": "Exchanging...",
+      "duplicateCount": "{count} duplicates",
+      "stoneValue": "{count} stones",
+      "success": "Gained {count} card stones.",
+      "errorFallback": "Failed to exchange the duplicate card."
+    },
     "viewCollection": "View Collection",
     "unownedCard": "???"
   },
