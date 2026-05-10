@@ -25,6 +25,7 @@ export interface Database {
           twitch_profile_image_url: string | null
           channel_point_reward_id: string | null
           channel_point_reward_name: string | null
+          channel_point_collection_name: string | null
           is_active: boolean
           // ガチャ効果音URL - R2に保存された音声ファイルのURL
           gacha_sound_url: string | null
@@ -68,6 +69,7 @@ export interface Database {
           twitch_profile_image_url?: string | null
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
+          channel_point_collection_name?: string | null
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -189,6 +191,7 @@ export interface Database {
           image_url: string | null
           rarity: Rarity
           card_number: number | null
+          collection_name: string | null
           drop_rate: number
           // レアリティ内重み: 同レアリティ内での排出確率配分（デフォルト1.0=均等）
           intra_rarity_weight: number
@@ -211,6 +214,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           card_number?: number | null
+          collection_name?: string | null
           drop_rate?: number
           intra_rarity_weight?: number
           is_active?: boolean
@@ -232,6 +236,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           card_number?: number | null
+          collection_name?: string | null
           drop_rate?: number
           intra_rarity_weight?: number
           is_active?: boolean
@@ -453,6 +458,7 @@ export interface Database {
           reward_name: string | null
           draw_count: number
           is_raid_limited: boolean
+          collection_name: string | null
           created_at: string
         }
         Insert: {
@@ -462,6 +468,7 @@ export interface Database {
           reward_name?: string | null
           draw_count?: number
           is_raid_limited?: boolean
+          collection_name?: string | null
           created_at?: string
         }
         Update: {
@@ -471,6 +478,7 @@ export interface Database {
           reward_name?: string | null
           draw_count?: number
           is_raid_limited?: boolean
+          collection_name?: string | null
           created_at?: string
         }
       }

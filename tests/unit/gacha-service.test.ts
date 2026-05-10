@@ -17,7 +17,7 @@ const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 
 // テスト用カードデータ
 const testCards = [
-  { id: 'card-1', name: 'Test Card', description: 'desc', image_url: null, rarity: 'common', drop_rate: 1.0 },
+  { id: 'card-1', name: 'Test Card', description: 'desc', image_url: null, rarity: 'common', collection_name: 'standard', drop_rate: 1.0 },
 ]
 
 /** cardsクエリの共通モック生成。thenableにしてawait対応 */
@@ -254,6 +254,28 @@ describe('GachaService.executeGacha', () => {
     expect(mockRpc).toHaveBeenCalledWith('execute_gacha_transaction', expect.objectContaining({
       p_event_id: null,
     }))
+  })
+
+  it('collectionName指定時は対象コレクションのカードだけを抽選対象にする', async () => {
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-collection' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'premium')
+
+    expect(result.success).toBe(true)
+    expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'premium')
   })
 })
 

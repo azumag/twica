@@ -16,6 +16,19 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
 const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
   "追加報酬のN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。";
 
+function normalizeCollectionName(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isMissingCollectionNameColumn(error: { message?: string; code?: string } | null | undefined) {
+  const message = error?.message ?? "";
+  return message.includes("collection_name");
+}
+
 /**
  * GET: ストリーマーの追加報酬一覧を取得
  * Fetch additional gacha rewards for the current streamer
@@ -63,9 +76,22 @@ export async function GET(request: NextRequest) {
     // このストリーマーの全ての追加報酬を取得
     let { data: rewards, error } = await supabaseAdmin
       .from("streamer_additional_gacha_rewards")
-      .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
+      .select("id, reward_id, reward_name, draw_count, is_raid_limited, collection_name, created_at")
       .eq("streamer_id", streamer.id)
       .order("created_at", { ascending: true });
+
+    if (error && isMissingCollectionNameColumn(error)) {
+      const fallbackResult = await supabaseAdmin
+        .from("streamer_additional_gacha_rewards")
+        .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
+        .eq("streamer_id", streamer.id)
+        .order("created_at", { ascending: true });
+      rewards = (fallbackResult.data || []).map((reward) => ({
+        ...reward,
+        collection_name: null,
+      }));
+      error = fallbackResult.error;
+    }
 
     if (isRaidOptionsSchemaError(error)) {
       const fallbackResult = await supabaseAdmin
@@ -77,6 +103,7 @@ export async function GET(request: NextRequest) {
         ...reward,
         draw_count: 1,
         is_raid_limited: false,
+        collection_name: null,
       }));
       error = fallbackResult.error;
     }
@@ -142,7 +169,8 @@ export async function POST(request: NextRequest) {
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { rewardId, rewardName, drawCount, isRaidLimited } = body;
+    const { rewardId, rewardName, drawCount, isRaidLimited, collectionName } = body;
+    const normalizedCollectionName = normalizeCollectionName(collectionName);
 
     if (!rewardId) {
       return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
@@ -161,6 +189,12 @@ export async function POST(request: NextRequest) {
         { error: "isRaidLimited must be a boolean" },
         { status: 400 }
       );
+    }
+    if (collectionName !== undefined && normalizedCollectionName === undefined) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (normalizedCollectionName && normalizedCollectionName.length > 80) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
     // Get streamer info to verify ownership
@@ -203,6 +237,7 @@ export async function POST(request: NextRequest) {
         reward_name: rewardName || null,
         draw_count: normalizedDrawCount,
         is_raid_limited: isRaidLimited ?? false,
+        collection_name: normalizedCollectionName ?? null,
       })
       .select()
       .maybeSingle();
@@ -233,7 +268,7 @@ export async function POST(request: NextRequest) {
     }
 
     logger.info(
-      `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}, drawCount=${normalizedDrawCount}, raidLimited=${isRaidLimited ?? false}`
+      `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}, drawCount=${normalizedDrawCount}, raidLimited=${isRaidLimited ?? false}, collectionName=${normalizedCollectionName ?? "all"}`
     );
 
     return NextResponse.json({ success: true, reward: newReward });

@@ -35,6 +35,14 @@ function extractRarityWeights(streamers: unknown): Record<string, number> | null
   return null;
 }
 
+function normalizeCollectionName(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -78,7 +86,8 @@ export async function PUT(
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber } = body;
+    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber, collectionName } = body;
+    const normalizedCollectionName = normalizeCollectionName(collectionName);
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -140,6 +149,14 @@ export async function PUT(
       );
     }
 
+    if (collectionName !== undefined && normalizedCollectionName === undefined) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    if (normalizedCollectionName && normalizedCollectionName.length > 80) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
     // intraRarityWeight は正の数値のみ許可
     if (intraRarityWeight !== undefined) {
       if (typeof intraRarityWeight !== "number" || !Number.isFinite(intraRarityWeight) || intraRarityWeight <= 0) {
@@ -184,6 +201,7 @@ export async function PUT(
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
     if (rarity !== undefined) updateData.rarity = rarity;
+    if (collectionName !== undefined) updateData.collection_name = normalizedCollectionName;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;

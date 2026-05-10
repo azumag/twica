@@ -25,6 +25,14 @@ import type { ApiRateLimitResponse } from "@/types/api";
 // カード一覧のキャッシュTTL（新鮮さとCPU使用量のバランスで30秒）
 const CARDS_CACHE_TTL = 30;
 
+function normalizeCollectionName(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export async function POST(request: NextRequest) {
   // Content-Type validation - must be the first check
   const contentTypeValidation = validateContentType(request, 'application/json')
@@ -80,7 +88,8 @@ export async function POST(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber } = body;
+    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber, collectionName } = body;
+    const normalizedCollectionName = normalizeCollectionName(collectionName);
 
     const nameValidation = validateCardName(name)
     if (!nameValidation.valid) {
@@ -132,6 +141,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (collectionName !== undefined && normalizedCollectionName === undefined) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    if (normalizedCollectionName && normalizedCollectionName.length > 80) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
     // intraRarityWeight は省略可能（デフォルト1.0）。指定時は正の数値のみ
     if (intraRarityWeight !== undefined) {
       if (typeof intraRarityWeight !== "number" || !Number.isFinite(intraRarityWeight) || intraRarityWeight <= 0) {
@@ -167,6 +184,7 @@ export async function POST(request: NextRequest) {
       description,
       image_url: imageUrl,
       rarity,
+      collection_name: normalizedCollectionName ?? null,
       card_number: cardNumber ?? null,
       drop_rate: dropRate,
     };

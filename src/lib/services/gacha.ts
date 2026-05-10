@@ -12,6 +12,7 @@ export interface GachaCard {
   description: string | null
   image_url: string | null
   rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  collection_name: string | null
   drop_rate: number
 }
 
@@ -40,6 +41,11 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
   return error?.code === 'PGRST204' || message.includes('draw_count') || message.includes('is_raid_limited')
 }
 
+function isMissingCollectionNameColumn(error: { message?: string; code?: string } | null | undefined) {
+  const message = error?.message ?? ''
+  return error?.code === 'PGRST204' || message.includes('collection_name') || message.includes('channel_point_collection_name')
+}
+
 const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
 
 function isStreamerSettingsSchemaError(error: { message?: string; code?: string } | null | undefined) {
@@ -49,6 +55,7 @@ function isStreamerSettingsSchemaError(error: { message?: string; code?: string 
     || message.includes('raid_gacha_draw_count')
     || message.includes('chat_announcement_multi_template')
     || message.includes('chat_announcement_multi_show_cards')
+    || message.includes('channel_point_collection_name')
 }
 
 function isRaidGachaActive(activeUntil: string | null | undefined, now = new Date()): boolean {
@@ -60,25 +67,59 @@ function isRaidGachaActive(activeUntil: string | null | undefined, now = new Dat
 export class GachaService {
   private supabase = getSupabaseAdmin()
 
-  async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string, eventId?: string, rewardCost?: number): Promise<Result<GachaResult>> {
+  async executeGacha(
+    streamerId: string,
+    userTwitchId: string,
+    userTwitchUsername: string,
+    eventId?: string,
+    rewardCost?: number,
+    collectionName?: string | null
+  ): Promise<Result<GachaResult>> {
     try {
-      // Get active cards for this streamer
-      // このストリーマーの有効なカードを取得
-      const { data: cards, error: cardsError } = await withRetry(
-        () => this.supabase
+      const fetchCards = () => {
+        let query = this.supabase
           .from('cards')
-          .select('id, name, description, image_url, rarity, drop_rate')
+          .select('id, name, description, image_url, rarity, collection_name, drop_rate')
           .eq('streamer_id', streamerId)
-          .eq('is_active', true),
+          .eq('is_active', true)
+
+        if (collectionName) {
+          query = query.eq('collection_name', collectionName)
+        }
+
+        return query
+      }
+
+      let { data: cards, error: cardsError } = await withRetry(
+        fetchCards,
         'gacha:executeGacha:cards',
       )
+
+      if (cardsError && isMissingCollectionNameColumn(cardsError)) {
+        if (collectionName) {
+          return err('Card collections are not deployed yet')
+        }
+        const fallbackResult = await withRetry(
+          () => this.supabase
+            .from('cards')
+            .select('id, name, description, image_url, rarity, drop_rate')
+            .eq('streamer_id', streamerId)
+            .eq('is_active', true),
+          'gacha:executeGacha:cards:fallback',
+        )
+        cards = (fallbackResult.data || []).map((card) => ({
+          ...card,
+          collection_name: null,
+        }))
+        cardsError = fallbackResult.error
+      }
 
       if (cardsError) {
         return err(`Database error: ${cardsError.message}`)
       }
 
       if (!cards || cards.length === 0) {
-        return err('No cards available for this streamer')
+        return err(collectionName ? 'No cards available for this collection' : 'No cards available for this streamer')
       }
 
       // Select a card based on drop rates
@@ -144,7 +185,8 @@ export class GachaService {
     userTwitchUsername: string,
     drawCount: number,
     eventId?: string,
-    rewardCost?: number
+    rewardCost?: number,
+    collectionName?: string | null
   ): Promise<Result<GachaResult>> {
     const cards: GachaCard[] = []
     let firstResult: GachaResult | null = null
@@ -157,7 +199,8 @@ export class GachaService {
         userTwitchId,
         userTwitchUsername,
         drawEventId,
-        drawRewardCost
+        drawRewardCost,
+        collectionName
       )
 
       if (!result.success) {
@@ -273,7 +316,7 @@ export class GachaService {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
       let { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until')
+        .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until')
         .eq('twitch_user_id', event.broadcaster_user_id)
         .maybeSingle()
 
@@ -287,6 +330,7 @@ export class GachaService {
           ? {
               ...fallbackResult.data,
               chat_announcement_multi_template: null,
+              channel_point_collection_name: null,
               chat_announcement_multi_show_cards: true,
               raid_gacha_active_until: null,
             }
@@ -299,14 +343,15 @@ export class GachaService {
       }
 
       // ガチャ実行用のヘルパー: 結果にストリーマー情報を付加して返す
-      const executeAndAttachStreamer = async (drawCount = 1): Promise<Result<GachaResult>> => {
+      const executeAndAttachStreamer = async (drawCount = 1, collectionName?: string | null): Promise<Result<GachaResult>> => {
         const result = await this.executeGachaDraws(
           streamer.id,
           event.user_id,
           event.user_name,
           drawCount,
           eventId,
-          event.reward.cost
+          event.reward.cost,
+          collectionName
         )
         if (!result.success) return result
         return ok({
@@ -324,20 +369,33 @@ export class GachaService {
       // Check if the reward ID matches the main reward
       // メイン報酬のIDと一致するかチェック
       if (streamer.channel_point_reward_id === event.reward.id) {
-        return await executeAndAttachStreamer()
+        return await executeAndAttachStreamer(1, streamer.channel_point_collection_name)
       }
 
       // Check if the reward ID matches any additional reward
       // 追加報酬のいずれかと一致するかチェック
-      const { data: additionalReward, error: additionalError } = await withRetry(
+      let { data: additionalReward, error: additionalError } = await withRetry(
         () => this.supabase
           .from('streamer_additional_gacha_rewards')
-          .select('id, draw_count, is_raid_limited')
+          .select('id, draw_count, is_raid_limited, collection_name')
           .eq('streamer_id', streamer.id)
           .eq('reward_id', event.reward.id)
           .maybeSingle(),
         'gacha:executeGachaForEventSub:additionalReward',
       )
+
+      if (additionalError && isMissingCollectionNameColumn(additionalError)) {
+        const fallbackResult = await this.supabase
+          .from('streamer_additional_gacha_rewards')
+          .select('id, draw_count, is_raid_limited')
+          .eq('streamer_id', streamer.id)
+          .eq('reward_id', event.reward.id)
+          .maybeSingle()
+        additionalReward = fallbackResult.data
+          ? { ...fallbackResult.data, collection_name: null }
+          : fallbackResult.data
+        additionalError = fallbackResult.error
+      }
 
       if (isRaidOptionsSchemaError(additionalError)) {
         logger.warn('Additional reward options schema is unavailable; refusing to execute a 1-draw fallback', {
@@ -368,7 +426,7 @@ export class GachaService {
         // 追加報酬が一致したのでガチャを実行
         const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 10)
         logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}, drawCount=${drawCount}, raidLimited=${Boolean(additionalReward.is_raid_limited)}`)
-        return await executeAndAttachStreamer(drawCount)
+        return await executeAndAttachStreamer(drawCount, additionalReward.collection_name)
       }
 
       return err('Reward ID mismatch')

@@ -82,6 +82,7 @@ type CardFormData = {
   description: string;
   imageUrl: string;
   rarity: Rarity;
+  collectionName: string;
   cardNumber: string;
   dropRate: number;
   intraRarityWeight: number;
@@ -240,6 +241,16 @@ export default function CardManager({
 
     return nextCards;
   }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
+
+  const collectionNameOptions = useMemo(() => {
+    return Array.from(
+      new Set(
+        cards
+          .map((card) => (typeof card.collection_name === "string" ? card.collection_name.trim() : ""))
+          .filter((name) => name.length > 0)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }, [cards]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -248,6 +259,7 @@ export default function CardManager({
     description: "",
     imageUrl: "",
     rarity: "common" as Rarity,
+    collectionName: "",
     cardNumber: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
@@ -789,6 +801,7 @@ export default function CardManager({
       description: "",
       imageUrl: "",
       rarity: "common",
+      collectionName: "",
       cardNumber: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
@@ -1008,6 +1021,7 @@ export default function CardManager({
       description: card.description || "",
       imageUrl: card.image_url || "",
       rarity: card.rarity,
+      collectionName: card.collection_name || "",
       cardNumber: card.card_number ? String(card.card_number) : "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
@@ -1098,6 +1112,7 @@ export default function CardManager({
           description: formData.description,
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
+          collectionName: formData.collectionName,
           cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
@@ -1420,6 +1435,31 @@ export default function CardManager({
                           {t("form.cardNumberHelp")}
                         </p>
                       </div>
+                    </div>
+                    <div className="mt-3">
+                      <label className="mb-1 block text-sm text-gray-300">
+                        {t("form.collectionName")}
+                      </label>
+                      <input
+                        type="text"
+                        name="collectionName"
+                        list="card-collection-options"
+                        maxLength={80}
+                        placeholder={t("form.collectionNamePlaceholder")}
+                        value={formData.collectionName}
+                        onChange={(e) =>
+                          setFormData({ ...formData, collectionName: e.target.value })
+                        }
+                        className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
+                      />
+                      <datalist id="card-collection-options">
+                        {collectionNameOptions.map((name) => (
+                          <option key={name} value={name} />
+                        ))}
+                      </datalist>
+                      <p className="mt-1 text-xs text-gray-300">
+                        {t("form.collectionNameHelp")}
+                      </p>
                     </div>
                   </div>
                 </div>

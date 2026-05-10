@@ -40,6 +40,14 @@ function hasValidRarityWeightsTotal(value: Record<string, number> | null): boole
   return Math.abs(total - 100) <= 0.001;
 }
 
+function normalizeCollectionName(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export async function POST(request: NextRequest) {
   // Content-Type validation - must be the first check
   const contentTypeValidation = validateContentType(request, 'application/json')
@@ -85,6 +93,7 @@ export async function POST(request: NextRequest) {
       streamerId,
       channelPointRewardId,
       channelPointRewardName,
+      channelPointCollectionName,
       // ガチャ効果音設定（オプション）
       gachaSoundUrl,
       gachaSoundEnabled,
@@ -111,6 +120,14 @@ export async function POST(request: NextRequest) {
 
     if (rarityWeights !== undefined && !hasValidRarityWeightsTotal(rarityWeights)) {
       return NextResponse.json({ error: "Rarity weights total must be 100%" }, { status: 400 });
+    }
+
+    const normalizedChannelPointCollectionName = normalizeCollectionName(channelPointCollectionName);
+    if (channelPointCollectionName !== undefined && normalizedChannelPointCollectionName === undefined) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (normalizedChannelPointCollectionName && normalizedChannelPointCollectionName.length > 80) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
     // 視聴者向け未所持カード表示の boolean 検証
@@ -153,6 +170,9 @@ export async function POST(request: NextRequest) {
     }
     if (channelPointRewardName !== undefined) {
       updateData.channel_point_reward_name = channelPointRewardName;
+    }
+    if (channelPointCollectionName !== undefined) {
+      updateData.channel_point_collection_name = normalizedChannelPointCollectionName;
     }
 
     // ガチャ効果音設定

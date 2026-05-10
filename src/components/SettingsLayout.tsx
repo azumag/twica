@@ -67,6 +67,7 @@ export interface SettingsLayoutData {
   channelPoint: {
     rewardId: string | null;
     rewardName: string | null;
+    collectionName: string | null;
   };
   gachaSound: {
     soundUrl: string | null;
@@ -133,6 +134,7 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
           streamerId={data.streamerId}
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
+          currentCollectionName={data.channelPoint.collectionName}
           compact
         />
       </StepCard>
@@ -247,6 +249,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           streamerId={data.streamerId}
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
+          currentCollectionName={data.channelPoint.collectionName}
         />
       ),
     },

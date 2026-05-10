@@ -541,6 +541,12 @@
       "raidStatusEnabled": "レイドガチャ受付を30分間有効にしました",
       "raidStatusDisabled": "レイドガチャ受付を停止しました",
       "raidStatusFailed": "レイドガチャ設定の更新に失敗しました"
+    },
+    "collections": {
+      "mainLabel": "メイン報酬のカードパック",
+      "additionalLabel": "追加報酬のカードパック",
+      "all": "すべてのカード",
+      "help": "カード管理で設定したパック名ごとに、排出対象を絞り込めます。"
     }
   },
   "gachaHistory": {

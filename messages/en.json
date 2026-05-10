@@ -541,6 +541,12 @@
       "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
       "raidStatusDisabled": "Raid gacha window disabled",
       "raidStatusFailed": "Failed to update raid gacha settings"
+    },
+    "collections": {
+      "mainLabel": "Main reward card pack",
+      "additionalLabel": "Additional reward card pack",
+      "all": "All cards",
+      "help": "Limit eligible cards by the pack names configured in card management."
     }
   },
   "gachaHistory": {

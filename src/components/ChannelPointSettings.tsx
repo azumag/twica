@@ -28,6 +28,7 @@ interface AdditionalReward {
   reward_name: string | null;
   draw_count: number;
   is_raid_limited: boolean;
+  collection_name: string | null;
   created_at: string;
 }
 
@@ -47,6 +48,7 @@ interface ChannelPointSettingsProps {
   streamerId: string;
   currentRewardId: string | null;
   currentRewardName: string | null;
+  currentCollectionName?: string | null;
   /**
    * compact: シンプル表示モード用の縮約レンダリング。
    * EventSub 診断パネル / 追加報酬セクション / 詳細エラーリストを隠し、
@@ -66,6 +68,7 @@ export default function ChannelPointSettings({
   streamerId,
   currentRewardId,
   currentRewardName,
+  currentCollectionName = null,
   compact = false,
 }: ChannelPointSettingsProps) {
   const t = useTranslations("channelPointSettings");
@@ -73,6 +76,7 @@ export default function ChannelPointSettings({
   const [rewards, setRewards] = useState<TwitchReward[]>([]);
   const [selectedRewardId, setSelectedRewardId] = useState(currentRewardId || "");
   const [selectedRewardName, setSelectedRewardName] = useState(currentRewardName || "");
+  const [selectedCollectionName, setSelectedCollectionName] = useState(currentCollectionName || "");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -91,8 +95,10 @@ export default function ChannelPointSettings({
   // Additional rewards state
   // 追加報酬の状態管理
   const [additionalRewards, setAdditionalRewards] = useState<AdditionalReward[]>([]);
+  const [collectionNames, setCollectionNames] = useState<string[]>([]);
   const [addingAdditional, setAddingAdditional] = useState(false);
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
+  const [selectedAdditionalCollectionName, setSelectedAdditionalCollectionName] = useState("");
   const [additionalDrawCount, setAdditionalDrawCount] = useState(1);
   const [raidGiftDrawCount, setRaidGiftDrawCount] = useState(0);
   const [updatingRaidGift, setUpdatingRaidGift] = useState(false);
@@ -181,6 +187,24 @@ export default function ChannelPointSettings({
       }
     } catch {
       logger.error("Failed to fetch additional rewards");
+    }
+  }, []);
+
+  const fetchCollectionNames = useCallback(async () => {
+    try {
+      const response = await fetch("/api/cards", { credentials: "include", cache: "no-store" });
+      if (!response.ok) return;
+      const cards = await response.json();
+      const names = Array.from(new Set(
+        (Array.isArray(cards) ? cards : [])
+          .map((card: { collection_name?: unknown }) =>
+            typeof card.collection_name === "string" ? card.collection_name.trim() : ""
+          )
+          .filter(Boolean)
+      )).sort((a, b) => a.localeCompare(b));
+      setCollectionNames(names);
+    } catch {
+      logger.error("Failed to fetch card collections");
     }
   }, []);
 
@@ -329,6 +353,7 @@ export default function ChannelPointSettings({
           streamerId,
           channelPointRewardId: selectedRewardId,
           channelPointRewardName: selectedRewardName,
+          channelPointCollectionName: selectedCollectionName || null,
         }),
       });
 
@@ -453,6 +478,7 @@ export default function ChannelPointSettings({
         body: JSON.stringify({
           rewardId: selectedAdditionalRewardId,
           rewardName: rewardName,
+          collectionName: selectedAdditionalCollectionName || null,
           drawCount: additionalDrawCount,
           isRaidLimited: false,
         }),
@@ -470,6 +496,7 @@ export default function ChannelPointSettings({
       // 状態を更新
       setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
       setSelectedAdditionalRewardId("");
+      setSelectedAdditionalCollectionName("");
       setAdditionalDrawCount(1);
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
@@ -833,6 +860,22 @@ export default function ChannelPointSettings({
                <p className="mt-1 text-xs text-gray-500">
                  {t("form.id")} {selectedRewardId}
                </p>
+               <label className="mt-3 block text-xs text-gray-300">
+                 {t("collections.mainLabel")}
+                 <select
+                   value={selectedCollectionName}
+                   onChange={(e) => setSelectedCollectionName(e.target.value)}
+                   className="mt-1 h-9 w-full rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
+                 >
+                   <option value="">{t("collections.all")}</option>
+                   {collectionNames.map((name) => (
+                     <option key={name} value={name}>{name}</option>
+                   ))}
+                 </select>
+               </label>
+               <p className="mt-1 text-xs text-gray-400">
+                 {t("collections.help")}
+               </p>
              </div>
            )}
 
@@ -1029,6 +1072,9 @@ export default function ChannelPointSettings({
                                {t("additionalRewards.raidLimited")}
                              </span>
                            )}
+                           <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                             {reward.collection_name || t("collections.all")}
+                           </span>
                          </div>
                        </div>
                        <button
@@ -1073,7 +1119,7 @@ export default function ChannelPointSettings({
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto] sm:items-center">
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px_180px_auto] sm:items-center">
                  {/*
                    ネイティブの矢印アイコンを残しつつ右側に余白を確保。
                    bg-gray-700 で他のフォーム要素と階調を揃え、フォーカスリングで状態を明示する。
@@ -1097,6 +1143,17 @@ export default function ChannelPointSettings({
                          {!reward.is_enabled && t("options.disabled")}
                        </option>
                      ))}
+                 </select>
+                 <select
+                   value={selectedAdditionalCollectionName}
+                   onChange={(e) => setSelectedAdditionalCollectionName(e.target.value)}
+                   aria-label={t("collections.additionalLabel")}
+                   className="h-10 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
+                 >
+                   <option value="">{t("collections.all")}</option>
+                   {collectionNames.map((name) => (
+                     <option key={name} value={name}>{name}</option>
+                   ))}
                  </select>
                  {/*
                    ラベルと数値入力を1コンポーネントとして見せるためのコンテナ。
