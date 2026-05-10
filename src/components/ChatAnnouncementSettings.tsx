@@ -426,7 +426,7 @@ export default function ChatAnnouncementSettings({
             <button
               onClick={handleDisconnectBot}
               disabled={botDisconnecting}
-              className="rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-500 disabled:opacity-50"
+              className="shrink-0 whitespace-nowrap rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-500 disabled:opacity-50"
             >
               {botDisconnecting ? t("buttons.disconnectingBot") : t("buttons.disconnectBot")}
             </button>
@@ -434,7 +434,7 @@ export default function ChatAnnouncementSettings({
             <button
               onClick={handleConnectBot}
               disabled={botConnecting}
-              className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+              className="shrink-0 whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
             >
               {botConnecting ? t("buttons.connectingBot") : t("buttons.connectBot")}
             </button>
