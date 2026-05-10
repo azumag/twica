@@ -392,7 +392,7 @@
       "saveTemplate": "Save Template",
       "saving": "Saving...",
       "chatDemo": "Chat Demo",
-      "connectBot": "Connect Another Account",
+      "connectBot": "Connect Another Twitch Account",
       "connectingBot": "Connecting...",
       "disconnectBot": "Disconnect Account",
       "disconnectingBot": "Disconnecting..."
@@ -416,7 +416,7 @@
     },
     "bot": {
       "title": "Sender Account",
-      "description": "Without another account connected, messages are sent from your streamer account. Connect Twitch to send from a different account.",
+      "description": "Without another account connected, messages are sent from your streamer account. When you start linking, Twitch opens authorization with the account currently signed in on Twitch. To send from a different account, switch accounts on Twitch before linking.",
       "connectedAs": "Sending as {name}"
     }
   },

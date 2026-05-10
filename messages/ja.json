@@ -392,7 +392,7 @@
       "saveTemplate": "テンプレートを保存",
       "saving": "保存中...",
       "chatDemo": "チャットデモ",
-      "connectBot": "別アカウントを連携",
+      "connectBot": "Twitchで別アカウントを連携",
       "connectingBot": "連携中...",
       "disconnectBot": "別アカウント連携を解除",
       "disconnectingBot": "解除中..."
@@ -416,7 +416,7 @@
     },
     "bot": {
       "title": "送信アカウント",
-      "description": "未連携の場合は配信者アカウントから送信します。別のTwitchアカウントから送る場合は連携してください。",
+      "description": "未連携の場合は配信者アカウントから送信します。連携を始めると、現在Twitchにログインしているアカウントで認証が開きます。別のアカウントから送る場合は、先にTwitch側でそのアカウントに切り替えてから連携してください。",
       "connectedAs": "{name} から送信します"
     }
   },
