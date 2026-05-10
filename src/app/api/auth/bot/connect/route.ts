@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
 
     const state = randomBytesHex(32)
     const baseUrl = getBaseUrl(request)
-    const redirectUri = `${baseUrl}${API_ROUTES.AUTH_BOT_CALLBACK}`
+    const redirectUri = `${baseUrl}${API_ROUTES.AUTH_TWITCH_CALLBACK}`
     const loginUrl = getTwitchAuthUrl(redirectUri, state, [ADDITIONAL_SCOPES.CHAT_WRITE])
 
     const response = NextResponse.json({ success: true, loginUrl })
