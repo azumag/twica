@@ -64,23 +64,89 @@ export async function GET(request: NextRequest) {
 
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
     const supabaseAdmin = getSupabaseAdmin()
-    const { error } = await supabaseAdmin
-      .from('streamers')
-      .update({
-        bot_twitch_user_id: botUser.id,
-        bot_twitch_username: botUser.login,
-        bot_twitch_display_name: botUser.display_name,
-        bot_twitch_access_token: tokens.access_token,
-        bot_twitch_refresh_token: tokens.refresh_token,
-        bot_twitch_token_expires_at: expiresAt.toISOString(),
-      })
-      .eq('twitch_user_id', session.twitchUserId)
 
-    if (error) {
+    const { data: streamer, error: streamerError } = await supabaseAdmin
+      .from('streamers')
+      .select('id')
+      .eq('twitch_user_id', session.twitchUserId)
+      .maybeSingle()
+
+    if (streamerError || !streamer) {
+      logger.error('BOT auth callback: failed to find streamer', {
+        twitchUserId: session.twitchUserId,
+        botTwitchUserId: botUser.id,
+        error: streamerError,
+      })
+      return redirectToSettings(baseUrl, { bot_error: 'database_error' })
+    }
+
+    const botAccountFields = {
+      twitch_user_id: botUser.id,
+      twitch_username: botUser.login,
+      twitch_display_name: botUser.display_name,
+      twitch_access_token: tokens.access_token,
+      twitch_refresh_token: tokens.refresh_token,
+      twitch_token_expires_at: expiresAt.toISOString(),
+      scopes: tokens.scope ?? [],
+      status: 'active',
+      last_error: null,
+    }
+
+    const { data: existingBotAccount, error: existingBotError } = await supabaseAdmin
+      .from('twitch_bot_accounts')
+      .select('id')
+      .eq('owner_type', 'streamer')
+      .eq('streamer_id', streamer.id)
+      .maybeSingle()
+
+    if (existingBotError) {
+      logger.error('BOT auth callback: failed to fetch existing BOT account', {
+        twitchUserId: session.twitchUserId,
+        botTwitchUserId: botUser.id,
+        error: existingBotError,
+      })
+      return redirectToSettings(baseUrl, { bot_error: 'database_error' })
+    }
+
+    const botAccountResult = existingBotAccount
+      ? await supabaseAdmin
+          .from('twitch_bot_accounts')
+          .update(botAccountFields)
+          .eq('id', existingBotAccount.id)
+          .select('id')
+          .single()
+      : await supabaseAdmin
+          .from('twitch_bot_accounts')
+          .insert({
+            ...botAccountFields,
+            owner_type: 'streamer',
+            streamer_id: streamer.id,
+          })
+          .select('id')
+          .single()
+
+    if (botAccountResult.error) {
       logger.error('BOT auth callback: failed to save BOT account', {
         twitchUserId: session.twitchUserId,
         botTwitchUserId: botUser.id,
-        error,
+        error: botAccountResult.error,
+      })
+      return redirectToSettings(baseUrl, { bot_error: 'database_error' })
+    }
+
+    const { error: senderSettingsError } = await supabaseAdmin
+      .from('streamer_chat_sender_settings')
+      .upsert({
+        streamer_id: streamer.id,
+        sender_mode: 'custom_bot',
+        custom_bot_account_id: botAccountResult.data.id,
+      })
+
+    if (senderSettingsError) {
+      logger.error('BOT auth callback: failed to save chat sender settings', {
+        twitchUserId: session.twitchUserId,
+        botTwitchUserId: botUser.id,
+        error: senderSettingsError,
       })
       return redirectToSettings(baseUrl, { bot_error: 'database_error' })
     }

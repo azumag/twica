@@ -182,27 +182,47 @@ export async function POST(request: NextRequest) {
       updateData.show_unowned_card_details = showUnownedCardDetails;
     }
 
+    let botDisconnected = false;
     if (disconnectBot === true) {
-      updateData.bot_twitch_user_id = null;
-      updateData.bot_twitch_username = null;
-      updateData.bot_twitch_display_name = null;
-      updateData.bot_twitch_access_token = null;
-      updateData.bot_twitch_refresh_token = null;
-      updateData.bot_twitch_token_expires_at = null;
+      const { error: senderSettingsError } = await supabaseAdmin
+        .from("streamer_chat_sender_settings")
+        .upsert({
+          streamer_id: streamerId,
+          sender_mode: "streamer",
+          custom_bot_account_id: null,
+        });
+
+      if (senderSettingsError) {
+        return handleDatabaseError(senderSettingsError, "Streamer Settings API: Disconnect BOT sender settings");
+      }
+
+      const { error: botDeleteError } = await supabaseAdmin
+        .from("twitch_bot_accounts")
+        .delete()
+        .eq("streamer_id", streamerId)
+        .eq("owner_type", "streamer");
+
+      if (botDeleteError) {
+        return handleDatabaseError(botDeleteError, "Streamer Settings API: Disconnect BOT account");
+      }
+
+      botDisconnected = true;
     }
 
     // 更新するフィールドがない場合はエラー
-    if (Object.keys(updateData).length === 0) {
+    if (Object.keys(updateData).length === 0 && !botDisconnected) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    const { error } = await supabaseAdmin
-      .from("streamers")
-      .update(updateData)
-      .eq("id", streamerId);
+    if (Object.keys(updateData).length > 0) {
+      const { error } = await supabaseAdmin
+        .from("streamers")
+        .update(updateData)
+        .eq("id", streamerId);
 
-    if (error) {
-      return handleDatabaseError(error, "Streamer Settings API: PUT");
+      if (error) {
+        return handleDatabaseError(error, "Streamer Settings API: PUT");
+      }
     }
 
     // 再計算はベストエフォート: 主操作（weights保存）は成功しているため、

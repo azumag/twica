@@ -71,10 +71,12 @@ describe('TwitchChatService', () => {
 
     it('BOTアカウント設定時はBOTのsender_idとトークンで送信する', async () => {
       vi.mocked(getBotAccountForChat).mockResolvedValue({
+        accountId: 'bot-account-id',
         senderId: 'bot-user-id',
         username: 'twica_bot',
         displayName: 'TwiCa Bot',
         accessToken: 'bot-token',
+        ownerType: 'streamer',
       });
 
       vi.mocked(global.fetch).mockResolvedValue({
