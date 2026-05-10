@@ -33,11 +33,13 @@ ALTER TABLE card_stone_transactions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Service can manage card stone balances"
 ON card_stone_balances
-FOR ALL USING (true);
+FOR ALL TO service_role
+USING (true) WITH CHECK (true);
 
 CREATE POLICY "Service can manage card stone transactions"
 ON card_stone_transactions
-FOR ALL USING (true);
+FOR ALL TO service_role
+USING (true) WITH CHECK (true);
 
 CREATE OR REPLACE FUNCTION card_stone_value_for_rarity(p_rarity TEXT)
 RETURNS INTEGER AS $$
