@@ -612,6 +612,7 @@
   "settingsPage": {
     "title": "配信設定",
     "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。",
+    "collectionNameDefault": "{streamerName} のコレクション",
     "viewMode": {
       "simple": "シンプル",
       "advanced": "詳細",
@@ -641,6 +642,24 @@
         "share": "共有",
         "shareDesc": "コレクションページのURL"
       }
+    }
+  },
+  "collectionNameSettings": {
+    "title": "コレクション名",
+    "description": "視聴者向けコレクションページの見出しに表示する名前を設定します。",
+    "form": {
+      "label": "表示名",
+      "save": "保存",
+      "counter": "{count}/{max}文字"
+    },
+    "messages": {
+      "saved": "コレクション名を保存しました",
+      "reset": "既定のコレクション名に戻しました",
+      "saving": "保存中..."
+    },
+    "errors": {
+      "saveFailed": "コレクション名の保存に失敗しました",
+      "tooLong": "{max}文字以内で入力してください"
     }
   },
   "cardsPage": {

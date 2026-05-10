@@ -36,6 +36,7 @@ export default async function SettingsPage() {
   const hasAdvancedSettingsInUse =
     Boolean(streamerData.streamer.gacha_sound_enabled) ||
     Boolean(streamerData.streamer.chat_announcement_enabled) ||
+    Boolean(streamerData.streamer.collection_name) ||
     Boolean(streamerData.streamer.show_unowned_cards) ||
     Boolean(streamerData.streamer.show_unowned_card_details);
 
@@ -63,6 +64,10 @@ export default async function SettingsPage() {
       visibility={{
         showUnowned: streamerData.streamer.show_unowned_cards ?? false,
         showUnownedDetails: streamerData.streamer.show_unowned_card_details ?? false,
+      }}
+      collectionName={{
+        name: streamerData.streamer.collection_name ?? null,
+        streamerName: streamerData.streamer.twitch_display_name,
       }}
       initialModeHint={hasAdvancedSettingsInUse ? "advanced" : "simple"}
     />

@@ -9,6 +9,8 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 
+const MAX_COLLECTION_NAME_LENGTH = 80;
+
 function validateRarityWeightsInput(value: unknown): value is Record<string, number> | null {
   if (value === null) {
     return true;
@@ -103,6 +105,9 @@ export async function POST(request: NextRequest) {
       // BOTアカウント連携解除（オプション）
       // Disconnect optional BOT account used for chat announcements
       disconnectBot,
+      // 視聴者向けコレクション表示名（オプション、Issue #230）
+      // Optional viewer-facing collection display name (Issue #230)
+      collectionName,
     } = body;
 
     if (rarityWeights !== undefined && !validateRarityWeightsInput(rarityWeights)) {
@@ -127,6 +132,19 @@ export async function POST(request: NextRequest) {
     if (
       chatAnnouncementMultiShowCards !== undefined
       && typeof chatAnnouncementMultiShowCards !== "boolean"
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      collectionName !== undefined &&
+      collectionName !== null &&
+      typeof collectionName !== "string"
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      typeof collectionName === "string" &&
+      collectionName.trim().length > MAX_COLLECTION_NAME_LENGTH
     ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
@@ -194,6 +212,13 @@ export async function POST(request: NextRequest) {
     }
     if (showUnownedCardDetails !== undefined) {
       updateData.show_unowned_card_details = showUnownedCardDetails;
+    }
+
+    // 視聴者向けコレクション表示名。空文字は既定タイトルに戻す。
+    // Collection display name for viewers. Empty input restores the default title.
+    if (collectionName !== undefined) {
+      updateData.collection_name =
+        collectionName === null ? null : collectionName.trim() || null;
     }
 
     let botDisconnected = false;

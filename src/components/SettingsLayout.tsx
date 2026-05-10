@@ -47,6 +47,10 @@ const CardVisibilitySettings = dynamic(() => import("@/components/CardVisibility
   ssr: false,
   loading: () => <SettingsPanelSkeleton />,
 });
+const CollectionNameSettings = dynamic(() => import("@/components/CollectionNameSettings"), {
+  ssr: false,
+  loading: () => <SettingsPanelSkeleton />,
+});
 
 function SettingsPanelSkeleton() {
   return (
@@ -81,6 +85,10 @@ export interface SettingsLayoutData {
   visibility: {
     showUnowned: boolean;
     showUnownedDetails: boolean;
+  };
+  collectionName: {
+    name: string | null;
+    streamerName: string;
   };
   initialModeHint: "simple" | "advanced";
 }
@@ -301,7 +309,14 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       description: t("advanced.section.shareDesc"),
       icon: <SectionIcon name="share" />,
       status: "configured",
-      content: <ShareSection url={collectionUrl} />,
+      content: (
+        <ShareSettings
+          url={collectionUrl}
+          streamerId={data.streamerId}
+          collectionName={data.collectionName.name}
+          defaultCollectionName={t("collectionNameDefault", { streamerName: data.collectionName.streamerName })}
+        />
+      ),
     },
   ];
 
@@ -309,6 +324,29 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
     <div className="space-y-6">
       <PageHeader title={t("title")} description={t("description")} />
       <AdvancedSettingsLayout sections={sections} />
+    </div>
+  );
+}
+
+function ShareSettings({
+  url,
+  streamerId,
+  collectionName,
+  defaultCollectionName,
+}: {
+  url: string;
+  streamerId: string;
+  collectionName: string | null;
+  defaultCollectionName: string;
+}) {
+  return (
+    <div className="space-y-4">
+      <CollectionNameSettings
+        streamerId={streamerId}
+        currentCollectionName={collectionName}
+        defaultCollectionName={defaultCollectionName}
+      />
+      <ShareSection url={url} />
     </div>
   );
 }

@@ -57,6 +57,9 @@ export interface Database {
           // incoming raid 送信者に自動付与するガチャ回数（0=無効）
           // Number of gacha draws gifted to the raider on incoming raids. 0 disables gifts.
           raid_gacha_draw_count: number
+          // 配信者が設定したコレクション表示名（nullの場合は既定タイトル）
+          // Optional display name for the viewer collection page
+          collection_name: string | null
           created_at: string
           updated_at: string
         }
@@ -80,6 +83,7 @@ export interface Database {
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
+          collection_name?: string | null
           created_at?: string
           updated_at?: string
         }

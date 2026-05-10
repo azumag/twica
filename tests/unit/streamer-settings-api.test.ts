@@ -342,6 +342,89 @@ describe('POST /api/streamer/settings', () => {
     })
   })
 
+  // Issue #230: 配信者が視聴者向けコレクション名を設定できる
+  describe('collection name settings (Issue #230)', () => {
+    it('should persist a trimmed collection name', async () => {
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+      const mockSupabase = builder.build()
+      const queryBuilder = builder.getQueryBuilder()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          collectionName: '  Weekly Cards  ',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(queryBuilder.update).toHaveBeenCalledWith({
+        collection_name: 'Weekly Cards',
+      })
+    })
+
+    it('should reset blank collection names to null', async () => {
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+      const mockSupabase = builder.build()
+      const queryBuilder = builder.getQueryBuilder()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          collectionName: '   ',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(queryBuilder.update).toHaveBeenCalledWith({
+        collection_name: null,
+      })
+    })
+
+    it('should reject collection names over 80 characters', async () => {
+      const mockSupabase = createSupabaseMock().build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          collectionName: 'x'.repeat(81),
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+  })
+
   it('should return 429 when rate limit exceeded', async () => {
     mockCheckRateLimit.mockResolvedValue({
       success: false,

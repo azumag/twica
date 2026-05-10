@@ -55,6 +55,9 @@ export default async function StreamerCollection({
   const tStreamer = await getTranslations("streamerCollection");
   const tCommon = await getTranslations("common");
   const tCardManager = await getTranslations("cardManager");
+  const collectionTitle =
+    streamer.collection_name?.trim() ||
+    tStreamer("title", { streamerName: streamer.twitch_display_name });
 
   return (
     <div className="min-h-screen bg-gray-900 p-4 sm:p-6 lg:p-8">
@@ -75,7 +78,7 @@ export default async function StreamerCollection({
           )}
           <div>
             <h1 className="text-2xl font-bold text-white">
-              {tStreamer("title", { streamerName: streamer.twitch_display_name })}
+              {collectionTitle}
             </h1>
             <p className="text-gray-400">
               {t("cardTypes", { count: visibleCardTypes })}

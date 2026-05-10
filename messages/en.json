@@ -612,6 +612,7 @@
   "settingsPage": {
     "title": "Stream Settings",
     "description": "Configure OBS overlay and channel point rewards.",
+    "collectionNameDefault": "{streamerName}'s Collection",
     "viewMode": {
       "simple": "Simple",
       "advanced": "Advanced",
@@ -641,6 +642,24 @@
         "share": "Share",
         "shareDesc": "Collection page URL"
       }
+    }
+  },
+  "collectionNameSettings": {
+    "title": "Collection Name",
+    "description": "Set the heading shown on your viewer-facing collection page.",
+    "form": {
+      "label": "Display name",
+      "save": "Save",
+      "counter": "{count}/{max} characters"
+    },
+    "messages": {
+      "saved": "Collection name saved",
+      "reset": "Collection name reset to the default",
+      "saving": "Saving..."
+    },
+    "errors": {
+      "saveFailed": "Failed to save collection name",
+      "tooLong": "Enter {max} characters or fewer"
     }
   },
   "cardsPage": {
