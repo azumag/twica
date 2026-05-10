@@ -156,9 +156,41 @@ describe("GET /api/gacha-stats", () => {
       });
     });
 
+    const ownersQuery = createMockQueryBuilder();
+    const ownersResponse = {
+      data: [
+        {
+          card_id: "c1",
+          obtained_at: "2026-01-01T00:00:00Z",
+          users: {
+            twitch_user_id: "viewer1",
+            twitch_username: "alice",
+            twitch_display_name: "Alice",
+          },
+        },
+        {
+          card_id: "c1",
+          obtained_at: "2026-01-02T00:00:00Z",
+          users: {
+            twitch_user_id: "viewer1",
+            twitch_username: "alice",
+            twitch_display_name: "Alice",
+          },
+        },
+      ],
+      error: null,
+    };
+    (ownersQuery as unknown as Record<string, unknown>).then = (
+      resolve: (value: unknown) => void
+    ) => {
+      resolve(ownersResponse);
+      return ownersQuery;
+    };
+
     mockGetSupabaseAdmin.mockReturnValue({
       from: vi.fn((table: string) => {
         if (table === "streamers") return streamerQuery;
+        if (table === "user_cards") return ownersQuery;
         return createMockQueryBuilder();
       }),
       rpc,
@@ -173,6 +205,16 @@ describe("GET /api/gacha-stats", () => {
     expect(body.cardStats[0].cardName).toBe("Card1");
     expect(body.cardStats[0].actualCount).toBe(1001);
     expect(body.cardStats[0].actualRate).toBe(100);
+    expect(body.cardStats[0].ownerCount).toBe(1);
+    expect(body.cardStats[0].owners).toEqual([
+      {
+        userTwitchId: "viewer1",
+        username: "alice",
+        displayName: "Alice",
+        ownedCount: 2,
+        lastObtainedAt: "2026-01-02T00:00:00Z",
+      },
+    ]);
     expect(body.rarityStats).toHaveLength(4);
     expect(body.channelPointStats.totalPoints).toBe(250);
     expect(body.channelPointStats.ranking).toEqual([

@@ -951,7 +951,10 @@
       "rarity": "レアリティ",
       "configuredRate": "設定排出率",
       "actualRate": "実際の排出率",
-      "drawCount": "排出回数"
+      "drawCount": "排出回数",
+      "owners": "所持ユーザー",
+      "ownerCount": "{count}人",
+      "noOwners": "所持ユーザーなし"
     },
     "raritySummary": "レアリティ別サマリー",
     "fullPeriodStats": {
