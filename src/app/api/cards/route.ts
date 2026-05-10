@@ -19,6 +19,7 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -80,7 +81,7 @@ export async function POST(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber } = body;
+    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber, maxIssuanceCount } = body;
 
     const nameValidation = validateCardName(name)
     if (!nameValidation.valid) {
@@ -132,6 +133,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const parsedIssuanceLimit = parseCardIssuanceLimit(maxIssuanceCount);
+    if (parsedIssuanceLimit === "invalid") {
+      return NextResponse.json(
+        { error: CARD_ISSUANCE_MESSAGES.invalid },
+        { status: 400 }
+      );
+    }
+
     // intraRarityWeight は省略可能（デフォルト1.0）。指定時は正の数値のみ
     if (intraRarityWeight !== undefined) {
       if (typeof intraRarityWeight !== "number" || !Number.isFinite(intraRarityWeight) || intraRarityWeight <= 0) {
@@ -168,6 +177,7 @@ export async function POST(request: NextRequest) {
       image_url: imageUrl,
       rarity,
       card_number: cardNumber ?? null,
+      max_issuance_count: parsedIssuanceLimit,
       drop_rate: dropRate,
     };
     if (intraRarityWeight !== undefined) {
@@ -182,6 +192,16 @@ export async function POST(request: NextRequest) {
 
     if (error && isMissingCardNumberColumnError(error)) {
       delete insertData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .insert(insertData)
+        .select()
+        .maybeSingle();
+      card = retryResult.data;
+      error = retryResult.error;
+    }
+    if (error && isMissingCardIssuanceColumnError(error)) {
+      delete insertData.max_issuance_count;
       const retryResult = await supabaseAdmin
         .from("cards")
         .insert(insertData)

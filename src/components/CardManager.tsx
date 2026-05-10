@@ -83,6 +83,7 @@ type CardFormData = {
   imageUrl: string;
   rarity: Rarity;
   cardNumber: string;
+  maxIssuanceCount: string;
   dropRate: number;
   intraRarityWeight: number;
 };
@@ -230,6 +231,7 @@ export default function CardManager({
     imageUrl: "",
     rarity: "common" as Rarity,
     cardNumber: "",
+    maxIssuanceCount: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
   });
@@ -771,6 +773,7 @@ export default function CardManager({
       imageUrl: "",
       rarity: "common",
       cardNumber: "",
+      maxIssuanceCount: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
     });
@@ -990,6 +993,7 @@ export default function CardManager({
       imageUrl: card.image_url || "",
       rarity: card.rarity,
       cardNumber: card.card_number ? String(card.card_number) : "",
+      maxIssuanceCount: card.max_issuance_count ? String(card.max_issuance_count) : "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
@@ -1080,6 +1084,7 @@ export default function CardManager({
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
           cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
+          maxIssuanceCount: formData.maxIssuanceCount.trim() === "" ? null : Number(formData.maxIssuanceCount),
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
@@ -1399,6 +1404,27 @@ export default function CardManager({
                         />
                         <p className="mt-1 text-xs text-gray-300">
                           {t("form.cardNumberHelp")}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.maxIssuanceCount")}
+                        </label>
+                        <input
+                          type="number"
+                          name="maxIssuanceCount"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          placeholder={t("form.maxIssuanceCountPlaceholder")}
+                          value={formData.maxIssuanceCount}
+                          onChange={(e) =>
+                            setFormData({ ...formData, maxIssuanceCount: e.target.value })
+                          }
+                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
+                        />
+                        <p className="mt-1 text-xs text-gray-300">
+                          {t("form.maxIssuanceCountHelp")}
                         </p>
                       </div>
                     </div>
