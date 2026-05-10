@@ -392,9 +392,9 @@
       "saveTemplate": "Save Template",
       "saving": "Saving...",
       "chatDemo": "Chat Demo",
-      "connectBot": "Connect Another Twitch Account",
+      "connectBot": "Connect",
       "connectingBot": "Connecting...",
-      "disconnectBot": "Disconnect Account",
+      "disconnectBot": "Disconnect",
       "disconnectingBot": "Disconnecting..."
     },
     "messages": {

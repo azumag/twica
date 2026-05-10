@@ -392,9 +392,9 @@
       "saveTemplate": "テンプレートを保存",
       "saving": "保存中...",
       "chatDemo": "チャットデモ",
-      "connectBot": "Twitchで別アカウントを連携",
+      "connectBot": "連携する",
       "connectingBot": "連携中...",
-      "disconnectBot": "別アカウント連携を解除",
+      "disconnectBot": "解除する",
       "disconnectingBot": "解除中..."
     },
     "messages": {
