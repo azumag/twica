@@ -230,7 +230,7 @@ export default function ChatAnnouncementSettings({
       setMessage(errorData.error || t("errors.botConnectFailed"));
       setIsError(true);
     } catch (error) {
-      logger.error("BOT connect error:", error);
+      logger.error("Alternate account connect error:", error);
       setMessage(t("errors.botConnectFailed"));
       setIsError(true);
     } finally {
@@ -268,7 +268,7 @@ export default function ChatAnnouncementSettings({
       setMessage(t("messages.botDisconnected"));
       setIsError(false);
     } catch (error) {
-      logger.error("BOT disconnect error:", error);
+      logger.error("Alternate account disconnect error:", error);
       setMessage(t("errors.botDisconnectFailed"));
       setIsError(true);
     } finally {

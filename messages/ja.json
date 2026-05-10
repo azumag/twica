@@ -371,7 +371,7 @@
   },
   "chatAnnouncementSettings": {
     "title": "チャット通知設定",
-    "description": "ガチャ結果をTwitchチャットに自動投稿します。BOTアカウントを連携すると、そのアカウントからメッセージが送信されます。",
+    "description": "ガチャ結果をTwitchチャットに自動投稿します。別のTwitchアカウントを連携すると、そのアカウントからメッセージが送信されます。",
     "status": {
       "enabled": "有効",
       "disabled": "無効"
@@ -392,22 +392,22 @@
       "saveTemplate": "テンプレートを保存",
       "saving": "保存中...",
       "chatDemo": "チャットデモ",
-      "connectBot": "BOTを連携",
+      "connectBot": "Twitchで別アカウントを連携",
       "connectingBot": "連携中...",
-      "disconnectBot": "BOT連携を解除",
+      "disconnectBot": "別アカウント連携を解除",
       "disconnectingBot": "解除中..."
     },
     "messages": {
       "checkingScope": "権限を確認中...",
       "saved": "設定を保存しました",
       "lengthWarning": "カード説明やURLが長い場合、送信メッセージが最大 {estimated} 文字程度になる可能性があります。{max}文字を超えた分は送信時に切り詰められます。",
-      "botDisconnected": "BOT連携を解除しました"
+      "botDisconnected": "別アカウント連携を解除しました"
     },
     "errors": {
       "saveFailed": "設定の保存に失敗しました",
       "reauthorizeFailed": "再認証に失敗しました",
-      "botConnectFailed": "BOT連携の開始に失敗しました",
-      "botDisconnectFailed": "BOT連携の解除に失敗しました"
+      "botConnectFailed": "別アカウント連携の開始に失敗しました",
+      "botDisconnectFailed": "別アカウント連携の解除に失敗しました"
     },
     "demo": {
       "title": "チャットメッセージプレビュー",
@@ -416,7 +416,7 @@
     },
     "bot": {
       "title": "送信アカウント",
-      "description": "未連携の場合は配信者アカウントから送信します。専用BOTから送る場合はTwitchで連携してください。",
+      "description": "未連携の場合は配信者アカウントから送信します。連携を始めると、現在Twitchにログインしているアカウントで認証が開きます。別のアカウントから送る場合は、先にTwitch側でそのアカウントに切り替えてから連携してください。",
       "connectedAs": "{name} から送信します"
     }
   },

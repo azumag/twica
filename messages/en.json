@@ -371,7 +371,7 @@
   },
   "chatAnnouncementSettings": {
     "title": "Chat Announcement Settings",
-    "description": "Automatically post gacha results to Twitch chat. Connect a BOT account to send messages from that account.",
+    "description": "Automatically post gacha results to Twitch chat. Connect another Twitch account to send messages from that account.",
     "status": {
       "enabled": "Enabled",
       "disabled": "Disabled"
@@ -392,22 +392,22 @@
       "saveTemplate": "Save Template",
       "saving": "Saving...",
       "chatDemo": "Chat Demo",
-      "connectBot": "Connect BOT",
+      "connectBot": "Connect Another Twitch Account",
       "connectingBot": "Connecting...",
-      "disconnectBot": "Disconnect BOT",
+      "disconnectBot": "Disconnect Account",
       "disconnectingBot": "Disconnecting..."
     },
     "messages": {
       "checkingScope": "Checking permissions...",
       "saved": "Settings saved",
       "lengthWarning": "If the card description or URL is long, the outgoing message may reach about {estimated} characters. Anything over {max} characters will be truncated when sent.",
-      "botDisconnected": "BOT account disconnected"
+      "botDisconnected": "Linked account disconnected"
     },
     "errors": {
       "saveFailed": "Failed to save settings",
       "reauthorizeFailed": "Re-authorization failed",
-      "botConnectFailed": "Failed to start BOT connection",
-      "botDisconnectFailed": "Failed to disconnect BOT account"
+      "botConnectFailed": "Failed to start account connection",
+      "botDisconnectFailed": "Failed to disconnect linked account"
     },
     "demo": {
       "title": "Chat Message Preview",
@@ -416,7 +416,7 @@
     },
     "bot": {
       "title": "Sender Account",
-      "description": "Without a BOT connection, messages are sent from your streamer account. Connect Twitch to send from a dedicated BOT.",
+      "description": "Without another account connected, messages are sent from your streamer account. When you start linking, Twitch opens authorization with the account currently signed in on Twitch. To send from a different account, switch accounts on Twitch before linking.",
       "connectedAs": "Sending as {name}"
     }
   },
