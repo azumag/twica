@@ -4,7 +4,8 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
   validateCardName,
   validateCardDescription,
-  validateImageUrl,
+  validateCardMediaType,
+  validateCardMediaUrl,
   validateRarity,
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
@@ -18,6 +19,9 @@ import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { isMissingCardMediaTypeColumnError, normalizeCardMediaType } from "@/lib/card-media";
+import { countVideoCardsForStreamer, getVideoCardLimit } from "@/lib/card-video-limits";
+import { getUserPlan } from "@/lib/plan";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 function extractRarityWeights(streamers: unknown): Record<string, number> | null {
@@ -78,7 +82,8 @@ export async function PUT(
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber } = body;
+    const { name, description, imageUrl, mediaType, rarity, dropRate, isActive, intraRarityWeight, cardNumber } = body;
+    const normalizedMediaType = mediaType === undefined ? undefined : normalizeCardMediaType(mediaType);
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -100,11 +105,11 @@ export async function PUT(
       }
     }
 
-    if (imageUrl !== undefined) {
-      const imageUrlValidation = validateImageUrl(imageUrl)
-      if (!imageUrlValidation.valid) {
+    if (mediaType !== undefined) {
+      const mediaTypeValidation = validateCardMediaType(mediaType)
+      if (!mediaTypeValidation.valid) {
         return NextResponse.json(
-          { error: imageUrlValidation.error },
+          { error: mediaTypeValidation.error },
           { status: 400 }
         )
       }
@@ -154,7 +159,7 @@ export async function PUT(
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!inner(twitch_user_id, rarity_weights)")
+      .select("*, streamers!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -162,6 +167,29 @@ export async function PUT(
 
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+    }
+
+    const effectiveMediaType = normalizedMediaType ?? normalizeCardMediaType(card.media_type);
+    if (imageUrl !== undefined || normalizedMediaType !== undefined) {
+      const mediaUrlValidation = validateCardMediaUrl(imageUrl ?? card.image_url, effectiveMediaType)
+      if (!mediaUrlValidation.valid) {
+        return NextResponse.json(
+          { error: mediaUrlValidation.error },
+          { status: 400 }
+        )
+      }
+    }
+
+    if (effectiveMediaType === "video" && normalizeCardMediaType(card.media_type) !== "video") {
+      const plan = await getUserPlan(session.twitchUserId);
+      const limit = getVideoCardLimit(plan);
+      const currentVideoCards = await countVideoCardsForStreamer(supabaseAdmin, card.streamer_id, id);
+      if (currentVideoCards >= limit) {
+        return NextResponse.json(
+          { error: ERROR_MESSAGES.VIDEO_CARD_LIMIT_EXCEEDED, limit, plan },
+          { status: 403 }
+        );
+      }
     }
 
     const rarityWeights = extractRarityWeights(card.streamers);
@@ -183,6 +211,7 @@ export async function PUT(
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
+    if (normalizedMediaType !== undefined) updateData.media_type = normalizedMediaType;
     if (rarity !== undefined) updateData.rarity = rarity;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
@@ -233,6 +262,18 @@ export async function PUT(
 
     if (error && isMissingCardNumberColumnError(error) && "card_number" in updateData) {
       delete updateData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .update(updateData)
+        .eq("id", id)
+        .select()
+        .maybeSingle();
+      updatedCard = retryResult.data;
+      error = retryResult.error;
+    }
+
+    if (error && isMissingCardMediaTypeColumnError(error) && updateData.media_type === "image") {
+      delete updateData.media_type;
       const retryResult = await supabaseAdmin
         .from("cards")
         .update(updateData)

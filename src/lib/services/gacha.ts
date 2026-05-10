@@ -11,6 +11,7 @@ export interface GachaCard {
   name: string
   description: string | null
   image_url: string | null
+  media_type?: 'image' | 'video'
   rarity: 'common' | 'rare' | 'epic' | 'legendary'
   drop_rate: number
 }
@@ -37,12 +38,10 @@ export class GachaService {
 
   async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string, eventId?: string, rewardCost?: number): Promise<Result<GachaResult>> {
     try {
-      // Get active cards for this streamer
-      // このストリーマーの有効なカードを取得
       const { data: cards, error: cardsError } = await withRetry(
         () => this.supabase
           .from('cards')
-          .select('id, name, description, image_url, rarity, drop_rate')
+          .select('id, name, description, image_url, media_type, rarity, drop_rate')
           .eq('streamer_id', streamerId)
           .eq('is_active', true),
         'gacha:executeGacha:cards',

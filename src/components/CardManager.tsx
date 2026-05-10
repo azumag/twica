@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
-import type { Card, Rarity } from "@/types/database";
+import type { Card, CardMediaType, Rarity } from "@/types/database";
 import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
@@ -14,6 +14,8 @@ import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import DropRateSettingsModal from "./DropRateSettingsModal";
 import ExpandableDescription from "./ExpandableDescription";
+import CardMedia from "./CardMedia";
+import { isVideoCard } from "@/lib/card-media";
 
 /** Custom dropdown arrow style for appearance-none select boxes */
 const SELECT_ARROW_STYLE: React.CSSProperties = {
@@ -81,6 +83,7 @@ type CardFormData = {
   name: string;
   description: string;
   imageUrl: string;
+  mediaType: CardMediaType;
   rarity: Rarity;
   cardNumber: string;
   dropRate: number;
@@ -228,6 +231,7 @@ export default function CardManager({
     name: "",
     description: "",
     imageUrl: "",
+    mediaType: "image",
     rarity: "common" as Rarity,
     cardNumber: "",
     dropRate: 0.25,
@@ -308,7 +312,7 @@ export default function CardManager({
   // Uses the original (pre-thumbnail) URL so users see the full-resolution image
   // サムネイルクリック時に表示する拡大画像モーダルの状態
   // サムネイル最適化前の元URLを保持し、高解像度のまま表示する
-  const [zoomedImage, setZoomedImage] = useState<{ url: string; name: string } | null>(null);
+  const [zoomedImage, setZoomedImage] = useState<{ url: string; name: string; mediaType?: CardMediaType } | null>(null);
   // Stores the thumbnail button that opened the modal so we can return focus when closed
   // モーダルを開いた元のサムネイルボタンを保持し、閉じた際にフォーカスを戻すための参照
   const zoomTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -769,6 +773,7 @@ export default function CardManager({
       name: "",
       description: "",
       imageUrl: "",
+      mediaType: "image",
       rarity: "common",
       cardNumber: "",
       dropRate: 0.25,
@@ -921,6 +926,10 @@ export default function CardManager({
    */
   const validateImageUrl = useCallback(async (url: string): Promise<boolean> => {
     if (!url) return true;
+    if (isVideoCard(formData.mediaType)) {
+      setConfirmedImageUrl(url);
+      return true;
+    }
 
     // プラン別の最大幅に基づいて解像度上限を算出
     // ポートレイトのアスペクト比(1118/800)を考慮した最大高さ
@@ -980,7 +989,7 @@ export default function CardManager({
 
       img.src = url;
     });
-  }, [t, maxImageWidth]);
+  }, [t, maxImageWidth, formData.mediaType]);
 
   const handleEdit = (card: Card) => {
     setEditingCard(card);
@@ -988,6 +997,7 @@ export default function CardManager({
       name: card.name,
       description: card.description || "",
       imageUrl: card.image_url || "",
+      mediaType: card.media_type ?? "image",
       rarity: card.rarity,
       cardNumber: card.card_number ? String(card.card_number) : "",
       dropRate: card.drop_rate,
@@ -1078,6 +1088,7 @@ export default function CardManager({
           name: formData.name,
           description: formData.description,
           imageUrl: finalImageUrl,
+          mediaType: formData.mediaType,
           rarity: formData.rarity,
           cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
           dropRate: formData.dropRate,
@@ -1359,7 +1370,31 @@ export default function CardManager({
                     />
                   </div>
                   <div className="min-w-0">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                      <div className="min-w-0">
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.mediaType")}
+                        </label>
+                        <select
+                          name="mediaType"
+                          value={formData.mediaType}
+                          onChange={(e) => {
+                            const mediaType = e.target.value as CardMediaType;
+                            setFormData({ ...formData, mediaType, imageUrl: "" });
+                            setConfirmedImageUrl("");
+                            setCroppedFile(null);
+                            setUserModifiedImage(true);
+                            if (fileInputRef.current) {
+                              fileInputRef.current.value = "";
+                            }
+                          }}
+                          className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
+                          style={SELECT_ARROW_STYLE}
+                        >
+                          <option value="image">{t("form.mediaTypeImage")}</option>
+                          <option value="video">{t("form.mediaTypeVideo")}</option>
+                        </select>
+                      </div>
                       <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.rarity")}
@@ -1407,7 +1442,7 @@ export default function CardManager({
                 {/* 右カラム: 画像 */}
                 <div className="min-w-0">
               <label className="mb-1 block text-sm text-gray-300">
-                {t("form.image")}
+                {isVideoCard(formData.mediaType) ? t("form.video") : t("form.image")}
               </label>
               <div className="space-y-2">
                 {/* Error message - always visible when there's an error */}
@@ -1424,16 +1459,19 @@ export default function CardManager({
                     {/* Skip Vercel Image Transformations to reduce usage costs */}
                     {/* unoptimized: ユーザーアップロード画像は既に最適化済み(400x400 JPEG) */}
                     {/* Vercel Image Transformations をスキップして使用量を削減 */}
-                    <Image
-                      src={confirmedImageUrl}
+                    <CardMedia
+                      url={confirmedImageUrl}
+                      mediaType={formData.mediaType}
                       alt={t("form.currentImage")}
                       width={60}
                       height={60}
-                      className="rounded object-cover"
-                      unoptimized
+                      className="h-[60px] w-[60px] rounded object-cover"
+                      imageVariant="icon"
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-gray-300">{t("form.currentImage")}</p>
+                      <p className="text-sm text-gray-300">
+                        {isVideoCard(formData.mediaType) ? t("form.currentVideo") : t("form.currentImage")}
+                      </p>
                       <p className="text-xs text-gray-500 truncate max-w-[200px]">
                         {confirmedImageUrl.split('/').pop()}
                       </p>
@@ -1486,28 +1524,32 @@ export default function CardManager({
                 {/* 確定済み画像がないか、ユーザーが操作した場合にファイル入力を表示 */}
                 {(!confirmedImageUrl || userModifiedImage) && !croppedFile && (
                   <>
-                    <input
-                      type="file"
-                      name="image"
-                      accept="image/*"
-                      ref={fileInputRef}
-                      onChange={handleFileChange}
-                      disabled={storageStatus?.uploadDisabled}
-                      className={`w-full min-w-0 text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
-                        storageStatus?.uploadDisabled
-                          ? 'opacity-50 cursor-not-allowed file:bg-gray-500'
-                          : 'file:bg-purple-600 hover:file:bg-purple-700'
-                      }`}
-                    />
-                    <p className="text-xs text-gray-500">
-                      {/* File size limit removed since cropping compresses to JPEG */}
-                      {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
-                      {t("fileUpload.formats")}{t("form.cropNoteWithOptions", { square: planCropModes.square.dimensions, portrait: planCropModes.portrait.dimensions })}
-                    </p>
+                    {!isVideoCard(formData.mediaType) && (
+                      <>
+                        <input
+                          type="file"
+                          name="image"
+                          accept="image/*"
+                          ref={fileInputRef}
+                          onChange={handleFileChange}
+                          disabled={storageStatus?.uploadDisabled}
+                          className={`w-full min-w-0 text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
+                            storageStatus?.uploadDisabled
+                              ? 'opacity-50 cursor-not-allowed file:bg-gray-500'
+                              : 'file:bg-purple-600 hover:file:bg-purple-700'
+                          }`}
+                        />
+                        <p className="text-xs text-gray-500">
+                          {/* File size limit removed since cropping compresses to JPEG */}
+                          {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
+                          {t("fileUpload.formats")}{t("form.cropNoteWithOptions", { square: planCropModes.square.dimensions, portrait: planCropModes.portrait.dimensions })}
+                        </p>
+                      </>
+                    )}
                     <input
                       type="url"
                       name="imageUrl"
-                      placeholder={t("form.imageUrlPlaceholder")}
+                      placeholder={isVideoCard(formData.mediaType) ? t("form.videoUrlPlaceholder") : t("form.imageUrlPlaceholder")}
                       value={formData.imageUrl}
                       onChange={(e) =>
                         setFormData({ ...formData, imageUrl: e.target.value })
@@ -1887,7 +1929,7 @@ export default function CardManager({
                   // リスト表示のサムネイルクリックでも同じ拡大モーダルを使い、閉じたらフォーカスを戻す
                   // Reuse the same zoom modal for list view so closing returns focus to the clicked thumbnail
                   zoomTriggerRef.current = trigger;
-                  setZoomedImage({ url: card.image_url, name: card.name });
+                  setZoomedImage({ url: card.image_url, name: card.name, mediaType: card.media_type });
                 }}
               />
             ) : (
@@ -1933,19 +1975,20 @@ export default function CardManager({
                                 type="button"
                                 onClick={(e) => {
                                   zoomTriggerRef.current = e.currentTarget;
-                                  setZoomedImage({ url: imageUrl, name: card.name });
+                                  setZoomedImage({ url: imageUrl, name: card.name, mediaType: card.media_type });
                                 }}
                                 className="block h-full w-full cursor-zoom-in overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
                                 aria-label={t("actions.enlargeImage", { name: card.name })}
                               >
-                                <Image
-                                  src={getOptimizedImageUrl(imageUrl, "thumbnail")}
+                                <CardMedia
+                                  url={imageUrl}
+                                  mediaType={card.media_type}
                                   alt={card.name}
                                   width={300}
                                   height={300}
                                   className="w-full h-full object-cover"
                                   priority={isPriority}
-                                  unoptimized
+                                  imageVariant="thumbnail"
                                 />
                               </button>
                             );
@@ -2428,15 +2471,26 @@ export default function CardManager({
             <div className="relative max-h-full max-w-5xl" onClick={(e) => e.stopPropagation()}>
               {/* CF Images Transformations の large プリセットで帯域最適化しつつ、object-contain でアスペクト比を維持 */}
               {/* Use the CF Images 'large' preset to limit bandwidth; object-contain preserves the original aspect ratio */}
-              <Image
-                src={getOptimizedImageUrl(zoomedImage.url, "large")}
-                alt={zoomedImage.name}
-                width={1200}
-                height={1200}
-                className="h-auto max-h-[90vh] w-auto max-w-full object-contain"
-                unoptimized
-                priority
-              />
+              {isVideoCard(zoomedImage.mediaType) ? (
+                <video
+                  src={zoomedImage.url}
+                  className="h-auto max-h-[90vh] w-auto max-w-full object-contain"
+                  controls
+                  playsInline
+                  preload="metadata"
+                  aria-label={zoomedImage.name}
+                />
+              ) : (
+                <Image
+                  src={getOptimizedImageUrl(zoomedImage.url, "large")}
+                  alt={zoomedImage.name}
+                  width={1200}
+                  height={1200}
+                  className="h-auto max-h-[90vh] w-auto max-w-full object-contain"
+                  unoptimized
+                  priority
+                />
+              )}
               <button
                 type="button"
                 onClick={closeZoom}

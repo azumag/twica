@@ -118,6 +118,7 @@ export default function SortedCardGrid({
               streamerId={streamerId}
               name={displayName}
               imageUrl={displayImageUrl}
+              mediaType={maskUnownedDetails ? null : card.media_type}
               rarityInfo={{
                 label: rarityInfo.label,
                 color: rarityInfo.color,

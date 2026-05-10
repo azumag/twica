@@ -12,7 +12,7 @@ describe("CardManager form layout", () => {
 
     expect(source).toContain("md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]");
     expect(source).toContain("flex min-w-0 flex-col justify-between gap-4");
-    expect(source).toContain("grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]");
+    expect(source).toContain("grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]");
     expect(source).toContain("w-full min-w-0 appearance-none rounded-lg");
     expect(source).toContain("w-full min-w-0 rounded-lg bg-gray-600");
   });
