@@ -3,6 +3,7 @@ import dynamic from "next/dynamic";
 import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
+import { getCustomBotAccountDisplayForStreamer } from "@/lib/twitch/token-manager";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
@@ -73,6 +74,8 @@ export default async function SettingsPage() {
     redirect("/dashboard");
   }
 
+  const botAccount = await getCustomBotAccountDisplayForStreamer(streamerData.streamer.id);
+
   return (
     <div>
       {/* 投票キャンペーンボタン（期間内かつ未適用の場合のみ表示） */}
@@ -117,6 +120,7 @@ export default async function SettingsPage() {
               streamerId={streamerData.streamer.id}
               currentEnabled={streamerData.streamer.chat_announcement_enabled ?? false}
               currentTemplate={streamerData.streamer.chat_announcement_template ?? null}
+              botAccount={botAccount}
             />
             {/* 未所持カード表示設定（Issue #395） */}
             {/* Unowned-card visibility settings (Issue #395) */}

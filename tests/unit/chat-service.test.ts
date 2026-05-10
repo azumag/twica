@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TwitchChatService } from '@/lib/twitch/chat-service';
-import { getTwitchAccessToken, hasScope } from '@/lib/twitch/token-manager';
+import { getBotAccountForChat, getTwitchAccessToken, hasScope } from '@/lib/twitch/token-manager';
 import { reportApiError, reportError } from '@/lib/sentry/error-handler';
 
 vi.mock('@/lib/twitch/token-manager');
@@ -30,6 +30,7 @@ describe('TwitchChatService', () => {
     globalThis.setTimeout = (cb: () => void) => { cb(); return 0; };
     // デフォルトではスコープあり（個別テストでオーバーライド可能）
     vi.mocked(hasScope).mockResolvedValue(true);
+    vi.mocked(getBotAccountForChat).mockResolvedValue(null);
     service = new TwitchChatService();
   });
 
@@ -66,6 +67,42 @@ describe('TwitchChatService', () => {
       expect(result).toBe(true);
       expect(hasScope).toHaveBeenCalledWith('123456789', 'user:write:chat');
       expect(getTwitchAccessToken).toHaveBeenCalled();
+    });
+
+    it('BOTアカウント設定時はBOTのsender_idとトークンで送信する', async () => {
+      vi.mocked(getBotAccountForChat).mockResolvedValue({
+        accountId: 'bot-account-id',
+        senderId: 'bot-user-id',
+        username: 'twica_bot',
+        displayName: 'TwiCa Bot',
+        accessToken: 'bot-token',
+        ownerType: 'streamer',
+      });
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+      } as Response);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(true);
+      expect(hasScope).not.toHaveBeenCalled();
+      expect(getTwitchAccessToken).not.toHaveBeenCalled();
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.twitch.tv/helix/chat/messages',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer bot-token',
+          }),
+          body: JSON.stringify({
+            broadcaster_id: '123456789',
+            sender_id: 'bot-user-id',
+            message: 'test message',
+          }),
+        }),
+      );
     });
 
     it('500文字を超える日本語メッセージは文字単位で切り詰めて送信する', async () => {

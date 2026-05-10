@@ -98,6 +98,9 @@ export async function POST(request: NextRequest) {
       // Unowned-card visibility settings (optional, Issue #395)
       showUnownedCards,
       showUnownedCardDetails,
+      // BOTアカウント連携解除（オプション）
+      // Disconnect optional BOT account used for chat announcements
+      disconnectBot,
     } = body;
 
     if (rarityWeights !== undefined && !validateRarityWeightsInput(rarityWeights)) {
@@ -114,6 +117,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (showUnownedCardDetails !== undefined && typeof showUnownedCardDetails !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -176,18 +182,47 @@ export async function POST(request: NextRequest) {
       updateData.show_unowned_card_details = showUnownedCardDetails;
     }
 
+    let botDisconnected = false;
+    if (disconnectBot === true) {
+      const { error: senderSettingsError } = await supabaseAdmin
+        .from("streamer_chat_sender_settings")
+        .upsert({
+          streamer_id: streamerId,
+          sender_mode: "streamer",
+          custom_bot_account_id: null,
+        });
+
+      if (senderSettingsError) {
+        return handleDatabaseError(senderSettingsError, "Streamer Settings API: Disconnect BOT sender settings");
+      }
+
+      const { error: botDeleteError } = await supabaseAdmin
+        .from("twitch_bot_accounts")
+        .delete()
+        .eq("streamer_id", streamerId)
+        .eq("owner_type", "streamer");
+
+      if (botDeleteError) {
+        return handleDatabaseError(botDeleteError, "Streamer Settings API: Disconnect BOT account");
+      }
+
+      botDisconnected = true;
+    }
+
     // 更新するフィールドがない場合はエラー
-    if (Object.keys(updateData).length === 0) {
+    if (Object.keys(updateData).length === 0 && !botDisconnected) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    const { error } = await supabaseAdmin
-      .from("streamers")
-      .update(updateData)
-      .eq("id", streamerId);
+    if (Object.keys(updateData).length > 0) {
+      const { error } = await supabaseAdmin
+        .from("streamers")
+        .update(updateData)
+        .eq("id", streamerId);
 
-    if (error) {
-      return handleDatabaseError(error, "Streamer Settings API: PUT");
+      if (error) {
+        return handleDatabaseError(error, "Streamer Settings API: PUT");
+      }
     }
 
     // 再計算はベストエフォート: 主操作（weights保存）は成功しているため、
