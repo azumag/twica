@@ -134,6 +134,7 @@ export default function CardManager({
   const [sortField, setSortField] = useState<SortField>("created_at");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [titleSearchQuery, setTitleSearchQuery] = useState("");
   // Track if this is the first render to skip initial reload
   // 初回レンダリングかどうかを追跡して初期リロードをスキップ
   const isFirstRender = useRef(true);
@@ -203,17 +204,23 @@ export default function CardManager({
    * サーバーがソートを処理、クライアントは即時UIフィードバックのためフィルタリングのみ
    */
   const filteredAndSortedCards = useMemo(() => {
+    const normalizedQuery = titleSearchQuery.trim().toLowerCase();
     // Only apply client-side filter for optimistic updates (toggle active)
     // 楽観的更新（アクティブ切り替え）用にクライアントサイドフィルターのみ適用
+    let nextCards = cards;
     if (statusFilter === "active") {
-      return cards.filter(card => card.is_active);
+      nextCards = nextCards.filter(card => card.is_active);
     } else if (statusFilter === "inactive") {
-      return cards.filter(card => !card.is_active);
+      nextCards = nextCards.filter(card => !card.is_active);
     }
+    if (normalizedQuery) {
+      nextCards = nextCards.filter(card => card.name.toLowerCase().includes(normalizedQuery));
+    }
+
     // Cards are already sorted by server, just return as-is
     // カードは既にサーバーでソートされているのでそのまま返す
-    return cards;
-  }, [cards, statusFilter]);
+    return nextCards;
+  }, [cards, statusFilter, titleSearchQuery]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1760,6 +1767,17 @@ export default function CardManager({
           {/* Sorting and filtering controls */}
           {/* 並び替えとフィルタリングコントロール */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* Title search */}
+            {/* タイトル検索 */}
+            <input
+              type="search"
+              value={titleSearchQuery}
+              onChange={(e) => setTitleSearchQuery(e.target.value)}
+              placeholder={t("search.titlePlaceholder")}
+              aria-label={t("search.titleLabel")}
+              className="min-w-[14rem] rounded-lg border border-gray-600 bg-gray-700 px-3 py-1.5 text-sm text-white placeholder:text-gray-400"
+            />
+
             {/* Sort field selector */}
             {/* 並び替えフィールド選択 */}
             <select
@@ -1852,9 +1870,11 @@ export default function CardManager({
 
         return (
           <>
-            {/* List view */}
-            {/* リスト表示 */}
-            {currentViewMode === "list" ? (
+            {displayCards.length === 0 ? (
+              <p className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-8 text-center text-gray-400">
+                {t("messages.noMatchingCards")}
+              </p>
+            ) : currentViewMode === "list" ? (
               <CardList
                 cards={displayCards}
                 totalActiveWeight={totalActiveWeight}
