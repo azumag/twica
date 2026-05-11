@@ -512,7 +512,11 @@
       "removeFailed": "Failed to remove additional reward",
       "removeConfirm": "Remove this additional reward? EventSub subscription will also be removed.",
       "cannotUseAsMain": "This reward is registered as an additional reward. Please remove it from additional rewards first.",
-      "cannotUseAsAdditional": "This reward is already set as the main reward."
+      "cannotUseAsAdditional": "This reward is already set as the main reward.",
+      "drawCount": "Draws",
+      "raidOnly": "Raid only",
+      "multiDraw": "{count} draws",
+      "raidLimited": "Raid limited"
     }
   },
   "gachaHistory": {

@@ -343,4 +343,118 @@ describe('GachaService.executeGachaForEventSub', () => {
       expect(result.error).toBe('Reward ID mismatch')
     }
   })
+
+  it('追加報酬のdraw_countに応じて同一EventSubから複数カードを付与する', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+      },
+      error: null,
+    })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'additional-1', draw_count: 3, is_raid_limited: true },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'raid-reward', cost: 500 },
+    }, 'event-raid')
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.cards).toHaveLength(3)
+    }
+    expect(mockRpc).toHaveBeenCalledTimes(3)
+    expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({
+      p_event_id: 'event-raid',
+      p_reward_cost: 500,
+    }))
+    expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({
+      p_event_id: 'event-raid:2',
+      p_reward_cost: null,
+    }))
+    expect(mockRpc).toHaveBeenNthCalledWith(3, 'execute_gacha_transaction', expect.objectContaining({
+      p_event_id: 'event-raid:3',
+      p_reward_cost: null,
+    }))
+  })
+
+  it('追加報酬オプション未適用のschema cacheでは通常の1回ガチャにフォールバックする', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+      },
+      error: null,
+    })
+    const optionQuery = createMockQueryBuilder()
+    ;(optionQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: null,
+      error: { message: "Could not find the 'draw_count' column", code: 'PGRST204' },
+    })
+    const fallbackQuery = createMockQueryBuilder()
+    ;(fallbackQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'additional-1' },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false },
+      error: null,
+    })
+    let additionalQueryCount = 0
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') {
+          additionalQueryCount += 1
+          return additionalQueryCount === 1 ? optionQuery : fallbackQuery
+        }
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'legacy-reward', cost: 100 },
+    }, 'event-legacy')
+
+    expect(result.success).toBe(true)
+    expect(mockRpc).toHaveBeenCalledTimes(1)
+  })
 })

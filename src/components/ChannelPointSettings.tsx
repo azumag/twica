@@ -19,6 +19,8 @@ interface AdditionalReward {
   id: string;
   reward_id: string;
   reward_name: string | null;
+  draw_count: number;
+  is_raid_limited: boolean;
   created_at: string;
 }
 
@@ -78,6 +80,8 @@ export default function ChannelPointSettings({
   const [additionalRewards, setAdditionalRewards] = useState<AdditionalReward[]>([]);
   const [addingAdditional, setAddingAdditional] = useState(false);
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
+  const [additionalDrawCount, setAdditionalDrawCount] = useState(1);
+  const [additionalRaidLimited, setAdditionalRaidLimited] = useState(false);
   // Track if registration failed (webhook unreachable)
   // 登録失敗を追跡（Webhookに到達できなかった場合）
   const [registrationFailed, setRegistrationFailed] = useState(false);
@@ -442,6 +446,8 @@ export default function ChannelPointSettings({
         body: JSON.stringify({
           rewardId: selectedAdditionalRewardId,
           rewardName: rewardName,
+          drawCount: additionalDrawCount,
+          isRaidLimited: additionalRaidLimited,
         }),
       });
 
@@ -457,6 +463,8 @@ export default function ChannelPointSettings({
       // 状態を更新
       setMessage(t("additionalRewards.addSuccess"));
       setSelectedAdditionalRewardId("");
+      setAdditionalDrawCount(1);
+      setAdditionalRaidLimited(false);
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
 
@@ -950,6 +958,18 @@ export default function ChannelPointSettings({
                          <span className="ml-2 text-xs text-gray-400 whitespace-nowrap">
                            ({reward.reward_id.slice(0, 8)}...)
                          </span>
+                         <div className="mt-1 flex flex-wrap gap-1 text-xs">
+                           {reward.draw_count > 1 && (
+                             <span className="rounded bg-purple-500/20 px-2 py-0.5 text-purple-200">
+                               {t("additionalRewards.multiDraw", { count: reward.draw_count })}
+                             </span>
+                           )}
+                           {reward.is_raid_limited && (
+                             <span className="rounded bg-cyan-500/20 px-2 py-0.5 text-cyan-200">
+                               {t("additionalRewards.raidLimited")}
+                             </span>
+                           )}
+                         </div>
                        </div>
                        <button
                          onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
@@ -964,11 +984,11 @@ export default function ChannelPointSettings({
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="flex items-center gap-2">
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto_auto] sm:items-center">
                  <select
                    value={selectedAdditionalRewardId}
                    onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
-                   className="flex-1 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200"
+                   className="min-w-0 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200"
                  >
                    <option value="">{t("additionalRewards.selectToAdd")}</option>
                    {rewards
@@ -985,6 +1005,30 @@ export default function ChannelPointSettings({
                        </option>
                      ))}
                  </select>
+                 <label className="flex items-center gap-2 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200">
+                   <span className="whitespace-nowrap text-xs text-gray-300">
+                     {t("additionalRewards.drawCount")}
+                   </span>
+                   <input
+                     type="number"
+                     min={1}
+                     max={10}
+                     value={additionalDrawCount}
+                     onChange={(e) => setAdditionalDrawCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
+                     className="w-12 rounded bg-gray-700 px-2 py-1 text-sm text-gray-100"
+                   />
+                 </label>
+                 <label className="flex items-center gap-2 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200">
+                   <input
+                     type="checkbox"
+                     checked={additionalRaidLimited}
+                     onChange={(e) => setAdditionalRaidLimited(e.target.checked)}
+                     className="h-4 w-4 rounded border-gray-500 bg-gray-700"
+                   />
+                   <span className="whitespace-nowrap text-xs text-gray-300">
+                     {t("additionalRewards.raidOnly")}
+                   </span>
+                 </label>
                  <button
                    onClick={handleAddAdditionalReward}
                    disabled={addingAdditional || !selectedAdditionalRewardId}

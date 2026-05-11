@@ -431,6 +431,8 @@ export interface Database {
           streamer_id: string
           reward_id: string
           reward_name: string | null
+          draw_count: number
+          is_raid_limited: boolean
           created_at: string
         }
         Insert: {
@@ -438,6 +440,8 @@ export interface Database {
           streamer_id: string
           reward_id: string
           reward_name?: string | null
+          draw_count?: number
+          is_raid_limited?: boolean
           created_at?: string
         }
         Update: {
@@ -445,6 +449,8 @@ export interface Database {
           streamer_id?: string
           reward_id?: string
           reward_name?: string | null
+          draw_count?: number
+          is_raid_limited?: boolean
           created_at?: string
         }
       }
