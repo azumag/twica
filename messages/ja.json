@@ -533,6 +533,13 @@
       "autoPortraitDescription": "ポートレイト画像の場合、自動で画像のみ表示に切り替え",
       "effects": "エフェクト表示",
       "effectsDescription": "レジェンダリーカードのキラキラエフェクトを表示",
+      "effectStyle": "エフェクト種類",
+      "effectStyleDescription": "レジェンダリーカード表示時の演出を選択します",
+      "effectStyles": {
+        "sparkle": "キラキラ",
+        "confetti": "紙吹雪",
+        "hearts": "ハート"
+      },
       "smallMode": "小さい画像モード",
       "smallModeDescription": "400x400未満の画像用に縮小表示（自動適用）",
       "displayDuration": "カードの表示時間",

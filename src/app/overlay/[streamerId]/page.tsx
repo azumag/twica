@@ -75,12 +75,19 @@ interface SparklePosition {
   animationDuration: string;
 }
 
+type OverlayEffectStyle = "sparkle" | "confetti" | "hearts";
+
+function parseOverlayEffectStyle(value: string | null): OverlayEffectStyle {
+  return value === "confetti" || value === "hearts" ? value : "sparkle";
+}
+
 /**
  * Overlay display options controlled via URL parameters
  * URLパラメータで制御されるオーバーレイ表示オプション
  * - imageOnly: 画像のみ表示（カード枠・テキストなし）
  * - autoPortrait: 縦長画像を自動検出してオリジナル画像表示
  * - effects: レジェンダリーのキラキラエフェクト表示（デフォルト: true）
+ * - effectStyle: エフェクトの種類（sparkle/confetti/hearts、デフォルト: sparkle）
  * - smallMode: 小さい画像用の縮小表示モード
  * - debug: デバッグモード（接続状態の詳細表示）
  * - portraitShowName: 縦長画像でカード名を表示（画像の下）
@@ -92,6 +99,7 @@ interface OverlayOptions {
   imageOnly: boolean;
   autoPortrait: boolean;
   effects: boolean;
+  effectStyle: OverlayEffectStyle;
   smallMode: boolean;
   displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
   debug: boolean;
@@ -126,6 +134,7 @@ export default function OverlayPage() {
     imageOnly: false,
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
+    effectStyle: "sparkle",
     smallMode: true,     // デフォルトで小さい画像モードを有効化
     displayDuration: 6,  // カードの表示時間（秒）、デフォルト6秒
     debug: false,        // デバッグモード（接続状態の詳細表示）
@@ -274,6 +283,7 @@ export default function OverlayPage() {
         imageOnly: urlParams.get("imageOnly") === "true",
         autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
         effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
+        effectStyle: parseOverlayEffectStyle(urlParams.get("effect")),
         smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
         displayDuration,  // カードの表示時間（秒）
         debug: isDebug,
@@ -653,6 +663,48 @@ export default function OverlayPage() {
   // エフェクトを表示するかどうか（オプションで無効化されていない場合のみ）
   const shouldShowEffects = options.effects && result.card.rarity === "legendary";
 
+  const renderOverlayEffects = () => {
+    if (!shouldShowEffects) {
+      return null;
+    }
+
+    return (
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        {sparklePositions.map((pos, i) => {
+          if (options.effectStyle === "confetti") {
+            return (
+              <div
+                key={i}
+                className={`absolute h-2.5 w-1.5 animate-bounce rounded-sm ${
+                  i % 4 === 0
+                    ? "bg-yellow-300"
+                    : i % 4 === 1
+                      ? "bg-pink-400"
+                      : i % 4 === 2
+                        ? "bg-cyan-300"
+                        : "bg-purple-400"
+                }`}
+                style={{ ...pos, transform: `rotate(${i * 23}deg)` }}
+              />
+            );
+          }
+
+          return (
+            <div
+              key={i}
+              className={`absolute ${
+                options.effectStyle === "hearts" ? "animate-bounce text-pink-300" : "animate-ping"
+              }`}
+              style={pos}
+            >
+              {options.effectStyle === "hearts" ? "♥" : "✨"}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   // 小さい画像モード用のサイズクラス
   // smallModeオプションが有効で、かつ画像が400x400未満の場合のみカードサイズを縮小
   // これにより小さい画像でも適切なサイズで表示され、大きい画像は通常サイズで表示される
@@ -730,20 +782,7 @@ export default function OverlayPage() {
               </div>
             )}
 
-            {/* Sparkle Effects for Legendary (if enabled) */}
-            {shouldShowEffects && (
-              <div className="pointer-events-none absolute inset-0">
-                {sparklePositions.map((pos, i) => (
-                  <div
-                    key={i}
-                    className="absolute animate-ping"
-                    style={pos}
-                  >
-                    ✨
-                  </div>
-                ))}
-              </div>
-            )}
+            {renderOverlayEffects()}
           </div>
         ) : (
           // 通常のカード表示モード
@@ -805,20 +844,7 @@ export default function OverlayPage() {
               </div>
             </div>
 
-            {/* Sparkle Effects for Legendary (if enabled) */}
-            {shouldShowEffects && (
-              <div className="pointer-events-none absolute inset-0">
-                {sparklePositions.map((pos, i) => (
-                  <div
-                    key={i}
-                    className="absolute animate-ping"
-                    style={pos}
-                  >
-                    ✨
-                  </div>
-                ))}
-              </div>
-            )}
+            {renderOverlayEffects()}
           </>
         )}
       </div>

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import OverlayPreview from '@/components/OverlayPreview'
@@ -34,6 +34,13 @@ const messages = {
       autoPortraitDescription: '説明',
       effects: 'エフェクト表示',
       effectsDescription: '説明',
+      effectStyle: 'エフェクト種類',
+      effectStyleDescription: '説明',
+      effectStyles: {
+        sparkle: 'キラキラ',
+        confetti: '紙吹雪',
+        hearts: 'ハート',
+      },
       smallMode: '小さい画像モード',
       smallModeDescription: '説明',
       displayDuration: 'カードの表示時間',
@@ -60,9 +67,31 @@ const renderWithIntl = (component: React.ReactElement) => {
   )
 }
 
+function createLocalStorageMock() {
+  const store = new Map<string, string>()
+
+  return {
+    getItem: vi.fn((key: string) => store.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => {
+      store.set(key, value)
+    }),
+    removeItem: vi.fn((key: string) => {
+      store.delete(key)
+    }),
+    clear: vi.fn(() => {
+      store.clear()
+    }),
+  }
+}
+
 describe('OverlayPreview', () => {
   beforeEach(() => {
-    localStorage.clear()
+    const localStorageMock = createLocalStorageMock()
+    Object.defineProperty(window, 'localStorage', {
+      value: localStorageMock,
+      configurable: true,
+    })
+    vi.stubGlobal('localStorage', localStorageMock)
   })
 
   it('localStorage に保存されたオーバーレイ設定を復元する', async () => {
@@ -70,6 +99,7 @@ describe('OverlayPreview', () => {
       imageOnly: true,
       autoPortrait: false,
       effects: false,
+      effectStyle: 'hearts',
       smallMode: false,
       displayDuration: 10,
       portraitShowName: true,
@@ -118,11 +148,36 @@ describe('OverlayPreview', () => {
         autoPortrait: true,
         effects: true,
         smallMode: true,
+        effectStyle: 'sparkle',
         displayDuration: 6,
         portraitShowName: false,
         portraitShowRarity: true,
         portraitShowDescription: false,
         portraitShowUsername: false,
+      })
+    })
+  })
+
+  it('エフェクト種類を選択すると overlay URL と localStorage に反映する', async () => {
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        baseUrl="https://example.com"
+        showPreview={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+    fireEvent.change(screen.getByLabelText('エフェクト種類'), { target: { value: 'confetti' } })
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('https://example.com/overlay/streamer-1?effect=confetti')).toBeInTheDocument()
+    })
+
+    await waitFor(() => {
+      const savedOptions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+      expect(savedOptions).toMatchObject({
+        effectStyle: 'confetti',
       })
     })
   })
