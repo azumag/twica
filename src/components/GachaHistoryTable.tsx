@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import Image from "next/image";
 import { useTranslations, useLocale } from "next-intl";
 import { RARITY_COLORS } from "@/lib/constants";
+import { formatRarityLabel } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import Pagination from "@/components/Pagination";
 import GachaHistoryFilters from "@/components/GachaHistoryFilters";
@@ -405,7 +406,7 @@ export default function GachaHistoryTable({
                         RARITY_COLORS[entry.cards.rarity as Rarity]
                       }`}
                     >
-                      {tRarity(entry.cards.rarity)}
+                      {formatRarityLabel(entry.cards.rarity, tRarity)}
                     </div>
                   </div>
                 ))
@@ -542,7 +543,7 @@ export default function GachaHistoryTable({
                           RARITY_COLORS[entry.cards.rarity as Rarity]
                         }`}
                       >
-                        {tRarity(entry.cards.rarity)}
+                        {formatRarityLabel(entry.cards.rarity, tRarity)}
                       </div>
                     </div>
                   ))

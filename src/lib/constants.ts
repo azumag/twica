@@ -79,26 +79,26 @@ export const DEFAULT_RARITY_WEIGHTS: Record<string, number> = {
 
 export const RARITY_ORDER = ["legendary", "epic", "rare", "common"];
 
-export const RARITY_COLORS = {
+export const RARITY_COLORS: Record<string, string> = {
   legendary: "bg-yellow-500",
   epic: "bg-purple-500",
   rare: "bg-blue-500",
   common: "bg-gray-500",
-} as const;
+};
 
-export const RARITY_GRADIENT_COLORS = {
+export const RARITY_GRADIENT_COLORS: Record<string, string> = {
   common: "from-gray-400 to-gray-600",
   rare: "from-blue-400 to-blue-600",
   epic: "from-purple-400 to-purple-600",
   legendary: "from-yellow-400 to-orange-500",
-} as const;
+};
 
-export const RARITY_GLOW = {
+export const RARITY_GLOW: Record<string, string> = {
   common: "shadow-gray-500/50",
   rare: "shadow-blue-500/50",
   epic: "shadow-purple-500/50",
   legendary: "shadow-yellow-500/50",
-} as const;
+};
 
 export const GACHA_COST = parseInt(process.env.GACHA_COST || '100', 10)
 
@@ -247,7 +247,7 @@ export const ERROR_MESSAGES = {
   CARD_NAME_TOO_LONG: 'Card name must be between 1 and 100 characters',
   DESCRIPTION_TOO_LONG: `Description must not exceed ${CARD_DESCRIPTION_MAX_CHARACTERS} characters`,
   INVALID_IMAGE_URL: 'Invalid image URL format',
-  INVALID_RARITY: 'Invalid rarity value. Must be one of: common, rare, epic, legendary',
+  INVALID_RARITY: 'Invalid rarity value. Use 1-40 non-control characters.',
 
   // Rate limit errors
   RATE_LIMIT_EXCEEDED: 'Too many requests. Please try again later.',

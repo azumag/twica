@@ -1,3 +1,5 @@
+import type { Rarity } from './database'
+
 export interface ApiErrorResponse {
   error: string
   retryAfter?: number
@@ -22,7 +24,7 @@ export interface GachaSuccessResponse {
     name: string
     description: string | null
     image_url: string | null
-    rarity: 'common' | 'rare' | 'epic' | 'legendary'
+    rarity: Rarity
   }
 }
 
@@ -45,7 +47,7 @@ export interface BattleSuccessResponse {
     skill_type: 'attack' | 'defense' | 'heal' | 'special'
     skill_name: string
     image_url: string
-    rarity: 'common' | 'rare' | 'epic' | 'legendary'
+    rarity: Rarity
   }
   opponentCard: {
     id: string
@@ -58,7 +60,7 @@ export interface BattleSuccessResponse {
     skill_type: 'attack' | 'defense' | 'heal' | 'special'
     skill_name: string
     image_url: string
-    rarity: 'common' | 'rare' | 'epic' | 'legendary'
+    rarity: Rarity
   }
   logs: Array<{
     round: number
@@ -80,7 +82,7 @@ export interface CardResponse {
   name: string
   description: string | null
   image_url: string | null
-  rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  rarity: Rarity
   drop_rate: number
   is_active: boolean
   created_at: string

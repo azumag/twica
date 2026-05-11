@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import { RARITY_COLORS } from "@/lib/constants";
+import { formatRarityLabel } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import type { Rarity } from "@/types/database";
 
@@ -189,7 +190,7 @@ export default function DropRateTable() {
                     RARITY_COLORS[rs.rarity as Rarity]
                   }`}
                 >
-                  {tRarity(rs.rarity)}
+                  {formatRarityLabel(rs.rarity, tRarity)}
                 </span>
                 <span className="ml-2">({rs.rate.toFixed(1)}%)</span>
               </div>
@@ -252,7 +253,7 @@ export default function DropRateTable() {
                         RARITY_COLORS[card.rarity as Rarity]
                       }`}
                     >
-                      {tRarity(card.rarity)}
+                      {formatRarityLabel(card.rarity, tRarity)}
                     </span>
                   </td>
                   <td className="p-3 text-right text-gray-300">

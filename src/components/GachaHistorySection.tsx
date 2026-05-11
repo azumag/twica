@@ -17,7 +17,7 @@ interface GachaHistorySectionProps {
   isStreamer: boolean;
 }
 
-const RARITY_COLORS = {
+const RARITY_COLORS: Record<string, string> = {
   common: "bg-gray-500",
   rare: "bg-blue-500",
   epic: "bg-purple-500",

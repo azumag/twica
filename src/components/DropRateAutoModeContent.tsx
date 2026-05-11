@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import { formatRarityLabel } from "@/lib/rarity";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
@@ -184,13 +185,7 @@ export default function DropRateAutoModeContent({
   // 両タブの変更を常にチェック（タブ切替後のクローズでも確認ダイアログが出るように）
   const hasAnyChanges = rarityHasChanges || perCardHasChanges;
 
-  const getRarityLabel = (rarity: string): string => {
-    try {
-      return tRarity(rarity as "common");
-    } catch {
-      return rarity;
-    }
-  };
+  const getRarityLabel = (rarity: string): string => formatRarityLabel(rarity, tRarity);
 
   const getRarityInfo = (rarity: Rarity) =>
     RARITIES.find((r) => r.value === rarity) || RARITIES[0];
@@ -590,7 +585,7 @@ export default function DropRateAutoModeContent({
                             <span
                               className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.color}`}
                             >
-                              {tRarity(card.rarity)}
+                              {getRarityLabel(card.rarity)}
                             </span>
                           </div>
                         </div>
