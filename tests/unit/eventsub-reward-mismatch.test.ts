@@ -169,6 +169,71 @@ describe('EventSub reward mismatch handling', () => {
     expect(mockReportError).not.toHaveBeenCalled()
   })
 
+  it('activates the raid gacha window from incoming Twitch raid notifications', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-channel-raid'
+    const timestamp = '2026-05-12T00:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.raid' },
+      event: {
+        from_broadcaster_user_id: 'raider-1',
+        from_broadcaster_user_login: 'raider',
+        from_broadcaster_user_name: 'Raider',
+        to_broadcaster_user_id: 'broadcaster-1',
+        to_broadcaster_user_login: 'streamer',
+        to_broadcaster_user_name: 'Streamer',
+        viewers: 42,
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+    const updateQuery = {
+      eq: vi.fn().mockResolvedValue({ error: null }),
+    }
+    const streamerQuery = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({
+        data: { id: 'streamer-1', raid_gacha_active_until: null },
+        error: null,
+      }),
+    }
+    const from = vi.fn((table: string) => {
+      if (table === 'streamers') {
+        return {
+          select: streamerQuery.select,
+          eq: streamerQuery.eq,
+          maybeSingle: streamerQuery.maybeSingle,
+          update: vi.fn((value: { raid_gacha_active_until: string }) => {
+            expect(Date.parse(value.raid_gacha_active_until)).toBeGreaterThan(Date.now())
+            return updateQuery
+          }),
+        }
+      }
+      throw new Error(`Unexpected table: ${table}`)
+    })
+    mockGetSupabaseAdmin.mockReturnValue({ from } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ received: true })
+    expect(mocks.executeGachaForEventSub).not.toHaveBeenCalled()
+    expect(streamerQuery.eq).toHaveBeenCalledWith('twitch_user_id', 'broadcaster-1')
+    expect(updateQuery.eq).toHaveBeenCalledWith('id', 'streamer-1')
+    expect(mockReportError).not.toHaveBeenCalled()
+  })
+
   it('still reports database failures while checking additional rewards', async () => {
     const response = await POST(
       await createNotificationRequest('Database error checking additional reward: Database error: error code: 502'),
