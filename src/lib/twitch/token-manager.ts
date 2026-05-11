@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
+import { withRetry } from '@/lib/supabase/retry';
 import { refreshTwitchToken, type TwitchTokens } from './auth';
 import { logger } from '@/lib/logger';
 
@@ -407,11 +408,14 @@ export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
 export async function hasScope(twitchUserId: string, scope: string): Promise<boolean> {
   const supabaseAdmin = getSupabaseAdmin();
 
-  const { data: user, error } = await supabaseAdmin
-    .from('users')
-    .select('twitch_scopes')
-    .eq('twitch_user_id', twitchUserId)
-    .maybeSingle();
+  const { data: user, error } = await withRetry(
+    () => supabaseAdmin
+      .from('users')
+      .select('twitch_scopes')
+      .eq('twitch_user_id', twitchUserId)
+      .maybeSingle(),
+    'Twitch scope check',
+  );
 
   if (error) {
     // PGRST204 means column not found - twitch_scopes column may not exist

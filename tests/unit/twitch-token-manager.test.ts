@@ -357,6 +357,36 @@ describe('Twitch Token Manager', () => {
       expect(result).toBe(true);
     });
 
+    it('scope確認のDB読み取りがCloudflare 500から復旧した場合はリトライしてtrueを返す', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn()
+          .mockResolvedValueOnce({
+            status: 500,
+            error: {
+              message: '<html><head><title>500 Internal Server Error</title></head><body>cloudflare</body></html>',
+            },
+          })
+          .mockResolvedValueOnce({
+            status: 200,
+            data: {
+              twitch_scopes: ['user:read:email', 'user:write:chat'],
+            },
+            error: null,
+          }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+
+      const result = await hasScope('123456789', 'user:write:chat');
+      expect(result).toBe(true);
+      expect(mockSupabaseAdmin.maybeSingle).toHaveBeenCalledTimes(2);
+    });
+
     it('ユーザーがスコープを持っていない場合はfalseを返す', async () => {
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
