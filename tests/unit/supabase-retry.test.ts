@@ -45,6 +45,25 @@ describe('withRetry', () => {
     expect(queryFn).toHaveBeenCalledTimes(2)
   })
 
+  it('Cloudflare HTML 500 の場合リトライする', async () => {
+    const queryFn = vi.fn()
+      .mockResolvedValueOnce({
+        status: 500,
+        statusText: 'Internal Server Error',
+        error: {
+          message: '<html><head><title>500 Internal Server Error</title></head><body>cloudflare</body></html>',
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: 'ok',
+        error: null,
+      })
+    const result = await withRetry(queryFn, 'test', { delays: [0, 0, 0] })
+    expect(result.error).toBeNull()
+    expect(queryFn).toHaveBeenCalledTimes(2)
+  })
+
   it('result.status が 503 の場合リトライする', async () => {
     const queryFn = vi.fn()
       .mockResolvedValueOnce({
