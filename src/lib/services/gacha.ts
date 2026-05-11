@@ -227,16 +227,20 @@ export class GachaService {
 
       // Check if the reward ID matches any additional reward
       // 追加報酬のいずれかと一致するかチェック
-      const { data: additionalReward, error: additionalError } = await this.supabase
-        .from('streamer_additional_gacha_rewards')
-        .select('id')
-        .eq('streamer_id', streamer.id)
-        .eq('reward_id', event.reward.id)
-        .maybeSingle()
+      const { data: additionalReward, error: additionalError } = await withRetry(
+        () => this.supabase
+          .from('streamer_additional_gacha_rewards')
+          .select('id')
+          .eq('streamer_id', streamer.id)
+          .eq('reward_id', event.reward.id)
+          .maybeSingle(),
+        'gacha:executeGachaForEventSub:additionalReward',
+      )
 
       // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
       if (additionalError) {
         logger.warn(`Error checking additional reward: ${additionalError.message}`)
+        return err(`Database error checking additional reward: ${additionalError.message}`)
       }
 
       if (additionalReward) {

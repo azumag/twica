@@ -122,6 +122,7 @@
       "numberLabel": "番号"
     },
     "sort": {
+      "displayOrder": "表示順",
       "createdAt": "設定日",
       "rarity": "レアリティ",
       "cardNumber": "カード番号",

@@ -313,6 +313,16 @@ async function handleRedemption(messageId: string, event: {
         logger.info('[handleRedemption] Skipped - duplicate event (RPC)', { messageId });
         return null;
       }
+      // 設定から外れた報酬の古い EventSub 通知は運用状態のズレであり、
+      // production error としてGitHub Issue化しない。
+      if (result.error === 'Reward ID mismatch') {
+        logger.warn('[handleRedemption] Reward ID mismatch - stale or unconfigured EventSub notification', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+          rewardId: event.reward.id,
+        });
+        return null;
+      }
       // カード未設定はユーザー設定の問題でありバグではない (Issue #277)
       // "No cards available" is a streamer setup issue, not a system bug
       if (result.error === 'No cards available for this streamer') {
