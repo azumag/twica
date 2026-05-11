@@ -61,4 +61,24 @@ describe('deriveEventSubStatus', () => {
       raidStatus: 'pending',
     })
   })
+
+  it('ignores stale raid subscriptions for a different callback URL', () => {
+    const status = deriveEventSubStatus([
+      {
+        id: 'old-raid-sub',
+        status: 'enabled',
+        type: 'channel.raid',
+        condition: { to_broadcaster_user_id: 'streamer-1' },
+        debug: {
+          expectedCallbackUrl: 'https://twica.example/api/twitch/eventsub',
+          callbackMatch: false,
+        },
+      },
+    ], 'main-reward')
+
+    expect(status).toEqual({
+      rewardStatus: 'none',
+      raidStatus: 'none',
+    })
+  })
 })

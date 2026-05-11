@@ -49,6 +49,12 @@ function createDeleteRequest(): NextRequest {
   })
 }
 
+function createDeleteRewardRequest(rewardId: string): NextRequest {
+  return new NextRequest(`http://localhost:3000/api/twitch/eventsub/subscribe?rewardId=${rewardId}`, {
+    method: 'DELETE',
+  })
+}
+
 describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -168,5 +174,140 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
 
     expect(response.status).toBe(401)
     await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.UNAUTHORIZED })
+  })
+
+  it('DELETE: 完全解除では同一 callback の channel point と raid EventSub を削除する', async () => {
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'
+    process.env.TWITCH_CLIENT_SECRET = 'client-secret'
+    process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'reward-sub',
+            status: 'enabled',
+            type: 'channel.channel_points_custom_reward_redemption.add',
+            condition: { broadcaster_user_id: '123456789', reward_id: 'main-reward' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+          {
+            id: 'raid-sub',
+            status: 'enabled',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+          {
+            id: 'other-callback-raid-sub',
+            status: 'enabled',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://other.example/api/twitch/eventsub' },
+          },
+        ],
+        pagination: {},
+      }), { status: 200 }),
+    ).mockResolvedValue(
+      new Response(null, { status: 204 }),
+    )
+
+    const response = await DELETE(createDeleteRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({
+      success: true,
+      deletedCount: 2,
+      totalCount: 2,
+      results: [
+        { id: 'reward-sub', type: 'channel.channel_points_custom_reward_redemption.add', success: true },
+        { id: 'raid-sub', type: 'channel.raid', success: true },
+      ],
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=reward-sub',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=raid-sub',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=other-callback-raid-sub',
+      expect.anything(),
+    )
+
+    fetchMock.mockRestore()
+  })
+
+  it('DELETE: rewardId 指定では raid EventSub を削除しない', async () => {
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'
+    process.env.TWITCH_CLIENT_SECRET = 'client-secret'
+    process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'target-reward-sub',
+            status: 'enabled',
+            type: 'channel.channel_points_custom_reward_redemption.add',
+            condition: { broadcaster_user_id: '123456789', reward_id: 'target-reward' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+          {
+            id: 'other-reward-sub',
+            status: 'enabled',
+            type: 'channel.channel_points_custom_reward_redemption.add',
+            condition: { broadcaster_user_id: '123456789', reward_id: 'other-reward' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+          {
+            id: 'raid-sub',
+            status: 'enabled',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+        ],
+        pagination: {},
+      }), { status: 200 }),
+    ).mockResolvedValue(
+      new Response(null, { status: 204 }),
+    )
+
+    const response = await DELETE(createDeleteRewardRequest('target-reward'))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({
+      success: true,
+      deletedCount: 1,
+      totalCount: 1,
+      results: [
+        { id: 'target-reward-sub', type: 'channel.channel_points_custom_reward_redemption.add', success: true },
+      ],
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=target-reward-sub',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=other-reward-sub',
+      expect.anything(),
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=raid-sub',
+      expect.anything(),
+    )
+
+    fetchMock.mockRestore()
   })
 })

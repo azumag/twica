@@ -425,7 +425,7 @@ export async function POST(request: NextRequest) {
  *
  * Query parameters:
  * - ?rewardId=xxx: Delete subscription for specific reward ID only
- * - (no params): Delete all channel point subscriptions for the broadcaster
+ * - (no params): Delete all channel point subscriptions and same-callback raid subscriptions for the broadcaster
  */
 export async function DELETE(request: NextRequest) {
   // 状態変更 API（EventSub 解除）のため CSRF 検証を最初に行う。
@@ -469,6 +469,7 @@ export async function DELETE(request: NextRequest) {
     const appAccessToken = await getAppAccessToken();
     const url = new URL(request.url);
     const specificRewardId = url.searchParams.get("rewardId");
+    const callbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
 
     // 対象ユーザーのサブスクリプションを取得
     // Get subscriptions for this user using user_id filter
@@ -493,11 +494,12 @@ export async function DELETE(request: NextRequest) {
       mySubscriptions = userSubscriptions.filter(
         (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD
           || (sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
-            && sub.condition.to_broadcaster_user_id === session.twitchUserId)
+            && sub.condition.to_broadcaster_user_id === session.twitchUserId
+            && sub.transport.callback === callbackUrl)
       );
       logger.info(
         `Deleting all EventSub subscriptions for broadcaster=${session.twitchUserId}: found ${mySubscriptions.length} subscriptions`,
-        { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id })) }
+        { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, type: s.type, rewardId: s.condition.reward_id, callback: s.transport.callback })) }
       );
     }
 
@@ -521,6 +523,7 @@ export async function DELETE(request: NextRequest) {
       const success = deleteResponse.status === 204 || deleteResponse.status === 404;
       results.push({
         id: sub.id,
+        type: sub.type,
         rewardId: sub.condition.reward_id,
         success,
         status: deleteResponse.status,

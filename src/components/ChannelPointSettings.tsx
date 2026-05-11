@@ -52,15 +52,17 @@ const FAILED_EVENTSUB_STATUSES = [
   "authorization_revoked",
 ];
 
+const matchesExpectedCallback = (sub: EventSubSubscription) => sub.debug?.callbackMatch ?? true;
+
 export function deriveEventSubStatus(
   subs: EventSubSubscription[],
   rewardIdToCheck: string,
 ): { rewardStatus: EventSubStatus; raidStatus: EventSubStatus } {
   const rewardSubscriptions = subs.filter(
-    (sub) => sub.type === CHANNEL_POINTS_EVENTSUB_TYPE
+    (sub) => sub.type === CHANNEL_POINTS_EVENTSUB_TYPE && matchesExpectedCallback(sub)
   );
   const raidSubscriptions = subs.filter(
-    (sub) => sub.type === RAID_EVENTSUB_TYPE
+    (sub) => sub.type === RAID_EVENTSUB_TYPE && matchesExpectedCallback(sub)
   );
 
   const hasActiveRewardSub = rewardSubscriptions.some(
@@ -649,6 +651,7 @@ export default function ChannelPointSettings({
       setSelectedRewardName("");
       setSavedMainRewardId("");
       setEventSubStatus("none");
+      setRaidEventSubStatus("none");
       setSubscriptions([]);
       setAdditionalRewards([]);
       setMessage(t("messages2.disconnectSuccess"));
