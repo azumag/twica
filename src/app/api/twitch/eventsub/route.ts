@@ -210,6 +210,7 @@ interface RedemptionNotifyData {
   gachaResult: {
     type: "gacha";
     card: GachaCard;
+    cards?: GachaCard[];
     userTwitchUsername: string;
   };
   broadcasterTwitchUserId: string;
@@ -358,6 +359,7 @@ async function handleRedemption(messageId: string, event: {
     const gachaResult = {
       type: "gacha" as const,
       card: result.data.card,
+      cards: result.data.cards,
       userTwitchUsername: result.data.userTwitchUsername,
     };
 

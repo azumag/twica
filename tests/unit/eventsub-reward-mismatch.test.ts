@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/twitch/eventsub/route'
 import { reportError } from '@/lib/sentry/error-handler'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
+import { broadcastGachaResult } from '@/lib/realtime'
 
 const mocks = vi.hoisted(() => ({
   executeGachaForEventSub: vi.fn(),
@@ -54,6 +55,7 @@ vi.mock('@/lib/logger', () => ({
 
 const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 const mockReportError = vi.mocked(reportError)
+const mockBroadcastGachaResult = vi.mocked(broadcastGachaResult)
 
 async function signEventSubBody(secret: string, messageId: string, timestamp: string, body: string): Promise<string> {
   const encoder = new TextEncoder()
@@ -142,6 +144,65 @@ describe('EventSub reward mismatch handling', () => {
         broadcasterUserId: 'broadcaster-1',
         gachaError: 'Database error checking additional reward: Database error: error code: 502',
       }),
+    )
+  })
+
+  it('broadcasts all cards returned by a multi-draw EventSub redemption', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-multi-draw'
+    const timestamp = '2026-05-12T00:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'raid-reward', title: 'Raid Gacha', cost: 500 },
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+    const cards = [
+      { id: 'card-1', name: 'Card 1', description: null, image_url: null, rarity: 'common' },
+      { id: 'card-2', name: 'Card 2', description: null, image_url: null, rarity: 'rare' },
+      { id: 'card-3', name: 'Card 3', description: null, image_url: null, rarity: 'epic' },
+    ]
+    mocks.executeGachaForEventSub.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards,
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: false,
+          chat_announcement_template: null,
+        },
+      },
+    })
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    expect(mockBroadcastGachaResult).toHaveBeenCalledWith(
+      'streamer-1',
+      expect.objectContaining({
+        card: cards[0],
+        cards,
+        userTwitchUsername: 'Viewer',
+      }),
+      expect.any(Object),
     )
   })
 })
