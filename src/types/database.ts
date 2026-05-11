@@ -226,6 +226,32 @@ export interface Database {
           updated_at?: string
         }
       }
+      twitch_oauth_tokens: {
+        Row: {
+          twitch_user_id: string
+          encrypted_access_token: string
+          encrypted_refresh_token: string
+          token_expires_at: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          twitch_user_id: string
+          encrypted_access_token: string
+          encrypted_refresh_token: string
+          token_expires_at: string
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          twitch_user_id?: string
+          encrypted_access_token?: string
+          encrypted_refresh_token?: string
+          token_expires_at?: string
+          created_at?: string
+          updated_at?: string
+        }
+      }
       users: {
         Row: {
           id: string
