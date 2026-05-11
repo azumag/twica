@@ -516,7 +516,15 @@
       "drawCount": "Draws",
       "raidOnly": "Raid only",
       "multiDraw": "{count} draws",
-      "raidLimited": "Raid limited"
+      "raidLimited": "Raid limited",
+      "raidStatusTitle": "Raid gacha window",
+      "raidStatusActive": "Active until {time}",
+      "raidStatusInactive": "Currently off",
+      "raidStatusEnable": "30 min on",
+      "raidStatusDisable": "Off",
+      "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
+      "raidStatusDisabled": "Raid gacha window disabled",
+      "raidStatusFailed": "Failed to update raid gacha window"
     }
   },
   "gachaHistory": {

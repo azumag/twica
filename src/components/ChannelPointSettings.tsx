@@ -82,12 +82,17 @@ export default function ChannelPointSettings({
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
   const [additionalDrawCount, setAdditionalDrawCount] = useState(1);
   const [additionalRaidLimited, setAdditionalRaidLimited] = useState(false);
+  const [raidGachaActiveUntil, setRaidGachaActiveUntil] = useState<string | null>(null);
+  const [updatingRaidGacha, setUpdatingRaidGacha] = useState(false);
   // Track if registration failed (webhook unreachable)
   // 登録失敗を追跡（Webhookに到達できなかった場合）
   const [registrationFailed, setRegistrationFailed] = useState(false);
   // Track the saved main reward ID (to detect changes for cleanup)
   // 保存済みのメイン報酬IDを追跡（変更検出とクリーンアップ用）
   const [savedMainRewardId, setSavedMainRewardId] = useState(currentRewardId || "");
+  const isRaidGachaActive = Boolean(
+    raidGachaActiveUntil && Date.parse(raidGachaActiveUntil) > Date.now()
+  );
 
   // チャネルポイント系スコープが付与済みか事前確認する。
   // 初回ログインではこれらのスコープを要求しないため、
@@ -200,6 +205,48 @@ export default function ChannelPointSettings({
     }
   }, []);
 
+  const fetchRaidGachaStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/streamer/raid-gacha", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setRaidGachaActiveUntil(data.activeUntil ?? null);
+      }
+    } catch {
+      logger.error("Failed to fetch raid gacha status");
+    }
+  }, []);
+
+  const updateRaidGachaStatus = async (active: boolean) => {
+    setUpdatingRaidGacha(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/streamer/raid-gacha", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active, activeMinutes: 30 }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setMessage(data.error || t("additionalRewards.raidStatusFailed"));
+        return;
+      }
+
+      setRaidGachaActiveUntil(data.activeUntil ?? null);
+      setMessage(active ? t("additionalRewards.raidStatusEnabled") : t("additionalRewards.raidStatusDisabled"));
+    } catch {
+      setMessage(t("additionalRewards.raidStatusFailed"));
+    } finally {
+      setUpdatingRaidGacha(false);
+    }
+  };
+
   // targetRewardIdを引数で受け取ることで、保存直後に最新のrewardIdで比較できる
   // 引数が省略された場合はselectedRewardIdを使用（初期ロード時など）
   const fetchEventSubStatus = useCallback(async (targetRewardId?: string) => {
@@ -265,6 +312,7 @@ export default function ChannelPointSettings({
     // メイン報酬が設定されている場合は追加報酬も取得
     if (currentRewardId) {
       fetchAdditionalRewards();
+      fetchRaidGachaStatus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -979,6 +1027,41 @@ export default function ChannelPointSettings({
                        </button>
                      </div>
                    ))}
+                 </div>
+               )}
+
+               {additionalRewards.some((reward) => reward.is_raid_limited) && (
+                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded bg-gray-600/50 px-3 py-2">
+                   <div>
+                     <div className="text-sm text-gray-200">
+                       {t("additionalRewards.raidStatusTitle")}
+                     </div>
+                     <div className="text-xs text-gray-400">
+                       {isRaidGachaActive
+                         ? t("additionalRewards.raidStatusActive", {
+                             time: new Date(raidGachaActiveUntil as string).toLocaleTimeString(),
+                           })
+                         : t("additionalRewards.raidStatusInactive")}
+                     </div>
+                   </div>
+                   <div className="flex gap-2">
+                     <button
+                       type="button"
+                       onClick={() => updateRaidGachaStatus(true)}
+                       disabled={updatingRaidGacha}
+                       className="rounded-lg bg-cyan-600 px-3 py-2 text-xs text-white hover:bg-cyan-700 disabled:opacity-50"
+                     >
+                       {t("additionalRewards.raidStatusEnable")}
+                     </button>
+                     <button
+                       type="button"
+                       onClick={() => updateRaidGachaStatus(false)}
+                       disabled={updatingRaidGacha || !isRaidGachaActive}
+                       className="rounded-lg bg-gray-700 px-3 py-2 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+                     >
+                       {t("additionalRewards.raidStatusDisable")}
+                     </button>
+                   </div>
                  </div>
                )}
 

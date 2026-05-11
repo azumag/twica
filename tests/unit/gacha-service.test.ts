@@ -270,6 +270,7 @@ describe('GachaService.executeGachaForEventSub', () => {
         channel_point_reward_id: 'main-reward',
         chat_announcement_enabled: false,
         chat_announcement_template: null,
+        raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
       },
       error: null,
     })
@@ -311,6 +312,7 @@ describe('GachaService.executeGachaForEventSub', () => {
         channel_point_reward_id: 'main-reward',
         chat_announcement_enabled: false,
         chat_announcement_template: null,
+        raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
       },
       error: null,
     })
@@ -352,6 +354,7 @@ describe('GachaService.executeGachaForEventSub', () => {
         channel_point_reward_id: 'main-reward',
         chat_announcement_enabled: false,
         chat_announcement_template: null,
+        raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
       },
       error: null,
     })
@@ -402,6 +405,50 @@ describe('GachaService.executeGachaForEventSub', () => {
       p_event_id: 'event-raid:3',
       p_reward_cost: null,
     }))
+  })
+
+  it('レイド限定の追加報酬はレイド受付期限がない通常時に発火しない', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        raid_gacha_active_until: null,
+      },
+      error: null,
+    })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'additional-1', draw_count: 3, is_raid_limited: true },
+      error: null,
+    })
+    const mockRpc = vi.fn()
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'raid-reward', cost: 500 },
+    }, 'event-raid-inactive')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Raid-limited reward inactive')
+    }
+    expect(mockRpc).not.toHaveBeenCalled()
   })
 
   it('追加報酬オプション未適用のschema cacheでは通常の1回ガチャにフォールバックする', async () => {

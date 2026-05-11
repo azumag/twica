@@ -377,6 +377,14 @@ async function handleRedemption(messageId: string, event: {
         });
         return null;
       }
+      if (result.error === 'Raid-limited reward inactive') {
+        logger.info('[handleRedemption] Raid-limited reward skipped outside active raid window', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+          rewardId: event.reward.id,
+        });
+        return null;
+      }
       // カード未設定はユーザー設定の問題でありバグではない (Issue #277)
       // "No cards available" is a streamer setup issue, not a system bug
       if (result.error === 'No cards available for this streamer') {

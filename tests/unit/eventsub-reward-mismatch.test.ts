@@ -161,6 +161,14 @@ describe('EventSub reward mismatch handling', () => {
     expect(mockReportError).not.toHaveBeenCalled()
   })
 
+  it('does not report raid-limited redemptions outside the active raid window', async () => {
+    const response = await POST(await createNotificationRequest('Raid-limited reward inactive'))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ received: true })
+    expect(mockReportError).not.toHaveBeenCalled()
+  })
+
   it('still reports database failures while checking additional rewards', async () => {
     const response = await POST(
       await createNotificationRequest('Database error checking additional reward: Database error: error code: 502'),

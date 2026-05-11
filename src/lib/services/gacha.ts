@@ -38,6 +38,17 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
   return error?.code === 'PGRST204' || message.includes('draw_count') || message.includes('is_raid_limited')
 }
 
+function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
+  const message = error?.message ?? ''
+  return error?.code === 'PGRST204' || message.includes('raid_gacha_active_until')
+}
+
+function isRaidGachaActive(activeUntil: string | null | undefined, now = new Date()): boolean {
+  if (!activeUntil) return false
+  const activeUntilTime = Date.parse(activeUntil)
+  return Number.isFinite(activeUntilTime) && activeUntilTime > now.getTime()
+}
+
 export class GachaService {
   private supabase = getSupabaseAdmin()
 
@@ -252,11 +263,21 @@ export class GachaService {
   ): Promise<Result<GachaResult>> {
     try {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
-      const { data: streamer, error: streamerError } = await this.supabase
+      let { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
+        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, raid_gacha_active_until')
         .eq('twitch_user_id', event.broadcaster_user_id)
         .maybeSingle()
+
+      if (isRaidStateSchemaError(streamerError)) {
+        const fallbackResult = await this.supabase
+          .from('streamers')
+          .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
+          .eq('twitch_user_id', event.broadcaster_user_id)
+          .maybeSingle()
+        streamer = fallbackResult.data ? { ...fallbackResult.data, raid_gacha_active_until: null } : fallbackResult.data
+        streamerError = fallbackResult.error
+      }
 
       if (streamerError || !streamer) {
         return err('Streamer not found')
@@ -324,6 +345,15 @@ export class GachaService {
       }
 
       if (additionalReward) {
+        if (additionalReward.is_raid_limited && !isRaidGachaActive(streamer.raid_gacha_active_until)) {
+          logger.info('Raid-limited gacha skipped because raid gacha is inactive', {
+            rewardId: event.reward.id,
+            streamerId: streamer.id,
+            raidGachaActiveUntil: streamer.raid_gacha_active_until,
+          })
+          return err('Raid-limited reward inactive')
+        }
+
         // Additional reward matched, execute gacha
         // 追加報酬が一致したのでガチャを実行
         const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 10)

@@ -45,6 +45,9 @@ export interface Database {
           // 未所持カード表示時に画像/説明まで公開するか（false=プレースホルダーのみ）
           // When unowned cards are shown, whether to reveal card image/description
           show_unowned_card_details: boolean
+          // レイド限定ガチャを受け付ける期限（null/期限切れは不明状態としてブロック）
+          // Until when raid-limited gacha rewards are accepted. Null/expired blocks them.
+          raid_gacha_active_until: string | null
           created_at: string
           updated_at: string
         }
@@ -64,6 +67,7 @@ export interface Database {
           rarity_weights?: Record<string, number> | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          raid_gacha_active_until?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -83,6 +87,7 @@ export interface Database {
           rarity_weights?: Record<string, number> | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          raid_gacha_active_until?: string | null
           created_at?: string
           updated_at?: string
         }

@@ -516,7 +516,15 @@
       "drawCount": "回数",
       "raidOnly": "レイド限定",
       "multiDraw": "{count}連",
-      "raidLimited": "レイド限定"
+      "raidLimited": "レイド限定",
+      "raidStatusTitle": "レイドガチャ受付",
+      "raidStatusActive": "{time} まで受付中",
+      "raidStatusInactive": "現在は停止中",
+      "raidStatusEnable": "30分ON",
+      "raidStatusDisable": "OFF",
+      "raidStatusEnabled": "レイドガチャ受付を30分間有効にしました",
+      "raidStatusDisabled": "レイドガチャ受付を停止しました",
+      "raidStatusFailed": "レイドガチャ受付の更新に失敗しました"
     }
   },
   "gachaHistory": {
