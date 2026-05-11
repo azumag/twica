@@ -44,6 +44,25 @@ interface EventSubSubscription {
   created_at: string;
 }
 
+const RECREATABLE_EVENTSUB_STATUSES = new Set([
+  "webhook_callback_verification_failed",
+  "notification_failures_exceeded",
+  "authorization_revoked",
+]);
+
+async function deleteEventSubSubscription(appAccessToken: string, subscriptionId: string) {
+  return fetch(
+    `${TWITCH_API_URL}/eventsub/subscriptions?id=${subscriptionId}`,
+    {
+      method: "DELETE",
+      headers: {
+        "Authorization": `Bearer ${appAccessToken}`,
+        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
+      },
+    },
+  );
+}
+
 async function createEventSubSubscription(
   appAccessToken: string,
   body: {
@@ -70,14 +89,38 @@ async function ensureRaidSubscription(
   broadcasterUserId: string,
   callbackUrl: string,
 ): Promise<{ subscription?: EventSubSubscription; created?: unknown; warning?: string }> {
-  const existingSub = userSubscriptions.find(
+  const existingSubs = userSubscriptions.filter(
     (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
       && sub.condition.to_broadcaster_user_id === broadcasterUserId
       && sub.transport.callback === callbackUrl,
   );
+  const reusableSub = existingSubs.find(
+    (sub) => !RECREATABLE_EVENTSUB_STATUSES.has(sub.status),
+  );
+  const recreatableSubs = existingSubs.filter(
+    (sub) => RECREATABLE_EVENTSUB_STATUSES.has(sub.status),
+  );
 
-  if (existingSub) {
-    return { subscription: existingSub };
+  for (const sub of recreatableSubs) {
+    logger.info(`Deleting failed raid EventSub before recreation: id=${sub.id}, status=${sub.status}`);
+    const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
+    if (!deleteResponse.ok && deleteResponse.status !== 404) {
+      const error = await deleteResponse.json().catch(() => ({}));
+      logger.warn("Failed to delete failed raid EventSub subscription before recreation", {
+        broadcasterUserId,
+        subscriptionId: sub.id,
+        status: deleteResponse.status,
+        error,
+      });
+    }
+  }
+
+  if (reusableSub) {
+    return { subscription: reusableSub };
+  }
+
+  if (recreatableSubs.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
 
   const response = await createEventSubSubscription(appAccessToken, {
@@ -229,16 +272,7 @@ export async function POST(request: NextRequest) {
     // 対象報酬のサブスクリプションのみ削除
     for (const sub of subscriptionsToDelete) {
       logger.info(`Deleting existing EventSub for target reward: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}, callback=${sub.transport.callback}`);
-      const deleteResponse = await fetch(
-        `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-        {
-          method: "DELETE",
-          headers: {
-            "Authorization": `Bearer ${appAccessToken}`,
-            "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-          },
-        }
-      );
+      const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
 
       // 削除結果を確認（204は成功、404は既に削除済み）
       if (!deleteResponse.ok && deleteResponse.status !== 404) {
@@ -335,16 +369,7 @@ export async function POST(request: NextRequest) {
           logger.info(`Found ${allMySubs.length} subscriptions for other rewards, attempting cleanup`);
 
           for (const sub of allMySubs) {
-            const delResponse = await fetch(
-              `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-              {
-                method: "DELETE",
-                headers: {
-                  "Authorization": `Bearer ${appAccessToken}`,
-                  "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-                },
-              }
-            );
+            const delResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
             logger.info(`Cleanup delete: id=${sub.id}, status=${delResponse.status}`);
           }
 
@@ -507,16 +532,7 @@ export async function DELETE(request: NextRequest) {
     // Delete each subscription
     const results = [];
     for (const sub of mySubscriptions) {
-      const deleteResponse = await fetch(
-        `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-        {
-          method: "DELETE",
-          headers: {
-            "Authorization": `Bearer ${appAccessToken}`,
-            "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-          },
-        }
-      );
+      const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
 
       // 204: 成功、404: 既に削除済み（どちらも成功扱い）
       // 204: Success, 404: Already deleted (both count as success)

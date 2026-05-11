@@ -166,6 +166,135 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     fetchMock.mockRestore()
   })
 
+  it('POST: 失敗済み incoming raid EventSub は削除して再作成する', async () => {
+    vi.useFakeTimers()
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'
+    process.env.TWITCH_CLIENT_SECRET = 'client-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = 'eventsub-secret'
+    process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
+    const streamerQuery = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'streamer-1' }, error: null }),
+    }
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'failed-raid-sub',
+            status: 'webhook_callback_verification_failed',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+        ],
+        pagination: {},
+      }), { status: 200 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: 'reward-sub', status: 'enabled' }] }), { status: 202 }),
+    ).mockResolvedValueOnce(
+      new Response(null, { status: 204 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: 'new-raid-sub', status: 'webhook_callback_verification_pending' }] }), { status: 202 }),
+    )
+
+    const responsePromise = POST(createPostRequest())
+    await vi.advanceTimersByTimeAsync(500)
+    const response = await responsePromise
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      subscription: { id: 'reward-sub' },
+      raidSubscription: { created: { id: 'new-raid-sub' } },
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=failed-raid-sub',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          type: 'channel.raid',
+          version: '1',
+          condition: { to_broadcaster_user_id: '123456789' },
+          transport: {
+            method: 'webhook',
+            callback: 'https://twica.example/api/twitch/eventsub',
+            secret: 'eventsub-secret',
+          },
+        }),
+      }),
+    )
+
+    fetchMock.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('POST: 有効な incoming raid EventSub は重複作成せず再利用する', async () => {
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'
+    process.env.TWITCH_CLIENT_SECRET = 'client-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = 'eventsub-secret'
+    process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
+    const streamerQuery = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'streamer-1' }, error: null }),
+    }
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'existing-raid-sub',
+            status: 'enabled',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+        ],
+        pagination: {},
+      }), { status: 200 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: 'reward-sub', status: 'enabled' }] }), { status: 202 }),
+    )
+
+    const response = await POST(createPostRequest())
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      subscription: { id: 'reward-sub' },
+      raidSubscription: { subscription: { id: 'existing-raid-sub' } },
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=existing-raid-sub',
+      expect.anything(),
+    )
+
+    fetchMock.mockRestore()
+  })
+
   it('DELETE: CSRF 有効かつ未認証のストリーマーは 401 を返す', async () => {
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
     mockCanUseStreamerFeatures.mockReturnValue(false)
