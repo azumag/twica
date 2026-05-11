@@ -1136,12 +1136,15 @@ export const getCollectionCompletions = cache(async (
   const cachedFetch = unstable_cache(
     async () => {
       const supabaseAdmin = getSupabaseAdmin();
-      const { data, error } = await supabaseAdmin
-        .from("collection_completions")
-        .select("total_cards, completed_at")
-        .eq("twitch_user_id", twitchUserId)
-        .eq("streamer_id", streamerId)
-        .order("completed_at", { ascending: false });
+      const { data, error } = await withRetry(
+        () => supabaseAdmin
+          .from("collection_completions")
+          .select("total_cards, completed_at")
+          .eq("twitch_user_id", twitchUserId)
+          .eq("streamer_id", streamerId)
+          .order("completed_at", { ascending: false }),
+        "dashboard:getCollectionCompletions",
+      );
       if (error) {
         logger.error(`Failed to fetch collection completions: ${error.message}`);
         return [];
