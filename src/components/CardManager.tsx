@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
+import { RARITIES, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
@@ -12,6 +12,7 @@ import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
+import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
@@ -951,9 +952,22 @@ export default function CardManager({
       // Cropped image will be compressed to JPEG, so original size doesn't matter
       // トリミング前はファイルタイプのみ検証（サイズチェックはスキップ）
       // トリミング後はJPEGに圧縮されるため、元のサイズは問題にならない
-      const allowedTypes = UPLOAD_CONFIG.ALLOWED_TYPES as readonly string[];
-      if (!allowedTypes.includes(file.type)) {
+      if (!isAllowedCardUploadFile(file)) {
         setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
+        return;
+      }
+      if (shouldPreserveOriginalCardUpload(file)) {
+        imageDimensionRequestId.current++;
+        if (croppedPreviewUrl) {
+          URL.revokeObjectURL(croppedPreviewUrl);
+        }
+        setSelectedFileForCrop(null);
+        setSourceImageWidth(null);
+        setCropModeModalOpen(false);
+        setCropModalOpen(false);
+        setSelectedCropMode("square");
+        setCroppedFile(file);
+        setCroppedPreviewUrl(URL.createObjectURL(file));
         return;
       }
       // 画像の実サイズを読み取ってからモーダルを開く
@@ -1675,8 +1689,8 @@ export default function CardManager({
                   </div>
                 )}
 
-                {/* Show cropped image preview when a file has been cropped */}
-                {/* トリミング済みファイルがある場合はプレビュー表示 */}
+                {/* Show selected upload preview when a file is ready */}
+                {/* アップロード準備済みファイルがある場合はプレビュー表示 */}
                 {croppedFile && croppedPreviewUrl && (
                   <div className="flex items-center gap-3 rounded-lg bg-green-900/30 border border-green-600/50 p-3">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1686,9 +1700,15 @@ export default function CardManager({
                       className={`rounded object-cover ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
+                      <p className="text-sm text-green-300">
+                        {shouldPreserveOriginalCardUpload(croppedFile)
+                          ? t("form.originalAnimatedImage")
+                          : t("form.croppedImage")}
+                      </p>
                       <p className="text-xs text-gray-400">
-                        {planCropModes[selectedCropMode].dimensions}px ({planCropModes[selectedCropMode].label})
+                        {shouldPreserveOriginalCardUpload(croppedFile)
+                          ? t("form.originalAnimatedImageHelp")
+                          : `${planCropModes[selectedCropMode].dimensions}px (${planCropModes[selectedCropMode].label})`}
                       </p>
                     </div>
                     <button
@@ -1730,6 +1750,7 @@ export default function CardManager({
                       {/* File size limit removed since cropping compresses to JPEG */}
                       {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
                       {t("fileUpload.formats")}{t("form.cropNoteWithOptions", { square: planCropModes.square.dimensions, portrait: planCropModes.portrait.dimensions })}
+                      {t("form.animatedGifNote")}
                     </p>
                     <input
                       type="url"

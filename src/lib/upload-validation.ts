@@ -1,4 +1,5 @@
 import { UPLOAD_CONFIG } from '@/lib/constants';
+import { isAllowedCardUploadFile } from '@/lib/card-upload-mode';
 
 export type UploadValidationError =
   | 'FILE_TOO_LARGE'
@@ -35,8 +36,7 @@ export function validateUpload(
     }
   }
 
-  const mimeType = file.type as typeof UPLOAD_CONFIG.ALLOWED_TYPES[number];
-  if (!UPLOAD_CONFIG.ALLOWED_TYPES.includes(mimeType)) {
+  if (!isAllowedCardUploadFile(file)) {
     return {
       valid: false,
       error: 'INVALID_FILE_TYPE',

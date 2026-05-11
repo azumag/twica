@@ -72,16 +72,19 @@
       "descriptionCount": "{current} / {max} characters",
       "currentImage": "Current image",
       "croppedImage": "Cropped image",
+      "originalAnimatedImage": "Animated image",
+      "originalAnimatedImageHelp": "GIF files are saved unchanged to preserve animation",
       "selectCropMode": "Select Crop Size",
       "cropModeDescription": "For Square images, name and description can be shown in the card frame on display. You can toggle this in overlay settings. Portrait images are displayed as-is.",
       "cropNoteWithOptions": "(Crop to Square {square} or Portrait {portrait})",
+      "animatedGifNote": ". GIF files are saved without cropping to preserve animation",
       "selectResolution": "Select Resolution",
       "resolutionStandard": "Standard (800px)",
       "resolutionFullHd": "Full HD (1920px)",
       "resolution4k": "4K (3840px)"
     },
     "fileUpload": {
-      "formats": "Supported: JPEG, PNG | ",
+      "formats": "Supported: JPEG, PNG, GIF, WebP | ",
       "maxSize": "Max size: {mb}MB"
     },
     "buttons": {
