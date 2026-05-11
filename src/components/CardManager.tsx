@@ -1339,10 +1339,10 @@ export default function CardManager({
                   </svg>
                 </button>
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                 {/* 左カラム: カード名 + レアリティを縦積み（右の画像ペーンと高さを揃える） */}
-                <div className="flex flex-col justify-between">
-                  <div>
+                <div className="flex min-w-0 flex-col justify-between gap-4">
+                  <div className="min-w-0">
                     <label className="mb-1 block text-sm text-gray-300">
                       {t("form.name")} *
                     </label>
@@ -1355,12 +1355,12 @@ export default function CardManager({
                       onChange={(e) =>
                         setFormData({ ...formData, name: e.target.value })
                       }
-                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                      className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
                     />
                   </div>
-                  <div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
+                  <div className="min-w-0">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                      <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.rarity")}
                         </label>
@@ -1370,7 +1370,7 @@ export default function CardManager({
                           onChange={(e) =>
                             setFormData({ ...formData, rarity: e.target.value as Rarity })
                           }
-                          className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
+                          className="w-full min-w-0 appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
                           style={SELECT_ARROW_STYLE}
                         >
                           {RARITIES.map((r) => (
@@ -1380,7 +1380,7 @@ export default function CardManager({
                           ))}
                         </select>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.cardNumber")}
                         </label>
@@ -1395,7 +1395,7 @@ export default function CardManager({
                           onChange={(e) =>
                             setFormData({ ...formData, cardNumber: e.target.value })
                           }
-                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
+                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
                         />
                         <p className="mt-1 text-xs text-gray-300">
                           {t("form.cardNumberHelp")}
@@ -1405,7 +1405,7 @@ export default function CardManager({
                   </div>
                 </div>
                 {/* 右カラム: 画像 */}
-                <div>
+                <div className="min-w-0">
               <label className="mb-1 block text-sm text-gray-300">
                 {t("form.image")}
               </label>
@@ -1432,7 +1432,7 @@ export default function CardManager({
                       className="rounded object-cover"
                       unoptimized
                     />
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm text-gray-300">{t("form.currentImage")}</p>
                       <p className="text-xs text-gray-500 truncate max-w-[200px]">
                         {confirmedImageUrl.split('/').pop()}
@@ -1458,7 +1458,7 @@ export default function CardManager({
                       alt={t("form.croppedImage")}
                       className={`rounded object-cover ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
                     />
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
                       <p className="text-xs text-gray-400">
                         {planCropModes[selectedCropMode].dimensions}px ({planCropModes[selectedCropMode].label})
@@ -1493,7 +1493,7 @@ export default function CardManager({
                       ref={fileInputRef}
                       onChange={handleFileChange}
                       disabled={storageStatus?.uploadDisabled}
-                      className={`w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
+                      className={`w-full min-w-0 text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
                         storageStatus?.uploadDisabled
                           ? 'opacity-50 cursor-not-allowed file:bg-gray-500'
                           : 'file:bg-purple-600 hover:file:bg-purple-700'
@@ -1521,7 +1521,7 @@ export default function CardManager({
                         setUserModifiedImage(true);
                       }}
                       disabled={imageUrlValidating}
-                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white disabled:opacity-50"
+                      className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white disabled:opacity-50"
                     />
                     {/* Show validating indicator when checking image URL */}
                     {/* 画像URL検証中の表示 */}
