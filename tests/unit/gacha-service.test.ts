@@ -89,6 +89,64 @@ describe('GachaService.executeGacha', () => {
     }
   })
 
+  it('カード取得の一時的な502エラーをリトライして成功する', async () => {
+    const failingCardsQuery = createMockQueryBuilder()
+    ;(failingCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({ data: null, error: { message: 'Database error: error code: 502', code: '502' } })
+      return failingCardsQuery
+    }
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-retry-cards' },
+      error: null,
+    })
+    const fromMock = vi.fn((table: string) => {
+      if (table === 'cards') {
+        return fromMock.mock.calls.filter(([name]) => name === 'cards').length === 1
+          ? failingCardsQuery
+          : cardsQuery
+      }
+      return createMockQueryBuilder()
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: fromMock,
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-card-retry')
+
+    expect(result.success).toBe(true)
+    expect(fromMock).toHaveBeenCalledWith('cards')
+    expect(fromMock).toHaveBeenCalledTimes(2)
+    expect(mockRpc).toHaveBeenCalledTimes(1)
+  })
+
+  it('RPCの一時的な502エラーをリトライして成功する', async () => {
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn()
+      .mockResolvedValueOnce({
+        data: null,
+        error: { message: 'Gacha RPC failed: error code: 502', code: '502' },
+      })
+      .mockResolvedValueOnce({
+        data: { is_duplicate: false, history_id: 'h-retry-rpc' },
+        error: null,
+      })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn(() => cardsQuery),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-rpc-retry')
+
+    expect(result.success).toBe(true)
+    expect(mockRpc).toHaveBeenCalledTimes(2)
+  })
+
   it('RPC未デプロイ(42883): レガシーフォールバックで成功する', async () => {
     const cardsQuery = createCardsQuery(testCards)
     // フォールバック時のDB操作用モック（upsert → select → insert チェーン）

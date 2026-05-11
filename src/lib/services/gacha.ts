@@ -4,6 +4,7 @@ import { normalizeDropRate } from '@/lib/card-utils'
 import { Result, ok, err } from '@/types/result'
 import { logger } from '@/lib/logger'
 import { reportError } from '@/lib/sentry/error-handler'
+import { withRetry } from '@/lib/supabase/retry'
 
 export interface GachaCard {
   id: string
@@ -38,11 +39,14 @@ export class GachaService {
     try {
       // Get active cards for this streamer
       // このストリーマーの有効なカードを取得
-      const { data: cards, error: cardsError } = await this.supabase
-        .from('cards')
-        .select('id, name, description, image_url, rarity, drop_rate')
-        .eq('streamer_id', streamerId)
-        .eq('is_active', true)
+      const { data: cards, error: cardsError } = await withRetry(
+        () => this.supabase
+          .from('cards')
+          .select('id, name, description, image_url, rarity, drop_rate')
+          .eq('streamer_id', streamerId)
+          .eq('is_active', true),
+        'gacha:executeGacha:cards',
+      )
 
       if (cardsError) {
         return err(`Database error: ${cardsError.message}`)
@@ -62,15 +66,17 @@ export class GachaService {
 
       // gacha_history, users, user_cards を1トランザクションでアトミックに実行
       // 従来は3回の個別DB操作で中間状態（履歴あり・カード未付与）が発生しえた
-      const { data: rpcResult, error: rpcError } = await this.supabase
-        .rpc('execute_gacha_transaction', {
+      const { data: rpcResult, error: rpcError } = await withRetry(
+        () => this.supabase.rpc('execute_gacha_transaction', {
           p_event_id: eventId || null,
           p_user_twitch_id: userTwitchId,
           p_user_twitch_username: userTwitchUsername,
           p_card_id: selectedCard.id,
           p_streamer_id: streamerId,
           p_reward_cost: rewardCost ?? null,
-        })
+        }),
+        'gacha:executeGacha:rpc',
+      )
 
       if (rpcError) {
         // RPC関数が未デプロイの場合（マイグレーション前）は旧ロジックにフォールバック
