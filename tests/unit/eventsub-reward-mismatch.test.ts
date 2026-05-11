@@ -4,9 +4,22 @@ import { POST } from '@/app/api/twitch/eventsub/route'
 import { reportError } from '@/lib/sentry/error-handler'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { broadcastGachaResult } from '@/lib/realtime'
+import { TwitchChatService } from '@/lib/twitch/chat-service'
+import { hasScope } from '@/lib/twitch/token-manager'
 
 const mocks = vi.hoisted(() => ({
   executeGachaForEventSub: vi.fn(),
+  buildMessage: vi.fn((template: string | null, placeholders: { user: string; card: string; cards?: string; draws?: number }) => {
+    const messageTemplate = template || '{user} got {card}'
+    return messageTemplate
+      .replace(/\{user\}/g, placeholders.user)
+      .replace(/\{card\}/g, placeholders.card)
+      .replace(/\{cards\}/g, placeholders.cards ?? '')
+      .replace(/\{draws\}/g, placeholders.draws === undefined ? '' : String(placeholders.draws))
+      .replace(/\s+/g, ' ')
+      .trim()
+  }),
+  sendChatMessage: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('@/lib/services/gacha', () => ({
@@ -37,12 +50,15 @@ vi.mock('@/lib/realtime', () => ({
 }))
 
 vi.mock('@/lib/twitch/token-manager', () => ({
-  hasScope: vi.fn(),
+  hasScope: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('@/lib/twitch/chat-service', () => ({
   DEFAULT_CHAT_TEMPLATE: '{user} got {card}',
-  TwitchChatService: vi.fn(),
+  TwitchChatService: vi.fn().mockImplementation(() => ({
+    buildMessage: mocks.buildMessage,
+    sendChatMessage: mocks.sendChatMessage,
+  })),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -56,6 +72,8 @@ vi.mock('@/lib/logger', () => ({
 const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 const mockReportError = vi.mocked(reportError)
 const mockBroadcastGachaResult = vi.mocked(broadcastGachaResult)
+const mockTwitchChatService = vi.mocked(TwitchChatService)
+const mockHasScope = vi.mocked(hasScope)
 
 async function signEventSubBody(secret: string, messageId: string, timestamp: string, body: string): Promise<string> {
   const encoder = new TextEncoder()
@@ -110,6 +128,18 @@ async function createNotificationRequest(gachaError: string): Promise<NextReques
 describe('EventSub reward mismatch handling', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockHasScope.mockResolvedValue(true)
+    mocks.buildMessage.mockImplementation((template: string | null, placeholders: { user: string; card: string; cards?: string; draws?: number }) => {
+      const messageTemplate = template || '{user} got {card}'
+      return messageTemplate
+        .replace(/\{user\}/g, placeholders.user)
+        .replace(/\{card\}/g, placeholders.card)
+        .replace(/\{cards\}/g, placeholders.cards ?? '')
+        .replace(/\{draws\}/g, placeholders.draws === undefined ? '' : String(placeholders.draws))
+        .replace(/\s+/g, ' ')
+        .trim()
+    })
+    mocks.sendChatMessage.mockResolvedValue(true)
     const historyQuery = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
@@ -203,6 +233,78 @@ describe('EventSub reward mismatch handling', () => {
         userTwitchUsername: 'Viewer',
       }),
       expect.any(Object),
+    )
+  })
+
+  it('sends multi-draw chat announcements with all cards while preserving {card} as the first card', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-multi-draw-chat'
+    const timestamp = '2026-05-11T10:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'raid-gacha', title: 'Raid Gacha', cost: 500 },
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+
+    const cards = [
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+      { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
+      { id: 'card-3', name: 'Gamma', description: null, image_url: null, rarity: 'legendary', drop_rate: 1 },
+    ] as const
+
+    mocks.executeGachaForEventSub.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards: [...cards],
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '{user}: first={card} all={cards} count={draws}',
+        },
+      },
+    })
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ received: true })
+    expect(mockBroadcastGachaResult).toHaveBeenCalledWith(
+      'streamer-1',
+      expect.objectContaining({ card: cards[0], cards: [...cards] }),
+      expect.any(Object),
+    )
+    expect(mockTwitchChatService).toHaveBeenCalled()
+    expect(mocks.buildMessage).toHaveBeenCalledWith(
+      '{user}: first={card} all={cards} count={draws}',
+      expect.objectContaining({
+        user: 'Viewer',
+        card: 'Alpha',
+        cards: 'Alpha、Beta、Gamma',
+        draws: 3,
+      }),
+    )
+    expect(mocks.sendChatMessage).toHaveBeenCalledWith(
+      'broadcaster-1',
+      'Viewer: first=Alpha all=Alpha、Beta、Gamma count=3',
     )
   })
 })

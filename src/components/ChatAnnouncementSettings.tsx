@@ -25,6 +25,7 @@ const DEFAULT_CHAT_TEMPLATE = "@{user} が【{rarity}】{card} を獲得しま�
 const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   user: 25,
   card: 100,
+  cards: 300,
   rarity: 12,
   num: 10,
   // コンプ進捗のユニーク/全種類数は現実的に4桁で十分
@@ -39,6 +40,8 @@ function buildChatPreviewMessage(
   placeholders: {
     user: string;
     card: string;
+    cards: string;
+    draws: string;
     rarity: string;
     num: string;
     unique: string;
@@ -50,6 +53,8 @@ function buildChatPreviewMessage(
   return template
     .replace(/\{user\}/g, placeholders.user)
     .replace(/\{card\}/g, placeholders.card)
+    .replace(/\{cards\}/g, placeholders.cards)
+    .replace(/\{draws\}/g, placeholders.draws)
     .replace(/\{rarity\}/g, placeholders.rarity)
     .replace(/\{num\}/g, placeholders.num)
     .replace(/\{unique\}/g, placeholders.unique)
@@ -100,6 +105,8 @@ export default function ChatAnnouncementSettings({
     return buildChatPreviewMessage(activeTemplate, {
       user: "SampleUser",
       card: "レジェンダリーカード",
+      cards: "レジェンダリーカード、レアカード、コモンカード",
+      draws: "3",
       rarity: "レジェンダリー",
       num: "3",
       unique: "5",
@@ -119,6 +126,8 @@ export default function ChatAnnouncementSettings({
       buildChatPreviewMessage(activeTemplate, {
         user: "U".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.user),
         card: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.card),
+        cards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.cards),
+        draws: "10",
         rarity: "レ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.rarity),
         num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
         unique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.unique),

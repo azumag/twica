@@ -238,7 +238,8 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
       data.streamer,
       data.gachaResult.card,
       data.gachaResult.userTwitchUsername,
-      data.userId
+      data.userId,
+      data.gachaResult.cards
     ),
   ]);
 
@@ -388,6 +389,7 @@ async function handleRedemption(messageId: string, event: {
  * @param card - 獲得したカード（GachaCard型 - gacha serviceから返される）
  * @param userName - ガチャを引いたユーザー名
  * @param userId - ガチャを引いたユーザーのTwitch ID
+ * @param cards - 複数枚ガチャ時の獲得カード一覧
  */
 async function sendChatAnnouncement(
   broadcasterTwitchUserId: string,
@@ -398,8 +400,13 @@ async function sendChatAnnouncement(
   },
   card: GachaCard,
   userName: string,
-  userId: string
+  userId: string,
+  cards?: GachaCard[]
 ): Promise<void> {
+  const drawnCards = cards && cards.length > 0 ? cards : [card];
+  const isMultiDraw = drawnCards.length > 1;
+  const cardNames = drawnCards.map((drawnCard) => drawnCard.name).join('、');
+
   // 関数呼び出しを記録（デバッグ用：この関数が呼ばれたことを確認するため）
   // Log function entry to confirm this function is being called
   logger.info('sendChatAnnouncement called', {
@@ -407,6 +414,7 @@ async function sendChatAnnouncement(
     streamerId: streamer.id,
     chatAnnouncementEnabled: streamer.chat_announcement_enabled,
     cardName: card.name,
+    drawCount: drawnCards.length,
     userName,
   });
 
@@ -445,7 +453,10 @@ async function sendChatAnnouncement(
   // テンプレートに含まれるプレースホルダーに応じてのみDBクエリを実行
   // waitUntil内のwall time短縮のため、不要なDBクエリをスキップ
   // Run DB queries only for placeholders that appear in the template to keep waitUntil wall-time short
-  const effectiveTemplate = streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
+  const messageTemplate = streamer.chat_announcement_template
+    || (isMultiDraw ? '@{user} が{draws}連ガチャで {cards} を獲得しました！' : DEFAULT_CHAT_TEMPLATE);
+  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}/.test(messageTemplate);
+  const effectiveTemplate = messageTemplate;
   const needsCardCount = /\{num\}/.test(effectiveTemplate);
   const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
   const needsAllCount = /\{all\}/.test(effectiveTemplate);
@@ -556,6 +567,8 @@ async function sendChatAnnouncement(
   const placeholders: ChatMessagePlaceholders = {
     user: userName,
     card: card.name,
+    cards: isMultiDraw ? cardNames : undefined,
+    draws: isMultiDraw ? drawnCards.length : undefined,
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,
@@ -567,7 +580,10 @@ async function sendChatAnnouncement(
   // チャットサービスでメッセージを構築・送信
   // Build and send message using chat service
   const chatService = new TwitchChatService();
-  const message = chatService.buildMessage(streamer.chat_announcement_template, placeholders);
+  const baseMessage = chatService.buildMessage(messageTemplate, placeholders);
+  const message = isMultiDraw && !usesMultiDrawPlaceholders
+    ? `${baseMessage}（全${drawnCards.length}枚: ${cardNames}）`
+    : baseMessage;
 
   const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
 
