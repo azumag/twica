@@ -46,6 +46,10 @@
     "newCard": "新規カード",
     "importFromEmotes": "エモートからインポート",
     "editCardNumbers": "番号をまとめて編集",
+    "search": {
+      "titleLabel": "カードタイトル検索",
+      "titlePlaceholder": "タイトルで検索"
+    },
     "form": {
       "name": "カード名",
       "namePlaceholder": "カード名",
@@ -92,6 +96,7 @@
       "networkErrorDelete": "ネットワークエラーが発生しました。削除をキャンセルしました。",
       "operationFailed": "操作に失敗しました: {msg}",
       "emptyCards": "まだカードがありません。「新規カード追加」から始めましょう。",
+      "noMatchingCards": "条件に一致するカードがありません。",
       "probability": "確率:",
       "errorOccurred": "エラーが発生しました ({status})",
       "uploadLimited": "アップロード機能が制限されています",
