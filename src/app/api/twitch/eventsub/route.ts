@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin";
 import { GachaService } from "@/lib/services/gacha";
-import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
+import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS, TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
@@ -11,10 +11,62 @@ import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders 
 import { hasScope } from "@/lib/twitch/token-manager";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
+import { countCharacters } from "@/lib/text-utils";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
+const CARD_LIST_SEPARATOR = "、";
+
+function formatCardNamesForChat(cardNames: string[], maxCharacters: number): string {
+  if (cardNames.length === 0) return "";
+
+  const fullList = cardNames.join(CARD_LIST_SEPARATOR);
+  if (countCharacters(fullList) <= maxCharacters) {
+    return fullList;
+  }
+
+  const total = cardNames.length;
+  const displayed: string[] = [];
+
+  for (const cardName of cardNames) {
+    const nextDisplayed = [...displayed, cardName];
+    const remaining = total - nextDisplayed.length;
+    const suffix = remaining > 0 ? ` ほか${remaining}枚（${nextDisplayed.length}/${total}枚表示）` : "";
+    const candidate = `${nextDisplayed.join(CARD_LIST_SEPARATOR)}${suffix}`;
+
+    if (countCharacters(candidate) > maxCharacters) {
+      break;
+    }
+
+    displayed.push(cardName);
+  }
+
+  if (displayed.length === 0) {
+    const fallback = `ほか${total}枚（0/${total}枚表示）`;
+    return countCharacters(fallback) <= maxCharacters ? fallback : `全${total}枚`;
+  }
+
+  const remaining = total - displayed.length;
+  return `${displayed.join(CARD_LIST_SEPARATOR)} ほか${remaining}枚（${displayed.length}/${total}枚表示）`;
+}
+
+function fitCardNamesForMessage(
+  cardNames: string[],
+  renderMessage: (cardsText: string) => string
+): { cardsText: string; message: string } {
+  let cardsText = cardNames.join(CARD_LIST_SEPARATOR);
+  let message = renderMessage(cardsText);
+
+  for (let i = 0; i < 3 && countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS; i++) {
+    const overflow = countCharacters(message) - TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
+    const nextMaxCharacters = Math.max(0, countCharacters(cardsText) - overflow);
+    cardsText = formatCardNamesForChat(cardNames, nextMaxCharacters);
+    message = renderMessage(cardsText);
+  }
+
+  return { cardsText, message };
+}
 
 /**
  * Verify Twitch EventSub signature using HMAC-SHA256 (Web Crypto API)
@@ -405,7 +457,7 @@ async function sendChatAnnouncement(
 ): Promise<void> {
   const drawnCards = cards && cards.length > 0 ? cards : [card];
   const isMultiDraw = drawnCards.length > 1;
-  const cardNames = drawnCards.map((drawnCard) => drawnCard.name).join('、');
+  const cardNames = drawnCards.map((drawnCard) => drawnCard.name);
 
   // 関数呼び出しを記録（デバッグ用：この関数が呼ばれたことを確認するため）
   // Log function entry to confirm this function is being called
@@ -567,7 +619,7 @@ async function sendChatAnnouncement(
   const placeholders: ChatMessagePlaceholders = {
     user: userName,
     card: card.name,
-    cards: isMultiDraw ? cardNames : undefined,
+    cards: isMultiDraw ? cardNames.join(CARD_LIST_SEPARATOR) : undefined,
     draws: isMultiDraw ? drawnCards.length : undefined,
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
@@ -580,10 +632,25 @@ async function sendChatAnnouncement(
   // チャットサービスでメッセージを構築・送信
   // Build and send message using chat service
   const chatService = new TwitchChatService();
-  const baseMessage = chatService.buildMessage(messageTemplate, placeholders);
-  const message = isMultiDraw && !usesMultiDrawPlaceholders
-    ? `${baseMessage}（全${drawnCards.length}枚: ${cardNames}）`
-    : baseMessage;
+  let message: string;
+
+  if (isMultiDraw && usesMultiDrawPlaceholders) {
+    const fitted = fitCardNamesForMessage(cardNames, (cardsText) =>
+      chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText })
+    );
+    placeholders.cards = fitted.cardsText;
+    message = fitted.message;
+  } else {
+    const baseMessage = chatService.buildMessage(messageTemplate, placeholders);
+    if (isMultiDraw) {
+      message = fitCardNamesForMessage(
+        cardNames,
+        (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`
+      ).message;
+    } else {
+      message = baseMessage;
+    }
+  }
 
   const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
 

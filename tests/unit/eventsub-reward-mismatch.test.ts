@@ -307,4 +307,65 @@ describe('EventSub reward mismatch handling', () => {
       'Viewer: first=Alpha all=Alpha、Beta、Gamma count=3',
     )
   })
+
+  it('abbreviates long multi-draw card lists before sending chat announcements', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-long-multi-draw-chat'
+    const timestamp = '2026-05-11T10:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'raid-gacha', title: 'Raid Gacha', cost: 500 },
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+
+    const cards = Array.from({ length: 10 }, (_, index) => ({
+      id: `card-${index + 1}`,
+      name: `CardName${String(index + 1).padStart(2, '0')}-${'A'.repeat(60)}`,
+      description: null,
+      image_url: null,
+      rarity: 'rare',
+      drop_rate: 1,
+    }))
+
+    mocks.executeGachaForEventSub.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards,
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} が{draws}連ガチャで {cards} を獲得しました！',
+        },
+      },
+    })
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    const placeholders = mocks.buildMessage.mock.calls.at(-1)?.[1]
+    expect(placeholders?.cards).toMatch(/ほか\d+枚（\d+\/10枚表示）/)
+    expect(placeholders?.cards).not.toContain('...')
+    const sentMessage = mocks.sendChatMessage.mock.calls.at(-1)?.[1] as string
+    expect(sentMessage.length).toBeLessThanOrEqual(500)
+    expect(sentMessage).toContain('10連ガチャ')
+  })
 })
