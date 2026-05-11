@@ -256,3 +256,91 @@ describe('GachaService.executeGacha', () => {
     }))
   })
 })
+
+describe('GachaService.executeGachaForEventSub', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('追加報酬のDBエラーをReward ID mismatchに潰さず返す', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+      },
+      error: null,
+    })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: null,
+      error: { message: 'Database error: error code: 502', code: '502' },
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: vi.fn(),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'additional-reward', cost: 100 },
+    }, 'event-additional-db-error')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Database error checking additional reward: Database error: error code: 502')
+    }
+  })
+
+  it('未設定のEventSub報酬はReward ID mismatchを返す', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+      },
+      error: null,
+    })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: null,
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: vi.fn(),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'stale-reward', cost: 100 },
+    }, 'event-stale-reward')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Reward ID mismatch')
+    }
+  })
+})
