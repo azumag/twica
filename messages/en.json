@@ -122,6 +122,7 @@
       "numberLabel": "Number"
     },
     "sort": {
+      "displayOrder": "Display Order",
       "createdAt": "Date Created",
       "rarity": "Rarity",
       "cardNumber": "Card Number",
