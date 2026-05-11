@@ -195,13 +195,20 @@ export class GachaService {
   ): Promise<Result<GachaResult>> {
     try {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
-      const { data: streamer, error: streamerError } = await this.supabase
-        .from('streamers')
-        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
-        .eq('twitch_user_id', event.broadcaster_user_id)
-        .maybeSingle()
+      const { data: streamer, error: streamerError } = await withRetry(
+        () => this.supabase
+          .from('streamers')
+          .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
+          .eq('twitch_user_id', event.broadcaster_user_id)
+          .maybeSingle(),
+        'gacha:executeGachaForEventSub:streamer',
+      )
 
-      if (streamerError || !streamer) {
+      if (streamerError) {
+        return err(`Database error fetching streamer: ${streamerError.message}`)
+      }
+
+      if (!streamer) {
         return err('Streamer not found')
       }
 

@@ -332,6 +332,15 @@ async function handleRedemption(messageId: string, event: {
         });
         return null;
       }
+      // 削除済み/未登録 broadcaster の古い EventSub 通知は設定起因であり、
+      // production error としてGitHub Issue化しない。
+      if (result.error === 'Streamer not found') {
+        logger.warn('[handleRedemption] Streamer not found - stale or unconfigured EventSub notification', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+        });
+        return null;
+      }
       logger.warn('[handleRedemption] Gacha execution failed', { messageId });
       await reportError(new Error(`Gacha execution failed: ${result.error}`), {
         context: 'eventsub:handleRedemption',
