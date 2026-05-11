@@ -46,6 +46,10 @@
     "newCard": "New Card",
     "importFromEmotes": "Import from Emotes",
     "editCardNumbers": "Edit Numbers",
+    "search": {
+      "titleLabel": "Search card titles",
+      "titlePlaceholder": "Search by title"
+    },
     "form": {
       "name": "Card Name",
       "namePlaceholder": "Card name",
@@ -92,6 +96,7 @@
       "networkErrorDelete": "A network error occurred. Deletion cancelled.",
       "operationFailed": "Operation failed: {msg}",
       "emptyCards": "No cards yet. Start by adding a new card.",
+      "noMatchingCards": "No cards match the current filters.",
       "probability": "Probability:",
       "errorOccurred": "An error occurred ({status})",
       "uploadLimited": "Upload feature is limited",
