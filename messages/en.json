@@ -480,6 +480,10 @@
       "rewardId": "Reward ID:",
       "allRewards": "All Rewards",
       "eventsubStatus": "EventSub Status",
+      "raidEventSubStatus": "Raid auto-enable",
+      "raidEventSubActive": "Incoming raid notifications are subscribed.",
+      "raidEventSubMissing": "Not registered or still pending. Use Save & Register EventSub to re-register.",
+      "raidEventSubError": "Registration failed. Use Save & Register EventSub to re-register.",
       "noSubscriptions": "No EventSub subscriptions. Click save to register.",
       "localTunnelNote": "* EventSub is not available in local environment"
     },

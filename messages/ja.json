@@ -480,6 +480,10 @@
       "rewardId": "報酬ID:",
       "allRewards": "全報酬",
       "eventsubStatus": "EventSub ステータス",
+      "raidEventSubStatus": "レイド自動ON",
+      "raidEventSubActive": "incoming raid 通知を受け取れる状態です。",
+      "raidEventSubMissing": "未登録または確認中です。必要な場合は「保存 & EventSub登録」で再登録してください。",
+      "raidEventSubError": "登録に失敗しています。「保存 & EventSub登録」で再登録してください。",
       "noSubscriptions": "EventSubサブスクリプションがありません。保存ボタンを押して登録してください。",
       "localTunnelNote": "※ EventSubはローカル環境では利用できません"
     },

@@ -29,8 +29,9 @@ interface EventSubSubscription {
   status: string;
   type: string;
   condition: {
-    broadcaster_user_id: string;
+    broadcaster_user_id?: string;
     reward_id?: string;
+    to_broadcaster_user_id?: string;
   };
   transport?: {
     callback?: string;
@@ -38,6 +39,56 @@ interface EventSubSubscription {
   debug?: {
     expectedCallbackUrl: string;
     callbackMatch: boolean;
+  };
+}
+
+type EventSubStatus = "none" | "pending" | "active" | "error";
+
+const CHANNEL_POINTS_EVENTSUB_TYPE = "channel.channel_points_custom_reward_redemption.add";
+const RAID_EVENTSUB_TYPE = "channel.raid";
+const FAILED_EVENTSUB_STATUSES = [
+  "webhook_callback_verification_failed",
+  "notification_failures_exceeded",
+  "authorization_revoked",
+];
+
+export function deriveEventSubStatus(
+  subs: EventSubSubscription[],
+  rewardIdToCheck: string,
+): { rewardStatus: EventSubStatus; raidStatus: EventSubStatus } {
+  const rewardSubscriptions = subs.filter(
+    (sub) => sub.type === CHANNEL_POINTS_EVENTSUB_TYPE
+  );
+  const raidSubscriptions = subs.filter(
+    (sub) => sub.type === RAID_EVENTSUB_TYPE
+  );
+
+  const hasActiveRewardSub = rewardSubscriptions.some(
+    (sub) => sub.status === "enabled" && sub.condition.reward_id === rewardIdToCheck
+  );
+  const hasFailedRewardSub = rewardSubscriptions.some(
+    (sub) => FAILED_EVENTSUB_STATUSES.includes(sub.status)
+  );
+  const hasActiveRaidSub = raidSubscriptions.some((sub) => sub.status === "enabled");
+  const hasFailedRaidSub = raidSubscriptions.some(
+    (sub) => FAILED_EVENTSUB_STATUSES.includes(sub.status)
+  );
+
+  return {
+    rewardStatus: hasActiveRewardSub
+      ? "active"
+      : hasFailedRewardSub
+        ? "error"
+        : rewardSubscriptions.length > 0
+          ? "pending"
+          : "none",
+    raidStatus: hasActiveRaidSub
+      ? "active"
+      : hasFailedRaidSub
+        ? "error"
+        : raidSubscriptions.length > 0
+          ? "pending"
+          : "none",
   };
 }
 
@@ -69,7 +120,8 @@ export default function ChannelPointSettings({
   const [disconnecting, setDisconnecting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [eventSubStatus, setEventSubStatus] = useState<"none" | "pending" | "active" | "error">("none");
+  const [eventSubStatus, setEventSubStatus] = useState<EventSubStatus>("none");
+  const [raidEventSubStatus, setRaidEventSubStatus] = useState<EventSubStatus>("none");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
   // チャネルポイント用スコープ不足でstep-up再認証が必要かどうか
   // Whether step-up reauth is needed because channel point scopes are missing
@@ -261,40 +313,10 @@ export default function ChannelPointSettings({
         logger.info("[EventSub] API response", { subsCount: subs.length, subs: subs.map((s: EventSubSubscription) => ({ id: s.id, status: s.status, reward_id: s.condition.reward_id })) });
         setSubscriptions(subs);
 
-        // Check if we have an active subscription for the target reward
-        // 引数で渡されたrewardIdを使うことで、保存直後でも正しく判定できる
-        const activeSub = subs.find(
-          (sub: EventSubSubscription) =>
-            sub.status === "enabled" &&
-            sub.condition.reward_id === rewardIdToCheck
-        );
-
-        // Check for failed subscriptions
-        // 失敗したサブスクリプションをチェック
-        const failedStatuses = [
-          "webhook_callback_verification_failed",
-          "notification_failures_exceeded",
-          "authorization_revoked",
-        ];
-        const hasFailedSub = subs.some(
-          (sub: EventSubSubscription) => failedStatuses.includes(sub.status)
-        );
-
-        logger.info("[EventSub] Status check", { activeSub: !!activeSub, hasFailedSub, rewardIdToCheck, subsLength: subs.length });
-
-        if (activeSub) {
-          logger.info("[EventSub] Setting status to ACTIVE");
-          setEventSubStatus("active");
-        } else if (hasFailedSub) {
-          logger.info("[EventSub] Setting status to ERROR (failed subscription found)");
-          setEventSubStatus("error");
-        } else if (subs.length > 0) {
-          logger.info("[EventSub] Setting status to PENDING");
-          setEventSubStatus("pending");
-        } else {
-          logger.info("[EventSub] Setting status to NONE");
-          setEventSubStatus("none");
-        }
+        const derivedStatus = deriveEventSubStatus(subs, rewardIdToCheck);
+        logger.info("[EventSub] Status check", { ...derivedStatus, rewardIdToCheck, subsLength: subs.length });
+        setEventSubStatus(derivedStatus.rewardStatus);
+        setRaidEventSubStatus(derivedStatus.raidStatus);
       }
       } catch {
         logger.error("Failed to fetch EventSub status");
@@ -745,6 +767,39 @@ export default function ChannelPointSettings({
     }
   };
 
+  const getStatusText = (status: EventSubStatus) => t(`status.${status}`);
+  const getStatusColor = (status: EventSubStatus) => {
+    switch (status) {
+      case "active":
+        return "text-green-400";
+      case "error":
+        return "text-red-400";
+      case "pending":
+        return "text-yellow-400";
+      default:
+        return "text-gray-400";
+    }
+  };
+
+  const getSubscriptionLabel = (sub: EventSubSubscription) => {
+    if (sub.type === RAID_EVENTSUB_TYPE) {
+      return t("form.raidEventSubStatus");
+    }
+
+    if (!sub.condition.reward_id) {
+      return t("form.allRewards");
+    }
+
+    return (
+      <>
+        {getRewardNameById(sub.condition.reward_id) || `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...`}
+        <span className="ml-1 text-gray-500">
+          ({sub.condition.reward_id.slice(0, 8)}...)
+        </span>
+      </>
+    );
+  };
+
   return (
     <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -840,22 +895,28 @@ export default function ChannelPointSettings({
            {/* EventSub Info */}
            <div className="rounded-lg bg-gray-700/50 p-4">
              <h3 className="mb-2 text-sm font-medium text-gray-300">{t("form.eventsubStatus")}</h3>
+             <div className="mb-3 rounded bg-gray-800/60 p-3 text-xs">
+               <div className="flex items-center justify-between gap-3">
+                 <span className="text-gray-300">{t("form.raidEventSubStatus")}</span>
+                 <span className={getStatusColor(raidEventSubStatus)}>
+                   {getStatusText(raidEventSubStatus)}
+                 </span>
+               </div>
+               <p className="mt-1 text-gray-500">
+                 {raidEventSubStatus === "active"
+                   ? t("form.raidEventSubActive")
+                   : raidEventSubStatus === "error"
+                     ? t("form.raidEventSubError")
+                     : t("form.raidEventSubMissing")}
+               </p>
+             </div>
              {subscriptions.length > 0 ? (
                <div className="space-y-2">
                  {subscriptions.map((sub) => (
                    <div key={sub.id}>
                      <div className="flex items-center justify-between text-xs">
                        <span className="text-gray-400">
-                         {sub.condition.reward_id ? (
-                           <>
-                             {/* Display reward name if available, otherwise show truncated ID */}
-                             {/* 報酬名があれば表示、なければ短縮IDを表示 */}
-                             {getRewardNameById(sub.condition.reward_id) || `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...`}
-                             <span className="ml-1 text-gray-500">
-                               ({sub.condition.reward_id.slice(0, 8)}...)
-                             </span>
-                           </>
-                         ) : t("form.allRewards")}
+                         {getSubscriptionLabel(sub)}
                        </span>
                        <span className={
                          sub.status === "enabled"
