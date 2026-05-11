@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { logger } from "@/lib/logger";
 import { normalizeDropRate } from "@/lib/card-utils";
 import { reportError } from "@/lib/sentry/error-handler";
+import { withRetry } from "@/lib/supabase/retry";
 import type { Card, Streamer, GachaHistory } from "@/types/database";
 
 interface CardWithDetails extends Card {
@@ -136,8 +137,10 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
 
   // RPC: DB側でGROUP BY集計（ユニークカード種類数のみ返却、行数制限の影響なし）
   const startQuery = Date.now();
-  const { data: rpcResult, error: rpcError } = await supabaseAdmin
-    .rpc("get_user_card_counts", { p_twitch_user_id: twitchUserId });
+  const { data: rpcResult, error: rpcError } = await withRetry(
+    () => supabaseAdmin.rpc("get_user_card_counts", { p_twitch_user_id: twitchUserId }),
+    "get_user_card_counts",
+  );
 
   if (!rpcError) {
     logger.info(`[Perf] getUserCards RPC: ${Date.now() - startQuery}ms`);
@@ -908,11 +911,13 @@ async function fetchUserCardsForStreamerFromDB(
 
   // RPC: DB側でGROUP BY集計 + streamer_idフィルタ
   const startQuery = Date.now();
-  const { data: rpcResult, error: rpcError } = await supabaseAdmin
-    .rpc("get_user_card_counts", {
+  const { data: rpcResult, error: rpcError } = await withRetry(
+    () => supabaseAdmin.rpc("get_user_card_counts", {
       p_twitch_user_id: twitchUserId,
       p_streamer_id: streamerId,
-    });
+    }),
+    "get_user_card_counts_for_streamer",
+  );
 
   if (!rpcError) {
     logger.info(`[Perf] getUserCardsForStreamer RPC: ${Date.now() - startQuery}ms`);
