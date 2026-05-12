@@ -763,6 +763,8 @@ async function sendChatAnnouncement(
       broadcasterTwitchUserId,
       streamerId: streamer.id,
       cardName: card.name,
+      drawCount: drawnCards.length,
+      multiDraw: isMultiDraw,
     });
   } else {
     // sendChatMessage が false を返した場合のログ（API呼び出し失敗）
@@ -771,6 +773,8 @@ async function sendChatAnnouncement(
       broadcasterTwitchUserId,
       streamerId: streamer.id,
       cardName: card.name,
+      drawCount: drawnCards.length,
+      multiDraw: isMultiDraw,
     });
   }
 }

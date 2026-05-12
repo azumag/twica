@@ -387,6 +387,62 @@ describe('EventSub reward mismatch handling', () => {
     )
   })
 
+  it('adds all multi-draw cards to existing single-card chat templates', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-multi-draw-single-template'
+    const timestamp = '2026-05-11T10:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'raid-gacha', title: 'Raid Gacha', cost: 500 },
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+
+    const cards = [
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+      { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
+      { id: 'card-3', name: 'Gamma', description: null, image_url: null, rarity: 'legendary', drop_rate: 1 },
+    ] as const
+
+    mocks.executeGachaForEventSub.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards: [...cards],
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} が {card} を獲得しました！',
+        },
+      },
+    })
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    expect(mocks.sendChatMessage).toHaveBeenCalledWith(
+      'broadcaster-1',
+      '@Viewer が Alpha を獲得しました！（全3枚: Alpha、Beta、Gamma）',
+    )
+  })
+
   it('abbreviates long multi-draw card lists before sending chat announcements', async () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret

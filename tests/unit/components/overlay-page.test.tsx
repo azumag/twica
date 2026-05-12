@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
-import type { RealtimeError, SubscribeOptions } from '@/lib/realtime'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import type { GachaBroadcastPayload, RealtimeError, SubscribeOptions } from '@/lib/realtime'
 import OverlayPage from '@/app/overlay/[streamerId]/page'
 
 const { subscribeMock } = vi.hoisted(() => ({
@@ -40,6 +40,7 @@ describe('OverlayPage', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
     subscribeMock.mockReset()
   })
@@ -63,5 +64,62 @@ describe('OverlayPage', () => {
     expect(await screen.findByText('Debug Mode - Connection Log')).toBeInTheDocument()
     expect(screen.getByText(`Last issue: ${connectionError.message}`)).toBeInTheDocument()
     expect(screen.queryByText('接続エラー')).not.toBeInTheDocument()
+  })
+
+  it('RealtimeのN連ガチャpayloadを1枚ずつ順番に表示する', async () => {
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+    let realtimeCallback: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      realtimeCallback = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+
+    await waitFor(() => {
+      expect(realtimeCallback).toBeDefined()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    act(() => {
+      realtimeCallback?.({
+        type: 'gacha',
+        card: {
+          id: 'card-1',
+          name: 'Alpha',
+          description: null,
+          image_url: null,
+          rarity: 'rare',
+        },
+        cards: [
+          {
+            id: 'card-1',
+            name: 'Alpha',
+            description: null,
+            image_url: null,
+            rarity: 'rare',
+          },
+          {
+            id: 'card-2',
+            name: 'Beta',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+        ],
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    expect(await screen.findByText('Alpha')).toBeInTheDocument()
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 3200))
+    })
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
   })
 })

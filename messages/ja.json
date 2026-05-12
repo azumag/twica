@@ -517,7 +517,7 @@
       "removeConfirm": "この追加報酬を削除しますか？EventSubサブスクリプションも削除されます。",
       "cannotUseAsMain": "この報酬は追加報酬として登録されています。先に追加報酬から削除してください。",
       "cannotUseAsAdditional": "この報酬はメイン報酬として設定されています。",
-      "drawCount": "一度に引ける回数",
+      "drawCount": "一度に排出する枚数",
       "raidOnly": "レイド限定",
       "multiDraw": "{count}連",
       "raidLimited": "レイド限定",
