@@ -148,18 +148,14 @@ export default function ChannelPointSettings({
   const [addingAdditional, setAddingAdditional] = useState(false);
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
   const [additionalDrawCount, setAdditionalDrawCount] = useState(1);
-  const [additionalRaidLimited, setAdditionalRaidLimited] = useState(false);
-  const [raidGachaActiveUntil, setRaidGachaActiveUntil] = useState<string | null>(null);
-  const [updatingRaidGacha, setUpdatingRaidGacha] = useState(false);
+  const [raidGiftDrawCount, setRaidGiftDrawCount] = useState(0);
+  const [updatingRaidGift, setUpdatingRaidGift] = useState(false);
   // Track if registration failed (webhook unreachable)
   // 登録失敗を追跡（Webhookに到達できなかった場合）
   const [registrationFailed, setRegistrationFailed] = useState(false);
   // Track the saved main reward ID (to detect changes for cleanup)
   // 保存済みのメイン報酬IDを追跡（変更検出とクリーンアップ用）
   const [savedMainRewardId, setSavedMainRewardId] = useState(currentRewardId || "");
-  const isRaidGachaActive = Boolean(
-    raidGachaActiveUntil && Date.parse(raidGachaActiveUntil) > Date.now()
-  );
 
   // チャネルポイント系スコープが付与済みか事前確認する。
   // 初回ログインではこれらのスコープを要求しないため、
@@ -280,15 +276,15 @@ export default function ChannelPointSettings({
       });
       if (response.ok) {
         const data = await response.json();
-        setRaidGachaActiveUntil(data.activeUntil ?? null);
+        setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.drawCount ?? 0))));
       }
     } catch {
       logger.error("Failed to fetch raid gacha status");
     }
   }, []);
 
-  const updateRaidGachaStatus = async (active: boolean) => {
-    setUpdatingRaidGacha(true);
+  const updateRaidGiftSettings = async () => {
+    setUpdatingRaidGift(true);
     setMessage("");
 
     try {
@@ -296,7 +292,7 @@ export default function ChannelPointSettings({
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active, activeMinutes: 30 }),
+        body: JSON.stringify({ drawCount: raidGiftDrawCount }),
       });
       const data = await response.json();
 
@@ -305,12 +301,12 @@ export default function ChannelPointSettings({
         return;
       }
 
-      setRaidGachaActiveUntil(data.activeUntil ?? null);
-      setMessage(active ? t("additionalRewards.raidStatusEnabled") : t("additionalRewards.raidStatusDisabled"));
+      setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.drawCount ?? 0))));
+      setMessage(t("additionalRewards.raidGiftSaved"));
     } catch {
       setMessage(t("additionalRewards.raidStatusFailed"));
     } finally {
-      setUpdatingRaidGacha(false);
+      setUpdatingRaidGift(false);
     }
   };
 
@@ -549,7 +545,7 @@ export default function ChannelPointSettings({
           rewardId: selectedAdditionalRewardId,
           rewardName: rewardName,
           drawCount: additionalDrawCount,
-          isRaidLimited: additionalRaidLimited,
+          isRaidLimited: false,
         }),
       });
 
@@ -566,7 +562,6 @@ export default function ChannelPointSettings({
       setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
       setSelectedAdditionalRewardId("");
       setAdditionalDrawCount(1);
-      setAdditionalRaidLimited(false);
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
       setRaidEventSubWarning(raidSubscriptionWarning);
@@ -1136,44 +1131,40 @@ export default function ChannelPointSettings({
                  </div>
                )}
 
-               {additionalRewards.some((reward) => reward.is_raid_limited) && (
-                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded bg-gray-600/50 px-3 py-2">
-                   <div>
-                     <div className="text-sm text-gray-200">
-                       {t("additionalRewards.raidStatusTitle")}
-                     </div>
-                     <div className="text-xs text-gray-400">
-                       {isRaidGachaActive
-                         ? t("additionalRewards.raidStatusActive", {
-                             time: new Date(raidGachaActiveUntil as string).toLocaleTimeString(),
-                           })
-                         : t("additionalRewards.raidStatusInactive")}
-                     </div>
+               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded bg-gray-600/50 px-3 py-2">
+                 <div>
+                   <div className="text-sm text-gray-200">
+                     {t("additionalRewards.raidGiftTitle")}
                    </div>
-                   <div className="flex gap-2">
-                     <button
-                       type="button"
-                       onClick={() => updateRaidGachaStatus(true)}
-                       disabled={updatingRaidGacha}
-                       className="rounded-lg bg-cyan-600 px-3 py-2 text-xs text-white hover:bg-cyan-700 disabled:opacity-50"
-                     >
-                       {t("additionalRewards.raidStatusEnable")}
-                     </button>
-                     <button
-                       type="button"
-                       onClick={() => updateRaidGachaStatus(false)}
-                       disabled={updatingRaidGacha || !isRaidGachaActive}
-                       className="rounded-lg bg-gray-700 px-3 py-2 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50"
-                     >
-                       {t("additionalRewards.raidStatusDisable")}
-                     </button>
+                   <div className="text-xs text-gray-400">
+                     {raidGiftDrawCount > 0
+                       ? t("additionalRewards.raidGiftEnabled", { count: raidGiftDrawCount })
+                       : t("additionalRewards.raidGiftDisabled")}
                    </div>
                  </div>
-               )}
+                 <div className="flex items-center gap-2">
+                   <input
+                     type="number"
+                     min={0}
+                     max={10}
+                     value={raidGiftDrawCount}
+                     onChange={(e) => setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(e.target.value) || 0)))}
+                     className="w-16 rounded bg-gray-700 px-2 py-1 text-sm text-gray-100"
+                   />
+                   <button
+                     type="button"
+                     onClick={updateRaidGiftSettings}
+                     disabled={updatingRaidGift}
+                     className="rounded-lg bg-cyan-600 px-3 py-2 text-xs text-white hover:bg-cyan-700 disabled:opacity-50"
+                   >
+                     {updatingRaidGift ? tCommon("loading") : tCommon("save")}
+                   </button>
+                 </div>
+               </div>
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto_auto] sm:items-center">
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto] sm:items-center">
                  <select
                    value={selectedAdditionalRewardId}
                    onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
@@ -1206,17 +1197,6 @@ export default function ChannelPointSettings({
                      onChange={(e) => setAdditionalDrawCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
                      className="w-12 rounded bg-gray-700 px-2 py-1 text-sm text-gray-100"
                    />
-                 </label>
-                 <label className="flex items-center gap-2 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200">
-                   <input
-                     type="checkbox"
-                     checked={additionalRaidLimited}
-                     onChange={(e) => setAdditionalRaidLimited(e.target.checked)}
-                     className="h-4 w-4 rounded border-gray-500 bg-gray-700"
-                   />
-                   <span className="whitespace-nowrap text-xs text-gray-300">
-                     {t("additionalRewards.raidOnly")}
-                   </span>
                  </label>
                  <button
                    onClick={handleAddAdditionalReward}

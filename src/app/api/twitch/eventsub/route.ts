@@ -17,7 +17,6 @@ const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
 const CARD_LIST_SEPARATOR = "、";
-const RAID_GACHA_EVENTSUB_ACTIVE_MINUTES = 30;
 
 function formatCardNamesForChat(cardNames: string[], maxCharacters: number): string {
   if (cardNames.length === 0) return "";
@@ -201,7 +200,19 @@ export async function POST(request: NextRequest) {
         }
       }
     } else if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID) {
-      await handleRaidNotification(messageId, event);
+      const result = await handleRaidNotification(messageId, event);
+      if (result) {
+        try {
+          const { getCloudflareContext } = await import('@opennextjs/cloudflare');
+          const { ctx } = await getCloudflareContext({ async: true });
+          ctx.waitUntil(postRedemptionNotify(result));
+        } catch (e) {
+          logger.warn('[EventSub] waitUntil unavailable for raid gift, falling back to sync', {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          await postRedemptionNotify(result);
+        }
+      }
     }
 
     return NextResponse.json({ received: true });
@@ -260,17 +271,6 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ error: ERROR_MESSAGES.UNKNOWN_MESSAGE_TYPE }, { status: 400 });
 }
 
-function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
-  const message = error?.message ?? "";
-  return error?.code === "PGRST204" || message.includes("raid_gacha_active_until");
-}
-
-function isActiveUntilAfter(value: string | null | undefined, target: Date): boolean {
-  if (!value) return false;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) && timestamp > target.getTime();
-}
-
 async function handleRaidNotification(messageId: string, event: {
   from_broadcaster_user_id?: string;
   from_broadcaster_user_login?: string;
@@ -279,74 +279,78 @@ async function handleRaidNotification(messageId: string, event: {
   to_broadcaster_user_login?: string;
   to_broadcaster_user_name?: string;
   viewers?: number;
-}): Promise<void> {
+}): Promise<RedemptionNotifyData | null> {
   const toBroadcasterUserId = event.to_broadcaster_user_id;
-  if (!toBroadcasterUserId) {
-    logger.warn("[EventSub] Raid notification missing to_broadcaster_user_id", { messageId, event });
-    return;
+  const fromBroadcasterUserId = event.from_broadcaster_user_id;
+  if (!toBroadcasterUserId || !fromBroadcasterUserId) {
+    logger.warn("[EventSub] Raid notification missing broadcaster id", { messageId, event });
+    return null;
   }
 
-  const activeUntil = new Date(Date.now() + RAID_GACHA_EVENTSUB_ACTIVE_MINUTES * 60 * 1000).toISOString();
-  const supabaseAdmin = getSupabaseAdmin();
+  const gachaService = new GachaService();
+  const result = await gachaService.executeGachaForRaidEvent({
+    to_broadcaster_user_id: toBroadcasterUserId,
+    from_broadcaster_user_id: fromBroadcasterUserId,
+    from_broadcaster_user_login: event.from_broadcaster_user_login,
+    from_broadcaster_user_name: event.from_broadcaster_user_name,
+  }, messageId);
 
-  const { data: streamer, error: streamerError } = await supabaseAdmin
-    .from("streamers")
-    .select("id, raid_gacha_active_until")
-    .eq("twitch_user_id", toBroadcasterUserId)
-    .maybeSingle();
-
-  if (isRaidStateSchemaError(streamerError)) {
-    logger.warn("[EventSub] Raid gacha state column is unavailable; raid notification ignored", {
-      messageId,
-      toBroadcasterUserId,
-      error: streamerError?.message,
-    });
-    return;
-  }
-
-  if (streamerError || !streamer) {
-    await reportError(new Error(`Raid EventSub streamer lookup failed: ${streamerError?.message ?? "Streamer not found"}`), {
+  if (!result.success) {
+    if (result.error === 'Raid gacha disabled') {
+      logger.info("[EventSub] Raid gacha gift skipped because it is disabled", {
+        messageId,
+        toBroadcasterUserId,
+        fromBroadcasterUserId,
+      });
+      return null;
+    }
+    if (result.error === 'Duplicate event') {
+      logger.info("[EventSub] Raid gacha gift skipped - duplicate event", { messageId });
+      return null;
+    }
+    if (result.error === 'No cards available for this streamer') {
+      logger.warn("[EventSub] Raid gacha gift skipped - no cards available", {
+        messageId,
+        toBroadcasterUserId,
+      });
+      return null;
+    }
+    await reportError(new Error(`Raid gacha gift failed: ${result.error}`), {
       context: "eventsub:handleRaidNotification",
       messageId,
       toBroadcasterUserId,
-      fromBroadcasterUserId: event.from_broadcaster_user_id,
+      fromBroadcasterUserId,
+      gachaError: result.error,
     });
-    return;
+    return null;
   }
 
-  if (isActiveUntilAfter(streamer.raid_gacha_active_until, new Date(activeUntil))) {
-    logger.info("[EventSub] Raid gacha window already extends beyond automatic activation", {
-      messageId,
-      streamerId: streamer.id,
-      activeUntil: streamer.raid_gacha_active_until,
-    });
-    return;
+  const streamer = result.data.streamer;
+  if (!streamer) {
+    logger.warn("[EventSub] Raid gacha gift missing streamer info", { messageId });
+    return null;
   }
 
-  const { error: updateError } = await supabaseAdmin
-    .from("streamers")
-    .update({ raid_gacha_active_until: activeUntil })
-    .eq("id", streamer.id);
-
-  if (updateError) {
-    await reportError(new Error(`Raid gacha activation failed: ${updateError.message}`), {
-      context: "eventsub:handleRaidNotification",
-      messageId,
-      streamerId: streamer.id,
-      toBroadcasterUserId,
-      fromBroadcasterUserId: event.from_broadcaster_user_id,
-    });
-    return;
-  }
-
-  logger.info("[EventSub] Raid gacha window activated from raid notification", {
+  logger.info("[EventSub] Raid gacha gift succeeded", {
     messageId,
     streamerId: streamer.id,
     toBroadcasterUserId,
-    fromBroadcasterUserId: event.from_broadcaster_user_id,
+    fromBroadcasterUserId,
     viewers: event.viewers,
-    activeUntil,
+    drawCount: result.data.cards?.length ?? 1,
   });
+
+  return {
+    gachaResult: {
+      type: "gacha",
+      card: result.data.card,
+      cards: result.data.cards,
+      userTwitchUsername: result.data.userTwitchUsername,
+    },
+    broadcasterTwitchUserId: toBroadcasterUserId,
+    streamer,
+    userId: fromBroadcasterUserId,
+  };
 }
 
 /** postRedemptionNotify に渡すデータ（streamer.id を streamerId として再利用し冗長を排除） */

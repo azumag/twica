@@ -9,6 +9,7 @@ import { hasScope } from '@/lib/twitch/token-manager'
 
 const mocks = vi.hoisted(() => ({
   executeGachaForEventSub: vi.fn(),
+  executeGachaForRaidEvent: vi.fn(),
   buildMessage: vi.fn((template: string | null, placeholders: { user: string; card: string; cards?: string; draws?: number }) => {
     const messageTemplate = template || '{user} got {card}'
     return messageTemplate
@@ -25,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/services/gacha', () => ({
   GachaService: vi.fn().mockImplementation(() => ({
     executeGachaForEventSub: mocks.executeGachaForEventSub,
+    executeGachaForRaidEvent: mocks.executeGachaForRaidEvent,
   })),
 }))
 
@@ -169,7 +171,7 @@ describe('EventSub reward mismatch handling', () => {
     expect(mockReportError).not.toHaveBeenCalled()
   })
 
-  it('activates the raid gacha window from incoming Twitch raid notifications', async () => {
+  it('gifts configured raid gacha draws to the incoming raider', async () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-channel-raid'
@@ -187,32 +189,23 @@ describe('EventSub reward mismatch handling', () => {
       },
     })
     const signature = await signEventSubBody(secret, messageId, timestamp, body)
-    const updateQuery = {
-      eq: vi.fn().mockResolvedValue({ error: null }),
-    }
-    const streamerQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({
-        data: { id: 'streamer-1', raid_gacha_active_until: null },
-        error: null,
-      }),
-    }
-    const from = vi.fn((table: string) => {
-      if (table === 'streamers') {
-        return {
-          select: streamerQuery.select,
-          eq: streamerQuery.eq,
-          maybeSingle: streamerQuery.maybeSingle,
-          update: vi.fn((value: { raid_gacha_active_until: string }) => {
-            expect(Date.parse(value.raid_gacha_active_until)).toBeGreaterThan(Date.now())
-            return updateQuery
-          }),
-        }
-      }
-      throw new Error(`Unexpected table: ${table}`)
+    const cards = [
+      { id: 'card-1', name: 'Raid Card 1', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
+      { id: 'card-2', name: 'Raid Card 2', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+    ]
+    mocks.executeGachaForRaidEvent.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards,
+        userTwitchUsername: 'Raider',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: false,
+          chat_announcement_template: null,
+        },
+      },
     })
-    mockGetSupabaseAdmin.mockReturnValue({ from } as unknown as ReturnType<typeof getSupabaseAdmin>)
 
     const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
       method: 'POST',
@@ -229,8 +222,21 @@ describe('EventSub reward mismatch handling', () => {
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ received: true })
     expect(mocks.executeGachaForEventSub).not.toHaveBeenCalled()
-    expect(streamerQuery.eq).toHaveBeenCalledWith('twitch_user_id', 'broadcaster-1')
-    expect(updateQuery.eq).toHaveBeenCalledWith('id', 'streamer-1')
+    expect(mocks.executeGachaForRaidEvent).toHaveBeenCalledWith({
+      to_broadcaster_user_id: 'broadcaster-1',
+      from_broadcaster_user_id: 'raider-1',
+      from_broadcaster_user_login: 'raider',
+      from_broadcaster_user_name: 'Raider',
+    }, messageId)
+    expect(mockBroadcastGachaResult).toHaveBeenCalledWith(
+      'streamer-1',
+      expect.objectContaining({
+        card: cards[0],
+        cards,
+        userTwitchUsername: 'Raider',
+      }),
+      expect.any(Object),
+    )
     expect(mockReportError).not.toHaveBeenCalled()
   })
 

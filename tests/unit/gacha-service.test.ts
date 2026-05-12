@@ -505,3 +505,97 @@ describe('GachaService.executeGachaForEventSub', () => {
     expect(mockRpc).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('GachaService.executeGachaForRaidEvent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('incoming raid の送信者に設定回数分のガチャを付与する', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        raid_gacha_draw_count: 2,
+      },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForRaidEvent({
+      to_broadcaster_user_id: 'broadcaster-1',
+      from_broadcaster_user_id: 'raider-1',
+      from_broadcaster_user_login: 'raider',
+      from_broadcaster_user_name: 'Raider',
+    }, 'raid-event-1')
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.cards).toHaveLength(2)
+      expect(result.data.userTwitchUsername).toBe('Raider')
+      expect(result.data.streamer?.id).toBe('streamer-1')
+    }
+    expect(streamerQuery.eq).toHaveBeenCalledWith('twitch_user_id', 'broadcaster-1')
+    expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({
+      p_event_id: 'raid-event-1',
+      p_user_twitch_id: 'raider-1',
+      p_reward_cost: null,
+    }))
+    expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({
+      p_event_id: 'raid-event-1:2',
+      p_user_twitch_id: 'raider-1',
+      p_reward_cost: null,
+    }))
+  })
+
+  it('レイド送信者プレゼントが0回ならガチャを実行しない', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        raid_gacha_draw_count: 0,
+      },
+      error: null,
+    })
+    const mockRpc = vi.fn()
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForRaidEvent({
+      to_broadcaster_user_id: 'broadcaster-1',
+      from_broadcaster_user_id: 'raider-1',
+      from_broadcaster_user_name: 'Raider',
+    }, 'raid-event-disabled')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Raid gacha disabled')
+    }
+    expect(mockRpc).not.toHaveBeenCalled()
+  })
+})
