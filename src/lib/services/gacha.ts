@@ -38,6 +38,8 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
   return error?.code === 'PGRST204' || message.includes('draw_count') || message.includes('is_raid_limited')
 }
 
+const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
+
 function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? ''
   return error?.code === 'PGRST204'
@@ -314,7 +316,7 @@ export class GachaService {
 
       // Check if the reward ID matches any additional reward
       // 追加報酬のいずれかと一致するかチェック
-      let { data: additionalReward, error: additionalError } = await withRetry(
+      const { data: additionalReward, error: additionalError } = await withRetry(
         () => this.supabase
           .from('streamer_additional_gacha_rewards')
           .select('id, draw_count, is_raid_limited')
@@ -325,19 +327,12 @@ export class GachaService {
       )
 
       if (isRaidOptionsSchemaError(additionalError)) {
-        const fallbackResult = await withRetry(
-          () => this.supabase
-            .from('streamer_additional_gacha_rewards')
-            .select('id')
-            .eq('streamer_id', streamer.id)
-            .eq('reward_id', event.reward.id)
-            .maybeSingle(),
-          'gacha:executeGachaForEventSub:additionalReward:fallback',
-        )
-        additionalReward = fallbackResult.data
-          ? { ...fallbackResult.data, draw_count: 1, is_raid_limited: false }
-          : fallbackResult.data
-        additionalError = fallbackResult.error
+        logger.warn('Additional reward options schema is unavailable; refusing to execute a 1-draw fallback', {
+          rewardId: event.reward.id,
+          streamerId: streamer.id,
+          error: additionalError?.message,
+        })
+        return err(ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE)
       }
 
       // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る

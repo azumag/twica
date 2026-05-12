@@ -13,6 +13,9 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
   return error?.code === "PGRST204" || message.includes("draw_count") || message.includes("is_raid_limited");
 }
 
+const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
+  "追加報酬のN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。";
+
 /**
  * GET: ストリーマーの追加報酬一覧を取得
  * Fetch additional gacha rewards for the current streamer
@@ -192,7 +195,7 @@ export async function POST(request: NextRequest) {
 
     // Insert the new additional reward
     // 新しい追加報酬を挿入
-    let { data: newReward, error } = await supabaseAdmin
+    const { data: newReward, error } = await supabaseAdmin
       .from("streamer_additional_gacha_rewards")
       .insert({
         streamer_id: streamer.id,
@@ -205,19 +208,16 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
 
     if (isRaidOptionsSchemaError(error)) {
-      const fallbackResult = await supabaseAdmin
-        .from("streamer_additional_gacha_rewards")
-        .insert({
-          streamer_id: streamer.id,
-          reward_id: rewardId,
-          reward_name: rewardName || null,
-        })
-        .select()
-        .maybeSingle();
-      newReward = fallbackResult.data
-        ? { ...fallbackResult.data, draw_count: 1, is_raid_limited: false }
-        : fallbackResult.data;
-      error = fallbackResult.error;
+      logger.warn("Additional reward options schema is not ready; refusing to create a 1-draw fallback reward", {
+        rewardId,
+        streamerId: streamer.id,
+        requestedDrawCount: normalizedDrawCount,
+        error: error?.message,
+      });
+      return NextResponse.json(
+        { error: RAID_OPTIONS_SCHEMA_PENDING_MESSAGE },
+        { status: 503 }
+      );
     }
 
     if (error) {

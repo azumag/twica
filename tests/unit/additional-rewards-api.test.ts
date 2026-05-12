@@ -122,7 +122,47 @@ describe('/api/streamer/additional-rewards raid options', () => {
     })
   })
 
-  it('normalizes legacy rows when raid option columns are not in schema cache yet', async () => {
+  it('rejects new additional rewards while raid option columns are not in schema cache yet', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'streamer-1', channel_point_reward_id: 'main-reward' },
+      error: null,
+    })
+    const insertQuery = createMockQueryBuilder()
+    ;(insertQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: null,
+      error: {
+        message: "Could not find the 'draw_count' column",
+        code: 'PGRST204',
+      },
+    })
+    const fromMock = vi.fn((table: string) => {
+      if (table === 'streamers') return streamerQuery
+      if (table === 'streamer_additional_gacha_rewards') return insertQuery
+      return createMockQueryBuilder()
+    })
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const response = await POST(new NextRequest('http://localhost/api/streamer/additional-rewards', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        rewardId: 'raid-reward',
+        rewardName: 'Raid 10',
+        drawCount: 10,
+        isRaidLimited: true,
+      }),
+    }))
+
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({
+      error: '追加報酬のN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。',
+    })
+  })
+
+  it('normalizes legacy rows on GET when raid option columns are not in schema cache yet', async () => {
     const streamerQuery = createMockQueryBuilder()
     ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { id: 'streamer-1' },
