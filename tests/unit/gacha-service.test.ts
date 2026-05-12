@@ -451,7 +451,7 @@ describe('GachaService.executeGachaForEventSub', () => {
     expect(mockRpc).not.toHaveBeenCalled()
   })
 
-  it('追加報酬オプション未適用のschema cacheでは通常の1回ガチャにフォールバックする', async () => {
+  it('追加報酬オプション未適用のschema cacheでは1回ガチャにフォールバックしない', async () => {
     const streamerQuery = createMockQueryBuilder()
     ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: {
@@ -467,26 +467,15 @@ describe('GachaService.executeGachaForEventSub', () => {
       data: null,
       error: { message: "Could not find the 'draw_count' column", code: 'PGRST204' },
     })
-    const fallbackQuery = createMockQueryBuilder()
-    ;(fallbackQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'additional-1' },
-      error: null,
-    })
-    const cardsQuery = createCardsQuery(testCards)
     const mockRpc = vi.fn().mockResolvedValue({
       data: { is_duplicate: false },
       error: null,
     })
-    let additionalQueryCount = 0
 
     mockGetSupabaseAdmin.mockReturnValue({
       from: vi.fn((table: string) => {
         if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') {
-          additionalQueryCount += 1
-          return additionalQueryCount === 1 ? optionQuery : fallbackQuery
-        }
-        if (table === 'cards') return cardsQuery
+        if (table === 'streamer_additional_gacha_rewards') return optionQuery
         return createMockQueryBuilder()
       }),
       rpc: mockRpc,
@@ -501,8 +490,11 @@ describe('GachaService.executeGachaForEventSub', () => {
       reward: { id: 'legacy-reward', cost: 100 },
     }, 'event-legacy')
 
-    expect(result.success).toBe(true)
-    expect(mockRpc).toHaveBeenCalledTimes(1)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Additional reward options unavailable')
+    }
+    expect(mockRpc).not.toHaveBeenCalled()
   })
 })
 

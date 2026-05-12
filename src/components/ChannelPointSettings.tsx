@@ -1137,9 +1137,7 @@ export default function ChannelPointSettings({
                      {t("additionalRewards.raidGiftTitle")}
                    </div>
                    <div className="text-xs text-gray-400">
-                     {raidGiftDrawCount > 0
-                       ? t("additionalRewards.raidGiftEnabled", { count: raidGiftDrawCount })
-                       : t("additionalRewards.raidGiftDisabled")}
+                     {t("additionalRewards.raidGiftDescription")}
                    </div>
                  </div>
                  <div className="flex items-center gap-2">
@@ -1164,7 +1162,7 @@ export default function ChannelPointSettings({
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto] sm:items-center">
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_170px_auto] sm:items-center">
                  <select
                    value={selectedAdditionalRewardId}
                    onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
