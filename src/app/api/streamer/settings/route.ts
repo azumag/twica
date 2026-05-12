@@ -92,6 +92,8 @@ export async function POST(request: NextRequest) {
       // Chat announcement settings (optional)
       chatAnnouncementEnabled,
       chatAnnouncementTemplate,
+      chatAnnouncementMultiTemplate,
+      chatAnnouncementMultiShowCards,
       // レアリティ別自動確率設定（オプション）
       rarityWeights,
       // 未所持カード表示設定（オプション、Issue #395）
@@ -120,6 +122,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      chatAnnouncementMultiShowCards !== undefined
+      && typeof chatAnnouncementMultiShowCards !== "boolean"
+    ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -166,6 +174,12 @@ export async function POST(request: NextRequest) {
     // chatAnnouncementTemplate: カスタムテンプレート（nullでデフォルト使用）
     if (chatAnnouncementTemplate !== undefined) {
       updateData.chat_announcement_template = chatAnnouncementTemplate;
+    }
+    if (chatAnnouncementMultiTemplate !== undefined) {
+      updateData.chat_announcement_multi_template = chatAnnouncementMultiTemplate;
+    }
+    if (chatAnnouncementMultiShowCards !== undefined) {
+      updateData.chat_announcement_multi_show_cards = chatAnnouncementMultiShowCards;
     }
 
     // rarityWeights: レアリティ別目標確率（nullで自動モード無効）

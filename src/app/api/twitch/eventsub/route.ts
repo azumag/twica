@@ -8,8 +8,6 @@ import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
 import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
-import { hasScope } from "@/lib/twitch/token-manager";
-import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 import { countCharacters } from "@/lib/text-utils";
 
@@ -17,6 +15,7 @@ const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
 const CARD_LIST_SEPARATOR = "、";
+const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = '@{user} が{draws}連ガチャで {rarityCounts} を獲得しました！{cards}';
 
 function formatCardNamesForChat(cardNames: string[], maxCharacters: number): string {
   if (cardNames.length === 0) return "";
@@ -66,6 +65,33 @@ function fitCardNamesForMessage(
   }
 
   return { cardsText, message };
+}
+
+function formatRarityCountsForChat(cardNamesByRarity: string[]): string {
+  if (cardNamesByRarity.length === 0) return "";
+
+  const counts = new Map<string, number>();
+  for (const rarity of cardNamesByRarity) {
+    counts.set(rarity, (counts.get(rarity) ?? 0) + 1);
+  }
+
+  const rarityOrder = ["legendary", "epic", "rare", "common"];
+  const rarityMap: Record<string, string> = {
+    common: 'コモン',
+    rare: 'レア',
+    epic: 'エピック',
+    legendary: 'レジェンダリー',
+  };
+
+  return [...counts.entries()]
+    .sort(([a], [b]) => {
+      const aIndex = rarityOrder.indexOf(a);
+      const bIndex = rarityOrder.indexOf(b);
+      return (aIndex === -1 ? rarityOrder.length : aIndex)
+        - (bIndex === -1 ? rarityOrder.length : bIndex);
+    })
+    .map(([rarity, count]) => `${rarityMap[rarity] ?? rarity}x${count}`)
+    .join(CARD_LIST_SEPARATOR);
 }
 
 /**
@@ -553,6 +579,8 @@ async function sendChatAnnouncement(
     id: string;
     chat_announcement_enabled: boolean;
     chat_announcement_template: string | null;
+    chat_announcement_multi_template: string | null;
+    chat_announcement_multi_show_cards: boolean;
   },
   card: GachaCard,
   userName: string,
@@ -562,6 +590,7 @@ async function sendChatAnnouncement(
   const drawnCards = cards && cards.length > 0 ? cards : [card];
   const isMultiDraw = drawnCards.length > 1;
   const cardNames = drawnCards.map((drawnCard) => drawnCard.name);
+  const rarityCounts = formatRarityCountsForChat(drawnCards.map((drawnCard) => drawnCard.rarity));
 
   // 関数呼び出しを記録（デバッグ用：この関数が呼ばれたことを確認するため）
   // Log function entry to confirm this function is being called
@@ -586,17 +615,6 @@ async function sendChatAnnouncement(
     return;
   }
 
-  // user:write:chatスコープが付与されているかチェック
-  // Check if user:write:chat scope is granted
-  const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE);
-  if (!hasChatScope) {
-    logger.info('Chat announcement skipped - missing scope', {
-      broadcasterTwitchUserId,
-      streamerId: streamer.id,
-    });
-    return;
-  }
-
   // レアリティの日本語/英語変換マップ
   // Rarity translation map
   const rarityMap: Record<string, string> = {
@@ -609,9 +627,10 @@ async function sendChatAnnouncement(
   // テンプレートに含まれるプレースホルダーに応じてのみDBクエリを実行
   // waitUntil内のwall time短縮のため、不要なDBクエリをスキップ
   // Run DB queries only for placeholders that appear in the template to keep waitUntil wall-time short
-  const messageTemplate = streamer.chat_announcement_template
-    || (isMultiDraw ? '@{user} が{draws}連ガチャで {cards} を獲得しました！' : DEFAULT_CHAT_TEMPLATE);
-  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}/.test(messageTemplate);
+  const messageTemplate = isMultiDraw
+    ? streamer.chat_announcement_multi_template || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE
+    : streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
+  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}|\{rarityCounts\}/.test(messageTemplate);
   const effectiveTemplate = messageTemplate;
   const needsCardCount = /\{num\}/.test(effectiveTemplate);
   const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
@@ -723,8 +742,11 @@ async function sendChatAnnouncement(
   const placeholders: ChatMessagePlaceholders = {
     user: userName,
     card: card.name,
-    cards: isMultiDraw ? cardNames.join(CARD_LIST_SEPARATOR) : undefined,
+    cards: isMultiDraw && streamer.chat_announcement_multi_show_cards
+      ? cardNames.join(CARD_LIST_SEPARATOR)
+      : undefined,
     draws: isMultiDraw ? drawnCards.length : undefined,
+    rarityCounts: isMultiDraw ? rarityCounts : undefined,
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,
@@ -738,7 +760,7 @@ async function sendChatAnnouncement(
   const chatService = new TwitchChatService();
   let message: string;
 
-  if (isMultiDraw && usesMultiDrawPlaceholders) {
+  if (isMultiDraw && streamer.chat_announcement_multi_show_cards && usesMultiDrawPlaceholders) {
     const fitted = fitCardNamesForMessage(cardNames, (cardsText) =>
       chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText })
     );
@@ -746,7 +768,7 @@ async function sendChatAnnouncement(
     message = fitted.message;
   } else {
     const baseMessage = chatService.buildMessage(messageTemplate, placeholders);
-    if (isMultiDraw) {
+    if (isMultiDraw && streamer.chat_announcement_multi_show_cards && !usesMultiDrawPlaceholders) {
       message = fitCardNamesForMessage(
         cardNames,
         (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`

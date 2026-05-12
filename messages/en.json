@@ -387,9 +387,14 @@
     "noLineBreakNote": "* Twitch chat does not support line breaks. Messages with line breaks will be sent as a single line.",
     "form": {
       "enableAnnouncement": "Enable chat announcements",
+      "showAdvanced": "Show advanced settings",
       "customTemplate": "Custom Template (optional)",
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
-      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'cards'}'=all card names, '{'draws'}'=draw count, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "multiTemplate": "Multi-draw Template (optional)",
+      "multiTemplatePlaceholder": "@'{'user'}' got '{'rarityCounts'}' from a '{'draws'}'-draw gacha! '{'cards'}'",
+      "multiShowCards": "Include card-name list in multi-draw announcements",
+      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list",
       "previewLength": "Preview length: {current} / {max} characters"
     },
     "buttons": {
@@ -418,6 +423,8 @@
     "demo": {
       "title": "Chat Message Preview",
       "description": "Preview of the message that will be sent (using sample data)",
+      "singleTitle": "Single draw",
+      "multiTitle": "Multi-draw",
       "close": "Close"
     },
     "bot": {

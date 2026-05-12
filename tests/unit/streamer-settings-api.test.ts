@@ -84,6 +84,43 @@ describe('POST /api/streamer/settings', () => {
     expect(getSupabaseAdmin).toHaveBeenCalled()
   })
 
+  it('should update multi-draw chat announcement settings', async () => {
+    const builder = createSupabaseMock()
+      .withMaybeSingleResponse({
+        id: 'streamer123',
+        twitch_user_id: 'streamer123',
+      })
+    const mockSupabase = builder.build()
+    const query = builder.getQueryBuilder()
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        chatAnnouncementEnabled: true,
+        chatAnnouncementTemplate: '@{user} got {card}',
+        chatAnnouncementMultiTemplate: '@{user}: {draws}連 {rarityCounts} {cards}',
+        chatAnnouncementMultiShowCards: false,
+      }),
+    })
+
+    const response = await POST(request)
+
+    expect(response.status).toBe(200)
+    expect(query.update).toHaveBeenCalledWith(expect.objectContaining({
+      chat_announcement_enabled: true,
+      chat_announcement_template: '@{user} got {card}',
+      chat_announcement_multi_template: '@{user}: {draws}連 {rarityCounts} {cards}',
+      chat_announcement_multi_show_cards: false,
+    }))
+  })
+
   it('should reject rarity weights when total is not 100%', async () => {
     const mockSupabase = createSupabaseMock().build()
 

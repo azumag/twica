@@ -36,6 +36,12 @@ export interface Database {
           // チャット通知のカスタムテンプレート（nullの場合はデフォルトテンプレートを使用）
           // Custom message template for chat announcements (null uses default)
           chat_announcement_template: string | null
+          // N連ガチャ向けチャット通知のカスタムテンプレート（nullの場合はN連デフォルト）
+          // Custom template for multi-draw chat announcements (null uses multi-draw default)
+          chat_announcement_multi_template: string | null
+          // N連ガチャ通知に個別カード名一覧を含めるか
+          // Whether multi-draw announcements include the individual card-name list
+          chat_announcement_multi_show_cards: boolean
           // レアリティ名をキーにした目標確率マップ（0-100）
           // Dynamic rarity-to-target-percentage map (0-100)
           rarity_weights: Record<string, number> | null
@@ -67,6 +73,8 @@ export interface Database {
           gacha_sound_enabled?: boolean
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
+          chat_announcement_multi_template?: string | null
+          chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
@@ -88,6 +96,8 @@ export interface Database {
           gacha_sound_enabled?: boolean
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
+          chat_announcement_multi_template?: string | null
+          chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean

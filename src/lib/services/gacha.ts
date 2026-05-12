@@ -23,6 +23,8 @@ export interface EventSubStreamerInfo {
   id: string
   chat_announcement_enabled: boolean
   chat_announcement_template: string | null
+  chat_announcement_multi_template: string | null
+  chat_announcement_multi_show_cards: boolean
 }
 
 export interface GachaResult {
@@ -40,11 +42,13 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
 
 const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
 
-function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
+function isStreamerSettingsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? ''
   return error?.code === 'PGRST204'
     || message.includes('raid_gacha_active_until')
     || message.includes('raid_gacha_draw_count')
+    || message.includes('chat_announcement_multi_template')
+    || message.includes('chat_announcement_multi_show_cards')
 }
 
 function isRaidGachaActive(activeUntil: string | null | undefined, now = new Date()): boolean {
@@ -269,17 +273,24 @@ export class GachaService {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
       let { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, raid_gacha_active_until')
+        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until')
         .eq('twitch_user_id', event.broadcaster_user_id)
         .maybeSingle()
 
-      if (isRaidStateSchemaError(streamerError)) {
+      if (isStreamerSettingsSchemaError(streamerError)) {
         const fallbackResult = await this.supabase
           .from('streamers')
           .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
           .eq('twitch_user_id', event.broadcaster_user_id)
           .maybeSingle()
-        streamer = fallbackResult.data ? { ...fallbackResult.data, raid_gacha_active_until: null } : fallbackResult.data
+        streamer = fallbackResult.data
+          ? {
+              ...fallbackResult.data,
+              chat_announcement_multi_template: null,
+              chat_announcement_multi_show_cards: true,
+              raid_gacha_active_until: null,
+            }
+          : fallbackResult.data
         streamerError = fallbackResult.error
       }
 
@@ -304,6 +315,8 @@ export class GachaService {
             id: streamer.id,
             chat_announcement_enabled: streamer.chat_announcement_enabled,
             chat_announcement_template: streamer.chat_announcement_template,
+            chat_announcement_multi_template: streamer.chat_announcement_multi_template,
+            chat_announcement_multi_show_cards: streamer.chat_announcement_multi_show_cards ?? true,
           },
         })
       }
@@ -376,17 +389,24 @@ export class GachaService {
     try {
       let { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, chat_announcement_enabled, chat_announcement_template, raid_gacha_draw_count')
+        .select('id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_draw_count')
         .eq('twitch_user_id', event.to_broadcaster_user_id)
         .maybeSingle()
 
-      if (isRaidStateSchemaError(streamerError)) {
+      if (isStreamerSettingsSchemaError(streamerError)) {
         const fallbackResult = await this.supabase
           .from('streamers')
           .select('id, chat_announcement_enabled, chat_announcement_template')
           .eq('twitch_user_id', event.to_broadcaster_user_id)
           .maybeSingle()
-        streamer = fallbackResult.data ? { ...fallbackResult.data, raid_gacha_draw_count: 0 } : fallbackResult.data
+        streamer = fallbackResult.data
+          ? {
+              ...fallbackResult.data,
+              chat_announcement_multi_template: null,
+              chat_announcement_multi_show_cards: true,
+              raid_gacha_draw_count: 0,
+            }
+          : fallbackResult.data
         streamerError = fallbackResult.error
       }
 
@@ -417,6 +437,8 @@ export class GachaService {
           id: streamer.id,
           chat_announcement_enabled: streamer.chat_announcement_enabled,
           chat_announcement_template: streamer.chat_announcement_template,
+          chat_announcement_multi_template: streamer.chat_announcement_multi_template,
+          chat_announcement_multi_show_cards: streamer.chat_announcement_multi_show_cards ?? true,
         },
       })
     } catch (error) {
