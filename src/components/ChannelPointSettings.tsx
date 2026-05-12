@@ -1173,11 +1173,11 @@ export default function ChannelPointSettings({
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto_auto] sm:items-center">
+               <div className="flex flex-wrap items-stretch gap-2">
                  <select
                    value={selectedAdditionalRewardId}
                    onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
-                   className="min-w-0 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200"
+                   className="min-w-[240px] flex-[1_1_280px] rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200"
                  >
                    <option value="">{t("additionalRewards.selectToAdd")}</option>
                    {rewards
@@ -1194,8 +1194,8 @@ export default function ChannelPointSettings({
                        </option>
                      ))}
                  </select>
-                 <label className="flex items-center gap-2 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200">
-                   <span className="whitespace-nowrap text-xs text-gray-300">
+                 <label className="flex min-w-[150px] items-center gap-2 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200">
+                   <span className="shrink-0 whitespace-nowrap text-xs text-gray-300">
                      {t("additionalRewards.drawCount")}
                    </span>
                    <input
@@ -1204,7 +1204,7 @@ export default function ChannelPointSettings({
                      max={10}
                      value={additionalDrawCount}
                      onChange={(e) => setAdditionalDrawCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
-                     className="w-12 rounded bg-gray-700 px-2 py-1 text-sm text-gray-100"
+                     className="h-8 w-16 rounded bg-gray-700 px-2 text-right text-sm text-gray-100"
                    />
                  </label>
                  <label className="flex items-center gap-2 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200">
@@ -1219,9 +1219,10 @@ export default function ChannelPointSettings({
                    </span>
                  </label>
                  <button
+                   type="button"
                    onClick={handleAddAdditionalReward}
                    disabled={addingAdditional || !selectedAdditionalRewardId}
-                   className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+                   className="min-w-[72px] rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
                  >
                    {addingAdditional ? tCommon("loading") : tCommon("add")}
                  </button>
