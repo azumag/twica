@@ -1131,12 +1131,12 @@ export default function ChannelPointSettings({
                  </div>
                )}
 
-               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded bg-gray-600/50 px-3 py-2">
-                 <div>
-                   <div className="text-sm text-gray-200">
+               <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-600/60 bg-gray-600/40 px-3 py-2.5">
+                 <div className="min-w-0">
+                   <div className="text-sm font-medium text-gray-100">
                      {t("additionalRewards.raidGiftTitle")}
                    </div>
-                   <div className="text-xs text-gray-400">
+                   <div className="mt-0.5 text-xs text-gray-400">
                      {t("additionalRewards.raidGiftDescription")}
                    </div>
                  </div>
@@ -1147,13 +1147,13 @@ export default function ChannelPointSettings({
                      max={10}
                      value={raidGiftDrawCount}
                      onChange={(e) => setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(e.target.value) || 0)))}
-                     className="w-16 rounded bg-gray-700 px-2 py-1 text-sm text-gray-100"
+                     className="h-9 w-16 rounded-md border border-gray-600 bg-gray-700 px-2 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
                    />
                    <button
                      type="button"
                      onClick={updateRaidGiftSettings}
                      disabled={updatingRaidGift}
-                     className="rounded-lg bg-cyan-600 px-3 py-2 text-xs text-white hover:bg-cyan-700 disabled:opacity-50"
+                     className="inline-flex h-9 items-center justify-center rounded-md bg-cyan-600 px-3 text-xs font-medium text-white shadow-sm transition-colors hover:bg-cyan-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-700 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
                    >
                      {updatingRaidGift ? tCommon("loading") : tCommon("save")}
                    </button>
@@ -1162,11 +1162,15 @@ export default function ChannelPointSettings({
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_170px_auto] sm:items-center">
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto] sm:items-center">
+                 {/*
+                   ネイティブの矢印アイコンを残しつつ右側に余白を確保。
+                   bg-gray-700 で他のフォーム要素と階調を揃え、フォーカスリングで状態を明示する。
+                 */}
                  <select
                    value={selectedAdditionalRewardId}
                    onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
-                   className="min-w-0 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200"
+                   className="h-10 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
                  >
                    <option value="">{t("additionalRewards.selectToAdd")}</option>
                    {rewards
@@ -1183,7 +1187,11 @@ export default function ChannelPointSettings({
                        </option>
                      ))}
                  </select>
-                 <label className="flex items-center gap-2 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200">
+                 {/*
+                   ラベルと数値入力を1コンポーネントとして見せるためのコンテナ。
+                   focus-within で内側 input のフォーカスに合わせてコンテナを強調する。
+                 */}
+                 <label className="group flex h-10 items-center gap-2 rounded-md border border-gray-600 bg-gray-700 pl-3 pr-1.5 text-sm text-gray-200 transition-colors hover:border-gray-500 focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500/40">
                    <span className="whitespace-nowrap text-xs text-gray-300">
                      {t("additionalRewards.drawCount")}
                    </span>
@@ -1193,13 +1201,13 @@ export default function ChannelPointSettings({
                      max={10}
                      value={additionalDrawCount}
                      onChange={(e) => setAdditionalDrawCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
-                     className="w-12 rounded bg-gray-700 px-2 py-1 text-sm text-gray-100"
+                     className="h-7 w-12 rounded bg-gray-800 px-2 text-sm text-gray-100 focus:outline-none"
                    />
                  </label>
                  <button
                    onClick={handleAddAdditionalReward}
                    disabled={addingAdditional || !selectedAdditionalRewardId}
-                   className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+                   className="inline-flex h-10 items-center justify-center rounded-md bg-purple-600 px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-700 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
                  >
                    {addingAdditional ? tCommon("loading") : tCommon("add")}
                  </button>
@@ -1207,17 +1215,21 @@ export default function ChannelPointSettings({
              </div>
            )}
 
-           <div className="flex flex-wrap items-center gap-4">
+           <div className="flex flex-wrap items-center gap-3">
+             {/*
+               主アクション・補助アクション・破壊的アクションの3階層をボタンの塗り/枠線/赤系で表現する。
+               全ボタン h-10 で高さを揃え、横並びの安定感を確保する。
+             */}
              <button
                onClick={handleSave}
                disabled={saving || !selectedRewardId}
-               className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
+               className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md bg-purple-600 px-5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
              >
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
              <button
                onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); setRegistrationFailed(false); }}
-               className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
+               className="inline-flex h-10 items-center justify-center rounded-md border border-gray-500 bg-transparent px-4 text-sm font-medium text-gray-200 transition-colors hover:border-gray-400 hover:bg-gray-700/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800"
              >
                {tCommon("refresh")}
              </button>
@@ -1227,7 +1239,7 @@ export default function ChannelPointSettings({
                <button
                  onClick={handleDisconnect}
                  disabled={disconnecting}
-                 className="rounded-lg border border-red-600 px-4 py-2 text-red-400 hover:bg-red-600/20 disabled:opacity-50"
+                 className="inline-flex h-10 items-center justify-center rounded-md border border-red-500/70 bg-transparent px-4 text-sm font-medium text-red-300 transition-colors hover:border-red-400 hover:bg-red-500/15 hover:text-red-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                >
                  {disconnecting ? t("buttons.disconnecting") : t("buttons.disconnect")}
                </button>
