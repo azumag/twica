@@ -54,6 +54,11 @@ const FAILED_EVENTSUB_STATUSES = [
 
 const matchesExpectedCallback = (sub: EventSubSubscription) => sub.debug?.callbackMatch ?? true;
 
+const getRaidSubscriptionWarning = (data: unknown): string => {
+  const raidSubscription = (data as { raidSubscription?: { warning?: unknown } })?.raidSubscription;
+  return typeof raidSubscription?.warning === "string" ? raidSubscription.warning : "";
+};
+
 export function deriveEventSubStatus(
   subs: EventSubSubscription[],
   rewardIdToCheck: string,
@@ -124,6 +129,7 @@ export default function ChannelPointSettings({
   const [error, setError] = useState("");
   const [eventSubStatus, setEventSubStatus] = useState<EventSubStatus>("none");
   const [raidEventSubStatus, setRaidEventSubStatus] = useState<EventSubStatus>("none");
+  const [raidEventSubWarning, setRaidEventSubWarning] = useState("");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
   // チャネルポイント用スコープ不足でstep-up再認証が必要かどうか
   // Whether step-up reauth is needed because channel point scopes are missing
@@ -319,6 +325,7 @@ export default function ChannelPointSettings({
         logger.info("[EventSub] Status check", { ...derivedStatus, rewardIdToCheck, subsLength: subs.length });
         setEventSubStatus(derivedStatus.rewardStatus);
         setRaidEventSubStatus(derivedStatus.raidStatus);
+        setRaidEventSubWarning("");
       }
       } catch {
         logger.error("Failed to fetch EventSub status");
@@ -435,15 +442,20 @@ export default function ChannelPointSettings({
       });
 
       const eventSubData = await eventSubResponse.json();
+      const raidSubscriptionWarning = getRaidSubscriptionWarning(eventSubData);
 
       // レスポンスのsuccessフィールドで判定（ステータスコードではなく）
       if (eventSubData.success) {
-        setMessage(eventSubData.message || t("messages.saveSuccess"));
+        setMessage(raidSubscriptionWarning || eventSubData.message || t("messages.saveSuccess"));
         setEventSubStatus("pending");
         setRegistrationFailed(false);
         setSavedMainRewardId(selectedRewardId);
         // Refresh status - 保存した報酬IDを明示的に渡して正しく比較
         await fetchEventSubStatus(selectedRewardId);
+        setRaidEventSubWarning(raidSubscriptionWarning);
+        if (raidSubscriptionWarning) {
+          setRaidEventSubStatus("error");
+        }
       } else if (eventSubData.warning) {
         // 警告状態：サブスクリプションの確認が必要
         setMessage(eventSubData.message || "状態を確認してください");
@@ -451,6 +463,10 @@ export default function ChannelPointSettings({
         setRegistrationFailed(false);
         setSavedMainRewardId(selectedRewardId);
         await fetchEventSubStatus(selectedRewardId);
+        setRaidEventSubWarning(raidSubscriptionWarning);
+        if (raidSubscriptionWarning) {
+          setRaidEventSubStatus("error");
+        }
       } else if (eventSubResponse.status === 429) {
         setMessage(eventSubData.error || t("messages.rateLimit"));
       } else {
@@ -502,6 +518,7 @@ export default function ChannelPointSettings({
       });
 
       const eventSubData = await eventSubResponse.json();
+      const raidSubscriptionWarning = getRaidSubscriptionWarning(eventSubData);
 
       if (!eventSubData.success && !eventSubData.warning) {
         setMessage(eventSubData.error || t("additionalRewards.addFailed"));
@@ -533,7 +550,11 @@ export default function ChannelPointSettings({
 
       // 3. Update state
       // 状態を更新
-      setMessage(t("additionalRewards.addSuccess"));
+      setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
+      setRaidEventSubWarning(raidSubscriptionWarning);
+      if (raidSubscriptionWarning) {
+        setRaidEventSubStatus("error");
+      }
       setSelectedAdditionalRewardId("");
       setAdditionalDrawCount(1);
       setAdditionalRaidLimited(false);
@@ -652,6 +673,7 @@ export default function ChannelPointSettings({
       setSavedMainRewardId("");
       setEventSubStatus("none");
       setRaidEventSubStatus("none");
+      setRaidEventSubWarning("");
       setSubscriptions([]);
       setAdditionalRewards([]);
       setMessage(t("messages2.disconnectSuccess"));
@@ -912,6 +934,11 @@ export default function ChannelPointSettings({
                      ? t("form.raidEventSubError")
                      : t("form.raidEventSubMissing")}
                </p>
+               {raidEventSubWarning && (
+                 <p className="mt-2 text-red-300">
+                   {raidEventSubWarning}
+                 </p>
+               )}
              </div>
              {subscriptions.length > 0 ? (
                <div className="space-y-2">

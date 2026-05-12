@@ -242,6 +242,72 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     vi.useRealTimers()
   })
 
+  it('POST: failed raid EventSub の削除失敗と作成失敗を区別して返す', async () => {
+    vi.useFakeTimers()
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'
+    process.env.TWITCH_CLIENT_SECRET = 'client-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = 'eventsub-secret'
+    process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
+    const streamerQuery = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'streamer-1' }, error: null }),
+    }
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'failed-raid-sub',
+            status: 'webhook_callback_verification_failed',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+        ],
+        pagination: {},
+      }), { status: 200 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: 'reward-sub', status: 'enabled' }] }), { status: 202 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: 'delete rejected' }), { status: 500 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: 'subscription still exists' }), { status: 409 }),
+    )
+
+    const responsePromise = POST(createPostRequest())
+    await vi.advanceTimersByTimeAsync(500)
+    const response = await responsePromise
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({
+      success: true,
+      subscription: { id: 'reward-sub' },
+      raidSubscription: {
+        deleteWarning: 'failed raid EventSub の削除に失敗しました: id=failed-raid-sub, status=500',
+        createWarning: 'raid EventSub の作成に失敗しました: status=409',
+      },
+    })
+    expect(body.raidSubscription.warning).toContain('failed raid EventSub の削除に失敗しました: id=failed-raid-sub, status=500')
+    expect(body.raidSubscription.warning).toContain('raid EventSub の作成に失敗しました: status=409')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.twitch.tv/helix/eventsub/subscriptions?id=failed-raid-sub',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+
+    fetchMock.mockRestore()
+    vi.useRealTimers()
+  })
+
   it('POST: 有効な incoming raid EventSub は重複作成せず再利用する', async () => {
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
     process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'

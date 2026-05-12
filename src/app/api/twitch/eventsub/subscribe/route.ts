@@ -44,6 +44,14 @@ interface EventSubSubscription {
   created_at: string;
 }
 
+interface RaidSubscriptionResult {
+  subscription?: EventSubSubscription;
+  created?: unknown;
+  warning?: string;
+  deleteWarning?: string;
+  createWarning?: string;
+}
+
 const RECREATABLE_EVENTSUB_STATUSES = new Set([
   "webhook_callback_verification_failed",
   "notification_failures_exceeded",
@@ -88,7 +96,7 @@ async function ensureRaidSubscription(
   userSubscriptions: EventSubSubscription[],
   broadcasterUserId: string,
   callbackUrl: string,
-): Promise<{ subscription?: EventSubSubscription; created?: unknown; warning?: string }> {
+): Promise<RaidSubscriptionResult> {
   const existingSubs = userSubscriptions.filter(
     (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
       && sub.condition.to_broadcaster_user_id === broadcasterUserId
@@ -100,6 +108,7 @@ async function ensureRaidSubscription(
   const recreatableSubs = existingSubs.filter(
     (sub) => RECREATABLE_EVENTSUB_STATUSES.has(sub.status),
   );
+  const deleteWarnings: string[] = [];
 
   for (const sub of recreatableSubs) {
     logger.info(`Deleting failed raid EventSub before recreation: id=${sub.id}, status=${sub.status}`);
@@ -112,11 +121,17 @@ async function ensureRaidSubscription(
         status: deleteResponse.status,
         error,
       });
+      deleteWarnings.push(`failed raid EventSub の削除に失敗しました: id=${sub.id}, status=${deleteResponse.status}`);
     }
   }
 
+  const deleteWarning = deleteWarnings.length > 0 ? deleteWarnings.join("; ") : undefined;
+
   if (reusableSub) {
-    return { subscription: reusableSub };
+    return {
+      subscription: reusableSub,
+      ...(deleteWarning ? { warning: deleteWarning, deleteWarning } : {}),
+    };
   }
 
   if (recreatableSubs.length > 0) {
@@ -138,7 +153,10 @@ async function ensureRaidSubscription(
 
   if (response.ok) {
     const data = await response.json();
-    return { created: data.data?.[0] };
+    return {
+      created: data.data?.[0],
+      ...(deleteWarning ? { warning: deleteWarning, deleteWarning } : {}),
+    };
   }
 
   const error = await response.json().catch(() => ({}));
@@ -147,7 +165,12 @@ async function ensureRaidSubscription(
     status: response.status,
     error,
   });
-  return { warning: `raid subscription failed: ${response.status}` };
+  const createWarning = `raid EventSub の作成に失敗しました: status=${response.status}`;
+  return {
+    warning: [deleteWarning, createWarning].filter(Boolean).join("; "),
+    ...(deleteWarning ? { deleteWarning } : {}),
+    createWarning,
+  };
 }
 
 async function getSubscriptionsByUserId(
