@@ -8,12 +8,11 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger";
 
-const DEFAULT_ACTIVE_MINUTES = 30;
-const MAX_ACTIVE_MINUTES = 180;
-
 function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? "";
-  return error?.code === "PGRST204" || message.includes("raid_gacha_active_until");
+  return error?.code === "PGRST204"
+    || message.includes("raid_gacha_active_until")
+    || message.includes("raid_gacha_draw_count");
 }
 
 function isActiveUntil(value: string | null | undefined): boolean {
@@ -26,7 +25,7 @@ async function getOwnedStreamer(twitchUserId: string) {
   const supabaseAdmin = getSupabaseAdmin();
   let { data: streamer, error } = await supabaseAdmin
     .from("streamers")
-    .select("id, raid_gacha_active_until")
+    .select("id, raid_gacha_active_until, raid_gacha_draw_count")
     .eq("twitch_user_id", twitchUserId)
     .maybeSingle();
 
@@ -37,7 +36,7 @@ async function getOwnedStreamer(twitchUserId: string) {
       .eq("twitch_user_id", twitchUserId)
       .maybeSingle();
     streamer = fallbackResult.data
-      ? { ...fallbackResult.data, raid_gacha_active_until: null }
+      ? { ...fallbackResult.data, raid_gacha_active_until: null, raid_gacha_draw_count: 0 }
       : fallbackResult.data;
     error = fallbackResult.error;
   }
@@ -76,6 +75,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       active: isActiveUntil(streamer.raid_gacha_active_until),
       activeUntil: streamer.raid_gacha_active_until,
+      drawCount: streamer.raid_gacha_draw_count ?? 0,
     }, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
     });
@@ -117,17 +117,11 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const active = body.active === true;
-    const requestedMinutes = body.activeMinutes === undefined
-      ? DEFAULT_ACTIVE_MINUTES
-      : Number(body.activeMinutes);
+    const requestedDrawCount = body.drawCount === undefined ? 0 : Number(body.drawCount);
 
-    if (body.active !== undefined && typeof body.active !== "boolean") {
-      return NextResponse.json({ error: "active must be a boolean" }, { status: 400 });
-    }
-    if (!Number.isInteger(requestedMinutes) || requestedMinutes < 1 || requestedMinutes > MAX_ACTIVE_MINUTES) {
+    if (!Number.isInteger(requestedDrawCount) || requestedDrawCount < 0 || requestedDrawCount > 10) {
       return NextResponse.json(
-        { error: `activeMinutes must be an integer between 1 and ${MAX_ACTIVE_MINUTES}` },
+        { error: "drawCount must be an integer between 0 and 10" },
         { status: 400 },
       );
     }
@@ -136,30 +130,26 @@ export async function POST(request: NextRequest) {
     if (streamerError) return handleDatabaseError(streamerError, "Raid Gacha API: POST lookup");
     if (!streamer) return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
 
-    const activeUntil = active
-      ? new Date(Date.now() + requestedMinutes * 60 * 1000).toISOString()
-      : null;
-
     const supabaseAdmin = getSupabaseAdmin();
     const { data: updatedStreamer, error } = await supabaseAdmin
       .from("streamers")
-      .update({ raid_gacha_active_until: activeUntil })
+      .update({ raid_gacha_draw_count: requestedDrawCount })
       .eq("id", streamer.id)
-      .select("raid_gacha_active_until")
+      .select("raid_gacha_active_until, raid_gacha_draw_count")
       .maybeSingle();
 
     if (error) return handleDatabaseError(error, "Raid Gacha API: POST update");
 
     logger.info("Raid gacha state updated", {
       streamerId: streamer.id,
-      active,
-      activeUntil,
+      drawCount: requestedDrawCount,
     });
 
     return NextResponse.json({
       success: true,
       active: isActiveUntil(updatedStreamer?.raid_gacha_active_until),
       activeUntil: updatedStreamer?.raid_gacha_active_until ?? null,
+      drawCount: updatedStreamer?.raid_gacha_draw_count ?? requestedDrawCount,
     });
   } catch (error) {
     return handleApiError(error, "Raid Gacha API: POST");

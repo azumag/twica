@@ -40,7 +40,9 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
 
 function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? ''
-  return error?.code === 'PGRST204' || message.includes('raid_gacha_active_until')
+  return error?.code === 'PGRST204'
+    || message.includes('raid_gacha_active_until')
+    || message.includes('raid_gacha_draw_count')
 }
 
 function isRaidGachaActive(activeUntil: string | null | undefined, now = new Date()): boolean {
@@ -362,6 +364,66 @@ export class GachaService {
       }
 
       return err('Reward ID mismatch')
+    } catch (error) {
+      return err(`Unexpected error: ${error}`)
+    }
+  }
+
+  async executeGachaForRaidEvent(
+    event: {
+      to_broadcaster_user_id: string
+      from_broadcaster_user_id: string
+      from_broadcaster_user_login?: string
+      from_broadcaster_user_name?: string
+    },
+    eventId?: string
+  ): Promise<Result<GachaResult>> {
+    try {
+      let { data: streamer, error: streamerError } = await this.supabase
+        .from('streamers')
+        .select('id, chat_announcement_enabled, chat_announcement_template, raid_gacha_draw_count')
+        .eq('twitch_user_id', event.to_broadcaster_user_id)
+        .maybeSingle()
+
+      if (isRaidStateSchemaError(streamerError)) {
+        const fallbackResult = await this.supabase
+          .from('streamers')
+          .select('id, chat_announcement_enabled, chat_announcement_template')
+          .eq('twitch_user_id', event.to_broadcaster_user_id)
+          .maybeSingle()
+        streamer = fallbackResult.data ? { ...fallbackResult.data, raid_gacha_draw_count: 0 } : fallbackResult.data
+        streamerError = fallbackResult.error
+      }
+
+      if (streamerError || !streamer) {
+        return err('Streamer not found')
+      }
+
+      const drawCount = Math.min(Math.max(Number(streamer.raid_gacha_draw_count ?? 0), 0), 10)
+      if (drawCount < 1) {
+        return err('Raid gacha disabled')
+      }
+
+      const userName = event.from_broadcaster_user_name || event.from_broadcaster_user_login || event.from_broadcaster_user_id
+      const result = await this.executeGachaDraws(
+        streamer.id,
+        event.from_broadcaster_user_id,
+        userName,
+        drawCount,
+        eventId,
+        undefined
+      )
+
+      if (!result.success) return result
+
+      return ok({
+        ...result.data,
+        streamer: {
+          id: streamer.id,
+          chat_announcement_enabled: streamer.chat_announcement_enabled,
+          chat_announcement_template: streamer.chat_announcement_template,
+        },
+      })
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }

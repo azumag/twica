@@ -521,6 +521,10 @@
       "raidOnly": "Raid only",
       "multiDraw": "{count} draws",
       "raidLimited": "Raid limited",
+      "raidGiftTitle": "Raider gift",
+      "raidGiftEnabled": "Incoming raids gift {count} gacha draws to the raider.",
+      "raidGiftDisabled": "Set to 0 to disable raid gifts.",
+      "raidGiftSaved": "Raid gift settings saved",
       "raidStatusTitle": "Raid gacha window",
       "raidStatusActive": "Active until {time}",
       "raidStatusInactive": "Currently off",
@@ -528,7 +532,7 @@
       "raidStatusDisable": "Off",
       "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
       "raidStatusDisabled": "Raid gacha window disabled",
-      "raidStatusFailed": "Failed to update raid gacha window"
+      "raidStatusFailed": "Failed to update raid gacha settings"
     }
   },
   "gachaHistory": {

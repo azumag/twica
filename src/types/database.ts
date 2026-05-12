@@ -48,6 +48,9 @@ export interface Database {
           // レイド限定ガチャを受け付ける期限（null/期限切れは不明状態としてブロック）
           // Until when raid-limited gacha rewards are accepted. Null/expired blocks them.
           raid_gacha_active_until: string | null
+          // incoming raid 送信者に自動付与するガチャ回数（0=無効）
+          // Number of gacha draws gifted to the raider on incoming raids. 0 disables gifts.
+          raid_gacha_draw_count: number
           created_at: string
           updated_at: string
         }
@@ -68,6 +71,7 @@ export interface Database {
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
+          raid_gacha_draw_count?: number
           created_at?: string
           updated_at?: string
         }
@@ -88,6 +92,7 @@ export interface Database {
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
+          raid_gacha_draw_count?: number
           created_at?: string
           updated_at?: string
         }
