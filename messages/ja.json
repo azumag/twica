@@ -611,7 +611,12 @@
   },
   "settingsPage": {
     "title": "配信設定",
-    "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。"
+    "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。",
+    "viewMode": {
+      "simple": "シンプル",
+      "advanced": "詳細",
+      "ariaLabel": "配信設定の表示モードを切り替え"
+    }
   },
   "cardsPage": {
     "title": "カード管理",

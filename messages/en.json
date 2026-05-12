@@ -611,7 +611,12 @@
   },
   "settingsPage": {
     "title": "Stream Settings",
-    "description": "Configure OBS overlay and channel point rewards."
+    "description": "Configure OBS overlay and channel point rewards.",
+    "viewMode": {
+      "simple": "Simple",
+      "advanced": "Advanced",
+      "ariaLabel": "Toggle stream settings display mode"
+    }
   },
   "cardsPage": {
     "title": "Card Management",

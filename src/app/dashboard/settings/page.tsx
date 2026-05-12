@@ -7,6 +7,11 @@ import { getCustomBotAccountDisplayForStreamer } from "@/lib/twitch/token-manage
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
+import {
+  AdvancedSettings,
+  SettingsViewModeProvider,
+  SettingsViewToggle,
+} from "@/components/SettingsViewMode";
 
 const OverlayPreview = dynamic(() => import("@/components/OverlayPreview"), {
   loading: () => (
@@ -76,20 +81,36 @@ export default async function SettingsPage() {
 
   const botAccount = await getCustomBotAccountDisplayForStreamer(streamerData.streamer.id);
 
+  // 既存ユーザーで詳細機能 (ガチャ効果音/チャット通知/未所持カード表示) を一つでも有効化済みなら
+  // 初回デフォルトを "advanced" にし、トグル導入で設定が消えたように見える混乱を避ける。
+  // localStorage に明示的な選択が保存されていれば、そちらが優先される。
+  const hasAdvancedSettingsInUse =
+    Boolean(streamerData.streamer.gacha_sound_enabled) ||
+    Boolean(streamerData.streamer.chat_announcement_enabled) ||
+    Boolean(streamerData.streamer.show_unowned_cards) ||
+    Boolean(streamerData.streamer.show_unowned_card_details);
+  const initialModeHint = hasAdvancedSettingsInUse ? "advanced" : "simple";
+
   return (
-    <div>
+    // 配信設定ページを Provider でラップし、シンプル/詳細トグルを画面全体に適用。
+    // Wrap entire page with the view-mode provider so toggle + advanced sections share state.
+    <SettingsViewModeProvider initialModeHint={initialModeHint}>
       {/* 投票キャンペーンボタン（期間内かつ未適用の場合のみ表示） */}
       <VoteCampaignButton visible={showVoteCampaign} bonusMb={VOTE_CAMPAIGN_CONFIG.BONUS_MB} />
 
       {/* Page header */}
       {/* ページヘッダー */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white">
-          {t("title")}
-        </h1>
-        <p className="mt-2 text-gray-400">
-          {t("description")}
-        </p>
+      {/* 表示モード切替トグルをタイトル右側に配置 (狭幅では下に回り込み) */}
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-white">
+            {t("title")}
+          </h1>
+          <p className="mt-2 text-gray-400">
+            {t("description")}
+          </p>
+        </div>
+        <SettingsViewToggle />
       </div>
 
       {/* OBSブラウザソースURLとカード引換設定を横並びに配置、プレビューは下に全幅で表示 */}
@@ -102,40 +123,46 @@ export default async function SettingsPage() {
         cards={streamerData.cards}
         sideContent={
           <>
+            {/* シンプル表示でも必須の設定: チャネルポイント報酬 */}
+            {/* Always-visible essential setting: channel point reward */}
             <ChannelPointSettings
               streamerId={streamerData.streamer.id}
               currentRewardId={streamerData.streamer.channel_point_reward_id}
               currentRewardName={streamerData.streamer.channel_point_reward_name}
             />
-            {/* ガチャ効果音設定 */}
-            {/* Gacha sound effect settings */}
-            <GachaSoundSettings
-              streamerId={streamerData.streamer.id}
-              currentSoundUrl={streamerData.streamer.gacha_sound_url ?? null}
-              currentSoundEnabled={streamerData.streamer.gacha_sound_enabled ?? false}
-            />
-            {/* チャット通知設定 */}
-            {/* Chat announcement settings */}
-            <ChatAnnouncementSettings
-              streamerId={streamerData.streamer.id}
-              currentEnabled={streamerData.streamer.chat_announcement_enabled ?? false}
-              currentTemplate={streamerData.streamer.chat_announcement_template ?? null}
-              currentMultiTemplate={streamerData.streamer.chat_announcement_multi_template ?? null}
-              currentMultiShowCards={streamerData.streamer.chat_announcement_multi_show_cards ?? true}
-              botAccount={botAccount}
-            />
-            {/* 未所持カード表示設定（Issue #395） */}
-            {/* Unowned-card visibility settings (Issue #395) */}
-            <CardVisibilitySettings
-              streamerId={streamerData.streamer.id}
-              currentShowUnowned={streamerData.streamer.show_unowned_cards ?? false}
-              currentShowUnownedDetails={
-                streamerData.streamer.show_unowned_card_details ?? false
-              }
-            />
+            {/* 詳細表示モードでのみ露出する追加設定群 */}
+            {/* Sections shown only in advanced mode */}
+            <AdvancedSettings>
+              {/* ガチャ効果音設定 */}
+              {/* Gacha sound effect settings */}
+              <GachaSoundSettings
+                streamerId={streamerData.streamer.id}
+                currentSoundUrl={streamerData.streamer.gacha_sound_url ?? null}
+                currentSoundEnabled={streamerData.streamer.gacha_sound_enabled ?? false}
+              />
+              {/* チャット通知設定 */}
+              {/* Chat announcement settings */}
+              <ChatAnnouncementSettings
+                streamerId={streamerData.streamer.id}
+                currentEnabled={streamerData.streamer.chat_announcement_enabled ?? false}
+                currentTemplate={streamerData.streamer.chat_announcement_template ?? null}
+                currentMultiTemplate={streamerData.streamer.chat_announcement_multi_template ?? null}
+                currentMultiShowCards={streamerData.streamer.chat_announcement_multi_show_cards ?? true}
+                botAccount={botAccount}
+              />
+              {/* 未所持カード表示設定（Issue #395） */}
+              {/* Unowned-card visibility settings (Issue #395) */}
+              <CardVisibilitySettings
+                streamerId={streamerData.streamer.id}
+                currentShowUnowned={streamerData.streamer.show_unowned_cards ?? false}
+                currentShowUnownedDetails={
+                  streamerData.streamer.show_unowned_card_details ?? false
+                }
+              />
+            </AdvancedSettings>
           </>
         }
       />
-    </div>
+    </SettingsViewModeProvider>
   );
 }
