@@ -66,60 +66,77 @@ describe('OverlayPage', () => {
     expect(screen.queryByText('接続エラー')).not.toBeInTheDocument()
   })
 
-  it('RealtimeのN連ガチャpayloadを1枚ずつ順番に表示する', async () => {
-    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
-    let realtimeCallback: ((payload: GachaBroadcastPayload) => void) | undefined
+  it('RealtimeのN連ガチャを全カード表示し、効果音は一度だけ再生する', async () => {
+    vi.useFakeTimers()
+
+    const playMock = vi.fn().mockResolvedValue(undefined)
+    const pauseMock = vi.fn()
+    class MockAudio {
+      currentTime = 0
+      preload = ''
+
+      constructor(public src: string) {}
+
+      play = playMock
+      pause = pauseMock
+    }
+
+    vi.stubGlobal('Audio', MockAudio)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: 'https://example.com/gacha.mp3', soundEnabled: true }),
+    }))
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+
     subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
-      realtimeCallback = callback as (payload: GachaBroadcastPayload) => void
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
       options.onSuccess?.()
       return vi.fn()
     })
 
     render(<OverlayPage />)
 
-    await waitFor(() => {
-      expect(realtimeCallback).toBeDefined()
-    })
     await act(async () => {
+      await Promise.resolve()
       await Promise.resolve()
     })
 
+    expect(onGachaResult).toBeDefined()
+    expect(playMock).toHaveBeenCalledTimes(1)
+    playMock.mockClear()
+
+    const cards = [
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare' },
+      { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common' },
+      { id: 'card-3', name: 'Gamma', description: null, image_url: null, rarity: 'legendary' },
+    ]
+
     act(() => {
-      realtimeCallback?.({
+      onGachaResult?.({
         type: 'gacha',
-        card: {
-          id: 'card-1',
-          name: 'Alpha',
-          description: null,
-          image_url: null,
-          rarity: 'rare',
-        },
-        cards: [
-          {
-            id: 'card-1',
-            name: 'Alpha',
-            description: null,
-            image_url: null,
-            rarity: 'rare',
-          },
-          {
-            id: 'card-2',
-            name: 'Beta',
-            description: null,
-            image_url: null,
-            rarity: 'common',
-          },
-        ],
+        card: cards[0],
+        cards,
         userTwitchUsername: 'Viewer',
       })
     })
 
-    expect(await screen.findByText('Alpha')).toBeInTheDocument()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Alpha')).toBeInTheDocument()
+    expect(playMock).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 3200))
+      await vi.advanceTimersByTimeAsync(6600)
     })
+    expect(screen.getByText('Beta')).toBeInTheDocument()
+    expect(playMock).toHaveBeenCalledTimes(1)
 
-    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('Gamma')).toBeInTheDocument()
+    expect(playMock).toHaveBeenCalledTimes(1)
   })
 })

@@ -387,9 +387,14 @@
     "noLineBreakNote": "※ Twitchチャットは改行に対応していません。改行を含むメッセージは1行で送信されます。",
     "form": {
       "enableAnnouncement": "チャット通知を有効にする",
+      "showAdvanced": "詳細設定を表示する",
       "customTemplate": "カスタムテンプレート（任意）",
       "templatePlaceholder": "@'{'user'}' が【'{'rarity'}'】'{'card'}' を獲得しました！",
-      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'cards'}'=全カード名, '{'draws'}'=抽選回数, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL",
+      "multiTemplate": "N連ガチャ用テンプレート（任意）",
+      "multiTemplatePlaceholder": "@'{'user'}' が'{'draws'}'連ガチャで '{'rarityCounts'}' を獲得しました！'{'cards'}'",
+      "multiShowCards": "N連通知にカード名一覧を含める",
+      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL",
+      "multiPlaceholderHelp": "N連用: '{'draws'}'=抽選回数, '{'rarityCounts'}'=レアリティ別枚数（例: レアx3、コモンx3）, '{'cards'}'=カード名一覧",
       "previewLength": "プレビュー文字数: {current} / {max}文字"
     },
     "buttons": {
@@ -418,6 +423,8 @@
     "demo": {
       "title": "チャットメッセージプレビュー",
       "description": "実際に送信されるメッセージのプレビューです（サンプルデータ使用）",
+      "singleTitle": "通常ガチャ",
+      "multiTitle": "N連ガチャ",
       "close": "閉じる"
     },
     "bot": {

@@ -120,6 +120,8 @@ export default async function SettingsPage() {
               streamerId={streamerData.streamer.id}
               currentEnabled={streamerData.streamer.chat_announcement_enabled ?? false}
               currentTemplate={streamerData.streamer.chat_announcement_template ?? null}
+              currentMultiTemplate={streamerData.streamer.chat_announcement_multi_template ?? null}
+              currentMultiShowCards={streamerData.streamer.chat_announcement_multi_show_cards ?? true}
               botAccount={botAccount}
             />
             {/* 未所持カード表示設定（Issue #395） */}
