@@ -515,6 +515,7 @@ export default function OverlayPage() {
         pollCursorRef.current = new Date().toISOString();
         displayResultRef.current({
           card: payload.card as unknown as Card,
+          cards: payload.cards as unknown as Card[] | undefined,
           userTwitchUsername: payload.userTwitchUsername,
         });
       }
