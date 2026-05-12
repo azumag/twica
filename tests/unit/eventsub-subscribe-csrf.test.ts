@@ -134,7 +134,22 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     ).mockResolvedValueOnce(
       new Response(JSON.stringify({ data: [{ id: 'reward-sub', status: 'enabled' }] }), { status: 202 }),
     ).mockResolvedValueOnce(
-      new Response(JSON.stringify({ data: [{ id: 'raid-sub', status: 'enabled' }] }), { status: 202 }),
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'raid-sub',
+            status: 'enabled',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+        ],
+      }), { status: 202 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [],
+        pagination: {},
+      }), { status: 200 }),
     )
 
     const response = await POST(createPostRequest())
@@ -143,7 +158,11 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     await expect(response.json()).resolves.toMatchObject({
       success: true,
       subscription: { id: 'reward-sub' },
-      raidSubscription: { created: { id: 'raid-sub' } },
+      raidSubscription: {
+        created: { id: 'raid-sub' },
+        status: 'active',
+        subscriptions: [{ id: 'raid-sub' }],
+      },
     })
     expect(fetchMock).toHaveBeenNthCalledWith(
       4,
@@ -204,7 +223,37 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     ).mockResolvedValueOnce(
       new Response(null, { status: 204 }),
     ).mockResolvedValueOnce(
-      new Response(JSON.stringify({ data: [{ id: 'new-raid-sub', status: 'webhook_callback_verification_pending' }] }), { status: 202 }),
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'new-raid-sub',
+            status: 'webhook_callback_verification_pending',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+        ],
+      }), { status: 202 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'failed-raid-sub',
+            status: 'webhook_callback_verification_failed',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+          {
+            id: 'new-raid-sub',
+            status: 'webhook_callback_verification_pending',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+        ],
+        pagination: {},
+      }), { status: 200 }),
     )
 
     const responsePromise = POST(createPostRequest())
@@ -215,13 +264,18 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     await expect(response.json()).resolves.toMatchObject({
       success: true,
       subscription: { id: 'reward-sub' },
-      raidSubscription: { created: { id: 'new-raid-sub' } },
+      raidSubscription: {
+        created: { id: 'new-raid-sub' },
+        status: 'pending',
+        subscriptions: [{ id: 'new-raid-sub' }],
+      },
     })
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.twitch.tv/helix/eventsub/subscriptions?id=failed-raid-sub',
       expect.objectContaining({ method: 'DELETE' }),
     )
-    expect(fetchMock).toHaveBeenLastCalledWith(
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
       'https://api.twitch.tv/helix/eventsub/subscriptions',
       expect.objectContaining({
         method: 'POST',
@@ -281,6 +335,19 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
       new Response(JSON.stringify({ message: 'delete rejected' }), { status: 500 }),
     ).mockResolvedValueOnce(
       new Response(JSON.stringify({ message: 'subscription still exists' }), { status: 409 }),
+    ).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [
+          {
+            id: 'failed-raid-sub',
+            status: 'webhook_callback_verification_failed',
+            type: 'channel.raid',
+            condition: { to_broadcaster_user_id: '123456789' },
+            transport: { method: 'webhook', callback: 'https://twica.example/api/twitch/eventsub' },
+          },
+        ],
+        pagination: {},
+      }), { status: 200 }),
     )
 
     const responsePromise = POST(createPostRequest())
@@ -295,6 +362,8 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
       raidSubscription: {
         deleteWarning: 'failed raid EventSub の削除に失敗しました: id=failed-raid-sub, status=500',
         createWarning: 'raid EventSub の作成に失敗しました: status=409',
+        status: 'error',
+        subscriptions: [{ id: 'failed-raid-sub' }],
       },
     })
     expect(body.raidSubscription.warning).toContain('failed raid EventSub の削除に失敗しました: id=failed-raid-sub, status=500')
@@ -350,7 +419,11 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     await expect(response.json()).resolves.toMatchObject({
       success: true,
       subscription: { id: 'reward-sub' },
-      raidSubscription: { subscription: { id: 'existing-raid-sub' } },
+      raidSubscription: {
+        subscription: { id: 'existing-raid-sub' },
+        status: 'active',
+        subscriptions: [{ id: 'existing-raid-sub' }],
+      },
     })
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(fetchMock).not.toHaveBeenCalledWith(

@@ -44,12 +44,16 @@ interface EventSubSubscription {
   created_at: string;
 }
 
+type RaidEventSubStatus = "none" | "pending" | "active" | "error";
+
 interface RaidSubscriptionResult {
   subscription?: EventSubSubscription;
   created?: unknown;
   warning?: string;
   deleteWarning?: string;
   createWarning?: string;
+  status: RaidEventSubStatus;
+  subscriptions: EventSubSubscription[];
 }
 
 const RECREATABLE_EVENTSUB_STATUSES = new Set([
@@ -57,6 +61,62 @@ const RECREATABLE_EVENTSUB_STATUSES = new Set([
   "notification_failures_exceeded",
   "authorization_revoked",
 ]);
+
+function getMatchingRaidSubscriptions(
+  subscriptions: EventSubSubscription[],
+  broadcasterUserId: string,
+  callbackUrl: string,
+): EventSubSubscription[] {
+  return subscriptions.filter(
+    (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
+      && sub.condition.to_broadcaster_user_id === broadcasterUserId
+      && sub.transport.callback === callbackUrl,
+  );
+}
+
+function deriveRaidEventSubStatus(subscriptions: EventSubSubscription[]): RaidEventSubStatus {
+  if (subscriptions.some((sub) => sub.status === "enabled")) return "active";
+  if (subscriptions.some((sub) => RECREATABLE_EVENTSUB_STATUSES.has(sub.status))) return "error";
+  return subscriptions.length > 0 ? "pending" : "none";
+}
+
+function isEventSubSubscription(value: unknown): value is EventSubSubscription {
+  if (!value || typeof value !== "object") return false;
+  const subscription = value as Partial<EventSubSubscription>;
+  return typeof subscription.id === "string"
+    && typeof subscription.status === "string"
+    && typeof subscription.type === "string"
+    && typeof subscription.condition === "object"
+    && typeof subscription.transport === "object";
+}
+
+function buildRaidSubscriptionResult(
+  subscriptions: EventSubSubscription[],
+  broadcasterUserId: string,
+  callbackUrl: string,
+  extra: Omit<RaidSubscriptionResult, "status" | "subscriptions"> = {},
+  ignoredSubscriptionIds: string[] = [],
+): RaidSubscriptionResult {
+  const ignoredIds = new Set(ignoredSubscriptionIds);
+  const matchingSubscriptions = getMatchingRaidSubscriptions(subscriptions, broadcasterUserId, callbackUrl)
+    .filter((sub) => !ignoredIds.has(sub.id));
+  const createdSubscription = isEventSubSubscription(extra.created)
+    && extra.created.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
+    && extra.created.condition.to_broadcaster_user_id === broadcasterUserId
+    && extra.created.transport.callback === callbackUrl
+    ? extra.created
+    : undefined;
+  const effectiveSubscriptions = matchingSubscriptions.length > 0
+    ? matchingSubscriptions
+    : createdSubscription
+      ? [createdSubscription]
+      : matchingSubscriptions;
+  return {
+    ...extra,
+    status: deriveRaidEventSubStatus(effectiveSubscriptions),
+    subscriptions: effectiveSubscriptions,
+  };
+}
 
 async function deleteEventSubSubscription(appAccessToken: string, subscriptionId: string) {
   return fetch(
@@ -96,12 +156,9 @@ async function ensureRaidSubscription(
   userSubscriptions: EventSubSubscription[],
   broadcasterUserId: string,
   callbackUrl: string,
+  refreshSubscriptions: () => Promise<EventSubSubscription[]>,
 ): Promise<RaidSubscriptionResult> {
-  const existingSubs = userSubscriptions.filter(
-    (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
-      && sub.condition.to_broadcaster_user_id === broadcasterUserId
-      && sub.transport.callback === callbackUrl,
-  );
+  const existingSubs = getMatchingRaidSubscriptions(userSubscriptions, broadcasterUserId, callbackUrl);
   const reusableSub = existingSubs.find(
     (sub) => !RECREATABLE_EVENTSUB_STATUSES.has(sub.status),
   );
@@ -109,6 +166,7 @@ async function ensureRaidSubscription(
     (sub) => RECREATABLE_EVENTSUB_STATUSES.has(sub.status),
   );
   const deleteWarnings: string[] = [];
+  const deletedSubscriptionIds: string[] = [];
 
   for (const sub of recreatableSubs) {
     logger.info(`Deleting failed raid EventSub before recreation: id=${sub.id}, status=${sub.status}`);
@@ -122,16 +180,18 @@ async function ensureRaidSubscription(
         error,
       });
       deleteWarnings.push(`failed raid EventSub の削除に失敗しました: id=${sub.id}, status=${deleteResponse.status}`);
+    } else {
+      deletedSubscriptionIds.push(sub.id);
     }
   }
 
   const deleteWarning = deleteWarnings.length > 0 ? deleteWarnings.join("; ") : undefined;
 
   if (reusableSub) {
-    return {
+    return buildRaidSubscriptionResult(userSubscriptions, broadcasterUserId, callbackUrl, {
       subscription: reusableSub,
       ...(deleteWarning ? { warning: deleteWarning, deleteWarning } : {}),
-    };
+    }, deletedSubscriptionIds);
   }
 
   if (recreatableSubs.length > 0) {
@@ -153,10 +213,11 @@ async function ensureRaidSubscription(
 
   if (response.ok) {
     const data = await response.json();
-    return {
+    const latestSubscriptions = await refreshSubscriptions();
+    return buildRaidSubscriptionResult(latestSubscriptions, broadcasterUserId, callbackUrl, {
       created: data.data?.[0],
       ...(deleteWarning ? { warning: deleteWarning, deleteWarning } : {}),
-    };
+    }, deletedSubscriptionIds);
   }
 
   const error = await response.json().catch(() => ({}));
@@ -166,11 +227,14 @@ async function ensureRaidSubscription(
     error,
   });
   const createWarning = `raid EventSub の作成に失敗しました: status=${response.status}`;
-  return {
+  const latestSubscriptions = recreatableSubs.length > 0
+    ? await refreshSubscriptions()
+    : userSubscriptions;
+  return buildRaidSubscriptionResult(latestSubscriptions, broadcasterUserId, callbackUrl, {
     warning: [deleteWarning, createWarning].filter(Boolean).join("; "),
     ...(deleteWarning ? { deleteWarning } : {}),
     createWarning,
-  };
+  }, deletedSubscriptionIds);
 }
 
 async function getSubscriptionsByUserId(
@@ -272,6 +336,7 @@ export async function POST(request: NextRequest) {
     // user_idパラメータで対象ユーザーのサブスクリプションのみを取得
     // Twitch API側でフィルタリングされるため、全件取得より効率的
     const userSubscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
+    const refreshUserSubscriptions = () => getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
 
     // 既存サブスクリプション数と状態をログに記録
     // channel_points_custom_reward_redemption.addタイプのサブスクリプションをフィルタリング
@@ -363,7 +428,13 @@ export async function POST(request: NextRequest) {
         );
 
         if (existingSub) {
-          const raidSubscription = await ensureRaidSubscription(appAccessToken, recheckUserSubs, session.twitchUserId, callbackUrl);
+          const raidSubscription = await ensureRaidSubscription(
+            appAccessToken,
+            recheckUserSubs,
+            session.twitchUserId,
+            callbackUrl,
+            refreshUserSubscriptions,
+          );
 
           // 既存のサブスクリプションが見つかった場合、それを返す（200 OK）
           logger.info(
@@ -416,7 +487,13 @@ export async function POST(request: NextRequest) {
 
           if (retryResponse.ok) {
             const retryData = await retryResponse.json();
-            const raidSubscription = await ensureRaidSubscription(appAccessToken, recheckUserSubs, session.twitchUserId, callbackUrl);
+            const raidSubscription = await ensureRaidSubscription(
+              appAccessToken,
+              recheckUserSubs,
+              session.twitchUserId,
+              callbackUrl,
+              refreshUserSubscriptions,
+            );
             logger.info(`Retry successful: subscriptionId=${retryData.data[0]?.id}`);
             return NextResponse.json({
               success: true,
@@ -448,7 +525,13 @@ export async function POST(request: NextRequest) {
     }
 
     const subscriptionData = await subscribeResponse.json();
-    const raidSubscription = await ensureRaidSubscription(appAccessToken, userSubscriptions, session.twitchUserId, callbackUrl);
+    const raidSubscription = await ensureRaidSubscription(
+      appAccessToken,
+      userSubscriptions,
+      session.twitchUserId,
+      callbackUrl,
+      refreshUserSubscriptions,
+    );
 
     // EventSub登録成功をログに記録
     logger.info(

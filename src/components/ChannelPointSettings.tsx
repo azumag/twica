@@ -59,6 +59,13 @@ const getRaidSubscriptionWarning = (data: unknown): string => {
   return typeof raidSubscription?.warning === "string" ? raidSubscription.warning : "";
 };
 
+const getRaidSubscriptionStatus = (data: unknown): EventSubStatus | null => {
+  const status = (data as { raidSubscription?: { status?: unknown } })?.raidSubscription?.status;
+  return status === "none" || status === "pending" || status === "active" || status === "error"
+    ? status
+    : null;
+};
+
 export function deriveEventSubStatus(
   subs: EventSubSubscription[],
   rewardIdToCheck: string,
@@ -443,6 +450,7 @@ export default function ChannelPointSettings({
 
       const eventSubData = await eventSubResponse.json();
       const raidSubscriptionWarning = getRaidSubscriptionWarning(eventSubData);
+      const raidSubscriptionStatus = getRaidSubscriptionStatus(eventSubData);
 
       // レスポンスのsuccessフィールドで判定（ステータスコードではなく）
       if (eventSubData.success) {
@@ -453,7 +461,9 @@ export default function ChannelPointSettings({
         // Refresh status - 保存した報酬IDを明示的に渡して正しく比較
         await fetchEventSubStatus(selectedRewardId);
         setRaidEventSubWarning(raidSubscriptionWarning);
-        if (raidSubscriptionWarning) {
+        if (raidSubscriptionStatus) {
+          setRaidEventSubStatus(raidSubscriptionWarning ? "error" : raidSubscriptionStatus);
+        } else if (raidSubscriptionWarning) {
           setRaidEventSubStatus("error");
         }
       } else if (eventSubData.warning) {
@@ -464,7 +474,9 @@ export default function ChannelPointSettings({
         setSavedMainRewardId(selectedRewardId);
         await fetchEventSubStatus(selectedRewardId);
         setRaidEventSubWarning(raidSubscriptionWarning);
-        if (raidSubscriptionWarning) {
+        if (raidSubscriptionStatus) {
+          setRaidEventSubStatus(raidSubscriptionWarning ? "error" : raidSubscriptionStatus);
+        } else if (raidSubscriptionWarning) {
           setRaidEventSubStatus("error");
         }
       } else if (eventSubResponse.status === 429) {
@@ -519,6 +531,7 @@ export default function ChannelPointSettings({
 
       const eventSubData = await eventSubResponse.json();
       const raidSubscriptionWarning = getRaidSubscriptionWarning(eventSubData);
+      const raidSubscriptionStatus = getRaidSubscriptionStatus(eventSubData);
 
       if (!eventSubData.success && !eventSubData.warning) {
         setMessage(eventSubData.error || t("additionalRewards.addFailed"));
@@ -551,15 +564,17 @@ export default function ChannelPointSettings({
       // 3. Update state
       // 状態を更新
       setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
-      setRaidEventSubWarning(raidSubscriptionWarning);
-      if (raidSubscriptionWarning) {
-        setRaidEventSubStatus("error");
-      }
       setSelectedAdditionalRewardId("");
       setAdditionalDrawCount(1);
       setAdditionalRaidLimited(false);
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
+      setRaidEventSubWarning(raidSubscriptionWarning);
+      if (raidSubscriptionStatus) {
+        setRaidEventSubStatus(raidSubscriptionWarning ? "error" : raidSubscriptionStatus);
+      } else if (raidSubscriptionWarning) {
+        setRaidEventSubStatus("error");
+      }
 
     } catch {
       setMessage(t("messages.errorOccurred"));
