@@ -389,7 +389,7 @@
       "enableAnnouncement": "Enable chat announcements",
       "customTemplate": "Custom Template (optional)",
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
-      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'cards'}'=all card names, '{'draws'}'=draw count, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
       "previewLength": "Preview length: {current} / {max} characters"
     },
     "buttons": {
@@ -480,6 +480,10 @@
       "rewardId": "Reward ID:",
       "allRewards": "All Rewards",
       "eventsubStatus": "EventSub Status",
+      "raidEventSubStatus": "Raid auto-enable",
+      "raidEventSubActive": "Incoming raid notifications are subscribed.",
+      "raidEventSubMissing": "Not registered or still pending. Use Save & Register EventSub to re-register.",
+      "raidEventSubError": "Registration failed. Use Save & Register EventSub to re-register.",
       "noSubscriptions": "No EventSub subscriptions. Click save to register.",
       "localTunnelNote": "* EventSub is not available in local environment"
     },
@@ -512,7 +516,19 @@
       "removeFailed": "Failed to remove additional reward",
       "removeConfirm": "Remove this additional reward? EventSub subscription will also be removed.",
       "cannotUseAsMain": "This reward is registered as an additional reward. Please remove it from additional rewards first.",
-      "cannotUseAsAdditional": "This reward is already set as the main reward."
+      "cannotUseAsAdditional": "This reward is already set as the main reward.",
+      "drawCount": "Draws",
+      "raidOnly": "Raid only",
+      "multiDraw": "{count} draws",
+      "raidLimited": "Raid limited",
+      "raidStatusTitle": "Raid gacha window",
+      "raidStatusActive": "Active until {time}",
+      "raidStatusInactive": "Currently off",
+      "raidStatusEnable": "30 min on",
+      "raidStatusDisable": "Off",
+      "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
+      "raidStatusDisabled": "Raid gacha window disabled",
+      "raidStatusFailed": "Failed to update raid gacha window"
     }
   },
   "gachaHistory": {

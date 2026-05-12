@@ -389,7 +389,7 @@
       "enableAnnouncement": "チャット通知を有効にする",
       "customTemplate": "カスタムテンプレート（任意）",
       "templatePlaceholder": "@'{'user'}' が【'{'rarity'}'】'{'card'}' を獲得しました！",
-      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL",
+      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'cards'}'=全カード名, '{'draws'}'=抽選回数, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL",
       "previewLength": "プレビュー文字数: {current} / {max}文字"
     },
     "buttons": {
@@ -480,6 +480,10 @@
       "rewardId": "報酬ID:",
       "allRewards": "全報酬",
       "eventsubStatus": "EventSub ステータス",
+      "raidEventSubStatus": "レイド自動ON",
+      "raidEventSubActive": "incoming raid 通知を受け取れる状態です。",
+      "raidEventSubMissing": "未登録または確認中です。必要な場合は「保存 & EventSub登録」で再登録してください。",
+      "raidEventSubError": "登録に失敗しています。「保存 & EventSub登録」で再登録してください。",
       "noSubscriptions": "EventSubサブスクリプションがありません。保存ボタンを押して登録してください。",
       "localTunnelNote": "※ EventSubはローカル環境では利用できません"
     },
@@ -512,7 +516,19 @@
       "removeFailed": "追加報酬の削除に失敗しました",
       "removeConfirm": "この追加報酬を削除しますか？EventSubサブスクリプションも削除されます。",
       "cannotUseAsMain": "この報酬は追加報酬として登録されています。先に追加報酬から削除してください。",
-      "cannotUseAsAdditional": "この報酬はメイン報酬として設定されています。"
+      "cannotUseAsAdditional": "この報酬はメイン報酬として設定されています。",
+      "drawCount": "回数",
+      "raidOnly": "レイド限定",
+      "multiDraw": "{count}連",
+      "raidLimited": "レイド限定",
+      "raidStatusTitle": "レイドガチャ受付",
+      "raidStatusActive": "{time} まで受付中",
+      "raidStatusInactive": "現在は停止中",
+      "raidStatusEnable": "30分ON",
+      "raidStatusDisable": "OFF",
+      "raidStatusEnabled": "レイドガチャ受付を30分間有効にしました",
+      "raidStatusDisabled": "レイドガチャ受付を停止しました",
+      "raidStatusFailed": "レイドガチャ受付の更新に失敗しました"
     }
   },
   "gachaHistory": {

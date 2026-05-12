@@ -501,5 +501,23 @@ describe('TwitchChatService', () => {
       );
       expect(message).toBe('@SampleUser が【レジェンダリー】Legendary Card（3枚目 / コンプ 5/10）を獲得！');
     });
+
+    it('N連ガチャ用の {cards} と {draws} を値に置換する', () => {
+      const message = service.buildMessage(
+        '@{user} が{draws}連ガチャで {cards} を獲得！先頭は {card}',
+        { ...basePlaceholders, cards: 'Legendary Card、Rare Card、Common Card', draws: 3 }
+      );
+
+      expect(message).toBe('@SampleUser が3連ガチャで Legendary Card、Rare Card、Common Card を獲得！先頭は Legendary Card');
+    });
+
+    it('N連ガチャ用プレースホルダー未指定時は空文字に置換される', () => {
+      const message = service.buildMessage(
+        '{user} が {card} を獲得！{draws}{cards}',
+        basePlaceholders
+      );
+
+      expect(message).toBe('SampleUser が Legendary Card を獲得！');
+    });
   });
 });
