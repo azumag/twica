@@ -28,6 +28,7 @@ const getRarityInfo = (rarity: Rarity) =>
 
 interface GachaResult {
   card: Card;
+  cards?: Card[];
   userTwitchUsername: string;
   historyId?: string;
 }
@@ -400,7 +401,14 @@ export default function OverlayPage() {
    * Enqueue a new gacha result; start playback if idle
    */
   const enqueueResult = useCallback((data: GachaResult) => {
-    queueRef.current.push(data);
+    const cards = data.cards?.length ? data.cards : [data.card];
+    queueRef.current.push(
+      ...cards.map((card) => ({
+        ...data,
+        card,
+        cards: undefined,
+      }))
+    );
     if (!isDisplayingRef.current) {
       processQueue();
     }

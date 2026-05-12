@@ -8,6 +8,7 @@ export const BROADCASTER_TYPE = {
 
 export const TWITCH_SUBSCRIPTION_TYPE = {
   CHANNEL_POINTS_REDEMPTION_ADD: 'channel.channel_points_custom_reward_redemption.add' as const,
+  CHANNEL_RAID: 'channel.raid' as const,
 }
 
 export const COOKIE_NAMES = {

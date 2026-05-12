@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin";
 import { GachaService } from "@/lib/services/gacha";
-import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
+import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS, TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
@@ -11,10 +11,63 @@ import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders 
 import { hasScope } from "@/lib/twitch/token-manager";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
+import { countCharacters } from "@/lib/text-utils";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
+const CARD_LIST_SEPARATOR = "、";
+const RAID_GACHA_EVENTSUB_ACTIVE_MINUTES = 30;
+
+function formatCardNamesForChat(cardNames: string[], maxCharacters: number): string {
+  if (cardNames.length === 0) return "";
+
+  const fullList = cardNames.join(CARD_LIST_SEPARATOR);
+  if (countCharacters(fullList) <= maxCharacters) {
+    return fullList;
+  }
+
+  const total = cardNames.length;
+  const displayed: string[] = [];
+
+  for (const cardName of cardNames) {
+    const nextDisplayed = [...displayed, cardName];
+    const remaining = total - nextDisplayed.length;
+    const suffix = remaining > 0 ? ` ほか${remaining}枚（${nextDisplayed.length}/${total}枚表示）` : "";
+    const candidate = `${nextDisplayed.join(CARD_LIST_SEPARATOR)}${suffix}`;
+
+    if (countCharacters(candidate) > maxCharacters) {
+      break;
+    }
+
+    displayed.push(cardName);
+  }
+
+  if (displayed.length === 0) {
+    const fallback = `ほか${total}枚（0/${total}枚表示）`;
+    return countCharacters(fallback) <= maxCharacters ? fallback : `全${total}枚`;
+  }
+
+  const remaining = total - displayed.length;
+  return `${displayed.join(CARD_LIST_SEPARATOR)} ほか${remaining}枚（${displayed.length}/${total}枚表示）`;
+}
+
+function fitCardNamesForMessage(
+  cardNames: string[],
+  renderMessage: (cardsText: string) => string
+): { cardsText: string; message: string } {
+  let cardsText = cardNames.join(CARD_LIST_SEPARATOR);
+  let message = renderMessage(cardsText);
+
+  for (let i = 0; i < 3 && countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS; i++) {
+    const overflow = countCharacters(message) - TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
+    const nextMaxCharacters = Math.max(0, countCharacters(cardsText) - overflow);
+    cardsText = formatCardNamesForChat(cardNames, nextMaxCharacters);
+    message = renderMessage(cardsText);
+  }
+
+  return { cardsText, message };
+}
 
 /**
  * Verify Twitch EventSub signature using HMAC-SHA256 (Web Crypto API)
@@ -147,6 +200,8 @@ export async function POST(request: NextRequest) {
           await postRedemptionNotify(result);
         }
       }
+    } else if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID) {
+      await handleRaidNotification(messageId, event);
     }
 
     return NextResponse.json({ received: true });
@@ -205,11 +260,101 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ error: ERROR_MESSAGES.UNKNOWN_MESSAGE_TYPE }, { status: 400 });
 }
 
+function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
+  const message = error?.message ?? "";
+  return error?.code === "PGRST204" || message.includes("raid_gacha_active_until");
+}
+
+function isActiveUntilAfter(value: string | null | undefined, target: Date): boolean {
+  if (!value) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp > target.getTime();
+}
+
+async function handleRaidNotification(messageId: string, event: {
+  from_broadcaster_user_id?: string;
+  from_broadcaster_user_login?: string;
+  from_broadcaster_user_name?: string;
+  to_broadcaster_user_id?: string;
+  to_broadcaster_user_login?: string;
+  to_broadcaster_user_name?: string;
+  viewers?: number;
+}): Promise<void> {
+  const toBroadcasterUserId = event.to_broadcaster_user_id;
+  if (!toBroadcasterUserId) {
+    logger.warn("[EventSub] Raid notification missing to_broadcaster_user_id", { messageId, event });
+    return;
+  }
+
+  const activeUntil = new Date(Date.now() + RAID_GACHA_EVENTSUB_ACTIVE_MINUTES * 60 * 1000).toISOString();
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: streamer, error: streamerError } = await supabaseAdmin
+    .from("streamers")
+    .select("id, raid_gacha_active_until")
+    .eq("twitch_user_id", toBroadcasterUserId)
+    .maybeSingle();
+
+  if (isRaidStateSchemaError(streamerError)) {
+    logger.warn("[EventSub] Raid gacha state column is unavailable; raid notification ignored", {
+      messageId,
+      toBroadcasterUserId,
+      error: streamerError?.message,
+    });
+    return;
+  }
+
+  if (streamerError || !streamer) {
+    await reportError(new Error(`Raid EventSub streamer lookup failed: ${streamerError?.message ?? "Streamer not found"}`), {
+      context: "eventsub:handleRaidNotification",
+      messageId,
+      toBroadcasterUserId,
+      fromBroadcasterUserId: event.from_broadcaster_user_id,
+    });
+    return;
+  }
+
+  if (isActiveUntilAfter(streamer.raid_gacha_active_until, new Date(activeUntil))) {
+    logger.info("[EventSub] Raid gacha window already extends beyond automatic activation", {
+      messageId,
+      streamerId: streamer.id,
+      activeUntil: streamer.raid_gacha_active_until,
+    });
+    return;
+  }
+
+  const { error: updateError } = await supabaseAdmin
+    .from("streamers")
+    .update({ raid_gacha_active_until: activeUntil })
+    .eq("id", streamer.id);
+
+  if (updateError) {
+    await reportError(new Error(`Raid gacha activation failed: ${updateError.message}`), {
+      context: "eventsub:handleRaidNotification",
+      messageId,
+      streamerId: streamer.id,
+      toBroadcasterUserId,
+      fromBroadcasterUserId: event.from_broadcaster_user_id,
+    });
+    return;
+  }
+
+  logger.info("[EventSub] Raid gacha window activated from raid notification", {
+    messageId,
+    streamerId: streamer.id,
+    toBroadcasterUserId,
+    fromBroadcasterUserId: event.from_broadcaster_user_id,
+    viewers: event.viewers,
+    activeUntil,
+  });
+}
+
 /** postRedemptionNotify に渡すデータ（streamer.id を streamerId として再利用し冗長を排除） */
 interface RedemptionNotifyData {
   gachaResult: {
     type: "gacha";
     card: GachaCard;
+    cards?: GachaCard[];
     userTwitchUsername: string;
   };
   broadcasterTwitchUserId: string;
@@ -237,7 +382,8 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
       data.streamer,
       data.gachaResult.card,
       data.gachaResult.userTwitchUsername,
-      data.userId
+      data.userId,
+      data.gachaResult.cards
     ),
   ]);
 
@@ -323,6 +469,14 @@ async function handleRedemption(messageId: string, event: {
         });
         return null;
       }
+      if (result.error === 'Raid-limited reward inactive') {
+        logger.info('[handleRedemption] Raid-limited reward skipped outside active raid window', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+          rewardId: event.reward.id,
+        });
+        return null;
+      }
       // カード未設定はユーザー設定の問題でありバグではない (Issue #277)
       // "No cards available" is a streamer setup issue, not a system bug
       if (result.error === 'No cards available for this streamer') {
@@ -358,6 +512,7 @@ async function handleRedemption(messageId: string, event: {
     const gachaResult = {
       type: "gacha" as const,
       card: result.data.card,
+      cards: result.data.cards,
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
@@ -386,6 +541,7 @@ async function handleRedemption(messageId: string, event: {
  * @param card - 獲得したカード（GachaCard型 - gacha serviceから返される）
  * @param userName - ガチャを引いたユーザー名
  * @param userId - ガチャを引いたユーザーのTwitch ID
+ * @param cards - 複数枚ガチャ時の獲得カード一覧
  */
 async function sendChatAnnouncement(
   broadcasterTwitchUserId: string,
@@ -396,8 +552,13 @@ async function sendChatAnnouncement(
   },
   card: GachaCard,
   userName: string,
-  userId: string
+  userId: string,
+  cards?: GachaCard[]
 ): Promise<void> {
+  const drawnCards = cards && cards.length > 0 ? cards : [card];
+  const isMultiDraw = drawnCards.length > 1;
+  const cardNames = drawnCards.map((drawnCard) => drawnCard.name);
+
   // 関数呼び出しを記録（デバッグ用：この関数が呼ばれたことを確認するため）
   // Log function entry to confirm this function is being called
   logger.info('sendChatAnnouncement called', {
@@ -405,6 +566,7 @@ async function sendChatAnnouncement(
     streamerId: streamer.id,
     chatAnnouncementEnabled: streamer.chat_announcement_enabled,
     cardName: card.name,
+    drawCount: drawnCards.length,
     userName,
   });
 
@@ -443,7 +605,10 @@ async function sendChatAnnouncement(
   // テンプレートに含まれるプレースホルダーに応じてのみDBクエリを実行
   // waitUntil内のwall time短縮のため、不要なDBクエリをスキップ
   // Run DB queries only for placeholders that appear in the template to keep waitUntil wall-time short
-  const effectiveTemplate = streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
+  const messageTemplate = streamer.chat_announcement_template
+    || (isMultiDraw ? '@{user} が{draws}連ガチャで {cards} を獲得しました！' : DEFAULT_CHAT_TEMPLATE);
+  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}/.test(messageTemplate);
+  const effectiveTemplate = messageTemplate;
   const needsCardCount = /\{num\}/.test(effectiveTemplate);
   const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
   const needsAllCount = /\{all\}/.test(effectiveTemplate);
@@ -554,6 +719,8 @@ async function sendChatAnnouncement(
   const placeholders: ChatMessagePlaceholders = {
     user: userName,
     card: card.name,
+    cards: isMultiDraw ? cardNames.join(CARD_LIST_SEPARATOR) : undefined,
+    draws: isMultiDraw ? drawnCards.length : undefined,
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,
@@ -565,7 +732,25 @@ async function sendChatAnnouncement(
   // チャットサービスでメッセージを構築・送信
   // Build and send message using chat service
   const chatService = new TwitchChatService();
-  const message = chatService.buildMessage(streamer.chat_announcement_template, placeholders);
+  let message: string;
+
+  if (isMultiDraw && usesMultiDrawPlaceholders) {
+    const fitted = fitCardNamesForMessage(cardNames, (cardsText) =>
+      chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText })
+    );
+    placeholders.cards = fitted.cardsText;
+    message = fitted.message;
+  } else {
+    const baseMessage = chatService.buildMessage(messageTemplate, placeholders);
+    if (isMultiDraw) {
+      message = fitCardNamesForMessage(
+        cardNames,
+        (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`
+      ).message;
+    } else {
+      message = baseMessage;
+    }
+  }
 
   const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
 
