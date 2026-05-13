@@ -87,6 +87,8 @@ interface OverlayPreviewProps {
   streamerId: string;
   baseUrl: string;
   showPreview?: boolean;  // プレビューセクションを表示するかどうか（デフォルト: true）
+  showCustomization?: boolean;  // カスタマイズ折りたたみセクションを表示するか（デフォルト: true）
+  showCollectionUrl?: boolean;  // コレクションURLセクションを表示するか（デフォルト: true）
   sideContent?: React.ReactNode;  // URLセクションの横に表示するコンテンツ（横並びレイアウト用）
   cards?: Card[];  // デバッグ用：配信者のカード一覧（セレクトボックスで選択可能）
 }
@@ -107,7 +109,15 @@ const isPreviewEnvironment = process.env.NEXT_PUBLIC_VERCEL_ENV === "preview";
  * - iframeでのプレビュー表示
  * - DEMOボタンで配信者のカードを表示
  */
-export default function OverlayPreview({ streamerId, baseUrl, showPreview = true, sideContent, cards = [] }: OverlayPreviewProps) {
+export default function OverlayPreview({
+  streamerId,
+  baseUrl,
+  showPreview = true,
+  showCustomization = true,
+  showCollectionUrl = true,
+  sideContent,
+  cards = [],
+}: OverlayPreviewProps) {
   const t = useTranslations("overlaySettings");
   const tDashboard = useTranslations("dashboard");
   const storageKey = `${OVERLAY_OPTIONS_STORAGE_KEY_PREFIX}${streamerId}`;
@@ -368,6 +378,7 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
 
       {/* オーバーレイカスタマイズオプション（折りたたみ可能） */}
       {/* Overlay customization options (collapsible section) */}
+      {showCustomization && (
       <div className="mt-6 pt-6 border-t border-gray-700">
         {/* 折りたたみヘッダー - クリックで展開/折りたたみ */}
         {/* Collapsible header - click to expand/collapse */}
@@ -554,6 +565,7 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
           </>
         )}
       </div>
+      )}
     </div>
   );
 
@@ -726,28 +738,20 @@ export default function OverlayPreview({ streamerId, baseUrl, showPreview = true
   if (sideContent) {
     return (
       <div className="space-y-8">
-        {/* URLセクションとsideContentを横並びに配置 */}
-        {/* Place URL section and sideContent side by side */}
         <div className="grid gap-8 lg:grid-cols-2">
           {urlSection}
           {sideContent}
         </div>
-        {/* コレクションページURLセクション（別欄として表示） */}
-        {/* Collection page URL section (displayed as separate section) */}
-        {collectionUrlSection}
-        {/* プレビューは全幅で下に配置 */}
-        {/* Preview section spans full width below */}
+        {showCollectionUrl && collectionUrlSection}
         {previewSection}
       </div>
     );
   }
 
   return (
-    <div className={showPreview ? "space-y-8" : ""}>
+    <div className={showPreview || showCollectionUrl ? "space-y-8" : ""}>
       {urlSection}
-      {/* コレクションページURLセクション（別欄として表示） */}
-      {/* Collection page URL section (displayed as separate section) */}
-      {collectionUrlSection}
+      {showCollectionUrl && collectionUrlSection}
       {previewSection}
     </div>
   );

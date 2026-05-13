@@ -611,7 +611,37 @@
   },
   "settingsPage": {
     "title": "Stream Settings",
-    "description": "Configure OBS overlay and channel point rewards."
+    "description": "Configure OBS overlay and channel point rewards.",
+    "viewMode": {
+      "simple": "Simple",
+      "advanced": "Advanced",
+      "ariaLabel": "Toggle stream settings display mode"
+    },
+    "simple": {
+      "step1": "1",
+      "step1Label": "Add the overlay to OBS",
+      "step2": "2",
+      "step2Label": "Pick a redemption reward",
+      "switchToAdvanced": "Show all settings →",
+      "collectionLink": "Viewer collection page"
+    },
+    "advanced": {
+      "navAria": "Settings sections",
+      "section": {
+        "overlay": "Overlay",
+        "overlayDesc": "OBS URL & effects",
+        "reward": "Reward",
+        "rewardDesc": "Channel-point link",
+        "sound": "Sound",
+        "soundDesc": "Gacha sound effect",
+        "announcement": "Chat alert",
+        "announcementDesc": "Auto chat message",
+        "visibility": "Visibility",
+        "visibilityDesc": "Unowned card display",
+        "share": "Share",
+        "shareDesc": "Collection page URL"
+      }
+    }
   },
   "cardsPage": {
     "title": "Card Management",

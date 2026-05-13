@@ -611,7 +611,37 @@
   },
   "settingsPage": {
     "title": "配信設定",
-    "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。"
+    "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。",
+    "viewMode": {
+      "simple": "シンプル",
+      "advanced": "詳細",
+      "ariaLabel": "配信設定の表示モードを切り替え"
+    },
+    "simple": {
+      "step1": "1",
+      "step1Label": "OBSにオーバーレイを追加",
+      "step2": "2",
+      "step2Label": "視聴者の引換ポイントを選ぶ",
+      "switchToAdvanced": "すべての設定を表示する →",
+      "collectionLink": "視聴者向けコレクションページ"
+    },
+    "advanced": {
+      "navAria": "設定セクション",
+      "section": {
+        "overlay": "オーバーレイ",
+        "overlayDesc": "OBS表示URLと演出",
+        "reward": "報酬",
+        "rewardDesc": "チャネルポイント連携",
+        "sound": "効果音",
+        "soundDesc": "ガチャ演出のサウンド",
+        "announcement": "チャット通知",
+        "announcementDesc": "獲得時の自動メッセージ",
+        "visibility": "公開設定",
+        "visibilityDesc": "未所持カードの見せ方",
+        "share": "共有",
+        "shareDesc": "コレクションページのURL"
+      }
+    }
   },
   "cardsPage": {
     "title": "カード管理",
