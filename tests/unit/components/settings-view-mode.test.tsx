@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import {
@@ -21,6 +21,27 @@ const messages = {
   },
 }
 
+function installLocalStorageMock() {
+  const store = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      get length() {
+        return store.size
+      },
+      clear: vi.fn(() => store.clear()),
+      getItem: vi.fn((key: string) => store.get(key) ?? null),
+      key: vi.fn((index: number) => Array.from(store.keys())[index] ?? null),
+      removeItem: vi.fn((key: string) => {
+        store.delete(key)
+      }),
+      setItem: vi.fn((key: string, value: string) => {
+        store.set(key, String(value))
+      }),
+    },
+  })
+}
+
 function renderWithProvider(
   ui: React.ReactNode,
   options: { initialModeHint?: 'simple' | 'advanced' } = {}
@@ -36,9 +57,14 @@ function renderWithProvider(
 
 describe('SettingsViewMode', () => {
   beforeEach(() => {
+    installLocalStorageMock()
     window.localStorage.clear()
     // モジュールスコープの購読者集合がテスト間で漏れないようにリセット。
     __resetSettingsViewModeSubscribersForTest()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   describe('SettingsViewToggle', () => {
@@ -98,6 +124,28 @@ describe('SettingsViewMode', () => {
       expect(
         screen.getByRole('button', { name: 'シンプル' })
       ).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('localStorage への保存に失敗しても同一タブ内では表示モードを切り替えられる', () => {
+      vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+        throw new Error('storage disabled')
+      })
+      renderWithProvider(
+        <>
+          <SettingsViewToggle />
+          <AdvancedSettings>
+            <p>advanced-content</p>
+          </AdvancedSettings>
+        </>
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: '詳細' }))
+
+      expect(screen.getByRole('button', { name: '詳細' })).toHaveAttribute(
+        'aria-pressed',
+        'true'
+      )
+      expect(screen.getByTestId('advanced-settings')).not.toHaveAttribute('hidden')
     })
 
     it('group ロールに aria-label が付与されている', () => {

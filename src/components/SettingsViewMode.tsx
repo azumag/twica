@@ -24,6 +24,7 @@ const DEFAULT_MODE: SettingsViewMode = "simple";
 // 自前の購読者集合を保持し setMode 時に手動通知する。
 // モジュールスコープのシングルトンとすることで、Provider 不在/複数でも整合性を保てる。
 const storageSubscribers = new Set<() => void>();
+let transientMode: SettingsViewMode | null = null;
 
 function notifyStorageSubscribers(): void {
   storageSubscribers.forEach((cb) => cb());
@@ -33,6 +34,7 @@ function notifyStorageSubscribers(): void {
 // Exported for tests only — production code should not depend on this.
 export function __resetSettingsViewModeSubscribersForTest(): void {
   storageSubscribers.clear();
+  transientMode = null;
 }
 
 interface SettingsViewModeContextValue {
@@ -74,6 +76,10 @@ function readStoredMode(): SettingsViewMode | null {
   }
 }
 
+function readCurrentMode(fallbackMode: SettingsViewMode): SettingsViewMode {
+  return transientMode ?? readStoredMode() ?? fallbackMode;
+}
+
 /**
  * Provider — Context + localStorage 永続化。
  * useSyncExternalStore で localStorage を購読し、SSR/CSR の整合性を保つ。
@@ -96,7 +102,7 @@ export function SettingsViewModeProvider({
   const fallbackMode: SettingsViewMode = initialModeHint ?? DEFAULT_MODE;
 
   const getClientSnapshot = useCallback((): SettingsViewMode => {
-    return readStoredMode() ?? fallbackMode;
+    return readCurrentMode(fallbackMode);
   }, [fallbackMode]);
 
   const getServerSnapshot = useCallback((): SettingsViewMode => {
@@ -114,10 +120,11 @@ export function SettingsViewModeProvider({
       // SSR で誤って呼ばれた場合は no-op (本来到達しない)。
       return;
     }
+    transientMode = next;
     try {
       window.localStorage.setItem(STORAGE_KEY, next);
     } catch {
-      // 永続化失敗時は notify せず、ストアの値も従前のまま (UI が一瞬切り替わって戻る現象を防ぐ)。
+      notifyStorageSubscribers();
       return;
     }
     notifyStorageSubscribers();
