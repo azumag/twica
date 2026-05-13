@@ -618,9 +618,6 @@
       "ariaLabel": "配信設定の表示モードを切り替え"
     },
     "simple": {
-      "heroEyebrow": "クイックスタート",
-      "heroTitle": "最短で配信を始める",
-      "heroDescription": "必要な2つの設定だけを表示しています。細かいカスタマイズは『詳細』に切り替えてください。",
       "step1": "1",
       "step1Label": "OBSにオーバーレイを追加",
       "step2": "2",

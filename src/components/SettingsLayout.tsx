@@ -107,30 +107,13 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
   const t = useTranslations("settingsPage");
   const collectionUrl = `${data.baseUrl}/collection/${data.streamerId}`;
 
+  // クイックスタートのヒーローカードは「毎回邪魔」とのフィードバックを受け削除。
+  // Step ラベル (「1. OBSにオーバーレイを追加」など) が既に説明的なため冗長だった。
+  // The hero ribbon was removed per user feedback ("毎回邪魔"); the step labels
+  // are self-explanatory and the page header already names the screen.
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
       <PageHeader title={t("title")} />
-
-      {/* Hero ribbon — explains the focused mode and orients the user */}
-      <section
-        aria-labelledby="simple-hero-title"
-        className="relative overflow-hidden rounded-3xl border border-violet-500/20 bg-gradient-to-br from-violet-600/15 via-indigo-700/10 to-transparent p-6 sm:p-8"
-      >
-        {/* decorative orb — pure CSS, no asset cost */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-violet-500/20 blur-3xl"
-        />
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-300/80">
-          {t("simple.heroEyebrow")}
-        </p>
-        <h2 id="simple-hero-title" className="mt-2 text-2xl font-semibold text-white sm:text-3xl">
-          {t("simple.heroTitle")}
-        </h2>
-        <p className="mt-3 max-w-lg text-sm leading-relaxed text-gray-300">
-          {t("simple.heroDescription")}
-        </p>
-      </section>
 
       {/* Step 1: OBS URL */}
       <StepCard step={t("simple.step1")} label={t("simple.step1Label")}>
