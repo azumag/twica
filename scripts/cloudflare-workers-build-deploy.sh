@@ -44,13 +44,6 @@ if [[ "$mode" == "deploy" ]]; then
     echo "Refusing to deploy $target from branch '$branch'; expected '$expected_branch'." >&2
     exit 1
   fi
-
-  if [[ -z "${SUPABASE_DB_URL:-}" ]]; then
-    echo "SUPABASE_DB_URL is required before deploying $target." >&2
-    exit 1
-  fi
-
-  npx supabase db push --db-url "$SUPABASE_DB_URL" --yes
 fi
 
 "${deploy_command[@]}"

@@ -1,15 +1,17 @@
 # Cloudflare Workers Deployment Workflow
 # Cloudflare Workersデプロイメントワークフロー
 #
-# Legacy GitHub Actions deploys the Next.js app until Cloudflare Workers Builds
-# is enabled. After setting the repository variable
+# GitHub Actions always applies Supabase migrations from the existing GitHub
+# Environment secrets. Legacy app deploys run here until Cloudflare Workers
+# Builds is enabled. After setting the repository variable
 # CLOUDFLARE_WORKERS_BUILDS_ENABLED=true, app deploys are handled by Cloudflare
-# and this workflow only deploys the auxiliary error-reporter Worker.
+# and this workflow keeps migrations plus the auxiliary error-reporter Worker.
 #
 # Cloudflare Workers Builds に切り替えるまでは、OpenNext（@opennextjs/cloudflare）
 # を使用して Next.js アプリを GitHub Actions からデプロイする。
 # リポジトリ変数 CLOUDFLARE_WORKERS_BUILDS_ENABLED=true を設定した後は、
-# アプリ本体のデプロイは Cloudflare 側で行い、この workflow は補助 Worker のみを扱う。
+# アプリ本体のデプロイは Cloudflare 側で行い、この workflow はマイグレーションと
+# 補助 Worker を扱う。
 #
 # Supabase migrations are applied automatically via `supabase db push --db-url`
 # before the build step. Each GitHub Environment holds its own SUPABASE_DB_URL.
@@ -65,8 +67,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  supabase-migrations:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    # GitHub Environment を動的に選択することで、環境ごとの Secrets が自動的に解決される。
+    # workflow_dispatch の場合は手動選択、push の場合はブランチ名で判定。
+    # Dynamically select the GitHub Environment so that per-environment
+    # Secrets are resolved automatically. workflow_dispatch uses the manual
+    # selection; push events are determined by branch name.
+    environment: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Supabase CLI をセットアップし、マイグレーションを適用する。
+      # Node.js / npm ci より前に配置し、マイグレーション失敗時に
+      # 不要な依存インストールを回避する。
+      # --db-url 方式により supabase link 不要・シークレット1つで動作する。
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.76.14
+
+      # production 環境へのマイグレーションは main ブランチからのみ許可。
+      # workflow_dispatch で非 main ブランチから production を選択した場合を防止する。
+      - name: Apply Supabase migrations
+        run: |
+          if [ "$RESOLVED_ENV" = "production" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Production migrations are only allowed from the main branch"
+            exit 1
+          fi
+          supabase db push --db-url "$SUPABASE_DB_URL" --yes
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RESOLVED_ENV: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+
   legacy-app-deploy:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'
+    needs: supabase-migrations
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -95,28 +136,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
-
-      # Supabase CLI をセットアップし、マイグレーションを適用する。
-      # Node.js / npm ci より前に配置し、マイグレーション失敗時に
-      # 不要な依存インストールを回避する。
-      # --db-url 方式により supabase link 不要・シークレット1つで動作する。
-      - name: Setup Supabase CLI
-        uses: supabase/setup-cli@v1
-        with:
-          version: 2.76.14
-
-      # production 環境へのマイグレーションは main ブランチからのみ許可。
-      # workflow_dispatch で非 main ブランチから production を選択した場合を防止する。
-      - name: Apply Supabase migrations
-        run: |
-          if [ "$RESOLVED_ENV" = "production" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Production migrations are only allowed from the main branch"
-            exit 1
-          fi
-          supabase db push --db-url "$SUPABASE_DB_URL" --yes
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          RESOLVED_ENV: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -171,6 +190,7 @@ jobs:
 
   auxiliary-workers:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'))
+    needs: supabase-migrations
     runs-on: ubuntu-latest
     permissions:
       contents: read
