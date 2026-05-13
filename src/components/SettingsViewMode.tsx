@@ -153,32 +153,33 @@ function useSettingsViewModeStrict(): SettingsViewModeContextValue {
 }
 
 /**
- * View-mode セグメントトグル。Apple Settings 風のピル状デザイン。
+ * View-mode セグメントトグル。
+ * "シンプル" と "詳細" は文字数が違うためボタン幅が一致しない。
+ * 以前はスライドする absolute なハイライトピルを使っていたが、50% width 計算が
+ * 各ボタンの実寸法とズレてはみ出していた (ユーザー報告)。
+ * 各ボタンに直接 active 背景を持たせる方式に切替え、位置ズレを根本解消。
  */
 export function SettingsViewToggle() {
   const t = useTranslations("settingsPage.viewMode");
   const { mode, setMode } = useSettingsViewModeStrict();
 
+  const baseClass =
+    "relative z-10 rounded-full px-4 py-1.5 text-xs font-medium tracking-wide transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300";
+  const activeClass =
+    "bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-lg shadow-violet-900/40";
+  const inactiveClass = "text-gray-400 hover:text-gray-200";
+
   return (
     <div
       role="group"
       aria-label={t("ariaLabel")}
-      className="relative inline-flex rounded-full border border-white/10 bg-gray-900/60 p-1 shadow-inner shadow-black/40 backdrop-blur"
+      className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-gray-900/60 p-1 shadow-inner shadow-black/40 backdrop-blur"
     >
-      {/* スライドする選択ハイライト */}
-      <span
-        aria-hidden="true"
-        className={`pointer-events-none absolute top-1 bottom-1 w-[calc(50%-0.25rem)] rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 shadow-lg shadow-violet-900/40 transition-transform duration-300 ease-out ${
-          mode === "advanced" ? "translate-x-[calc(100%+0.25rem)]" : "translate-x-0"
-        }`}
-      />
       <button
         type="button"
         aria-pressed={mode === "simple"}
         onClick={() => setMode("simple")}
-        className={`relative z-10 px-4 py-1.5 text-xs font-medium tracking-wide transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${
-          mode === "simple" ? "text-white" : "text-gray-400 hover:text-gray-200"
-        }`}
+        className={`${baseClass} ${mode === "simple" ? activeClass : inactiveClass}`}
       >
         {t("simple")}
       </button>
@@ -186,9 +187,7 @@ export function SettingsViewToggle() {
         type="button"
         aria-pressed={mode === "advanced"}
         onClick={() => setMode("advanced")}
-        className={`relative z-10 px-4 py-1.5 text-xs font-medium tracking-wide transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${
-          mode === "advanced" ? "text-white" : "text-gray-400 hover:text-gray-200"
-        }`}
+        className={`${baseClass} ${mode === "advanced" ? activeClass : inactiveClass}`}
       >
         {t("advanced")}
       </button>
