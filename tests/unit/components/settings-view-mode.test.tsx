@@ -192,19 +192,23 @@ describe('SettingsViewMode', () => {
   })
 
   describe('useSettingsViewMode (Provider 未使用時)', () => {
-    it('Provider 外で AdvancedSettings を使うと例外', () => {
-      // テスト時の console.error を抑制するため、render を try/catch で囲む。
-      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      expect(() =>
-        render(
-          <NextIntlClientProvider locale="ja" messages={messages}>
-            <AdvancedSettings>
-              <p>x</p>
-            </AdvancedSettings>
-          </NextIntlClientProvider>
-        )
-      ).toThrow(/SettingsViewModeProvider/)
-      spy.mockRestore()
+    it('Provider 外でも AdvancedSettings は children を表示する (= advanced フォールバック)', () => {
+      // Provider 未使用時は安全側に倒し「advanced (= 全機能表示)」をフォールバックとして返す。
+      // これにより個別の設定コンポーネントを単独 (テスト/Storybook/エラーフォールバック等) で
+      // レンダリングしてもクラッシュしないことを保証する。
+      render(
+        <NextIntlClientProvider locale="ja" messages={messages}>
+          <AdvancedSettings>
+            <p>advanced-fallback-content</p>
+          </AdvancedSettings>
+        </NextIntlClientProvider>
+      )
+      // children が表示されていること
+      expect(screen.getByText('advanced-fallback-content')).toBeInTheDocument()
+      // hidden / aria-hidden が付与されていないこと (= advanced モードで可視)
+      const wrapper = screen.getByTestId('advanced-settings')
+      expect(wrapper).not.toHaveAttribute('hidden')
+      expect(wrapper).not.toHaveAttribute('aria-hidden')
     })
   })
 })
