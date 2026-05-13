@@ -78,7 +78,7 @@ interface CardManagerProps {
 
 // Sorting field options
 // 並び替えフィールドの選択肢
-type SortField = "created_at" | "rarity" | "card_number" | "drop_rate";
+type SortField = "display_order" | "created_at" | "rarity" | "card_number" | "drop_rate";
 type CardFormData = {
   name: string;
   description: string;
@@ -97,6 +97,18 @@ type SortDirection = "asc" | "desc";
 // Status filter options
 // ステータスフィルターの選択肢
 type StatusFilter = "all" | "active" | "inactive";
+
+const compareCardsByDisplayOrder = (a: Card, b: Card): number => {
+  const numberDiff =
+    (a.card_number ?? Number.MAX_SAFE_INTEGER) -
+    (b.card_number ?? Number.MAX_SAFE_INTEGER);
+  if (numberDiff !== 0) return numberDiff;
+
+  const createdAtDiff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  if (createdAtDiff !== 0) return createdAtDiff;
+
+  return a.id.localeCompare(b.id);
+};
 
 export default function CardManager({
   streamerId,
@@ -134,8 +146,8 @@ export default function CardManager({
 
   // Sorting and filtering state
   // 並び替えとフィルタリングの状態
-  const [sortField, setSortField] = useState<SortField>("created_at");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [sortField, setSortField] = useState<SortField>("display_order");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [titleSearchQuery, setTitleSearchQuery] = useState("");
   // Track if this is the first render to skip initial reload
@@ -220,10 +232,15 @@ export default function CardManager({
       nextCards = nextCards.filter(card => card.name.toLowerCase().includes(normalizedQuery));
     }
 
-    // Cards are already sorted by server, just return as-is
-    // カードは既にサーバーでソートされているのでそのまま返す
+    if (sortField === "display_order") {
+      nextCards = [...nextCards].sort(compareCardsByDisplayOrder);
+      if (sortDirection === "desc") {
+        nextCards.reverse();
+      }
+    }
+
     return nextCards;
-  }, [cards, statusFilter, titleSearchQuery]);
+  }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1828,6 +1845,7 @@ export default function CardManager({
               className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
               style={SELECT_ARROW_STYLE}
             >
+              <option value="display_order">{t("sort.displayOrder")}</option>
               <option value="created_at">{t("sort.createdAt")}</option>
               <option value="rarity">{t("sort.rarity")}</option>
               <option value="card_number">{t("sort.cardNumber")}</option>

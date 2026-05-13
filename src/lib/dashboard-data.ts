@@ -395,6 +395,21 @@ export interface GachaUserEntry {
   lastDrawAt: string;
 }
 
+function normalizeUniqueCardIds(cardIds: unknown): string[] {
+  if (!Array.isArray(cardIds)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      cardIds.filter(
+        (cardId): cardId is string =>
+          typeof cardId === "string" && cardId.length > 0
+      )
+    )
+  );
+}
+
 /**
  * Get aggregated user list for a streamer's gacha history
  * RPC get_gacha_users_for_streamer でDB側集計を行い、件数制限なしで正確なカード所有状況を返す
@@ -422,14 +437,17 @@ export async function getGachaUsersForStreamer(
     // asキャストだが、SQL側でCOALESCEにより users/unique_card_ids は必ず配列を返す
     const rpcData = rpcResult as { users: Array<{ user_twitch_id: string; username: string; draw_count: number; last_draw_at: string; unique_card_ids: string[] }>; total: number };
     const rpcUsers = rpcData.users || [];
-    const users: GachaUserEntry[] = rpcUsers.map((u) => ({
-      userTwitchId: u.user_twitch_id,
-      username: u.username || "",
-      drawCount: u.draw_count,
-      uniqueCards: (u.unique_card_ids || []).length,
-      uniqueCardIds: u.unique_card_ids || [],
-      lastDrawAt: u.last_draw_at,
-    }));
+    const users: GachaUserEntry[] = rpcUsers.map((u) => {
+      const uniqueCardIds = normalizeUniqueCardIds(u.unique_card_ids);
+      return {
+        userTwitchId: u.user_twitch_id,
+        username: u.username || "",
+        drawCount: u.draw_count,
+        uniqueCards: uniqueCardIds.length,
+        uniqueCardIds,
+        lastDrawAt: u.last_draw_at,
+      };
+    });
     const total = rpcData.total || 0;
     return {
       users,
@@ -1136,12 +1154,15 @@ export const getCollectionCompletions = cache(async (
   const cachedFetch = unstable_cache(
     async () => {
       const supabaseAdmin = getSupabaseAdmin();
-      const { data, error } = await supabaseAdmin
-        .from("collection_completions")
-        .select("total_cards, completed_at")
-        .eq("twitch_user_id", twitchUserId)
-        .eq("streamer_id", streamerId)
-        .order("completed_at", { ascending: false });
+      const { data, error } = await withRetry(
+        () => supabaseAdmin
+          .from("collection_completions")
+          .select("total_cards, completed_at")
+          .eq("twitch_user_id", twitchUserId)
+          .eq("streamer_id", streamerId)
+          .order("completed_at", { ascending: false }),
+        "dashboard:getCollectionCompletions",
+      );
       if (error) {
         logger.error(`Failed to fetch collection completions: ${error.message}`);
         return [];

@@ -267,7 +267,7 @@ export async function POST(request: NextRequest) {
 
 // Valid sort fields for cards
 // カードの有効な並び替えフィールド
-const VALID_SORT_FIELDS = ["created_at", "rarity", "drop_rate", "card_number"] as const;
+const VALID_SORT_FIELDS = ["created_at", "rarity", "drop_rate", "card_number", "display_order"] as const;
 type SortField = typeof VALID_SORT_FIELDS[number];
 
 // Valid sort directions
@@ -314,15 +314,25 @@ async function fetchCardsFromDB(
   // Apply sorting - all fields use DB-side sorting for correct pagination
   // 並び替えを適用 - ページネーション整合性のため全フィールドDB側でソート
   const ascending = sortDirection === "asc";
-  // Use rarity_order generated column (CASE-based: legendary=1, epic=2, rare=3, common=4)
-  // instead of rarity text column which sorts alphabetically
-  // rarityテキストカラムはアルファベット順になるため、rarity_order generated columnを使用
-  const dbSortField = sortField === "rarity" ? "rarity_order" : sortField;
+  // Use stable DB-side ordering for correct pagination.
+  // display_order uses manually assigned card numbers first, then old cards first.
+  const dbSortField = sortField === "rarity"
+    ? "rarity_order"
+    : sortField === "display_order"
+      ? "card_number"
+      : sortField;
   query = query.order(dbSortField, { ascending, nullsFirst: false });
+  if (sortField === "display_order") {
+    query = query.order("created_at", { ascending: true, nullsFirst: false });
+  }
   query = query.range(offset, offset + limit - 1);
 
   let { data: cards, error, count } = await query;
-  if (error && sortField === "card_number" && isMissingCardNumberColumnError(error)) {
+  if (
+    error &&
+    (sortField === "card_number" || sortField === "display_order") &&
+    isMissingCardNumberColumnError(error)
+  ) {
     const fallbackQuery = supabaseAdmin
       .from("cards")
       .select("*", { count: "exact" })

@@ -1,20 +1,98 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin";
 import { GachaService } from "@/lib/services/gacha";
-import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
+import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS, TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { broadcastGachaResult } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
 import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
-import { hasScope } from "@/lib/twitch/token-manager";
-import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
+import { countCharacters } from "@/lib/text-utils";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
+const CARD_LIST_SEPARATOR = "、";
+const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = '@{user} が{draws}連ガチャで {rarityCounts} を獲得しました！{cards}';
+
+function formatCardNamesForChat(cardNames: string[], maxCharacters: number): string {
+  if (cardNames.length === 0) return "";
+
+  const fullList = cardNames.join(CARD_LIST_SEPARATOR);
+  if (countCharacters(fullList) <= maxCharacters) {
+    return fullList;
+  }
+
+  const total = cardNames.length;
+  const displayed: string[] = [];
+
+  for (const cardName of cardNames) {
+    const nextDisplayed = [...displayed, cardName];
+    const remaining = total - nextDisplayed.length;
+    const suffix = remaining > 0 ? ` ほか${remaining}枚（${nextDisplayed.length}/${total}枚表示）` : "";
+    const candidate = `${nextDisplayed.join(CARD_LIST_SEPARATOR)}${suffix}`;
+
+    if (countCharacters(candidate) > maxCharacters) {
+      break;
+    }
+
+    displayed.push(cardName);
+  }
+
+  if (displayed.length === 0) {
+    const fallback = `ほか${total}枚（0/${total}枚表示）`;
+    return countCharacters(fallback) <= maxCharacters ? fallback : `全${total}枚`;
+  }
+
+  const remaining = total - displayed.length;
+  return `${displayed.join(CARD_LIST_SEPARATOR)} ほか${remaining}枚（${displayed.length}/${total}枚表示）`;
+}
+
+function fitCardNamesForMessage(
+  cardNames: string[],
+  renderMessage: (cardsText: string) => string
+): { cardsText: string; message: string } {
+  let cardsText = cardNames.join(CARD_LIST_SEPARATOR);
+  let message = renderMessage(cardsText);
+
+  for (let i = 0; i < 3 && countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS; i++) {
+    const overflow = countCharacters(message) - TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
+    const nextMaxCharacters = Math.max(0, countCharacters(cardsText) - overflow);
+    cardsText = formatCardNamesForChat(cardNames, nextMaxCharacters);
+    message = renderMessage(cardsText);
+  }
+
+  return { cardsText, message };
+}
+
+function formatRarityCountsForChat(cardNamesByRarity: string[]): string {
+  if (cardNamesByRarity.length === 0) return "";
+
+  const counts = new Map<string, number>();
+  for (const rarity of cardNamesByRarity) {
+    counts.set(rarity, (counts.get(rarity) ?? 0) + 1);
+  }
+
+  const rarityOrder = ["legendary", "epic", "rare", "common"];
+  const rarityMap: Record<string, string> = {
+    common: 'コモン',
+    rare: 'レア',
+    epic: 'エピック',
+    legendary: 'レジェンダリー',
+  };
+
+  return [...counts.entries()]
+    .sort(([a], [b]) => {
+      const aIndex = rarityOrder.indexOf(a);
+      const bIndex = rarityOrder.indexOf(b);
+      return (aIndex === -1 ? rarityOrder.length : aIndex)
+        - (bIndex === -1 ? rarityOrder.length : bIndex);
+    })
+    .map(([rarity, count]) => `${rarityMap[rarity] ?? rarity}x${count}`)
+    .join(CARD_LIST_SEPARATOR);
+}
 
 /**
  * Verify Twitch EventSub signature using HMAC-SHA256 (Web Crypto API)
@@ -147,6 +225,20 @@ export async function POST(request: NextRequest) {
           await postRedemptionNotify(result);
         }
       }
+    } else if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID) {
+      const result = await handleRaidNotification(messageId, event);
+      if (result) {
+        try {
+          const { getCloudflareContext } = await import('@opennextjs/cloudflare');
+          const { ctx } = await getCloudflareContext({ async: true });
+          ctx.waitUntil(postRedemptionNotify(result));
+        } catch (e) {
+          logger.warn('[EventSub] waitUntil unavailable for raid gift, falling back to sync', {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          await postRedemptionNotify(result);
+        }
+      }
     }
 
     return NextResponse.json({ received: true });
@@ -205,11 +297,94 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ error: ERROR_MESSAGES.UNKNOWN_MESSAGE_TYPE }, { status: 400 });
 }
 
+async function handleRaidNotification(messageId: string, event: {
+  from_broadcaster_user_id?: string;
+  from_broadcaster_user_login?: string;
+  from_broadcaster_user_name?: string;
+  to_broadcaster_user_id?: string;
+  to_broadcaster_user_login?: string;
+  to_broadcaster_user_name?: string;
+  viewers?: number;
+}): Promise<RedemptionNotifyData | null> {
+  const toBroadcasterUserId = event.to_broadcaster_user_id;
+  const fromBroadcasterUserId = event.from_broadcaster_user_id;
+  if (!toBroadcasterUserId || !fromBroadcasterUserId) {
+    logger.warn("[EventSub] Raid notification missing broadcaster id", { messageId, event });
+    return null;
+  }
+
+  const gachaService = new GachaService();
+  const result = await gachaService.executeGachaForRaidEvent({
+    to_broadcaster_user_id: toBroadcasterUserId,
+    from_broadcaster_user_id: fromBroadcasterUserId,
+    from_broadcaster_user_login: event.from_broadcaster_user_login,
+    from_broadcaster_user_name: event.from_broadcaster_user_name,
+  }, messageId);
+
+  if (!result.success) {
+    if (result.error === 'Raid gacha disabled') {
+      logger.info("[EventSub] Raid gacha gift skipped because it is disabled", {
+        messageId,
+        toBroadcasterUserId,
+        fromBroadcasterUserId,
+      });
+      return null;
+    }
+    if (result.error === 'Duplicate event') {
+      logger.info("[EventSub] Raid gacha gift skipped - duplicate event", { messageId });
+      return null;
+    }
+    if (result.error === 'No cards available for this streamer') {
+      logger.warn("[EventSub] Raid gacha gift skipped - no cards available", {
+        messageId,
+        toBroadcasterUserId,
+      });
+      return null;
+    }
+    await reportError(new Error(`Raid gacha gift failed: ${result.error}`), {
+      context: "eventsub:handleRaidNotification",
+      messageId,
+      toBroadcasterUserId,
+      fromBroadcasterUserId,
+      gachaError: result.error,
+    });
+    return null;
+  }
+
+  const streamer = result.data.streamer;
+  if (!streamer) {
+    logger.warn("[EventSub] Raid gacha gift missing streamer info", { messageId });
+    return null;
+  }
+
+  logger.info("[EventSub] Raid gacha gift succeeded", {
+    messageId,
+    streamerId: streamer.id,
+    toBroadcasterUserId,
+    fromBroadcasterUserId,
+    viewers: event.viewers,
+    drawCount: result.data.cards?.length ?? 1,
+  });
+
+  return {
+    gachaResult: {
+      type: "gacha",
+      card: result.data.card,
+      cards: result.data.cards,
+      userTwitchUsername: result.data.userTwitchUsername,
+    },
+    broadcasterTwitchUserId: toBroadcasterUserId,
+    streamer,
+    userId: fromBroadcasterUserId,
+  };
+}
+
 /** postRedemptionNotify に渡すデータ（streamer.id を streamerId として再利用し冗長を排除） */
 interface RedemptionNotifyData {
   gachaResult: {
     type: "gacha";
     card: GachaCard;
+    cards?: GachaCard[];
     userTwitchUsername: string;
   };
   broadcasterTwitchUserId: string;
@@ -237,7 +412,8 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
       data.streamer,
       data.gachaResult.card,
       data.gachaResult.userTwitchUsername,
-      data.userId
+      data.userId,
+      data.gachaResult.cards
     ),
   ]);
 
@@ -313,6 +489,24 @@ async function handleRedemption(messageId: string, event: {
         logger.info('[handleRedemption] Skipped - duplicate event (RPC)', { messageId });
         return null;
       }
+      // 設定から外れた報酬の古い EventSub 通知は運用状態のズレであり、
+      // production error としてGitHub Issue化しない。
+      if (result.error === 'Reward ID mismatch') {
+        logger.warn('[handleRedemption] Reward ID mismatch - stale or unconfigured EventSub notification', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+          rewardId: event.reward.id,
+        });
+        return null;
+      }
+      if (result.error === 'Raid-limited reward inactive') {
+        logger.info('[handleRedemption] Raid-limited reward skipped outside active raid window', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+          rewardId: event.reward.id,
+        });
+        return null;
+      }
       // カード未設定はユーザー設定の問題でありバグではない (Issue #277)
       // "No cards available" is a streamer setup issue, not a system bug
       if (result.error === 'No cards available for this streamer') {
@@ -348,6 +542,7 @@ async function handleRedemption(messageId: string, event: {
     const gachaResult = {
       type: "gacha" as const,
       card: result.data.card,
+      cards: result.data.cards,
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
@@ -376,6 +571,7 @@ async function handleRedemption(messageId: string, event: {
  * @param card - 獲得したカード（GachaCard型 - gacha serviceから返される）
  * @param userName - ガチャを引いたユーザー名
  * @param userId - ガチャを引いたユーザーのTwitch ID
+ * @param cards - 複数枚ガチャ時の獲得カード一覧
  */
 async function sendChatAnnouncement(
   broadcasterTwitchUserId: string,
@@ -383,11 +579,19 @@ async function sendChatAnnouncement(
     id: string;
     chat_announcement_enabled: boolean;
     chat_announcement_template: string | null;
+    chat_announcement_multi_template: string | null;
+    chat_announcement_multi_show_cards: boolean;
   },
   card: GachaCard,
   userName: string,
-  userId: string
+  userId: string,
+  cards?: GachaCard[]
 ): Promise<void> {
+  const drawnCards = cards && cards.length > 0 ? cards : [card];
+  const isMultiDraw = drawnCards.length > 1;
+  const cardNames = drawnCards.map((drawnCard) => drawnCard.name);
+  const rarityCounts = formatRarityCountsForChat(drawnCards.map((drawnCard) => drawnCard.rarity));
+
   // 関数呼び出しを記録（デバッグ用：この関数が呼ばれたことを確認するため）
   // Log function entry to confirm this function is being called
   logger.info('sendChatAnnouncement called', {
@@ -395,6 +599,7 @@ async function sendChatAnnouncement(
     streamerId: streamer.id,
     chatAnnouncementEnabled: streamer.chat_announcement_enabled,
     cardName: card.name,
+    drawCount: drawnCards.length,
     userName,
   });
 
@@ -404,17 +609,6 @@ async function sendChatAnnouncement(
     // 無効状態を明示的にログ出力（以前は無言リターンでデバッグ困難だった）
     // Explicitly log disabled state (previously returned silently, making debugging impossible)
     logger.info('Chat announcement skipped - feature disabled', {
-      broadcasterTwitchUserId,
-      streamerId: streamer.id,
-    });
-    return;
-  }
-
-  // user:write:chatスコープが付与されているかチェック
-  // Check if user:write:chat scope is granted
-  const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE);
-  if (!hasChatScope) {
-    logger.info('Chat announcement skipped - missing scope', {
       broadcasterTwitchUserId,
       streamerId: streamer.id,
     });
@@ -433,7 +627,11 @@ async function sendChatAnnouncement(
   // テンプレートに含まれるプレースホルダーに応じてのみDBクエリを実行
   // waitUntil内のwall time短縮のため、不要なDBクエリをスキップ
   // Run DB queries only for placeholders that appear in the template to keep waitUntil wall-time short
-  const effectiveTemplate = streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
+  const messageTemplate = isMultiDraw
+    ? streamer.chat_announcement_multi_template || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE
+    : streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
+  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}|\{rarityCounts\}/.test(messageTemplate);
+  const effectiveTemplate = messageTemplate;
   const needsCardCount = /\{num\}/.test(effectiveTemplate);
   const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
   const needsAllCount = /\{all\}/.test(effectiveTemplate);
@@ -544,6 +742,11 @@ async function sendChatAnnouncement(
   const placeholders: ChatMessagePlaceholders = {
     user: userName,
     card: card.name,
+    cards: isMultiDraw && streamer.chat_announcement_multi_show_cards
+      ? cardNames.join(CARD_LIST_SEPARATOR)
+      : undefined,
+    draws: isMultiDraw ? drawnCards.length : undefined,
+    rarityCounts: isMultiDraw ? rarityCounts : undefined,
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,
@@ -555,7 +758,25 @@ async function sendChatAnnouncement(
   // チャットサービスでメッセージを構築・送信
   // Build and send message using chat service
   const chatService = new TwitchChatService();
-  const message = chatService.buildMessage(streamer.chat_announcement_template, placeholders);
+  let message: string;
+
+  if (isMultiDraw && streamer.chat_announcement_multi_show_cards && usesMultiDrawPlaceholders) {
+    const fitted = fitCardNamesForMessage(cardNames, (cardsText) =>
+      chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText })
+    );
+    placeholders.cards = fitted.cardsText;
+    message = fitted.message;
+  } else {
+    const baseMessage = chatService.buildMessage(messageTemplate, placeholders);
+    if (isMultiDraw && streamer.chat_announcement_multi_show_cards && !usesMultiDrawPlaceholders) {
+      message = fitCardNamesForMessage(
+        cardNames,
+        (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`
+      ).message;
+    } else {
+      message = baseMessage;
+    }
+  }
 
   const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
 
@@ -564,6 +785,8 @@ async function sendChatAnnouncement(
       broadcasterTwitchUserId,
       streamerId: streamer.id,
       cardName: card.name,
+      drawCount: drawnCards.length,
+      multiDraw: isMultiDraw,
     });
   } else {
     // sendChatMessage が false を返した場合のログ（API呼び出し失敗）
@@ -572,6 +795,8 @@ async function sendChatAnnouncement(
       broadcasterTwitchUserId,
       streamerId: streamer.id,
       cardName: card.name,
+      drawCount: drawnCards.length,
+      multiDraw: isMultiDraw,
     });
   }
 }

@@ -29,12 +29,16 @@ const getRarityInfo = (rarity: Rarity) =>
 
 interface GachaResult {
   card: Card;
+  cards?: Card[];
   userTwitchUsername: string;
   historyId?: string;
+  soundGroupId?: string;
+  shouldPlaySound?: boolean;
 }
 
 interface OverlayPollingEvent {
   id: string;
+  eventId: string | null;
   redeemedAt: string;
   userTwitchUsername: string;
   card: Pick<Card, "id" | "name" | "description" | "image_url" | "media_type" | "rarity">;
@@ -157,6 +161,7 @@ export default function OverlayPage() {
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
   const queueRef = useRef<GachaResult[]>([]);
   const isDisplayingRef = useRef(false);
+  const playedSoundGroupIdsRef = useRef<Set<string>>(new Set());
   // processQueueの再帰呼び出し用ref（useCallback内で自身を参照するため）
   const processQueueRef = useRef<() => void>(() => {});
   // displayResultとaddDebugLogをrefで保持することで、
@@ -377,7 +382,16 @@ export default function OverlayPage() {
     // Show card after brief delay
     animationTimeoutRef.current = setTimeout(() => {
       setShowCard(true);
-      playGachaSound();
+      if (next.shouldPlaySound !== false) {
+        if (next.soundGroupId) {
+          if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+            playedSoundGroupIdsRef.current.add(next.soundGroupId);
+            playGachaSound();
+          }
+        } else {
+          playGachaSound();
+        }
+      }
 
       // Hide after display, then process next queued item
       animationTimeoutRef.current = setTimeout(() => {
@@ -401,7 +415,15 @@ export default function OverlayPage() {
    * Enqueue a new gacha result; start playback if idle
    */
   const enqueueResult = useCallback((data: GachaResult) => {
-    queueRef.current.push(data);
+    const cards = data.cards?.length ? data.cards : [data.card];
+    queueRef.current.push(
+      ...cards.map((card, index) => ({
+        ...data,
+        card,
+        cards: undefined,
+        shouldPlaySound: data.shouldPlaySound !== false && index === 0,
+      }))
+    );
     if (!isDisplayingRef.current) {
       processQueue();
     }
@@ -443,6 +465,7 @@ export default function OverlayPage() {
           card: event.card as Card,
           userTwitchUsername: event.userTwitchUsername,
           historyId: event.id,
+          soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
         });
       }
     } catch (error) {
@@ -496,6 +519,8 @@ export default function OverlayPage() {
   // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
   // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
   useEffect(() => {
+    const playedSoundGroupIds = playedSoundGroupIdsRef.current;
+
     queueMicrotask(() => {
       addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
       addDebugLogRef.current(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
@@ -508,6 +533,7 @@ export default function OverlayPage() {
         pollCursorRef.current = new Date().toISOString();
         displayResultRef.current({
           card: payload.card as unknown as Card,
+          cards: payload.cards as unknown as Card[] | undefined,
           userTwitchUsername: payload.userTwitchUsername,
         });
       }
@@ -549,6 +575,7 @@ export default function OverlayPage() {
       // キューをクリアして未再生アイテムを破棄
       queueRef.current = [];
       isDisplayingRef.current = false;
+      playedSoundGroupIds.clear();
       if (connectionTimeoutRef.current) {
         clearTimeout(connectionTimeoutRef.current);
       }

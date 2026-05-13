@@ -128,6 +128,7 @@
       "numberLabel": "Number"
     },
     "sort": {
+      "displayOrder": "Display Order",
       "createdAt": "Date Created",
       "rarity": "Rarity",
       "cardNumber": "Card Number",
@@ -392,9 +393,14 @@
     "noLineBreakNote": "* Twitch chat does not support line breaks. Messages with line breaks will be sent as a single line.",
     "form": {
       "enableAnnouncement": "Enable chat announcements",
+      "showAdvanced": "Show advanced settings",
       "customTemplate": "Custom Template (optional)",
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
-      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "multiTemplate": "Multi-draw Template (optional)",
+      "multiTemplatePlaceholder": "@'{'user'}' got '{'rarityCounts'}' from a '{'draws'}'-draw gacha! '{'cards'}'",
+      "multiShowCards": "Include card-name list in multi-draw announcements",
+      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list",
       "previewLength": "Preview length: {current} / {max} characters"
     },
     "buttons": {
@@ -423,6 +429,8 @@
     "demo": {
       "title": "Chat Message Preview",
       "description": "Preview of the message that will be sent (using sample data)",
+      "singleTitle": "Single draw",
+      "multiTitle": "Multi-draw",
       "close": "Close"
     },
     "bot": {
@@ -485,6 +493,10 @@
       "rewardId": "Reward ID:",
       "allRewards": "All Rewards",
       "eventsubStatus": "EventSub Status",
+      "raidEventSubStatus": "Raid auto-enable",
+      "raidEventSubActive": "Incoming raid notifications are subscribed.",
+      "raidEventSubMissing": "Not registered or still pending. Use Save & Register EventSub to re-register.",
+      "raidEventSubError": "Registration failed. Use Save & Register EventSub to re-register.",
       "noSubscriptions": "No EventSub subscriptions. Click save to register.",
       "localTunnelNote": "* EventSub is not available in local environment"
     },
@@ -517,7 +529,24 @@
       "removeFailed": "Failed to remove additional reward",
       "removeConfirm": "Remove this additional reward? EventSub subscription will also be removed.",
       "cannotUseAsMain": "This reward is registered as an additional reward. Please remove it from additional rewards first.",
-      "cannotUseAsAdditional": "This reward is already set as the main reward."
+      "cannotUseAsAdditional": "This reward is already set as the main reward.",
+      "drawCount": "Cards per redemption",
+      "raidOnly": "Raid only",
+      "multiDraw": "{count} draws",
+      "raidLimited": "Raid limited",
+      "raidGiftTitle": "Raid gacha",
+      "raidGiftDescription": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
+      "raidGiftEnabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
+      "raidGiftDisabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
+      "raidGiftSaved": "Raid gacha settings saved",
+      "raidStatusTitle": "Raid gacha window",
+      "raidStatusActive": "Active until {time}",
+      "raidStatusInactive": "Currently off",
+      "raidStatusEnable": "30 min on",
+      "raidStatusDisable": "Off",
+      "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
+      "raidStatusDisabled": "Raid gacha window disabled",
+      "raidStatusFailed": "Failed to update raid gacha settings"
     }
   },
   "gachaHistory": {

@@ -8,6 +8,14 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger";
 
+function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
+  const message = error?.message ?? "";
+  return error?.code === "PGRST204" || message.includes("draw_count") || message.includes("is_raid_limited");
+}
+
+const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
+  "追加報酬のN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。";
+
 /**
  * GET: ストリーマーの追加報酬一覧を取得
  * Fetch additional gacha rewards for the current streamer
@@ -53,11 +61,25 @@ export async function GET(request: NextRequest) {
 
     // Fetch all additional rewards for this streamer
     // このストリーマーの全ての追加報酬を取得
-    const { data: rewards, error } = await supabaseAdmin
+    let { data: rewards, error } = await supabaseAdmin
       .from("streamer_additional_gacha_rewards")
-      .select("id, reward_id, reward_name, created_at")
+      .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
       .eq("streamer_id", streamer.id)
       .order("created_at", { ascending: true });
+
+    if (isRaidOptionsSchemaError(error)) {
+      const fallbackResult = await supabaseAdmin
+        .from("streamer_additional_gacha_rewards")
+        .select("id, reward_id, reward_name, created_at")
+        .eq("streamer_id", streamer.id)
+        .order("created_at", { ascending: true });
+      rewards = (fallbackResult.data || []).map((reward) => ({
+        ...reward,
+        draw_count: 1,
+        is_raid_limited: false,
+      }));
+      error = fallbackResult.error;
+    }
 
     if (error) {
       return handleDatabaseError(error, "Additional Rewards API: GET");
@@ -120,10 +142,25 @@ export async function POST(request: NextRequest) {
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { rewardId, rewardName } = body;
+    const { rewardId, rewardName, drawCount, isRaidLimited } = body;
 
     if (!rewardId) {
       return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
+    }
+
+    const normalizedDrawCount = drawCount === undefined ? 1 : Number(drawCount);
+    if (!Number.isInteger(normalizedDrawCount) || normalizedDrawCount < 1 || normalizedDrawCount > 10) {
+      return NextResponse.json(
+        { error: "drawCount must be an integer between 1 and 10" },
+        { status: 400 }
+      );
+    }
+
+    if (isRaidLimited !== undefined && typeof isRaidLimited !== "boolean") {
+      return NextResponse.json(
+        { error: "isRaidLimited must be a boolean" },
+        { status: 400 }
+      );
     }
 
     // Get streamer info to verify ownership
@@ -164,9 +201,24 @@ export async function POST(request: NextRequest) {
         streamer_id: streamer.id,
         reward_id: rewardId,
         reward_name: rewardName || null,
+        draw_count: normalizedDrawCount,
+        is_raid_limited: isRaidLimited ?? false,
       })
       .select()
       .maybeSingle();
+
+    if (isRaidOptionsSchemaError(error)) {
+      logger.warn("Additional reward options schema is not ready; refusing to create a 1-draw fallback reward", {
+        rewardId,
+        streamerId: streamer.id,
+        requestedDrawCount: normalizedDrawCount,
+        error: error?.message,
+      });
+      return NextResponse.json(
+        { error: RAID_OPTIONS_SCHEMA_PENDING_MESSAGE },
+        { status: 503 }
+      );
+    }
 
     if (error) {
       // Handle unique constraint violation (reward already added)
@@ -181,7 +233,7 @@ export async function POST(request: NextRequest) {
     }
 
     logger.info(
-      `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}`
+      `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}, drawCount=${normalizedDrawCount}, raidLimited=${isRaidLimited ?? false}`
     );
 
     return NextResponse.json({ success: true, reward: newReward });

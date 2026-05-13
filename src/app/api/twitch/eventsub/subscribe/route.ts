@@ -3,7 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
-import { ERROR_MESSAGES } from "@/lib/constants";
+import { ERROR_MESSAGES, TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { validateCSRFToken } from "@/lib/csrf";
 
@@ -39,9 +39,202 @@ interface EventSubSubscription {
   id: string;
   status: string;
   type: string;
-  condition: { broadcaster_user_id: string; reward_id?: string };
+  condition: { broadcaster_user_id?: string; reward_id?: string; to_broadcaster_user_id?: string };
   transport: { method: string; callback: string };
   created_at: string;
+}
+
+type RaidEventSubStatus = "none" | "pending" | "active" | "error";
+
+interface RaidSubscriptionResult {
+  subscription?: EventSubSubscription;
+  created?: unknown;
+  warning?: string;
+  deleteWarning?: string;
+  createWarning?: string;
+  status: RaidEventSubStatus;
+  subscriptions: EventSubSubscription[];
+}
+
+const RECREATABLE_EVENTSUB_STATUSES = new Set([
+  "webhook_callback_verification_failed",
+  "notification_failures_exceeded",
+  "authorization_revoked",
+]);
+
+function getMatchingRaidSubscriptions(
+  subscriptions: EventSubSubscription[],
+  broadcasterUserId: string,
+  callbackUrl: string,
+): EventSubSubscription[] {
+  return subscriptions.filter(
+    (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
+      && sub.condition.to_broadcaster_user_id === broadcasterUserId
+      && sub.transport.callback === callbackUrl,
+  );
+}
+
+function deriveRaidEventSubStatus(subscriptions: EventSubSubscription[]): RaidEventSubStatus {
+  if (subscriptions.some((sub) => sub.status === "enabled")) return "active";
+  if (subscriptions.some((sub) => RECREATABLE_EVENTSUB_STATUSES.has(sub.status))) return "error";
+  return subscriptions.length > 0 ? "pending" : "none";
+}
+
+function isEventSubSubscription(value: unknown): value is EventSubSubscription {
+  if (!value || typeof value !== "object") return false;
+  const subscription = value as Partial<EventSubSubscription>;
+  return typeof subscription.id === "string"
+    && typeof subscription.status === "string"
+    && typeof subscription.type === "string"
+    && typeof subscription.condition === "object"
+    && typeof subscription.transport === "object";
+}
+
+function buildRaidSubscriptionResult(
+  subscriptions: EventSubSubscription[],
+  broadcasterUserId: string,
+  callbackUrl: string,
+  extra: Omit<RaidSubscriptionResult, "status" | "subscriptions"> = {},
+  ignoredSubscriptionIds: string[] = [],
+): RaidSubscriptionResult {
+  const ignoredIds = new Set(ignoredSubscriptionIds);
+  const matchingSubscriptions = getMatchingRaidSubscriptions(subscriptions, broadcasterUserId, callbackUrl)
+    .filter((sub) => !ignoredIds.has(sub.id));
+  const createdSubscription = isEventSubSubscription(extra.created)
+    && extra.created.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
+    && extra.created.condition.to_broadcaster_user_id === broadcasterUserId
+    && extra.created.transport.callback === callbackUrl
+    ? extra.created
+    : undefined;
+  const effectiveSubscriptions = matchingSubscriptions.length > 0
+    ? matchingSubscriptions
+    : createdSubscription
+      ? [createdSubscription]
+      : matchingSubscriptions;
+  return {
+    ...extra,
+    status: deriveRaidEventSubStatus(effectiveSubscriptions),
+    subscriptions: effectiveSubscriptions,
+  };
+}
+
+async function deleteEventSubSubscription(appAccessToken: string, subscriptionId: string) {
+  return fetch(
+    `${TWITCH_API_URL}/eventsub/subscriptions?id=${subscriptionId}`,
+    {
+      method: "DELETE",
+      headers: {
+        "Authorization": `Bearer ${appAccessToken}`,
+        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
+      },
+    },
+  );
+}
+
+async function createEventSubSubscription(
+  appAccessToken: string,
+  body: {
+    type: string;
+    version: string;
+    condition: Record<string, string>;
+    transport: { method: "webhook"; callback: string; secret: string | undefined };
+  },
+) {
+  return fetch(`${TWITCH_API_URL}/eventsub/subscriptions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${appAccessToken}`,
+      "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function ensureRaidSubscription(
+  appAccessToken: string,
+  userSubscriptions: EventSubSubscription[],
+  broadcasterUserId: string,
+  callbackUrl: string,
+  refreshSubscriptions: () => Promise<EventSubSubscription[]>,
+): Promise<RaidSubscriptionResult> {
+  const existingSubs = getMatchingRaidSubscriptions(userSubscriptions, broadcasterUserId, callbackUrl);
+  const reusableSub = existingSubs.find(
+    (sub) => !RECREATABLE_EVENTSUB_STATUSES.has(sub.status),
+  );
+  const recreatableSubs = existingSubs.filter(
+    (sub) => RECREATABLE_EVENTSUB_STATUSES.has(sub.status),
+  );
+  const deleteWarnings: string[] = [];
+  const deletedSubscriptionIds: string[] = [];
+
+  for (const sub of recreatableSubs) {
+    logger.info(`Deleting failed raid EventSub before recreation: id=${sub.id}, status=${sub.status}`);
+    const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
+    if (!deleteResponse.ok && deleteResponse.status !== 404) {
+      const error = await deleteResponse.json().catch(() => ({}));
+      logger.warn("Failed to delete failed raid EventSub subscription before recreation", {
+        broadcasterUserId,
+        subscriptionId: sub.id,
+        status: deleteResponse.status,
+        error,
+      });
+      deleteWarnings.push(`failed raid EventSub の削除に失敗しました: id=${sub.id}, status=${deleteResponse.status}`);
+    } else {
+      deletedSubscriptionIds.push(sub.id);
+    }
+  }
+
+  const deleteWarning = deleteWarnings.length > 0 ? deleteWarnings.join("; ") : undefined;
+
+  if (reusableSub) {
+    return buildRaidSubscriptionResult(userSubscriptions, broadcasterUserId, callbackUrl, {
+      subscription: reusableSub,
+      ...(deleteWarning ? { warning: deleteWarning, deleteWarning } : {}),
+    }, deletedSubscriptionIds);
+  }
+
+  if (recreatableSubs.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+
+  const response = await createEventSubSubscription(appAccessToken, {
+    type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID,
+    version: "1",
+    condition: {
+      to_broadcaster_user_id: broadcasterUserId,
+    },
+    transport: {
+      method: "webhook",
+      callback: callbackUrl,
+      secret: process.env.TWITCH_EVENTSUB_SECRET,
+    },
+  });
+
+  if (response.ok) {
+    const data = await response.json();
+    const latestSubscriptions = await refreshSubscriptions();
+    return buildRaidSubscriptionResult(latestSubscriptions, broadcasterUserId, callbackUrl, {
+      created: data.data?.[0],
+      ...(deleteWarning ? { warning: deleteWarning, deleteWarning } : {}),
+    }, deletedSubscriptionIds);
+  }
+
+  const error = await response.json().catch(() => ({}));
+  logger.warn("Failed to create raid EventSub subscription", {
+    broadcasterUserId,
+    status: response.status,
+    error,
+  });
+  const createWarning = `raid EventSub の作成に失敗しました: status=${response.status}`;
+  const latestSubscriptions = recreatableSubs.length > 0
+    ? await refreshSubscriptions()
+    : userSubscriptions;
+  return buildRaidSubscriptionResult(latestSubscriptions, broadcasterUserId, callbackUrl, {
+    warning: [deleteWarning, createWarning].filter(Boolean).join("; "),
+    ...(deleteWarning ? { deleteWarning } : {}),
+    createWarning,
+  }, deletedSubscriptionIds);
 }
 
 async function getSubscriptionsByUserId(
@@ -143,11 +336,12 @@ export async function POST(request: NextRequest) {
     // user_idパラメータで対象ユーザーのサブスクリプションのみを取得
     // Twitch API側でフィルタリングされるため、全件取得より効率的
     const userSubscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
+    const refreshUserSubscriptions = () => getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
 
     // 既存サブスクリプション数と状態をログに記録
     // channel_points_custom_reward_redemption.addタイプのサブスクリプションをフィルタリング
     const mySubscriptions = userSubscriptions.filter(
-      (sub) => sub.type === "channel.channel_points_custom_reward_redemption.add"
+      (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD
     );
     logger.info(
       `Existing EventSub subscriptions for broadcaster=${session.twitchUserId}: count=${mySubscriptions.length} (total for user: ${userSubscriptions.length})`,
@@ -166,16 +360,7 @@ export async function POST(request: NextRequest) {
     // 対象報酬のサブスクリプションのみ削除
     for (const sub of subscriptionsToDelete) {
       logger.info(`Deleting existing EventSub for target reward: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}, callback=${sub.transport.callback}`);
-      const deleteResponse = await fetch(
-        `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-        {
-          method: "DELETE",
-          headers: {
-            "Authorization": `Bearer ${appAccessToken}`,
-            "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-          },
-        }
-      );
+      const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
 
       // 削除結果を確認（204は成功、404は既に削除済み）
       if (!deleteResponse.ok && deleteResponse.status !== 404) {
@@ -196,30 +381,19 @@ export async function POST(request: NextRequest) {
     }
 
     // Create new subscription
-    const subscribeResponse = await fetch(
-      `${TWITCH_API_URL}/eventsub/subscriptions`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${appAccessToken}`,
-          "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          type: "channel.channel_points_custom_reward_redemption.add",
-          version: "1",
-          condition: {
-            broadcaster_user_id: session.twitchUserId,
-            reward_id: rewardId,
-          },
-          transport: {
-            method: "webhook",
-            callback: callbackUrl,
-            secret: process.env.TWITCH_EVENTSUB_SECRET,
-          },
-        }),
-      }
-    );
+    const subscribeResponse = await createEventSubSubscription(appAccessToken, {
+      type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD,
+      version: "1",
+      condition: {
+        broadcaster_user_id: session.twitchUserId,
+        reward_id: rewardId,
+      },
+      transport: {
+        method: "webhook",
+        callback: callbackUrl,
+        secret: process.env.TWITCH_EVENTSUB_SECRET,
+      },
+    });
 
     if (!subscribeResponse.ok) {
       const error = await subscribeResponse.json();
@@ -237,7 +411,7 @@ export async function POST(request: NextRequest) {
 
         // channel_points_custom_reward_redemption.addタイプのサブスクリプションをフィルタリング（デバッグ用）
         const allMySubs = recheckUserSubs.filter(
-          (sub) => sub.type === "channel.channel_points_custom_reward_redemption.add"
+          (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD
         );
         logger.info(
           `All EventSub subscriptions after 409: count=${allMySubs.length} (total for user: ${recheckUserSubs.length})`,
@@ -254,10 +428,18 @@ export async function POST(request: NextRequest) {
         );
 
         if (existingSub) {
+          const raidSubscription = await ensureRaidSubscription(
+            appAccessToken,
+            recheckUserSubs,
+            session.twitchUserId,
+            callbackUrl,
+            refreshUserSubscriptions,
+          );
+
           // 既存のサブスクリプションが見つかった場合、それを返す（200 OK）
           logger.info(
             `Found existing EventSub subscription: id=${existingSub.id}, status=${existingSub.status}`,
-            { existingSub }
+            { existingSub, raidSubscription }
           );
 
           // callback URLが異なる場合は警告
@@ -270,6 +452,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({
             success: true,
             subscription: existingSub,
+            raidSubscription,
             message: "既存のサブスクリプションを使用しています",
           });
         }
@@ -280,16 +463,7 @@ export async function POST(request: NextRequest) {
           logger.info(`Found ${allMySubs.length} subscriptions for other rewards, attempting cleanup`);
 
           for (const sub of allMySubs) {
-            const delResponse = await fetch(
-              `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-              {
-                method: "DELETE",
-                headers: {
-                  "Authorization": `Bearer ${appAccessToken}`,
-                  "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-                },
-              }
-            );
+            const delResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
             logger.info(`Cleanup delete: id=${sub.id}, status=${delResponse.status}`);
           }
 
@@ -297,37 +471,34 @@ export async function POST(request: NextRequest) {
           await new Promise(resolve => setTimeout(resolve, 1000));
 
           // 再試行
-          const retryResponse = await fetch(
-            `${TWITCH_API_URL}/eventsub/subscriptions`,
-            {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${appAccessToken}`,
-                "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                type: "channel.channel_points_custom_reward_redemption.add",
-                version: "1",
-                condition: {
-                  broadcaster_user_id: session.twitchUserId,
-                  reward_id: rewardId,
-                },
-                transport: {
-                  method: "webhook",
-                  callback: callbackUrl,
-                  secret: process.env.TWITCH_EVENTSUB_SECRET,
-                },
-              }),
-            }
-          );
+          const retryResponse = await createEventSubSubscription(appAccessToken, {
+            type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD,
+            version: "1",
+            condition: {
+              broadcaster_user_id: session.twitchUserId,
+              reward_id: rewardId,
+            },
+            transport: {
+              method: "webhook",
+              callback: callbackUrl,
+              secret: process.env.TWITCH_EVENTSUB_SECRET,
+            },
+          });
 
           if (retryResponse.ok) {
             const retryData = await retryResponse.json();
+            const raidSubscription = await ensureRaidSubscription(
+              appAccessToken,
+              recheckUserSubs,
+              session.twitchUserId,
+              callbackUrl,
+              refreshUserSubscriptions,
+            );
             logger.info(`Retry successful: subscriptionId=${retryData.data[0]?.id}`);
             return NextResponse.json({
               success: true,
               subscription: retryData.data[0],
+              raidSubscription,
               message: "クリーンアップ後に登録しました",
             });
           } else {
@@ -354,16 +525,24 @@ export async function POST(request: NextRequest) {
     }
 
     const subscriptionData = await subscribeResponse.json();
+    const raidSubscription = await ensureRaidSubscription(
+      appAccessToken,
+      userSubscriptions,
+      session.twitchUserId,
+      callbackUrl,
+      refreshUserSubscriptions,
+    );
 
     // EventSub登録成功をログに記録
     logger.info(
       `EventSub subscription created: broadcaster=${session.twitchUserId}, rewardId=${rewardId}, subscriptionId=${subscriptionData.data[0]?.id}`,
-      { status: subscriptionData.data[0]?.status }
+      { status: subscriptionData.data[0]?.status, raidSubscription }
     );
 
     return NextResponse.json({
       success: true,
       subscription: subscriptionData.data[0],
+      raidSubscription,
     });
   } catch (error) {
     return handleApiError(error, "EventSub Subscribe API");
@@ -377,7 +556,7 @@ export async function POST(request: NextRequest) {
  *
  * Query parameters:
  * - ?rewardId=xxx: Delete subscription for specific reward ID only
- * - (no params): Delete all channel point subscriptions for the broadcaster
+ * - (no params): Delete all channel point subscriptions and same-callback raid subscriptions for the broadcaster
  */
 export async function DELETE(request: NextRequest) {
   // 状態変更 API（EventSub 解除）のため CSRF 検証を最初に行う。
@@ -421,6 +600,7 @@ export async function DELETE(request: NextRequest) {
     const appAccessToken = await getAppAccessToken();
     const url = new URL(request.url);
     const specificRewardId = url.searchParams.get("rewardId");
+    const callbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
 
     // 対象ユーザーのサブスクリプションを取得
     // Get subscriptions for this user using user_id filter
@@ -429,7 +609,7 @@ export async function DELETE(request: NextRequest) {
     // channel_points_custom_reward_redemption.add タイプのみフィルタ
     // Filter to only channel point redemption subscriptions
     let mySubscriptions = userSubscriptions.filter(
-      (sub) => sub.type === "channel.channel_points_custom_reward_redemption.add"
+      (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD
     );
 
     // If rewardId is specified, filter to only that reward
@@ -442,9 +622,15 @@ export async function DELETE(request: NextRequest) {
         `Deleting EventSub subscription for specific reward: broadcaster=${session.twitchUserId}, rewardId=${specificRewardId}, found ${mySubscriptions.length} subscriptions`
       );
     } else {
+      mySubscriptions = userSubscriptions.filter(
+        (sub) => sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD
+          || (sub.type === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID
+            && sub.condition.to_broadcaster_user_id === session.twitchUserId
+            && sub.transport.callback === callbackUrl)
+      );
       logger.info(
         `Deleting all EventSub subscriptions for broadcaster=${session.twitchUserId}: found ${mySubscriptions.length} subscriptions`,
-        { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, rewardId: s.condition.reward_id })) }
+        { subscriptions: mySubscriptions.map((s) => ({ id: s.id, status: s.status, type: s.type, rewardId: s.condition.reward_id, callback: s.transport.callback })) }
       );
     }
 
@@ -452,22 +638,14 @@ export async function DELETE(request: NextRequest) {
     // Delete each subscription
     const results = [];
     for (const sub of mySubscriptions) {
-      const deleteResponse = await fetch(
-        `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-        {
-          method: "DELETE",
-          headers: {
-            "Authorization": `Bearer ${appAccessToken}`,
-            "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-          },
-        }
-      );
+      const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
 
       // 204: 成功、404: 既に削除済み（どちらも成功扱い）
       // 204: Success, 404: Already deleted (both count as success)
       const success = deleteResponse.status === 204 || deleteResponse.status === 404;
       results.push({
         id: sub.id,
+        type: sub.type,
         rewardId: sub.condition.reward_id,
         success,
         status: deleteResponse.status,

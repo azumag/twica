@@ -37,6 +37,12 @@ export interface Database {
           // チャット通知のカスタムテンプレート（nullの場合はデフォルトテンプレートを使用）
           // Custom message template for chat announcements (null uses default)
           chat_announcement_template: string | null
+          // N連ガチャ向けチャット通知のカスタムテンプレート（nullの場合はN連デフォルト）
+          // Custom template for multi-draw chat announcements (null uses multi-draw default)
+          chat_announcement_multi_template: string | null
+          // N連ガチャ通知に個別カード名一覧を含めるか
+          // Whether multi-draw announcements include the individual card-name list
+          chat_announcement_multi_show_cards: boolean
           // レアリティ名をキーにした目標確率マップ（0-100）
           // Dynamic rarity-to-target-percentage map (0-100)
           rarity_weights: Record<string, number> | null
@@ -46,6 +52,12 @@ export interface Database {
           // 未所持カード表示時に画像/説明まで公開するか（false=プレースホルダーのみ）
           // When unowned cards are shown, whether to reveal card image/description
           show_unowned_card_details: boolean
+          // レイド限定ガチャを受け付ける期限（null/期限切れは不明状態としてブロック）
+          // Until when raid-limited gacha rewards are accepted. Null/expired blocks them.
+          raid_gacha_active_until: string | null
+          // incoming raid 送信者に自動付与するガチャ回数（0=無効）
+          // Number of gacha draws gifted to the raider on incoming raids. 0 disables gifts.
+          raid_gacha_draw_count: number
           created_at: string
           updated_at: string
         }
@@ -62,9 +74,13 @@ export interface Database {
           gacha_sound_enabled?: boolean
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
+          chat_announcement_multi_template?: string | null
+          chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          raid_gacha_active_until?: string | null
+          raid_gacha_draw_count?: number
           created_at?: string
           updated_at?: string
         }
@@ -81,9 +97,13 @@ export interface Database {
           gacha_sound_enabled?: boolean
           chat_announcement_enabled?: boolean
           chat_announcement_template?: string | null
+          chat_announcement_multi_template?: string | null
+          chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          raid_gacha_active_until?: string | null
+          raid_gacha_draw_count?: number
           created_at?: string
           updated_at?: string
         }
@@ -435,6 +455,8 @@ export interface Database {
           streamer_id: string
           reward_id: string
           reward_name: string | null
+          draw_count: number
+          is_raid_limited: boolean
           created_at: string
         }
         Insert: {
@@ -442,6 +464,8 @@ export interface Database {
           streamer_id: string
           reward_id: string
           reward_name?: string | null
+          draw_count?: number
+          is_raid_limited?: boolean
           created_at?: string
         }
         Update: {
@@ -449,6 +473,8 @@ export interface Database {
           streamer_id?: string
           reward_id?: string
           reward_name?: string | null
+          draw_count?: number
+          is_raid_limited?: boolean
           created_at?: string
         }
       }

@@ -215,6 +215,22 @@ describe('GET /api/cards', () => {
       expect(cardsQuery.order).toHaveBeenCalledWith('card_number', { ascending: true, nullsFirst: false })
     })
 
+    it('sortField=display_order の場合、card_number の後に作成日昇順で安定ソートする', async () => {
+      const { cardsQuery } = setupCardsMock({
+        streamer: { id: 'streamer-1' },
+        cards: [],
+      })
+
+      await GET(createRequest({
+        streamerId: 'streamer-1',
+        sortField: 'display_order',
+        sortDirection: 'asc',
+      }))
+
+      expect(cardsQuery.order).toHaveBeenNthCalledWith(1, 'card_number', { ascending: true, nullsFirst: false })
+      expect(cardsQuery.order).toHaveBeenNthCalledWith(2, 'created_at', { ascending: true, nullsFirst: false })
+    })
+
     it('card_number が schema cache にない場合は created_at ソートで再試行する', async () => {
       const { firstCardsQuery, retryCardsQuery } = setupCardsMockWithRetry({
         streamer: { id: 'streamer-1' },
