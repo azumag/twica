@@ -110,6 +110,14 @@ interface ChannelPointSettingsProps {
   streamerId: string;
   currentRewardId: string | null;
   currentRewardName: string | null;
+  /**
+   * compact: シンプル表示モード用の縮約レンダリング。
+   * EventSub 診断パネル / 追加報酬セクション / 詳細エラーリストを隠し、
+   * 報酬選択 + ステータスピル + 保存ボタンの最小構成にする。
+   * Hide diagnostic panel, additional rewards, and verbose error states
+   * to give beginners a focused, low-noise reward picker.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -121,6 +129,7 @@ export default function ChannelPointSettings({
   streamerId,
   currentRewardId,
   currentRewardName,
+  compact = false,
 }: ChannelPointSettingsProps) {
   const t = useTranslations("channelPointSettings");
   const tCommon = useTranslations("common");
@@ -916,7 +925,7 @@ export default function ChannelPointSettings({
              </div>
            )}
 
-           {selectedRewardId && (
+           {selectedRewardId && !compact && (
              <div className="rounded-lg bg-gray-700 p-3">
                <p className="text-sm text-gray-400">
                  {t("form.selected")} <span className="text-white">{selectedRewardName}</span>
@@ -927,7 +936,8 @@ export default function ChannelPointSettings({
              </div>
            )}
 
-           {/* EventSub Info */}
+           {/* EventSub Info — compact mode では診断ノイズを隠す */}
+           {!compact && (
            <div className="rounded-lg bg-gray-700/50 p-4">
              <h3 className="mb-2 text-sm font-medium text-gray-300">{t("form.eventsubStatus")}</h3>
              <div className="mb-3 rounded bg-gray-800/60 p-3 text-xs">
@@ -1078,10 +1088,11 @@ export default function ChannelPointSettings({
               </p>
             )}
            </div>
+           )}
 
            {/* Additional Rewards Section - Only shown when main reward is active */}
            {/* 追加報酬セクション - メイン報酬がアクティブな場合のみ表示 */}
-           {selectedRewardId && eventSubStatus === "active" && (
+           {!compact && selectedRewardId && eventSubStatus === "active" && (
              <div className="rounded-lg bg-gray-700/50 p-4">
                <h3 className="mb-2 text-sm font-medium text-gray-300">
                  {t("additionalRewards.title")}
@@ -1227,15 +1238,16 @@ export default function ChannelPointSettings({
              >
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
+             {!compact && (
              <button
                onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); setRegistrationFailed(false); }}
                className="inline-flex h-10 items-center justify-center rounded-md border border-gray-500 bg-transparent px-4 text-sm font-medium text-gray-200 transition-colors hover:border-gray-400 hover:bg-gray-700/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800"
              >
                {tCommon("refresh")}
              </button>
-             {/* 設定解除ボタン: EventSubが設定されている場合のみ表示 */}
-             {/* Disconnect button: Only shown when EventSub is configured */}
-             {(eventSubStatus === "active" || eventSubStatus === "pending" || subscriptions.length > 0) && (
+             )}
+             {/* 設定解除ボタン: EventSubが設定されている場合のみ表示 (compact 時は省略) */}
+             {!compact && (eventSubStatus === "active" || eventSubStatus === "pending" || subscriptions.length > 0) && (
                <button
                  onClick={handleDisconnect}
                  disabled={disconnecting}
