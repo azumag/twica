@@ -1,6 +1,7 @@
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUnreadAnnouncements } from "@/lib/announcements";
-import { getUserPlan } from "@/lib/plan";
+import { getUserPlanSnapshot } from "@/lib/plan";
+import { logPerf, perfStart } from "@/lib/perf";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
@@ -21,6 +22,7 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const startedAt = perfStart();
   // Get session for authentication check
   // 認証確認のためにセッションを取得
   const session = await getSession();
@@ -37,13 +39,13 @@ export default async function DashboardLayout({
 
   // Check if user has a supporter plan (support/patron) for inquiry access
   // 問い合わせ機能アクセス用に支援者プランを確認
-  const plan = await getUserPlan(session.twitchUserId);
+  const [plan, unreadAnnouncements] = await Promise.all([
+    getUserPlanSnapshot(session.twitchUserId),
+    getUnreadAnnouncements(session.twitchUserId),
+  ]);
   const isSupporter = plan !== 'basic';
-
-  // Get unread announcements count for header badge
-  // ヘッダーのバッジ表示用に未読お知らせ数を取得
-  const unreadAnnouncements = await getUnreadAnnouncements(session.twitchUserId);
   const unreadAnnouncementsCount = unreadAnnouncements.length;
+  logPerf("dashboard-layout", "load", startedAt, { isStreamer, isSupporter });
 
   return (
     <div className="min-h-screen bg-gray-900">

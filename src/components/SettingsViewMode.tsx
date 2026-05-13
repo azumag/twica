@@ -153,32 +153,33 @@ function useSettingsViewModeStrict(): SettingsViewModeContextValue {
 }
 
 /**
- * View-mode セグメントトグル。Apple Settings 風のピル状デザイン。
+ * View-mode セグメントトグル。
+ * "シンプル" と "詳細" は文字数が違うためボタン幅が一致しない。
+ * 以前はスライドする absolute なハイライトピルを使っていたが、50% width 計算が
+ * 各ボタンの実寸法とズレてはみ出していた (ユーザー報告)。
+ * 各ボタンに直接 active 背景を持たせる方式に切替え、位置ズレを根本解消。
  */
 export function SettingsViewToggle() {
   const t = useTranslations("settingsPage.viewMode");
   const { mode, setMode } = useSettingsViewModeStrict();
 
+  const baseClass =
+    "relative z-10 rounded-full px-4 py-1.5 text-xs font-medium tracking-wide transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300";
+  const activeClass =
+    "bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-lg shadow-violet-900/40";
+  const inactiveClass = "text-gray-400 hover:text-gray-200";
+
   return (
     <div
       role="group"
       aria-label={t("ariaLabel")}
-      className="relative inline-flex rounded-full border border-white/10 bg-gray-900/60 p-1 shadow-inner shadow-black/40 backdrop-blur"
+      className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-gray-900/60 p-1 shadow-inner shadow-black/40 backdrop-blur"
     >
-      {/* スライドする選択ハイライト */}
-      <span
-        aria-hidden="true"
-        className={`pointer-events-none absolute top-1 bottom-1 w-[calc(50%-0.25rem)] rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 shadow-lg shadow-violet-900/40 transition-transform duration-300 ease-out ${
-          mode === "advanced" ? "translate-x-[calc(100%+0.25rem)]" : "translate-x-0"
-        }`}
-      />
       <button
         type="button"
         aria-pressed={mode === "simple"}
         onClick={() => setMode("simple")}
-        className={`relative z-10 px-4 py-1.5 text-xs font-medium tracking-wide transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${
-          mode === "simple" ? "text-white" : "text-gray-400 hover:text-gray-200"
-        }`}
+        className={`${baseClass} ${mode === "simple" ? activeClass : inactiveClass}`}
       >
         {t("simple")}
       </button>
@@ -186,9 +187,7 @@ export function SettingsViewToggle() {
         type="button"
         aria-pressed={mode === "advanced"}
         onClick={() => setMode("advanced")}
-        className={`relative z-10 px-4 py-1.5 text-xs font-medium tracking-wide transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${
-          mode === "advanced" ? "text-white" : "text-gray-400 hover:text-gray-200"
-        }`}
+        className={`${baseClass} ${mode === "advanced" ? activeClass : inactiveClass}`}
       >
         {t("advanced")}
       </button>
@@ -245,9 +244,22 @@ const STATUS_DOT_CLASS: Record<NonNullable<SettingsSection["status"]>, string> =
 export function AdvancedSettingsLayout({ sections }: { sections: SettingsSection[] }) {
   const t = useTranslations("settingsPage.advanced");
   const [activeId, setActiveId] = useState<string>(sections[0]?.id ?? "");
+  const [visitedIds, setVisitedIds] = useState<Set<string>>(
+    () => new Set(sections[0]?.id ? [sections[0].id] : [])
+  );
   const active = sections.find((s) => s.id === activeId) ?? sections[0];
 
   if (!active) return null;
+
+  const selectSection = (sectionId: string) => {
+    setActiveId(sectionId);
+    setVisitedIds((prev) => {
+      if (prev.has(sectionId)) return prev;
+      const next = new Set(prev);
+      next.add(sectionId);
+      return next;
+    });
+  };
 
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -263,7 +275,7 @@ export function AdvancedSettingsLayout({ sections }: { sections: SettingsSection
               <button
                 key={section.id}
                 type="button"
-                onClick={() => setActiveId(section.id)}
+                onClick={() => selectSection(section.id)}
                 aria-current={isActive ? "true" : undefined}
                 className={`group flex shrink-0 items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 lg:w-full lg:shrink ${
                   isActive
@@ -306,12 +318,14 @@ export function AdvancedSettingsLayout({ sections }: { sections: SettingsSection
 
       {/* Content pane */}
       <div className="min-w-0">
-        {/* 全セクションを DOM に保持し、非アクティブを hidden で隠す。
-            入力中の値や子コンポーネントの fetch 状態がタブ切り替えで失われないようにする。 */}
+        {/* 訪問済みセクションだけを DOM に保持する。
+            初期表示では非表示セクションの fetch を発火させず、訪問後は入力状態を保つ。 */}
         {sections.map((section) => (
-          <div key={section.id} hidden={section.id !== active.id} aria-hidden={section.id !== active.id ? true : undefined}>
-            {section.content}
-          </div>
+          visitedIds.has(section.id) ? (
+            <div key={section.id} hidden={section.id !== active.id} aria-hidden={section.id !== active.id ? true : undefined}>
+              {section.content}
+            </div>
+          ) : null
         ))}
       </div>
     </div>

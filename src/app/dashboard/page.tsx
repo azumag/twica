@@ -9,6 +9,7 @@ import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { getStorageUsage, formatBytes } from "@/lib/storage-usage";
 import { sha256Prefix } from "@/lib/crypto-utils";
+import { logPerf, perfStart } from "@/lib/perf";
 import Stats from "@/components/Stats";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 import AnnouncementBanner from "@/components/AnnouncementBanner";
@@ -25,6 +26,7 @@ import AnnouncementBanner from "@/components/AnnouncementBanner";
  * 統計概要、最近のカード、他のセクションへのクイックリンクを表示
  */
 export default async function DashboardPage() {
+  const startedAt = perfStart();
   const t = await getTranslations("dashboard");
   const tCards = await getTranslations("cardsPage");
   const tSettings = await getTranslations("settingsPage");
@@ -52,6 +54,11 @@ export default async function DashboardPage() {
     getUnreadAnnouncements(session.twitchUserId),
     storagePromise,
   ]);
+  logPerf("dashboard-page", "load-data", startedAt, {
+    cardCount: userCards.length,
+    unreadAnnouncements: unreadAnnouncements.length,
+    isStreamer,
+  });
 
   // Sort cards by rarity (legendary first)
   // レアリティでソート（レジェンダリーが先頭）

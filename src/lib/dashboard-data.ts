@@ -5,6 +5,7 @@ import { logger } from "@/lib/logger";
 import { normalizeDropRate } from "@/lib/card-utils";
 import { reportError } from "@/lib/sentry/error-handler";
 import { withRetry } from "@/lib/supabase/retry";
+import { logPerf, perfStart } from "@/lib/perf";
 import type { Card, Streamer, GachaHistory } from "@/types/database";
 
 interface CardWithDetails extends Card {
@@ -395,6 +396,21 @@ export interface GachaUserEntry {
   lastDrawAt: string;
 }
 
+function normalizeUniqueCardIds(cardIds: unknown): string[] {
+  if (!Array.isArray(cardIds)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      cardIds.filter(
+        (cardId): cardId is string =>
+          typeof cardId === "string" && cardId.length > 0
+      )
+    )
+  );
+}
+
 /**
  * Get aggregated user list for a streamer's gacha history
  * RPC get_gacha_users_for_streamer でDB側集計を行い、件数制限なしで正確なカード所有状況を返す
@@ -422,14 +438,17 @@ export async function getGachaUsersForStreamer(
     // asキャストだが、SQL側でCOALESCEにより users/unique_card_ids は必ず配列を返す
     const rpcData = rpcResult as { users: Array<{ user_twitch_id: string; username: string; draw_count: number; last_draw_at: string; unique_card_ids: string[] }>; total: number };
     const rpcUsers = rpcData.users || [];
-    const users: GachaUserEntry[] = rpcUsers.map((u) => ({
-      userTwitchId: u.user_twitch_id,
-      username: u.username || "",
-      drawCount: u.draw_count,
-      uniqueCards: (u.unique_card_ids || []).length,
-      uniqueCardIds: u.unique_card_ids || [],
-      lastDrawAt: u.last_draw_at,
-    }));
+    const users: GachaUserEntry[] = rpcUsers.map((u) => {
+      const uniqueCardIds = normalizeUniqueCardIds(u.unique_card_ids);
+      return {
+        userTwitchId: u.user_twitch_id,
+        username: u.username || "",
+        drawCount: u.draw_count,
+        uniqueCards: uniqueCardIds.length,
+        uniqueCardIds,
+        lastDrawAt: u.last_draw_at,
+      };
+    });
     const total = rpcData.total || 0;
     return {
       users,
@@ -894,6 +913,59 @@ export const getActiveCardsForStreamer = cache(async (
   logger.info(`[Perf] getActiveCardsForStreamer (with cache): ${Date.now() - start}ms`);
   return result;
 });
+
+export interface ActiveCardCountForStreamer {
+  totalActive: number;
+  activeCardIds: Set<string>;
+}
+
+export async function getActiveCardCountsForStreamers(
+  streamerIds: string[]
+): Promise<Map<string, ActiveCardCountForStreamer>> {
+  const startedAt = perfStart();
+  const uniqueStreamerIds = Array.from(new Set(streamerIds.filter(Boolean)));
+  const counts = new Map<string, ActiveCardCountForStreamer>();
+  for (const streamerId of uniqueStreamerIds) {
+    counts.set(streamerId, { totalActive: 0, activeCardIds: new Set() });
+  }
+
+  if (uniqueStreamerIds.length === 0) {
+    logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, { streamerCount: 0 });
+    return counts;
+  }
+
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await withRetry(
+    () => supabaseAdmin
+      .from("cards")
+      .select("id, streamer_id")
+      .in("streamer_id", uniqueStreamerIds)
+      .eq("is_active", true),
+    "getActiveCardCountsForStreamers",
+  );
+
+  if (error) {
+    reportError(new Error(`active card count batch query failed: ${error.message}`));
+    logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, {
+      streamerCount: uniqueStreamerIds.length,
+      failed: true,
+    });
+    return counts;
+  }
+
+  for (const row of (data || []) as Array<{ id: string; streamer_id: string }>) {
+    const entry = counts.get(row.streamer_id);
+    if (!entry) continue;
+    entry.totalActive += 1;
+    entry.activeCardIds.add(row.id);
+  }
+
+  logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, {
+    streamerCount: uniqueStreamerIds.length,
+    activeCardCount: data?.length ?? 0,
+  });
+  return counts;
+}
 
 /**
  * Internal function to fetch user cards for a specific streamer from database
