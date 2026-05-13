@@ -1,11 +1,15 @@
 # Cloudflare Workers Deployment Workflow
 # Cloudflare Workersデプロイメントワークフロー
 #
-# Automatically deploys the Next.js app to Cloudflare Workers
-# using OpenNext (@opennextjs/cloudflare).
+# Legacy GitHub Actions deploys the Next.js app until Cloudflare Workers Builds
+# is enabled. After setting the repository variable
+# CLOUDFLARE_WORKERS_BUILDS_ENABLED=true, app deploys are handled by Cloudflare
+# and this workflow only deploys the auxiliary error-reporter Worker.
 #
-# OpenNext（@opennextjs/cloudflare）を使用して
-# Next.jsアプリをCloudflare Workersに自動デプロイする。
+# Cloudflare Workers Builds に切り替えるまでは、OpenNext（@opennextjs/cloudflare）
+# を使用して Next.js アプリを GitHub Actions からデプロイする。
+# リポジトリ変数 CLOUDFLARE_WORKERS_BUILDS_ENABLED=true を設定した後は、
+# アプリ本体のデプロイは Cloudflare 側で行い、この workflow は補助 Worker のみを扱う。
 #
 # Supabase migrations are applied automatically via `supabase db push --db-url`
 # before the build step. Each GitHub Environment holds its own SUPABASE_DB_URL.
@@ -32,7 +36,7 @@
 #    - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 #    - NEXT_PUBLIC_TWITCH_CLIENT_ID
 
-name: Deploy to Cloudflare Workers
+name: Cloudflare Deploy Support
 
 on:
   push:
@@ -61,7 +65,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  legacy-app-deploy:
+    if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -158,6 +163,37 @@ jobs:
       # See: https://github.com/azumag/twica/issues/239
       - name: Deploy Error Reporter Cron Worker
         if: steps.env.outputs.deploy_cmd != 'npm run workers:deploy:preview'
+        working-directory: workers/error-reporter
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  auxiliary-workers:
+    if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Error Reporter Cron Worker のデプロイ（本番のみ）
+      # Supabase errors テーブルの未処理エラーを定期的に GitHub Issue 化する。
+      # Secrets (SUPABASE_URL, SUPABASE_SECRET_KEY, GITHUB_TOKEN) は
+      # Cloudflare Dashboard で事前設定が必要。
+      # See: https://github.com/azumag/twica/issues/239
+      - name: Deploy Error Reporter Cron Worker
         working-directory: workers/error-reporter
         run: npx wrangler deploy
         env:
