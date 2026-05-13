@@ -618,9 +618,6 @@
       "ariaLabel": "Toggle stream settings display mode"
     },
     "simple": {
-      "heroEyebrow": "Quick start",
-      "heroTitle": "Start streaming in two steps",
-      "heroDescription": "Only the two settings you need to go live. Switch to Advanced for full customization.",
       "step1": "1",
       "step1Label": "Add the overlay to OBS",
       "step2": "2",
