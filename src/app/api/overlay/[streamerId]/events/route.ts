@@ -25,6 +25,7 @@ interface OverlayHistoryCard {
 
 interface OverlayHistoryRow {
   id: string;
+  event_id: string | null;
   redeemed_at: string;
   user_twitch_username: string | null;
   cards: OverlayHistoryCard | OverlayHistoryCard[] | null;
@@ -120,7 +121,7 @@ export async function GET(
         supabaseAdmin
           .from("gacha_history")
           .select(
-            "id, redeemed_at, user_twitch_username, cards(id, name, description, image_url, rarity)"
+            "id, event_id, redeemed_at, user_twitch_username, cards(id, name, description, image_url, rarity)"
           )
           .eq("streamer_id", streamerId)
           .gt("redeemed_at", since)
@@ -140,6 +141,7 @@ export async function GET(
         if (!card) return null;
         return {
           id: row.id,
+          eventId: row.event_id,
           redeemedAt: row.redeemed_at,
           userTwitchUsername: row.user_twitch_username ?? "Unknown",
           card,
