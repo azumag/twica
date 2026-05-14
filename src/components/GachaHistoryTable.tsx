@@ -3,12 +3,11 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import Image from "next/image";
 import { useTranslations, useLocale } from "next-intl";
-import { RARITY_COLORS } from "@/lib/constants";
-import { formatRarityLabel } from "@/lib/rarity";
+import { formatRarityLabel, getRarityColorClass } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import Pagination from "@/components/Pagination";
 import GachaHistoryFilters from "@/components/GachaHistoryFilters";
-import type { GachaHistory, Card, Rarity } from "@/types/database";
+import type { GachaHistory, Card } from "@/types/database";
 import type { GachaUserEntry } from "@/lib/dashboard-data";
 
 /**
@@ -402,9 +401,9 @@ export default function GachaHistoryTable({
 
                     {/* Rarity badge / レアリティバッジ */}
                     <div
-                      className={`shrink-0 rounded-full px-2 py-0.5 text-xs text-white ${
-                        RARITY_COLORS[entry.cards.rarity as Rarity]
-                      }`}
+                      className={`shrink-0 rounded-full px-2 py-0.5 text-xs text-white ${getRarityColorClass(
+                        entry.cards.rarity
+                      )}`}
                     >
                       {formatRarityLabel(entry.cards.rarity, tRarity)}
                     </div>
@@ -539,9 +538,9 @@ export default function GachaHistoryTable({
                         </p>
                       </div>
                       <div
-                        className={`shrink-0 rounded-full px-2 py-0.5 text-xs text-white ${
-                          RARITY_COLORS[entry.cards.rarity as Rarity]
-                        }`}
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-xs text-white ${getRarityColorClass(
+                          entry.cards.rarity
+                        )}`}
                       >
                         {formatRarityLabel(entry.cards.rarity, tRarity)}
                       </div>
