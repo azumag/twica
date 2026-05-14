@@ -13,7 +13,7 @@ import {
 import CopyButton from "@/components/CopyButton";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
-import type { Card } from "@/types/database";
+import type { Card, Json } from "@/types/database";
 
 // token-manager のサーバー専用モジュールに依存しないよう、戻り値型を inline 宣言。
 // 形状は getCustomBotAccountDisplayForStreamer の戻り値と一致させる。
@@ -73,6 +73,7 @@ export interface SettingsLayoutData {
   gachaSound: {
     soundUrl: string | null;
     soundEnabled: boolean;
+    soundRules?: Json;
   };
   chatAnnouncement: {
     enabled: boolean;
@@ -274,6 +275,9 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           streamerId={data.streamerId}
           currentSoundUrl={data.gachaSound.soundUrl}
           currentSoundEnabled={data.gachaSound.soundEnabled}
+          currentSoundRules={data.gachaSound.soundRules}
+          currentRewardId={data.channelPoint.rewardId}
+          currentRewardName={data.channelPoint.rewardName}
         />
       ),
     },

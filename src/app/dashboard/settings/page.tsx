@@ -58,6 +58,7 @@ export default async function SettingsPage() {
       gachaSound={{
         soundUrl: streamerData.streamer.gacha_sound_url ?? null,
         soundEnabled: streamerData.streamer.gacha_sound_enabled ?? false,
+        soundRules: streamerData.streamer.gacha_sound_rules,
       }}
       chatAnnouncement={{
         enabled: streamerData.streamer.chat_announcement_enabled ?? false,

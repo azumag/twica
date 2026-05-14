@@ -32,6 +32,7 @@ import {
   isMissingPackRarityWeightsColumnError,
 } from "@/lib/collections/collection-existence";
 import { isNewCardPackNameAdditionGated } from "@/lib/plan-gate";
+import { normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 
 
 type RarityWeightsValidation =
@@ -278,6 +279,7 @@ export async function POST(request: NextRequest) {
       // ガチャ効果音設定（オプション）
       gachaSoundUrl,
       gachaSoundEnabled,
+      gachaSoundRules,
       // チャット通知設定（オプション）
       // Chat announcement settings (optional)
       chatAnnouncementEnabled,
@@ -398,6 +400,10 @@ export async function POST(request: NextRequest) {
       chatAnnouncementMultiShowCards !== undefined
       && typeof chatAnnouncementMultiShowCards !== "boolean"
     ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    if (gachaSoundRules !== undefined && !Array.isArray(gachaSoundRules)) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -609,6 +615,13 @@ export async function POST(request: NextRequest) {
     if (gachaSoundEnabled !== undefined) {
       updateData.gacha_sound_enabled = gachaSoundEnabled;
     }
+    if (gachaSoundRules !== undefined) {
+      const rules = normalizeGachaSoundRules(gachaSoundRules);
+      updateData.gacha_sound_rules = rules;
+      const fallbackRule = rules.find((rule) => rule.enabled && rule.targetType === "all") ?? rules.find((rule) => rule.enabled);
+      updateData.gacha_sound_url = fallbackRule?.url ?? null;
+      updateData.gacha_sound_enabled = Boolean(fallbackRule);
+    }
 
     // チャット通知設定
     // Chat announcement settings
@@ -794,6 +807,24 @@ export async function POST(request: NextRequest) {
         } else {
           error = null;
         }
+      }
+
+      // Issue #176: gacha_sound_rules はこのフィーチャーで新規追加された列。
+      // デプロイ窓では未デプロイの可能性があるため、列を落として旧来の
+      // gacha_sound_url/gacha_sound_enabled のみで再試行する(グレースフルデグレード)。
+      if (
+        error &&
+        gachaSoundRules !== undefined &&
+        (error.code === "PGRST204" || error.message.includes("gacha_sound_rules"))
+      ) {
+        logger.warn("gacha_sound_rules column not available yet; saving legacy sound fallback only");
+        const legacyUpdateData = { ...updateData };
+        delete legacyUpdateData.gacha_sound_rules;
+        const fallbackResult = await supabaseAdmin
+          .from("streamers")
+          .update(legacyUpdateData)
+          .eq("id", streamerId);
+        error = fallbackResult.error;
       }
 
       if (error) {

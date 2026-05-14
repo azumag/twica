@@ -8,6 +8,7 @@ import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
 import { type OverlayEffectStyle, normalizeOverlayEffectStyle } from "@/lib/overlay-effect";
 import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
+import { normalizeGachaSoundRules, pickGachaSoundRule, type GachaSoundRule } from "@/lib/gacha-sound-rules";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
@@ -33,6 +34,7 @@ interface GachaResult {
   historyId?: string;
   soundGroupId?: string;
   shouldPlaySound?: boolean;
+  rewardId?: string | null;
 }
 
 interface OverlayPollingEvent {
@@ -41,6 +43,7 @@ interface OverlayPollingEvent {
   redeemedAt: string;
   userTwitchUsername: string;
   card: Pick<Card, "id" | "name" | "description" | "image_url" | "rarity">;
+  rewardId?: string | null;
 }
 
 function fetchJsonWithXhrFallback<T>(url: string): Promise<T> {
@@ -160,7 +163,8 @@ export default function OverlayPage() {
   const [soundSettings, setSoundSettings] = useState<{
     soundUrl: string | null;
     soundEnabled: boolean;
-  }>({ soundUrl: null, soundEnabled: true });
+    soundRules: GachaSoundRule[];
+  }>({ soundUrl: null, soundEnabled: true, soundRules: [] });
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
@@ -204,9 +208,11 @@ export default function OverlayPage() {
         const response = await fetch(`/api/streamer/${streamerId}/sound-settings`);
         if (response.ok) {
           const data = await response.json();
+          const soundRules = normalizeGachaSoundRules(data.soundRules);
           setSoundSettings({
             soundUrl: data.soundUrl,
             soundEnabled: data.soundEnabled ?? true,
+            soundRules,
           });
           // 効果音URLが設定されている場合、Audio要素を作成してプリロード
           // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）
@@ -346,25 +352,33 @@ export default function OverlayPage() {
    * ユーザー操作によるアンロック後であれば即座に再生される
    * 未アンロック時は再生失敗するがエラーは無視する
    */
-  const playGachaSound = useCallback(() => {
+  const playGachaSound = useCallback((data: GachaResult) => {
     // 効果音が無効または未設定の場合はスキップ
-    if (!soundSettings.soundEnabled || !soundSettings.soundUrl) {
+    const selectedRule = pickGachaSoundRule(soundSettings.soundRules, {
+      rarity: data.card.rarity,
+      rewardId: data.rewardId,
+    });
+    const soundUrl = selectedRule?.url ?? soundSettings.soundUrl;
+    if (!soundSettings.soundEnabled || !soundUrl) {
       return;
     }
 
     try {
-      if (audioRef.current) {
+      if (audioRef.current?.src === soundUrl) {
         // プリロード済みのAudio要素を使用して再生
         audioRef.current.currentTime = 0;
         audioRef.current.play().catch(() => {
           // 自動再生ポリシーによりブロックされた場合は無視
           // ユーザーがページをクリックすればアンロックされ、次回から再生可能
         });
+      } else {
+        const audio = new Audio(soundUrl);
+        audio.play().catch(() => {});
       }
     } catch (error) {
       logger.error("Error playing gacha sound:", error);
     }
-  }, [soundSettings.soundEnabled, soundSettings.soundUrl]);
+  }, [soundSettings.soundEnabled, soundSettings.soundRules, soundSettings.soundUrl]);
 
   /**
    * キューから1件取り出して表示し、終了後に次のアイテムを処理する
@@ -394,10 +408,10 @@ export default function OverlayPage() {
         if (next.soundGroupId) {
           if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
             playedSoundGroupIdsRef.current.add(next.soundGroupId);
-            playGachaSound();
+            playGachaSound(next);
           }
         } else {
-          playGachaSound();
+          playGachaSound(next);
         }
       }
 
@@ -474,6 +488,7 @@ export default function OverlayPage() {
           userTwitchUsername: event.userTwitchUsername,
           historyId: event.id,
           soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
+          rewardId: event.rewardId ?? null,
         });
       }
     } catch (error) {
@@ -543,6 +558,7 @@ export default function OverlayPage() {
           card: payload.card as unknown as Card,
           cards: payload.cards as unknown as Card[] | undefined,
           userTwitchUsername: payload.userTwitchUsername,
+          rewardId: payload.rewardId ?? null,
         });
       }
     }, {

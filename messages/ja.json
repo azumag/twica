@@ -403,7 +403,7 @@
   },
   "gachaSoundSettings": {
     "title": "ガチャ効果音設定",
-    "description": "ガチャ演出時に再生される効果音を設定できます。",
+    "description": "ガチャ演出時に再生される効果音を複数登録し、全体・レアリティ別・チャネルポイント報酬別に出し分けできます。",
     "status": {
       "enabled": "有効",
       "disabled": "無効"
@@ -413,7 +413,19 @@
       "fileRequirements": "対応形式: {formats} | 最大サイズ: {maxSize}",
       "currentSound": "現在の効果音",
       "enableSound": "効果音を有効にする",
-      "uploadFirst": "先にファイルをアップロードしてください"
+      "uploadFirst": "先にファイルをアップロードしてください",
+      "noSounds": "効果音はまだ登録されていません。",
+      "defaultLabel": "効果音",
+      "soundName": "効果音名",
+      "targetType": "再生条件",
+      "rarity": "レアリティ",
+      "rewardId": "報酬ID",
+      "rewardPlaceholder": "チャネルポイント報酬ID"
+    },
+    "targets": {
+      "all": "すべてのガチャ",
+      "rarity": "レアリティ別",
+      "reward": "チャネルポイント報酬別"
     },
     "buttons": {
       "play": "再生",
@@ -424,6 +436,7 @@
       "uploadSuccess": "効果音をアップロードしました",
       "uploading": "アップロード中...",
       "saving": "保存中...",
+      "saved": "効果音設定を保存しました",
       "enabled": "効果音を有効にしました",
       "disabled": "効果音を無効にしました",
       "deleted": "効果音を削除しました"
