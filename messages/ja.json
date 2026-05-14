@@ -387,7 +387,6 @@
     "noLineBreakNote": "※ Twitchチャットは改行に対応していません。改行を含むメッセージは1行で送信されます。",
     "form": {
       "enableAnnouncement": "チャット通知を有効にする",
-      "showAdvanced": "詳細設定を表示する",
       "customTemplate": "カスタムテンプレート（任意）",
       "templatePlaceholder": "@'{'user'}' が【'{'rarity'}'】'{'card'}' を獲得しました！",
       "multiTemplate": "N連ガチャ用テンプレート（任意）",
