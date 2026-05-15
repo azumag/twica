@@ -2,7 +2,7 @@
 -- ダブり交換の冪等性キーを追加し、RPC のセキュリティを強化する。
 --
 -- 背景 / Background:
---   00040_add_card_stones_exchange.sql で導入した exchange_duplicate_card_for_stones は
+--   00048_add_card_stones_exchange.sql で導入した exchange_duplicate_card_for_stones は
 --   二重送信や再試行で同じダブりを複数回交換できてしまう。クライアント生成の
 --   request_id を冪等性キーとして受け取り、UNIQUE(user_id, request_id) と
 --   INSERT ... ON CONFLICT DO NOTHING で多重交換を防止する。
