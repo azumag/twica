@@ -1,5 +1,21 @@
 "use client";
 
+// 視聴者向けコレクション表示名 (Issue #230)。
+// 注意: 本機能は Issue では `premium` ラベルが付与されているが、現時点では意図的に
+// プラン (canUseStreamerFeatures 以外の) ゲートを設けていない。理由は以下:
+//   - 視聴者ページ (`StreamerCollection`) のタイトル文言を差し替えるだけの低コスト
+//     機能で、ガチャ実行や視聴者付与など課金的価値とは独立している。
+//   - 既存の Streamer Settings 画面に到達できる時点で `canUseStreamerFeatures`
+//     が true の前提があり、実質的にストリーマー全員が編集可能で問題ない。
+// 将来 premium 限定にする場合は `src/lib/plan.ts` のヘルパで分岐を追加し、UI と
+// API (route.ts) の両方で同じ判定を行うこと (UI バイパスを許さない)。
+//
+// Note: although Issue #230 carries the "premium" label, we intentionally do
+// not gate this feature behind a paid plan today. The behavior is a trivial
+// title swap on the viewer-facing collection page with no monetary value, and
+// gating it would only add friction. Revisit (and gate consistently in both
+// the UI and `route.ts`) if pricing strategy changes.
+
 import { FormEvent, useState } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";

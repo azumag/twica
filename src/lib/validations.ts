@@ -131,6 +131,36 @@ export function validateImageUrl(imageUrl: unknown): { valid: boolean; error?: s
   }
 }
 
+// Disallowed control / formatting characters for free-text display fields.
+// 表示名に紛れ込むと UI を破壊したり、視覚スプーフィングに利用される可能性がある
+// 文字を除去する。具体的には以下を弾く:
+//   - C0/C1 制御文字 (NULL, BS, ESC, 改行, タブなど) と DEL
+//     (U+0000-U+001F, U+007F-U+009F)
+//   - Zero-width / 不可視文字 (U+200B-U+200F, U+FEFF) - 改ざん検知回避を防止
+//   - Unicode bidi override (U+202A-U+202E, U+2066-U+2069) - 表示順スプーフィング対策
+//
+// 正規表現リテラルに生の制御文字を埋め込むとファイルがバイナリ扱いされ、
+// 差分レビューや lint が破綻するため、Unicode escapes を含む文字列から
+// `RegExp` をコンストラクトする。
+const DISALLOWED_DISPLAY_CHARS = new RegExp(
+  '[\\u0000-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]',
+  'g'
+)
+
+/**
+ * 視聴者向けに表示される自由入力テキストを正規化する。
+ * 制御文字や bidi override などを除去した上で前後の空白をトリムする。
+ * 結果が空文字列の場合は null を返し、呼び出し側で「未設定」として扱えるようにする。
+ *
+ * Normalize free-text input that will be rendered to viewers. Strips control
+ * characters, zero-width chars, and bidi overrides before trimming. Returns
+ * `null` when the resulting string is empty so callers can treat it as unset.
+ */
+export function normalizeCollectionName(value: string): string | null {
+  const sanitized = value.replace(DISALLOWED_DISPLAY_CHARS, '').trim()
+  return sanitized.length === 0 ? null : sanitized
+}
+
 export function validateRarity(rarity: unknown): { valid: boolean; error?: string } {
   if (typeof rarity !== 'string') {
     return { valid: false, error: ERROR_MESSAGES.INVALID_RARITY }

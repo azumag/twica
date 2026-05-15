@@ -143,10 +143,8 @@ export default function CardManager({
 
   // Sorting and filtering state
   // 並び替えとフィルタリングの状態
-  // Default sort: 設定日（created_at）降順
-  // 初期表示は最新の設定（作成）日順とし、サーバー側 initialCards のソートと一致させる
-  const [sortField, setSortField] = useState<SortField>("created_at");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [sortField, setSortField] = useState<SortField>("display_order");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [titleSearchQuery, setTitleSearchQuery] = useState("");
   // Track if this is the first render to skip initial reload

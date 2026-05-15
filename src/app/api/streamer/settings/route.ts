@@ -8,6 +8,7 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+import { normalizeCollectionName } from "@/lib/validations";
 
 const MAX_COLLECTION_NAME_LENGTH = 80;
 
@@ -142,11 +143,21 @@ export async function POST(request: NextRequest) {
     ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
-    if (
-      typeof collectionName === "string" &&
-      collectionName.trim().length > MAX_COLLECTION_NAME_LENGTH
-    ) {
-      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    // 制御文字や bidi override 等を除去した「正規化後」の文字列で長さを判定する。
+    // 単純な trim() のみだと不可視文字で長さ制限を回避できてしまうため、
+    // 必ずサニタイザを通した上で評価する。
+    // Length is evaluated on the sanitized form so callers cannot bypass the
+    // limit with invisible / formatting characters.
+    let normalizedCollectionName: string | null | undefined = undefined;
+    if (collectionName !== undefined) {
+      normalizedCollectionName =
+        collectionName === null ? null : normalizeCollectionName(collectionName);
+      if (
+        normalizedCollectionName !== null &&
+        normalizedCollectionName.length > MAX_COLLECTION_NAME_LENGTH
+      ) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
     }
 
     // Verify ownership
@@ -214,11 +225,10 @@ export async function POST(request: NextRequest) {
       updateData.show_unowned_card_details = showUnownedCardDetails;
     }
 
-    // 視聴者向けコレクション表示名。空文字は既定タイトルに戻す。
-    // Collection display name for viewers. Empty input restores the default title.
-    if (collectionName !== undefined) {
-      updateData.collection_name =
-        collectionName === null ? null : collectionName.trim() || null;
+    // 視聴者向けコレクション表示名。空文字 / null は既定タイトルに戻す扱い。
+    // Collection display name for viewers. Empty / null input restores the default title.
+    if (normalizedCollectionName !== undefined) {
+      updateData.collection_name = normalizedCollectionName;
     }
 
     let botDisconnected = false;

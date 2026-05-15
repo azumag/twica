@@ -61,7 +61,7 @@ describe('CardManager title search', () => {
     expect(screen.getByText('2 件のカード')).toBeInTheDocument()
   })
 
-  it('defaults the management list to newest created cards', () => {
+  it('defaults the management list to assigned display order', () => {
     renderCardManager([
       baseCard({ id: 'second', name: 'Second Card', card_number: 2, created_at: '2026-05-02T00:00:00Z' }),
       baseCard({ id: 'first', name: 'First Card', card_number: 1, created_at: '2026-05-01T00:00:00Z' }),
@@ -69,8 +69,8 @@ describe('CardManager title search', () => {
     ])
 
     const text = document.body.textContent ?? ''
-    expect(text.indexOf('Second Card')).toBeLessThan(text.indexOf('First Card'))
-    expect(text.indexOf('First Card')).toBeLessThan(text.indexOf('Auto Card'))
+    expect(text.indexOf('First Card')).toBeLessThan(text.indexOf('Second Card'))
+    expect(text.indexOf('Second Card')).toBeLessThan(text.indexOf('Auto Card'))
   })
 
   it('shows a filtered empty state without replacing the no-cards message', () => {

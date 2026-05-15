@@ -107,6 +107,7 @@ export interface Database {
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
+          collection_name?: string | null
           created_at?: string
           updated_at?: string
         }

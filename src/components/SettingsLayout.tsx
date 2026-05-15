@@ -328,6 +328,22 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
   );
 }
 
+// コレクション表示名 (Issue #230) は Simple レイアウトには敢えて露出させず、
+// Advanced レイアウトの「共有」セクションでのみ編集可能とする。
+// 理由:
+//   - Simple は配信開始までの最短導線 (チャネルポイント連携 + ガチャ起動) に絞り
+//     込んでおり、表示名のような任意項目を追加するとファネルが伸びる。
+//   - 表示名はストリーマーのブランディング寄りの設定で、最初の配信前には未設定の
+//     ままでも実害がなく、必要になった時点で Advanced から編集できれば十分。
+// 上記の判断は意図的なため、Simple 側に追加する変更を提案する場合は本コメントを
+// 参照した上で UX 上の優先順位を再評価すること。
+//
+// The collection display name setting (Issue #230) is intentionally exposed
+// only inside the Advanced layout's "share" section. The Simple layout is
+// optimized for the shortest path to a working gacha overlay, so optional
+// branding-style fields like this one are deliberately omitted to keep the
+// onboarding funnel short. Revisit this trade-off before surfacing the input
+// in the Simple layout.
 function ShareSettings({
   url,
   streamerId,

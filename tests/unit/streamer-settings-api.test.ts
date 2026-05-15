@@ -404,6 +404,112 @@ describe('POST /api/streamer/settings', () => {
       })
     })
 
+    it('should strip control characters, zero-width chars, and bidi overrides', async () => {
+      // 改行・タブ・NULL・ゼロ幅・bidi override は表示の崩れや視覚スプーフィングを
+      // 招くため除去された上で永続化されることを確認する。
+      // Confirms that newlines/tabs/NULL/zero-width/bidi overrides are stripped
+      // before the value is persisted, leaving only the safe display text.
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+      const mockSupabase = builder.build()
+      const queryBuilder = builder.getQueryBuilder()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      // hello (LF)(TAB)(NULL)(ZWSP)(RLO) world
+      const dirty = 'hello\u000a\u0009\u0000\u200b\u202eworld'
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          collectionName: dirty,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(queryBuilder.update).toHaveBeenCalledWith({
+        collection_name: 'helloworld',
+      })
+    })
+
+    it('should reset to null when input contains only disallowed characters', async () => {
+      // 不可視文字や制御文字のみの入力は空とみなして既定タイトルに戻す。
+      // Inputs that consist solely of stripped characters must reset the value
+      // to null so the default title is shown.
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+      const mockSupabase = builder.build()
+      const queryBuilder = builder.getQueryBuilder()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          collectionName: '\u200b\u202e\u0000\u0020\u0020\u0009',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(queryBuilder.update).toHaveBeenCalledWith({
+        collection_name: null,
+      })
+    })
+
+    it('should accept input whose sanitized form fits within 80 chars', async () => {
+      // 80 文字 (許可) + 大量の zero-width 文字 (除去される) はサニタイズ後 80 文字
+      // となり OK。サニタイズ後の長さで判定していることを保証する。
+      // Confirms that length validation runs against the sanitized form so that
+      // invisible padding does not push the value past the limit.
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+      const mockSupabase = builder.build()
+      const queryBuilder = builder.getQueryBuilder()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+
+      const padded = 'x'.repeat(80) + '\u200b'.repeat(50)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          collectionName: padded,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(queryBuilder.update).toHaveBeenCalledWith({
+        collection_name: 'x'.repeat(80),
+      })
+    })
+
     it('should reject collection names over 80 characters', async () => {
       const mockSupabase = createSupabaseMock().build()
       const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
