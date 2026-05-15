@@ -52,13 +52,19 @@ function formatCardNamesForChat(cardNames: string[], maxCharacters: number): str
 
 function fitCardNamesForMessage(
   cardNames: string[],
-  renderMessage: (cardsText: string) => string
+  renderMessage: (cardsText: string) => string,
+  // 後段で必ず追記される接尾辞分の文字数を予約しておくことで、
+  // 「初出:」追記時の二段階圧縮で末尾切り（truncateCharacters）に陥るのを防ぐ。
+  // Reserve characters for a suffix that will be appended later (e.g., " 初出: ...").
+  // Without this, the second fit pass cannot shrink {cards} enough and the suffix gets truncated.
+  reservedSuffixCharacters: number = 0
 ): { cardsText: string; message: string } {
+  const effectiveLimit = Math.max(0, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS - reservedSuffixCharacters);
   let cardsText = cardNames.join(CARD_LIST_SEPARATOR);
   let message = renderMessage(cardsText);
 
-  for (let i = 0; i < 3 && countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS; i++) {
-    const overflow = countCharacters(message) - TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
+  for (let i = 0; i < 3 && countCharacters(message) > effectiveLimit; i++) {
+    const overflow = countCharacters(message) - effectiveLimit;
     const nextMaxCharacters = Math.max(0, countCharacters(cardsText) - overflow);
     cardsText = formatCardNamesForChat(cardNames, nextMaxCharacters);
     message = renderMessage(cardsText);
@@ -123,7 +129,12 @@ function findNewCardNamesForCurrentDraw(
 
     const currentDrawCount = drawnCounts.get(drawnCard.id) ?? 0;
     const previousCount = finalCount - currentDrawCount;
-    if (previousCount <= 0) {
+    // legacy fallback で user_cards INSERT が失敗すると finalCount=0 のまま返り、
+    // previousCount が負値になって「初出」誤通知が発生する。
+    // 「初出」と判定するには「いま実際に所持している（finalCount > 0）」必要がある。
+    // If legacy fallback INSERT fails, finalCount stays 0 while currentDrawCount > 0,
+    // making previousCount negative. Treat as "new card" only when the user actually owns it.
+    if (finalCount > 0 && previousCount <= 0) {
       newCardNames.push(drawnCard.name);
     }
     seenInCurrentDraw.add(drawnCard.id);
@@ -814,9 +825,20 @@ async function sendChatAnnouncement(
   const chatService = new TwitchChatService();
   let message: string;
 
+  // 後段で「初出: {cardNames}」を追記する場合、{cards} 側の圧縮時に
+  // 接尾辞分の文字数を予約しておかないと、最終的な truncate で「初出:」部分が
+  // 切り落とされる可能性がある。事前に長さを見積もって reservedSuffixCharacters に渡す。
+  // Estimate the suffix length so {cards} fitting reserves space for the appended "初出: ..."
+  const willAppendDefaultNewCards = shouldAppendDefaultNewCards && newCardNames.length > 0;
+  const reservedSuffixCharacters = willAppendDefaultNewCards
+    ? countCharacters(' 初出: ') + countCharacters(newCardNames.join(CARD_LIST_SEPARATOR))
+    : 0;
+
   if (isMultiDraw && streamer.chat_announcement_multi_show_cards && usesMultiDrawPlaceholders) {
-    const fitted = fitCardNamesForMessage(cardNames, (cardsText) =>
-      chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText })
+    const fitted = fitCardNamesForMessage(
+      cardNames,
+      (cardsText) => chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText }),
+      reservedSuffixCharacters
     );
     placeholders.cards = fitted.cardsText;
     message = fitted.message;
@@ -825,19 +847,22 @@ async function sendChatAnnouncement(
     if (isMultiDraw && streamer.chat_announcement_multi_show_cards && !usesMultiDrawPlaceholders) {
       message = fitCardNamesForMessage(
         cardNames,
-        (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`
+        (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`,
+        reservedSuffixCharacters
       ).message;
     } else {
       message = baseMessage;
     }
   }
 
-  if (shouldAppendDefaultNewCards && newCardNames.length > 0) {
+  if (willAppendDefaultNewCards) {
+    // ここでの fitCardNamesForMessage は newCardNames 側の圧縮を担う。
+    // 上で {cards} 側に余白を予約済みなので、通常はここでの圧縮は発生しない。
+    // The earlier pass reserved space, so this fit normally just appends as-is.
     const fitted = fitCardNamesForMessage(
       newCardNames,
       (newCardsText) => `${message} 初出: ${newCardsText}`
     );
-    placeholders.newCards = fitted.cardsText;
     message = fitted.message;
   }
 

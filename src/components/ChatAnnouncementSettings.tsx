@@ -36,6 +36,10 @@ const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   unique: 4,
   all: 4,
   detail: CARD_DESCRIPTION_MAX_CHARACTERS,
+  // newCards は cards と同等の上限（実装上は 「初出: 」付与時に予約される）
+  // newCards mirrors `cards` length; runtime reserves space for the "初出: " suffix
+  newCards: 300,
+  newCardCount: 4,
 } as const;
 
 function buildChatPreviewMessage(
@@ -52,6 +56,8 @@ function buildChatPreviewMessage(
     all: string;
     detail: string;
     url: string;
+    newCards: string;
+    newCardCount: string;
   }
 ): string {
   return template
@@ -66,6 +72,8 @@ function buildChatPreviewMessage(
     .replace(/\{all\}/g, placeholders.all)
     .replace(/\{detail\}/g, placeholders.detail)
     .replace(/\{url\}/g, placeholders.url)
+    .replace(/\{newCards\}/g, placeholders.newCards)
+    .replace(/\{newCardCount\}/g, placeholders.newCardCount)
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -127,6 +135,8 @@ export default function ChatAnnouncementSettings({
       all: "10",
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
+      newCards: "レジェンダリーカード、レアカード",
+      newCardCount: "2",
     });
   }, [activeTemplate, streamerId]);
 
@@ -143,6 +153,8 @@ export default function ChatAnnouncementSettings({
       all: "10",
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
+      newCards: multiShowCards ? "レジェンダリーカード、レアカード" : "",
+      newCardCount: multiShowCards ? "2" : "",
     });
   }, [activeMultiTemplate, multiShowCards, streamerId]);
 
@@ -165,6 +177,8 @@ export default function ChatAnnouncementSettings({
         all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
         detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
         url: `https://twica.live/collection/${streamerId}`,
+        newCards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCards),
+        newCardCount: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardCount),
       })
     );
   }, [activeTemplate, streamerId]);

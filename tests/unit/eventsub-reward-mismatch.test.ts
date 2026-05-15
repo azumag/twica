@@ -735,4 +735,156 @@ describe('EventSub reward mismatch handling', () => {
     )
     expect(rpc).not.toHaveBeenCalled()
   })
+
+  // 「初出: ...」追記がメッセージ末尾切り（truncate）で消えないことを確認する。
+  // 旧実装では {cards} 圧縮時に接尾辞分の予約をしていなかったため、500文字に
+  // 張り付くと最終的に 「初出:」 部分が truncate で削られていた。
+  // Verifies that the appended "初出: ..." suffix survives even when {cards} fills the limit.
+  it('preserves the 「初出: ...」 suffix when card lists fill the message limit', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-new-cards-suffix-preserved'
+    const timestamp = '2026-05-11T10:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'raid-gacha', title: 'Raid Gacha', cost: 500 },
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+
+    // 各カード名は十分長く、10連で全カードを並べると 500 文字を大幅に超える。
+    // すべてのカードが新規取得（finalCount=1, currentDrawCount=1）になるよう設定。
+    const cards = Array.from({ length: 10 }, (_, index) => ({
+      id: `card-${index + 1}`,
+      name: `NewCardName${String(index + 1).padStart(2, '0')}-${'B'.repeat(60)}`,
+      description: null,
+      image_url: null,
+      rarity: 'rare',
+      drop_rate: 1,
+    }))
+
+    mockGetSupabaseAdminNoCache.mockReturnValue({
+      rpc: vi.fn().mockResolvedValue({
+        data: cards.map((card) => ({ count: 1, card: { id: card.id, is_active: true } })),
+        error: null,
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+
+    mocks.executeGachaForEventSub.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards,
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: null,
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: true,
+        },
+      },
+    })
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    const sentMessage = mocks.sendChatMessage.mock.calls.at(-1)?.[1] as string
+    expect(sentMessage.length).toBeLessThanOrEqual(500)
+    // 「初出:」セクションが truncate で末尾削除されていないこと
+    expect(sentMessage).toContain(' 初出: ')
+    // truncate サフィックス '...' で終わっていない（=「初出:」直後で打ち切られていない）
+    expect(sentMessage.endsWith('...')).toBe(false)
+  })
+
+  // legacy fallback で user_cards の INSERT に失敗すると finalCount が 0 のまま
+  // 返ってきて「初出」誤通知が起きるバグ。finalCount=0 のカードは「持っていない」ため
+  // 「初出」とは扱わない。
+  // Regression: when finalCount=0 the user does not actually own the card (legacy fallback
+  // INSERT failed); it must NOT be announced as "初出".
+  it('does not announce 「初出」 when finalCount is 0 due to legacy fallback insert failure', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-new-cards-legacy-fallback-zero'
+    const timestamp = '2026-05-11T10:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'raid-gacha', title: 'Raid Gacha', cost: 500 },
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+
+    const cards = [
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+      { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
+    ] as const
+
+    // Beta は legacy fallback で INSERT 失敗 -> count=0 が返る想定。
+    // 旧実装では previousCount = 0 - 1 = -1 で「初出」誤通知。
+    mockGetSupabaseAdminNoCache.mockReturnValue({
+      rpc: vi.fn().mockResolvedValue({
+        data: [
+          { count: 1, card: { id: 'card-1', is_active: true } },
+          { count: 0, card: { id: 'card-2', is_active: true } },
+        ],
+        error: null,
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+
+    mocks.executeGachaForEventSub.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards: [...cards],
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: null,
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: true,
+        },
+      },
+    })
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    const sentMessage = mocks.sendChatMessage.mock.calls.at(-1)?.[1] as string
+    // Alpha は finalCount=1 で「初出」対象、Beta は finalCount=0 なので除外。
+    expect(sentMessage).toContain(' 初出: Alpha')
+    // 末尾の「初出:」セクションに Beta が含まれていないことを厳密に確認
+    const newCardSection = sentMessage.slice(sentMessage.indexOf(' 初出: '))
+    expect(newCardSection).not.toContain('Beta')
+  })
 })
