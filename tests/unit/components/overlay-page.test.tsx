@@ -139,4 +139,41 @@ describe('OverlayPage', () => {
     expect(screen.getByText('Gamma')).toBeInTheDocument()
     expect(playMock).toHaveBeenCalledTimes(1)
   })
+
+  it('複数の効果音ルールをルールごとにプリロードする', async () => {
+    const createdUrls: string[] = []
+    class MockAudio {
+      src: string
+      preload = ''
+      currentTime = 0
+      constructor(src?: string) {
+        this.src = src ?? ''
+        if (src) createdUrls.push(src)
+      }
+      play() {
+        return Promise.resolve()
+      }
+      pause() {}
+    }
+    vi.stubGlobal('Audio', MockAudio as unknown as typeof Audio)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        soundUrl: 'https://example.com/legacy.mp3',
+        soundEnabled: true,
+        soundRules: [
+          { id: 'r1', url: 'https://example.com/rare.mp3', targetType: 'rarity', rarity: 'rare' },
+          { id: 'r2', url: 'https://example.com/legendary.mp3', targetType: 'rarity', rarity: 'legendary' },
+        ],
+      }),
+    }))
+
+    render(<OverlayPage />)
+
+    await waitFor(() => {
+      expect(createdUrls).toContain('https://example.com/rare.mp3')
+      expect(createdUrls).toContain('https://example.com/legendary.mp3')
+      expect(createdUrls).toContain('https://example.com/legacy.mp3')
+    })
+  })
 })

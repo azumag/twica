@@ -185,10 +185,13 @@ export default function OverlayPage() {
   const pollCursorRef = useRef(new Date().toISOString());
   const seenHistoryIdsRef = useRef<Set<string>>(new Set());
   const lastPollingErrorLogRef = useRef(0);
-  // 効果音再生用のオーディオ要素への参照
+  // 効果音再生用のオーディオ要素キャッシュ
   // HTMLAudioElementを使用（R2パブリックURLはCORSヘッダーがないためfetch不可、
   // audioタグはCORS不要で読み込める）
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // ルールごと（ruleId）に1つのAudio要素をプリロードして保持する。
+  // 単一audioRefだとレアリティ別など複数音が設定されたとき先頭以外が
+  // プリロードされず初回再生で遅延・無音になる問題を回避する。
+  const audioCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   // ユーザー操作により音声再生がアンロック済みかどうか
   // ブラウザの自動再生ポリシーにより、最初のユーザー操作までplay()は失敗する
   const audioUnlockedRef = useRef(false);
@@ -209,29 +212,47 @@ export default function OverlayPage() {
         if (response.ok) {
           const data = await response.json();
           const soundRules = normalizeGachaSoundRules(data.soundRules);
+          const soundEnabled = data.soundEnabled ?? true;
           setSoundSettings({
             soundUrl: data.soundUrl,
-            soundEnabled: data.soundEnabled ?? true,
+            soundEnabled,
             soundRules,
           });
-          // 効果音URLが設定されている場合、Audio要素を作成してプリロード
-          // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）
-          if (data.soundUrl && data.soundEnabled) {
-            const audio = new Audio(data.soundUrl);
-            audio.preload = "auto";
-            audioRef.current = audio;
 
-            // 自動再生可能かテスト（ブロックされていればUI表示用フラグを立てる）
-            audio.play().then(() => {
-              // 再生成功 → 即座に停止（プリロード目的）
-              audio.pause();
-              audio.currentTime = 0;
-              audioUnlockedRef.current = true;
-            }).catch(() => {
-              // NotAllowedError: 自動再生ポリシーによりブロック
-              // ユーザー操作後にアンロックされる
-              setAudioBlocked(true);
-            });
+          if (soundEnabled) {
+            // 再生され得る全URL（ルールごと + レガシー単一URL）を収集して
+            // それぞれHTMLAudioElementを作成しプリロードする。
+            // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）。
+            // key: ruleId、レガシーURLは固定キー "__legacy__" を使う。
+            const cache = audioCacheRef.current;
+            const entries: { key: string; url: string }[] = [];
+            for (const rule of soundRules) {
+              if (rule.enabled && rule.url) {
+                entries.push({ key: rule.id, url: rule.url });
+              }
+            }
+            if (data.soundUrl) {
+              entries.push({ key: "__legacy__", url: data.soundUrl });
+            }
+
+            for (const { key, url } of entries) {
+              if (cache.has(key)) continue;
+              const audio = new Audio(url);
+              audio.preload = "auto";
+              cache.set(key, audio);
+
+              // 自動再生可能かテスト（ブロックされていればUI表示用フラグを立てる）
+              audio.play().then(() => {
+                // 再生成功 → 即座に停止（プリロード目的）
+                audio.pause();
+                audio.currentTime = 0;
+                audioUnlockedRef.current = true;
+              }).catch(() => {
+                // NotAllowedError: 自動再生ポリシーによりブロック
+                // ユーザー操作後にアンロックされる
+                setAudioBlocked(true);
+              });
+            }
           }
         }
       } catch (error) {
@@ -248,20 +269,29 @@ export default function OverlayPage() {
   useEffect(() => {
     const unlockAudio = () => {
       if (audioUnlockedRef.current) return;
-      const audio = audioRef.current;
-      if (audio) {
-        // ユーザー操作のコンテキスト内でplay()を呼ぶことでブラウザのロックを解除
-        // Calling play() within user gesture context unlocks browser's autoplay restriction
-        audio.play().then(() => {
-          audio.pause();
-          audio.currentTime = 0;
+      const cache = audioCacheRef.current;
+      if (cache.size === 0) return;
+
+      // ユーザー操作のコンテキスト内で全Audio要素のplay()を呼ぶことで
+      // ブラウザのロックを一括解除する（複数音すべてをアンロック）。
+      // Calling play() within user gesture context unlocks browser's autoplay restriction
+      const audios = Array.from(cache.values());
+      Promise.allSettled(
+        audios.map((audio) =>
+          audio.play().then(() => {
+            audio.pause();
+            audio.currentTime = 0;
+          }),
+        ),
+      ).then((results) => {
+        const anyUnlocked = results.some((r) => r.status === "fulfilled");
+        if (anyUnlocked) {
           audioUnlockedRef.current = true;
           setAudioBlocked(false);
           logger.info("Audio unlocked after user interaction");
-        }).catch(() => {
-          // まだアンロックできない場合は次のクリックで再試行
-        });
-      }
+        }
+        // 全て失敗した場合は次のクリックで再試行
+      });
     };
 
     document.addEventListener("click", unlockAudio);
@@ -364,14 +394,19 @@ export default function OverlayPage() {
     }
 
     try {
-      if (audioRef.current?.src === soundUrl) {
+      // ルールに対応するプリロード済みAudio要素を優先的に使用する。
+      // ルールが選択された場合は rule.id、レガシー単一URLの場合は固定キー。
+      const cacheKey = selectedRule?.id ?? "__legacy__";
+      const cached = audioCacheRef.current.get(cacheKey);
+      if (cached && cached.src === soundUrl) {
         // プリロード済みのAudio要素を使用して再生
-        audioRef.current.currentTime = 0;
-        audioRef.current.play().catch(() => {
+        cached.currentTime = 0;
+        cached.play().catch(() => {
           // 自動再生ポリシーによりブロックされた場合は無視
           // ユーザーがページをクリックすればアンロックされ、次回から再生可能
         });
       } else {
+        // キャッシュ未生成（取得タイミング差など）のフォールバック
         const audio = new Audio(soundUrl);
         audio.play().catch(() => {});
       }

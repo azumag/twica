@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { RARITIES, SOUND_UPLOAD_CONFIG } from "@/lib/constants";
 import {
+  createRuleId,
   legacySoundToRules,
   normalizeGachaSoundRules,
   type GachaSoundRule,
@@ -20,12 +21,6 @@ interface GachaSoundSettingsProps {
   currentRewardId?: string | null;
   currentRewardName?: string | null;
 }
-
-const newRuleId = () => (
-  typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `sound-${Date.now()}-${Math.random().toString(36).slice(2)}`
-);
 
 export default function GachaSoundSettings({
   streamerId,
@@ -158,7 +153,7 @@ export default function GachaSoundSettings({
       const nextRules: GachaSoundRule[] = [
         ...rules,
         {
-          id: newRuleId(),
+          id: createRuleId(),
           url: data.url,
           enabled: true,
           label: file.name.replace(/\.[^.]+$/, "").slice(0, 80) || t("form.defaultLabel"),
