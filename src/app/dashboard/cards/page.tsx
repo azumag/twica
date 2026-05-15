@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import dynamic from "next/dynamic";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
-import { getUserPlan, PLAN_MAX_IMAGE_WIDTH, PLAN_AVAILABLE_WIDTHS } from "@/lib/plan";
+import { getUserPlan, PLAN_MAX_IMAGE_WIDTH, PLAN_AVAILABLE_WIDTHS, PLAN_MAX_UPLOAD_SIZE } from "@/lib/plan";
 import type { Card } from "@/types/database";
 
 const CardManager = dynamic(() => import("@/components/CardManager"), {
@@ -57,6 +57,7 @@ export default async function CardsPage() {
   // Issue #269再設計: 新規カードパック名の登録(パック管理モーダルでの追加)
   // にのみプランが必要。既存パックの選択・解除はゲート対象外。
   const isPremium = plan !== "basic";
+  const maxUploadSize = PLAN_MAX_UPLOAD_SIZE[plan];
 
   return (
     <CardManager
@@ -74,6 +75,7 @@ export default async function CardsPage() {
       maxImageWidth={maxImageWidth}
       availableWidths={availableWidths}
       isPremium={isPremium}
+      maxUploadSize={maxUploadSize}
     />
   );
 }

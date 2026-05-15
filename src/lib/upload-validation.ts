@@ -36,7 +36,10 @@ export function validateUpload(
     }
   }
 
-  if (!isAllowedCardUploadFile(file)) {
+  // サーバ側の厳密判定では拡張子による空 MIME フォールバックを行わない。
+  // 拡張子フォールバックはブラウザ依存のフォーム送信で File.type が空になるケースの救済策で、
+  // クライアント側のファイル選択 UI (CardManager) でのみ有効化する。
+  if (!isAllowedCardUploadFile(file, { allowEmptyMimeWithExtension: false })) {
     return {
       valid: false,
       error: 'INVALID_FILE_TYPE',

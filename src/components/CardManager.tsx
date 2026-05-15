@@ -75,6 +75,10 @@ interface CardManagerProps {
   // Plan-based available output widths (default: [800])
   // プラン別選択可能な出力幅（デフォルト: [800]）
   availableWidths?: number[];
+  // Plan-based maximum upload size in bytes (default: UPLOAD_CONFIG.MAX_FILE_SIZE)
+  // GIFはトリミング/再圧縮をスキップして原本送信されるため、UI上でユーザーへ上限を案内するのに利用する
+  // プラン別アップロードサイズ上限（バイト）。GIF原本送信モード時の注意文表示にも用いる
+  maxUploadSize?: number;
   // Initial rarity weights: null/undefined = unset (auto mode with defaults), {} = explicit manual mode, {weights} = auto mode
   // レアリティ確率設定: null/undefined=未設定（自動モードデフォルト化）, {}=手動モード明示, {weights}=自動モード
   initialRarityWeights?: Record<string, number> | null;
@@ -139,6 +143,7 @@ export default function CardManager({
   maxCards,
   maxImageWidth = 800,
   availableWidths = [800],
+  maxUploadSize,
   initialRarityWeights = null,
   initialCustomRarities = [],
   initialCardPackNames = [],
@@ -957,6 +962,14 @@ export default function CardManager({
         return;
       }
       if (shouldPreserveOriginalCardUpload(file)) {
+        // GIFはトリミング/再圧縮されず原本のままアップロードされるため、
+        // クライアント側でもプラン上限を事前にチェックし UX を早期化する
+        // （サーバ側 validateUpload でも最終的に弾かれるが、無駄なネットワークを避ける）
+        const validation = validateUpload(file, maxUploadSize);
+        if (!validation.valid) {
+          setUploadError(getUploadErrorMessage(validation.error!));
+          return;
+        }
         imageDimensionRequestId.current++;
         if (croppedPreviewUrl) {
           URL.revokeObjectURL(croppedPreviewUrl);
@@ -1751,6 +1764,13 @@ export default function CardManager({
                       {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
                       {t("fileUpload.formats")}{t("form.cropNoteWithOptions", { square: planCropModes.square.dimensions, portrait: planCropModes.portrait.dimensions })}
                       {t("form.animatedGifNote")}
+                    </p>
+                    {/* GIFはトリミング/再圧縮されず原本のままアップロードされるため、
+                        プラン上限 (basic=1MB, support=5MB, patron/twitch_sub=10MB) を明示する */}
+                    <p className="text-xs text-amber-400">
+                      {t("form.animatedGifSizeLimit", {
+                        maxMb: Math.floor((maxUploadSize ?? 1 * 1024 * 1024) / (1024 * 1024)),
+                      })}
                     </p>
                     <input
                       type="url"

@@ -78,6 +78,7 @@
       "cropModeDescription": "正方形の場合、表示時に名前・説明をカード枠に表示できます。オーバーレイ設定で表示非表示を選択できます。ポートレイトはそのまま表示されます。",
       "cropNoteWithOptions": "（正方形{square}またはポートレイト{portrait}にトリミング）",
       "animatedGifNote": "。GIFはアニメーション保持のためトリミングせず保存します",
+      "animatedGifSizeLimit": "GIFはそのまま送信されるため、{maxMb}MB以下にしてください",
       "selectResolution": "解像度を選択",
       "resolutionStandard": "標準 (800px)",
       "resolutionFullHd": "Full HD (1920px)",

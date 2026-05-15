@@ -46,4 +46,28 @@ describe("isAllowedCardUploadFile", () => {
       type: "",
     })).toBe(false)
   })
+
+  it("rejects empty-MIME files when extension fallback is disabled (server path)", () => {
+    expect(
+      isAllowedCardUploadFile(
+        {
+          name: "card.gif",
+          type: "",
+        },
+        { allowEmptyMimeWithExtension: false },
+      ),
+    ).toBe(false)
+  })
+
+  it("still allows known MIME types when extension fallback is disabled", () => {
+    expect(
+      isAllowedCardUploadFile(
+        {
+          name: "card.gif",
+          type: "image/gif",
+        },
+        { allowEmptyMimeWithExtension: false },
+      ),
+    ).toBe(true)
+  })
 })
