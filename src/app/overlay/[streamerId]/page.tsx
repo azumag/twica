@@ -373,7 +373,15 @@ export default function OverlayPage() {
     isDisplayingRef.current = true;
 
     // 画像のアスペクト比をチェック（autoPortraitモード用）
-    await checkImageAspectRatio(next.card.image_url);
+    // 動画カードの場合は new window.Image() ではアスペクト比を取得できないため、
+    // 横長扱いでデフォルトレイアウトを採用しスキップする。
+    // (PR #449 レビュー指摘: 動画URLでも Image() を呼んでしまい onerror パスでフラグだけリセットされていた)
+    if (isVideoCard(next.card.media_type)) {
+      setIsPortraitImage(false);
+      setIsSmallImage(false);
+    } else {
+      await checkImageAspectRatio(next.card.image_url);
+    }
 
     setSparklePositions(generateSparklePositions());
     setResult(next);

@@ -145,6 +145,23 @@ export function validateCardMediaType(mediaType: unknown): { valid: boolean; err
   return { valid: true }
 }
 
+// 動画URLのホスト allowlist。環境変数 ALLOWED_VIDEO_HOSTS をカンマ区切りで設定すると
+// 列挙されたホストのみ受け入れる。未設定時は後方互換のため素通しするが warn ログを出す。
+// (PR #449 レビュー指摘: 外部ホスト無制限・MITM/コンテンツ差し替えリスク)
+function getAllowedVideoHosts(): string[] | null {
+  const raw = process.env.ALLOWED_VIDEO_HOSTS?.trim()
+  if (!raw) return null
+  return raw
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter((h) => h.length > 0)
+}
+
+function isAllowedVideoHost(hostname: string, allowed: string[]): boolean {
+  const lower = hostname.toLowerCase()
+  return allowed.some((entry) => lower === entry || lower.endsWith('.' + entry))
+}
+
 export function validateCardMediaUrl(mediaUrl: unknown, mediaType: CardMediaType): { valid: boolean; error?: string } {
   if (mediaType === 'image') {
     return validateImageUrl(mediaUrl)
@@ -167,6 +184,13 @@ export function validateCardMediaUrl(mediaUrl: unknown, mediaType: CardMediaType
     const pathname = url.pathname.toLowerCase()
     const hasValidExtension = ALLOWED_VIDEO_EXTENSIONS.some((ext) => pathname.endsWith(ext))
     if (!hasValidExtension) {
+      return { valid: false, error: ERROR_MESSAGES.INVALID_VIDEO_URL }
+    }
+
+    // ホスト allowlist チェック。env 未設定時は後方互換維持のため通すが、
+    // 設定されている場合は厳格に検証する。
+    const allowedHosts = getAllowedVideoHosts()
+    if (allowedHosts && !isAllowedVideoHost(url.hostname, allowedHosts)) {
       return { valid: false, error: ERROR_MESSAGES.INVALID_VIDEO_URL }
     }
 

@@ -20,7 +20,7 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
-import { isMissingCardMediaTypeColumnError, normalizeCardMediaType } from "@/lib/card-media";
+import { normalizeCardMediaType } from "@/lib/card-media";
 import { countVideoCardsForStreamer, getVideoCardLimit } from "@/lib/card-video-limits";
 import { getUserPlan } from "@/lib/plan";
 import type { ApiRateLimitResponse } from "@/types/api";
@@ -217,16 +217,11 @@ export async function POST(request: NextRequest) {
       error = retryResult.error;
     }
 
-    if (error && isMissingCardMediaTypeColumnError(error) && normalizedMediaType === "image") {
-      delete insertData.media_type;
-      const retryResult = await supabaseAdmin
-        .from("cards")
-        .insert(insertData)
-        .select()
-        .maybeSingle();
-      card = retryResult.data;
-      error = retryResult.error;
-    }
+    // NOTE: 旧コードには「media_type 列が無く、かつ image 指定時のみ」フォールバック挿入する分岐があったが、
+    // video 側ではフォールバックが無く 500 エラーになっていた。
+    // 中途半端なフォールバックを残すと「画像ならOK・動画ならNG」という未マイグレーション環境特有の
+    // 一貫性のない挙動を生み、デバッグも困難になるため削除し、media_type マイグレーション必須を明確化する。
+    // (PR #449 レビュー指摘: video 側 INSERT 失敗、YAGNI 原則で過剰なフォールバックを除去)
 
     if (error) {
       if (isCardNumberConflictError(error)) {

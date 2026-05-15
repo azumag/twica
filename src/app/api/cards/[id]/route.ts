@@ -19,7 +19,7 @@ import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
-import { isMissingCardMediaTypeColumnError, normalizeCardMediaType } from "@/lib/card-media";
+import { normalizeCardMediaType } from "@/lib/card-media";
 import { countVideoCardsForStreamer, getVideoCardLimit } from "@/lib/card-video-limits";
 import { getUserPlan } from "@/lib/plan";
 import type { ApiRateLimitResponse } from "@/types/api";
@@ -157,9 +157,12 @@ export async function PUT(
 
     // Verify ownership and get current image_url for cleanup
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
+    // 必要なカラムだけを明示取得する（"*" は将来カラムが増えた時に転送量と RLS リスクを増やすため避ける）。
+    // media_type は動画カード判定に必要なため追加。
+    // (PR #449 レビュー指摘: select("*", ...) で従来の明示列リストから退化していた)
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("*, streamers!inner(twitch_user_id, rarity_weights)")
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, media_type, streamers!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -272,17 +275,10 @@ export async function PUT(
       error = retryResult.error;
     }
 
-    if (error && isMissingCardMediaTypeColumnError(error) && updateData.media_type === "image") {
-      delete updateData.media_type;
-      const retryResult = await supabaseAdmin
-        .from("cards")
-        .update(updateData)
-        .eq("id", id)
-        .select()
-        .maybeSingle();
-      updatedCard = retryResult.data;
-      error = retryResult.error;
-    }
+    // NOTE: 旧コードには「media_type 列が無く、かつ image 指定時のみ」フォールバック更新する分岐があったが、
+    // video 側では同じ分岐が無く 500 エラーになっていた。中途半端なフォールバックは
+    // ユーザー体験のばらつきと保守性低下を招くため削除し、media_type マイグレーション必須を明確化する。
+    // (PR #449 レビュー指摘: video 側 INSERT/UPDATE でフォールバック未実装による 500、YAGNI 原則)
 
     if (error) {
       if (isCardNumberConflictError(error)) {

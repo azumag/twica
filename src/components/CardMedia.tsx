@@ -26,12 +26,22 @@ export default function CardMedia({
   controls = false,
 }: CardMediaProps) {
   if (isVideoCard(mediaType)) {
+    // controls=false の場合（コレクション一覧やCardManagerサムネイル等）、
+    // poster 未指定の <video> は黒画面のままになるため、ミュート autoplay + loop で
+    // 1フレーム目以降をループ再生しサムネイルとして機能させる。
+    // muted は autoplay のブラウザポリシー要件、playsInline は iOS 対策。
+    // OBSオーバーレイ（controls=true 等の本表示）側では別途 video 要素を使うため
+    // ここでは controls=false の thumbnail/icon 用途のみ自動再生を有効化する。
+    // (PR #449 レビュー指摘: thumbnail/icon で動画が黒画面)
+    const isThumbnail = !controls;
     return (
       <video
         src={url}
         className={className}
         controls={controls}
-        muted={!controls}
+        muted={isThumbnail}
+        autoPlay={isThumbnail}
+        loop={isThumbnail}
         playsInline
         preload="metadata"
         aria-label={alt}
