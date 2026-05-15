@@ -174,6 +174,74 @@ describe('POST /api/streamer/settings', () => {
     expect(data.success).toBe(true)
   })
 
+  // C5: rarity_weights キーのバリデーション/正規化
+  describe('rarity weights key validation (C5)', () => {
+    const buildRequest = (rarityWeights: unknown) =>
+      new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', rarityWeights }),
+      })
+
+    const mockOk = async () => {
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const built = mockSupabase.build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        built as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+      return mockSupabase.getQueryBuilder()
+    }
+
+    it('rejects empty string key', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ '': 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects key that is whitespace only (empty after trim)', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ '   ': 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects key longer than 40 chars', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ ['a'.repeat(41)]: 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects key containing control characters', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ ['rare\u0001']: 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects key containing bidi override characters', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ ['rare\u202E']: 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects duplicate keys after trim/NFC normalization', async () => {
+      await mockOk()
+      // " common " と "common" は trim 後に衝突する
+      const response = await POST(buildRequest({ common: 50, ' common ': 50 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('persists trimmed/NFC-normalized keys when valid', async () => {
+      const query = await mockOk()
+      // 前後空白付きキー(合計100%)。trim 後の "common"/"rare" で保存されること。
+      const response = await POST(buildRequest({ ' common ': 70, rare: 30 }))
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({ rarity_weights: { common: 70, rare: 30 } })
+      )
+    })
+  })
+
   it('should return 403 when CSRF token is invalid', async () => {
     mockValidateCSRFToken.mockResolvedValue({ valid: false })
 

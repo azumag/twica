@@ -39,7 +39,7 @@ describe("calculateDropRates", () => {
     ]);
   });
 
-  it("uses fallback equal per-card weight for rarities missing in rarityWeights", () => {
+  it("sets 0 (excluded) for rarities missing in rarityWeights to keep configured total intact", () => {
     const result = calculateDropRates(
       [
         { id: "c1", rarity: "common", is_active: true },
@@ -49,10 +49,12 @@ describe("calculateDropRates", () => {
       { common: 60 }
     );
 
+    // mythic は重み未設定 → 0%（排出対象外）。均等fallbackで合計が100%を
+    // 超えるのを防ぐ。
     expect(result).toEqual([
       { id: "c1", dropRate: 0.6 },
-      { id: "m1", dropRate: 0.3333 },
-      { id: "m2", dropRate: 0.3333 },
+      { id: "m1", dropRate: 0 },
+      { id: "m2", dropRate: 0 },
     ]);
   });
 
@@ -90,7 +92,7 @@ describe("calculateDropRates", () => {
     expect(result).toEqual([]);
   });
 
-  it("uses fallback for NaN or Infinity weight values", () => {
+  it("sets 0 for NaN or Infinity weight values", () => {
     const result = calculateDropRates(
       [
         { id: "c1", rarity: "common", is_active: true },
@@ -99,10 +101,10 @@ describe("calculateDropRates", () => {
       { common: NaN, rare: Infinity }
     );
 
-    // NaN/Infinity は isValidPercent で弾かれ、fallbackPerCard (1/2 = 0.5) が使われる
+    // NaN/Infinity は isValidPercent で弾かれ、0%（排出対象外）となる
     expect(result).toEqual([
-      { id: "c1", dropRate: 0.5 },
-      { id: "c2", dropRate: 0.5 },
+      { id: "c1", dropRate: 0 },
+      { id: "c2", dropRate: 0 },
     ]);
   });
 
@@ -132,7 +134,7 @@ describe("calculateDropRates", () => {
     expect(result).toEqual([{ id: "c1", dropRate: 0.05 }]);
   });
 
-  it("uses fallback for all cards when rarityWeights is empty object", () => {
+  it("sets 0 for all cards when rarityWeights is empty object", () => {
     const result = calculateDropRates(
       [
         { id: "c1", rarity: "common", is_active: true },
@@ -141,10 +143,10 @@ describe("calculateDropRates", () => {
       {}
     );
 
-    // 空オブジェクト → 全レアリティがfallback（均等配分 1/2 = 0.5）
+    // 空オブジェクト → 全レアリティが重み未設定 → 0%（排出対象外）
     expect(result).toEqual([
-      { id: "c1", dropRate: 0.5 },
-      { id: "c2", dropRate: 0.5 },
+      { id: "c1", dropRate: 0 },
+      { id: "c2", dropRate: 0 },
     ]);
   });
 
@@ -163,14 +165,14 @@ describe("calculateDropRates", () => {
     ]);
   });
 
-  it("uses fallback for negative weight values", () => {
+  it("sets 0 for negative weight values", () => {
     const result = calculateDropRates(
       [{ id: "c1", rarity: "common", is_active: true }],
       { common: -5 }
     );
 
-    // 負の値は isValidPercent で弾かれ、fallback (1/1 = 1.0) が使われる
-    expect(result).toEqual([{ id: "c1", dropRate: 1 }]);
+    // 負の値は isValidPercent で弾かれ、0%（排出対象外）となる
+    expect(result).toEqual([{ id: "c1", dropRate: 0 }]);
   });
 
   // ---- intra_rarity_weight テスト ----
@@ -243,9 +245,9 @@ describe("calculateDropRates", () => {
     ]);
   });
 
-  it("ignores intra_rarity_weight for fallback rarities", () => {
-    // rarityWeightsに存在しないレアリティはfallback（均等配分）
-    // この場合intra_rarity_weightは計算に使われない
+  it("sets 0 for unconfigured rarities regardless of intra_rarity_weight", () => {
+    // rarityWeightsに存在しないレアリティは0%（排出対象外）。
+    // intra_rarity_weightは計算に使われない。
     const result = calculateDropRates(
       [
         { id: "m1", rarity: "mythic", is_active: true, intra_rarity_weight: 5.0 },
@@ -255,11 +257,34 @@ describe("calculateDropRates", () => {
       { common: 60 }
     );
 
-    // mythicはfallback: 1/3 = 0.3333 (intra_rarity_weightは無視)
+    // mythic は重み未設定 → 0% (intra_rarity_weightは無視)
     expect(result).toEqual([
-      { id: "m1", dropRate: 0.3333 },
-      { id: "m2", dropRate: 0.3333 },
+      { id: "m1", dropRate: 0 },
+      { id: "m2", dropRate: 0 },
       { id: "c1", dropRate: 0.6 },
+    ]);
+  });
+
+  it("excludes unconfigured custom rarity so total never exceeds the configured 100%", () => {
+    // C4 回帰テスト: カスタムレアリティ(mythic)が重み未設定でも、
+    // 設定済みレアリティの合計(100%)を超えない。
+    const result = calculateDropRates(
+      [
+        { id: "c1", rarity: "common", is_active: true },
+        { id: "r1", rarity: "rare", is_active: true },
+        { id: "m1", rarity: "mythic", is_active: true },
+        { id: "m2", rarity: "mythic", is_active: true },
+      ],
+      { common: 70, rare: 30 }
+    );
+
+    const total = result.reduce((sum, r) => sum + r.dropRate, 0);
+    expect(total).toBeCloseTo(1.0, 4);
+    expect(result).toEqual([
+      { id: "c1", dropRate: 0.7 },
+      { id: "r1", dropRate: 0.3 },
+      { id: "m1", dropRate: 0 },
+      { id: "m2", dropRate: 0 },
     ]);
   });
 

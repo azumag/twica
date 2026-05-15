@@ -114,6 +114,26 @@ export default function DropRateAutoModeContent({
     setDraftWeights(nextDraft);
   }, [rarityWeights, rarityKeys]);
 
+  // カスタムレアリティ追加時の未登録キー初期化。
+  // rarityKeys にカード由来の新規レアリティが現れたとき、draftWeights に
+  // 当該キーを 0 で先行登録する。これをしないと、新キーが入力欄に 0 表示
+  // される一方で合計には反映されず、「合計100%」制約と実表示が乖離して
+  // 保存できなくなる（カスタムレアリティ追加でUI制約が破綻する）ため。
+  useEffect(() => {
+    setDraftWeights((prev) => {
+      const missingKeys = rarityKeys.filter(
+        (key) => !Object.prototype.hasOwnProperty.call(prev, key)
+      );
+      if (missingKeys.length === 0) return prev;
+
+      const next = { ...prev };
+      for (const key of missingKeys) {
+        next[key] = clampPercent(rarityWeights[key] ?? 0);
+      }
+      return next;
+    });
+  }, [rarityKeys, rarityWeights]);
+
   // レアリティ別合計
   const rarityTotal = useMemo(() => {
     return Object.values(draftWeights).reduce((sum, value) => sum + value, 0);
