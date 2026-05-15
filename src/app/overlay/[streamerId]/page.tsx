@@ -7,6 +7,7 @@ import type { Card, Rarity } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
 import { RARITIES, RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
+import { type OverlayEffectStyle, normalizeOverlayEffectStyle } from "@/lib/overlay-effect";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
@@ -75,10 +76,9 @@ interface SparklePosition {
   animationDuration: string;
 }
 
-type OverlayEffectStyle = "sparkle" | "confetti" | "hearts";
-
+// 共有定義に集約: src/lib/overlay-effect.ts を Single Source of Truth とする
 function parseOverlayEffectStyle(value: string | null): OverlayEffectStyle {
-  return value === "confetti" || value === "hearts" ? value : "sparkle";
+  return normalizeOverlayEffectStyle(value);
 }
 
 /**
@@ -668,8 +668,16 @@ export default function OverlayPage() {
       return null;
     }
 
+    // i * 23deg: 23 は 360 と互いに素な素数のため、N=20 個並べても回転角が均等に
+    // 散らばり (周期 360°) 偏りが目立たない。色も 4 色を i%4 で循環させ、視覚的な
+    // ランダム感を低コストで演出する（CSS 1行で済ませる狙い）。
+    const CONFETTI_ROTATION_STEP_DEG = 23;
     return (
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div
+        className="pointer-events-none absolute inset-0 overflow-hidden"
+        // スクリーンリーダーには無意味な装飾なので非読み上げに
+        aria-hidden="true"
+      >
         {sparklePositions.map((pos, i) => {
           if (options.effectStyle === "confetti") {
             return (
@@ -684,7 +692,7 @@ export default function OverlayPage() {
                         ? "bg-cyan-300"
                         : "bg-purple-400"
                 }`}
-                style={{ ...pos, transform: `rotate(${i * 23}deg)` }}
+                style={{ ...pos, transform: `rotate(${i * CONFETTI_ROTATION_STEP_DEG}deg)` }}
               />
             );
           }

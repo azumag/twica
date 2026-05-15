@@ -4,6 +4,11 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import CopyButton from "@/components/CopyButton";
 import type { Card } from "@/types/database";
+import {
+  type OverlayEffectStyle,
+  OVERLAY_EFFECT_STYLES,
+  normalizeOverlayEffectStyle,
+} from "@/lib/overlay-effect";
 
 /**
  * Overlay preview options interface
@@ -23,10 +28,6 @@ interface OverlayOptions {
   portraitShowDescription: boolean; // 縦長画像で説明を表示
   portraitShowUsername: boolean;    // 縦長画像でユーザー名を表示
 }
-
-type OverlayEffectStyle = "sparkle" | "confetti" | "hearts";
-
-const OVERLAY_EFFECT_STYLES: OverlayEffectStyle[] = ["sparkle", "confetti", "hearts"];
 
 const DEFAULT_OVERLAY_OPTIONS: OverlayOptions = {
   imageOnly: false,
@@ -48,9 +49,7 @@ function readStoredBoolean(value: unknown, fallback: boolean) {
 }
 
 function readStoredEffectStyle(value: unknown): OverlayEffectStyle {
-  return typeof value === "string" && OVERLAY_EFFECT_STYLES.includes(value as OverlayEffectStyle)
-    ? value as OverlayEffectStyle
-    : DEFAULT_OVERLAY_OPTIONS.effectStyle;
+  return normalizeOverlayEffectStyle(value);
 }
 
 function clampDisplayDuration(value: unknown) {
