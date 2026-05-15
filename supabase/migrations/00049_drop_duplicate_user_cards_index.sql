@@ -1,0 +1,12 @@
+-- Drop duplicate index introduced by 00041.
+-- 00001_initial_schema.sql line 70 already creates `idx_user_cards_card_id` on user_cards(card_id),
+-- and 00041 added `idx_user_cards_card_id_issuance_count` covering the exact same column set.
+-- Keeping both wastes write-amplification on every user_cards insert/update without any read benefit.
+--
+-- 00041 で追加された idx_user_cards_card_id_issuance_count は
+-- 00001_initial_schema.sql の idx_user_cards_card_id (user_cards(card_id)) と完全に重複する。
+-- そのまま残すと user_cards への INSERT/UPDATE 時に余分な書き込みコストが発生するため削除する。
+--
+-- NOTE: This migration uses 00049 to leave room for upstream main migrations during rebase.
+-- 00041 自体の番号衝突解消 (リネーム) は author の手動 rebase 時に対応する。
+DROP INDEX IF EXISTS idx_user_cards_card_id_issuance_count;

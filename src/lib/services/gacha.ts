@@ -175,6 +175,21 @@ export class GachaService {
     streamerId: string, userTwitchId: string, userTwitchUsername: string,
     selectedCard: GachaCard, eventId?: string, rewardCost?: number
   ): Promise<Result<GachaResult>> {
+    // Legacy パスは execute_gacha_transaction RPC が未デプロイの一時的状態のためのフォールバック。
+    // この経路では FOR UPDATE による行ロックが取れず、発行枚数チェックと INSERT を
+    // アトミックに実行できないため、上限超過の race condition を防げない。
+    // よって発行可能枚数 (max_issuance_count) が設定されたカードは legacy パスでは抽選対象外とする。
+    // limited カードは migration 適用後の RPC パス経由でのみ付与可能。
+    // The legacy fallback runs only while execute_gacha_transaction is missing on the DB.
+    // Without FOR UPDATE row locking we cannot enforce issuance limits atomically here,
+    // so refuse to issue limited cards via this path to avoid over-issuing.
+    if (selectedCard.max_issuance_count !== null && selectedCard.max_issuance_count !== undefined) {
+      logger.warn('Legacy fallback: refused to issue limited card (RPC not deployed yet)', {
+        streamerId, userTwitchId, eventId, cardId: selectedCard.id,
+      })
+      return err(CARD_ISSUANCE_MESSAGES.soldOut)
+    }
+
     // gacha_history upsert（冪等性のためevent_idで重複チェック）
     const { error: historyError } = await this.supabase
       .from('gacha_history')

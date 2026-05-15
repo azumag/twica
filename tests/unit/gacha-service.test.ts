@@ -320,6 +320,50 @@ describe('GachaService.executeGacha', () => {
     }
   })
 
+  it('RPC未デプロイ + limited カード選択時: legacy パスで発行を拒否する', async () => {
+    // limited カード (max_issuance_count あり) を含むカード集合で、
+    // RPC が未デプロイ (42883) でフォールバックが必要な状況をシミュレートする。
+    // selectWeightedCard が limited カードを選んだケースを再現するため、
+    // 抽選候補に未発行の limited カードのみを残す。
+    const limitedCards = [
+      { id: 'limited-card', name: 'Limited', description: 'desc', image_url: null, rarity: 'legendary', drop_rate: 100, max_issuance_count: 5 },
+    ]
+    const cardsQuery = createCardsQuery(limitedCards as unknown as typeof testCards)
+    // user_cards は未発行 (0/5) → limited カードが抽選対象に残る
+    const userCardsQuery = createMockQueryBuilder()
+    ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({ data: [], error: null })
+      return userCardsQuery
+    }
+
+    const fromMock = vi.fn((table: string) => {
+      if (table === 'cards') return cardsQuery
+      if (table === 'user_cards') return userCardsQuery
+      return createMockQueryBuilder()
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: fromMock,
+      rpc: vi.fn().mockResolvedValue({
+        data: null,
+        error: { message: 'function execute_gacha_transaction does not exist', code: '42883' },
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-legacy-limited')
+
+    // Legacy パスでは atomic な発行枚数チェックができないため、
+    // 上限超過リスクを避けて soldOut エラーを返す。
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('発行可能枚数')
+    }
+    // gacha_history / user_cards INSERT は実行されていないことを確認
+    expect(fromMock).not.toHaveBeenCalledWith('gacha_history')
+    expect(fromMock).not.toHaveBeenCalledWith('users')
+  })
+
   it('eventId未指定: p_event_idにnullが渡される', async () => {
     const cardsQuery = createCardsQuery(testCards)
     const mockRpc = vi.fn().mockResolvedValue({

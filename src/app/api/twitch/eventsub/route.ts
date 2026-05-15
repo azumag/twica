@@ -11,6 +11,7 @@ import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders 
 import { hasScope } from "@/lib/twitch/token-manager";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
+import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
@@ -319,6 +320,23 @@ async function handleRedemption(messageId: string, event: {
         logger.warn('[handleRedemption] No cards available - streamer setup issue', {
           messageId,
           broadcasterUserId: event.broadcaster_user_id,
+        });
+        return null;
+      }
+      // カード発行可能枚数の上限到達はストリーマーの設定運用の結果であり、
+      // システムバグではない。Sentry/Issue 化を抑止し warn ログのみに留める。
+      // RPC からの 'limit_reached' と、事前フィルタからの soldOut メッセージの両方を扱う。
+      // Card issuance limit reached is the result of streamer configuration, not a system bug.
+      // Suppress Sentry/Issue reporting and emit a warn log only.
+      if (
+        result.error === 'limit_reached' ||
+        result.error === CARD_ISSUANCE_MESSAGES.soldOut ||
+        result.error.includes('発行可能枚数')
+      ) {
+        logger.warn('[handleRedemption] Card issuance limit reached', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+          gachaError: result.error,
         });
         return null;
       }
