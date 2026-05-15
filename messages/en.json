@@ -284,6 +284,7 @@
       "exchanging": "Exchanging...",
       "duplicateCount": "{count} duplicates",
       "stoneValue": "{count} stones",
+      "confirmMessage": "Exchange one duplicate of \"{name}\" for {count} card stones. This action cannot be undone. Continue?",
       "success": "Gained {count} card stones.",
       "errorFallback": "Failed to exchange the duplicate card."
     },

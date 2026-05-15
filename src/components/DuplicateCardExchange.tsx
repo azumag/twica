@@ -26,6 +26,7 @@ interface DuplicateCardExchangeProps {
     cardNumberTemplate: string;
     duplicateCountTemplate: string;
     stoneValueTemplate: string;
+    confirmTemplate: string;
     successTemplate: string;
     errorFallback: string;
   };
@@ -47,15 +48,30 @@ export default function DuplicateCardExchange({
   );
 
   const exchangeCard = async (card: DuplicateExchangeCard) => {
+    // 交換は取り消せない破壊的操作のため、実行前に明示的な確認を求める。
+    // The exchange permanently destroys a duplicate copy, so require explicit confirmation.
+    const confirmMessage = translations.confirmTemplate
+      .replace("{name}", card.name)
+      .replace("{count}", String(card.stoneValue));
+    if (typeof window !== "undefined" && !window.confirm(confirmMessage)) {
+      return;
+    }
+
     setActiveCardId(card.id);
     setMessage(null);
     setError(null);
+
+    // 二重送信や再試行で同じダブりが複数回交換されるのを防ぐため、
+    // クライアントで一意な requestId を生成し、サーバ側の冪等性キーとして送信する。
+    // Generate a unique requestId on the client and send it as the server-side
+    // idempotency key so retries/double-clicks cannot exchange the same copy twice.
+    const requestId = crypto.randomUUID();
 
     try {
       const response = await fetch("/api/card-stones/exchange", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cardId: card.id }),
+        body: JSON.stringify({ cardId: card.id, requestId }),
       });
       const result = await response.json().catch(() => null) as
         | { stonesGained?: number; error?: string }

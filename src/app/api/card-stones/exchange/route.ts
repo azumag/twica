@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
   }
 
   const identifier = await getRateLimitIdentifier(request, session.twitchUserId);
-  const rateLimit = await checkRateLimit(rateLimits.cardsPost, identifier);
+  const rateLimit = await checkRateLimit(rateLimits.cardStoneExchange, identifier);
   if (!rateLimit.success) {
     return NextResponse.json(
       { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
@@ -58,10 +58,22 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = await request.json().catch(() => null) as { cardId?: unknown } | null;
+    const body = await request.json().catch(() => null) as
+      | { cardId?: unknown; requestId?: unknown }
+      | null;
     if (!isUuid(body?.cardId)) {
       return NextResponse.json(
         { error: "cardId is required" },
+        { status: 400 }
+      );
+    }
+    // requestId はクライアント生成の冪等性キー。二重送信や再試行による
+    // 同一ダブりの多重交換を RPC 側の UNIQUE 制約で防ぐために必須とする。
+    // requestId is a client-generated idempotency key. It is required so the RPC's
+    // UNIQUE constraint can reject duplicate exchanges from retries/double-submits.
+    if (!isUuid(body?.requestId)) {
+      return NextResponse.json(
+        { error: "requestId is required" },
         { status: 400 }
       );
     }
@@ -70,6 +82,7 @@ export async function POST(request: NextRequest) {
     const { data, error } = await supabaseAdmin.rpc("exchange_duplicate_card_for_stones", {
       p_twitch_user_id: session.twitchUserId,
       p_card_id: body.cardId,
+      p_request_id: body.requestId,
     });
 
     if (error) {

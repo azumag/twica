@@ -17,6 +17,11 @@ import StreamerCollection from "@/components/StreamerCollection";
 import type { StreamerCollectionCard } from "@/components/StreamerCollection";
 import type { Rarity } from "@/types/database";
 
+// レアリティごとのカードストーン価値。
+// IMPORTANT: SQL 側の `card_stone_value_for_rarity`
+// (supabase/migrations/00040_add_card_stones_exchange.sql) と必ず同期させること。
+// 実際の付与値はサーバ RPC が決定するため、ここはあくまで UI 表示用の見積もり値。
+// MUST stay in sync with the SQL `card_stone_value_for_rarity` function.
 const CARD_STONE_VALUES: Record<Rarity, number> = {
   common: 1,
   rare: 3,

@@ -111,6 +111,7 @@ export default async function StreamerCollection({
             cardNumberTemplate: t("cardNumber"),
             duplicateCountTemplate: t("duplicateExchange.duplicateCount", { count: "{count}" }),
             stoneValueTemplate: t("duplicateExchange.stoneValue", { count: "{count}" }),
+            confirmTemplate: t("duplicateExchange.confirmMessage", { name: "{name}", count: "{count}" }),
             successTemplate: t("duplicateExchange.success", { count: "{count}" }),
             errorFallback: t("duplicateExchange.errorFallback"),
           }}

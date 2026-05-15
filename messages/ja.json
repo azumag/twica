@@ -284,6 +284,7 @@
       "exchanging": "交換中...",
       "duplicateCount": "ダブり {count}枚",
       "stoneValue": "{count}ストーン",
+      "confirmMessage": "「{name}」のダブり1枚を{count}カードストーンに交換します。この操作は取り消せません。よろしいですか？",
       "success": "{count}カードストーンを獲得しました。",
       "errorFallback": "ダブりカードの交換に失敗しました。"
     },

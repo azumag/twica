@@ -329,6 +329,11 @@ export const rateLimits = {
   twitchCheckSubscription: createRatelimit("twitchCheckSubscription", 5, 60 * 1000),
   // Twitch サブスク手動無効化（分あたり5回）
   twitchDisableSubscription: createRatelimit("twitchDisableSubscription", 5, 60 * 1000),
+  // ダブりカード→カードストーン交換（分あたり5回）
+  // 破壊的かつDB残高を変動させる操作のため、汎用cardsPostより厳しい専用制限を設定
+  // Duplicate-card to card-stone exchange. Destructive balance-mutating operation,
+  // so use a stricter dedicated limit than the generic cardsPost.
+  cardStoneExchange: createRatelimit("cardStoneExchange", 5, 60 * 1000),
 } as const;
 
 /**
