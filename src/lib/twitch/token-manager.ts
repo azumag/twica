@@ -93,8 +93,10 @@ async function saveEncryptedTwitchTokens(
 ): Promise<string> {
   const supabaseAdmin = getSupabaseAdmin();
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-  const encryptedAccessToken = await encryptTwitchToken(tokens.access_token);
-  const encryptedRefreshToken = await encryptTwitchToken(tokens.refresh_token);
+  // twitch_user_id を AAD として束縛する（行入れ替え型攻撃を防止）
+  // Bind twitch_user_id as AAD to prevent cross-row ciphertext substitution.
+  const encryptedAccessToken = await encryptTwitchToken(tokens.access_token, twitchUserId);
+  const encryptedRefreshToken = await encryptTwitchToken(tokens.refresh_token, twitchUserId);
 
   const { error } = await supabaseAdmin
     .from('twitch_oauth_tokens')
@@ -143,11 +145,34 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
       return null;
     }
 
+    // 復号失敗（鍵ローテ後の旧暗号文、AAD 不一致、ストレージ破損）は
+    // 例外で落とすと UI が 500 になり再ログイン導線が分かりづらいため、
+    // null を返して再認証フローへ誘導する。
+    // Decryption failure (post-rotation, AAD mismatch, storage corruption)
+    // returns null instead of throwing, so the UI can redirect to re-auth
+    // rather than showing a 500.
     if (expiresAt > new Date()) {
-      return await decryptTwitchToken(encryptedTokenRow.encrypted_access_token);
+      try {
+        return await decryptTwitchToken(encryptedTokenRow.encrypted_access_token, twitchUserId);
+      } catch (error) {
+        logger.warn('Failed to decrypt access token; user must re-auth', {
+          twitchUserId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
     }
 
-    const refreshToken = await decryptTwitchToken(encryptedTokenRow.encrypted_refresh_token);
+    let refreshToken: string;
+    try {
+      refreshToken = await decryptTwitchToken(encryptedTokenRow.encrypted_refresh_token, twitchUserId);
+    } catch (error) {
+      logger.warn('Failed to decrypt refresh token; user must re-auth', {
+        twitchUserId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
     return await refreshTwitchAccessToken(twitchUserId, refreshToken);
   }
 
@@ -166,12 +191,25 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
     return null;
   }
 
-  const accessToken = isEncryptedTwitchToken(user.twitch_access_token)
-    ? await decryptTwitchToken(user.twitch_access_token)
-    : user.twitch_access_token;
-  const refreshToken = isEncryptedTwitchToken(user.twitch_refresh_token)
-    ? await decryptTwitchToken(user.twitch_refresh_token)
-    : user.twitch_refresh_token;
+  // レガシー列に残っている暗号文も AAD 付き復号にフォールバックする。
+  // 復号失敗は再認証必要として null 返却（同上）。
+  // Legacy column ciphertexts also use AAD-bound decryption; failure -> null.
+  let accessToken: string;
+  let refreshToken: string;
+  try {
+    accessToken = isEncryptedTwitchToken(user.twitch_access_token)
+      ? await decryptTwitchToken(user.twitch_access_token, twitchUserId)
+      : user.twitch_access_token;
+    refreshToken = isEncryptedTwitchToken(user.twitch_refresh_token)
+      ? await decryptTwitchToken(user.twitch_refresh_token, twitchUserId)
+      : user.twitch_refresh_token;
+  } catch (error) {
+    logger.warn('Failed to decrypt legacy Twitch tokens; user must re-auth', {
+      twitchUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 
   const now = new Date();
   if (expiresAt > now) {
@@ -217,6 +255,13 @@ function isMissingBotSchemaError(error: { code?: string } | null): boolean {
   return error?.code === 'PGRST204' || error?.code === 'PGRST205' || error?.code === '42P01';
 }
 
+// TODO(#397-followup): twitch_bot_accounts のトークン (twitch_access_token /
+//   twitch_refresh_token) も users 側と同様に AES-GCM + HKDF + AAD で暗号化する。
+//   本 PR ではスキーマ・バックフィル・呼び出し箇所が広範に及ぶためスコープ外。
+//   別 issue/PR で対応すること。
+// TODO(#397-followup): apply the same encryption (HKDF + AES-GCM + AAD) to
+//   twitch_bot_accounts tokens. Out of scope for this PR due to wider
+//   schema/backfill/caller impact; tracked separately.
 export async function getBotAccountForChat(broadcasterTwitchUserId: string): Promise<BotChatAccount | null> {
   const supabaseAdmin = getSupabaseAdmin();
 
@@ -646,15 +691,35 @@ export async function validateTokenScopes(twitchUserId: string): Promise<string[
     let accessToken: string | null = null;
     let expiresAtValue: string | null = null;
 
+    // 復号失敗（鍵ローテ後の旧暗号文や AAD 不一致）は null 返却にして
+    // check-scope の read-only 契約を維持しつつ DB 信頼にフォールバックさせる。
+    // Decryption failure returns null so check-scope keeps its read-only
+    // contract and the caller falls back to DB-stored scopes.
     if (encryptedTokenRow) {
-      accessToken = await decryptTwitchToken(encryptedTokenRow.encrypted_access_token);
+      try {
+        accessToken = await decryptTwitchToken(encryptedTokenRow.encrypted_access_token, twitchUserId);
+      } catch (error) {
+        logger.warn('Failed to decrypt access token in validateTokenScopes', {
+          twitchUserId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
       expiresAtValue = encryptedTokenRow.token_expires_at;
     } else {
       const user = await fetchLegacyUserTokenRow(twitchUserId);
       if (user?.twitch_access_token) {
-        accessToken = isEncryptedTwitchToken(user.twitch_access_token)
-          ? await decryptTwitchToken(user.twitch_access_token)
-          : user.twitch_access_token;
+        try {
+          accessToken = isEncryptedTwitchToken(user.twitch_access_token)
+            ? await decryptTwitchToken(user.twitch_access_token, twitchUserId)
+            : user.twitch_access_token;
+        } catch (error) {
+          logger.warn('Failed to decrypt legacy access token in validateTokenScopes', {
+            twitchUserId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
         expiresAtValue = user.twitch_token_expires_at;
       }
     }
