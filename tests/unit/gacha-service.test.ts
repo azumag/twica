@@ -277,6 +277,74 @@ describe('GachaService.executeGacha', () => {
     expect(result.success).toBe(true)
     expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'premium')
   })
+
+  it('collection_name無関係のPGRST204はcollectionフォールバックさせずDBエラーを返す', async () => {
+    // PGRST204 単独では collection フォールバックを誤発火させない（Concerns#1）。
+    // collection_name を含まない別カラムのスキーマキャッシュ未反映を想定。
+    const cardsQuery = createMockQueryBuilder()
+    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({
+        data: null,
+        error: { message: "Could not find the 'some_other_column' column", code: 'PGRST204' },
+      })
+      return cardsQuery
+    }
+    const mockRpc = vi.fn()
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('Database error')
+    }
+    // フォールバッククエリ・RPCいずれも呼ばれない（誤発火していない）。
+    expect(mockRpc).not.toHaveBeenCalled()
+  })
+
+  it('collection_nameを含むPGRST204はcollectionフォールバックする', async () => {
+    // メッセージに collection_name を含む PGRST204 は従来通りフォールバック。
+    let callCount = 0
+    const cardsQuery = createMockQueryBuilder()
+    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      callCount += 1
+      if (callCount === 1) {
+        resolve({
+          data: null,
+          error: { message: "Could not find the 'collection_name' column", code: 'PGRST204' },
+        })
+      } else {
+        resolve({ data: [{ ...testCards[0] }], error: null })
+      }
+      return cardsQuery
+    }
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-fallback' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+
+    expect(result.success).toBe(true)
+    expect(mockRpc).toHaveBeenCalled()
+  })
 })
 
 describe('GachaService.executeGachaForEventSub', () => {

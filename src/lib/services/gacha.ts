@@ -43,7 +43,13 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
 
 function isMissingCollectionNameColumn(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? ''
-  return error?.code === 'PGRST204' || message.includes('collection_name') || message.includes('channel_point_collection_name')
+  // PGRST204 単独だと collection_name 以外のスキーマキャッシュ未反映でも
+  // 真になり、コレクション機能を不要にフォールバックしてしまう。
+  // code と collection_name 参照の両方を要求して誤検知を防ぐ。
+  // PGRST204 alone fires for unrelated schema-cache misses too, silently
+  // disabling collection scoping. Require both the code and a
+  // collection_name reference to avoid false positives.
+  return error?.code === 'PGRST204' && message.includes('collection_name')
 }
 
 const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'

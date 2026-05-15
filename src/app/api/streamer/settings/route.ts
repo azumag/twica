@@ -172,6 +172,7 @@ export async function POST(request: NextRequest) {
       updateData.channel_point_reward_name = channelPointRewardName;
     }
     if (channelPointCollectionName !== undefined) {
+      // TODO(#269 premium): 意図的に premium gate 未実装。要件確認次第 getUserPlan 判定追加。
       updateData.channel_point_collection_name = normalizedChannelPointCollectionName;
     }
 

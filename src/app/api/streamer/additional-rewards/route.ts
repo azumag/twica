@@ -237,6 +237,7 @@ export async function POST(request: NextRequest) {
         reward_name: rewardName || null,
         draw_count: normalizedDrawCount,
         is_raid_limited: isRaidLimited ?? false,
+        // TODO(#269 premium): 意図的に premium gate 未実装。要件確認次第 getUserPlan 判定追加。
         collection_name: normalizedCollectionName ?? null,
       })
       .select()

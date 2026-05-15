@@ -191,10 +191,23 @@ export default function ChannelPointSettings({
   }, []);
 
   const fetchCollectionNames = useCallback(async () => {
+    if (!streamerId) return;
     try {
-      const response = await fetch("/api/cards", { credentials: "include", cache: "no-store" });
+      // /api/cards は streamerId 必須（未指定だと 400）かつ
+      // { cards, pagination } 形式で返す。全コレクション名を網羅するため
+      // limit を大きめに取り、status=all で非アクティブカードも対象にする。
+      // /api/cards requires streamerId (400 otherwise) and returns
+      // { cards, pagination }. Request a large limit with status=all so all
+      // collection names (including inactive cards) are covered.
+      const response = await fetch(
+        `/api/cards?streamerId=${encodeURIComponent(streamerId)}&limit=1000&offset=0&status=all`,
+        { credentials: "include", cache: "no-store" }
+      );
       if (!response.ok) return;
-      const cards = await response.json();
+      const json = await response.json();
+      // 後方互換: 配列が直接返るケースも許容しつつ { cards } を優先する。
+      // Backward compatible: prefer { cards } but tolerate a bare array.
+      const cards = Array.isArray(json) ? json : json.cards ?? [];
       const names = Array.from(new Set(
         (Array.isArray(cards) ? cards : [])
           .map((card: { collection_name?: unknown }) =>
@@ -206,7 +219,7 @@ export default function ChannelPointSettings({
     } catch {
       logger.error("Failed to fetch card collections");
     }
-  }, []);
+  }, [streamerId]);
 
   const fetchRaidGachaStatus = useCallback(async () => {
     try {
@@ -283,6 +296,15 @@ export default function ChannelPointSettings({
     // compact modeでは初期表示の外部診断APIを避け、詳細表示時のみbootstrapでまとめて取得する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // コレクション名一覧はコレクション指定ドロップダウン（メイン/追加報酬）の選択肢に使う。
+  // streamerId 変更時に取得し直す。/api/cards はローカルAPIで安価なため compact でも取得する。
+  // Collection names populate the collection-scope dropdowns (main/additional).
+  // Refetch when streamerId changes; /api/cards is a cheap local API so we
+  // fetch it even in compact mode.
+  useEffect(() => {
+    fetchCollectionNames();
+  }, [fetchCollectionNames]);
 
   const handleCreateReward = async () => {
     setCreating(true);
