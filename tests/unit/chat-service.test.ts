@@ -130,6 +130,36 @@ describe('TwitchChatService', () => {
     });
   });
 
+  describe('buildMessage - multi-draw new card placeholders', () => {
+    it('N連ガチャ用の {newCards} と {newCardCount} を値に置換する', () => {
+      const message = service.buildMessage(
+        '{user}: 初出 {newCardCount}種類 {newCards}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+          newCards: 'Alpha、Gamma',
+          newCardCount: 2,
+        },
+      );
+
+      expect(message).toBe('viewer: 初出 2種類 Alpha、Gamma');
+    });
+
+    it('N連ガチャ用の初出プレースホルダー未指定時は空文字に置換される', () => {
+      const message = service.buildMessage(
+        '{user}: 初出 {newCardCount}種類 {newCards}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+        },
+      );
+
+      expect(message).toBe('viewer: 初出 種類');
+    });
+  });
+
   describe('sendChatMessage - 401エラー時のDB保護', () => {
     it('401 + スコープエラーでもDBのスコープは削除されない（DB保護）', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');

@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/twitch/eventsub/route'
 import { reportError } from '@/lib/sentry/error-handler'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+import { getSupabaseAdmin, getSupabaseAdminNoCache } from '@/lib/supabase/admin'
 import { broadcastGachaResult } from '@/lib/realtime'
 import { TwitchChatService } from '@/lib/twitch/chat-service'
 
 const mocks = vi.hoisted(() => ({
   executeGachaForEventSub: vi.fn(),
   executeGachaForRaidEvent: vi.fn(),
-  buildMessage: vi.fn((template: string | null, placeholders: { user: string; card: string; cards?: string; draws?: number; rarityCounts?: string }) => {
+  buildMessage: vi.fn((template: string | null, placeholders: { user: string; card: string; cards?: string; draws?: number; rarityCounts?: string; newCards?: string; newCardCount?: number }) => {
     const messageTemplate = template || '{user} got {card}'
     return messageTemplate
       .replace(/\{user\}/g, placeholders.user)
@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
       .replace(/\{cards\}/g, placeholders.cards ?? '')
       .replace(/\{draws\}/g, placeholders.draws === undefined ? '' : String(placeholders.draws))
       .replace(/\{rarityCounts\}/g, placeholders.rarityCounts ?? '')
+      .replace(/\{newCards\}/g, placeholders.newCards ?? '')
+      .replace(/\{newCardCount\}/g, placeholders.newCardCount === undefined ? '' : String(placeholders.newCardCount))
       .replace(/\s+/g, ' ')
       .trim()
   }),
@@ -68,6 +70,7 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
+const mockGetSupabaseAdminNoCache = vi.mocked(getSupabaseAdminNoCache)
 const mockReportError = vi.mocked(reportError)
 const mockBroadcastGachaResult = vi.mocked(broadcastGachaResult)
 const mockTwitchChatService = vi.mocked(TwitchChatService)
@@ -125,7 +128,7 @@ async function createNotificationRequest(gachaError: string): Promise<NextReques
 describe('EventSub reward mismatch handling', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.buildMessage.mockImplementation((template: string | null, placeholders: { user: string; card: string; cards?: string; draws?: number; rarityCounts?: string }) => {
+    mocks.buildMessage.mockImplementation((template: string | null, placeholders: { user: string; card: string; cards?: string; draws?: number; rarityCounts?: string; newCards?: string; newCardCount?: number }) => {
       const messageTemplate = template || '{user} got {card}'
       return messageTemplate
         .replace(/\{user\}/g, placeholders.user)
@@ -133,6 +136,8 @@ describe('EventSub reward mismatch handling', () => {
         .replace(/\{cards\}/g, placeholders.cards ?? '')
         .replace(/\{draws\}/g, placeholders.draws === undefined ? '' : String(placeholders.draws))
         .replace(/\{rarityCounts\}/g, placeholders.rarityCounts ?? '')
+        .replace(/\{newCards\}/g, placeholders.newCards ?? '')
+        .replace(/\{newCardCount\}/g, placeholders.newCardCount === undefined ? '' : String(placeholders.newCardCount))
         .replace(/\s+/g, ' ')
         .trim()
     })
@@ -148,6 +153,9 @@ describe('EventSub reward mismatch handling', () => {
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    mockGetSupabaseAdminNoCache.mockReturnValue({
+      rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
+    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
   })
 
   it('does not report stale EventSub notifications for unconfigured rewards', async () => {
@@ -447,6 +455,151 @@ describe('EventSub reward mismatch handling', () => {
     )
   })
 
+  it('appends newly obtained card names to the default multi-draw chat announcement', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-multi-draw-new-cards'
+    const timestamp = '2026-05-11T10:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'raid-gacha', title: 'Raid Gacha', cost: 500 },
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+
+    const cards = [
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+      { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+      { id: 'card-3', name: 'Gamma', description: null, image_url: null, rarity: 'legendary', drop_rate: 1 },
+    ] as const
+
+    mockGetSupabaseAdminNoCache.mockReturnValue({
+      rpc: vi.fn().mockResolvedValue({
+        data: [
+          { count: 2, card: { id: 'card-1', is_active: true } },
+          { count: 2, card: { id: 'card-2', is_active: true } },
+          { count: 1, card: { id: 'card-3', is_active: true } },
+        ],
+        error: null,
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+
+    mocks.executeGachaForEventSub.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards: [...cards],
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: null,
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: true,
+        },
+      },
+    })
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    expect(mocks.sendChatMessage).toHaveBeenCalledWith(
+      'broadcaster-1',
+      '@Viewer が4連ガチャで レジェンダリーx1、レアx2、コモンx1 を獲得しました！Alpha、Beta、Alpha、Gamma 初出: Alpha、Gamma',
+    )
+  })
+
+  it('exposes newly obtained card placeholders for custom multi-draw templates', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-multi-draw-new-placeholders'
+    const timestamp = '2026-05-11T10:00:00Z'
+    const body = JSON.stringify({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'raid-gacha', title: 'Raid Gacha', cost: 500 },
+      },
+    })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+
+    const cards = [
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+      { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
+    ] as const
+
+    mockGetSupabaseAdminNoCache.mockReturnValue({
+      rpc: vi.fn().mockResolvedValue({
+        data: [
+          { count: 1, card: { id: 'card-1', is_active: true } },
+          { count: 3, card: { id: 'card-2', is_active: true } },
+        ],
+        error: null,
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+
+    mocks.executeGachaForEventSub.mockResolvedValue({
+      success: true,
+      data: {
+        card: cards[0],
+        cards: [...cards],
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: null,
+          chat_announcement_multi_template: '@{user}: new={newCards} count={newCardCount} all={cards}',
+          chat_announcement_multi_show_cards: true,
+        },
+      },
+    })
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    }))
+
+    expect(response.status).toBe(200)
+    expect(mocks.buildMessage).toHaveBeenCalledWith(
+      '@{user}: new={newCards} count={newCardCount} all={cards}',
+      expect.objectContaining({
+        newCards: 'Alpha',
+        newCardCount: 1,
+        cards: 'Alpha、Beta',
+      }),
+    )
+    expect(mocks.sendChatMessage).toHaveBeenCalledWith(
+      'broadcaster-1',
+      '@Viewer: new=Alpha count=1 all=Alpha、Beta',
+    )
+  })
+
   it('abbreviates long multi-draw card lists before sending chat announcements', async () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
@@ -532,6 +685,10 @@ describe('EventSub reward mismatch handling', () => {
       { id: 'card-2', name: 'Rare B', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
       { id: 'card-3', name: 'Common A', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
     ] as const
+    const rpc = vi.fn().mockResolvedValue({ data: [], error: null })
+    mockGetSupabaseAdminNoCache.mockReturnValue({
+      rpc,
+    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
 
     mocks.executeGachaForEventSub.mockResolvedValue({
       success: true,
@@ -566,6 +723,8 @@ describe('EventSub reward mismatch handling', () => {
       '@{user}: {draws}連 {rarityCounts} {cards}',
       expect.objectContaining({
         cards: undefined,
+        newCards: undefined,
+        newCardCount: undefined,
         draws: 3,
         rarityCounts: 'レアx2、コモンx1',
       }),
@@ -574,5 +733,6 @@ describe('EventSub reward mismatch handling', () => {
       'broadcaster-1',
       '@Viewer: 3連 レアx2、コモンx1',
     )
+    expect(rpc).not.toHaveBeenCalled()
   })
 })

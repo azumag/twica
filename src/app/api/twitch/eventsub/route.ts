@@ -94,6 +94,44 @@ function formatRarityCountsForChat(cardNamesByRarity: string[]): string {
     .join(CARD_LIST_SEPARATOR);
 }
 
+function findNewCardNamesForCurrentDraw(
+  drawnCards: GachaCard[],
+  userCardCounts: Array<{ count: number; card: { id: string; is_active?: boolean } }>
+): string[] {
+  const drawnCounts = new Map<string, number>();
+  for (const drawnCard of drawnCards) {
+    drawnCounts.set(drawnCard.id, (drawnCounts.get(drawnCard.id) ?? 0) + 1);
+  }
+
+  const finalCounts = new Map<string, number>();
+  for (const row of userCardCounts) {
+    if (!row.card?.id) continue;
+    finalCounts.set(row.card.id, Number(row.count) || 0);
+  }
+
+  const seenInCurrentDraw = new Set<string>();
+  const newCardNames: string[] = [];
+
+  for (const drawnCard of drawnCards) {
+    if (seenInCurrentDraw.has(drawnCard.id)) continue;
+
+    const finalCount = finalCounts.get(drawnCard.id);
+    if (finalCount === undefined) {
+      seenInCurrentDraw.add(drawnCard.id);
+      continue;
+    }
+
+    const currentDrawCount = drawnCounts.get(drawnCard.id) ?? 0;
+    const previousCount = finalCount - currentDrawCount;
+    if (previousCount <= 0) {
+      newCardNames.push(drawnCard.name);
+    }
+    seenInCurrentDraw.add(drawnCard.id);
+  }
+
+  return newCardNames;
+}
+
 /**
  * Verify Twitch EventSub signature using HMAC-SHA256 (Web Crypto API)
  * Twitch EventSubの署名をHMAC-SHA256で検証（Web Crypto API使用）
@@ -630,17 +668,25 @@ async function sendChatAnnouncement(
   const messageTemplate = isMultiDraw
     ? streamer.chat_announcement_multi_template || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE
     : streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
-  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}|\{rarityCounts\}/.test(messageTemplate);
+  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}|\{rarityCounts\}|\{newCards\}|\{newCardCount\}/.test(messageTemplate);
   const effectiveTemplate = messageTemplate;
   const needsCardCount = /\{num\}/.test(effectiveTemplate);
   const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
   const needsAllCount = /\{all\}/.test(effectiveTemplate);
+  const usesNewCardPlaceholders = /\{newCards\}|\{newCardCount\}/.test(effectiveTemplate);
+  const shouldAppendDefaultNewCards = isMultiDraw
+    && streamer.chat_announcement_multi_show_cards
+    && !streamer.chat_announcement_multi_template;
+  const needsNewCardInfo = isMultiDraw
+    && streamer.chat_announcement_multi_show_cards
+    && (usesNewCardPlaceholders || shouldAppendDefaultNewCards);
 
   let cardCount: number | undefined;
   let uniqueCount: number | undefined;
   let allCount: number | undefined;
+  let newCardNames: string[] = [];
 
-  if (needsCardCount || needsUniqueCount || needsAllCount) {
+  if (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo) {
     const supabaseAdminNoCache = getSupabaseAdminNoCache();
 
     // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
@@ -659,7 +705,7 @@ async function sendChatAnnouncement(
     // {num} / {unique}: use RPC returning pre-aggregated per-card counts.
     // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
     // RPC does not filter by is_active, so we filter on the client.
-    const userCardCountsPromise = (needsCardCount || needsUniqueCount)
+    const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo)
       ? supabaseAdminNoCache.rpc('get_user_card_counts', {
           p_twitch_user_id: userId,
           p_streamer_id: streamer.id,
@@ -688,14 +734,14 @@ async function sendChatAnnouncement(
         }
       }
 
-      if (needsCardCount || needsUniqueCount) {
+      if (needsCardCount || needsUniqueCount || needsNewCardInfo) {
         if (userCardCountsResult?.error) {
           logger.warn('Failed to fetch user card counts for chat announcement', {
             streamerId: streamer.id,
             userTwitchId: userId,
             error: userCardCountsResult.error.message,
           });
-          if (needsUniqueCount) {
+          if (needsUniqueCount || needsNewCardInfo) {
             // RPC 失敗時は 0 にフォールバックせず、未定義のままプレースホルダを空文字化
             // On RPC failure, leave placeholders undefined so buildMessage strips them
           }
@@ -718,6 +764,10 @@ async function sendChatAnnouncement(
             // アクティブカードのみ数えてコンプ進捗を算出
             // Count only active cards to match the progress definition in dashboard UI
             uniqueCount = rows.filter((row) => row.card?.is_active === true).length;
+          }
+
+          if (needsNewCardInfo) {
+            newCardNames = findNewCardNamesForCurrentDraw(drawnCards, rows);
           }
         }
       }
@@ -747,6 +797,10 @@ async function sendChatAnnouncement(
       : undefined,
     draws: isMultiDraw ? drawnCards.length : undefined,
     rarityCounts: isMultiDraw ? rarityCounts : undefined,
+    newCards: needsNewCardInfo && newCardNames.length > 0
+      ? newCardNames.join(CARD_LIST_SEPARATOR)
+      : undefined,
+    newCardCount: needsNewCardInfo ? newCardNames.length : undefined,
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,
@@ -776,6 +830,15 @@ async function sendChatAnnouncement(
     } else {
       message = baseMessage;
     }
+  }
+
+  if (shouldAppendDefaultNewCards && newCardNames.length > 0) {
+    const fitted = fitCardNamesForMessage(
+      newCardNames,
+      (newCardsText) => `${message} 初出: ${newCardsText}`
+    );
+    placeholders.newCards = fitted.cardsText;
+    message = fitted.message;
   }
 
   const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
