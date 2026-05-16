@@ -154,7 +154,10 @@ export async function PUT(
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!inner(twitch_user_id, rarity_weights)")
+      // streamers の埋め込みは FK 制約名で一意化する: migration 00051 の
+      // card_owner_stats が cards↔streamers を m2m にも見せ、ヒントなしの
+      // streamers(...) は PGRST201 で失敗するため。
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -324,7 +327,10 @@ export async function DELETE(
     // 削除用にimage_url付きでカードを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, streamers!inner(twitch_user_id, rarity_weights)")
+      // streamers の埋め込みは FK 制約名で一意化する(PUT と同じ理由: migration
+      // 00051 の card_owner_stats が cards↔streamers を m2m にも見せ、ヒント
+      // なしの streamers(...) は PGRST201 で失敗するため)。
+      .select("streamer_id, image_url, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
