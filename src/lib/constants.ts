@@ -62,6 +62,18 @@ export const SESSION_CONFIG = {
   COOKIE_PATH: '/',
 }
 
+// レアリティ名（rarity_weights のキー / cards.rarity / custom_rarities）の
+// 共通検証プリミティブ。クライアント(モーダル)とサーバー(API)で同一規則を使う。
+// レアリティ名の最大長。DB側のレアリティ列(varchar)と整合する保守的な上限。
+export const MAX_RARITY_KEY_LENGTH = 40;
+// 1配信者あたりのカスタムレアリティ数の上限。DB(00049 の CHECK)と整合させる。
+export const MAX_CUSTOM_RARITIES = 50;
+// 制御文字(C0 U+0000-U+001F・DEL U+007F・C1 U+0080-U+009F)。
+// 表示崩れや不可視キー注入を防ぐため禁止。
+export const RARITY_CONTROL_CHAR_REGEX = /[\u0000-\u001F\u007F-\u009F]/;
+// Bidi override/embedding/isolate 文字。UI上で他キーへのなりすましを防ぐため禁止。
+export const RARITY_BIDI_OVERRIDE_REGEX = /[\u202A-\u202E\u2066-\u2069]/;
+
 export const RARITIES = [
   { value: "common", label: "コモン", color: "bg-gray-500" },
   { value: "rare", label: "レア", color: "bg-blue-500" },

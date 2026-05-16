@@ -13,6 +13,8 @@ interface DropRateAutoModeContentProps {
   cards: Card[];
   streamerId: string;
   rarityWeights: Record<string, number>;
+  // カスタムレアリティ名（カード未使用でも重み設定欄に表示するため）
+  customRarities: string[];
   onCardsSave: (updatedCards: Card[]) => void;
   onRarityWeightsApply: (
     w: Record<string, number> | null,
@@ -39,6 +41,7 @@ export default function DropRateAutoModeContent({
   cards,
   streamerId,
   rarityWeights,
+  customRarities,
   onCardsSave,
   onRarityWeightsApply,
   onSwitchToManualMode,
@@ -83,13 +86,14 @@ export default function DropRateAutoModeContent({
     for (const rarity of RARITIES) keys.add(rarity.value);
     for (const card of cards) keys.add(card.rarity);
     for (const key of Object.keys(rarityWeights)) keys.add(key);
+    for (const key of customRarities) keys.add(key);
 
     const baseOrder = RARITIES.map((rarity) => rarity.value) as string[];
     const extras = Array.from(keys)
       .filter((key) => !baseOrder.includes(key))
       .sort();
     return [...baseOrder.filter((key) => keys.has(key)), ...extras];
-  }, [cards, rarityWeights]);
+  }, [cards, rarityWeights, customRarities]);
 
   // アクティブカード数（レアリティ別）
   const activeCounts = useMemo(() => {

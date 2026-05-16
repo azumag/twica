@@ -4,18 +4,18 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger";
-import { ERROR_MESSAGES } from "@/lib/constants";
+import {
+  ERROR_MESSAGES,
+  RARITIES,
+  MAX_RARITY_KEY_LENGTH,
+  MAX_CUSTOM_RARITIES,
+  RARITY_CONTROL_CHAR_REGEX as CONTROL_CHAR_REGEX,
+  RARITY_BIDI_OVERRIDE_REGEX as BIDI_OVERRIDE_REGEX,
+} from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 
-// レアリティキーの最大長。DB側のレアリティ列(varchar)と整合する保守的な上限。
-const MAX_RARITY_KEY_LENGTH = 40;
-// 制御文字(C0 範囲 \u0000-\u001F・DEL \u007F・C1 範囲 \u0080-\u009F)。
-// 表示崩れや不可視キー注入を防ぐため禁止。
-const CONTROL_CHAR_REGEX = /[\u0000-\u001F\u007F-\u009F]/;
-// Bidi override/embedding/isolate 文字。UI上で他キーへのなりすましを防ぐため禁止。
-const BIDI_OVERRIDE_REGEX = /[\u202A-\u202E\u2066-\u2069]/;
 
 type RarityWeightsValidation =
   | { ok: true; value: Record<string, number> | null }
@@ -58,6 +58,57 @@ function validateRarityWeightsInput(value: unknown): RarityWeightsValidation {
       return { ok: false };
     }
     normalized[key] = rate;
+  }
+
+  return { ok: true, value: normalized };
+}
+
+// デフォルトレアリティの value 集合。カスタム一覧へ重複登録させないために使用。
+const DEFAULT_RARITY_VALUES = new Set<string>(RARITIES.map((r) => r.value));
+
+type CustomRaritiesValidation =
+  | { ok: true; value: string[] }
+  | { ok: false };
+
+/**
+ * customRarities 入力を検証し、正規化済みの文字列配列を返す。
+ *
+ * rarity_weights のキー検証と同じ規則を適用する:
+ * - 配列であること（要素は文字列のみ）。
+ * - 各要素は trim + Unicode NFC 正規化後、長さ 1〜40。
+ * - 制御文字 / Bidi override を禁止。
+ * - 正規化後にデフォルトレアリティと一致するものは拒否
+ *   （デフォルトは常に選択可能なため、カスタム一覧に持たせると二重表示になる）。
+ * - 正規化後に重複するものは拒否（黙ってマージするとUI表示が崩れるため）。
+ * - 件数上限は MAX_CUSTOM_RARITIES。
+ */
+function validateCustomRaritiesInput(value: unknown): CustomRaritiesValidation {
+  if (!Array.isArray(value)) {
+    return { ok: false };
+  }
+  if (value.length > MAX_CUSTOM_RARITIES) {
+    return { ok: false };
+  }
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (typeof raw !== "string") {
+      return { ok: false };
+    }
+    const key = raw.trim().normalize("NFC");
+    if (
+      key.length < 1
+      || key.length > MAX_RARITY_KEY_LENGTH
+      || CONTROL_CHAR_REGEX.test(key)
+      || BIDI_OVERRIDE_REGEX.test(key)
+      || DEFAULT_RARITY_VALUES.has(key)
+      || seen.has(key)
+    ) {
+      return { ok: false };
+    }
+    seen.add(key);
+    normalized.push(key);
   }
 
   return { ok: true, value: normalized };
@@ -133,6 +184,9 @@ export async function POST(request: NextRequest) {
       chatAnnouncementMultiShowCards,
       // レアリティ別自動確率設定（オプション）
       rarityWeights,
+      // カスタムレアリティ名の一覧（オプション、ドロップ率設定とは独立）
+      // Custom rarity name catalog (optional, decoupled from drop-rate settings)
+      customRarities,
       // 未所持カード表示設定（オプション、Issue #395）
       // Unowned-card visibility settings (optional, Issue #395)
       showUnownedCards,
@@ -154,6 +208,17 @@ export async function POST(request: NextRequest) {
       if (!hasValidRarityWeightsTotal(normalizedRarityWeights)) {
         return NextResponse.json({ error: "Rarity weights total must be 100%" }, { status: 400 });
       }
+    }
+
+    // customRarities はレアリティ名の一覧のみを保持し、ドロップ率には影響しない。
+    // そのため再計算は行わず、独立した列にそのまま保存する。
+    let normalizedCustomRarities: string[] | undefined;
+    if (customRarities !== undefined) {
+      const validation = validateCustomRaritiesInput(customRarities);
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedCustomRarities = validation.value;
     }
 
     // 視聴者向け未所持カード表示の boolean 検証
@@ -228,6 +293,11 @@ export async function POST(request: NextRequest) {
     // rarityWeights: レアリティ別目標確率（nullで自動モード無効）
     if (rarityWeights !== undefined) {
       updateData.rarity_weights = normalizedRarityWeights;
+    }
+
+    // カスタムレアリティ名（ドロップ率の再計算は不要）
+    if (customRarities !== undefined) {
+      updateData.custom_rarities = normalizedCustomRarities;
     }
 
     // 未所持カードの視聴者向け表示設定
