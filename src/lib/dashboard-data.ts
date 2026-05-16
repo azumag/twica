@@ -29,11 +29,26 @@ export const getStreamerData = cache(async (twitchUserId: string) => {
 
   // Single query: get streamer with their cards using foreign key relation
   // 1回のクエリ: 外部キーリレーションを使用して配信者とカードを取得
+  //
+  // 埋め込みは必ず FK 制約名 cards_streamer_id_fkey を明示する。
+  // migration 00051 で追加した card_owner_stats が streamers(id) と cards(id) の
+  // 双方を参照する中間テーブルとなり、PostgREST が streamers→cards を
+  // (1) cards.streamer_id 経由の直接リレーション
+  // (2) card_owner_stats 経由の many-to-many リレーション
+  // の2通りに解決できてしまう。ヒントなしの `cards (*)` は曖昧と判定され
+  // PGRST201 (Could not embed because more than one relationship was found)
+  // でクエリ全体が失敗し、streamer が null になって配信者が
+  // カード管理/設定ページから /dashboard へ誤リダイレクトされていた。
+  //
+  // Always disambiguate the embed via the FK constraint name. Migration 00051's
+  // card_owner_stats references both streamers and cards, so PostgREST finds two
+  // possible streamers→cards relationships (direct FK vs. m2m junction) and an
+  // un-hinted `cards (*)` fails with PGRST201, breaking these pages.
   const { data: streamer } = await supabaseAdmin
     .from("streamers")
     .select(`
       *,
-      cards (*)
+      cards!cards_streamer_id_fkey (*)
     `)
     .eq("twitch_user_id", twitchUserId)
     .maybeSingle();
@@ -169,9 +184,12 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
     return [];
   }
 
+  // streamers の埋め込みは FK 制約名で一意化する（getStreamerData と同じ理由:
+  // migration 00051 の card_owner_stats が cards↔streamers を m2m にも見せるため、
+  // ヒントなしの streamers(*) は PGRST201 で失敗する）。
   const { data: userCards } = await supabaseAdmin
     .from("user_cards")
-    .select("card_id, cards(*, streamers(*))")
+    .select("card_id, cards(*, streamers!cards_streamer_id_fkey(*))")
     .eq("user_id", user.id)
     .range(0, 9999);
   logger.info(`[Perf] getUserCards query: ${Date.now() - startQuery}ms`);
@@ -1393,9 +1411,12 @@ async function fetchUserCardsForStreamerFromDB(
     return [];
   }
 
+  // streamers の埋め込みは FK 制約名で一意化する（getStreamerData と同じ理由:
+  // migration 00051 の card_owner_stats が cards↔streamers を m2m にも見せるため、
+  // ヒントなしの streamers(*) は PGRST201 で失敗する）。
   const { data: userCards } = await supabaseAdmin
     .from("user_cards")
-    .select("card_id, cards!inner(*, streamers!inner(*))")
+    .select("card_id, cards!inner(*, streamers!cards_streamer_id_fkey!inner(*))")
     .eq("user_id", user.id)
     .eq("cards.streamer_id", streamerId)
     .range(0, 9999);
@@ -1483,11 +1504,14 @@ export const getUserCardDetail = cache(async (
 
   // Get the card with streamer info to verify it belongs to the streamer
   // カードと配信者情報を取得して、配信者のものかどうかを確認
+  // streamers の埋め込みは FK 制約名で一意化する（getStreamerData と同じ理由:
+  // migration 00051 の card_owner_stats が cards↔streamers を m2m にも見せるため、
+  // ヒントなしの streamers(*) は PGRST201 で失敗する）。
   const { data: card } = await supabaseAdmin
     .from("cards")
     .select(`
       *,
-      streamers (*)
+      streamers!cards_streamer_id_fkey (*)
     `)
     .eq("id", cardId)
     .eq("streamer_id", streamerId)
