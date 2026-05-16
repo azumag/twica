@@ -767,6 +767,128 @@ async function fetchChannelPointUsageStatsFromHistory(
 
 
 /**
+ * Fallback drop-rate aggregation computed directly from gacha_history + cards.
+ *
+ * get_gacha_drop_stats（RPC, migration 00038）が本番に未デプロイ、または
+ * 実行時エラーで失敗した場合、getGachaStats はフォールバック無しだと
+ * totalDraws=0 を返し、配信者には毎日大量にガチャが回っていても
+ * 「この期間にはガチャデータがありません。」と誤表示されてしまう。
+ * channelPointStats が fetchChannelPointUsageStatsFromHistory で
+ * 同様に救済されているのと対称になるよう、ここでも履歴から直接集計する。
+ *
+ * ロジックは RPC（migration 00038）および analysis/DropRateStats.tsx と
+ * 同一: 総数は count-only クエリで正確に取得し、カード別/レアリティ別の
+ * 内訳は上限 10000 件の履歴サンプルから集計する（PostgREST の行上限対策）。
+ */
+async function fetchGachaDropStatsFromHistory(
+  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
+  streamerId: string,
+  fromDateIso: string
+): Promise<Omit<GachaStatsResult, "channelPointStats">> {
+  const FIXED_RARITIES = ["legendary", "epic", "rare", "common"] as const;
+  const emptyRarityStats = FIXED_RARITIES.map((rarity) => ({
+    rarity,
+    count: 0,
+    rate: 0,
+  }));
+
+  const [countResult, historyResult, cardsResult] = await Promise.all([
+    supabaseAdmin
+      .from("gacha_history")
+      .select("id", { count: "exact", head: true })
+      .eq("streamer_id", streamerId)
+      .gte("redeemed_at", fromDateIso),
+    supabaseAdmin
+      .from("gacha_history")
+      .select("card_id, cards(rarity)")
+      .eq("streamer_id", streamerId)
+      .gte("redeemed_at", fromDateIso)
+      .limit(10000),
+    supabaseAdmin
+      .from("cards")
+      .select("id, name, rarity, image_url, drop_rate, rarity_order, created_at")
+      .eq("streamer_id", streamerId)
+      .eq("is_active", true)
+      .order("rarity_order", { ascending: true })
+      .order("created_at", { ascending: false }),
+  ]);
+
+  if (countResult.error || historyResult.error || cardsResult.error) {
+    reportError(
+      new Error(
+        `gacha drop stats fallback query failed: ${
+          countResult.error?.message ||
+          historyResult.error?.message ||
+          cardsResult.error?.message
+        }`
+      )
+    );
+    return { totalDraws: 0, cardStats: [], rarityStats: emptyRarityStats };
+  }
+
+  const totalDraws = countResult.count || 0;
+  // Supabase の型推論が select('card_id, cards(rarity)') に対して不完全なため明示キャスト
+  const history = (historyResult.data || []) as unknown as Array<{
+    card_id: string;
+    cards: { rarity: string } | null;
+  }>;
+  const cards = (cardsResult.data || []) as Array<{
+    id: string;
+    name: string;
+    rarity: string;
+    image_url: string | null;
+    drop_rate: number | string | null;
+    created_at: string;
+  }>;
+
+  const drawCounts = new Map<string, number>();
+  for (const row of history) {
+    drawCounts.set(row.card_id, (drawCounts.get(row.card_id) || 0) + 1);
+  }
+
+  const totalWeight = cards.reduce(
+    (sum, c) => sum + Number(c.drop_rate || 0),
+    0
+  );
+
+  const cardStats = cards.map((card) => {
+    const actualCount = drawCounts.get(card.id) || 0;
+    return {
+      cardId: card.id,
+      cardName: card.name,
+      rarity: card.rarity,
+      imageUrl: card.image_url,
+      configuredRate:
+        totalWeight > 0 ? (Number(card.drop_rate || 0) / totalWeight) * 100 : 0,
+      actualCount,
+      actualRate: totalDraws > 0 ? (actualCount / totalDraws) * 100 : 0,
+      ownerCount: 0,
+      owners: [] as GachaStatsOwner[],
+    };
+  });
+
+  // レアリティ別集計は履歴←cards の join から引く（RPC migration 00038 と同じく
+  // is_active 非依存）。非アクティブ化済みカードの過去排出も RPC と同様に計上される。
+  const rarityCounts = new Map<string, number>();
+  for (const row of history) {
+    const rarity = row.cards?.rarity;
+    if (rarity) {
+      rarityCounts.set(rarity, (rarityCounts.get(rarity) || 0) + 1);
+    }
+  }
+  const rarityStats = FIXED_RARITIES.map((rarity) => {
+    const count = rarityCounts.get(rarity) || 0;
+    return {
+      rarity,
+      count,
+      rate: totalDraws > 0 ? (count / totalDraws) * 100 : 0,
+    };
+  });
+
+  return { totalDraws, cardStats, rarityStats };
+}
+
+/**
  * Get gacha statistics for a streamer within a given period
  * Query gacha_history filtered by streamer_id and date range,
  * then compare actual draw counts against configured drop_rate
@@ -782,12 +904,13 @@ export async function getGachaStats(
   const now = new Date();
   const daysAgo = period === "7d" ? 7 : 30;
   const fromDate = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+  const fromDateIso = fromDate.toISOString();
 
   const [dropStatsResult, ownerResult, channelPointResult] = await Promise.all([
     supabaseAdmin
       .rpc("get_gacha_drop_stats", {
         p_streamer_id: streamerId,
-        p_from_date: fromDate.toISOString(),
+        p_from_date: fromDateIso,
       }),
     supabaseAdmin
       .from("user_cards")
@@ -808,15 +931,28 @@ export async function getGachaStats(
       }),
   ]);
 
-  const dropStats = parseGachaDropStatsRpc(dropStatsResult.data) || {
-    totalDraws: 0,
-    cardStats: [],
-    rarityStats: ["legendary", "epic", "rare", "common"].map((rarity) => ({
-      rarity,
-      count: 0,
-      rate: 0,
-    })),
-  };
+  // RPC が使えない場合（未デプロイ=42883 や実行時エラー）は履歴から直接集計する。
+  // ここで握り潰すと配信者には恒久的に「データなし」と誤表示されるため、
+  // channelPointStats と同様にエラーを可観測化したうえでフォールバックする。
+  let dropStats = parseGachaDropStatsRpc(dropStatsResult.data);
+  if (!dropStats) {
+    if (dropStatsResult.error?.code === "42883") {
+      logger.warn(
+        "get_gacha_drop_stats not deployed, falling back to history aggregation"
+      );
+    } else if (dropStatsResult.error) {
+      reportError(
+        new Error(
+          `get_gacha_drop_stats RPC failed: ${dropStatsResult.error.message}`
+        )
+      );
+    }
+    dropStats = await fetchGachaDropStatsFromHistory(
+      supabaseAdmin,
+      streamerId,
+      fromDateIso
+    );
+  }
   const channelPointStats =
     parseChannelPointUsageStatsRpc(channelPointResult.data) ||
     await fetchChannelPointUsageStatsFromHistory(supabaseAdmin, streamerId, 10);

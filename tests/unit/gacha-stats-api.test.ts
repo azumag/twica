@@ -237,6 +237,123 @@ describe("GET /api/gacha-stats", () => {
     });
   });
 
+  it("aggregates drop stats from history when get_gacha_drop_stats RPC errors", async () => {
+    const session = {
+      twitchUserId: "streamer1",
+      twitchUsername: "streamer1",
+      twitchDisplayName: "Streamer 1",
+      twitchProfileImageUrl: "",
+      broadcasterType: "affiliate",
+      expiresAt: Date.now() + 100000,
+      version: 1,
+    };
+    mockGetSession.mockResolvedValue(session);
+    mockCanUseStreamerFeatures.mockReturnValue(true);
+
+    const streamerQuery = createMockQueryBuilder();
+    (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
+      createMockResponse({ id: "streamer-id-1" })
+    );
+
+    const thenable = (response: unknown) => {
+      const q = createMockQueryBuilder();
+      Object.assign(q, {
+        then: Promise.resolve(response).then.bind(Promise.resolve(response)),
+      });
+      return q;
+    };
+
+    // 1回目の gacha_history = count-only クエリ、2回目 = 履歴サンプル
+    const countQuery = thenable({ count: 3, error: null });
+    const historySampleQuery = thenable({
+      data: [
+        { card_id: "c1", cards: { rarity: "common" } },
+        { card_id: "c1", cards: { rarity: "common" } },
+        { card_id: "c2", cards: { rarity: "legendary" } },
+      ],
+      error: null,
+    });
+    const cardsQuery = thenable({
+      data: [
+        {
+          id: "c1",
+          name: "Card1",
+          rarity: "common",
+          image_url: null,
+          drop_rate: 7,
+          rarity_order: 4,
+          created_at: "2026-01-02T00:00:00Z",
+        },
+        {
+          id: "c2",
+          name: "Card2",
+          rarity: "legendary",
+          image_url: null,
+          drop_rate: 3,
+          rarity_order: 1,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      error: null,
+    });
+    const ownersQuery = thenable({ data: [], error: null });
+
+    let gachaHistoryCalls = 0;
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === "streamers") return streamerQuery;
+        if (table === "user_cards") return ownersQuery;
+        if (table === "cards") return cardsQuery;
+        if (table === "gacha_history") {
+          gachaHistoryCalls += 1;
+          return gachaHistoryCalls === 1 ? countQuery : historySampleQuery;
+        }
+        return createMockQueryBuilder();
+      }),
+      rpc: vi.fn((functionName: string) => {
+        if (functionName === "get_gacha_drop_stats") {
+          return Promise.resolve({
+            data: null,
+            error: { code: "P0001", message: "boom" },
+          });
+        }
+        return Promise.resolve({
+          data: { total_points: 0, ranking: [] },
+          error: null,
+        });
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(createRequest({ period: "7d" }));
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.totalDraws).toBe(3);
+    expect(body.cardStats).toHaveLength(2);
+
+    const c1 = body.cardStats.find(
+      (c: { cardId: string }) => c.cardId === "c1"
+    );
+    const c2 = body.cardStats.find(
+      (c: { cardId: string }) => c.cardId === "c2"
+    );
+    expect(c1.actualCount).toBe(2);
+    expect(c1.configuredRate).toBeCloseTo(70);
+    expect(c1.actualRate).toBeCloseTo((2 / 3) * 100);
+    expect(c2.actualCount).toBe(1);
+    expect(c2.configuredRate).toBeCloseTo(30);
+    expect(c2.actualRate).toBeCloseTo((1 / 3) * 100);
+
+    const common = body.rarityStats.find(
+      (r: { rarity: string }) => r.rarity === "common"
+    );
+    const legendary = body.rarityStats.find(
+      (r: { rarity: string }) => r.rarity === "legendary"
+    );
+    expect(common.count).toBe(2);
+    expect(legendary.count).toBe(1);
+  });
+
   it("falls back to history aggregation when the channel point stats RPC is not deployed", async () => {
     const session = {
       twitchUserId: "streamer1",
