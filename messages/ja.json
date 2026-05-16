@@ -1028,11 +1028,17 @@
     "tabs": {
       "7d": "7日間",
       "30d": "30日間",
-      "channelPoints": "チャネルポイント"
+      "channelPoints": "チャネルポイント",
+      "byCard": "カード別"
     },
     "totalDraws": "総ガチャ回数",
     "draws": "回",
+    "period": {
+      "7d": "7日間",
+      "30d": "30日間"
+    },
     "noData": "この期間にはガチャデータがありません。",
+    "noCardData": "カードがありません。",
     "channelPointRanking": {
       "title": "チャネルポイント使用ランキング（記録開始後）",
       "total": "記録開始後合計: {points} ポイント",
@@ -1049,6 +1055,9 @@
       "configuredRate": "設定排出率",
       "actualRate": "実際の排出率",
       "drawCount": "排出回数",
+      "drawers": "引いたユーザー",
+      "drawerCount": "{count}人",
+      "noDrawers": "引いたユーザーなし",
       "owners": "所持ユーザー",
       "ownerCount": "{count}人",
       "noOwners": "所持ユーザーなし"

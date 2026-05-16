@@ -76,7 +76,7 @@ describe("GET /api/gacha-stats", () => {
     expect(res.status).toBe(403);
   });
 
-  it("returns 400 for invalid period", async () => {
+  it("returns 400 for unknown period value", async () => {
     mockGetSession.mockResolvedValue({
       twitchUserId: "streamer1",
       twitchUsername: "streamer1",
@@ -126,6 +126,15 @@ describe("GET /api/gacha-stats", () => {
                 configured_rate: 100,
                 actual_count: 1001,
                 actual_rate: 100,
+                drawer_count: 1,
+                drawers: [
+                  {
+                    user_twitch_id: "viewer1",
+                    username: "alice",
+                    draw_count: 1001,
+                    last_drawn_at: "2026-01-02T00:00:00Z",
+                  },
+                ],
               },
             ],
             rarity_stats: [
@@ -156,41 +165,9 @@ describe("GET /api/gacha-stats", () => {
       });
     });
 
-    const ownersQuery = createMockQueryBuilder();
-    const ownersResponse = {
-      data: [
-        {
-          card_id: "c1",
-          obtained_at: "2026-01-01T00:00:00Z",
-          users: {
-            twitch_user_id: "viewer1",
-            twitch_username: "alice",
-            twitch_display_name: "Alice",
-          },
-        },
-        {
-          card_id: "c1",
-          obtained_at: "2026-01-02T00:00:00Z",
-          users: {
-            twitch_user_id: "viewer1",
-            twitch_username: "alice",
-            twitch_display_name: "Alice",
-          },
-        },
-      ],
-      error: null,
-    };
-    (ownersQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve(ownersResponse);
-      return ownersQuery;
-    };
-
     mockGetSupabaseAdmin.mockReturnValue({
       from: vi.fn((table: string) => {
         if (table === "streamers") return streamerQuery;
-        if (table === "user_cards") return ownersQuery;
         return createMockQueryBuilder();
       }),
       rpc,
@@ -205,14 +182,13 @@ describe("GET /api/gacha-stats", () => {
     expect(body.cardStats[0].cardName).toBe("Card1");
     expect(body.cardStats[0].actualCount).toBe(1001);
     expect(body.cardStats[0].actualRate).toBe(100);
-    expect(body.cardStats[0].ownerCount).toBe(1);
-    expect(body.cardStats[0].owners).toEqual([
+    expect(body.cardStats[0].drawerCount).toBe(1);
+    expect(body.cardStats[0].drawers).toEqual([
       {
         userTwitchId: "viewer1",
         username: "alice",
-        displayName: "Alice",
-        ownedCount: 2,
-        lastObtainedAt: "2026-01-02T00:00:00Z",
+        drawCount: 1001,
+        lastDrawnAt: "2026-01-02T00:00:00Z",
       },
     ]);
     expect(body.rarityStats).toHaveLength(4);
@@ -354,6 +330,88 @@ describe("GET /api/gacha-stats", () => {
     expect(legendary.count).toBe(1);
   });
 
+  it("returns per-card owner stats for period=byCard", async () => {
+    const session = {
+      twitchUserId: "streamer1",
+      twitchUsername: "streamer1",
+      twitchDisplayName: "Streamer 1",
+      twitchProfileImageUrl: "",
+      broadcasterType: "affiliate",
+      expiresAt: Date.now() + 100000,
+      version: 1,
+    };
+    mockGetSession.mockResolvedValue(session);
+    mockCanUseStreamerFeatures.mockReturnValue(true);
+
+    const streamerQuery = createMockQueryBuilder();
+    (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
+      createMockResponse({ id: "streamer-id-1" })
+    );
+
+    const rpc = vi.fn((functionName: string) => {
+      if (functionName === "get_card_owner_stats") {
+        return Promise.resolve({
+          data: {
+            card_stats: [
+              {
+                card_id: "c1",
+                card_name: "Card1",
+                rarity: "common",
+                image_url: null,
+                owner_count: 1,
+                owners: [
+                  {
+                    user_twitch_id: "viewer1",
+                    username: "alice",
+                    display_name: "Alice",
+                    owned_count: 2,
+                    last_obtained_at: "2026-01-02T00:00:00Z",
+                  },
+                ],
+              },
+            ],
+          },
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: null, error: null });
+    });
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === "streamers") return streamerQuery;
+        return createMockQueryBuilder();
+      }),
+      rpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(createRequest({ period: "byCard" }));
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.cardStats).toEqual([
+      {
+        cardId: "c1",
+        cardName: "Card1",
+        rarity: "common",
+        imageUrl: null,
+        ownerCount: 1,
+        owners: [
+          {
+            userTwitchId: "viewer1",
+            username: "alice",
+            displayName: "Alice",
+            ownedCount: 2,
+            lastObtainedAt: "2026-01-02T00:00:00Z",
+          },
+        ],
+      },
+    ]);
+    expect(rpc).toHaveBeenCalledWith("get_card_owner_stats", {
+      p_streamer_id: "streamer-id-1",
+    });
+  });
+
   it("falls back to history aggregation when the channel point stats RPC is not deployed", async () => {
     const session = {
       twitchUserId: "streamer1",
@@ -436,5 +494,224 @@ describe("GET /api/gacha-stats", () => {
         },
       ],
     });
+  });
+
+  it("falls back to user_cards aggregation for byCard when get_card_owner_stats is not deployed", async () => {
+    const session = {
+      twitchUserId: "streamer1",
+      twitchUsername: "streamer1",
+      twitchDisplayName: "Streamer 1",
+      twitchProfileImageUrl: "",
+      broadcasterType: "affiliate",
+      expiresAt: Date.now() + 100000,
+      version: 1,
+    };
+    mockGetSession.mockResolvedValue(session);
+    mockCanUseStreamerFeatures.mockReturnValue(true);
+
+    const streamerQuery = createMockQueryBuilder();
+    (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
+      createMockResponse({ id: "streamer-id-1" })
+    );
+
+    const thenable = (response: unknown) => {
+      const q = createMockQueryBuilder();
+      Object.assign(q, {
+        then: Promise.resolve(response).then.bind(Promise.resolve(response)),
+      });
+      return q;
+    };
+
+    const cardsQuery = thenable({
+      data: [
+        {
+          id: "c1",
+          name: "Card1",
+          rarity: "common",
+          image_url: null,
+          rarity_order: 4,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      error: null,
+    });
+    const userCardsQuery = thenable({
+      data: [
+        {
+          card_id: "c1",
+          obtained_at: "2026-01-01T00:00:00Z",
+          users: {
+            twitch_user_id: "viewer1",
+            twitch_username: "alice",
+            twitch_display_name: "Alice",
+          },
+        },
+        {
+          card_id: "c1",
+          obtained_at: "2026-01-03T00:00:00Z",
+          users: {
+            twitch_user_id: "viewer1",
+            twitch_username: "alice",
+            twitch_display_name: "Alice",
+          },
+        },
+      ],
+      error: null,
+    });
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === "streamers") return streamerQuery;
+        if (table === "cards") return cardsQuery;
+        if (table === "user_cards") return userCardsQuery;
+        return createMockQueryBuilder();
+      }),
+      rpc: vi.fn().mockResolvedValue({
+        data: null,
+        error: { code: "42883", message: "function not found" },
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(createRequest({ period: "byCard" }));
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.cardStats).toEqual([
+      {
+        cardId: "c1",
+        cardName: "Card1",
+        rarity: "common",
+        imageUrl: null,
+        ownerCount: 1,
+        owners: [
+          {
+            userTwitchId: "viewer1",
+            username: "alice",
+            displayName: "Alice",
+            ownedCount: 2,
+            lastObtainedAt: "2026-01-03T00:00:00Z",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("aggregates period drawers from history when get_gacha_drop_stats RPC errors", async () => {
+    const session = {
+      twitchUserId: "streamer1",
+      twitchUsername: "streamer1",
+      twitchDisplayName: "Streamer 1",
+      twitchProfileImageUrl: "",
+      broadcasterType: "affiliate",
+      expiresAt: Date.now() + 100000,
+      version: 1,
+    };
+    mockGetSession.mockResolvedValue(session);
+    mockCanUseStreamerFeatures.mockReturnValue(true);
+
+    const streamerQuery = createMockQueryBuilder();
+    (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
+      createMockResponse({ id: "streamer-id-1" })
+    );
+
+    const thenable = (response: unknown) => {
+      const q = createMockQueryBuilder();
+      Object.assign(q, {
+        then: Promise.resolve(response).then.bind(Promise.resolve(response)),
+      });
+      return q;
+    };
+
+    const countQuery = thenable({ count: 3, error: null });
+    const historySampleQuery = thenable({
+      data: [
+        {
+          card_id: "c1",
+          user_twitch_id: "viewer1",
+          user_twitch_username: "alice",
+          redeemed_at: "2026-01-01T00:00:00Z",
+          cards: { rarity: "common" },
+        },
+        {
+          card_id: "c1",
+          user_twitch_id: "viewer1",
+          user_twitch_username: "alice",
+          redeemed_at: "2026-01-02T00:00:00Z",
+          cards: { rarity: "common" },
+        },
+        {
+          card_id: "c1",
+          user_twitch_id: "viewer2",
+          user_twitch_username: "bob",
+          redeemed_at: "2026-01-03T00:00:00Z",
+          cards: { rarity: "common" },
+        },
+      ],
+      error: null,
+    });
+    const cardsQuery = thenable({
+      data: [
+        {
+          id: "c1",
+          name: "Card1",
+          rarity: "common",
+          image_url: null,
+          drop_rate: 10,
+          rarity_order: 4,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      error: null,
+    });
+
+    let gachaHistoryCalls = 0;
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === "streamers") return streamerQuery;
+        if (table === "cards") return cardsQuery;
+        if (table === "gacha_history") {
+          gachaHistoryCalls += 1;
+          return gachaHistoryCalls === 1 ? countQuery : historySampleQuery;
+        }
+        return createMockQueryBuilder();
+      }),
+      rpc: vi.fn((functionName: string) => {
+        if (functionName === "get_gacha_drop_stats") {
+          return Promise.resolve({
+            data: null,
+            error: { code: "P0001", message: "boom" },
+          });
+        }
+        return Promise.resolve({
+          data: { total_points: 0, ranking: [] },
+          error: null,
+        });
+      }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(createRequest({ period: "7d" }));
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.totalDraws).toBe(3);
+    expect(body.cardStats).toHaveLength(1);
+    const c1 = body.cardStats[0];
+    expect(c1.actualCount).toBe(3);
+    expect(c1.drawerCount).toBe(2);
+    // 引いた回数の多い順 → viewer1(2回) が先頭、viewer2(1回) が次
+    expect(c1.drawers).toEqual([
+      {
+        userTwitchId: "viewer1",
+        username: "alice",
+        drawCount: 2,
+        lastDrawnAt: "2026-01-02T00:00:00Z",
+      },
+      {
+        userTwitchId: "viewer2",
+        username: "bob",
+        drawCount: 1,
+        lastDrawnAt: "2026-01-03T00:00:00Z",
+      },
+    ]);
   });
 });
