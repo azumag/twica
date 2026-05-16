@@ -130,6 +130,55 @@ describe('TwitchChatService', () => {
     });
   });
 
+  describe('buildMessage - multi-draw new card placeholders', () => {
+    it('N連ガチャ用の {newCards} と {newCardCount} を値に置換する', () => {
+      const message = service.buildMessage(
+        '{user}: 初出 {newCardCount}種類 {newCards}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+          newCards: 'Alpha、Gamma',
+          newCardCount: 2,
+        },
+      );
+
+      expect(message).toBe('viewer: 初出 2種類 Alpha、Gamma');
+    });
+
+    it('N連ガチャ用の初出プレースホルダー未指定時は空文字に置換される', () => {
+      // newCards / newCardCount どちらも未指定なら空文字置換となり、
+      // 「種類」「初出」など接続詞は周辺の連続空白整形で1スペースに丸まる。
+      // 「初出」セクション全体を出さないかどうかは呼び出し側の責務（route.ts の
+      // shouldAppendDefaultNewCards 判定 / カスタムテンプレート設計）に委ねる。
+      // Whether to omit the "初出" section entirely is the caller's responsibility.
+      const message = service.buildMessage(
+        '{user}: 初出 {newCardCount}種類 {newCards}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+        },
+      );
+
+      expect(message).toBe('viewer: 初出 種類');
+    });
+
+    it('newCardCount=0 を明示的に渡すと "0" として置換される', () => {
+      const message = service.buildMessage(
+        '{user}: 初出 {newCardCount}種類',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+          newCardCount: 0,
+        },
+      );
+
+      expect(message).toBe('viewer: 初出 0種類');
+    });
+  });
+
   describe('sendChatMessage - 401エラー時のDB保護', () => {
     it('401 + スコープエラーでもDBのスコープは削除されない（DB保護）', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
