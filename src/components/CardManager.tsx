@@ -1398,24 +1398,32 @@ export default function CardManager({
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.rarity")}
                         </label>
-                        <input
+                        {/*
+                          レアリティ選択は <select> を使用する。
+                          以前は <input list> + <datalist> だったが、datalist は
+                          入力欄の現在値に部分一致する候補のみを表示する仕様のため、
+                          初期値 "common" が入っている状態ではコモンしか候補に出ず
+                          実質的に他のレアリティを選べない不具合があった。
+                          <select> なら現在値に関わらず常に全選択肢を表示できる。
+                          rarityOptions はデフォルト4種＋既存カードのレアリティ＋
+                          カスタムレアリティ(rarity_weights)を含むため、デフォルトの
+                          レアリティは常に保持される。
+                        */}
+                        <select
                           name="rarity"
-                          list="card-rarity-options"
                           value={formData.rarity}
                           onChange={(e) =>
                             setFormData({ ...formData, rarity: e.target.value as Rarity })
                           }
-                          maxLength={40}
-                          placeholder={getRarityLabel("common")}
-                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
-                        />
-                        <datalist id="card-rarity-options">
+                          className="w-full min-w-0 appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-8 text-white"
+                          style={SELECT_ARROW_STYLE}
+                        >
                           {rarityOptions.map((rarity) => (
                             <option key={rarity} value={rarity}>
                               {getRarityLabel(rarity)}
                             </option>
                           ))}
-                        </datalist>
+                        </select>
                       </div>
                       <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
