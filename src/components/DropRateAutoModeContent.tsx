@@ -5,7 +5,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
-import { formatRarityLabel } from "@/lib/rarity";
+import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
@@ -211,8 +211,7 @@ export default function DropRateAutoModeContent({
 
   const getRarityLabel = (rarity: string): string => formatRarityLabel(rarity, tRarity);
 
-  const getRarityInfo = (rarity: Rarity) =>
-    RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+  const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
   // === レアリティ別: 保存 ===
   // レアリティ保存後、サーバーがカードのdrop_rateを再計算するため

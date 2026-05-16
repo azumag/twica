@@ -5,7 +5,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
-import { formatRarityLabel } from "@/lib/rarity";
+import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
@@ -265,8 +265,7 @@ export default function BatchDropRateManualContent({
     }
   };
 
-  const getRarityInfo = (rarity: Rarity) =>
-    RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+  const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={handleClose}>

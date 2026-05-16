@@ -3,7 +3,8 @@ import Image from "next/image";
 import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUserCards } from "@/lib/dashboard-data";
-import { RARITY_ORDER, RARITIES, VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
+import { RARITY_ORDER, VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
+import { getRarityDisplayInfo, aggregateCustomRarities } from "@/lib/rarity";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
@@ -67,6 +68,8 @@ export default async function DashboardPage() {
   });
 
   // Calculate collection statistics
+  const customRarities = aggregateCustomRarities(userCards);
+
   // コレクション統計を計算
   const stats = {
     total: userCards.reduce((sum, c) => sum + c.count, 0),
@@ -75,6 +78,7 @@ export default async function DashboardPage() {
     epic: userCards.filter((c) => c.rarity === "epic").length,
     rare: userCards.filter((c) => c.rarity === "rare").length,
     common: userCards.filter((c) => c.rarity === "common").length,
+    customRarities,
   };
 
   // Get recent cards for preview (max 4)
@@ -85,8 +89,7 @@ export default async function DashboardPage() {
    * Get rarity information (label and color) for display
    * 表示用のレアリティ情報（ラベルと色）を取得
    */
-  const getRarityInfo = (rarity: string) =>
-    RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+  const getRarityInfo = (rarity: string) => getRarityDisplayInfo(rarity);
 
   return (
     <div>

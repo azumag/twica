@@ -3,8 +3,7 @@
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES } from "@/lib/constants";
-import { formatRarityLabel } from "@/lib/rarity";
+import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import ExpandableDescription from "./ExpandableDescription";
 
@@ -38,8 +37,7 @@ interface CardListProps {
  * Get rarity information (label and color) for a given rarity value
  * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
  */
-const getRarityInfo = (rarity: Rarity) =>
-  RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
 /**
  * List view component for displaying cards in a tabular format
