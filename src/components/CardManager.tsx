@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
-import { formatRarityLabel } from "@/lib/rarity";
+import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
@@ -1263,8 +1263,7 @@ export default function CardManager({
     }
   };
 
-  const getRarityInfo = (rarity: Rarity) =>
-    RARITIES.find((r) => r.value === rarity) || { ...RARITIES[0], color: "bg-gray-500" };
+  const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">

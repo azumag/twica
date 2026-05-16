@@ -1,4 +1,5 @@
 import { getTranslations } from "next-intl/server";
+import { getRarityDisplayInfo } from "@/lib/rarity";
 
 interface StatsProps {
   stats: {
@@ -8,6 +9,9 @@ interface StatsProps {
     epic: number;
     rare: number;
     common: number;
+    // カスタムレアリティ別の所持ユニーク数（デフォルト4種以外）。
+    // 後方互換のため未指定（undefined）も許容する。
+    customRarities?: { rarity: string; count: number }[];
   };
 }
 
@@ -50,6 +54,26 @@ export default async function Stats({ stats }: StatsProps) {
         </div>
         <div className="text-sm text-gray-400/70">{t("common")}</div>
       </div>
+      {/* カスタムレアリティ別の内訳（デフォルト4種の後ろに追加表示）。
+          色は固定レアリティ用の色定義が無いため共通フォールバックを使う。 */}
+      {(stats.customRarities ?? []).map(({ rarity, count }) => {
+        const info = getRarityDisplayInfo(rarity);
+        return (
+          <div
+            key={rarity}
+            className="rounded-xl bg-gray-800 p-4 text-center"
+          >
+            <div className="text-3xl font-bold text-white">{count}</div>
+            <div className="mt-1 flex justify-center">
+              <span
+                className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${info.color}`}
+              >
+                {info.label}
+              </span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
