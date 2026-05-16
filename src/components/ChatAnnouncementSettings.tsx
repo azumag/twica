@@ -98,9 +98,6 @@ export default function ChatAnnouncementSettings({
   const [template, setTemplate] = useState(currentTemplate || "");
   const [multiTemplate, setMultiTemplate] = useState(currentMultiTemplate || "");
   const [multiShowCards, setMultiShowCards] = useState(currentMultiShowCards);
-  const [showAdvanced, setShowAdvanced] = useState(
-    Boolean(currentTemplate || currentMultiTemplate || !currentMultiShowCards || botAccount)
-  );
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
@@ -471,17 +468,6 @@ export default function ChatAnnouncementSettings({
         </div>
       )}
 
-      <label className="mb-4 flex items-center gap-3 rounded-lg border border-gray-700 bg-gray-900/40 p-3">
-        <input
-          type="checkbox"
-          checked={showAdvanced}
-          onChange={(e) => setShowAdvanced(e.target.checked)}
-          className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500"
-        />
-        <span className="text-sm text-gray-200">{t("form.showAdvanced")}</span>
-      </label>
-
-      {showAdvanced && (
       <div className="mb-4 rounded-lg border border-gray-700 bg-gray-900/40 p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -513,7 +499,6 @@ export default function ChatAnnouncementSettings({
           )}
         </div>
       </div>
-      )}
 
       <div className={`space-y-4 ${!canSendChat ? "opacity-50 pointer-events-none" : ""}`}>
         {/* 有効/無効切り替え */}
@@ -535,89 +520,85 @@ export default function ChatAnnouncementSettings({
           </span>
         </div>
 
-        {showAdvanced && (
-          <>
-            {/* カスタムテンプレート入力 */}
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">
-                {t("form.customTemplate")}
-              </label>
-              <textarea
-                value={template}
-                onChange={(e) => setTemplate(e.target.value)}
-                placeholder={t("form.templatePlaceholder")}
-                disabled={!canSendChat}
-                rows={3}
-                className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none disabled:opacity-50"
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                {t("form.placeholderHelp")}
-              </p>
-              <p className={`mt-1 text-xs ${demoMessageCharacterCount > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS ? "text-yellow-400" : "text-gray-500"}`}>
-                {t("form.previewLength", {
-                  current: demoMessageCharacterCount,
-                  max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
-                })}
-              </p>
-              {mayExceedChatLimit && (
-                <div className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
-                  {t("messages.lengthWarning", {
-                    estimated: estimatedMaxMessageCharacterCount,
-                    max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
-                  })}
-                </div>
-              )}
+        {/* カスタムテンプレート入力 */}
+        <div>
+          <label className="mb-1 block text-sm text-gray-300">
+            {t("form.customTemplate")}
+          </label>
+          <textarea
+            value={template}
+            onChange={(e) => setTemplate(e.target.value)}
+            placeholder={t("form.templatePlaceholder")}
+            disabled={!canSendChat}
+            rows={3}
+            className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none disabled:opacity-50"
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            {t("form.placeholderHelp")}
+          </p>
+          <p className={`mt-1 text-xs ${demoMessageCharacterCount > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS ? "text-yellow-400" : "text-gray-500"}`}>
+            {t("form.previewLength", {
+              current: demoMessageCharacterCount,
+              max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
+            })}
+          </p>
+          {mayExceedChatLimit && (
+            <div className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
+              {t("messages.lengthWarning", {
+                estimated: estimatedMaxMessageCharacterCount,
+                max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
+              })}
             </div>
+          )}
+        </div>
 
-            <div className="rounded-lg border border-gray-700 bg-gray-900/40 p-4">
-              <label className="mb-1 block text-sm text-gray-300">
-                {t("form.multiTemplate")}
-              </label>
-              <textarea
-                value={multiTemplate}
-                onChange={(e) => setMultiTemplate(e.target.value)}
-                placeholder={t("form.multiTemplatePlaceholder")}
-                disabled={!canSendChat}
-                rows={3}
-                className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none disabled:opacity-50"
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                {t("form.multiPlaceholderHelp")}
-              </p>
-              <label className="mt-3 flex items-center gap-2 text-sm text-gray-300">
-                <input
-                  type="checkbox"
-                  checked={multiShowCards}
-                  onChange={(e) => setMultiShowCards(e.target.checked)}
-                  disabled={!canSendChat}
-                  className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500 disabled:opacity-50"
-                />
-                {t("form.multiShowCards")}
-              </label>
-            </div>
+        <div className="rounded-lg border border-gray-700 bg-gray-900/40 p-4">
+          <label className="mb-1 block text-sm text-gray-300">
+            {t("form.multiTemplate")}
+          </label>
+          <textarea
+            value={multiTemplate}
+            onChange={(e) => setMultiTemplate(e.target.value)}
+            placeholder={t("form.multiTemplatePlaceholder")}
+            disabled={!canSendChat}
+            rows={3}
+            className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none disabled:opacity-50"
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            {t("form.multiPlaceholderHelp")}
+          </p>
+          <label className="mt-3 flex items-center gap-2 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              checked={multiShowCards}
+              onChange={(e) => setMultiShowCards(e.target.checked)}
+              disabled={!canSendChat}
+              className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500 disabled:opacity-50"
+            />
+            {t("form.multiShowCards")}
+          </label>
+        </div>
 
-            {/* ボタン群 */}
-            <div className="flex gap-2">
-              {/* テンプレート保存ボタン */}
-              <button
-                onClick={handleSaveTemplate}
-                disabled={saving || !canSendChat}
-                className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
-              >
-                {saving ? t("buttons.saving") : t("buttons.saveTemplate")}
-              </button>
+        {/* ボタン群 */}
+        <div className="flex gap-2">
+          {/* テンプレート保存ボタン */}
+          <button
+            onClick={handleSaveTemplate}
+            disabled={saving || !canSendChat}
+            className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+          >
+            {saving ? t("buttons.saving") : t("buttons.saveTemplate")}
+          </button>
 
-              {/* チャットデモボタン */}
-              <button
-                onClick={() => setShowDemoModal(true)}
-                disabled={!canSendChat}
-                className="rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-500 disabled:opacity-50"
-              >
-                {t("buttons.chatDemo")}
-              </button>
-            </div>
-          </>
-        )}
+          {/* チャットデモボタン */}
+          <button
+            onClick={() => setShowDemoModal(true)}
+            disabled={!canSendChat}
+            className="rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-500 disabled:opacity-50"
+          >
+            {t("buttons.chatDemo")}
+          </button>
+        </div>
 
         {/* ステータスメッセージ */}
         {message && (

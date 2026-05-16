@@ -387,7 +387,6 @@
     "noLineBreakNote": "* Twitch chat does not support line breaks. Messages with line breaks will be sent as a single line.",
     "form": {
       "enableAnnouncement": "Enable chat announcements",
-      "showAdvanced": "Show advanced settings",
       "customTemplate": "Custom Template (optional)",
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
       "multiTemplate": "Multi-draw Template (optional)",
