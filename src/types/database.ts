@@ -6,7 +6,7 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
-export type Rarity = 'common' | 'rare' | 'epic' | 'legendary'
+export type Rarity = string
 export type SkillType = 'attack' | 'defense' | 'heal' | 'special'
 export type BattleResult = 'win' | 'lose' | 'draw'
 export type ChatSenderMode = 'streamer' | 'custom_bot' | 'official_bot'
@@ -756,7 +756,7 @@ export interface OpponentCardData {
   skill_type: 'attack' | 'defense' | 'heal' | 'special'
   skill_name: string
   image_url: string
-  rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  rarity: Rarity
 }
 
 export interface BattleCard {

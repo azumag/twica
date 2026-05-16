@@ -9,21 +9,58 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 
-function validateRarityWeightsInput(value: unknown): value is Record<string, number> | null {
+// レアリティキーの最大長。DB側のレアリティ列(varchar)と整合する保守的な上限。
+const MAX_RARITY_KEY_LENGTH = 40;
+// 制御文字(C0 範囲 \u0000-\u001F・DEL \u007F・C1 範囲 \u0080-\u009F)。
+// 表示崩れや不可視キー注入を防ぐため禁止。
+const CONTROL_CHAR_REGEX = /[\u0000-\u001F\u007F-\u009F]/;
+// Bidi override/embedding/isolate 文字。UI上で他キーへのなりすましを防ぐため禁止。
+const BIDI_OVERRIDE_REGEX = /[\u202A-\u202E\u2066-\u2069]/;
+
+type RarityWeightsValidation =
+  | { ok: true; value: Record<string, number> | null }
+  | { ok: false };
+
+/**
+ * rarity_weights 入力を検証し、キーを正規化した安全なオブジェクトを返す。
+ *
+ * - 値: 0〜100 の有限数のみ。
+ * - キー: trim + Unicode NFC 正規化後に、長さ 1〜40、制御文字/Bidi override を禁止。
+ * - 正規化(trim/NFC)後にキーが重複する場合は不正入力として拒否する
+ *   （重複を黙ってマージすると確率設計が意図せず変わるため）。
+ */
+function validateRarityWeightsInput(value: unknown): RarityWeightsValidation {
   if (value === null) {
-    return true;
+    return { ok: true, value: null };
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
+    return { ok: false };
   }
 
-  for (const rate of Object.values(value)) {
+  const normalized: Record<string, number> = {};
+  for (const [rawKey, rate] of Object.entries(value as Record<string, unknown>)) {
     if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0 || rate > 100) {
-      return false;
+      return { ok: false };
     }
+
+    const key = rawKey.trim().normalize("NFC");
+    if (
+      key.length < 1
+      || key.length > MAX_RARITY_KEY_LENGTH
+      || CONTROL_CHAR_REGEX.test(key)
+      || BIDI_OVERRIDE_REGEX.test(key)
+    ) {
+      return { ok: false };
+    }
+
+    // trim/NFC 後に衝突するキーは黙ってマージせず拒否する
+    if (Object.prototype.hasOwnProperty.call(normalized, key)) {
+      return { ok: false };
+    }
+    normalized[key] = rate;
   }
 
-  return true;
+  return { ok: true, value: normalized };
 }
 
 function hasValidRarityWeightsTotal(value: Record<string, number> | null): boolean {
@@ -105,12 +142,18 @@ export async function POST(request: NextRequest) {
       disconnectBot,
     } = body;
 
-    if (rarityWeights !== undefined && !validateRarityWeightsInput(rarityWeights)) {
-      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
-    }
+    // 検証成功時はキーを正規化(trim/NFC)した値を以降の保存・再計算で使用する。
+    let normalizedRarityWeights: Record<string, number> | null | undefined;
+    if (rarityWeights !== undefined) {
+      const validation = validateRarityWeightsInput(rarityWeights);
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedRarityWeights = validation.value;
 
-    if (rarityWeights !== undefined && !hasValidRarityWeightsTotal(rarityWeights)) {
-      return NextResponse.json({ error: "Rarity weights total must be 100%" }, { status: 400 });
+      if (!hasValidRarityWeightsTotal(normalizedRarityWeights)) {
+        return NextResponse.json({ error: "Rarity weights total must be 100%" }, { status: 400 });
+      }
     }
 
     // 視聴者向け未所持カード表示の boolean 検証
@@ -184,7 +227,7 @@ export async function POST(request: NextRequest) {
 
     // rarityWeights: レアリティ別目標確率（nullで自動モード無効）
     if (rarityWeights !== undefined) {
-      updateData.rarity_weights = rarityWeights;
+      updateData.rarity_weights = normalizedRarityWeights;
     }
 
     // 未所持カードの視聴者向け表示設定
@@ -247,7 +290,7 @@ export async function POST(request: NextRequest) {
         recalculatedCards = await recalculateIfAutoMode(
           supabaseAdmin,
           streamerId,
-          rarityWeights
+          normalizedRarityWeights
         );
       } catch (recalculationError) {
         logger.error("Streamer Settings API: Recalculation failed after weight save", recalculationError);

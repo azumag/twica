@@ -6,7 +6,8 @@ import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
-import { RARITIES, RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
+import { RARITIES } from "@/lib/constants";
+import { getRarityGlowClass, getRarityGradientClass } from "@/lib/rarity";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
@@ -669,8 +670,8 @@ export default function OverlayPage() {
     );
   }
 
-  const rarityColor = RARITY_GRADIENT_COLORS[result.card.rarity];
-  const rarityGlow = RARITY_GLOW[result.card.rarity];
+  const rarityColor = getRarityGradientClass(result.card.rarity);
+  const rarityGlow = getRarityGlowClass(result.card.rarity);
   const rarityInfo = getRarityInfo(result.card.rarity);
 
   // 画像のみ表示モードかどうかを判定

@@ -3,9 +3,8 @@
 import { useState, useEffect } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
-import { RARITY_COLORS } from "@/lib/constants";
+import { formatRarityLabel, getRarityColorClass } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
-import type { Rarity } from "@/types/database";
 
 interface CardStat {
   cardId: string;
@@ -185,11 +184,11 @@ export default function DropRateTable() {
               <div className="text-2xl font-bold text-white">{rs.count}</div>
               <div className="text-sm text-gray-400">
                 <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${
-                    RARITY_COLORS[rs.rarity as Rarity]
-                  }`}
+                  className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${getRarityColorClass(
+                    rs.rarity
+                  )}`}
                 >
-                  {tRarity(rs.rarity)}
+                  {formatRarityLabel(rs.rarity, tRarity)}
                 </span>
                 <span className="ml-2">({rs.rate.toFixed(1)}%)</span>
               </div>
@@ -248,11 +247,11 @@ export default function DropRateTable() {
                   </td>
                   <td className="p-3">
                     <span
-                      className={`rounded-full px-2 py-0.5 text-xs text-white ${
-                        RARITY_COLORS[card.rarity as Rarity]
-                      }`}
+                      className={`rounded-full px-2 py-0.5 text-xs text-white ${getRarityColorClass(
+                        card.rarity
+                      )}`}
                     >
-                      {tRarity(card.rarity)}
+                      {formatRarityLabel(card.rarity, tRarity)}
                     </span>
                   </td>
                   <td className="p-3 text-right text-gray-300">

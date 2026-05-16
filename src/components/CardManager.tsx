@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { formatRarityLabel } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
@@ -122,6 +123,10 @@ export default function CardManager({
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
   const tRarity = useTranslations("rarity");
+  const getRarityLabel = useCallback(
+    (rarity: string) => formatRarityLabel(rarity, tRarity),
+    [tRarity]
+  );
   const [cards, setCards] = useState<Card[]>(initialCards);
   // DB値の変換: null=未設定→デフォルト自動モード, {}=手動モード明示, {weights}=自動モード
   const [rarityWeights, setRarityWeights] = useState<Record<string, number> | null>(() => {
@@ -133,6 +138,16 @@ export default function CardManager({
     }
     return initialRarityWeights;
   });
+  const rarityOptions = useMemo(() => {
+    const values = new Set<string>(RARITIES.map((rarity) => rarity.value));
+    cards.forEach((card) => {
+      if (card.rarity.trim()) values.add(card.rarity);
+    });
+    Object.keys(rarityWeights ?? {}).forEach((rarity) => {
+      if (rarity.trim()) values.add(rarity);
+    });
+    return Array.from(values);
+  }, [cards, rarityWeights]);
   const [loading, setLoading] = useState(false);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
@@ -1237,7 +1252,7 @@ export default function CardManager({
   };
 
   const getRarityInfo = (rarity: Rarity) =>
-    RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+    RARITIES.find((r) => r.value === rarity) || { ...RARITIES[0], color: "bg-gray-500" };
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
@@ -1383,21 +1398,24 @@ export default function CardManager({
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.rarity")}
                         </label>
-                        <select
+                        <input
                           name="rarity"
+                          list="card-rarity-options"
                           value={formData.rarity}
                           onChange={(e) =>
                             setFormData({ ...formData, rarity: e.target.value as Rarity })
                           }
-                          className="w-full min-w-0 appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
-                          style={SELECT_ARROW_STYLE}
-                        >
-                          {RARITIES.map((r) => (
-                            <option key={r.value} value={r.value}>
-                              {tRarity(r.value)}
+                          maxLength={40}
+                          placeholder={getRarityLabel("common")}
+                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
+                        />
+                        <datalist id="card-rarity-options">
+                          {rarityOptions.map((rarity) => (
+                            <option key={rarity} value={rarity}>
+                              {getRarityLabel(rarity)}
                             </option>
                           ))}
-                        </select>
+                        </datalist>
                       </div>
                       <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
@@ -1624,7 +1642,7 @@ export default function CardManager({
                     if (!stats) return null;
                     return (
                       <span className="flex items-center gap-2 text-xs text-gray-400 shrink-0">
-                        <span>{tRarity(formData.rarity)}内: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
+                        <span>{getRarityLabel(formData.rarity)}内: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
                         <span className="text-gray-500">→</span>
                         <span>{t("form.overallDropRate")}: <span className="text-green-400">{stats.overallPercent.toFixed(1)}%</span></span>
                       </span>
@@ -1938,7 +1956,7 @@ export default function CardManager({
                           <span
                             className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
                           >
-                            {tRarity(card.rarity)}
+                            {getRarityLabel(card.rarity)}
                           </span>
                         </div>
                       </div>

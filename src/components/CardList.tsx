@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import { formatRarityLabel } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import ExpandableDescription from "./ExpandableDescription";
 
@@ -194,7 +195,7 @@ export default function CardList({
                   <span
                     className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.color}`}
                   >
-                    {tRarity(card.rarity)}
+                    {formatRarityLabel(card.rarity, tRarity)}
                   </span>
                 </td>
 
