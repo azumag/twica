@@ -14,6 +14,7 @@ import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import DropRateSettingsModal from "./DropRateSettingsModal";
+import CustomRarityModal from "./CustomRarityModal";
 import ExpandableDescription from "./ExpandableDescription";
 
 /** Custom dropdown arrow style for appearance-none select boxes */
@@ -73,6 +74,9 @@ interface CardManagerProps {
   // Initial rarity weights: null/undefined = unset (auto mode with defaults), {} = explicit manual mode, {weights} = auto mode
   // レアリティ確率設定: null/undefined=未設定（自動モードデフォルト化）, {}=手動モード明示, {weights}=自動モード
   initialRarityWeights?: Record<string, number> | null;
+  // 配信者が定義したカスタムレアリティ名（rarity_weights とは独立）
+  // Streamer-defined custom rarity names (decoupled from rarity_weights)
+  initialCustomRarities?: string[];
 }
 
 // Sorting field options
@@ -117,6 +121,7 @@ export default function CardManager({
   maxImageWidth = 800,
   availableWidths = [800],
   initialRarityWeights = null,
+  initialCustomRarities = [],
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -138,6 +143,8 @@ export default function CardManager({
     }
     return initialRarityWeights;
   });
+  // カスタムレアリティ名（ドロップ率設定とは独立。専用モーダルで管理）
+  const [customRarities, setCustomRarities] = useState<string[]>(initialCustomRarities);
   const rarityOptions = useMemo(() => {
     const values = new Set<string>(RARITIES.map((rarity) => rarity.value));
     cards.forEach((card) => {
@@ -146,8 +153,11 @@ export default function CardManager({
     Object.keys(rarityWeights ?? {}).forEach((rarity) => {
       if (rarity.trim()) values.add(rarity);
     });
+    customRarities.forEach((rarity) => {
+      if (rarity.trim()) values.add(rarity);
+    });
     return Array.from(values);
-  }, [cards, rarityWeights]);
+  }, [cards, rarityWeights, customRarities]);
   const [loading, setLoading] = useState(false);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
@@ -338,6 +348,8 @@ export default function CardManager({
   // Batch drop rate modal state
   // 確率一括調整モーダルの状態
   const [showBatchDropRateModal, setShowBatchDropRateModal] = useState(false);
+  // カスタムレアリティ管理モーダルの状態
+  const [showCustomRarityModal, setShowCustomRarityModal] = useState(false);
   // Zoomed card image modal state (opened when user clicks a thumbnail)
   // Uses the original (pre-thumbnail) URL so users see the full-resolution image
   // サムネイルクリック時に表示する拡大画像モーダルの状態
@@ -1268,6 +1280,14 @@ export default function CardManager({
             className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
           >
             {t("dropRateSettings.button")}
+          </button>
+          {/* Custom rarity management button */}
+          {/* カスタムレアリティ管理ボタン */}
+          <button
+            onClick={() => setShowCustomRarityModal(true)}
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
+          >
+            {t("customRarity.button")}
           </button>
           {/* Emote import button */}
           {/* エモートインポートボタン */}
@@ -2245,6 +2265,17 @@ export default function CardManager({
         onCardsSave={handleBatchDropRateSave}
         onRarityWeightsApply={handleRarityWeightsApply}
         rarityWeights={rarityWeights}
+        customRarities={customRarities}
+      />
+
+      {/* Custom Rarity Modal */}
+      {/* カスタムレアリティ管理モーダル */}
+      <CustomRarityModal
+        isOpen={showCustomRarityModal}
+        onClose={() => setShowCustomRarityModal(false)}
+        streamerId={streamerId}
+        customRarities={customRarities}
+        onSaved={setCustomRarities}
       />
 
       {/* Emote Import Modal */}

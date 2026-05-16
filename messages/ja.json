@@ -188,6 +188,28 @@
       "confirmSwitchToAuto": "レアリティ別確率設定が有効になり、全カードの確率が再計算されます。切り替えますか？",
       "switchFailed": "モードの切り替えに失敗しました"
     },
+    "customRarity": {
+      "button": "レアリティカスタム",
+      "title": "カスタムレアリティ",
+      "description": "カード作成時に選べるレアリティを管理します。デフォルトのレアリティは常に選択でき、削除できません。",
+      "defaultSection": "デフォルト（常に選択可能）",
+      "customSection": "カスタムレアリティ",
+      "addPlaceholder": "新しいレアリティ名",
+      "add": "追加",
+      "empty": "カスタムレアリティはまだありません",
+      "deleteNote": "削除しても既存カードのレアリティは変わりません（カード作成時の候補から外れるだけです）。",
+      "save": "保存",
+      "saving": "保存中...",
+      "saved": "保存しました",
+      "saveFailed": "保存に失敗しました",
+      "confirmClose": "未保存の変更があります。閉じますか？",
+      "errorEmpty": "レアリティ名を入力してください",
+      "errorTooLong": "レアリティ名は40文字以内で入力してください",
+      "errorInvalidChars": "使用できない文字が含まれています",
+      "errorDuplicate": "同じレアリティが既に存在します",
+      "errorDefault": "デフォルトのレアリティは追加できません（常に選択可能です）",
+      "errorMax": "カスタムレアリティは最大{max}件までです"
+    },
     "batchDropRate": {
       "button": "確率一括調整",
       "title": "確率一括調整",

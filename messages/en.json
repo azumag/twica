@@ -188,6 +188,28 @@
       "confirmSwitchToAuto": "Rarity-based probability will be enabled and all card rates will be recalculated. Switch?",
       "switchFailed": "Failed to switch mode"
     },
+    "customRarity": {
+      "button": "Custom Rarities",
+      "title": "Custom Rarities",
+      "description": "Manage the rarities selectable when creating cards. Default rarities are always available and cannot be removed.",
+      "defaultSection": "Default (always available)",
+      "customSection": "Custom rarities",
+      "addPlaceholder": "New rarity name",
+      "add": "Add",
+      "empty": "No custom rarities yet",
+      "deleteNote": "Removing a custom rarity does not change existing cards (it is only removed from the card-creation suggestions).",
+      "save": "Save",
+      "saving": "Saving...",
+      "saved": "Saved",
+      "saveFailed": "Failed to save",
+      "confirmClose": "You have unsaved changes. Close anyway?",
+      "errorEmpty": "Enter a rarity name",
+      "errorTooLong": "Rarity name must be 40 characters or fewer",
+      "errorInvalidChars": "Contains characters that cannot be used",
+      "errorDuplicate": "That rarity already exists",
+      "errorDefault": "Default rarities cannot be added (they are always available)",
+      "errorMax": "Up to {max} custom rarities allowed"
+    },
     "batchDropRate": {
       "button": "Batch Drop Rate",
       "title": "Batch Drop Rate Adjustment",
