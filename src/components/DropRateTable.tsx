@@ -14,6 +14,21 @@ interface CardStat {
   configuredRate: number;
   actualCount: number;
   actualRate: number;
+  // 期間内にそのカードを引いたユーザー（所持ユーザーではない）
+  drawerCount: number;
+  drawers: Array<{
+    userTwitchId: string;
+    username: string;
+    drawCount: number;
+    lastDrawnAt: string;
+  }>;
+}
+
+interface CardOwnerStat {
+  cardId: string;
+  cardName: string;
+  rarity: string;
+  imageUrl: string | null;
   ownerCount: number;
   owners: Array<{
     userTwitchId: string;
@@ -46,7 +61,11 @@ interface GachaStatsData {
   rarityStats: RarityStat[];
 }
 
-type StatsTab = "7d" | "30d" | "channelPoints";
+interface CardOwnerStatsData {
+  cardStats: CardOwnerStat[];
+}
+
+type StatsTab = "7d" | "30d" | "channelPoints" | "byCard";
 
 /**
  * Drop rate comparison table for streamer statistics page
@@ -60,12 +79,24 @@ export default function DropRateTable() {
 
   const [activeTab, setActiveTab] = useState<StatsTab>("7d");
   const [stats, setStats] = useState<GachaStatsData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [cardOwnerStats, setCardOwnerStats] =
+    useState<CardOwnerStatsData | null>(null);
+  // 期間統計とカード別統計は独立して非同期取得するため、
+  // スピナー状態を分離する（一方のフェッチ中に他方タブへ戻っても
+  // スピナーが残らないようにする）。
+  const [periodLoading, setPeriodLoading] = useState(true);
+  const [cardOwnerLoading, setCardOwnerLoading] = useState(false);
+  // 期間統計の取得期間。channelPoints タブは 7d 取得分の
+  // channelPointStats を流用するため 7d 扱いとする。
   const period = activeTab === "30d" ? "30d" : "7d";
+  const loading = activeTab === "byCard" ? cardOwnerLoading : periodLoading;
 
+  // 期間統計（7日/30日、およびチャネルポイントランキングの土台）。
+  // 「カード別」タブは期間に依存しないため別エフェクトで取得する。
   useEffect(() => {
+    if (activeTab === "byCard") return;
     const fetchStats = async () => {
-      setLoading(true);
+      setPeriodLoading(true);
       try {
         const res = await fetch(`/api/gacha-stats?period=${period}`);
         if (res.ok) {
@@ -73,11 +104,34 @@ export default function DropRateTable() {
           setStats(data);
         }
       } finally {
-        setLoading(false);
+        setPeriodLoading(false);
       }
     };
     fetchStats();
+    // 依存は period のみ。activeTab を含めると 7日↔ランキング 等の
+    // 同一 period 間タブ切替でも RPC を二重に叩き、DB負荷低減の目的に
+    // 反するため。period が変わらない限り取得済み stats を再利用する。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period]);
+
+  // 「カード別」タブ用: 全期間のカード別所持ユーザー統計を遅延取得。
+  // 一度取得したらタブ切替で再フェッチしない（DB負荷低減）。
+  useEffect(() => {
+    if (activeTab !== "byCard" || cardOwnerStats) return;
+    const fetchCardOwnerStats = async () => {
+      setCardOwnerLoading(true);
+      try {
+        const res = await fetch(`/api/gacha-stats?period=byCard`);
+        if (res.ok) {
+          const data = await res.json();
+          setCardOwnerStats(data);
+        }
+      } finally {
+        setCardOwnerLoading(false);
+      }
+    };
+    fetchCardOwnerStats();
+  }, [activeTab, cardOwnerStats]);
 
   /**
    * Highlight rows where actual rate deviates significantly from configured rate
@@ -212,7 +266,7 @@ export default function DropRateTable() {
                 <th className="p-3 text-right">
                   {t("dropRateTable.drawCount")}
                 </th>
-                <th className="p-3">{t("dropRateTable.owners")}</th>
+                <th className="p-3">{t("dropRateTable.drawers")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
@@ -266,28 +320,28 @@ export default function DropRateTable() {
                   <td className="p-3">
                     <div className="min-w-48 max-w-xs">
                       <div className="text-sm font-medium text-white">
-                        {t("dropRateTable.ownerCount", {
-                          count: card.ownerCount,
+                        {t("dropRateTable.drawerCount", {
+                          count: card.drawerCount,
                         })}
                       </div>
-                      {card.owners.length > 0 ? (
+                      {card.drawers.length > 0 ? (
                         <div className="mt-1 flex flex-wrap gap-1">
-                          {card.owners.map((owner) => (
+                          {card.drawers.map((drawer) => (
                             <span
-                              key={owner.userTwitchId}
+                              key={drawer.userTwitchId}
                               className="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-200"
-                              title={owner.userTwitchId}
+                              title={drawer.userTwitchId}
                             >
-                              {owner.displayName || owner.username}
-                              {owner.ownedCount > 1
-                                ? ` x${owner.ownedCount}`
+                              {drawer.username}
+                              {drawer.drawCount > 1
+                                ? ` x${drawer.drawCount}`
                                 : ""}
                             </span>
                           ))}
                         </div>
                       ) : (
                         <div className="mt-1 text-xs text-gray-500">
-                          {t("dropRateTable.noOwners")}
+                          {t("dropRateTable.noDrawers")}
                         </div>
                       )}
                     </div>
@@ -301,11 +355,103 @@ export default function DropRateTable() {
     );
   };
 
+  // 「カード別」タブ: 全期間のカード別所持ユーザー一覧
+  const renderCardOwnerStats = () => {
+    if (!cardOwnerStats) return null;
+
+    if (cardOwnerStats.cardStats.length === 0) {
+      return (
+        <div className="py-12 text-center text-gray-400">
+          {t("noCardData")}
+        </div>
+      );
+    }
+
+    return (
+      <div className="overflow-x-auto rounded-xl bg-gray-800">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-700 text-left text-gray-400">
+              <th className="p-3">{t("dropRateTable.cardName")}</th>
+              <th className="p-3">{t("dropRateTable.rarity")}</th>
+              <th className="p-3">{t("dropRateTable.owners")}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-700">
+            {cardOwnerStats.cardStats.map((card) => (
+              <tr key={card.cardId}>
+                <td className="p-3">
+                  <div className="flex items-center gap-2">
+                    <div className="h-8 w-8 flex-shrink-0 overflow-hidden rounded bg-gray-700">
+                      {card.imageUrl ? (
+                        <Image
+                          src={getOptimizedImageUrl(card.imageUrl, "icon")}
+                          alt={card.cardName}
+                          width={32}
+                          height={32}
+                          className="h-full w-full object-cover"
+                          unoptimized
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-sm">
+                          🎴
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-white">{card.cardName}</span>
+                  </div>
+                </td>
+                <td className="p-3">
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs text-white ${getRarityColorClass(
+                      card.rarity
+                    )}`}
+                  >
+                    {formatRarityLabel(card.rarity, tRarity)}
+                  </span>
+                </td>
+                <td className="p-3">
+                  <div className="min-w-48 max-w-xs">
+                    <div className="text-sm font-medium text-white">
+                      {t("dropRateTable.ownerCount", {
+                        count: card.ownerCount,
+                      })}
+                    </div>
+                    {card.owners.length > 0 ? (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {card.owners.map((owner) => (
+                          <span
+                            key={owner.userTwitchId}
+                            className="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-200"
+                            title={owner.userTwitchId}
+                          >
+                            {owner.displayName || owner.username}
+                            {owner.ownedCount > 1
+                              ? ` x${owner.ownedCount}`
+                              : ""}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-1 text-xs text-gray-500">
+                        {t("dropRateTable.noOwners")}
+                      </div>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   return (
     <div>
       {/* Period tabs / 期間タブ */}
       <div className="mb-6 flex flex-wrap gap-2">
-        {(["7d", "30d", "channelPoints"] as const).map((tab) => (
+        {(["7d", "30d", "channelPoints", "byCard"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -324,6 +470,12 @@ export default function DropRateTable() {
         <div className="py-12 text-center text-gray-400">
           <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-gray-500 border-t-purple-500" />
         </div>
+      ) : activeTab === "byCard" ? (
+        cardOwnerStats ? (
+          renderCardOwnerStats()
+        ) : (
+          <div className="py-12 text-center text-gray-400">{t("noData")}</div>
+        )
       ) : !stats ? (
         <div className="py-12 text-center text-gray-400">{t("noData")}</div>
       ) : activeTab === "channelPoints" ? (
@@ -332,13 +484,19 @@ export default function DropRateTable() {
         renderPeriodStats()
       )}
 
-      {/* Full period stats notice / 全期間統計についてのお知らせ */}
-      <div className="mt-8 rounded-xl border border-gray-700 bg-gray-800/50 p-4">
-        <h4 className="mb-2 text-sm font-semibold text-gray-300">
-          {t("fullPeriodStats.title")}
-        </h4>
-        <p className="text-sm text-gray-400">{t("fullPeriodStats.message")}</p>
-      </div>
+      {/* Full period stats notice / 全期間統計についてのお知らせ
+          「カード別」タブは全期間の所持統計そのものなので、
+          「全期間統計は未実装」という告知と矛盾するため非表示にする。 */}
+      {activeTab !== "byCard" && (
+        <div className="mt-8 rounded-xl border border-gray-700 bg-gray-800/50 p-4">
+          <h4 className="mb-2 text-sm font-semibold text-gray-300">
+            {t("fullPeriodStats.title")}
+          </h4>
+          <p className="text-sm text-gray-400">
+            {t("fullPeriodStats.message")}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

@@ -660,6 +660,14 @@ export interface Database {
         Args: {
           p_streamer_id: string
           p_from_date: string
+          p_limit_per_card?: number
+        }
+        Returns: Json
+      }
+      get_card_owner_stats: {
+        Args: {
+          p_streamer_id: string
+          p_limit_per_card?: number
         }
         Returns: Json
       }

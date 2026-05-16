@@ -1031,11 +1031,17 @@
     "tabs": {
       "7d": "7 Days",
       "30d": "30 Days",
-      "channelPoints": "Channel Points"
+      "channelPoints": "Channel Points",
+      "byCard": "By Card"
     },
     "totalDraws": "Total Draws",
     "draws": "draws",
+    "period": {
+      "7d": "7 Days",
+      "30d": "30 Days"
+    },
     "noData": "No gacha data for this period.",
+    "noCardData": "No cards.",
     "channelPointRanking": {
       "title": "Channel Point Usage Ranking (Since Tracking Started)",
       "total": "Total since tracking started: {points} points",
@@ -1052,6 +1058,9 @@
       "configuredRate": "Configured Rate",
       "actualRate": "Actual Rate",
       "drawCount": "Draw Count",
+      "drawers": "Players Who Drew",
+      "drawerCount": "{count} users",
+      "noDrawers": "No players drew this",
       "owners": "Owners",
       "ownerCount": "{count} users",
       "noOwners": "No owners"
