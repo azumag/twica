@@ -38,6 +38,8 @@ const messages = {
       smallModeDescription: '説明',
       displayDuration: 'カードの表示時間',
       displayDurationDescription: '説明',
+      multiDrawDisplayDuration: 'N連時のカード表示時間',
+      multiDrawDisplayDurationDescription: '説明',
       seconds: '秒',
       portraitInfoSection: '縦長画像の付帯情報（画像の下に表示）',
       portraitShowName: 'カード名を表示',
@@ -72,6 +74,7 @@ describe('OverlayPreview', () => {
       effects: false,
       smallMode: false,
       displayDuration: 10,
+      multiDrawDisplayDuration: 4,
       portraitShowName: true,
       portraitShowRarity: false,
       portraitShowDescription: true,
@@ -89,7 +92,7 @@ describe('OverlayPreview', () => {
     await waitFor(() => {
       expect(
         screen.getByDisplayValue(
-          'https://example.com/overlay/streamer-1?imageOnly=true&autoPortrait=false&effects=false&smallMode=false&duration=10&pName=true&pRarity=false&pDesc=true&pUser=true'
+          'https://example.com/overlay/streamer-1?imageOnly=true&autoPortrait=false&effects=false&smallMode=false&duration=10&mDuration=4&pName=true&pRarity=false&pDesc=true&pUser=true'
         )
       ).toBeInTheDocument()
     })
@@ -119,10 +122,37 @@ describe('OverlayPreview', () => {
         effects: true,
         smallMode: true,
         displayDuration: 6,
+        multiDrawDisplayDuration: 3,
         portraitShowName: false,
         portraitShowRarity: true,
         portraitShowDescription: false,
         portraitShowUsername: false,
+      })
+    })
+  })
+
+  it('N連表示時間を URL と localStorage に反映する', async () => {
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        baseUrl="https://example.com"
+        showPreview={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+    const sliders = screen.getAllByRole('slider')
+    fireEvent.change(sliders[1], { target: { value: '5' } })
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('https://example.com/overlay/streamer-1?mDuration=5')).toBeInTheDocument()
+    })
+
+    await waitFor(() => {
+      const savedOptions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+      expect(savedOptions).toMatchObject({
+        displayDuration: 6,
+        multiDrawDisplayDuration: 5,
       })
     })
   })

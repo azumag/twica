@@ -604,6 +604,8 @@
       "smallModeDescription": "400x400未満の画像用に縮小表示（自動適用）",
       "displayDuration": "カードの表示時間",
       "displayDurationDescription": "カードが画面に表示される時間を設定します",
+      "multiDrawDisplayDuration": "N連時のカード表示時間",
+      "multiDrawDisplayDurationDescription": "N連ガチャ時の1枚あたりの表示時間を設定します",
       "seconds": "秒",
       "portraitInfoSection": "縦長画像の付帯情報（画像の下に表示）",
       "portraitShowName": "カード名を表示",

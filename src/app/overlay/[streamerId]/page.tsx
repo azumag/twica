@@ -97,6 +97,7 @@ interface OverlayOptions {
   effects: boolean;
   smallMode: boolean;
   displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
+  multiDrawDisplayDuration: number;  // N連ガチャ時のカード表示時間（秒）、デフォルト3秒
   debug: boolean;
   // 縦長画像の付帯情報表示オプション（画像に被らず表示）
   portraitShowName: boolean;
@@ -131,6 +132,7 @@ export default function OverlayPage() {
     effects: true,
     smallMode: true,     // デフォルトで小さい画像モードを有効化
     displayDuration: 6,  // カードの表示時間（秒）、デフォルト6秒
+    multiDrawDisplayDuration: 3,  // N連ガチャ時のカード表示時間（秒）、デフォルト3秒
     debug: false,        // デバッグモード（接続状態の詳細表示）
     // 縦長画像の付帯情報オプション（デフォルトでレアリティのみ表示）
     portraitShowName: false,
@@ -157,7 +159,7 @@ export default function OverlayPage() {
   const connectionStatusRef = useRef(connectionStatus);
   // ガチャ結果キュー: アニメーション中に到着した結果をバッファし順番に表示する
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
-  const queueRef = useRef<GachaResult[]>([]);
+  const queueRef = useRef<(GachaResult & { isMultiDraw?: boolean })[]>([]);
   const isDisplayingRef = useRef(false);
   const playedSoundGroupIdsRef = useRef<Set<string>>(new Set());
   // processQueueの再帰呼び出し用ref（useCallback内で自身を参照するため）
@@ -272,6 +274,10 @@ export default function OverlayPage() {
     const displayDuration = durationParam
       ? Math.min(15, Math.max(2, parseInt(durationParam, 10) || 6))
       : 6;
+    const multiDrawDurationParam = urlParams.get("mDuration");
+    const multiDrawDisplayDuration = multiDrawDurationParam
+      ? Math.min(10, Math.max(1, parseInt(multiDrawDurationParam, 10) || 3))
+      : 3;
     // queueMicrotaskで非同期に実行してカスケードレンダーを回避
     queueMicrotask(() => {
       setOptions({
@@ -280,6 +286,7 @@ export default function OverlayPage() {
         effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
         smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
         displayDuration,  // カードの表示時間（秒）
+        multiDrawDisplayDuration,  // N連ガチャ時のカード表示時間（秒）
         debug: isDebug,
         // 縦長画像の付帯情報オプション
         // pName, pRarity, pDesc, pUser（短縮パラメータ名）
@@ -376,6 +383,7 @@ export default function OverlayPage() {
     setSparklePositions(generateSparklePositions());
     setResult(next);
     setShowCard(false);
+    const displaySeconds = next.isMultiDraw ? options.multiDrawDisplayDuration : options.displayDuration;
 
     // Show card after brief delay
     animationTimeoutRef.current = setTimeout(() => {
@@ -399,9 +407,9 @@ export default function OverlayPage() {
           // ref経由で最新のprocessQueueを呼び出し（再帰）
           processQueueRef.current();
         }, 500);
-      }, options.displayDuration * 1000);
+      }, displaySeconds * 1000);
     }, 100);
-  }, [checkImageAspectRatio, playGachaSound, options.displayDuration]);
+  }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.multiDrawDisplayDuration]);
 
   // processQueueRefを最新のcallbackで更新
   useEffect(() => {
@@ -414,11 +422,13 @@ export default function OverlayPage() {
    */
   const enqueueResult = useCallback((data: GachaResult) => {
     const cards = data.cards?.length ? data.cards : [data.card];
+    const isMultiDraw = cards.length > 1;
     queueRef.current.push(
       ...cards.map((card, index) => ({
         ...data,
         card,
         cards: undefined,
+        isMultiDraw,
         shouldPlaySound: data.shouldPlaySound !== false && index === 0,
       }))
     );

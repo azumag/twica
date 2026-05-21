@@ -15,6 +15,7 @@ interface OverlayOptions {
   effects: boolean;         // レジェンダリーのキラキラエフェクト表示
   smallMode: boolean;       // 小さい画像用の縮小表示モード
   displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
+  multiDrawDisplayDuration: number;  // N連ガチャ時のカード表示時間（秒）、デフォルト3秒
   // 縦長画像の付帯情報表示オプション（画像に被らず下に表示）
   // Portrait image info options (displayed below image, not overlapping)
   portraitShowName: boolean;        // 縦長画像でカード名を表示
@@ -29,6 +30,7 @@ const DEFAULT_OVERLAY_OPTIONS: OverlayOptions = {
   effects: true,
   smallMode: true,
   displayDuration: 6,
+  multiDrawDisplayDuration: 3,
   portraitShowName: false,
   portraitShowRarity: true,
   portraitShowDescription: false,
@@ -49,6 +51,14 @@ function clampDisplayDuration(value: unknown) {
   return Math.min(15, Math.max(2, parsed));
 }
 
+function clampMultiDrawDisplayDuration(value: unknown) {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_OVERLAY_OPTIONS.multiDrawDisplayDuration;
+  }
+  return Math.min(10, Math.max(1, parsed));
+}
+
 function parseStoredOptions(value: unknown): OverlayOptions {
   if (!value || typeof value !== "object") {
     return { ...DEFAULT_OVERLAY_OPTIONS };
@@ -62,6 +72,7 @@ function parseStoredOptions(value: unknown): OverlayOptions {
     effects: readStoredBoolean(stored.effects, DEFAULT_OVERLAY_OPTIONS.effects),
     smallMode: readStoredBoolean(stored.smallMode, DEFAULT_OVERLAY_OPTIONS.smallMode),
     displayDuration: clampDisplayDuration(stored.displayDuration),
+    multiDrawDisplayDuration: clampMultiDrawDisplayDuration(stored.multiDrawDisplayDuration),
     portraitShowName: readStoredBoolean(stored.portraitShowName, DEFAULT_OVERLAY_OPTIONS.portraitShowName),
     portraitShowRarity: readStoredBoolean(stored.portraitShowRarity, DEFAULT_OVERLAY_OPTIONS.portraitShowRarity),
     portraitShowDescription: readStoredBoolean(stored.portraitShowDescription, DEFAULT_OVERLAY_OPTIONS.portraitShowDescription),
@@ -76,6 +87,7 @@ function areOverlayOptionsEqual(a: OverlayOptions, b: OverlayOptions) {
     a.effects === b.effects &&
     a.smallMode === b.smallMode &&
     a.displayDuration === b.displayDuration &&
+    a.multiDrawDisplayDuration === b.multiDrawDisplayDuration &&
     a.portraitShowName === b.portraitShowName &&
     a.portraitShowRarity === b.portraitShowRarity &&
     a.portraitShowDescription === b.portraitShowDescription &&
@@ -219,6 +231,9 @@ export default function OverlayPreview({
     // カードの表示時間（デフォルト6秒、それ以外の場合のみ出力）
     // Display duration in seconds (default 6, only output if different)
     if (options.displayDuration !== 6) params.set("duration", String(options.displayDuration));
+    // N連ガチャ時のカード表示時間（デフォルト3秒、それ以外の場合のみ出力）
+    // Multi-draw card display duration in seconds (default 3, only output if different)
+    if (options.multiDrawDisplayDuration !== 3) params.set("mDuration", String(options.multiDrawDisplayDuration));
     // 縦長画像の付帯情報オプション
     // Portrait info options
     if (options.portraitShowName) params.set("pName", "true");               // デフォルトfalse、trueの場合のみ出力
@@ -493,6 +508,27 @@ export default function OverlayPreview({
               <span>15{t("options.seconds")}</span>
             </div>
             <p className="text-xs text-gray-400 mt-1">{t("options.displayDurationDescription")}</p>
+          </div>
+
+          <div className="pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-white">{t("options.multiDrawDisplayDuration")}</span>
+              <span className="text-sm text-purple-400 font-medium">{options.multiDrawDisplayDuration}{t("options.seconds")}</span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="10"
+              step="1"
+              value={options.multiDrawDisplayDuration}
+              onChange={(e) => setOptions(prev => ({ ...prev, multiDrawDisplayDuration: Number(e.target.value) }))}
+              className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-600"
+            />
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>1{t("options.seconds")}</span>
+              <span>10{t("options.seconds")}</span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">{t("options.multiDrawDisplayDurationDescription")}</p>
           </div>
         </div>
 
