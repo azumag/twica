@@ -131,13 +131,13 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6600)
+      await vi.advanceTimersByTimeAsync(3600)
     })
     expect(screen.getByText('Beta')).toBeInTheDocument()
     expect(playMock).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6600)
+      await vi.advanceTimersByTimeAsync(3600)
     })
     expect(screen.getByText('Gamma')).toBeInTheDocument()
     expect(playMock).toHaveBeenCalledTimes(1)
