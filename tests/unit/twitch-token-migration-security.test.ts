@@ -4,7 +4,7 @@ import { resolve } from 'path'
 
 describe('encrypted Twitch token migration', () => {
   const migration = readFileSync(
-    resolve(__dirname, '../../supabase/migrations/00041_add_encrypted_twitch_oauth_tokens.sql'),
+    resolve(__dirname, '../../supabase/migrations/00054_add_encrypted_twitch_oauth_tokens.sql'),
     'utf8',
   )
 
@@ -18,6 +18,7 @@ describe('encrypted Twitch token migration', () => {
 
   it('limits token table access to service_role RLS policy', () => {
     expect(migration).toContain('ALTER TABLE twitch_oauth_tokens ENABLE ROW LEVEL SECURITY')
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.twitch_oauth_tokens TO service_role')
     expect(migration).toContain('FOR ALL')
     expect(migration).toContain('TO service_role')
     expect(migration).toContain('USING (true)')

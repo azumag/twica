@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS twitch_oauth_tokens (
 
 ALTER TABLE twitch_oauth_tokens ENABLE ROW LEVEL SECURITY;
 
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.twitch_oauth_tokens TO service_role;
+
 DROP POLICY IF EXISTS "Service role can manage Twitch OAuth tokens" ON twitch_oauth_tokens;
 CREATE POLICY "Service role can manage Twitch OAuth tokens"
 ON twitch_oauth_tokens
