@@ -549,6 +549,14 @@
       "raidOnly": "レイド限定",
       "multiDraw": "{count}連",
       "raidLimited": "レイド限定",
+      "guaranteedRarity": "確定枠",
+      "guaranteedRarityNone": "なし",
+      "guaranteedRarityBadge": "最終{rarity}+確定",
+      "guaranteedRarityOptions": {
+        "rare": "レア",
+        "epic": "エピック",
+        "legendary": "レジェンダリー"
+      },
       "raidGiftTitle": "レイドガチャ",
       "raidGiftDescription": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",
       "raidGiftEnabled": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",

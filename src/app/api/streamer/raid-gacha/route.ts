@@ -7,12 +7,14 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger";
+import { isGuaranteedRarity, normalizeGuaranteedRarity } from "@/lib/rarity";
 
 function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? "";
   return error?.code === "PGRST204"
     || message.includes("raid_gacha_active_until")
-    || message.includes("raid_gacha_draw_count");
+    || message.includes("raid_gacha_draw_count")
+    || message.includes("raid_gacha_guaranteed_rarity");
 }
 
 function isActiveUntil(value: string | null | undefined): boolean {
@@ -25,7 +27,7 @@ async function getOwnedStreamer(twitchUserId: string) {
   const supabaseAdmin = getSupabaseAdmin();
   let { data: streamer, error } = await supabaseAdmin
     .from("streamers")
-    .select("id, raid_gacha_active_until, raid_gacha_draw_count")
+    .select("id, raid_gacha_active_until, raid_gacha_draw_count, raid_gacha_guaranteed_rarity")
     .eq("twitch_user_id", twitchUserId)
     .maybeSingle();
 
@@ -36,7 +38,7 @@ async function getOwnedStreamer(twitchUserId: string) {
       .eq("twitch_user_id", twitchUserId)
       .maybeSingle();
     streamer = fallbackResult.data
-      ? { ...fallbackResult.data, raid_gacha_active_until: null, raid_gacha_draw_count: 0 }
+      ? { ...fallbackResult.data, raid_gacha_active_until: null, raid_gacha_draw_count: 0, raid_gacha_guaranteed_rarity: null }
       : fallbackResult.data;
     error = fallbackResult.error;
   }
@@ -76,6 +78,7 @@ export async function GET(request: NextRequest) {
       active: isActiveUntil(streamer.raid_gacha_active_until),
       activeUntil: streamer.raid_gacha_active_until,
       drawCount: streamer.raid_gacha_draw_count ?? 0,
+      guaranteedRarity: streamer.raid_gacha_guaranteed_rarity ?? null,
     }, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
     });
@@ -118,6 +121,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const requestedDrawCount = body.drawCount === undefined ? 0 : Number(body.drawCount);
+    const guaranteedRarityInput = body.guaranteedRarity;
 
     if (!Number.isInteger(requestedDrawCount) || requestedDrawCount < 0 || requestedDrawCount > 10) {
       return NextResponse.json(
@@ -126,6 +130,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (
+      guaranteedRarityInput !== undefined
+      && guaranteedRarityInput !== null
+      && guaranteedRarityInput !== ""
+      && !isGuaranteedRarity(guaranteedRarityInput)
+    ) {
+      return NextResponse.json(
+        { error: "guaranteedRarity must be one of rare, epic, legendary, or null" },
+        { status: 400 },
+      );
+    }
+    const guaranteedRarity = normalizeGuaranteedRarity(guaranteedRarityInput);
+
     const { streamer, error: streamerError } = await getOwnedStreamer(session.twitchUserId);
     if (streamerError) return handleDatabaseError(streamerError, "Raid Gacha API: POST lookup");
     if (!streamer) return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
@@ -133,9 +150,12 @@ export async function POST(request: NextRequest) {
     const supabaseAdmin = getSupabaseAdmin();
     const { data: updatedStreamer, error } = await supabaseAdmin
       .from("streamers")
-      .update({ raid_gacha_draw_count: requestedDrawCount })
+      .update({
+        raid_gacha_draw_count: requestedDrawCount,
+        raid_gacha_guaranteed_rarity: requestedDrawCount >= 2 ? guaranteedRarity : null,
+      })
       .eq("id", streamer.id)
-      .select("raid_gacha_active_until, raid_gacha_draw_count")
+      .select("raid_gacha_active_until, raid_gacha_draw_count, raid_gacha_guaranteed_rarity")
       .maybeSingle();
 
     if (error) return handleDatabaseError(error, "Raid Gacha API: POST update");
@@ -143,6 +163,7 @@ export async function POST(request: NextRequest) {
     logger.info("Raid gacha state updated", {
       streamerId: streamer.id,
       drawCount: requestedDrawCount,
+      guaranteedRarity: requestedDrawCount >= 2 ? guaranteedRarity : null,
     });
 
     return NextResponse.json({
@@ -150,6 +171,7 @@ export async function POST(request: NextRequest) {
       active: isActiveUntil(updatedStreamer?.raid_gacha_active_until),
       activeUntil: updatedStreamer?.raid_gacha_active_until ?? null,
       drawCount: updatedStreamer?.raid_gacha_draw_count ?? requestedDrawCount,
+      guaranteedRarity: updatedStreamer?.raid_gacha_guaranteed_rarity ?? null,
     });
   } catch (error) {
     return handleApiError(error, "Raid Gacha API: POST");

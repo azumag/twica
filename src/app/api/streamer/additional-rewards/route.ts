@@ -7,10 +7,14 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger";
+import { isGuaranteedRarity, normalizeGuaranteedRarity } from "@/lib/rarity";
 
 function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? "";
-  return error?.code === "PGRST204" || message.includes("draw_count") || message.includes("is_raid_limited");
+  return error?.code === "PGRST204"
+    || message.includes("draw_count")
+    || message.includes("is_raid_limited")
+    || message.includes("guaranteed_rarity");
 }
 
 const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
@@ -63,7 +67,7 @@ export async function GET(request: NextRequest) {
     // このストリーマーの全ての追加報酬を取得
     let { data: rewards, error } = await supabaseAdmin
       .from("streamer_additional_gacha_rewards")
-      .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
+      .select("id, reward_id, reward_name, draw_count, is_raid_limited, guaranteed_rarity, created_at")
       .eq("streamer_id", streamer.id)
       .order("created_at", { ascending: true });
 
@@ -77,6 +81,7 @@ export async function GET(request: NextRequest) {
         ...reward,
         draw_count: 1,
         is_raid_limited: false,
+        guaranteed_rarity: null,
       }));
       error = fallbackResult.error;
     }
@@ -142,7 +147,7 @@ export async function POST(request: NextRequest) {
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { rewardId, rewardName, drawCount, isRaidLimited } = body;
+    const { rewardId, rewardName, drawCount, isRaidLimited, guaranteedRarity: guaranteedRarityInput } = body;
 
     if (!rewardId) {
       return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
@@ -162,6 +167,19 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    if (
+      guaranteedRarityInput !== undefined
+      && guaranteedRarityInput !== null
+      && guaranteedRarityInput !== ""
+      && !isGuaranteedRarity(guaranteedRarityInput)
+    ) {
+      return NextResponse.json(
+        { error: "guaranteedRarity must be one of rare, epic, legendary, or null" },
+        { status: 400 }
+      );
+    }
+    const guaranteedRarity = normalizeGuaranteedRarity(guaranteedRarityInput);
 
     // Get streamer info to verify ownership
     // ストリーマー情報を取得して所有権を確認
@@ -203,6 +221,7 @@ export async function POST(request: NextRequest) {
         reward_name: rewardName || null,
         draw_count: normalizedDrawCount,
         is_raid_limited: isRaidLimited ?? false,
+        guaranteed_rarity: normalizedDrawCount >= 2 ? guaranteedRarity : null,
       })
       .select()
       .maybeSingle();
@@ -233,7 +252,7 @@ export async function POST(request: NextRequest) {
     }
 
     logger.info(
-      `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}, drawCount=${normalizedDrawCount}, raidLimited=${isRaidLimited ?? false}`
+      `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}, drawCount=${normalizedDrawCount}, raidLimited=${isRaidLimited ?? false}, guaranteedRarity=${normalizedDrawCount >= 2 ? guaranteedRarity ?? "none" : "none"}`
     );
 
     return NextResponse.json({ success: true, reward: newReward });

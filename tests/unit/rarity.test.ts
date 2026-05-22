@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  aggregateCustomRarities,
   formatRarityLabel,
   getRarityColorClass,
+  getRarityDisplayInfo,
   getRarityGlowClass,
   getRarityGradientClass,
-  getRarityDisplayInfo,
-  aggregateCustomRarities,
+  isGuaranteedRarity,
+  meetsRarityFloor,
+  normalizeGuaranteedRarity,
 } from "@/lib/rarity";
 
 describe("rarity helpers", () => {
@@ -59,6 +62,31 @@ describe("rarity helpers", () => {
       expect(
         aggregateCustomRarities([{ rarity: "common" }, { rarity: "rare" }]),
       ).toEqual([]);
+    });
+  });
+
+  describe("guaranteed rarity helpers", () => {
+    it("recognizes supported guaranteed rarity values", () => {
+      expect(isGuaranteedRarity("rare")).toBe(true);
+      expect(isGuaranteedRarity("epic")).toBe(true);
+      expect(isGuaranteedRarity("legendary")).toBe(true);
+      expect(isGuaranteedRarity("common")).toBe(false);
+      expect(isGuaranteedRarity("custom")).toBe(false);
+    });
+
+    it("normalizes empty guaranteed rarity values to null", () => {
+      expect(normalizeGuaranteedRarity(undefined)).toBeNull();
+      expect(normalizeGuaranteedRarity(null)).toBeNull();
+      expect(normalizeGuaranteedRarity("")).toBeNull();
+      expect(normalizeGuaranteedRarity("rare")).toBe("rare");
+      expect(normalizeGuaranteedRarity("common")).toBeNull();
+    });
+
+    it("checks built-in rarity floors while excluding custom rarity values", () => {
+      expect(meetsRarityFloor("rare", "rare")).toBe(true);
+      expect(meetsRarityFloor("epic", "rare")).toBe(true);
+      expect(meetsRarityFloor("common", "rare")).toBe(false);
+      expect(meetsRarityFloor("custom-ultra", "rare")).toBe(false);
     });
   });
 });

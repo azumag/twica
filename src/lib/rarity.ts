@@ -75,3 +75,30 @@ export function getRarityGradientClass(rarity: string): string {
 export function getRarityGlowClass(rarity: string): string {
   return RARITY_GLOW[rarity] ?? DEFAULT_RARITY_GLOW_CLASS;
 }
+
+export const GUARANTEED_RARITY_VALUES = ["rare", "epic", "legendary"] as const;
+
+export type GuaranteedRarity = (typeof GUARANTEED_RARITY_VALUES)[number];
+
+const RARITY_RANK: Record<string, number> = {
+  common: 0,
+  rare: 1,
+  epic: 2,
+  legendary: 3,
+};
+
+export function isGuaranteedRarity(value: unknown): value is GuaranteedRarity {
+  return typeof value === "string" && GUARANTEED_RARITY_VALUES.includes(value as GuaranteedRarity);
+}
+
+export function normalizeGuaranteedRarity(value: unknown): GuaranteedRarity | null {
+  if (value === undefined || value === null || value === "") return null;
+  return isGuaranteedRarity(value) ? value : null;
+}
+
+export function meetsRarityFloor(cardRarity: string, floor: GuaranteedRarity): boolean {
+  const cardRank = RARITY_RANK[cardRarity];
+  const floorRank = RARITY_RANK[floor];
+  if (cardRank === undefined || floorRank === undefined) return false;
+  return cardRank >= floorRank;
+}
