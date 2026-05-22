@@ -28,8 +28,11 @@ interface AdditionalReward {
   reward_name: string | null;
   draw_count: number;
   is_raid_limited: boolean;
+  guaranteed_rarity: string | null;
   created_at: string;
 }
+
+const GUARANTEED_RARITY_OPTIONS = ["rare", "epic", "legendary"] as const;
 
 const getRaidSubscriptionWarning = (data: unknown): string => {
   const raidSubscription = (data as { raidSubscription?: { warning?: unknown } })?.raidSubscription;
@@ -94,7 +97,9 @@ export default function ChannelPointSettings({
   const [addingAdditional, setAddingAdditional] = useState(false);
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
   const [additionalDrawCount, setAdditionalDrawCount] = useState(1);
+  const [additionalGuaranteedRarity, setAdditionalGuaranteedRarity] = useState("");
   const [raidGiftDrawCount, setRaidGiftDrawCount] = useState(0);
+  const [raidGiftGuaranteedRarity, setRaidGiftGuaranteedRarity] = useState("");
   const [updatingRaidGift, setUpdatingRaidGift] = useState(false);
   // Track if registration failed (webhook unreachable)
   // 登録失敗を追跡（Webhookに到達できなかった場合）
@@ -143,6 +148,7 @@ export default function ChannelPointSettings({
         if (typeof data.raidGiftDrawCount !== "undefined") {
           setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.raidGiftDrawCount ?? 0))));
         }
+        setRaidGiftGuaranteedRarity(typeof data.raidGiftGuaranteedRarity === "string" ? data.raidGiftGuaranteedRarity : "");
       }
     } catch (err) {
       logger.error("Failed to bootstrap channel point settings:", err);
@@ -193,6 +199,7 @@ export default function ChannelPointSettings({
       if (response.ok) {
         const data = await response.json();
         setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.drawCount ?? 0))));
+        setRaidGiftGuaranteedRarity(typeof data.guaranteedRarity === "string" ? data.guaranteedRarity : "");
       }
     } catch {
       logger.error("Failed to fetch raid gacha status");
@@ -208,7 +215,10 @@ export default function ChannelPointSettings({
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ drawCount: raidGiftDrawCount }),
+        body: JSON.stringify({
+          drawCount: raidGiftDrawCount,
+          guaranteedRarity: raidGiftDrawCount >= 2 ? raidGiftGuaranteedRarity || null : null,
+        }),
       });
       const data = await response.json();
 
@@ -218,6 +228,7 @@ export default function ChannelPointSettings({
       }
 
       setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.drawCount ?? 0))));
+      setRaidGiftGuaranteedRarity(typeof data.guaranteedRarity === "string" ? data.guaranteedRarity : "");
       setMessage(t("additionalRewards.raidGiftSaved"));
     } catch {
       setMessage(t("additionalRewards.raidStatusFailed"));
@@ -455,6 +466,7 @@ export default function ChannelPointSettings({
           rewardName: rewardName,
           drawCount: additionalDrawCount,
           isRaidLimited: false,
+          guaranteedRarity: additionalDrawCount >= 2 ? additionalGuaranteedRarity || null : null,
         }),
       });
 
@@ -471,6 +483,7 @@ export default function ChannelPointSettings({
       setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
       setSelectedAdditionalRewardId("");
       setAdditionalDrawCount(1);
+      setAdditionalGuaranteedRarity("");
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
       setRaidEventSubWarning(raidSubscriptionWarning);
@@ -1029,6 +1042,13 @@ export default function ChannelPointSettings({
                                {t("additionalRewards.raidLimited")}
                              </span>
                            )}
+                           {reward.draw_count > 1 && reward.guaranteed_rarity && (
+                             <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-100">
+                               {t("additionalRewards.guaranteedRarityBadge", {
+                                 rarity: t(`additionalRewards.guaranteedRarityOptions.${reward.guaranteed_rarity}`),
+                               })}
+                             </span>
+                           )}
                          </div>
                        </div>
                        <button
@@ -1051,7 +1071,7 @@ export default function ChannelPointSettings({
                      {t("additionalRewards.raidGiftDescription")}
                    </div>
                  </div>
-                 <div className="flex items-center gap-2">
+                 <div className="flex flex-wrap items-center gap-2">
                    <input
                      type="number"
                      min={0}
@@ -1060,6 +1080,24 @@ export default function ChannelPointSettings({
                      onChange={(e) => setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(e.target.value) || 0)))}
                      className="h-9 w-16 rounded-md border border-gray-600 bg-gray-700 px-2 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
                    />
+                   <label className="flex h-9 items-center gap-2 rounded-md border border-gray-600 bg-gray-700 pl-3 pr-2 text-sm text-gray-200 transition-colors hover:border-gray-500 focus-within:border-cyan-500 focus-within:ring-1 focus-within:ring-cyan-500/40">
+                     <span className="whitespace-nowrap text-xs text-gray-300">
+                       {t("additionalRewards.guaranteedRarity")}
+                     </span>
+                     <select
+                       value={raidGiftDrawCount >= 2 ? raidGiftGuaranteedRarity : ""}
+                       onChange={(e) => setRaidGiftGuaranteedRarity(e.target.value)}
+                       disabled={raidGiftDrawCount < 2}
+                       className="h-7 rounded bg-gray-800 px-2 text-xs text-gray-100 focus:outline-none disabled:text-gray-500"
+                     >
+                       <option value="">{t("additionalRewards.guaranteedRarityNone")}</option>
+                       {GUARANTEED_RARITY_OPTIONS.map((rarity) => (
+                         <option key={rarity} value={rarity}>
+                           {t(`additionalRewards.guaranteedRarityOptions.${rarity}`)}
+                         </option>
+                       ))}
+                     </select>
+                   </label>
                    <button
                      type="button"
                      onClick={updateRaidGiftSettings}
@@ -1073,7 +1111,7 @@ export default function ChannelPointSettings({
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto] sm:items-center">
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_180px_auto] sm:items-center">
                  {/*
                    ネイティブの矢印アイコンを残しつつ右側に余白を確保。
                    bg-gray-700 で他のフォーム要素と階調を揃え、フォーカスリングで状態を明示する。
@@ -1114,6 +1152,24 @@ export default function ChannelPointSettings({
                      onChange={(e) => setAdditionalDrawCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
                      className="h-7 w-12 rounded bg-gray-800 px-2 text-sm text-gray-100 focus:outline-none"
                    />
+                 </label>
+                 <label className="group flex h-10 items-center gap-2 rounded-md border border-gray-600 bg-gray-700 pl-3 pr-2 text-sm text-gray-200 transition-colors hover:border-gray-500 focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500/40">
+                   <span className="whitespace-nowrap text-xs text-gray-300">
+                     {t("additionalRewards.guaranteedRarity")}
+                   </span>
+                   <select
+                     value={additionalDrawCount >= 2 ? additionalGuaranteedRarity : ""}
+                     onChange={(e) => setAdditionalGuaranteedRarity(e.target.value)}
+                     disabled={additionalDrawCount < 2}
+                     className="h-7 min-w-0 flex-1 rounded bg-gray-800 px-2 text-xs text-gray-100 focus:outline-none disabled:text-gray-500"
+                   >
+                     <option value="">{t("additionalRewards.guaranteedRarityNone")}</option>
+                     {GUARANTEED_RARITY_OPTIONS.map((rarity) => (
+                       <option key={rarity} value={rarity}>
+                         {t(`additionalRewards.guaranteedRarityOptions.${rarity}`)}
+                       </option>
+                     ))}
+                   </select>
                  </label>
                  <button
                    onClick={handleAddAdditionalReward}

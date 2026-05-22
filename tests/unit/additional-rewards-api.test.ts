@@ -71,6 +71,7 @@ describe('/api/streamer/additional-rewards raid options', () => {
         reward_name: 'Raid 10',
         draw_count: 10,
         is_raid_limited: true,
+        guaranteed_rarity: 'rare',
       },
       error: null,
     })
@@ -91,6 +92,7 @@ describe('/api/streamer/additional-rewards raid options', () => {
         rewardName: 'Raid 10',
         drawCount: 10,
         isRaidLimited: true,
+        guaranteedRarity: 'rare',
       }),
     }))
 
@@ -98,7 +100,29 @@ describe('/api/streamer/additional-rewards raid options', () => {
     expect(insertQuery.insert).toHaveBeenCalledWith(expect.objectContaining({
       draw_count: 10,
       is_raid_limited: true,
+      guaranteed_rarity: 'rare',
     }))
+  })
+
+  it('rejects unsupported guaranteedRarity values', async () => {
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue({ from: vi.fn() } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const response = await POST(new NextRequest('http://localhost/api/streamer/additional-rewards', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        rewardId: 'raid-reward',
+        rewardName: 'Raid 10',
+        drawCount: 10,
+        guaranteedRarity: 'common',
+      }),
+    }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({
+      error: 'guaranteedRarity must be one of rare, epic, legendary, or null',
+    })
   })
 
   it('rejects drawCount outside the supported range', async () => {
@@ -201,6 +225,7 @@ describe('/api/streamer/additional-rewards raid options', () => {
         reward_id: 'legacy-reward',
         draw_count: 1,
         is_raid_limited: false,
+        guaranteed_rarity: null,
       }),
     ])
   })

@@ -5,13 +5,14 @@ import { Result, ok, err } from '@/types/result'
 import { logger } from '@/lib/logger'
 import { reportError } from '@/lib/sentry/error-handler'
 import { withRetry } from '@/lib/supabase/retry'
+import { meetsRarityFloor, normalizeGuaranteedRarity, type GuaranteedRarity } from '@/lib/rarity'
 
 export interface GachaCard {
   id: string
   name: string
   description: string | null
   image_url: string | null
-  rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  rarity: string
   drop_rate: number
 }
 
@@ -41,7 +42,10 @@ export interface GachaResult {
 
 function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? ''
-  return error?.code === 'PGRST204' || message.includes('draw_count') || message.includes('is_raid_limited')
+  return error?.code === 'PGRST204'
+    || message.includes('draw_count')
+    || message.includes('is_raid_limited')
+    || message.includes('guaranteed_rarity')
 }
 
 const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
@@ -51,6 +55,7 @@ function isStreamerSettingsSchemaError(error: { message?: string; code?: string 
   return error?.code === 'PGRST204'
     || message.includes('raid_gacha_active_until')
     || message.includes('raid_gacha_draw_count')
+    || message.includes('raid_gacha_guaranteed_rarity')
     || message.includes('chat_announcement_multi_template')
     || message.includes('chat_announcement_multi_show_cards')
 }
@@ -64,7 +69,14 @@ function isRaidGachaActive(activeUntil: string | null | undefined, now = new Dat
 export class GachaService {
   private supabase = getSupabaseAdmin()
 
-  async executeGacha(streamerId: string, userTwitchId: string, userTwitchUsername: string, eventId?: string, rewardCost?: number): Promise<Result<GachaResult>> {
+  async executeGacha(
+    streamerId: string,
+    userTwitchId: string,
+    userTwitchUsername: string,
+    eventId?: string,
+    rewardCost?: number,
+    guaranteedRarity?: GuaranteedRarity | null
+  ): Promise<Result<GachaResult>> {
     try {
       // Get active cards for this streamer
       // このストリーマーの有効なカードを取得
@@ -85,9 +97,19 @@ export class GachaService {
         return err('No cards available for this streamer')
       }
 
-      // Select a card based on drop rates
-      // ドロップ率に基づいてカードを選択
-      const selectedCard = selectWeightedCard(normalizeDropRate(cards))
+      const guaranteedCandidates = guaranteedRarity
+        ? cards.filter((card) => meetsRarityFloor(card.rarity, guaranteedRarity))
+        : cards
+      const candidateCards = guaranteedCandidates.length > 0 ? guaranteedCandidates : cards
+
+      if (guaranteedRarity && guaranteedCandidates.length === 0) {
+        logger.warn('No cards match guaranteed rarity floor; falling back to normal gacha candidates', {
+          streamerId,
+          guaranteedRarity,
+        })
+      }
+
+      const selectedCard = selectWeightedCard(normalizeDropRate(candidateCards))
 
       if (!selectedCard) {
         return err('Failed to select card')
@@ -149,7 +171,8 @@ export class GachaService {
     userTwitchUsername: string,
     drawCount: number,
     eventId?: string,
-    rewardCost?: number
+    rewardCost?: number,
+    guaranteedRarity?: GuaranteedRarity | null
   ): Promise<Result<GachaResult>> {
     const cards: GachaCard[] = []
     const historyIds: string[] = []
@@ -158,12 +181,16 @@ export class GachaService {
     for (let index = 0; index < drawCount; index += 1) {
       const drawEventId = eventId && index > 0 ? `${eventId}:${index + 1}` : eventId
       const drawRewardCost = index === 0 ? rewardCost : undefined
+      const drawGuaranteedRarity = drawCount >= 2 && index === drawCount - 1
+        ? guaranteedRarity
+        : null
       const result = await this.executeGacha(
         streamerId,
         userTwitchId,
         userTwitchUsername,
         drawEventId,
-        drawRewardCost
+        drawRewardCost,
+        drawGuaranteedRarity
       )
 
       if (!result.success) {
@@ -342,7 +369,7 @@ export class GachaService {
       const { data: additionalReward, error: additionalError } = await withRetry(
         () => this.supabase
           .from('streamer_additional_gacha_rewards')
-          .select('id, draw_count, is_raid_limited')
+          .select('id, draw_count, is_raid_limited, guaranteed_rarity')
           .eq('streamer_id', streamer.id)
           .eq('reward_id', event.reward.id)
           .maybeSingle(),
@@ -377,8 +404,28 @@ export class GachaService {
         // Additional reward matched, execute gacha
         // 追加報酬が一致したのでガチャを実行
         const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 10)
-        logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}, drawCount=${drawCount}, raidLimited=${Boolean(additionalReward.is_raid_limited)}`)
-        return await executeAndAttachStreamer(drawCount)
+        const guaranteedRarity = normalizeGuaranteedRarity(additionalReward.guaranteed_rarity)
+        logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}, drawCount=${drawCount}, raidLimited=${Boolean(additionalReward.is_raid_limited)}, guaranteedRarity=${guaranteedRarity ?? 'none'}`)
+        const result = await this.executeGachaDraws(
+          streamer.id,
+          event.user_id,
+          event.user_name,
+          drawCount,
+          eventId,
+          event.reward.cost,
+          guaranteedRarity
+        )
+        if (!result.success) return result
+        return ok({
+          ...result.data,
+          streamer: {
+            id: streamer.id,
+            chat_announcement_enabled: streamer.chat_announcement_enabled,
+            chat_announcement_template: streamer.chat_announcement_template,
+            chat_announcement_multi_template: streamer.chat_announcement_multi_template,
+            chat_announcement_multi_show_cards: streamer.chat_announcement_multi_show_cards ?? true,
+          },
+        })
       }
 
       return err('Reward ID mismatch')
@@ -399,7 +446,7 @@ export class GachaService {
     try {
       let { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_draw_count')
+        .select('id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_draw_count, raid_gacha_guaranteed_rarity')
         .eq('twitch_user_id', event.to_broadcaster_user_id)
         .maybeSingle()
 
@@ -415,6 +462,7 @@ export class GachaService {
               chat_announcement_multi_template: null,
               chat_announcement_multi_show_cards: true,
               raid_gacha_draw_count: 0,
+              raid_gacha_guaranteed_rarity: null,
             }
           : fallbackResult.data
         streamerError = fallbackResult.error
@@ -436,7 +484,8 @@ export class GachaService {
         userName,
         drawCount,
         eventId,
-        undefined
+        undefined,
+        normalizeGuaranteedRarity(streamer.raid_gacha_guaranteed_rarity)
       )
 
       if (!result.success) return result

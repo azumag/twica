@@ -23,14 +23,18 @@ interface TwitchReward {
 
 function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? "";
-  return error?.code === "PGRST204" || message.includes("draw_count") || message.includes("is_raid_limited");
+  return error?.code === "PGRST204"
+    || message.includes("draw_count")
+    || message.includes("is_raid_limited")
+    || message.includes("guaranteed_rarity");
 }
 
 function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? "";
   return error?.code === "PGRST204"
     || message.includes("raid_gacha_active_until")
-    || message.includes("raid_gacha_draw_count");
+    || message.includes("raid_gacha_draw_count")
+    || message.includes("raid_gacha_guaranteed_rarity");
 }
 
 async function getTwitchRewards(twitchUserId: string): Promise<{ rewards: TwitchReward[]; requiresReauth?: boolean; error?: string }> {
@@ -120,7 +124,7 @@ async function getAdditionalRewards(streamerId: string) {
   const supabaseAdmin = getSupabaseAdmin();
   let { data: rewards, error } = await supabaseAdmin
     .from("streamer_additional_gacha_rewards")
-    .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
+    .select("id, reward_id, reward_name, draw_count, is_raid_limited, guaranteed_rarity, created_at")
     .eq("streamer_id", streamerId)
     .order("created_at", { ascending: true });
 
@@ -134,6 +138,7 @@ async function getAdditionalRewards(streamerId: string) {
       ...reward,
       draw_count: 1,
       is_raid_limited: false,
+      guaranteed_rarity: null,
     }));
     error = fallbackResult.error;
   }
@@ -149,7 +154,7 @@ async function getOwnedStreamer(twitchUserId: string) {
   const supabaseAdmin = getSupabaseAdmin();
   let { data: streamer, error } = await supabaseAdmin
     .from("streamers")
-    .select("id, channel_point_reward_id, raid_gacha_draw_count")
+    .select("id, channel_point_reward_id, raid_gacha_draw_count, raid_gacha_guaranteed_rarity")
     .eq("twitch_user_id", twitchUserId)
     .maybeSingle();
 
@@ -160,7 +165,7 @@ async function getOwnedStreamer(twitchUserId: string) {
       .eq("twitch_user_id", twitchUserId)
       .maybeSingle();
     streamer = fallbackResult.data
-      ? { ...fallbackResult.data, raid_gacha_draw_count: 0 }
+      ? { ...fallbackResult.data, raid_gacha_draw_count: 0, raid_gacha_guaranteed_rarity: null }
       : fallbackResult.data;
     error = fallbackResult.error;
   }
@@ -234,6 +239,7 @@ export async function GET(request: NextRequest) {
       responsePayload.raidEventSubStatus = status.raidStatus;
       responsePayload.additionalRewards = await getAdditionalRewards(streamer.id);
       responsePayload.raidGiftDrawCount = streamer.raid_gacha_draw_count ?? 0;
+      responsePayload.raidGiftGuaranteedRarity = streamer.raid_gacha_guaranteed_rarity ?? null;
     }
 
     return NextResponse.json(responsePayload);

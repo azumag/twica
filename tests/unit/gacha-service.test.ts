@@ -21,7 +21,7 @@ const testCards = [
 ]
 
 /** cardsクエリの共通モック生成。thenableにしてawait対応 */
-function createCardsQuery(cards: typeof testCards | []) {
+function createCardsQuery(cards: Array<(typeof testCards)[number]> | []) {
   const q = createMockQueryBuilder()
   ;(q as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
     resolve({ data: cards, error: null })
@@ -404,6 +404,115 @@ describe('GachaService.executeGachaForEventSub', () => {
     expect(mockRpc).toHaveBeenNthCalledWith(3, 'execute_gacha_transaction', expect.objectContaining({
       p_event_id: 'event-raid:3',
       p_reward_cost: null,
+    }))
+  })
+
+  it('追加報酬のN連最終枠に確定レアリティを適用する', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
+      },
+      error: null,
+    })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'additional-1', draw_count: 2, is_raid_limited: false, guaranteed_rarity: 'rare' },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery([
+      { id: 'common-card', name: 'Common', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
+      { id: 'rare-card', name: 'Rare', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+    ])
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'rare-reward', cost: 500 },
+    }, 'event-rare')
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.cards?.[1].id).toBe('rare-card')
+    }
+    expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({
+      p_card_id: 'rare-card',
+      p_event_id: 'event-rare:2',
+    }))
+  })
+
+  it('確定レアリティ対象カードがない場合は通常候補にフォールバックする', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
+      },
+      error: null,
+    })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'additional-1', draw_count: 2, is_raid_limited: false, guaranteed_rarity: 'legendary' },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery([
+      { id: 'common-card', name: 'Common', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
+    ])
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'legendary-reward', cost: 500 },
+    }, 'event-fallback')
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.cards).toHaveLength(2)
+    }
+    expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({
+      p_card_id: 'common-card',
+      p_event_id: 'event-fallback:2',
     }))
   })
 

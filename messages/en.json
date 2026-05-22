@@ -549,6 +549,14 @@
       "raidOnly": "Raid only",
       "multiDraw": "{count} draws",
       "raidLimited": "Raid limited",
+      "guaranteedRarity": "Guaranteed slot",
+      "guaranteedRarityNone": "None",
+      "guaranteedRarityBadge": "Last slot {rarity}+",
+      "guaranteedRarityOptions": {
+        "rare": "Rare",
+        "epic": "Epic",
+        "legendary": "Legendary"
+      },
       "raidGiftTitle": "Raid gacha",
       "raidGiftDescription": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
       "raidGiftEnabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
