@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { logger } from "@/lib/logger";
 import { normalizeDropRate } from "@/lib/card-utils";
 import { reportError } from "@/lib/sentry/error-handler";
+import { withRetry } from "@/lib/supabase/retry";
 import type { Card, Streamer, GachaHistory } from "@/types/database";
 
 interface CardWithDetails extends Card {
@@ -136,8 +137,10 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
 
   // RPC: DB側でGROUP BY集計（ユニークカード種類数のみ返却、行数制限の影響なし）
   const startQuery = Date.now();
-  const { data: rpcResult, error: rpcError } = await supabaseAdmin
-    .rpc("get_user_card_counts", { p_twitch_user_id: twitchUserId });
+  const { data: rpcResult, error: rpcError } = await withRetry(
+    () => supabaseAdmin.rpc("get_user_card_counts", { p_twitch_user_id: twitchUserId }),
+    "get_user_card_counts",
+  );
 
   if (!rpcError) {
     logger.info(`[Perf] getUserCards RPC: ${Date.now() - startQuery}ms`);
@@ -392,6 +395,21 @@ export interface GachaUserEntry {
   lastDrawAt: string;
 }
 
+function normalizeUniqueCardIds(cardIds: unknown): string[] {
+  if (!Array.isArray(cardIds)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      cardIds.filter(
+        (cardId): cardId is string =>
+          typeof cardId === "string" && cardId.length > 0
+      )
+    )
+  );
+}
+
 /**
  * Get aggregated user list for a streamer's gacha history
  * RPC get_gacha_users_for_streamer でDB側集計を行い、件数制限なしで正確なカード所有状況を返す
@@ -419,14 +437,17 @@ export async function getGachaUsersForStreamer(
     // asキャストだが、SQL側でCOALESCEにより users/unique_card_ids は必ず配列を返す
     const rpcData = rpcResult as { users: Array<{ user_twitch_id: string; username: string; draw_count: number; last_draw_at: string; unique_card_ids: string[] }>; total: number };
     const rpcUsers = rpcData.users || [];
-    const users: GachaUserEntry[] = rpcUsers.map((u) => ({
-      userTwitchId: u.user_twitch_id,
-      username: u.username || "",
-      drawCount: u.draw_count,
-      uniqueCards: (u.unique_card_ids || []).length,
-      uniqueCardIds: u.unique_card_ids || [],
-      lastDrawAt: u.last_draw_at,
-    }));
+    const users: GachaUserEntry[] = rpcUsers.map((u) => {
+      const uniqueCardIds = normalizeUniqueCardIds(u.unique_card_ids);
+      return {
+        userTwitchId: u.user_twitch_id,
+        username: u.username || "",
+        drawCount: u.draw_count,
+        uniqueCards: uniqueCardIds.length,
+        uniqueCardIds,
+        lastDrawAt: u.last_draw_at,
+      };
+    });
     const total = rpcData.total || 0;
     return {
       users,
@@ -551,6 +572,14 @@ export interface GachaStatsResult {
     configuredRate: number;
     actualCount: number;
     actualRate: number;
+    ownerCount: number;
+    owners: Array<{
+      userTwitchId: string;
+      username: string;
+      displayName: string;
+      ownedCount: number;
+      lastObtainedAt: string;
+    }>;
   }>;
   rarityStats: Array<{
     rarity: string;
@@ -590,6 +619,25 @@ interface GachaDropStatsRpcRarityRow {
   rate: number | string;
 }
 
+type GachaStatsOwner = GachaStatsResult["cardStats"][number]["owners"][number];
+
+type GachaStatsOwnerRow = {
+  card_id: string;
+  obtained_at: string;
+  users:
+    | {
+        twitch_user_id: string;
+        twitch_username: string | null;
+        twitch_display_name: string | null;
+      }
+    | Array<{
+        twitch_user_id: string;
+        twitch_username: string | null;
+        twitch_display_name: string | null;
+      }>
+    | null;
+};
+
 function parseGachaDropStatsRpc(rpcResult: unknown): Omit<GachaStatsResult, "channelPointStats"> | null {
   if (!rpcResult || typeof rpcResult !== "object") return null;
 
@@ -612,6 +660,8 @@ function parseGachaDropStatsRpc(rpcResult: unknown): Omit<GachaStatsResult, "cha
       configuredRate: Number(row.configured_rate || 0),
       actualCount: Number(row.actual_count || 0),
       actualRate: Number(row.actual_rate || 0),
+      ownerCount: 0,
+      owners: [],
     })),
     rarityStats: payload.rarity_stats.map((row) => ({
       rarity: row.rarity,
@@ -732,12 +782,23 @@ export async function getGachaStats(
   const daysAgo = period === "7d" ? 7 : 30;
   const fromDate = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
 
-  const [dropStatsResult, channelPointResult] = await Promise.all([
+  const [dropStatsResult, ownerResult, channelPointResult] = await Promise.all([
     supabaseAdmin
       .rpc("get_gacha_drop_stats", {
         p_streamer_id: streamerId,
         p_from_date: fromDate.toISOString(),
       }),
+    supabaseAdmin
+      .from("user_cards")
+      .select(`
+        card_id,
+        obtained_at,
+        users!inner(twitch_user_id, twitch_username, twitch_display_name),
+        cards!inner(streamer_id, is_active)
+      `)
+      .eq("cards.streamer_id", streamerId)
+      .eq("cards.is_active", true)
+      .range(0, 9999),
     supabaseAdmin
       .rpc("get_channel_point_usage_stats", {
         p_streamer_id: streamerId,
@@ -767,7 +828,45 @@ export async function getGachaStats(
     }
   }
 
-  return { ...dropStats, channelPointStats };
+  const ownersByCard = new Map<string, Map<string, GachaStatsOwner>>();
+
+  for (const row of (ownerResult.data || []) as GachaStatsOwnerRow[]) {
+    const user = Array.isArray(row.users) ? row.users[0] : row.users;
+    if (!user) continue;
+
+    const cardOwners = ownersByCard.get(row.card_id) || new Map();
+    const existing = cardOwners.get(user.twitch_user_id);
+    if (existing) {
+      existing.ownedCount += 1;
+      if (row.obtained_at > existing.lastObtainedAt) {
+        existing.lastObtainedAt = row.obtained_at;
+      }
+    } else {
+      cardOwners.set(user.twitch_user_id, {
+        userTwitchId: user.twitch_user_id,
+        username: user.twitch_username || "",
+        displayName: user.twitch_display_name || user.twitch_username || "",
+        ownedCount: 1,
+        lastObtainedAt: row.obtained_at,
+      });
+    }
+    ownersByCard.set(row.card_id, cardOwners);
+  }
+
+  const cardStats = dropStats.cardStats.map((card) => {
+    const owners = Array.from(ownersByCard.get(card.cardId)?.values() || []).sort(
+      (a, b) =>
+        b.ownedCount - a.ownedCount ||
+        new Date(b.lastObtainedAt).getTime() - new Date(a.lastObtainedAt).getTime()
+    );
+    return {
+      ...card,
+      ownerCount: owners.length,
+      owners,
+    };
+  });
+
+  return { ...dropStats, cardStats, channelPointStats };
 }
 
 /**
@@ -830,11 +929,13 @@ async function fetchUserCardsForStreamerFromDB(
 
   // RPC: DB側でGROUP BY集計 + streamer_idフィルタ
   const startQuery = Date.now();
-  const { data: rpcResult, error: rpcError } = await supabaseAdmin
-    .rpc("get_user_card_counts", {
+  const { data: rpcResult, error: rpcError } = await withRetry(
+    () => supabaseAdmin.rpc("get_user_card_counts", {
       p_twitch_user_id: twitchUserId,
       p_streamer_id: streamerId,
-    });
+    }),
+    "get_user_card_counts_for_streamer",
+  );
 
   if (!rpcError) {
     logger.info(`[Perf] getUserCardsForStreamer RPC: ${Date.now() - startQuery}ms`);
@@ -1053,12 +1154,15 @@ export const getCollectionCompletions = cache(async (
   const cachedFetch = unstable_cache(
     async () => {
       const supabaseAdmin = getSupabaseAdmin();
-      const { data, error } = await supabaseAdmin
-        .from("collection_completions")
-        .select("total_cards, completed_at")
-        .eq("twitch_user_id", twitchUserId)
-        .eq("streamer_id", streamerId)
-        .order("completed_at", { ascending: false });
+      const { data, error } = await withRetry(
+        () => supabaseAdmin
+          .from("collection_completions")
+          .select("total_cards, completed_at")
+          .eq("twitch_user_id", twitchUserId)
+          .eq("streamer_id", streamerId)
+          .order("completed_at", { ascending: false }),
+        "dashboard:getCollectionCompletions",
+      );
       if (error) {
         logger.error(`Failed to fetch collection completions: ${error.message}`);
         return [];

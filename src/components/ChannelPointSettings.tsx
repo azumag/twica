@@ -19,6 +19,8 @@ interface AdditionalReward {
   id: string;
   reward_id: string;
   reward_name: string | null;
+  draw_count: number;
+  is_raid_limited: boolean;
   created_at: string;
 }
 
@@ -27,8 +29,9 @@ interface EventSubSubscription {
   status: string;
   type: string;
   condition: {
-    broadcaster_user_id: string;
+    broadcaster_user_id?: string;
     reward_id?: string;
+    to_broadcaster_user_id?: string;
   };
   transport?: {
     callback?: string;
@@ -39,10 +42,82 @@ interface EventSubSubscription {
   };
 }
 
+type EventSubStatus = "none" | "pending" | "active" | "error";
+
+const CHANNEL_POINTS_EVENTSUB_TYPE = "channel.channel_points_custom_reward_redemption.add";
+const RAID_EVENTSUB_TYPE = "channel.raid";
+const FAILED_EVENTSUB_STATUSES = [
+  "webhook_callback_verification_failed",
+  "notification_failures_exceeded",
+  "authorization_revoked",
+];
+
+const matchesExpectedCallback = (sub: EventSubSubscription) => sub.debug?.callbackMatch ?? true;
+
+const getRaidSubscriptionWarning = (data: unknown): string => {
+  const raidSubscription = (data as { raidSubscription?: { warning?: unknown } })?.raidSubscription;
+  return typeof raidSubscription?.warning === "string" ? raidSubscription.warning : "";
+};
+
+const getRaidSubscriptionStatus = (data: unknown): EventSubStatus | null => {
+  const status = (data as { raidSubscription?: { status?: unknown } })?.raidSubscription?.status;
+  return status === "none" || status === "pending" || status === "active" || status === "error"
+    ? status
+    : null;
+};
+
+export function deriveEventSubStatus(
+  subs: EventSubSubscription[],
+  rewardIdToCheck: string,
+): { rewardStatus: EventSubStatus; raidStatus: EventSubStatus } {
+  const rewardSubscriptions = subs.filter(
+    (sub) => sub.type === CHANNEL_POINTS_EVENTSUB_TYPE && matchesExpectedCallback(sub)
+  );
+  const raidSubscriptions = subs.filter(
+    (sub) => sub.type === RAID_EVENTSUB_TYPE && matchesExpectedCallback(sub)
+  );
+
+  const hasActiveRewardSub = rewardSubscriptions.some(
+    (sub) => sub.status === "enabled" && sub.condition.reward_id === rewardIdToCheck
+  );
+  const hasFailedRewardSub = rewardSubscriptions.some(
+    (sub) => FAILED_EVENTSUB_STATUSES.includes(sub.status)
+  );
+  const hasActiveRaidSub = raidSubscriptions.some((sub) => sub.status === "enabled");
+  const hasFailedRaidSub = raidSubscriptions.some(
+    (sub) => FAILED_EVENTSUB_STATUSES.includes(sub.status)
+  );
+
+  return {
+    rewardStatus: hasActiveRewardSub
+      ? "active"
+      : hasFailedRewardSub
+        ? "error"
+        : rewardSubscriptions.length > 0
+          ? "pending"
+          : "none",
+    raidStatus: hasActiveRaidSub
+      ? "active"
+      : hasFailedRaidSub
+        ? "error"
+        : raidSubscriptions.length > 0
+          ? "pending"
+          : "none",
+  };
+}
+
 interface ChannelPointSettingsProps {
   streamerId: string;
   currentRewardId: string | null;
   currentRewardName: string | null;
+  /**
+   * compact: シンプル表示モード用の縮約レンダリング。
+   * EventSub 診断パネル / 追加報酬セクション / 詳細エラーリストを隠し、
+   * 報酬選択 + ステータスピル + 保存ボタンの最小構成にする。
+   * Hide diagnostic panel, additional rewards, and verbose error states
+   * to give beginners a focused, low-noise reward picker.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -54,6 +129,7 @@ export default function ChannelPointSettings({
   streamerId,
   currentRewardId,
   currentRewardName,
+  compact = false,
 }: ChannelPointSettingsProps) {
   const t = useTranslations("channelPointSettings");
   const tCommon = useTranslations("common");
@@ -67,7 +143,9 @@ export default function ChannelPointSettings({
   const [disconnecting, setDisconnecting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [eventSubStatus, setEventSubStatus] = useState<"none" | "pending" | "active" | "error">("none");
+  const [eventSubStatus, setEventSubStatus] = useState<EventSubStatus>("none");
+  const [raidEventSubStatus, setRaidEventSubStatus] = useState<EventSubStatus>("none");
+  const [raidEventSubWarning, setRaidEventSubWarning] = useState("");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
   // チャネルポイント用スコープ不足でstep-up再認証が必要かどうか
   // Whether step-up reauth is needed because channel point scopes are missing
@@ -78,6 +156,9 @@ export default function ChannelPointSettings({
   const [additionalRewards, setAdditionalRewards] = useState<AdditionalReward[]>([]);
   const [addingAdditional, setAddingAdditional] = useState(false);
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
+  const [additionalDrawCount, setAdditionalDrawCount] = useState(1);
+  const [raidGiftDrawCount, setRaidGiftDrawCount] = useState(0);
+  const [updatingRaidGift, setUpdatingRaidGift] = useState(false);
   // Track if registration failed (webhook unreachable)
   // 登録失敗を追跡（Webhookに到達できなかった場合）
   const [registrationFailed, setRegistrationFailed] = useState(false);
@@ -196,6 +277,48 @@ export default function ChannelPointSettings({
     }
   }, []);
 
+  const fetchRaidGachaStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/streamer/raid-gacha", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.drawCount ?? 0))));
+      }
+    } catch {
+      logger.error("Failed to fetch raid gacha status");
+    }
+  }, []);
+
+  const updateRaidGiftSettings = async () => {
+    setUpdatingRaidGift(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/streamer/raid-gacha", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ drawCount: raidGiftDrawCount }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setMessage(data.error || t("additionalRewards.raidStatusFailed"));
+        return;
+      }
+
+      setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.drawCount ?? 0))));
+      setMessage(t("additionalRewards.raidGiftSaved"));
+    } catch {
+      setMessage(t("additionalRewards.raidStatusFailed"));
+    } finally {
+      setUpdatingRaidGift(false);
+    }
+  };
+
   // targetRewardIdを引数で受け取ることで、保存直後に最新のrewardIdで比較できる
   // 引数が省略された場合はselectedRewardIdを使用（初期ロード時など）
   const fetchEventSubStatus = useCallback(async (targetRewardId?: string) => {
@@ -210,40 +333,11 @@ export default function ChannelPointSettings({
         logger.info("[EventSub] API response", { subsCount: subs.length, subs: subs.map((s: EventSubSubscription) => ({ id: s.id, status: s.status, reward_id: s.condition.reward_id })) });
         setSubscriptions(subs);
 
-        // Check if we have an active subscription for the target reward
-        // 引数で渡されたrewardIdを使うことで、保存直後でも正しく判定できる
-        const activeSub = subs.find(
-          (sub: EventSubSubscription) =>
-            sub.status === "enabled" &&
-            sub.condition.reward_id === rewardIdToCheck
-        );
-
-        // Check for failed subscriptions
-        // 失敗したサブスクリプションをチェック
-        const failedStatuses = [
-          "webhook_callback_verification_failed",
-          "notification_failures_exceeded",
-          "authorization_revoked",
-        ];
-        const hasFailedSub = subs.some(
-          (sub: EventSubSubscription) => failedStatuses.includes(sub.status)
-        );
-
-        logger.info("[EventSub] Status check", { activeSub: !!activeSub, hasFailedSub, rewardIdToCheck, subsLength: subs.length });
-
-        if (activeSub) {
-          logger.info("[EventSub] Setting status to ACTIVE");
-          setEventSubStatus("active");
-        } else if (hasFailedSub) {
-          logger.info("[EventSub] Setting status to ERROR (failed subscription found)");
-          setEventSubStatus("error");
-        } else if (subs.length > 0) {
-          logger.info("[EventSub] Setting status to PENDING");
-          setEventSubStatus("pending");
-        } else {
-          logger.info("[EventSub] Setting status to NONE");
-          setEventSubStatus("none");
-        }
+        const derivedStatus = deriveEventSubStatus(subs, rewardIdToCheck);
+        logger.info("[EventSub] Status check", { ...derivedStatus, rewardIdToCheck, subsLength: subs.length });
+        setEventSubStatus(derivedStatus.rewardStatus);
+        setRaidEventSubStatus(derivedStatus.raidStatus);
+        setRaidEventSubWarning("");
       }
       } catch {
         logger.error("Failed to fetch EventSub status");
@@ -261,6 +355,7 @@ export default function ChannelPointSettings({
     // メイン報酬が設定されている場合は追加報酬も取得
     if (currentRewardId) {
       fetchAdditionalRewards();
+      fetchRaidGachaStatus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -359,15 +454,23 @@ export default function ChannelPointSettings({
       });
 
       const eventSubData = await eventSubResponse.json();
+      const raidSubscriptionWarning = getRaidSubscriptionWarning(eventSubData);
+      const raidSubscriptionStatus = getRaidSubscriptionStatus(eventSubData);
 
       // レスポンスのsuccessフィールドで判定（ステータスコードではなく）
       if (eventSubData.success) {
-        setMessage(eventSubData.message || t("messages.saveSuccess"));
+        setMessage(raidSubscriptionWarning || eventSubData.message || t("messages.saveSuccess"));
         setEventSubStatus("pending");
         setRegistrationFailed(false);
         setSavedMainRewardId(selectedRewardId);
         // Refresh status - 保存した報酬IDを明示的に渡して正しく比較
         await fetchEventSubStatus(selectedRewardId);
+        setRaidEventSubWarning(raidSubscriptionWarning);
+        if (raidSubscriptionStatus) {
+          setRaidEventSubStatus(raidSubscriptionWarning ? "error" : raidSubscriptionStatus);
+        } else if (raidSubscriptionWarning) {
+          setRaidEventSubStatus("error");
+        }
       } else if (eventSubData.warning) {
         // 警告状態：サブスクリプションの確認が必要
         setMessage(eventSubData.message || "状態を確認してください");
@@ -375,6 +478,12 @@ export default function ChannelPointSettings({
         setRegistrationFailed(false);
         setSavedMainRewardId(selectedRewardId);
         await fetchEventSubStatus(selectedRewardId);
+        setRaidEventSubWarning(raidSubscriptionWarning);
+        if (raidSubscriptionStatus) {
+          setRaidEventSubStatus(raidSubscriptionWarning ? "error" : raidSubscriptionStatus);
+        } else if (raidSubscriptionWarning) {
+          setRaidEventSubStatus("error");
+        }
       } else if (eventSubResponse.status === 429) {
         setMessage(eventSubData.error || t("messages.rateLimit"));
       } else {
@@ -426,6 +535,8 @@ export default function ChannelPointSettings({
       });
 
       const eventSubData = await eventSubResponse.json();
+      const raidSubscriptionWarning = getRaidSubscriptionWarning(eventSubData);
+      const raidSubscriptionStatus = getRaidSubscriptionStatus(eventSubData);
 
       if (!eventSubData.success && !eventSubData.warning) {
         setMessage(eventSubData.error || t("additionalRewards.addFailed"));
@@ -442,6 +553,8 @@ export default function ChannelPointSettings({
         body: JSON.stringify({
           rewardId: selectedAdditionalRewardId,
           rewardName: rewardName,
+          drawCount: additionalDrawCount,
+          isRaidLimited: false,
         }),
       });
 
@@ -455,10 +568,17 @@ export default function ChannelPointSettings({
 
       // 3. Update state
       // 状態を更新
-      setMessage(t("additionalRewards.addSuccess"));
+      setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
       setSelectedAdditionalRewardId("");
+      setAdditionalDrawCount(1);
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
+      setRaidEventSubWarning(raidSubscriptionWarning);
+      if (raidSubscriptionStatus) {
+        setRaidEventSubStatus(raidSubscriptionWarning ? "error" : raidSubscriptionStatus);
+      } else if (raidSubscriptionWarning) {
+        setRaidEventSubStatus("error");
+      }
 
     } catch {
       setMessage(t("messages.errorOccurred"));
@@ -571,6 +691,8 @@ export default function ChannelPointSettings({
       setSelectedRewardName("");
       setSavedMainRewardId("");
       setEventSubStatus("none");
+      setRaidEventSubStatus("none");
+      setRaidEventSubWarning("");
       setSubscriptions([]);
       setAdditionalRewards([]);
       setMessage(t("messages2.disconnectSuccess"));
@@ -689,6 +811,39 @@ export default function ChannelPointSettings({
     }
   };
 
+  const getStatusText = (status: EventSubStatus) => t(`status.${status}`);
+  const getStatusColor = (status: EventSubStatus) => {
+    switch (status) {
+      case "active":
+        return "text-green-400";
+      case "error":
+        return "text-red-400";
+      case "pending":
+        return "text-yellow-400";
+      default:
+        return "text-gray-400";
+    }
+  };
+
+  const getSubscriptionLabel = (sub: EventSubSubscription) => {
+    if (sub.type === RAID_EVENTSUB_TYPE) {
+      return t("form.raidEventSubStatus");
+    }
+
+    if (!sub.condition.reward_id) {
+      return t("form.allRewards");
+    }
+
+    return (
+      <>
+        {getRewardNameById(sub.condition.reward_id) || `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...`}
+        <span className="ml-1 text-gray-500">
+          ({sub.condition.reward_id.slice(0, 8)}...)
+        </span>
+      </>
+    );
+  };
+
   return (
     <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -770,7 +925,7 @@ export default function ChannelPointSettings({
              </div>
            )}
 
-           {selectedRewardId && (
+           {selectedRewardId && !compact && (
              <div className="rounded-lg bg-gray-700 p-3">
                <p className="text-sm text-gray-400">
                  {t("form.selected")} <span className="text-white">{selectedRewardName}</span>
@@ -781,25 +936,37 @@ export default function ChannelPointSettings({
              </div>
            )}
 
-           {/* EventSub Info */}
+           {/* EventSub Info — compact mode では診断ノイズを隠す */}
+           {!compact && (
            <div className="rounded-lg bg-gray-700/50 p-4">
              <h3 className="mb-2 text-sm font-medium text-gray-300">{t("form.eventsubStatus")}</h3>
+             <div className="mb-3 rounded bg-gray-800/60 p-3 text-xs">
+               <div className="flex items-center justify-between gap-3">
+                 <span className="text-gray-300">{t("form.raidEventSubStatus")}</span>
+                 <span className={getStatusColor(raidEventSubStatus)}>
+                   {getStatusText(raidEventSubStatus)}
+                 </span>
+               </div>
+               <p className="mt-1 text-gray-500">
+                 {raidEventSubStatus === "active"
+                   ? t("form.raidEventSubActive")
+                   : raidEventSubStatus === "error"
+                     ? t("form.raidEventSubError")
+                     : t("form.raidEventSubMissing")}
+               </p>
+               {raidEventSubWarning && (
+                 <p className="mt-2 text-red-300">
+                   {raidEventSubWarning}
+                 </p>
+               )}
+             </div>
              {subscriptions.length > 0 ? (
                <div className="space-y-2">
                  {subscriptions.map((sub) => (
                    <div key={sub.id}>
                      <div className="flex items-center justify-between text-xs">
                        <span className="text-gray-400">
-                         {sub.condition.reward_id ? (
-                           <>
-                             {/* Display reward name if available, otherwise show truncated ID */}
-                             {/* 報酬名があれば表示、なければ短縮IDを表示 */}
-                             {getRewardNameById(sub.condition.reward_id) || `${t("form.rewardId")} ${sub.condition.reward_id.slice(0, 8)}...`}
-                             <span className="ml-1 text-gray-500">
-                               ({sub.condition.reward_id.slice(0, 8)}...)
-                             </span>
-                           </>
-                         ) : t("form.allRewards")}
+                         {getSubscriptionLabel(sub)}
                        </span>
                        <span className={
                          sub.status === "enabled"
@@ -921,10 +1088,11 @@ export default function ChannelPointSettings({
               </p>
             )}
            </div>
+           )}
 
            {/* Additional Rewards Section - Only shown when main reward is active */}
            {/* 追加報酬セクション - メイン報酬がアクティブな場合のみ表示 */}
-           {selectedRewardId && eventSubStatus === "active" && (
+           {!compact && selectedRewardId && eventSubStatus === "active" && (
              <div className="rounded-lg bg-gray-700/50 p-4">
                <h3 className="mb-2 text-sm font-medium text-gray-300">
                  {t("additionalRewards.title")}
@@ -950,6 +1118,18 @@ export default function ChannelPointSettings({
                          <span className="ml-2 text-xs text-gray-400 whitespace-nowrap">
                            ({reward.reward_id.slice(0, 8)}...)
                          </span>
+                         <div className="mt-1 flex flex-wrap gap-1 text-xs">
+                           {reward.draw_count > 1 && (
+                             <span className="rounded bg-purple-500/20 px-2 py-0.5 text-purple-200">
+                               {t("additionalRewards.multiDraw", { count: reward.draw_count })}
+                             </span>
+                           )}
+                           {reward.is_raid_limited && (
+                             <span className="rounded bg-cyan-500/20 px-2 py-0.5 text-cyan-200">
+                               {t("additionalRewards.raidLimited")}
+                             </span>
+                           )}
+                         </div>
                        </div>
                        <button
                          onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
@@ -962,13 +1142,46 @@ export default function ChannelPointSettings({
                  </div>
                )}
 
+               <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-600/60 bg-gray-600/40 px-3 py-2.5">
+                 <div className="min-w-0">
+                   <div className="text-sm font-medium text-gray-100">
+                     {t("additionalRewards.raidGiftTitle")}
+                   </div>
+                   <div className="mt-0.5 text-xs text-gray-400">
+                     {t("additionalRewards.raidGiftDescription")}
+                   </div>
+                 </div>
+                 <div className="flex items-center gap-2">
+                   <input
+                     type="number"
+                     min={0}
+                     max={10}
+                     value={raidGiftDrawCount}
+                     onChange={(e) => setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(e.target.value) || 0)))}
+                     className="h-9 w-16 rounded-md border border-gray-600 bg-gray-700 px-2 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
+                   />
+                   <button
+                     type="button"
+                     onClick={updateRaidGiftSettings}
+                     disabled={updatingRaidGift}
+                     className="inline-flex h-9 items-center justify-center rounded-md bg-cyan-600 px-3 text-xs font-medium text-white shadow-sm transition-colors hover:bg-cyan-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-700 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
+                   >
+                     {updatingRaidGift ? tCommon("loading") : tCommon("save")}
+                   </button>
+                 </div>
+               </div>
+
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="flex items-center gap-2">
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto] sm:items-center">
+                 {/*
+                   ネイティブの矢印アイコンを残しつつ右側に余白を確保。
+                   bg-gray-700 で他のフォーム要素と階調を揃え、フォーカスリングで状態を明示する。
+                 */}
                  <select
                    value={selectedAdditionalRewardId}
                    onChange={(e) => setSelectedAdditionalRewardId(e.target.value)}
-                   className="flex-1 rounded-lg bg-gray-600 px-3 py-2 text-sm text-gray-200"
+                   className="h-10 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
                  >
                    <option value="">{t("additionalRewards.selectToAdd")}</option>
                    {rewards
@@ -985,10 +1198,27 @@ export default function ChannelPointSettings({
                        </option>
                      ))}
                  </select>
+                 {/*
+                   ラベルと数値入力を1コンポーネントとして見せるためのコンテナ。
+                   focus-within で内側 input のフォーカスに合わせてコンテナを強調する。
+                 */}
+                 <label className="group flex h-10 items-center gap-2 rounded-md border border-gray-600 bg-gray-700 pl-3 pr-1.5 text-sm text-gray-200 transition-colors hover:border-gray-500 focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500/40">
+                   <span className="whitespace-nowrap text-xs text-gray-300">
+                     {t("additionalRewards.drawCount")}
+                   </span>
+                   <input
+                     type="number"
+                     min={1}
+                     max={10}
+                     value={additionalDrawCount}
+                     onChange={(e) => setAdditionalDrawCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
+                     className="h-7 w-12 rounded bg-gray-800 px-2 text-sm text-gray-100 focus:outline-none"
+                   />
+                 </label>
                  <button
                    onClick={handleAddAdditionalReward}
                    disabled={addingAdditional || !selectedAdditionalRewardId}
-                   className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+                   className="inline-flex h-10 items-center justify-center rounded-md bg-purple-600 px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-700 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
                  >
                    {addingAdditional ? tCommon("loading") : tCommon("add")}
                  </button>
@@ -996,27 +1226,32 @@ export default function ChannelPointSettings({
              </div>
            )}
 
-           <div className="flex flex-wrap items-center gap-4">
+           <div className="flex flex-wrap items-center gap-3">
+             {/*
+               主アクション・補助アクション・破壊的アクションの3階層をボタンの塗り/枠線/赤系で表現する。
+               全ボタン h-10 で高さを揃え、横並びの安定感を確保する。
+             */}
              <button
                onClick={handleSave}
                disabled={saving || !selectedRewardId}
-               className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
+               className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md bg-purple-600 px-5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
              >
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
+             {!compact && (
              <button
                onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); setRegistrationFailed(false); }}
-               className="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-700"
+               className="inline-flex h-10 items-center justify-center rounded-md border border-gray-500 bg-transparent px-4 text-sm font-medium text-gray-200 transition-colors hover:border-gray-400 hover:bg-gray-700/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800"
              >
                {tCommon("refresh")}
              </button>
-             {/* 設定解除ボタン: EventSubが設定されている場合のみ表示 */}
-             {/* Disconnect button: Only shown when EventSub is configured */}
-             {(eventSubStatus === "active" || eventSubStatus === "pending" || subscriptions.length > 0) && (
+             )}
+             {/* 設定解除ボタン: EventSubが設定されている場合のみ表示 (compact 時は省略) */}
+             {!compact && (eventSubStatus === "active" || eventSubStatus === "pending" || subscriptions.length > 0) && (
                <button
                  onClick={handleDisconnect}
                  disabled={disconnecting}
-                 className="rounded-lg border border-red-600 px-4 py-2 text-red-400 hover:bg-red-600/20 disabled:opacity-50"
+                 className="inline-flex h-10 items-center justify-center rounded-md border border-red-500/70 bg-transparent px-4 text-sm font-medium text-red-300 transition-colors hover:border-red-400 hover:bg-red-500/15 hover:text-red-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                >
                  {disconnecting ? t("buttons.disconnecting") : t("buttons.disconnect")}
                </button>

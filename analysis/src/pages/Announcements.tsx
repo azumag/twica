@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { Announcement } from '../types/database'
 
@@ -13,11 +13,6 @@ const SEVERITY_OPTIONS = [
 // お知らせ + 既読数の拡張型
 interface AnnouncementWithStats extends Announcement {
   read_count: number
-}
-
-// 既読レコードの型（selectクエリ結果用）
-interface ReadRecord {
-  announcement_id: string
 }
 
 // フォーム初期値
@@ -34,9 +29,7 @@ const INITIAL_FORM = {
  * お知らせ管理ページ（analysis管理ダッシュボード用）
  * お知らせの一覧表示、新規作成、編集、削除を行う
  *
- * Note: analysis SPA のDatabase型にはRelationshipsキーが未定義のため、
- * Supabase v2.91のwrite系メソッドで型エラーが発生する。
- * ランタイムでは問題ないため、write系クエリには型アサーションを使用する。
+ * RLS-protected admin data is loaded through the local __admin API.
  */
 export function Announcements() {
   const [announcements, setAnnouncements] = useState<AnnouncementWithStats[]>([])
@@ -54,33 +47,7 @@ export function Announcements() {
   const fetchAnnouncements = async () => {
     setLoading(true)
     try {
-      // お知らせ一覧取得
-      const { data: annData, error: annError } = await supabase
-        .from('announcements')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (annError) throw annError
-
-      // 各お知らせの既読数を取得
-      const { data: readCounts, error: readError } = await supabase
-        .from('announcement_reads')
-        .select('announcement_id')
-
-      if (readError) throw readError
-
-      // 既読数を集計
-      const countMap = new Map<string, number>()
-      ;((readCounts || []) as ReadRecord[]).forEach(r => {
-        countMap.set(r.announcement_id, (countMap.get(r.announcement_id) || 0) + 1)
-      })
-
-      const withStats: AnnouncementWithStats[] = ((annData || []) as Announcement[]).map(a => ({
-        ...a,
-        read_count: countMap.get(a.id) || 0,
-      }))
-
-      setAnnouncements(withStats)
+      setAnnouncements(await adminApi.getAnnouncements())
     } catch (error) {
       console.error('Failed to fetch announcements:', error)
     } finally {
@@ -134,18 +101,9 @@ export function Announcements() {
       }
 
       if (editingId) {
-        // 更新 - Database型にRelationshipsが未定義のため型アサーション使用
-        const { error } = await (supabase
-          .from('announcements') as any)
-          .update(payload)
-          .eq('id', editingId)
-        if (error) throw error
+        await adminApi.updateAnnouncement(editingId, payload)
       } else {
-        // 新規作成
-        const { error } = await (supabase
-          .from('announcements') as any)
-          .insert(payload)
-        if (error) throw error
+        await adminApi.createAnnouncement(payload)
       }
 
       resetForm()
@@ -163,11 +121,7 @@ export function Announcements() {
     if (!confirm('Delete this announcement? This will also remove all read records.')) return
 
     try {
-      const { error } = await (supabase
-        .from('announcements') as any)
-        .delete()
-        .eq('id', id)
-      if (error) throw error
+      await adminApi.deleteAnnouncement(id)
       fetchAnnouncements()
     } catch (error) {
       console.error('Failed to delete announcement:', error)
@@ -178,14 +132,7 @@ export function Announcements() {
   // 公開/非公開トグル
   const togglePublish = async (announcement: AnnouncementWithStats) => {
     try {
-      const { error } = await (supabase
-        .from('announcements') as any)
-        .update({
-          is_published: !announcement.is_published,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', announcement.id)
-      if (error) throw error
+      await adminApi.updateAnnouncementPublished(announcement.id, !announcement.is_published)
       fetchAnnouncements()
     } catch (error) {
       console.error('Failed to toggle publish:', error)

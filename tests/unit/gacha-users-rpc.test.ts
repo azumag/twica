@@ -124,6 +124,32 @@ describe("getGachaUsersForStreamer", () => {
       });
     });
 
+    it("RPCのunique_card_idsに重複があってもユニーク種数として扱う", async () => {
+      const rpcData = {
+        users: [
+          {
+            user_twitch_id: "user1",
+            username: "Alice",
+            draw_count: 1455,
+            last_draw_at: "2026-05-13T05:00:00Z",
+            unique_card_ids: ["card-a", "card-b", "card-a", "card-b", "card-c"],
+          },
+        ],
+        total: 1,
+      };
+      mockGetSupabaseAdmin.mockReturnValue(
+        createRpcSuccessClient(rpcData) as any
+      );
+
+      const result = await getGachaUsersForStreamer(STREAMER_ID);
+
+      expect(result.users[0]).toMatchObject({
+        drawCount: 1455,
+        uniqueCards: 3,
+        uniqueCardIds: ["card-a", "card-b", "card-c"],
+      });
+    });
+
     it("RPCにp_limit/p_offsetを正しく渡す", async () => {
       const rpcData = { users: [], total: 0 };
       const client = createRpcSuccessClient(rpcData);

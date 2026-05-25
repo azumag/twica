@@ -46,6 +46,10 @@
     "newCard": "New Card",
     "importFromEmotes": "Import from Emotes",
     "editCardNumbers": "Edit Numbers",
+    "search": {
+      "titleLabel": "Search card titles",
+      "titlePlaceholder": "Search by title"
+    },
     "form": {
       "name": "Card Name",
       "namePlaceholder": "Card name",
@@ -92,6 +96,7 @@
       "networkErrorDelete": "A network error occurred. Deletion cancelled.",
       "operationFailed": "Operation failed: {msg}",
       "emptyCards": "No cards yet. Start by adding a new card.",
+      "noMatchingCards": "No cards match the current filters.",
       "probability": "Probability:",
       "errorOccurred": "An error occurred ({status})",
       "uploadLimited": "Upload feature is limited",
@@ -117,6 +122,7 @@
       "numberLabel": "Number"
     },
     "sort": {
+      "displayOrder": "Display Order",
       "createdAt": "Date Created",
       "rarity": "Rarity",
       "cardNumber": "Card Number",
@@ -371,7 +377,7 @@
   },
   "chatAnnouncementSettings": {
     "title": "Chat Announcement Settings",
-    "description": "Automatically post gacha results to Twitch chat. Messages are sent from your streamer account.",
+    "description": "Automatically post gacha results to Twitch chat. Connect another Twitch account to send messages from that account.",
     "status": {
       "enabled": "Enabled",
       "disabled": "Disabled"
@@ -381,9 +387,14 @@
     "noLineBreakNote": "* Twitch chat does not support line breaks. Messages with line breaks will be sent as a single line.",
     "form": {
       "enableAnnouncement": "Enable chat announcements",
+      "showAdvanced": "Show advanced settings",
       "customTemplate": "Custom Template (optional)",
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
-      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "multiTemplate": "Multi-draw Template (optional)",
+      "multiTemplatePlaceholder": "@'{'user'}' got '{'rarityCounts'}' from a '{'draws'}'-draw gacha! '{'cards'}'",
+      "multiShowCards": "Include card-name list in multi-draw announcements",
+      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list",
       "previewLength": "Preview length: {current} / {max} characters"
     },
     "buttons": {
@@ -391,21 +402,35 @@
       "reauthorizing": "Re-authorizing...",
       "saveTemplate": "Save Template",
       "saving": "Saving...",
-      "chatDemo": "Chat Demo"
+      "chatDemo": "Chat Demo",
+      "connectBot": "Connect",
+      "connectingBot": "Connecting...",
+      "disconnectBot": "Disconnect",
+      "disconnectingBot": "Disconnecting..."
     },
     "messages": {
       "checkingScope": "Checking permissions...",
       "saved": "Settings saved",
-      "lengthWarning": "If the card description or URL is long, the outgoing message may reach about {estimated} characters. Anything over {max} characters will be truncated when sent."
+      "lengthWarning": "If the card description or URL is long, the outgoing message may reach about {estimated} characters. Anything over {max} characters will be truncated when sent.",
+      "botDisconnected": "Linked account disconnected"
     },
     "errors": {
       "saveFailed": "Failed to save settings",
-      "reauthorizeFailed": "Re-authorization failed"
+      "reauthorizeFailed": "Re-authorization failed",
+      "botConnectFailed": "Failed to start account connection",
+      "botDisconnectFailed": "Failed to disconnect linked account"
     },
     "demo": {
       "title": "Chat Message Preview",
       "description": "Preview of the message that will be sent (using sample data)",
+      "singleTitle": "Single draw",
+      "multiTitle": "Multi-draw",
       "close": "Close"
+    },
+    "bot": {
+      "title": "Sender Account",
+      "description": "Without another account connected, messages are sent from your streamer account. When you start linking, Twitch opens authorization with the account currently signed in on Twitch. To send from a different account, switch accounts on Twitch before linking.",
+      "connectedAs": "Sending as {name}"
     }
   },
   "cardVisibilitySettings": {
@@ -462,6 +487,10 @@
       "rewardId": "Reward ID:",
       "allRewards": "All Rewards",
       "eventsubStatus": "EventSub Status",
+      "raidEventSubStatus": "Raid auto-enable",
+      "raidEventSubActive": "Incoming raid notifications are subscribed.",
+      "raidEventSubMissing": "Not registered or still pending. Use Save & Register EventSub to re-register.",
+      "raidEventSubError": "Registration failed. Use Save & Register EventSub to re-register.",
       "noSubscriptions": "No EventSub subscriptions. Click save to register.",
       "localTunnelNote": "* EventSub is not available in local environment"
     },
@@ -494,7 +523,24 @@
       "removeFailed": "Failed to remove additional reward",
       "removeConfirm": "Remove this additional reward? EventSub subscription will also be removed.",
       "cannotUseAsMain": "This reward is registered as an additional reward. Please remove it from additional rewards first.",
-      "cannotUseAsAdditional": "This reward is already set as the main reward."
+      "cannotUseAsAdditional": "This reward is already set as the main reward.",
+      "drawCount": "Cards per redemption",
+      "raidOnly": "Raid only",
+      "multiDraw": "{count} draws",
+      "raidLimited": "Raid limited",
+      "raidGiftTitle": "Raid gacha",
+      "raidGiftDescription": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
+      "raidGiftEnabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
+      "raidGiftDisabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
+      "raidGiftSaved": "Raid gacha settings saved",
+      "raidStatusTitle": "Raid gacha window",
+      "raidStatusActive": "Active until {time}",
+      "raidStatusInactive": "Currently off",
+      "raidStatusEnable": "30 min on",
+      "raidStatusDisable": "Off",
+      "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
+      "raidStatusDisabled": "Raid gacha window disabled",
+      "raidStatusFailed": "Failed to update raid gacha settings"
     }
   },
   "gachaHistory": {
@@ -572,7 +618,37 @@
   },
   "settingsPage": {
     "title": "Stream Settings",
-    "description": "Configure OBS overlay and channel point rewards."
+    "description": "Configure OBS overlay and channel point rewards.",
+    "viewMode": {
+      "simple": "Simple",
+      "advanced": "Advanced",
+      "ariaLabel": "Toggle stream settings display mode"
+    },
+    "simple": {
+      "step1": "1",
+      "step1Label": "Add the overlay to OBS",
+      "step2": "2",
+      "step2Label": "Pick a redemption reward",
+      "switchToAdvanced": "Show all settings →",
+      "collectionLink": "Viewer collection page"
+    },
+    "advanced": {
+      "navAria": "Settings sections",
+      "section": {
+        "overlay": "Overlay",
+        "overlayDesc": "OBS URL & effects",
+        "reward": "Reward",
+        "rewardDesc": "Channel-point link",
+        "sound": "Sound",
+        "soundDesc": "Gacha sound effect",
+        "announcement": "Chat alert",
+        "announcementDesc": "Auto chat message",
+        "visibility": "Visibility",
+        "visibilityDesc": "Unowned card display",
+        "share": "Share",
+        "shareDesc": "Collection page URL"
+      }
+    }
   },
   "cardsPage": {
     "title": "Card Management",
@@ -961,7 +1037,10 @@
       "rarity": "Rarity",
       "configuredRate": "Configured Rate",
       "actualRate": "Actual Rate",
-      "drawCount": "Draw Count"
+      "drawCount": "Draw Count",
+      "owners": "Owners",
+      "ownerCount": "{count} users",
+      "noOwners": "No owners"
     },
     "raritySummary": "Rarity Summary",
     "fullPeriodStats": {

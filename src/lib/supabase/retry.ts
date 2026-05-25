@@ -16,12 +16,12 @@ interface RetryOptions {
 
 const DEFAULT_DELAYS = [100, 300, 1000]
 
-// 502/503 はインフラ一時障害のためリトライ対象
-const RETRYABLE_STATUS_CODES = [502, 503]
+// 500/502/503 はインフラ一時障害のためリトライ対象
+const RETRYABLE_STATUS_CODES = [500, 502, 503]
 
 // Supabase/PostgREST が返すエラーメッセージのテキストパターン
 // ステータスコード数字が含まれない場合（"Bad Gateway" 等）にも対応
-const RETRYABLE_MESSAGE_PATTERNS = ['bad gateway', 'service unavailable']
+const RETRYABLE_MESSAGE_PATTERNS = ['internal server error', 'bad gateway', 'service unavailable']
 
 /**
  * Supabase クエリ結果に対するリトライラッパー

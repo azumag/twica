@@ -24,7 +24,10 @@ describe("dashboard dynamic imports", () => {
   });
 
   it("lazy-loads streamer settings panels", () => {
-    const source = readSource("src/app/dashboard/settings/page.tsx");
+    // Dynamic imports were moved from page.tsx into SettingsLayout.tsx as part of
+    // the Simple/Advanced redesign — the lazy-load guarantee still holds, but the
+    // boundary is now the client layout component, not the server page.
+    const source = readSource("src/components/SettingsLayout.tsx");
 
     expect(source).toContain('dynamic(() => import("@/components/OverlayPreview")');
     expect(source).toContain('dynamic(() => import("@/components/ChannelPointSettings")');

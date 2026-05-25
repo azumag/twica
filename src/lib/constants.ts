@@ -8,6 +8,7 @@ export const BROADCASTER_TYPE = {
 
 export const TWITCH_SUBSCRIPTION_TYPE = {
   CHANNEL_POINTS_REDEMPTION_ADD: 'channel.channel_points_custom_reward_redemption.add' as const,
+  CHANNEL_RAID: 'channel.raid' as const,
 }
 
 export const COOKIE_NAMES = {
@@ -23,6 +24,9 @@ export const COOKIE_NAMES = {
   // 再認証フロー判定用Cookie（値はOAuth state）
   // Re-auth flow marker cookie (value is the OAuth state)
   REAUTH_STATE: 'twica_reauth_state',
+  // BOTアカウント連携フロー判定用Cookie（値はOAuth state）
+  // BOT account OAuth flow marker (value is OAuth state)
+  BOT_AUTH_STATE: 'twica_bot_auth_state',
   // ログアウト後のスコープ復元用最小Cookie（twitchUserIdのみ格納）
   // 全セッションデータの代わりにtwitchUserIdだけを保持し、
   // loginルートが追加スコープ復元に使用する
@@ -42,6 +46,7 @@ export const API_ROUTES = {
   AUTH_TWITCH_CALLBACK: '/api/auth/twitch/callback',
   AUTH_TWITCH_LOGIN: '/api/auth/twitch/login',
   AUTH_LOGOUT: '/api/auth/logout',
+  AUTH_BOT_CALLBACK: '/api/auth/bot/callback',
 }
 
 export const SESSION_CONFIG = {

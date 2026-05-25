@@ -4,6 +4,7 @@ import { normalizeDropRate } from '@/lib/card-utils'
 import { Result, ok, err } from '@/types/result'
 import { logger } from '@/lib/logger'
 import { reportError } from '@/lib/sentry/error-handler'
+import { withRetry } from '@/lib/supabase/retry'
 
 export interface GachaCard {
   id: string
@@ -22,13 +23,38 @@ export interface EventSubStreamerInfo {
   id: string
   chat_announcement_enabled: boolean
   chat_announcement_template: string | null
+  chat_announcement_multi_template: string | null
+  chat_announcement_multi_show_cards: boolean
 }
 
 export interface GachaResult {
   card: GachaCard
+  cards?: GachaCard[]
   userTwitchUsername: string
   /** EventSub経由の場合のみ設定。クエリ統合のためガチャ結果と一緒に返す */
   streamer?: EventSubStreamerInfo
+}
+
+function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
+  const message = error?.message ?? ''
+  return error?.code === 'PGRST204' || message.includes('draw_count') || message.includes('is_raid_limited')
+}
+
+const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
+
+function isStreamerSettingsSchemaError(error: { message?: string; code?: string } | null | undefined) {
+  const message = error?.message ?? ''
+  return error?.code === 'PGRST204'
+    || message.includes('raid_gacha_active_until')
+    || message.includes('raid_gacha_draw_count')
+    || message.includes('chat_announcement_multi_template')
+    || message.includes('chat_announcement_multi_show_cards')
+}
+
+function isRaidGachaActive(activeUntil: string | null | undefined, now = new Date()): boolean {
+  if (!activeUntil) return false
+  const activeUntilTime = Date.parse(activeUntil)
+  return Number.isFinite(activeUntilTime) && activeUntilTime > now.getTime()
 }
 
 export class GachaService {
@@ -38,11 +64,14 @@ export class GachaService {
     try {
       // Get active cards for this streamer
       // このストリーマーの有効なカードを取得
-      const { data: cards, error: cardsError } = await this.supabase
-        .from('cards')
-        .select('id, name, description, image_url, rarity, drop_rate')
-        .eq('streamer_id', streamerId)
-        .eq('is_active', true)
+      const { data: cards, error: cardsError } = await withRetry(
+        () => this.supabase
+          .from('cards')
+          .select('id, name, description, image_url, rarity, drop_rate')
+          .eq('streamer_id', streamerId)
+          .eq('is_active', true),
+        'gacha:executeGacha:cards',
+      )
 
       if (cardsError) {
         return err(`Database error: ${cardsError.message}`)
@@ -62,15 +91,17 @@ export class GachaService {
 
       // gacha_history, users, user_cards を1トランザクションでアトミックに実行
       // 従来は3回の個別DB操作で中間状態（履歴あり・カード未付与）が発生しえた
-      const { data: rpcResult, error: rpcError } = await this.supabase
-        .rpc('execute_gacha_transaction', {
+      const { data: rpcResult, error: rpcError } = await withRetry(
+        () => this.supabase.rpc('execute_gacha_transaction', {
           p_event_id: eventId || null,
           p_user_twitch_id: userTwitchId,
           p_user_twitch_username: userTwitchUsername,
           p_card_id: selectedCard.id,
           p_streamer_id: streamerId,
           p_reward_cost: rewardCost ?? null,
-        })
+        }),
+        'gacha:executeGacha:rpc',
+      )
 
       if (rpcError) {
         // RPC関数が未デプロイの場合（マイグレーション前）は旧ロジックにフォールバック
@@ -105,6 +136,57 @@ export class GachaService {
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }
+  }
+
+  private async executeGachaDraws(
+    streamerId: string,
+    userTwitchId: string,
+    userTwitchUsername: string,
+    drawCount: number,
+    eventId?: string,
+    rewardCost?: number
+  ): Promise<Result<GachaResult>> {
+    const cards: GachaCard[] = []
+    let firstResult: GachaResult | null = null
+
+    for (let index = 0; index < drawCount; index += 1) {
+      const drawEventId = eventId && index > 0 ? `${eventId}:${index + 1}` : eventId
+      const drawRewardCost = index === 0 ? rewardCost : undefined
+      const result = await this.executeGacha(
+        streamerId,
+        userTwitchId,
+        userTwitchUsername,
+        drawEventId,
+        drawRewardCost
+      )
+
+      if (!result.success) {
+        if (cards.length > 0 && result.error !== 'Duplicate event') {
+          logger.warn('Multi-draw gacha stopped after partial success', {
+            streamerId,
+            userTwitchId,
+            eventId,
+            completedDraws: cards.length,
+            requestedDraws: drawCount,
+            error: result.error,
+          })
+          break
+        }
+        return result
+      }
+
+      cards.push(result.data.card)
+      firstResult ??= result.data
+    }
+
+    if (!firstResult) {
+      return err('Failed to execute gacha draws')
+    }
+
+    return ok({
+      ...firstResult,
+      cards,
+    })
   }
 
   /**
@@ -189,19 +271,43 @@ export class GachaService {
   ): Promise<Result<GachaResult>> {
     try {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
-      const { data: streamer, error: streamerError } = await this.supabase
+      let { data: streamer, error: streamerError } = await this.supabase
         .from('streamers')
-        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
+        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until')
         .eq('twitch_user_id', event.broadcaster_user_id)
         .maybeSingle()
+
+      if (isStreamerSettingsSchemaError(streamerError)) {
+        const fallbackResult = await this.supabase
+          .from('streamers')
+          .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
+          .eq('twitch_user_id', event.broadcaster_user_id)
+          .maybeSingle()
+        streamer = fallbackResult.data
+          ? {
+              ...fallbackResult.data,
+              chat_announcement_multi_template: null,
+              chat_announcement_multi_show_cards: true,
+              raid_gacha_active_until: null,
+            }
+          : fallbackResult.data
+        streamerError = fallbackResult.error
+      }
 
       if (streamerError || !streamer) {
         return err('Streamer not found')
       }
 
       // ガチャ実行用のヘルパー: 結果にストリーマー情報を付加して返す
-      const executeAndAttachStreamer = async (): Promise<Result<GachaResult>> => {
-        const result = await this.executeGacha(streamer.id, event.user_id, event.user_name, eventId, event.reward.cost)
+      const executeAndAttachStreamer = async (drawCount = 1): Promise<Result<GachaResult>> => {
+        const result = await this.executeGachaDraws(
+          streamer.id,
+          event.user_id,
+          event.user_name,
+          drawCount,
+          eventId,
+          event.reward.cost
+        )
         if (!result.success) return result
         return ok({
           ...result.data,
@@ -209,6 +315,8 @@ export class GachaService {
             id: streamer.id,
             chat_announcement_enabled: streamer.chat_announcement_enabled,
             chat_announcement_template: streamer.chat_announcement_template,
+            chat_announcement_multi_template: streamer.chat_announcement_multi_template,
+            chat_announcement_multi_show_cards: streamer.chat_announcement_multi_show_cards ?? true,
           },
         })
       }
@@ -221,26 +329,118 @@ export class GachaService {
 
       // Check if the reward ID matches any additional reward
       // 追加報酬のいずれかと一致するかチェック
-      const { data: additionalReward, error: additionalError } = await this.supabase
-        .from('streamer_additional_gacha_rewards')
-        .select('id')
-        .eq('streamer_id', streamer.id)
-        .eq('reward_id', event.reward.id)
-        .maybeSingle()
+      const { data: additionalReward, error: additionalError } = await withRetry(
+        () => this.supabase
+          .from('streamer_additional_gacha_rewards')
+          .select('id, draw_count, is_raid_limited')
+          .eq('streamer_id', streamer.id)
+          .eq('reward_id', event.reward.id)
+          .maybeSingle(),
+        'gacha:executeGachaForEventSub:additionalReward',
+      )
+
+      if (isRaidOptionsSchemaError(additionalError)) {
+        logger.warn('Additional reward options schema is unavailable; refusing to execute a 1-draw fallback', {
+          rewardId: event.reward.id,
+          streamerId: streamer.id,
+          error: additionalError?.message,
+        })
+        return err(ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE)
+      }
 
       // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
       if (additionalError) {
         logger.warn(`Error checking additional reward: ${additionalError.message}`)
+        return err(`Database error checking additional reward: ${additionalError.message}`)
       }
 
       if (additionalReward) {
+        if (additionalReward.is_raid_limited && !isRaidGachaActive(streamer.raid_gacha_active_until)) {
+          logger.info('Raid-limited gacha skipped because raid gacha is inactive', {
+            rewardId: event.reward.id,
+            streamerId: streamer.id,
+            raidGachaActiveUntil: streamer.raid_gacha_active_until,
+          })
+          return err('Raid-limited reward inactive')
+        }
+
         // Additional reward matched, execute gacha
         // 追加報酬が一致したのでガチャを実行
-        logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}`)
-        return await executeAndAttachStreamer()
+        const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 10)
+        logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}, drawCount=${drawCount}, raidLimited=${Boolean(additionalReward.is_raid_limited)}`)
+        return await executeAndAttachStreamer(drawCount)
       }
 
       return err('Reward ID mismatch')
+    } catch (error) {
+      return err(`Unexpected error: ${error}`)
+    }
+  }
+
+  async executeGachaForRaidEvent(
+    event: {
+      to_broadcaster_user_id: string
+      from_broadcaster_user_id: string
+      from_broadcaster_user_login?: string
+      from_broadcaster_user_name?: string
+    },
+    eventId?: string
+  ): Promise<Result<GachaResult>> {
+    try {
+      let { data: streamer, error: streamerError } = await this.supabase
+        .from('streamers')
+        .select('id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_draw_count')
+        .eq('twitch_user_id', event.to_broadcaster_user_id)
+        .maybeSingle()
+
+      if (isStreamerSettingsSchemaError(streamerError)) {
+        const fallbackResult = await this.supabase
+          .from('streamers')
+          .select('id, chat_announcement_enabled, chat_announcement_template')
+          .eq('twitch_user_id', event.to_broadcaster_user_id)
+          .maybeSingle()
+        streamer = fallbackResult.data
+          ? {
+              ...fallbackResult.data,
+              chat_announcement_multi_template: null,
+              chat_announcement_multi_show_cards: true,
+              raid_gacha_draw_count: 0,
+            }
+          : fallbackResult.data
+        streamerError = fallbackResult.error
+      }
+
+      if (streamerError || !streamer) {
+        return err('Streamer not found')
+      }
+
+      const drawCount = Math.min(Math.max(Number(streamer.raid_gacha_draw_count ?? 0), 0), 10)
+      if (drawCount < 1) {
+        return err('Raid gacha disabled')
+      }
+
+      const userName = event.from_broadcaster_user_name || event.from_broadcaster_user_login || event.from_broadcaster_user_id
+      const result = await this.executeGachaDraws(
+        streamer.id,
+        event.from_broadcaster_user_id,
+        userName,
+        drawCount,
+        eventId,
+        undefined
+      )
+
+      if (!result.success) return result
+
+      return ok({
+        ...result.data,
+        streamer: {
+          id: streamer.id,
+          chat_announcement_enabled: streamer.chat_announcement_enabled,
+          chat_announcement_template: streamer.chat_announcement_template,
+          chat_announcement_multi_template: streamer.chat_announcement_multi_template,
+          chat_announcement_multi_show_cards: streamer.chat_announcement_multi_show_cards ?? true,
+        },
+      })
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }

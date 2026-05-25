@@ -92,12 +92,17 @@ export async function POST(request: NextRequest) {
       // Chat announcement settings (optional)
       chatAnnouncementEnabled,
       chatAnnouncementTemplate,
+      chatAnnouncementMultiTemplate,
+      chatAnnouncementMultiShowCards,
       // レアリティ別自動確率設定（オプション）
       rarityWeights,
       // 未所持カード表示設定（オプション、Issue #395）
       // Unowned-card visibility settings (optional, Issue #395)
       showUnownedCards,
       showUnownedCardDetails,
+      // BOTアカウント連携解除（オプション）
+      // Disconnect optional BOT account used for chat announcements
+      disconnectBot,
     } = body;
 
     if (rarityWeights !== undefined && !validateRarityWeightsInput(rarityWeights)) {
@@ -114,6 +119,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (showUnownedCardDetails !== undefined && typeof showUnownedCardDetails !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      chatAnnouncementMultiShowCards !== undefined
+      && typeof chatAnnouncementMultiShowCards !== "boolean"
+    ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -161,6 +175,12 @@ export async function POST(request: NextRequest) {
     if (chatAnnouncementTemplate !== undefined) {
       updateData.chat_announcement_template = chatAnnouncementTemplate;
     }
+    if (chatAnnouncementMultiTemplate !== undefined) {
+      updateData.chat_announcement_multi_template = chatAnnouncementMultiTemplate;
+    }
+    if (chatAnnouncementMultiShowCards !== undefined) {
+      updateData.chat_announcement_multi_show_cards = chatAnnouncementMultiShowCards;
+    }
 
     // rarityWeights: レアリティ別目標確率（nullで自動モード無効）
     if (rarityWeights !== undefined) {
@@ -176,18 +196,47 @@ export async function POST(request: NextRequest) {
       updateData.show_unowned_card_details = showUnownedCardDetails;
     }
 
+    let botDisconnected = false;
+    if (disconnectBot === true) {
+      const { error: senderSettingsError } = await supabaseAdmin
+        .from("streamer_chat_sender_settings")
+        .upsert({
+          streamer_id: streamerId,
+          sender_mode: "streamer",
+          custom_bot_account_id: null,
+        });
+
+      if (senderSettingsError) {
+        return handleDatabaseError(senderSettingsError, "Streamer Settings API: Disconnect BOT sender settings");
+      }
+
+      const { error: botDeleteError } = await supabaseAdmin
+        .from("twitch_bot_accounts")
+        .delete()
+        .eq("streamer_id", streamerId)
+        .eq("owner_type", "streamer");
+
+      if (botDeleteError) {
+        return handleDatabaseError(botDeleteError, "Streamer Settings API: Disconnect BOT account");
+      }
+
+      botDisconnected = true;
+    }
+
     // 更新するフィールドがない場合はエラー
-    if (Object.keys(updateData).length === 0) {
+    if (Object.keys(updateData).length === 0 && !botDisconnected) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    const { error } = await supabaseAdmin
-      .from("streamers")
-      .update(updateData)
-      .eq("id", streamerId);
+    if (Object.keys(updateData).length > 0) {
+      const { error } = await supabaseAdmin
+        .from("streamers")
+        .update(updateData)
+        .eq("id", streamerId);
 
-    if (error) {
-      return handleDatabaseError(error, "Streamer Settings API: PUT");
+      if (error) {
+        return handleDatabaseError(error, "Streamer Settings API: PUT");
+      }
     }
 
     // 再計算はベストエフォート: 主操作（weights保存）は成功しているため、

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { withRetry } from "@/lib/supabase/retry";
-import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
+import { handleApiError } from "@/lib/error-handler";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { logger } from "@/lib/logger";
 
 interface RouteParams {
   params: Promise<{ streamerId: string }>;
@@ -32,7 +33,7 @@ export async function GET(
     // 配信者の効果音設定のみを取得
     // パブリックエンドポイントなので必要最小限の情報のみ返す
     // 502 一時障害に対するリトライ (Issue #325)
-    const { data: streamer, error } = await withRetry(
+    const { data: streamer, error, status } = await withRetry(
       () => supabaseAdmin
         .from("streamers")
         .select("gacha_sound_url, gacha_sound_enabled")
@@ -42,7 +43,15 @@ export async function GET(
     );
 
     if (error) {
-      return handleDatabaseError(error, "Streamer Sound Settings API");
+      logger.warn("Streamer Sound Settings API: falling back to disabled sound settings", {
+        streamerId,
+        status,
+        error: error.message,
+      });
+      return NextResponse.json({
+        soundUrl: null,
+        soundEnabled: false,
+      });
     }
 
     if (!streamer) {

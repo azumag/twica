@@ -83,6 +83,49 @@ function setupCardsMock(options: {
   return { streamerQuery, cardsQuery }
 }
 
+function setupCardsMockWithRetry(options: {
+  streamer?: { id: string } | null
+  firstCardsError: Error
+  retryCards?: Record<string, unknown>[]
+}) {
+  const streamerQuery = createMockQueryBuilder()
+  ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
+    createMockResponse(options.streamer ?? null)
+  )
+
+  const firstCardsQuery = createMockQueryBuilder()
+  ;(firstCardsQuery as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
+    resolve({ data: null, error: options.firstCardsError, count: null })
+    return firstCardsQuery
+  }
+
+  const retryCardsQuery = createMockQueryBuilder()
+  ;(retryCardsQuery as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
+    resolve({
+      data: options.retryCards ?? [],
+      error: null,
+      count: options.retryCards?.length ?? 0,
+    })
+    return retryCardsQuery
+  }
+
+  const from = vi.fn((table: string) => {
+    if (table === 'streamers') return streamerQuery
+    if (table === 'cards') {
+      return from.mock.calls.filter(([calledTable]) => calledTable === 'cards').length === 1
+        ? firstCardsQuery
+        : retryCardsQuery
+    }
+    return createMockQueryBuilder()
+  })
+
+  mockGetSupabaseAdmin.mockReturnValue({
+    from,
+  } as ReturnType<typeof getSupabaseAdmin>)
+
+  return { firstCardsQuery, retryCardsQuery }
+}
+
 function createRequest(params: Record<string, string> = {}): NextRequest {
   const url = new URL('http://localhost/api/cards')
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value))
@@ -170,6 +213,44 @@ describe('GET /api/cards', () => {
       }))
 
       expect(cardsQuery.order).toHaveBeenCalledWith('card_number', { ascending: true, nullsFirst: false })
+    })
+
+    it('sortField=display_order の場合、card_number の後に作成日昇順で安定ソートする', async () => {
+      const { cardsQuery } = setupCardsMock({
+        streamer: { id: 'streamer-1' },
+        cards: [],
+      })
+
+      await GET(createRequest({
+        streamerId: 'streamer-1',
+        sortField: 'display_order',
+        sortDirection: 'asc',
+      }))
+
+      expect(cardsQuery.order).toHaveBeenNthCalledWith(1, 'card_number', { ascending: true, nullsFirst: false })
+      expect(cardsQuery.order).toHaveBeenNthCalledWith(2, 'created_at', { ascending: true, nullsFirst: false })
+    })
+
+    it('card_number が schema cache にない場合は created_at ソートで再試行する', async () => {
+      const { firstCardsQuery, retryCardsQuery } = setupCardsMockWithRetry({
+        streamer: { id: 'streamer-1' },
+        firstCardsError: Object.assign(new Error("Could not find the 'card_number' column of 'cards' in the schema cache"), {
+          code: 'PGRST204',
+        }),
+        retryCards: [{ id: '1', drop_rate: 0.5 }],
+      })
+
+      const response = await GET(createRequest({
+        streamerId: 'streamer-1',
+        sortField: 'card_number',
+        sortDirection: 'asc',
+      }))
+      const body = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(body.cards).toHaveLength(1)
+      expect(firstCardsQuery.order).toHaveBeenCalledWith('card_number', { ascending: true, nullsFirst: false })
+      expect(retryCardsQuery.order).toHaveBeenCalledWith('created_at', { ascending: true, nullsFirst: false })
     })
 
     it('不正なsortFieldはcreated_atにフォールバックする', async () => {

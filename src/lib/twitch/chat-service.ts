@@ -1,5 +1,5 @@
 import { getEnvVar } from '@/lib/env-validation'
-import { getTwitchAccessToken, hasScope } from './token-manager'
+import { getBotAccountForChat, getTwitchAccessToken, hasScope } from './token-manager'
 import { ADDITIONAL_SCOPES } from './scopes'
 import { logger } from '@/lib/logger'
 import { reportApiError, reportError } from '@/lib/sentry/error-handler'
@@ -32,6 +32,15 @@ export interface ChatMessagePlaceholders {
   // 獲得したカードの名前
   // Name of the card obtained
   card: string
+  // 複数枚ガチャ時の獲得カード名一覧（オプション）
+  // All obtained card names for multi-draw announcements (optional)
+  cards?: string
+  // 複数枚ガチャ時の抽選回数（オプション）
+  // Draw count for multi-draw announcements (optional)
+  draws?: number
+  // 複数枚ガチャ時のレアリティ別枚数（例: レアx3、コモンx3）
+  // Rarity counts for multi-draw announcements (e.g. Rare x3, Common x3)
+  rarityCounts?: string
   // カードのレアリティ（日本語または英語）
   // Card rarity (Japanese or English)
   rarity: string
@@ -88,20 +97,32 @@ export class TwitchChatService {
    * @returns 成功した場合はtrue、失敗した場合はfalse
    */
   async sendChatMessage(broadcasterTwitchUserId: string, message: string): Promise<boolean> {
-    // 送信前にDBのスコープを確認（無駄なAPI呼び出し抑止）
-    // Check DB scope before sending to avoid unnecessary API calls (e.g., repeated 401s from EventSub)
-    const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
-    if (!hasChatScope) {
-      logger.info('Skipping chat message - user:write:chat scope not granted', { broadcasterTwitchUserId })
-      return false
+    const botAccount = await getBotAccountForChat(broadcasterTwitchUserId)
+    let senderTwitchUserId = broadcasterTwitchUserId
+    let accessToken = botAccount?.accessToken ?? null
+
+    if (botAccount) {
+      senderTwitchUserId = botAccount.senderId
+    } else {
+      // 送信前にDBのスコープを確認（無駄なAPI呼び出し抑止）
+      // Check DB scope before sending to avoid unnecessary API calls (e.g., repeated 401s from EventSub)
+      const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
+      if (!hasChatScope) {
+        logger.info('Skipping chat message - user:write:chat scope not granted', { broadcasterTwitchUserId })
+        return false
+      }
+
+      // 配信者本人のアクセストークンを取得（user:write:chatスコープが必要）
+      // Get the broadcaster's access token (requires user:write:chat scope)
+      accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
     }
 
-    // 配信者本人のアクセストークンを取得（user:write:chatスコープが必要）
-    // Get the broadcaster's access token (requires user:write:chat scope)
-    const accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
-
     if (!accessToken) {
-      logger.warn('No access token available for broadcaster', { broadcasterTwitchUserId })
+      logger.warn('No access token available for chat sender', {
+        broadcasterTwitchUserId,
+        senderTwitchUserId,
+        usingBotAccount: Boolean(botAccount),
+      })
       return false
     }
 
@@ -120,7 +141,7 @@ export class TwitchChatService {
       },
       body: JSON.stringify({
         broadcaster_id: broadcasterTwitchUserId,
-        sender_id: broadcasterTwitchUserId,
+        sender_id: senderTwitchUserId,
         message: truncatedMessage,
       }),
     }
@@ -141,6 +162,8 @@ export class TwitchChatService {
         if (response.ok) {
           logger.info('Chat message sent successfully', {
             broadcasterTwitchUserId,
+            senderTwitchUserId,
+            usingBotAccount: Boolean(botAccount),
             messageLength: countCharacters(truncatedMessage),
             attempt,
           })
@@ -162,6 +185,8 @@ export class TwitchChatService {
 
         logger.warn('Twitch chat message transient failure - retrying', {
           broadcasterTwitchUserId,
+          senderTwitchUserId,
+          usingBotAccount: Boolean(botAccount),
           status: response.status,
           attempt,
           nextDelayMs: CHAT_SEND_RETRY_DELAYS_MS[attempt - 1],
@@ -180,6 +205,8 @@ export class TwitchChatService {
 
         logger.warn('Twitch chat message network error - retrying', {
           broadcasterTwitchUserId,
+          senderTwitchUserId,
+          usingBotAccount: Boolean(botAccount),
           attempt,
           nextDelayMs: CHAT_SEND_RETRY_DELAYS_MS[attempt - 1],
           error: error instanceof Error ? error.message : String(error),
@@ -205,6 +232,8 @@ export class TwitchChatService {
       )) {
         logger.warn('Twitch API returned 401 for chat scope - token/DB mismatch detected (DB preserved)', {
           broadcasterTwitchUserId,
+          senderTwitchUserId,
+          usingBotAccount: Boolean(botAccount),
           twitchError: errorBody.message,
         })
       }
@@ -216,7 +245,13 @@ export class TwitchChatService {
       try {
         await reportApiError('/helix/chat/messages', 'POST',
           new Error(`Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`),
-          { broadcasterTwitchUserId, status: lastResponse.status, twitchError: errorBody.error }
+          {
+            broadcasterTwitchUserId,
+            senderTwitchUserId,
+            usingBotAccount: Boolean(botAccount),
+            status: lastResponse.status,
+            twitchError: errorBody.error,
+          }
         )
       } catch {
         // reportApiError 自体の失敗はベストエフォート — メインフローをブロックしない
@@ -232,6 +267,8 @@ export class TwitchChatService {
       await reportError(lastException, {
         context: 'chat-service:sendChatMessage',
         broadcasterTwitchUserId,
+        senderTwitchUserId,
+        usingBotAccount: Boolean(botAccount),
       })
     } catch {
       // reportError 自体の失敗はベストエフォート — 必ず return false に到達させる
@@ -293,6 +330,24 @@ export class TwitchChatService {
       message = message.replace(/\{all\}/g, String(placeholders.all))
     } else {
       message = message.replace(/\{all\}/g, '')
+    }
+
+    if (placeholders.cards) {
+      message = message.replace(/\{cards\}/g, placeholders.cards)
+    } else {
+      message = message.replace(/\{cards\}/g, '')
+    }
+
+    if (placeholders.draws !== undefined) {
+      message = message.replace(/\{draws\}/g, String(placeholders.draws))
+    } else {
+      message = message.replace(/\{draws\}/g, '')
+    }
+
+    if (placeholders.rarityCounts) {
+      message = message.replace(/\{rarityCounts\}/g, placeholders.rarityCounts)
+    } else {
+      message = message.replace(/\{rarityCounts\}/g, '')
     }
 
     // 連続する空白を1つにまとめ、前後の空白を削除

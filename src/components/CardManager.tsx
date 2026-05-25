@@ -76,7 +76,7 @@ interface CardManagerProps {
 
 // Sorting field options
 // 並び替えフィールドの選択肢
-type SortField = "created_at" | "rarity" | "card_number" | "drop_rate";
+type SortField = "display_order" | "created_at" | "rarity" | "card_number" | "drop_rate";
 type CardFormData = {
   name: string;
   description: string;
@@ -94,6 +94,18 @@ type SortDirection = "asc" | "desc";
 // Status filter options
 // ステータスフィルターの選択肢
 type StatusFilter = "all" | "active" | "inactive";
+
+const compareCardsByDisplayOrder = (a: Card, b: Card): number => {
+  const numberDiff =
+    (a.card_number ?? Number.MAX_SAFE_INTEGER) -
+    (b.card_number ?? Number.MAX_SAFE_INTEGER);
+  if (numberDiff !== 0) return numberDiff;
+
+  const createdAtDiff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  if (createdAtDiff !== 0) return createdAtDiff;
+
+  return a.id.localeCompare(b.id);
+};
 
 export default function CardManager({
   streamerId,
@@ -131,9 +143,10 @@ export default function CardManager({
 
   // Sorting and filtering state
   // 並び替えとフィルタリングの状態
-  const [sortField, setSortField] = useState<SortField>("created_at");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [sortField, setSortField] = useState<SortField>("display_order");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [titleSearchQuery, setTitleSearchQuery] = useState("");
   // Track if this is the first render to skip initial reload
   // 初回レンダリングかどうかを追跡して初期リロードをスキップ
   const isFirstRender = useRef(true);
@@ -203,17 +216,28 @@ export default function CardManager({
    * サーバーがソートを処理、クライアントは即時UIフィードバックのためフィルタリングのみ
    */
   const filteredAndSortedCards = useMemo(() => {
+    const normalizedQuery = titleSearchQuery.trim().toLowerCase();
     // Only apply client-side filter for optimistic updates (toggle active)
     // 楽観的更新（アクティブ切り替え）用にクライアントサイドフィルターのみ適用
+    let nextCards = cards;
     if (statusFilter === "active") {
-      return cards.filter(card => card.is_active);
+      nextCards = nextCards.filter(card => card.is_active);
     } else if (statusFilter === "inactive") {
-      return cards.filter(card => !card.is_active);
+      nextCards = nextCards.filter(card => !card.is_active);
     }
-    // Cards are already sorted by server, just return as-is
-    // カードは既にサーバーでソートされているのでそのまま返す
-    return cards;
-  }, [cards, statusFilter]);
+    if (normalizedQuery) {
+      nextCards = nextCards.filter(card => card.name.toLowerCase().includes(normalizedQuery));
+    }
+
+    if (sortField === "display_order") {
+      nextCards = [...nextCards].sort(compareCardsByDisplayOrder);
+      if (sortDirection === "desc") {
+        nextCards.reverse();
+      }
+    }
+
+    return nextCards;
+  }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1332,10 +1356,10 @@ export default function CardManager({
                   </svg>
                 </button>
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                 {/* 左カラム: カード名 + レアリティを縦積み（右の画像ペーンと高さを揃える） */}
-                <div className="flex flex-col justify-between">
-                  <div>
+                <div className="flex min-w-0 flex-col justify-between gap-4">
+                  <div className="min-w-0">
                     <label className="mb-1 block text-sm text-gray-300">
                       {t("form.name")} *
                     </label>
@@ -1348,12 +1372,12 @@ export default function CardManager({
                       onChange={(e) =>
                         setFormData({ ...formData, name: e.target.value })
                       }
-                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                      className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
                     />
                   </div>
-                  <div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
+                  <div className="min-w-0">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                      <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.rarity")}
                         </label>
@@ -1363,7 +1387,7 @@ export default function CardManager({
                           onChange={(e) =>
                             setFormData({ ...formData, rarity: e.target.value as Rarity })
                           }
-                          className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
+                          className="w-full min-w-0 appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
                           style={SELECT_ARROW_STYLE}
                         >
                           {RARITIES.map((r) => (
@@ -1373,7 +1397,7 @@ export default function CardManager({
                           ))}
                         </select>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.cardNumber")}
                         </label>
@@ -1388,7 +1412,7 @@ export default function CardManager({
                           onChange={(e) =>
                             setFormData({ ...formData, cardNumber: e.target.value })
                           }
-                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
+                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
                         />
                         <p className="mt-1 text-xs text-gray-300">
                           {t("form.cardNumberHelp")}
@@ -1398,7 +1422,7 @@ export default function CardManager({
                   </div>
                 </div>
                 {/* 右カラム: 画像 */}
-                <div>
+                <div className="min-w-0">
               <label className="mb-1 block text-sm text-gray-300">
                 {t("form.image")}
               </label>
@@ -1425,7 +1449,7 @@ export default function CardManager({
                       className="rounded object-cover"
                       unoptimized
                     />
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm text-gray-300">{t("form.currentImage")}</p>
                       <p className="text-xs text-gray-500 truncate max-w-[200px]">
                         {confirmedImageUrl.split('/').pop()}
@@ -1451,7 +1475,7 @@ export default function CardManager({
                       alt={t("form.croppedImage")}
                       className={`rounded object-cover ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
                     />
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
                       <p className="text-xs text-gray-400">
                         {planCropModes[selectedCropMode].dimensions}px ({planCropModes[selectedCropMode].label})
@@ -1486,7 +1510,7 @@ export default function CardManager({
                       ref={fileInputRef}
                       onChange={handleFileChange}
                       disabled={storageStatus?.uploadDisabled}
-                      className={`w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
+                      className={`w-full min-w-0 text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
                         storageStatus?.uploadDisabled
                           ? 'opacity-50 cursor-not-allowed file:bg-gray-500'
                           : 'file:bg-purple-600 hover:file:bg-purple-700'
@@ -1514,7 +1538,7 @@ export default function CardManager({
                         setUserModifiedImage(true);
                       }}
                       disabled={imageUrlValidating}
-                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white disabled:opacity-50"
+                      className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white disabled:opacity-50"
                     />
                     {/* Show validating indicator when checking image URL */}
                     {/* 画像URL検証中の表示 */}
@@ -1760,6 +1784,17 @@ export default function CardManager({
           {/* Sorting and filtering controls */}
           {/* 並び替えとフィルタリングコントロール */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* Title search */}
+            {/* タイトル検索 */}
+            <input
+              type="search"
+              value={titleSearchQuery}
+              onChange={(e) => setTitleSearchQuery(e.target.value)}
+              placeholder={t("search.titlePlaceholder")}
+              aria-label={t("search.titleLabel")}
+              className="min-w-[14rem] rounded-lg border border-gray-600 bg-gray-700 px-3 py-1.5 text-sm text-white placeholder:text-gray-400"
+            />
+
             {/* Sort field selector */}
             {/* 並び替えフィールド選択 */}
             <select
@@ -1768,6 +1803,7 @@ export default function CardManager({
               className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
               style={SELECT_ARROW_STYLE}
             >
+              <option value="display_order">{t("sort.displayOrder")}</option>
               <option value="created_at">{t("sort.createdAt")}</option>
               <option value="rarity">{t("sort.rarity")}</option>
               <option value="card_number">{t("sort.cardNumber")}</option>
@@ -1852,9 +1888,11 @@ export default function CardManager({
 
         return (
           <>
-            {/* List view */}
-            {/* リスト表示 */}
-            {currentViewMode === "list" ? (
+            {displayCards.length === 0 ? (
+              <p className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-8 text-center text-gray-400">
+                {t("messages.noMatchingCards")}
+              </p>
+            ) : currentViewMode === "list" ? (
               <CardList
                 cards={displayCards}
                 totalActiveWeight={totalActiveWeight}
