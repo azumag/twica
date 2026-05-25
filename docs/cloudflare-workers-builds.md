@@ -1,9 +1,10 @@
 # Cloudflare Workers Builds Deployment
 
 TwiCa deploys the Next.js Worker through Cloudflare Workers Builds. GitHub
-Actions remains available as a fallback until the Cloudflare connection is
-confirmed, and continues to deploy the auxiliary error-reporter Worker after the
-cutover.
+Actions remains responsible for Supabase migrations from the existing GitHub
+Environment secrets, remains available as a fallback until the Cloudflare
+connection is confirmed, and continues to deploy the auxiliary error-reporter
+Worker after the cutover.
 
 ## Build Targets
 
@@ -21,12 +22,15 @@ Configure two Cloudflare Workers Builds connections.
 
 Required build variables / secrets:
 
-- `SUPABASE_DB_URL`
 - `NEXT_PUBLIC_APP_URL`
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` or `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `NEXT_PUBLIC_TWITCH_CLIENT_ID`
 - `NEXT_PUBLIC_CF_IMAGES_ENABLED`
+
+Do not duplicate `SUPABASE_DB_URL` in Cloudflare Build Variables. It is a
+Postgres connection string for migrations, not the Supabase project URL, and is
+read from the existing GitHub Environment secret by the migration job.
 
 Runtime secrets such as `TWITCH_CLIENT_SECRET`, `TWITCH_EVENTSUB_SECRET`,
 `SUPABASE_SECRET_KEY`, `CSRF_TOKEN_SALT`, `R2_PUBLIC_URL`, and
@@ -49,7 +53,10 @@ script refuses to deploy unless `WORKERS_CI_BRANCH=preview`, so accidental
 promotion from feature branches fails before touching the Worker.
 
 If non-production branch builds are enabled, feature branches upload version
-previews for `twica-preview` without running Supabase migrations.
+previews for `twica-preview` without running Supabase migrations. The checked-in
+deploy wrapper also falls back to this upload path if the preview deploy command
+is invoked on a feature branch, so branch builds cannot accidentally promote a
+feature branch to the preview deployment.
 
 ## Cutover
 
@@ -59,7 +66,8 @@ previews for `twica-preview` without running Supabase migrations.
 4. In GitHub repository variables, set
    `CLOUDFLARE_WORKERS_BUILDS_ENABLED=true`.
 5. Keep `.github/workflows/deploy-cloudflare.yml` enabled. With the variable set,
-   it skips the legacy app deploy and only deploys `workers/error-reporter` for
+   it skips the legacy app deploy while still applying Supabase migrations from
+   GitHub Environment secrets, and deploys `workers/error-reporter` for
    production.
 
 ## Safety Rules
@@ -67,6 +75,7 @@ previews for `twica-preview` without running Supabase migrations.
 - Production Supabase migrations run only from `main`.
 - Preview Supabase migrations run only from `preview`.
 - Feature branch preview uploads do not run migrations.
-- If `SUPABASE_DB_URL` is missing, deploy commands fail before uploading.
+- `SUPABASE_DB_URL` stays in GitHub Environment secrets; Cloudflare Build
+  Variables should only contain values required by the Next.js build.
 - Do not enable the GitHub repository variable until Cloudflare Builds has
   successfully deployed both Workers once.

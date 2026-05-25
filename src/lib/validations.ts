@@ -1,5 +1,5 @@
 import { getSupabaseAdmin } from './supabase/admin'
-import { CARD_DESCRIPTION_MAX_CHARACTERS, ERROR_MESSAGES, RARITIES } from './constants'
+import { CARD_DESCRIPTION_MAX_CHARACTERS, ERROR_MESSAGES } from './constants'
 import { countCharacters } from './text-utils'
 
 export async function validateDropRateSum(
@@ -136,9 +136,13 @@ export function validateRarity(rarity: unknown): { valid: boolean; error?: strin
     return { valid: false, error: ERROR_MESSAGES.INVALID_RARITY }
   }
 
-  const allowedRarities = RARITIES.map(r => r.value)
+  const trimmedRarity = rarity.trim()
 
-  if (!allowedRarities.includes(rarity as 'common' | 'rare' | 'epic' | 'legendary')) {
+  if (trimmedRarity.length === 0 || trimmedRarity.length > 40) {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_RARITY }
+  }
+
+  if (/[\u0000-\u001f\u007f]/.test(trimmedRarity)) {
     return { valid: false, error: ERROR_MESSAGES.INVALID_RARITY }
   }
 

@@ -19,6 +19,8 @@ interface DropRateSettingsModalProps {
     c: Card[] | null
   ) => void;
   rarityWeights: Record<string, number> | null;
+  // カスタムレアリティ名（自動モードで重みを割り当てられるよう一覧へ含める）
+  customRarities: string[];
 }
 
 /**
@@ -36,6 +38,7 @@ export default function DropRateSettingsModal({
   onCardsSave,
   onRarityWeightsApply,
   rarityWeights,
+  customRarities,
 }: DropRateSettingsModalProps) {
   const t = useTranslations("cardManager");
   const [switching, setSwitching] = useState(false);
@@ -110,6 +113,7 @@ export default function DropRateSettingsModal({
         cards={cards}
         streamerId={streamerId}
         rarityWeights={rarityWeights}
+        customRarities={customRarities}
         onCardsSave={onCardsSave}
         onRarityWeightsApply={onRarityWeightsApply}
         onSwitchToManualMode={() => switchMode(false)}

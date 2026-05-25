@@ -25,7 +25,10 @@ function isValidPercent(value: unknown): value is number {
  * Rules:
  * - Only active cards are recalculated.
  * - Existing card rarities are detected dynamically (no fixed rarity list).
- * - If a card rarity is missing in rarityWeights, fallback to equal weight per active card.
+ * - If a card rarity is missing/invalid in rarityWeights, the card drop rate is 0
+ *   (excluded from gacha). A per-card equal fallback would let unconfigured
+ *   rarities silently inflate the total well beyond the 100% the operator set,
+ *   breaking the rarity-weight design. 0 keeps the configured totals intact.
  * - intra_rarity_weight controls distribution within a rarity (default 1.0 = equal share).
  *   Formula: card_rate = (rarity_pct / 100) * (card_intra_weight / sum_intra_weights_in_rarity)
  * - Result is rounded to 4 decimal places to match DECIMAL(5,4).
@@ -52,14 +55,15 @@ export function calculateDropRates(
     }
   }
 
-  const fallbackPerCard = roundTo4(1 / activeCards.length);
-
   return activeCards.map((card) => {
     const targetPercent = rarityWeights[card.rarity];
     const group = rarityGroups.get(card.rarity);
 
+    // レアリティ重みが未設定/不正なカードは排出対象外(0%)。
+    // 均等配分のフォールバックを行うと、運用者が設定した合計100%を
+    // 未設定レアリティが押し上げてしまい、レアリティ重み設計が破綻するため。
     if (!isValidPercent(targetPercent) || !group) {
-      return { id: card.id, dropRate: fallbackPerCard };
+      return { id: card.id, dropRate: 0 };
     }
 
     const intraWeight = card.intra_rarity_weight ?? 1.0;

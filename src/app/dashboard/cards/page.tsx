@@ -60,6 +60,7 @@ export default async function CardsPage() {
       streamerId={streamerData.streamer.id}
       initialCards={initialCards}
       initialRarityWeights={streamerData.streamer.rarity_weights}
+      initialCustomRarities={streamerData.streamer.custom_rarities ?? []}
       viewMode="list"
       showViewToggle={true}
       maxImageWidth={maxImageWidth}
