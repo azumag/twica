@@ -7,6 +7,6 @@
 -- 00001_initial_schema.sql の idx_user_cards_card_id (user_cards(card_id)) と完全に重複する。
 -- そのまま残すと user_cards への INSERT/UPDATE 時に余分な書き込みコストが発生するため削除する。
 --
--- NOTE: This migration uses 00049 to leave room for upstream main migrations during rebase.
--- 00041 自体の番号衝突解消 (リネーム) は author の手動 rebase 時に対応する。
+-- NOTE: This migration uses 00057 to leave room for upstream and in-flight migrations during rebase.
+-- 00056 の issuance limit migration と対になる cleanup として後続番号にする。
 DROP INDEX IF EXISTS idx_user_cards_card_id_issuance_count;

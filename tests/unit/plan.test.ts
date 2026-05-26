@@ -5,6 +5,7 @@ import {
   PLAN_MAX_UPLOAD_SIZE,
   type PlanType,
 } from '@/lib/plan'
+import { hasTwitchSub } from '@/lib/twitch/sub-check'
 
 vi.mock('@/lib/logger')
 vi.mock('@/lib/twitch/sub-check', () => ({
@@ -108,6 +109,37 @@ describe('getUserPlan', () => {
     const { getUserPlan } = await import('@/lib/plan')
     const result = await getUserPlan('user-throw')
     expect(result).toBe('basic')
+  })
+
+  it('getUserPlanSnapshot uses DB state without calling Twitch subscription API', async () => {
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    const from = vi.fn((table: string) => {
+      if (table === 'user_licenses') {
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          in: vi.fn().mockResolvedValue({
+            data: [{ plan_type: 'support', support_codes: { status: 'active' } }],
+            error: null,
+          }),
+        }
+      }
+      return {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: { twitch_has_sub: true },
+          error: null,
+        }),
+      }
+    })
+    vi.mocked(getSupabaseAdmin).mockReturnValue({ from } as any)
+
+    const { getUserPlanSnapshot } = await import('@/lib/plan')
+    const result = await getUserPlanSnapshot('user-snapshot')
+
+    expect(result).toBe('twitch_sub')
+    expect(hasTwitchSub).not.toHaveBeenCalled()
   })
 })
 
@@ -213,4 +245,3 @@ describe('getPlanStorageBytes', () => {
     expect(result).toBe(500 * 1024 * 1024)
   })
 })
-

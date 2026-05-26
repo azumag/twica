@@ -14,6 +14,7 @@ import {
 } from "@/lib/collection-utils";
 import StreamerCollection from "@/components/StreamerCollection";
 import type { StreamerCollectionCard } from "@/components/StreamerCollection";
+import { aggregateCustomRarities } from "@/lib/rarity";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -89,6 +90,8 @@ export default async function StreamerCollectionPage({
 
   // Calculate collection statistics — 未所持カードはカウントしない（所持実績のみ）
   // Stats summarize the viewer's actual ownership; unowned cards are excluded.
+  const customRarities = aggregateCustomRarities(ownedCards);
+
   const stats = {
     total: ownedCards.reduce((sum, c) => sum + c.count, 0),
     unique: ownedCards.length,
@@ -96,6 +99,7 @@ export default async function StreamerCollectionPage({
     epic: ownedCards.filter((c) => c.rarity === "epic").length,
     rare: ownedCards.filter((c) => c.rarity === "rare").length,
     common: ownedCards.filter((c) => c.rarity === "common").length,
+    customRarities,
   };
 
   const progress = {

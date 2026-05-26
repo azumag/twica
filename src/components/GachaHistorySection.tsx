@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import type { GachaHistory, Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { getRarityColorClass } from "@/lib/rarity";
 
 
 interface GachaHistoryWithCard extends GachaHistory {
@@ -16,13 +17,6 @@ interface GachaHistorySectionProps {
   recentGacha: GachaHistoryWithCard[];
   isStreamer: boolean;
 }
-
-const RARITY_COLORS = {
-  common: "bg-gray-500",
-  rare: "bg-blue-500",
-  epic: "bg-purple-500",
-  legendary: "bg-yellow-500",
-};
 
 /**
  * Gacha History Section Component
@@ -104,7 +98,7 @@ export default function GachaHistorySection({
                      {new Date(entry.redeemed_at).toLocaleString('ja-JP')}
                    </p>
                  </div>
-                 <div className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[entry.cards.rarity]}`}>
+                 <div className={`rounded-full px-2 py-0.5 text-xs text-white ${getRarityColorClass(entry.cards.rarity)}`}>
                    {entry.cards.rarity}
                  </div>
                  {isStreamer && (

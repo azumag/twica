@@ -17,11 +17,14 @@ export class TwitchTokenError extends Error {
 export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
   const supabaseAdmin = getSupabaseAdmin();
 
-  const { data: user, error: dbError } = await supabaseAdmin
-    .from('users')
-    .select('twitch_access_token, twitch_refresh_token, twitch_token_expires_at')
-    .eq('twitch_user_id', twitchUserId)
-    .maybeSingle();
+  const { data: user, error: dbError } = await withRetry(
+    () => supabaseAdmin
+      .from('users')
+      .select('twitch_access_token, twitch_refresh_token, twitch_token_expires_at')
+      .eq('twitch_user_id', twitchUserId)
+      .maybeSingle(),
+    'twitch token fetch',
+  );
 
   if (dbError) {
     // PGRST204 means column not found - token columns may not exist in schema
@@ -540,11 +543,14 @@ export async function validateTokenScopes(twitchUserId: string): Promise<string[
     // check-scope GET must be read-only; getTwitchAccessToken() would refresh expired
     // tokens and write to DB, violating the read-only contract.
     const supabaseAdmin = getSupabaseAdmin();
-    const { data: user, error: dbError } = await supabaseAdmin
-      .from('users')
-      .select('twitch_access_token, twitch_token_expires_at')
-      .eq('twitch_user_id', twitchUserId)
-      .maybeSingle();
+    const { data: user, error: dbError } = await withRetry(
+      () => supabaseAdmin
+        .from('users')
+        .select('twitch_access_token, twitch_token_expires_at')
+        .eq('twitch_user_id', twitchUserId)
+        .maybeSingle(),
+      'twitch token scope validation fetch',
+    );
 
     if (dbError || !user?.twitch_access_token) return null;
 

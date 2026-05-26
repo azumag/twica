@@ -5,31 +5,45 @@ import { Database } from '../types/database'
 // Uses dashboard-specific environment variables to isolate from the main application
 const supabaseUrl = import.meta.env.VITE_DASHBOARD_SUPABASE_URL
 
-// Prefer Service Role Key for full data access (bypasses RLS)
-// Fall back to Anon Key if Service Role Key is not set
+// Browser-visible client key. Secret/service-role keys must stay on the local
+// Vite server side and are used via /__admin endpoints for protected data.
 const supabaseKey =
-  import.meta.env.VITE_DASHBOARD_SUPABASE_SERVICE_ROLE_KEY ||
+  import.meta.env.VITE_DASHBOARD_SUPABASE_PUBLISHABLE_KEY ||
   import.meta.env.VITE_DASHBOARD_SUPABASE_ANON_KEY
 
-// Track which key type is being used for debugging
-const isServiceRoleKey = !!import.meta.env.VITE_DASHBOARD_SUPABASE_SERVICE_ROLE_KEY
+const configuredSecretKey = !!import.meta.env.VITE_DASHBOARD_SUPABASE_SECRET_KEY ||
+  !!import.meta.env.VITE_DASHBOARD_SUPABASE_SERVICE_ROLE_KEY
 
 // Validate environment variables are set
 if (!supabaseUrl || !supabaseKey) {
   console.error(
-    'Missing Supabase environment variables. Please set VITE_DASHBOARD_SUPABASE_URL and either VITE_DASHBOARD_SUPABASE_SERVICE_ROLE_KEY or VITE_DASHBOARD_SUPABASE_ANON_KEY in .env.local'
+    'Missing Supabase environment variables. Please set VITE_DASHBOARD_SUPABASE_URL and VITE_DASHBOARD_SUPABASE_PUBLISHABLE_KEY in .env.local'
   )
 } else {
-  // Log which key type is being used (helpful for debugging)
-  console.log(`Dashboard Supabase client initialized with ${isServiceRoleKey ? 'Service Role Key (RLS bypassed)' : 'Anon Key (RLS enforced)'}`)
+  console.log(
+    `Dashboard Supabase client initialized with ${
+      import.meta.env.VITE_DASHBOARD_SUPABASE_PUBLISHABLE_KEY ? 'Publishable Key' : 'legacy Anon Key'
+    }`
+  )
+}
+
+if (configuredSecretKey) {
+  console.warn(
+    'A VITE_DASHBOARD_SUPABASE_SECRET_KEY/service-role key is configured, but browser code ignores it. Use DASHBOARD_SUPABASE_SECRET_KEY for the local __admin API instead.'
+  )
 }
 
 // Create Supabase client instance
-// When using Service Role Key, RLS is bypassed allowing full read access to all tables
-// IMPORTANT: This dashboard is for local admin use only - never expose Service Role Key publicly
 export const supabase: SupabaseClient<Database> = createClient<Database>(
   supabaseUrl || '',
-  supabaseKey || ''
+  supabaseKey || '',
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }
 )
 
 // Read-only query wrapper to ensure we only perform SELECT operations

@@ -14,6 +14,8 @@ interface ChatAnnouncementSettingsProps {
   // カスタムテンプレート（nullの場合はデフォルト）
   // Custom template (null for default)
   currentTemplate: string | null;
+  currentMultiTemplate: string | null;
+  currentMultiShowCards: boolean;
   botAccount?: {
     username: string | null;
     displayName: string | null;
@@ -21,10 +23,12 @@ interface ChatAnnouncementSettingsProps {
 }
 
 const DEFAULT_CHAT_TEMPLATE = "@{user} が【{rarity}】{card} を獲得しました！";
+const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = "@{user} が{draws}連ガチャで {rarityCounts} を獲得しました！{cards}";
 
 const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   user: 25,
   card: 100,
+  cards: 300,
   rarity: 12,
   num: 10,
   // コンプ進捗のユニーク/全種類数は現実的に4桁で十分
@@ -32,6 +36,10 @@ const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   unique: 4,
   all: 4,
   detail: CARD_DESCRIPTION_MAX_CHARACTERS,
+  // newCards は cards と同等の上限（実装上は 「初出: 」付与時に予約される）
+  // newCards mirrors `cards` length; runtime reserves space for the "初出: " suffix
+  newCards: 300,
+  newCardCount: 4,
 } as const;
 
 function buildChatPreviewMessage(
@@ -39,23 +47,33 @@ function buildChatPreviewMessage(
   placeholders: {
     user: string;
     card: string;
+    cards: string;
+    draws: string;
+    rarityCounts: string;
     rarity: string;
     num: string;
     unique: string;
     all: string;
     detail: string;
     url: string;
+    newCards: string;
+    newCardCount: string;
   }
 ): string {
   return template
     .replace(/\{user\}/g, placeholders.user)
     .replace(/\{card\}/g, placeholders.card)
+    .replace(/\{cards\}/g, placeholders.cards)
+    .replace(/\{draws\}/g, placeholders.draws)
+    .replace(/\{rarityCounts\}/g, placeholders.rarityCounts)
     .replace(/\{rarity\}/g, placeholders.rarity)
     .replace(/\{num\}/g, placeholders.num)
     .replace(/\{unique\}/g, placeholders.unique)
     .replace(/\{all\}/g, placeholders.all)
     .replace(/\{detail\}/g, placeholders.detail)
     .replace(/\{url\}/g, placeholders.url)
+    .replace(/\{newCards\}/g, placeholders.newCards)
+    .replace(/\{newCardCount\}/g, placeholders.newCardCount)
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -69,6 +87,8 @@ export default function ChatAnnouncementSettings({
   streamerId,
   currentEnabled,
   currentTemplate,
+  currentMultiTemplate,
+  currentMultiShowCards,
   botAccount,
 }: ChatAnnouncementSettingsProps) {
   const t = useTranslations("chatAnnouncementSettings");
@@ -76,6 +96,8 @@ export default function ChatAnnouncementSettings({
   // State管理
   const [enabled, setEnabled] = useState(currentEnabled);
   const [template, setTemplate] = useState(currentTemplate || "");
+  const [multiTemplate, setMultiTemplate] = useState(currentMultiTemplate || "");
+  const [multiShowCards, setMultiShowCards] = useState(currentMultiShowCards);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
@@ -94,20 +116,44 @@ export default function ChatAnnouncementSettings({
   const [botConnecting, setBotConnecting] = useState(false);
   const [botDisconnecting, setBotDisconnecting] = useState(false);
   const activeTemplate = template || DEFAULT_CHAT_TEMPLATE;
+  const activeMultiTemplate = multiTemplate || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE;
   const canSendChat = hasScope || botConnected;
 
   const demoMessage = useMemo(() => {
     return buildChatPreviewMessage(activeTemplate, {
       user: "SampleUser",
       card: "レジェンダリーカード",
+      cards: "レジェンダリーカード、レアカード、コモンカード",
+      draws: "3",
+      rarityCounts: "レジェンダリーx1、レアx1、コモンx1",
       rarity: "レジェンダリー",
       num: "3",
       unique: "5",
       all: "10",
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
+      newCards: "レジェンダリーカード、レアカード",
+      newCardCount: "2",
     });
   }, [activeTemplate, streamerId]);
+
+  const multiDemoMessage = useMemo(() => {
+    return buildChatPreviewMessage(activeMultiTemplate, {
+      user: "SampleUser",
+      card: "レジェンダリーカード",
+      cards: multiShowCards ? "（レジェンダリーカード、レアカード、コモンカード）" : "",
+      draws: "3",
+      rarityCounts: "レジェンダリーx1、レアx1、コモンx1",
+      rarity: "レジェンダリー",
+      num: "3",
+      unique: "5",
+      all: "10",
+      detail: "特別なカードの説明文です",
+      url: `https://twica.live/collection/${streamerId}`,
+      newCards: multiShowCards ? "レジェンダリーカード、レアカード" : "",
+      newCardCount: multiShowCards ? "2" : "",
+    });
+  }, [activeMultiTemplate, multiShowCards, streamerId]);
 
   const demoMessageCharacterCount = useMemo(
     () => countCharacters(demoMessage),
@@ -119,12 +165,17 @@ export default function ChatAnnouncementSettings({
       buildChatPreviewMessage(activeTemplate, {
         user: "U".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.user),
         card: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.card),
+        cards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.cards),
+        draws: "10",
+        rarityCounts: "レジェンダリーx10",
         rarity: "レ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.rarity),
         num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
         unique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.unique),
         all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
         detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
         url: `https://twica.live/collection/${streamerId}`,
+        newCards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCards),
+        newCardCount: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardCount),
       })
     );
   }, [activeTemplate, streamerId]);
@@ -280,7 +331,12 @@ export default function ChatAnnouncementSettings({
    * 設定を保存
    * Save settings
    */
-  const saveSettings = useCallback(async (newEnabled: boolean, newTemplate: string) => {
+  const saveSettings = useCallback(async (
+    newEnabled: boolean,
+    newTemplate: string,
+    newMultiTemplate: string,
+    newMultiShowCards: boolean
+  ) => {
     setSaving(true);
     setMessage("");
     setIsError(false);
@@ -296,6 +352,8 @@ export default function ChatAnnouncementSettings({
           streamerId,
           chatAnnouncementEnabled: newEnabled,
           chatAnnouncementTemplate: newTemplate || null,
+          chatAnnouncementMultiTemplate: newMultiTemplate || null,
+          chatAnnouncementMultiShowCards: newMultiShowCards,
         }),
       });
 
@@ -327,21 +385,21 @@ export default function ChatAnnouncementSettings({
     const newEnabled = !enabled;
     setEnabled(newEnabled);
 
-    const success = await saveSettings(newEnabled, template);
+    const success = await saveSettings(newEnabled, template, multiTemplate, multiShowCards);
     if (!success) {
       // 失敗した場合は元に戻す
       // Revert on failure
       setEnabled(!newEnabled);
     }
-  }, [enabled, saveSettings, template]);
+  }, [enabled, multiShowCards, multiTemplate, saveSettings, template]);
 
   /**
    * テンプレートを保存
    * Save template
    */
   const handleSaveTemplate = useCallback(async () => {
-    await saveSettings(enabled, template);
-  }, [enabled, saveSettings, template]);
+    await saveSettings(enabled, template, multiTemplate, multiShowCards);
+  }, [enabled, multiShowCards, multiTemplate, saveSettings, template]);
 
   /**
    * デモ用のサンプルメッセージを生成
@@ -494,6 +552,33 @@ export default function ChatAnnouncementSettings({
           )}
         </div>
 
+        <div className="rounded-lg border border-gray-700 bg-gray-900/40 p-4">
+          <label className="mb-1 block text-sm text-gray-300">
+            {t("form.multiTemplate")}
+          </label>
+          <textarea
+            value={multiTemplate}
+            onChange={(e) => setMultiTemplate(e.target.value)}
+            placeholder={t("form.multiTemplatePlaceholder")}
+            disabled={!canSendChat}
+            rows={3}
+            className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none disabled:opacity-50"
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            {t("form.multiPlaceholderHelp")}
+          </p>
+          <label className="mt-3 flex items-center gap-2 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              checked={multiShowCards}
+              onChange={(e) => setMultiShowCards(e.target.checked)}
+              disabled={!canSendChat}
+              className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500 disabled:opacity-50"
+            />
+            {t("form.multiShowCards")}
+          </label>
+        </div>
+
         {/* ボタン群 */}
         <div className="flex gap-2">
           {/* テンプレート保存ボタン */}
@@ -536,8 +621,15 @@ export default function ChatAnnouncementSettings({
             </p>
             {/* プレビューメッセージ */}
             <div className="mb-4 rounded-lg bg-gray-700 p-4">
+              <p className="mb-2 text-xs text-gray-400">{t("demo.singleTitle")}</p>
               <p className="break-words text-sm text-white">
                 {demoMessage}
+              </p>
+            </div>
+            <div className="mb-4 rounded-lg bg-gray-700 p-4">
+              <p className="mb-2 text-xs text-gray-400">{t("demo.multiTitle")}</p>
+              <p className="break-words text-sm text-white">
+                {multiDemoMessage}
               </p>
             </div>
             <button

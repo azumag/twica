@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { CARD_DESCRIPTION_MAX_CHARACTERS, ERROR_MESSAGES } from '@/lib/constants'
 import { countCharacters, truncateCharacters } from '@/lib/text-utils'
-import { validateCardDescription } from '@/lib/validations'
+import { validateCardDescription, validateRarity } from '@/lib/validations'
 
 describe('countCharacters', () => {
   it('日本語文字列を文字単位で数える', () => {
@@ -30,6 +30,29 @@ describe('validateCardDescription', () => {
     expect(validateCardDescription(description)).toEqual({
       valid: false,
       error: ERROR_MESSAGES.DESCRIPTION_TOO_LONG,
+    })
+  })
+})
+
+describe('validateRarity', () => {
+  it('allows built-in and custom rarity labels', () => {
+    expect(validateRarity('legendary')).toEqual({ valid: true })
+    expect(validateRarity('mythic')).toEqual({ valid: true })
+    expect(validateRarity('イベント限定')).toEqual({ valid: true })
+  })
+
+  it('rejects blank, oversized, and control-character rarity labels', () => {
+    expect(validateRarity('   ')).toEqual({
+      valid: false,
+      error: ERROR_MESSAGES.INVALID_RARITY,
+    })
+    expect(validateRarity('a'.repeat(41))).toEqual({
+      valid: false,
+      error: ERROR_MESSAGES.INVALID_RARITY,
+    })
+    expect(validateRarity('rare\nhidden')).toEqual({
+      valid: false,
+      error: ERROR_MESSAGES.INVALID_RARITY,
     })
   })
 })

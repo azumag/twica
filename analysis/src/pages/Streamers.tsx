@@ -1,12 +1,10 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { StreamerPopup } from '../components/StreamerPopup'
 import { Streamer } from '../types/database'
-
-// チャット通知の送信に必要なTwitch OAuthスコープ
-const CHAT_WRITE_SCOPE = 'user:write:chat'
 
 // 投票キャンペーンの識別子（2026選挙応援キャンペーン）
 // キャンペーン終了後はこの定数とクエリを削除すること
@@ -37,6 +35,12 @@ interface StreamerWithStats extends Streamer {
   // usersテーブルのtwitch_scopesにuser:write:chatが含まれているか
   // チャット通知の送信にはこのスコープが必要
   has_chat_scope: boolean
+  // 現在の送信方式（配信者本人 / BOT）でチャット通知を送信できるか
+  chat_send_available: boolean
+  // 有効なBOT送信設定があるか
+  has_active_bot_sender: boolean
+  // 現在選択されているチャット通知の送信方式
+  chat_sender_mode: 'streamer' | 'custom_bot' | 'official_bot'
   // 投票キャンペーンボーナスを有効化しているか
   has_vote_campaign_bonus: boolean
 }
@@ -130,7 +134,7 @@ export function Streamers() {
       // storage_usageはuser_prefixごとの集計済みバイト数を保持（本番APIと同じデータソース）
       // streamer_storage_bonusから投票キャンペーンボーナス適用済みストリーマーを取得
       // fetchAllPagedで1000行制限を回避して全行取得
-      const [streamersResult, storageUsageResult, storageBonusResult] = await Promise.all([
+      const [streamersResult, storageUsageResult, storageBonusResult, chatAccessResult] = await Promise.all([
         fetchAllPaged(() =>
           supabase.from('streamers').select('*, cards(count)')
             .order('created_at', { ascending: false })
@@ -142,6 +146,7 @@ export function Streamers() {
         fetchAllPaged(() =>
           supabase.from('streamer_storage_bonus').select('streamer_id').eq('type', VOTE_CAMPAIGN_TYPE).eq('memo', VOTE_CAMPAIGN_MEMO)
         ),
+        adminApi.getStreamerChatAccess(),
       ])
 
       // 全てのクエリのエラーチェック
@@ -155,36 +160,13 @@ export function Streamers() {
         // 続行は可能だが、投票キャンペーン情報が空になることを記録
       }
 
-      // ストリーマーのtwitch_user_id一覧を抽出して、対応するusersのみクエリする（第2段階）
+      // ストリーマーのtwitch_user_id一覧を抽出する（storage prefix計算用）
       const streamerTwitchIds = (streamersResult.data || []).map(
         (s: { twitch_user_id: string }) => s.twitch_user_id
       )
-      // ストリーマー数が多い場合、in()のURLサイズ制限とSupabase行数制限を回避するためバッチ取得
-      // 各バッチは並列実行でパフォーマンスを確保
-      const userScopesByTwitchId = new Map<string, string[]>()
-      if (streamerTwitchIds.length > 0) {
-        const IN_BATCH_SIZE = 500
-        const batches: string[][] = []
-        for (let i = 0; i < streamerTwitchIds.length; i += IN_BATCH_SIZE) {
-          batches.push(streamerTwitchIds.slice(i, i + IN_BATCH_SIZE))
-        }
-        const batchResults = await Promise.all(
-          batches.map((batch) =>
-            supabase.from('users').select('twitch_user_id, twitch_scopes').in('twitch_user_id', batch)
-          )
-        )
-        for (const usersResult of batchResults) {
-          if (usersResult.error) {
-            console.warn('Users query error (twitch_scopes取得失敗):', usersResult.error)
-            continue
-          }
-          const users = (usersResult.data || []) as { twitch_user_id: string; twitch_scopes: string[] }[]
-          users.forEach((user) => {
-            userScopesByTwitchId.set(user.twitch_user_id, user.twitch_scopes || [])
-          })
-        }
-        console.log(`Streamer users with scopes loaded: ${userScopesByTwitchId.size}/${streamerTwitchIds.length}件`)
-      }
+      const chatAccessByStreamerId = new Map(
+        chatAccessResult.map((access) => [access.streamer_id, access])
+      )
 
       // storage_usageテーブルからuser_prefixごとの使用量Mapを構築
       // storage_usageはアップロード/削除時にRPCで自動更新される集計済みテーブルのため、
@@ -226,10 +208,7 @@ export function Streamers() {
         const userPrefix = prefixByTwitchId.get(streamer.twitch_user_id) || ''
         const storageBytes = storageSizeByPrefix.get(userPrefix) || 0
 
-        // ストリーマーに対応するユーザーのスコープを確認
-        // user:write:chat スコープがあればチャット通知の送信権限あり
-        const userScopes = userScopesByTwitchId.get(streamer.twitch_user_id) || []
-        const hasChatScope = userScopes.includes(CHAT_WRITE_SCOPE)
+        const chatAccess = chatAccessByStreamerId.get(streamer.id)
 
         // 投票キャンペーンボーナスの有無を確認
         const hasVoteCampaignBonus = voteCampaignStreamerIdSet.has(streamer.id)
@@ -251,7 +230,10 @@ export function Streamers() {
           updated_at: streamer.updated_at,
           card_count: cardCount,
           storage_bytes: storageBytes,
-          has_chat_scope: hasChatScope,
+          has_chat_scope: chatAccess?.has_chat_scope ?? false,
+          chat_send_available: chatAccess?.chat_send_available ?? false,
+          has_active_bot_sender: chatAccess?.has_active_bot_sender ?? false,
+          chat_sender_mode: chatAccess?.sender_mode ?? 'streamer',
           has_vote_campaign_bonus: hasVoteCampaignBonus,
         }
       })
@@ -351,7 +333,7 @@ export function Streamers() {
     },
     {
       // チャット通知設定の有効/無効を表示するカラム
-      // 通知ONなのにuser:write:chatスコープが無い場合は警告アイコンを表示
+      // 通知ONなのに現在の送信方式で送信できない場合は警告アイコンを表示
       key: 'chat_announcement',
       header: 'Chat通知',
       render: (streamer: StreamerWithStats) => (
@@ -365,11 +347,11 @@ export function Streamers() {
           >
             {streamer.chat_announcement_enabled ? 'ON' : 'OFF'}
           </span>
-          {/* 通知ONだが権限がない場合に警告表示 */}
-          {streamer.chat_announcement_enabled && !streamer.has_chat_scope && (
+          {/* 通知ONだが現在の送信方式で送信できない場合に警告表示 */}
+          {streamer.chat_announcement_enabled && !streamer.chat_send_available && (
             <span
               className="text-amber-500"
-              title="通知ONですがuser:write:chatスコープが未付与のため送信できません"
+              title="通知ONですが現在の送信方式では送信できません"
             >
               ⚠
             </span>
@@ -378,19 +360,27 @@ export function Streamers() {
       ),
     },
     {
-      // Chat権限(user:write:chatスコープ)の有無を表示するカラム
-      // usersテーブルのtwitch_scopesから判定
+      // 現在のチャット通知送信可否を表示するカラム
       key: 'chat_scope',
-      header: 'Chat権限',
+      header: 'Chat送信',
       render: (streamer: StreamerWithStats) => (
         <span
           className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-            streamer.has_chat_scope
+            streamer.chat_send_available
               ? 'bg-blue-100 text-blue-800'
               : 'bg-gray-100 text-gray-800'
           }`}
+          title={
+            streamer.has_active_bot_sender
+              ? '有効なBOT送信設定があります'
+              : streamer.has_chat_scope
+                ? '配信者本人にuser:write:chatが付与されています'
+                : '現在の送信方式ではチャット通知を送信できません'
+          }
         >
-          {streamer.has_chat_scope ? '付与済み' : '未付与'}
+          {streamer.chat_send_available
+            ? streamer.has_active_bot_sender ? 'BOT送信可' : '本人送信可'
+            : '送信不可'}
         </span>
       ),
     },
@@ -460,8 +450,8 @@ export function Streamers() {
   const chatEnabledStreamers = streamers.filter((s) => s.chat_announcement_enabled).length
   // カスタムテンプレート設定済みのストリーマー数
   const customTemplateStreamers = streamers.filter((s) => s.chat_announcement_template).length
-  // Chat通知ONだがuser:write:chatスコープが未付与のストリーマー数（要対応）
-  const chatEnabledNoScope = streamers.filter((s) => s.chat_announcement_enabled && !s.has_chat_scope).length
+  // Chat通知ONだが現在の送信方式で送信できないストリーマー数（要対応）
+  const chatEnabledNoSender = streamers.filter((s) => s.chat_announcement_enabled && !s.chat_send_available).length
   // 投票キャンペーンボーナスを有効化したユーザー数
   const voteCampaignUsers = streamers.filter((s) => s.has_vote_campaign_bonus).length
 
@@ -500,9 +490,9 @@ export function Streamers() {
       result = result.filter((s) => s.chat_announcement_template)
     }
 
-    // フィルター: Chat通知ONだが権限(user:write:chat)未付与のストリーマーのみ表示
+    // フィルター: Chat通知ONだが現在の送信方式で送信できないストリーマーのみ表示
     if (filterMissingScope) {
-      result = result.filter((s) => s.chat_announcement_enabled && !s.has_chat_scope)
+      result = result.filter((s) => s.chat_announcement_enabled && !s.chat_send_available)
     }
 
     // フィルター: 投票キャンペーン有効化済みのストリーマーのみ表示
@@ -577,16 +567,16 @@ export function Streamers() {
         </div>
       </div>
 
-      {/* Chat通知ONなのに権限がないストリーマーがいる場合に警告バナーを表示 */}
-      {chatEnabledNoScope > 0 && (
+      {/* Chat通知ONなのに現在の送信方式で送信できないストリーマーがいる場合に警告バナーを表示 */}
+      {chatEnabledNoSender > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center gap-3">
           <span className="text-amber-500 text-xl">⚠</span>
           <div>
             <p className="text-sm font-medium text-amber-800">
-              Chat通知ONだが権限(user:write:chat)が未付与: {chatEnabledNoScope}件
+              Chat通知ONだが現在の送信方式では送信不可: {chatEnabledNoSender}件
             </p>
             <p className="text-xs text-amber-600 mt-0.5">
-              該当ストリーマーはチャット通知が送信されません。再認証が必要です。
+              配信者本人の再認証、または有効なBOT送信設定が必要です。
             </p>
           </div>
         </div>
@@ -693,7 +683,7 @@ export function Streamers() {
             </span>
           </label>
 
-          {/* Chat通知ONだが権限未付与のみ表示トグル */}
+          {/* Chat通知ONだが送信不可のみ表示トグル */}
           <label className="flex items-center space-x-2 cursor-pointer">
             <input
               type="checkbox"
@@ -702,7 +692,7 @@ export function Streamers() {
               className="w-4 h-4 text-amber-500 border-gray-300 rounded focus:ring-amber-500"
             />
             <span className="text-sm text-amber-600 font-medium">
-              通知ON・権限なし
+              通知ON・送信不可
             </span>
           </label>
 

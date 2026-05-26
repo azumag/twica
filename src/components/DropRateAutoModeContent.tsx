@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
@@ -12,6 +13,8 @@ interface DropRateAutoModeContentProps {
   cards: Card[];
   streamerId: string;
   rarityWeights: Record<string, number>;
+  // カスタムレアリティ名（カード未使用でも重み設定欄に表示するため）
+  customRarities: string[];
   onCardsSave: (updatedCards: Card[]) => void;
   onRarityWeightsApply: (
     w: Record<string, number> | null,
@@ -38,6 +41,7 @@ export default function DropRateAutoModeContent({
   cards,
   streamerId,
   rarityWeights,
+  customRarities,
   onCardsSave,
   onRarityWeightsApply,
   onSwitchToManualMode,
@@ -82,13 +86,14 @@ export default function DropRateAutoModeContent({
     for (const rarity of RARITIES) keys.add(rarity.value);
     for (const card of cards) keys.add(card.rarity);
     for (const key of Object.keys(rarityWeights)) keys.add(key);
+    for (const key of customRarities) keys.add(key);
 
     const baseOrder = RARITIES.map((rarity) => rarity.value) as string[];
     const extras = Array.from(keys)
       .filter((key) => !baseOrder.includes(key))
       .sort();
     return [...baseOrder.filter((key) => keys.has(key)), ...extras];
-  }, [cards, rarityWeights]);
+  }, [cards, rarityWeights, customRarities]);
 
   // アクティブカード数（レアリティ別）
   const activeCounts = useMemo(() => {
@@ -112,6 +117,26 @@ export default function DropRateAutoModeContent({
     }
     setDraftWeights(nextDraft);
   }, [rarityWeights, rarityKeys]);
+
+  // カスタムレアリティ追加時の未登録キー初期化。
+  // rarityKeys にカード由来の新規レアリティが現れたとき、draftWeights に
+  // 当該キーを 0 で先行登録する。これをしないと、新キーが入力欄に 0 表示
+  // される一方で合計には反映されず、「合計100%」制約と実表示が乖離して
+  // 保存できなくなる（カスタムレアリティ追加でUI制約が破綻する）ため。
+  useEffect(() => {
+    setDraftWeights((prev) => {
+      const missingKeys = rarityKeys.filter(
+        (key) => !Object.prototype.hasOwnProperty.call(prev, key)
+      );
+      if (missingKeys.length === 0) return prev;
+
+      const next = { ...prev };
+      for (const key of missingKeys) {
+        next[key] = clampPercent(rarityWeights[key] ?? 0);
+      }
+      return next;
+    });
+  }, [rarityKeys, rarityWeights]);
 
   // レアリティ別合計
   const rarityTotal = useMemo(() => {
@@ -184,16 +209,9 @@ export default function DropRateAutoModeContent({
   // 両タブの変更を常にチェック（タブ切替後のクローズでも確認ダイアログが出るように）
   const hasAnyChanges = rarityHasChanges || perCardHasChanges;
 
-  const getRarityLabel = (rarity: string): string => {
-    try {
-      return tRarity(rarity as "common");
-    } catch {
-      return rarity;
-    }
-  };
+  const getRarityLabel = (rarity: string): string => formatRarityLabel(rarity, tRarity);
 
-  const getRarityInfo = (rarity: Rarity) =>
-    RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+  const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
   // === レアリティ別: 保存 ===
   // レアリティ保存後、サーバーがカードのdrop_rateを再計算するため
@@ -590,7 +608,7 @@ export default function DropRateAutoModeContent({
                             <span
                               className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.color}`}
                             >
-                              {tRarity(card.rarity)}
+                              {getRarityLabel(card.rarity)}
                             </span>
                           </div>
                         </div>

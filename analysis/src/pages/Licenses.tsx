@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import type { SupportCode, UserLicense, SupportCodeStatus, PlanType } from '../types/database'
 
@@ -73,13 +73,7 @@ export function Licenses() {
   const fetchCodes = async () => {
     setLoading(true)
     try {
-      const { data, error } = await supabase
-        .from('support_codes')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (error) throw error
-      setCodes((data || []) as SupportCode[])
+      setCodes(await adminApi.getSupportCodes())
     } catch (error) {
       console.error('Failed to fetch support codes:', error)
     } finally {
@@ -91,34 +85,7 @@ export function Licenses() {
   const fetchLicenses = async () => {
     setLicensesLoading(true)
     try {
-      const { data, error } = await supabase
-        .from('user_licenses')
-        .select('*')
-        .order('activated_at', { ascending: false })
-
-      if (error) throw error
-      const licensesData = (data || []) as UserLicense[]
-
-      // ユーザー名を取得して結合
-      const twitchIds = [...new Set(licensesData.map(l => l.twitch_user_id))]
-      let userMap = new Map<string, string>()
-      if (twitchIds.length > 0) {
-        const { data: users } = await supabase
-          .from('users')
-          .select('twitch_user_id, twitch_display_name')
-          .in('twitch_user_id', twitchIds)
-
-        if (users) {
-          for (const u of users as { twitch_user_id: string; twitch_display_name: string }[]) {
-            userMap.set(u.twitch_user_id, u.twitch_display_name)
-          }
-        }
-      }
-
-      setLicenses(licensesData.map(l => ({
-        ...l,
-        twitch_username: userMap.get(l.twitch_user_id) || l.twitch_user_id,
-      })))
+      setLicenses(await adminApi.getLicenses())
     } catch (error) {
       console.error('Failed to fetch licenses:', error)
     } finally {
@@ -129,15 +96,9 @@ export function Licenses() {
   const fetchTwitchSubs = async () => {
     setTwitchSubsLoading(true)
     try {
-      const { data, count, error } = await supabase
-        .from('users')
-        .select('twitch_user_id, twitch_display_name, twitch_sub_verified_at', { count: 'exact' })
-        .eq('twitch_has_sub', true)
-        .order('twitch_sub_verified_at', { ascending: false })
-
-      if (error) throw error
-      setTwitchSubs((data || []) as TwitchSubUser[])
-      if (count !== null) setTwitchSubCount(count)
+      const { rows, count } = await adminApi.getTwitchSubs()
+      setTwitchSubs(rows)
+      setTwitchSubCount(count)
     } catch (error) {
       console.error('Failed to fetch twitch subs:', error)
     } finally {
@@ -174,16 +135,11 @@ export function Licenses() {
       const plainCode = generateRandomCode()
       const codeHash = await sha256(plainCode)
 
-      const { error } = await (supabase
-        .from('support_codes') as any)
-        .insert({
-          code_hash: codeHash,
-          plan_type: newPlanType,
-          status: 'active',
-          memo: newMemo.trim() || null,
-        })
-
-      if (error) throw error
+      await adminApi.createSupportCode({
+        code_hash: codeHash,
+        plan_type: newPlanType,
+        memo: newMemo.trim() || null,
+      })
 
       // 平文コードを一度だけ表示
       setGeneratedPlainCode(plainCode)
@@ -203,10 +159,7 @@ export function Licenses() {
     if (newStatus === 'revoked') {
       if (!confirm('Revoke this code? All associated licenses will be deleted.')) return
       try {
-        const { error } = await supabase.rpc('revoke_support_code', {
-          p_code_id: codeId,
-        })
-        if (error) throw error
+        await adminApi.revokeSupportCode(codeId)
         fetchCodes()
         fetchLicenses()
       } catch (error) {
@@ -217,11 +170,7 @@ export function Licenses() {
     }
 
     try {
-      const { error } = await (supabase
-        .from('support_codes') as any)
-        .update({ status: newStatus, updated_at: new Date().toISOString() })
-        .eq('id', codeId)
-      if (error) throw error
+      await adminApi.updateSupportCodeStatus(codeId, newStatus)
       fetchCodes()
     } catch (error) {
       console.error('Failed to update code status:', error)

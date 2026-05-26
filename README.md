@@ -281,17 +281,25 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 2. Run migrations in `supabase/migrations/`
 3. Enable Twitch Authentication in Supabase Dashboard
 
-## Deployment (Vercel)
+## Deployment (Cloudflare Workers)
 
-1. Connect GitHub repository to Vercel
-2. Configure environment variables in Vercel dashboard
-3. Automatic CI/CD on push to main
+TwiCa is deployed to Cloudflare Workers with OpenNext.
+
+```bash
+npm run workers:build
+npm run workers:deploy
+```
+
+Cloudflare Workers Builds is the preferred CI/CD path for the app Worker. See
+[docs/cloudflare-workers-builds.md](docs/cloudflare-workers-builds.md) for the
+production / preview build settings and the GitHub Actions cutover flag.
 
 ### CI/CD
 
 - GitHub Actions runs on push to main and pull requests
 - Build uses dummy environment variables for CI (no external API calls)
-- Vercel automatically deploys on merge to main
+- Cloudflare Workers Builds deploys the app Worker after cutover
+- GitHub Actions still deploys the production error-reporter Worker
 
 ## Security
 

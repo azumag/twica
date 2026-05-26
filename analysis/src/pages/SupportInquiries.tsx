@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import type { SupportInquiry, SupportInquiryMessage, InquiryStatus } from '../types/database'
 
@@ -41,18 +41,7 @@ export function SupportInquiries() {
   const fetchInquiries = async () => {
     setLoading(true)
     try {
-      let query = supabase
-        .from('support_inquiries')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (statusFilter !== 'all') {
-        query = query.eq('status', statusFilter)
-      }
-
-      const { data, error } = await query
-      if (error) throw error
-      setInquiries((data || []) as SupportInquiry[])
+      setInquiries(await adminApi.getSupportInquiries(statusFilter))
     } catch (error) {
       console.error('Failed to fetch inquiries:', error)
     } finally {
@@ -68,14 +57,7 @@ export function SupportInquiries() {
   const fetchMessages = async (inquiryId: string) => {
     setLoadingMessages(true)
     try {
-      const { data, error } = await supabase
-        .from('support_inquiry_messages')
-        .select('*')
-        .eq('inquiry_id', inquiryId)
-        .order('created_at', { ascending: true })
-
-      if (error) throw error
-      setMessages((data || []) as SupportInquiryMessage[])
+      setMessages(await adminApi.getSupportInquiryMessages(inquiryId))
     } catch (error) {
       console.error('Failed to fetch messages:', error)
     } finally {
@@ -93,12 +75,7 @@ export function SupportInquiries() {
   // ステータス変更
   const handleStatusChange = async (inquiryId: string, newStatus: InquiryStatus) => {
     try {
-      // Database型にRelationshipsが未定義のため型アサーション使用（Announcements.tsxと同パターン）
-      const { error } = await (supabase
-        .from('support_inquiries') as any)
-        .update({ status: newStatus, updated_at: new Date().toISOString() })
-        .eq('id', inquiryId)
-      if (error) throw error
+      await adminApi.updateSupportInquiryStatus(inquiryId, newStatus)
 
       // ローカル状態を更新
       setInquiries(prev => prev.map(i =>
@@ -119,16 +96,7 @@ export function SupportInquiries() {
 
     setSending(true)
     try {
-      // Database型にRelationshipsが未定義のため型アサーション使用
-      const { error } = await (supabase
-        .from('support_inquiry_messages') as any)
-        .insert({
-          inquiry_id: selectedInquiry.id,
-          sender_type: 'admin',
-          sender_id: 'admin',
-          body: replyBody.trim(),
-        })
-      if (error) throw error
+      await adminApi.createSupportInquiryReply(selectedInquiry.id, replyBody.trim())
 
       setReplyBody('')
       fetchMessages(selectedInquiry.id)
