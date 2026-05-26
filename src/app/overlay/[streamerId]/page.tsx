@@ -605,6 +605,10 @@ export default function OverlayPage() {
         });
       }
     }, {
+      // Overlay has polling fallback, so endlessly reopening failed WebSockets only
+      // creates noisy preview logs and unnecessary Supabase Realtime traffic. Try a
+      // few times for low-latency delivery, then let polling carry the session.
+      maxRetries: 3,
       onError: (error) => {
         addDebugLogRef.current(`Connection error: ${error.message} (expected: ${error.isExpected})`);
         if (error.isExpected) {
