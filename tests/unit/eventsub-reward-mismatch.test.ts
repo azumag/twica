@@ -261,7 +261,7 @@ describe('EventSub reward mismatch handling', () => {
     )
   })
 
-  it('broadcasts all cards returned by a multi-draw EventSub redemption', async () => {
+  it('broadcasts only ordered history IDs for a multi-draw EventSub redemption', async () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-multi-draw'
@@ -282,11 +282,13 @@ describe('EventSub reward mismatch handling', () => {
       { id: 'card-2', name: 'Card 2', description: null, image_url: null, rarity: 'rare' },
       { id: 'card-3', name: 'Card 3', description: null, image_url: null, rarity: 'epic' },
     ]
+    const historyIds = ['history-1', 'history-2', 'history-3']
     mocks.executeGachaForEventSub.mockResolvedValue({
       success: true,
       data: {
         card: cards[0],
         cards,
+        historyIds,
         userTwitchUsername: 'Viewer',
         streamer: {
           id: 'streamer-1',
@@ -311,15 +313,29 @@ describe('EventSub reward mismatch handling', () => {
     }))
 
     expect(response.status).toBe(200)
-    expect(mockBroadcastGachaResult).toHaveBeenCalledWith(
-      'streamer-1',
-      expect.objectContaining({
-        card: cards[0],
-        cards,
-        userTwitchUsername: 'Viewer',
-      }),
-      expect.any(Object),
+    const v2Call = mockBroadcastGachaResult.mock.calls.find(
+      (call) => call[2]?.channelVersion === 'v2',
     )
+    expect(v2Call?.[0]).toBe('streamer-1')
+    expect(v2Call?.[1]).toEqual(expect.objectContaining({
+      historyIds,
+      cardIds: ['card-1', 'card-2', 'card-3'],
+      drawCount: 3,
+      soundGroupId: 'history-1',
+      userTwitchUsername: 'Viewer',
+    }))
+    expect(v2Call?.[1].card).toBeUndefined()
+    expect(v2Call?.[1].cards).toBeUndefined()
+
+    const legacyCall = mockBroadcastGachaResult.mock.calls.find(
+      (call) => call[2]?.channelVersion === 'legacy',
+    )
+    expect(legacyCall?.[1]).toEqual(expect.objectContaining({
+      card: cards[0],
+      cards: [...cards],
+      drawCount: 3,
+      userTwitchUsername: 'Viewer',
+    }))
   })
 
   it('sends multi-draw chat announcements with all cards while preserving {card} as the first card', async () => {
@@ -350,6 +366,7 @@ describe('EventSub reward mismatch handling', () => {
       data: {
         card: cards[0],
         cards: [...cards],
+        historyIds: ['history-1', 'history-2', 'history-3'],
         userTwitchUsername: 'Viewer',
         streamer: {
           id: 'streamer-1',
@@ -375,11 +392,15 @@ describe('EventSub reward mismatch handling', () => {
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ received: true })
-    expect(mockBroadcastGachaResult).toHaveBeenCalledWith(
-      'streamer-1',
-      expect.objectContaining({ card: cards[0], cards: [...cards] }),
-      expect.any(Object),
+    const v2Call = mockBroadcastGachaResult.mock.calls.find(
+      (call) => call[2]?.channelVersion === 'v2',
     )
+    expect(v2Call?.[0]).toBe('streamer-1')
+    expect(v2Call?.[1]).toEqual(expect.objectContaining({
+      historyIds: ['history-1', 'history-2', 'history-3'],
+      cardIds: ['card-1', 'card-2', 'card-3'],
+      drawCount: 3,
+    }))
     expect(mockTwitchChatService).toHaveBeenCalled()
     expect(mocks.buildMessage).toHaveBeenCalledWith(
       '{user}: first={card} all={cards} count={draws} rarity={rarityCounts}',

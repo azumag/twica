@@ -34,6 +34,12 @@ const GACHA_CHANNEL_CONFIG = {
   },
 } as const
 
+type GachaChannelVersion = 'legacy' | 'v2'
+
+function getGachaChannelName(streamerId: string, version: GachaChannelVersion): string {
+  return version === 'v2' ? `gacha:v2:${streamerId}` : `gacha:${streamerId}`
+}
+
 function getSupabaseRealtimeClient(): SupabaseClient {
   if (supabaseRealtime) {
     return supabaseRealtime
@@ -69,7 +75,7 @@ function getSupabaseRealtimeClient(): SupabaseClient {
 
 export interface GachaBroadcastPayload {
   type: 'gacha'
-  card: {
+  card?: {
     id: string
     name: string
     description: string | null
@@ -83,6 +89,13 @@ export interface GachaBroadcastPayload {
     image_url: string | null
     rarity: string
   }>
+  /** Ordered gacha_history IDs. Preferred for EventSub multi-draw to avoid fanning out full card payloads. */
+  historyIds?: string[]
+  /** Ordered card IDs for diagnostics and clients that only need identity. */
+  cardIds?: string[]
+  drawCount?: number
+  /** Stable group ID so the overlay plays one sound for an N-draw event after fetching details. */
+  soundGroupId?: string
   userTwitchUsername: string
 }
 
@@ -91,6 +104,12 @@ export interface RealtimeError {
   message: string
   error: unknown
   isExpected?: boolean
+}
+
+export interface BroadcastOptions {
+  maxRetries?: number
+  retryDelay?: number
+  channelVersion?: GachaChannelVersion
 }
 
 // 接続中の一時的なステータス（エラーではない）
@@ -104,9 +123,10 @@ const EXPECTED_CLOSE_STATUSES = ['CLOSED', 'TIMED_OUT', 'CHANNEL_ERROR']
 export async function broadcastGachaResult(
   streamerId: string,
   payload: GachaBroadcastPayload,
-  options: { maxRetries?: number; retryDelay?: number } = {}
+  options: BroadcastOptions = {}
 ): Promise<void> {
-  const { maxRetries = 3, retryDelay = 1000 } = options
+  const { maxRetries = 3, retryDelay = 1000, channelVersion = 'legacy' } = options
+  const channelName = getGachaChannelName(streamerId, channelVersion)
 
   // getSupabaseRealtimeClient() や client.channel() がリトライループ前に throw する可能性がある
   // （環境変数不正、クライアント初期化失敗など）。これらのエラーも try/catch 内に含め、
@@ -117,7 +137,7 @@ export async function broadcastGachaResult(
   let channel: ReturnType<ReturnType<typeof getSupabaseRealtimeClient>['channel']>
   try {
     client = getSupabaseRealtimeClient()
-    channel = client.channel(`gacha:${streamerId}`, GACHA_CHANNEL_CONFIG)
+    channel = client.channel(channelName, GACHA_CHANNEL_CONFIG)
   } catch (initError) {
     logger.warn(`[Broadcast] Failed to initialize realtime client for streamer ${streamerId}`, {
       error: initError instanceof Error ? initError.message : String(initError),
@@ -146,7 +166,7 @@ export async function broadcastGachaResult(
           // ブロードキャスト失敗はガチャ処理自体に影響しない（OBSオーバーレイへの通知のみ）
           // 一時的な502/タイムアウトで大量のGitHub Issueが作成されるのを防ぐため、
           // reportRealtimeError ではなく warn ログに留める (Issue #359-#365)
-          logger.warn(`[Broadcast] Failed after ${maxRetries} retries for streamer ${streamerId}`, {
+          logger.warn(`[Broadcast] Failed after ${maxRetries} retries for ${channelName}`, {
             error: error instanceof Error ? error.message : String(error),
             retryCount: attemptCount - 1,
           })
@@ -163,7 +183,7 @@ export async function broadcastGachaResult(
     try {
       client.removeChannel(channel)
     } catch {
-      logger.info(`Channel cleanup completed for streamer ${streamerId}`)
+      logger.info(`Channel cleanup completed for ${channelName}`)
     }
   }
 }
@@ -184,6 +204,10 @@ export interface SubscribeOptions {
   // デバッグ用：接続ステータスの変化を追跡するコールバック
   // OBSブラウザソースでの接続問題を調査するために使用
   onStatusChange?: (status: string) => void
+  // v2 is the ID-only overlay channel. The legacy channel remains available
+  // during rollout because already-open OBS browser sources keep their old JS
+  // and still need full payloads until the scene is refreshed.
+  channelVersion?: GachaChannelVersion
 }
 
 export function subscribeToGachaResults(
@@ -197,8 +221,10 @@ export function subscribeToGachaResults(
     onError,
     onSuccess,
     onStatusChange,
+    channelVersion = 'v2',
   } = options
 
+  const channelName = getGachaChannelName(streamerId, channelVersion)
   let client: SupabaseClient | null = null
   let channel: ReturnType<SupabaseClient['channel']> | null = null
   let retryCount = 0
@@ -243,7 +269,7 @@ export function subscribeToGachaResults(
         client.removeChannel(channel)
       } catch {
         // クリーンアップ失敗は非致命的、ログのみ
-        logger.info(`Previous channel cleanup for gacha:${streamerId}`)
+        logger.info(`Previous channel cleanup for ${channelName}`)
       }
       channel = null
     }
@@ -254,7 +280,7 @@ export function subscribeToGachaResults(
     try {
       client = getSupabaseRealtimeClient()
       onStatusChange?.('CLIENT_CREATED')
-      channel = client.channel(`gacha:${streamerId}`, GACHA_CHANNEL_CONFIG)
+      channel = client.channel(channelName, GACHA_CHANNEL_CONFIG)
       onStatusChange?.('CHANNEL_CREATED')
 
       channel
@@ -286,12 +312,12 @@ export function subscribeToGachaResults(
 
           if (status === 'SUBSCRIBED') {
             retryCount = 0
-            logger.info(`Successfully subscribed to gacha:${streamerId}`)
+            logger.info(`Successfully subscribed to ${channelName}`)
             onSuccess?.()
           } else if (CONNECTING_STATUSES.includes(status)) {
             // 接続中の一時的なステータス（リトライカウントを増やさない）
             // Temporary connecting status - don't count as error
-            logger.info(`Connection in progress for gacha:${streamerId}, status: ${status}`)
+            logger.info(`Connection in progress for ${channelName}, status: ${status}`)
             onStatusChange?.(`CONNECTING: ${status}`)
           } else {
             const isExpected = EXPECTED_CLOSE_STATUSES.includes(status)
@@ -304,9 +330,9 @@ export function subscribeToGachaResults(
             }
 
             if (isExpected) {
-              logger.info(`Expected connection closure for gacha:${streamerId}, status: ${status}`)
+              logger.info(`Expected connection closure for ${channelName}, status: ${status}`)
             } else {
-              logger.warn(`Connection issue for gacha:${streamerId}, status: ${status}`)
+              logger.warn(`Connection issue for ${channelName}, status: ${status}`)
               // クライアントサイドの同期コールバック内のため await 不可
               void reportRealtimeError(err, {
                 action: 'subscribe',
@@ -325,7 +351,7 @@ export function subscribeToGachaResults(
               logger.info(`Retrying connection (attempt ${retryLabel}) in ${Math.round(delay)}ms...`)
               retryTimeout = setTimeout(subscribe, delay)
             } else {
-              logger.warn(`Max retries (${maxRetries}) reached for gacha:${streamerId}`)
+              logger.warn(`Max retries (${maxRetries}) reached for ${channelName}`)
               const maxRetriesError: RealtimeError = {
                 type: 'connection',
                 message: 'Max retries reached. Please refresh the page to reconnect.',
@@ -337,7 +363,7 @@ export function subscribeToGachaResults(
           }
         })
     } catch (error) {
-      logger.error(`Failed to subscribe to gacha:${streamerId}:`, error)
+      logger.error(`Failed to subscribe to ${channelName}:`, error)
       // 同期関数 subscribe() 内のため await 不可
       void reportRealtimeError(error, {
         action: 'subscribe',
