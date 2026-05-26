@@ -231,6 +231,7 @@ export function subscribeToGachaResults(
   let isDisposed = false
   let retryTimeout: ReturnType<typeof setTimeout> | null = null
   let subscriptionGeneration = 0
+  let maxRetriesNotified = false
 
   const hasRetryLimit = Number.isFinite(maxRetries)
 
@@ -312,6 +313,7 @@ export function subscribeToGachaResults(
 
           if (status === 'SUBSCRIBED') {
             retryCount = 0
+            maxRetriesNotified = false
             logger.info(`Successfully subscribed to ${channelName}`)
             onSuccess?.()
           } else if (CONNECTING_STATUSES.includes(status)) {
@@ -321,6 +323,14 @@ export function subscribeToGachaResults(
             onStatusChange?.(`CONNECTING: ${status}`)
           } else {
             const isExpected = EXPECTED_CLOSE_STATUSES.includes(status)
+
+            // Supabase can emit the same terminal status more than once for a
+            // single channel failure. Once a reconnect is already scheduled,
+            // ignore duplicate terminal callbacks so one failure consumes only
+            // one retry budget and cleanup can still cancel the pending timer.
+            if (retryTimeout) {
+              return
+            }
 
             const error: RealtimeError = {
               type: 'connection',
@@ -346,17 +356,24 @@ export function subscribeToGachaResults(
 
             if (!hasRetryLimit || retryCount < maxRetries) {
               retryCount++
+              maxRetriesNotified = false
               const delay = getRetryDelay(retryCount, retryDelay)
               const retryLabel = hasRetryLimit ? `${retryCount}/${maxRetries}` : `${retryCount}`
               logger.info(`Retrying connection (attempt ${retryLabel}) in ${Math.round(delay)}ms...`)
               retryTimeout = setTimeout(subscribe, delay)
             } else {
-              logger.warn(`Max retries (${maxRetries}) reached for ${channelName}`)
+              if (maxRetriesNotified) {
+                return
+              }
+              maxRetriesNotified = true
+              logger.info(`Max retries (${maxRetries}) reached for ${channelName}; staying on fallback path`)
               const maxRetriesError: RealtimeError = {
                 type: 'connection',
-                message: 'Max retries reached. Please refresh the page to reconnect.',
+                message: 'Realtime reconnect limit reached; polling fallback is active.',
                 error: null,
-                isExpected: false,
+                // Finite maxRetries is used by overlays because polling fallback is available.
+                // Treat the handoff as expected so debug UI does not show a false failure.
+                isExpected: true,
               }
               onError?.(maxRetriesError)
             }

@@ -102,15 +102,60 @@ describe('subscribeToGachaResults', () => {
     await vi.runOnlyPendingTimersAsync()
 
     expect(channels).toHaveLength(2)
-    expect(loggerMock.warn).toHaveBeenCalledWith(
-      'Max retries (1) reached for gacha:v2:streamer-1',
+    expect(loggerMock.info).toHaveBeenCalledWith(
+      'Max retries (1) reached for gacha:v2:streamer-1; staying on fallback path',
     )
     expect(onError).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        message: 'Max retries reached. Please refresh the page to reconnect.',
-        isExpected: false,
+        message: 'Realtime reconnect limit reached; polling fallback is active.',
+        isExpected: true,
       }),
     )
+
+    cleanup()
+  })
+
+  it('reports max retries only once when Supabase repeats terminal statuses', async () => {
+    const onError = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
+      maxRetries: 0,
+      retryDelay: 10,
+      onError,
+    })
+
+    statusCallbacks[0]('CHANNEL_ERROR')
+    statusCallbacks[0]('CHANNEL_ERROR')
+    await vi.runOnlyPendingTimersAsync()
+
+    expect(loggerMock.info).toHaveBeenCalledWith(
+      'Max retries (0) reached for gacha:v2:streamer-1; staying on fallback path',
+    )
+    expect(onError.mock.calls.filter(([error]) => (
+      error.message === 'Realtime reconnect limit reached; polling fallback is active.'
+    ))).toHaveLength(1)
+
+    cleanup()
+  })
+
+  it('counts repeated terminal statuses with a pending retry as one failure', async () => {
+    const onError = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
+      maxRetries: 1,
+      retryDelay: 10,
+      onError,
+    })
+
+    statusCallbacks[0]('CHANNEL_ERROR')
+    statusCallbacks[0]('CHANNEL_ERROR')
+    await vi.runOnlyPendingTimersAsync()
+
+    expect(channels).toHaveLength(2)
+    expect(onError.mock.calls.filter(([error]) => (
+      error.message === 'Realtime connection issue: CHANNEL_ERROR'
+    ))).toHaveLength(1)
+    expect(onError.mock.calls.some(([error]) => (
+      error.message === 'Realtime reconnect limit reached; polling fallback is active.'
+    ))).toBe(false)
 
     cleanup()
   })
