@@ -2,6 +2,34 @@ import { vi } from 'vitest'
 import '@testing-library/jest-dom'
 import { createMockSupabaseClient } from './utils/supabase-mock'
 
+const localStorageStore = new Map<string, string>()
+const localStorageMock: Storage = {
+  get length() {
+    return localStorageStore.size
+  },
+  clear: vi.fn(() => localStorageStore.clear()),
+  getItem: vi.fn((key: string) => localStorageStore.get(key) ?? null),
+  key: vi.fn((index: number) => Array.from(localStorageStore.keys())[index] ?? null),
+  removeItem: vi.fn((key: string) => {
+    localStorageStore.delete(key)
+  }),
+  setItem: vi.fn((key: string, value: string) => {
+    localStorageStore.set(key, String(value))
+  }),
+}
+
+// Node 25 exposes an experimental global localStorage that is separate from
+// happy-dom and lacks clear(). Keep bare localStorage and window.localStorage
+// on the same browser-like Storage object for component tests.
+Object.defineProperty(window, 'localStorage', {
+  configurable: true,
+  value: localStorageMock,
+})
+Object.defineProperty(globalThis, 'localStorage', {
+  configurable: true,
+  value: localStorageMock,
+})
+
 // Setup environment variables
 process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000'
 process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://test.supabase.co'

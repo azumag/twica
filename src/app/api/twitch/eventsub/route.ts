@@ -3,7 +3,7 @@ import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin"
 import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS, TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
-import { broadcastGachaResult } from "@/lib/realtime";
+import { broadcastGachaResult, type GachaBroadcastPayload } from "@/lib/realtime";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
@@ -420,6 +420,8 @@ async function handleRaidNotification(messageId: string, event: {
       type: "gacha",
       card: result.data.card,
       cards: result.data.cards,
+      historyId: result.data.historyId,
+      historyIds: result.data.historyIds,
       userTwitchUsername: result.data.userTwitchUsername,
     },
     broadcasterTwitchUserId: toBroadcasterUserId,
@@ -434,11 +436,50 @@ interface RedemptionNotifyData {
     type: "gacha";
     card: GachaCard;
     cards?: GachaCard[];
+    historyId?: string;
+    historyIds?: string[];
     userTwitchUsername: string;
   };
   broadcasterTwitchUserId: string;
   streamer: EventSubStreamerInfo;
   userId: string;
+}
+
+function buildRealtimePayload(gachaResult: RedemptionNotifyData["gachaResult"]): GachaBroadcastPayload {
+  const drawnCards = gachaResult.cards?.length ? gachaResult.cards : [gachaResult.card];
+  const historyIds = gachaResult.historyIds?.length
+    ? gachaResult.historyIds
+    : gachaResult.historyId
+      ? [gachaResult.historyId]
+      : undefined;
+
+  if (historyIds && historyIds.length === drawnCards.length) {
+    return {
+      type: "gacha",
+      historyIds,
+      cardIds: drawnCards.map((drawnCard) => drawnCard.id),
+      drawCount: drawnCards.length,
+      soundGroupId: historyIds[0],
+      userTwitchUsername: gachaResult.userTwitchUsername,
+    };
+  }
+
+  // RPC未適用やlegacy fallbackではgacha_history.idを安全に特定できないため、
+  // 既存のfull payloadを維持してoverlay表示とチャット通知の互換性を優先する。
+  // Keep the full payload only when the ID-only contract is unavailable.
+  return buildLegacyRealtimePayload(gachaResult);
+}
+
+function buildLegacyRealtimePayload(gachaResult: RedemptionNotifyData["gachaResult"]): GachaBroadcastPayload {
+  const drawnCards = gachaResult.cards?.length ? gachaResult.cards : [gachaResult.card];
+
+  return {
+    type: "gacha",
+    card: gachaResult.card,
+    cards: gachaResult.cards,
+    drawCount: drawnCards.length,
+    userTwitchUsername: gachaResult.userTwitchUsername,
+  };
 }
 
 /**
@@ -451,10 +492,19 @@ interface RedemptionNotifyData {
  */
 async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   const results = await Promise.allSettled([
-    // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
-    broadcastGachaResult(data.streamer.id, data.gachaResult, {
+    // 新しいoverlayはv2 channelでID-only payloadを受け、詳細をAPIで補完する。
+    // 旧OBSブラウザソースは長時間リロードされないため、移行期間はlegacy channelにも
+    // full payloadを送って表示欠落を避ける。v2へ移行済みのソースからegress削減が効く。
+    broadcastGachaResult(data.streamer.id, buildRealtimePayload(data.gachaResult), {
       maxRetries: 1,
       retryDelay: 500,
+      channelVersion: "v2",
+    }),
+    // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
+    broadcastGachaResult(data.streamer.id, buildLegacyRealtimePayload(data.gachaResult), {
+      maxRetries: 1,
+      retryDelay: 500,
+      channelVersion: "legacy",
     }),
     sendChatAnnouncement(
       data.broadcasterTwitchUserId,
@@ -467,12 +517,12 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   ]);
 
   // 通知失敗をログ出力 + エラー追跡
-  // Note: broadcastGachaResult (i=0) は内部でリトライし失敗時も throw しない設計 (Issue #359-#365)
+  // Note: broadcastGachaResult (i=0,1) は内部でリトライし失敗時も throw しない設計 (Issue #359-#365)
   // そのため broadcast は 'rejected' にならず、失敗ログは broadcastGachaResult 内で warn として出力される
-  // chatAnnouncement (i=1) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
+  // chatAnnouncement (i=2) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
-      const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
+      const label = i < 2 ? 'broadcast' : 'chatAnnouncement';
       logger.warn(`[postRedemptionNotify] ${label} failed`, {
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         streamerId: data.streamer.id,
@@ -592,6 +642,8 @@ async function handleRedemption(messageId: string, event: {
       type: "gacha" as const,
       card: result.data.card,
       cards: result.data.cards,
+      historyId: result.data.historyId,
+      historyIds: result.data.historyIds,
       userTwitchUsername: result.data.userTwitchUsername,
     };
 

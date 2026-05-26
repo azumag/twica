@@ -30,6 +30,10 @@ export interface EventSubStreamerInfo {
 export interface GachaResult {
   card: GachaCard
   cards?: GachaCard[]
+  /** gacha_history.id for the first draw when the transactional RPC returns it. */
+  historyId?: string
+  /** Ordered gacha_history IDs for multi-draw results. Omitted when legacy fallback cannot return IDs. */
+  historyIds?: string[]
   userTwitchUsername: string
   /** EventSub経由の場合のみ設定。クエリ統合のためガチャ結果と一緒に返す */
   streamer?: EventSubStreamerInfo
@@ -131,6 +135,7 @@ export class GachaService {
 
       return ok({
         card: selectedCard,
+        historyId: typeof rpcResult?.history_id === 'string' ? rpcResult.history_id : undefined,
         userTwitchUsername,
       })
     } catch (error) {
@@ -147,6 +152,7 @@ export class GachaService {
     rewardCost?: number
   ): Promise<Result<GachaResult>> {
     const cards: GachaCard[] = []
+    const historyIds: string[] = []
     let firstResult: GachaResult | null = null
 
     for (let index = 0; index < drawCount; index += 1) {
@@ -176,6 +182,9 @@ export class GachaService {
       }
 
       cards.push(result.data.card)
+      if (result.data.historyId) {
+        historyIds.push(result.data.historyId)
+      }
       firstResult ??= result.data
     }
 
@@ -186,6 +195,7 @@ export class GachaService {
     return ok({
       ...firstResult,
       cards,
+      historyIds: historyIds.length === cards.length ? historyIds : undefined,
     })
   }
 

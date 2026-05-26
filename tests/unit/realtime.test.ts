@@ -103,7 +103,7 @@ describe('subscribeToGachaResults', () => {
 
     expect(channels).toHaveLength(2)
     expect(loggerMock.warn).toHaveBeenCalledWith(
-      'Max retries (1) reached for gacha:streamer-1',
+      'Max retries (1) reached for gacha:v2:streamer-1',
     )
     expect(onError).toHaveBeenLastCalledWith(
       expect.objectContaining({

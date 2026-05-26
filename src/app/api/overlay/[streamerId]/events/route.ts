@@ -62,6 +62,33 @@ function resolveCard(cards: OverlayHistoryRow["cards"]): OverlayHistoryCard | nu
   return cards;
 }
 
+const MAX_BATCH_IDS = 25;
+
+function parseHistoryIdsParam(value: string | null): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .slice(0, MAX_BATCH_IDS);
+}
+
+function mapHistoryRows(rows: OverlayHistoryRow[]) {
+  return rows
+    .map((row) => {
+      const card = resolveCard(row.cards);
+      if (!card) return null;
+      return {
+        id: row.id,
+        eventId: row.event_id,
+        redeemedAt: row.redeemed_at,
+        userTwitchUsername: row.user_twitch_username ?? "Unknown",
+        card,
+      };
+    })
+    .filter((event): event is NonNullable<typeof event> => event !== null);
+}
+
 /**
  * GET /api/overlay/[streamerId]/events
  *
@@ -83,6 +110,73 @@ export async function GET(
     }
 
     const { searchParams } = new URL(request.url);
+    const requestedIds = parseHistoryIdsParam(searchParams.get("ids"));
+
+    if (requestedIds.length > 0) {
+      const uniqueRequestedIds = Array.from(new Set(requestedIds));
+      const identifier = await getRateLimitIdentifier(request);
+      const rateLimitResult = await checkRateLimit(
+        rateLimits.overlayEventsGet,
+        identifier
+      );
+
+      if (!rateLimitResult.success) {
+        return NextResponse.json<ApiRateLimitResponse>(
+          {
+            error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+            retryAfter:
+              (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000),
+          },
+          {
+            status: 429,
+            headers: {
+              "X-RateLimit-Limit": String(rateLimitResult.limit),
+              "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+              "X-RateLimit-Reset": String(rateLimitResult.reset),
+            },
+          }
+        );
+      }
+
+      const supabaseAdmin = getSupabaseAdmin();
+      const { data, error } = await withRetry(
+        () =>
+          supabaseAdmin
+            .from("gacha_history")
+            .select(
+              "id, event_id, redeemed_at, user_twitch_username, cards(id, name, description, image_url, rarity)"
+            )
+            .eq("streamer_id", streamerId)
+            .in("id", uniqueRequestedIds),
+        "overlayEventsByIds",
+        { maxRetries: 1 }
+      );
+
+      if (error) {
+        return handleDatabaseError(error, "Overlay Events API");
+      }
+
+      const eventsById = new Map(mapHistoryRows((data ?? []) as OverlayHistoryRow[]).map((event) => [event.id, event]));
+      const events = requestedIds
+        .map((id) => eventsById.get(id))
+        .filter((event): event is NonNullable<typeof event> => event !== undefined);
+      const complete = events.length === requestedIds.length;
+
+      // ID指定はRealtime受信直後の詳細補完に使う。DB反映レースで欠けた応答を
+      // キャッシュすると、全OBSソースが同じ欠落を踏むため完全一致時だけ短TTLにする。
+      // Only complete batches are cacheable; partial batches must be retried by clients.
+      return NextResponse.json(
+        { events, complete },
+        {
+          headers: {
+            "Cache-Control": complete
+              ? "public, max-age=5, stale-while-revalidate=10"
+              : "no-store",
+          },
+        }
+      );
+    }
+
     const since = normalizeDateParam(searchParams.get("since"));
     if (!since) {
       return NextResponse.json(
@@ -135,19 +229,7 @@ export async function GET(
       return handleDatabaseError(error, "Overlay Events API");
     }
 
-    const events = ((data ?? []) as OverlayHistoryRow[])
-      .map((row) => {
-        const card = resolveCard(row.cards);
-        if (!card) return null;
-        return {
-          id: row.id,
-          eventId: row.event_id,
-          redeemedAt: row.redeemed_at,
-          userTwitchUsername: row.user_twitch_username ?? "Unknown",
-          card,
-        };
-      })
-      .filter((event): event is NonNullable<typeof event> => event !== null);
+    const events = mapHistoryRows((data ?? []) as OverlayHistoryRow[]);
 
     return NextResponse.json({ events });
   } catch (error) {
