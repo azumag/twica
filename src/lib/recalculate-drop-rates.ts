@@ -11,7 +11,7 @@ import { logger } from "@/lib/logger";
 export async function recalculateIfAutoMode(
   supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   streamerId: string,
-  rarityWeights: Record<string, number> | null
+  rarityWeights: Record<string, number> | null | undefined
 ): Promise<Card[] | null> {
   // null = 未設定, {} = 手動モード明示 → いずれも自動再計算スキップ
   if (!rarityWeights || Object.keys(rarityWeights).length === 0) {

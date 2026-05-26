@@ -6,7 +6,7 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
-export type Rarity = 'common' | 'rare' | 'epic' | 'legendary'
+export type Rarity = string
 export type CardMediaType = 'image' | 'video'
 export type SkillType = 'attack' | 'defense' | 'heal' | 'special'
 export type BattleResult = 'win' | 'lose' | 'draw'
@@ -46,6 +46,9 @@ export interface Database {
           // レアリティ名をキーにした目標確率マップ（0-100）
           // Dynamic rarity-to-target-percentage map (0-100)
           rarity_weights: Record<string, number> | null
+          // 配信者が定義したカスタムレアリティ名の一覧（rarity_weights とは独立）
+          // List of streamer-defined custom rarity names (decoupled from rarity_weights)
+          custom_rarities: string[]
           // 視聴者向けコレクションページで未所持カードを表示するか（オプトイン、デフォルトfalse）
           // Whether unowned cards are visible on the viewer collection page (opt-in, default false)
           show_unowned_cards: boolean
@@ -77,6 +80,7 @@ export interface Database {
           chat_announcement_multi_template?: string | null
           chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
+          custom_rarities?: string[]
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
@@ -100,6 +104,7 @@ export interface Database {
           chat_announcement_multi_template?: string | null
           chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
+          custom_rarities?: string[]
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
@@ -659,6 +664,14 @@ export interface Database {
         Args: {
           p_streamer_id: string
           p_from_date: string
+          p_limit_per_card?: number
+        }
+        Returns: Json
+      }
+      get_card_owner_stats: {
+        Args: {
+          p_streamer_id: string
+          p_limit_per_card?: number
         }
         Returns: Json
       }
@@ -760,7 +773,7 @@ export interface OpponentCardData {
   skill_type: 'attack' | 'defense' | 'heal' | 'special'
   skill_name: string
   image_url: string
-  rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  rarity: Rarity
 }
 
 export interface BattleCard {

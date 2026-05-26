@@ -162,7 +162,10 @@ export async function PUT(
     // (PR #449 レビュー指摘: select("*", ...) で従来の明示列リストから退化していた)
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, media_type, streamers!inner(twitch_user_id, rarity_weights)")
+      // streamers の埋め込みは FK 制約名で一意化する: migration 00051 の
+      // card_owner_stats が cards↔streamers を m2m にも見せ、ヒントなしの
+      // streamers(...) は PGRST201 で失敗するため。
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, media_type, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -215,7 +218,7 @@ export async function PUT(
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
     if (normalizedMediaType !== undefined) updateData.media_type = normalizedMediaType;
-    if (rarity !== undefined) updateData.rarity = rarity;
+    if (rarity !== undefined) updateData.rarity = typeof rarity === "string" ? rarity.trim() : rarity;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
@@ -361,7 +364,10 @@ export async function DELETE(
     // 削除用にimage_url付きでカードを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, streamers!inner(twitch_user_id, rarity_weights)")
+      // streamers の埋め込みは FK 制約名で一意化する(PUT と同じ理由: migration
+      // 00051 の card_owner_stats が cards↔streamers を m2m にも見せ、ヒント
+      // なしの streamers(...) は PGRST201 で失敗するため)。
+      .select("streamer_id, image_url, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 

@@ -52,13 +52,19 @@ function formatCardNamesForChat(cardNames: string[], maxCharacters: number): str
 
 function fitCardNamesForMessage(
   cardNames: string[],
-  renderMessage: (cardsText: string) => string
+  renderMessage: (cardsText: string) => string,
+  // 後段で必ず追記される接尾辞分の文字数を予約しておくことで、
+  // 「初出:」追記時の二段階圧縮で末尾切り（truncateCharacters）に陥るのを防ぐ。
+  // Reserve characters for a suffix that will be appended later (e.g., " 初出: ...").
+  // Without this, the second fit pass cannot shrink {cards} enough and the suffix gets truncated.
+  reservedSuffixCharacters: number = 0
 ): { cardsText: string; message: string } {
+  const effectiveLimit = Math.max(0, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS - reservedSuffixCharacters);
   let cardsText = cardNames.join(CARD_LIST_SEPARATOR);
   let message = renderMessage(cardsText);
 
-  for (let i = 0; i < 3 && countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS; i++) {
-    const overflow = countCharacters(message) - TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
+  for (let i = 0; i < 3 && countCharacters(message) > effectiveLimit; i++) {
+    const overflow = countCharacters(message) - effectiveLimit;
     const nextMaxCharacters = Math.max(0, countCharacters(cardsText) - overflow);
     cardsText = formatCardNamesForChat(cardNames, nextMaxCharacters);
     message = renderMessage(cardsText);
@@ -92,6 +98,49 @@ function formatRarityCountsForChat(cardNamesByRarity: string[]): string {
     })
     .map(([rarity, count]) => `${rarityMap[rarity] ?? rarity}x${count}`)
     .join(CARD_LIST_SEPARATOR);
+}
+
+function findNewCardNamesForCurrentDraw(
+  drawnCards: GachaCard[],
+  userCardCounts: Array<{ count: number; card: { id: string; is_active?: boolean } }>
+): string[] {
+  const drawnCounts = new Map<string, number>();
+  for (const drawnCard of drawnCards) {
+    drawnCounts.set(drawnCard.id, (drawnCounts.get(drawnCard.id) ?? 0) + 1);
+  }
+
+  const finalCounts = new Map<string, number>();
+  for (const row of userCardCounts) {
+    if (!row.card?.id) continue;
+    finalCounts.set(row.card.id, Number(row.count) || 0);
+  }
+
+  const seenInCurrentDraw = new Set<string>();
+  const newCardNames: string[] = [];
+
+  for (const drawnCard of drawnCards) {
+    if (seenInCurrentDraw.has(drawnCard.id)) continue;
+
+    const finalCount = finalCounts.get(drawnCard.id);
+    if (finalCount === undefined) {
+      seenInCurrentDraw.add(drawnCard.id);
+      continue;
+    }
+
+    const currentDrawCount = drawnCounts.get(drawnCard.id) ?? 0;
+    const previousCount = finalCount - currentDrawCount;
+    // legacy fallback で user_cards INSERT が失敗すると finalCount=0 のまま返り、
+    // previousCount が負値になって「初出」誤通知が発生する。
+    // 「初出」と判定するには「いま実際に所持している（finalCount > 0）」必要がある。
+    // If legacy fallback INSERT fails, finalCount stays 0 while currentDrawCount > 0,
+    // making previousCount negative. Treat as "new card" only when the user actually owns it.
+    if (finalCount > 0 && previousCount <= 0) {
+      newCardNames.push(drawnCard.name);
+    }
+    seenInCurrentDraw.add(drawnCard.id);
+  }
+
+  return newCardNames;
 }
 
 /**
@@ -630,17 +679,25 @@ async function sendChatAnnouncement(
   const messageTemplate = isMultiDraw
     ? streamer.chat_announcement_multi_template || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE
     : streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
-  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}|\{rarityCounts\}/.test(messageTemplate);
+  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}|\{rarityCounts\}|\{newCards\}|\{newCardCount\}/.test(messageTemplate);
   const effectiveTemplate = messageTemplate;
   const needsCardCount = /\{num\}/.test(effectiveTemplate);
   const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
   const needsAllCount = /\{all\}/.test(effectiveTemplate);
+  const usesNewCardPlaceholders = /\{newCards\}|\{newCardCount\}/.test(effectiveTemplate);
+  const shouldAppendDefaultNewCards = isMultiDraw
+    && streamer.chat_announcement_multi_show_cards
+    && !streamer.chat_announcement_multi_template;
+  const needsNewCardInfo = isMultiDraw
+    && streamer.chat_announcement_multi_show_cards
+    && (usesNewCardPlaceholders || shouldAppendDefaultNewCards);
 
   let cardCount: number | undefined;
   let uniqueCount: number | undefined;
   let allCount: number | undefined;
+  let newCardNames: string[] = [];
 
-  if (needsCardCount || needsUniqueCount || needsAllCount) {
+  if (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo) {
     const supabaseAdminNoCache = getSupabaseAdminNoCache();
 
     // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
@@ -659,7 +716,7 @@ async function sendChatAnnouncement(
     // {num} / {unique}: use RPC returning pre-aggregated per-card counts.
     // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
     // RPC does not filter by is_active, so we filter on the client.
-    const userCardCountsPromise = (needsCardCount || needsUniqueCount)
+    const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo)
       ? supabaseAdminNoCache.rpc('get_user_card_counts', {
           p_twitch_user_id: userId,
           p_streamer_id: streamer.id,
@@ -688,14 +745,14 @@ async function sendChatAnnouncement(
         }
       }
 
-      if (needsCardCount || needsUniqueCount) {
+      if (needsCardCount || needsUniqueCount || needsNewCardInfo) {
         if (userCardCountsResult?.error) {
           logger.warn('Failed to fetch user card counts for chat announcement', {
             streamerId: streamer.id,
             userTwitchId: userId,
             error: userCardCountsResult.error.message,
           });
-          if (needsUniqueCount) {
+          if (needsUniqueCount || needsNewCardInfo) {
             // RPC 失敗時は 0 にフォールバックせず、未定義のままプレースホルダを空文字化
             // On RPC failure, leave placeholders undefined so buildMessage strips them
           }
@@ -718,6 +775,10 @@ async function sendChatAnnouncement(
             // アクティブカードのみ数えてコンプ進捗を算出
             // Count only active cards to match the progress definition in dashboard UI
             uniqueCount = rows.filter((row) => row.card?.is_active === true).length;
+          }
+
+          if (needsNewCardInfo) {
+            newCardNames = findNewCardNamesForCurrentDraw(drawnCards, rows);
           }
         }
       }
@@ -747,6 +808,10 @@ async function sendChatAnnouncement(
       : undefined,
     draws: isMultiDraw ? drawnCards.length : undefined,
     rarityCounts: isMultiDraw ? rarityCounts : undefined,
+    newCards: needsNewCardInfo && newCardNames.length > 0
+      ? newCardNames.join(CARD_LIST_SEPARATOR)
+      : undefined,
+    newCardCount: needsNewCardInfo ? newCardNames.length : undefined,
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,
@@ -760,9 +825,20 @@ async function sendChatAnnouncement(
   const chatService = new TwitchChatService();
   let message: string;
 
+  // 後段で「初出: {cardNames}」を追記する場合、{cards} 側の圧縮時に
+  // 接尾辞分の文字数を予約しておかないと、最終的な truncate で「初出:」部分が
+  // 切り落とされる可能性がある。事前に長さを見積もって reservedSuffixCharacters に渡す。
+  // Estimate the suffix length so {cards} fitting reserves space for the appended "初出: ..."
+  const willAppendDefaultNewCards = shouldAppendDefaultNewCards && newCardNames.length > 0;
+  const reservedSuffixCharacters = willAppendDefaultNewCards
+    ? countCharacters(' 初出: ') + countCharacters(newCardNames.join(CARD_LIST_SEPARATOR))
+    : 0;
+
   if (isMultiDraw && streamer.chat_announcement_multi_show_cards && usesMultiDrawPlaceholders) {
-    const fitted = fitCardNamesForMessage(cardNames, (cardsText) =>
-      chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText })
+    const fitted = fitCardNamesForMessage(
+      cardNames,
+      (cardsText) => chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText }),
+      reservedSuffixCharacters
     );
     placeholders.cards = fitted.cardsText;
     message = fitted.message;
@@ -771,11 +847,23 @@ async function sendChatAnnouncement(
     if (isMultiDraw && streamer.chat_announcement_multi_show_cards && !usesMultiDrawPlaceholders) {
       message = fitCardNamesForMessage(
         cardNames,
-        (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`
+        (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`,
+        reservedSuffixCharacters
       ).message;
     } else {
       message = baseMessage;
     }
+  }
+
+  if (willAppendDefaultNewCards) {
+    // ここでの fitCardNamesForMessage は newCardNames 側の圧縮を担う。
+    // 上で {cards} 側に余白を予約済みなので、通常はここでの圧縮は発生しない。
+    // The earlier pass reserved space, so this fit normally just appends as-is.
+    const fitted = fitCardNamesForMessage(
+      newCardNames,
+      (newCardsText) => `${message} 初出: ${newCardsText}`
+    );
+    message = fitted.message;
   }
 
   const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);

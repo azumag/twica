@@ -6,8 +6,8 @@ import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
-import { RARITIES, RARITY_GRADIENT_COLORS, RARITY_GLOW } from "@/lib/constants";
 import { isVideoCard } from "@/lib/card-media";
+import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
@@ -24,8 +24,7 @@ if (typeof window !== 'undefined' && typeof window.queueMicrotask !== 'function'
  * Get rarity information (label and color) for a given rarity value
  * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
  */
-const getRarityInfo = (rarity: Rarity) =>
-  RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
 interface GachaResult {
   card: Card;
@@ -678,8 +677,8 @@ export default function OverlayPage() {
     );
   }
 
-  const rarityColor = RARITY_GRADIENT_COLORS[result.card.rarity];
-  const rarityGlow = RARITY_GLOW[result.card.rarity];
+  const rarityColor = getRarityGradientClass(result.card.rarity);
+  const rarityGlow = getRarityGlowClass(result.card.rarity);
   const rarityInfo = getRarityInfo(result.card.rarity);
 
   // 画像のみ表示モードかどうかを判定

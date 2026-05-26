@@ -194,6 +194,28 @@
       "confirmSwitchToAuto": "Rarity-based probability will be enabled and all card rates will be recalculated. Switch?",
       "switchFailed": "Failed to switch mode"
     },
+    "customRarity": {
+      "button": "Custom Rarities",
+      "title": "Custom Rarities",
+      "description": "Manage the rarities selectable when creating cards. Default rarities are always available and cannot be removed.",
+      "defaultSection": "Default (always available)",
+      "customSection": "Custom rarities",
+      "addPlaceholder": "New rarity name",
+      "add": "Add",
+      "empty": "No custom rarities yet",
+      "deleteNote": "Removing a custom rarity does not change existing cards (it is only removed from the card-creation suggestions).",
+      "save": "Save",
+      "saving": "Saving...",
+      "saved": "Saved",
+      "saveFailed": "Failed to save",
+      "confirmClose": "You have unsaved changes. Close anyway?",
+      "errorEmpty": "Enter a rarity name",
+      "errorTooLong": "Rarity name must be 40 characters or fewer",
+      "errorInvalidChars": "Contains characters that cannot be used",
+      "errorDuplicate": "That rarity already exists",
+      "errorDefault": "Default rarities cannot be added (they are always available)",
+      "errorMax": "Up to {max} custom rarities allowed"
+    },
     "batchDropRate": {
       "button": "Batch Drop Rate",
       "title": "Batch Drop Rate Adjustment",
@@ -393,14 +415,13 @@
     "noLineBreakNote": "* Twitch chat does not support line breaks. Messages with line breaks will be sent as a single line.",
     "form": {
       "enableAnnouncement": "Enable chat announcements",
-      "showAdvanced": "Show advanced settings",
       "customTemplate": "Custom Template (optional)",
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
       "multiTemplate": "Multi-draw Template (optional)",
       "multiTemplatePlaceholder": "@'{'user'}' got '{'rarityCounts'}' from a '{'draws'}'-draw gacha! '{'cards'}'",
       "multiShowCards": "Include card-name list in multi-draw announcements",
       "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
-      "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list",
+      "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list, '{'newCards'}'=newly obtained card names this draw, '{'newCardCount'}'=count of newly obtained card types this draw",
       "previewLength": "Preview length: {current} / {max} characters"
     },
     "buttons": {
@@ -617,7 +638,37 @@
   },
   "settingsPage": {
     "title": "Stream Settings",
-    "description": "Configure OBS overlay and channel point rewards."
+    "description": "Configure OBS overlay and channel point rewards.",
+    "viewMode": {
+      "simple": "Simple",
+      "advanced": "Advanced",
+      "ariaLabel": "Toggle stream settings display mode"
+    },
+    "simple": {
+      "step1": "1",
+      "step1Label": "Add the overlay to OBS",
+      "step2": "2",
+      "step2Label": "Pick a redemption reward",
+      "switchToAdvanced": "Show all settings →",
+      "collectionLink": "Viewer collection page"
+    },
+    "advanced": {
+      "navAria": "Settings sections",
+      "section": {
+        "overlay": "Overlay",
+        "overlayDesc": "OBS URL & effects",
+        "reward": "Reward",
+        "rewardDesc": "Channel-point link",
+        "sound": "Sound",
+        "soundDesc": "Gacha sound effect",
+        "announcement": "Chat alert",
+        "announcementDesc": "Auto chat message",
+        "visibility": "Visibility",
+        "visibilityDesc": "Unowned card display",
+        "share": "Share",
+        "shareDesc": "Collection page URL"
+      }
+    }
   },
   "cardsPage": {
     "title": "Card Management",
@@ -986,11 +1037,17 @@
     "tabs": {
       "7d": "7 Days",
       "30d": "30 Days",
-      "channelPoints": "Channel Points"
+      "channelPoints": "Channel Points",
+      "byCard": "By Card"
     },
     "totalDraws": "Total Draws",
     "draws": "draws",
+    "period": {
+      "7d": "7 Days",
+      "30d": "30 Days"
+    },
     "noData": "No gacha data for this period.",
+    "noCardData": "No cards.",
     "channelPointRanking": {
       "title": "Channel Point Usage Ranking (Since Tracking Started)",
       "total": "Total since tracking started: {points} points",
@@ -1007,6 +1064,9 @@
       "configuredRate": "Configured Rate",
       "actualRate": "Actual Rate",
       "drawCount": "Draw Count",
+      "drawers": "Players Who Drew",
+      "drawerCount": "{count} users",
+      "noDrawers": "No players drew this",
       "owners": "Owners",
       "ownerCount": "{count} users",
       "noOwners": "No owners"

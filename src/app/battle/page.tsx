@@ -7,7 +7,7 @@ import type { UserCardWithDetails } from '@/types/database'
 import AnimatedBattle from '@/components/AnimatedBattle'
 import Image from 'next/image'
 import { fetchSession } from '@/lib/api-client'
-import { RARITY_COLORS } from '@/lib/constants'
+import { getRarityColorClass } from '@/lib/rarity'
 
 interface BattleCard {
   id: string
@@ -194,7 +194,7 @@ export default function BattlePage() {
                         <div className="mb-1 flex items-center justify-between">
                           <h4 className="font-semibold text-white">{userCard.card.name}</h4>
                           <span
-                            className={`rounded-full px-2 py-0.5 text-xs text-white ${RARITY_COLORS[userCard.card.rarity]}`}
+                            className={`rounded-full px-2 py-0.5 text-xs text-white ${getRarityColorClass(userCard.card.rarity)}`}
                           >
                             {userCard.card.rarity}
                           </span>

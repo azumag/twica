@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/session";
-import { getUserCards, getActiveCardsForStreamer } from "@/lib/dashboard-data";
+import { getUserCards, getActiveCardCountsForStreamers } from "@/lib/dashboard-data";
 import { countOwnedActiveCardTypes, sortCollectedCards } from "@/lib/collection-utils";
 import Collection from "@/components/Collection";
 import type { Card, Streamer } from "@/types/database";
@@ -63,18 +63,17 @@ export default async function CollectionPage() {
   // getUserCards() は非アクティブカードも含むため、進捗には
   // アクティブカードとの交差で正確な所持数を算出する
   const streamerIds = Object.keys(cardsByStreamer);
-  const activeCardData = await Promise.all(
-    streamerIds.map(async (streamerId) => {
-      const activeCards = await getActiveCardsForStreamer(streamerId);
-      const activeCardIds = new Set(activeCards.map((c) => c.id));
-      return {
-        streamerId,
-        totalActive: activeCards.length,
-        ownedActive: countOwnedActiveCardTypes(cardsByStreamer[streamerId].cards, activeCardIds),
-      };
-    })
-  );
-  for (const { streamerId, totalActive, ownedActive } of activeCardData) {
+  const activeCardCounts = await getActiveCardCountsForStreamers(streamerIds);
+  for (const streamerId of streamerIds) {
+    const activeCardData = activeCardCounts.get(streamerId) ?? {
+      totalActive: 0,
+      activeCardIds: new Set<string>(),
+    };
+    const totalActive = activeCardData.totalActive;
+    const ownedActive = countOwnedActiveCardTypes(
+      cardsByStreamer[streamerId].cards,
+      activeCardData.activeCardIds
+    );
     cardsByStreamer[streamerId].totalActive = totalActive;
     cardsByStreamer[streamerId].ownedActive = ownedActive;
 

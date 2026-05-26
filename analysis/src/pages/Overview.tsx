@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { adminApi, type OverviewStats } from '../lib/adminApi'
 import { StatCard } from '../components/StatCard'
 import { StreamerPopup } from '../components/StreamerPopup'
 import { GachaHistory, Battle, Card, Streamer } from '../types/database'
@@ -11,7 +11,7 @@ import { RarityBadge } from '../components/RarityBadge'
  */
 export function Overview() {
   // State for statistics
-  const [stats, setStats] = useState({
+  const [stats, setStats] = useState<OverviewStats>({
     totalUsers: 0,
     totalStreamers: 0,
     totalCards: 0,
@@ -34,72 +34,10 @@ export function Overview() {
   async function fetchData() {
     setLoading(true)
     try {
-      // Calculate date boundaries for time-based statistics
-      const now = new Date()
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
-      const weekStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
-
-      // Fetch all data in parallel for better performance
-      const [
-        usersResult,
-        streamersResult,
-        cardsResult,
-        todayGachaResult,
-        weekGachaResult,
-        monthGachaResult,
-        recentGachaResult,
-        recentBattlesResult,
-      ] = await Promise.all([
-        // Count total users
-        supabase.from('users').select('*', { count: 'exact', head: true }),
-        // Count total streamers
-        supabase.from('streamers').select('*', { count: 'exact', head: true }),
-        // Count total cards
-        supabase.from('cards').select('*', { count: 'exact', head: true }),
-        // Count today's gacha
-        supabase
-          .from('gacha_history')
-          .select('*', { count: 'exact', head: true })
-          .gte('redeemed_at', todayStart),
-        // Count this week's gacha
-        supabase
-          .from('gacha_history')
-          .select('*', { count: 'exact', head: true })
-          .gte('redeemed_at', weekStart),
-        // Count this month's gacha
-        supabase
-          .from('gacha_history')
-          .select('*', { count: 'exact', head: true })
-          .gte('redeemed_at', monthStart),
-        // Get recent gacha history with card and streamer details
-        supabase
-          .from('gacha_history')
-          .select('*, cards(*), streamers(*)')
-          .order('redeemed_at', { ascending: false })
-          .limit(10),
-        // Get recent battles
-        supabase
-          .from('battles')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(10),
-      ])
-
-      setStats({
-        totalUsers: usersResult.count || 0,
-        totalStreamers: streamersResult.count || 0,
-        totalCards: cardsResult.count || 0,
-        todayGacha: todayGachaResult.count || 0,
-        weekGacha: weekGachaResult.count || 0,
-        monthGacha: monthGachaResult.count || 0,
-      })
-
-      // Type assertion for joined query results
-      setRecentGacha(
-        (recentGachaResult.data as unknown as (GachaHistory & { cards: Card; streamers: Streamer })[]) || []
-      )
-      setRecentBattles(recentBattlesResult.data || [])
+      const data = await adminApi.getOverview()
+      setStats(data.stats)
+      setRecentGacha(data.recentGacha as (GachaHistory & { cards: Card; streamers: Streamer })[])
+      setRecentBattles(data.recentBattles)
     } catch (error) {
       console.error('Error fetching dashboard data:', error)
     } finally {

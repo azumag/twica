@@ -186,13 +186,14 @@ export async function POST(request: NextRequest) {
     // 実際の確率は「このカードの重み / 全体の重み」で計算される
     // 重みは相対的であり絶対的な割合ではないため、合計100%制限は不要
 
+    const normalizedRarity = typeof rarity === "string" ? rarity.trim() : rarity;
     const insertData: Record<string, unknown> = {
       streamer_id: streamerId,
       name,
       description,
       image_url: imageUrl,
       media_type: normalizedMediaType,
-      rarity,
+      rarity: normalizedRarity,
       card_number: cardNumber ?? null,
       drop_rate: dropRate,
     };

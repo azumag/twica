@@ -13,6 +13,9 @@ export type Json =
 export type Rarity = 'common' | 'rare' | 'epic' | 'legendary'
 export type SkillType = 'attack' | 'defense' | 'heal' | 'special'
 export type BattleResult = 'win' | 'lose' | 'draw'
+export type ChatSenderMode = 'streamer' | 'custom_bot' | 'official_bot'
+export type TwitchBotOwnerType = 'streamer' | 'system'
+export type TwitchBotStatus = 'active' | 'revoked' | 'error'
 
 export interface Database {
   public: {
@@ -167,6 +170,79 @@ export interface Database {
           twitch_profile_image_url?: string | null
           tos_accepted_at?: string | null
           twitch_scopes?: string[]
+          created_at?: string
+          updated_at?: string
+        }
+      }
+      twitch_bot_accounts: {
+        Row: {
+          id: string
+          owner_type: TwitchBotOwnerType
+          streamer_id: string | null
+          twitch_user_id: string
+          twitch_username: string | null
+          twitch_display_name: string | null
+          twitch_access_token: string
+          twitch_refresh_token: string
+          twitch_token_expires_at: string
+          scopes: string[] | null
+          status: TwitchBotStatus
+          last_error: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          owner_type: TwitchBotOwnerType
+          streamer_id?: string | null
+          twitch_user_id: string
+          twitch_username?: string | null
+          twitch_display_name?: string | null
+          twitch_access_token: string
+          twitch_refresh_token: string
+          twitch_token_expires_at: string
+          scopes?: string[] | null
+          status?: TwitchBotStatus
+          last_error?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          owner_type?: TwitchBotOwnerType
+          streamer_id?: string | null
+          twitch_user_id?: string
+          twitch_username?: string | null
+          twitch_display_name?: string | null
+          twitch_access_token?: string
+          twitch_refresh_token?: string
+          twitch_token_expires_at?: string
+          scopes?: string[] | null
+          status?: TwitchBotStatus
+          last_error?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+      }
+      streamer_chat_sender_settings: {
+        Row: {
+          streamer_id: string
+          sender_mode: ChatSenderMode
+          custom_bot_account_id: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          streamer_id: string
+          sender_mode?: ChatSenderMode
+          custom_bot_account_id?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          streamer_id?: string
+          sender_mode?: ChatSenderMode
+          custom_bot_account_id?: string | null
           created_at?: string
           updated_at?: string
         }

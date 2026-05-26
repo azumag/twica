@@ -2,16 +2,15 @@ import Image from "next/image";
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import type { Streamer, Card } from "@/types/database";
-import { RARITIES } from "@/lib/constants";
+import { getRarityDisplayInfo } from "@/lib/rarity";
 import type { Rarity } from "@/types/database";
 import { isVideoCard } from "@/lib/card-media";
 
 /**
- * Get rarity information (label and color) for a given rarity value
- * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
+ * Get rarity information (label and color) for a given rarity value.
+ * カスタムレアリティも正しく表示するため共通ヘルパに集約。
  */
-const getRarityInfo = (rarity: Rarity) =>
-  RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
 interface CardWithDetails extends Card {
   streamer: Streamer;

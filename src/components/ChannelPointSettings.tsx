@@ -4,7 +4,14 @@ import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/scopes";
+import {
+  deriveEventSubStatus,
+  RAID_EVENTSUB_TYPE,
+  type EventSubStatus,
+  type EventSubSubscriptionForStatus,
+} from "@/lib/twitch/eventsub-status";
 
+export { deriveEventSubStatus } from "@/lib/twitch/eventsub-status";
 
 interface TwitchReward {
   id: string;
@@ -24,36 +31,6 @@ interface AdditionalReward {
   created_at: string;
 }
 
-interface EventSubSubscription {
-  id: string;
-  status: string;
-  type: string;
-  condition: {
-    broadcaster_user_id?: string;
-    reward_id?: string;
-    to_broadcaster_user_id?: string;
-  };
-  transport?: {
-    callback?: string;
-  };
-  debug?: {
-    expectedCallbackUrl: string;
-    callbackMatch: boolean;
-  };
-}
-
-type EventSubStatus = "none" | "pending" | "active" | "error";
-
-const CHANNEL_POINTS_EVENTSUB_TYPE = "channel.channel_points_custom_reward_redemption.add";
-const RAID_EVENTSUB_TYPE = "channel.raid";
-const FAILED_EVENTSUB_STATUSES = [
-  "webhook_callback_verification_failed",
-  "notification_failures_exceeded",
-  "authorization_revoked",
-];
-
-const matchesExpectedCallback = (sub: EventSubSubscription) => sub.debug?.callbackMatch ?? true;
-
 const getRaidSubscriptionWarning = (data: unknown): string => {
   const raidSubscription = (data as { raidSubscription?: { warning?: unknown } })?.raidSubscription;
   return typeof raidSubscription?.warning === "string" ? raidSubscription.warning : "";
@@ -66,50 +43,18 @@ const getRaidSubscriptionStatus = (data: unknown): EventSubStatus | null => {
     : null;
 };
 
-export function deriveEventSubStatus(
-  subs: EventSubSubscription[],
-  rewardIdToCheck: string,
-): { rewardStatus: EventSubStatus; raidStatus: EventSubStatus } {
-  const rewardSubscriptions = subs.filter(
-    (sub) => sub.type === CHANNEL_POINTS_EVENTSUB_TYPE && matchesExpectedCallback(sub)
-  );
-  const raidSubscriptions = subs.filter(
-    (sub) => sub.type === RAID_EVENTSUB_TYPE && matchesExpectedCallback(sub)
-  );
-
-  const hasActiveRewardSub = rewardSubscriptions.some(
-    (sub) => sub.status === "enabled" && sub.condition.reward_id === rewardIdToCheck
-  );
-  const hasFailedRewardSub = rewardSubscriptions.some(
-    (sub) => FAILED_EVENTSUB_STATUSES.includes(sub.status)
-  );
-  const hasActiveRaidSub = raidSubscriptions.some((sub) => sub.status === "enabled");
-  const hasFailedRaidSub = raidSubscriptions.some(
-    (sub) => FAILED_EVENTSUB_STATUSES.includes(sub.status)
-  );
-
-  return {
-    rewardStatus: hasActiveRewardSub
-      ? "active"
-      : hasFailedRewardSub
-        ? "error"
-        : rewardSubscriptions.length > 0
-          ? "pending"
-          : "none",
-    raidStatus: hasActiveRaidSub
-      ? "active"
-      : hasFailedRaidSub
-        ? "error"
-        : raidSubscriptions.length > 0
-          ? "pending"
-          : "none",
-  };
-}
-
 interface ChannelPointSettingsProps {
   streamerId: string;
   currentRewardId: string | null;
   currentRewardName: string | null;
+  /**
+   * compact: シンプル表示モード用の縮約レンダリング。
+   * EventSub 診断パネル / 追加報酬セクション / 詳細エラーリストを隠し、
+   * 報酬選択 + ステータスピル + 保存ボタンの最小構成にする。
+   * Hide diagnostic panel, additional rewards, and verbose error states
+   * to give beginners a focused, low-noise reward picker.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -121,6 +66,7 @@ export default function ChannelPointSettings({
   streamerId,
   currentRewardId,
   currentRewardName,
+  compact = false,
 }: ChannelPointSettingsProps) {
   const t = useTranslations("channelPointSettings");
   const tCommon = useTranslations("common");
@@ -137,7 +83,7 @@ export default function ChannelPointSettings({
   const [eventSubStatus, setEventSubStatus] = useState<EventSubStatus>("none");
   const [raidEventSubStatus, setRaidEventSubStatus] = useState<EventSubStatus>("none");
   const [raidEventSubWarning, setRaidEventSubWarning] = useState("");
-  const [subscriptions, setSubscriptions] = useState<EventSubSubscription[]>([]);
+  const [subscriptions, setSubscriptions] = useState<EventSubSubscriptionForStatus[]>([]);
   // チャネルポイント用スコープ不足でstep-up再認証が必要かどうか
   // Whether step-up reauth is needed because channel point scopes are missing
   const [needsReauth, setNeedsReauth] = useState(false);
@@ -162,84 +108,54 @@ export default function ChannelPointSettings({
   // 連携未設定のユーザーはここで step-up 再認証の導線に誘導される。
   // Pre-check Channel Points scope grant. Initial login omits these scopes,
   // so users who haven't opted in are redirected to step-up reauth via the CTA.
-  const checkChannelPointScope = useCallback(async (): Promise<boolean> => {
+  const fetchChannelPointBootstrap = useCallback(async (includeDiagnostics: boolean) => {
     try {
       const response = await fetch(
-        `/api/auth/check-scope?scope=${encodeURIComponent(
-          "channel:read:redemptions"
-        )}`,
-        { credentials: "include" }
+        `/api/twitch/channel-point-bootstrap?diagnostics=${includeDiagnostics ? "1" : "0"}`,
+        { credentials: "include" },
       );
       if (!response.ok) {
-        // 一時的な障害（rate limit等）: reauth CTAを出さずrewards APIに任せる。
-        // Transient failure (e.g. rate limit): fall through to rewards API.
-        return true;
+        setError(t("messages.fetchFailed"));
+        return;
       }
       const data = await response.json();
-      return Boolean(data.hasScope);
+      if (!data.hasRequiredScope || data.requiresReauth) {
+        setNeedsReauth(true);
+        return;
+      }
+
+      setNeedsReauth(false);
+      if (data.error === "affiliateRequired") {
+        setError(t("messages.affiliateRequired"));
+      } else if (data.error) {
+        setError(t("messages.fetchFailed"));
+      }
+      setRewards(Array.isArray(data.rewards) ? data.rewards : []);
+
+      if (includeDiagnostics) {
+        setSubscriptions(Array.isArray(data.subscriptions) ? data.subscriptions : []);
+        if (data.eventSubStatus) setEventSubStatus(data.eventSubStatus);
+        if (data.raidEventSubStatus) setRaidEventSubStatus(data.raidEventSubStatus);
+        if (Array.isArray(data.additionalRewards)) {
+          setAdditionalRewards(data.additionalRewards);
+          logger.info("[AdditionalRewards] Bootstrapped additional rewards", { count: data.additionalRewards.length });
+        }
+        if (typeof data.raidGiftDrawCount !== "undefined") {
+          setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.raidGiftDrawCount ?? 0))));
+        }
+      }
     } catch (err) {
-      logger.error("Failed to check channel point scope:", err);
-      return true;
+      logger.error("Failed to bootstrap channel point settings:", err);
+      setError(t("messages.fetchFailed"));
     }
-  }, []);
+  }, [t]);
 
   const fetchRewards = async () => {
     setLoading(true);
     setError("");
 
     try {
-      // スコープ未付与なら rewards API を呼ぶ前に CTA へ切替える。
-      // これにより Twitch 401 の汎用エラーに埋もれないようにする。
-      // Short-circuit to the reauth CTA before calling the rewards API when
-      // scopes are missing, so users never see a generic 401 error instead.
-      const hasScope = await checkChannelPointScope();
-      if (!hasScope) {
-        setNeedsReauth(true);
-        setLoading(false);
-        return;
-      }
-
-      const response = await fetch("/api/twitch/rewards", {
-        credentials: "include",
-      });
-
-      if (response.status === 401) {
-        const errorData = await response.json();
-        // requiresReauth はトークン自体が失われたケース。
-        // スコープ不足は事前チェックで拾うため、ここではログイン誘導のみ。
-        // requiresReauth here means the token itself is gone; scope gaps are
-        // already handled by the pre-check above.
-        if (errorData.requiresReauth) {
-          setNeedsReauth(true);
-        } else {
-          setError(t("messages.fetchFailed"));
-        }
-        setLoading(false);
-        return;
-      }
-
-      if (response.status === 403) {
-        setError(t("messages.affiliateRequired"));
-        setLoading(false);
-        return;
-      }
-
-      if (response.status === 429) {
-        const errorData = await response.json();
-        setError(errorData.error || t("messages.rateLimit"));
-        setLoading(false);
-        return;
-      }
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        setError(errorData.error || "報酬の取得に失敗しました");
-        setLoading(false);
-        return;
-      }
-
-      const data = await response.json();
-      setRewards(data);
+      await fetchChannelPointBootstrap(!compact);
     } catch (err) {
       logger.error("Failed to fetch rewards:", err);
       setError(t("messages.fetchFailed"));
@@ -321,7 +237,7 @@ export default function ChannelPointSettings({
       });
       if (response.ok) {
         const subs = await response.json();
-        logger.info("[EventSub] API response", { subsCount: subs.length, subs: subs.map((s: EventSubSubscription) => ({ id: s.id, status: s.status, reward_id: s.condition.reward_id })) });
+        logger.info("[EventSub] API response", { subsCount: subs.length, subs: subs.map((s: EventSubSubscriptionForStatus) => ({ id: s.id, status: s.status, reward_id: s.condition.reward_id })) });
         setSubscriptions(subs);
 
         const derivedStatus = deriveEventSubStatus(subs, rewardIdToCheck);
@@ -340,14 +256,7 @@ export default function ChannelPointSettings({
   // 依存配列を空にすることで、保存後の再実行を防ぐ
   useEffect(() => {
     fetchRewards();
-    // 初期ロード時はpropsのcurrentRewardIdを使用
-    fetchEventSubStatus(currentRewardId || undefined);
-    // Fetch additional rewards if main reward is set
-    // メイン報酬が設定されている場合は追加報酬も取得
-    if (currentRewardId) {
-      fetchAdditionalRewards();
-      fetchRaidGachaStatus();
-    }
+    // compact modeでは初期表示の外部診断APIを避け、詳細表示時のみbootstrapでまとめて取得する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -816,7 +725,7 @@ export default function ChannelPointSettings({
     }
   };
 
-  const getSubscriptionLabel = (sub: EventSubSubscription) => {
+  const getSubscriptionLabel = (sub: EventSubSubscriptionForStatus) => {
     if (sub.type === RAID_EVENTSUB_TYPE) {
       return t("form.raidEventSubStatus");
     }
@@ -916,7 +825,7 @@ export default function ChannelPointSettings({
              </div>
            )}
 
-           {selectedRewardId && (
+           {selectedRewardId && !compact && (
              <div className="rounded-lg bg-gray-700 p-3">
                <p className="text-sm text-gray-400">
                  {t("form.selected")} <span className="text-white">{selectedRewardName}</span>
@@ -927,7 +836,8 @@ export default function ChannelPointSettings({
              </div>
            )}
 
-           {/* EventSub Info */}
+           {/* EventSub Info — compact mode では診断ノイズを隠す */}
+           {!compact && (
            <div className="rounded-lg bg-gray-700/50 p-4">
              <h3 className="mb-2 text-sm font-medium text-gray-300">{t("form.eventsubStatus")}</h3>
              <div className="mb-3 rounded bg-gray-800/60 p-3 text-xs">
@@ -1078,10 +988,11 @@ export default function ChannelPointSettings({
               </p>
             )}
            </div>
+           )}
 
            {/* Additional Rewards Section - Only shown when main reward is active */}
            {/* 追加報酬セクション - メイン報酬がアクティブな場合のみ表示 */}
-           {selectedRewardId && eventSubStatus === "active" && (
+           {!compact && selectedRewardId && eventSubStatus === "active" && (
              <div className="rounded-lg bg-gray-700/50 p-4">
                <h3 className="mb-2 text-sm font-medium text-gray-300">
                  {t("additionalRewards.title")}
@@ -1227,15 +1138,16 @@ export default function ChannelPointSettings({
              >
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
              </button>
+             {!compact && (
              <button
-               onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); setRegistrationFailed(false); }}
+               onClick={() => { fetchRewards(); fetchEventSubStatus(); fetchAdditionalRewards(); fetchRaidGachaStatus(); setRegistrationFailed(false); }}
                className="inline-flex h-10 items-center justify-center rounded-md border border-gray-500 bg-transparent px-4 text-sm font-medium text-gray-200 transition-colors hover:border-gray-400 hover:bg-gray-700/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800"
              >
                {tCommon("refresh")}
              </button>
-             {/* 設定解除ボタン: EventSubが設定されている場合のみ表示 */}
-             {/* Disconnect button: Only shown when EventSub is configured */}
-             {(eventSubStatus === "active" || eventSubStatus === "pending" || subscriptions.length > 0) && (
+             )}
+             {/* 設定解除ボタン: EventSubが設定されている場合のみ表示 (compact 時は省略) */}
+             {!compact && (eventSubStatus === "active" || eventSubStatus === "pending" || subscriptions.length > 0) && (
                <button
                  onClick={handleDisconnect}
                  disabled={disconnecting}

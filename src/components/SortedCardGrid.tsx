@@ -4,15 +4,14 @@ import { useMemo, useState } from "react";
 import CollectionCard from "./CollectionCard";
 import ExpandableDescription from "./ExpandableDescription";
 import type { Rarity, Card } from "@/types/database";
-import { RARITIES } from "@/lib/constants";
+import { getRarityDisplayInfo } from "@/lib/rarity";
 import { sortCollectedCards, type CollectionSortMode } from "@/lib/collection-utils";
 
 /**
- * Get rarity information (label and color) for a given rarity value
- * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
+ * Get rarity information (label and color) for a given rarity value.
+ * カスタムレアリティも正しく表示するため共通ヘルパに集約。
  */
-const getRarityInfo = (rarity: Rarity) =>
-  RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
 interface CardWithDetails extends Card {
   count: number;

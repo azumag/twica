@@ -18,6 +18,7 @@ import { withRetry } from '@/lib/supabase/retry'
 import { logger } from '@/lib/logger'
 import { hasTwitchSub } from '@/lib/twitch/sub-check'
 import { PLAN_PRIORITY, PLAN_STORAGE_BONUS } from '@/lib/plan-constants'
+import { logPerf, perfStart } from '@/lib/perf'
 import type { PlanType } from '@/lib/plan-constants'
 
 // サーバー側コードからの既存 import を壊さないよう re-export
@@ -34,6 +35,7 @@ export { PLAN_STORAGE_BONUS, PLAN_MAX_IMAGE_WIDTH, PLAN_MAX_UPLOAD_SIZE, PLAN_AV
  * @returns 現在の有効プラン（ライセンスなしの場合は 'basic'）
  */
 export const getUserPlan = cache(async function getUserPlan(twitchUserId: string): Promise<PlanType> {
+  const startedAt = perfStart()
   try {
     // DBライセンス判定・Twitchサブスク判定を並列実行
     // hasTwitchSub は環境変数未設定時に即座に false を返すため、未設定環境でも安全
@@ -54,6 +56,32 @@ export const getUserPlan = cache(async function getUserPlan(twitchUserId: string
     // プラン判定失敗時はbasicとする（ユーザーに不利にしない方が安全）
     logger.error('[Plan] Error getting user plan:', error)
     return 'basic'
+  } finally {
+    logPerf('plan', 'getUserPlan', startedAt)
+  }
+})
+
+/**
+ * Dashboard navigation用の軽量プラン判定。
+ * 外部Twitch APIへ再検証に行かず、DBに保存済みのライセンス/サブスク状態だけを見る。
+ */
+export const getUserPlanSnapshot = cache(async function getUserPlanSnapshot(twitchUserId: string): Promise<PlanType> {
+  const startedAt = perfStart()
+  try {
+    const [licensePlan, cachedSubPlan] = await Promise.all([
+      getLicensePlan(twitchUserId),
+      getCachedTwitchSubPlan(twitchUserId),
+    ])
+
+    if (PLAN_PRIORITY[cachedSubPlan] > PLAN_PRIORITY[licensePlan]) {
+      return cachedSubPlan
+    }
+    return licensePlan
+  } catch (error) {
+    logger.error('[Plan] Error getting user plan snapshot:', error)
+    return 'basic'
+  } finally {
+    logPerf('plan', 'getUserPlanSnapshot', startedAt)
   }
 })
 
@@ -96,6 +124,29 @@ async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
     return highestPlan
   } catch (error) {
     logger.error('[Plan] Error getting license plan:', error)
+    return 'basic'
+  }
+}
+
+async function getCachedTwitchSubPlan(twitchUserId: string): Promise<PlanType> {
+  try {
+    const supabaseAdmin = getSupabaseAdmin()
+    const { data, error } = await withRetry(
+      () => supabaseAdmin
+        .from('users')
+        .select('twitch_has_sub')
+        .eq('twitch_user_id', twitchUserId)
+        .maybeSingle(),
+      'getCachedTwitchSubPlan',
+    )
+
+    if (error || !data) {
+      return 'basic'
+    }
+
+    return data.twitch_has_sub === true ? 'twitch_sub' : 'basic'
+  } catch (error) {
+    logger.error('[Plan] Error getting cached Twitch sub plan:', error)
     return 'basic'
   }
 }
