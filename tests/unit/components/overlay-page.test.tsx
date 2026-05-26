@@ -52,6 +52,9 @@ describe('OverlayPage', () => {
       expect(subscribeMock).toHaveBeenCalled()
     })
 
+    expect(subscribeMock.mock.calls[0][2]).toEqual(expect.objectContaining({
+      maxRetries: 3,
+    }))
     expect(screen.queryByText('接続エラー')).not.toBeInTheDocument()
     expect(screen.queryByText(connectionError.message)).not.toBeInTheDocument()
   })
