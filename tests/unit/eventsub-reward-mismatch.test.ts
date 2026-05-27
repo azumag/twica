@@ -261,7 +261,7 @@ describe('EventSub reward mismatch handling', () => {
     )
   })
 
-  it('broadcasts only ordered history IDs for a multi-draw EventSub redemption', async () => {
+  it('broadcasts the full card payload for a multi-draw EventSub redemption', async () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-multi-draw'
@@ -313,24 +313,9 @@ describe('EventSub reward mismatch handling', () => {
     }))
 
     expect(response.status).toBe(200)
-    const v2Call = mockBroadcastGachaResult.mock.calls.find(
-      (call) => call[2]?.channelVersion === 'v2',
-    )
-    expect(v2Call?.[0]).toBe('streamer-1')
-    expect(v2Call?.[1]).toEqual(expect.objectContaining({
-      historyIds,
-      cardIds: ['card-1', 'card-2', 'card-3'],
-      drawCount: 3,
-      soundGroupId: 'history-1',
-      userTwitchUsername: 'Viewer',
-    }))
-    expect(v2Call?.[1].card).toBeUndefined()
-    expect(v2Call?.[1].cards).toBeUndefined()
-
-    const legacyCall = mockBroadcastGachaResult.mock.calls.find(
-      (call) => call[2]?.channelVersion === 'legacy',
-    )
-    expect(legacyCall?.[1]).toEqual(expect.objectContaining({
+    expect(mockBroadcastGachaResult).toHaveBeenCalledTimes(1)
+    expect(mockBroadcastGachaResult.mock.calls[0]?.[0]).toBe('streamer-1')
+    expect(mockBroadcastGachaResult.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
       card: cards[0],
       cards: [...cards],
       drawCount: 3,
@@ -392,13 +377,10 @@ describe('EventSub reward mismatch handling', () => {
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ received: true })
-    const v2Call = mockBroadcastGachaResult.mock.calls.find(
-      (call) => call[2]?.channelVersion === 'v2',
-    )
-    expect(v2Call?.[0]).toBe('streamer-1')
-    expect(v2Call?.[1]).toEqual(expect.objectContaining({
-      historyIds: ['history-1', 'history-2', 'history-3'],
-      cardIds: ['card-1', 'card-2', 'card-3'],
+    expect(mockBroadcastGachaResult.mock.calls[0]?.[0]).toBe('streamer-1')
+    expect(mockBroadcastGachaResult.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      card: cards[0],
+      cards: [...cards],
       drawCount: 3,
     }))
     expect(mockTwitchChatService).toHaveBeenCalled()

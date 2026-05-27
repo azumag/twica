@@ -34,12 +34,6 @@ const GACHA_CHANNEL_CONFIG = {
   },
 } as const
 
-type GachaChannelVersion = 'legacy' | 'v2'
-
-function getGachaChannelName(streamerId: string, version: GachaChannelVersion): string {
-  return version === 'v2' ? `gacha:v2:${streamerId}` : `gacha:${streamerId}`
-}
-
 function getSupabaseRealtimeClient(): SupabaseClient {
   if (supabaseRealtime) {
     return supabaseRealtime
@@ -75,7 +69,7 @@ function getSupabaseRealtimeClient(): SupabaseClient {
 
 export interface GachaBroadcastPayload {
   type: 'gacha'
-  card?: {
+  card: {
     id: string
     name: string
     description: string | null
@@ -89,10 +83,6 @@ export interface GachaBroadcastPayload {
     image_url: string | null
     rarity: string
   }>
-  /** Ordered gacha_history IDs. Preferred for EventSub multi-draw to avoid fanning out full card payloads. */
-  historyIds?: string[]
-  /** Ordered card IDs for diagnostics and clients that only need identity. */
-  cardIds?: string[]
   drawCount?: number
   /** Stable group ID so the overlay plays one sound for an N-draw event after fetching details. */
   soundGroupId?: string
@@ -109,7 +99,6 @@ export interface RealtimeError {
 export interface BroadcastOptions {
   maxRetries?: number
   retryDelay?: number
-  channelVersion?: GachaChannelVersion
 }
 
 // 接続中の一時的なステータス（エラーではない）
@@ -125,8 +114,8 @@ export async function broadcastGachaResult(
   payload: GachaBroadcastPayload,
   options: BroadcastOptions = {}
 ): Promise<void> {
-  const { maxRetries = 3, retryDelay = 1000, channelVersion = 'legacy' } = options
-  const channelName = getGachaChannelName(streamerId, channelVersion)
+  const { maxRetries = 3, retryDelay = 1000 } = options
+  const channelName = `gacha:${streamerId}`
 
   // getSupabaseRealtimeClient() や client.channel() がリトライループ前に throw する可能性がある
   // （環境変数不正、クライアント初期化失敗など）。これらのエラーも try/catch 内に含め、
@@ -204,10 +193,6 @@ export interface SubscribeOptions {
   // デバッグ用：接続ステータスの変化を追跡するコールバック
   // OBSブラウザソースでの接続問題を調査するために使用
   onStatusChange?: (status: string) => void
-  // v2 is the ID-only overlay channel. The legacy channel remains available
-  // during rollout because already-open OBS browser sources keep their old JS
-  // and still need full payloads until the scene is refreshed.
-  channelVersion?: GachaChannelVersion
 }
 
 export function subscribeToGachaResults(
@@ -221,10 +206,9 @@ export function subscribeToGachaResults(
     onError,
     onSuccess,
     onStatusChange,
-    channelVersion = 'v2',
   } = options
 
-  const channelName = getGachaChannelName(streamerId, channelVersion)
+  const channelName = `gacha:${streamerId}`
   let client: SupabaseClient | null = null
   let channel: ReturnType<SupabaseClient['channel']> | null = null
   let retryCount = 0

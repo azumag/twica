@@ -130,12 +130,7 @@ export async function POST(request: NextRequest) {
         };
 
         try {
-          // 新overlayはv2 channel、旧OBSソースはlegacy channelを購読している。
-          // デモ通知は低頻度なので、移行期間中はfull payloadを両方に送って互換性を優先する。
-          await Promise.allSettled([
-            broadcastGachaResult(targetStreamerId, payload, { channelVersion: "v2" }),
-            broadcastGachaResult(targetStreamerId, payload, { channelVersion: "legacy" }),
-          ]);
+          await broadcastGachaResult(targetStreamerId, payload);
           logger.info(`Demo broadcast sent to streamer ${targetStreamerId}`);
         } catch (broadcastError) {
           // ブロードキャストエラーはログに記録するが、レスポンスは返す

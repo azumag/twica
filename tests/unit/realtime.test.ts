@@ -103,7 +103,7 @@ describe('subscribeToGachaResults', () => {
 
     expect(channels).toHaveLength(2)
     expect(loggerMock.info).toHaveBeenCalledWith(
-      'Max retries (1) reached for gacha:v2:streamer-1; staying on fallback path',
+      'Max retries (1) reached for gacha:streamer-1; staying on fallback path',
     )
     expect(onError).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -128,7 +128,7 @@ describe('subscribeToGachaResults', () => {
     await vi.runOnlyPendingTimersAsync()
 
     expect(loggerMock.info).toHaveBeenCalledWith(
-      'Max retries (0) reached for gacha:v2:streamer-1; staying on fallback path',
+      'Max retries (0) reached for gacha:streamer-1; staying on fallback path',
     )
     expect(onError.mock.calls.filter(([error]) => (
       error.message === 'Realtime reconnect limit reached; polling fallback is active.'
