@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
@@ -13,6 +14,7 @@ import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import DropRateSettingsModal from "./DropRateSettingsModal";
+import CustomRarityModal from "./CustomRarityModal";
 import ExpandableDescription from "./ExpandableDescription";
 
 /** Custom dropdown arrow style for appearance-none select boxes */
@@ -72,11 +74,14 @@ interface CardManagerProps {
   // Initial rarity weights: null/undefined = unset (auto mode with defaults), {} = explicit manual mode, {weights} = auto mode
   // レアリティ確率設定: null/undefined=未設定（自動モードデフォルト化）, {}=手動モード明示, {weights}=自動モード
   initialRarityWeights?: Record<string, number> | null;
+  // 配信者が定義したカスタムレアリティ名（rarity_weights とは独立）
+  // Streamer-defined custom rarity names (decoupled from rarity_weights)
+  initialCustomRarities?: string[];
 }
 
 // Sorting field options
 // 並び替えフィールドの選択肢
-type SortField = "created_at" | "rarity" | "card_number" | "drop_rate";
+type SortField = "display_order" | "created_at" | "rarity" | "card_number" | "drop_rate";
 type CardFormData = {
   name: string;
   description: string;
@@ -95,6 +100,18 @@ type SortDirection = "asc" | "desc";
 // ステータスフィルターの選択肢
 type StatusFilter = "all" | "active" | "inactive";
 
+const compareCardsByDisplayOrder = (a: Card, b: Card): number => {
+  const numberDiff =
+    (a.card_number ?? Number.MAX_SAFE_INTEGER) -
+    (b.card_number ?? Number.MAX_SAFE_INTEGER);
+  if (numberDiff !== 0) return numberDiff;
+
+  const createdAtDiff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  if (createdAtDiff !== 0) return createdAtDiff;
+
+  return a.id.localeCompare(b.id);
+};
+
 export default function CardManager({
   streamerId,
   initialCards,
@@ -104,12 +121,17 @@ export default function CardManager({
   maxImageWidth = 800,
   availableWidths = [800],
   initialRarityWeights = null,
+  initialCustomRarities = [],
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
   const tRarity = useTranslations("rarity");
+  const getRarityLabel = useCallback(
+    (rarity: string) => formatRarityLabel(rarity, tRarity),
+    [tRarity]
+  );
   const [cards, setCards] = useState<Card[]>(initialCards);
   // DB値の変換: null=未設定→デフォルト自動モード, {}=手動モード明示, {weights}=自動モード
   const [rarityWeights, setRarityWeights] = useState<Record<string, number> | null>(() => {
@@ -121,6 +143,21 @@ export default function CardManager({
     }
     return initialRarityWeights;
   });
+  // カスタムレアリティ名（ドロップ率設定とは独立。専用モーダルで管理）
+  const [customRarities, setCustomRarities] = useState<string[]>(initialCustomRarities);
+  const rarityOptions = useMemo(() => {
+    const values = new Set<string>(RARITIES.map((rarity) => rarity.value));
+    cards.forEach((card) => {
+      if (card.rarity.trim()) values.add(card.rarity);
+    });
+    Object.keys(rarityWeights ?? {}).forEach((rarity) => {
+      if (rarity.trim()) values.add(rarity);
+    });
+    customRarities.forEach((rarity) => {
+      if (rarity.trim()) values.add(rarity);
+    });
+    return Array.from(values);
+  }, [cards, rarityWeights, customRarities]);
   const [loading, setLoading] = useState(false);
   // Current view mode state (thumbnail or list)
   // 現在の表示モード状態（サムネイルまたはリスト）
@@ -131,9 +168,12 @@ export default function CardManager({
 
   // Sorting and filtering state
   // 並び替えとフィルタリングの状態
+  // Default sort: 設定日（created_at）降順
+  // 初期表示は最新の設定（作成）日順とし、サーバー側 initialCards のソートと一致させる
   const [sortField, setSortField] = useState<SortField>("created_at");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [titleSearchQuery, setTitleSearchQuery] = useState("");
   // Track if this is the first render to skip initial reload
   // 初回レンダリングかどうかを追跡して初期リロードをスキップ
   const isFirstRender = useRef(true);
@@ -203,17 +243,28 @@ export default function CardManager({
    * サーバーがソートを処理、クライアントは即時UIフィードバックのためフィルタリングのみ
    */
   const filteredAndSortedCards = useMemo(() => {
+    const normalizedQuery = titleSearchQuery.trim().toLowerCase();
     // Only apply client-side filter for optimistic updates (toggle active)
     // 楽観的更新（アクティブ切り替え）用にクライアントサイドフィルターのみ適用
+    let nextCards = cards;
     if (statusFilter === "active") {
-      return cards.filter(card => card.is_active);
+      nextCards = nextCards.filter(card => card.is_active);
     } else if (statusFilter === "inactive") {
-      return cards.filter(card => !card.is_active);
+      nextCards = nextCards.filter(card => !card.is_active);
     }
-    // Cards are already sorted by server, just return as-is
-    // カードは既にサーバーでソートされているのでそのまま返す
-    return cards;
-  }, [cards, statusFilter]);
+    if (normalizedQuery) {
+      nextCards = nextCards.filter(card => card.name.toLowerCase().includes(normalizedQuery));
+    }
+
+    if (sortField === "display_order") {
+      nextCards = [...nextCards].sort(compareCardsByDisplayOrder);
+      if (sortDirection === "desc") {
+        nextCards.reverse();
+      }
+    }
+
+    return nextCards;
+  }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -297,6 +348,8 @@ export default function CardManager({
   // Batch drop rate modal state
   // 確率一括調整モーダルの状態
   const [showBatchDropRateModal, setShowBatchDropRateModal] = useState(false);
+  // カスタムレアリティ管理モーダルの状態
+  const [showCustomRarityModal, setShowCustomRarityModal] = useState(false);
   // Zoomed card image modal state (opened when user clicks a thumbnail)
   // Uses the original (pre-thumbnail) URL so users see the full-resolution image
   // サムネイルクリック時に表示する拡大画像モーダルの状態
@@ -1210,8 +1263,7 @@ export default function CardManager({
     }
   };
 
-  const getRarityInfo = (rarity: Rarity) =>
-    RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+  const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
@@ -1227,6 +1279,14 @@ export default function CardManager({
             className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
           >
             {t("dropRateSettings.button")}
+          </button>
+          {/* Custom rarity management button */}
+          {/* カスタムレアリティ管理ボタン */}
+          <button
+            onClick={() => setShowCustomRarityModal(true)}
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
+          >
+            {t("customRarity.button")}
           </button>
           {/* Emote import button */}
           {/* エモートインポートボタン */}
@@ -1332,10 +1392,10 @@ export default function CardManager({
                   </svg>
                 </button>
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                 {/* 左カラム: カード名 + レアリティを縦積み（右の画像ペーンと高さを揃える） */}
-                <div className="flex flex-col justify-between">
-                  <div>
+                <div className="flex min-w-0 flex-col justify-between gap-4">
+                  <div className="min-w-0">
                     <label className="mb-1 block text-sm text-gray-300">
                       {t("form.name")} *
                     </label>
@@ -1348,32 +1408,43 @@ export default function CardManager({
                       onChange={(e) =>
                         setFormData({ ...formData, name: e.target.value })
                       }
-                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white"
+                      className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
                     />
                   </div>
-                  <div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
+                  <div className="min-w-0">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                      <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.rarity")}
                         </label>
+                        {/*
+                          レアリティ選択は <select> を使用する。
+                          以前は <input list> + <datalist> だったが、datalist は
+                          入力欄の現在値に部分一致する候補のみを表示する仕様のため、
+                          初期値 "common" が入っている状態ではコモンしか候補に出ず
+                          実質的に他のレアリティを選べない不具合があった。
+                          <select> なら現在値に関わらず常に全選択肢を表示できる。
+                          rarityOptions はデフォルト4種＋既存カードのレアリティ＋
+                          カスタムレアリティ(rarity_weights)を含むため、デフォルトの
+                          レアリティは常に保持される。
+                        */}
                         <select
                           name="rarity"
                           value={formData.rarity}
                           onChange={(e) =>
                             setFormData({ ...formData, rarity: e.target.value as Rarity })
                           }
-                          className="w-full appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-10 text-white"
+                          className="w-full min-w-0 appearance-none rounded-lg bg-gray-600 px-4 py-2 pr-8 text-white"
                           style={SELECT_ARROW_STYLE}
                         >
-                          {RARITIES.map((r) => (
-                            <option key={r.value} value={r.value}>
-                              {tRarity(r.value)}
+                          {rarityOptions.map((rarity) => (
+                            <option key={rarity} value={rarity}>
+                              {getRarityLabel(rarity)}
                             </option>
                           ))}
                         </select>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <label className="mb-1 block text-sm text-gray-300">
                           {t("form.cardNumber")}
                         </label>
@@ -1388,7 +1459,7 @@ export default function CardManager({
                           onChange={(e) =>
                             setFormData({ ...formData, cardNumber: e.target.value })
                           }
-                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
+                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
                         />
                         <p className="mt-1 text-xs text-gray-300">
                           {t("form.cardNumberHelp")}
@@ -1398,7 +1469,7 @@ export default function CardManager({
                   </div>
                 </div>
                 {/* 右カラム: 画像 */}
-                <div>
+                <div className="min-w-0">
               <label className="mb-1 block text-sm text-gray-300">
                 {t("form.image")}
               </label>
@@ -1425,7 +1496,7 @@ export default function CardManager({
                       className="rounded object-cover"
                       unoptimized
                     />
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm text-gray-300">{t("form.currentImage")}</p>
                       <p className="text-xs text-gray-500 truncate max-w-[200px]">
                         {confirmedImageUrl.split('/').pop()}
@@ -1451,7 +1522,7 @@ export default function CardManager({
                       alt={t("form.croppedImage")}
                       className={`rounded object-cover ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
                     />
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
                       <p className="text-xs text-gray-400">
                         {planCropModes[selectedCropMode].dimensions}px ({planCropModes[selectedCropMode].label})
@@ -1486,7 +1557,7 @@ export default function CardManager({
                       ref={fileInputRef}
                       onChange={handleFileChange}
                       disabled={storageStatus?.uploadDisabled}
-                      className={`w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
+                      className={`w-full min-w-0 text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
                         storageStatus?.uploadDisabled
                           ? 'opacity-50 cursor-not-allowed file:bg-gray-500'
                           : 'file:bg-purple-600 hover:file:bg-purple-700'
@@ -1514,7 +1585,7 @@ export default function CardManager({
                         setUserModifiedImage(true);
                       }}
                       disabled={imageUrlValidating}
-                      className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white disabled:opacity-50"
+                      className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white disabled:opacity-50"
                     />
                     {/* Show validating indicator when checking image URL */}
                     {/* 画像URL検証中の表示 */}
@@ -1598,7 +1669,7 @@ export default function CardManager({
                     if (!stats) return null;
                     return (
                       <span className="flex items-center gap-2 text-xs text-gray-400 shrink-0">
-                        <span>{tRarity(formData.rarity)}内: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
+                        <span>{getRarityLabel(formData.rarity)}内: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
                         <span className="text-gray-500">→</span>
                         <span>{t("form.overallDropRate")}: <span className="text-green-400">{stats.overallPercent.toFixed(1)}%</span></span>
                       </span>
@@ -1760,6 +1831,17 @@ export default function CardManager({
           {/* Sorting and filtering controls */}
           {/* 並び替えとフィルタリングコントロール */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* Title search */}
+            {/* タイトル検索 */}
+            <input
+              type="search"
+              value={titleSearchQuery}
+              onChange={(e) => setTitleSearchQuery(e.target.value)}
+              placeholder={t("search.titlePlaceholder")}
+              aria-label={t("search.titleLabel")}
+              className="min-w-[14rem] rounded-lg border border-gray-600 bg-gray-700 px-3 py-1.5 text-sm text-white placeholder:text-gray-400"
+            />
+
             {/* Sort field selector */}
             {/* 並び替えフィールド選択 */}
             <select
@@ -1768,6 +1850,7 @@ export default function CardManager({
               className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
               style={SELECT_ARROW_STYLE}
             >
+              <option value="display_order">{t("sort.displayOrder")}</option>
               <option value="created_at">{t("sort.createdAt")}</option>
               <option value="rarity">{t("sort.rarity")}</option>
               <option value="card_number">{t("sort.cardNumber")}</option>
@@ -1852,9 +1935,11 @@ export default function CardManager({
 
         return (
           <>
-            {/* List view */}
-            {/* リスト表示 */}
-            {currentViewMode === "list" ? (
+            {displayCards.length === 0 ? (
+              <p className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-8 text-center text-gray-400">
+                {t("messages.noMatchingCards")}
+              </p>
+            ) : currentViewMode === "list" ? (
               <CardList
                 cards={displayCards}
                 totalActiveWeight={totalActiveWeight}
@@ -1898,7 +1983,7 @@ export default function CardManager({
                           <span
                             className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
                           >
-                            {tRarity(card.rarity)}
+                            {getRarityLabel(card.rarity)}
                           </span>
                         </div>
                       </div>
@@ -2179,6 +2264,17 @@ export default function CardManager({
         onCardsSave={handleBatchDropRateSave}
         onRarityWeightsApply={handleRarityWeightsApply}
         rarityWeights={rarityWeights}
+        customRarities={customRarities}
+      />
+
+      {/* Custom Rarity Modal */}
+      {/* カスタムレアリティ管理モーダル */}
+      <CustomRarityModal
+        isOpen={showCustomRarityModal}
+        onClose={() => setShowCustomRarityModal(false)}
+        streamerId={streamerId}
+        customRarities={customRarities}
+        onSaved={setCustomRarities}
       />
 
       {/* Emote Import Modal */}

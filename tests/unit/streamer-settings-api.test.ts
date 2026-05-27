@@ -11,7 +11,10 @@ vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/request-validation')
-vi.mock('@/lib/constants')
+// 本物の constants モジュールを保持する。RARITIES が空配列になると
+// route.ts の DEFAULT_RARITY_VALUES が空となり、デフォルトレアリティとの
+// 衝突検出ができなくなるため、ファクトリで実体をそのまま返す。
+vi.mock('@/lib/constants', async (importOriginal) => await importOriginal())
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
   return {
@@ -84,6 +87,43 @@ describe('POST /api/streamer/settings', () => {
     expect(getSupabaseAdmin).toHaveBeenCalled()
   })
 
+  it('should update multi-draw chat announcement settings', async () => {
+    const builder = createSupabaseMock()
+      .withMaybeSingleResponse({
+        id: 'streamer123',
+        twitch_user_id: 'streamer123',
+      })
+    const mockSupabase = builder.build()
+    const query = builder.getQueryBuilder()
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        chatAnnouncementEnabled: true,
+        chatAnnouncementTemplate: '@{user} got {card}',
+        chatAnnouncementMultiTemplate: '@{user}: {draws}連 {rarityCounts} {cards}',
+        chatAnnouncementMultiShowCards: false,
+      }),
+    })
+
+    const response = await POST(request)
+
+    expect(response.status).toBe(200)
+    expect(query.update).toHaveBeenCalledWith(expect.objectContaining({
+      chat_announcement_enabled: true,
+      chat_announcement_template: '@{user} got {card}',
+      chat_announcement_multi_template: '@{user}: {draws}連 {rarityCounts} {cards}',
+      chat_announcement_multi_show_cards: false,
+    }))
+  })
+
   it('should reject rarity weights when total is not 100%', async () => {
     const mockSupabase = createSupabaseMock().build()
 
@@ -135,6 +175,168 @@ describe('POST /api/streamer/settings', () => {
     expect(response.status).toBe(200)
     const data = await response.json()
     expect(data.success).toBe(true)
+  })
+
+  // C5: rarity_weights キーのバリデーション/正規化
+  describe('rarity weights key validation (C5)', () => {
+    const buildRequest = (rarityWeights: unknown) =>
+      new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', rarityWeights }),
+      })
+
+    const mockOk = async () => {
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const built = mockSupabase.build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        built as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+      return mockSupabase.getQueryBuilder()
+    }
+
+    it('rejects empty string key', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ '': 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects key that is whitespace only (empty after trim)', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ '   ': 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects key longer than 40 chars', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ ['a'.repeat(41)]: 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects key containing control characters', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ ['rare\u0001']: 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects key containing bidi override characters', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ ['rare\u202E']: 100 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects duplicate keys after trim/NFC normalization', async () => {
+      await mockOk()
+      // " common " と "common" は trim 後に衝突する
+      const response = await POST(buildRequest({ common: 50, ' common ': 50 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('persists trimmed/NFC-normalized keys when valid', async () => {
+      const query = await mockOk()
+      // 前後空白付きキー(合計100%)。trim 後の "common"/"rare" で保存されること。
+      const response = await POST(buildRequest({ ' common ': 70, rare: 30 }))
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({ rarity_weights: { common: 70, rare: 30 } })
+      )
+    })
+  })
+
+  describe('custom rarities validation', () => {
+    const buildRequest = (customRarities: unknown) =>
+      new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', customRarities }),
+      })
+
+    const mockOk = async () => {
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const built = mockSupabase.build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(
+        built as unknown as ReturnType<typeof getSupabaseAdmin>
+      )
+      return mockSupabase.getQueryBuilder()
+    }
+
+    it('rejects non-array value', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ super: 1 }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects non-string element', async () => {
+      await mockOk()
+      const response = await POST(buildRequest(['super', 123]))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects empty / whitespace-only name', async () => {
+      await mockOk()
+      const response = await POST(buildRequest(['   ']))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects name longer than 40 chars', async () => {
+      await mockOk()
+      const response = await POST(buildRequest(['a'.repeat(41)]))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects control characters', async () => {
+      await mockOk()
+      const response = await POST(buildRequest(['super']))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects bidi override characters', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest([`super${String.fromCharCode(0x202e)}`])
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects collision with a default rarity', async () => {
+      await mockOk()
+      const response = await POST(buildRequest(['common']))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects duplicates after trim/NFC normalization', async () => {
+      await mockOk()
+      const response = await POST(buildRequest(['super', ' super ']))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects more than 50 entries', async () => {
+      await mockOk()
+      const many = Array.from({ length: 51 }, (_, i) => `r${i}`)
+      const response = await POST(buildRequest(many))
+      expect(response.status).toBe(400)
+    })
+
+    it('persists trimmed/NFC-normalized names when valid', async () => {
+      const query = await mockOk()
+      const response = await POST(buildRequest([' super ', 'ultra']))
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({ custom_rarities: ['super', 'ultra'] })
+      )
+    })
+
+    it('does not trigger drop-rate recalculation', async () => {
+      await mockOk()
+      const response = await POST(buildRequest(['super']))
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.recalculatedCards).toBeNull()
+    })
   })
 
   it('should return 403 when CSRF token is invalid', async () => {

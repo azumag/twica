@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TwitchChatService } from '@/lib/twitch/chat-service';
-import { getTwitchAccessToken, hasScope } from '@/lib/twitch/token-manager';
+import { getBotAccountForChat, getTwitchAccessToken, hasScope } from '@/lib/twitch/token-manager';
 import { reportApiError, reportError } from '@/lib/sentry/error-handler';
 
 vi.mock('@/lib/twitch/token-manager');
@@ -30,6 +30,7 @@ describe('TwitchChatService', () => {
     globalThis.setTimeout = (cb: () => void) => { cb(); return 0; };
     // デフォルトではスコープあり（個別テストでオーバーライド可能）
     vi.mocked(hasScope).mockResolvedValue(true);
+    vi.mocked(getBotAccountForChat).mockResolvedValue(null);
     service = new TwitchChatService();
   });
 
@@ -68,6 +69,42 @@ describe('TwitchChatService', () => {
       expect(getTwitchAccessToken).toHaveBeenCalled();
     });
 
+    it('BOTアカウント設定時はBOTのsender_idとトークンで送信する', async () => {
+      vi.mocked(getBotAccountForChat).mockResolvedValue({
+        accountId: 'bot-account-id',
+        senderId: 'bot-user-id',
+        username: 'twica_bot',
+        displayName: 'TwiCa Bot',
+        accessToken: 'bot-token',
+        ownerType: 'streamer',
+      });
+
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+      } as Response);
+
+      const result = await service.sendChatMessage('123456789', 'test message');
+
+      expect(result).toBe(true);
+      expect(hasScope).not.toHaveBeenCalled();
+      expect(getTwitchAccessToken).not.toHaveBeenCalled();
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.twitch.tv/helix/chat/messages',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer bot-token',
+          }),
+          body: JSON.stringify({
+            broadcaster_id: '123456789',
+            sender_id: 'bot-user-id',
+            message: 'test message',
+          }),
+        }),
+      );
+    });
+
     it('500文字を超える日本語メッセージは文字単位で切り詰めて送信する', async () => {
       vi.mocked(hasScope).mockResolvedValue(true);
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
@@ -90,6 +127,55 @@ describe('TwitchChatService', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe('buildMessage - multi-draw new card placeholders', () => {
+    it('N連ガチャ用の {newCards} と {newCardCount} を値に置換する', () => {
+      const message = service.buildMessage(
+        '{user}: 初出 {newCardCount}種類 {newCards}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+          newCards: 'Alpha、Gamma',
+          newCardCount: 2,
+        },
+      );
+
+      expect(message).toBe('viewer: 初出 2種類 Alpha、Gamma');
+    });
+
+    it('N連ガチャ用の初出プレースホルダー未指定時は空文字に置換される', () => {
+      // newCards / newCardCount どちらも未指定なら空文字置換となり、
+      // 「種類」「初出」など接続詞は周辺の連続空白整形で1スペースに丸まる。
+      // 「初出」セクション全体を出さないかどうかは呼び出し側の責務（route.ts の
+      // shouldAppendDefaultNewCards 判定 / カスタムテンプレート設計）に委ねる。
+      // Whether to omit the "初出" section entirely is the caller's responsibility.
+      const message = service.buildMessage(
+        '{user}: 初出 {newCardCount}種類 {newCards}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+        },
+      );
+
+      expect(message).toBe('viewer: 初出 種類');
+    });
+
+    it('newCardCount=0 を明示的に渡すと "0" として置換される', () => {
+      const message = service.buildMessage(
+        '{user}: 初出 {newCardCount}種類',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+          newCardCount: 0,
+        },
+      );
+
+      expect(message).toBe('viewer: 初出 0種類');
     });
   });
 
@@ -463,6 +549,24 @@ describe('TwitchChatService', () => {
         { ...basePlaceholders, num: 3, unique: 5, all: 10 }
       );
       expect(message).toBe('@SampleUser が【レジェンダリー】Legendary Card（3枚目 / コンプ 5/10）を獲得！');
+    });
+
+    it('N連ガチャ用の {cards} と {draws} を値に置換する', () => {
+      const message = service.buildMessage(
+        '@{user} が{draws}連ガチャで {cards} を獲得！先頭は {card}',
+        { ...basePlaceholders, cards: 'Legendary Card、Rare Card、Common Card', draws: 3 }
+      );
+
+      expect(message).toBe('@SampleUser が3連ガチャで Legendary Card、Rare Card、Common Card を獲得！先頭は Legendary Card');
+    });
+
+    it('N連ガチャ用プレースホルダー未指定時は空文字に置換される', () => {
+      const message = service.buildMessage(
+        '{user} が {card} を獲得！{draws}{cards}',
+        basePlaceholders
+      );
+
+      expect(message).toBe('SampleUser が Legendary Card を獲得！');
     });
   });
 });

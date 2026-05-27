@@ -8,7 +8,7 @@ import {
   getRateLimitIdentifier,
 } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { getGachaStats } from "@/lib/dashboard-data";
+import { getGachaStats, getGachaCardOwnerStats } from "@/lib/dashboard-data";
 
 /**
  * GET /api/gacha-stats
@@ -65,9 +65,10 @@ export async function GET(request: NextRequest) {
 
     // Validate period parameter
     // period パラメータのバリデーション
-    if (period !== "7d" && period !== "30d") {
+    // "byCard": 全期間のカード別所持ユーザー統計（「カード別」タブ用）
+    if (period !== "7d" && period !== "30d" && period !== "byCard") {
       return NextResponse.json(
-        { error: "Invalid period. Must be '7d' or '30d'." },
+        { error: "Invalid period. Must be '7d', '30d', or 'byCard'." },
         { status: 400 }
       );
     }
@@ -84,6 +85,11 @@ export async function GET(request: NextRequest) {
         { error: ERROR_MESSAGES.STREAMER_NOT_FOUND },
         { status: 404 }
       );
+    }
+
+    if (period === "byCard") {
+      const cardOwnerStats = await getGachaCardOwnerStats(streamer.id);
+      return NextResponse.json(cardOwnerStats);
     }
 
     const stats = await getGachaStats(streamer.id, period);

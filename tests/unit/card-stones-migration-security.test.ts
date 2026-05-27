@@ -5,7 +5,7 @@ import { resolve } from "path";
 describe("card stones migration security", () => {
   it("restricts card stone management policies to the service role", () => {
     const migration = readFileSync(
-      resolve(__dirname, "../../supabase/migrations/00048_add_card_stones_exchange.sql"),
+      resolve(__dirname, "../../supabase/migrations/00059_add_card_stones_exchange.sql"),
       "utf8"
     );
 
@@ -24,7 +24,7 @@ USING (true) WITH CHECK (true);`);
     const migration = readFileSync(
       resolve(
         __dirname,
-        "../../supabase/migrations/00050_card_stone_exchange_idempotency.sql"
+        "../../supabase/migrations/00060_card_stone_exchange_idempotency.sql"
       ),
       "utf8"
     );

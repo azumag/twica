@@ -17,7 +17,7 @@ import { deleteFromR2 } from "@/lib/r2-client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 function extractRarityWeights(streamers: unknown): Record<string, number> | null {
@@ -154,7 +154,10 @@ export async function PUT(
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!inner(twitch_user_id, rarity_weights)")
+      // streamers の埋め込みは FK 制約名で一意化する: migration 00051 の
+      // card_owner_stats が cards↔streamers を m2m にも見せ、ヒントなしの
+      // streamers(...) は PGRST201 で失敗するため。
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -183,7 +186,7 @@ export async function PUT(
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
-    if (rarity !== undefined) updateData.rarity = rarity;
+    if (rarity !== undefined) updateData.rarity = typeof rarity === "string" ? rarity.trim() : rarity;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
@@ -224,12 +227,24 @@ export async function PUT(
       }
     }
 
-    const { data: updatedCard, error } = await supabaseAdmin
+    let { data: updatedCard, error } = await supabaseAdmin
       .from("cards")
       .update(updateData)
       .eq("id", id)
       .select()
       .maybeSingle();
+
+    if (error && isMissingCardNumberColumnError(error) && "card_number" in updateData) {
+      delete updateData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .update(updateData)
+        .eq("id", id)
+        .select()
+        .maybeSingle();
+      updatedCard = retryResult.data;
+      error = retryResult.error;
+    }
 
     if (error) {
       if (isCardNumberConflictError(error)) {
@@ -312,7 +327,10 @@ export async function DELETE(
     // 削除用にimage_url付きでカードを取得
     const { data: card } = await supabaseAdmin
       .from("cards")
-      .select("streamer_id, image_url, streamers!inner(twitch_user_id, rarity_weights)")
+      // streamers の埋め込みは FK 制約名で一意化する(PUT と同じ理由: migration
+      // 00051 の card_owner_stats が cards↔streamers を m2m にも見せ、ヒント
+      // なしの streamers(...) は PGRST201 で失敗するため)。
+      .select("streamer_id, image_url, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 

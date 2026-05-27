@@ -76,6 +76,13 @@ export interface GachaBroadcastPayload {
     image_url: string | null
     rarity: string
   }
+  cards?: Array<{
+    id: string
+    name: string
+    description: string | null
+    image_url: string | null
+    rarity: string
+  }>
   userTwitchUsername: string
 }
 

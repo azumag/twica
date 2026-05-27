@@ -10,6 +10,7 @@ import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 import { getBaseUrl } from '@/lib/url-utils'
 import { signSession } from '@/lib/session'
+import { handleLinkedAccountCallback } from '@/lib/twitch/linked-account-auth'
 
 export async function GET(request: NextRequest) {
   // 開発環境ではリクエストのホストから動的にベースURLを取得
@@ -47,6 +48,16 @@ export async function GET(request: NextRequest) {
 
   // Verify state
   const cookieStore = await cookies()
+  const storedBotState = cookieStore.get(COOKIE_NAMES.BOT_AUTH_STATE)?.value
+  if (storedBotState && state === storedBotState) {
+    const redirectUri = `${baseUrl}/api/auth/twitch/callback`
+    return handleLinkedAccountCallback({
+      baseUrl,
+      code,
+      redirectUri,
+    })
+  }
+
   const storedState = cookieStore.get(COOKIE_NAMES.AUTH_STATE)?.value
 
   if (!storedState || state !== storedState) {

@@ -23,6 +23,9 @@ interface StreamerCollectionProps {
     epic: number;
     rare: number;
     common: number;
+    // カスタムレアリティ別の所持ユニーク数（デフォルト4種以外）。
+    // 後方互換のため optional（Stats 側で `?? []` ガード）。
+    customRarities?: { rarity: string; count: number }[];
   };
   progress: {
     owned: number;

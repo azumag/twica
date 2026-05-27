@@ -18,7 +18,7 @@ import { getStorageUsage } from "@/lib/storage-usage";
 import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -161,12 +161,13 @@ export async function POST(request: NextRequest) {
     // 実際の確率は「このカードの重み / 全体の重み」で計算される
     // 重みは相対的であり絶対的な割合ではないため、合計100%制限は不要
 
+    const normalizedRarity = typeof rarity === "string" ? rarity.trim() : rarity;
     const insertData: Record<string, unknown> = {
       streamer_id: streamerId,
       name,
       description,
       image_url: imageUrl,
-      rarity,
+      rarity: normalizedRarity,
       card_number: cardNumber ?? null,
       drop_rate: dropRate,
     };
@@ -174,11 +175,22 @@ export async function POST(request: NextRequest) {
       insertData.intra_rarity_weight = intraRarityWeight;
     }
 
-    const { data: card, error } = await supabaseAdmin
+    let { data: card, error } = await supabaseAdmin
       .from("cards")
       .insert(insertData)
       .select()
       .maybeSingle();
+
+    if (error && isMissingCardNumberColumnError(error)) {
+      delete insertData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .insert(insertData)
+        .select()
+        .maybeSingle();
+      card = retryResult.data;
+      error = retryResult.error;
+    }
 
     if (error) {
       if (isCardNumberConflictError(error)) {
@@ -219,7 +231,7 @@ export async function POST(request: NextRequest) {
 
 // Valid sort fields for cards
 // カードの有効な並び替えフィールド
-const VALID_SORT_FIELDS = ["created_at", "rarity", "drop_rate", "card_number"] as const;
+const VALID_SORT_FIELDS = ["created_at", "rarity", "drop_rate", "card_number", "display_order"] as const;
 type SortField = typeof VALID_SORT_FIELDS[number];
 
 // Valid sort directions
@@ -266,14 +278,44 @@ async function fetchCardsFromDB(
   // Apply sorting - all fields use DB-side sorting for correct pagination
   // 並び替えを適用 - ページネーション整合性のため全フィールドDB側でソート
   const ascending = sortDirection === "asc";
-  // Use rarity_order generated column (CASE-based: legendary=1, epic=2, rare=3, common=4)
-  // instead of rarity text column which sorts alphabetically
-  // rarityテキストカラムはアルファベット順になるため、rarity_order generated columnを使用
-  const dbSortField = sortField === "rarity" ? "rarity_order" : sortField;
+  // Use stable DB-side ordering for correct pagination.
+  // display_order uses manually assigned card numbers first, then old cards first.
+  const dbSortField = sortField === "rarity"
+    ? "rarity_order"
+    : sortField === "display_order"
+      ? "card_number"
+      : sortField;
   query = query.order(dbSortField, { ascending, nullsFirst: false });
+  if (sortField === "display_order") {
+    query = query.order("created_at", { ascending: true, nullsFirst: false });
+  }
   query = query.range(offset, offset + limit - 1);
 
-  const { data: cards, error, count } = await query;
+  let { data: cards, error, count } = await query;
+  if (
+    error &&
+    (sortField === "card_number" || sortField === "display_order") &&
+    isMissingCardNumberColumnError(error)
+  ) {
+    const fallbackQuery = supabaseAdmin
+      .from("cards")
+      .select("*", { count: "exact" })
+      .eq("streamer_id", streamerId);
+
+    let filteredFallbackQuery = fallbackQuery;
+    if (statusFilter === "active") {
+      filteredFallbackQuery = filteredFallbackQuery.eq("is_active", true);
+    } else if (statusFilter === "inactive") {
+      filteredFallbackQuery = filteredFallbackQuery.eq("is_active", false);
+    }
+
+    const fallbackResult = await filteredFallbackQuery
+      .order("created_at", { ascending, nullsFirst: false })
+      .range(offset, offset + limit - 1);
+    cards = fallbackResult.data;
+    error = fallbackResult.error;
+    count = fallbackResult.count;
+  }
   if (error) throw error;
 
   logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${cards?.length || 0} cards)`);

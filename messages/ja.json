@@ -46,6 +46,10 @@
     "newCard": "新規カード",
     "importFromEmotes": "エモートからインポート",
     "editCardNumbers": "番号をまとめて編集",
+    "search": {
+      "titleLabel": "カードタイトル検索",
+      "titlePlaceholder": "タイトルで検索"
+    },
     "form": {
       "name": "カード名",
       "namePlaceholder": "カード名",
@@ -92,6 +96,7 @@
       "networkErrorDelete": "ネットワークエラーが発生しました。削除をキャンセルしました。",
       "operationFailed": "操作に失敗しました: {msg}",
       "emptyCards": "まだカードがありません。「新規カード追加」から始めましょう。",
+      "noMatchingCards": "条件に一致するカードがありません。",
       "probability": "確率:",
       "errorOccurred": "エラーが発生しました ({status})",
       "uploadLimited": "アップロード機能が制限されています",
@@ -117,6 +122,7 @@
       "numberLabel": "番号"
     },
     "sort": {
+      "displayOrder": "表示順",
       "createdAt": "設定日",
       "rarity": "レアリティ",
       "cardNumber": "カード番号",
@@ -181,6 +187,28 @@
       "confirmSwitchToManual": "レアリティ別の自動計算が無効になります。切り替えますか？",
       "confirmSwitchToAuto": "レアリティ別確率設定が有効になり、全カードの確率が再計算されます。切り替えますか？",
       "switchFailed": "モードの切り替えに失敗しました"
+    },
+    "customRarity": {
+      "button": "レアリティカスタム",
+      "title": "カスタムレアリティ",
+      "description": "カード作成時に選べるレアリティを管理します。デフォルトのレアリティは常に選択でき、削除できません。",
+      "defaultSection": "デフォルト（常に選択可能）",
+      "customSection": "カスタムレアリティ",
+      "addPlaceholder": "新しいレアリティ名",
+      "add": "追加",
+      "empty": "カスタムレアリティはまだありません",
+      "deleteNote": "削除しても既存カードのレアリティは変わりません（カード作成時の候補から外れるだけです）。",
+      "save": "保存",
+      "saving": "保存中...",
+      "saved": "保存しました",
+      "saveFailed": "保存に失敗しました",
+      "confirmClose": "未保存の変更があります。閉じますか？",
+      "errorEmpty": "レアリティ名を入力してください",
+      "errorTooLong": "レアリティ名は40文字以内で入力してください",
+      "errorInvalidChars": "使用できない文字が含まれています",
+      "errorDuplicate": "同じレアリティが既に存在します",
+      "errorDefault": "デフォルトのレアリティは追加できません（常に選択可能です）",
+      "errorMax": "カスタムレアリティは最大{max}件までです"
     },
     "batchDropRate": {
       "button": "確率一括調整",
@@ -384,7 +412,7 @@
   },
   "chatAnnouncementSettings": {
     "title": "チャット通知設定",
-    "description": "ガチャ結果をTwitchチャットに自動投稿します。配信者アカウントからメッセージが送信されます。",
+    "description": "ガチャ結果をTwitchチャットに自動投稿します。別のTwitchアカウントを連携すると、そのアカウントからメッセージが送信されます。",
     "status": {
       "enabled": "有効",
       "disabled": "無効"
@@ -396,7 +424,11 @@
       "enableAnnouncement": "チャット通知を有効にする",
       "customTemplate": "カスタムテンプレート（任意）",
       "templatePlaceholder": "@'{'user'}' が【'{'rarity'}'】'{'card'}' を獲得しました！",
-      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL",
+      "multiTemplate": "N連ガチャ用テンプレート（任意）",
+      "multiTemplatePlaceholder": "@'{'user'}' が'{'draws'}'連ガチャで '{'rarityCounts'}' を獲得しました！'{'cards'}'",
+      "multiShowCards": "N連通知にカード名一覧を含める",
+      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL",
+      "multiPlaceholderHelp": "N連用: '{'draws'}'=抽選回数, '{'rarityCounts'}'=レアリティ別枚数（例: レアx3、コモンx3）, '{'cards'}'=カード名一覧, '{'newCards'}'=今回初めて獲得したカード名一覧, '{'newCardCount'}'=今回初めて獲得したカード種類数",
       "previewLength": "プレビュー文字数: {current} / {max}文字"
     },
     "buttons": {
@@ -404,21 +436,35 @@
       "reauthorizing": "再認証中...",
       "saveTemplate": "テンプレートを保存",
       "saving": "保存中...",
-      "chatDemo": "チャットデモ"
+      "chatDemo": "チャットデモ",
+      "connectBot": "連携する",
+      "connectingBot": "連携中...",
+      "disconnectBot": "解除する",
+      "disconnectingBot": "解除中..."
     },
     "messages": {
       "checkingScope": "権限を確認中...",
       "saved": "設定を保存しました",
-      "lengthWarning": "カード説明やURLが長い場合、送信メッセージが最大 {estimated} 文字程度になる可能性があります。{max}文字を超えた分は送信時に切り詰められます。"
+      "lengthWarning": "カード説明やURLが長い場合、送信メッセージが最大 {estimated} 文字程度になる可能性があります。{max}文字を超えた分は送信時に切り詰められます。",
+      "botDisconnected": "別アカウント連携を解除しました"
     },
     "errors": {
       "saveFailed": "設定の保存に失敗しました",
-      "reauthorizeFailed": "再認証に失敗しました"
+      "reauthorizeFailed": "再認証に失敗しました",
+      "botConnectFailed": "別アカウント連携の開始に失敗しました",
+      "botDisconnectFailed": "別アカウント連携の解除に失敗しました"
     },
     "demo": {
       "title": "チャットメッセージプレビュー",
       "description": "実際に送信されるメッセージのプレビューです（サンプルデータ使用）",
+      "singleTitle": "通常ガチャ",
+      "multiTitle": "N連ガチャ",
       "close": "閉じる"
+    },
+    "bot": {
+      "title": "送信アカウント",
+      "description": "未連携の場合は配信者アカウントから送信します。連携を始めると、現在Twitchにログインしているアカウントで認証が開きます。別のアカウントから送る場合は、先にTwitch側でそのアカウントに切り替えてから連携してください。",
+      "connectedAs": "{name} から送信します"
     }
   },
   "cardVisibilitySettings": {
@@ -475,6 +521,10 @@
       "rewardId": "報酬ID:",
       "allRewards": "全報酬",
       "eventsubStatus": "EventSub ステータス",
+      "raidEventSubStatus": "レイド自動ON",
+      "raidEventSubActive": "incoming raid 通知を受け取れる状態です。",
+      "raidEventSubMissing": "未登録または確認中です。必要な場合は「保存 & EventSub登録」で再登録してください。",
+      "raidEventSubError": "登録に失敗しています。「保存 & EventSub登録」で再登録してください。",
       "noSubscriptions": "EventSubサブスクリプションがありません。保存ボタンを押して登録してください。",
       "localTunnelNote": "※ EventSubはローカル環境では利用できません"
     },
@@ -507,7 +557,24 @@
       "removeFailed": "追加報酬の削除に失敗しました",
       "removeConfirm": "この追加報酬を削除しますか？EventSubサブスクリプションも削除されます。",
       "cannotUseAsMain": "この報酬は追加報酬として登録されています。先に追加報酬から削除してください。",
-      "cannotUseAsAdditional": "この報酬はメイン報酬として設定されています。"
+      "cannotUseAsAdditional": "この報酬はメイン報酬として設定されています。",
+      "drawCount": "一度に排出する枚数",
+      "raidOnly": "レイド限定",
+      "multiDraw": "{count}連",
+      "raidLimited": "レイド限定",
+      "raidGiftTitle": "レイドガチャ",
+      "raidGiftDescription": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",
+      "raidGiftEnabled": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",
+      "raidGiftDisabled": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",
+      "raidGiftSaved": "レイドガチャ設定を保存しました",
+      "raidStatusTitle": "レイドガチャ受付",
+      "raidStatusActive": "{time} まで受付中",
+      "raidStatusInactive": "現在は停止中",
+      "raidStatusEnable": "30分ON",
+      "raidStatusDisable": "OFF",
+      "raidStatusEnabled": "レイドガチャ受付を30分間有効にしました",
+      "raidStatusDisabled": "レイドガチャ受付を停止しました",
+      "raidStatusFailed": "レイドガチャ設定の更新に失敗しました"
     }
   },
   "gachaHistory": {
@@ -578,7 +645,37 @@
   },
   "settingsPage": {
     "title": "配信設定",
-    "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。"
+    "description": "OBSオーバーレイとチャネルポイント報酬の設定を行います。",
+    "viewMode": {
+      "simple": "シンプル",
+      "advanced": "詳細",
+      "ariaLabel": "配信設定の表示モードを切り替え"
+    },
+    "simple": {
+      "step1": "1",
+      "step1Label": "OBSにオーバーレイを追加",
+      "step2": "2",
+      "step2Label": "視聴者の引換ポイントを選ぶ",
+      "switchToAdvanced": "すべての設定を表示する →",
+      "collectionLink": "視聴者向けコレクションページ"
+    },
+    "advanced": {
+      "navAria": "設定セクション",
+      "section": {
+        "overlay": "オーバーレイ",
+        "overlayDesc": "OBS表示URLと演出",
+        "reward": "報酬",
+        "rewardDesc": "チャネルポイント連携",
+        "sound": "効果音",
+        "soundDesc": "ガチャ演出のサウンド",
+        "announcement": "チャット通知",
+        "announcementDesc": "獲得時の自動メッセージ",
+        "visibility": "公開設定",
+        "visibilityDesc": "未所持カードの見せ方",
+        "share": "共有",
+        "shareDesc": "コレクションページのURL"
+      }
+    }
   },
   "cardsPage": {
     "title": "カード管理",
@@ -944,11 +1041,17 @@
     "tabs": {
       "7d": "7日間",
       "30d": "30日間",
-      "channelPoints": "チャネルポイント"
+      "channelPoints": "チャネルポイント",
+      "byCard": "カード別"
     },
     "totalDraws": "総ガチャ回数",
     "draws": "回",
+    "period": {
+      "7d": "7日間",
+      "30d": "30日間"
+    },
     "noData": "この期間にはガチャデータがありません。",
+    "noCardData": "カードがありません。",
     "channelPointRanking": {
       "title": "チャネルポイント使用ランキング（記録開始後）",
       "total": "記録開始後合計: {points} ポイント",
@@ -964,7 +1067,13 @@
       "rarity": "レアリティ",
       "configuredRate": "設定排出率",
       "actualRate": "実際の排出率",
-      "drawCount": "排出回数"
+      "drawCount": "排出回数",
+      "drawers": "引いたユーザー",
+      "drawerCount": "{count}人",
+      "noDrawers": "引いたユーザーなし",
+      "owners": "所持ユーザー",
+      "ownerCount": "{count}人",
+      "noOwners": "所持ユーザーなし"
     },
     "raritySummary": "レアリティ別サマリー",
     "fullPeriodStats": {

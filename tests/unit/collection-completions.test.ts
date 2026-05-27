@@ -3,8 +3,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Supabase admin モック
 const mockUpsert = vi.fn();
 const mockSelect = vi.fn();
-const mockEq = vi.fn();
-const mockOrder = vi.fn();
 
 vi.mock('@/lib/supabase/admin', () => ({
   getSupabaseAdmin: () => ({
@@ -109,6 +107,28 @@ describe('collection-completions', () => {
       const result = await getCollectionCompletions('user1', 'streamer1');
 
       expect(result).toEqual([]);
+    });
+
+    it('一時的な502エラーをリトライして復旧する', async () => {
+      const mockData = [
+        { total_cards: 8, completed_at: '2026-03-01T00:00:00Z' },
+      ];
+      const mockOrder = vi.fn()
+        .mockResolvedValueOnce({ data: null, error: { message: 'error code: 502' } })
+        .mockResolvedValueOnce({ data: mockData, error: null });
+      mockSelect.mockImplementation(() => ({
+        eq: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            order: mockOrder,
+          }),
+        }),
+      }));
+
+      const { getCollectionCompletions } = await import('@/lib/dashboard-data');
+      const result = await getCollectionCompletions('user1', 'streamer1');
+
+      expect(result).toEqual(mockData);
+      expect(mockOrder).toHaveBeenCalledTimes(2);
     });
   });
 });
