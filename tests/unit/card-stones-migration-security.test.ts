@@ -18,6 +18,13 @@ USING (true) WITH CHECK (true);`);
 ON card_stone_transactions
 FOR ALL TO service_role
 USING (true) WITH CHECK (true);`);
+
+    expect(migration).toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.card_stone_balances TO service_role;"
+    );
+    expect(migration).toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.card_stone_transactions TO service_role;"
+    );
   });
 
   it("hardens the idempotency migration (search_path, request_id, ON CONFLICT)", () => {

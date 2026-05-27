@@ -31,6 +31,9 @@ ON card_stone_transactions(user_id, streamer_id, created_at DESC);
 ALTER TABLE card_stone_balances ENABLE ROW LEVEL SECURITY;
 ALTER TABLE card_stone_transactions ENABLE ROW LEVEL SECURITY;
 
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.card_stone_balances TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.card_stone_transactions TO service_role;
+
 CREATE POLICY "Service can manage card stone balances"
 ON card_stone_balances
 FOR ALL TO service_role
