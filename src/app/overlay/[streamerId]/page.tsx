@@ -42,11 +42,6 @@ interface OverlayPollingEvent {
   card: Pick<Card, "id" | "name" | "description" | "image_url" | "rarity">;
 }
 
-interface OverlayEventsResponse {
-  events?: OverlayPollingEvent[];
-  complete?: boolean;
-}
-
 function fetchJsonWithXhrFallback<T>(url: string): Promise<T> {
   return fetch(url)
     .then((response) => {
@@ -504,63 +499,6 @@ export default function OverlayPage() {
     };
   }, [pollOverlayEvents]);
 
-  const fetchOverlayEventsByIds = useCallback(async (
-    historyIds: string[],
-    options: { maxRetries?: number; retryDelayMs?: number } = {}
-  ): Promise<OverlayPollingEvent[]> => {
-    const { maxRetries = 2, retryDelayMs = 250 } = options;
-    const ids = historyIds.filter(Boolean);
-
-    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      const url = new URL(`/api/overlay/${streamerId}/events`, window.location.origin);
-      url.searchParams.set("ids", ids.join(","));
-      // Cache key is already the ids list; this timestamp is intentionally not
-      // added so complete responses can be shared by multiple OBS sources.
-      const data = await fetchJsonWithXhrFallback<OverlayEventsResponse>(url.toString());
-      const events = data.events ?? [];
-      if (data.complete !== false && events.length === ids.length) {
-        return events;
-      }
-
-      if (attempt < maxRetries) {
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
-      }
-    }
-
-    throw new Error("Overlay detail fetch returned an incomplete batch");
-  }, [streamerId]);
-
-  const displayRealtimeIdPayload = useCallback(async (payload: { historyIds?: string[]; userTwitchUsername: string; soundGroupId?: string }) => {
-    const historyIds = payload.historyIds?.filter(Boolean) ?? [];
-    if (historyIds.length === 0) {
-      return;
-    }
-
-    try {
-      const events = await fetchOverlayEventsByIds(historyIds);
-      for (const event of events) {
-        if (seenHistoryIdsRef.current.has(event.id)) {
-          continue;
-        }
-        seenHistoryIdsRef.current.add(event.id);
-        const redeemedAtMs = Date.parse(event.redeemedAt);
-        pollCursorRef.current = Number.isFinite(redeemedAtMs)
-          ? new Date(redeemedAtMs).toISOString()
-          : new Date().toISOString();
-        displayResultRef.current({
-          card: event.card as Card,
-          userTwitchUsername: event.userTwitchUsername || payload.userTwitchUsername,
-          historyId: event.id,
-          soundGroupId: payload.soundGroupId ?? historyIds[0],
-        });
-      }
-    } catch (error) {
-      logger.warn("Overlay detail fetch failed for Realtime payload:", error);
-      addDebugLogRef.current("Realtime detail fetch failed; polling fallback will retry");
-      setConnectionStatus("disconnected");
-    }
-  }, [fetchOverlayEventsByIds]);
-
   // デバッグログを追加するヘルパー関数
   // OBSブラウザソースでの接続問題を調査するために使用
   const addDebugLog = useCallback((message: string) => {
@@ -588,13 +526,7 @@ export default function OverlayPage() {
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
       addDebugLogRef.current(`Received payload: ${payload.type}`);
-      if (payload.type === 'gacha' && payload.historyIds?.length) {
-        // ID-only payloadは詳細APIの補完が成功するまで表示済みとは扱わない。
-        // 先にcursorを進めると、partial/429/ネットワーク失敗時にpolling fallbackも
-        // gacha_history.redeemed_atを取り逃がすため、displayRealtimeIdPayload内で
-        // 実際に表示できたevent.redeemedAtまでだけ進める。
-        void displayRealtimeIdPayload(payload);
-      } else if (payload.type === 'gacha' && payload.card) {
+      if (payload.type === 'gacha' && payload.card) {
         // Avoid replaying the same event through polling if Realtime later drops.
         pollCursorRef.current = new Date().toISOString();
         displayResultRef.current({
@@ -657,7 +589,7 @@ export default function OverlayPage() {
         clearTimeout(animationTimeoutRef.current);
       }
     };
-  }, [displayRealtimeIdPayload, streamerId]);
+  }, [streamerId]);
 
   // Demo function for testing
   // デモ機能 - 配信者のカードがあればそれを、なければデモカードを表示

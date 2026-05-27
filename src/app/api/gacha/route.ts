@@ -119,13 +119,7 @@ export async function POST(request: NextRequest) {
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
-    // 新overlayはv2 channel、旧OBSソースはlegacy channelを購読している。
-    // 手動ガチャ/デモは低頻度でfull payloadのままなので、移行期間中は両方に送って
-    // リロード済み/未リロードのOBSソースを同時に壊さない。
-    await Promise.allSettled([
-      broadcastGachaResult(streamerId, payload, { channelVersion: "v2" }),
-      broadcastGachaResult(streamerId, payload, { channelVersion: "legacy" }),
-    ]);
+    await broadcastGachaResult(streamerId, payload);
     logger.info(`Gacha result broadcast attempted for streamer ${streamerId}`);
 
     return NextResponse.json<GachaSuccessResponse>({

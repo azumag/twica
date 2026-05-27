@@ -447,31 +447,6 @@ interface RedemptionNotifyData {
 
 function buildRealtimePayload(gachaResult: RedemptionNotifyData["gachaResult"]): GachaBroadcastPayload {
   const drawnCards = gachaResult.cards?.length ? gachaResult.cards : [gachaResult.card];
-  const historyIds = gachaResult.historyIds?.length
-    ? gachaResult.historyIds
-    : gachaResult.historyId
-      ? [gachaResult.historyId]
-      : undefined;
-
-  if (historyIds && historyIds.length === drawnCards.length) {
-    return {
-      type: "gacha",
-      historyIds,
-      cardIds: drawnCards.map((drawnCard) => drawnCard.id),
-      drawCount: drawnCards.length,
-      soundGroupId: historyIds[0],
-      userTwitchUsername: gachaResult.userTwitchUsername,
-    };
-  }
-
-  // RPC未適用やlegacy fallbackではgacha_history.idを安全に特定できないため、
-  // 既存のfull payloadを維持してoverlay表示とチャット通知の互換性を優先する。
-  // Keep the full payload only when the ID-only contract is unavailable.
-  return buildLegacyRealtimePayload(gachaResult);
-}
-
-function buildLegacyRealtimePayload(gachaResult: RedemptionNotifyData["gachaResult"]): GachaBroadcastPayload {
-  const drawnCards = gachaResult.cards?.length ? gachaResult.cards : [gachaResult.card];
 
   return {
     type: "gacha",
@@ -492,19 +467,13 @@ function buildLegacyRealtimePayload(gachaResult: RedemptionNotifyData["gachaResu
  */
 async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   const results = await Promise.allSettled([
-    // 新しいoverlayはv2 channelでID-only payloadを受け、詳細をAPIで補完する。
-    // 旧OBSブラウザソースは長時間リロードされないため、移行期間はlegacy channelにも
-    // full payloadを送って表示欠落を避ける。v2へ移行済みのソースからegress削減が効く。
+    // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
+    // Keep the payload shape as a full object while we isolate the API-key
+    // deployment issue; changing both transport auth and payload contract at
+    // once makes production impact harder to reason about.
     broadcastGachaResult(data.streamer.id, buildRealtimePayload(data.gachaResult), {
       maxRetries: 1,
       retryDelay: 500,
-      channelVersion: "v2",
-    }),
-    // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
-    broadcastGachaResult(data.streamer.id, buildLegacyRealtimePayload(data.gachaResult), {
-      maxRetries: 1,
-      retryDelay: 500,
-      channelVersion: "legacy",
     }),
     sendChatAnnouncement(
       data.broadcasterTwitchUserId,
@@ -517,9 +486,9 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   ]);
 
   // 通知失敗をログ出力 + エラー追跡
-  // Note: broadcastGachaResult (i=0,1) は内部でリトライし失敗時も throw しない設計 (Issue #359-#365)
+  // Note: broadcastGachaResult (i=0) は内部でリトライし失敗時も throw しない設計 (Issue #359-#365)
   // そのため broadcast は 'rejected' にならず、失敗ログは broadcastGachaResult 内で warn として出力される
-  // chatAnnouncement (i=2) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
+  // chatAnnouncement (i=1) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
       const label = i < 2 ? 'broadcast' : 'chatAnnouncement';
