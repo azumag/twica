@@ -139,10 +139,12 @@ describe('subscribeToGachaResults', () => {
 
   it('counts repeated terminal statuses with a pending retry as one failure', async () => {
     const onError = vi.fn()
+    const onStatusChange = vi.fn()
     const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
       maxRetries: 1,
       retryDelay: 10,
       onError,
+      onStatusChange,
     })
 
     statusCallbacks[0]('CHANNEL_ERROR')
@@ -152,6 +154,9 @@ describe('subscribeToGachaResults', () => {
     expect(channels).toHaveLength(2)
     expect(onError.mock.calls.filter(([error]) => (
       error.message === 'Realtime connection issue: CHANNEL_ERROR'
+    ))).toHaveLength(1)
+    expect(onStatusChange.mock.calls.filter(([status]) => (
+      status === 'SUBSCRIBE_STATUS: CHANNEL_ERROR'
     ))).toHaveLength(1)
     expect(onError.mock.calls.some(([error]) => (
       error.message === 'Realtime reconnect limit reached; polling fallback is active.'
