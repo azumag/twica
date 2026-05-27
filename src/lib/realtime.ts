@@ -309,6 +309,14 @@ export function subscribeToGachaResults(
             return
           }
 
+          const isRetryableTerminalStatus = status !== 'SUBSCRIBED' && !CONNECTING_STATUSES.includes(status)
+          if (isRetryableTerminalStatus && (retryTimeout || maxRetriesNotified)) {
+            // Supabase may repeat the same terminal status for one failed socket.
+            // Suppress duplicates before debug callbacks too, otherwise preview
+            // still shows duplicate CHANNEL_ERROR lines even though retry state is safe.
+            return
+          }
+
           onStatusChange?.(`SUBSCRIBE_STATUS: ${status}`)
 
           if (status === 'SUBSCRIBED') {
@@ -323,14 +331,6 @@ export function subscribeToGachaResults(
             onStatusChange?.(`CONNECTING: ${status}`)
           } else {
             const isExpected = EXPECTED_CLOSE_STATUSES.includes(status)
-
-            // Supabase can emit the same terminal status more than once for a
-            // single channel failure. Once a reconnect is already scheduled,
-            // ignore duplicate terminal callbacks so one failure consumes only
-            // one retry budget and cleanup can still cancel the pending timer.
-            if (retryTimeout) {
-              return
-            }
 
             const error: RealtimeError = {
               type: 'connection',
