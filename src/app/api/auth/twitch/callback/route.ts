@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError, getTwitchAuthUrl } from '@/lib/twitch/auth'
 import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
-import { saveTwitchScopes } from '@/lib/twitch/token-manager'
+import { saveTwitchScopes, saveTwitchTokens } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions, STATE_COOKIE_OPTIONS } from '@/lib/constants'
@@ -215,9 +215,6 @@ export async function GET(request: NextRequest) {
           twitch_username: twitchUser.login,
           twitch_display_name: twitchUser.display_name,
           twitch_profile_image_url: twitchUser.profile_image_url,
-          twitch_access_token: tokens.access_token,
-          twitch_refresh_token: tokens.refresh_token,
-          twitch_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
         }, {
           onConflict: 'twitch_user_id',
         })
@@ -233,6 +230,8 @@ export async function GET(request: NextRequest) {
         })
         throw upsertError
       }
+
+      await saveTwitchTokens(twitchUser.id, tokens)
 
       // トークン交換時に付与されたスコープをDBに全置換で保存する。
       // loginルートがOAuthリクエストに既存スコープ（user:write:chat等）を含めるため、

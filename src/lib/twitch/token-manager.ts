@@ -2,6 +2,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { withRetry } from '@/lib/supabase/retry';
 import { refreshTwitchToken, type TwitchTokens } from './auth';
 import { logger } from '@/lib/logger';
+import { decryptTwitchToken, encryptTwitchToken, isEncryptedTwitchToken } from './token-encryption';
 
 export class TwitchTokenError extends Error {
   constructor(
@@ -14,9 +15,52 @@ export class TwitchTokenError extends Error {
   }
 }
 
-export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
-  const supabaseAdmin = getSupabaseAdmin();
+type LegacyUserTokenRow = {
+  twitch_access_token: string | null
+  twitch_refresh_token: string | null
+  twitch_token_expires_at: string | null
+}
 
+type EncryptedTokenRow = {
+  encrypted_access_token: string
+  encrypted_refresh_token: string
+  token_expires_at: string
+}
+
+function isMissingTokenTableError(error: { code?: string; message?: string } | null | undefined): boolean {
+  return error?.code === 'PGRST204' || error?.code === 'PGRST205' || error?.code === '42P01'
+}
+
+async function fetchEncryptedTokenRow(twitchUserId: string): Promise<EncryptedTokenRow | null> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await withRetry(
+    () => supabaseAdmin
+      .from('twitch_oauth_tokens')
+      .select('encrypted_access_token, encrypted_refresh_token, token_expires_at')
+      .eq('twitch_user_id', twitchUserId)
+      .maybeSingle(),
+    'twitch encrypted token fetch',
+  );
+
+  if (error) {
+    if (isMissingTokenTableError(error)) {
+      logger.warn('Encrypted Twitch token table not found in schema', { twitchUserId, error });
+      return null;
+    }
+
+    logger.error('Database error fetching encrypted Twitch tokens', { twitchUserId, error });
+    throw new TwitchTokenError(
+      'Failed to fetch user tokens from database',
+      'DATABASE_ERROR',
+      error
+    );
+  }
+
+  return data as EncryptedTokenRow | null;
+}
+
+async function fetchLegacyUserTokenRow(twitchUserId: string): Promise<LegacyUserTokenRow | null> {
+  const supabaseAdmin = getSupabaseAdmin();
   const { data: user, error: dbError } = await withRetry(
     () => supabaseAdmin
       .from('users')
@@ -27,14 +71,11 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
   );
 
   if (dbError) {
-    // PGRST204 means column not found - token columns may not exist in schema
     if (dbError.code === 'PGRST204') {
-      logger.warn('Twitch token columns not found in schema', { twitchUserId, error: dbError });
+      logger.warn('Legacy Twitch token columns not found in schema', { twitchUserId, error: dbError });
       return null;
     }
 
-    // Other database errors are unexpected and should be thrown
-    // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
     logger.error('Database error fetching user tokens', { twitchUserId, error: dbError });
     throw new TwitchTokenError(
       'Failed to fetch user tokens from database',
@@ -42,6 +83,100 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
       dbError
     );
   }
+
+  return user as LegacyUserTokenRow | null;
+}
+
+async function saveEncryptedTwitchTokens(
+  twitchUserId: string,
+  tokens: Pick<TwitchTokens, 'access_token' | 'refresh_token' | 'expires_in'>
+): Promise<string> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+  // twitch_user_id を AAD として束縛する（行入れ替え型攻撃を防止）
+  // Bind twitch_user_id as AAD to prevent cross-row ciphertext substitution.
+  const encryptedAccessToken = await encryptTwitchToken(tokens.access_token, twitchUserId);
+  const encryptedRefreshToken = await encryptTwitchToken(tokens.refresh_token, twitchUserId);
+
+  const { error } = await supabaseAdmin
+    .from('twitch_oauth_tokens')
+    .upsert({
+      twitch_user_id: twitchUserId,
+      encrypted_access_token: encryptedAccessToken,
+      encrypted_refresh_token: encryptedRefreshToken,
+      token_expires_at: expiresAt.toISOString(),
+    }, {
+      onConflict: 'twitch_user_id',
+    });
+
+  if (error) {
+    if (isMissingTokenTableError(error)) {
+      logger.error('Encrypted Twitch token table not found; refusing plaintext token save', { twitchUserId, error });
+    }
+    throw error;
+  }
+
+  await clearLegacyTwitchTokenColumns(twitchUserId);
+  return expiresAt.toISOString();
+}
+
+async function clearLegacyTwitchTokenColumns(twitchUserId: string): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({
+      twitch_access_token: null,
+      twitch_refresh_token: null,
+      twitch_token_expires_at: null,
+    })
+    .eq('twitch_user_id', twitchUserId);
+
+  if (error && error.code !== 'PGRST204') {
+    logger.warn('Failed to clear legacy Twitch token columns after encrypted save', { twitchUserId, error });
+  }
+}
+
+export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
+  const encryptedTokenRow = await fetchEncryptedTokenRow(twitchUserId);
+
+  if (encryptedTokenRow) {
+    const expiresAt = new Date(encryptedTokenRow.token_expires_at);
+    if (isNaN(expiresAt.getTime())) {
+      return null;
+    }
+
+    // 復号失敗（鍵ローテ後の旧暗号文、AAD 不一致、ストレージ破損）は
+    // 例外で落とすと UI が 500 になり再ログイン導線が分かりづらいため、
+    // null を返して再認証フローへ誘導する。
+    // Decryption failure (post-rotation, AAD mismatch, storage corruption)
+    // returns null instead of throwing, so the UI can redirect to re-auth
+    // rather than showing a 500.
+    if (expiresAt > new Date()) {
+      try {
+        return await decryptTwitchToken(encryptedTokenRow.encrypted_access_token, twitchUserId);
+      } catch (error) {
+        logger.warn('Failed to decrypt access token; user must re-auth', {
+          twitchUserId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+    }
+
+    let refreshToken: string;
+    try {
+      refreshToken = await decryptTwitchToken(encryptedTokenRow.encrypted_refresh_token, twitchUserId);
+    } catch (error) {
+      logger.warn('Failed to decrypt refresh token; user must re-auth', {
+        twitchUserId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    return await refreshTwitchAccessToken(twitchUserId, refreshToken);
+  }
+
+  const user = await fetchLegacyUserTokenRow(twitchUserId);
 
   if (!user || !user.twitch_access_token || !user.twitch_refresh_token) {
     return null;
@@ -56,12 +191,44 @@ export async function getTwitchAccessToken(twitchUserId: string): Promise<string
     return null;
   }
 
-  const now = new Date();
-  if (expiresAt > now) {
-    return user.twitch_access_token;
+  // レガシー列に残っている暗号文も AAD 付き復号にフォールバックする。
+  // 復号失敗は再認証必要として null 返却（同上）。
+  // Legacy column ciphertexts also use AAD-bound decryption; failure -> null.
+  let accessToken: string;
+  let refreshToken: string;
+  try {
+    accessToken = isEncryptedTwitchToken(user.twitch_access_token)
+      ? await decryptTwitchToken(user.twitch_access_token, twitchUserId)
+      : user.twitch_access_token;
+    refreshToken = isEncryptedTwitchToken(user.twitch_refresh_token)
+      ? await decryptTwitchToken(user.twitch_refresh_token, twitchUserId)
+      : user.twitch_refresh_token;
+  } catch (error) {
+    logger.warn('Failed to decrypt legacy Twitch tokens; user must re-auth', {
+      twitchUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
   }
 
-  return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
+  const now = new Date();
+  if (expiresAt > now) {
+    try {
+      await saveEncryptedTwitchTokens(twitchUserId, {
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        expires_in: Math.max(1, Math.floor((expiresAt.getTime() - now.getTime()) / 1000)),
+      });
+    } catch (migrationError) {
+      logger.warn('Failed to migrate legacy Twitch tokens to encrypted table', {
+        twitchUserId,
+        error: migrationError instanceof Error ? migrationError.message : String(migrationError),
+      });
+    }
+    return accessToken;
+  }
+
+  return await refreshTwitchAccessToken(twitchUserId, refreshToken);
 }
 
 export interface BotChatAccount {
@@ -88,6 +255,13 @@ function isMissingBotSchemaError(error: { code?: string } | null): boolean {
   return error?.code === 'PGRST204' || error?.code === 'PGRST205' || error?.code === '42P01';
 }
 
+// TODO(#397-followup): twitch_bot_accounts のトークン (twitch_access_token /
+//   twitch_refresh_token) も users 側と同様に AES-GCM + HKDF + AAD で暗号化する。
+//   本 PR ではスキーマ・バックフィル・呼び出し箇所が広範に及ぶためスコープ外。
+//   別 issue/PR で対応すること。
+// TODO(#397-followup): apply the same encryption (HKDF + AES-GCM + AAD) to
+//   twitch_bot_accounts tokens. Out of scope for this PR due to wider
+//   schema/backfill/caller impact; tracked separately.
 export async function getBotAccountForChat(broadcasterTwitchUserId: string): Promise<BotChatAccount | null> {
   const supabaseAdmin = getSupabaseAdmin();
 
@@ -302,26 +476,7 @@ export async function getCustomBotAccountDisplayForStreamer(
 async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: string): Promise<string> {
   try {
     const tokens = await refreshTwitchToken(refreshToken);
-    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-    const supabaseAdmin = getSupabaseAdmin();
-    const { error } = await supabaseAdmin
-      .from('users')
-      .update({
-        twitch_access_token: tokens.access_token,
-        twitch_refresh_token: tokens.refresh_token,
-        twitch_token_expires_at: expiresAt.toISOString(),
-      })
-      .eq('twitch_user_id', twitchUserId);
-
-    if (error) {
-      // If columns don't exist (PGRST204), just return the token without saving
-      if (error.code === 'PGRST204') {
-        logger.warn('Twitch token columns not found in schema, returning token without saving', { twitchUserId, error });
-        return tokens.access_token;
-      }
-      throw error;
-    }
+    await saveEncryptedTwitchTokens(twitchUserId, tokens);
 
     // リフレッシュレスポンスのスコープでDBを全置換する（best-effort）
     // Twitchのrefreshレスポンスはトークンの実スコープを返す（公式ドキュメント準拠）。
@@ -357,30 +512,20 @@ async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: stri
 }
 
 export async function saveTwitchTokens(twitchUserId: string, tokens: TwitchTokens): Promise<void> {
-  const supabaseAdmin = getSupabaseAdmin();
-  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-  const { error } = await supabaseAdmin
-    .from('users')
-    .update({
-      twitch_access_token: tokens.access_token,
-      twitch_refresh_token: tokens.refresh_token,
-      twitch_token_expires_at: expiresAt.toISOString(),
-    })
-    .eq('twitch_user_id', twitchUserId);
-
-  if (error) {
-    // If columns don't exist (PGRST204), just log and return
-    if (error.code === 'PGRST204') {
-      logger.warn('Twitch token columns not found in schema, skipping save', { twitchUserId, error });
-      return;
-    }
-    throw error;
-  }
+  await saveEncryptedTwitchTokens(twitchUserId, tokens);
 }
 
 export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
   const supabaseAdmin = getSupabaseAdmin();
+
+  const { error: deleteError } = await supabaseAdmin
+    .from('twitch_oauth_tokens')
+    .delete()
+    .eq('twitch_user_id', twitchUserId);
+
+  if (deleteError && !isMissingTokenTableError(deleteError)) {
+    throw deleteError;
+  }
 
   const { error } = await supabaseAdmin
     .from('users')
@@ -542,17 +687,44 @@ export async function validateTokenScopes(twitchUserId: string): Promise<string[
     // Read token and expiry from DB without triggering refresh.
     // check-scope GET must be read-only; getTwitchAccessToken() would refresh expired
     // tokens and write to DB, violating the read-only contract.
-    const supabaseAdmin = getSupabaseAdmin();
-    const { data: user, error: dbError } = await withRetry(
-      () => supabaseAdmin
-        .from('users')
-        .select('twitch_access_token, twitch_token_expires_at')
-        .eq('twitch_user_id', twitchUserId)
-        .maybeSingle(),
-      'twitch token scope validation fetch',
-    );
+    const encryptedTokenRow = await fetchEncryptedTokenRow(twitchUserId);
+    let accessToken: string | null = null;
+    let expiresAtValue: string | null = null;
 
-    if (dbError || !user?.twitch_access_token) return null;
+    // 復号失敗（鍵ローテ後の旧暗号文や AAD 不一致）は null 返却にして
+    // check-scope の read-only 契約を維持しつつ DB 信頼にフォールバックさせる。
+    // Decryption failure returns null so check-scope keeps its read-only
+    // contract and the caller falls back to DB-stored scopes.
+    if (encryptedTokenRow) {
+      try {
+        accessToken = await decryptTwitchToken(encryptedTokenRow.encrypted_access_token, twitchUserId);
+      } catch (error) {
+        logger.warn('Failed to decrypt access token in validateTokenScopes', {
+          twitchUserId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+      expiresAtValue = encryptedTokenRow.token_expires_at;
+    } else {
+      const user = await fetchLegacyUserTokenRow(twitchUserId);
+      if (user?.twitch_access_token) {
+        try {
+          accessToken = isEncryptedTwitchToken(user.twitch_access_token)
+            ? await decryptTwitchToken(user.twitch_access_token, twitchUserId)
+            : user.twitch_access_token;
+        } catch (error) {
+          logger.warn('Failed to decrypt legacy access token in validateTokenScopes', {
+            twitchUserId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+        expiresAtValue = user.twitch_token_expires_at;
+      }
+    }
+
+    if (!accessToken) return null;
 
     // トークンがローカルで期限切れならTwitch APIを叩かずnullを返す。
     // 期限切れは通常の状態であり、スコープ失効とは異なる。
@@ -562,15 +734,15 @@ export async function validateTokenScopes(twitchUserId: string): Promise<string[
     // Expiry is normal operation, not scope revocation. Returning null lets
     // check-scope API trust the DB result. Actual scope usage (chat, sub check)
     // handles 401 individually when the feature is invoked.
-    if (user.twitch_token_expires_at) {
-      const expiresAt = new Date(user.twitch_token_expires_at);
+    if (expiresAtValue) {
+      const expiresAt = new Date(expiresAtValue);
       if (!isNaN(expiresAt.getTime()) && expiresAt <= new Date()) {
         return null;
       }
     }
 
     const response = await fetch('https://id.twitch.tv/oauth2/validate', {
-      headers: { 'Authorization': `OAuth ${user.twitch_access_token}` },
+      headers: { 'Authorization': `OAuth ${accessToken}` },
     });
 
     // 401/403（期限内トークンに対して）= revoke等の無効化 → 空配列で乖離検出

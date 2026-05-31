@@ -57,6 +57,11 @@ export async function handleLinkedAccountCallback({
       return redirectToSettings(baseUrl, { bot_error: 'database_error' })
     }
 
+    // TODO(#397-followup): twitch_bot_accounts のトークンも暗号化する。
+    //   現状は users 側のみ暗号化済み (#397)。bot 側はスキーマ拡張・バックフィル
+    //   ・getBotAccountForChat の復号呼び出しを伴うため別 PR で対応。
+    // TODO(#397-followup): encrypt bot account tokens. Currently only users
+    //   tokens are encrypted; bot side requires separate schema/backfill work.
     const botAccountFields = {
       twitch_user_id: botUser.id,
       twitch_username: botUser.login,
