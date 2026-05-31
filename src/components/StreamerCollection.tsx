@@ -4,6 +4,7 @@ import { getTranslations } from "next-intl/server";
 import Stats from "./Stats";
 import SortedCardGrid from "./SortedCardGrid";
 import CollectionProgress from "./CollectionProgress";
+import DuplicateCardExchange from "./DuplicateCardExchange";
 import type { Streamer, Card } from "@/types/database";
 
 export interface StreamerCollectionCard extends Card {
@@ -33,6 +34,15 @@ interface StreamerCollectionProps {
   visibleCardTypes: number;
   // 過去のコンプリート達成履歴（デフォルト空配列で後方互換）
   completionHistory?: { total_cards: number; completed_at: string }[];
+  cardStoneBalance?: number;
+  duplicateExchangeCards?: Array<{
+    id: string;
+    name: string;
+    rarity: StreamerCollectionCard["rarity"];
+    count: number;
+    collectionNumber?: number;
+    stoneValue: number;
+  }>;
   // 未所持カードの画像/説明を隠すか（プレースホルダー表示にするか）
   // Issue #395: streamer の show_unowned_card_details=false のときに true。
   // When true, unowned cards are rendered as placeholders (no image / no description).
@@ -52,6 +62,8 @@ export default async function StreamerCollection({
   progress,
   visibleCardTypes,
   completionHistory = [],
+  cardStoneBalance = 0,
+  duplicateExchangeCards = [],
   hideUnownedDetails = false,
 }: StreamerCollectionProps) {
   const t = await getTranslations("collection");
@@ -89,6 +101,24 @@ export default async function StreamerCollection({
         {/* Stats */}
         <Stats stats={stats} />
         <CollectionProgress owned={progress.owned} total={progress.total} completionHistory={completionHistory} />
+        <DuplicateCardExchange
+          balance={cardStoneBalance}
+          cards={duplicateExchangeCards}
+          translations={{
+            title: t("duplicateExchange.title"),
+            balance: t("duplicateExchange.balance", { count: "{count}" }),
+            empty: t("duplicateExchange.empty"),
+            description: t("duplicateExchange.description"),
+            exchange: t("duplicateExchange.exchange"),
+            exchanging: t("duplicateExchange.exchanging"),
+            cardNumberTemplate: t("cardNumber"),
+            duplicateCountTemplate: t("duplicateExchange.duplicateCount", { count: "{count}" }),
+            stoneValueTemplate: t("duplicateExchange.stoneValue", { count: "{count}" }),
+            confirmTemplate: t("duplicateExchange.confirmMessage", { name: "{name}", count: "{count}" }),
+            successTemplate: t("duplicateExchange.success", { count: "{count}" }),
+            errorFallback: t("duplicateExchange.errorFallback"),
+          }}
+        />
 
         {/* Cards */}
         {/* カード一覧 */}
