@@ -4,6 +4,7 @@ import { getTranslations } from "next-intl/server";
 import type { Streamer, Card } from "@/types/database";
 import { getRarityDisplayInfo } from "@/lib/rarity";
 import type { Rarity } from "@/types/database";
+import { isVideoCard } from "@/lib/card-media";
 
 /**
  * Get rarity information (label and color) for a given rarity value.
@@ -57,17 +58,28 @@ export default async function CardDetail({ card, streamer }: CardDetailProps) {
           {/* カード画像 - トリミングなしで表示 */}
           {card.image_url ? (
             <div className="relative w-full flex justify-center bg-gray-700">
-              {/* unoptimized: Images are already optimized during upload */}
-              {/* unoptimized: アップロード時に既に最適化済み */}
-              <Image
-                src={card.image_url}
-                alt={card.name}
-                width={800}
-                height={1118}
-                className="w-full h-auto max-h-[70vh] object-contain"
-                priority
-                unoptimized
-              />
+              {isVideoCard(card.media_type) ? (
+                <video
+                  src={card.image_url}
+                  className="w-full h-auto max-h-[70vh] object-contain"
+                  controls
+                  playsInline
+                  preload="metadata"
+                  aria-label={card.name}
+                />
+              ) : (
+                // unoptimized: Images are already optimized during upload
+                // unoptimized: アップロード時に既に最適化済み
+                <Image
+                  src={card.image_url}
+                  alt={card.name}
+                  width={800}
+                  height={1118}
+                  className="w-full h-auto max-h-[70vh] object-contain"
+                  priority
+                  unoptimized
+                />
+              )}
             </div>
           ) : (
             <div className="w-full aspect-square bg-gray-700 flex items-center justify-center text-gray-500">

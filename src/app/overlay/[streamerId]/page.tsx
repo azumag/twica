@@ -6,6 +6,7 @@ import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
+import { isVideoCard } from "@/lib/card-media";
 import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
@@ -39,7 +40,7 @@ interface OverlayPollingEvent {
   eventId: string | null;
   redeemedAt: string;
   userTwitchUsername: string;
-  card: Pick<Card, "id" | "name" | "description" | "image_url" | "rarity">;
+  card: Pick<Card, "id" | "name" | "description" | "image_url" | "media_type" | "rarity">;
 }
 
 function fetchJsonWithXhrFallback<T>(url: string): Promise<T> {
@@ -371,7 +372,15 @@ export default function OverlayPage() {
     isDisplayingRef.current = true;
 
     // 画像のアスペクト比をチェック（autoPortraitモード用）
-    await checkImageAspectRatio(next.card.image_url);
+    // 動画カードの場合は new window.Image() ではアスペクト比を取得できないため、
+    // 横長扱いでデフォルトレイアウトを採用しスキップする。
+    // (PR #449 レビュー指摘: 動画URLでも Image() を呼んでしまい onerror パスでフラグだけリセットされていた)
+    if (isVideoCard(next.card.media_type)) {
+      setIsPortraitImage(false);
+      setIsSmallImage(false);
+    } else {
+      await checkImageAspectRatio(next.card.image_url);
+    }
 
     setSparklePositions(generateSparklePositions());
     setResult(next);
@@ -710,14 +719,27 @@ export default function OverlayPage() {
 
             {/* 画像 */}
             {result.card.image_url ? (
-              <Image
-                src={result.card.image_url}
-                alt={result.card.name}
-                width={shouldUseSmallMode ? 192 : 320}
-                height={shouldUseSmallMode ? 268 : 448}
-                className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
-                unoptimized
-              />
+              isVideoCard(result.card.media_type) ? (
+                <video
+                  src={result.card.image_url}
+                  className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
+                  autoPlay
+                  muted
+                  playsInline
+                  loop
+                  preload="metadata"
+                  aria-label={result.card.name}
+                />
+              ) : (
+                <Image
+                  src={result.card.image_url}
+                  alt={result.card.name}
+                  width={shouldUseSmallMode ? 192 : 320}
+                  height={shouldUseSmallMode ? 268 : 448}
+                  className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
+                  unoptimized
+                />
+              )
             ) : (
               <div className={`flex items-center justify-center bg-gray-700 rounded-lg ${shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80"}`}>
                 <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
@@ -805,14 +827,27 @@ export default function OverlayPage() {
                 <div className="aspect-square bg-gray-600">
                   {result.card.image_url ? (
                     // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
-                    <Image
-                      src={result.card.image_url}
-                      alt={result.card.name}
-                      width={shouldUseSmallMode ? 180 : 300}
-                      height={shouldUseSmallMode ? 180 : 300}
-                      className="w-full h-full object-cover"
-                      unoptimized
-                    />
+                    isVideoCard(result.card.media_type) ? (
+                      <video
+                        src={result.card.image_url}
+                        className="w-full h-full object-cover"
+                        autoPlay
+                        muted
+                        playsInline
+                        loop
+                        preload="metadata"
+                        aria-label={result.card.name}
+                      />
+                    ) : (
+                      <Image
+                        src={result.card.image_url}
+                        alt={result.card.name}
+                        width={shouldUseSmallMode ? 180 : 300}
+                        height={shouldUseSmallMode ? 180 : 300}
+                        className="w-full h-full object-cover"
+                        unoptimized
+                      />
+                    )
                   ) : (
                     <div className="flex h-full items-center justify-center">
                       <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>

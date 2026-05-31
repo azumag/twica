@@ -7,6 +7,7 @@ export type Json =
   | Json[]
 
 export type Rarity = string
+export type CardMediaType = 'image' | 'video'
 export type SkillType = 'attack' | 'defense' | 'heal' | 'special'
 export type BattleResult = 'win' | 'lose' | 'draw'
 export type ChatSenderMode = 'streamer' | 'custom_bot' | 'official_bot'
@@ -192,6 +193,7 @@ export interface Database {
           name: string
           description: string | null
           image_url: string | null
+          media_type?: CardMediaType
           rarity: Rarity
           card_number: number | null
           drop_rate: number
@@ -214,6 +216,7 @@ export interface Database {
           name: string
           description?: string | null
           image_url?: string | null
+          media_type?: CardMediaType
           rarity?: Rarity
           card_number?: number | null
           drop_rate?: number
@@ -235,6 +238,7 @@ export interface Database {
           name?: string
           description?: string | null
           image_url?: string | null
+          media_type?: CardMediaType
           rarity?: Rarity
           card_number?: number | null
           drop_rate?: number

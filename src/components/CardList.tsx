@@ -1,11 +1,10 @@
 "use client";
 
-import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
-import { getOptimizedImageUrl } from "@/lib/image-utils";
 import ExpandableDescription from "./ExpandableDescription";
+import CardMedia from "./CardMedia";
 
 interface CardListProps {
   // Array of cards to display
@@ -134,27 +133,29 @@ export default function CardList({
                               className="block h-full w-full cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
                               aria-label={t("actions.enlargeImage", { name: card.name })}
                             >
-                              <Image
-                                src={getOptimizedImageUrl(imageUrl, "icon")}
+                              <CardMedia
+                                url={imageUrl}
+                                mediaType={card.media_type}
                                 alt={card.name}
                                 width={48}
                                 height={48}
                                 className="h-full w-full object-cover"
                                 priority={isPriority}
-                                unoptimized
+                                imageVariant="icon"
                               />
                             </button>
                           );
                         })()
                       ) : (
-                        <Image
-                          src={getOptimizedImageUrl(card.image_url, "icon")}
+                        <CardMedia
+                          url={card.image_url}
+                          mediaType={card.media_type}
                           alt={card.name}
                           width={48}
                           height={48}
                           className="h-full w-full object-cover"
                           priority={isPriority}
-                          unoptimized
+                          imageVariant="icon"
                         />
                       )
                     ) : (

@@ -4,7 +4,8 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
   validateCardName,
   validateCardDescription,
-  validateImageUrl,
+  validateCardMediaType,
+  validateCardMediaUrl,
   validateRarity,
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
@@ -18,6 +19,9 @@ import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { normalizeCardMediaType } from "@/lib/card-media";
+import { countVideoCardsForStreamer, getVideoCardLimit } from "@/lib/card-video-limits";
+import { getUserPlan } from "@/lib/plan";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 function extractRarityWeights(streamers: unknown): Record<string, number> | null {
@@ -78,7 +82,8 @@ export async function PUT(
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber } = body;
+    const { name, description, imageUrl, mediaType, rarity, dropRate, isActive, intraRarityWeight, cardNumber } = body;
+    const normalizedMediaType = mediaType === undefined ? undefined : normalizeCardMediaType(mediaType);
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -100,11 +105,11 @@ export async function PUT(
       }
     }
 
-    if (imageUrl !== undefined) {
-      const imageUrlValidation = validateImageUrl(imageUrl)
-      if (!imageUrlValidation.valid) {
+    if (mediaType !== undefined) {
+      const mediaTypeValidation = validateCardMediaType(mediaType)
+      if (!mediaTypeValidation.valid) {
         return NextResponse.json(
-          { error: imageUrlValidation.error },
+          { error: mediaTypeValidation.error },
           { status: 400 }
         )
       }
@@ -152,12 +157,15 @@ export async function PUT(
 
     // Verify ownership and get current image_url for cleanup
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
+    // 必要なカラムだけを明示取得する（"*" は将来カラムが増えた時に転送量と RLS リスクを増やすため避ける）。
+    // media_type は動画カード判定に必要なため追加。
+    // (PR #449 レビュー指摘: select("*", ...) で従来の明示列リストから退化していた)
     const { data: card } = await supabaseAdmin
       .from("cards")
       // streamers の埋め込みは FK 制約名で一意化する: migration 00051 の
       // card_owner_stats が cards↔streamers を m2m にも見せ、ヒントなしの
       // streamers(...) は PGRST201 で失敗するため。
-      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, media_type, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
 
@@ -165,6 +173,29 @@ export async function PUT(
 
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+    }
+
+    const effectiveMediaType = normalizedMediaType ?? normalizeCardMediaType(card.media_type);
+    if (imageUrl !== undefined || normalizedMediaType !== undefined) {
+      const mediaUrlValidation = validateCardMediaUrl(imageUrl ?? card.image_url, effectiveMediaType)
+      if (!mediaUrlValidation.valid) {
+        return NextResponse.json(
+          { error: mediaUrlValidation.error },
+          { status: 400 }
+        )
+      }
+    }
+
+    if (effectiveMediaType === "video" && normalizeCardMediaType(card.media_type) !== "video") {
+      const plan = await getUserPlan(session.twitchUserId);
+      const limit = getVideoCardLimit(plan);
+      const currentVideoCards = await countVideoCardsForStreamer(supabaseAdmin, card.streamer_id, id);
+      if (currentVideoCards >= limit) {
+        return NextResponse.json(
+          { error: ERROR_MESSAGES.VIDEO_CARD_LIMIT_EXCEEDED, limit, plan },
+          { status: 403 }
+        );
+      }
     }
 
     const rarityWeights = extractRarityWeights(card.streamers);
@@ -186,6 +217,7 @@ export async function PUT(
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
+    if (normalizedMediaType !== undefined) updateData.media_type = normalizedMediaType;
     if (rarity !== undefined) updateData.rarity = typeof rarity === "string" ? rarity.trim() : rarity;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
@@ -245,6 +277,11 @@ export async function PUT(
       updatedCard = retryResult.data;
       error = retryResult.error;
     }
+
+    // NOTE: 旧コードには「media_type 列が無く、かつ image 指定時のみ」フォールバック更新する分岐があったが、
+    // video 側では同じ分岐が無く 500 エラーになっていた。中途半端なフォールバックは
+    // ユーザー体験のばらつきと保守性低下を招くため削除し、media_type マイグレーション必須を明確化する。
+    // (PR #449 レビュー指摘: video 側 INSERT/UPDATE でフォールバック未実装による 500、YAGNI 原則)
 
     if (error) {
       if (isCardNumberConflictError(error)) {

@@ -74,6 +74,7 @@ export interface GachaBroadcastPayload {
     name: string
     description: string | null
     image_url: string | null
+    media_type?: 'image' | 'video'
     rarity: string
   }
   cards?: Array<{
