@@ -270,18 +270,24 @@ export class GachaService {
   ): Promise<Result<GachaResult>> {
     try {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
-      let { data: streamer, error: streamerError } = await this.supabase
-        .from('streamers')
-        .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until')
-        .eq('twitch_user_id', event.broadcaster_user_id)
-        .maybeSingle()
+      let { data: streamer, error: streamerError } = await withRetry(
+        () => this.supabase
+          .from('streamers')
+          .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until')
+          .eq('twitch_user_id', event.broadcaster_user_id)
+          .maybeSingle(),
+        'gacha:executeGachaForEventSub:streamer',
+      )
 
       if (isStreamerSettingsSchemaError(streamerError)) {
-        const fallbackResult = await this.supabase
-          .from('streamers')
-          .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
-          .eq('twitch_user_id', event.broadcaster_user_id)
-          .maybeSingle()
+        const fallbackResult = await withRetry(
+          () => this.supabase
+            .from('streamers')
+            .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
+            .eq('twitch_user_id', event.broadcaster_user_id)
+            .maybeSingle(),
+          'gacha:executeGachaForEventSub:streamer:fallback',
+        )
         streamer = fallbackResult.data
           ? {
               ...fallbackResult.data,
@@ -293,7 +299,11 @@ export class GachaService {
         streamerError = fallbackResult.error
       }
 
-      if (streamerError || !streamer) {
+      if (streamerError) {
+        return err(`Database error fetching streamer: ${streamerError.message}`)
+      }
+
+      if (!streamer) {
         return err('Streamer not found')
       }
 
