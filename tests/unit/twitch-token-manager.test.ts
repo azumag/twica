@@ -14,8 +14,6 @@ type MockSupabaseAdmin = {
   single?: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
   insert: ReturnType<typeof vi.fn>;
-  upsert?: ReturnType<typeof vi.fn>;
-  delete?: ReturnType<typeof vi.fn>;
 };
 
 describe('Twitch Token Manager', () => {
@@ -29,10 +27,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'valid-token',
             twitch_refresh_token: 'refresh-token',
@@ -42,7 +37,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -56,16 +50,12 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: null,
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -80,16 +70,12 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: null,
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -109,7 +95,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -123,10 +108,6 @@ describe('Twitch Token Manager', () => {
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
         maybeSingle: vi.fn()
-          .mockResolvedValueOnce({
-            data: null,
-            error: null,
-          })
           .mockResolvedValueOnce({
             status: 502,
             error: { code: '502', message: 'error code: 502' },
@@ -147,7 +128,7 @@ describe('Twitch Token Manager', () => {
 
       const token = await getTwitchAccessToken('123456789');
       expect(token).toBe('valid-token-after-retry');
-      expect(mockSupabaseAdmin.maybeSingle).toHaveBeenCalledTimes(3);
+      expect(mockSupabaseAdmin.maybeSingle).toHaveBeenCalledTimes(2);
     });
 
     it('期限切れのトークンを更新する', async () => {
@@ -156,9 +137,6 @@ describe('Twitch Token Manager', () => {
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
         maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
           data: {
             twitch_access_token: 'expired-token',
             twitch_refresh_token: 'refresh-token',
@@ -168,7 +146,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -195,7 +172,6 @@ describe('Twitch Token Manager', () => {
         single: vi.fn().mockResolvedValue({ data: null, error: null }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -208,20 +184,13 @@ describe('Twitch Token Manager', () => {
         scope: ['user:read:email'],
       });
 
-      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('twitch_oauth_tokens');
-      expect(mockSupabaseAdmin.upsert).toHaveBeenCalledWith(
+      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('users');
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          twitch_user_id: '123456789',
-          encrypted_access_token: expect.stringMatching(/^v1:/),
-          encrypted_refresh_token: expect.stringMatching(/^v1:/),
-        }),
-        { onConflict: 'twitch_user_id' },
+          twitch_access_token: 'access-token',
+          twitch_refresh_token: 'refresh-token',
+        })
       );
-      expect(mockSupabaseAdmin.update).toHaveBeenCalledWith({
-        twitch_access_token: null,
-        twitch_refresh_token: null,
-        twitch_token_expires_at: null,
-      });
     });
   });
 
@@ -234,7 +203,6 @@ describe('Twitch Token Manager', () => {
         single: vi.fn().mockResolvedValue({ data: null, error: null }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        delete: vi.fn().mockReturnThis(),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -242,8 +210,6 @@ describe('Twitch Token Manager', () => {
       await deleteTwitchTokens('123456789');
 
       expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('users');
-      expect(mockSupabaseAdmin.from).toHaveBeenCalledWith('twitch_oauth_tokens');
-      expect(mockSupabaseAdmin.delete).toHaveBeenCalled();
       expect(mockSupabaseAdmin.update).toHaveBeenCalledWith(
         expect.objectContaining({
           twitch_access_token: null,
@@ -526,10 +492,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'valid-token',
             twitch_token_expires_at: new Date(Date.now() + 3600_000).toISOString(),
@@ -538,7 +501,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
 
@@ -561,10 +523,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'expired-token',
             twitch_token_expires_at: new Date(Date.now() - 1000).toISOString(),
@@ -573,7 +532,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
 
@@ -587,10 +545,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'revoked-token',
             twitch_token_expires_at: new Date(Date.now() + 3600_000).toISOString(),
@@ -599,7 +554,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
 
@@ -618,10 +572,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'token-no-expiry',
             twitch_token_expires_at: null,
@@ -630,7 +581,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
 
@@ -650,10 +600,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'valid-token',
             twitch_token_expires_at: new Date(Date.now() + 3600_000).toISOString(),
@@ -662,7 +609,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
 
@@ -681,16 +627,12 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: null,
           error: null,
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
 
@@ -705,13 +647,12 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: null,
           error: { code: 'PGRST000', message: 'Connection failed' },
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
 
@@ -727,10 +668,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'expired-token',
             twitch_refresh_token: 'refresh-token',
@@ -740,7 +678,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -755,37 +692,43 @@ describe('Twitch Token Manager', () => {
       const token = await getTwitchAccessToken('123456789');
       expect(token).toBe('new-token');
 
+      // saveTwitchScopes が呼ばれることを確認（update が2回呼ばれる: トークン保存 + スコープ保存）
+      // from が 'users' テーブルに対して呼ばれている
       expect(mockSupabaseAdmin.update).toHaveBeenCalledWith({
         twitch_scopes: ['user:read:email', 'user:write:chat'],
       });
     });
 
     it('saveTwitchScopes失敗時もトークンが正常に返る', async () => {
+      // 1回目のeqでトークン保存成功、2回目でスコープ保存失敗
+      let eqCallCount = 0;
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
-        eq: vi.fn()
-          .mockReturnValueOnce({
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: null,
-              error: null,
-            }),
-          })
-          .mockReturnValueOnce({
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: {
-                twitch_access_token: 'expired-token',
-                twitch_refresh_token: 'refresh-token',
-                twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
-              },
-              error: null,
-            }),
-          })
-          .mockReturnValueOnce({ error: null })
-          .mockReturnValueOnce({ error: { code: 'PGRST000', message: 'Connection failed' } }),
+        eq: vi.fn().mockImplementation(() => {
+          eqCallCount++;
+          if (eqCallCount === 1) {
+            // getTwitchAccessToken の select チェーン
+            return {
+              maybeSingle: vi.fn().mockResolvedValue({
+                data: {
+                  twitch_access_token: 'expired-token',
+                  twitch_refresh_token: 'refresh-token',
+                  twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+                },
+                error: null,
+              }),
+            };
+          }
+          if (eqCallCount === 2) {
+            // refreshTwitchAccessToken の update チェーン → 成功
+            return { error: null };
+          }
+          // saveTwitchScopes の update チェーン → 失敗
+          return { error: { code: 'PGRST000', message: 'Connection failed' } };
+        }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -809,10 +752,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'expired-token',
             twitch_refresh_token: 'refresh-token',
@@ -822,7 +762,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -850,10 +789,7 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: null,
-          error: null,
-        }).mockResolvedValueOnce({
+        maybeSingle: vi.fn().mockResolvedValue({
           data: {
             twitch_access_token: 'expired-token',
             twitch_refresh_token: 'refresh-token',
@@ -863,7 +799,6 @@ describe('Twitch Token Manager', () => {
         }),
         update: updateMock,
         insert: vi.fn().mockResolvedValue({ error: null }),
-        upsert: vi.fn().mockResolvedValue({ error: null }),
       };
 
       vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
@@ -877,13 +812,13 @@ describe('Twitch Token Manager', () => {
 
       await getTwitchAccessToken('123456789');
 
-      // update は旧usersトークン列のクリアだけ（スコープ保存は呼ばれない）
+      // update はトークン保存の1回だけ（スコープ保存は呼ばれない）
       expect(updateMock).toHaveBeenCalledTimes(1);
-      expect(updateMock).toHaveBeenCalledWith({
-        twitch_access_token: null,
-        twitch_refresh_token: null,
-        twitch_token_expires_at: null,
-      });
+      expect(updateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          twitch_access_token: 'new-token',
+        })
+      );
     });
   });
 });

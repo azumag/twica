@@ -9,7 +9,6 @@ export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_TWITCH_CLIENT_ID', required: true },
   { name: 'TWITCH_CLIENT_SECRET', required: true },
   { name: 'TWITCH_EVENTSUB_SECRET', required: true },
-  { name: 'TWITCH_TOKEN_ENCRYPTION_KEY', required: true },
   { name: 'NEXT_PUBLIC_SUPABASE_URL', required: true },
   // BLOB_READ_WRITE_TOKEN は Vercel Blob 用で、Cloudflare R2 ネイティブバインディング移行後は不要
   { name: 'CSRF_TOKEN_SALT', required: true },

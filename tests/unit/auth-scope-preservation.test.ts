@@ -79,10 +79,8 @@ vi.mock('@/lib/twitch/auth', () => ({
 
 // token-manager
 const mockSaveTwitchScopes = vi.fn()
-const mockSaveTwitchTokens = vi.fn()
 vi.mock('@/lib/twitch/token-manager', () => ({
   saveTwitchScopes: (...args: unknown[]) => mockSaveTwitchScopes(...args),
-  saveTwitchTokens: (...args: unknown[]) => mockSaveTwitchTokens(...args),
 }))
 
 // rate-limit
@@ -328,7 +326,6 @@ describe('Auth scope preservation: callback route', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     mockSaveTwitchScopes.mockResolvedValue(undefined)
-    mockSaveTwitchTokens.mockResolvedValue(undefined)
 
     const auth = await import('@/lib/twitch/auth')
     exchangeCodeForTokens = vi.mocked(auth.exchangeCodeForTokens)
