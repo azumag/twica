@@ -653,64 +653,6 @@ export interface Database {
           completed_at?: string
         }
       }
-      card_stone_balances: {
-        Row: {
-          id: string
-          user_id: string
-          streamer_id: string
-          balance: number
-          created_at: string
-          updated_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          streamer_id: string
-          balance?: number
-          created_at?: string
-          updated_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          streamer_id?: string
-          balance?: number
-          created_at?: string
-          updated_at?: string
-        }
-      }
-      card_stone_transactions: {
-        Row: {
-          id: string
-          user_id: string
-          streamer_id: string
-          card_id: string | null
-          user_card_id: string | null
-          amount: number
-          type: 'duplicate_exchange'
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          streamer_id: string
-          card_id?: string | null
-          user_card_id?: string | null
-          amount: number
-          type: 'duplicate_exchange'
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          streamer_id?: string
-          card_id?: string | null
-          user_card_id?: string | null
-          amount?: number
-          type?: 'duplicate_exchange'
-          created_at?: string
-        }
-      }
       // ストリーマーごとのストレージ容量ボーナステーブル
       // キャンペーンやプロモーション等で追加容量を付与するために使用
       streamer_storage_bonus: {
@@ -767,13 +709,6 @@ export interface Database {
         }
         Returns: Json
       }
-      exchange_duplicate_card_for_stones: {
-        Args: {
-          p_twitch_user_id: string
-          p_card_id: string
-        }
-        Returns: Json
-      }
     }
     Enums: {
       [_ in never]: never
@@ -786,8 +721,6 @@ export type Streamer = Database['public']['Tables']['streamers']['Row']
 export type Card = Database['public']['Tables']['cards']['Row']
 export type User = Database['public']['Tables']['users']['Row']
 export type UserCard = Database['public']['Tables']['user_cards']['Row']
-export type CardStoneBalance = Database['public']['Tables']['card_stone_balances']['Row']
-export type CardStoneTransaction = Database['public']['Tables']['card_stone_transactions']['Row']
 export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
 export type Battle = Database['public']['Tables']['battles']['Row'] & {
   opponent_card_data?: OpponentCardData | null

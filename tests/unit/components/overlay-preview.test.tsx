@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import OverlayPreview from '@/components/OverlayPreview'
@@ -60,35 +60,13 @@ const renderWithIntl = (component: React.ReactElement) => {
   )
 }
 
-function installLocalStorageMock() {
-  const store = new Map<string, string>()
-  Object.defineProperty(window, 'localStorage', {
-    configurable: true,
-    value: {
-      get length() {
-        return store.size
-      },
-      clear: vi.fn(() => store.clear()),
-      getItem: vi.fn((key: string) => store.get(key) ?? null),
-      key: vi.fn((index: number) => Array.from(store.keys())[index] ?? null),
-      removeItem: vi.fn((key: string) => {
-        store.delete(key)
-      }),
-      setItem: vi.fn((key: string, value: string) => {
-        store.set(key, String(value))
-      }),
-    },
-  })
-}
-
 describe('OverlayPreview', () => {
   beforeEach(() => {
-    installLocalStorageMock()
-    window.localStorage.clear()
+    localStorage.clear()
   })
 
   it('localStorage に保存されたオーバーレイ設定を復元する', async () => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
       imageOnly: true,
       autoPortrait: false,
       effects: false,
@@ -134,7 +112,7 @@ describe('OverlayPreview', () => {
     })
 
     await waitFor(() => {
-      const savedOptions = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
+      const savedOptions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
       expect(savedOptions).toMatchObject({
         imageOnly: true,
         autoPortrait: true,
