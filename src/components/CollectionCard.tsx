@@ -1,5 +1,6 @@
+import Image from "next/image";
 import Link from "next/link";
-import CardMedia from "./CardMedia";
+import { getOptimizedImageUrl } from "@/lib/image-utils";
 
 /**
  * Props for the CollectionCard component
@@ -16,9 +17,8 @@ interface CollectionCardProps {
   // 表示するカード名
   name: string;
   // Card image URL (optional)
-  // カード画像/動画URL（任意）
+  // カード画像URL（任意）
   imageUrl: string | null;
-  mediaType?: string | null;
   // Rarity display info (label and color class)
   // レアリティ表示情報（ラベルとカラークラス）
   rarityInfo: {
@@ -64,7 +64,6 @@ export default function CollectionCard({
   streamerId,
   name,
   imageUrl,
-  mediaType,
   rarityInfo,
   collectionNumberLabel,
   count,
@@ -132,15 +131,14 @@ export default function CollectionCard({
       {/* All cards use the same square aspect ratio with object-cover for consistency */}
       <div className="aspect-square bg-gray-600">
         {imageUrl ? (
-          <CardMedia
-            url={imageUrl}
-            mediaType={mediaType}
+          <Image
+            src={getOptimizedImageUrl(imageUrl, "thumbnail")}
             alt={name}
             width={300}
             height={300}
             className={`w-full h-full object-cover ${isOwned ? "" : "grayscale opacity-50"} ${isInactive ? "opacity-80 saturate-75" : ""}`}
             priority={priority}
-            imageVariant="thumbnail"
+            unoptimized
           />
         ) : (
           <div

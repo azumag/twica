@@ -124,10 +124,6 @@ export async function POST(request: NextRequest) {
             name: card.name,
             description: card.description,
             image_url: card.image_url,
-            // 動画カードを判別するためにメディアタイプも含める。
-            // OBSオーバーレイ側で <video> と <img> を切り替えるために必須。
-            // (PR #449 レビュー指摘: media_type 欠落により video が画像扱いになる問題)
-            media_type: card.media_type ?? undefined,
             rarity: card.rarity,
           },
           userTwitchUsername,

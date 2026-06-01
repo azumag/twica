@@ -20,7 +20,6 @@ interface OverlayHistoryCard {
   name: string;
   description: string | null;
   image_url: string | null;
-  media_type?: "image" | "video";
   rarity: Rarity;
 }
 
@@ -122,7 +121,7 @@ export async function GET(
         supabaseAdmin
           .from("gacha_history")
           .select(
-            "id, event_id, redeemed_at, user_twitch_username, cards(id, name, description, image_url, media_type, rarity)"
+            "id, event_id, redeemed_at, user_twitch_username, cards(id, name, description, image_url, rarity)"
           )
           .eq("streamer_id", streamerId)
           .gt("redeemed_at", since)

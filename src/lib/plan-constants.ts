@@ -53,12 +53,3 @@ export const PLAN_PRIORITY: Record<PlanType, number> = {
   patron: 2,
   twitch_sub: 2,
 }
-
-// プランごとの動画カード枠数
-// basic: 数枠まで無料, support以上: 支援者向けに追加枠
-export const PLAN_VIDEO_CARD_LIMIT: Record<PlanType, number> = {
-  basic: 3,
-  support: 10,
-  patron: 30,
-  twitch_sub: 30,
-}
