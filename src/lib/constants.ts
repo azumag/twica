@@ -259,10 +259,7 @@ export const ERROR_MESSAGES = {
   CARD_NAME_TOO_LONG: 'Card name must be between 1 and 100 characters',
   DESCRIPTION_TOO_LONG: `Description must not exceed ${CARD_DESCRIPTION_MAX_CHARACTERS} characters`,
   INVALID_IMAGE_URL: 'Invalid image URL format',
-  INVALID_MEDIA_TYPE: 'Invalid card media type',
-  INVALID_VIDEO_URL: 'Invalid video URL. Use an HTTPS MP4, WebM, MOV, or M4V URL.',
   INVALID_RARITY: 'Invalid rarity value. Use 1-40 non-control characters.',
-  VIDEO_CARD_LIMIT_EXCEEDED: 'Video card limit exceeded for your current plan.',
 
   // Rate limit errors
   RATE_LIMIT_EXCEEDED: 'Too many requests. Please try again later.',

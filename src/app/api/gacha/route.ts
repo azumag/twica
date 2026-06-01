@@ -114,7 +114,6 @@ export async function POST(request: NextRequest) {
         name: result.data.card.name,
         description: result.data.card.description,
         image_url: result.data.card.image_url,
-        media_type: result.data.card.media_type,
         rarity: result.data.card.rarity,
       },
       userTwitchUsername: result.data.userTwitchUsername,

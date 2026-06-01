@@ -5,8 +5,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
   validateCardName,
   validateCardDescription,
-  validateCardMediaType,
-  validateCardMediaUrl,
+  validateImageUrl,
   validateRarity,
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
@@ -20,9 +19,6 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
-import { normalizeCardMediaType } from "@/lib/card-media";
-import { countVideoCardsForStreamer, getVideoCardLimit } from "@/lib/card-video-limits";
-import { getUserPlan } from "@/lib/plan";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -84,8 +80,7 @@ export async function POST(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { streamerId, name, description, imageUrl, mediaType, rarity, dropRate, intraRarityWeight, cardNumber } = body;
-    const normalizedMediaType = normalizeCardMediaType(mediaType);
+    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber } = body;
 
     const nameValidation = validateCardName(name)
     if (!nameValidation.valid) {
@@ -103,18 +98,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const mediaTypeValidation = validateCardMediaType(mediaType)
-    if (!mediaTypeValidation.valid) {
+    const imageUrlValidation = validateImageUrl(imageUrl)
+    if (!imageUrlValidation.valid) {
       return NextResponse.json(
-        { error: mediaTypeValidation.error },
-        { status: 400 }
-      )
-    }
-
-    const mediaUrlValidation = validateCardMediaUrl(imageUrl, normalizedMediaType)
-    if (!mediaUrlValidation.valid) {
-      return NextResponse.json(
-        { error: mediaUrlValidation.error },
+        { error: imageUrlValidation.error },
         { status: 400 }
       )
     }
@@ -167,18 +154,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    if (normalizedMediaType === "video") {
-      const plan = await getUserPlan(session.twitchUserId);
-      const limit = getVideoCardLimit(plan);
-      const currentVideoCards = await countVideoCardsForStreamer(supabaseAdmin, streamerId);
-      if (currentVideoCards >= limit) {
-        return NextResponse.json(
-          { error: ERROR_MESSAGES.VIDEO_CARD_LIMIT_EXCEEDED, limit, plan },
-          { status: 403 }
-        );
-      }
-    }
-
     // NOTE: Drop rate validation removed because the system uses relative weights
     // The actual probability is calculated as: this_card_weight / total_weights
     // So there's no need to limit the sum to 100% - weights are relative, not absolute percentages
@@ -192,7 +167,6 @@ export async function POST(request: NextRequest) {
       name,
       description,
       image_url: imageUrl,
-      media_type: normalizedMediaType,
       rarity: normalizedRarity,
       card_number: cardNumber ?? null,
       drop_rate: dropRate,
@@ -217,12 +191,6 @@ export async function POST(request: NextRequest) {
       card = retryResult.data;
       error = retryResult.error;
     }
-
-    // NOTE: 旧コードには「media_type 列が無く、かつ image 指定時のみ」フォールバック挿入する分岐があったが、
-    // video 側ではフォールバックが無く 500 エラーになっていた。
-    // 中途半端なフォールバックを残すと「画像ならOK・動画ならNG」という未マイグレーション環境特有の
-    // 一貫性のない挙動を生み、デバッグも困難になるため削除し、media_type マイグレーション必須を明確化する。
-    // (PR #449 レビュー指摘: video 側 INSERT 失敗、YAGNI 原則で過剰なフォールバックを除去)
 
     if (error) {
       if (isCardNumberConflictError(error)) {
