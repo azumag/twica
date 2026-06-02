@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import {
   AdvancedSettings,
+  AdvancedSettingsLayout,
   SettingsViewModeProvider,
   SettingsViewToggle,
   __resetSettingsViewModeSubscribersForTest,
@@ -13,6 +14,9 @@ const STORAGE_KEY = 'twica.settingsViewMode'
 
 const messages = {
   settingsPage: {
+    advanced: {
+      navAria: '詳細設定ナビゲーション',
+    },
     viewMode: {
       simple: 'シンプル',
       advanced: '詳細',
@@ -209,6 +213,27 @@ describe('SettingsViewMode', () => {
       const wrapper = screen.getByTestId('advanced-settings')
       expect(wrapper).not.toHaveAttribute('hidden')
       expect(wrapper).not.toHaveAttribute('aria-hidden')
+    })
+  })
+
+  describe('AdvancedSettingsLayout', () => {
+    it('初期表示ではactive sectionだけをmountし、選択後は訪問済みsectionを保持する', () => {
+      renderWithProvider(
+        <AdvancedSettingsLayout
+          sections={[
+            { id: 'first', label: 'First', content: <div data-testid="first-panel">first</div> },
+            { id: 'second', label: 'Second', content: <div data-testid="second-panel">second</div> },
+          ]}
+        />
+      )
+
+      expect(screen.getByTestId('first-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('second-panel')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: /Second/ }))
+
+      expect(screen.getByTestId('first-panel').parentElement).toHaveAttribute('hidden')
+      expect(screen.getByTestId('second-panel')).toBeInTheDocument()
     })
   })
 })

@@ -51,8 +51,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: [test, lint]
-    # lint がスキップされても build を実行（failure/cancelled 時は実行しない）
-    if: ${{ !failure() && !cancelled() }}
+    # Cloudflare Workers Builds handles app builds after cutover.
+    # Before cutover, keep this as the fallback build gate.
+    if: ${{ !failure() && !cancelled() && vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true' }}
 
     steps:
       - uses: actions/checkout@v4

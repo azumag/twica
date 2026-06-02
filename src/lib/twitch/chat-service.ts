@@ -41,6 +41,12 @@ export interface ChatMessagePlaceholders {
   // 複数枚ガチャ時のレアリティ別枚数（例: レアx3、コモンx3）
   // Rarity counts for multi-draw announcements (e.g. Rare x3, Common x3)
   rarityCounts?: string
+  // 複数枚ガチャで今回初めて獲得したカード名一覧（オプション）
+  // Newly obtained card names in the current multi-draw announcement (optional)
+  newCards?: string
+  // 複数枚ガチャで今回初めて獲得したカードの種類数（オプション）
+  // Count of newly obtained card types in the current multi-draw announcement (optional)
+  newCardCount?: number
   // カードのレアリティ（日本語または英語）
   // Card rarity (Japanese or English)
   rarity: string
@@ -348,6 +354,18 @@ export class TwitchChatService {
       message = message.replace(/\{rarityCounts\}/g, placeholders.rarityCounts)
     } else {
       message = message.replace(/\{rarityCounts\}/g, '')
+    }
+
+    if (placeholders.newCards) {
+      message = message.replace(/\{newCards\}/g, placeholders.newCards)
+    } else {
+      message = message.replace(/\{newCards\}/g, '')
+    }
+
+    if (placeholders.newCardCount !== undefined) {
+      message = message.replace(/\{newCardCount\}/g, String(placeholders.newCardCount))
+    } else {
+      message = message.replace(/\{newCardCount\}/g, '')
     }
 
     // 連続する空白を1つにまとめ、前後の空白を削除

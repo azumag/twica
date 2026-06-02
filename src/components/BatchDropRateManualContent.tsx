@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES } from "@/lib/constants";
+import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 
@@ -264,8 +265,7 @@ export default function BatchDropRateManualContent({
     }
   };
 
-  const getRarityInfo = (rarity: Rarity) =>
-    RARITIES.find((r) => r.value === rarity) || RARITIES[0];
+  const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={handleClose}>
@@ -371,7 +371,7 @@ export default function BatchDropRateManualContent({
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium text-white truncate">{card.name}</p>
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.color}`}>
-                          {tRarity(card.rarity)}
+                          {formatRarityLabel(card.rarity, tRarity)}
                         </span>
                       </div>
                     </div>
@@ -423,7 +423,7 @@ export default function BatchDropRateManualContent({
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-3">
                         <span className={`rounded-full px-3 py-1 text-sm font-medium text-white ${rarityConfig.color}`}>
-                          {tRarity(rarity)}
+                          {formatRarityLabel(rarity, tRarity)}
                         </span>
                         <span className="text-sm text-gray-400">
                           {stats.cards.length} {t("batchDropRate.cardsCount")}
