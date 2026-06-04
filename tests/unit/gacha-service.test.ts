@@ -432,6 +432,66 @@ describe('GachaService.executeGachaForEventSub', () => {
     }
   })
 
+  it('streamer未登録: Streamer not foundを返す', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: null,
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: vi.fn(),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'missing-broadcaster',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'reward-1', cost: 100 },
+    }, 'event-missing-streamer')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Streamer not found')
+    }
+  })
+
+  it('streamer取得DBエラー: 未登録扱いにせずDBエラーを返す', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: null,
+      error: { message: 'permission denied', code: '42501' },
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: vi.fn(),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'reward-1', cost: 100 },
+    }, 'event-streamer-db-error')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Database error fetching streamer: permission denied')
+    }
+  })
+
   it('未設定のEventSub報酬はReward ID mismatchを返す', async () => {
     const streamerQuery = createMockQueryBuilder()
     ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
