@@ -69,3 +69,9 @@ supabase/.temp/
 # Analysis Dashboard
 analysis/node_modules
 analysis/dist
+
+# Codex agent worktrees / scratch clones (accidentally committed as gitlinks once;
+# see fix removing 22 stray submodule entries). These are local-only working dirs
+# and must never be tracked — they break Cloudflare Workers Builds' submodule clone.
+.codex-*/
+twica-maker-*/
