@@ -99,14 +99,13 @@ export class GachaService {
         return err('No cards available for this streamer')
       }
 
-      const cardIds = cards.map((card) => card.id)
       const limitedCards = cards.filter((card) => card.max_issuance_count !== null && card.max_issuance_count !== undefined)
       let availableCards = cards
       if (limitedCards.length > 0) {
         const { data: issuedRows, error: issuedError } = await this.supabase
           .from('user_cards')
           .select('card_id')
-          .in('card_id', cardIds)
+          .in('card_id', limitedCards.map((card) => card.id))
 
         if (issuedError) {
           return err(`Database error: ${issuedError.message}`)

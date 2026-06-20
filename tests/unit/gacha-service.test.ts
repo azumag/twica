@@ -269,6 +269,36 @@ describe('GachaService.executeGacha', () => {
     }))
   })
 
+  it('発行枚数チェッククエリは limitedCards のIDのみに絞り込む（無制限カードIDを含まない）', async () => {
+    const cardsQuery = createCardsQuery([
+      { id: 'unlimited-card', name: 'Unlimited', description: null, image_url: null, rarity: 'common', drop_rate: 1, max_issuance_count: null },
+      { id: 'limited-card', name: 'Limited', description: null, image_url: null, rarity: 'rare', drop_rate: 1, max_issuance_count: 5 },
+    ] as typeof testCards)
+    const userCardsQuery = createMockQueryBuilder()
+    const inSpy = vi.spyOn(userCardsQuery, 'in')
+    ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({ data: [], error: null })
+      return userCardsQuery
+    }
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'cards') return cardsQuery
+        if (table === 'user_cards') return userCardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: vi.fn().mockResolvedValue({ data: { is_duplicate: false, history_id: 'h-1' }, error: null }),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    await new GachaService().executeGacha('streamer-1', 'user-1', 'testuser', 'event-query-scope')
+
+    // user_cards の .in() は limitedCards の ID のみで呼ばれる
+    expect(inSpy).toHaveBeenCalledWith('card_id', ['limited-card'])
+    // 無制限カードの ID は含まれない
+    const calledIds = inSpy.mock.calls[0]?.[1] as string[]
+    expect(calledIds).not.toContain('unlimited-card')
+  })
+
   it('全カードが発行上限に達している場合はエラーを返す', async () => {
     const cardsQuery = createCardsQuery([
       { id: 'sold-out-card', name: 'Sold Out', description: null, image_url: null, rarity: 'legendary', drop_rate: 100, max_issuance_count: 1 },
