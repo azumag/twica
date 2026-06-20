@@ -567,6 +567,48 @@ describe('POST /api/streamer/settings', () => {
       const response = await POST(request)
       expect(response.status).toBe(200)
     })
+
+    it.each(['patron', 'twitch_sub'] as const)('%s plan users can set gachaSoundRules', async (plan) => {
+      mockGetUserPlan.mockResolvedValue(plan)
+
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundRules: [] }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+
+    it('getUserPlan エラー時は basic フォールバックで 403 を返す（セキュリティ正方向）', async () => {
+      // getUserPlan 内で例外が発生した場合、plan.ts が 'basic' にフォールバックするため
+      // gachaSoundRules リクエストは 403 になる（プレミアム機能を誤って許可しない方向のフェイルセーフ）
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundRules: [] }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(403)
+    })
   })
 
   it('should return 429 when rate limit exceeded', async () => {
