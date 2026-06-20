@@ -258,7 +258,7 @@ export default function GachaSoundSettings({
       )}
 
       {/* inert でキーボード・スクリーンリーダーも含めて完全に無効化 */}
-      <div className={`space-y-4 ${!isPremium ? "opacity-50" : ""}`} {...(!isPremium ? { inert: "" } : {})}>
+      <div className={`space-y-4 ${!isPremium ? "opacity-50" : ""}`} inert={!isPremium || undefined}>
         <div>
           <label className="mb-1 block text-sm text-gray-300">{t("form.selectFile")}</label>
           <input
