@@ -33,6 +33,7 @@ import {
 } from "@/lib/collections/collection-existence";
 import { isNewCardPackNameAdditionGated } from "@/lib/plan-gate";
 import { normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
+import { getUserPlan } from "@/lib/plan";
 
 
 type RarityWeightsValidation =
@@ -616,6 +617,12 @@ export async function POST(request: NextRequest) {
       updateData.gacha_sound_enabled = gachaSoundEnabled;
     }
     if (gachaSoundRules !== undefined) {
+      // 複数ルール・ターゲット指定は支援プラン以上限定の機能
+      // Multi-rule and targeting are premium features; reject for basic plan users
+      const plan = await getUserPlan(session.twitchUserId);
+      if (plan === "basic") {
+        return NextResponse.json({ error: ERROR_MESSAGES.PLAN_UPGRADE_REQUIRED }, { status: 403 });
+      }
       const rules = normalizeGachaSoundRules(gachaSoundRules);
       updateData.gacha_sound_rules = rules;
       const fallbackRule = rules.find((rule) => rule.enabled && rule.targetType === "all") ?? rules.find((rule) => rule.enabled);

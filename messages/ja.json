@@ -449,7 +449,8 @@
       "deleteFailed": "削除に失敗しました",
       "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。"
     },
-    "confirmDelete": "この効果音を削除しますか？"
+    "confirmDelete": "この効果音を削除しますか？",
+    "premiumRequired": "複数効果音・ターゲット指定は助力プラン以上の機能です。"
   },
   "chatAnnouncementSettings": {
     "title": "チャット通知設定",

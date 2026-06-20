@@ -16,7 +16,9 @@ vi.mock('@/lib/request-validation')
 // Issue #269: most pre-existing tests below assume an authorized (non-basic)
 // streamer, since they predate plan gating. Default to a premium plan here so
 // they keep exercising collection-name persistence rather than the gate;
-// gate-specific tests override this per-case.
+// gate-specific tests override this per-case. This also covers Issue #176's
+// gachaSoundRules premium gate (support plan by default; basic-plan tests
+// override the mock to exercise the 403 path).
 vi.mock('@/lib/plan')
 // 本物の constants モジュールを保持する。RARITIES が空配列になると
 // route.ts の DEFAULT_RARITY_VALUES が空となり、デフォルトレアリティとの
@@ -61,6 +63,7 @@ describe('POST /api/streamer/settings', () => {
 
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
     mockValidateContentType.mockReturnValue(null)
+    // デフォルトは support プラン（gachaSoundRules を使用可能）
     mockGetUserPlan.mockResolvedValue('support')
   })
 
@@ -508,6 +511,56 @@ describe('POST /api/streamer/settings', () => {
         body: JSON.stringify({
           streamerId: 'streamer123',
           showUnownedCardDetails: true,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+  })
+
+  describe('gachaSoundRules premium gate', () => {
+    it('should return 403 for basic plan users attempting to set gachaSoundRules', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [{ id: 'rule1', url: 'https://example.com/s.mp3', enabled: true, label: 'a', targetType: 'all', rarity: null, rewardId: null, rewardName: null }],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(403)
+      const data = await response.json()
+      expect(data.error).toBe('この機能は助力プラン以上が必要です')
+    })
+
+    it('should allow support plan users to set gachaSoundRules', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [],
         }),
       })
 

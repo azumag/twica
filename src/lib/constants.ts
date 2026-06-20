@@ -316,6 +316,8 @@ export const ERROR_MESSAGES = {
   FANBOX_ID_TOO_LONG: 'FANBOX ID is too long',
   // プランダウングレード等でストレージ超過時のエラー
   PLAN_OVER_LIMIT: 'ストレージ容量を超過しています。支援特典をアップグレードするか、画像を削除してください。',
+  // 支援プランが必要な機能へのアクセス拒否
+  PLAN_UPGRADE_REQUIRED: 'この機能は助力プラン以上が必要です',
 
   // Support inquiry errors
   INQUIRY_NOT_FOUND: 'Inquiry not found',

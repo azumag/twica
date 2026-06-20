@@ -14,6 +14,7 @@ import CopyButton from "@/components/CopyButton";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import type { Card, Json } from "@/types/database";
+import type { PlanType } from "@/lib/plan-constants";
 
 // token-manager のサーバー専用モジュールに依存しないよう、戻り値型を inline 宣言。
 // 形状は getCustomBotAccountDisplayForStreamer の戻り値と一致させる。
@@ -60,6 +61,7 @@ function SettingsPanelSkeleton() {
 
 export interface SettingsLayoutData {
   streamerId: string;
+  plan: PlanType;
   baseUrl: string;
   cards: Card[];
   showVoteCampaign: boolean;
@@ -273,6 +275,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       content: (
         <GachaSoundSettings
           streamerId={data.streamerId}
+          plan={data.plan}
           currentSoundUrl={data.gachaSound.soundUrl}
           currentSoundEnabled={data.gachaSound.soundEnabled}
           currentSoundRules={data.gachaSound.soundRules}

@@ -12,9 +12,11 @@ import {
   type GachaSoundTargetType,
 } from "@/lib/gacha-sound-rules";
 import type { Json } from "@/types/database";
+import type { PlanType } from "@/lib/plan-constants";
 
 interface GachaSoundSettingsProps {
   streamerId: string;
+  plan?: PlanType;
   currentSoundUrl: string | null;
   currentSoundEnabled: boolean;
   currentSoundRules?: Json;
@@ -24,6 +26,7 @@ interface GachaSoundSettingsProps {
 
 export default function GachaSoundSettings({
   streamerId,
+  plan,
   currentSoundUrl,
   currentSoundEnabled,
   currentSoundRules,
@@ -31,6 +34,7 @@ export default function GachaSoundSettings({
   currentRewardName,
 }: GachaSoundSettingsProps) {
   const t = useTranslations("gachaSoundSettings");
+  const isPremium = plan !== undefined && plan !== "basic";
   const tCommon = useTranslations("common");
 
   const initialRules = useMemo(() => {
@@ -247,7 +251,13 @@ export default function GachaSoundSettings({
 
       <p className="mb-4 text-sm text-gray-400">{t("description")}</p>
 
-      <div className="space-y-4">
+      {!isPremium && plan !== undefined && (
+        <p className="mb-4 rounded-lg bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          {t("premiumRequired")}
+        </p>
+      )}
+
+      <div className={`space-y-4 ${!isPremium && plan !== undefined ? "pointer-events-none opacity-50" : ""}`}>
         <div>
           <label className="mb-1 block text-sm text-gray-300">{t("form.selectFile")}</label>
           <input

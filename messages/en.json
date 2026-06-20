@@ -449,7 +449,8 @@
       "deleteFailed": "Failed to delete",
       "rateLimit": "Too many requests. Please wait and try again."
     },
-    "confirmDelete": "Delete this sound effect?"
+    "confirmDelete": "Delete this sound effect?",
+    "premiumRequired": "Multiple sounds and targeting are available for support plan subscribers and above."
   },
   "chatAnnouncementSettings": {
     "title": "Chat Announcement Settings",
