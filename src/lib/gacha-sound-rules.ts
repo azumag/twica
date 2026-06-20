@@ -44,7 +44,7 @@ export const createRuleId = (): string => (
  * - ALLOWED_SOUND_HOSTS が未設定の場合は後方互換のため素通し
  *   （HTTPS チェックのみ適用）
  */
-function isAllowedSoundUrl(rawUrl: string): boolean {
+export function isAllowedSoundUrl(rawUrl: string): boolean {
   let parsed: URL;
   try {
     // ブラウザ環境では相対 URL もあり得るため location.origin を base にする

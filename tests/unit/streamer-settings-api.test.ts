@@ -611,6 +611,38 @@ describe('POST /api/streamer/settings', () => {
     })
   })
 
+  describe('gachaSoundUrl URL validation', () => {
+    it('should return 400 for non-HTTPS gachaSoundUrl', async () => {
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundUrl: 'http://example.com/sound.mp3' }),
+      })
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+
+    it('should accept null gachaSoundUrl (delete)', async () => {
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundUrl: null }),
+      })
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+
+    it('should accept HTTPS gachaSoundUrl', async () => {
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundUrl: 'https://example.com/sound.mp3' }),
+      })
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+  })
+
   it('should return 429 when rate limit exceeded', async () => {
     mockCheckRateLimit.mockResolvedValue({
       success: false,

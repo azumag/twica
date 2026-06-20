@@ -32,7 +32,7 @@ import {
   isMissingPackRarityWeightsColumnError,
 } from "@/lib/collections/collection-existence";
 import { isNewCardPackNameAdditionGated } from "@/lib/plan-gate";
-import { normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
+import { normalizeGachaSoundRules, isAllowedSoundUrl } from "@/lib/gacha-sound-rules";
 import { getUserPlan } from "@/lib/plan";
 
 
@@ -610,6 +610,9 @@ export async function POST(request: NextRequest) {
     // ガチャ効果音設定
     // gachaSoundUrl: 効果音ファイルのURL（nullで削除）
     if (gachaSoundUrl !== undefined) {
+      if (gachaSoundUrl !== null && !isAllowedSoundUrl(gachaSoundUrl)) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
       updateData.gacha_sound_url = gachaSoundUrl;
     }
     // gachaSoundEnabled: 効果音の有効/無効フラグ
