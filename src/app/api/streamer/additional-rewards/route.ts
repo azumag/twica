@@ -9,6 +9,7 @@ import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger";
 import { resolveCollectionNameField } from "@/lib/validation/collection-name";
 import { checkCollectionHasActiveCards, isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+import { isCollectionChangeGated } from "@/lib/plan-gate";
 
 function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? "";
@@ -220,10 +221,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Issue #269: binding a pack to a new additional reward requires a
+    // premium plan. There is no update path for additional rewards (only
+    // create/delete), so any non-null value is a new registration attempt.
+    // Gated requests still create the reward — only the pack binding is
+    // dropped — so reward creation itself stays available on the basic plan.
+    const collectionNamePremiumRequired = await isCollectionChangeGated(
+      session.twitchUserId,
+      collectionNameResult.value,
+      null
+    );
+
     // Issue #393: when a pack is bound, ensure it actually has active cards so the
     // reward never resolves to an empty draw pool at redemption time. Skip the
-    // check during the deploy window (column not migrated yet).
-    if (typeof collectionNameResult.value === "string") {
+    // check during the deploy window (column not migrated yet) and when the
+    // assignment is gated (it will not be persisted, so existence is moot).
+    if (typeof collectionNameResult.value === "string" && !collectionNamePremiumRequired) {
       const existence = await checkCollectionHasActiveCards(
         supabaseAdmin,
         streamer.id,
@@ -245,7 +258,7 @@ export async function POST(request: NextRequest) {
       draw_count: normalizedDrawCount,
       is_raid_limited: isRaidLimited ?? false,
     };
-    if (typeof collectionNameResult.value === "string") {
+    if (typeof collectionNameResult.value === "string" && !collectionNamePremiumRequired) {
       insertPayload.collection_name = collectionNameResult.value;
     }
 
@@ -298,7 +311,11 @@ export async function POST(request: NextRequest) {
       `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}, drawCount=${normalizedDrawCount}, raidLimited=${isRaidLimited ?? false}`
     );
 
-    return NextResponse.json({ success: true, reward: newReward });
+    return NextResponse.json({
+      success: true,
+      reward: newReward,
+      ...(collectionNamePremiumRequired ? { collectionNamePremiumRequired: true } : {}),
+    });
   } catch (error) {
     return handleApiError(error, "Additional Rewards API: POST");
   }

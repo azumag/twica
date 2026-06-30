@@ -62,6 +62,9 @@
       "collectionName": "カードパック",
       "collectionNamePlaceholder": "例: キャラ / 武器 (空欄=未分類)",
       "collectionNameHelp": "同じパック名のカードだけがチャネポ報酬の抽選対象になります",
+      "collectionNameClear": "✕ 解除",
+      "collectionNamePremiumRequired": "カードパックの新規登録・変更には支援プランまたはTwitchサブスクが必要です(解除のみ可能)",
+      "collectionNamePremiumRequiredSaved": "カードは保存されましたが、パック設定の変更には支援プランまたはTwitchサブスクが必要です",
       "dropRate": "出現確率",
       "intraRarityWeight": "レアリティ内での排出確率",
       "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
@@ -571,7 +574,9 @@
       "additionalLabel": "追加報酬のカードパック",
       "all": "すべてのカード",
       "help": "カード管理で設定したパック名ごとに、排出対象を絞り込めます。",
-      "missing": "{name}(抽選可能カードなし)"
+      "missing": "{name}(抽選可能カードなし)",
+      "premiumRequired": "新しいパックの紐付けには支援プランまたはTwitchサブスクが必要です(解除のみ可能)",
+      "premiumRequiredSaved": "保存しましたが、パック設定の変更には支援プランまたはTwitchサブスクが必要です"
     }
   },
   "gachaHistory": {

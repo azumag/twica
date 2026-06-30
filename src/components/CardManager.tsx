@@ -77,6 +77,11 @@ interface CardManagerProps {
   // 配信者が定義したカスタムレアリティ名（rarity_weights とは独立）
   // Streamer-defined custom rarity names (decoupled from rarity_weights)
   initialCustomRarities?: string[];
+  // Issue #269: whether the streamer's plan allows assigning/changing card
+  // packs (collection_name). Defaults to false (fail-closed, matching
+  // plan.ts's "treat lookup failure as basic" stance) so omitting this prop
+  // never accidentally grants the premium-only capability.
+  isPremium?: boolean;
 }
 
 // Sorting field options
@@ -124,6 +129,7 @@ export default function CardManager({
   availableWidths = [800],
   initialRarityWeights = null,
   initialCustomRarities = [],
+  isPremium = false,
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -300,6 +306,11 @@ export default function CardManager({
   const isDescriptionTooLong = descriptionCharacterCount > CARD_DESCRIPTION_MAX_CHARACTERS;
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Issue #269: set when a save succeeded but the pack assignment was dropped
+  // because the user's plan doesn't allow new card-pack registrations. The
+  // card itself still saved, so this is a standalone notice, not tied to the
+  // (closing) form's visibility.
+  const [collectionPlanNotice, setCollectionPlanNotice] = useState(false);
   // Separate state for confirmed image URL (only update on blur)
   // プレビュー表示用の確定済み画像URL（フォーカスが外れた時のみ更新）
   const [confirmedImageUrl, setConfirmedImageUrl] = useState("");
@@ -1157,9 +1168,14 @@ export default function CardManager({
         const recalculatedCards = Array.isArray(responseData.recalculatedCards)
           ? (responseData.recalculatedCards as Card[])
           : null;
+        // Issue #269: read+strip the synthetic flag so it never leaks into
+        // the Card object stored in state (Card has no such field).
+        const collectionNamePremiumRequired = responseData.collectionNamePremiumRequired === true;
         const savedCardData = { ...(responseData as Record<string, unknown>) };
         delete savedCardData.recalculatedCards;
+        delete savedCardData.collectionNamePremiumRequired;
         const savedCard = savedCardData as unknown as Card;
+        setCollectionPlanNotice(collectionNamePremiumRequired);
 
         if (editingCard) {
           setCards((prevCards) => {
@@ -1345,6 +1361,18 @@ export default function CardManager({
         </div>
       )}
 
+      {/* Issue #269: card saved, but the pack assignment was dropped because
+          the plan doesn't allow new card-pack registrations. Standalone
+          banner (not tied to the form, which already closed on save). */}
+      {collectionPlanNotice && (
+        <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
+          <p className="text-sm text-yellow-300">{t("form.collectionNamePremiumRequiredSaved")}</p>
+          <a href="/plans" className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
+            支援特典について
+          </a>
+        </div>
+      )}
+
       {/* Storage usage info displayed at panel level */}
       {/* ストレージ使用量をパネルレベルで表示 */}
       {storageStatus && (
@@ -1486,30 +1514,44 @@ export default function CardManager({
                         </p>
                       </div>
                     </div>
-                    {/* Issue #393: カードパック名（任意）。datalist で既存パック名を提案しつつ自由入力も可。 */}
+                    {/* Issue #393: カードパック名（任意）。datalist で既存パック名を提案しつつ自由入力も可。
+                        Issue #269: 新規登録・変更には支援プラン/Twitchサブスクが必要。disabled
+                        にすると既存値の解除手段も失われるため、「✕ 解除」ボタンは常に有効にする。 */}
                     <div className="mt-3 min-w-0">
                       <label className="mb-1 block text-sm text-gray-300">
                         {t("form.collectionName")}
                       </label>
-                      <input
-                        type="text"
-                        name="collectionName"
-                        list="card-collection-options"
-                        maxLength={80}
-                        placeholder={t("form.collectionNamePlaceholder")}
-                        value={formData.collectionName}
-                        onChange={(e) =>
-                          setFormData({ ...formData, collectionName: e.target.value })
-                        }
-                        className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
-                      />
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          name="collectionName"
+                          list="card-collection-options"
+                          maxLength={80}
+                          disabled={!isPremium}
+                          placeholder={t("form.collectionNamePlaceholder")}
+                          value={formData.collectionName}
+                          onChange={(e) =>
+                            setFormData({ ...formData, collectionName: e.target.value })
+                          }
+                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                        {!isPremium && formData.collectionName !== "" && (
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, collectionName: "" })}
+                            className="shrink-0 rounded-lg border border-gray-500 px-3 text-sm text-gray-300 hover:bg-gray-700"
+                          >
+                            {t("form.collectionNameClear")}
+                          </button>
+                        )}
+                      </div>
                       <datalist id="card-collection-options">
                         {collectionNameOptions.map((name) => (
                           <option key={name} value={name} />
                         ))}
                       </datalist>
                       <p className="mt-1 text-xs text-gray-300">
-                        {t("form.collectionNameHelp")}
+                        {isPremium ? t("form.collectionNameHelp") : t("form.collectionNamePremiumRequired")}
                       </p>
                     </div>
                   </div>

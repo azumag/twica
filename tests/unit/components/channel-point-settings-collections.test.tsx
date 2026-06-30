@@ -43,7 +43,7 @@ function mockFetch(): FetchMock {
   return fetchMock;
 }
 
-function renderComponent() {
+function renderComponent(isPremium?: boolean) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <ChannelPointSettings
@@ -51,6 +51,7 @@ function renderComponent() {
         currentRewardId="main-reward"
         currentRewardName="Main"
         currentCollectionName={null}
+        isPremium={isPremium}
       />
     </NextIntlClientProvider>
   );
@@ -88,6 +89,30 @@ describe("ChannelPointSettings card pack dropdowns", () => {
       // so each name appears at least once.
       expect(screen.getAllByRole("option", { name: "weapons" }).length).toBeGreaterThan(0);
       expect(screen.getAllByRole("option", { name: "characters" }).length).toBeGreaterThan(0);
+    });
+  });
+
+  // Issue #269: non-premium (basic plan) users can see existing pack options
+  // but cannot select a new one — only the blank "all cards" option stays
+  // enabled, so clearing a binding remains possible while new registration
+  // does not.
+  it("disables non-blank pack options when isPremium is false (default)", async () => {
+    renderComponent();
+
+    await waitFor(() => {
+      const options = screen.getAllByRole("option", { name: "weapons" }) as HTMLOptionElement[];
+      expect(options.length).toBeGreaterThan(0);
+      options.forEach((option) => expect(option.disabled).toBe(true));
+    });
+  });
+
+  it("enables pack options when isPremium is true", async () => {
+    renderComponent(true);
+
+    await waitFor(() => {
+      const options = screen.getAllByRole("option", { name: "weapons" }) as HTMLOptionElement[];
+      expect(options.length).toBeGreaterThan(0);
+      options.forEach((option) => expect(option.disabled).toBe(false));
     });
   });
 });

@@ -17,6 +17,7 @@ import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { resolveCollectionNameField } from "@/lib/validation/collection-name";
 import { checkCollectionHasActiveCards, isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+import { isCollectionChangeGated } from "@/lib/plan-gate";
 
 
 type RarityWeightsValidation =
@@ -250,20 +251,55 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify ownership
-    const { data: streamer } = await supabaseAdmin
+    let { data: streamer, error: streamerSelectError } = await supabaseAdmin
       .from("streamers")
-      .select("id")
+      .select("id, channel_point_collection_name")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
+
+    // Issue #269 (self-review fix): channel_point_collection_name was added
+    // to this ownership-check SELECT to read the current pack value for the
+    // gate below. During the deploy window (migration 00061 not applied yet)
+    // that turns the SELECT itself into a 42703 "column does not exist"
+    // error, which would 403 EVERY settings save — not just pack-related
+    // ones — because this branch only checked `!streamer`, not `error`.
+    // Retry without the column so unrelated settings keep saving; the gate
+    // then just sees no current pack value (treated as null), matching every
+    // other #393 deploy-window fallback in this codebase.
+    if (streamerSelectError && isMissingCollectionNameColumn(streamerSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("streamers")
+        .select("id")
+        .eq("id", streamerId)
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = retryResult.data
+        ? { ...retryResult.data, channel_point_collection_name: null }
+        : null;
+      streamerSelectError = retryResult.error;
+    }
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
+    // Issue #269: binding the main reward to a NEW pack requires a premium
+    // plan. Clearing it or resubmitting the current value is always allowed,
+    // so a downgraded streamer keeps saving every other setting on this
+    // combined endpoint (rarity weights, sounds, chat announcements, etc.).
+    const collectionNamePremiumRequired = await isCollectionChangeGated(
+      session.twitchUserId,
+      channelPointCollectionResult.value,
+      streamer.channel_point_collection_name
+    );
+
     // Issue #393: reject binding the main reward to a pack with no active cards,
     // which would always resolve to an empty draw pool at redemption time.
-    if (typeof channelPointCollectionResult.value === "string") {
+    // Issue #269: skip when the assignment is gated — it will not be
+    // persisted, so validating its existence is wasted work and could wrongly
+    // block the rest of this save with COLLECTION_NOT_FOUND.
+    if (typeof channelPointCollectionResult.value === "string" && !collectionNamePremiumRequired) {
       const existence = await checkCollectionHasActiveCards(
         supabaseAdmin,
         streamer.id,
@@ -286,7 +322,8 @@ export async function POST(request: NextRequest) {
       updateData.channel_point_reward_name = channelPointRewardName;
     }
     // Issue #393: persist the main-reward pack binding (null clears it = all cards).
-    if (channelPointCollectionResult.value !== undefined) {
+    // Issue #269: skip persisting it if the plan gate rejected this assignment.
+    if (channelPointCollectionResult.value !== undefined && !collectionNamePremiumRequired) {
       updateData.channel_point_collection_name = channelPointCollectionResult.value;
     }
 
@@ -363,8 +400,13 @@ export async function POST(request: NextRequest) {
       botDisconnected = true;
     }
 
-    // 更新するフィールドがない場合はエラー
-    if (Object.keys(updateData).length === 0 && !botDisconnected) {
+    // 更新するフィールドがない場合はエラー。ただし、唯一意図された変更が
+    // プランゲートで除外された場合は「無効なリクエスト」ではなく、成功+
+    // collectionNamePremiumRequired フラグで理由を伝える(Issue #269)。
+    // No fields left to update is an error — UNLESS the only intended change
+    // was the pack binding and it was dropped by the plan gate, in which case
+    // we still report success with the flag instead of a generic 400.
+    if (Object.keys(updateData).length === 0 && !botDisconnected && !collectionNamePremiumRequired) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -409,7 +451,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ success: true, recalculatedCards });
+    return NextResponse.json({
+      success: true,
+      recalculatedCards,
+      ...(collectionNamePremiumRequired ? { collectionNamePremiumRequired: true } : {}),
+    });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");
   }

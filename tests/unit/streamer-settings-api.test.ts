@@ -5,12 +5,18 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
+import { getUserPlan } from '@/lib/plan'
 import { createSupabaseMock, createMockQueryBuilder } from '../utils/supabase-mock'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/request-validation')
+// Issue #269: most pre-existing tests below assume an authorized (non-basic)
+// streamer, since they predate plan gating. Default to a premium plan here so
+// they keep exercising collection-name persistence rather than the gate;
+// gate-specific tests override this per-case.
+vi.mock('@/lib/plan')
 // 本物の constants モジュールを保持する。RARITIES が空配列になると
 // route.ts の DEFAULT_RARITY_VALUES が空となり、デフォルトレアリティとの
 // 衝突検出ができなくなるため、ファクトリで実体をそのまま返す。
@@ -28,6 +34,7 @@ const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 const mockValidateContentType = vi.mocked(validateContentType)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
+const mockGetUserPlan = vi.mocked(getUserPlan)
 
 describe('POST /api/streamer/settings', () => {
   beforeEach(() => {
@@ -53,6 +60,7 @@ describe('POST /api/streamer/settings', () => {
 
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
     mockValidateContentType.mockReturnValue(null)
+    mockGetUserPlan.mockResolvedValue('support')
   })
 
   it('should update streamer settings with valid data', async () => {
@@ -623,5 +631,190 @@ describe('POST /api/streamer/settings', () => {
 
     const response = await POST(request)
     expect(response.status).toBe(400)
+  })
+
+  // Issue #269: premium gate for the main-reward pack binding.
+  describe('card-pack premium gate (Issue #269)', () => {
+    it('drops a NEW pack binding on the basic plan but still saves it (200, no DB write, flag set)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: 'weapons',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.success).toBe(true)
+      expect(data.collectionNamePremiumRequired).toBe(true)
+      // Gated: the pack binding itself must never reach the DB write, and the
+      // pack-existence check must be skipped (it would otherwise wrongly 400
+      // on a since-deactivated pack even though nothing is being persisted).
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('saves rarityWeights alongside a gated pack-binding attempt on the basic plan (no collateral failure)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: 'weapons',
+          rarityWeights: { common: 50, rare: 50 },
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.collectionNamePremiumRequired).toBe(true)
+      // The unrelated field still saves — basic-plan users keep settings access.
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ rarity_weights: { common: 50, rare: 50 } })
+      )
+      const updateCall = (streamerQuery.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(updateCall).not.toHaveProperty('channel_point_collection_name')
+    })
+
+    it('allows resubmitting the SAME pack value on the basic plan (no-op change, no gate)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: 'weapons' },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 3, error: null })
+        return cardsQuery
+      }
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: 'weapons',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.collectionNamePremiumRequired).toBeUndefined()
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_collection_name: 'weapons' })
+      )
+      // getUserPlan must not even be consulted for a no-op resubmission.
+      expect(mockGetUserPlan).not.toHaveBeenCalled()
+    })
+
+    it('allows clearing an existing pack binding to null on the basic plan', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: 'weapons' },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: null,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.collectionNamePremiumRequired).toBeUndefined()
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_collection_name: null })
+      )
+      expect(mockGetUserPlan).not.toHaveBeenCalled()
+    })
+
+    // Self-review regression guard: the ownership-check SELECT now also
+    // reads channel_point_collection_name for the gate's currentValue. If
+    // that column isn't migrated yet, the SELECT itself errors (42703) and
+    // must NOT 403 an otherwise-valid settings save unrelated to packs.
+    it('still saves other settings when channel_point_collection_name is not deployed yet (deploy window)', async () => {
+      const selectQuery = createMockQueryBuilder()
+      ;(selectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: null,
+        error: { code: '42703', message: 'column streamers.channel_point_collection_name does not exist' },
+      })
+      const retrySelectQuery = createMockQueryBuilder()
+      ;(retrySelectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123' },
+        error: null,
+      })
+      const updateQuery = createMockQueryBuilder()
+      let selectCalls = 0
+      const fromMock = vi.fn(() => {
+        selectCalls += 1
+        if (selectCalls === 1) return selectQuery
+        if (selectCalls === 2) return retrySelectQuery
+        return updateQuery
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointRewardId: 'reward-123',
+          channelPointRewardName: 'Test Reward',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(updateQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_reward_id: 'reward-123' })
+      )
+    })
   })
 })
