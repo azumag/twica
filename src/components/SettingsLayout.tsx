@@ -67,6 +67,8 @@ export interface SettingsLayoutData {
   channelPoint: {
     rewardId: string | null;
     rewardName: string | null;
+    // Issue #393: pack bound to the main reward (null = all cards)
+    collectionName: string | null;
   };
   gachaSound: {
     soundUrl: string | null;
@@ -133,6 +135,7 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
           streamerId={data.streamerId}
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
+          currentCollectionName={data.channelPoint.collectionName}
           compact
         />
       </StepCard>
@@ -247,6 +250,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           streamerId={data.streamerId}
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
+          currentCollectionName={data.channelPoint.collectionName}
         />
       ),
     },

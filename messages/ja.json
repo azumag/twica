@@ -59,6 +59,9 @@
       "cardNumber": "カード番号",
       "cardNumberPlaceholder": "例: 12",
       "cardNumberHelp": "空欄なら自動採番されます",
+      "collectionName": "カードパック",
+      "collectionNamePlaceholder": "例: キャラ / 武器 (空欄=未分類)",
+      "collectionNameHelp": "同じパック名のカードだけがチャネポ報酬の抽選対象になります",
       "dropRate": "出現確率",
       "intraRarityWeight": "レアリティ内での排出確率",
       "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
@@ -562,6 +565,13 @@
       "raidStatusEnabled": "レイドガチャ受付を30分間有効にしました",
       "raidStatusDisabled": "レイドガチャ受付を停止しました",
       "raidStatusFailed": "レイドガチャ設定の更新に失敗しました"
+    },
+    "collections": {
+      "mainLabel": "メイン報酬のカードパック",
+      "additionalLabel": "追加報酬のカードパック",
+      "all": "すべてのカード",
+      "help": "カード管理で設定したパック名ごとに、排出対象を絞り込めます。",
+      "missing": "{name}(抽選可能カードなし)"
     }
   },
   "gachaHistory": {

@@ -59,6 +59,9 @@
       "cardNumber": "Card Number",
       "cardNumberPlaceholder": "e.g. 12",
       "cardNumberHelp": "Leave blank to auto-number",
+      "collectionName": "Card Pack",
+      "collectionNamePlaceholder": "e.g. Characters / Weapons (blank = unclassified)",
+      "collectionNameHelp": "Only cards in the same pack are eligible for that channel point reward's gacha",
       "dropRate": "Drop Rate",
       "intraRarityWeight": "Drop Rate within Rarity",
       "intraRarityWeightHint": "Adjust drop balance among cards of the same rarity (default: 1.0)",
@@ -562,6 +565,13 @@
       "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
       "raidStatusDisabled": "Raid gacha window disabled",
       "raidStatusFailed": "Failed to update raid gacha settings"
+    },
+    "collections": {
+      "mainLabel": "Main reward card pack",
+      "additionalLabel": "Additional reward card pack",
+      "all": "All cards",
+      "help": "Limit eligible cards by the pack names configured in card management.",
+      "missing": "{name} (no drawable cards)"
     }
   },
   "gachaHistory": {

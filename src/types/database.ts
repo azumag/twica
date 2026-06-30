@@ -25,6 +25,9 @@ export interface Database {
           twitch_profile_image_url: string | null
           channel_point_reward_id: string | null
           channel_point_reward_name: string | null
+          // メイン報酬に紐付くカードパック名（NULL=全カード対象）。Issue #393
+          // Card pack bound to the main channel-point reward (NULL = all cards)
+          channel_point_collection_name: string | null
           is_active: boolean
           // ガチャ効果音URL - R2に保存された音声ファイルのURL
           gacha_sound_url: string | null
@@ -71,6 +74,7 @@ export interface Database {
           twitch_profile_image_url?: string | null
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
+          channel_point_collection_name?: string | null
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -95,6 +99,7 @@ export interface Database {
           twitch_profile_image_url?: string | null
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
+          channel_point_collection_name?: string | null
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -194,6 +199,9 @@ export interface Database {
           image_url: string | null
           rarity: Rarity
           card_number: number | null
+          // 所属カードパック名（NULL=未分類=全カード抽選対象）。Issue #393
+          // Pack this card belongs to (NULL = unclassified = drawable from any reward)
+          collection_name: string | null
           drop_rate: number
           // レアリティ内重み: 同レアリティ内での排出確率配分（デフォルト1.0=均等）
           intra_rarity_weight: number
@@ -216,6 +224,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           card_number?: number | null
+          collection_name?: string | null
           drop_rate?: number
           intra_rarity_weight?: number
           is_active?: boolean
@@ -237,6 +246,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           card_number?: number | null
+          collection_name?: string | null
           drop_rate?: number
           intra_rarity_weight?: number
           is_active?: boolean
@@ -458,6 +468,9 @@ export interface Database {
           reward_name: string | null
           draw_count: number
           is_raid_limited: boolean
+          // 追加報酬に紐付くカードパック名（NULL=全カード対象）。Issue #393
+          // Card pack bound to this additional reward (NULL = all cards)
+          collection_name: string | null
           created_at: string
         }
         Insert: {
@@ -467,6 +480,7 @@ export interface Database {
           reward_name?: string | null
           draw_count?: number
           is_raid_limited?: boolean
+          collection_name?: string | null
           created_at?: string
         }
         Update: {
@@ -476,6 +490,7 @@ export interface Database {
           reward_name?: string | null
           draw_count?: number
           is_raid_limited?: boolean
+          collection_name?: string | null
           created_at?: string
         }
       }

@@ -88,6 +88,8 @@ type CardFormData = {
   imageUrl: string;
   rarity: Rarity;
   cardNumber: string;
+  // Issue #393: card pack name ("" = unclassified / all cards)
+  collectionName: string;
   dropRate: number;
   intraRarityWeight: number;
 };
@@ -265,6 +267,19 @@ export default function CardManager({
 
     return nextCards;
   }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
+
+  // Issue #393: distinct pack names across this streamer's cards, for the
+  // collection-name datalist suggestions in the card form.
+  const collectionNameOptions = useMemo(() => {
+    return Array.from(
+      new Set(
+        cards
+          .map((card) => (typeof card.collection_name === "string" ? card.collection_name.trim() : ""))
+          .filter((name) => name.length > 0)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }, [cards]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -274,6 +289,7 @@ export default function CardManager({
     imageUrl: "",
     rarity: "common" as Rarity,
     cardNumber: "",
+    collectionName: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
   });
@@ -817,6 +833,7 @@ export default function CardManager({
       imageUrl: "",
       rarity: "common",
       cardNumber: "",
+      collectionName: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
     });
@@ -1036,6 +1053,7 @@ export default function CardManager({
       imageUrl: card.image_url || "",
       rarity: card.rarity,
       cardNumber: card.card_number ? String(card.card_number) : "",
+      collectionName: card.collection_name || "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
@@ -1126,6 +1144,8 @@ export default function CardManager({
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
           cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
+          // Issue #393: send the pack name (trimmed "" → null clears it = all cards)
+          collectionName: formData.collectionName.trim() === "" ? null : formData.collectionName.trim(),
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
@@ -1465,6 +1485,32 @@ export default function CardManager({
                           {t("form.cardNumberHelp")}
                         </p>
                       </div>
+                    </div>
+                    {/* Issue #393: カードパック名（任意）。datalist で既存パック名を提案しつつ自由入力も可。 */}
+                    <div className="mt-3 min-w-0">
+                      <label className="mb-1 block text-sm text-gray-300">
+                        {t("form.collectionName")}
+                      </label>
+                      <input
+                        type="text"
+                        name="collectionName"
+                        list="card-collection-options"
+                        maxLength={80}
+                        placeholder={t("form.collectionNamePlaceholder")}
+                        value={formData.collectionName}
+                        onChange={(e) =>
+                          setFormData({ ...formData, collectionName: e.target.value })
+                        }
+                        className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
+                      />
+                      <datalist id="card-collection-options">
+                        {collectionNameOptions.map((name) => (
+                          <option key={name} value={name} />
+                        ))}
+                      </datalist>
+                      <p className="mt-1 text-xs text-gray-300">
+                        {t("form.collectionNameHelp")}
+                      </p>
                     </div>
                   </div>
                 </div>

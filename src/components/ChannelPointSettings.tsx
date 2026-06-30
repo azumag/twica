@@ -28,6 +28,8 @@ interface AdditionalReward {
   reward_name: string | null;
   draw_count: number;
   is_raid_limited: boolean;
+  // Issue #393: card pack bound to this additional reward (null = all cards)
+  collection_name: string | null;
   created_at: string;
 }
 
@@ -47,6 +49,8 @@ interface ChannelPointSettingsProps {
   streamerId: string;
   currentRewardId: string | null;
   currentRewardName: string | null;
+  // Issue #393: pack currently bound to the main reward (null = all cards)
+  currentCollectionName?: string | null;
   /**
    * compact: シンプル表示モード用の縮約レンダリング。
    * EventSub 診断パネル / 追加報酬セクション / 詳細エラーリストを隠し、
@@ -66,6 +70,7 @@ export default function ChannelPointSettings({
   streamerId,
   currentRewardId,
   currentRewardName,
+  currentCollectionName = null,
   compact = false,
 }: ChannelPointSettingsProps) {
   const t = useTranslations("channelPointSettings");
@@ -73,6 +78,13 @@ export default function ChannelPointSettings({
   const [rewards, setRewards] = useState<TwitchReward[]>([]);
   const [selectedRewardId, setSelectedRewardId] = useState(currentRewardId || "");
   const [selectedRewardName, setSelectedRewardName] = useState(currentRewardName || "");
+  // Issue #393: pack selections + available pack list
+  const [selectedCollectionName, setSelectedCollectionName] = useState(currentCollectionName || "");
+  const [collections, setCollections] = useState<string[]>([]);
+  // collectionsLoaded: true のときだけ「抽選可能カードなし」警告を出す。
+  // 取得前/取得失敗時に実在パックを誤警告しないためのガード。
+  const [collectionsLoaded, setCollectionsLoaded] = useState(false);
+  const [selectedAdditionalCollectionName, setSelectedAdditionalCollectionName] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -184,6 +196,27 @@ export default function ChannelPointSettings({
     }
   }, []);
 
+  // Issue #393: load the streamer's pack names for the collection dropdowns.
+  // Uses the dedicated lightweight endpoint (DISTINCT, active-only) instead of
+  // fetching the full card list and reshaping it client-side.
+  const fetchCollections = useCallback(async () => {
+    if (!streamerId) return;
+    try {
+      const response = await fetch(
+        `/api/cards/collections?streamerId=${encodeURIComponent(streamerId)}`,
+        { credentials: "include", cache: "no-store" }
+      );
+      if (!response.ok) return;
+      const data = await response.json();
+      const names = Array.isArray(data?.collections) ? data.collections : [];
+      setCollections(names.filter((name: unknown): name is string => typeof name === "string"));
+      // 取得成功時のみ loaded=true。これ以降だけ missing 警告を有効化する。
+      setCollectionsLoaded(true);
+    } catch {
+      logger.error("Failed to fetch card collections");
+    }
+  }, [streamerId]);
+
   const fetchRaidGachaStatus = useCallback(async () => {
     try {
       const response = await fetch("/api/streamer/raid-gacha", {
@@ -260,6 +293,12 @@ export default function ChannelPointSettings({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Issue #393: パック名一覧をメイン/追加報酬のドロップダウン用に取得。
+  // streamerId 変更時に取り直す（/api/cards/collections は軽量なため compact でも取得）。
+  useEffect(() => {
+    fetchCollections();
+  }, [fetchCollections]);
+
   const handleCreateReward = async () => {
     setCreating(true);
     setMessage("");
@@ -329,6 +368,8 @@ export default function ChannelPointSettings({
           streamerId,
           channelPointRewardId: selectedRewardId,
           channelPointRewardName: selectedRewardName,
+          // Issue #393: bind the main reward to a pack ("" → null = all cards)
+          channelPointCollectionName: selectedCollectionName || null,
         }),
       });
 
@@ -339,7 +380,9 @@ export default function ChannelPointSettings({
       }
 
       if (!settingsResponse.ok) {
-        setMessage(t("messages.saveFailed"));
+        // Surface the server's specific error (e.g. Issue #393 empty-pack rejection).
+        const errorData = await settingsResponse.json().catch(() => null);
+        setMessage(errorData?.error || t("messages.saveFailed"));
         return;
       }
 
@@ -455,6 +498,8 @@ export default function ChannelPointSettings({
           rewardName: rewardName,
           drawCount: additionalDrawCount,
           isRaidLimited: false,
+          // Issue #393: bind this additional reward to a pack ("" → null = all cards)
+          collectionName: selectedAdditionalCollectionName || null,
         }),
       });
 
@@ -470,6 +515,7 @@ export default function ChannelPointSettings({
       // 状態を更新
       setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
       setSelectedAdditionalRewardId("");
+      setSelectedAdditionalCollectionName("");
       setAdditionalDrawCount(1);
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
@@ -833,6 +879,33 @@ export default function ChannelPointSettings({
                <p className="mt-1 text-xs text-gray-500">
                  {t("form.id")} {selectedRewardId}
                </p>
+               {/* Issue #393: メイン報酬に紐付けるカードパック。 */}
+               <label className="mt-3 block text-xs text-gray-300">
+                 {t("collections.mainLabel")}
+                 <select
+                   value={selectedCollectionName}
+                   onChange={(e) => setSelectedCollectionName(e.target.value)}
+                   className="mt-1 h-9 w-full rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
+                 >
+                   <option value="">{t("collections.all")}</option>
+                   {collections.map((name) => (
+                     <option key={name} value={name}>{name}</option>
+                   ))}
+                   {/* 保存済みだが一覧に無い（抽選可能カードが消えた）パックも選択肢に残し、
+                       黙ってスコープが全カードに変わる事故を防ぐ。取得完了後のみ
+                       「抽選可能カードなし」を付す（取得前/失敗時は素の名前で表示）。 */}
+                   {selectedCollectionName && !collections.includes(selectedCollectionName) && (
+                     <option value={selectedCollectionName}>
+                       {collectionsLoaded
+                         ? t("collections.missing", { name: selectedCollectionName })
+                         : selectedCollectionName}
+                     </option>
+                   )}
+                 </select>
+               </label>
+               <p className="mt-1 text-xs text-gray-400">
+                 {t("collections.help")}
+               </p>
              </div>
            )}
 
@@ -1029,6 +1102,24 @@ export default function ChannelPointSettings({
                                {t("additionalRewards.raidLimited")}
                              </span>
                            )}
+                           {/* Issue #393: 紐付くカードパック。保存済みだが抽選可能カードが
+                               消えたパックは警告色で示し、空抽選の危険を可視化する。
+                               取得完了後のみ警告（取得前/失敗時は素の名前で表示）。 */}
+                           {reward.collection_name ? (
+                             collectionsLoaded && !collections.includes(reward.collection_name) ? (
+                               <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
+                                 {t("collections.missing", { name: reward.collection_name })}
+                               </span>
+                             ) : (
+                               <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                                 {reward.collection_name}
+                               </span>
+                             )
+                           ) : (
+                             <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                               {t("collections.all")}
+                             </span>
+                           )}
                          </div>
                        </div>
                        <button
@@ -1073,7 +1164,7 @@ export default function ChannelPointSettings({
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto] sm:items-center">
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px_180px_auto] sm:items-center">
                  {/*
                    ネイティブの矢印アイコンを残しつつ右側に余白を確保。
                    bg-gray-700 で他のフォーム要素と階調を揃え、フォーカスリングで状態を明示する。
@@ -1097,6 +1188,18 @@ export default function ChannelPointSettings({
                          {!reward.is_enabled && t("options.disabled")}
                        </option>
                      ))}
+                 </select>
+                 {/* Issue #393: この追加報酬に紐付けるカードパック（任意）。 */}
+                 <select
+                   value={selectedAdditionalCollectionName}
+                   onChange={(e) => setSelectedAdditionalCollectionName(e.target.value)}
+                   aria-label={t("collections.additionalLabel")}
+                   className="h-10 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
+                 >
+                   <option value="">{t("collections.all")}</option>
+                   {collections.map((name) => (
+                     <option key={name} value={name}>{name}</option>
+                   ))}
                  </select>
                  {/*
                    ラベルと数値入力を1コンポーネントとして見せるためのコンテナ。

@@ -19,6 +19,8 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { resolveCollectionNameField } from "@/lib/validation/collection-name";
+import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -81,6 +83,13 @@ export async function POST(request: NextRequest) {
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
     const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber } = body;
+
+    // Issue #393: optional card pack name. Centralized helper distinguishes
+    // "omitted" from "present-but-invalid" so bad types are rejected, not ignored.
+    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
+    if (!collectionNameResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
 
     const nameValidation = validateCardName(name)
     if (!nameValidation.valid) {
@@ -171,6 +180,10 @@ export async function POST(request: NextRequest) {
       card_number: cardNumber ?? null,
       drop_rate: dropRate,
     };
+    // Issue #393: persist the pack name when provided (null clears it = all cards).
+    if (collectionNameResult.value !== undefined) {
+      insertData.collection_name = collectionNameResult.value;
+    }
     if (intraRarityWeight !== undefined) {
       insertData.intra_rarity_weight = intraRarityWeight;
     }
@@ -183,6 +196,21 @@ export async function POST(request: NextRequest) {
 
     if (error && isMissingCardNumberColumnError(error)) {
       delete insertData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .insert(insertData)
+        .select()
+        .maybeSingle();
+      card = retryResult.data;
+      error = retryResult.error;
+    }
+
+    // Issue #393: deploy-window safety. If collection_name is not migrated yet,
+    // retry without it so card creation still succeeds (the pack is dropped for
+    // this card; the streamer can re-assign it once the column is live). Mirrors
+    // the card_number missing-column retry above.
+    if (error && isMissingCollectionNameColumn(error) && "collection_name" in insertData) {
+      delete insertData.collection_name;
       const retryResult = await supabaseAdmin
         .from("cards")
         .insert(insertData)

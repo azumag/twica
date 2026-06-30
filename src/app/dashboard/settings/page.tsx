@@ -49,6 +49,7 @@ export default async function SettingsPage() {
       channelPoint={{
         rewardId: streamerData.streamer.channel_point_reward_id,
         rewardName: streamerData.streamer.channel_point_reward_name,
+        collectionName: streamerData.streamer.channel_point_collection_name ?? null,
       }}
       gachaSound={{
         soundUrl: streamerData.streamer.gacha_sound_url ?? null,

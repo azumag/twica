@@ -15,6 +15,8 @@ import {
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+import { resolveCollectionNameField } from "@/lib/validation/collection-name";
+import { checkCollectionHasActiveCards, isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
 
 
 type RarityWeightsValidation =
@@ -173,6 +175,8 @@ export async function POST(request: NextRequest) {
       streamerId,
       channelPointRewardId,
       channelPointRewardName,
+      // メイン報酬に紐付くカードパック名（Issue #393）は body から直接
+      // resolveCollectionNameField で読むため、ここでは分割代入しない。
       // ガチャ効果音設定（オプション）
       gachaSoundUrl,
       gachaSoundEnabled,
@@ -239,6 +243,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
+    // Issue #393: validate the main-reward pack name (null = all cards).
+    const channelPointCollectionResult = resolveCollectionNameField(body, "channelPointCollectionName");
+    if (!channelPointCollectionResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
     // Verify ownership
     const { data: streamer } = await supabaseAdmin
       .from("streamers")
@@ -251,6 +261,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
+    // Issue #393: reject binding the main reward to a pack with no active cards,
+    // which would always resolve to an empty draw pool at redemption time.
+    if (typeof channelPointCollectionResult.value === "string") {
+      const existence = await checkCollectionHasActiveCards(
+        supabaseAdmin,
+        streamer.id,
+        channelPointCollectionResult.value
+      );
+      if (existence === "absent") {
+        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+      }
+    }
+
     // 更新するフィールドを動的に構築
     // チャネルポイント設定と効果音設定の両方に対応
     const updateData: Record<string, unknown> = {};
@@ -261,6 +284,10 @@ export async function POST(request: NextRequest) {
     }
     if (channelPointRewardName !== undefined) {
       updateData.channel_point_reward_name = channelPointRewardName;
+    }
+    // Issue #393: persist the main-reward pack binding (null clears it = all cards).
+    if (channelPointCollectionResult.value !== undefined) {
+      updateData.channel_point_collection_name = channelPointCollectionResult.value;
     }
 
     // ガチャ効果音設定
@@ -342,10 +369,25 @@ export async function POST(request: NextRequest) {
     }
 
     if (Object.keys(updateData).length > 0) {
-      const { error } = await supabaseAdmin
+      let { error } = await supabaseAdmin
         .from("streamers")
         .update(updateData)
         .eq("id", streamerId);
+
+      // Issue #393: deploy-window safety — if channel_point_collection_name is not
+      // migrated yet, retry without it so other settings still persist.
+      if (error && isMissingCollectionNameColumn(error) && "channel_point_collection_name" in updateData) {
+        delete updateData.channel_point_collection_name;
+        if (Object.keys(updateData).length > 0) {
+          const retryResult = await supabaseAdmin
+            .from("streamers")
+            .update(updateData)
+            .eq("id", streamerId);
+          error = retryResult.error;
+        } else {
+          error = null;
+        }
+      }
 
       if (error) {
         return handleDatabaseError(error, "Streamer Settings API: PUT");
