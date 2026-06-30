@@ -18,6 +18,8 @@ import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { resolveCollectionNameField } from "@/lib/validation/collection-name";
+import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 function extractRarityWeights(streamers: unknown): Record<string, number> | null {
@@ -79,6 +81,12 @@ export async function PUT(
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
     const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber } = body;
+
+    // Issue #393: optional card pack name (null clears it = all cards).
+    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
+    if (!collectionNameResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -187,6 +195,7 @@ export async function PUT(
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
     if (rarity !== undefined) updateData.rarity = typeof rarity === "string" ? rarity.trim() : rarity;
+    if (collectionNameResult.value !== undefined) updateData.collection_name = collectionNameResult.value;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
@@ -236,6 +245,21 @@ export async function PUT(
 
     if (error && isMissingCardNumberColumnError(error) && "card_number" in updateData) {
       delete updateData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .update(updateData)
+        .eq("id", id)
+        .select()
+        .maybeSingle();
+      updatedCard = retryResult.data;
+      error = retryResult.error;
+    }
+
+    // Issue #393: deploy-window safety — retry without collection_name if the
+    // column is not migrated yet so other field edits still persist. Mirrors the
+    // card_number retry above.
+    if (error && isMissingCollectionNameColumn(error) && "collection_name" in updateData) {
+      delete updateData.collection_name;
       const retryResult = await supabaseAdmin
         .from("cards")
         .update(updateData)

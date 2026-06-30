@@ -49,6 +49,7 @@ export default async function StreamerSettings({ streamerData }: StreamerSetting
           streamerId={streamerData.streamer.id}
           currentRewardId={streamerData.streamer.channel_point_reward_id}
           currentRewardName={streamerData.streamer.channel_point_reward_name}
+          currentCollectionName={streamerData.streamer.channel_point_collection_name ?? null}
         />
       </div>
 
