@@ -544,7 +544,9 @@ describe('POST /api/streamer/settings', () => {
   it('persists channelPointCollectionName when the pack has active cards', async () => {
     const streamerQuery = createMockQueryBuilder()
     ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+      // Issue #393再設計: channelPointCollectionName は card_pack_names に
+      // 登録済みである必要がある。
+      data: { id: 'streamer123', twitch_user_id: 'streamer123', card_pack_names: ['weapons'] },
       error: null,
     })
     // existence check: cards query awaited directly → thenable {count}
@@ -579,7 +581,8 @@ describe('POST /api/streamer/settings', () => {
   it('rejects binding the main reward to a pack with no active cards (400)', async () => {
     const streamerQuery = createMockQueryBuilder()
     ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+      // 'empty-pack' は登録済み(card_pack_names)だが、アクティブカードが無い。
+      data: { id: 'streamer123', twitch_user_id: 'streamer123', card_pack_names: ['empty-pack'] },
       error: null,
     })
     const cardsQuery = createMockQueryBuilder()
@@ -633,13 +636,13 @@ describe('POST /api/streamer/settings', () => {
     expect(response.status).toBe(400)
   })
 
-  // Issue #269: premium gate for the main-reward pack binding.
-  describe('card-pack premium gate (Issue #269)', () => {
-    it('drops a NEW pack binding on the basic plan but still saves it (200, no DB write, flag set)', async () => {
-      mockGetUserPlan.mockResolvedValue('basic')
+  // Issue #393再設計: channelPointCollectionName は登録済みパック名(または
+  // 現在値と同じ/null)であることを要求するmembership検証。
+  describe('card-pack membership validation (Issue #393再設計)', () => {
+    it('rejects binding the main reward to an unregistered pack name (400)', async () => {
       const streamerQuery = createMockQueryBuilder()
       ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null },
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['characters'] },
         error: null,
       })
 
@@ -658,56 +661,14 @@ describe('POST /api/streamer/settings', () => {
       })
 
       const response = await POST(request)
-      expect(response.status).toBe(200)
-      const data = await response.json()
-      expect(data.success).toBe(true)
-      expect(data.collectionNamePremiumRequired).toBe(true)
-      // Gated: the pack binding itself must never reach the DB write, and the
-      // pack-existence check must be skipped (it would otherwise wrongly 400
-      // on a since-deactivated pack even though nothing is being persisted).
+      expect(response.status).toBe(400)
       expect(streamerQuery.update).not.toHaveBeenCalled()
     })
 
-    it('saves rarityWeights alongside a gated pack-binding attempt on the basic plan (no collateral failure)', async () => {
-      mockGetUserPlan.mockResolvedValue('basic')
+    it('allows resubmitting the SAME pack value even if it was since removed from the registered list (orphaned pack)', async () => {
       const streamerQuery = createMockQueryBuilder()
       ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null },
-        error: null,
-      })
-
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
-        from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          streamerId: 'streamer123',
-          channelPointCollectionName: 'weapons',
-          rarityWeights: { common: 50, rare: 50 },
-        }),
-      })
-
-      const response = await POST(request)
-      expect(response.status).toBe(200)
-      const data = await response.json()
-      expect(data.collectionNamePremiumRequired).toBe(true)
-      // The unrelated field still saves — basic-plan users keep settings access.
-      expect(streamerQuery.update).toHaveBeenCalledWith(
-        expect.objectContaining({ rarity_weights: { common: 50, rare: 50 } })
-      )
-      const updateCall = (streamerQuery.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
-      expect(updateCall).not.toHaveProperty('channel_point_collection_name')
-    })
-
-    it('allows resubmitting the SAME pack value on the basic plan (no-op change, no gate)', async () => {
-      mockGetUserPlan.mockResolvedValue('basic')
-      const streamerQuery = createMockQueryBuilder()
-      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: 'weapons' },
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: 'weapons', card_pack_names: [] },
         error: null,
       })
       const cardsQuery = createMockQueryBuilder()
@@ -732,20 +693,15 @@ describe('POST /api/streamer/settings', () => {
 
       const response = await POST(request)
       expect(response.status).toBe(200)
-      const data = await response.json()
-      expect(data.collectionNamePremiumRequired).toBeUndefined()
       expect(streamerQuery.update).toHaveBeenCalledWith(
         expect.objectContaining({ channel_point_collection_name: 'weapons' })
       )
-      // getUserPlan must not even be consulted for a no-op resubmission.
-      expect(mockGetUserPlan).not.toHaveBeenCalled()
     })
 
-    it('allows clearing an existing pack binding to null on the basic plan', async () => {
-      mockGetUserPlan.mockResolvedValue('basic')
+    it('allows clearing an existing pack binding to null regardless of the registered list', async () => {
       const streamerQuery = createMockQueryBuilder()
       ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: 'weapons' },
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: 'weapons', card_pack_names: [] },
         error: null,
       })
 
@@ -765,18 +721,15 @@ describe('POST /api/streamer/settings', () => {
 
       const response = await POST(request)
       expect(response.status).toBe(200)
-      const data = await response.json()
-      expect(data.collectionNamePremiumRequired).toBeUndefined()
       expect(streamerQuery.update).toHaveBeenCalledWith(
         expect.objectContaining({ channel_point_collection_name: null })
       )
-      expect(mockGetUserPlan).not.toHaveBeenCalled()
     })
 
-    // Self-review regression guard: the ownership-check SELECT now also
-    // reads channel_point_collection_name for the gate's currentValue. If
-    // that column isn't migrated yet, the SELECT itself errors (42703) and
-    // must NOT 403 an otherwise-valid settings save unrelated to packs.
+    // Self-review regression guard (carried over from #269): the
+    // ownership-check SELECT reads channel_point_collection_name AND
+    // card_pack_names. Either column being undeployed must not 403/break
+    // unrelated settings saves.
     it('still saves other settings when channel_point_collection_name is not deployed yet (deploy window)', async () => {
       const selectQuery = createMockQueryBuilder()
       ;(selectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -815,6 +768,279 @@ describe('POST /api/streamer/settings', () => {
       expect(updateQuery.update).toHaveBeenCalledWith(
         expect.objectContaining({ channel_point_reward_id: 'reward-123' })
       )
+    })
+
+    it('still saves other settings when card_pack_names is not deployed yet (deploy window)', async () => {
+      const selectQuery = createMockQueryBuilder()
+      ;(selectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: null,
+        error: { code: '42703', message: 'column streamers.card_pack_names does not exist' },
+      })
+      const retrySelectQuery = createMockQueryBuilder()
+      ;(retrySelectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', channel_point_collection_name: null },
+        error: null,
+      })
+      const updateQuery = createMockQueryBuilder()
+      let selectCalls = 0
+      const fromMock = vi.fn(() => {
+        selectCalls += 1
+        if (selectCalls === 1) return selectQuery
+        if (selectCalls === 2) return retrySelectQuery
+        return updateQuery
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointRewardId: 'reward-123',
+          channelPointRewardName: 'Test Reward',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(updateQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_reward_id: 'reward-123' })
+      )
+    })
+  })
+
+  // Issue #269再設計: プレミアムゲートは「パック名一覧への新規追加」に移設。
+  describe('cardPackNames management + premium gate (Issue #269再設計)', () => {
+    it('rejects non-array cardPackNames (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: 'weapons' }),
+      }))
+
+      expect(response.status).toBe(400)
+    })
+
+    it('persists new pack names on a premium plan and returns the persisted list', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: [] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons', 'characters'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNames).toEqual(['weapons', 'characters'])
+      expect(data.cardPackNamesPremiumRequired).toBeUndefined()
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ card_pack_names: ['weapons', 'characters'] })
+      )
+    })
+
+    it('drops NEW pack additions on the basic plan but keeps existing entries and removals (200, flag set)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons'] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      // Request: keep "weapons" (existing), add "armor" (new, should be gated).
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons', 'armor'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNames).toEqual(['weapons'])
+      expect(data.cardPackNamesPremiumRequired).toBe(true)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ card_pack_names: ['weapons'] })
+      )
+    })
+
+    it('allows removing pack names on the basic plan (never gated)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons', 'characters'] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNames).toEqual(['weapons'])
+      expect(data.cardPackNamesPremiumRequired).toBeUndefined()
+      // Removal-only changes never consult getUserPlan.
+      expect(mockGetUserPlan).not.toHaveBeenCalled()
+    })
+
+    it('does not call getUserPlan when cardPackNames is unchanged (no-op)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons'] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(mockGetUserPlan).not.toHaveBeenCalled()
+    })
+
+    // 自己レビューで発見した重大バグの回帰テスト: SELECT側は card_pack_names
+    // を正常に読めても、その後のUPDATEで同列が見つからずフォールバックする
+    // 稀なケース(スキーマキャッシュの伝播遅延等)で、実際には保存されて
+    // いないのに「この内容で保存できた」と偽ってはならない。
+    it('reports the pre-write list (not the requested one) and a deploy-window flag when the UPDATE itself drops card_pack_names', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons'] },
+        error: null,
+      })
+      // First update attempt fails because card_pack_names isn't actually
+      // writable yet (e.g. PostgREST schema-cache lag), even though the
+      // SELECT above succeeded moments earlier.
+      ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        eq: vi.fn().mockResolvedValue({
+          error: { code: 'PGRST204', message: "Could not find the 'card_pack_names' column" },
+        }),
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons', 'armor'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      // Must report the list as it actually is in the DB (unchanged), not
+      // the requested ['weapons', 'armor'] which never got persisted.
+      expect(data.cardPackNames).toEqual(['weapons'])
+      expect(data.cardPackNamesSkippedDeployWindow).toBe(true)
+    })
+  })
+
+  // codexチームレビュー指摘の回帰テスト: 同一リクエストで cardPackNames の
+  // 追加とその新パックへの channelPointCollectionName 紐付けを同時に送った
+  // 場合、後者のmembership検証は「ゲート適用後の persistedCardPackNames」に
+  // 対して行われる(リクエスト受信時点の古い一覧に対してではない)。
+  describe('same-request ordering: cardPackNames gate → channelPointCollectionName membership', () => {
+    it('accepts binding to a pack added in the SAME request on a premium plan', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: [] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 1, error: null })
+        return cardsQuery
+      }
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          cardPackNames: ['weapons'],
+          channelPointCollectionName: 'weapons',
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ card_pack_names: ['weapons'], channel_point_collection_name: 'weapons' })
+      )
+    })
+
+    it('rejects binding to a pack whose addition was gated out on the basic plan in the SAME request', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: [] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          cardPackNames: ['weapons'],
+          channelPointCollectionName: 'weapons',
+        }),
+      }))
+
+      // "weapons" was dropped from persistedCardPackNames by the gate, so
+      // binding the main reward to it must fail membership validation.
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
     })
   })
 })

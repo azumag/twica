@@ -1,53 +1,41 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { isCollectionChangeGated } from "@/lib/plan-gate";
+import { isNewCardPackNameAdditionGated } from "@/lib/plan-gate";
 import { getUserPlan } from "@/lib/plan";
 
 vi.mock("@/lib/plan");
 
 const mockGetUserPlan = vi.mocked(getUserPlan);
 
-describe("isCollectionChangeGated (Issue #269)", () => {
+describe("isNewCardPackNameAdditionGated (Issue #269再設計)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("is not gated and never calls getUserPlan when newValue is undefined (field omitted)", async () => {
-    const result = await isCollectionChangeGated("user1", undefined, "weapons");
+  it("is not gated and never calls getUserPlan when addedNames is empty (no-op or removal-only save)", async () => {
+    const result = await isNewCardPackNameAdditionGated("user1", []);
     expect(result).toBe(false);
     expect(mockGetUserPlan).not.toHaveBeenCalled();
   });
 
-  it("is not gated and never calls getUserPlan when clearing to null", async () => {
-    const result = await isCollectionChangeGated("user1", null, "weapons");
-    expect(result).toBe(false);
-    expect(mockGetUserPlan).not.toHaveBeenCalled();
-  });
-
-  it("is not gated and never calls getUserPlan when resubmitting the current value", async () => {
-    const result = await isCollectionChangeGated("user1", "weapons", "weapons");
-    expect(result).toBe(false);
-    expect(mockGetUserPlan).not.toHaveBeenCalled();
-  });
-
-  it("is gated when assigning a NEW value on the basic plan", async () => {
+  it("is gated when adding a new pack name on the basic plan", async () => {
     mockGetUserPlan.mockResolvedValue("basic");
-    const result = await isCollectionChangeGated("user1", "weapons", null);
+    const result = await isNewCardPackNameAdditionGated("user1", ["weapons"]);
     expect(result).toBe(true);
     expect(mockGetUserPlan).toHaveBeenCalledWith("user1");
   });
 
-  it("is gated when changing from one pack to a different pack on the basic plan", async () => {
-    mockGetUserPlan.mockResolvedValue("basic");
-    const result = await isCollectionChangeGated("user1", "armor", "weapons");
-    expect(result).toBe(true);
-  });
-
   it.each(["support", "patron", "twitch_sub"] as const)(
-    "is NOT gated for a NEW value on the %s plan",
+    "is NOT gated when adding a new pack name on the %s plan",
     async (plan) => {
       mockGetUserPlan.mockResolvedValue(plan);
-      const result = await isCollectionChangeGated("user1", "weapons", null);
+      const result = await isNewCardPackNameAdditionGated("user1", ["weapons"]);
       expect(result).toBe(false);
     }
   );
+
+  it("is gated when adding multiple new pack names on the basic plan", async () => {
+    mockGetUserPlan.mockResolvedValue("basic");
+    const result = await isNewCardPackNameAdditionGated("user1", ["weapons", "armor"]);
+    expect(result).toBe(true);
+  });
 });

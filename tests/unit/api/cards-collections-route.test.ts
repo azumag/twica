@@ -18,15 +18,6 @@ const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 
-function thenable(data: unknown, error: unknown = null) {
-  const q = createMockQueryBuilder();
-  ;(q as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-    resolve({ data, error });
-    return q;
-  };
-  return q;
-}
-
 function makeRequest(streamerId?: string) {
   const url = streamerId
     ? `http://localhost/api/cards/collections?streamerId=${streamerId}`
@@ -34,25 +25,32 @@ function makeRequest(streamerId?: string) {
   return new NextRequest(url);
 }
 
-// streamer ownership query resolves via maybeSingle; the cards query is thenable.
+// Issue #393再設計: データソースは streamers.card_pack_names(事前登録一覧)。
+// GETは所有権確認と同一クエリでこの列も取得する。
 function mockAdmin(opts: {
-  streamer?: { id: string } | null;
+  streamer?: { id: string; card_pack_names?: string[] } | null;
   streamerError?: unknown;
-  cards?: Array<{ collection_name: string | null }>;
-  cardsError?: unknown;
+  fallbackStreamer?: { id: string } | null;
 }) {
   const streamerQuery = createMockQueryBuilder();
-  ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+  (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
     data: opts.streamer ?? null,
     error: opts.streamerError ?? null,
   });
-  const cardsQuery = thenable(opts.cards ?? [], opts.cardsError ?? null);
-
+  const fallbackQuery = createMockQueryBuilder();
+  (fallbackQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+    data: opts.fallbackStreamer ?? null,
+    error: null,
+  });
+  let calls = 0;
   mockGetSupabaseAdmin.mockReturnValue({
-    from: vi.fn((table: string) => (table === "streamers" ? streamerQuery : cardsQuery)),
+    from: vi.fn(() => {
+      calls += 1;
+      return calls === 1 ? streamerQuery : fallbackQuery;
+    }),
   } as unknown as ReturnType<typeof getSupabaseAdmin>);
 
-  return { streamerQuery, cardsQuery };
+  return { streamerQuery, fallbackQuery };
 }
 
 describe("GET /api/cards/collections", () => {
@@ -76,21 +74,26 @@ describe("GET /api/cards/collections", () => {
     });
   });
 
-  it("returns distinct, sorted pack names for active cards", async () => {
+  it("returns the streamer's pre-defined pack names", async () => {
     mockAdmin({
-      streamer: { id: "streamer-1" },
-      cards: [
-        { collection_name: "weapons" },
-        { collection_name: "characters" },
-        { collection_name: "weapons" },
-        { collection_name: " characters " },
-      ],
+      streamer: { id: "streamer-1", card_pack_names: ["weapons", "characters"] },
     });
 
     const res = await GET(makeRequest("streamer-1"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.collections).toEqual(["characters", "weapons"]);
+    expect(body.collections).toEqual(["weapons", "characters"]);
+  });
+
+  it("returns an empty list when no packs are registered", async () => {
+    mockAdmin({
+      streamer: { id: "streamer-1", card_pack_names: [] },
+    });
+
+    const res = await GET(makeRequest("streamer-1"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.collections).toEqual([]);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -127,16 +130,28 @@ describe("GET /api/cards/collections", () => {
     expect(res.status).toBe(429);
   });
 
-  it("returns an empty list when the collection_name column is not deployed yet (READ 42703)", async () => {
+  it("returns an empty list when card_pack_names is not deployed yet (READ 42703), after confirming ownership", async () => {
     // Real PostgREST returns 42703 ("does not exist") for a SELECT on a missing
-    // column, not PGRST204 — so the deploy-window fallback must accept that shape.
+    // column, not PGRST204 — the deploy-window fallback must accept that shape,
+    // and must still verify ownership via a fallback query before responding.
     mockAdmin({
-      streamer: { id: "streamer-1" },
-      cardsError: { code: "42703", message: "column cards.collection_name does not exist" },
+      streamer: undefined,
+      streamerError: { code: "42703", message: "column streamers.card_pack_names does not exist" },
+      fallbackStreamer: { id: "streamer-1" },
     });
     const res = await GET(makeRequest("streamer-1"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.collections).toEqual([]);
+  });
+
+  it("returns 403 during the deploy window if the session does not own the streamer", async () => {
+    mockAdmin({
+      streamer: undefined,
+      streamerError: { code: "42703", message: "column streamers.card_pack_names does not exist" },
+      fallbackStreamer: null,
+    });
+    const res = await GET(makeRequest("streamer-1"));
+    expect(res.status).toBe(403);
   });
 });

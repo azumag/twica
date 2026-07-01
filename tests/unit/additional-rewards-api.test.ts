@@ -5,17 +5,12 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
-import { getUserPlan } from '@/lib/plan'
 import { createMockQueryBuilder } from '../utils/supabase-mock'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/request-validation')
-// Issue #269: pre-existing tests below predate plan gating and assume an
-// authorized (non-basic) streamer; default to premium so they keep
-// exercising collection-name persistence. Gate-specific tests override this.
-vi.mock('@/lib/plan')
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
   return {
@@ -29,7 +24,6 @@ const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 const mockValidateContentType = vi.mocked(validateContentType)
-const mockGetUserPlan = vi.mocked(getUserPlan)
 
 function createThenableQuery(data: unknown, error: unknown = null) {
   const query = createMockQueryBuilder()
@@ -61,7 +55,6 @@ describe('/api/streamer/additional-rewards raid options', () => {
     })
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
     mockValidateContentType.mockReturnValue(null)
-    mockGetUserPlan.mockResolvedValue('support')
   })
 
   it('persists drawCount and raid-limited options for an additional reward', async () => {
@@ -112,7 +105,8 @@ describe('/api/streamer/additional-rewards raid options', () => {
   it('persists collectionName when the pack has active cards', async () => {
     const streamerQuery = createMockQueryBuilder()
     ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'streamer-1', channel_point_reward_id: 'main-reward' },
+      // Issue #393再設計: collectionName は card_pack_names に登録済みである必要がある。
+      data: { id: 'streamer-1', channel_point_reward_id: 'main-reward', card_pack_names: ['weapons'] },
       error: null,
     })
     // existence check: cards query is awaited directly → must be thenable {count}
@@ -149,7 +143,8 @@ describe('/api/streamer/additional-rewards raid options', () => {
   it('rejects an additional reward bound to a pack with no active cards (400)', async () => {
     const streamerQuery = createMockQueryBuilder()
     ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'streamer-1', channel_point_reward_id: 'main-reward' },
+      // 'empty-pack' は登録済み(card_pack_names)だが、アクティブカードが無い。
+      data: { id: 'streamer-1', channel_point_reward_id: 'main-reward', card_pack_names: ['empty-pack'] },
       error: null,
     })
     const cardsQuery = createMockQueryBuilder()
@@ -192,20 +187,17 @@ describe('/api/streamer/additional-rewards raid options', () => {
     expect(response.status).toBe(400)
   })
 
-  // Issue #269: premium gate for additional-reward pack bindings.
-  describe('card-pack premium gate (Issue #269)', () => {
-    it('drops a pack binding on the basic plan but still creates the reward (200, flag set)', async () => {
-      mockGetUserPlan.mockResolvedValue('basic')
+  // Issue #393再設計: 追加報酬は更新エンドポイントが無いため、非null値は常に
+  // 「新規紐付け」として扱われ、事前登録済み(card_pack_names)であることを要求する。
+  // #269のプレミアムゲートは廃止(パック管理モーダルでの追加時のみに移設)。
+  describe('card-pack membership validation (Issue #393再設計)', () => {
+    it('rejects binding an unregistered pack name (400)', async () => {
       const streamerQuery = createMockQueryBuilder()
       ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: { id: 'streamer-1', channel_point_reward_id: 'main-reward' },
+        data: { id: 'streamer-1', channel_point_reward_id: 'main-reward', card_pack_names: ['characters'] },
         error: null,
       })
       const insertQuery = createMockQueryBuilder()
-      ;(insertQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: { id: 'additional-1', reward_id: 'extra-reward', collection_name: null },
-        error: null,
-      })
       const fromMock = vi.fn((table: string) => {
         if (table === 'streamers') return streamerQuery
         if (table === 'streamer_additional_gacha_rewards') return insertQuery
@@ -221,24 +213,16 @@ describe('/api/streamer/additional-rewards raid options', () => {
         body: JSON.stringify({ rewardId: 'extra-reward', rewardName: 'Weapons', collectionName: 'weapons' }),
       }))
 
-      expect(response.status).toBe(200)
-      const data = await response.json()
-      expect(data.success).toBe(true)
-      expect(data.collectionNamePremiumRequired).toBe(true)
-      // Gated: collection_name must never reach the insert payload, and the
-      // pack-existence check (which needs the 'cards' table) must be skipped.
-      expect(insertQuery.insert).toHaveBeenCalledWith(
-        expect.not.objectContaining({ collection_name: expect.anything() })
-      )
+      expect(response.status).toBe(400)
+      expect(insertQuery.insert).not.toHaveBeenCalled()
     })
 
     // Non-regression: collectionName-less reward creation is pre-#393
-    // functionality and must keep working on the basic plan.
-    it('still creates a reward with no pack on the basic plan (non-regression)', async () => {
-      mockGetUserPlan.mockResolvedValue('basic')
+    // functionality and must keep working regardless of card_pack_names.
+    it('still creates a reward with no pack (non-regression)', async () => {
       const streamerQuery = createMockQueryBuilder()
       ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: { id: 'streamer-1', channel_point_reward_id: 'main-reward' },
+        data: { id: 'streamer-1', channel_point_reward_id: 'main-reward', card_pack_names: [] },
         error: null,
       })
       const insertQuery = createMockQueryBuilder()
@@ -264,9 +248,52 @@ describe('/api/streamer/additional-rewards raid options', () => {
       expect(response.status).toBe(200)
       const data = await response.json()
       expect(data.success).toBe(true)
-      expect(data.collectionNamePremiumRequired).toBeUndefined()
-      // getUserPlan must not even be consulted when no pack is being bound.
-      expect(mockGetUserPlan).not.toHaveBeenCalled()
+    })
+
+    // Self-review regression guard (carried over from #269): the
+    // ownership-check SELECT reads card_pack_names. Undeployed must not
+    // break reward creation (only the pack binding is dropped).
+    it('creates the reward but drops the pack binding when card_pack_names is not deployed yet (deploy window)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: null,
+        error: { code: '42703', message: 'column streamers.card_pack_names does not exist' },
+      })
+      const retryStreamerQuery = createMockQueryBuilder()
+      ;(retryStreamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer-1', channel_point_reward_id: 'main-reward' },
+        error: null,
+      })
+      const insertQuery = createMockQueryBuilder()
+      ;(insertQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'additional-1', reward_id: 'extra-reward', collection_name: null },
+        error: null,
+      })
+      let streamerCalls = 0
+      const fromMock = vi.fn((table: string) => {
+        if (table === 'streamers') {
+          streamerCalls += 1
+          return streamerCalls === 1 ? streamerQuery : retryStreamerQuery
+        }
+        if (table === 'streamer_additional_gacha_rewards') return insertQuery
+        return createMockQueryBuilder()
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost/api/streamer/additional-rewards', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rewardId: 'extra-reward', rewardName: 'Weapons', collectionName: 'weapons' }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.collectionNameSkippedDeployWindow).toBe(true)
+      expect(insertQuery.insert).toHaveBeenCalledWith(
+        expect.not.objectContaining({ collection_name: expect.anything() })
+      )
     })
   })
 

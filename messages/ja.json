@@ -60,11 +60,9 @@
       "cardNumberPlaceholder": "例: 12",
       "cardNumberHelp": "空欄なら自動採番されます",
       "collectionName": "カードパック",
-      "collectionNamePlaceholder": "例: キャラ / 武器 (空欄=未分類)",
-      "collectionNameHelp": "同じパック名のカードだけがチャネポ報酬の抽選対象になります",
-      "collectionNameClear": "✕ 解除",
-      "collectionNamePremiumRequired": "カードパックの新規登録・変更には支援プランまたはTwitchサブスクが必要です(解除のみ可能)",
-      "collectionNamePremiumRequiredSaved": "カードは保存されましたが、パック設定の変更には支援プランまたはTwitchサブスクが必要です",
+      "collectionNameUnclassified": "未分類（すべてのカード）",
+      "collectionNameHelp": "同じパック名のカードだけがチャネポ報酬の抽選対象になります。パック名は「パック管理」で事前に登録してください。",
+      "collectionNameDeployWindow": "カードは保存されましたが、パック機能が準備中のためパック設定は反映されませんでした。しばらくしてから再度お試しください。",
       "dropRate": "出現確率",
       "intraRarityWeight": "レアリティ内での排出確率",
       "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
@@ -215,6 +213,27 @@
       "errorDuplicate": "同じレアリティが既に存在します",
       "errorDefault": "デフォルトのレアリティは追加できません（常に選択可能です）",
       "errorMax": "カスタムレアリティは最大{max}件までです"
+    },
+    "cardPackModal": {
+      "button": "パック管理",
+      "title": "カードパック管理",
+      "description": "カード作成時やチャネルポイント設定で選択できるパック名を管理します。ここで登録した名前だけが選択肢になります。",
+      "addPlaceholder": "新しいパック名",
+      "add": "追加",
+      "empty": "登録済みのパックはまだありません",
+      "deleteNote": "削除しても既存カード・報酬の紐付けは変わりません（新規選択の候補から外れるだけです）。",
+      "save": "保存",
+      "saving": "保存中...",
+      "saveFailed": "保存に失敗しました",
+      "confirmClose": "未保存の変更があります。閉じますか？",
+      "errorEmpty": "パック名を入力してください",
+      "errorTooLong": "パック名は80文字以内で入力してください",
+      "errorInvalidChars": "使用できない文字が含まれています",
+      "errorDuplicate": "同じパック名が既に存在します",
+      "errorMax": "パックは最大{max}件までです",
+      "premiumRequired": "新しいパックの追加には支援プランまたはTwitchサブスクが必要です。既存パックの削除は反映されました。",
+      "premiumRequiredHint": "新しいパックの追加には支援プランまたはTwitchサブスクが必要です（削除は常に可能です）。",
+      "deployWindow": "パック機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。"
     },
     "batchDropRate": {
       "button": "確率一括調整",
@@ -573,10 +592,8 @@
       "mainLabel": "メイン報酬のカードパック",
       "additionalLabel": "追加報酬のカードパック",
       "all": "すべてのカード",
-      "help": "カード管理で設定したパック名ごとに、排出対象を絞り込めます。",
-      "missing": "{name}(抽選可能カードなし)",
-      "premiumRequired": "新しいパックの紐付けには支援プランまたはTwitchサブスクが必要です(解除のみ可能)",
-      "premiumRequiredSaved": "保存しましたが、パック設定の変更には支援プランまたはTwitchサブスクが必要です"
+      "help": "カード管理の「パック管理」で登録したパック名ごとに、排出対象を絞り込めます。抽選可能なカードが1枚も無いパックを紐付けると保存時にエラーになります。",
+      "missing": "{name}(パック管理で登録解除済み。現在の紐付けは維持されています)"
     }
   },
   "gachaHistory": {

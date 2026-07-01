@@ -54,7 +54,8 @@ export default async function CardsPage() {
   const plan = await getUserPlan(session.twitchUserId);
   const maxImageWidth = PLAN_MAX_IMAGE_WIDTH[plan];
   const availableWidths = PLAN_AVAILABLE_WIDTHS[plan];
-  // Issue #269: card-pack (collection_name) assignment requires a premium plan.
+  // Issue #269再設計: 新規カードパック名の登録(パック管理モーダルでの追加)
+  // にのみプランが必要。既存パックの選択・解除はゲート対象外。
   const isPremium = plan !== "basic";
 
   return (
@@ -63,6 +64,7 @@ export default async function CardsPage() {
       initialCards={initialCards}
       initialRarityWeights={streamerData.streamer.rarity_weights}
       initialCustomRarities={streamerData.streamer.custom_rarities ?? []}
+      initialCardPackNames={streamerData.streamer.card_pack_names ?? []}
       viewMode="list"
       showViewToggle={true}
       maxImageWidth={maxImageWidth}

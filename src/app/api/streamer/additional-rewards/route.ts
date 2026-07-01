@@ -7,9 +7,12 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger";
-import { resolveCollectionNameField } from "@/lib/validation/collection-name";
-import { checkCollectionHasActiveCards, isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
-import { isCollectionChangeGated } from "@/lib/plan-gate";
+import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
+import {
+  checkCollectionHasActiveCards,
+  isMissingCollectionNameColumn,
+  isMissingCardPackNamesColumnError,
+} from "@/lib/collections/collection-existence";
 
 function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? "";
@@ -193,11 +196,25 @@ export async function POST(request: NextRequest) {
 
     // Get streamer info to verify ownership
     // ストリーマー情報を取得して所有権を確認
-    const { data: streamer } = await supabaseAdmin
+    let { data: streamer, error: streamerSelectError } = await supabaseAdmin
       .from("streamers")
-      .select("id, channel_point_reward_id")
+      .select("id, channel_point_reward_id, card_pack_names")
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
+
+    // Issue #393再設計: card_pack_names がデプロイ窓で未検出の場合、それだけ
+    // 外して再試行する(所有権確認・メイン報酬確認は継続できるようにする)。
+    let cardPackNamesUnavailable = false;
+    if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("streamers")
+        .select("id, channel_point_reward_id")
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = retryResult.data ? { ...retryResult.data, card_pack_names: [] as string[] } : null;
+      streamerSelectError = retryResult.error;
+      cardPackNamesUnavailable = true;
+    }
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
@@ -221,22 +238,31 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Issue #269: binding a pack to a new additional reward requires a
-    // premium plan. There is no update path for additional rewards (only
-    // create/delete), so any non-null value is a new registration attempt.
-    // Gated requests still create the reward — only the pack binding is
-    // dropped — so reward creation itself stays available on the basic plan.
-    const collectionNamePremiumRequired = await isCollectionChangeGated(
-      session.twitchUserId,
-      collectionNameResult.value,
-      null
-    );
+    // Issue #393再設計: 追加報酬に更新エンドポイントは無い(作成/削除のみ)ため、
+    // 非null値は常に「新規紐付け」として扱い、事前登録済みパック名であることを
+    // 要求する(Issue #269のプレミアムゲートは廃止。パック管理モーダルでの
+    // 追加時のみゲートする設計に変更したため、ここではmembership検証のみ行う)。
+    const registeredPackNames: string[] = Array.isArray(streamer.card_pack_names)
+      ? streamer.card_pack_names
+      : [];
+    if (
+      typeof collectionNameResult.value === "string" &&
+      !cardPackNamesUnavailable &&
+      !isRegisteredOrUnchanged(collectionNameResult.value, null, registeredPackNames)
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+    }
+
+    // デプロイ窓でmembership検証ができない間は、新しいパック紐付けの書き込み
+    // 自体を見送る(報酬自体の作成は続行)。
+    const collectionNameSkippedDeployWindow =
+      cardPackNamesUnavailable && typeof collectionNameResult.value === "string";
 
     // Issue #393: when a pack is bound, ensure it actually has active cards so the
     // reward never resolves to an empty draw pool at redemption time. Skip the
     // check during the deploy window (column not migrated yet) and when the
-    // assignment is gated (it will not be persisted, so existence is moot).
-    if (typeof collectionNameResult.value === "string" && !collectionNamePremiumRequired) {
+    // assignment could not be persisted anyway.
+    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
       const existence = await checkCollectionHasActiveCards(
         supabaseAdmin,
         streamer.id,
@@ -258,7 +284,7 @@ export async function POST(request: NextRequest) {
       draw_count: normalizedDrawCount,
       is_raid_limited: isRaidLimited ?? false,
     };
-    if (typeof collectionNameResult.value === "string" && !collectionNamePremiumRequired) {
+    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
       insertPayload.collection_name = collectionNameResult.value;
     }
 
@@ -314,7 +340,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       reward: newReward,
-      ...(collectionNamePremiumRequired ? { collectionNamePremiumRequired: true } : {}),
+      ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Additional Rewards API: POST");

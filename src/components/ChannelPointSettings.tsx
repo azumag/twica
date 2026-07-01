@@ -51,10 +51,6 @@ interface ChannelPointSettingsProps {
   currentRewardName: string | null;
   // Issue #393: pack currently bound to the main reward (null = all cards)
   currentCollectionName?: string | null;
-  // Issue #269: whether the streamer's plan allows new/changed card-pack
-  // bindings. Defaults to false (fail-closed) so existing call sites that
-  // don't pass it never accidentally grant the premium-only capability.
-  isPremium?: boolean;
   /**
    * compact: シンプル表示モード用の縮約レンダリング。
    * EventSub 診断パネル / 追加報酬セクション / 詳細エラーリストを隠し、
@@ -75,7 +71,6 @@ export default function ChannelPointSettings({
   currentRewardId,
   currentRewardName,
   currentCollectionName = null,
-  isPremium = false,
   compact = false,
 }: ChannelPointSettingsProps) {
   const t = useTranslations("channelPointSettings");
@@ -86,7 +81,7 @@ export default function ChannelPointSettings({
   // Issue #393: pack selections + available pack list
   const [selectedCollectionName, setSelectedCollectionName] = useState(currentCollectionName || "");
   const [collections, setCollections] = useState<string[]>([]);
-  // collectionsLoaded: true のときだけ「抽選可能カードなし」警告を出す。
+  // collectionsLoaded: true のときだけ「登録解除済み」警告を出す。
   // 取得前/取得失敗時に実在パックを誤警告しないためのガード。
   const [collectionsLoaded, setCollectionsLoaded] = useState(false);
   const [selectedAdditionalCollectionName, setSelectedAdditionalCollectionName] = useState("");
@@ -97,11 +92,6 @@ export default function ChannelPointSettings({
   const [disconnecting, setDisconnecting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  // Issue #269: set when a save succeeded but a card-pack binding was dropped
-  // because the plan doesn't allow new registrations. Kept separate from
-  // `message` (which the EventSub flow overwrites several times after the
-  // settings save) so the notice survives until the next save attempt.
-  const [collectionPlanNotice, setCollectionPlanNotice] = useState(false);
   const [eventSubStatus, setEventSubStatus] = useState<EventSubStatus>("none");
   const [raidEventSubStatus, setRaidEventSubStatus] = useState<EventSubStatus>("none");
   const [raidEventSubWarning, setRaidEventSubWarning] = useState("");
@@ -396,11 +386,6 @@ export default function ChannelPointSettings({
         return;
       }
 
-      // Issue #269: the save succeeded, but the server may have dropped the
-      // pack binding if the plan doesn't allow new registrations.
-      const settingsData = await settingsResponse.json().catch(() => null);
-      setCollectionPlanNotice(settingsData?.collectionNamePremiumRequired === true);
-
       // Subscribe to EventSub
       const eventSubResponse = await fetch("/api/twitch/eventsub/subscribe", {
         method: "POST",
@@ -528,9 +513,6 @@ export default function ChannelPointSettings({
 
       // 3. Update state
       // 状態を更新
-      // Issue #269: the reward was created, but the server may have dropped
-      // the pack binding if the plan doesn't allow new registrations.
-      setCollectionPlanNotice(dbData?.collectionNamePremiumRequired === true);
       setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
       setSelectedAdditionalRewardId("");
       setSelectedAdditionalCollectionName("");
@@ -817,17 +799,6 @@ export default function ChannelPointSettings({
         {getEventSubStatusBadge()}
       </div>
 
-      {/* Issue #269: saved successfully, but a card-pack binding was dropped
-          because the plan doesn't allow new registrations. */}
-      {collectionPlanNotice && (
-        <div className="mb-4 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3">
-          <p className="text-sm text-yellow-300">{t("collections.premiumRequiredSaved")}</p>
-          <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
-            支援特典について
-          </a>
-        </div>
-      )}
-
        {needsReauth ? (
          // スコープ不足時のstep-up再認証導線。
          // 初回ログインではチャネルポイント系スコープを要求しないため、
@@ -908,11 +879,9 @@ export default function ChannelPointSettings({
                <p className="mt-1 text-xs text-gray-500">
                  {t("form.id")} {selectedRewardId}
                </p>
-               {/* Issue #393: メイン報酬に紐付けるカードパック。
-                   Issue #269: 新規登録・変更には支援プラン/Twitchサブスクが必要。
-                   <select> 自体はdisabledにせず、空("全カード")以外のoptionだけ
-                   disabledにすることで、選択中パックの表示維持と解除(空への変更)は
-                   常に可能なまま、新しいパックへの変更だけを防ぐ。 */}
+               {/* Issue #393再設計: メイン報酬に紐付けるカードパック。パック管理
+                   (カード管理画面)で事前登録した一覧から選ぶだけで、ここでは
+                   もうゲート対象外(新規登録はパック管理モーダル側でのみ発生)。 */}
                <label className="mt-3 block text-xs text-gray-300">
                  {t("collections.mainLabel")}
                  <select
@@ -922,11 +891,15 @@ export default function ChannelPointSettings({
                  >
                    <option value="">{t("collections.all")}</option>
                    {collections.map((name) => (
-                     <option key={name} value={name} disabled={!isPremium}>{name}</option>
+                     <option key={name} value={name}>{name}</option>
                    ))}
-                   {/* 保存済みだが一覧に無い（抽選可能カードが消えた）パックも選択肢に残し、
-                       黙ってスコープが全カードに変わる事故を防ぐ。取得完了後のみ
-                       「抽選可能カードなし」を付す（取得前/失敗時は素の名前で表示）。 */}
+                   {/* 保存済みだが一覧に無い(パック管理で登録解除された)パックも
+                       選択肢に残し、黙ってスコープが全カードに変わる事故を防ぐ。
+                       #393再設計後、この一覧は「事前登録済みパック名」のみを
+                       返す(アクティブカードの有無は問わない)ため、ここに来る
+                       ケースは常に「登録解除済み」であり「抽選可能カードなし」
+                       ではない。取得完了後のみラベルを付す
+                       （取得前/失敗時は素の名前で表示）。 */}
                    {selectedCollectionName && !collections.includes(selectedCollectionName) && (
                      <option value={selectedCollectionName}>
                        {collectionsLoaded
@@ -937,7 +910,7 @@ export default function ChannelPointSettings({
                  </select>
                </label>
                <p className="mt-1 text-xs text-gray-400">
-                 {isPremium ? t("collections.help") : t("collections.premiumRequired")}
+                 {t("collections.help")}
                </p>
              </div>
            )}
@@ -1135,9 +1108,9 @@ export default function ChannelPointSettings({
                                {t("additionalRewards.raidLimited")}
                              </span>
                            )}
-                           {/* Issue #393: 紐付くカードパック。保存済みだが抽選可能カードが
-                               消えたパックは警告色で示し、空抽選の危険を可視化する。
-                               取得完了後のみ警告（取得前/失敗時は素の名前で表示）。 */}
+                           {/* Issue #393再設計: 紐付くカードパック。パック管理で
+                               登録解除された(=事前登録一覧に無い)パックは警告色で
+                               示す。取得完了後のみ警告（取得前/失敗時は素の名前で表示）。 */}
                            {reward.collection_name ? (
                              collectionsLoaded && !collections.includes(reward.collection_name) ? (
                                <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
@@ -1222,9 +1195,9 @@ export default function ChannelPointSettings({
                        </option>
                      ))}
                  </select>
-                 {/* Issue #393: この追加報酬に紐付けるカードパック（任意）。
-                     Issue #269: 新規追加報酬は常に作成可能。パックの新規紐付けのみ
-                     非空optionをdisabledにして支援プラン/Twitchサブスク限定にする。 */}
+                 {/* Issue #393再設計: この追加報酬に紐付けるカードパック（任意）。
+                     パック管理で事前登録した一覧から選ぶだけで、ここではゲート
+                     対象外(報酬自体の新規作成は常に可能)。 */}
                  <select
                    value={selectedAdditionalCollectionName}
                    onChange={(e) => setSelectedAdditionalCollectionName(e.target.value)}
@@ -1233,7 +1206,7 @@ export default function ChannelPointSettings({
                  >
                    <option value="">{t("collections.all")}</option>
                    {collections.map((name) => (
-                     <option key={name} value={name} disabled={!isPremium}>{name}</option>
+                     <option key={name} value={name}>{name}</option>
                    ))}
                  </select>
                  {/*
