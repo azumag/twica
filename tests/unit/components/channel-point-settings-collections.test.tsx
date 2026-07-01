@@ -47,7 +47,7 @@ function mockFetch(collections: string[] = ["characters", "weapons"]): FetchMock
   return fetchMock;
 }
 
-function renderComponent() {
+function renderComponent(props: Partial<React.ComponentProps<typeof ChannelPointSettings>> = {}) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <ChannelPointSettings
@@ -55,6 +55,7 @@ function renderComponent() {
         currentRewardId="main-reward"
         currentRewardName="Main"
         currentCollectionName={null}
+        {...props}
       />
     </NextIntlClientProvider>
   );
@@ -169,5 +170,81 @@ describe("ChannelPointSettings card pack dropdowns", () => {
     // The raw reserved names never appear as option labels.
     expect(screen.queryByRole("option", { name: "__default__" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "__legacy" })).not.toBeInTheDocument();
+  });
+});
+
+// Issue #554: cardPacks prop controls whether the pack selects are shown,
+// shown-disabled, or shown-enabled, depending on plan (canManage) and
+// whether a binding already exists (downgrade-safety: never silently drop it).
+describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
+  let fetchMock: FetchMock;
+
+  beforeEach(() => {
+    fetchMock = mockFetch();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("canManage=false + no current binding: hides both pack selects and shows the upsell hint", async () => {
+    renderComponent({ cardPacks: { canManage: false, defaultPackName: null } });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("カードパック（支援プラン限定機能）").length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByLabelText("引き換え対象のカードパック")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("追加報酬のカードパック")).not.toBeInTheDocument();
+  });
+
+  it("canManage=false + an existing main-reward binding: shows the select but disabled, plus the upsell hint", async () => {
+    renderComponent({
+      currentCollectionName: "weapons",
+      cardPacks: { canManage: false, defaultPackName: null },
+    });
+
+    await waitFor(() => {
+      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
+      expect(select).toBeDisabled();
+      expect(select.value).toBe("weapons");
+    });
+    expect(screen.getAllByText("カードパック（支援プラン限定機能）").length).toBeGreaterThan(0);
+  });
+
+  it("canManage=true + zero registered packs: shows the (always-enabled) select plus a registration hint", async () => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", mockFetch([]));
+    renderComponent({ cardPacks: { canManage: true, defaultPackName: null } });
+
+    await waitFor(() => {
+      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
+      expect(select).not.toBeDisabled();
+    });
+    expect(
+      screen.getAllByText("パック名はカード管理の「パック管理」から登録できます").length
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("カードパック（支援プラン限定機能）")).not.toBeInTheDocument();
+  });
+
+  it("canManage=true + packs registered: behaves exactly like the legacy (cardPacks-unset) display", async () => {
+    renderComponent({ cardPacks: { canManage: true, defaultPackName: null } });
+
+    await waitFor(() => {
+      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
+      expect(select).not.toBeDisabled();
+    });
+    expect(screen.queryByText("カードパック（支援プラン限定機能）")).not.toBeInTheDocument();
+    expect(screen.queryByText("パック名はカード管理の「パック管理」から登録できます")).not.toBeInTheDocument();
+  });
+
+  it("parameterizes the default-pack option label with the streamer's custom display name", async () => {
+    renderComponent({ cardPacks: { canManage: true, defaultPackName: "オリジナルカード" } });
+
+    await waitFor(() => {
+      const options = screen.getAllByRole("option", { name: "オリジナルカード（未分類のカードのみ）" });
+      expect(options.length).toBe(2);
+    });
+    expect(screen.queryByText("デフォルトパック（未分類のカードのみ）")).not.toBeInTheDocument();
   });
 });

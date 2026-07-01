@@ -60,6 +60,19 @@ interface ChannelPointSettingsProps {
    * to give beginners a focused, low-noise reward picker.
    */
   compact?: boolean;
+  /**
+   * Issue #554: カードパックのプルダウン表示制御 + デフォルト名。
+   * `undefined`(未指定)の場合は従来どおりの表示(常に有効なselect、
+   * デフォルト名は汎用ラベル)にフォールバックする — 既存の呼び出し元
+   * (テスト含む)を壊さないための後方互換。
+   */
+  cardPacks?: {
+    // false: 新規のパック紐付け(選択)は支援プラン/Twitchサブスク限定。
+    // 既存の紐付けは維持される(ダウングレード耐性 — 黙って解除しない)。
+    canManage: boolean;
+    // 「デフォルト」(未分類)パックの表示名オーバーライド。null は汎用ラベル。
+    defaultPackName: string | null;
+  };
 }
 
 /**
@@ -73,6 +86,7 @@ export default function ChannelPointSettings({
   currentRewardName,
   currentCollectionName = null,
   compact = false,
+  cardPacks,
 }: ChannelPointSettingsProps) {
   const t = useTranslations("channelPointSettings");
   const tCommon = useTranslations("common");
@@ -801,6 +815,53 @@ export default function ChannelPointSettings({
     );
   };
 
+  // Issue #554: 「デフォルト」パックの表示名。cardPacks 未指定/未設定時は
+  // 汎用ラベル("デフォルトパック")にフォールバックする。
+  const defaultPackDisplayName = cardPacks?.defaultPackName ?? t("collections.defaultOnlyName");
+
+  // Issue #554: パックselectの表示モード。
+  // - "enabled" : 通常どおり選択可能(cardPacks未指定 = 後方互換、または
+  //   canManage=trueのとき常にこのモード)。
+  // - "disabled": canManage=false だが既存の紐付けがある(ダウングレード後、
+  //   黙って解除しないための維持表示)。
+  // - "hidden"  : canManage=false かつ紐付けなし(邪魔にならないアップセル表示に置き換える)。
+  //
+  // 注意: この表示制御は progressive disclosure / アップセル導線としての
+  // 「UX」であり、セキュリティ境界ではない。サーバー側 (/api/streamer/settings)
+  // は意図的に既存パックの紐付け(選択)をプランでゲートしない — #553 の確立済み
+  // 設計 (src/lib/plan-gate.ts:「Assigning an EXISTING pre-defined pack ... is
+  // never gated」) のとおり、ゲート対象は「新規パック名の登録」のみ。basic
+  // ユーザーがAPIを直接叩いて紐付けても、そもそもパックを登録できない以上
+  // 実質的な価値流出はない(sentinel "__default__" の直接指定も、パックを
+  // 持たないユーザーには「全カード」と等価で無害)。
+  //
+  // NOTE: this display control is a progressive-disclosure / upsell UX, NOT a
+  // security boundary. The server deliberately does not plan-gate assigning an
+  // existing pack (see src/lib/plan-gate.ts) — only registering NEW pack names
+  // is gated, so bypassing this UI yields nothing of value to a basic user.
+  const resolvePackControlMode = (hasBinding: boolean): "enabled" | "disabled" | "hidden" => {
+    if (!cardPacks || cardPacks.canManage) return "enabled";
+    return hasBinding ? "disabled" : "hidden";
+  };
+  const mainPackControlMode = resolvePackControlMode(selectedCollectionName !== "");
+  const additionalPackControlMode = resolvePackControlMode(selectedAdditionalCollectionName !== "");
+  // canManage=true だが登録済みパックが0件の場合の案内(「すべてのカード」
+  // 「デフォルトパックのみ」は常に有効な選択肢のため、select自体は表示する)。
+  const showNoPacksRegisteredHint = Boolean(cardPacks?.canManage) && collections.length === 0;
+
+  // Issue #554: パック機能が支援プラン/Twitchサブスク限定である旨の
+  // アップセル表示。邪魔にならないよう text-xs のグレーアウトテキストとする。
+  // リンク文言「支援特典について」は他コンポーネント(CardPackModal 等)と
+  // 同じ既存パターンを踏襲し、あえて i18n キー化せずハードコードしている。
+  const renderPackUpsellHint = () => (
+    <p className="mt-1 text-xs text-gray-500">
+      {t("collections.premiumLocked")}
+      <a href="/plans" className="ml-1 text-purple-400 hover:text-purple-300 underline">
+        支援特典について
+      </a>
+    </p>
+  );
+
   return (
     <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -892,47 +953,62 @@ export default function ChannelPointSettings({
                </p>
                {/* Issue #393再設計: メイン報酬に紐付けるカードパック。パック管理
                    (カード管理画面)で事前登録した一覧から選ぶだけで、ここでは
-                   もうゲート対象外(新規登録はパック管理モーダル側でのみ発生)。 */}
-               <label className="mt-3 block text-xs text-gray-300">
-                 {t("collections.mainLabel")}
-                 <select
-                   value={selectedCollectionName}
-                   onChange={(e) => setSelectedCollectionName(e.target.value)}
-                   className="mt-1 h-9 w-full rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
-                 >
-                   <option value="">{t("collections.all")}</option>
-                   {/* Issue #555: 「デフォルトパックのみ」= 未分類(collection_name
-                       IS NULL)のカードだけに抽選対象を絞る選択肢。事前登録された
-                       パックとは独立した固定オプションとして常に表示する。 */}
-                   <option value={DEFAULT_PACK_SENTINEL}>{t("collections.defaultOnly")}</option>
-                   {collections.map((name) => (
-                     <option key={name} value={name}>{name}</option>
-                   ))}
-                   {/* 保存済みだが一覧に無い(パック管理で登録解除された)パックも
-                       選択肢に残し、黙ってスコープが全カードに変わる事故を防ぐ。
-                       #393再設計後、この一覧は「事前登録済みパック名」のみを
-                       返す(アクティブカードの有無は問わない)ため、ここに来る
-                       ケースは常に「登録解除済み」であり「抽選可能カードなし」
-                       ではない。取得完了後のみラベルを付す
-                       （取得前/失敗時は素の名前で表示）。
-                       Issue #555: DEFAULT_PACK_SENTINEL は上の固定オプションと
-                       して既に選択肢にあるため、ここでは除外する(除外しないと
-                       同じ値のoptionが2つ並び、誤って「登録解除済み」ラベルの
-                       方が選択されてしまう)。 */}
-                   {selectedCollectionName
-                     && selectedCollectionName !== DEFAULT_PACK_SENTINEL
-                     && !collections.includes(selectedCollectionName) && (
-                     <option value={selectedCollectionName}>
-                       {collectionsLoaded
-                         ? t("collections.missing", { name: selectedCollectionName })
-                         : selectedCollectionName}
-                     </option>
+                   もうゲート対象外(新規登録はパック管理モーダル側でのみ発生)。
+                   Issue #554: canManage=false のときは表示自体を制御する
+                   (mainPackControlMode参照)。 */}
+               {mainPackControlMode === "hidden" ? (
+                 renderPackUpsellHint()
+               ) : (
+                 <>
+                   <label className="mt-3 block text-xs text-gray-300">
+                     {t("collections.mainLabel")}
+                     <select
+                       value={selectedCollectionName}
+                       onChange={(e) => setSelectedCollectionName(e.target.value)}
+                       disabled={mainPackControlMode === "disabled"}
+                       className="mt-1 h-9 w-full rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+                     >
+                       <option value="">{t("collections.all")}</option>
+                       {/* Issue #555: 「デフォルトパックのみ」= 未分類(collection_name
+                           IS NULL)のカードだけに抽選対象を絞る選択肢。事前登録された
+                           パックとは独立した固定オプションとして常に表示する。 */}
+                       <option value={DEFAULT_PACK_SENTINEL}>
+                         {t("collections.defaultOnly", { name: defaultPackDisplayName })}
+                       </option>
+                       {collections.map((name) => (
+                         <option key={name} value={name}>{name}</option>
+                       ))}
+                       {/* 保存済みだが一覧に無い(パック管理で登録解除された)パックも
+                           選択肢に残し、黙ってスコープが全カードに変わる事故を防ぐ。
+                           #393再設計後、この一覧は「事前登録済みパック名」のみを
+                           返す(アクティブカードの有無は問わない)ため、ここに来る
+                           ケースは常に「登録解除済み」であり「抽選可能カードなし」
+                           ではない。取得完了後のみラベルを付す
+                           （取得前/失敗時は素の名前で表示）。
+                           Issue #555: DEFAULT_PACK_SENTINEL は上の固定オプションと
+                           して既に選択肢にあるため、ここでは除外する(除外しないと
+                           同じ値のoptionが2つ並び、誤って「登録解除済み」ラベルの
+                           方が選択されてしまう)。 */}
+                       {selectedCollectionName
+                         && selectedCollectionName !== DEFAULT_PACK_SENTINEL
+                         && !collections.includes(selectedCollectionName) && (
+                         <option value={selectedCollectionName}>
+                           {collectionsLoaded
+                             ? t("collections.missing", { name: selectedCollectionName })
+                             : selectedCollectionName}
+                         </option>
+                       )}
+                     </select>
+                   </label>
+                   <p className="mt-1 text-xs text-gray-400">
+                     {t("collections.help")}
+                   </p>
+                   {mainPackControlMode === "disabled" && renderPackUpsellHint()}
+                   {mainPackControlMode === "enabled" && showNoPacksRegisteredHint && (
+                     <p className="mt-1 text-xs text-gray-500">{t("collections.packHint")}</p>
                    )}
-                 </select>
-               </label>
-               <p className="mt-1 text-xs text-gray-400">
-                 {t("collections.help")}
-               </p>
+                 </>
+               )}
              </div>
            )}
 
@@ -1139,7 +1215,7 @@ export default function ChannelPointSettings({
                            {reward.collection_name ? (
                              reward.collection_name === DEFAULT_PACK_SENTINEL ? (
                                <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
-                                 {t("collections.defaultOnly")}
+                                 {t("collections.defaultOnly", { name: defaultPackDisplayName })}
                                </span>
                              ) : collectionsLoaded && !collections.includes(reward.collection_name) ? (
                                <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
@@ -1226,20 +1302,32 @@ export default function ChannelPointSettings({
                  </select>
                  {/* Issue #393再設計: この追加報酬に紐付けるカードパック（任意）。
                      パック管理で事前登録した一覧から選ぶだけで、ここではゲート
-                     対象外(報酬自体の新規作成は常に可能)。 */}
-                 <select
-                   value={selectedAdditionalCollectionName}
-                   onChange={(e) => setSelectedAdditionalCollectionName(e.target.value)}
-                   aria-label={t("collections.additionalLabel")}
-                   className="h-10 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
-                 >
-                   <option value="">{t("collections.all")}</option>
-                   {/* Issue #555: メイン報酬の選択肢と同様に「デフォルトパックのみ」を追加 */}
-                   <option value={DEFAULT_PACK_SENTINEL}>{t("collections.defaultOnly")}</option>
-                   {collections.map((name) => (
-                     <option key={name} value={name}>{name}</option>
-                   ))}
-                 </select>
+                     対象外(報酬自体の新規作成は常に可能)。
+                     Issue #554: canManage=false かつ紐付けなしの場合、グリッド
+                     レイアウトを崩さないよう同じセル内に短い案内テキストを表示し、
+                     詳しい案内(リンク付き)はグリッド全体の下に別途表示する。 */}
+                 {additionalPackControlMode === "hidden" ? (
+                   <div className="flex h-10 min-w-0 items-center rounded-md border border-gray-700 bg-gray-800/60 px-2 text-[11px] leading-tight text-gray-500">
+                     {t("collections.premiumLocked")}
+                   </div>
+                 ) : (
+                   <select
+                     value={selectedAdditionalCollectionName}
+                     onChange={(e) => setSelectedAdditionalCollectionName(e.target.value)}
+                     aria-label={t("collections.additionalLabel")}
+                     disabled={additionalPackControlMode === "disabled"}
+                     className="h-10 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+                   >
+                     <option value="">{t("collections.all")}</option>
+                     {/* Issue #555: メイン報酬の選択肢と同様に「デフォルトパックのみ」を追加 */}
+                     <option value={DEFAULT_PACK_SENTINEL}>
+                       {t("collections.defaultOnly", { name: defaultPackDisplayName })}
+                     </option>
+                     {collections.map((name) => (
+                       <option key={name} value={name}>{name}</option>
+                     ))}
+                   </select>
+                 )}
                  {/*
                    ラベルと数値入力を1コンポーネントとして見せるためのコンテナ。
                    focus-within で内側 input のフォーカスに合わせてコンテナを強調する。
@@ -1265,6 +1353,11 @@ export default function ChannelPointSettings({
                    {addingAdditional ? tCommon("loading") : tCommon("add")}
                  </button>
                </div>
+               {(additionalPackControlMode === "hidden" || additionalPackControlMode === "disabled") &&
+                 renderPackUpsellHint()}
+               {additionalPackControlMode === "enabled" && showNoPacksRegisteredHint && (
+                 <p className="mt-1 text-xs text-gray-500">{t("collections.packHint")}</p>
+               )}
              </div>
            )}
 

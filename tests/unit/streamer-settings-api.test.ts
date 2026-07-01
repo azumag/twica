@@ -1116,4 +1116,111 @@ describe('POST /api/streamer/settings', () => {
       expect(streamerQuery.update).not.toHaveBeenCalled()
     })
   })
+
+  // Issue #554: display-name override for the "default" (unclassified) pack.
+  // No plan gate, no catalog membership check — a pure standalone string field.
+  describe('defaultCardPackName (Issue #554)', () => {
+    it('rejects a reserved (`__`-prefixed) value', async () => {
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: '__default__' }),
+      }))
+
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a value over the max length', async () => {
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: 'a'.repeat(81) }),
+      }))
+
+      expect(response.status).toBe(400)
+    })
+
+    it('saves a trimmed, valid display name', async () => {
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockSupabase = builder.build()
+      const query = builder.getQueryBuilder()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: '  My Pack  ' }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({ default_card_pack_name: 'My Pack' })
+      )
+    })
+
+    it('resets to the generic label when defaultCardPackName is explicitly null', async () => {
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockSupabase = builder.build()
+      const query = builder.getQueryBuilder()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: null }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({ default_card_pack_name: null })
+      )
+    })
+
+    // 自己レビュー観点(card_pack_names と同型): デプロイ窓でUPDATE自体が
+    // default_card_pack_name 列を見つけられなかった場合、実際には保存されて
+    // いないことをフラグで示す(黙って「保存できた」と偽らない)。
+    it('reports a deploy-window flag when the UPDATE drops default_card_pack_name', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+        error: null,
+      })
+      ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        eq: vi.fn().mockResolvedValue({
+          error: { code: 'PGRST204', message: "Could not find the 'default_card_pack_name' column" },
+        }),
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: 'My Pack' }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.defaultCardPackNameSkippedDeployWindow).toBe(true)
+    })
+  })
 })

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { isMissingCollectionNameColumn, checkCollectionHasActiveCards } from "@/lib/collections/collection-existence";
+import {
+  isMissingCollectionNameColumn,
+  isMissingDefaultCardPackNameColumnError,
+  isMissingRenameCardPackFunctionError,
+  checkCollectionHasActiveCards,
+} from "@/lib/collections/collection-existence";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { createMockQueryBuilder } from "../../utils/supabase-mock";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -73,6 +78,79 @@ describe("isMissingCollectionNameColumn", () => {
     expect(isMissingCollectionNameColumn(null)).toBe(false);
     expect(isMissingCollectionNameColumn(undefined)).toBe(false);
     expect(isMissingCollectionNameColumn({})).toBe(false);
+  });
+});
+
+// Issue #554: `streamers.default_card_pack_name` deploy-window detection.
+describe("isMissingDefaultCardPackNameColumnError", () => {
+  it("detects the WRITE shape (PGRST204)", () => {
+    expect(
+      isMissingDefaultCardPackNameColumnError({
+        code: "PGRST204",
+        message: "Could not find the 'default_card_pack_name' column of 'streamers' in the schema cache",
+      })
+    ).toBe(true);
+  });
+
+  it("detects the READ shape (42703)", () => {
+    expect(
+      isMissingDefaultCardPackNameColumnError({
+        code: "42703",
+        message: "column streamers.default_card_pack_name does not exist",
+      })
+    ).toBe(true);
+  });
+
+  it("does not match unrelated columns", () => {
+    expect(
+      isMissingDefaultCardPackNameColumnError({
+        code: "PGRST204",
+        message: "Could not find the 'card_pack_names' column",
+      })
+    ).toBe(false);
+  });
+
+  it("returns false for null/empty errors", () => {
+    expect(isMissingDefaultCardPackNameColumnError(null)).toBe(false);
+    expect(isMissingDefaultCardPackNameColumnError(undefined)).toBe(false);
+    expect(isMissingDefaultCardPackNameColumnError({})).toBe(false);
+  });
+});
+
+// Issue #554: `rename_card_pack` RPC deploy-window detection (missing FUNCTION,
+// not a missing column — different Postgres error shape: 42883).
+describe("isMissingRenameCardPackFunctionError", () => {
+  it("detects the undefined_function error (42883) mentioning rename_card_pack", () => {
+    expect(
+      isMissingRenameCardPackFunctionError({
+        code: "42883",
+        message: "function rename_card_pack(uuid, text, text) does not exist",
+      })
+    ).toBe(true);
+  });
+
+  it("does not match a 42883 error for an unrelated function", () => {
+    expect(
+      isMissingRenameCardPackFunctionError({
+        code: "42883",
+        message: "function some_other_function(uuid) does not exist",
+      })
+    ).toBe(false);
+  });
+
+  it("does not match a differently-coded error even if it mentions rename_card_pack", () => {
+    expect(
+      isMissingRenameCardPackFunctionError({
+        code: "P0001",
+        message: "rename_card_pack: OLD_NAME_NOT_FOUND",
+      })
+    ).toBe(false);
+  });
+
+  it("returns false for null/empty errors", () => {
+    expect(isMissingRenameCardPackFunctionError(null)).toBe(false);
+    expect(isMissingRenameCardPackFunctionError(undefined)).toBe(false);
+    expect(isMissingRenameCardPackFunctionError({})).toBe(false);
   });
 });
 
