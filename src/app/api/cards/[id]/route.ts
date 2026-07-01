@@ -20,6 +20,7 @@ import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
 import { resolveCollectionNameField } from "@/lib/validation/collection-name";
 import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+import { isCollectionChangeGated } from "@/lib/plan-gate";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 function extractRarityWeights(streamers: unknown): Record<string, number> | null {
@@ -160,20 +161,50 @@ export async function PUT(
 
     // Verify ownership and get current image_url for cleanup
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
-    const { data: card } = await supabaseAdmin
+    let { data: card, error: cardSelectError } = await supabaseAdmin
       .from("cards")
       // streamers の埋め込みは FK 制約名で一意化する: migration 00051 の
       // card_owner_stats が cards↔streamers を m2m にも見せ、ヒントなしの
       // streamers(...) は PGRST201 で失敗するため。
-      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, collection_name, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
       .eq("id", id)
       .maybeSingle();
+
+    // Issue #269 (self-review fix): collection_name was added to this
+    // ownership-check SELECT to read the current pack value for the gate
+    // below. During the deploy window (migration 00061 not applied yet) that
+    // turns the SELECT itself into a 42703 "column does not exist" error,
+    // which would 403 EVERY card edit — not just pack-related ones — because
+    // this branch only checked `!card`, not `error`. Retry without the
+    // column so unrelated edits keep working; the gate then just sees no
+    // current pack value (treated as null), matching every other #393
+    // deploy-window fallback in this codebase.
+    if (cardSelectError && isMissingCollectionNameColumn(cardSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
+        .eq("id", id)
+        .maybeSingle();
+      card = retryResult.data
+        ? { ...retryResult.data, collection_name: null }
+        : null;
+      cardSelectError = retryResult.error;
+    }
 
     const twitchUserId = extractTwitchUserId(card?.streamers);
 
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
+
+    // Issue #269: reassigning a card's pack to a NEW value requires a premium
+    // plan. Clearing it (null) or resubmitting the current value is always
+    // allowed, so a downgraded user keeps full read/edit access to the card.
+    const collectionNamePremiumRequired = await isCollectionChangeGated(
+      session.twitchUserId,
+      collectionNameResult.value,
+      card.collection_name
+    );
 
     const rarityWeights = extractRarityWeights(card.streamers);
     const rarityChanged = rarity !== undefined && rarity !== card.rarity;
@@ -195,7 +226,7 @@ export async function PUT(
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
     if (rarity !== undefined) updateData.rarity = typeof rarity === "string" ? rarity.trim() : rarity;
-    if (collectionNameResult.value !== undefined) updateData.collection_name = collectionNameResult.value;
+    if (collectionNameResult.value !== undefined && !collectionNamePremiumRequired) updateData.collection_name = collectionNameResult.value;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
@@ -298,6 +329,7 @@ export async function PUT(
     return NextResponse.json({
       ...updatedCard,
       recalculatedCards,
+      ...(collectionNamePremiumRequired ? { collectionNamePremiumRequired: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Cards API: PUT");

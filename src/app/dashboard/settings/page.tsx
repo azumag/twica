@@ -3,6 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
 import { getCustomBotAccountDisplayForStreamer } from "@/lib/twitch/token-manager";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
+import { getUserPlan } from "@/lib/plan";
 import SettingsLayout from "@/components/SettingsLayout";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
@@ -25,11 +26,15 @@ export default async function SettingsPage() {
   const isStreamer = canUseStreamerFeatures(session);
   if (!isStreamer) redirect("/dashboard");
 
-  const [streamerData, showVoteCampaign] = await Promise.all([
+  const [streamerData, showVoteCampaign, plan] = await Promise.all([
     getStreamerData(session.twitchUserId),
     shouldShowVoteCampaign(session.twitchUserId),
+    getUserPlan(session.twitchUserId),
   ]);
   if (!streamerData) redirect("/dashboard");
+
+  // Issue #269: card-pack (collection_name) binding requires a premium plan.
+  const isPremium = plan !== "basic";
 
   const botAccount = await getCustomBotAccountDisplayForStreamer(streamerData.streamer.id);
 
@@ -51,6 +56,7 @@ export default async function SettingsPage() {
         rewardName: streamerData.streamer.channel_point_reward_name,
         collectionName: streamerData.streamer.channel_point_collection_name ?? null,
       }}
+      isPremium={isPremium}
       gachaSound={{
         soundUrl: streamerData.streamer.gacha_sound_url ?? null,
         soundEnabled: streamerData.streamer.gacha_sound_enabled ?? false,

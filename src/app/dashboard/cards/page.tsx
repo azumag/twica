@@ -54,6 +54,8 @@ export default async function CardsPage() {
   const plan = await getUserPlan(session.twitchUserId);
   const maxImageWidth = PLAN_MAX_IMAGE_WIDTH[plan];
   const availableWidths = PLAN_AVAILABLE_WIDTHS[plan];
+  // Issue #269: card-pack (collection_name) assignment requires a premium plan.
+  const isPremium = plan !== "basic";
 
   return (
     <CardManager
@@ -65,6 +67,7 @@ export default async function CardsPage() {
       showViewToggle={true}
       maxImageWidth={maxImageWidth}
       availableWidths={availableWidths}
+      isPremium={isPremium}
     />
   );
 }

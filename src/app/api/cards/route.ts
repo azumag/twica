@@ -21,6 +21,7 @@ import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
 import { resolveCollectionNameField } from "@/lib/validation/collection-name";
 import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+import { isCollectionChangeGated } from "@/lib/plan-gate";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -163,6 +164,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
+    // Issue #269: assigning a pack to a new card requires a premium plan
+    // (support code or Twitch sub). New cards have no existing pack to
+    // compare against, so any non-null value is a new registration attempt.
+    // Gated requests still create the card — only the pack assignment is
+    // dropped — so basic-plan users keep full card management access.
+    const collectionNamePremiumRequired = await isCollectionChangeGated(
+      session.twitchUserId,
+      collectionNameResult.value,
+      null
+    );
+
     // NOTE: Drop rate validation removed because the system uses relative weights
     // The actual probability is calculated as: this_card_weight / total_weights
     // So there's no need to limit the sum to 100% - weights are relative, not absolute percentages
@@ -181,7 +193,8 @@ export async function POST(request: NextRequest) {
       drop_rate: dropRate,
     };
     // Issue #393: persist the pack name when provided (null clears it = all cards).
-    if (collectionNameResult.value !== undefined) {
+    // Issue #269: skip persisting it if the plan gate rejected this assignment.
+    if (collectionNameResult.value !== undefined && !collectionNamePremiumRequired) {
       insertData.collection_name = collectionNameResult.value;
     }
     if (intraRarityWeight !== undefined) {
@@ -251,6 +264,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ...card,
       recalculatedCards,
+      ...(collectionNamePremiumRequired ? { collectionNamePremiumRequired: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Cards API: POST");

@@ -62,6 +62,9 @@
       "collectionName": "Card Pack",
       "collectionNamePlaceholder": "e.g. Characters / Weapons (blank = unclassified)",
       "collectionNameHelp": "Only cards in the same pack are eligible for that channel point reward's gacha",
+      "collectionNameClear": "✕ Clear",
+      "collectionNamePremiumRequired": "Creating or changing card packs requires a supporter plan or Twitch subscription (you can still clear it)",
+      "collectionNamePremiumRequiredSaved": "The card was saved, but changing the pack assignment requires a supporter plan or Twitch subscription",
       "dropRate": "Drop Rate",
       "intraRarityWeight": "Drop Rate within Rarity",
       "intraRarityWeightHint": "Adjust drop balance among cards of the same rarity (default: 1.0)",
@@ -571,7 +574,9 @@
       "additionalLabel": "Additional reward card pack",
       "all": "All cards",
       "help": "Limit eligible cards by the pack names configured in card management.",
-      "missing": "{name} (no drawable cards)"
+      "missing": "{name} (no drawable cards)",
+      "premiumRequired": "Binding a new pack requires a supporter plan or Twitch subscription (you can still clear it)",
+      "premiumRequiredSaved": "Saved, but changing the pack binding requires a supporter plan or Twitch subscription"
     }
   },
   "gachaHistory": {
