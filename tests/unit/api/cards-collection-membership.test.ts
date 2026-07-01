@@ -32,7 +32,7 @@ const SESSION = {
   twitchUserId: "user1",
   twitchUsername: "streamer",
   twitchDisplayName: "Streamer",
-  twitchProfileImageUrl: null,
+  twitchProfileImageUrl: "",
   broadcasterType: "affiliate" as const,
   expiresAt: Date.now() + 60_000,
   version: 1,
