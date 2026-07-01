@@ -51,6 +51,9 @@ export interface Database {
           // 配信者が定義したカスタムレアリティ名の一覧（rarity_weights とは独立）
           // List of streamer-defined custom rarity names (decoupled from rarity_weights)
           custom_rarities: string[]
+          // 配信者が事前登録したカードパック名の一覧（Issue #393再設計）
+          // Pre-defined card pack names the streamer manages (Issue #393 redesign)
+          card_pack_names: string[]
           // 視聴者向けコレクションページで未所持カードを表示するか（オプトイン、デフォルトfalse）
           // Whether unowned cards are visible on the viewer collection page (opt-in, default false)
           show_unowned_cards: boolean
@@ -84,6 +87,7 @@ export interface Database {
           chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
           custom_rarities?: string[]
+          card_pack_names?: string[]
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
@@ -109,6 +113,7 @@ export interface Database {
           chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
           custom_rarities?: string[]
+          card_pack_names?: string[]
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null

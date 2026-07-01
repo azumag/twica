@@ -10,6 +10,13 @@
 // 本モジュールは DB 非依存の純粋関数のみとし、client component からも安全に
 // import できるようにする。DB を読む存在検証は server-only の
 // `@/lib/collections/collection-existence` に分離している。
+//
+// Redesign (post-#393/#269): pack names are now a pre-defined, streamer-managed
+// list (`streamers.card_pack_names`) rather than free text typed on any card.
+// `validateCardPackNamesInput` validates that list; `isRegisteredOrUnchanged`
+// gates individual card/reward assignments against it.
+
+import { MAX_CARD_PACK_NAMES, RARITY_CONTROL_CHAR_REGEX, RARITY_BIDI_OVERRIDE_REGEX } from "@/lib/constants";
 
 /** Maximum length of a collection (pack) name. Mirrors the DB CHECK constraint. */
 export const MAX_COLLECTION_NAME_LENGTH = 80;
@@ -77,4 +84,77 @@ export function resolveCollectionNameField(
   }
 
   return { ok: true, value: normalized };
+}
+
+export type CardPackNamesValidation =
+  | { ok: true; value: string[] }
+  | { ok: false };
+
+/**
+ * Validate the streamer-managed list of pre-defined card pack names
+ * (`streamers.card_pack_names`). Mirrors `validateCustomRaritiesInput`
+ * (streamer/settings route) in shape: array of strings, trimmed, length- and
+ * count-bounded, control-char/Bidi rejected, no duplicates.
+ *
+ * Per-element normalization is `trim()` only (NFC/case folding intentionally
+ * not applied — see `normalizeCollectionName`). Unlike a single scalar
+ * `collectionName`, this list is rendered directly as picker options across
+ * the dashboard, so control characters and Bidi override characters are
+ * rejected here (custom_rarities applies the same hardening for its list).
+ */
+export function validateCardPackNamesInput(value: unknown): CardPackNamesValidation {
+  if (!Array.isArray(value) || value.length > MAX_CARD_PACK_NAMES) {
+    return { ok: false };
+  }
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (typeof raw !== "string") {
+      return { ok: false };
+    }
+    const trimmed = raw.trim();
+    if (
+      trimmed.length < 1
+      || trimmed.length > MAX_COLLECTION_NAME_LENGTH
+      || RARITY_CONTROL_CHAR_REGEX.test(trimmed)
+      || RARITY_BIDI_OVERRIDE_REGEX.test(trimmed)
+    ) {
+      return { ok: false };
+    }
+    if (seen.has(trimmed)) {
+      return { ok: false };
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+
+  return { ok: true, value: normalized };
+}
+
+/**
+ * Determine whether a card/reward's `collectionName` assignment is allowed
+ * against the streamer's pre-defined pack list.
+ *
+ * Always allowed, regardless of registration:
+ * - clearing to `null` (never a "new" assignment)
+ * - resubmitting the value already stored (`currentValue`) unchanged
+ *
+ * This keeps a card/reward whose pack was later removed from
+ * `card_pack_names` fully editable — deleting a pack from the management
+ * list never retroactively breaks unrelated edits to cards that still
+ * reference it (mirrors the #269 "clearing/no-op is never gated" stance,
+ * applied here to "known pack name" instead of "plan").
+ *
+ * Only a genuine change to a NEW value must be a member of `registeredNames`.
+ */
+export function isRegisteredOrUnchanged(
+  newValue: string | null,
+  currentValue: string | null,
+  registeredNames: string[]
+): boolean {
+  if (newValue === null || newValue === currentValue) {
+    return true;
+  }
+  return registeredNames.includes(newValue);
 }

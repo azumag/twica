@@ -15,6 +15,7 @@ import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import DropRateSettingsModal from "./DropRateSettingsModal";
 import CustomRarityModal from "./CustomRarityModal";
+import CardPackModal from "./CardPackModal";
 import ExpandableDescription from "./ExpandableDescription";
 
 /** Custom dropdown arrow style for appearance-none select boxes */
@@ -77,10 +78,13 @@ interface CardManagerProps {
   // 配信者が定義したカスタムレアリティ名（rarity_weights とは独立）
   // Streamer-defined custom rarity names (decoupled from rarity_weights)
   initialCustomRarities?: string[];
-  // Issue #269: whether the streamer's plan allows assigning/changing card
-  // packs (collection_name). Defaults to false (fail-closed, matching
-  // plan.ts's "treat lookup failure as basic" stance) so omitting this prop
-  // never accidentally grants the premium-only capability.
+  // 配信者が事前登録したカードパック名（Issue #393再設計）。カード作成/編集
+  // フォームの collectionName は自由入力ではなく、このリストからのみ選択する。
+  // Pre-defined card pack names (Issue #393 redesign). The collectionName
+  // field on the card form now only selects from this list, not free text.
+  initialCardPackNames?: string[];
+  // Issue #269再設計: 新規パック登録(パック管理モーダルでの追加)にのみ適用する
+  // プラン判定。デフォルトfalse(フェイルクローズ)。
   isPremium?: boolean;
 }
 
@@ -129,6 +133,7 @@ export default function CardManager({
   availableWidths = [800],
   initialRarityWeights = null,
   initialCustomRarities = [],
+  initialCardPackNames = [],
   isPremium = false,
 }: CardManagerProps) {
   // i18n translations
@@ -153,6 +158,8 @@ export default function CardManager({
   });
   // カスタムレアリティ名（ドロップ率設定とは独立。専用モーダルで管理）
   const [customRarities, setCustomRarities] = useState<string[]>(initialCustomRarities);
+  // 事前登録カードパック名（Issue #393再設計。専用モーダルで管理）
+  const [cardPackNames, setCardPackNames] = useState<string[]>(initialCardPackNames);
   const rarityOptions = useMemo(() => {
     const values = new Set<string>(RARITIES.map((rarity) => rarity.value));
     cards.forEach((card) => {
@@ -274,18 +281,6 @@ export default function CardManager({
     return nextCards;
   }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
 
-  // Issue #393: distinct pack names across this streamer's cards, for the
-  // collection-name datalist suggestions in the card form.
-  const collectionNameOptions = useMemo(() => {
-    return Array.from(
-      new Set(
-        cards
-          .map((card) => (typeof card.collection_name === "string" ? card.collection_name.trim() : ""))
-          .filter((name) => name.length > 0)
-      )
-    ).sort((a, b) => a.localeCompare(b));
-  }, [cards]);
-
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -299,6 +294,17 @@ export default function CardManager({
     dropRate: 0.25,
     intraRarityWeight: 1.0,
   });
+  // Issue #393再設計: 事前登録パック一覧 + (編集中カードの現在値がその一覧に
+  // 無ければ)孤立参照を選択肢として残す(ChannelPointSettingsの「一覧に無い
+  // パックも表示」パターンと同じ。パック管理から削除された後の既存紐付けを
+  // 黙って見えなくしない)。
+  const cardPackSelectOptions = useMemo(() => {
+    const options = [...cardPackNames];
+    if (formData.collectionName && !options.includes(formData.collectionName)) {
+      options.push(formData.collectionName);
+    }
+    return options;
+  }, [cardPackNames, formData.collectionName]);
   const descriptionCharacterCount = useMemo(
     () => countCharacters(formData.description),
     [formData.description]
@@ -306,11 +312,10 @@ export default function CardManager({
   const isDescriptionTooLong = descriptionCharacterCount > CARD_DESCRIPTION_MAX_CHARACTERS;
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  // Issue #269: set when a save succeeded but the pack assignment was dropped
-  // because the user's plan doesn't allow new card-pack registrations. The
-  // card itself still saved, so this is a standalone notice, not tied to the
-  // (closing) form's visibility.
-  const [collectionPlanNotice, setCollectionPlanNotice] = useState(false);
+  // Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付けだけ
+  // 保留された稀なケースの通知。resetForm()がuploadErrorを即座にクリアする
+  // ため、フォームの表示状態から独立させる。
+  const [deployWindowNotice, setDeployWindowNotice] = useState(false);
   // Separate state for confirmed image URL (only update on blur)
   // プレビュー表示用の確定済み画像URL（フォーカスが外れた時のみ更新）
   const [confirmedImageUrl, setConfirmedImageUrl] = useState("");
@@ -377,6 +382,8 @@ export default function CardManager({
   const [showBatchDropRateModal, setShowBatchDropRateModal] = useState(false);
   // カスタムレアリティ管理モーダルの状態
   const [showCustomRarityModal, setShowCustomRarityModal] = useState(false);
+  // パック管理モーダルの状態(Issue #393再設計)
+  const [showCardPackModal, setShowCardPackModal] = useState(false);
   // Zoomed card image modal state (opened when user clicks a thumbnail)
   // Uses the original (pre-thumbnail) URL so users see the full-resolution image
   // サムネイルクリック時に表示する拡大画像モーダルの状態
@@ -1168,14 +1175,15 @@ export default function CardManager({
         const recalculatedCards = Array.isArray(responseData.recalculatedCards)
           ? (responseData.recalculatedCards as Card[])
           : null;
-        // Issue #269: read+strip the synthetic flag so it never leaks into
-        // the Card object stored in state (Card has no such field).
-        const collectionNamePremiumRequired = responseData.collectionNamePremiumRequired === true;
+        // Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付け
+        // だけ保留された、稀なケース用のフラグ。読み取り後に取り除いて
+        // Card型に無い合成フィールドが state に漏れないようにする。
+        const collectionNameSkippedDeployWindow = responseData.collectionNameSkippedDeployWindow === true;
         const savedCardData = { ...(responseData as Record<string, unknown>) };
         delete savedCardData.recalculatedCards;
-        delete savedCardData.collectionNamePremiumRequired;
+        delete savedCardData.collectionNameSkippedDeployWindow;
         const savedCard = savedCardData as unknown as Card;
-        setCollectionPlanNotice(collectionNamePremiumRequired);
+        setDeployWindowNotice(collectionNameSkippedDeployWindow);
 
         if (editingCard) {
           setCards((prevCards) => {
@@ -1324,6 +1332,14 @@ export default function CardManager({
           >
             {t("customRarity.button")}
           </button>
+          {/* Card pack management button (Issue #393再設計) */}
+          {/* パック管理ボタン */}
+          <button
+            onClick={() => setShowCardPackModal(true)}
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
+          >
+            {t("cardPackModal.button")}
+          </button>
           {/* Emote import button */}
           {/* エモートインポートボタン */}
           <button
@@ -1361,15 +1377,12 @@ export default function CardManager({
         </div>
       )}
 
-      {/* Issue #269: card saved, but the pack assignment was dropped because
-          the plan doesn't allow new card-pack registrations. Standalone
-          banner (not tied to the form, which already closed on save). */}
-      {collectionPlanNotice && (
+      {/* Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付けが
+          保留された稀なケース用の通知。フォームは保存成功時に閉じるため
+          form表示状態から独立させたスタンドアロンバナー。 */}
+      {deployWindowNotice && (
         <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
-          <p className="text-sm text-yellow-300">{t("form.collectionNamePremiumRequiredSaved")}</p>
-          <a href="/plans" className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
-            支援特典について
-          </a>
+          <p className="text-sm text-yellow-300">{t("form.collectionNameDeployWindow")}</p>
         </div>
       )}
 
@@ -1514,44 +1527,29 @@ export default function CardManager({
                         </p>
                       </div>
                     </div>
-                    {/* Issue #393: カードパック名（任意）。datalist で既存パック名を提案しつつ自由入力も可。
-                        Issue #269: 新規登録・変更には支援プラン/Twitchサブスクが必要。disabled
-                        にすると既存値の解除手段も失われるため、「✕ 解除」ボタンは常に有効にする。 */}
+                    {/* Issue #393再設計: カードパックは自由入力ではなく、事前に
+                        「パック管理」で登録した一覧から選択する(レアリティselectと
+                        同じパターン)。新規登録はパック管理モーダル側でのみ発生する
+                        ため、ここでの選択は常にゲート対象外。 */}
                     <div className="mt-3 min-w-0">
                       <label className="mb-1 block text-sm text-gray-300">
                         {t("form.collectionName")}
                       </label>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          name="collectionName"
-                          list="card-collection-options"
-                          maxLength={80}
-                          disabled={!isPremium}
-                          placeholder={t("form.collectionNamePlaceholder")}
-                          value={formData.collectionName}
-                          onChange={(e) =>
-                            setFormData({ ...formData, collectionName: e.target.value })
-                          }
-                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                        {!isPremium && formData.collectionName !== "" && (
-                          <button
-                            type="button"
-                            onClick={() => setFormData({ ...formData, collectionName: "" })}
-                            className="shrink-0 rounded-lg border border-gray-500 px-3 text-sm text-gray-300 hover:bg-gray-700"
-                          >
-                            {t("form.collectionNameClear")}
-                          </button>
-                        )}
-                      </div>
-                      <datalist id="card-collection-options">
-                        {collectionNameOptions.map((name) => (
-                          <option key={name} value={name} />
+                      <select
+                        name="collectionName"
+                        value={formData.collectionName}
+                        onChange={(e) =>
+                          setFormData({ ...formData, collectionName: e.target.value })
+                        }
+                        className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
+                      >
+                        <option value="">{t("form.collectionNameUnclassified")}</option>
+                        {cardPackSelectOptions.map((name) => (
+                          <option key={name} value={name}>{name}</option>
                         ))}
-                      </datalist>
+                      </select>
                       <p className="mt-1 text-xs text-gray-300">
-                        {isPremium ? t("form.collectionNameHelp") : t("form.collectionNamePremiumRequired")}
+                        {t("form.collectionNameHelp")}
                       </p>
                     </div>
                   </div>
@@ -2363,6 +2361,17 @@ export default function CardManager({
         streamerId={streamerId}
         customRarities={customRarities}
         onSaved={setCustomRarities}
+      />
+
+      {/* Card Pack Modal (Issue #393再設計) */}
+      {/* パック管理モーダル */}
+      <CardPackModal
+        isOpen={showCardPackModal}
+        onClose={() => setShowCardPackModal(false)}
+        streamerId={streamerId}
+        cardPackNames={cardPackNames}
+        isPremium={isPremium}
+        onSaved={setCardPackNames}
       />
 
       {/* Emote Import Modal */}

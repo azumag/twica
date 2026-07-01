@@ -4,24 +4,20 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+import { isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 /**
  * GET /api/cards/collections?streamerId=...
  *
- * Issue #393: lightweight list of the streamer's distinct card pack names.
- * Returns only packs that contain at least one ACTIVE card, because gacha only
- * draws active cards — surfacing empty packs would let streamers bind a reward to
- * a pool that always fails at redemption time.
+ * Issue #393再設計: 事前登録されたカードパック名一覧を返す(streamers.card_pack_names)。
+ * アクティブカードの有無は問わない — パック管理モーダルで定義した時点で選択肢に
+ * 含まれる(空パックへの紐付けは保存時に checkCollectionHasActiveCards が別途弾く)。
  *
- * Response: { collections: string[] } (DISTINCT, NULL excluded, sorted).
+ * Response: { collections: string[] } (定義順、NULL/重複なし)。
  *
- * This replaces the previous reliance on fetching the full /api/cards list and
- * picking names client-side (wrong response shape, heavy payload).
- *
- * 課題 #393: 配信者のカードパック名一覧(軽量)。is_active=true のカードを持つ
- * パックのみ返す(ガチャは active のみ抽選するため、空パックは出さない)。
+ * 旧実装(DISTINCT な有効カード collection_name を返す)から変更。呼び出し元
+ * (ChannelPointSettings)のインターフェースは変更なし。
  */
 export async function GET(request: NextRequest) {
   const session = await getSession();
@@ -59,41 +55,39 @@ export async function GET(request: NextRequest) {
   try {
     const supabaseAdmin = getSupabaseAdmin();
 
-    // Verify the session owns this streamer profile.
+    // Verify the session owns this streamer profile, and read the pre-defined
+    // pack list in the same query.
     const { data: streamer, error: streamerError } = await supabaseAdmin
       .from("streamers")
-      .select("id")
+      .select("id, card_pack_names")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
 
-    if (streamerError || !streamer) {
+    if (streamerError) {
+      // Deploy-window fallback: column not migrated yet → no packs exist.
+      if (isMissingCardPackNamesColumnError(streamerError)) {
+        const { data: ownedStreamer } = await supabaseAdmin
+          .from("streamers")
+          .select("id")
+          .eq("id", streamerId)
+          .eq("twitch_user_id", session.twitchUserId)
+          .maybeSingle();
+        if (!ownedStreamer) {
+          return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+        }
+        return NextResponse.json({ collections: [] });
+      }
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    const { data: rows, error } = await supabaseAdmin
-      .from("cards")
-      .select("collection_name")
-      .eq("streamer_id", streamerId)
-      .eq("is_active", true)
-      .not("collection_name", "is", null);
-
-    if (error) {
-      // Deploy-window fallback: column not migrated yet → no packs exist.
-      if (isMissingCollectionNameColumn(error)) {
-        return NextResponse.json({ collections: [] });
-      }
-      throw error;
+    if (!streamer) {
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    // Deduplicate + sort. Names are already trimmed on write, but trim defensively.
-    const collections = Array.from(
-      new Set(
-        (rows ?? [])
-          .map((row) => (typeof row.collection_name === "string" ? row.collection_name.trim() : ""))
-          .filter((name) => name.length > 0)
-      )
-    ).sort((a, b) => a.localeCompare(b));
+    const collections = Array.isArray(streamer.card_pack_names)
+      ? (streamer.card_pack_names as string[])
+      : [];
 
     return NextResponse.json({ collections });
   } catch (error) {

@@ -70,10 +70,6 @@ export interface SettingsLayoutData {
     // Issue #393: pack bound to the main reward (null = all cards)
     collectionName: string | null;
   };
-  // Issue #269: whether the streamer's plan allows new/changed card-pack
-  // bindings on the channel point reward(s). Defaults to false in
-  // ChannelPointSettings (fail-closed) if omitted.
-  isPremium?: boolean;
   gachaSound: {
     soundUrl: string | null;
     soundEnabled: boolean;
@@ -140,7 +136,6 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
-          isPremium={data.isPremium}
           compact
         />
       </StepCard>
@@ -256,7 +251,6 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
-          isPremium={data.isPremium}
         />
       ),
     },

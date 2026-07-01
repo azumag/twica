@@ -19,9 +19,8 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
-import { resolveCollectionNameField } from "@/lib/validation/collection-name";
-import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
-import { isCollectionChangeGated } from "@/lib/plan-gate";
+import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
+import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -153,27 +152,54 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify streamer owns this streamer profile
-    const { data: streamer } = await supabaseAdmin
+    let { data: streamer, error: streamerSelectError } = await supabaseAdmin
       .from("streamers")
-      .select("id, rarity_weights")
+      .select("id, rarity_weights, card_pack_names")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
+
+    // Issue #393再設計: card_pack_names(事前登録パック一覧)列がデプロイ窓で
+    // まだ無い場合、membership検証ができない。ownership確認自体は
+    // rarity_weightsのみで継続できるようフォールバックする。
+    let cardPackNamesUnavailable = false;
+    if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("streamers")
+        .select("id, rarity_weights")
+        .eq("id", streamerId)
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = retryResult.data ? { ...retryResult.data, card_pack_names: [] as string[] } : null;
+      streamerSelectError = retryResult.error;
+      cardPackNamesUnavailable = true;
+    }
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    // Issue #269: assigning a pack to a new card requires a premium plan
-    // (support code or Twitch sub). New cards have no existing pack to
-    // compare against, so any non-null value is a new registration attempt.
-    // Gated requests still create the card — only the pack assignment is
-    // dropped — so basic-plan users keep full card management access.
-    const collectionNamePremiumRequired = await isCollectionChangeGated(
-      session.twitchUserId,
-      collectionNameResult.value,
-      null
-    );
+    const registeredPackNames: string[] = Array.isArray(streamer.card_pack_names)
+      ? streamer.card_pack_names
+      : [];
+
+    // Issue #393再設計: 新規カードには比較対象の現在値が無いため、非null値は
+    // 常に「新規紐付け」として扱い、事前登録済みパック名であることを要求する
+    // (Issue #269のプレミアムゲートは廃止。パック管理モーダルでの追加時のみ
+    // ゲートする設計に変更したため、ここではmembership検証のみ行う)。
+    if (
+      collectionNameResult.value !== undefined &&
+      collectionNameResult.value !== null &&
+      !cardPackNamesUnavailable &&
+      !isRegisteredOrUnchanged(collectionNameResult.value, null, registeredPackNames)
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+    }
+
+    // デプロイ窓(card_pack_names未検出)で非null値が指定された場合は、
+    // membership検証ができないため書き込み自体を見送る(カード作成は続行)。
+    const collectionNameSkippedDeployWindow =
+      cardPackNamesUnavailable && collectionNameResult.value !== undefined && collectionNameResult.value !== null;
 
     // NOTE: Drop rate validation removed because the system uses relative weights
     // The actual probability is calculated as: this_card_weight / total_weights
@@ -193,8 +219,8 @@ export async function POST(request: NextRequest) {
       drop_rate: dropRate,
     };
     // Issue #393: persist the pack name when provided (null clears it = all cards).
-    // Issue #269: skip persisting it if the plan gate rejected this assignment.
-    if (collectionNameResult.value !== undefined && !collectionNamePremiumRequired) {
+    // Issue #393再設計: デプロイ窓でmembership検証ができない場合は書き込み自体を見送る。
+    if (collectionNameResult.value !== undefined && !collectionNameSkippedDeployWindow) {
       insertData.collection_name = collectionNameResult.value;
     }
     if (intraRarityWeight !== undefined) {
@@ -264,7 +290,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ...card,
       recalculatedCards,
-      ...(collectionNamePremiumRequired ? { collectionNamePremiumRequired: true } : {}),
+      ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Cards API: POST");

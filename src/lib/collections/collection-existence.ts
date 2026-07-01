@@ -55,6 +55,37 @@ export function isMissingCollectionNameColumn(
   );
 }
 
+/**
+ * Detect the "card_pack_names column is not deployed yet" schema error.
+ *
+ * Separate function (not folded into `isMissingCollectionNameColumn`) because
+ * that helper gates specifically on the substring "collection_name", which
+ * `card_pack_names` does not contain — mirrors this codebase's existing
+ * one-helper-per-column convention (see `isMissingCardNumberColumnError`).
+ *
+ * Same dual error-shape handling as `isMissingCollectionNameColumn`: PGRST204
+ * on write paths, 42703 ("does not exist") / "schema cache" on read paths.
+ *
+ * `card_pack_names`(パック事前登録一覧, #393再設計)列の未デプロイ検知。
+ * `collection_name` 文言でゲートする既存関数とは別に用意する(列ごとに専用
+ * 関数を持つ既存の慣習(`isMissingCardNumberColumnError`)に合わせる)。
+ */
+export function isMissingCardPackNamesColumnError(
+  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
+): boolean {
+  if (!error) return false;
+  const text = [error.message, error.details, error.hint]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  return (
+    text.includes("card_pack_names") &&
+    (error.code === "PGRST204" ||
+      text.includes("does not exist") ||
+      text.includes("schema cache"))
+  );
+}
+
 export type CollectionExistenceResult =
   | "exists" // at least one active card belongs to this pack
   | "absent" // no active card belongs to this pack → would cause empty draws
