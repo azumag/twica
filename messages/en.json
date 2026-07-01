@@ -229,6 +229,7 @@
       "errorEmpty": "Enter a pack name",
       "errorTooLong": "Pack name must be 80 characters or fewer",
       "errorInvalidChars": "Contains characters that cannot be used",
+      "errorReserved": "Names starting with __ are reserved and cannot be used",
       "errorDuplicate": "That pack name already exists",
       "errorMax": "Up to {max} packs allowed",
       "premiumRequired": "Adding a new pack requires a supporter plan or Twitch subscription. Removals were applied.",
@@ -589,9 +590,10 @@
       "raidStatusFailed": "Failed to update raid gacha settings"
     },
     "collections": {
-      "mainLabel": "Main reward card pack",
+      "mainLabel": "Card pack for redemption",
       "additionalLabel": "Additional reward card pack",
       "all": "All cards",
+      "defaultOnly": "Default pack (unclassified cards only)",
       "help": "Limit eligible cards by the pack names registered in \"Pack Management\" under card management. Binding a pack with no drawable cards will fail on save.",
       "missing": "{name} (removed from Pack Management; the current binding is kept)"
     }

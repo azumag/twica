@@ -7,6 +7,7 @@ import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
 import { getUserPlan } from '@/lib/plan'
 import { createSupabaseMock, createMockQueryBuilder } from '../utils/supabase-mock'
+import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
@@ -724,6 +725,78 @@ describe('POST /api/streamer/settings', () => {
       expect(streamerQuery.update).toHaveBeenCalledWith(
         expect.objectContaining({ channel_point_collection_name: null })
       )
+    })
+
+    // Issue #555: DEFAULT_PACK_SENTINEL ("default pack only") is a reserved
+    // value that can never appear in card_pack_names, so the ordinary
+    // membership check must be skipped for it — otherwise no streamer could
+    // ever select it. Existence of at least one active unclassified card is
+    // still required (checkCollectionHasActiveCards below).
+    it('accepts DEFAULT_PACK_SENTINEL without requiring it in card_pack_names, given active unclassified cards', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        // card_pack_names intentionally does NOT (and never can) contain the sentinel.
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons'] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 2, error: null })
+        return cardsQuery
+      }
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: DEFAULT_PACK_SENTINEL,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      // existence check must use the sentinel-aware .is('collection_name', null) path
+      expect(cardsQuery.is).toHaveBeenCalledWith('collection_name', null)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_collection_name: DEFAULT_PACK_SENTINEL })
+      )
+    })
+
+    it('rejects DEFAULT_PACK_SENTINEL when there are zero active unclassified cards (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: [] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 0, error: null })
+        return cardsQuery
+      }
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: DEFAULT_PACK_SENTINEL,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
     })
 
     // Self-review regression guard (carried over from #269): the

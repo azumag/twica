@@ -6,6 +6,7 @@ import { checkRateLimit } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
 import { createMockQueryBuilder } from '../utils/supabase-mock'
+import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
@@ -248,6 +249,83 @@ describe('/api/streamer/additional-rewards raid options', () => {
       expect(response.status).toBe(200)
       const data = await response.json()
       expect(data.success).toBe(true)
+    })
+
+    // Issue #555: DEFAULT_PACK_SENTINEL ("default pack only") is a reserved
+    // value that can never appear in card_pack_names, so the ordinary
+    // membership check must be skipped for it. Existence of at least one
+    // active unclassified card is still required.
+    it('accepts DEFAULT_PACK_SENTINEL without requiring it in card_pack_names, given active unclassified cards', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        // card_pack_names intentionally does NOT (and never can) contain the sentinel.
+        data: { id: 'streamer-1', channel_point_reward_id: 'main-reward', card_pack_names: ['weapons'] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 1, error: null })
+        return cardsQuery
+      }
+      const insertQuery = createMockQueryBuilder()
+      ;(insertQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'additional-1', reward_id: 'extra-reward', collection_name: DEFAULT_PACK_SENTINEL },
+        error: null,
+      })
+      const fromMock = vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'cards') return cardsQuery
+        if (table === 'streamer_additional_gacha_rewards') return insertQuery
+        return createMockQueryBuilder()
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost/api/streamer/additional-rewards', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rewardId: 'extra-reward', rewardName: 'Default', collectionName: DEFAULT_PACK_SENTINEL }),
+      }))
+
+      expect(response.status).toBe(200)
+      // existence check must use the sentinel-aware .is('collection_name', null) path
+      expect(cardsQuery.is).toHaveBeenCalledWith('collection_name', null)
+      expect(insertQuery.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ collection_name: DEFAULT_PACK_SENTINEL })
+      )
+    })
+
+    it('rejects DEFAULT_PACK_SENTINEL when there are zero active unclassified cards (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer-1', channel_point_reward_id: 'main-reward', card_pack_names: [] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 0, error: null })
+        return cardsQuery
+      }
+      const insertQuery = createMockQueryBuilder()
+      const fromMock = vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'cards') return cardsQuery
+        if (table === 'streamer_additional_gacha_rewards') return insertQuery
+        return createMockQueryBuilder()
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost/api/streamer/additional-rewards', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rewardId: 'extra-reward', rewardName: 'Default', collectionName: DEFAULT_PACK_SENTINEL }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(insertQuery.insert).not.toHaveBeenCalled()
     })
 
     // Self-review regression guard (carried over from #269): the

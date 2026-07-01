@@ -7,7 +7,7 @@ import {
   RARITY_CONTROL_CHAR_REGEX as CONTROL_CHAR_REGEX,
   RARITY_BIDI_OVERRIDE_REGEX as BIDI_OVERRIDE_REGEX,
 } from "@/lib/constants";
-import { MAX_COLLECTION_NAME_LENGTH } from "@/lib/validation/collection-name";
+import { MAX_COLLECTION_NAME_LENGTH, isReservedCollectionName } from "@/lib/validation/collection-name";
 import { logger } from "@/lib/logger";
 
 // ここでの事前検証は UX 向上のためで、最終的な検証はサーバーが行う
@@ -89,6 +89,13 @@ export default function CardPackModal({
     }
     if (CONTROL_CHAR_REGEX.test(key) || BIDI_OVERRIDE_REGEX.test(key)) {
       setError(t("cardPackModal.errorInvalidChars"));
+      return;
+    }
+    // Issue #555: `__` は DEFAULT_PACK_SENTINEL 等の予約値の名前空間。ここで
+    // 弾かないと、サーバー側検証(validateCardPackNamesInput)で拒否されるまで
+    // ユーザーが気づけない。
+    if (isReservedCollectionName(key)) {
+      setError(t("cardPackModal.errorReserved"));
       return;
     }
     if (list.includes(key)) {

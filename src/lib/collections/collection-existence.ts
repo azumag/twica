@@ -10,6 +10,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
+import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 
 /**
  * Detect the "collection_name column is not deployed yet" schema error.
@@ -107,12 +108,24 @@ export async function checkCollectionHasActiveCards(
   streamerId: string,
   collectionName: string
 ): Promise<CollectionExistenceResult> {
-  const { count, error } = await supabaseAdmin
+  let query = supabaseAdmin
     .from("cards")
     .select("id", { count: "exact", head: true })
     .eq("streamer_id", streamerId)
-    .eq("collection_name", collectionName)
     .eq("is_active", true);
+
+  // Issue #555: DEFAULT_PACK_SENTINEL asks about the DEFAULT pack (cards left
+  // unclassified, i.e. collection_name IS NULL) — the inverse of the normal
+  // named-pack lookup, which needs `.eq(...)` against a literal string.
+  // `.eq('collection_name', DEFAULT_PACK_SENTINEL)` would never match anything
+  // (no card actually has that literal string as its collection_name), so this
+  // must branch to `.is(...)`. Mirrors how executeGacha resolves the same
+  // sentinel when drawing cards (see gacha.ts).
+  query = collectionName === DEFAULT_PACK_SENTINEL
+    ? query.is("collection_name", null)
+    : query.eq("collection_name", collectionName);
+
+  const { count, error } = await query;
 
   if (error) {
     if (isMissingCollectionNameColumn(error)) {

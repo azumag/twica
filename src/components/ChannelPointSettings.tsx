@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/scopes";
+import { DEFAULT_PACK_SENTINEL, isReservedCollectionName } from "@/lib/validation/collection-name";
 import {
   deriveEventSubStatus,
   RAID_EVENTSUB_TYPE,
@@ -209,7 +210,17 @@ export default function ChannelPointSettings({
       if (!response.ok) return;
       const data = await response.json();
       const names = Array.isArray(data?.collections) ? data.collections : [];
-      setCollections(names.filter((name: unknown): name is string => typeof name === "string"));
+      // Issue #555: 予約語(`__` 始まり)は防御的に除外する。予約語ガード
+      // (isReservedCollectionName)導入前に "__default__" 等の実パックが
+      // 登録されていた遺産データが残っている場合、固定オプション
+      // (DEFAULT_PACK_SENTINEL)と同じ value の option が重複描画され、
+      // その実パックを選択できなくなる value 衝突を防ぐ。
+      setCollections(
+        names.filter(
+          (name: unknown): name is string =>
+            typeof name === "string" && !isReservedCollectionName(name)
+        )
+      );
       // 取得成功時のみ loaded=true。これ以降だけ missing 警告を有効化する。
       setCollectionsLoaded(true);
     } catch {
@@ -890,6 +901,10 @@ export default function ChannelPointSettings({
                    className="mt-1 h-9 w-full rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
                  >
                    <option value="">{t("collections.all")}</option>
+                   {/* Issue #555: 「デフォルトパックのみ」= 未分類(collection_name
+                       IS NULL)のカードだけに抽選対象を絞る選択肢。事前登録された
+                       パックとは独立した固定オプションとして常に表示する。 */}
+                   <option value={DEFAULT_PACK_SENTINEL}>{t("collections.defaultOnly")}</option>
                    {collections.map((name) => (
                      <option key={name} value={name}>{name}</option>
                    ))}
@@ -899,8 +914,14 @@ export default function ChannelPointSettings({
                        返す(アクティブカードの有無は問わない)ため、ここに来る
                        ケースは常に「登録解除済み」であり「抽選可能カードなし」
                        ではない。取得完了後のみラベルを付す
-                       （取得前/失敗時は素の名前で表示）。 */}
-                   {selectedCollectionName && !collections.includes(selectedCollectionName) && (
+                       （取得前/失敗時は素の名前で表示）。
+                       Issue #555: DEFAULT_PACK_SENTINEL は上の固定オプションと
+                       して既に選択肢にあるため、ここでは除外する(除外しないと
+                       同じ値のoptionが2つ並び、誤って「登録解除済み」ラベルの
+                       方が選択されてしまう)。 */}
+                   {selectedCollectionName
+                     && selectedCollectionName !== DEFAULT_PACK_SENTINEL
+                     && !collections.includes(selectedCollectionName) && (
                      <option value={selectedCollectionName}>
                        {collectionsLoaded
                          ? t("collections.missing", { name: selectedCollectionName })
@@ -1110,9 +1131,17 @@ export default function ChannelPointSettings({
                            )}
                            {/* Issue #393再設計: 紐付くカードパック。パック管理で
                                登録解除された(=事前登録一覧に無い)パックは警告色で
-                               示す。取得完了後のみ警告（取得前/失敗時は素の名前で表示）。 */}
+                               示す。取得完了後のみ警告（取得前/失敗時は素の名前で表示）。
+                               Issue #555: DEFAULT_PACK_SENTINEL は予約値のため
+                               事前登録一覧には現れず、素の "__default__" 文字列
+                               表示や「登録解除済み」誤判定を避けるため専用ラベルを
+                               優先して表示する。 */}
                            {reward.collection_name ? (
-                             collectionsLoaded && !collections.includes(reward.collection_name) ? (
+                             reward.collection_name === DEFAULT_PACK_SENTINEL ? (
+                               <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                                 {t("collections.defaultOnly")}
+                               </span>
+                             ) : collectionsLoaded && !collections.includes(reward.collection_name) ? (
                                <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
                                  {t("collections.missing", { name: reward.collection_name })}
                                </span>
@@ -1205,6 +1234,8 @@ export default function ChannelPointSettings({
                    className="h-10 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
                  >
                    <option value="">{t("collections.all")}</option>
+                   {/* Issue #555: メイン報酬の選択肢と同様に「デフォルトパックのみ」を追加 */}
+                   <option value={DEFAULT_PACK_SENTINEL}>{t("collections.defaultOnly")}</option>
                    {collections.map((name) => (
                      <option key={name} value={name}>{name}</option>
                    ))}

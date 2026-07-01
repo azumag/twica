@@ -12,12 +12,12 @@ vi.mock("@/lib/logger");
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
-function mockFetch(): FetchMock {
+function mockFetch(collections: string[] = ["characters", "weapons"]): FetchMock {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
 
     if (url.includes("/api/cards/collections")) {
-      return new Response(JSON.stringify({ collections: ["characters", "weapons"] }), {
+      return new Response(JSON.stringify({ collections }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -30,6 +30,10 @@ function mockFetch(): FetchMock {
           rewards: [{ id: "main-reward", title: "Main", cost: 100, is_enabled: true }],
           subscriptions: [],
           additionalRewards: [],
+          // Issue #555: the additional-reward section (and its own pack select)
+          // only renders when eventSubStatus === "active" — set it here so the
+          // new "default pack only" option tests can see BOTH selects.
+          eventSubStatus: "active",
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
@@ -101,5 +105,69 @@ describe("ChannelPointSettings card pack dropdowns", () => {
       expect(options.length).toBeGreaterThan(0);
       options.forEach((option) => expect(option.disabled).toBe(false));
     });
+  });
+
+  // Issue #555: a fixed "default pack only" option (collection_name IS NULL)
+  // must appear alongside "all cards" and the registered pack names, in both
+  // the main-reward and additional-reward selects.
+  it('renders a "default pack only" option in both pack selects', async () => {
+    renderComponent();
+
+    await waitFor(() => {
+      const options = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLOptionElement[];
+      expect(options.length).toBe(2);
+      options.forEach((option) => {
+        expect(option.disabled).toBe(false);
+        expect((option as HTMLOptionElement).value).toBe("__default__");
+      });
+    });
+  });
+
+  // Regression guard: DEFAULT_PACK_SENTINEL is never a registered pack name
+  // (it's reserved), so the "orphaned/missing pack" fallback option must not
+  // ALSO render a duplicate <option value="__default__"> labeled "missing" —
+  // that would create two options sharing one value in the same <select>.
+  it('does not render a duplicate "missing pack" option for the default-pack sentinel', async () => {
+    render(
+      <NextIntlClientProvider locale="ja" messages={jaMessages}>
+        <ChannelPointSettings
+          streamerId="streamer-1"
+          currentRewardId="main-reward"
+          currentRewardName="Main"
+          currentCollectionName="__default__"
+        />
+      </NextIntlClientProvider>
+    );
+
+    await waitFor(() => {
+      const defaultOptions = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" });
+      expect(defaultOptions.length).toBe(2);
+    });
+    expect(screen.queryByText(/登録解除済み/)).not.toBeInTheDocument();
+  });
+
+  // Issue #555 (review MINOR): a real pack literally named "__default__" could
+  // have been registered BEFORE the reserved-name guard existed. If the API
+  // response still contains such legacy names, fetchCollections must filter
+  // them out defensively — otherwise the fixed DEFAULT_PACK_SENTINEL option and
+  // the legacy pack would render duplicate <option>s sharing one value in the
+  // same <select>, making the legacy pack unselectable.
+  it("filters reserved (`__`-prefixed) names out of the API response so options never duplicate", async () => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", mockFetch(["characters", "weapons", "__default__", "__legacy"]));
+
+    renderComponent();
+
+    await waitFor(() => {
+      // Normal packs render as usual (main + additional select = 2 each).
+      expect(screen.getAllByRole("option", { name: "weapons" }).length).toBe(2);
+    });
+    // Exactly the two FIXED default-pack options remain — no third/fourth
+    // option coming from the legacy "__default__" entry in the response.
+    const defaultOptions = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLOptionElement[];
+    expect(defaultOptions.length).toBe(2);
+    // The raw reserved names never appear as option labels.
+    expect(screen.queryByRole("option", { name: "__default__" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "__legacy" })).not.toBeInTheDocument();
   });
 });
