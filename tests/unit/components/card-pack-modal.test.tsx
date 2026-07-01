@@ -84,6 +84,22 @@ describe("CardPackModal", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  // Issue #555: `__`-prefixed names are reserved for sentinel values like
+  // DEFAULT_PACK_SENTINEL and must be rejected client-side (in addition to the
+  // server-side validateCardPackNamesInput check) so streamers get immediate
+  // feedback instead of a failed save.
+  it("rejects a `__`-prefixed (reserved) pack name and does not add it", async () => {
+    renderModal({ isPremium: true, cardPackNames: ["weapons"] });
+
+    fireEvent.change(screen.getByPlaceholderText("新しいパック名"), {
+      target: { value: "__default__" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "追加" }));
+
+    expect(screen.getByText("__ で始まる名前は予約されているため使用できません")).toBeInTheDocument();
+    expect(screen.queryByText("__default__")).not.toBeInTheDocument();
+  });
+
   it("adds a new pack name and saves when isPremium is true", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ success: true, cardPackNames: ["weapons", "characters"] }), {

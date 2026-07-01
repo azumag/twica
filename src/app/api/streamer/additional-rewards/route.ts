@@ -7,7 +7,7 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger";
-import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
+import { resolveCollectionNameField, isRegisteredOrUnchanged, DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import {
   checkCollectionHasActiveCards,
   isMissingCollectionNameColumn,
@@ -245,8 +245,15 @@ export async function POST(request: NextRequest) {
     const registeredPackNames: string[] = Array.isArray(streamer.card_pack_names)
       ? streamer.card_pack_names
       : [];
+    // Issue #555: DEFAULT_PACK_SENTINEL is a reserved value that can never be a
+    // member of card_pack_names (isReservedCollectionName rejects registering
+    // it), so the ordinary membership check would always reject it. Every
+    // streamer implicitly has this pseudo-pack (their unclassified cards), so
+    // membership validation is skipped for it entirely; existence is verified
+    // separately below via checkCollectionHasActiveCards.
     if (
       typeof collectionNameResult.value === "string" &&
+      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
       !cardPackNamesUnavailable &&
       !isRegisteredOrUnchanged(collectionNameResult.value, null, registeredPackNames)
     ) {

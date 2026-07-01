@@ -15,7 +15,7 @@ import {
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { resolveCollectionNameField, validateCardPackNamesInput, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
+import { resolveCollectionNameField, validateCardPackNamesInput, isRegisteredOrUnchanged, DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import {
   checkCollectionHasActiveCards,
   isMissingCollectionNameColumn,
@@ -332,8 +332,17 @@ export async function POST(request: NextRequest) {
     // 登録済みであることを要求する(#5参照: cardPackNamesのゲート適用後の
     // リストに対して判定する。カード削除等で一覧から消えたパックへの既存
     // 紐付けは、値を変えない限り常に許可=孤立参照でも壊れない)。
+    //
+    // Issue #555: DEFAULT_PACK_SENTINEL(「デフォルトパックのみ」選択)は
+    // 予約値であり、そもそも card_pack_names に登録できない
+    // (isReservedCollectionName)。そのため常に非登録扱いとなり、通常の
+    // membership検証にかけると誰も選べなくなってしまう。すべてのストリーマー
+    // が持つ疑似パック(=未分類カード)として、membership検証自体を常に
+    // スキップして受理する(存在検証は下のcheckCollectionHasActiveCardsで
+    // 別途行う)。
     if (
       channelPointCollectionResult.value !== undefined &&
+      channelPointCollectionResult.value !== DEFAULT_PACK_SENTINEL &&
       !isRegisteredOrUnchanged(
         channelPointCollectionResult.value,
         streamer.channel_point_collection_name,

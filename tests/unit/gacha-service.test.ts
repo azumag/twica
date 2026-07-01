@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { GachaService } from '@/lib/services/gacha'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { createMockQueryBuilder } from '../utils/supabase-mock'
+import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
@@ -274,6 +275,56 @@ describe('GachaService.executeGacha', () => {
 
     expect(result.success).toBe(true)
     expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'weapons')
+  })
+
+  // Issue #555: 「デフォルトパックのみ」= 未分類カード(collection_name IS NULL)
+  // だけを抽選対象にする。通常のパック名指定(.eq)とは逆に .is で絞り込む必要がある。
+  it('DEFAULT_PACK_SENTINEL指定時は未分類(collection_name IS NULL)のカードだけを抽選対象にする', async () => {
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-default-pack' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, DEFAULT_PACK_SENTINEL)
+
+    expect(result.success).toBe(true)
+    expect(cardsQuery.is).toHaveBeenCalledWith('collection_name', null)
+    // A literal .eq('collection_name', '__default__') would never match any real
+    // card, so the sentinel must never be passed to .eq.
+    expect(cardsQuery.eq).not.toHaveBeenCalledWith('collection_name', DEFAULT_PACK_SENTINEL)
+  })
+
+  it('DEFAULT_PACK_SENTINEL指定+列未デプロイ(READ 42703)なら誤って全カード抽選せず拒否する', async () => {
+    const cardsQuery = createMockQueryBuilder()
+    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({
+        data: null,
+        error: { message: 'column cards.collection_name does not exist', code: '42703' },
+      })
+      return cardsQuery
+    }
+    const mockRpc = vi.fn()
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, DEFAULT_PACK_SENTINEL)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Card collections are not deployed yet')
+    }
+    expect(mockRpc).not.toHaveBeenCalled()
   })
 
   it('collection指定なしではcollection_nameで絞り込まない', async () => {

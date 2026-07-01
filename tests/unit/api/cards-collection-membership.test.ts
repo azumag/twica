@@ -12,6 +12,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { createMockQueryBuilder } from "../../utils/supabase-mock";
+import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
@@ -119,6 +120,43 @@ describe("POST /api/cards card-pack membership validation (Issue #393再設計)"
     expect(cardsQuery.insert).toHaveBeenCalledWith(
       expect.objectContaining({ collection_name: "weapons" })
     );
+  });
+
+  // Issue #555: DEFAULT_PACK_SENTINEL ("default pack only") is meaningful ONLY
+  // as a gacha/reward FILTER value ("draw from unclassified cards"); a card's
+  // own default-pack membership is expressed by collection_name = NULL, never
+  // by this sentinel string. The sentinel is reserved (isReservedCollectionName)
+  // so it can never be registered in card_pack_names, meaning the existing
+  // membership check rejects it automatically — this test fixes that behavior.
+  it("rejects DEFAULT_PACK_SENTINEL as a card's collectionName (400) — cards use null, not the sentinel", async () => {
+    const streamerQuery = createMockQueryBuilder();
+    (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: "streamer1", rarity_weights: null, card_pack_names: ["weapons"] },
+      error: null,
+    });
+    const cardsQuery = createMockQueryBuilder();
+    const fromMock = vi.fn((table: string) => (table === "streamers" ? streamerQuery : cardsQuery));
+
+    const { getSupabaseAdmin } = await import("@/lib/supabase/admin");
+    vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const request = new NextRequest("http://localhost/api/cards", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        streamerId: "streamer1",
+        name: "Sword",
+        description: "",
+        imageUrl: "https://example.com/a.png",
+        rarity: "common",
+        dropRate: 0.5,
+        collectionName: DEFAULT_PACK_SENTINEL,
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    expect(cardsQuery.insert).not.toHaveBeenCalled();
   });
 
   it("allows a null (unclassified) pack with no membership check needed", async () => {
@@ -236,6 +274,28 @@ describe("PUT /api/cards/[id] card-pack membership validation (Issue #393再設�
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "Renamed", collectionName: "armor" }),
+    });
+
+    const response = await PUT(request, { params: Promise.resolve({ id: "card1" }) });
+    expect(response.status).toBe(400);
+    expect(updateQuery.update).not.toHaveBeenCalled();
+  });
+
+  // Issue #555: same reservation applies to card updates — a card's own
+  // default-pack membership is expressed by collection_name = NULL, never by
+  // the DEFAULT_PACK_SENTINEL filter value.
+  it("rejects changing to DEFAULT_PACK_SENTINEL (400) — cards use null, not the sentinel", async () => {
+    const selectQuery = buildCardQuery("weapons", ["weapons", "characters"]);
+    const updateQuery = createMockQueryBuilder();
+    const fromMock = vi.fn(() => selectQuery);
+
+    const { getSupabaseAdmin } = await import("@/lib/supabase/admin");
+    vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const request = new NextRequest("http://localhost/api/cards/card1", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Renamed", collectionName: DEFAULT_PACK_SENTINEL }),
     });
 
     const response = await PUT(request, { params: Promise.resolve({ id: "card1" }) });

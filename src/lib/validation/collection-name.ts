@@ -86,6 +86,41 @@ export function resolveCollectionNameField(
   return { ok: true, value: normalized };
 }
 
+/**
+ * Issue #555: sentinel value meaning "the default (unclassified) pack" — i.e.
+ * cards whose `collection_name` is NULL. Streamers can already select "all
+ * cards" (no filter) or a named pack; this sentinel adds a third, distinct
+ * choice ("only the cards nobody assigned to a pack") without needing a real
+ * DB value to represent NULL-ness inside a `<select>` (HTML option values are
+ * always strings, so NULL itself cannot be an option value).
+ *
+ * The `__` prefix is deliberately chosen so it can never collide with a
+ * streamer-typed pack name: `isReservedCollectionName` rejects the entire
+ * `__`-prefixed namespace at registration time (see `validateCardPackNamesInput`),
+ * so no real pack can ever equal this sentinel.
+ *
+ * デフォルト(未分類)パックを表す予約値。HTML の <select> は NULL を直接
+ * 値として持てないため、この文字列で代替する。`__` 始まりの名前は
+ * `isReservedCollectionName` により登録時点で拒否されるため、実際の
+ * パック名と衝突することはない。
+ */
+export const DEFAULT_PACK_SENTINEL = "__default__";
+
+/**
+ * Reserved-name guard for card pack names (`streamers.card_pack_names`).
+ * Names starting with `__` are reserved for sentinel values such as
+ * `DEFAULT_PACK_SENTINEL` and must never be registrable as a real pack name —
+ * otherwise a streamer-created pack literally named "__default__" would
+ * collide with the default-pack UI option and silently change its meaning
+ * (from "a named pack" to "unclassified cards").
+ *
+ * `__` で始まるパック名を予約語として扱う。`DEFAULT_PACK_SENTINEL` 等の
+ * 予約値と衝突する実パックの登録を防ぐ。
+ */
+export function isReservedCollectionName(name: string): boolean {
+  return name.startsWith("__");
+}
+
 export type CardPackNamesValidation =
   | { ok: true; value: string[] }
   | { ok: false };
@@ -119,6 +154,9 @@ export function validateCardPackNamesInput(value: unknown): CardPackNamesValidat
       || trimmed.length > MAX_COLLECTION_NAME_LENGTH
       || RARITY_CONTROL_CHAR_REGEX.test(trimmed)
       || RARITY_BIDI_OVERRIDE_REGEX.test(trimmed)
+      // Issue #555: `__`-prefixed names are reserved for sentinels like
+      // DEFAULT_PACK_SENTINEL and must never be registrable as a real pack.
+      || isReservedCollectionName(trimmed)
     ) {
       return { ok: false };
     }

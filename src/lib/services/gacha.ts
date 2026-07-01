@@ -6,6 +6,7 @@ import { logger } from '@/lib/logger'
 import { reportError } from '@/lib/sentry/error-handler'
 import { withRetry } from '@/lib/supabase/retry'
 import { isMissingCollectionNameColumn } from '@/lib/collections/collection-existence'
+import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 
 export interface GachaCard {
   id: string
@@ -89,7 +90,15 @@ export class GachaService {
           .eq('is_active', true)
 
         if (collectionName) {
-          query = query.eq('collection_name', collectionName)
+          // Issue #555: DEFAULT_PACK_SENTINEL means "draw only from unclassified
+          // cards" (collection_name IS NULL) — the inverse of a normal named-pack
+          // filter, which needs `.eq(...)` against a literal string value.
+          // `.eq('collection_name', DEFAULT_PACK_SENTINEL)` would never match any
+          // card (no card's collection_name literally equals that sentinel), so
+          // this must branch to `.is(...)` instead.
+          query = collectionName === DEFAULT_PACK_SENTINEL
+            ? query.is('collection_name', null)
+            : query.eq('collection_name', collectionName)
         }
 
         return query
