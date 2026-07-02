@@ -11,6 +11,7 @@ import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import { cardMatchesPackKey } from "@/lib/collection-packs";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
@@ -283,10 +284,11 @@ export default function CardManager({
     }
     // Issue #554: パックフィルタ。DEFAULT_PACK_SENTINEL は「未分類のみ」
     // (collection_name IS NULL)、それ以外は選択されたパック名との完全一致。
-    if (packFilter === DEFAULT_PACK_SENTINEL) {
-      nextCards = nextCards.filter(card => card.collection_name == null);
-    } else if (packFilter) {
-      nextCards = nextCards.filter(card => card.collection_name === packFilter);
+    // cardMatchesPackKey は executeGacha の抽選プール絞り込みと同じ述語を
+    // 共有しており(collection-packs.ts)、表示用フィルタと抽選プールの判定が
+    // ズレないようにする。
+    if (packFilter) {
+      nextCards = nextCards.filter(card => cardMatchesPackKey(card.collection_name, packFilter));
     }
     if (normalizedQuery) {
       nextCards = nextCards.filter(card => card.name.toLowerCase().includes(normalizedQuery));
@@ -312,6 +314,26 @@ export default function CardManager({
     return Array.from(names);
   }, [cardPackNames, cards]);
 
+  // Calculate total weight for probability calculation.
+  // Issue #565: 確率列の母数は実際の抽選プールに一致させる。パック指定の
+  // 報酬から引いた場合、GachaService.executeGacha は active + collection
+  // で候補を絞り、selectWeightedCard が候補内の drop_rate 比で抽選する
+  // (=パック内で再正規化)。そこでパックフィルタ選択中は同じ絞り込みを
+  // 母数に適用し、「そのパックから引いたときの抽選確率」を表示する。
+  // statusFilter/タイトル検索は表示用フィルタであり抽選プールとは無関係の
+  // ため母数には影響させない。
+  const totalActiveWeight = useMemo(
+    () =>
+      cards
+        .filter(
+          (c) =>
+            c.is_active &&
+            (!packFilter || cardMatchesPackKey(c.collection_name, packFilter))
+        )
+        .reduce((sum, c) => sum + c.drop_rate, 0),
+    [cards, packFilter]
+  );
+
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -329,13 +351,22 @@ export default function CardManager({
   // 無ければ)孤立参照を選択肢として残す(ChannelPointSettingsの「一覧に無い
   // パックも表示」パターンと同じ。パック管理から削除された後の既存紐付けを
   // 黙って見えなくしない)。
+  // Issue #567続き: 孤立参照のアンカーは formData.collectionName ではなく
+  // editingCard.collection_name(編集開始時点の元の値)で行う。デフォルトへ
+  // 変更した直後は formData.collectionName が "" になり cardPackNames が
+  // 空だと選択肢がゼロになって select 自体がアンマウントされ、孤立参照へ
+  // 戻せなくなる(下の表示ゲート参照)。editingCard を見ることで、編集
+  // セッション中は select が消えず、いつでも元のパックへ戻せる。
   const cardPackSelectOptions = useMemo(() => {
     const options = [...cardPackNames];
+    if (editingCard?.collection_name && !options.includes(editingCard.collection_name)) {
+      options.push(editingCard.collection_name);
+    }
     if (formData.collectionName && !options.includes(formData.collectionName)) {
       options.push(formData.collectionName);
     }
     return options;
-  }, [cardPackNames, formData.collectionName]);
+  }, [cardPackNames, editingCard, formData.collectionName]);
   const descriptionCharacterCount = useMemo(
     () => countCharacters(formData.description),
     [formData.description]
@@ -1562,31 +1593,42 @@ export default function CardManager({
                         「パック管理」で登録した一覧から選択する(レアリティselectと
                         同じパターン)。新規登録はパック管理モーダル側でのみ発生する
                         ため、ここでの選択は常にゲート対象外。 */}
-                    <div className="mt-3 min-w-0">
-                      <label className="mb-1 block text-sm text-gray-300">
-                        {t("form.collectionName")}
-                      </label>
-                      <select
-                        name="collectionName"
-                        value={formData.collectionName}
-                        onChange={(e) =>
-                          setFormData({ ...formData, collectionName: e.target.value })
-                        }
-                        className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
-                      >
-                        <option value="">
-                          {t("form.collectionNameUnclassified", {
-                            name: defaultPackName ?? t("cardPackModal.defaultName"),
-                          })}
-                        </option>
-                        {cardPackSelectOptions.map((name) => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
-                      <p className="mt-1 text-xs text-gray-300">
-                        {t("form.collectionNameHelp")}
-                      </p>
-                    </div>
+                    {/* Issue #567: 選べるパックが1つも無い場合(デフォルト1択)は
+                        セレクト自体を出さない。cardPackSelectOptions は登録済み
+                        パック ∪ 編集中カードの孤立参照(editingCard.collection_name
+                        をアンカーにする。formData の現在値だけを見ると、デフォルト
+                        へ変更した直後に選択肢がゼロになり select ごと消えて孤立
+                        参照へ戻せなくなるため)なので、孤立参照カードの編集セッション
+                        中は select が常にマウントされたままとなり、デフォルトへ
+                        変更してもいつでも元のパックへ戻せる。非表示時は
+                        collectionName が "" のまま = 未分類(null)で保存される。 */}
+                    {cardPackSelectOptions.length > 0 && (
+                      <div className="mt-3 min-w-0">
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.collectionName")}
+                        </label>
+                        <select
+                          name="collectionName"
+                          value={formData.collectionName}
+                          onChange={(e) =>
+                            setFormData({ ...formData, collectionName: e.target.value })
+                          }
+                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
+                        >
+                          <option value="">
+                            {t("form.collectionNameUnclassified", {
+                              name: defaultPackName ?? t("cardPackModal.defaultName"),
+                            })}
+                          </option>
+                          {cardPackSelectOptions.map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-xs text-gray-300">
+                          {t("form.collectionNameHelp")}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
                 {/* 右カラム: 画像 */}
@@ -2058,12 +2100,6 @@ export default function CardManager({
         // 並び替え/フィルタリングが適用されたfilteredAndSortedCardsを表示に使用
         const displayCards = maxCards ? filteredAndSortedCards.slice(0, maxCards) : filteredAndSortedCards;
 
-        // Calculate total weight of all active cards for probability calculation
-        // 出現確率計算用の全アクティブカードの重み合計を計算
-        const totalActiveWeight = cards
-          .filter(c => c.is_active)
-          .reduce((sum, c) => sum + c.drop_rate, 0);
-
         if (cards.length === 0) {
           return (
             <p className="text-center text-gray-400">
@@ -2074,6 +2110,16 @@ export default function CardManager({
 
         return (
           <>
+            {/* Issue #565: パックフィルタ選択中は確率列が「そのパックから引いた
+                場合の抽選確率」に切り替わるため、その旨を明示する。確率列は
+                リスト表示にしか無いのでリスト表示時のみ出す。また、絞り込み
+                結果が0件で「該当カードなし」の空状態を表示する場合は確率列
+                自体が存在しないため、ヒントも出さない(displayCards.length > 0)。 */}
+            {packFilter && currentViewMode === "list" && displayCards.length > 0 && (
+              <p className="mb-2 text-xs text-gray-400">
+                {t("filter.packProbabilityHint")}
+              </p>
+            )}
             {displayCards.length === 0 ? (
               <p className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-8 text-center text-gray-400">
                 {t("messages.noMatchingCards")}

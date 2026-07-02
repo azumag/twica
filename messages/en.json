@@ -139,7 +139,8 @@
       "active": "Active Only",
       "inactive": "Paused Only",
       "packLabel": "Filter by card pack",
-      "packAll": "All packs"
+      "packAll": "All packs",
+      "packProbabilityHint": "Probabilities shown are the draw rates when redeeming a reward tied to this pack"
     },
     "table": {
       "image": "Image",
@@ -234,8 +235,8 @@
       "errorReserved": "Names starting with __ are reserved and cannot be used",
       "errorDuplicate": "That pack name already exists",
       "errorMax": "Up to {max} packs allowed",
-      "premiumRequired": "Adding a new pack requires a supporter plan or Twitch subscription. Removals were applied.",
-      "premiumRequiredHint": "Adding a new pack requires a supporter plan or Twitch subscription (removal is always available).",
+      "premiumRequired": "Additional packs are offered as a bonus feature of the supporter plan / Twitch subscription. Removals were applied.",
+      "premiumRequiredHint": "Additional packs are offered as a bonus feature of the supporter plan / Twitch subscription (removal is always available).",
       "deployWindow": "The pack feature is not ready yet, so your changes could not be saved. Please try again shortly.",
       "defaultName": "Default",
       "defaultRowDescription": "The built-in pack that unclassified cards belong to",

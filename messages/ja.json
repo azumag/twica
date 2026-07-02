@@ -139,7 +139,8 @@
       "active": "配布中のみ",
       "inactive": "配布停止のみ",
       "packLabel": "カードパックで絞り込む",
-      "packAll": "すべてのパック"
+      "packAll": "すべてのパック",
+      "packProbabilityHint": "確率はこのパックが指定された報酬から引いた場合の抽選確率です"
     },
     "table": {
       "image": "画像",
@@ -234,8 +235,8 @@
       "errorReserved": "__ で始まる名前は予約されているため使用できません",
       "errorDuplicate": "同じパック名が既に存在します",
       "errorMax": "パックは最大{max}件までです",
-      "premiumRequired": "新しいパックの追加には支援プランまたはTwitchサブスクが必要です。既存パックの削除は反映されました。",
-      "premiumRequiredHint": "新しいパックの追加には支援プランまたはTwitchサブスクが必要です（削除は常に可能です）。",
+      "premiumRequired": "追加パックの機能は支援またはTwitchサブスクのおまけ機能として提供されています。既存パックの削除は反映されました。",
+      "premiumRequiredHint": "追加パックの機能は支援またはTwitchサブスクのおまけ機能として提供されています（削除は常に可能です）。",
       "deployWindow": "パック機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。",
       "defaultName": "デフォルト",
       "defaultRowDescription": "未分類カードが属する既定のパックです",
