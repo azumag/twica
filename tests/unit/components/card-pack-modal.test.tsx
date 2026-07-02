@@ -148,7 +148,7 @@ describe("CardPackModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => {
-      expect(screen.getByText(/支援プランまたはTwitchサブスクが必要です/)).toBeInTheDocument();
+      expect(screen.getByText(/おまけ機能として提供されています/)).toBeInTheDocument();
     });
     expect(onSaved).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
