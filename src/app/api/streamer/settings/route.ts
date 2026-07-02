@@ -9,6 +9,7 @@ import {
   RARITIES,
   MAX_RARITY_KEY_LENGTH,
   MAX_CUSTOM_RARITIES,
+  MAX_PACK_RARITY_WEIGHTS_ENTRIES,
   RARITY_CONTROL_CHAR_REGEX as CONTROL_CHAR_REGEX,
   RARITY_BIDI_OVERRIDE_REGEX as BIDI_OVERRIDE_REGEX,
 } from "@/lib/constants";
@@ -27,6 +28,8 @@ import {
   isMissingCollectionNameColumn,
   isMissingCardPackNamesColumnError,
   isMissingDefaultCardPackNameColumnError,
+  isMissingRarityWeightsScopeColumnError,
+  isMissingPackRarityWeightsColumnError,
 } from "@/lib/collections/collection-existence";
 import { isNewCardPackNameAdditionGated } from "@/lib/plan-gate";
 
@@ -142,6 +145,89 @@ function hasValidRarityWeightsTotal(value: Record<string, number> | null): boole
   return Math.abs(total - 100) <= 0.001;
 }
 
+type PackRarityWeightsValidation =
+  | { ok: true; value: Record<string, Record<string, number>> | null }
+  | { ok: false };
+
+/**
+ * Issue #578(#576 フェーズ1): pack_rarity_weights 入力を検証する。
+ *
+ * - `null` は「全エントリをクリア」として常に許可する。
+ * - オブジェクト以外(配列含む)・51件超は拒否する（DB の
+ *   check_pack_rarity_weights_values と同じ上限。50パック + __default__）。
+ * - 各キーは DEFAULT_PACK_SENTINEL か、`catalog`(実効パックカタログ)に
+ *   登録済みの名前でなければ拒否する。
+ * - 各値は validateRarityWeightsInput でキー/値の形式検証を行った上で、
+ *   空オブジェクトを明示的に拒否する（グローバルへの継承は「キーを
+ *   送らない」ことで表現する規約のため、空オブジェクトでの継承指定は
+ *   曖昧で許可しない）。さらに hasValidRarityWeightsTotal で合計100%を要求する
+ *   （各パックの実効分布は完結している必要がある）。
+ *
+ * 実効カタログ(catalog)は呼び出し側が決定する: 同一リクエストに
+ * cardPackNames が含まれていればその新カタログ、なければ DB 上の現在の
+ * card_pack_names を渡す。
+ */
+function validatePackRarityWeightsInput(
+  value: unknown,
+  catalog: string[]
+): PackRarityWeightsValidation {
+  if (value === null) {
+    return { ok: true, value: null };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false };
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_PACK_RARITY_WEIGHTS_ENTRIES) {
+    return { ok: false };
+  }
+
+  const normalized: Record<string, Record<string, number>> = {};
+  for (const [key, entryValue] of entries) {
+    if (key !== DEFAULT_PACK_SENTINEL && !catalog.includes(key)) {
+      return { ok: false };
+    }
+
+    const validation = validateRarityWeightsInput(entryValue);
+    if (!validation.ok || validation.value === null) {
+      return { ok: false };
+    }
+
+    // 空オブジェクトはグローバル継承の表現として認めない（継承したい場合は
+    // キー自体を省略する規約のため、曖昧な入力として拒否する）。
+    if (Object.keys(validation.value).length === 0) {
+      return { ok: false };
+    }
+
+    if (!hasValidRarityWeightsTotal(validation.value)) {
+      return { ok: false };
+    }
+
+    normalized[key] = validation.value;
+  }
+
+  return { ok: true, value: normalized };
+}
+
+/**
+ * Issue #578: cardPackNames の保存に伴い、最終カタログに存在しなくなった
+ * キーを pack_rarity_weights から取り除く。__default__ は実パックカタログの
+ * メンバーではない（常に存在する疑似パック）ため、常に保持する。
+ */
+function prunePackRarityWeights(
+  value: Record<string, Record<string, number>>,
+  finalCatalog: string[]
+): Record<string, Record<string, number>> {
+  const pruned: Record<string, Record<string, number>> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (key === DEFAULT_PACK_SENTINEL || finalCatalog.includes(key)) {
+      pruned[key] = entryValue;
+    }
+  }
+  return pruned;
+}
+
 export async function POST(request: NextRequest) {
   // Content-Type validation - must be the first check
   const contentTypeValidation = validateContentType(request, 'application/json')
@@ -200,6 +286,20 @@ export async function POST(request: NextRequest) {
       chatAnnouncementMultiShowCards,
       // レアリティ別自動確率設定（オプション）
       rarityWeights,
+      // レアリティ重みのスコープ（オプション、Issue #578）: 'global'(全パック共通)
+      // か 'per_pack'(パック別、packRarityWeights を優先)か。実効重みの計算
+      // (パック別ドロップ率反映)は抽選時に行う(#576 フェーズ2)ため、ここでの
+      // 保存では drop_rate の再計算は一切トリガーしない。
+      // Rarity-weight scope (optional, Issue #578): 'global' (shared across
+      // all packs) or 'per_pack' (packRarityWeights takes precedence).
+      // Effective per-pack weights are computed at DRAW TIME (#576 Phase 2),
+      // so saving this field never triggers a drop_rate recalculation.
+      rarityWeightsScope,
+      // パック別レアリティ重みの上書きマップ（オプション、Issue #578）。
+      // null で全クリア。キーはパック名または __default__。
+      // Per-pack rarity-weight override map (optional, Issue #578). null
+      // clears all entries. Keys are pack names or __default__.
+      packRarityWeights,
       // カスタムレアリティ名の一覧（オプション、ドロップ率設定とは独立）
       // Custom rarity name catalog (optional, decoupled from drop-rate settings)
       customRarities,
@@ -234,6 +334,15 @@ export async function POST(request: NextRequest) {
       if (!hasValidRarityWeightsTotal(normalizedRarityWeights)) {
         return NextResponse.json({ error: "Rarity weights total must be 100%" }, { status: 400 });
       }
+    }
+
+    // rarityWeightsScope: 'global' | 'per_pack' の2値のみ許可（Issue #578）。
+    if (
+      rarityWeightsScope !== undefined
+      && rarityWeightsScope !== "global"
+      && rarityWeightsScope !== "per_pack"
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
     // customRarities はレアリティ名の一覧のみを保持し、ドロップ率には影響しない。
@@ -301,10 +410,28 @@ export async function POST(request: NextRequest) {
     // Verify ownership
     let { data: streamer, error: streamerSelectError } = await supabaseAdmin
       .from("streamers")
-      .select("id, channel_point_collection_name, card_pack_names")
+      .select("id, channel_point_collection_name, card_pack_names, pack_rarity_weights")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
+
+    // Issue #578: pack_rarity_weights はこのフェーズで新規追加された列。デプロイ窓では
+    // 他の列より先に(あるいは他が既に安定デプロイ済みの状態で単独で)未デプロイになり
+    // うるため、既存の card_pack_names / channel_point_collection_name と同じチェイン
+    // 方式で、まずこの列だけ剥がして再試行する。プルーニング(下記)に使う現在値の
+    // 読み取りが目的で、未デプロイなら「保存されているエントリなし」= null 扱いにする。
+    if (streamerSelectError && isMissingPackRarityWeightsColumnError(streamerSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("streamers")
+        .select("id, channel_point_collection_name, card_pack_names")
+        .eq("id", streamerId)
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = retryResult.data
+        ? { ...retryResult.data, pack_rarity_weights: null as Record<string, Record<string, number>> | null }
+        : null;
+      streamerSelectError = retryResult.error;
+    }
 
     // Issue #393再設計 / #269: このownership確認SELECTは channel_point_collection_name
     // と card_pack_names の現在値を読むために2列を含む。デプロイ窓ではどちらか
@@ -320,7 +447,11 @@ export async function POST(request: NextRequest) {
         .eq("twitch_user_id", session.twitchUserId)
         .maybeSingle();
       streamer = retryResult.data
-        ? { ...retryResult.data, card_pack_names: [] as string[] }
+        ? {
+            ...retryResult.data,
+            card_pack_names: [] as string[],
+            pack_rarity_weights: null as Record<string, Record<string, number>> | null,
+          }
         : null;
       streamerSelectError = retryResult.error;
     }
@@ -333,7 +464,12 @@ export async function POST(request: NextRequest) {
         .eq("twitch_user_id", session.twitchUserId)
         .maybeSingle();
       streamer = retryResult.data
-        ? { ...retryResult.data, channel_point_collection_name: null, card_pack_names: [] as string[] }
+        ? {
+            ...retryResult.data,
+            channel_point_collection_name: null,
+            card_pack_names: [] as string[],
+            pack_rarity_weights: null as Record<string, Record<string, number>> | null,
+          }
         : null;
       streamerSelectError = retryResult.error;
     }
@@ -346,6 +482,33 @@ export async function POST(request: NextRequest) {
       ? streamer.card_pack_names
       : [];
 
+    // pack_rarity_weights は object 前提の列（配列/非objectは不正データとして
+    // 無視しnullにフォールバック — DBのCHECK制約により通常発生しない防御的処理）。
+    const currentPackRarityWeights: Record<string, Record<string, number>> | null =
+      streamer.pack_rarity_weights
+      && typeof streamer.pack_rarity_weights === "object"
+      && !Array.isArray(streamer.pack_rarity_weights)
+        ? (streamer.pack_rarity_weights as Record<string, Record<string, number>>)
+        : null;
+
+    // Issue #578(#576 フェーズ1): packRarityWeights のキーは、同一リクエストで
+    // cardPackNames も送られていればその新カタログ、そうでなければ DB 上の
+    // 現在の card_pack_names を実効カタログとして検証する。
+    const effectivePackCatalogForRarityWeights: string[] =
+      normalizedCardPackNames !== undefined ? normalizedCardPackNames : currentCardPackNames;
+
+    let normalizedPackRarityWeights: Record<string, Record<string, number>> | null | undefined;
+    if (packRarityWeights !== undefined) {
+      const validation = validatePackRarityWeightsInput(
+        packRarityWeights,
+        effectivePackCatalogForRarityWeights
+      );
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedPackRarityWeights = validation.value;
+    }
+
     // Issue #269再設計: 「新しい登録」= card_pack_names一覧への新規追加のみを
     // ゲートする。カード/報酬への既存パックの紐付け(選択)はもうゲート対象外。
     let persistedCardPackNames: string[] = currentCardPackNames;
@@ -356,6 +519,26 @@ export async function POST(request: NextRequest) {
       persistedCardPackNames = cardPackNamesPremiumRequired
         ? normalizedCardPackNames.filter((name) => currentCardPackNames.includes(name))
         : normalizedCardPackNames;
+    }
+
+    // Issue #578: cardPackNames の保存に伴い、最終カタログ(persistedCardPackNames、
+    // ゲート適用後)に存在しなくなったキーを pack_rarity_weights から取り除く
+    // (__default__ は常に保持)。packRarityWeights が同一リクエストで指定されて
+    // いればそれを、されていなければ DB の現在値(currentPackRarityWeights)を
+    // プルーニング対象の基準にする — 「cardPackNamesだけ送っても機能する」
+    // 仕様のため、packRarityWeights 未指定でも DB 上の値を読み直して整合させる。
+    let packRarityWeightsToPersist: Record<string, Record<string, number>> | null | undefined =
+      normalizedPackRarityWeights;
+
+    if (normalizedCardPackNames !== undefined) {
+      const pruneBasis = packRarityWeightsToPersist !== undefined
+        ? packRarityWeightsToPersist
+        : currentPackRarityWeights;
+      if (pruneBasis !== null) {
+        packRarityWeightsToPersist = prunePackRarityWeights(pruneBasis, persistedCardPackNames);
+      }
+      // pruneBasis が null かつ packRarityWeightsToPersist が未指定の場合、
+      // プルーニングすべき既存エントリが無いため何もしない(undefinedのまま)。
     }
 
     // Issue #393再設計: メイン報酬のパック紐付けは、null化・現在値の再送信は
@@ -449,6 +632,17 @@ export async function POST(request: NextRequest) {
       updateData.rarity_weights = normalizedRarityWeights;
     }
 
+    // Issue #578(#576 フェーズ1): rarity_weights_scope / pack_rarity_weights。
+    // 実効重みは抽選時計算(#576 設計)のため、これらの保存では drop_rate の
+    // 再計算(recalculateIfAutoMode)は一切トリガーしない(下記の再計算呼び出しは
+    // rarityWeights !== undefined のみを条件としており、この2フィールドは対象外)。
+    if (rarityWeightsScope !== undefined) {
+      updateData.rarity_weights_scope = rarityWeightsScope;
+    }
+    if (packRarityWeightsToPersist !== undefined) {
+      updateData.pack_rarity_weights = packRarityWeightsToPersist;
+    }
+
     // カスタムレアリティ名（ドロップ率の再計算は不要）
     if (customRarities !== undefined) {
       updateData.custom_rarities = normalizedCustomRarities;
@@ -518,12 +712,46 @@ export async function POST(request: NextRequest) {
     // Issue #554: 同じ理由(デプロイ窓)で default_card_pack_name 列がまだ
     // 無い可能性があるため、card_pack_names と同じ skip-and-flag パターンを踏襲する。
     let defaultCardPackNameWriteSkipped = false;
+    // Issue #578: rarity_weights_scope / pack_rarity_weights も同じ理由(デプロイ窓)で
+    // skip-and-flag パターンを踏襲する。
+    let rarityWeightsScopeWriteSkipped = false;
+    let packRarityWeightsWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       let { error } = await supabaseAdmin
         .from("streamers")
         .update(updateData)
         .eq("id", streamerId);
+
+      // Issue #578: このフェーズで新規追加された列を最初に剥がす(他の既存列より
+      // 未デプロイである可能性が高いため)。
+      if (error && isMissingRarityWeightsScopeColumnError(error) && "rarity_weights_scope" in updateData) {
+        delete updateData.rarity_weights_scope;
+        rarityWeightsScopeWriteSkipped = true;
+        if (Object.keys(updateData).length > 0) {
+          const retryResult = await supabaseAdmin
+            .from("streamers")
+            .update(updateData)
+            .eq("id", streamerId);
+          error = retryResult.error;
+        } else {
+          error = null;
+        }
+      }
+
+      if (error && isMissingPackRarityWeightsColumnError(error) && "pack_rarity_weights" in updateData) {
+        delete updateData.pack_rarity_weights;
+        packRarityWeightsWriteSkipped = true;
+        if (Object.keys(updateData).length > 0) {
+          const retryResult = await supabaseAdmin
+            .from("streamers")
+            .update(updateData)
+            .eq("id", streamerId);
+          error = retryResult.error;
+        } else {
+          error = null;
+        }
+      }
 
       // Issue #393再設計: 書き込み時点で card_pack_names / channel_point_collection_name
       // のどちらか(または両方)が未デプロイの可能性があるため、都度1列だけ剥がして再試行する。
@@ -605,6 +833,11 @@ export async function POST(request: NextRequest) {
       // gate, no catalog membership check) — the client's submitted value is
       // authoritative on success. Only the deploy-window skip needs a flag.
       ...(defaultCardPackNameWriteSkipped ? { defaultCardPackNameSkippedDeployWindow: true } : {}),
+      // Issue #578: rarity_weights_scope / pack_rarity_weights も同様に、値そのものは
+      // エコーバックせず(サーバ側の却下シナリオが無いため送信値がそのまま正)、
+      // デプロイ窓によるskipのみフラグで通知する。
+      ...(rarityWeightsScopeWriteSkipped ? { rarityWeightsScopeSkippedDeployWindow: true } : {}),
+      ...(packRarityWeightsWriteSkipped ? { packRarityWeightsSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");

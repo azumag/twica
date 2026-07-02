@@ -48,6 +48,19 @@ export interface Database {
           // レアリティ名をキーにした目標確率マップ（0-100）
           // Dynamic rarity-to-target-percentage map (0-100)
           rarity_weights: Record<string, number> | null
+          // rarity_weights を全パック共通(global)で使うか、パック別
+          // (per_pack, pack_rarity_weights を優先)で使うか。Issue #578
+          // Whether rarity_weights applies globally or per-pack overrides
+          // (pack_rarity_weights) take precedence. Issue #578
+          rarity_weights_scope: 'global' | 'per_pack'
+          // パック名(またはデフォルトパック用の __default__)をキーにした
+          // レアリティ別目標確率マップの上書き。エントリの無いパックは
+          // rarity_weights を継承する（アプリ層の規約）。Issue #578
+          // Per-pack override of the rarity-to-target-percentage map, keyed
+          // by pack name (or __default__ for the unclassified pseudo-pack).
+          // Packs without an entry inherit rarity_weights (app-layer
+          // convention). Issue #578
+          pack_rarity_weights: Record<string, Record<string, number>> | null
           // 配信者が定義したカスタムレアリティ名の一覧（rarity_weights とは独立）
           // List of streamer-defined custom rarity names (decoupled from rarity_weights)
           custom_rarities: string[]
@@ -91,6 +104,8 @@ export interface Database {
           chat_announcement_multi_template?: string | null
           chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
+          rarity_weights_scope?: 'global' | 'per_pack'
+          pack_rarity_weights?: Record<string, Record<string, number>> | null
           custom_rarities?: string[]
           card_pack_names?: string[]
           default_card_pack_name?: string | null
@@ -118,6 +133,8 @@ export interface Database {
           chat_announcement_multi_template?: string | null
           chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
+          rarity_weights_scope?: 'global' | 'per_pack'
+          pack_rarity_weights?: Record<string, Record<string, number>> | null
           custom_rarities?: string[]
           card_pack_names?: string[]
           default_card_pack_name?: string | null

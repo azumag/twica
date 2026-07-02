@@ -139,6 +139,62 @@ export function isMissingRenameCardPackFunctionError(
   return text.includes("rename_card_pack") && error.code === "42883";
 }
 
+/**
+ * Detect the "rarity_weights_scope column is not deployed yet" schema error.
+ *
+ * Separate function for the same reason as `isMissingCardPackNamesColumnError`
+ * / `isMissingDefaultCardPackNameColumnError`: this column's name doesn't
+ * contain "collection_name", so the existing gate would never match it
+ * (one-helper-per-column convention).
+ *
+ * Issue #578 (#576 Phase 1): `streamers.rarity_weights_scope` ships in
+ * migration 00065, in the same PR as the settings route that writes it — a
+ * rolling deploy can briefly have the app code live before the migration has
+ * run, so the route uses this to skip persisting the field during that
+ * window instead of 500ing.
+ */
+export function isMissingRarityWeightsScopeColumnError(
+  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
+): boolean {
+  if (!error) return false;
+  const text = [error.message, error.details, error.hint]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  return (
+    text.includes("rarity_weights_scope") &&
+    (error.code === "PGRST204" ||
+      text.includes("does not exist") ||
+      text.includes("schema cache"))
+  );
+}
+
+/**
+ * Detect the "pack_rarity_weights column is not deployed yet" schema error.
+ *
+ * Same rationale/shape as `isMissingRarityWeightsScopeColumnError` above —
+ * `streamers.pack_rarity_weights` ships in the same migration (00065).
+ * Kept as a distinct helper (rather than folded into the scope check) so
+ * each column can independently fall back during the deploy window, mirroring
+ * how `card_pack_names` and `default_card_pack_name` are detected separately
+ * even though they shipped close together.
+ */
+export function isMissingPackRarityWeightsColumnError(
+  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
+): boolean {
+  if (!error) return false;
+  const text = [error.message, error.details, error.hint]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  return (
+    text.includes("pack_rarity_weights") &&
+    (error.code === "PGRST204" ||
+      text.includes("does not exist") ||
+      text.includes("schema cache"))
+  );
+}
+
 export type CollectionExistenceResult =
   | "exists" // at least one active card belongs to this pack
   | "absent" // no active card belongs to this pack → would cause empty draws
