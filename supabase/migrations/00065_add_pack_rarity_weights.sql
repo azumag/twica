@@ -78,10 +78,20 @@ ADD COLUMN IF NOT EXISTS pack_rarity_weights JSONB DEFAULT NULL;
 -- card_pack_names element validation (00062) and rarity_weights key
 -- validation (00025): the DB only enforces shape/bounds, and the API route
 -- (POST /api/streamer/settings) enforces catalog membership.
-CREATE OR REPLACE FUNCTION check_pack_rarity_weights_values(weights JSONB)
+--
+-- SET search_path = '' + 完全修飾が必須である理由: CHECK 制約は streamers
+-- 行の UPDATE のたびに(変更列に関係なく)再評価される。rename_card_pack は
+-- `SET search_path = ''` で動作し streamers を UPDATE するため、この関数の
+-- 中の関数呼び出しが非修飾だと、その空 search_path を継承した実行時名前解決
+-- が `function check_rarity_weights_values(jsonb) does not exist` で失敗し、
+-- リネーム全体がロールバックする(pack_rarity_weights 非 NULL の配信者で
+-- 100% 再現)。ネスト呼び出しを public. で修飾し、この関数自体も
+-- search_path を固定して呼び出し元の環境に依存しないようにする。
+CREATE OR REPLACE FUNCTION public.check_pack_rarity_weights_values(weights JSONB)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 IMMUTABLE
+SET search_path = ''
 AS $$
 DECLARE
   entry_key TEXT;
@@ -112,7 +122,7 @@ BEGIN
       RETURN FALSE;
     END IF;
 
-    IF NOT check_rarity_weights_values(entry_value) THEN
+    IF NOT public.check_rarity_weights_values(entry_value) THEN
       RETURN FALSE;
     END IF;
   END LOOP;
@@ -126,23 +136,26 @@ DROP CONSTRAINT IF EXISTS streamers_pack_rarity_weights_valid;
 
 ALTER TABLE streamers
 ADD CONSTRAINT streamers_pack_rarity_weights_valid
-CHECK (check_pack_rarity_weights_values(pack_rarity_weights));
+CHECK (public.check_pack_rarity_weights_values(pack_rarity_weights));
 
 -- ---------------------------------------------------------------------------
--- c. rename_card_pack: extend the #554 rename RPC (migration 00063) so that
--- renaming a catalog pack also carries forward any per-pack rarity-weight
--- override stored under the old name — otherwise a rename would silently
--- orphan the override (it would keep applying to a pack name that no longer
--- exists in the catalog, while the renamed pack would silently fall back to
--- the global weights). Full body copied from 00063 verbatim; the only change
--- is the new pack_rarity_weights cascade step added at the end, alongside the
--- existing cascades to cards / channel_point_collection_name /
--- streamer_additional_gacha_rewards. Issue #576/#578.
+-- c. rename_card_pack: extend the #554 rename RPC so that renaming a catalog
+-- pack also carries forward any per-pack rarity-weight override stored under
+-- the old name — otherwise a rename would silently orphan the override (it
+-- would keep applying to a pack name that no longer exists in the catalog,
+-- while the renamed pack would silently fall back to the global weights).
+--
+-- Full body copied verbatim from **00064** (NOT 00063 — 00064 already
+-- superseded 00063 by adding the collection_completions cascade for #557,
+-- which must be preserved here); the only change is the new
+-- pack_rarity_weights cascade step, alongside the existing cascades to
+-- cards / channel_point_collection_name / streamer_additional_gacha_rewards /
+-- collection_completions. Issue #576/#578.
 --
 -- SECURITY INVOKER / SET search_path = '' / schema-qualification: unchanged
--- from 00063 — see that migration's comment for the full rationale (this
--- function performs no privilege escalation; only the service_role admin
--- client ever calls it, per the REVOKE/GRANT at the bottom of this block).
+-- from 00063/00064 — see those migrations' comments for the full rationale
+-- (this function performs no privilege escalation; only the service_role
+-- admin client ever calls it, per the REVOKE/GRANT at the bottom of this block).
 CREATE OR REPLACE FUNCTION public.rename_card_pack(
   p_streamer_id UUID,
   p_old_name TEXT,
@@ -225,6 +238,37 @@ BEGIN
   SET collection_name = v_new_name
   WHERE streamer_id = p_streamer_id AND collection_name = p_old_name;
 
+  -- Issue #557: carry per-pack completion achievements over to the new name
+  -- (the follow-up 00063 explicitly deferred with its "#557 で対応予定" note).
+  --
+  -- ORDER MATTERS — DELETE must run BEFORE the UPDATE below. The partial
+  -- unique index idx_collection_completions_pack_unique forbids two rows
+  -- with the same (twitch_user_id, streamer_id, collection_name,
+  -- total_cards). If some user already holds a completion recorded under
+  -- v_new_name with the same total_cards (e.g. the new name was used by a
+  -- previously-deleted pack, or an earlier rename cycled names), UPDATE-ing
+  -- their old-name row to v_new_name would raise a unique violation and roll
+  -- back the ENTIRE rename (catalog + cards + reward cascades above) because
+  -- of an unrelated historical coincidence. So first DELETE exactly those
+  -- old-name rows whose destination slot is already occupied — the surviving
+  -- pre-existing new-name row already records the same achievement, so no
+  -- information is lost — then UPDATE the remaining, collision-free rows.
+  DELETE FROM public.collection_completions old_cc
+  WHERE old_cc.streamer_id = p_streamer_id
+    AND old_cc.collection_name = p_old_name
+    AND EXISTS (
+      SELECT 1
+      FROM public.collection_completions new_cc
+      WHERE new_cc.streamer_id = p_streamer_id
+        AND new_cc.collection_name = v_new_name
+        AND new_cc.twitch_user_id = old_cc.twitch_user_id
+        AND new_cc.total_cards = old_cc.total_cards
+    );
+
+  UPDATE public.collection_completions
+  SET collection_name = v_new_name
+  WHERE streamer_id = p_streamer_id AND collection_name = p_old_name;
+
   -- Issue #576/#578: carry forward a per-pack rarity-weight override stored
   -- under the old name, if any. Move (not copy) the JSON entry atomically —
   -- `- p_old_name` drops the old key and `|| jsonb_build_object(...)` adds
@@ -237,13 +281,6 @@ BEGIN
   SET pack_rarity_weights = (pack_rarity_weights - p_old_name) || jsonb_build_object(v_new_name, pack_rarity_weights -> p_old_name)
   WHERE id = p_streamer_id AND pack_rarity_weights ? p_old_name;
 
-  -- NOTE (#557 follow-up, deliberately out of scope here): collection_completions
-  -- also stores a collection_name reference (a per-user "completed this pack"
-  -- record). It is intentionally NOT touched by this function yet — whether a
-  -- completion earned under the old name should transfer to the renamed pack,
-  -- or be forfeited, is a product decision that hasn't been made. A follow-up
-  -- PR will CREATE OR REPLACE this function (same signature) to add that
-  -- cascade once the semantics are decided, rather than guessing here.
 END;
 $$;
 

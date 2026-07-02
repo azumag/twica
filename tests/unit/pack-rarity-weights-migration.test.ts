@@ -37,9 +37,12 @@ describe("pack rarity weights migration (00065)", () => {
     });
 
     describe("check_pack_rarity_weights_values function", () => {
-      it("is created with the correct signature", () => {
+      it("is created schema-qualified with a locked-down search_path", () => {
+        // rename_card_pack(SET search_path = '')が streamers を UPDATE すると
+        // CHECK 制約経由でこの関数が空 search_path 下で実行されるため、
+        // 修飾名 + search_path 固定でないと実行時名前解決に失敗する。
         expect(sql).toMatch(
-          /CREATE OR REPLACE FUNCTION check_pack_rarity_weights_values\(weights JSONB\)\s*\n\s*RETURNS BOOLEAN\s*\n\s*LANGUAGE plpgsql\s*\n\s*IMMUTABLE/i
+          /CREATE OR REPLACE FUNCTION public\.check_pack_rarity_weights_values\(weights JSONB\)\s*\n\s*RETURNS BOOLEAN\s*\n\s*LANGUAGE plpgsql\s*\n\s*IMMUTABLE\s*\n\s*SET search_path = ''/i
         );
       });
 
@@ -60,8 +63,10 @@ describe("pack rarity weights migration (00065)", () => {
         expect(sql).toMatch(/IF jsonb_typeof\(entry_value\) <> 'object' THEN\s*\n\s*RETURN FALSE;/i);
       });
 
-      it("delegates per-entry numeric/bounds validation to check_rarity_weights_values", () => {
-        expect(sql).toMatch(/IF NOT check_rarity_weights_values\(entry_value\) THEN\s*\n\s*RETURN FALSE;/i);
+      it("delegates per-entry numeric/bounds validation to schema-qualified check_rarity_weights_values", () => {
+        // 非修飾だと空 search_path 下(rename_card_pack 経由の CHECK 再評価)で
+        // 'function does not exist' になるため、public. 修飾が必須。
+        expect(sql).toMatch(/IF NOT public\.check_rarity_weights_values\(entry_value\) THEN\s*\n\s*RETURN FALSE;/i);
       });
 
       it("documents that catalog key-existence validation is an app-layer concern (mirrors 00025/00062)", () => {
@@ -73,7 +78,7 @@ describe("pack rarity weights migration (00065)", () => {
     it("idempotently re-applies the CHECK constraint (drop before add)", () => {
       expect(sql).toMatch(/DROP CONSTRAINT IF EXISTS streamers_pack_rarity_weights_valid/i);
       expect(sql).toMatch(
-        /ADD CONSTRAINT streamers_pack_rarity_weights_valid\s*\n\s*CHECK \(check_pack_rarity_weights_values\(pack_rarity_weights\)\)/i
+        /ADD CONSTRAINT streamers_pack_rarity_weights_valid\s*\n\s*CHECK \(public\.check_pack_rarity_weights_values\(pack_rarity_weights\)\)/i
       );
     });
   });
@@ -88,6 +93,16 @@ describe("pack rarity weights migration (00065)", () => {
     it("keeps SECURITY INVOKER with a locked-down search_path", () => {
       expect(sql).toMatch(/SECURITY INVOKER/i);
       expect(sql).toMatch(/SET search_path = ''/);
+    });
+
+    it("preserves the collection_completions cascade added by 00064 (#557) — the RPC body must be based on 00064, not 00063", () => {
+      // 00064 が 00063 を上書きして collection_completions の
+      // DELETE(衝突回避)→UPDATE カスケードを追加済み。00063 ベースで
+      // CREATE OR REPLACE すると #557 の挙動が巻き戻るリグレッションになる。
+      expect(sql).toMatch(/DELETE FROM public\.collection_completions old_cc/i);
+      expect(sql).toMatch(
+        /UPDATE public\.collection_completions\s+SET collection_name = v_new_name\s+WHERE streamer_id = p_streamer_id AND collection_name = p_old_name/i
+      );
     });
 
     it("preserves all original validation/cascades from 00063", () => {
@@ -118,9 +133,8 @@ describe("pack rarity weights migration (00065)", () => {
       expect(sql).toMatch(/#576\/#578|#578\/#576|Issue #578/);
     });
 
-    it("still documents collection_completions as an explicit, deliberate follow-up (#557), not touched here", () => {
+    it("references #557 for the preserved collection_completions cascade rationale", () => {
       expect(sql).toMatch(/#557/);
-      expect(sql).not.toMatch(/UPDATE public\.collection_completions/i);
     });
 
     it("revokes EXECUTE from PUBLIC/anon/authenticated and grants only to service_role", () => {

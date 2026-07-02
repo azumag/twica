@@ -1424,6 +1424,57 @@ describe('POST /api/streamer/settings', () => {
       )
     })
 
+    it('prunes weights for a plan-gated new pack and echoes the persisted packRarityWeights back', async () => {
+      // basic プランで cardPackNames に新パック追加 + そのパック向け配分を同時送信
+      // したケース。検証はゲート適用前の要求カタログに対して通るため 400 には
+      // ならず、プレミアムゲートが追加を却下 → prune で配分エントリが落ちる。
+      // クライアントが state を再同期できるよう、確定後の永続値がレスポンスに
+      // エコーバックされることを担保する(cardPackNames と同じ規約)。
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          cardPackNames: ['weapons', 'armor'],
+          packRarityWeights: {
+            weapons: { common: 70, rare: 30 },
+            armor: { common: 100 },
+          },
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNamesPremiumRequired).toBe(true)
+      // armor はゲート却下された追加パックなので配分も prune され、
+      // 永続値(weapons のみ)がそのままエコーバックされる。
+      expect(data.packRarityWeights).toEqual({ weapons: { common: 70, rare: 30 } })
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: { weapons: { common: 70, rare: 30 } },
+        })
+      )
+    })
+
     it('does not trigger drop-rate recalculation when saving rarityWeightsScope/packRarityWeights', async () => {
       const streamerQuery = createMockQueryBuilder()
       ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({

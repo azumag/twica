@@ -833,9 +833,17 @@ export async function POST(request: NextRequest) {
       // gate, no catalog membership check) — the client's submitted value is
       // authoritative on success. Only the deploy-window skip needs a flag.
       ...(defaultCardPackNameWriteSkipped ? { defaultCardPackNameSkippedDeployWindow: true } : {}),
-      // Issue #578: rarity_weights_scope / pack_rarity_weights も同様に、値そのものは
-      // エコーバックせず(サーバ側の却下シナリオが無いため送信値がそのまま正)、
-      // デプロイ窓によるskipのみフラグで通知する。
+      // Issue #578: rarityWeightsScope はエコーバック不要(サーバ側の却下・
+      // 加工シナリオが無く送信値がそのまま正)。一方 packRarityWeights は
+      // **サーバ側で黙って加工されるシナリオがある**: 同一リクエストの
+      // cardPackNames 追加がプレミアムゲートで却下されると、その追加パック向け
+      // エントリは prune で落ちる(検証はゲート適用前の要求カタログに対して
+      // 通っているため 400 にはならない)。cardPackNames と同様、確定後の
+      // 永続値をエコーバックしてクライアントが state を再同期できるようにする。
+      // デプロイ窓 skip 時は書き込まれていないためエコーしない(フラグで通知)。
+      ...(packRarityWeightsToPersist !== undefined && !packRarityWeightsWriteSkipped
+        ? { packRarityWeights: packRarityWeightsToPersist }
+        : {}),
       ...(rarityWeightsScopeWriteSkipped ? { rarityWeightsScopeSkippedDeployWindow: true } : {}),
       ...(packRarityWeightsWriteSkipped ? { packRarityWeightsSkippedDeployWindow: true } : {}),
     });
