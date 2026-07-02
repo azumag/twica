@@ -139,7 +139,8 @@
       "active": "配布中のみ",
       "inactive": "配布停止のみ",
       "packLabel": "カードパックで絞り込む",
-      "packAll": "すべてのパック"
+      "packAll": "すべてのパック",
+      "packProbabilityHint": "確率はこのパックが指定された報酬から引いた場合の抽選確率です"
     },
     "table": {
       "image": "画像",

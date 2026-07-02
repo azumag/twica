@@ -2065,10 +2065,20 @@ export default function CardManager({
         // 並び替え/フィルタリングが適用されたfilteredAndSortedCardsを表示に使用
         const displayCards = maxCards ? filteredAndSortedCards.slice(0, maxCards) : filteredAndSortedCards;
 
-        // Calculate total weight of all active cards for probability calculation
-        // 出現確率計算用の全アクティブカードの重み合計を計算
+        // Calculate total weight for probability calculation.
+        // Issue #565: 確率列の母数は実際の抽選プールに一致させる。パック指定の
+        // 報酬から引いた場合、GachaService.executeGacha は active + collection
+        // で候補を絞り、selectWeightedCard が候補内の drop_rate 比で抽選する
+        // (=パック内で再正規化)。そこでパックフィルタ選択中は同じ絞り込みを
+        // 母数に適用し、「そのパックから引いたときの抽選確率」を表示する。
+        // statusFilter/タイトル検索は表示用フィルタであり抽選プールとは無関係の
+        // ため母数には影響させない。
         const totalActiveWeight = cards
           .filter(c => c.is_active)
+          .filter(c =>
+            packFilter === DEFAULT_PACK_SENTINEL ? c.collection_name == null
+            : packFilter ? c.collection_name === packFilter
+            : true)
           .reduce((sum, c) => sum + c.drop_rate, 0);
 
         if (cards.length === 0) {
@@ -2081,6 +2091,14 @@ export default function CardManager({
 
         return (
           <>
+            {/* Issue #565: パックフィルタ選択中は確率列が「そのパックから引いた
+                場合の抽選確率」に切り替わるため、その旨を明示する。確率列は
+                リスト表示にしか無いのでリスト表示時のみ出す。 */}
+            {packFilter && currentViewMode === "list" && (
+              <p className="mb-2 text-xs text-gray-400">
+                {t("filter.packProbabilityHint")}
+              </p>
+            )}
             {displayCards.length === 0 ? (
               <p className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-8 text-center text-gray-400">
                 {t("messages.noMatchingCards")}

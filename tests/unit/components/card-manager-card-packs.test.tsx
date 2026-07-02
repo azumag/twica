@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import CardManager from '@/components/CardManager'
+import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import jaMessages from '../../../messages/ja.json'
 import type { Card } from '@/types/database'
 
@@ -93,5 +94,64 @@ describe('CardManager pack select visibility (Issue #567)', () => {
       .map((option) => option.textContent)
     expect(optionLabels).toContain('ghost-pack')
     expect(optionLabels).toContain('デフォルト（すべてのカード）')
+  })
+})
+
+// Issue #565: 確率列の母数は実際の抽選プール(executeGachaと同じ絞り込み)に
+// 合わせる。パックフィルタ選択中はそのパック内で再正規化された抽選確率を表示。
+describe('CardManager pack-relative probability (Issue #565)', () => {
+  const packCards = [
+    baseCard({ id: 'a1', name: 'A1', collection_name: 'パックA', drop_rate: 0.1 }),
+    baseCard({ id: 'a2', name: 'A2', collection_name: 'パックA', drop_rate: 0.3 }),
+    baseCard({ id: 'u1', name: 'U1', collection_name: null, drop_rate: 0.6 }),
+  ]
+
+  const selectPackFilter = (value: string) => {
+    fireEvent.change(
+      screen.getByRole('combobox', { name: 'カードパックで絞り込む' }),
+      { target: { value } }
+    )
+  }
+
+  const HINT = '確率はこのパックが指定された報酬から引いた場合の抽選確率です'
+
+  it('shows probabilities against all active cards when no pack filter is selected', () => {
+    renderCardManager(packCards, {
+      initialCardPackNames: ['パックA'],
+      viewMode: 'list',
+    })
+
+    expect(screen.getByText('10.0%')).toBeInTheDocument()
+    expect(screen.getByText('30.0%')).toBeInTheDocument()
+    expect(screen.getByText('60.0%')).toBeInTheDocument()
+    expect(screen.queryByText(HINT)).not.toBeInTheDocument()
+  })
+
+  it('renormalizes probabilities within the selected pack and shows the hint', () => {
+    renderCardManager(packCards, {
+      initialCardPackNames: ['パックA'],
+      viewMode: 'list',
+    })
+
+    selectPackFilter('パックA')
+
+    // 0.1 : 0.3 → 25% : 75% (executeGacha がパック内で再正規化するのと同じ)
+    expect(screen.getByText('25.0%')).toBeInTheDocument()
+    expect(screen.getByText('75.0%')).toBeInTheDocument()
+    expect(screen.queryByText('10.0%')).not.toBeInTheDocument()
+    expect(screen.getByText(HINT)).toBeInTheDocument()
+  })
+
+  it('renormalizes within the default (unclassified) pack via the sentinel filter', () => {
+    renderCardManager(packCards, {
+      initialCardPackNames: ['パックA'],
+      viewMode: 'list',
+    })
+
+    selectPackFilter(DEFAULT_PACK_SENTINEL)
+
+    // 未分類は U1 のみ → 100%
+    expect(screen.getByText('100.0%')).toBeInTheDocument()
+    expect(screen.getByText(HINT)).toBeInTheDocument()
   })
 })

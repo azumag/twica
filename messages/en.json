@@ -139,7 +139,8 @@
       "active": "Active Only",
       "inactive": "Paused Only",
       "packLabel": "Filter by card pack",
-      "packAll": "All packs"
+      "packAll": "All packs",
+      "packProbabilityHint": "Probabilities shown are the draw rates when redeeming a reward tied to this pack"
     },
     "table": {
       "image": "Image",
