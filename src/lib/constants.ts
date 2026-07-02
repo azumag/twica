@@ -70,6 +70,9 @@ export const MAX_RARITY_KEY_LENGTH = 40;
 export const MAX_CUSTOM_RARITIES = 50;
 // 1配信者あたりの事前登録カードパック数の上限。DB(00062 の CHECK)と整合させる。
 export const MAX_CARD_PACK_NAMES = 50;
+// pack_rarity_weights のエントリ数上限。事前登録パック上限(50) + __default__(1)。
+// DB(00065 の check_pack_rarity_weights_values)と整合させる。Issue #578
+export const MAX_PACK_RARITY_WEIGHTS_ENTRIES = 51;
 // 制御文字(C0 U+0000-U+001F・DEL U+007F・C1 U+0080-U+009F)。
 // 表示崩れや不可視キー注入を防ぐため禁止。
 export const RARITY_CONTROL_CHAR_REGEX = /[\u0000-\u001F\u007F-\u009F]/;

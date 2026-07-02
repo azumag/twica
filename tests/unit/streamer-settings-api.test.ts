@@ -1223,4 +1223,356 @@ describe('POST /api/streamer/settings', () => {
       expect(data.defaultCardPackNameSkippedDeployWindow).toBe(true)
     })
   })
+
+  // Issue #578 (#576 Phase 1): per-pack rarity weight foundation. This phase
+  // only stores rarityWeightsScope / packRarityWeights — it never recalculates
+  // drop_rate (effective per-pack weights are computed at draw time in #576
+  // Phase 2), and packRarityWeights keys must be members of the effective
+  // pack catalog (cardPackNames in the same request, else the streamer's
+  // current card_pack_names).
+  describe('pack rarity weights (Issue #578)', () => {
+    it('saves a valid rarityWeightsScope + packRarityWeights (named pack + __default__)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          rarityWeightsScope: 'per_pack',
+          packRarityWeights: {
+            weapons: { common: 70, rare: 30 },
+            [DEFAULT_PACK_SENTINEL]: { common: 50, rare: 50 },
+          },
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rarity_weights_scope: 'per_pack',
+          pack_rarity_weights: {
+            weapons: { common: 70, rare: 30 },
+            [DEFAULT_PACK_SENTINEL]: { common: 50, rare: 50 },
+          },
+        })
+      )
+    })
+
+    it('rejects an invalid rarityWeightsScope value (400)', async () => {
+      const mockSupabase = createSupabaseMock().build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', rarityWeightsScope: 'bogus' }),
+      }))
+
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a packRarityWeights key that is not in the effective pack catalog (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          // 'armor' is not registered in card_pack_names.
+          packRarityWeights: { armor: { common: 100 } },
+        }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('rejects a packRarityWeights entry whose distribution does not sum to 100% (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packRarityWeights: { weapons: { common: 50, rare: 30 } },
+        }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('rejects a packRarityWeights entry that is an empty object (400) — omit the key to inherit global instead', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packRarityWeights: { weapons: {} },
+        }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('prunes stale pack_rarity_weights entries when cardPackNames is saved (keeps __default__), even though packRarityWeights itself was not sent', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons', 'armor'],
+          pack_rarity_weights: {
+            weapons: { common: 70, rare: 30 },
+            armor: { common: 60, rare: 40 },
+            [DEFAULT_PACK_SENTINEL]: { common: 50, rare: 50 },
+          },
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      // Removing 'armor' from the catalog — packRarityWeights is NOT part of this request.
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: {
+            weapons: { common: 70, rare: 30 },
+            [DEFAULT_PACK_SENTINEL]: { common: 50, rare: 50 },
+          },
+        })
+      )
+    })
+
+    it('prunes weights for a plan-gated new pack and echoes the persisted packRarityWeights back', async () => {
+      // basic プランで cardPackNames に新パック追加 + そのパック向け配分を同時送信
+      // したケース。検証はゲート適用前の要求カタログに対して通るため 400 には
+      // ならず、プレミアムゲートが追加を却下 → prune で配分エントリが落ちる。
+      // クライアントが state を再同期できるよう、確定後の永続値がレスポンスに
+      // エコーバックされることを担保する(cardPackNames と同じ規約)。
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          cardPackNames: ['weapons', 'armor'],
+          packRarityWeights: {
+            weapons: { common: 70, rare: 30 },
+            armor: { common: 100 },
+          },
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNamesPremiumRequired).toBe(true)
+      // armor はゲート却下された追加パックなので配分も prune され、
+      // 永続値(weapons のみ)がそのままエコーバックされる。
+      expect(data.packRarityWeights).toEqual({ weapons: { common: 70, rare: 30 } })
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: { weapons: { common: 70, rare: 30 } },
+        })
+      )
+    })
+
+    it('does not trigger drop-rate recalculation when saving rarityWeightsScope/packRarityWeights', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          rarityWeightsScope: 'per_pack',
+          packRarityWeights: { weapons: { common: 100 } },
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.recalculatedCards).toBeNull()
+    })
+
+    describe('deploy-window: new columns not yet migrated', () => {
+      it('skips rarity_weights_scope and reports the flag when the UPDATE fails on that column', async () => {
+        const streamerQuery = createMockQueryBuilder()
+        ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+          data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+          error: null,
+        })
+        ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+          eq: vi.fn().mockResolvedValue({
+            error: { code: 'PGRST204', message: "Could not find the 'rarity_weights_scope' column" },
+          }),
+        })
+
+        const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+        vi.mocked(getSupabaseAdmin).mockReturnValue({
+          from: vi.fn(() => streamerQuery),
+        } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+        const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ streamerId: 'streamer123', rarityWeightsScope: 'per_pack' }),
+        }))
+
+        expect(response.status).toBe(200)
+        const data = await response.json()
+        expect(data.rarityWeightsScopeSkippedDeployWindow).toBe(true)
+      })
+
+      it('skips pack_rarity_weights and reports the flag when the UPDATE fails on that column', async () => {
+        const streamerQuery = createMockQueryBuilder()
+        ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+          data: {
+            id: 'streamer123',
+            twitch_user_id: 'streamer123',
+            channel_point_collection_name: null,
+            card_pack_names: ['weapons'],
+            pack_rarity_weights: null,
+          },
+          error: null,
+        })
+        ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+          eq: vi.fn().mockResolvedValue({
+            error: { code: 'PGRST204', message: "Could not find the 'pack_rarity_weights' column" },
+          }),
+        })
+
+        const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+        vi.mocked(getSupabaseAdmin).mockReturnValue({
+          from: vi.fn(() => streamerQuery),
+        } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+        const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            streamerId: 'streamer123',
+            packRarityWeights: { weapons: { common: 100 } },
+          }),
+        }))
+
+        expect(response.status).toBe(200)
+        const data = await response.json()
+        expect(data.packRarityWeightsSkippedDeployWindow).toBe(true)
+      })
+    })
+  })
 })
