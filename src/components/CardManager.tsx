@@ -1562,6 +1562,12 @@ export default function CardManager({
                         「パック管理」で登録した一覧から選択する(レアリティselectと
                         同じパターン)。新規登録はパック管理モーダル側でのみ発生する
                         ため、ここでの選択は常にゲート対象外。 */}
+                    {/* Issue #567: 選べるパックが1つも無い場合(デフォルト1択)は
+                        セレクト自体を出さない。cardPackSelectOptions は登録済み
+                        パック ∪ 編集中カードの孤立参照なので、孤立参照カードの
+                        編集時は0件登録でも表示され、デフォルトへ戻せる。非表示時は
+                        collectionName が "" のまま = 未分類(null)で保存される。 */}
+                    {cardPackSelectOptions.length > 0 && (
                     <div className="mt-3 min-w-0">
                       <label className="mb-1 block text-sm text-gray-300">
                         {t("form.collectionName")}
@@ -1587,6 +1593,7 @@ export default function CardManager({
                         {t("form.collectionNameHelp")}
                       </p>
                     </div>
+                    )}
                   </div>
                 </div>
                 {/* 右カラム: 画像 */}
