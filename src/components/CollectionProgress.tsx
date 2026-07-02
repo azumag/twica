@@ -105,7 +105,14 @@ export default function CollectionProgress({
             {t("complete")}
           </p>
           {currentCompleteRecord && (
-            <p className="text-xs text-emerald-200/90">
+            // formatDateTime は Intl.DateTimeFormat に timeZone を指定していないため、
+            // SSR (Cloudflare Workers = UTC) とクライアント（ユーザーのローカルTZ）で
+            // 整形結果が異なりうる。これは「ユーザーのローカルタイムゾーンで達成日時を
+            // 表示する」という意図した挙動であり、hydration mismatch ではない。
+            // timeZone を固定すると全ユーザーにその TZ を強制してしまうため不採用とし、
+            // React 公式にタイムスタンプ用途で認められている suppressHydrationWarning で
+            // 警告を抑制する。
+            <p className="text-xs text-emerald-200/90" suppressHydrationWarning>
               {t("currentCompleteAt", {
                 dateTime: formatDateTime(currentCompleteRecord.completed_at),
               })}
@@ -118,7 +125,13 @@ export default function CollectionProgress({
       {pastCompletionHistory.length > 0 && (
         <div className="mt-3 space-y-1">
           {pastCompletionHistory.map((record) => (
-            <p key={`${record.total_cards}-${record.completed_at}`} className="text-xs text-gray-300">
+            // 上と同様、達成日時はユーザーのローカルTZで表示する意図した挙動のため
+            // suppressHydrationWarning でSSR/クライアント間の差分警告を抑制する。
+            <p
+              key={`${record.total_cards}-${record.completed_at}`}
+              className="text-xs text-gray-300"
+              suppressHydrationWarning
+            >
               {t("pastCompleteWithDateTime", {
                 totalCards: record.total_cards,
                 dateTime: formatDateTime(record.completed_at),
