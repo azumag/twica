@@ -355,6 +355,12 @@
       "line1": "You don't have any cards from this streamer yet.",
       "line2": "Use channel points to get cards!"
     },
+    "packFilter": {
+      "label": "Card Pack",
+      "all": "All",
+      "defaultName": "Default",
+      "emptyPack": "You don't have any cards from this pack yet."
+    },
     "viewFullCollection": "← View Full Collection"
   },
   "cardDetail": {

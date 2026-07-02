@@ -633,6 +633,11 @@ export interface Database {
           twitch_user_id: string
           streamer_id: string
           total_cards: number
+          // 達成対象パック。NULL=全体コンプリート(従来レコード)、
+          // "__default__"(DEFAULT_PACK_SENTINEL)=デフォルト(未分類)パック。Issue #557
+          // Which pack this completion is for. NULL = overall (legacy rows),
+          // DEFAULT_PACK_SENTINEL = the default (unclassified) pseudo-pack.
+          collection_name: string | null
           completed_at: string
         }
         Insert: {
@@ -640,6 +645,7 @@ export interface Database {
           twitch_user_id: string
           streamer_id: string
           total_cards: number
+          collection_name?: string | null
           completed_at?: string
         }
         Update: {
@@ -647,6 +653,7 @@ export interface Database {
           twitch_user_id?: string
           streamer_id?: string
           total_cards?: number
+          collection_name?: string | null
           completed_at?: string
         }
       }

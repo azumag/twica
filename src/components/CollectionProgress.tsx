@@ -1,4 +1,6 @@
-import { getLocale, getTranslations } from "next-intl/server";
+"use client";
+
+import { useLocale, useTranslations } from "next-intl";
 
 interface CollectionProgressProps {
   // Number of unique card types the user owns
@@ -17,14 +19,20 @@ interface CollectionProgressProps {
  *
  * - 現在コンプリート中 → 「コンプリート！」表示
  * - 過去履歴あり → 「全X種時にコンプリート達成（日時付き）」を表示
+ *
+ * Issue #557: Server Component から Client Component へ変換。パックフィルタ
+ * (CollectionPackFilter, クライアント状態でパック切替) 内で選択中パックの
+ * 進捗表示として再利用するため。翻訳の取得が next-intl/server の
+ * getTranslations/getLocale から next-intl の hooks に変わるだけで、
+ * 描画内容・挙動は不変 (Server Component 配下からの利用も従来どおり可能)。
  */
-export default async function CollectionProgress({
+export default function CollectionProgress({
   owned,
   total,
   completionHistory = [],
 }: CollectionProgressProps) {
-  const locale = await getLocale();
-  const t = await getTranslations("collectionProgress");
+  const locale = useLocale();
+  const t = useTranslations("collectionProgress");
 
   const safeOwned = Math.max(0, owned);
   const safeTotal = Math.max(0, total);

@@ -355,6 +355,12 @@
       "line1": "この配信者のカードはまだ持っていません。",
       "line2": "チャネルポイントを使ってカードをゲットしましょう！"
     },
+    "packFilter": {
+      "label": "カードパック",
+      "all": "すべて",
+      "defaultName": "デフォルト",
+      "emptyPack": "このパックのカードはまだ持っていません。"
+    },
     "viewFullCollection": "← すべてのコレクションを見る"
   },
   "cardDetail": {
