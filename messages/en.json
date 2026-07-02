@@ -59,6 +59,10 @@
       "cardNumber": "Card Number",
       "cardNumberPlaceholder": "e.g. 12",
       "cardNumberHelp": "Leave blank to auto-number",
+      "collectionName": "Card Pack",
+      "collectionNameUnclassified": "{name} (all cards)",
+      "collectionNameHelp": "Only cards in the same pack are eligible for that channel point reward's gacha. Register pack names in \"Pack Management\" first.",
+      "collectionNameDeployWindow": "The card was saved, but the pack feature is not ready yet, so the pack assignment was not applied. Please try again shortly.",
       "dropRate": "Drop Rate",
       "intraRarityWeight": "Drop Rate within Rarity",
       "intraRarityWeightHint": "Adjust drop balance among cards of the same rarity (default: 1.0)",
@@ -133,7 +137,9 @@
     "filter": {
       "all": "All",
       "active": "Active Only",
-      "inactive": "Paused Only"
+      "inactive": "Paused Only",
+      "packLabel": "Filter by card pack",
+      "packAll": "All packs"
     },
     "table": {
       "image": "Image",
@@ -209,6 +215,34 @@
       "errorDuplicate": "That rarity already exists",
       "errorDefault": "Default rarities cannot be added (they are always available)",
       "errorMax": "Up to {max} custom rarities allowed"
+    },
+    "cardPackModal": {
+      "button": "Pack Management",
+      "title": "Card Pack Management",
+      "description": "Manage the pack names selectable when creating cards or configuring channel point rewards. Only names registered here appear as options.",
+      "addPlaceholder": "New pack name",
+      "add": "Add",
+      "empty": "No packs registered yet",
+      "deleteNote": "Removing a pack does not change existing card/reward bindings (it is only removed from the selection options).",
+      "save": "Save",
+      "saving": "Saving...",
+      "saveFailed": "Failed to save",
+      "confirmClose": "You have unsaved changes. Close anyway?",
+      "errorEmpty": "Enter a pack name",
+      "errorTooLong": "Pack name must be 80 characters or fewer",
+      "errorInvalidChars": "Contains characters that cannot be used",
+      "errorReserved": "Names starting with __ are reserved and cannot be used",
+      "errorDuplicate": "That pack name already exists",
+      "errorMax": "Up to {max} packs allowed",
+      "premiumRequired": "Adding a new pack requires a supporter plan or Twitch subscription. Removals were applied.",
+      "premiumRequiredHint": "Adding a new pack requires a supporter plan or Twitch subscription (removal is always available).",
+      "deployWindow": "The pack feature is not ready yet, so your changes could not be saved. Please try again shortly.",
+      "defaultName": "Default",
+      "defaultRowDescription": "The built-in pack that unclassified cards belong to",
+      "cannotDelete": "Cannot delete",
+      "rename": "Rename",
+      "renameFailed": "Failed to rename",
+      "renameDisabledHint": "You have unsaved changes — save them first before renaming"
     },
     "batchDropRate": {
       "button": "Batch Drop Rate",
@@ -320,6 +354,12 @@
     "empty": {
       "line1": "You don't have any cards from this streamer yet.",
       "line2": "Use channel points to get cards!"
+    },
+    "packFilter": {
+      "label": "Card Pack",
+      "all": "All",
+      "defaultName": "Default",
+      "emptyPack": "You don't have any cards from this pack yet."
     },
     "viewFullCollection": "← View Full Collection"
   },
@@ -487,6 +527,12 @@
       "error": "Error",
       "none": "Not Set"
     },
+    "sections": {
+      "connection": "Connection Status",
+      "connectionDesc": "Registration status of Twitch EventSub (notifications). If card redemption is not working, check here for errors.",
+      "mainReward": "Main Reward",
+      "mainRewardDesc": "Choose the channel point reward that triggers card redemption and the card pack it draws from."
+    },
     "messages": {
       "affiliateRequired": "You must be a Twitch Affiliate or Partner to use channel points.",
       "rateLimit": "Too many requests. Please wait and try again.",
@@ -554,6 +600,7 @@
       "raidGiftEnabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
       "raidGiftDisabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
       "raidGiftSaved": "Raid gacha settings saved",
+      "raidGiftCountLabel": "Cards to gift",
       "raidStatusTitle": "Raid gacha window",
       "raidStatusActive": "Active until {time}",
       "raidStatusInactive": "Currently off",
@@ -562,6 +609,17 @@
       "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
       "raidStatusDisabled": "Raid gacha window disabled",
       "raidStatusFailed": "Failed to update raid gacha settings"
+    },
+    "collections": {
+      "mainLabel": "Card pack for redemption",
+      "additionalLabel": "Additional reward card pack",
+      "all": "All cards",
+      "defaultOnly": "{name} (unclassified cards only)",
+      "defaultOnlyName": "Default pack",
+      "help": "Limit eligible cards by the pack names registered in \"Pack Management\" under card management. Binding a pack with no drawable cards will fail on save.",
+      "missing": "{name} (removed from Pack Management; the current binding is kept)",
+      "premiumLocked": "Card Pack (supporter plan feature)",
+      "packHint": "Register pack names from \"Pack Management\" in card management"
     }
   },
   "gachaHistory": {

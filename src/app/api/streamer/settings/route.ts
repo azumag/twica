@@ -15,6 +15,20 @@ import {
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+import {
+  resolveCollectionNameField,
+  validateCardPackNamesInput,
+  validatePackName,
+  isRegisteredOrUnchanged,
+  DEFAULT_PACK_SENTINEL,
+} from "@/lib/validation/collection-name";
+import {
+  checkCollectionHasActiveCards,
+  isMissingCollectionNameColumn,
+  isMissingCardPackNamesColumnError,
+  isMissingDefaultCardPackNameColumnError,
+} from "@/lib/collections/collection-existence";
+import { isNewCardPackNameAdditionGated } from "@/lib/plan-gate";
 
 
 type RarityWeightsValidation =
@@ -173,6 +187,8 @@ export async function POST(request: NextRequest) {
       streamerId,
       channelPointRewardId,
       channelPointRewardName,
+      // メイン報酬に紐付くカードパック名（Issue #393）は body から直接
+      // resolveCollectionNameField で読むため、ここでは分割代入しない。
       // ガチャ効果音設定（オプション）
       gachaSoundUrl,
       gachaSoundEnabled,
@@ -187,6 +203,16 @@ export async function POST(request: NextRequest) {
       // カスタムレアリティ名の一覧（オプション、ドロップ率設定とは独立）
       // Custom rarity name catalog (optional, decoupled from drop-rate settings)
       customRarities,
+      // 事前登録カードパック名の一覧（オプション、カード/報酬紐付けとは独立）
+      // Pre-defined card pack name catalog (optional, decoupled from card/reward bindings)
+      cardPackNames,
+      // 「デフォルト」(未分類)パックの表示名オーバーライド（オプション、Issue #554）。
+      // null でリセット（汎用ラベル表示に戻す）。カタログ(card_pack_names)への
+      // 登録・重複チェックは不要 — 表示専用の独立した文字列のため。
+      // Display-name override for the "default" (unclassified) pack (optional,
+      // Issue #554). null resets it back to the generic label. No catalog
+      // membership/uniqueness check needed — this is a standalone display string.
+      defaultCardPackName,
       // 未所持カード表示設定（オプション、Issue #395）
       // Unowned-card visibility settings (optional, Issue #395)
       showUnownedCards,
@@ -221,6 +247,33 @@ export async function POST(request: NextRequest) {
       normalizedCustomRarities = validation.value;
     }
 
+    // cardPackNames は事前登録カードパック名の一覧のみを保持する（Issue #393再設計）。
+    let normalizedCardPackNames: string[] | undefined;
+    if (cardPackNames !== undefined) {
+      const validation = validateCardPackNamesInput(cardPackNames);
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedCardPackNames = validation.value;
+    }
+
+    // defaultCardPackName: 同じルール(validatePackName)で検証するが、null は
+    // 「リセット」として常に許可する（カード名一覧と違い、単一の任意項目のため
+    // "" trim 結果が空になるケースは validatePackName が弾く。プランゲートなし
+    // — 既存パック名の管理操作と同様、Issue #269 のゲート対象は新規登録のみ）。
+    let normalizedDefaultCardPackName: string | null | undefined;
+    if (defaultCardPackName !== undefined) {
+      if (defaultCardPackName === null) {
+        normalizedDefaultCardPackName = null;
+      } else {
+        const validation = validatePackName(defaultCardPackName);
+        if (!validation.ok) {
+          return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+        }
+        normalizedDefaultCardPackName = validation.value;
+      }
+    }
+
     // 視聴者向け未所持カード表示の boolean 検証
     // Booleans are validated strictly to avoid silent coercion of arbitrary inputs
     if (showUnownedCards !== undefined && typeof showUnownedCards !== "boolean") {
@@ -239,16 +292,112 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
+    // Issue #393: validate the main-reward pack name (null = all cards).
+    const channelPointCollectionResult = resolveCollectionNameField(body, "channelPointCollectionName");
+    if (!channelPointCollectionResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
     // Verify ownership
-    const { data: streamer } = await supabaseAdmin
+    let { data: streamer, error: streamerSelectError } = await supabaseAdmin
       .from("streamers")
-      .select("id")
+      .select("id, channel_point_collection_name, card_pack_names")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
 
+    // Issue #393再設計 / #269: このownership確認SELECTは channel_point_collection_name
+    // と card_pack_names の現在値を読むために2列を含む。デプロイ窓ではどちらか
+    // (または両方)が未デプロイになりうるため、都度1列だけ剥がして再試行する
+    // (既存の card_number → collection_name と同じチェイン方式)。どちらの列も
+    // 未デプロイの通常設定保存を403にしないための安全策(#269自己レビューで
+    // 発見・修正した回帰の再発防止)。
+    if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("streamers")
+        .select("id, channel_point_collection_name")
+        .eq("id", streamerId)
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = retryResult.data
+        ? { ...retryResult.data, card_pack_names: [] as string[] }
+        : null;
+      streamerSelectError = retryResult.error;
+    }
+
+    if (streamerSelectError && isMissingCollectionNameColumn(streamerSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("streamers")
+        .select("id")
+        .eq("id", streamerId)
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = retryResult.data
+        ? { ...retryResult.data, channel_point_collection_name: null, card_pack_names: [] as string[] }
+        : null;
+      streamerSelectError = retryResult.error;
+    }
+
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+    }
+
+    const currentCardPackNames: string[] = Array.isArray(streamer.card_pack_names)
+      ? streamer.card_pack_names
+      : [];
+
+    // Issue #269再設計: 「新しい登録」= card_pack_names一覧への新規追加のみを
+    // ゲートする。カード/報酬への既存パックの紐付け(選択)はもうゲート対象外。
+    let persistedCardPackNames: string[] = currentCardPackNames;
+    let cardPackNamesPremiumRequired = false;
+    if (normalizedCardPackNames !== undefined) {
+      const addedNames = normalizedCardPackNames.filter((name) => !currentCardPackNames.includes(name));
+      cardPackNamesPremiumRequired = await isNewCardPackNameAdditionGated(session.twitchUserId, addedNames);
+      persistedCardPackNames = cardPackNamesPremiumRequired
+        ? normalizedCardPackNames.filter((name) => currentCardPackNames.includes(name))
+        : normalizedCardPackNames;
+    }
+
+    // Issue #393再設計: メイン報酬のパック紐付けは、null化・現在値の再送信は
+    // 常に許可し、新しい値は「この保存で確定した persistedCardPackNames」に
+    // 登録済みであることを要求する(#5参照: cardPackNamesのゲート適用後の
+    // リストに対して判定する。カード削除等で一覧から消えたパックへの既存
+    // 紐付けは、値を変えない限り常に許可=孤立参照でも壊れない)。
+    //
+    // Issue #555: DEFAULT_PACK_SENTINEL(「デフォルトパックのみ」選択)は
+    // 予約値であり、そもそも card_pack_names に登録できない
+    // (isReservedCollectionName)。そのため常に非登録扱いとなり、通常の
+    // membership検証にかけると誰も選べなくなってしまう。すべてのストリーマー
+    // が持つ疑似パック(=未分類カード)として、membership検証自体を常に
+    // スキップして受理する(存在検証は下のcheckCollectionHasActiveCardsで
+    // 別途行う)。
+    if (
+      channelPointCollectionResult.value !== undefined &&
+      channelPointCollectionResult.value !== DEFAULT_PACK_SENTINEL &&
+      !isRegisteredOrUnchanged(
+        channelPointCollectionResult.value,
+        streamer.channel_point_collection_name,
+        persistedCardPackNames
+      )
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+    }
+
+    // Issue #393: reject binding the main reward to a pack with no active cards,
+    // which would always resolve to an empty draw pool at redemption time.
+    // 値が実際に変わる場合のみチェックする(#1: 孤立参照の再送信では走らせない)。
+    if (
+      typeof channelPointCollectionResult.value === "string" &&
+      channelPointCollectionResult.value !== streamer.channel_point_collection_name
+    ) {
+      const existence = await checkCollectionHasActiveCards(
+        supabaseAdmin,
+        streamer.id,
+        channelPointCollectionResult.value
+      );
+      if (existence === "absent") {
+        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+      }
     }
 
     // 更新するフィールドを動的に構築
@@ -261,6 +410,11 @@ export async function POST(request: NextRequest) {
     }
     if (channelPointRewardName !== undefined) {
       updateData.channel_point_reward_name = channelPointRewardName;
+    }
+    // Issue #393: persist the main-reward pack binding (null clears it = all cards).
+    // membership検証(上記)を通っているため、ここでは無条件に保存する。
+    if (channelPointCollectionResult.value !== undefined) {
+      updateData.channel_point_collection_name = channelPointCollectionResult.value;
     }
 
     // ガチャ効果音設定
@@ -300,6 +454,17 @@ export async function POST(request: NextRequest) {
       updateData.custom_rarities = normalizedCustomRarities;
     }
 
+    // 事前登録カードパック名（Issue #393再設計）。ゲートで一部却下されていても
+    // persistedCardPackNames(=保存してよい範囲)を無条件に保存する。
+    if (normalizedCardPackNames !== undefined) {
+      updateData.card_pack_names = persistedCardPackNames;
+    }
+
+    // 「デフォルト」パックの表示名オーバーライド（Issue #554）。
+    if (normalizedDefaultCardPackName !== undefined) {
+      updateData.default_card_pack_name = normalizedDefaultCardPackName;
+    }
+
     // 未所持カードの視聴者向け表示設定
     // Unowned-card visibility settings for the viewer-facing collection page
     if (showUnownedCards !== undefined) {
@@ -337,15 +502,71 @@ export async function POST(request: NextRequest) {
     }
 
     // 更新するフィールドがない場合はエラー
+    // (cardPackNames は指定されていれば必ず updateData に入るため、
+    // このガードで空になるケースはもう channelPointCollectionName 由来では
+    // 発生しない=特別扱いは不要)。
     if (Object.keys(updateData).length === 0 && !botDisconnected) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
+    // 自己レビューで発見: 書き込み時点でcard_pack_names列が無く剥がして
+    // リトライした場合、DBには実際には保存されていない。にもかかわらず
+    // レスポンスで persistedCardPackNames(要求どおり保存できた前提の値)を
+    // 返すと、クライアントに「保存できた」と偽って伝えてしまう。このフラグで
+    // 実際に書き込めたかどうかを追跡し、レスポンスの真正性を保証する。
+    let cardPackNamesWriteSkipped = false;
+    // Issue #554: 同じ理由(デプロイ窓)で default_card_pack_name 列がまだ
+    // 無い可能性があるため、card_pack_names と同じ skip-and-flag パターンを踏襲する。
+    let defaultCardPackNameWriteSkipped = false;
+
     if (Object.keys(updateData).length > 0) {
-      const { error } = await supabaseAdmin
+      let { error } = await supabaseAdmin
         .from("streamers")
         .update(updateData)
         .eq("id", streamerId);
+
+      // Issue #393再設計: 書き込み時点で card_pack_names / channel_point_collection_name
+      // のどちらか(または両方)が未デプロイの可能性があるため、都度1列だけ剥がして再試行する。
+      if (error && isMissingCardPackNamesColumnError(error) && "card_pack_names" in updateData) {
+        delete updateData.card_pack_names;
+        cardPackNamesWriteSkipped = true;
+        if (Object.keys(updateData).length > 0) {
+          const retryResult = await supabaseAdmin
+            .from("streamers")
+            .update(updateData)
+            .eq("id", streamerId);
+          error = retryResult.error;
+        } else {
+          error = null;
+        }
+      }
+
+      if (error && isMissingDefaultCardPackNameColumnError(error) && "default_card_pack_name" in updateData) {
+        delete updateData.default_card_pack_name;
+        defaultCardPackNameWriteSkipped = true;
+        if (Object.keys(updateData).length > 0) {
+          const retryResult = await supabaseAdmin
+            .from("streamers")
+            .update(updateData)
+            .eq("id", streamerId);
+          error = retryResult.error;
+        } else {
+          error = null;
+        }
+      }
+
+      if (error && isMissingCollectionNameColumn(error) && "channel_point_collection_name" in updateData) {
+        delete updateData.channel_point_collection_name;
+        if (Object.keys(updateData).length > 0) {
+          const retryResult = await supabaseAdmin
+            .from("streamers")
+            .update(updateData)
+            .eq("id", streamerId);
+          error = retryResult.error;
+        } else {
+          error = null;
+        }
+      }
 
       if (error) {
         return handleDatabaseError(error, "Streamer Settings API: PUT");
@@ -367,7 +588,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ success: true, recalculatedCards });
+    return NextResponse.json({
+      success: true,
+      recalculatedCards,
+      // Issue #393再設計: cardPackNamesを指定した場合、実際にDBへ永続化された
+      // リストを常に返す(クライアントはこれでstateを同期する)。書き込み自体が
+      // デプロイ窓で見送られた場合は、保存前の currentCardPackNames を返す
+      // (persistedCardPackNamesは「保存できた前提」の値であり、実態と異なる)。
+      ...(normalizedCardPackNames !== undefined
+        ? { cardPackNames: cardPackNamesWriteSkipped ? currentCardPackNames : persistedCardPackNames }
+        : {}),
+      ...(cardPackNamesPremiumRequired ? { cardPackNamesPremiumRequired: true } : {}),
+      ...(cardPackNamesWriteSkipped ? { cardPackNamesSkippedDeployWindow: true } : {}),
+      // Issue #554: no value is echoed back (unlike cardPackNames) because
+      // there is no server-side rejection scenario for this field (no plan
+      // gate, no catalog membership check) — the client's submitted value is
+      // authoritative on success. Only the deploy-window skip needs a flag.
+      ...(defaultCardPackNameWriteSkipped ? { defaultCardPackNameSkippedDeployWindow: true } : {}),
+    });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");
   }

@@ -10,11 +10,13 @@ import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
+import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import DropRateSettingsModal from "./DropRateSettingsModal";
 import CustomRarityModal from "./CustomRarityModal";
+import CardPackModal from "./CardPackModal";
 import ExpandableDescription from "./ExpandableDescription";
 
 /** Custom dropdown arrow style for appearance-none select boxes */
@@ -77,6 +79,19 @@ interface CardManagerProps {
   // 配信者が定義したカスタムレアリティ名（rarity_weights とは独立）
   // Streamer-defined custom rarity names (decoupled from rarity_weights)
   initialCustomRarities?: string[];
+  // 配信者が事前登録したカードパック名（Issue #393再設計）。カード作成/編集
+  // フォームの collectionName は自由入力ではなく、このリストからのみ選択する。
+  // Pre-defined card pack names (Issue #393 redesign). The collectionName
+  // field on the card form now only selects from this list, not free text.
+  initialCardPackNames?: string[];
+  // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554）。
+  // null/undefined は汎用ラベル("デフォルト")を意味する(列未デプロイ時も含む)。
+  // Display-name override for the "default" (unclassified) pack (Issue #554).
+  // null/undefined falls back to the generic label ("デフォルト").
+  initialDefaultPackName?: string | null;
+  // Issue #269再設計: 新規パック登録(パック管理モーダルでの追加)にのみ適用する
+  // プラン判定。デフォルトfalse(フェイルクローズ)。
+  isPremium?: boolean;
 }
 
 // Sorting field options
@@ -88,6 +103,8 @@ type CardFormData = {
   imageUrl: string;
   rarity: Rarity;
   cardNumber: string;
+  // Issue #393: card pack name ("" = unclassified / all cards)
+  collectionName: string;
   dropRate: number;
   intraRarityWeight: number;
 };
@@ -122,6 +139,9 @@ export default function CardManager({
   availableWidths = [800],
   initialRarityWeights = null,
   initialCustomRarities = [],
+  initialCardPackNames = [],
+  initialDefaultPackName = null,
+  isPremium = false,
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -145,6 +165,10 @@ export default function CardManager({
   });
   // カスタムレアリティ名（ドロップ率設定とは独立。専用モーダルで管理）
   const [customRarities, setCustomRarities] = useState<string[]>(initialCustomRarities);
+  // 事前登録カードパック名（Issue #393再設計。専用モーダルで管理）
+  const [cardPackNames, setCardPackNames] = useState<string[]>(initialCardPackNames);
+  // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554。専用モーダルで管理）
+  const [defaultPackName, setDefaultPackName] = useState<string | null>(initialDefaultPackName);
   const rarityOptions = useMemo(() => {
     const values = new Set<string>(RARITIES.map((rarity) => rarity.value));
     cards.forEach((card) => {
@@ -173,6 +197,11 @@ export default function CardManager({
   const [sortField, setSortField] = useState<SortField>("created_at");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // パックフィルタ（Issue #554）。"" = すべてのパック、DEFAULT_PACK_SENTINEL =
+  // デフォルト(未分類, collection_name IS NULL)のみ、それ以外はパック名の完全一致。
+  // ステータスフィルタと異なり、サーバー(/api/cards)側にこの絞り込みパラメータは
+  // 無いため、常にクライアント側(filteredAndSortedCards)のみで完結させる。
+  const [packFilter, setPackFilter] = useState<string>("");
   const [titleSearchQuery, setTitleSearchQuery] = useState("");
   // Track if this is the first render to skip initial reload
   // 初回レンダリングかどうかを追跡して初期リロードをスキップ
@@ -252,6 +281,13 @@ export default function CardManager({
     } else if (statusFilter === "inactive") {
       nextCards = nextCards.filter(card => !card.is_active);
     }
+    // Issue #554: パックフィルタ。DEFAULT_PACK_SENTINEL は「未分類のみ」
+    // (collection_name IS NULL)、それ以外は選択されたパック名との完全一致。
+    if (packFilter === DEFAULT_PACK_SENTINEL) {
+      nextCards = nextCards.filter(card => card.collection_name == null);
+    } else if (packFilter) {
+      nextCards = nextCards.filter(card => card.collection_name === packFilter);
+    }
     if (normalizedQuery) {
       nextCards = nextCards.filter(card => card.name.toLowerCase().includes(normalizedQuery));
     }
@@ -264,7 +300,18 @@ export default function CardManager({
     }
 
     return nextCards;
-  }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
+  }, [cards, sortDirection, sortField, statusFilter, packFilter, titleSearchQuery]);
+
+  // Issue #554: パックフィルタの選択肢 = 事前登録カタログ ∪ カード上に実在する
+  // collection_name(パック管理から削除された等の孤立参照も選択肢から漏らさない)。
+  const packFilterOptions = useMemo(() => {
+    const names = new Set<string>(cardPackNames);
+    cards.forEach((card) => {
+      if (card.collection_name) names.add(card.collection_name);
+    });
+    return Array.from(names);
+  }, [cardPackNames, cards]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -274,9 +321,21 @@ export default function CardManager({
     imageUrl: "",
     rarity: "common" as Rarity,
     cardNumber: "",
+    collectionName: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
   });
+  // Issue #393再設計: 事前登録パック一覧 + (編集中カードの現在値がその一覧に
+  // 無ければ)孤立参照を選択肢として残す(ChannelPointSettingsの「一覧に無い
+  // パックも表示」パターンと同じ。パック管理から削除された後の既存紐付けを
+  // 黙って見えなくしない)。
+  const cardPackSelectOptions = useMemo(() => {
+    const options = [...cardPackNames];
+    if (formData.collectionName && !options.includes(formData.collectionName)) {
+      options.push(formData.collectionName);
+    }
+    return options;
+  }, [cardPackNames, formData.collectionName]);
   const descriptionCharacterCount = useMemo(
     () => countCharacters(formData.description),
     [formData.description]
@@ -284,6 +343,10 @@ export default function CardManager({
   const isDescriptionTooLong = descriptionCharacterCount > CARD_DESCRIPTION_MAX_CHARACTERS;
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付けだけ
+  // 保留された稀なケースの通知。resetForm()がuploadErrorを即座にクリアする
+  // ため、フォームの表示状態から独立させる。
+  const [deployWindowNotice, setDeployWindowNotice] = useState(false);
   // Separate state for confirmed image URL (only update on blur)
   // プレビュー表示用の確定済み画像URL（フォーカスが外れた時のみ更新）
   const [confirmedImageUrl, setConfirmedImageUrl] = useState("");
@@ -350,6 +413,8 @@ export default function CardManager({
   const [showBatchDropRateModal, setShowBatchDropRateModal] = useState(false);
   // カスタムレアリティ管理モーダルの状態
   const [showCustomRarityModal, setShowCustomRarityModal] = useState(false);
+  // パック管理モーダルの状態(Issue #393再設計)
+  const [showCardPackModal, setShowCardPackModal] = useState(false);
   // Zoomed card image modal state (opened when user clicks a thumbnail)
   // Uses the original (pre-thumbnail) URL so users see the full-resolution image
   // サムネイルクリック時に表示する拡大画像モーダルの状態
@@ -817,6 +882,7 @@ export default function CardManager({
       imageUrl: "",
       rarity: "common",
       cardNumber: "",
+      collectionName: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
     });
@@ -1036,6 +1102,7 @@ export default function CardManager({
       imageUrl: card.image_url || "",
       rarity: card.rarity,
       cardNumber: card.card_number ? String(card.card_number) : "",
+      collectionName: card.collection_name || "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
@@ -1126,6 +1193,8 @@ export default function CardManager({
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
           cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
+          // Issue #393: send the pack name (trimmed "" → null clears it = all cards)
+          collectionName: formData.collectionName.trim() === "" ? null : formData.collectionName.trim(),
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
@@ -1137,9 +1206,15 @@ export default function CardManager({
         const recalculatedCards = Array.isArray(responseData.recalculatedCards)
           ? (responseData.recalculatedCards as Card[])
           : null;
+        // Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付け
+        // だけ保留された、稀なケース用のフラグ。読み取り後に取り除いて
+        // Card型に無い合成フィールドが state に漏れないようにする。
+        const collectionNameSkippedDeployWindow = responseData.collectionNameSkippedDeployWindow === true;
         const savedCardData = { ...(responseData as Record<string, unknown>) };
         delete savedCardData.recalculatedCards;
+        delete savedCardData.collectionNameSkippedDeployWindow;
         const savedCard = savedCardData as unknown as Card;
+        setDeployWindowNotice(collectionNameSkippedDeployWindow);
 
         if (editingCard) {
           setCards((prevCards) => {
@@ -1288,6 +1363,14 @@ export default function CardManager({
           >
             {t("customRarity.button")}
           </button>
+          {/* Card pack management button (Issue #393再設計) */}
+          {/* パック管理ボタン */}
+          <button
+            onClick={() => setShowCardPackModal(true)}
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
+          >
+            {t("cardPackModal.button")}
+          </button>
           {/* Emote import button */}
           {/* エモートインポートボタン */}
           <button
@@ -1322,6 +1405,15 @@ export default function CardManager({
           <a href="/plans" className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
             支援特典について
           </a>
+        </div>
+      )}
+
+      {/* Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付けが
+          保留された稀なケース用の通知。フォームは保存成功時に閉じるため
+          form表示状態から独立させたスタンドアロンバナー。 */}
+      {deployWindowNotice && (
+        <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
+          <p className="text-sm text-yellow-300">{t("form.collectionNameDeployWindow")}</p>
         </div>
       )}
 
@@ -1465,6 +1557,35 @@ export default function CardManager({
                           {t("form.cardNumberHelp")}
                         </p>
                       </div>
+                    </div>
+                    {/* Issue #393再設計: カードパックは自由入力ではなく、事前に
+                        「パック管理」で登録した一覧から選択する(レアリティselectと
+                        同じパターン)。新規登録はパック管理モーダル側でのみ発生する
+                        ため、ここでの選択は常にゲート対象外。 */}
+                    <div className="mt-3 min-w-0">
+                      <label className="mb-1 block text-sm text-gray-300">
+                        {t("form.collectionName")}
+                      </label>
+                      <select
+                        name="collectionName"
+                        value={formData.collectionName}
+                        onChange={(e) =>
+                          setFormData({ ...formData, collectionName: e.target.value })
+                        }
+                        className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
+                      >
+                        <option value="">
+                          {t("form.collectionNameUnclassified", {
+                            name: defaultPackName ?? t("cardPackModal.defaultName"),
+                          })}
+                        </option>
+                        {cardPackSelectOptions.map((name) => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-xs text-gray-300">
+                        {t("form.collectionNameHelp")}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1897,6 +2018,24 @@ export default function CardManager({
               <option value="active">{t("filter.active")}</option>
               <option value="inactive">{t("filter.inactive")}</option>
             </select>
+
+            {/* Pack filter (Issue #554) */}
+            {/* パックフィルター */}
+            <select
+              value={packFilter}
+              onChange={(e) => setPackFilter(e.target.value)}
+              aria-label={t("filter.packLabel")}
+              className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
+              style={SELECT_ARROW_STYLE}
+            >
+              <option value="">{t("filter.packAll")}</option>
+              <option value={DEFAULT_PACK_SENTINEL}>
+                {defaultPackName ?? t("cardPackModal.defaultName")}
+              </option>
+              {packFilterOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
           </div>
 
           {/* View toggle (shown when showViewToggle is true) */}
@@ -2275,6 +2414,19 @@ export default function CardManager({
         streamerId={streamerId}
         customRarities={customRarities}
         onSaved={setCustomRarities}
+      />
+
+      {/* Card Pack Modal (Issue #393再設計) */}
+      {/* パック管理モーダル */}
+      <CardPackModal
+        isOpen={showCardPackModal}
+        onClose={() => setShowCardPackModal(false)}
+        streamerId={streamerId}
+        cardPackNames={cardPackNames}
+        defaultPackName={defaultPackName}
+        isPremium={isPremium}
+        onSaved={setCardPackNames}
+        onDefaultPackNameSaved={setDefaultPackName}
       />
 
       {/* Emote Import Modal */}

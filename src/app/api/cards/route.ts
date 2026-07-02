@@ -19,6 +19,8 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
+import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
@@ -82,6 +84,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber } = body;
 
+    // Issue #393: optional card pack name. Centralized helper distinguishes
+    // "omitted" from "present-but-invalid" so bad types are rejected, not ignored.
+    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
+    if (!collectionNameResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
     const nameValidation = validateCardName(name)
     if (!nameValidation.valid) {
       return NextResponse.json(
@@ -143,16 +152,54 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify streamer owns this streamer profile
-    const { data: streamer } = await supabaseAdmin
+    let { data: streamer, error: streamerSelectError } = await supabaseAdmin
       .from("streamers")
-      .select("id, rarity_weights")
+      .select("id, rarity_weights, card_pack_names")
       .eq("id", streamerId)
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
 
+    // Issue #393再設計: card_pack_names(事前登録パック一覧)列がデプロイ窓で
+    // まだ無い場合、membership検証ができない。ownership確認自体は
+    // rarity_weightsのみで継続できるようフォールバックする。
+    let cardPackNamesUnavailable = false;
+    if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("streamers")
+        .select("id, rarity_weights")
+        .eq("id", streamerId)
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = retryResult.data ? { ...retryResult.data, card_pack_names: [] as string[] } : null;
+      streamerSelectError = retryResult.error;
+      cardPackNamesUnavailable = true;
+    }
+
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
+
+    const registeredPackNames: string[] = Array.isArray(streamer.card_pack_names)
+      ? streamer.card_pack_names
+      : [];
+
+    // Issue #393再設計: 新規カードには比較対象の現在値が無いため、非null値は
+    // 常に「新規紐付け」として扱い、事前登録済みパック名であることを要求する
+    // (Issue #269のプレミアムゲートは廃止。パック管理モーダルでの追加時のみ
+    // ゲートする設計に変更したため、ここではmembership検証のみ行う)。
+    if (
+      collectionNameResult.value !== undefined &&
+      collectionNameResult.value !== null &&
+      !cardPackNamesUnavailable &&
+      !isRegisteredOrUnchanged(collectionNameResult.value, null, registeredPackNames)
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+    }
+
+    // デプロイ窓(card_pack_names未検出)で非null値が指定された場合は、
+    // membership検証ができないため書き込み自体を見送る(カード作成は続行)。
+    const collectionNameSkippedDeployWindow =
+      cardPackNamesUnavailable && collectionNameResult.value !== undefined && collectionNameResult.value !== null;
 
     // NOTE: Drop rate validation removed because the system uses relative weights
     // The actual probability is calculated as: this_card_weight / total_weights
@@ -171,6 +218,11 @@ export async function POST(request: NextRequest) {
       card_number: cardNumber ?? null,
       drop_rate: dropRate,
     };
+    // Issue #393: persist the pack name when provided (null clears it = all cards).
+    // Issue #393再設計: デプロイ窓でmembership検証ができない場合は書き込み自体を見送る。
+    if (collectionNameResult.value !== undefined && !collectionNameSkippedDeployWindow) {
+      insertData.collection_name = collectionNameResult.value;
+    }
     if (intraRarityWeight !== undefined) {
       insertData.intra_rarity_weight = intraRarityWeight;
     }
@@ -183,6 +235,21 @@ export async function POST(request: NextRequest) {
 
     if (error && isMissingCardNumberColumnError(error)) {
       delete insertData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .insert(insertData)
+        .select()
+        .maybeSingle();
+      card = retryResult.data;
+      error = retryResult.error;
+    }
+
+    // Issue #393: deploy-window safety. If collection_name is not migrated yet,
+    // retry without it so card creation still succeeds (the pack is dropped for
+    // this card; the streamer can re-assign it once the column is live). Mirrors
+    // the card_number missing-column retry above.
+    if (error && isMissingCollectionNameColumn(error) && "collection_name" in insertData) {
+      delete insertData.collection_name;
       const retryResult = await supabaseAdmin
         .from("cards")
         .insert(insertData)
@@ -223,6 +290,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ...card,
       recalculatedCards,
+      ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Cards API: POST");

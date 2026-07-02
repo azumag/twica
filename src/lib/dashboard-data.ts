@@ -6,7 +6,11 @@ import { normalizeDropRate } from "@/lib/card-utils";
 import { reportError } from "@/lib/sentry/error-handler";
 import { withRetry } from "@/lib/supabase/retry";
 import { logPerf, perfStart } from "@/lib/perf";
-import type { Card, Streamer, GachaHistory } from "@/types/database";
+// Issue #557: デプロイ窓 (00064 未適用) の collection_name 列欠落検知に再利用。
+// 既存ヘルパは "collection_name" 文言でゲートしており、collection_completions
+// の同名列にもそのまま一致する。
+import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+import type { Card, Streamer, GachaHistory, Database } from "@/types/database";
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -1561,10 +1565,62 @@ export const getUserCardDetail = cache(async (
 });
 
 /**
- * Record a collection completion achievement
- * UNIQUE制約により同一total_cardsでの重複挿入はスキップされる
+ * PostgreSQL unique-constraint violation. Issue #557: completion records are
+ * now written with a plain INSERT and this code is silently ignored, because
+ * migration 00064 replaced the table's UNIQUE constraint with two PARTIAL
+ * unique indexes — PostgREST's upsert (`ON CONFLICT (cols)`) cannot infer a
+ * partial index as its conflict target, so upsert+ignoreDuplicates would
+ * error on every write. A pre-INSERT SELECT is no substitute either (two
+ * concurrent page loads could both see "not recorded yet" and both insert —
+ * the DB-level unique index is the only race-free arbiter).
+ */
+const UNIQUE_VIOLATION_CODE = "23505";
+
+/**
+ * Shared write path for completion records (overall + per-pack).
+ * INSERT + ignore 23505 (already recorded — the expected steady-state case),
+ * report anything else. Never throws: エラーでページ表示を壊さない。
+ */
+async function insertCompletionRecord(
+  row: Database["public"]["Tables"]["collection_completions"]["Insert"],
+  context: string,
+): Promise<void> {
+  const { twitch_user_id: twitchUserId, streamer_id: streamerId, total_cards: totalCards } = row;
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const { error } = await supabaseAdmin
+      .from("collection_completions")
+      .insert(row);
+    if (!error) return;
+    // Duplicate achievement (unique index hit): the normal repeat-visit case,
+    // same silent outcome the previous upsert+ignoreDuplicates produced.
+    if (error.code === UNIQUE_VIOLATION_CODE) return;
+    // Deploy window (new code + old schema): collection_name column not
+    // migrated yet. Only pack-scoped inserts ever carry the column (the
+    // overall record omits it entirely for exactly this compatibility), so
+    // skipping silently here loses nothing — the pack record will be written
+    // on the next page view after 00064 lands.
+    if ("collection_name" in row && isMissingCollectionNameColumn(error)) return;
+    logger.error(`Failed to record collection completion: ${error.message}`);
+    reportError(error, { context, twitchUserId, streamerId, totalCards });
+  } catch (err) {
+    // fire-and-forget: エラーでページ表示を壊さない
+    logger.error(`Unexpected error in ${context}: ${err}`);
+    reportError(err instanceof Error ? err : new Error(String(err)), {
+      context, twitchUserId, streamerId, totalCards,
+    });
+  }
+}
+
+/**
+ * Record an overall (whole-collection) completion achievement.
+ * 一意インデックスにより同一total_cardsでの重複挿入はスキップされる。
  * Cloudflare Workers では void 呼び出しだと応答後に破棄されるため、
  * 呼び出し側で必ず await すること
+ *
+ * The insert deliberately OMITS collection_name (not even an explicit null)
+ * so the identical statement works against both the pre- and post-00064
+ * schema during the deploy window.
  *
  * コレクションコンプリート達成をDBに記録する
  */
@@ -1573,51 +1629,92 @@ export async function recordCollectionCompletion(
   streamerId: string,
   totalCards: number,
 ): Promise<void> {
-  try {
-    const supabaseAdmin = getSupabaseAdmin();
-    // upsert with ignoreDuplicates: UNIQUE制約違反時は静かにスキップ
-    const { error } = await supabaseAdmin
-      .from("collection_completions")
-      .upsert(
-        { twitch_user_id: twitchUserId, streamer_id: streamerId, total_cards: totalCards },
-        { onConflict: "twitch_user_id,streamer_id,total_cards", ignoreDuplicates: true },
-      );
-    if (error) {
-      logger.error(`Failed to record collection completion: ${error.message}`);
-      reportError(error, { context: "recordCollectionCompletion", twitchUserId, streamerId, totalCards });
-    }
-  } catch (err) {
-    // fire-and-forget: エラーでページ表示を壊さない
-    logger.error(`Unexpected error in recordCollectionCompletion: ${err}`);
-    reportError(err instanceof Error ? err : new Error(String(err)), {
-      context: "recordCollectionCompletion", twitchUserId, streamerId, totalCards,
-    });
-  }
+  await insertCompletionRecord(
+    { twitch_user_id: twitchUserId, streamer_id: streamerId, total_cards: totalCards },
+    "recordCollectionCompletion",
+  );
+}
+
+/**
+ * Record a pack-scoped completion achievement (Issue #557).
+ * `packKey` is the card pack's collection_name, or DEFAULT_PACK_SENTINEL for
+ * the default (unclassified) pseudo-pack — the sentinel is a legitimate
+ * stored value in collection_completions.collection_name (see migration
+ * 00064). Callers must await (same Workers constraint as above).
+ *
+ * パック別コンプリート達成をDBに記録する（デフォルトパックは sentinel）。
+ */
+export async function recordPackCompletion(
+  twitchUserId: string,
+  streamerId: string,
+  totalCards: number,
+  packKey: string,
+): Promise<void> {
+  await insertCompletionRecord(
+    {
+      twitch_user_id: twitchUserId,
+      streamer_id: streamerId,
+      total_cards: totalCards,
+      collection_name: packKey,
+    },
+    "recordPackCompletion",
+  );
+}
+
+export interface CollectionCompletionRecord {
+  total_cards: number;
+  completed_at: string;
+  // 対象パック。null=全体コンプリート、DEFAULT_PACK_SENTINEL=デフォルトパック。Issue #557
+  collection_name: string | null;
 }
 
 /**
  * Get past collection completion records for a user and streamer
  * Returns records sorted by completed_at DESC (newest first)
  *
+ * Issue #557: now also returns collection_name (null = overall completion,
+ * pack name / DEFAULT_PACK_SENTINEL = pack-scoped). During the 00064 deploy
+ * window the column doesn't exist yet, so the select falls back to the
+ * legacy column list and maps every row to collection_name null — the only
+ * faithful reading, since no pack-scoped row can exist without the column.
+ *
  * ユーザー×配信者の過去コンプリート達成記録を取得（新しい順）
  */
 export const getCollectionCompletions = cache(async (
   twitchUserId: string,
   streamerId: string,
-): Promise<{ total_cards: number; completed_at: string }[]> => {
+): Promise<CollectionCompletionRecord[]> => {
   const cachedFetch = unstable_cache(
-    async () => {
+    async (): Promise<CollectionCompletionRecord[]> => {
       const supabaseAdmin = getSupabaseAdmin();
       const { data, error } = await withRetry(
         () => supabaseAdmin
           .from("collection_completions")
-          .select("total_cards, completed_at")
+          .select("total_cards, completed_at, collection_name")
           .eq("twitch_user_id", twitchUserId)
           .eq("streamer_id", streamerId)
           .order("completed_at", { ascending: false }),
         "dashboard:getCollectionCompletions",
       );
       if (error) {
+        if (isMissingCollectionNameColumn(error)) {
+          // Deploy window fallback: re-select without the not-yet-deployed
+          // column (read-path 42703) and surface rows as overall completions.
+          const legacy = await withRetry(
+            () => supabaseAdmin
+              .from("collection_completions")
+              .select("total_cards, completed_at")
+              .eq("twitch_user_id", twitchUserId)
+              .eq("streamer_id", streamerId)
+              .order("completed_at", { ascending: false }),
+            "dashboard:getCollectionCompletions:legacy",
+          );
+          if (legacy.error) {
+            logger.error(`Failed to fetch collection completions (legacy): ${legacy.error.message}`);
+            return [];
+          }
+          return (legacy.data || []).map((row) => ({ ...row, collection_name: null }));
+        }
         logger.error(`Failed to fetch collection completions: ${error.message}`);
         return [];
       }

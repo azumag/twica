@@ -18,6 +18,8 @@ import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
+import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 function extractRarityWeights(streamers: unknown): Record<string, number> | null {
@@ -33,6 +35,35 @@ function extractRarityWeights(streamers: unknown): Record<string, number> | null
     return (streamers as { rarity_weights: Record<string, number> | null }).rarity_weights;
   }
   return null;
+}
+
+// Issue #393再設計: streamers埋め込みからcard_pack_names(事前登録パック一覧)を読む。
+// extractRarityWeightsと同じ「array/objectどちらの埋め込み形状にも対応する」パターン。
+function extractCardPackNames(streamers: unknown): string[] {
+  const readFrom = (value: unknown): string[] => {
+    if (value && typeof value === "object" && "card_pack_names" in value) {
+      const raw = (value as { card_pack_names: unknown }).card_pack_names;
+      return Array.isArray(raw) ? (raw as string[]) : [];
+    }
+    return [];
+  };
+  if (!streamers) return [];
+  if (Array.isArray(streamers)) return readFrom(streamers[0]);
+  return readFrom(streamers);
+}
+
+// デプロイ窓フォールバックで card_pack_names 列を落とした埋め込みを再構成する際、
+// extractCardPackNames が常に空配列を安全に読めるよう明示的に空配列を注入する。
+function withEmptyCardPackNames(streamers: unknown): unknown {
+  if (Array.isArray(streamers)) {
+    return streamers.map((entry) =>
+      entry && typeof entry === "object" ? { ...entry, card_pack_names: [] } : entry
+    );
+  }
+  if (streamers && typeof streamers === "object") {
+    return { ...streamers, card_pack_names: [] };
+  }
+  return streamers;
 }
 
 export async function PUT(
@@ -79,6 +110,12 @@ export async function PUT(
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
     const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber } = body;
+
+    // Issue #393: optional card pack name (null clears it = all cards).
+    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
+    if (!collectionNameResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
 
     if (name !== undefined) {
       const nameValidation = validateCardName(name)
@@ -152,20 +189,84 @@ export async function PUT(
 
     // Verify ownership and get current image_url for cleanup
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
-    const { data: card } = await supabaseAdmin
+    let { data: card, error: cardSelectError } = await supabaseAdmin
       .from("cards")
       // streamers の埋め込みは FK 制約名で一意化する: migration 00051 の
       // card_owner_stats が cards↔streamers を m2m にも見せ、ヒントなしの
       // streamers(...) は PGRST201 で失敗するため。
-      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
+      .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, collection_name, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights, card_pack_names)")
       .eq("id", id)
       .maybeSingle();
+
+    // Issue #393再設計: card_pack_names(事前登録パック一覧、streamers埋め込み内)
+    // がデプロイ窓で未検出の場合、それだけ外して再試行する(collection_nameは
+    // 既に本番稼働済みの列のため、通常この組み合わせのみが発生する)。
+    let cardPackNamesUnavailable = false;
+    if (cardSelectError && isMissingCardPackNamesColumnError(cardSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, collection_name, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
+        .eq("id", id)
+        .maybeSingle();
+      card = retryResult.data
+        ? ({ ...retryResult.data, streamers: withEmptyCardPackNames(retryResult.data.streamers) } as typeof card)
+        : null;
+      cardSelectError = retryResult.error;
+      cardPackNamesUnavailable = true;
+    }
+
+    // Issue #269 (self-review fix): collection_name was added to this
+    // ownership-check SELECT to read the current pack value for the gate
+    // below. During the deploy window (migration 00061 not applied yet) that
+    // turns the SELECT itself into a 42703 "column does not exist" error,
+    // which would 403 EVERY card edit — not just pack-related ones — because
+    // this branch only checked `!card`, not `error`. Retry without the
+    // column so unrelated edits keep working; the gate then just sees no
+    // current pack value (treated as null), matching every other #393
+    // deploy-window fallback in this codebase. card_pack_names も併せて落とす
+    // (両方同時に未デプロイという稀なケースの安全側対応)。
+    if (cardSelectError && isMissingCollectionNameColumn(cardSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
+        .eq("id", id)
+        .maybeSingle();
+      card = retryResult.data
+        ? ({
+            ...retryResult.data,
+            collection_name: null,
+            streamers: withEmptyCardPackNames(retryResult.data.streamers),
+          } as typeof card)
+        : null;
+      cardSelectError = retryResult.error;
+      cardPackNamesUnavailable = true;
+    }
 
     const twitchUserId = extractTwitchUserId(card?.streamers);
 
     if (!card || twitchUserId === null || twitchUserId !== session.twitchUserId) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
+
+    // Issue #393再設計: パック紐付けの変更は、値が実際に変わる場合のみ
+    // 事前登録済み(card_pack_names)であることを要求する(#269のプレミアム
+    // ゲートは廃止。パック管理モーダルでの追加時のみゲートする設計に変更)。
+    // null化・現在値の再送信は常に許可 — パック削除後の孤立参照でも壊れない。
+    const registeredPackNames = extractCardPackNames(card.streamers);
+    const collectionNameIsNewNonNullValue =
+      collectionNameResult.value !== undefined &&
+      collectionNameResult.value !== null &&
+      collectionNameResult.value !== card.collection_name;
+
+    if (collectionNameIsNewNonNullValue && !cardPackNamesUnavailable) {
+      if (!isRegisteredOrUnchanged(collectionNameResult.value as string, card.collection_name, registeredPackNames)) {
+        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+      }
+    }
+
+    // デプロイ窓でmembership検証ができない間は、新しいパック紐付けの書き込み
+    // 自体を見送る(他フィールドの更新は妨げない)。
+    const collectionNameSkippedDeployWindow = collectionNameIsNewNonNullValue && cardPackNamesUnavailable;
 
     const rarityWeights = extractRarityWeights(card.streamers);
     const rarityChanged = rarity !== undefined && rarity !== card.rarity;
@@ -187,6 +288,7 @@ export async function PUT(
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
     if (rarity !== undefined) updateData.rarity = typeof rarity === "string" ? rarity.trim() : rarity;
+    if (collectionNameResult.value !== undefined && !collectionNameSkippedDeployWindow) updateData.collection_name = collectionNameResult.value;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;
     if (dropRate !== undefined) updateData.drop_rate = dropRate;
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
@@ -246,6 +348,21 @@ export async function PUT(
       error = retryResult.error;
     }
 
+    // Issue #393: deploy-window safety — retry without collection_name if the
+    // column is not migrated yet so other field edits still persist. Mirrors the
+    // card_number retry above.
+    if (error && isMissingCollectionNameColumn(error) && "collection_name" in updateData) {
+      delete updateData.collection_name;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .update(updateData)
+        .eq("id", id)
+        .select()
+        .maybeSingle();
+      updatedCard = retryResult.data;
+      error = retryResult.error;
+    }
+
     if (error) {
       if (isCardNumberConflictError(error)) {
         return NextResponse.json(
@@ -274,6 +391,7 @@ export async function PUT(
     return NextResponse.json({
       ...updatedCard,
       recalculatedCards,
+      ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Cards API: PUT");

@@ -25,6 +25,9 @@ export interface Database {
           twitch_profile_image_url: string | null
           channel_point_reward_id: string | null
           channel_point_reward_name: string | null
+          // メイン報酬に紐付くカードパック名（NULL=全カード対象）。Issue #393
+          // Card pack bound to the main channel-point reward (NULL = all cards)
+          channel_point_collection_name: string | null
           is_active: boolean
           // ガチャ効果音URL - R2に保存された音声ファイルのURL
           gacha_sound_url: string | null
@@ -48,6 +51,14 @@ export interface Database {
           // 配信者が定義したカスタムレアリティ名の一覧（rarity_weights とは独立）
           // List of streamer-defined custom rarity names (decoupled from rarity_weights)
           custom_rarities: string[]
+          // 配信者が事前登録したカードパック名の一覧（Issue #393再設計）
+          // Pre-defined card pack names the streamer manages (Issue #393 redesign)
+          card_pack_names: string[]
+          // 「デフォルト」(未分類, collection_name IS NULL)パックの表示名
+          // オーバーライド。NULL の場合は汎用ラベル("デフォルト")を表示する。
+          // Display-name override for the "default" (unclassified) pseudo-pack.
+          // NULL falls back to a generic label ("デフォルト"). Issue #554.
+          default_card_pack_name: string | null
           // 視聴者向けコレクションページで未所持カードを表示するか（オプトイン、デフォルトfalse）
           // Whether unowned cards are visible on the viewer collection page (opt-in, default false)
           show_unowned_cards: boolean
@@ -71,6 +82,7 @@ export interface Database {
           twitch_profile_image_url?: string | null
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
+          channel_point_collection_name?: string | null
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -80,6 +92,8 @@ export interface Database {
           chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
           custom_rarities?: string[]
+          card_pack_names?: string[]
+          default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
@@ -95,6 +109,7 @@ export interface Database {
           twitch_profile_image_url?: string | null
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
+          channel_point_collection_name?: string | null
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -104,6 +119,8 @@ export interface Database {
           chat_announcement_multi_show_cards?: boolean
           rarity_weights?: Record<string, number> | null
           custom_rarities?: string[]
+          card_pack_names?: string[]
+          default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
@@ -194,6 +211,9 @@ export interface Database {
           image_url: string | null
           rarity: Rarity
           card_number: number | null
+          // 所属カードパック名（NULL=未分類=全カード抽選対象）。Issue #393
+          // Pack this card belongs to (NULL = unclassified = drawable from any reward)
+          collection_name: string | null
           drop_rate: number
           // レアリティ内重み: 同レアリティ内での排出確率配分（デフォルト1.0=均等）
           intra_rarity_weight: number
@@ -216,6 +236,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           card_number?: number | null
+          collection_name?: string | null
           drop_rate?: number
           intra_rarity_weight?: number
           is_active?: boolean
@@ -237,6 +258,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           card_number?: number | null
+          collection_name?: string | null
           drop_rate?: number
           intra_rarity_weight?: number
           is_active?: boolean
@@ -458,6 +480,9 @@ export interface Database {
           reward_name: string | null
           draw_count: number
           is_raid_limited: boolean
+          // 追加報酬に紐付くカードパック名（NULL=全カード対象）。Issue #393
+          // Card pack bound to this additional reward (NULL = all cards)
+          collection_name: string | null
           created_at: string
         }
         Insert: {
@@ -467,6 +492,7 @@ export interface Database {
           reward_name?: string | null
           draw_count?: number
           is_raid_limited?: boolean
+          collection_name?: string | null
           created_at?: string
         }
         Update: {
@@ -476,6 +502,7 @@ export interface Database {
           reward_name?: string | null
           draw_count?: number
           is_raid_limited?: boolean
+          collection_name?: string | null
           created_at?: string
         }
       }
@@ -606,6 +633,11 @@ export interface Database {
           twitch_user_id: string
           streamer_id: string
           total_cards: number
+          // 達成対象パック。NULL=全体コンプリート(従来レコード)、
+          // "__default__"(DEFAULT_PACK_SENTINEL)=デフォルト(未分類)パック。Issue #557
+          // Which pack this completion is for. NULL = overall (legacy rows),
+          // DEFAULT_PACK_SENTINEL = the default (unclassified) pseudo-pack.
+          collection_name: string | null
           completed_at: string
         }
         Insert: {
@@ -613,6 +645,7 @@ export interface Database {
           twitch_user_id: string
           streamer_id: string
           total_cards: number
+          collection_name?: string | null
           completed_at?: string
         }
         Update: {
@@ -620,6 +653,7 @@ export interface Database {
           twitch_user_id?: string
           streamer_id?: string
           total_cards?: number
+          collection_name?: string | null
           completed_at?: string
         }
       }
@@ -678,6 +712,19 @@ export interface Database {
           p_limit?: number
         }
         Returns: Json
+      }
+      // Issue #554: atomically renames an existing catalog pack and cascades
+      // the new name across cards.collection_name /
+      // streamers.channel_point_collection_name /
+      // streamer_additional_gacha_rewards.collection_name for that streamer.
+      // See supabase/migrations/00063_add_default_pack_name_and_rename.sql.
+      rename_card_pack: {
+        Args: {
+          p_streamer_id: string
+          p_old_name: string
+          p_new_name: string
+        }
+        Returns: null
       }
     }
     Enums: {

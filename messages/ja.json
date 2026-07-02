@@ -59,6 +59,10 @@
       "cardNumber": "カード番号",
       "cardNumberPlaceholder": "例: 12",
       "cardNumberHelp": "空欄なら自動採番されます",
+      "collectionName": "カードパック",
+      "collectionNameUnclassified": "{name}（すべてのカード）",
+      "collectionNameHelp": "同じパック名のカードだけがチャネポ報酬の抽選対象になります。パック名は「パック管理」で事前に登録してください。",
+      "collectionNameDeployWindow": "カードは保存されましたが、パック機能が準備中のためパック設定は反映されませんでした。しばらくしてから再度お試しください。",
       "dropRate": "出現確率",
       "intraRarityWeight": "レアリティ内での排出確率",
       "intraRarityWeightHint": "同じレアリティ内での排出バランスを調整します（デフォルト: 1.0）",
@@ -133,7 +137,9 @@
     "filter": {
       "all": "全て",
       "active": "配布中のみ",
-      "inactive": "配布停止のみ"
+      "inactive": "配布停止のみ",
+      "packLabel": "カードパックで絞り込む",
+      "packAll": "すべてのパック"
     },
     "table": {
       "image": "画像",
@@ -209,6 +215,34 @@
       "errorDuplicate": "同じレアリティが既に存在します",
       "errorDefault": "デフォルトのレアリティは追加できません（常に選択可能です）",
       "errorMax": "カスタムレアリティは最大{max}件までです"
+    },
+    "cardPackModal": {
+      "button": "パック管理",
+      "title": "カードパック管理",
+      "description": "カード作成時やチャネルポイント設定で選択できるパック名を管理します。ここで登録した名前だけが選択肢になります。",
+      "addPlaceholder": "新しいパック名",
+      "add": "追加",
+      "empty": "登録済みのパックはまだありません",
+      "deleteNote": "削除しても既存カード・報酬の紐付けは変わりません（新規選択の候補から外れるだけです）。",
+      "save": "保存",
+      "saving": "保存中...",
+      "saveFailed": "保存に失敗しました",
+      "confirmClose": "未保存の変更があります。閉じますか？",
+      "errorEmpty": "パック名を入力してください",
+      "errorTooLong": "パック名は80文字以内で入力してください",
+      "errorInvalidChars": "使用できない文字が含まれています",
+      "errorReserved": "__ で始まる名前は予約されているため使用できません",
+      "errorDuplicate": "同じパック名が既に存在します",
+      "errorMax": "パックは最大{max}件までです",
+      "premiumRequired": "新しいパックの追加には支援プランまたはTwitchサブスクが必要です。既存パックの削除は反映されました。",
+      "premiumRequiredHint": "新しいパックの追加には支援プランまたはTwitchサブスクが必要です（削除は常に可能です）。",
+      "deployWindow": "パック機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。",
+      "defaultName": "デフォルト",
+      "defaultRowDescription": "未分類カードが属する既定のパックです",
+      "cannotDelete": "削除不可",
+      "rename": "名前を変更",
+      "renameFailed": "名前の変更に失敗しました",
+      "renameDisabledHint": "未保存の変更があるため、リネームするには先に保存してください"
     },
     "batchDropRate": {
       "button": "確率一括調整",
@@ -320,6 +354,12 @@
     "empty": {
       "line1": "この配信者のカードはまだ持っていません。",
       "line2": "チャネルポイントを使ってカードをゲットしましょう！"
+    },
+    "packFilter": {
+      "label": "カードパック",
+      "all": "すべて",
+      "defaultName": "デフォルト",
+      "emptyPack": "このパックのカードはまだ持っていません。"
     },
     "viewFullCollection": "← すべてのコレクションを見る"
   },
@@ -487,6 +527,12 @@
       "error": "エラー",
       "none": "未設定"
     },
+    "sections": {
+      "connection": "接続状況",
+      "connectionDesc": "Twitch EventSub（通知）の登録状態です。カード引き換えが動作しないときは、ここでエラーの有無を確認してください",
+      "mainReward": "メイン報酬",
+      "mainRewardDesc": "カード引き換えのきっかけになるチャネルポイント報酬と、排出対象のカードパックを設定します"
+    },
     "messages": {
       "affiliateRequired": "チャネルポイントを使用するには、Twitchアフィリエイトまたはパートナーである必要があります。",
       "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。",
@@ -554,6 +600,7 @@
       "raidGiftEnabled": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",
       "raidGiftDisabled": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",
       "raidGiftSaved": "レイドガチャ設定を保存しました",
+      "raidGiftCountLabel": "プレゼントする枚数",
       "raidStatusTitle": "レイドガチャ受付",
       "raidStatusActive": "{time} まで受付中",
       "raidStatusInactive": "現在は停止中",
@@ -562,6 +609,17 @@
       "raidStatusEnabled": "レイドガチャ受付を30分間有効にしました",
       "raidStatusDisabled": "レイドガチャ受付を停止しました",
       "raidStatusFailed": "レイドガチャ設定の更新に失敗しました"
+    },
+    "collections": {
+      "mainLabel": "引き換え対象のカードパック",
+      "additionalLabel": "追加報酬のカードパック",
+      "all": "すべてのカード",
+      "defaultOnly": "{name}（未分類のカードのみ）",
+      "defaultOnlyName": "デフォルトパック",
+      "help": "カード管理の「パック管理」で登録したパック名ごとに、排出対象を絞り込めます。抽選可能なカードが1枚も無いパックを紐付けると保存時にエラーになります。",
+      "missing": "{name}(パック管理で登録解除済み。現在の紐付けは維持されています)",
+      "premiumLocked": "カードパック（支援プラン限定機能）",
+      "packHint": "パック名はカード管理の「パック管理」から登録できます"
     }
   },
   "gachaHistory": {

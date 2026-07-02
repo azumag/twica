@@ -4,6 +4,8 @@ import { getTranslations } from "next-intl/server";
 import Stats from "./Stats";
 import SortedCardGrid from "./SortedCardGrid";
 import CollectionProgress from "./CollectionProgress";
+import CollectionPackFilter from "./CollectionPackFilter";
+import type { CollectionPackDisplay } from "./CollectionPackFilter";
 import type { Streamer, Card } from "@/types/database";
 
 export interface StreamerCollectionCard extends Card {
@@ -37,6 +39,11 @@ interface StreamerCollectionProps {
   // Issue #395: streamer の show_unowned_card_details=false のときに true。
   // When true, unowned cards are rendered as placeholders (no image / no description).
   hideUnownedDetails?: boolean;
+  // パック絞り込みタブに表示するパック一覧 (Issue #557)。空配列（デフォルト）
+  // のときはフィルタUIを一切出さず従来表示のまま（名前付きパック未使用の
+  // 配信者では見た目・挙動とも完全に不変）。
+  // Pack filter tabs. Empty (default) = no filter UI, legacy layout untouched.
+  packs?: CollectionPackDisplay[];
 }
 
 /**
@@ -53,11 +60,27 @@ export default async function StreamerCollection({
   visibleCardTypes,
   completionHistory = [],
   hideUnownedDetails = false,
+  packs = [],
 }: StreamerCollectionProps) {
   const t = await getTranslations("collection");
   const tStreamer = await getTranslations("streamerCollection");
   const tCommon = await getTranslations("common");
   const tCardManager = await getTranslations("cardManager");
+
+  // SortedCardGrid 向けのシリアライズ済み翻訳。従来表示とパックフィルタ表示の
+  // 両方でグリッドを描画するため、1回だけ組み立てて共有する。
+  // Pass template strings instead of functions (Server -> Client serialization)
+  // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
+  const gridTranslations = {
+    cardCountTemplate: t("cardCount", { count: "{count}" }),
+    noImage: tCommon("noImage"),
+    unownedCard: t("unownedCard"),
+    inactiveStatus: tCardManager("status.paused"),
+    cardNumberTemplate: t("cardNumber"),
+    sortLabel: t("sort.label"),
+    sortByNumber: t("sort.number"),
+    sortByRarity: t("sort.rarity"),
+  };
 
   return (
     <div className="min-h-screen bg-gray-900 p-4 sm:p-6 lg:p-8">
@@ -88,38 +111,45 @@ export default async function StreamerCollection({
 
         {/* Stats */}
         <Stats stats={stats} />
-        <CollectionProgress owned={progress.owned} total={progress.total} completionHistory={completionHistory} />
 
-        {/* Cards */}
-        {/* カード一覧 */}
-        {cards.length === 0 ? (
-          <div className="rounded-xl bg-gray-800 p-8 text-center">
-            <p className="text-gray-400">
-              {tStreamer("empty.line1")}
-              <br />
-              {tStreamer("empty.line2")}
-            </p>
-          </div>
-        ) : (
-          // SortedCardGrid: 全カード統一サイズ（正方形 + object-cover）のグリッド表示
-          // レアリティ順はサーバーサイドで事前ソート済み
-          <SortedCardGrid
+        {packs.length > 0 ? (
+          // Issue #557: 名前付きパックがある場合はパック絞り込みUI。
+          // 進捗表示とグリッドは選択スコープに応じてクライアント側で切り替わる
+          // （「すべて」選択時は下の従来表示と同一の入力になる）。
+          <CollectionPackFilter
             cards={cards}
             streamerId={streamer.id}
             hideUnownedDetails={hideUnownedDetails}
-            translations={{
-              // Pass template string instead of function (Server -> Client serialization)
-              // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
-              cardCountTemplate: t("cardCount", { count: "{count}" }),
-              noImage: tCommon("noImage"),
-              unownedCard: t("unownedCard"),
-              inactiveStatus: tCardManager("status.paused"),
-              cardNumberTemplate: t("cardNumber"),
-              sortLabel: t("sort.label"),
-              sortByNumber: t("sort.number"),
-              sortByRarity: t("sort.rarity"),
-            }}
+            overallProgress={progress}
+            overallCompletionHistory={completionHistory}
+            packs={packs}
+            gridTranslations={gridTranslations}
           />
+        ) : (
+          <>
+            <CollectionProgress owned={progress.owned} total={progress.total} completionHistory={completionHistory} />
+
+            {/* Cards */}
+            {/* カード一覧 */}
+            {cards.length === 0 ? (
+              <div className="rounded-xl bg-gray-800 p-8 text-center">
+                <p className="text-gray-400">
+                  {tStreamer("empty.line1")}
+                  <br />
+                  {tStreamer("empty.line2")}
+                </p>
+              </div>
+            ) : (
+              // SortedCardGrid: 全カード統一サイズ（正方形 + object-cover）のグリッド表示
+              // レアリティ順はサーバーサイドで事前ソート済み
+              <SortedCardGrid
+                cards={cards}
+                streamerId={streamer.id}
+                hideUnownedDetails={hideUnownedDetails}
+                translations={gridTranslations}
+              />
+            )}
+          </>
         )}
 
         {/* Back link to full collection */}

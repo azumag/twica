@@ -16,6 +16,7 @@ export interface MockQueryBuilder<T = unknown> {
   ilike: (column: string, pattern: string) => MockQueryBuilder<T>
   in: (column: string, values: unknown[]) => MockQueryBuilder<T>
   is: (column: string, value: unknown) => MockQueryBuilder<T>
+  not: (column: string, operator: string, value: unknown) => MockQueryBuilder<T>
   order: (column: string, options?: { ascending?: boolean; nullsFirst?: boolean }) => MockQueryBuilder<T>
   limit: (count: number) => MockQueryBuilder<T>
   range: (from: number, to: number) => MockQueryBuilder<T>
@@ -46,7 +47,7 @@ export function createMockQueryBuilder<T = unknown>(
   const chainableMethods = [
     'select', 'insert', 'upsert', 'update', 'delete',
     'eq', 'neq', 'gt', 'gte', 'lt', 'lte',
-    'like', 'ilike', 'in', 'is',
+    'like', 'ilike', 'in', 'is', 'not',
     'order', 'limit', 'range'
   ]
 
