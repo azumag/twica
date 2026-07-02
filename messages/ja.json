@@ -60,7 +60,7 @@
       "cardNumberPlaceholder": "例: 12",
       "cardNumberHelp": "空欄なら自動採番されます",
       "collectionName": "カードパック",
-      "collectionNameUnclassified": "未分類（すべてのカード）",
+      "collectionNameUnclassified": "{name}（すべてのカード）",
       "collectionNameHelp": "同じパック名のカードだけがチャネポ報酬の抽選対象になります。パック名は「パック管理」で事前に登録してください。",
       "collectionNameDeployWindow": "カードは保存されましたが、パック機能が準備中のためパック設定は反映されませんでした。しばらくしてから再度お試しください。",
       "dropRate": "出現確率",
@@ -137,7 +137,9 @@
     "filter": {
       "all": "全て",
       "active": "配布中のみ",
-      "inactive": "配布停止のみ"
+      "inactive": "配布停止のみ",
+      "packLabel": "カードパックで絞り込む",
+      "packAll": "すべてのパック"
     },
     "table": {
       "image": "画像",
@@ -234,7 +236,13 @@
       "errorMax": "パックは最大{max}件までです",
       "premiumRequired": "新しいパックの追加には支援プランまたはTwitchサブスクが必要です。既存パックの削除は反映されました。",
       "premiumRequiredHint": "新しいパックの追加には支援プランまたはTwitchサブスクが必要です（削除は常に可能です）。",
-      "deployWindow": "パック機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。"
+      "deployWindow": "パック機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。",
+      "defaultName": "デフォルト",
+      "defaultRowDescription": "未分類カードが属する既定のパックです",
+      "cannotDelete": "削除不可",
+      "rename": "名前を変更",
+      "renameFailed": "名前の変更に失敗しました",
+      "renameDisabledHint": "未保存の変更があるため、リネームするには先に保存してください"
     },
     "batchDropRate": {
       "button": "確率一括調整",
@@ -593,9 +601,12 @@
       "mainLabel": "引き換え対象のカードパック",
       "additionalLabel": "追加報酬のカードパック",
       "all": "すべてのカード",
-      "defaultOnly": "デフォルトパック（未分類のカードのみ）",
+      "defaultOnly": "{name}（未分類のカードのみ）",
+      "defaultOnlyName": "デフォルトパック",
       "help": "カード管理の「パック管理」で登録したパック名ごとに、排出対象を絞り込めます。抽選可能なカードが1枚も無いパックを紐付けると保存時にエラーになります。",
-      "missing": "{name}(パック管理で登録解除済み。現在の紐付けは維持されています)"
+      "missing": "{name}(パック管理で登録解除済み。現在の紐付けは維持されています)",
+      "premiumLocked": "カードパック（支援プラン限定機能）",
+      "packHint": "パック名はカード管理の「パック管理」から登録できます"
     }
   },
   "gachaHistory": {

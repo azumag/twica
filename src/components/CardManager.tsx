@@ -10,6 +10,7 @@ import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
+import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
@@ -83,6 +84,11 @@ interface CardManagerProps {
   // Pre-defined card pack names (Issue #393 redesign). The collectionName
   // field on the card form now only selects from this list, not free text.
   initialCardPackNames?: string[];
+  // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554）。
+  // null/undefined は汎用ラベル("デフォルト")を意味する(列未デプロイ時も含む)。
+  // Display-name override for the "default" (unclassified) pack (Issue #554).
+  // null/undefined falls back to the generic label ("デフォルト").
+  initialDefaultPackName?: string | null;
   // Issue #269再設計: 新規パック登録(パック管理モーダルでの追加)にのみ適用する
   // プラン判定。デフォルトfalse(フェイルクローズ)。
   isPremium?: boolean;
@@ -134,6 +140,7 @@ export default function CardManager({
   initialRarityWeights = null,
   initialCustomRarities = [],
   initialCardPackNames = [],
+  initialDefaultPackName = null,
   isPremium = false,
 }: CardManagerProps) {
   // i18n translations
@@ -160,6 +167,8 @@ export default function CardManager({
   const [customRarities, setCustomRarities] = useState<string[]>(initialCustomRarities);
   // 事前登録カードパック名（Issue #393再設計。専用モーダルで管理）
   const [cardPackNames, setCardPackNames] = useState<string[]>(initialCardPackNames);
+  // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554。専用モーダルで管理）
+  const [defaultPackName, setDefaultPackName] = useState<string | null>(initialDefaultPackName);
   const rarityOptions = useMemo(() => {
     const values = new Set<string>(RARITIES.map((rarity) => rarity.value));
     cards.forEach((card) => {
@@ -188,6 +197,11 @@ export default function CardManager({
   const [sortField, setSortField] = useState<SortField>("created_at");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // パックフィルタ（Issue #554）。"" = すべてのパック、DEFAULT_PACK_SENTINEL =
+  // デフォルト(未分類, collection_name IS NULL)のみ、それ以外はパック名の完全一致。
+  // ステータスフィルタと異なり、サーバー(/api/cards)側にこの絞り込みパラメータは
+  // 無いため、常にクライアント側(filteredAndSortedCards)のみで完結させる。
+  const [packFilter, setPackFilter] = useState<string>("");
   const [titleSearchQuery, setTitleSearchQuery] = useState("");
   // Track if this is the first render to skip initial reload
   // 初回レンダリングかどうかを追跡して初期リロードをスキップ
@@ -267,6 +281,13 @@ export default function CardManager({
     } else if (statusFilter === "inactive") {
       nextCards = nextCards.filter(card => !card.is_active);
     }
+    // Issue #554: パックフィルタ。DEFAULT_PACK_SENTINEL は「未分類のみ」
+    // (collection_name IS NULL)、それ以外は選択されたパック名との完全一致。
+    if (packFilter === DEFAULT_PACK_SENTINEL) {
+      nextCards = nextCards.filter(card => card.collection_name == null);
+    } else if (packFilter) {
+      nextCards = nextCards.filter(card => card.collection_name === packFilter);
+    }
     if (normalizedQuery) {
       nextCards = nextCards.filter(card => card.name.toLowerCase().includes(normalizedQuery));
     }
@@ -279,7 +300,17 @@ export default function CardManager({
     }
 
     return nextCards;
-  }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
+  }, [cards, sortDirection, sortField, statusFilter, packFilter, titleSearchQuery]);
+
+  // Issue #554: パックフィルタの選択肢 = 事前登録カタログ ∪ カード上に実在する
+  // collection_name(パック管理から削除された等の孤立参照も選択肢から漏らさない)。
+  const packFilterOptions = useMemo(() => {
+    const names = new Set<string>(cardPackNames);
+    cards.forEach((card) => {
+      if (card.collection_name) names.add(card.collection_name);
+    });
+    return Array.from(names);
+  }, [cardPackNames, cards]);
 
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
@@ -1543,7 +1574,11 @@ export default function CardManager({
                         }
                         className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
                       >
-                        <option value="">{t("form.collectionNameUnclassified")}</option>
+                        <option value="">
+                          {t("form.collectionNameUnclassified", {
+                            name: defaultPackName ?? t("cardPackModal.defaultName"),
+                          })}
+                        </option>
                         {cardPackSelectOptions.map((name) => (
                           <option key={name} value={name}>{name}</option>
                         ))}
@@ -1983,6 +2018,24 @@ export default function CardManager({
               <option value="active">{t("filter.active")}</option>
               <option value="inactive">{t("filter.inactive")}</option>
             </select>
+
+            {/* Pack filter (Issue #554) */}
+            {/* パックフィルター */}
+            <select
+              value={packFilter}
+              onChange={(e) => setPackFilter(e.target.value)}
+              aria-label={t("filter.packLabel")}
+              className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
+              style={SELECT_ARROW_STYLE}
+            >
+              <option value="">{t("filter.packAll")}</option>
+              <option value={DEFAULT_PACK_SENTINEL}>
+                {defaultPackName ?? t("cardPackModal.defaultName")}
+              </option>
+              {packFilterOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
           </div>
 
           {/* View toggle (shown when showViewToggle is true) */}
@@ -2370,8 +2423,10 @@ export default function CardManager({
         onClose={() => setShowCardPackModal(false)}
         streamerId={streamerId}
         cardPackNames={cardPackNames}
+        defaultPackName={defaultPackName}
         isPremium={isPremium}
         onSaved={setCardPackNames}
+        onDefaultPackNameSaved={setDefaultPackName}
       />
 
       {/* Emote Import Modal */}

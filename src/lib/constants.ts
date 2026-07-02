@@ -261,6 +261,10 @@ export const ERROR_MESSAGES = {
   // in the streamer's pre-defined card_pack_names list (distinct from
   // COLLECTION_NOT_FOUND, which is about an empty-but-registered pack).
   COLLECTION_NOT_REGISTERED: 'The selected card pack has not been registered. Add it in pack management first.',
+  // Issue #554: PATCH /api/cards/collections (pack rename) returns this when
+  // the `rename_card_pack` RPC is not deployed yet (deploy-window fallback,
+  // mirrors the cardPackNamesSkippedDeployWindow pattern used elsewhere).
+  PACK_RENAME_NOT_READY: 'Pack renaming is not available yet. Please try again shortly.',
   CONTENT_TYPE_MISSING: 'Content-Type header is required',
   CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
   CARD_NAME_REQUIRED: 'Card name is required',

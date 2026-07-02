@@ -15,11 +15,18 @@ import {
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { resolveCollectionNameField, validateCardPackNamesInput, isRegisteredOrUnchanged, DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import {
+  resolveCollectionNameField,
+  validateCardPackNamesInput,
+  validatePackName,
+  isRegisteredOrUnchanged,
+  DEFAULT_PACK_SENTINEL,
+} from "@/lib/validation/collection-name";
 import {
   checkCollectionHasActiveCards,
   isMissingCollectionNameColumn,
   isMissingCardPackNamesColumnError,
+  isMissingDefaultCardPackNameColumnError,
 } from "@/lib/collections/collection-existence";
 import { isNewCardPackNameAdditionGated } from "@/lib/plan-gate";
 
@@ -199,6 +206,13 @@ export async function POST(request: NextRequest) {
       // 事前登録カードパック名の一覧（オプション、カード/報酬紐付けとは独立）
       // Pre-defined card pack name catalog (optional, decoupled from card/reward bindings)
       cardPackNames,
+      // 「デフォルト」(未分類)パックの表示名オーバーライド（オプション、Issue #554）。
+      // null でリセット（汎用ラベル表示に戻す）。カタログ(card_pack_names)への
+      // 登録・重複チェックは不要 — 表示専用の独立した文字列のため。
+      // Display-name override for the "default" (unclassified) pack (optional,
+      // Issue #554). null resets it back to the generic label. No catalog
+      // membership/uniqueness check needed — this is a standalone display string.
+      defaultCardPackName,
       // 未所持カード表示設定（オプション、Issue #395）
       // Unowned-card visibility settings (optional, Issue #395)
       showUnownedCards,
@@ -241,6 +255,23 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
       }
       normalizedCardPackNames = validation.value;
+    }
+
+    // defaultCardPackName: 同じルール(validatePackName)で検証するが、null は
+    // 「リセット」として常に許可する（カード名一覧と違い、単一の任意項目のため
+    // "" trim 結果が空になるケースは validatePackName が弾く。プランゲートなし
+    // — 既存パック名の管理操作と同様、Issue #269 のゲート対象は新規登録のみ）。
+    let normalizedDefaultCardPackName: string | null | undefined;
+    if (defaultCardPackName !== undefined) {
+      if (defaultCardPackName === null) {
+        normalizedDefaultCardPackName = null;
+      } else {
+        const validation = validatePackName(defaultCardPackName);
+        if (!validation.ok) {
+          return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+        }
+        normalizedDefaultCardPackName = validation.value;
+      }
     }
 
     // 視聴者向け未所持カード表示の boolean 検証
@@ -429,6 +460,11 @@ export async function POST(request: NextRequest) {
       updateData.card_pack_names = persistedCardPackNames;
     }
 
+    // 「デフォルト」パックの表示名オーバーライド（Issue #554）。
+    if (normalizedDefaultCardPackName !== undefined) {
+      updateData.default_card_pack_name = normalizedDefaultCardPackName;
+    }
+
     // 未所持カードの視聴者向け表示設定
     // Unowned-card visibility settings for the viewer-facing collection page
     if (showUnownedCards !== undefined) {
@@ -479,6 +515,9 @@ export async function POST(request: NextRequest) {
     // 返すと、クライアントに「保存できた」と偽って伝えてしまう。このフラグで
     // 実際に書き込めたかどうかを追跡し、レスポンスの真正性を保証する。
     let cardPackNamesWriteSkipped = false;
+    // Issue #554: 同じ理由(デプロイ窓)で default_card_pack_name 列がまだ
+    // 無い可能性があるため、card_pack_names と同じ skip-and-flag パターンを踏襲する。
+    let defaultCardPackNameWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       let { error } = await supabaseAdmin
@@ -491,6 +530,20 @@ export async function POST(request: NextRequest) {
       if (error && isMissingCardPackNamesColumnError(error) && "card_pack_names" in updateData) {
         delete updateData.card_pack_names;
         cardPackNamesWriteSkipped = true;
+        if (Object.keys(updateData).length > 0) {
+          const retryResult = await supabaseAdmin
+            .from("streamers")
+            .update(updateData)
+            .eq("id", streamerId);
+          error = retryResult.error;
+        } else {
+          error = null;
+        }
+      }
+
+      if (error && isMissingDefaultCardPackNameColumnError(error) && "default_card_pack_name" in updateData) {
+        delete updateData.default_card_pack_name;
+        defaultCardPackNameWriteSkipped = true;
         if (Object.keys(updateData).length > 0) {
           const retryResult = await supabaseAdmin
             .from("streamers")
@@ -547,6 +600,11 @@ export async function POST(request: NextRequest) {
         : {}),
       ...(cardPackNamesPremiumRequired ? { cardPackNamesPremiumRequired: true } : {}),
       ...(cardPackNamesWriteSkipped ? { cardPackNamesSkippedDeployWindow: true } : {}),
+      // Issue #554: no value is echoed back (unlike cardPackNames) because
+      // there is no server-side rejection scenario for this field (no plan
+      // gate, no catalog membership check) — the client's submitted value is
+      // authoritative on success. Only the deploy-window skip needs a flag.
+      ...(defaultCardPackNameWriteSkipped ? { defaultCardPackNameSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");

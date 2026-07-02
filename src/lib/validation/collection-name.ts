@@ -121,6 +121,40 @@ export function isReservedCollectionName(name: string): boolean {
   return name.startsWith("__");
 }
 
+export type PackNameValidation = { ok: true; value: string } | { ok: false };
+
+/**
+ * Validate a single, standalone pack-name string: trim, length 1-80, no
+ * control/Bidi-override characters, and not `__`-reserved.
+ *
+ * Issue #554: this is the single-value counterpart to
+ * `validateCardPackNamesInput`'s per-element checks (extracted so the rename
+ * API's `newName` and the streamer's `default_card_pack_name` display-name
+ * override can share the exact same rule set without duplicating it — a
+ * streamer typing an invalid name should get the identical rejection reason
+ * regardless of which field they're editing). List-only concerns
+ * (de-duplication, item-count cap) stay in `validateCardPackNamesInput`,
+ * which now delegates its per-element validation to this function.
+ */
+export function validatePackName(value: unknown): PackNameValidation {
+  if (typeof value !== "string") {
+    return { ok: false };
+  }
+  const trimmed = value.trim();
+  if (
+    trimmed.length < 1
+    || trimmed.length > MAX_COLLECTION_NAME_LENGTH
+    || RARITY_CONTROL_CHAR_REGEX.test(trimmed)
+    || RARITY_BIDI_OVERRIDE_REGEX.test(trimmed)
+    // Issue #555: `__`-prefixed names are reserved for sentinels like
+    // DEFAULT_PACK_SENTINEL and must never be registrable as a real pack.
+    || isReservedCollectionName(trimmed)
+  ) {
+    return { ok: false };
+  }
+  return { ok: true, value: trimmed };
+}
+
 export type CardPackNamesValidation =
   | { ok: true; value: string[] }
   | { ok: false };
@@ -145,21 +179,11 @@ export function validateCardPackNamesInput(value: unknown): CardPackNamesValidat
   const normalized: string[] = [];
   const seen = new Set<string>();
   for (const raw of value) {
-    if (typeof raw !== "string") {
+    const validation = validatePackName(raw);
+    if (!validation.ok) {
       return { ok: false };
     }
-    const trimmed = raw.trim();
-    if (
-      trimmed.length < 1
-      || trimmed.length > MAX_COLLECTION_NAME_LENGTH
-      || RARITY_CONTROL_CHAR_REGEX.test(trimmed)
-      || RARITY_BIDI_OVERRIDE_REGEX.test(trimmed)
-      // Issue #555: `__`-prefixed names are reserved for sentinels like
-      // DEFAULT_PACK_SENTINEL and must never be registrable as a real pack.
-      || isReservedCollectionName(trimmed)
-    ) {
-      return { ok: false };
-    }
+    const { value: trimmed } = validation;
     if (seen.has(trimmed)) {
       return { ok: false };
     }

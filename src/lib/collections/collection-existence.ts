@@ -87,6 +87,58 @@ export function isMissingCardPackNamesColumnError(
   );
 }
 
+/**
+ * Detect the "default_card_pack_name column is not deployed yet" schema error.
+ *
+ * Separate function for the same reason as `isMissingCardPackNamesColumnError`:
+ * this column's name doesn't contain "collection_name", so the existing
+ * gate would never match it (one-helper-per-column convention).
+ *
+ * Issue #554: `streamers.default_card_pack_name` (display-name override for
+ * the default/unclassified pseudo-pack) ships in the same PR as its API
+ * consumers, so a rolling deploy can briefly have the app code live before
+ * the migration has run — this lets the settings route skip persisting the
+ * field during that window instead of 500ing.
+ */
+export function isMissingDefaultCardPackNameColumnError(
+  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
+): boolean {
+  if (!error) return false;
+  const text = [error.message, error.details, error.hint]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  return (
+    text.includes("default_card_pack_name") &&
+    (error.code === "PGRST204" ||
+      text.includes("does not exist") ||
+      text.includes("schema cache"))
+  );
+}
+
+/**
+ * Detect the "rename_card_pack RPC is not deployed yet" error.
+ *
+ * Issue #554: `public.rename_card_pack` ships in migration 00063, in the same
+ * PR as the PATCH /api/cards/collections route that calls it via
+ * `supabaseAdmin.rpc(...)`. During a rolling deploy the app code can go live
+ * before the migration finishes, in which case PostgREST/Postgres reports
+ * `42883` (`undefined_function`) — NOT one of the PGRST204/42703 shapes used
+ * by the missing-COLUMN detectors above, since this is a missing FUNCTION.
+ * The route uses this to return a "feature not ready yet" response instead of
+ * a raw 500.
+ */
+export function isMissingRenameCardPackFunctionError(
+  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
+): boolean {
+  if (!error) return false;
+  const text = [error.message, error.details, error.hint]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  return text.includes("rename_card_pack") && error.code === "42883";
+}
+
 export type CollectionExistenceResult =
   | "exists" // at least one active card belongs to this pack
   | "absent" // no active card belongs to this pack → would cause empty draws

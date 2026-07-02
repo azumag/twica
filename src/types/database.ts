@@ -54,6 +54,11 @@ export interface Database {
           // 配信者が事前登録したカードパック名の一覧（Issue #393再設計）
           // Pre-defined card pack names the streamer manages (Issue #393 redesign)
           card_pack_names: string[]
+          // 「デフォルト」(未分類, collection_name IS NULL)パックの表示名
+          // オーバーライド。NULL の場合は汎用ラベル("デフォルト")を表示する。
+          // Display-name override for the "default" (unclassified) pseudo-pack.
+          // NULL falls back to a generic label ("デフォルト"). Issue #554.
+          default_card_pack_name: string | null
           // 視聴者向けコレクションページで未所持カードを表示するか（オプトイン、デフォルトfalse）
           // Whether unowned cards are visible on the viewer collection page (opt-in, default false)
           show_unowned_cards: boolean
@@ -88,6 +93,7 @@ export interface Database {
           rarity_weights?: Record<string, number> | null
           custom_rarities?: string[]
           card_pack_names?: string[]
+          default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
@@ -114,6 +120,7 @@ export interface Database {
           rarity_weights?: Record<string, number> | null
           custom_rarities?: string[]
           card_pack_names?: string[]
+          default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
           raid_gacha_active_until?: string | null
@@ -698,6 +705,19 @@ export interface Database {
           p_limit?: number
         }
         Returns: Json
+      }
+      // Issue #554: atomically renames an existing catalog pack and cascades
+      // the new name across cards.collection_name /
+      // streamers.channel_point_collection_name /
+      // streamer_additional_gacha_rewards.collection_name for that streamer.
+      // See supabase/migrations/00063_add_default_pack_name_and_rename.sql.
+      rename_card_pack: {
+        Args: {
+          p_streamer_id: string
+          p_old_name: string
+          p_new_name: string
+        }
+        Returns: null
       }
     }
     Enums: {

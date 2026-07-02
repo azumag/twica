@@ -84,6 +84,13 @@ export interface SettingsLayoutData {
     showUnowned: boolean;
     showUnownedDetails: boolean;
   };
+  // Issue #554: カードパックのプルダウン表示制御 + デフォルト名。未指定
+  // (undefined)の場合は ChannelPointSettings 側が従来どおりの表示にフォール
+  // バックする(後方互換 — 既存の呼び出し元を壊さない)。
+  cardPacks?: {
+    canManage: boolean;
+    defaultPackName: string | null;
+  };
   initialModeHint: "simple" | "advanced";
 }
 
@@ -136,6 +143,7 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
+          cardPacks={data.cardPacks}
           compact
         />
       </StepCard>
@@ -251,6 +259,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
+          cardPacks={data.cardPacks}
         />
       ),
     },

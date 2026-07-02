@@ -65,6 +65,10 @@ export default async function CardsPage() {
       initialRarityWeights={streamerData.streamer.rarity_weights}
       initialCustomRarities={streamerData.streamer.custom_rarities ?? []}
       initialCardPackNames={streamerData.streamer.card_pack_names ?? []}
+      // Issue #554: 列未デプロイのデプロイ窓では実行時に undefined になり得るため
+      // (TS型は必須だがDB列が存在しない場合、Supabaseは単にキーを省く)、`?? null` で
+      // 汎用ラベル表示にフォールバックする。
+      initialDefaultPackName={streamerData.streamer.default_card_pack_name ?? null}
       viewMode="list"
       showViewToggle={true}
       maxImageWidth={maxImageWidth}

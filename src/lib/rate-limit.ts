@@ -283,6 +283,11 @@ export const rateLimits = {
   cardsPost: createRatelimit("cardsPost", 20, 60 * 1000),
   cardsGet: createRatelimit("cardsGet", 100, 60 * 1000),
   cardsId: createRatelimit("cardsId", 100, 60 * 1000),
+  // Issue #554: pack rename (PATCH /api/cards/collections). A write endpoint
+  // that cascades across several tables, so keep it as tight as the other
+  // settings-mutation endpoint (streamerSettings) rather than the generous
+  // read limits above.
+  cardsPatch: createRatelimit("cardsPatch", 10, 60 * 1000),
   streamerSettings: createRatelimit("streamerSettings", 10, 60 * 1000),
   gacha: createRatelimit("gacha", 30, 60 * 1000),
   battleStart: createRatelimit("battleStart", 20, 60 * 1000),
