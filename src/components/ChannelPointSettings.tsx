@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useId } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/scopes";
@@ -902,121 +902,20 @@ export default function ChannelPointSettings({
        ) : loading ? (
          <div className="text-gray-400">{tCommon("loading")}</div>
        ) : (
-         <div className="space-y-4">
-           <div>
-             <label className="mb-1 block text-sm text-gray-300">
-               {t("form.selectReward")}
-             </label>
-             <select
-               value={selectedRewardId}
-               onChange={handleRewardSelect}
-               className="w-full rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
-             >
-               <option value="">{t("options.selectReward")}</option>
-               {rewards
-                 .filter((reward) =>
-                   // Exclude rewards that are already registered as additional rewards
-                   // 追加報酬として既に登録されているものを除外
-                   !additionalRewards.some((ar) => ar.reward_id === reward.id)
-                 )
-                 .map((reward) => (
-                   <option key={reward.id} value={reward.id}>
-                     {reward.title} ({reward.cost} {t("options.points")})
-                     {!reward.is_enabled && t("options.disabled")}
-                   </option>
-                 ))}
-             </select>
-           </div>
-
-           {rewards.length === 0 && (
-             <div className="rounded-lg bg-gray-700 p-4">
-               <p className="mb-3 text-sm text-gray-400">
-                 {t("form.noRewards")}
-               </p>
-               <button
-                 onClick={handleCreateReward}
-                 disabled={creating}
-                 className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
-               >
-                 {creating ? t("buttons.creating") : t("buttons.createReward")}
-               </button>
-             </div>
-           )}
-
-           {selectedRewardId && !compact && (
-             <div className="rounded-lg bg-gray-700 p-3">
-               <p className="text-sm text-gray-400">
-                 {t("form.selected")} <span className="text-white">{selectedRewardName}</span>
-               </p>
-               <p className="mt-1 text-xs text-gray-500">
-                 {t("form.id")} {selectedRewardId}
-               </p>
-               {/* Issue #393再設計: メイン報酬に紐付けるカードパック。パック管理
-                   (カード管理画面)で事前登録した一覧から選ぶだけで、ここでは
-                   もうゲート対象外(新規登録はパック管理モーダル側でのみ発生)。
-                   Issue #554: canManage=false のときは表示自体を制御する
-                   (mainPackControlMode参照)。 */}
-               {mainPackControlMode === "hidden" ? (
-                 renderPackUpsellHint()
-               ) : (
-                 <>
-                   <label className="mt-3 block text-xs text-gray-300">
-                     {t("collections.mainLabel")}
-                     <select
-                       value={selectedCollectionName}
-                       onChange={(e) => setSelectedCollectionName(e.target.value)}
-                       disabled={mainPackControlMode === "disabled"}
-                       className="mt-1 h-9 w-full rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40 disabled:cursor-not-allowed disabled:opacity-60"
-                     >
-                       <option value="">{t("collections.all")}</option>
-                       {/* Issue #555: 「デフォルトパックのみ」= 未分類(collection_name
-                           IS NULL)のカードだけに抽選対象を絞る選択肢。事前登録された
-                           パックとは独立した固定オプションとして常に表示する。 */}
-                       <option value={DEFAULT_PACK_SENTINEL}>
-                         {t("collections.defaultOnly", { name: defaultPackDisplayName })}
-                       </option>
-                       {collections.map((name) => (
-                         <option key={name} value={name}>{name}</option>
-                       ))}
-                       {/* 保存済みだが一覧に無い(パック管理で登録解除された)パックも
-                           選択肢に残し、黙ってスコープが全カードに変わる事故を防ぐ。
-                           #393再設計後、この一覧は「事前登録済みパック名」のみを
-                           返す(アクティブカードの有無は問わない)ため、ここに来る
-                           ケースは常に「登録解除済み」であり「抽選可能カードなし」
-                           ではない。取得完了後のみラベルを付す
-                           （取得前/失敗時は素の名前で表示）。
-                           Issue #555: DEFAULT_PACK_SENTINEL は上の固定オプションと
-                           して既に選択肢にあるため、ここでは除外する(除外しないと
-                           同じ値のoptionが2つ並び、誤って「登録解除済み」ラベルの
-                           方が選択されてしまう)。 */}
-                       {selectedCollectionName
-                         && selectedCollectionName !== DEFAULT_PACK_SENTINEL
-                         && !collections.includes(selectedCollectionName) && (
-                         <option value={selectedCollectionName}>
-                           {collectionsLoaded
-                             ? t("collections.missing", { name: selectedCollectionName })
-                             : selectedCollectionName}
-                         </option>
-                       )}
-                     </select>
-                   </label>
-                   <p className="mt-1 text-xs text-gray-400">
-                     {t("collections.help")}
-                   </p>
-                   {mainPackControlMode === "disabled" && renderPackUpsellHint()}
-                   {mainPackControlMode === "enabled" && showNoPacksRegisteredHint && (
-                     <p className="mt-1 text-xs text-gray-500">{t("collections.packHint")}</p>
-                   )}
-                 </>
-               )}
-             </div>
-           )}
-
-           {/* EventSub Info — compact mode では診断ノイズを隠す */}
+         <div className={compact ? "space-y-4" : "space-y-6"}>
+           {/* Issue #556: 接続状況セクション。EventSub(Twitch通知)の登録状態と
+               診断情報を1つのセクションに集約する。見出し・説明は SectionCard
+               側で描画するため、旧マークアップにあった内部 h3(EventSub ステータス)
+               は削除した(二重見出しの防止)。compact mode では診断ノイズを隠す。 */}
            {!compact && (
-           <div className="rounded-lg bg-gray-700/50 p-4">
-             <h3 className="mb-2 text-sm font-medium text-gray-300">{t("form.eventsubStatus")}</h3>
-             <div className="mb-3 rounded bg-gray-800/60 p-3 text-xs">
+           <SectionCard
+             title={t("sections.connection")}
+             description={t("sections.connectionDesc")}
+           >
+             {/* Issue #556: SectionCard の bg-gray-900/30 上では旧 bg-gray-800/60
+                 だけだと輝度差が小さく境界が曖昧になるため、細い枠線で
+                 診断ボックスの範囲を明示する(チームレビュー指摘への対応)。 */}
+             <div className="mb-3 rounded-md border border-gray-700/60 bg-gray-800/60 p-3 text-xs">
                <div className="flex items-center justify-between gap-3">
                  <span className="text-gray-300">{t("form.raidEventSubStatus")}</span>
                  <span className={getStatusColor(raidEventSubStatus)}>
@@ -1163,20 +1062,138 @@ export default function ChannelPointSettings({
                 {t("form.localTunnelNote")}
               </p>
             )}
-           </div>
+           </SectionCard>
            )}
 
-           {/* Additional Rewards Section - Only shown when main reward is active */}
-           {/* 追加報酬セクション - メイン報酬がアクティブな場合のみ表示 */}
-           {!compact && selectedRewardId && eventSubStatus === "active" && (
-             <div className="rounded-lg bg-gray-700/50 p-4">
-               <h3 className="mb-2 text-sm font-medium text-gray-300">
-                 {t("additionalRewards.title")}
-               </h3>
-               <p className="mb-3 text-xs text-gray-400">
-                 {t("additionalRewards.description")}
-               </p>
+           {/* Issue #556: メイン報酬セクション。報酬の選択・作成と、引き換え対象
+               カードパックの紐付けを1つのセクションにまとめる。compact(シンプル
+               モード)では SectionCard がフラグメントとして children をそのまま
+               返すため、DOM 構造・クラスは再構成前と完全に一致する
+               (シンプルモードの見た目は変えない制約)。 */}
+           <SectionCard
+             compact={compact}
+             title={t("sections.mainReward")}
+             description={t("sections.mainRewardDesc")}
+           >
+             <div>
+               <label className="mb-1 block text-sm text-gray-300">
+                 {t("form.selectReward")}
+               </label>
+               <select
+                 value={selectedRewardId}
+                 onChange={handleRewardSelect}
+                 className="w-full rounded-lg bg-gray-700 px-4 py-2 text-gray-200"
+               >
+                 <option value="">{t("options.selectReward")}</option>
+                 {rewards
+                   .filter((reward) =>
+                     // Exclude rewards that are already registered as additional rewards
+                     // 追加報酬として既に登録されているものを除外
+                     !additionalRewards.some((ar) => ar.reward_id === reward.id)
+                   )
+                   .map((reward) => (
+                     <option key={reward.id} value={reward.id}>
+                       {reward.title} ({reward.cost} {t("options.points")})
+                       {!reward.is_enabled && t("options.disabled")}
+                     </option>
+                   ))}
+               </select>
+             </div>
 
+             {rewards.length === 0 && (
+               <div className="rounded-lg bg-gray-700 p-4">
+                 <p className="mb-3 text-sm text-gray-400">
+                   {t("form.noRewards")}
+                 </p>
+                 <button
+                   onClick={handleCreateReward}
+                   disabled={creating}
+                   className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+                 >
+                   {creating ? t("buttons.creating") : t("buttons.createReward")}
+                 </button>
+               </div>
+             )}
+
+             {selectedRewardId && !compact && (
+               <div className="rounded-lg bg-gray-700 p-3">
+                 <p className="text-sm text-gray-400">
+                   {t("form.selected")} <span className="text-white">{selectedRewardName}</span>
+                 </p>
+                 <p className="mt-1 text-xs text-gray-500">
+                   {t("form.id")} {selectedRewardId}
+                 </p>
+                 {/* Issue #393再設計: メイン報酬に紐付けるカードパック。パック管理
+                     (カード管理画面)で事前登録した一覧から選ぶだけで、ここでは
+                     もうゲート対象外(新規登録はパック管理モーダル側でのみ発生)。
+                     Issue #554: canManage=false のときは表示自体を制御する
+                     (mainPackControlMode参照)。 */}
+                 {mainPackControlMode === "hidden" ? (
+                   renderPackUpsellHint()
+                 ) : (
+                   <>
+                     <label className="mt-3 block text-xs text-gray-300">
+                       {t("collections.mainLabel")}
+                       <select
+                         value={selectedCollectionName}
+                         onChange={(e) => setSelectedCollectionName(e.target.value)}
+                         disabled={mainPackControlMode === "disabled"}
+                         className="mt-1 h-9 w-full rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+                       >
+                         <option value="">{t("collections.all")}</option>
+                         {/* Issue #555: 「デフォルトパックのみ」= 未分類(collection_name
+                             IS NULL)のカードだけに抽選対象を絞る選択肢。事前登録された
+                             パックとは独立した固定オプションとして常に表示する。 */}
+                         <option value={DEFAULT_PACK_SENTINEL}>
+                           {t("collections.defaultOnly", { name: defaultPackDisplayName })}
+                         </option>
+                         {collections.map((name) => (
+                           <option key={name} value={name}>{name}</option>
+                         ))}
+                         {/* 保存済みだが一覧に無い(パック管理で登録解除された)パックも
+                             選択肢に残し、黙ってスコープが全カードに変わる事故を防ぐ。
+                             #393再設計後、この一覧は「事前登録済みパック名」のみを
+                             返す(アクティブカードの有無は問わない)ため、ここに来る
+                             ケースは常に「登録解除済み」であり「抽選可能カードなし」
+                             ではない。取得完了後のみラベルを付す
+                             （取得前/失敗時は素の名前で表示）。
+                             Issue #555: DEFAULT_PACK_SENTINEL は上の固定オプションと
+                             して既に選択肢にあるため、ここでは除外する(除外しないと
+                             同じ値のoptionが2つ並び、誤って「登録解除済み」ラベルの
+                             方が選択されてしまう)。 */}
+                         {selectedCollectionName
+                           && selectedCollectionName !== DEFAULT_PACK_SENTINEL
+                           && !collections.includes(selectedCollectionName) && (
+                           <option value={selectedCollectionName}>
+                             {collectionsLoaded
+                               ? t("collections.missing", { name: selectedCollectionName })
+                               : selectedCollectionName}
+                           </option>
+                         )}
+                       </select>
+                     </label>
+                     <p className="mt-1 text-xs text-gray-400">
+                       {t("collections.help")}
+                     </p>
+                     {mainPackControlMode === "disabled" && renderPackUpsellHint()}
+                     {mainPackControlMode === "enabled" && showNoPacksRegisteredHint && (
+                       <p className="mt-1 text-xs text-gray-500">{t("collections.packHint")}</p>
+                     )}
+                   </>
+                 )}
+               </div>
+             )}
+           </SectionCard>
+
+           {/* Additional Rewards Section - Only shown when main reward is active */}
+           {/* 追加報酬セクション - メイン報酬がアクティブな場合のみ表示。
+               Issue #556: 見出し・説明は SectionCard 側で描画する(二重見出しの
+               防止のため、旧マークアップの内部 h3/p は削除)。 */}
+           {!compact && selectedRewardId && eventSubStatus === "active" && (
+             <SectionCard
+               title={t("additionalRewards.title")}
+               description={t("additionalRewards.description")}
+             >
                {/* List of additional rewards */}
                {/* 追加報酬一覧 */}
                {additionalRewards.length > 0 && (
@@ -1243,35 +1260,6 @@ export default function ChannelPointSettings({
                    ))}
                  </div>
                )}
-
-               <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-600/60 bg-gray-600/40 px-3 py-2.5">
-                 <div className="min-w-0">
-                   <div className="text-sm font-medium text-gray-100">
-                     {t("additionalRewards.raidGiftTitle")}
-                   </div>
-                   <div className="mt-0.5 text-xs text-gray-400">
-                     {t("additionalRewards.raidGiftDescription")}
-                   </div>
-                 </div>
-                 <div className="flex items-center gap-2">
-                   <input
-                     type="number"
-                     min={0}
-                     max={10}
-                     value={raidGiftDrawCount}
-                     onChange={(e) => setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(e.target.value) || 0)))}
-                     className="h-9 w-16 rounded-md border border-gray-600 bg-gray-700 px-2 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
-                   />
-                   <button
-                     type="button"
-                     onClick={updateRaidGiftSettings}
-                     disabled={updatingRaidGift}
-                     className="inline-flex h-9 items-center justify-center rounded-md bg-cyan-600 px-3 text-xs font-medium text-white shadow-sm transition-colors hover:bg-cyan-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-700 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
-                   >
-                     {updatingRaidGift ? tCommon("loading") : tCommon("save")}
-                   </button>
-                 </div>
-               </div>
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
@@ -1358,10 +1346,52 @@ export default function ChannelPointSettings({
                {additionalPackControlMode === "enabled" && showNoPacksRegisteredHint && (
                  <p className="mt-1 text-xs text-gray-500">{t("collections.packHint")}</p>
                )}
-             </div>
+             </SectionCard>
            )}
 
-           <div className="flex flex-wrap items-center gap-3">
+           {/* Issue #556: レイドガチャセクション。従来は追加報酬パネル内部の
+               1ブロック(一覧と追加フォームの間)に挟み込まれていて機能の境界が
+               分かりづらかったため、専用セクションとして独立させた。
+               タイトル・説明は SectionCard 側で描画する(旧マークアップの
+               インラインタイトル/説明は重複するため削除)。
+               表示条件(メイン報酬がアクティブな場合のみ)は追加報酬セクションと
+               同一のまま変更していない。 */}
+           {!compact && selectedRewardId && eventSubStatus === "active" && (
+             <SectionCard
+               title={t("additionalRewards.raidGiftTitle")}
+               description={t("additionalRewards.raidGiftDescription")}
+             >
+               <div className="flex items-center gap-2">
+                 {/* 可視タイトルは SectionCard の見出しに移したため、入力単体の
+                     意味(何の枚数か)を伝える aria-label を付与する。追加報酬
+                     フォームの枚数入力(drawCount)と同文言にすると accessible
+                     name が重複し、将来 getByLabelText で多重一致する回帰リスク
+                     があるため、レイドガチャ専用キー(raidGiftCountLabel)を使う。 */}
+                 <input
+                   type="number"
+                   min={0}
+                   max={10}
+                   aria-label={t("additionalRewards.raidGiftCountLabel")}
+                   value={raidGiftDrawCount}
+                   onChange={(e) => setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(e.target.value) || 0)))}
+                   className="h-9 w-16 rounded-md border border-gray-600 bg-gray-700 px-2 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
+                 />
+                 <button
+                   type="button"
+                   onClick={updateRaidGiftSettings}
+                   disabled={updatingRaidGift}
+                   className="inline-flex h-9 items-center justify-center rounded-md bg-cyan-600 px-3 text-xs font-medium text-white shadow-sm transition-colors hover:bg-cyan-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
+                 >
+                   {updatingRaidGift ? tCommon("loading") : tCommon("save")}
+                 </button>
+               </div>
+             </SectionCard>
+           )}
+
+           {/* Issue #556: 詳細モードではセクション群と全体アクション行の境界を
+               hairline(border-t)で明示する。compact 時は従来クラスをそのまま
+               維持し、シンプルモードの見た目を変えない。 */}
+           <div className={compact ? "flex flex-wrap items-center gap-3" : "flex flex-wrap items-center gap-3 border-t border-gray-700 pt-4"}>
              {/*
                主アクション・補助アクション・破壊的アクションの3階層をボタンの塗り/枠線/赤系で表現する。
                全ボタン h-10 で高さを揃え、横並びの安定感を確保する。
@@ -1414,5 +1444,51 @@ export default function ChannelPointSettings({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Issue #556: 詳細モード用のセクションカード。
+ * 非compact表示では機能ブロック(接続状況/メイン報酬/追加報酬/レイドガチャ)を
+ * 見出し+説明文付きの枠(border)で視覚的に区切り、約1300行分の設定UIが平坦に
+ * 縦積みされて機能の境界が判別しづらかった問題を解消する。
+ *
+ * compact=true(シンプルモード)では枠・見出しを一切描画せず、children を
+ * フラグメントとしてそのまま返す。フラグメントは DOM ノードを生成しないため、
+ * 外側コンテナの space-y-* セレクタ(直下の子への margin 適用)も再構成前と
+ * 同じ要素に効き、シンプルモードの DOM 構造・見た目は完全に維持される
+ * (「compact モードの見た目は変えない」制約を機械的に保証する)。
+ *
+ * Section card for the advanced (non-compact) mode. Wraps each functional
+ * block in a bordered card with a heading + description. In compact mode it
+ * renders children as-is (fragment), keeping the simple-mode DOM identical.
+ */
+function SectionCard({
+  title,
+  description,
+  compact = false,
+  children,
+}: {
+  title: string;
+  description?: string;
+  compact?: boolean;
+  children: React.ReactNode;
+}) {
+  // aria-labelledby 用の一意ID。early return より前に呼び、フックの呼び出し
+  // 順序を全レンダーで一定に保つ(rules of hooks)。compact 時は未使用。
+  const headingId = useId();
+  if (compact) return <>{children}</>;
+  return (
+    <section
+      aria-labelledby={headingId}
+      className="rounded-lg border border-gray-700 bg-gray-900/30 p-4"
+    >
+      <h3 id={headingId} className="text-sm font-semibold text-gray-100">{title}</h3>
+      {description && <p className="mt-1 text-xs text-gray-400">{description}</p>}
+      {/* space-y-4: セクション内の直下ブロック(報酬select/フォールバック/選択中
+          情報など)の縦リズムを統一する。再構成前は外側コンテナの space-y-4 が
+          担っていた間隔で、同じ 1rem を維持している。 */}
+      <div className="mt-4 space-y-4">{children}</div>
+    </section>
   );
 }
