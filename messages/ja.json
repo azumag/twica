@@ -521,6 +521,12 @@
       "error": "エラー",
       "none": "未設定"
     },
+    "sections": {
+      "connection": "接続状況",
+      "connectionDesc": "Twitch EventSub（通知）の登録状態です。カード引き換えが動作しないときは、ここでエラーの有無を確認してください",
+      "mainReward": "メイン報酬",
+      "mainRewardDesc": "カード引き換えのきっかけになるチャネルポイント報酬と、排出対象のカードパックを設定します"
+    },
     "messages": {
       "affiliateRequired": "チャネルポイントを使用するには、Twitchアフィリエイトまたはパートナーである必要があります。",
       "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。",
@@ -588,6 +594,7 @@
       "raidGiftEnabled": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",
       "raidGiftDisabled": "レイドがきたら、そのレイド元の人にガチャをプレゼントできる設定。プレゼント枚数を指定できます。0なら無効",
       "raidGiftSaved": "レイドガチャ設定を保存しました",
+      "raidGiftCountLabel": "プレゼントする枚数",
       "raidStatusTitle": "レイドガチャ受付",
       "raidStatusActive": "{time} まで受付中",
       "raidStatusInactive": "現在は停止中",

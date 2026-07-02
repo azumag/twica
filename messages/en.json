@@ -521,6 +521,12 @@
       "error": "Error",
       "none": "Not Set"
     },
+    "sections": {
+      "connection": "Connection Status",
+      "connectionDesc": "Registration status of Twitch EventSub (notifications). If card redemption is not working, check here for errors.",
+      "mainReward": "Main Reward",
+      "mainRewardDesc": "Choose the channel point reward that triggers card redemption and the card pack it draws from."
+    },
     "messages": {
       "affiliateRequired": "You must be a Twitch Affiliate or Partner to use channel points.",
       "rateLimit": "Too many requests. Please wait and try again.",
@@ -588,6 +594,7 @@
       "raidGiftEnabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
       "raidGiftDisabled": "When a raid arrives, gift gacha draws to the raider. Set how many draws to gift. 0 disables it.",
       "raidGiftSaved": "Raid gacha settings saved",
+      "raidGiftCountLabel": "Cards to gift",
       "raidStatusTitle": "Raid gacha window",
       "raidStatusActive": "Active until {time}",
       "raidStatusInactive": "Currently off",
