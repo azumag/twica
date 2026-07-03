@@ -28,8 +28,41 @@ interface OverlayHistoryRow {
   event_id: string | null;
   redeemed_at: string;
   user_twitch_username: string | null;
+  // Issue #591: migration 00070 で追加。デプロイ窓では未選択(下のフォールバック
+  // クエリ)になりうるため undefined も許容する。
+  reward_id?: string | null;
   cards: OverlayHistoryCard | OverlayHistoryCard[] | null;
 }
+
+/**
+ * Issue #591: gacha_history.reward_id (migration 00070) が未デプロイのDBに
+ * ローリングデプロイ中の新アプリコードが SELECT すると発生する読み取りエラーを
+ * 検知する。書き込み経路の PGRST204 とは異なり、SELECT/ORDER/フィルタでの
+ * 列欠落は PostgreSQL が直接 42703 ("column ... does not exist") を返す
+ * (このモジュールでは書き込みは発生しないため 42703 が主だが、PostgREST の
+ * スキーマキャッシュ経由のPGRST204も念のため許容する)。
+ * collection-existence.ts の isMissingCollectionNameColumn 等と同じ判定パターン。
+ */
+function isMissingRewardIdColumnError(
+  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
+): boolean {
+  if (!error) return false;
+  const text = [error.message, error.details, error.hint]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  return (
+    text.includes("reward_id") &&
+    (error.code === "PGRST204" ||
+      text.includes("does not exist") ||
+      text.includes("schema cache"))
+  );
+}
+
+const OVERLAY_HISTORY_SELECT_WITH_REWARD_ID =
+  "id, event_id, redeemed_at, user_twitch_username, reward_id, cards(id, name, description, image_url, rarity)";
+const OVERLAY_HISTORY_SELECT_WITHOUT_REWARD_ID =
+  "id, event_id, redeemed_at, user_twitch_username, cards(id, name, description, image_url, rarity)";
 
 function normalizeDateParam(value: string | null): string | null {
   if (!value) return null;
@@ -116,13 +149,11 @@ export async function GET(
     }
 
     const supabaseAdmin = getSupabaseAdmin();
-    const { data, error } = await withRetry(
+    let { data, error } = await withRetry(
       () =>
         supabaseAdmin
           .from("gacha_history")
-          .select(
-            "id, event_id, redeemed_at, user_twitch_username, cards(id, name, description, image_url, rarity)"
-          )
+          .select(OVERLAY_HISTORY_SELECT_WITH_REWARD_ID)
           .eq("streamer_id", streamerId)
           .gt("redeemed_at", since)
           .order("redeemed_at", { ascending: true })
@@ -130,6 +161,33 @@ export async function GET(
       "overlayEvents",
       { maxRetries: 1 }
     );
+
+    // Issue #591 デプロイ窓フォールバック: gacha_history.reward_id (migration 00070)
+    // がまだ本番DBに適用されていない状態で新アプリコードがSELECTすると読み取り
+    // エラーになる。列を含めない従来のクエリへ1回だけ再試行し、rewardId は
+    // null(=既存の rarity/all ルールへのフォールバック挙動)として扱う。
+    // isMissingCollectionNameColumn 等(collection-existence.ts)と同じ
+    // 「列剥がして再試行」パターン。
+    if (error && isMissingRewardIdColumnError(error)) {
+      const fallback = await withRetry(
+        () =>
+          supabaseAdmin
+            .from("gacha_history")
+            .select(OVERLAY_HISTORY_SELECT_WITHOUT_REWARD_ID)
+            .eq("streamer_id", streamerId)
+            .gt("redeemed_at", since)
+            .order("redeemed_at", { ascending: true })
+            .limit(10),
+        "overlayEvents:reward-id-fallback",
+        { maxRetries: 1 }
+      );
+      // supabase-js は select() の*リテラル*文字列からRow型を推論するため、列数が
+      // 異なる2つのSELECTは互換性の無い別々の型になる(gacha.ts の
+      // executeGacha 内 max_issuance_count フォールバックと同じ制約)。fallback行に
+      // reward_id: null を明示的に補って、上のwith-reward-id型と構造的に一致させる。
+      data = fallback.data?.map((row) => ({ ...row, reward_id: null })) ?? null;
+      error = fallback.error;
+    }
 
     if (error) {
       return handleDatabaseError(error, "Overlay Events API");
@@ -144,6 +202,11 @@ export async function GET(
           eventId: row.event_id,
           redeemedAt: row.redeemed_at,
           userTwitchUsername: row.user_twitch_username ?? "Unknown",
+          // Issue #591: ポーリング経路でも報酬別効果音ルールが評価できるよう、
+          // gacha_history.reward_id をそのまま公開する。列未デプロイ時
+          // (上のフォールバック後)は常に undefined ?? null = null になり、
+          // 従来どおり rarity/all ルールへ安全にフォールバックする。
+          rewardId: row.reward_id ?? null,
           card,
         };
       })

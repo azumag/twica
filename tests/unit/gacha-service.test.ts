@@ -101,7 +101,36 @@ describe('GachaService.executeGacha', () => {
       p_card_id: 'card-1',
       p_streamer_id: 'streamer-1',
       p_reward_cost: null,
+      p_reward_id: null,
     })
+  })
+
+  it('rewardId指定時: execute_gacha_transaction RPCにp_reward_idとして渡される(Issue #591)', async () => {
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-reward-id' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    // executeGacha の8番目の引数(rewardId)を直接渡す
+    const result = await service.executeGacha(
+      'streamer-1', 'user-1', 'testuser', 'event-reward-id',
+      undefined, undefined, undefined, 'reward-abc'
+    )
+
+    expect(result.success).toBe(true)
+    expect(mockRpc).toHaveBeenCalledWith('execute_gacha_transaction', expect.objectContaining({
+      p_reward_id: 'reward-abc',
+    }))
   })
 
   it('drop_rate が DECIMAL 文字列で返っても、結果カードの drop_rate は number に正規化される', async () => {
@@ -1116,14 +1145,20 @@ describe('GachaService.executeGachaForEventSub', () => {
     expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({
       p_event_id: 'event-raid',
       p_reward_cost: 500,
+      // Issue #591: reward_id は reward_cost と異なり「消費ポイント」ではなく
+      // 「起点になった報酬」というN連の全カード共通属性なので、1枚目以外も
+      // 同じ reward_id を持つ必要がある(下の2枚目・3枚目のアサーション参照)。
+      p_reward_id: 'raid-reward',
     }))
     expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({
       p_event_id: 'event-raid:2',
       p_reward_cost: null,
+      p_reward_id: 'raid-reward',
     }))
     expect(mockRpc).toHaveBeenNthCalledWith(3, 'execute_gacha_transaction', expect.objectContaining({
       p_event_id: 'event-raid:3',
       p_reward_cost: null,
+      p_reward_id: 'raid-reward',
     }))
   })
 
@@ -1259,6 +1294,10 @@ describe('GachaService.executeGachaForEventSub', () => {
 
     expect(result.success).toBe(true)
     expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'weapons')
+    // Issue #591: メイン報酬一致時も event.reward.id がp_reward_idとしてRPCへ渡る
+    expect(mockRpc).toHaveBeenCalledWith('execute_gacha_transaction', expect.objectContaining({
+      p_reward_id: 'main-reward',
+    }))
   })
 
   // Issue #579 (#576 フェーズ2): executeGachaForEventSubが取得したstreamer行の
@@ -1486,11 +1525,14 @@ describe('GachaService.executeGachaForRaidEvent', () => {
       p_event_id: 'raid-event-1',
       p_user_twitch_id: 'raider-1',
       p_reward_cost: null,
+      // Issue #591: raid gacha is not tied to a channel-point reward, always null
+      p_reward_id: null,
     }))
     expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({
       p_event_id: 'raid-event-1:2',
       p_user_twitch_id: 'raider-1',
       p_reward_cost: null,
+      p_reward_id: null,
     }))
   })
 
