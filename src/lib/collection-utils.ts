@@ -1,4 +1,4 @@
-import { RARITY_ORDER } from "@/lib/constants";
+import { getRarityRank } from "@/lib/rarity";
 import type { Card } from "@/types/database";
 
 export type CollectionSortMode = "rarity" | "number";
@@ -27,7 +27,9 @@ export function sortCollectedCards<T extends SortableCollectionCard>(
       if (numberDiff !== 0) return numberDiff;
     }
 
-    const rarityDiff = RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity);
+    // getRarityRank: 未知の(カスタム)レアリティはビルトインより後ろに来るよう
+    // Number.POSITIVE_INFINITY を返す（Issue #505、gacha-sound-rules.ts と同じ考え方）
+    const rarityDiff = getRarityRank(a.rarity) - getRarityRank(b.rarity);
     if (rarityDiff !== 0) return rarityDiff;
 
     const createdAtDiff = new Date(b.created_at).getTime() - new Date(a.created_at).getTime();

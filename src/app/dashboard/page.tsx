@@ -3,8 +3,8 @@ import Image from "next/image";
 import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUserCards } from "@/lib/dashboard-data";
-import { RARITY_ORDER, VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
-import { getRarityDisplayInfo, aggregateCustomRarities } from "@/lib/rarity";
+import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
+import { getRarityDisplayInfo, aggregateCustomRarities, compareByRarity } from "@/lib/rarity";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
@@ -61,11 +61,9 @@ export default async function DashboardPage() {
     isStreamer,
   });
 
-  // Sort cards by rarity (legendary first)
-  // レアリティでソート（レジェンダリーが先頭）
-  userCards.sort((a, b) => {
-    return RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity);
-  });
+  // Sort cards by rarity (legendary first, custom rarities last; see compareByRarity)
+  // レアリティでソート（レジェンダリーが先頭、カスタムレアリティは末尾。compareByRarity参照）
+  userCards.sort(compareByRarity);
 
   // Calculate collection statistics
   const customRarities = aggregateCustomRarities(userCards);

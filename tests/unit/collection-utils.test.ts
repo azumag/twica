@@ -23,6 +23,27 @@ describe("collection-utils", () => {
       ]);
     });
 
+    it("sorts custom rarities after all builtin rarities, not before them (Issue #505)", () => {
+      // 修正前は RARITY_ORDER.indexOf() の -1 をそのまま比較に使っていたため、
+      // カスタムレアリティ ("mythic") が legendary (index 0) より希少と
+      // 誤判定され、一覧の先頭に来てしまうバグがあった。
+      const cards = [
+        { id: "custom-mythic", rarity: "mythic" as const, created_at: "2026-03-05T00:00:00Z" },
+        { id: "common-new", rarity: "common" as const, created_at: "2026-03-03T00:00:00Z" },
+        { id: "legendary-old", rarity: "legendary" as const, created_at: "2026-03-01T00:00:00Z" },
+        { id: "legendary-new", rarity: "legendary" as const, created_at: "2026-03-02T00:00:00Z" },
+        { id: "rare-new", rarity: "rare" as const, created_at: "2026-03-04T00:00:00Z" },
+      ];
+
+      expect(sortCollectedCards(cards).map((card) => card.id)).toEqual([
+        "legendary-new",
+        "legendary-old",
+        "rare-new",
+        "common-new",
+        "custom-mythic",
+      ]);
+    });
+
     it("sorts by collection number when requested", () => {
       const cards = [
         { id: "third", rarity: "legendary" as const, created_at: "2026-03-03T00:00:00Z", collectionNumber: 3 },

@@ -6,6 +6,8 @@ import {
   getRarityGradientClass,
   getRarityDisplayInfo,
   aggregateCustomRarities,
+  getRarityRank,
+  compareByRarity,
 } from "@/lib/rarity";
 
 describe("rarity helpers", () => {
@@ -59,6 +61,57 @@ describe("rarity helpers", () => {
       expect(
         aggregateCustomRarities([{ rarity: "common" }, { rarity: "rare" }]),
       ).toEqual([]);
+    });
+  });
+
+  describe("getRarityRank", () => {
+    it("ranks builtin rarities from legendary (0) to common (3)", () => {
+      expect(getRarityRank("legendary")).toBe(0);
+      expect(getRarityRank("epic")).toBe(1);
+      expect(getRarityRank("rare")).toBe(2);
+      expect(getRarityRank("common")).toBe(3);
+    });
+
+    it("ranks unknown (custom) rarities after all builtin rarities (Issue #505)", () => {
+      // 修正前は Array.prototype.indexOf の -1 をそのまま比較に使っており、
+      // カスタムレアリティが legendary (0) より「小さい」と誤判定されて
+      // 一覧の先頭に来てしまっていた。POSITIVE_INFINITY を返すことで
+      // 常に最後尾に並ぶことを保証する。
+      expect(getRarityRank("mythic")).toBe(Number.POSITIVE_INFINITY);
+      expect(getRarityRank("mythic")).toBeGreaterThan(getRarityRank("common"));
+    });
+  });
+
+  describe("compareByRarity", () => {
+    it("sorts builtin rarities from legendary to common", () => {
+      const cards = [
+        { rarity: "common" },
+        { rarity: "legendary" },
+        { rarity: "rare" },
+        { rarity: "epic" },
+      ];
+
+      expect(cards.sort(compareByRarity).map((c) => c.rarity)).toEqual([
+        "legendary",
+        "epic",
+        "rare",
+        "common",
+      ]);
+    });
+
+    it("sorts a custom rarity after legendary, not before it (Issue #505)", () => {
+      const cards = [
+        { rarity: "mythic" },
+        { rarity: "legendary" },
+        { rarity: "common" },
+      ];
+
+      // 修正前は "mythic" (custom) が先頭 (legendaryより希少扱い) に来ていた
+      expect(cards.sort(compareByRarity).map((c) => c.rarity)).toEqual([
+        "legendary",
+        "common",
+        "mythic",
+      ]);
     });
   });
 });
