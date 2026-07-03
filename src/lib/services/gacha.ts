@@ -128,7 +128,15 @@ export class GachaService {
     // Issue #579 (#576 フェーズ2): パック内レアリティ自動配分に使う配信者の
     // 重み設定。collectionName が未指定の場合や手動モードの場合は無視され、
     // 従来どおり drop_rate ベースの抽選になる。
-    weightsConfig?: RarityWeightsDrawConfig
+    weightsConfig?: RarityWeightsDrawConfig,
+    // Issue #591: Twitchチャネルポイント報酬ID(streamer_additional_gacha_rewards.reward_id
+    // / GachaResult.rewardId と同じ形の値、cards.id とは無関係)。execute_gacha_transaction
+    // RPC経由でgacha_history.reward_idに永続化することで、Realtime broadcastが届かない
+    // ポーリング経路(/api/overlay/[streamerId]/events)でも報酬別効果音ルール
+    // (gacha-sound-rules.ts の targetType: 'reward', #451/#586)が発火するようにする。
+    // EventSub経由(executeGachaForEventSub)のみ利用可能。レイドガチャ
+    // (executeGachaForRaidEvent)はチャネルポイント報酬に紐付かないため常にundefined。
+    rewardId?: string | null
   ): Promise<Result<GachaResult>> {
     try {
       // Get active cards for this streamer (optionally scoped to a pack).
@@ -323,6 +331,7 @@ export class GachaService {
             p_card_id: selectedCard.id,
             p_streamer_id: streamerId,
             p_reward_cost: rewardCost ?? null,
+            p_reward_id: rewardId ?? null,
           }),
           'gacha:executeGacha:rpc',
         )
@@ -332,6 +341,17 @@ export class GachaService {
           // 無停止デプロイ時にアプリコードが先にデプロイされても、
           // ユーザーのチャネルポイントが消費されカード未付与になることを防ぐ
           // TODO: マイグレーション適用確認後にフォールバックを削除
+          //
+          // Issue #591 (p_reward_id追加): PostgREST はRPCを名前付き引数で呼ぶため、
+          // 本アプリコードが先にデプロイされ p_reward_id を送っても、DB側が
+          // migration 00070 未適用(旧6引数版のまま)だと該当パラメータ名を
+          // 解決できず 42883 になる — 00033 で p_reward_cost を追加した際と
+          // 全く同じ性質のデプロイ窓リスクであり、この既存フォールバックが
+          // そのまま吸収する。列とRPCは同一migrationファイル内でアトミックに
+          // 追加されるため、この42883の間は gacha_history.reward_id 列も
+          // 未デプロイ — だからこそ下の executeGachaLegacy は reward_id を
+          // 書き込まない(書けば列不在でPGRST204になるため、詳細は
+          // executeGachaLegacy 内のコメント参照)。
           if (rpcError.code === '42883') {
             logger.warn('execute_gacha_transaction not found, falling back to legacy operations', {
               streamerId, userTwitchId, eventId,
@@ -509,7 +529,16 @@ export class GachaService {
     collectionName?: string | null,
     // Issue #579 (#576 フェーズ2): 各ドローに同じ重み設定を forward する
     // (複数枚ドローでも同じレアリティ配分を一貫して適用するため)。
-    weightsConfig?: RarityWeightsDrawConfig
+    weightsConfig?: RarityWeightsDrawConfig,
+    // Issue #591: 各ドローに同じ報酬IDを forward する。rewardCost(下記
+    // drawRewardCost)とは異なり index===0 に限定しない — reward_cost は
+    // 「引換1回で消費した合計ポイント数」なので1件だけに紐付けるが、
+    // reward_id は「どの報酬から起点になったガチャか」というN連の全カード
+    // 共通の属性であり、ポーリング経路(events API)は履歴行ごとに独立して
+    // サウンドルールを判定する(pickSoundBearingCardIndexへ1件ずつ渡す)ため、
+    // 1枚目以外が reward_id=null のままだと2枚目以降だけ報酬別ルールが
+    // 発火しないバグになる。
+    rewardId?: string | null
   ): Promise<Result<GachaResult>> {
     const cards: GachaCard[] = []
     let firstResult: GachaResult | null = null
@@ -524,7 +553,8 @@ export class GachaService {
         drawEventId,
         drawRewardCost,
         collectionName,
-        weightsConfig
+        weightsConfig,
+        rewardId
       )
 
       if (!result.success) {
@@ -591,6 +621,15 @@ export class GachaService {
     }
 
     // gacha_history upsert（冪等性のためevent_idで重複チェック）
+    //
+    // Issue #591: ここでは意図的に reward_id を書き込まない。この legacy パスに
+    // 到達するのは execute_gacha_transaction RPC が 42883 (未デプロイ) の場合のみ
+    // で、gacha_history.reward_id 列と当該RPCは同一migrationファイル(00070)で
+    // アトミックに追加されるため、RPCが無い=列も無い状態が保証される。ここで
+    // reward_id キーを含めると、PostgREST の書き込み経路は列不在を PGRST204
+    // として返す — つまり「RPC未デプロイ時の安全弁」であるこの legacy パス
+    // 自体を、列追加のせいで壊してしまう。ポーリング経路の報酬別サウンドは
+    // このデプロイ窓の間だけ rarity/all ルールにフォールバックする(=許容範囲)。
     const { error: historyError } = await this.supabase
       .from('gacha_history')
       .upsert({
@@ -797,7 +836,11 @@ export class GachaService {
             rarityWeightsScope: streamer.rarity_weights_scope,
             rarityWeights: streamer.rarity_weights,
             packRarityWeights: streamer.pack_rarity_weights,
-          }
+          },
+          // Issue #591: gacha_history.reward_id に永続化するため、実際に
+          // マッチした報酬ID(メイン報酬 or 追加報酬、いずれも event.reward.id
+          // は同一のEventSub通知由来)をそのまま forward する。
+          event.reward.id
         )
         if (!result.success) return result
         return ok({
