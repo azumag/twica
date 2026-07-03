@@ -1571,3 +1571,258 @@ describe('GachaService.executeGachaForRaidEvent', () => {
     expect(mockRpc).not.toHaveBeenCalled()
   })
 })
+
+// Issue #512: N連ドロー(executeGachaDraws)がバッチ途中の非重複エラーで
+// 部分的にしか完了しなかった場合に、旧実装は firstResult があれば
+// ok(部分的なcards配列)を返しており、呼び出し元(route.ts)からは要求どおり
+// 完了した成功と区別できなかった(視聴者はチャネルポイントを消費したのに
+// 一部カードしか受け取れず、エラーも報告されなかった)。
+// また、EventSub再送がバッチ途中までの完了を引き継いで残りを再開できず、
+// 1枚目が重複と判定された時点でバッチ全体を「再送は重複だから何もしない」
+// と誤って打ち切ってしまう問題もあった。
+// このdescribeブロックは、executeGachaForEventSub(追加報酬、drawCount>1)
+// を入口として、修正後の executeGachaDraws の挙動を検証する。
+describe('GachaService.executeGachaDraws 部分失敗・再送時の再開ロジック (Issue #512)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  /** N連(drawCount)の追加報酬に紐づくstreamer/additionalRewardの共通モック */
+  function mockStreamerWithAdditionalReward(drawCount: number) {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        raid_gacha_active_until: null,
+      },
+      error: null,
+    })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'additional-1', draw_count: drawCount, is_raid_limited: false },
+      error: null,
+    })
+    return { streamerQuery, additionalRewardQuery }
+  }
+
+  it('N連ドローがバッチ途中の非重複エラーで失敗したら、部分的なcards配列でok()にせずerr()を返す', async () => {
+    const { streamerQuery, additionalRewardQuery } = mockStreamerWithAdditionalReward(3)
+    const cardsQuery = createCardsQuery(testCards)
+    // 初回実行(再送ではない)なので完了済みは0件
+    const historyQuery = createCardsQuery<{ event_id: string }>([])
+    const mockRpc = createRpcMock({
+      transactionResponses: [
+        { data: { is_duplicate: false }, error: null }, // 1枚目: 成功
+        { data: null, error: { message: 'Database connection failed' } }, // 2枚目: 非重複の実エラー
+      ],
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'cards') return cardsQuery
+        if (table === 'gacha_history') return historyQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'multi-reward', cost: 300 },
+    }, 'evt-partial')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('Partial gacha completion: 1/3')
+    }
+    // 3枚目は試行されない(2枚目の実エラーでバッチを打ち切る)
+    expect(mockRpc).toHaveBeenCalledTimes(2)
+  })
+
+  it('N連ドローが全件完了済みの再送は1枚も引かずDuplicate eventを返す(旧実装と観測可能な挙動を一致させる)', async () => {
+    const { streamerQuery, additionalRewardQuery } = mockStreamerWithAdditionalReward(3)
+    // 3件とも既に gacha_history に存在する = 完全な重複再送。cardsテーブルへは
+    // 到達しないはずなので意図的にモックしない(未設定のまま呼ばれたら
+    // createMockQueryBuilder の既定値[data:null]で選択に失敗し、後続の
+    // アサーション以前に result.success が想定と食い違って検知できる)。
+    const historyQuery = createCardsQuery<{ event_id: string }>([
+      { event_id: 'evt-full' },
+      { event_id: 'evt-full:2' },
+      { event_id: 'evt-full:3' },
+    ])
+    const mockRpc = vi.fn()
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'gacha_history') return historyQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'multi-reward', cost: 300 },
+    }, 'evt-full')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Duplicate event')
+    }
+    expect(mockRpc).not.toHaveBeenCalled()
+  })
+
+  it('N連ドローが一部完了済みの再送は残りだけ再開し、reward_costを二重付与しない', async () => {
+    const { streamerQuery, additionalRewardQuery } = mockStreamerWithAdditionalReward(3)
+    const cardsQuery = createCardsQuery(testCards)
+    // 1,2枚目(evt-resume, evt-resume:2)は既に完了済み。3枚目だけ未完了。
+    const historyQuery = createCardsQuery<{ event_id: string }>([
+      { event_id: 'evt-resume' },
+      { event_id: 'evt-resume:2' },
+    ])
+    const mockRpc = createRpcMock({
+      transactionResponses: [
+        { data: { is_duplicate: false }, error: null }, // 3枚目のみ試行される
+      ],
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'cards') return cardsQuery
+        if (table === 'gacha_history') return historyQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'multi-reward', cost: 300 },
+    }, 'evt-resume')
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      // このinvocationで新たに引いた分のみ(1,2枚目は前回の呼び出しで確定済み
+      // のためここには含まれない)。通知のdrawCount表示がこの枚数を使う点は
+      // 既知の限界として報告済み(gacha_history上の付与自体は正しく完結する)。
+      expect(result.data.cards).toHaveLength(1)
+    }
+    expect(mockRpc).toHaveBeenCalledTimes(1)
+    expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({
+      p_event_id: 'evt-resume:3',
+      p_reward_id: 'multi-reward',
+      // グローバルindexが0でないため reward_cost は再付与しない(1枚目の行に
+      // 既に記録済み。ここで再付与すると集計上の消費ポイントが2重になる)。
+      p_reward_cost: null,
+    }))
+  })
+
+  it('gacha_historyの完了行が歯抜けの場合、先頭から連続する分だけを完了済みとして扱う', async () => {
+    const { streamerQuery, additionalRewardQuery } = mockStreamerWithAdditionalReward(4)
+    const cardsQuery = createCardsQuery(testCards)
+    // 1枚目(evt-gap)と3枚目(evt-gap:3)は存在するが2枚目(evt-gap:2)が存在しない
+    // 歯抜け状態(通常運用では起きない想定だが、安全側の挙動を保証する)。
+    // 「先頭から連続」でしか数えないため、2枚目の欠落で打ち切ってprefixCount=1
+    // となり、2枚目から再開するべき(3枚目が結果に含まれるからといって
+    // 4枚目まで一気に飛び越えてはならない)。
+    const historyQuery = createCardsQuery<{ event_id: string }>([
+      { event_id: 'evt-gap' },
+      { event_id: 'evt-gap:3' },
+    ])
+    const mockRpc = createRpcMock({
+      transactionResponses: [
+        { data: { is_duplicate: false }, error: null }, // 2枚目
+        { data: { is_duplicate: false }, error: null }, // 3枚目(結果はあったが再試行される)
+        { data: { is_duplicate: false }, error: null }, // 4枚目
+      ],
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'cards') return cardsQuery
+        if (table === 'gacha_history') return historyQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'multi-reward', cost: 300 },
+    }, 'evt-gap')
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.cards).toHaveLength(3)
+    }
+    expect(mockRpc).toHaveBeenCalledTimes(3)
+    expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({ p_event_id: 'evt-gap:2' }))
+    expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({ p_event_id: 'evt-gap:3' }))
+    expect(mockRpc).toHaveBeenNthCalledWith(3, 'execute_gacha_transaction', expect.objectContaining({ p_event_id: 'evt-gap:4' }))
+  })
+
+  it('単発ドロー(drawCount=1)ではgacha_historyの完了件数チェックを行わない(ホットパスに追加クエリを増やさない)', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+      },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({ data: { is_duplicate: false }, error: null })
+    const fromMock = vi.fn((table: string) => {
+      if (table === 'streamers') return streamerQuery
+      if (table === 'cards') return cardsQuery
+      return createMockQueryBuilder()
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: fromMock,
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'main-reward', cost: 100 },
+    }, 'evt-single')
+
+    expect(result.success).toBe(true)
+    expect(fromMock).not.toHaveBeenCalledWith('gacha_history')
+    expect(mockRpc).toHaveBeenCalledTimes(1)
+  })
+})
