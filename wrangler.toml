@@ -77,22 +77,38 @@ preview_bucket_name = "twica-sound-dev"
 [vars]
 NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 
-# Environment variables are configured in Cloudflare Pages dashboard
-# 環境変数はCloudflare Pagesダッシュボードで設定
+# Environment variables are configured via Cloudflare secrets / dashboard, not
+# by adding entries to this file (the [vars] block above is the one exception,
+# kept here specifically so it survives Dashboard-only overwrites).
+# 環境変数はこのファイルに追記するのではなく Cloudflare Secrets /
+# ダッシュボードで設定する（上の [vars] は Dashboard 専用設定の上書きに
+# 対抗するための唯一の例外）。
 #
-# Required environment variables:
-# 必要な環境変数:
-# - NEXT_PUBLIC_SUPABASE_URL
-# - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or legacy NEXT_PUBLIC_SUPABASE_ANON_KEY)
-# - NEXT_PUBLIC_TWITCH_CLIENT_ID
-# - NEXT_PUBLIC_APP_URL
-# - TWITCH_CLIENT_ID
-# - TWITCH_CLIENT_SECRET
-# - TWITCH_EVENTSUB_SECRET
-# - SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY)
-# - R2_PUBLIC_URL (public URL for image R2 bucket)
-# - R2_SOUND_PUBLIC_URL (public URL for sound R2 bucket)
-# - CSRF_TOKEN_SALT
+# Canonical list (#536): the actual runtime source of truth for which
+# environment variables are required is `src/lib/env-validation.ts`
+# (`requiredEnvVars` / `requiredEnvVarGroups`), which throws at startup if any
+# are missing. Do not maintain a second hand-written list here — a prior
+# version of this comment drifted out of sync with env-validation.ts and
+# became misleading. Check that file, not this comment, for what is actually
+# required.
+# 必須環境変数の正本(#536): 実際にランタイムで何が必須かは
+# `src/lib/env-validation.ts` の `requiredEnvVars` / `requiredEnvVarGroups`
+# （起動時に不足があると例外を投げる）。ここに別の手書きリストを維持しない
+# （以前のコメントは env-validation.ts と乖離してしまっていた）。必須項目は
+# このコメントではなく同ファイルを参照すること。
+#
+# Wrangler-specific operational note: server-side / non-NEXT_PUBLIC_* secrets
+# are set with `wrangler secret put <NAME>` (or the Cloudflare dashboard) —
+# never commit them to this file. `NEXT_PUBLIC_*` build-time vars are supplied
+# by Cloudflare Workers Builds / the CI build step (see
+# docs/cloudflare-workers-builds.md), not by [vars] here, so production and
+# preview can use different values without editing this file.
+# Wrangler固有の運用メモ: サーバー側（非NEXT_PUBLIC_*）のシークレットは
+# `wrangler secret put <NAME>`（またはCloudflareダッシュボード）で設定し、
+# このファイルにはコミットしない。`NEXT_PUBLIC_*` のビルド時変数は
+# Cloudflare Workers Builds / CIビルドステップから供給される
+# (docs/cloudflare-workers-builds.md 参照) ため、[vars] ではなく本番/
+# プレビューで異なる値を、このファイルを編集せずに持てる。
 #
 # Note: R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY are no longer needed
 # in Workers environment (R2 is accessed via native bindings above).
