@@ -48,6 +48,41 @@ jobs:
       - name: Lint
         run: npm run lint
 
+  migration-order-check:
+    # マイグレーション番号の out-of-order チェック (#541)。
+    # PR ごとに、ベースブランチとの merge-base 以降で新規追加された
+    # supabase/migrations/*.sql の番号がベースブランチの既存最大番号より
+    # 大きいことを検証する（マージ順序と採番順序のズレが原因だった #525-527 の再発防止）。
+    # push イベント（マージ後）にはこの比較対象がないため PR コンテキストのみで実行する。
+    name: Migration order check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # ベースブランチとの merge-base を計算するために全履歴を取得する
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch base branch
+        # PR の base ブランチの「現時点の」最新状態を明示的に取得する。
+        # actions/checkout はチェックアウト対象 ref の履歴のみを取得するため、
+        # 自分がブランチを作成した後に base ブランチへ別 PR がマージされていた場合
+        # その最新コミットは fetch-depth: 0 だけでは取得されない。
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Check migration order
+        run: npm run check:migration-order -- --base=origin/${{ github.base_ref }}
+
   build:
     runs-on: ubuntu-latest
     needs: [test, lint]
