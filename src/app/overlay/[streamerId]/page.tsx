@@ -8,7 +8,13 @@ import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
 import { type OverlayEffectStyle, normalizeOverlayEffectStyle } from "@/lib/overlay-effect";
 import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
-import { normalizeGachaSoundRules, pickGachaSoundRule, type GachaSoundRule } from "@/lib/gacha-sound-rules";
+import {
+  normalizeGachaSoundRules,
+  pickGachaSoundRule,
+  type GachaSoundRule,
+  type GachaSoundTargetType,
+} from "@/lib/gacha-sound-rules";
+import { RARITY_ORDER } from "@/lib/constants";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
@@ -44,6 +50,78 @@ interface OverlayPollingEvent {
   userTwitchUsername: string;
   card: Pick<Card, "id" | "name" | "description" | "image_url" | "rarity">;
   rewardId?: string | null;
+}
+
+// pickGachaSoundRule と同じ優先順位(reward > rarity > all)。ここでの
+// 「どのカードを音の代表にするか」の比較にも同じ優先度を使い、一致させる。
+const SOUND_RULE_SPECIFICITY: Record<GachaSoundTargetType, number> = {
+  reward: 3,
+  rarity: 2,
+  all: 1,
+};
+
+/**
+ * N連ガチャの複数カードの中から、効果音を鳴らす1枚を選ぶ（PR #451 レビュー
+ * 指摘 F2）。
+ *
+ * 従来は常に「1枚目のカード」のレアリティだけで効果音ルールを決めていたため、
+ * 例えば10連の4枚目にレジェンダリーが出ても、1枚目がコモンならレジェンダリー
+ * 音は鳴らなかった。ここではバッチ内の各カードを pickGachaSoundRule で個別に
+ * 評価し、一致したルールの具体性(reward > rarity > all)が最も高いカードを選ぶ。
+ * 同じ具体性で複数枚が一致する場合(例: レア/レジェンダリー両方のレアリティ
+ * ルールが設定されていて両方引いた)は、より希少なレアリティのカードを優先する
+ * (RARITY_ORDER: legendary が最も希少 = 配列の先頭)。
+ *
+ * - soundRules が空(レガシー単一URL設定、ルール非対応)の場合は、従来どおり
+ *   1枚目を代表とする(レガシー動作は変えない)。
+ * - soundRules が1件以上あるのにどのカードもルールに一致しない場合は -1 を
+ *   返す(F1bのオーバーレイ側no-matchフォールバック撤廃と一貫して「何も鳴らさない」)。
+ *
+ * テストで直接検証できるよう named export にしている(デフォルトエクスポートは
+ * Next.js のページコンポーネントのみが対象で、追加の named export は
+ * ルーティングに影響しない)。
+ */
+export function pickSoundBearingCardIndex(
+  cards: Pick<Card, "rarity">[],
+  rewardId: string | null | undefined,
+  soundRules: GachaSoundRule[],
+): number {
+  if (soundRules.length === 0) {
+    return cards.length > 0 ? 0 : -1;
+  }
+
+  let bestIndex = -1;
+  let bestSpecificity = 0;
+  let bestRarityRank = Number.POSITIVE_INFINITY;
+
+  cards.forEach((card, index) => {
+    const rule = pickGachaSoundRule(soundRules, { rarity: card.rarity, rewardId });
+    if (!rule) return;
+
+    const specificity = SOUND_RULE_SPECIFICITY[rule.targetType];
+    const rawRarityRank = RARITY_ORDER.indexOf(card.rarity);
+    const rarityRank = rawRarityRank === -1 ? Number.POSITIVE_INFINITY : rawRarityRank;
+
+    const isMoreSpecific = specificity > bestSpecificity;
+    // 「同率なら希少なカードを優先」は rarity ルール同士が並んだ場合に限る
+    // (仕様上のtie-break対象)。reward/all は、rewardId が全カード共通の
+    // バッチ単位の情報である(=一致すれば全カードが等しく一致する)ため、
+    // ここで希少度によるタイブレークを適用すると「常に一番レアなカード」に
+    // 音が偏ってしまい非直感的。reward/all の同率タイは、先に一致した
+    // (=表示順で先頭の)カードを採用する。
+    const isRarityTierTieBreak =
+      specificity === bestSpecificity
+      && rule.targetType === "rarity"
+      && rarityRank < bestRarityRank;
+
+    if (isMoreSpecific || isRarityTierTieBreak) {
+      bestIndex = index;
+      bestSpecificity = specificity;
+      bestRarityRank = rarityRank;
+    }
+  });
+
+  return bestIndex;
 }
 
 function fetchJsonWithXhrFallback<T>(url: string): Promise<T> {
@@ -388,7 +466,18 @@ export default function OverlayPage() {
       rarity: data.card.rarity,
       rewardId: data.rewardId,
     });
-    const soundUrl = selectedRule?.url ?? soundSettings.soundUrl;
+    // PR #451 レビュー指摘(F1b): soundRules が1件以上ある(=このクライアントは
+    // ルールベースの音を理解している)のにどのルールにも一致しなかった場合、
+    // 「何も鳴らさない」が正しい挙動。以前はここで soundSettings.soundUrl
+    // (サーバー側がミラーしていた「有効な最初のルール」のURL)にフォール
+    // バックしていたため、例えば'legendary'限定ルールしか設定していない
+    // 配信でも、それ以外の全レアリティでレジェンダリー音が鳴ってしまって
+    // いた(サーバー側 F1 のミラー修正とセットで直る問題)。
+    // レガシー設定(soundRulesが空=ルール未対応の単一URL設定)の場合のみ、
+    // 従来どおり soundUrl にフォールバックする。
+    const soundUrl = soundSettings.soundRules.length > 0
+      ? (selectedRule?.url ?? null)
+      : soundSettings.soundUrl;
     if (!soundSettings.soundEnabled || !soundUrl) {
       return;
     }
@@ -473,18 +562,26 @@ export default function OverlayPage() {
    */
   const enqueueResult = useCallback((data: GachaResult) => {
     const cards = data.cards?.length ? data.cards : [data.card];
+    // PR #451 レビュー指摘(F2): 「1枚目のカード」固定ではなく、バッチ全体から
+    // ルール一致優先度(reward > rarity > all、同率ならより希少なレアリティ)が
+    // 最も高い1枚を選んで、そのカードの表示タイミングでのみ音を鳴らす。
+    // 上位から明示的に shouldPlaySound: false が来ている場合はバッチ全体を
+    // 無音にする(現状これを設定する呼び出し元は無いが、既存の安全弁として維持)。
+    const soundBearingIndex = data.shouldPlaySound === false
+      ? -1
+      : pickSoundBearingCardIndex(cards, data.rewardId, soundSettings.soundRules);
     queueRef.current.push(
       ...cards.map((card, index) => ({
         ...data,
         card,
         cards: undefined,
-        shouldPlaySound: data.shouldPlaySound !== false && index === 0,
+        shouldPlaySound: index === soundBearingIndex,
       }))
     );
     if (!isDisplayingRef.current) {
       processQueue();
     }
-  }, [processQueue]);
+  }, [processQueue, soundSettings.soundRules]);
 
   // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）
   useEffect(() => {

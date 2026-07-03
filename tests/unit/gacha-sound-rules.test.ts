@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   MAX_GACHA_SOUND_RULES,
   legacySoundToRules,
@@ -55,8 +55,18 @@ describe("gacha sound rules", () => {
   });
 
   describe("URL allowlist", () => {
+    // R2_SOUND_PUBLIC_URL / R2_PUBLIC_URL (F4) はテスト実行環境では通常未設定だが、
+    // 他のテストファイル・ローカルの .env 経由での汚染を防ぐため明示的にクリアする。
+    beforeEach(() => {
+      delete process.env.ALLOWED_SOUND_HOSTS;
+      delete process.env.R2_SOUND_PUBLIC_URL;
+      delete process.env.R2_PUBLIC_URL;
+    });
+
     afterEach(() => {
       delete process.env.ALLOWED_SOUND_HOSTS;
+      delete process.env.R2_SOUND_PUBLIC_URL;
+      delete process.env.R2_PUBLIC_URL;
     });
 
     it("rejects non-HTTPS URLs", () => {
@@ -67,7 +77,7 @@ describe("gacha sound rules", () => {
       expect(rules.map((r) => r.id)).toEqual(["https"]);
     });
 
-    it("passes through any HTTPS URL when ALLOWED_SOUND_HOSTS is unset (backward compat)", () => {
+    it("passes through any HTTPS URL when no allowlist source (ALLOWED_SOUND_HOSTS/R2 envs) is configured (backward compat)", () => {
       const rules = normalizeGachaSoundRules([
         { id: "a", url: "https://any-host.example/a.mp3", targetType: "all" },
       ]);
@@ -82,6 +92,44 @@ describe("gacha sound rules", () => {
         { id: "blocked", url: "https://evil.example/c.mp3", targetType: "all" },
       ]);
       expect(rules.map((r) => r.id).sort()).toEqual(["allowed", "allowed2"]);
+    });
+
+    // F4 (PR #451 レビュー指摘): ALLOWED_SOUND_HOSTS がどの環境にも設定されて
+    // いなかったため、実質的にはHTTPSであれば何でも許可される no-op な保護に
+    // なっていた。アプリが実際にアップロード先として使う R2_SOUND_PUBLIC_URL /
+    // R2_PUBLIC_URL のホストから、新たな運用設定を増やさずに allowlist を導出する。
+    it("derives the allowlist from R2_SOUND_PUBLIC_URL / R2_PUBLIC_URL hosts when ALLOWED_SOUND_HOSTS is unset", () => {
+      process.env.R2_SOUND_PUBLIC_URL = "https://sounds.cdn.example";
+      process.env.R2_PUBLIC_URL = "https://images.cdn.example";
+
+      const rules = normalizeGachaSoundRules([
+        { id: "sound-host", url: "https://sounds.cdn.example/a.mp3", targetType: "all" },
+        { id: "image-host", url: "https://images.cdn.example/b.mp3", targetType: "all" },
+        { id: "blocked", url: "https://evil.example/c.mp3", targetType: "all" },
+      ]);
+      expect(rules.map((r) => r.id).sort()).toEqual(["image-host", "sound-host"]);
+    });
+
+    it("unions R2-derived hosts with an explicit ALLOWED_SOUND_HOSTS", () => {
+      process.env.R2_SOUND_PUBLIC_URL = "https://sounds.cdn.example";
+      process.env.ALLOWED_SOUND_HOSTS = "extra.allowed.com";
+
+      const rules = normalizeGachaSoundRules([
+        { id: "sound-host", url: "https://sounds.cdn.example/a.mp3", targetType: "all" },
+        { id: "explicit-host", url: "https://extra.allowed.com/b.mp3", targetType: "all" },
+        { id: "blocked", url: "https://evil.example/c.mp3", targetType: "all" },
+      ]);
+      expect(rules.map((r) => r.id).sort()).toEqual(["explicit-host", "sound-host"]);
+    });
+
+    it("keeps validating an already-saved rule on the R2 sound host once the allowlist is derived", () => {
+      // 既存の保存済みルールが、導出後のallowlistでも引き続き有効であることを確認する
+      // (＝正規のアップロード先を誤って弾かない、というF4修正の安全性要件)。
+      process.env.R2_SOUND_PUBLIC_URL = "https://sounds.cdn.example/";
+      const rules = normalizeGachaSoundRules([
+        { id: "existing", url: "https://sounds.cdn.example/existing.mp3", targetType: "all" },
+      ]);
+      expect(rules.map((r) => r.id)).toEqual(["existing"]);
     });
   });
 

@@ -32,7 +32,12 @@ import {
   isMissingPackRarityWeightsColumnError,
 } from "@/lib/collections/collection-existence";
 import { isNewCardPackNameAdditionGated } from "@/lib/plan-gate";
-import { normalizeGachaSoundRules, isAllowedSoundUrl } from "@/lib/gacha-sound-rules";
+import {
+  normalizeGachaSoundRules,
+  isAllowedSoundUrl,
+  legacySoundToRules,
+  type GachaSoundRule,
+} from "@/lib/gacha-sound-rules";
 import { getUserPlan } from "@/lib/plan";
 
 
@@ -594,6 +599,11 @@ export async function POST(request: NextRequest) {
     // チャネルポイント設定と効果音設定の両方に対応
     const updateData: Record<string, unknown> = {};
 
+    // gachaSoundRules が送られた場合に「実際に正規化・保存対象となった値」を
+    // レスポンスでエコーバックするため、if ブロックの外側に持ち出しておく
+    // (F5: 楽観反映によるサイレント欠損対策。cardPackNames と同じパターン)。
+    let persistedGachaSoundRules: GachaSoundRule[] | undefined;
+
     // チャネルポイント報酬設定（従来の機能）
     if (channelPointRewardId !== undefined) {
       updateData.channel_point_reward_id = channelPointRewardId;
@@ -628,7 +638,18 @@ export async function POST(request: NextRequest) {
       }
       const rules = normalizeGachaSoundRules(gachaSoundRules);
       updateData.gacha_sound_rules = rules;
-      const fallbackRule = rules.find((rule) => rule.enabled && rule.targetType === "all") ?? rules.find((rule) => rule.enabled);
+      persistedGachaSoundRules = rules;
+      // PR #451 レビュー指摘(F1): gacha_sound_url/gacha_sound_enabled は
+      // レアリティ／報酬別ルールに対応していない旧オーバーレイクライアント
+      // (キャッシュ済み・未更新のブラウザソース)との互換のためだけに残す
+      // ミラーである。以前は「有効な最初のルール」を無条件にミラーしていたため、
+      // 例えば 'legendary' 限定ルールしか設定していなくても、そのURLが
+      // 全レアリティ共通のフォールバックとして保存され、
+      // オーバーレイ側のno-matchフォールバック(修正後は空)と組み合わさる前は
+      // 「全レアリティでレジェンダリー音が鳴る」事故を起こしていた。
+      // catch-all(targetType === "all")の有効ルールが無い設定では、
+      // 「常に鳴らしてよい音」は存在しないため、ミラーせず null/false にする。
+      const fallbackRule = rules.find((rule) => rule.enabled && rule.targetType === "all") ?? null;
       updateData.gacha_sound_url = fallbackRule?.url ?? null;
       updateData.gacha_sound_enabled = Boolean(fallbackRule);
     }
@@ -739,6 +760,11 @@ export async function POST(request: NextRequest) {
     // skip-and-flag パターンを踏襲する。
     let rarityWeightsScopeWriteSkipped = false;
     let packRarityWeightsWriteSkipped = false;
+    // Issue #176/#451フォローアップ(F5): gacha_sound_rules も同じ理由(デプロイ窓)で
+    // skip-and-flag パターンを踏襲する。列を剥がしてのリトライ自体は既存の
+    // グレースフルデグレード(下記)がやっていたが、フラグが立っておらず
+    // クライアントには常に「保存できた」と返っていた(=楽観反映によるサイレント欠損)。
+    let gachaSoundRulesWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       let { error } = await supabaseAdmin
@@ -830,6 +856,7 @@ export async function POST(request: NextRequest) {
         logger.warn("gacha_sound_rules column not available yet; saving legacy sound fallback only");
         const legacyUpdateData = { ...updateData };
         delete legacyUpdateData.gacha_sound_rules;
+        gachaSoundRulesWriteSkipped = true;
         const fallbackResult = await supabaseAdmin
           .from("streamers")
           .update(legacyUpdateData)
@@ -887,6 +914,27 @@ export async function POST(request: NextRequest) {
         : {}),
       ...(rarityWeightsScopeWriteSkipped ? { rarityWeightsScopeSkippedDeployWindow: true } : {}),
       ...(packRarityWeightsWriteSkipped ? { packRarityWeightsSkippedDeployWindow: true } : {}),
+      // F5(#451フォローアップ): クライアント(GachaSoundSettings)は保存成功時に
+      // 送信した配列をそのまま楽観反映していたが、サーバ側の正規化
+      // (normalizeGachaSoundRules: 不正URL除外・デッドルール除外・件数上限)や
+      // デプロイ窓でのスキップにより実際の永続値と食い違うことがあった
+      // (200を返しつつ実は保存されていない/一部削られている、というサイレント欠損)。
+      // cardPackNames/packRarityWeights と同じパターンで、実際に永続化された
+      // 値を常にエコーバックしクライアントに再同期させる。デプロイ窓でスキップ
+      // した場合は、gacha_sound_rules 列自体には書き込めていないため、実際に
+      // 書き込めた旧来ミラー列(gacha_sound_url/gacha_sound_enabled)から
+      // 「実態」を復元して返す(=多くの場合、催促ルールが1件も無い空配列)。
+      ...(persistedGachaSoundRules !== undefined
+        ? {
+            gachaSoundRules: gachaSoundRulesWriteSkipped
+              ? legacySoundToRules(
+                  typeof updateData.gacha_sound_url === "string" ? updateData.gacha_sound_url : null,
+                  updateData.gacha_sound_enabled === true
+                )
+              : persistedGachaSoundRules,
+          }
+        : {}),
+      ...(gachaSoundRulesWriteSkipped ? { gachaSoundRulesSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");
