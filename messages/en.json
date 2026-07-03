@@ -156,8 +156,14 @@
       "rarity": "Rarity",
       "weight": "Weight",
       "probability": "Probability",
+      "issuance": "Issued",
       "status": "Status",
       "actions": "Actions"
+    },
+    "issuance": {
+      "issuedOfMax": "{issued} / {max} issued",
+      "soldOut": "Sold out",
+      "lowRemaining": "Low stock"
     },
     "status": {
       "distributing": "Active",
@@ -499,7 +505,7 @@
       "multiTemplate": "Multi-draw Template (optional)",
       "multiTemplatePlaceholder": "@'{'user'}' got '{'rarityCounts'}' from a '{'draws'}'-draw gacha! '{'cards'}'",
       "multiShowCards": "Include card-name list in multi-draw announcements",
-      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL",
+      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL, '{'packName'}'=name of the pack the obtained card belongs to (empty string when the draw wasn't restricted to a pack)",
       "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list, '{'newCards'}'=newly obtained card names this draw, '{'newCardCount'}'=count of newly obtained card types this draw",
       "previewLength": "Preview length: {current} / {max} characters"
     },
@@ -704,7 +710,7 @@
       "effects": "Show Effects",
       "effectsDescription": "Show sparkle effects for legendary cards",
       "effectStyle": "Effect Style",
-      "effectStyleDescription": "Choose the animation used for legendary card reveals",
+      "effectStyleDescription": "Choose the animation used for legendary card reveals (only shown for legendary cards)",
       "effectStyles": {
         "sparkle": "Sparkles",
         "confetti": "Confetti",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from '@/lib/card-issuance'
+import { getIssuanceInfo, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from '@/lib/card-issuance'
 
 describe('parseCardIssuanceLimit', () => {
   it('treats empty values as unlimited', () => {
@@ -49,5 +49,44 @@ describe('isMissingCardIssuanceColumnError', () => {
       code: 'PGRST204',
       message: "Could not find the 'card_number' column of 'cards' in the schema cache",
     })).toBe(false)
+  })
+})
+
+// Issue #542: CardManagerで発行済み枚数・残余枚数を表示する
+describe('getIssuanceInfo', () => {
+  it('returns null for unlimited cards (max_issuance_count is null/undefined)', () => {
+    expect(getIssuanceInfo(null, 5)).toBeNull()
+    expect(getIssuanceInfo(undefined, 5)).toBeNull()
+  })
+
+  it('reports neither soldOut nor lowRemaining well below the limit', () => {
+    expect(getIssuanceInfo(10, 3)).toEqual({ max: 10, issued: 3, soldOut: false, lowRemaining: false })
+  })
+
+  it('treats a missing issued count as 0', () => {
+    expect(getIssuanceInfo(10, null)).toEqual({ max: 10, issued: 0, soldOut: false, lowRemaining: false })
+    expect(getIssuanceInfo(10, undefined)).toEqual({ max: 10, issued: 0, soldOut: false, lowRemaining: false })
+  })
+
+  // 受け入れ条件: 残り10%以下のカードに警告表示がある
+  it('flags lowRemaining once remaining stock drops to 10% or below', () => {
+    // 残り 1/10 = 10% ちょうど → 該当
+    expect(getIssuanceInfo(10, 9)).toEqual({ max: 10, issued: 9, soldOut: false, lowRemaining: true })
+    // 残り 2/10 = 20% → 非該当
+    expect(getIssuanceInfo(10, 8)).toEqual({ max: 10, issued: 8, soldOut: false, lowRemaining: false })
+  })
+
+  it('flags soldOut once issued reaches the cap, and never both soldOut and lowRemaining', () => {
+    expect(getIssuanceInfo(10, 10)).toEqual({ max: 10, issued: 10, soldOut: true, lowRemaining: false })
+  })
+
+  it('treats over-issued counts (e.g. concurrent legacy draws) as soldOut', () => {
+    expect(getIssuanceInfo(10, 11)).toEqual({ max: 10, issued: 11, soldOut: true, lowRemaining: false })
+  })
+
+  it('handles a fully-unique card (max=1)', () => {
+    // 未発行時点では残り100%なのでlowRemainingにはならない（発行された瞬間に即soldOutへ遷移する）
+    expect(getIssuanceInfo(1, 0)).toEqual({ max: 1, issued: 0, soldOut: false, lowRemaining: false })
+    expect(getIssuanceInfo(1, 1)).toEqual({ max: 1, issued: 1, soldOut: true, lowRemaining: false })
   })
 })

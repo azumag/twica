@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { CARD_DESCRIPTION_MAX_CHARACTERS, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
 import { countCharacters } from "@/lib/text-utils";
+import { MAX_COLLECTION_NAME_LENGTH } from "@/lib/validation/collection-name";
 
 interface ChatAnnouncementSettingsProps {
   streamerId: string;
@@ -40,6 +41,9 @@ const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   // newCards mirrors `cards` length; runtime reserves space for the "初出: " suffix
   newCards: 300,
   newCardCount: 4,
+  // パック名の上限はDBのCHECK制約（MAX_COLLECTION_NAME_LENGTH）に合わせる
+  // Pack name limit mirrors the DB CHECK constraint (MAX_COLLECTION_NAME_LENGTH)
+  packName: MAX_COLLECTION_NAME_LENGTH,
 } as const;
 
 function buildChatPreviewMessage(
@@ -58,6 +62,7 @@ function buildChatPreviewMessage(
     url: string;
     newCards: string;
     newCardCount: string;
+    packName: string;
   }
 ): string {
   return template
@@ -74,6 +79,7 @@ function buildChatPreviewMessage(
     .replace(/\{url\}/g, placeholders.url)
     .replace(/\{newCards\}/g, placeholders.newCards)
     .replace(/\{newCardCount\}/g, placeholders.newCardCount)
+    .replace(/\{packName\}/g, placeholders.packName)
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -134,6 +140,7 @@ export default function ChatAnnouncementSettings({
       url: `https://twica.live/collection/${streamerId}`,
       newCards: "レジェンダリーカード、レアカード",
       newCardCount: "2",
+      packName: "サンプルパック",
     });
   }, [activeTemplate, streamerId]);
 
@@ -152,6 +159,7 @@ export default function ChatAnnouncementSettings({
       url: `https://twica.live/collection/${streamerId}`,
       newCards: multiShowCards ? "レジェンダリーカード、レアカード" : "",
       newCardCount: multiShowCards ? "2" : "",
+      packName: "サンプルパック",
     });
   }, [activeMultiTemplate, multiShowCards, streamerId]);
 
@@ -176,6 +184,7 @@ export default function ChatAnnouncementSettings({
         url: `https://twica.live/collection/${streamerId}`,
         newCards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCards),
         newCardCount: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardCount),
+        packName: "パ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packName),
       })
     );
   }, [activeTemplate, streamerId]);

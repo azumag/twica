@@ -32,6 +32,39 @@ function createCardsQuery<T extends Record<string, unknown>>(cards: T[]) {
   return q
 }
 
+/**
+ * rpc() の共通モック。Issue #548 以降、発行上限付きカードがあると
+ * executeGacha は execute_gacha_transaction とは別に get_issued_card_counts も
+ * 呼ぶため、単純な単一 mockResolvedValue では両者を区別できない。
+ * 呼ばれた関数名(第1引数)で振り分け、get_issued_card_counts には
+ * issuedCounts (card_id -> 発行済み枚数のプレーンオブジェクト、
+ * get_issued_card_counts RPC の実際の戻り値と同じ形)を返す。
+ * execute_gacha_transaction は呼ばれるたびに transactionResponses を
+ * 1つずつ消費し、最後の要素は使い切った後も繰り返し返す
+ * (`mockResolvedValue` と同じ「以降は同じ値」の挙動)。
+ */
+function createRpcMock(options: {
+  issuedCounts?: Record<string, number>
+  transactionResponses: Array<{ data: unknown; error: { message: string; code?: string } | null }>
+}) {
+  const { issuedCounts = {}, transactionResponses } = options
+  let callIndex = 0
+  // 第2引数(params)を明示的にシグネチャへ含める: これが無いと vi.fn() の型が
+  // 1要素タプル([fnName: string])に推論され、呼び出し側で
+  // `mock.calls[n][1]` (params) にアクセスするコードが型エラーになる。
+  // params 自体はこのモックの分岐に使わないため、`void` で参照だけして
+  // no-unused-vars を満たす(呼び出し側の型安全性のためだけに存在する引数)。
+  return vi.fn((fnName: string, params?: Record<string, unknown>) => {
+    void params
+    if (fnName === 'get_issued_card_counts') {
+      return Promise.resolve({ data: issuedCounts, error: null })
+    }
+    const response = transactionResponses[Math.min(callIndex, transactionResponses.length - 1)]
+    callIndex += 1
+    return Promise.resolve(response)
+  })
+}
+
 describe('GachaService.executeGacha', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -275,22 +308,13 @@ describe('GachaService.executeGacha', () => {
       { id: 'sold-out-card', name: 'Sold Out', description: null, image_url: null, rarity: 'legendary', drop_rate: 100, max_issuance_count: 1 },
       { id: 'available-card', name: 'Available', description: null, image_url: null, rarity: 'common', drop_rate: 1, max_issuance_count: null },
     ] as typeof testCards)
-    const userCardsQuery = createMockQueryBuilder()
-    ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ data: [{ card_id: 'sold-out-card' }], error: null })
-      return userCardsQuery
-    }
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, limit_reached: false, history_id: 'h-1' },
-      error: null,
+    const mockRpc = createRpcMock({
+      issuedCounts: { 'sold-out-card': 1 },
+      transactionResponses: [{ data: { is_duplicate: false, limit_reached: false, history_id: 'h-1' }, error: null }],
     })
 
     mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'cards') return cardsQuery
-        if (table === 'user_cards') return userCardsQuery
-        return createMockQueryBuilder()
-      }),
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
       rpc: mockRpc,
     } as unknown as ReturnType<typeof getSupabaseAdmin>)
 
@@ -303,53 +327,37 @@ describe('GachaService.executeGacha', () => {
     }))
   })
 
-  it('発行枚数チェッククエリは limitedCards のIDのみに絞り込む（無制限カードIDを含まない）', async () => {
+  it('発行枚数チェックRPCは limitedCards のIDのみに絞り込む（無制限カードIDを含まない）', async () => {
     const cardsQuery = createCardsQuery([
       { id: 'unlimited-card', name: 'Unlimited', description: null, image_url: null, rarity: 'common', drop_rate: 1, max_issuance_count: null },
       { id: 'limited-card', name: 'Limited', description: null, image_url: null, rarity: 'rare', drop_rate: 1, max_issuance_count: 5 },
     ] as typeof testCards)
-    const userCardsQuery = createMockQueryBuilder()
-    const inSpy = vi.spyOn(userCardsQuery, 'in')
-    ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ data: [], error: null })
-      return userCardsQuery
-    }
+    const mockRpc = createRpcMock({
+      transactionResponses: [{ data: { is_duplicate: false, history_id: 'h-1' }, error: null }],
+    })
 
     mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'cards') return cardsQuery
-        if (table === 'user_cards') return userCardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: vi.fn().mockResolvedValue({ data: { is_duplicate: false, history_id: 'h-1' }, error: null }),
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
     } as unknown as ReturnType<typeof getSupabaseAdmin>)
 
     await new GachaService().executeGacha('streamer-1', 'user-1', 'testuser', 'event-query-scope')
 
-    // user_cards の .in() は limitedCards の ID のみで呼ばれる
-    expect(inSpy).toHaveBeenCalledWith('card_id', ['limited-card'])
-    // 無制限カードの ID は含まれない
-    const calledIds = inSpy.mock.calls[0]?.[1] as string[]
-    expect(calledIds).not.toContain('unlimited-card')
+    // get_issued_card_counts RPC は limitedCards の ID のみで呼ばれる(無制限カードIDを含まない)
+    expect(mockRpc).toHaveBeenCalledWith('get_issued_card_counts', { p_card_ids: ['limited-card'] })
   })
 
   it('全カードが発行上限に達している場合はエラーを返す', async () => {
     const cardsQuery = createCardsQuery([
       { id: 'sold-out-card', name: 'Sold Out', description: null, image_url: null, rarity: 'legendary', drop_rate: 100, max_issuance_count: 1 },
     ] as typeof testCards)
-    const userCardsQuery = createMockQueryBuilder()
-    ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ data: [{ card_id: 'sold-out-card' }], error: null })
-      return userCardsQuery
-    }
-    const mockRpc = vi.fn()
+    const mockRpc = createRpcMock({
+      issuedCounts: { 'sold-out-card': 1 },
+      transactionResponses: [],
+    })
 
     mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'cards') return cardsQuery
-        if (table === 'user_cards') return userCardsQuery
-        return createMockQueryBuilder()
-      }),
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
       rpc: mockRpc,
     } as unknown as ReturnType<typeof getSupabaseAdmin>)
 
@@ -360,7 +368,9 @@ describe('GachaService.executeGacha', () => {
     if (!result.success) {
       expect(result.error).toContain('発行可能枚数')
     }
-    expect(mockRpc).not.toHaveBeenCalled()
+    // 発行枚数チェックRPC (get_issued_card_counts) は呼ばれるが、全カード売り切れのため
+    // 抽選トランザクションRPC (execute_gacha_transaction) は呼ばれない
+    expect(mockRpc).not.toHaveBeenCalledWith('execute_gacha_transaction', expect.anything())
   })
 
   it('RPCが発行上限到達を返した場合はカード付与成功にしない', async () => {
@@ -478,21 +488,16 @@ describe('GachaService.executeGacha', () => {
       ]
       const cardsQuery = createCardsQuery(packCards as unknown as typeof testCards)
       // c1はまだ未発行(0/1)なので発行上限フィルタ後も初期プールに残る
-      const userCardsQuery = createMockQueryBuilder()
-      ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-        resolve({ data: [], error: null })
-        return userCardsQuery
-      }
-      const mockRpc = vi.fn()
-        .mockResolvedValueOnce({ data: { is_duplicate: false, limit_reached: true }, error: null })
-        .mockResolvedValueOnce({ data: { is_duplicate: false, limit_reached: false, history_id: 'h-effective-retry' }, error: null })
+      const mockRpc = createRpcMock({
+        issuedCounts: {},
+        transactionResponses: [
+          { data: { is_duplicate: false, limit_reached: true }, error: null },
+          { data: { is_duplicate: false, limit_reached: false, history_id: 'h-effective-retry' }, error: null },
+        ],
+      })
 
       mockGetSupabaseAdmin.mockReturnValue({
-        from: vi.fn((table: string) => {
-          if (table === 'cards') return cardsQuery
-          if (table === 'user_cards') return userCardsQuery
-          return createMockQueryBuilder()
-        }),
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
         rpc: mockRpc,
       } as unknown as ReturnType<typeof getSupabaseAdmin>)
 
@@ -504,9 +509,11 @@ describe('GachaService.executeGacha', () => {
       })
 
       expect(result.success).toBe(true)
-      expect(mockRpc).toHaveBeenCalledTimes(2)
-      const firstCardId = (mockRpc.mock.calls[0][1] as { p_card_id: string }).p_card_id
-      const secondCardId = (mockRpc.mock.calls[1][1] as { p_card_id: string }).p_card_id
+      // 発行枚数チェックRPCの1回 + 抽選トランザクションRPCの2回(1回目はlimit_reached)
+      const transactionCalls = mockRpc.mock.calls.filter(([fnName]) => fnName === 'execute_gacha_transaction')
+      expect(transactionCalls).toHaveLength(2)
+      const firstCardId = (transactionCalls[0][1] as { p_card_id: string }).p_card_id
+      const secondCardId = (transactionCalls[1][1] as { p_card_id: string }).p_card_id
       expect(secondCardId).not.toBe(firstCardId)
       if (result.success) {
         expect(result.data.card.id).toBe(secondCardId)
@@ -519,19 +526,13 @@ describe('GachaService.executeGacha', () => {
         { id: 'card-b', name: 'B', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: 1 },
       ] as unknown as typeof testCards)
       // 両カードとも未発行として初期プールに残す
-      const userCardsQuery = createMockQueryBuilder()
-      ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-        resolve({ data: [], error: null })
-        return userCardsQuery
-      }
-      const mockRpc = vi.fn().mockResolvedValue({ data: { is_duplicate: false, limit_reached: true }, error: null })
+      const mockRpc = createRpcMock({
+        issuedCounts: {},
+        transactionResponses: [{ data: { is_duplicate: false, limit_reached: true }, error: null }],
+      })
 
       mockGetSupabaseAdmin.mockReturnValue({
-        from: vi.fn((table: string) => {
-          if (table === 'cards') return cardsQuery
-          if (table === 'user_cards') return userCardsQuery
-          return createMockQueryBuilder()
-        }),
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
         rpc: mockRpc,
       } as unknown as ReturnType<typeof getSupabaseAdmin>)
 
@@ -542,8 +543,9 @@ describe('GachaService.executeGacha', () => {
       if (!result.success) {
         expect(result.error).toBe(CARD_ISSUANCE_MESSAGES.soldOut)
       }
-      // 2枚のプールを2回で使い果たして打ち切られる
-      expect(mockRpc).toHaveBeenCalledTimes(2)
+      // 2枚のプールを2回で使い果たして打ち切られる(発行枚数チェックRPCは別カウント)
+      const transactionCalls = mockRpc.mock.calls.filter(([fnName]) => fnName === 'execute_gacha_transaction')
+      expect(transactionCalls).toHaveLength(2)
     })
 
     it('再試行回数の上限(5回)を超えたら、プールにまだカードが残っていてもsoldOutで打ち切る', async () => {

@@ -120,3 +120,38 @@ export function computePackProgress(
     total: packActiveIds.size,
   };
 }
+
+/**
+ * Issue #597: resolve the display name of the pack a gacha draw was scoped
+ * to, for the `{packName}` chat announcement placeholder.
+ *
+ * Mirrors the 3 states the collection page (page.tsx) already distinguishes
+ * for `CollectionPackDisplay.displayName`, just resolved eagerly instead of
+ * being left for a client component to fall back on:
+ * - `collectionName` is null/undefined — the draw was NOT restricted to any
+ *   pack (unrestricted gacha) → `''` (stripped by chat-service's optional
+ *   placeholder handling, same convention as `{newCards}` when absent).
+ * - `collectionName === DEFAULT_PACK_SENTINEL` — restricted to the default
+ *   (unclassified) pseudo-pack → the streamer's override (`defaultPackName`,
+ *   i.e. `streamers.default_card_pack_name`), or `defaultPackFallbackLabel`
+ *   when no override is set (same fallback pattern as
+ *   ChannelPointSettings' `defaultPackDisplayName`, #554).
+ * - any other `collectionName` IS the display name (named packs don't have a
+ *   separate display-name column — the registered pack name itself is shown
+ *   everywhere else, see #393) → returned verbatim.
+ *
+ * `defaultPackFallbackLabel` is injected by the caller (rather than hardcoded
+ * here) so this module stays free of display strings/i18n, matching how
+ * `CollectionPackDisplay.displayName` also leaves that resolution to callers.
+ */
+export function resolvePackDisplayName(
+  collectionName: string | null | undefined,
+  defaultPackName: string | null,
+  defaultPackFallbackLabel: string
+): string {
+  if (!collectionName) return "";
+  if (collectionName === DEFAULT_PACK_SENTINEL) {
+    return defaultPackName ?? defaultPackFallbackLabel;
+  }
+  return collectionName;
+}

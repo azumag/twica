@@ -6,6 +6,17 @@ export default defineConfig({
     include: ['tests/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['node_modules', '.next', 'dist'],
     environment: 'happy-dom',
+    // Issue #532: OverlayPreviewのiframeテストでsrcを実際に書き換えると、happy-domが
+    // 本物のネットワークfetchを試みてしまう（サンドボックス環境ではNetworkErrorのstderrノイズ、
+    // 実ネットワークがあるCIでは意図しない外部通信・遅延の原因になる）。
+    // iframeの実ページ読み込みを無効化し、単体テストがネットワークに依存しないようにする。
+    environmentOptions: {
+      happyDOM: {
+        settings: {
+          disableIframePageLoading: true,
+        },
+      },
+    },
     globals: true,
     setupFiles: ['tests/setup.ts'],
     // プロセスリーク対策: タイムアウトとクリーンアップ設定

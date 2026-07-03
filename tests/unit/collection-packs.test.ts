@@ -3,6 +3,7 @@ import {
   cardMatchesPackKey,
   computePackProgress,
   deriveCollectionPackGroups,
+  resolvePackDisplayName,
 } from "@/lib/collection-packs";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 
@@ -114,6 +115,35 @@ describe("collection-packs", () => {
         owned: 0,
         total: 0,
       });
+    });
+  });
+
+  // Issue #597: {packName} チャット通知プレースホルダの表示名解決。
+  describe("resolvePackDisplayName", () => {
+    it("returns an empty string when the draw was not restricted to any pack (null)", () => {
+      expect(resolvePackDisplayName(null, "レアパック", "デフォルトパック")).toBe("");
+    });
+
+    it("returns an empty string when collectionName is undefined", () => {
+      expect(resolvePackDisplayName(undefined, "レアパック", "デフォルトパック")).toBe("");
+    });
+
+    it("returns the streamer's override for the default (unclassified) pseudo-pack", () => {
+      expect(
+        resolvePackDisplayName(DEFAULT_PACK_SENTINEL, "スターターパック", "デフォルトパック")
+      ).toBe("スターターパック");
+    });
+
+    it("falls back to the generic label when the default pack has no override", () => {
+      expect(resolvePackDisplayName(DEFAULT_PACK_SENTINEL, null, "デフォルトパック")).toBe(
+        "デフォルトパック"
+      );
+    });
+
+    it("returns the named pack's collection_name verbatim, ignoring defaultPackName", () => {
+      expect(resolvePackDisplayName("weapons", "スターターパック", "デフォルトパック")).toBe(
+        "weapons"
+      );
     });
   });
 });

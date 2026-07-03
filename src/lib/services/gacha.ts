@@ -47,6 +47,11 @@ export interface EventSubStreamerInfo {
   chat_announcement_template: string | null
   chat_announcement_multi_template: string | null
   chat_announcement_multi_show_cards: boolean
+  // Issue #597: {packName} プレースホルダでデフォルト(未分類)パックの表示名
+  // オーバーライドとして使う(#554 の default_card_pack_name)。raid gacha 経路
+  // (executeGachaForRaidEvent)はパックに絞られることが無いため未取得のまま
+  // (undefined)でもよいよう optional にする。
+  default_card_pack_name?: string | null
 }
 
 export interface GachaResult {
@@ -54,6 +59,10 @@ export interface GachaResult {
   cards?: GachaCard[]
   userTwitchUsername: string
   rewardId?: string | null
+  // Issue #597: 抽選をパックに絞った際の collection_name(DEFAULT_PACK_SENTINEL
+  // を含む)。無制限抽選(パック指定なし)の場合は null/undefined。チャット通知
+  // の {packName} プレースホルダ解決に使う。
+  collectionName?: string | null
   /** EventSub経由の場合のみ設定。クエリ統合のためガチャ結果と一緒に返す */
   streamer?: EventSubStreamerInfo
 }
@@ -64,6 +73,29 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
 }
 
 const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
+
+/**
+ * get_issued_card_counts RPC (migration 00069) の JSONB 戻り値
+ * ({ "<card_id>": <count>, ... }) を Map<card_id, count> にパースする。
+ * Issue #548: 旧実装の issuedCounts と完全に同じ形状を維持する。
+ *
+ * RPC が未デプロイ/エラー時のフォールバック(select+in→JS集計)と混線しないよう、
+ * 想定外の形(null/配列/非オブジェクト)は空Mapとして扱い、呼び出し側で例外を
+ * 起こさない防御的パースにする。
+ */
+function parseIssuedCardCountsRpc(rpcResult: unknown): Map<string, number> {
+  const counts = new Map<string, number>()
+  if (!rpcResult || typeof rpcResult !== 'object' || Array.isArray(rpcResult)) {
+    return counts
+  }
+  for (const [cardId, rawCount] of Object.entries(rpcResult as Record<string, unknown>)) {
+    const count = Number(rawCount)
+    if (Number.isFinite(count)) {
+      counts.set(cardId, count)
+    }
+  }
+  return counts
+}
 
 function isStreamerSettingsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? ''
@@ -208,21 +240,11 @@ export class GachaService {
       const limitedCards = cards.filter((card) => card.max_issuance_count !== null && card.max_issuance_count !== undefined)
       let availableCards = cards
       if (limitedCards.length > 0) {
-        const { data: issuedRows, error: issuedError } = await this.supabase
-          .from('user_cards')
-          .select('card_id')
-          .in('card_id', limitedCards.map((card) => card.id))
-
-        if (issuedError) {
-          return err(`Database error: ${issuedError.message}`)
+        const issuedCountsResult = await this.getIssuedCounts(limitedCards.map((card) => card.id))
+        if (!issuedCountsResult.success) {
+          return err(issuedCountsResult.error)
         }
-
-        const issuedCounts = new Map<string, number>()
-        for (const row of issuedRows || []) {
-          const cardId = (row as { card_id?: string }).card_id
-          if (!cardId) continue
-          issuedCounts.set(cardId, (issuedCounts.get(cardId) || 0) + 1)
-        }
+        const issuedCounts = issuedCountsResult.data
 
         availableCards = cards.filter((card) => {
           if (card.max_issuance_count === null || card.max_issuance_count === undefined) return true
@@ -347,6 +369,60 @@ export class GachaService {
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }
+  }
+
+  /**
+   * 発行上限付きカード(max_issuance_count が設定されたカード)について、
+   * card_id ごとの発行済み枚数を取得する。
+   *
+   * Issue #548: 旧実装は user_cards から該当card_idの行を .in() で全件フェッチし、
+   * アプリ側(JS)で card_id ごとに1行ずつ数えていた。発行数が多い人気の限定
+   * カードほど、件数を知りたいだけなのに数千行をDBからアプリへ転送することになり、
+   * 転送量・メモリ・レイテンシが発行済み枚数に比例して線形に悪化していた。
+   * get_issued_card_counts RPC (migration 00069) はDB側で GROUP BY / COUNT(*) を
+   * 実行し、{ "<card_id>": <count> } 形式のJSONBオブジェクト1個だけを返す。
+   * これにより転送量は「発行上限付きカードの種類数」(通常一桁〜十数件)にしか
+   * 依存しなくなる。
+   *
+   * 無停止デプロイの過渡期でRPCが未デプロイ(42883)の場合は、旧来の
+   * select+in によるフェッチ→JS集計にフォールバックする。Map<card_id, count>
+   * の中身は両経路で完全に同一になるため、呼び出し側(executeGacha)の
+   * フィルタリングロジックへの影響はない。
+   */
+  private async getIssuedCounts(cardIds: string[]): Promise<Result<Map<string, number>>> {
+    const { data: rpcData, error: rpcError } = await withRetry(
+      () => this.supabase.rpc('get_issued_card_counts', { p_card_ids: cardIds }),
+      'gacha:executeGacha:issuedCounts',
+    )
+
+    if (!rpcError) {
+      return ok(parseIssuedCardCountsRpc(rpcData))
+    }
+
+    if (rpcError.code !== '42883') {
+      return err(`Database error: ${rpcError.message}`)
+    }
+
+    logger.warn('get_issued_card_counts not deployed, falling back to per-row aggregation', {
+      cardCount: cardIds.length,
+    })
+
+    const { data: issuedRows, error: issuedError } = await this.supabase
+      .from('user_cards')
+      .select('card_id')
+      .in('card_id', cardIds)
+
+    if (issuedError) {
+      return err(`Database error: ${issuedError.message}`)
+    }
+
+    const issuedCounts = new Map<string, number>()
+    for (const row of issuedRows || []) {
+      const cardId = (row as { card_id?: string }).card_id
+      if (!cardId) continue
+      issuedCounts.set(cardId, (issuedCounts.get(cardId) || 0) + 1)
+    }
+    return ok(issuedCounts)
   }
 
   /**
@@ -588,10 +664,12 @@ export class GachaService {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
       // rarity_weights / rarity_weights_scope / pack_rarity_weights は Issue #579
       // (#576 フェーズ2) のパック内レアリティ自動配分に使う。
+      // default_card_pack_name (migration 00063, Issue #554) は {packName} プレースホルダで
+      // デフォルト(未分類)パックの表示名オーバーライドとして使う(Issue #597)。
       let { data: streamer, error: streamerError } = await withRetry(
         () => this.supabase
           .from('streamers')
-          .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, rarity_weights_scope, pack_rarity_weights')
+          .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, rarity_weights_scope, pack_rarity_weights, default_card_pack_name')
           .eq('twitch_user_id', event.broadcaster_user_id)
           .maybeSingle(),
         'gacha:executeGachaForEventSub:streamer',
@@ -612,10 +690,13 @@ export class GachaService {
         streamerError &&
         (isMissingRarityWeightsScopeColumnError(streamerError) || isMissingPackRarityWeightsColumnError(streamerError))
       ) {
+        // default_card_pack_name (00063) は rarity_weights_scope/pack_rarity_weights
+        // (00065) より先行するマイグレーションのため、この分岐に来る時点で確実に
+        // デプロイ済み。選択して問題ない。
         const weightsFallback = await withRetry(
           () => this.supabase
             .from('streamers')
-            .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights')
+            .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, default_card_pack_name')
             .eq('twitch_user_id', event.broadcaster_user_id)
             .maybeSingle(),
           'gacha:executeGachaForEventSub:streamer:weights-fallback',
@@ -650,6 +731,10 @@ export class GachaService {
               channel_point_collection_name: null,
               rarity_weights_scope: null,
               pack_rarity_weights: null,
+              // default_card_pack_name (00063) は channel_point_collection_name (00061)
+              // より後発のマイグレーションのため、この分岐に来る時点で確実に未デプロイ。
+              // 選択せず null 固定にする(Issue #597)。
+              default_card_pack_name: null,
             }
           : collectionFallback.data
         streamerError = collectionFallback.error
@@ -677,6 +762,10 @@ export class GachaService {
               rarity_weights: null,
               rarity_weights_scope: null,
               pack_rarity_weights: null,
+              // Issue #597: この分岐は channel_point_collection_name(00061)より
+              // 前段の欠落まで拾う最も古いフォールバックのため、default_card_pack_name
+              // (00063)も確実に未デプロイ。選択せず null 固定にする。
+              default_card_pack_name: null,
             }
           : fallbackResult.data
         streamerError = fallbackResult.error
@@ -714,12 +803,16 @@ export class GachaService {
         return ok({
           ...result.data,
           rewardId: event.reward.id,
+          // Issue #597: {packName} プレースホルダ解決用に、この抽選が絞られた
+          // パックの collection_name をそのまま結果に持たせる。
+          collectionName: collectionName ?? null,
           streamer: {
             id: streamer.id,
             chat_announcement_enabled: streamer.chat_announcement_enabled,
             chat_announcement_template: streamer.chat_announcement_template,
             chat_announcement_multi_template: streamer.chat_announcement_multi_template,
             chat_announcement_multi_show_cards: streamer.chat_announcement_multi_show_cards ?? true,
+            default_card_pack_name: streamer.default_card_pack_name ?? null,
           },
         })
       }

@@ -195,6 +195,10 @@ export default async function PlansPage() {
                 </div>
               </div>
             </div>
+
+            <p className="mt-4 text-sm text-gray-500">
+              ※ アニメーションGIFはトリミング・再圧縮せず原本を保持するため、1ファイルあたりの上限（素地1MB / 助力5MB / ご贔屓・Twitchサブスク10MB）がそのまま適用されます。
+            </p>
           </section>
 
           {/* コードの取得方法 */}

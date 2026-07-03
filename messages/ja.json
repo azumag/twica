@@ -156,8 +156,14 @@
       "rarity": "レアリティ",
       "weight": "重み",
       "probability": "確率",
+      "issuance": "発行数",
       "status": "ステータス",
       "actions": "操作"
+    },
+    "issuance": {
+      "issuedOfMax": "{issued} / {max} 発行済み",
+      "soldOut": "売り切れ",
+      "lowRemaining": "残りわずか"
     },
     "status": {
       "distributing": "配布中",
@@ -499,7 +505,7 @@
       "multiTemplate": "N連ガチャ用テンプレート（任意）",
       "multiTemplatePlaceholder": "@'{'user'}' が'{'draws'}'連ガチャで '{'rarityCounts'}' を獲得しました！'{'cards'}'",
       "multiShowCards": "N連通知にカード名一覧を含める",
-      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL",
+      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL, '{'packName'}'=獲得カードが属するパック名（パック未指定の抽選では空文字）",
       "multiPlaceholderHelp": "N連用: '{'draws'}'=抽選回数, '{'rarityCounts'}'=レアリティ別枚数（例: レアx3、コモンx3）, '{'cards'}'=カード名一覧, '{'newCards'}'=今回初めて獲得したカード名一覧, '{'newCardCount'}'=今回初めて獲得したカード種類数",
       "previewLength": "プレビュー文字数: {current} / {max}文字"
     },
@@ -704,7 +710,7 @@
       "effects": "エフェクト表示",
       "effectsDescription": "レジェンダリーカードのキラキラエフェクトを表示",
       "effectStyle": "エフェクト種類",
-      "effectStyleDescription": "レジェンダリーカード表示時の演出を選択します",
+      "effectStyleDescription": "レジェンダリーカード表示時の演出を選択します（レジェンダリーカードにのみ表示されます）",
       "effectStyles": {
         "sparkle": "キラキラ",
         "confetti": "紙吹雪",

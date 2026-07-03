@@ -62,3 +62,50 @@ export function isMissingCardIssuanceColumnError(error: unknown): boolean {
     err.code === "PGRST204"
   );
 }
+
+// Issue #542: 配信者がCardManagerで「あと何枚発行できるか」を一目で把握できる
+// よう、上限付きカードの発行済み枚数から売り切れ/残りわずかを判定する。
+// 閾値(10%)はIssue本文の受け入れ条件「残り10%以下のカードに警告表示」に合わせた。
+// Determines sold-out / low-remaining state for a limited-issuance card so
+// CardManager can surface it. Threshold (10%) matches the issue's acceptance
+// criteria ("残り10%以下のカードに警告表示がある").
+export const LOW_REMAINING_THRESHOLD_RATIO = 0.1;
+
+export interface IssuanceInfo {
+  // 発行可能枚数の上限（呼び出し元がnull/undefinedを弾いた後の非null値）
+  max: number;
+  // 現在の発行済み枚数
+  issued: number;
+  // 上限に到達済みか（issued >= max）
+  soldOut: boolean;
+  // 残り枚数が上限の10%以下か（soldOutの場合はfalse。売り切れ表示と警告表示を
+  // 同時に出さないための排他制御）
+  lowRemaining: boolean;
+}
+
+/**
+ * カードの発行状況（売り切れ/残りわずか）を判定する。
+ * max_issuance_count が null/undefined（無制限カード）の場合は null を返し、
+ * 呼び出し元（CardList/CardManagerのグリッド表示）で枚数表示自体を出さない
+ * ようにする。
+ *
+ * Computes issuance status (sold out / low remaining) for a card.
+ * Returns null for unlimited cards (max_issuance_count is null/undefined) so
+ * callers (CardList / CardManager thumbnail grid) skip rendering the count
+ * entirely.
+ */
+export function getIssuanceInfo(
+  maxIssuanceCount: number | null | undefined,
+  issuedCount: number | null | undefined
+): IssuanceInfo | null {
+  if (maxIssuanceCount === null || maxIssuanceCount === undefined) return null;
+
+  const issued = issuedCount ?? 0;
+  const soldOut = issued >= maxIssuanceCount;
+  const lowRemaining =
+    !soldOut &&
+    maxIssuanceCount > 0 &&
+    (maxIssuanceCount - issued) / maxIssuanceCount <= LOW_REMAINING_THRESHOLD_RATIO;
+
+  return { max: maxIssuanceCount, issued, soldOut, lowRemaining };
+}

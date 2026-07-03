@@ -759,7 +759,17 @@ export interface Database {
 
 // Helper types
 export type Streamer = Database['public']['Tables']['streamers']['Row']
-export type Card = Database['public']['Tables']['cards']['Row']
+// Issue #542: issued_count is not a DB column — it's computed by GET /api/cards
+// (COUNT of user_cards grouped by card_id) and attached only to cards that have
+// max_issuance_count set. Unlimited cards omit the field entirely to avoid the
+// extra join/response payload for the common case.
+// issued_countはDBカラムではなく、GET /api/cardsが計算して付与するフィールド
+// （user_cardsをcard_idでグルーピングしたCOUNT）。max_issuance_countが設定された
+// カードのみに付与される。無制限カードでは不要なJOIN/レスポンス増を避けるため
+// フィールド自体を省略する。
+export type Card = Database['public']['Tables']['cards']['Row'] & {
+  issued_count?: number
+}
 export type User = Database['public']['Tables']['users']['Row']
 export type UserCard = Database['public']['Tables']['user_cards']['Row']
 export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
