@@ -704,7 +704,7 @@
       "effects": "エフェクト表示",
       "effectsDescription": "レジェンダリーカードのキラキラエフェクトを表示",
       "effectStyle": "エフェクト種類",
-      "effectStyleDescription": "レジェンダリーカード表示時の演出を選択します",
+      "effectStyleDescription": "レジェンダリーカード表示時の演出を選択します（レジェンダリーカードにのみ表示されます）",
       "effectStyles": {
         "sparkle": "キラキラ",
         "confetti": "紙吹雪",

@@ -704,7 +704,7 @@
       "effects": "Show Effects",
       "effectsDescription": "Show sparkle effects for legendary cards",
       "effectStyle": "Effect Style",
-      "effectStyleDescription": "Choose the animation used for legendary card reveals",
+      "effectStyleDescription": "Choose the animation used for legendary card reveals (only shown for legendary cards)",
       "effectStyles": {
         "sparkle": "Sparkles",
         "confetti": "Confetti",

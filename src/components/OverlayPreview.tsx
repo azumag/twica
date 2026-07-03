@@ -44,6 +44,19 @@ const DEFAULT_OVERLAY_OPTIONS: OverlayOptions = {
 
 const OVERLAY_OPTIONS_STORAGE_KEY_PREFIX = "twica:overlay-options:";
 
+/**
+ * Issue #532: オプション変更はiframeのURLに正しく反映されていたが、オーバーレイは
+ * カード非表示中は透明な背景のみのため、変更してもユーザーが見た目の変化に
+ * 気づけないUX問題があった。デモ実行直後の一定時間内にオプションを変更した場合は
+ * 自動でプレビューDEMOを再実行し、変更が視覚的にすぐ確認できるようにする。
+ *
+ * この時間を超えた変更では自動発火しない（無関係なタイミングでカードが
+ * 勝手に出るのを防ぐ）。
+ */
+const RECENT_DEMO_WINDOW_MS = 30_000;
+/** スライダー操作等の連続的なオプション変更を1回の再デモにまとめるデバウンス時間 */
+const AUTO_REDEMO_DEBOUNCE_MS = 800;
+
 function readStoredBoolean(value: unknown, fallback: boolean) {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -148,6 +161,15 @@ export default function OverlayPreview({
   // iframeの参照（DEMOボタン用）
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
+  // Issue #532: 直近にプレビューDEMOを実行した時刻（自動再デモの判定に使用）
+  // null の場合はまだ一度もデモを実行していないことを表す。
+  // 初回表示やOBS URLをコピーしただけの利用では勝手にカードを出さないためのガードとして使う。
+  const lastDemoAtRef = useRef<number | null>(null);
+  // 自動再デモのデバウンス用タイマーID
+  const autoRedemoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // オプション変更の初回検知フラグ（URL更新メッセージ用のisFirstRenderとは別管理）
+  const isFirstOptionsChange = useRef(true);
+
   // デバッグ用：選択されたカードID（"random"でランダム、カードIDで特定のカード）
   // Debug: selected card ID for demo/gacha ("random" for random selection, card ID for specific card)
   const [selectedCardId, setSelectedCardId] = useState<string>("random");
@@ -170,6 +192,13 @@ export default function OverlayPreview({
   useEffect(() => {
     isFirstRender.current = true;
     setShowUrlUpdated(false);
+    // 配信者切り替え（storageKey変更）時は直近デモ状態も引き継がずリセットする
+    isFirstOptionsChange.current = true;
+    lastDemoAtRef.current = null;
+    if (autoRedemoTimerRef.current) {
+      clearTimeout(autoRedemoTimerRef.current);
+      autoRedemoTimerRef.current = null;
+    }
   }, [storageKey]);
 
   // ブラウザごとに最後に使ったオーバーレイ設定を復元する
@@ -286,8 +315,54 @@ export default function OverlayPreview({
         demoUrl += `&cardId=${selectedCardId}`;
       }
       iframeRef.current.src = demoUrl;
+      // Issue #532: 自動再デモの起点として実行時刻を記録する
+      lastDemoAtRef.current = Date.now();
     }
   }, [overlayUrl, urlParams, selectedCardId]);
+
+  // triggerDemoの最新版を常に参照できるようにするref。
+  // 自動再デモのuseEffectはselectedCardId変更（triggerDemoの依存の一つ）では
+  // 再発火させたくない（対象はあくまで「表示オプション」の変更のため）ので、
+  // 関数そのものをeffectの依存に含めず、refで最新のクロージャを参照する。
+  const triggerDemoRef = useRef(triggerDemo);
+  useEffect(() => {
+    triggerDemoRef.current = triggerDemo;
+  }, [triggerDemo]);
+
+  // Issue #532: デモ実行後にオプションを変更した場合、iframeのURL自体は
+  // 正しく更新されていても、カードが表示されていないアイドル状態では見た目が
+  // 変わらずユーザーが変化に気づけない。直近にプレビューDEMOを実行していた
+  // 場合のみ、オプション変更をデバウンスして自動的にプレビューDEMOを再実行する。
+  // - デモを一度も実行していない場合（初回表示・OBS URLコピーのみの利用等）は発火しない
+  // - 直近のデモから RECENT_DEMO_WINDOW_MS を超えている場合も発火しない（無関係な変更で
+  //   勝手にカードが出るのを防ぐ）
+  // - urlParams は options の全フィールドを反映して生成されるため、これを監視すれば
+  //   表示に影響するオプション変更を過不足なく検知できる
+  useEffect(() => {
+    if (initializedStorageKey !== storageKey) {
+      return;
+    }
+    if (isFirstOptionsChange.current) {
+      isFirstOptionsChange.current = false;
+      return;
+    }
+    if (lastDemoAtRef.current === null || Date.now() - lastDemoAtRef.current > RECENT_DEMO_WINDOW_MS) {
+      return;
+    }
+    if (autoRedemoTimerRef.current) {
+      clearTimeout(autoRedemoTimerRef.current);
+    }
+    autoRedemoTimerRef.current = setTimeout(() => {
+      triggerDemoRef.current();
+    }, AUTO_REDEMO_DEBOUNCE_MS);
+    return () => {
+      if (autoRedemoTimerRef.current) {
+        clearTimeout(autoRedemoTimerRef.current);
+      }
+    };
+    // triggerDemoRef経由で最新のtriggerDemoを参照するため、triggerDemo自体をこのeffectの
+    // 依存に含める必要はない（含めるとselectedCardId変更だけでも誤発火してしまう）。
+  }, [initializedStorageKey, storageKey, urlParams]);
 
   // OBS DEMOを実行（Supabase Realtimeでブロードキャスト）
   // OBSに設定したオーバーレイにも反映される
@@ -356,6 +431,27 @@ export default function OverlayPreview({
       ...prev,
       [key]: !prev[key],
     }));
+  };
+
+  // アクティブなカードのみフィルタリング（デモ/ガチャで使用）
+  // Filter only active cards for demo/gacha
+  const activeCards = cards.filter(card => card.is_active);
+
+  // Issue #532: effectStyle（confetti/hearts等）はlegendaryカードにのみ表示される
+  // （overlay page側の shouldShowEffects 条件）ため、ランダムデモがlegendary以外を
+  // 引くと変更してもエフェクトが確認できない。効果種類を変えたら、選択可能な
+  // legendaryカードがあればプレビュー用カードを自動的にそちらへ寄せる。
+  // legendaryカードが存在しない場合は選択を変更しない（存在しないカードを捏造しない）。
+  const handleEffectStyleChange = (value: string) => {
+    setOptions(prev => ({
+      ...prev,
+      effectStyle: readStoredEffectStyle(value),
+    }));
+
+    const legendaryCard = activeCards.find((card) => card.rarity === "legendary");
+    if (legendaryCard) {
+      setSelectedCardId(legendaryCard.id);
+    }
   };
 
   // URLセクションのコンテンツ
@@ -478,10 +574,7 @@ export default function OverlayPreview({
               <select
                 aria-label={t("options.effectStyle")}
                 value={options.effectStyle}
-                onChange={(e) => setOptions(prev => ({
-                  ...prev,
-                  effectStyle: readStoredEffectStyle(e.target.value),
-                }))}
+                onChange={(e) => handleEffectStyleChange(e.target.value)}
                 className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
               >
                 {OVERLAY_EFFECT_STYLES.map((style) => (
@@ -626,10 +719,6 @@ export default function OverlayPreview({
       </div>
     </div>
   );
-
-  // アクティブなカードのみフィルタリング（デモ/ガチャで使用）
-  // Filter only active cards for demo/gacha
-  const activeCards = cards.filter(card => card.is_active);
 
   // プレビューセクションのコンテンツ
   // Preview section content
