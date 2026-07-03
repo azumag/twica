@@ -1,4 +1,5 @@
 import type { Rarity } from "@/types/database";
+import { RARITY_ORDER } from "@/lib/constants";
 
 export type GachaSoundTargetType = "all" | "rarity" | "reward";
 
@@ -192,4 +193,78 @@ export function legacySoundToRules(soundUrl: string | null, soundEnabled: boolea
     rewardId: null,
     rewardName: null,
   }];
+}
+
+// pickGachaSoundRule と同じ優先順位(reward > rarity > all)。
+// 「どのカードを音の代表にするか」の比較にも同じ優先度を使い、一致させる。
+const SOUND_RULE_SPECIFICITY: Record<GachaSoundTargetType, number> = {
+  reward: 3,
+  rarity: 2,
+  all: 1,
+};
+
+/**
+ * N連ガチャの複数カードの中から、効果音を鳴らす1枚を選ぶ（PR #451 レビュー
+ * 指摘 F2）。
+ *
+ * 従来は常に「1枚目のカード」のレアリティだけで効果音ルールを決めていたため、
+ * 例えば10連の4枚目にレジェンダリーが出ても、1枚目がコモンならレジェンダリー
+ * 音は鳴らなかった。ここではバッチ内の各カードを pickGachaSoundRule で個別に
+ * 評価し、一致したルールの具体性(reward > rarity > all)が最も高いカードを選ぶ。
+ * 同じ具体性で複数枚が一致する場合(例: レア/レジェンダリー両方のレアリティ
+ * ルールが設定されていて両方引いた)は、より希少なレアリティのカードを優先する
+ * (RARITY_ORDER: legendary が最も希少 = 配列の先頭)。
+ *
+ * - soundRules が空(レガシー単一URL設定、ルール非対応)の場合は、従来どおり
+ *   1枚目を代表とする(レガシー動作は変えない)。
+ * - soundRules が1件以上あるのにどのカードもルールに一致しない場合は -1 を
+ *   返す(オーバーレイ側no-matchフォールバック撤廃と一貫して「何も鳴らさない」)。
+ *
+ * このモジュールに置く理由: 当初 overlay page (page.tsx) の named export と
+ * して実装されていたが、Next.js の Page ファイルは規定フィールド以外の
+ * export を持てず `next build` の Page 型検証で失敗する(vitest/tsc では
+ * 検出されない build 固有の検査)。ロジックの帰属先としても、同じ優先度定義を
+ * 持つ pickGachaSoundRule の隣が正しい。
+ */
+export function pickSoundBearingCardIndex(
+  cards: Array<{ rarity: string }>,
+  rewardId: string | null | undefined,
+  soundRules: GachaSoundRule[],
+): number {
+  if (soundRules.length === 0) {
+    return cards.length > 0 ? 0 : -1;
+  }
+
+  let bestIndex = -1;
+  let bestSpecificity = 0;
+  let bestRarityRank = Number.POSITIVE_INFINITY;
+
+  cards.forEach((card, index) => {
+    const rule = pickGachaSoundRule(soundRules, { rarity: card.rarity, rewardId });
+    if (!rule) return;
+
+    const specificity = SOUND_RULE_SPECIFICITY[rule.targetType];
+    const rawRarityRank = RARITY_ORDER.indexOf(card.rarity);
+    const rarityRank = rawRarityRank === -1 ? Number.POSITIVE_INFINITY : rawRarityRank;
+
+    const isMoreSpecific = specificity > bestSpecificity;
+    // 「同率なら希少なカードを優先」は rarity ルール同士が並んだ場合に限る
+    // (仕様上のtie-break対象)。reward/all は、rewardId が全カード共通の
+    // バッチ単位の情報である(=一致すれば全カードが等しく一致する)ため、
+    // ここで希少度によるタイブレークを適用すると「常に一番レアなカード」に
+    // 音が偏ってしまい非直感的。reward/all の同率タイは、先に一致した
+    // (=表示順で先頭の)カードを採用する。
+    const isRarityTierTieBreak =
+      specificity === bestSpecificity
+      && rule.targetType === "rarity"
+      && rarityRank < bestRarityRank;
+
+    if (isMoreSpecific || isRarityTierTieBreak) {
+      bestIndex = index;
+      bestSpecificity = specificity;
+      bestRarityRank = rarityRank;
+    }
+  });
+
+  return bestIndex;
 }
