@@ -332,6 +332,68 @@ type SortDirection = typeof VALID_SORT_DIRECTIONS[number];
 const VALID_STATUS_FILTERS = ["all", "active", "inactive"] as const;
 type StatusFilter = typeof VALID_STATUS_FILTERS[number];
 
+// Issue #542: cards一覧に「発行済み枚数」を付与する際に参照する最小限の形状
+// Minimal shape needed to attach issued counts to a cards-list row
+type CardWithIssuanceLimit = { id: string; max_issuance_count?: number | null };
+
+/**
+ * Issue #542 (CardManagerで発行済み枚数・残余枚数を表示する):
+ * max_issuance_count が設定された「限定カード」のみ、user_cards から発行済み
+ * 枚数を取得して issued_count として付与する。
+ *
+ * - 限定カードが0件（大多数のケース = 無制限カードのみ）なら user_cards への
+ *   問い合わせ自体をスキップし、不要なDB負荷を避ける（Issueの受け入れ条件）。
+ * - Supabase(PostgREST)クライアントは任意のGROUP BY集計をサポートしないため、
+ *   対象カードのuser_cards.card_idを1クエリで取得し、アプリ側でCOUNTする
+ *   （Issue #548と同様の「limited-card subsetのみ対象にする」考え方）。
+ *   行数は対象カードの発行上限に頭打ちされるため、無制限カードを含む全件
+ *   カウントより大幅に軽い。
+ * - 取得に失敗してもカード一覧自体は返す（ベストエフォート）。issued_countが
+ *   付与されないだけで、UI側は無制限カードと同様に枚数表示をスキップする。
+ *
+ * Only cards with max_issuance_count set ("limited cards") get an issued_count
+ * looked up from user_cards. Skips the query entirely when there are no limited
+ * cards on the page (the common case) to avoid unnecessary DB load. PostgREST
+ * has no arbitrary GROUP BY, so we fetch card_id rows for the limited subset in
+ * a single query and COUNT them in application code (bounded by each card's
+ * issuance cap, not the whole table). Failures are best-effort: the card list
+ * is still returned, just without issued_count.
+ */
+async function attachIssuedCounts<T extends CardWithIssuanceLimit>(
+  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
+  cards: T[]
+): Promise<Array<T & { issued_count?: number }>> {
+  const limitedCardIds = cards
+    .filter((card) => card.max_issuance_count !== null && card.max_issuance_count !== undefined)
+    .map((card) => card.id);
+
+  if (limitedCardIds.length === 0) {
+    return cards;
+  }
+
+  const { data: issuedRows, error } = await supabaseAdmin
+    .from("user_cards")
+    .select("card_id")
+    .in("card_id", limitedCardIds);
+
+  if (error) {
+    logger.error("Cards API: Failed to fetch issued counts (Issue #542)", error);
+    return cards;
+  }
+
+  const issuedCounts = new Map<string, number>();
+  for (const row of (issuedRows || []) as { card_id: string }[]) {
+    issuedCounts.set(row.card_id, (issuedCounts.get(row.card_id) || 0) + 1);
+  }
+
+  return cards.map((card) => {
+    if (card.max_issuance_count === null || card.max_issuance_count === undefined) {
+      return card;
+    }
+    return { ...card, issued_count: issuedCounts.get(card.id) ?? 0 };
+  });
+}
+
 /**
  * Internal function to fetch cards from database (used for caching)
  * データベースからカードを取得する内部関数（キャッシュ用）
@@ -406,9 +468,15 @@ async function fetchCardsFromDB(
   }
   if (error) throw error;
 
+  // Issue #542: 限定カードにのみ発行済み枚数(issued_count)を付与する
+  const cardsWithIssuedCounts = await attachIssuedCounts(
+    supabaseAdmin,
+    normalizeDropRate((cards || []) as Array<{ drop_rate: unknown } & CardWithIssuanceLimit>)
+  );
+
   logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${cards?.length || 0} cards)`);
 
-  return { cards: normalizeDropRate(cards || []), count };
+  return { cards: cardsWithIssuedCounts, count };
 }
 
 export async function GET(request: NextRequest) {

@@ -49,6 +49,10 @@ function setupCardsMock(options: {
   streamer?: { id: string } | null
   cards?: Record<string, unknown>[]
   cardsError?: Error | null
+  // Issue #542: user_cards から取得する発行済みカード行（issued_count集計の元データ）
+  // user_cards rows fed into the issued_count aggregation (Issue #542)
+  userCards?: Record<string, unknown>[]
+  userCardsError?: Error | null
 }) {
   // ストリーマー確認用クエリビルダー
   const streamerQuery = createMockQueryBuilder()
@@ -70,17 +74,32 @@ function setupCardsMock(options: {
     return cardsQuery
   }
 
-  mockGetSupabaseAdmin.mockReturnValue({
-    from: vi.fn((table: string) => {
-      if (table === 'streamers') return streamerQuery
-      if (table === 'cards') {
-        return cardsQuery
-      }
-      return createMockQueryBuilder()
-    }),
-  } as ReturnType<typeof getSupabaseAdmin>)
+  // Issue #542: 発行済み枚数集計用のuser_cardsクエリビルダー（暗黙のawaitに対応）
+  // user_cards query builder for the issued_count aggregation (implicit await)
+  const userCardsQuery = createMockQueryBuilder()
+  // Note: 既存の cardsQuery 等は `as Record<string, unknown>` で直接キャストしているが、
+  // MockQueryBuilder<unknown> と Record<string, unknown> は型として十分重ならず
+  // TS2352になる（tsc baseline比較のため、新規コードではここだけ `as unknown` を
+  // 経由してこのエラーパターンを増やさないようにする）。
+  ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
+    resolve({ data: options.userCards ?? [], error: options.userCardsError ?? null })
+    return userCardsQuery
+  }
 
-  return { streamerQuery, cardsQuery }
+  const from = vi.fn((table: string) => {
+    if (table === 'streamers') return streamerQuery
+    if (table === 'cards') {
+      return cardsQuery
+    }
+    if (table === 'user_cards') {
+      return userCardsQuery
+    }
+    return createMockQueryBuilder()
+  })
+
+  mockGetSupabaseAdmin.mockReturnValue({ from } as ReturnType<typeof getSupabaseAdmin>)
+
+  return { streamerQuery, cardsQuery, userCardsQuery, from }
 }
 
 function setupCardsMockWithRetry(options: {
@@ -347,6 +366,85 @@ describe('GET /api/cards', () => {
 
       const response = await GET(createRequest({ streamerId: 'nonexistent' }))
       expect(response.status).toBe(403)
+    })
+  })
+
+  // Issue #542: CardManagerで発行済み枚数・残余枚数を表示する
+  describe('issued_count (Issue #542)', () => {
+    it('無制限カードのみの場合、user_cardsへの問い合わせをスキップし issued_count を付与しない', async () => {
+      const { from } = setupCardsMock({
+        streamer: { id: 'streamer-1' },
+        cards: [
+          { id: 'card-1', drop_rate: 0.5, max_issuance_count: null },
+          { id: 'card-2', drop_rate: 0.5, max_issuance_count: undefined },
+        ],
+      })
+
+      const response = await GET(createRequest({ streamerId: 'streamer-1' }))
+      const body = await response.json()
+
+      expect(response.status).toBe(200)
+      // 無駄なJOINを避けるため、限定カードが1件も無ければuser_cardsは問い合わせない
+      expect(from).toHaveBeenCalledWith('cards')
+      expect(from).not.toHaveBeenCalledWith('user_cards')
+      expect(body.cards[0].issued_count).toBeUndefined()
+      expect(body.cards[1].issued_count).toBeUndefined()
+    })
+
+    it('上限付きカードのみ user_cards をcard_idでグルーピングしたCOUNTを issued_count として付与する', async () => {
+      const { userCardsQuery } = setupCardsMock({
+        streamer: { id: 'streamer-1' },
+        cards: [
+          { id: 'card-limited', drop_rate: 0.5, max_issuance_count: 10 },
+          { id: 'card-unlimited', drop_rate: 0.5, max_issuance_count: null },
+        ],
+        // card-limited が3枚発行済み。card-unlimitedは対象外なので行が来ても無視される想定は無い
+        // (実際のクエリは limitedCardIds のみで絞り込むため、ここではlimited分のみ用意)
+        userCards: [
+          { card_id: 'card-limited' },
+          { card_id: 'card-limited' },
+          { card_id: 'card-limited' },
+        ],
+      })
+
+      const response = await GET(createRequest({ streamerId: 'streamer-1' }))
+      const body = await response.json()
+
+      expect(response.status).toBe(200)
+      // 限定カードのIDのみでuser_cardsを絞り込むこと（無制限カードは対象外）
+      expect(userCardsQuery.in).toHaveBeenCalledWith('card_id', ['card-limited'])
+
+      const limited = body.cards.find((c: { id: string }) => c.id === 'card-limited')
+      const unlimited = body.cards.find((c: { id: string }) => c.id === 'card-unlimited')
+      expect(limited.issued_count).toBe(3)
+      expect(unlimited.issued_count).toBeUndefined()
+    })
+
+    it('発行済み0枚の限定カードは issued_count: 0 になる', async () => {
+      setupCardsMock({
+        streamer: { id: 'streamer-1' },
+        cards: [{ id: 'card-limited', drop_rate: 0.5, max_issuance_count: 5 }],
+        userCards: [],
+      })
+
+      const response = await GET(createRequest({ streamerId: 'streamer-1' }))
+      const body = await response.json()
+
+      expect(body.cards[0].issued_count).toBe(0)
+    })
+
+    it('user_cardsの取得に失敗してもカード一覧自体は200で返す（ベストエフォート、issued_countは付与しない）', async () => {
+      setupCardsMock({
+        streamer: { id: 'streamer-1' },
+        cards: [{ id: 'card-limited', drop_rate: 0.5, max_issuance_count: 5 }],
+        userCardsError: new Error('db unavailable'),
+      })
+
+      const response = await GET(createRequest({ streamerId: 'streamer-1' }))
+      const body = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(body.cards[0].issued_count).toBeUndefined()
     })
   })
 })

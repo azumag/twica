@@ -156,8 +156,14 @@
       "rarity": "レアリティ",
       "weight": "重み",
       "probability": "確率",
+      "issuance": "発行数",
       "status": "ステータス",
       "actions": "操作"
+    },
+    "issuance": {
+      "issuedOfMax": "{issued} / {max} 発行済み",
+      "soldOut": "売り切れ",
+      "lowRemaining": "残りわずか"
     },
     "status": {
       "distributing": "配布中",

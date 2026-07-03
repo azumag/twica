@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { getIssuanceInfo } from "@/lib/card-issuance";
 import ExpandableDescription from "./ExpandableDescription";
 
 interface CardListProps {
@@ -115,6 +116,9 @@ export default function CardList({
             {/* 確率列：固定幅 80px */}
             {/* Probability column: fixed width 80px */}
             <th className="px-4 py-3 w-20">{t("table.probability")}</th>
+            {/* 発行数列：固定幅 112px（Issue #542。無制限カードは"-"のみで空欄） */}
+            {/* Issuance column: fixed width 112px (Issue #542. Shows "-" for unlimited cards) */}
+            <th className="px-4 py-3 w-28">{t("table.issuance")}</th>
             {/* ステータス列：固定幅 100px */}
             {/* Status column: fixed width 100px */}
             <th className="px-4 py-3 w-24">{t("table.status")}</th>
@@ -130,6 +134,8 @@ export default function CardList({
             // First 4 rows get priority for LCP optimization
             // 最初の4行はLCP最適化のためpriority設定
             const isPriority = index < 4;
+            // Issue #542: limited-issuance cards only (null for unlimited cards)
+            const issuanceInfo = getIssuanceInfo(card.max_issuance_count, card.issued_count);
 
             return (
               <tr
@@ -226,6 +232,38 @@ export default function CardList({
                 {/* 出現確率（重みから計算された実際の確率） */}
                 <td className="px-4 py-3 text-sm text-green-400 font-medium">
                   {calculateActualProbability(card)}
+                </td>
+
+                {/* Issued / max issuance count (Issue #542) */}
+                {/* 発行済み / 発行可能枚数（Issue #542） */}
+                <td className="px-4 py-3 text-sm">
+                  {issuanceInfo ? (
+                    <div className="flex flex-col items-start gap-1">
+                      <span
+                        className={
+                          issuanceInfo.soldOut
+                            ? "font-medium text-red-400"
+                            : issuanceInfo.lowRemaining
+                              ? "font-medium text-yellow-400"
+                              : "text-gray-300"
+                        }
+                      >
+                        {t("issuance.issuedOfMax", { issued: issuanceInfo.issued, max: issuanceInfo.max })}
+                      </span>
+                      {issuanceInfo.soldOut && (
+                        <span className="inline-flex items-center rounded-full bg-red-500/20 px-2 py-0.5 text-xs text-red-400">
+                          {t("issuance.soldOut")}
+                        </span>
+                      )}
+                      {!issuanceInfo.soldOut && issuanceInfo.lowRemaining && (
+                        <span className="inline-flex items-center rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-400">
+                          {t("issuance.lowRemaining")}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-gray-500">-</span>
+                  )}
                 </td>
 
                 {/* Status */}
