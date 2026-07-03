@@ -506,7 +506,7 @@
       "multiTemplatePlaceholder": "@'{'user'}' が'{'draws'}'連ガチャで '{'rarityCounts'}' を獲得しました！'{'cards'}'",
       "multiShowCards": "N連通知にカード名一覧を含める",
       "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL, '{'packName'}'=獲得カードが属するパック名（パック未指定の抽選では空文字）",
-      "multiPlaceholderHelp": "N連用: '{'draws'}'=抽選回数, '{'rarityCounts'}'=レアリティ別枚数（例: レアx3、コモンx3）, '{'cards'}'=カード名一覧, '{'newCards'}'=今回初めて獲得したカード名一覧, '{'newCardCount'}'=今回初めて獲得したカード種類数",
+      "multiPlaceholderHelp": "N連用: '{'draws'}'=抽選回数, '{'rarityCounts'}'=レアリティ別枚数（例: レアx3、コモンx3）, '{'cards'}'=カード名一覧, '{'newCards'}'=今回初めて獲得したカード名一覧, '{'newCardCount'}'=今回初めて獲得したカード種類数（'{'newCards'}'・'{'newCardCount'}'は「N連通知にカード名一覧を含める」を有効にしている場合のみ値が入ります。無効の場合は空文字に置き換わります）",
       "previewLength": "プレビュー文字数: {current} / {max}文字"
     },
     "buttons": {
@@ -524,6 +524,7 @@
       "checkingScope": "権限を確認中...",
       "saved": "設定を保存しました",
       "lengthWarning": "カード説明やURLが長い場合、送信メッセージが最大 {estimated} 文字程度になる可能性があります。{max}文字を超えた分は送信時に切り詰められます。",
+      "newCardPlaceholderWarning": "「N連通知にカード名一覧を含める」が無効なため、テンプレート内の '{'newCards'}' / '{'newCardCount'}' は送信時に空文字に置き換わります。内容を表示したい場合は上のチェックボックスを有効にしてください。",
       "botDisconnected": "別アカウント連携を解除しました"
     },
     "errors": {

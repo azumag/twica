@@ -125,6 +125,19 @@ export default function ChatAnnouncementSettings({
   const activeMultiTemplate = multiTemplate || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE;
   const canSendChat = hasScope || botConnected;
 
+  // {newCards}/{newCardCount} は multiShowCards（カード名一覧表示）が有効なときのみ値が入り、
+  // 無効時は本文生成ロジック側で空文字に置換される（#487仕様、本PRでは変更しない）。
+  // 誤設定に気づきにくいため、テンプレートがこれらを使っているのに表示設定がOFFの場合は警告する。
+  // {newCards}/{newCardCount} only get content when multiShowCards (card-name list display) is
+  // enabled; otherwise the message-building logic replaces them with an empty string (existing
+  // #487 behavior, unchanged by this PR). Since that's easy to misconfigure without noticing,
+  // warn when the template references them while the display toggle is off.
+  const usesNewCardPlaceholders = useMemo(
+    () => /\{newCards\}|\{newCardCount\}/.test(activeMultiTemplate),
+    [activeMultiTemplate]
+  );
+  const showNewCardPlaceholderWarning = usesNewCardPlaceholders && !multiShowCards;
+
   const demoMessage = useMemo(() => {
     return buildChatPreviewMessage(activeTemplate, {
       user: "SampleUser",
@@ -586,6 +599,15 @@ export default function ChatAnnouncementSettings({
             />
             {t("form.multiShowCards")}
           </label>
+          {/* #504: multiShowCards無効時に{newCards}/{newCardCount}が空文字化される仕様は */}
+          {/* 誤設定に見えやすいため、テンプレートがこれらを使っている場合のみ警告を表示する */}
+          {/* #504: warn when the template uses {newCards}/{newCardCount} while multiShowCards */}
+          {/* is off, since the resulting empty-string substitution otherwise looks like a bug */}
+          {showNewCardPlaceholderWarning && (
+            <div className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
+              {t("messages.newCardPlaceholderWarning")}
+            </div>
+          )}
         </div>
 
         {/* ボタン群 */}
