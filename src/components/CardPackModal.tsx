@@ -9,6 +9,7 @@ import {
 } from "@/lib/constants";
 import { MAX_COLLECTION_NAME_LENGTH, isReservedCollectionName } from "@/lib/validation/collection-name";
 import { logger } from "@/lib/logger";
+import { isEnterKeySubmit } from "@/lib/keyboard-utils";
 
 // ここでの事前検証は UX 向上のためで、最終的な検証はサーバーが行う
 // (POST /api/streamer/settings, PATCH /api/cards/collections)。検証規則は
@@ -27,6 +28,12 @@ interface CardPackModalProps {
   onSaved: (next: string[]) => void;
   // Issue #554: デフォルトパックの表示名リネームが成功した際に親へ通知する。
   onDefaultPackNameSaved: (next: string | null) => void;
+  // Issue #605: 通常パックのリネームが成功した際、旧名→新名を親へ通知する。
+  // onSaved はリネーム後のカタログ配列(string[])のみを渡すため、親
+  // (CardManager)が保持する cards ステートの collection_name 追従には使えない。
+  // このコールバックで親がカード側をローカルパッチできるようにする
+  // (呼び出し側がカードを持たない場合に備え任意propとする)。
+  onPackRenamed?: (oldName: string, newName: string) => void;
 }
 
 /**
@@ -84,6 +91,7 @@ export default function CardPackModal({
   isPremium = false,
   onSaved,
   onDefaultPackNameSaved,
+  onPackRenamed,
 }: CardPackModalProps) {
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
@@ -289,6 +297,12 @@ export default function CardPackModal({
         : list.map((v) => (v === oldName ? newName : v));
       setList(nextList);
       onSaved(nextList);
+      // Issue #605: カタログ配列の更新(onSaved)だけでは、親が保持する既存カード
+      // の collection_name が旧パック名のまま取り残される(サーバー側は
+      // rename_card_pack RPC でカード側も含めて既にカスケード更新済み)。
+      // 親側のカード表示がリロードするまで「別パックのカード」に見えてしまう
+      // 不具合の原因だったため、専用コールバックで旧名→新名を明示的に伝える。
+      onPackRenamed?.(oldName, newName);
       cancelRename();
     } catch (err) {
       logger.error("Failed to rename card pack:", err);
@@ -411,7 +425,8 @@ export default function CardPackModal({
                 placeholder={t("cardPackModal.addPlaceholder")}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  // Issue #613: IME変換確定のEnterで誤って追加が走らないようにする
+                  if (isEnterKeySubmit(e)) {
                     e.preventDefault();
                     handleAdd();
                   }
@@ -463,7 +478,8 @@ export default function CardPackModal({
                         placeholder={t("cardPackModal.defaultName")}
                         onChange={(e) => setRenameInput(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") {
+                          // Issue #613: IME変換確定のEnterで誤って保存が走らないようにする
+                          if (isEnterKeySubmit(e)) {
                             e.preventDefault();
                             handleRenameDefaultSave();
                           } else if (e.key === "Escape") {
@@ -541,7 +557,8 @@ export default function CardPackModal({
                           disabled={renameSaving}
                           onChange={(e) => setRenameInput(e.target.value)}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") {
+                            // Issue #613: IME変換確定のEnterで誤って保存が走らないようにする
+                            if (isEnterKeySubmit(e)) {
                               e.preventDefault();
                               handleRenamePackSave();
                             } else if (e.key === "Escape") {
