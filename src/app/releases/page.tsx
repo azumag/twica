@@ -11,6 +11,7 @@ export const metadata: Metadata = {
 
 /**
  * リリースノートページ
+ * 2026年7月: カードパック初リリース・パック別排出率・効果音詳細設定・発行枚数上限
  * v1.31.0: カード排出確率自動設定・コレクションコンプリート・ガチャ履歴フィルタ
  * v1.27.0: 支援特典システム・Twitchサブスク確認・問い合わせフォーム
  */
@@ -48,6 +49,156 @@ export default async function ReleasesPage() {
           <h1 className="mb-10 text-3xl font-bold text-white">
             TwiCa リリースノート
           </h1>
+
+          {/* 2026年7月 - 初リリース機能を支援機能/通常機能で分類し、同じ機能群の改善をまとめて説明 */}
+          <div className="mb-16">
+            <div className="mb-8">
+              <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
+                2026年7月アップデート
+              </div>
+              <p className="mt-2 text-sm text-gray-500">2026-07-03</p>
+            </div>
+
+            <p className="mb-10 leading-relaxed text-gray-400">
+              今回のアップデートでは、カードパック機能を初リリースしました。
+              チャネルポイント報酬ごとに抽選対象を分けられるようになり、
+              支援機能としてパックの追加登録や効果音の詳細設定も利用できます。
+            </p>
+
+            <section className="mb-10">
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                支援機能
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    カードパックの追加登録
+                  </h3>
+                  <p className="text-gray-400">
+                    支援プランまたはTwitchサブスクが有効な配信者は、カードパックを追加登録できるようになりました。
+                    登録したパックはカード作成やチャネルポイント報酬設定でプルダウンから選べるため、
+                    パック名の入力ミスを防ぎながら運用できます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    既に登録済みのパックの利用・解除は、支援状態が変わっても行えます。
+                    パック名のリネーム、デフォルトパック名の変更、パック別のカード一覧表示にも対応しました。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    ガチャ効果音の詳細設定
+                  </h3>
+                  <p className="text-gray-400">
+                    ガチャ効果音を、全体・レアリティ別・チャネルポイント報酬別に設定できるようになりました。
+                    報酬別設定では、報酬IDを手入力するのではなく、報酬名と必要ポイントが分かるプルダウンから選択できます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    複数枚ガチャでは、引いたカード全体を見て、より適切な効果音が選ばれるようになりました。
+                    保存後の設定反映や、許可される効果音URLの扱いも改善しています。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    支援特典ページの更新
+                  </h3>
+                  <p className="text-gray-400">
+                    支援特典ページを今回の内容に合わせて更新しました。
+                    カードパックの追加登録やガチャ効果音の詳細設定など、
+                    利用できる特典内容を確認しやすくしています。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="mb-10">
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                通常機能
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    報酬ごとのカードパック抽選
+                  </h3>
+                  <p className="text-gray-400">
+                    チャネルポイント報酬ごとに、抽選対象となるカードパックを切り替えられるようになりました。
+                    通常報酬では全カード、特別な報酬では特定パックのみ、といった使い分けができます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    未指定の場合はこれまで通り全カードが対象です。
+                    未分類カードだけを対象にするデフォルトパックも選択できます。
+                    パック未登録時には不要な選択欄を表示しないなど、設定画面の分かりやすさも改善しました。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    パック別排出率設定
+                  </h3>
+                  <p className="text-gray-400">
+                    ガチャの自動モードで、全体共通のレアリティ配分に加えて、
+                    パックごとのレアリティ配分を設定できるようになりました。
+                    個別設定がないパックは全体設定を引き継ぐため、必要なパックだけ調整できます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    パック指定の抽選では、そのパック内のカード構成とレアリティ配分をもとに抽選されます。
+                    カード一覧や作成・編集画面に表示される確率も、実際の抽選対象に近い内容になるよう改善しました。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    パック別コレクション表示
+                  </h3>
+                  <p className="text-gray-400">
+                    視聴者向けコレクションページで、カードパックごとの絞り込みとコンプリート達成表示に対応しました。
+                    全体の収集状況だけでなく、特定パックごとの進捗や達成状況も確認できます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    達成日時の表示で発生していた画面表示の不一致も修正しました。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    発行枚数上限
+                  </h3>
+                  <p className="text-gray-400">
+                    カードごとに発行上限を設定できるようになりました。
+                    限定カードや先着カードのように、配布枚数を制限したい運用に対応できます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    上限に達したカードが抽選された場合は、可能な範囲で別カードを再抽選します。
+                    上限到達と設定不備も区別して扱うようになりました。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    アニメーションGIF対応
+                  </h3>
+                  <p className="text-gray-400">
+                    カード画像としてアニメーションGIFを保持できるようになりました。
+                    一般的なGIF形式を正しく判定し、GIF利用時のサイズ上限も画面上で分かりやすく案内します。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    設定画面の整理
+                  </h3>
+                  <p className="text-gray-400">
+                    カード引き換え設定の詳細モードを、
+                    接続状況・メイン報酬・追加の引き換え設定・レイドガチャに整理しました。
+                    機能はそのままに、設定内容を見つけやすくしています。
+                  </p>
+                </div>
+              </div>
+            </section>
+          </div>
 
           {/* v1.31.0 - カード排出確率自動設定・コレクションコンプリート・ガチャ履歴フィルタ */}
           <div className="mb-16">
