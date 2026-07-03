@@ -53,7 +53,10 @@ script refuses to deploy unless `WORKERS_CI_BRANCH=preview`, so accidental
 promotion from feature branches fails before touching the Worker.
 
 If non-production branch builds are enabled, feature branches upload version
-previews for `twica-preview` without running Supabase migrations.
+previews for `twica-preview` without running Supabase migrations. The checked-in
+deploy wrapper also falls back to this upload path if the preview deploy command
+is invoked on a feature branch, so branch builds cannot accidentally promote a
+feature branch to the preview deployment.
 
 ## Cutover
 

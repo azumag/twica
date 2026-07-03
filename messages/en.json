@@ -659,6 +659,13 @@
       "autoPortraitDescription": "Automatically switch to image-only mode for portrait images",
       "effects": "Show Effects",
       "effectsDescription": "Show sparkle effects for legendary cards",
+      "effectStyle": "Effect Style",
+      "effectStyleDescription": "Choose the animation used for legendary card reveals",
+      "effectStyles": {
+        "sparkle": "Sparkles",
+        "confetti": "Confetti",
+        "hearts": "Hearts"
+      },
       "smallMode": "Small Image Mode",
       "smallModeDescription": "Smaller display for images under 400x400 (auto-applied)",
       "displayDuration": "Card Display Duration",
