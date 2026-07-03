@@ -6,8 +6,13 @@ import { logger } from '@/lib/logger'
 import { reportError } from '@/lib/sentry/error-handler'
 import { withRetry } from '@/lib/supabase/retry'
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError } from '@/lib/card-issuance'
-import { isMissingCollectionNameColumn } from '@/lib/collections/collection-existence'
+import {
+  isMissingCollectionNameColumn,
+  isMissingRarityWeightsScopeColumnError,
+  isMissingPackRarityWeightsColumnError,
+} from '@/lib/collections/collection-existence'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
+import { computeEffectiveWeights, resolveRarityWeightsForPool } from '@/lib/rarity-weight-calculator'
 
 export interface GachaCard {
   id: string
@@ -17,6 +22,19 @@ export interface GachaCard {
   rarity: 'common' | 'rare' | 'epic' | 'legendary'
   drop_rate: number
   max_issuance_count?: number | null
+}
+
+/**
+ * パック内レアリティ自動配分(Issue #579, #576 フェーズ2)に必要な、配信者の
+ * レアリティ重み設定。executeGacha に collectionName と一緒に渡し、抽選プールが
+ * 特定パックに絞られている場合のみ effectiveWeight 計算に使う。省略時/各
+ * フィールドが undefined の場合は resolveRarityWeightsForPool が安全側
+ * (手動モード維持 or グローバル配分)にフォールバックする。
+ */
+export interface RarityWeightsDrawConfig {
+  rarityWeightsScope?: string | null
+  rarityWeights?: Record<string, number> | null
+  packRarityWeights?: Record<string, Record<string, number>> | null
 }
 
 /**
@@ -74,7 +92,11 @@ export class GachaService {
     rewardCost?: number,
     // Issue #393: when set, restrict the draw pool to this card pack. NULL/undefined
     // keeps the legacy "all active cards" behavior.
-    collectionName?: string | null
+    collectionName?: string | null,
+    // Issue #579 (#576 フェーズ2): パック内レアリティ自動配分に使う配信者の
+    // 重み設定。collectionName が未指定の場合や手動モードの場合は無視され、
+    // 従来どおり drop_rate ベースの抽選になる。
+    weightsConfig?: RarityWeightsDrawConfig
   ): Promise<Result<GachaResult>> {
     try {
       // Get active cards for this streamer (optionally scoped to a pack).
@@ -93,22 +115,22 @@ export class GachaService {
       // applied on BOTH the primary and the issuance-column-missing fallback
       // query below, or the fallback would silently ignore the requested pack
       // and draw from ALL of the streamer's cards during that deploy window.
-      // The filter is duplicated at each call site (rather than hoisted into a
-      // shared helper parameterized by column list) because supabase-js infers
-      // the Row type from a *literal* `.select(...)` string; passing a variable
-      // string collapses the type to something that cannot be spread
-      // (`{ ...card, ... }` below would fail to compile), and a shared helper
-      // generic enough to preserve both literal Row types is not worth the
-      // complexity for two short queries.
+      //
+      // Issue #579 (#576 フェーズ2): intra_rarity_weight (migration 00026, 既存の
+      // 安定列) はパック内レアリティ自動配分の計算にのみ必要なので、パック指定時
+      // のみ SELECT に追加する。supabase-js は select() の *リテラル* 文字列から
+      // Row 型を推論するため(変数文字列や三項式を渡すと型が崩れる)、列リストが
+      // 異なる分岐ごとに select() 呼び出し自体を分ける。パック未指定クエリの
+      // 列リストは従来(main の #108 実装)と完全に同一のまま維持する。
       let { data: cards, error: cardsError } = await withRetry(
         () => {
-          let query = this.supabase
-            .from('cards')
-            .select('id, name, description, image_url, rarity, drop_rate, max_issuance_count')
-            .eq('streamer_id', streamerId)
-            .eq('is_active', true)
-
           if (collectionName) {
+            let query = this.supabase
+              .from('cards')
+              .select('id, name, description, image_url, rarity, drop_rate, max_issuance_count, intra_rarity_weight')
+              .eq('streamer_id', streamerId)
+              .eq('is_active', true)
+
             // Issue #555: DEFAULT_PACK_SENTINEL means "draw only from unclassified
             // cards" (collection_name IS NULL) — the inverse of a normal named-pack
             // filter, which needs `.eq(...)` against a literal string value.
@@ -118,9 +140,15 @@ export class GachaService {
             query = collectionName === DEFAULT_PACK_SENTINEL
               ? query.is('collection_name', null)
               : query.eq('collection_name', collectionName)
+
+            return query
           }
 
-          return query
+          return this.supabase
+            .from('cards')
+            .select('id, name, description, image_url, rarity, drop_rate, max_issuance_count')
+            .eq('streamer_id', streamerId)
+            .eq('is_active', true)
         },
         'gacha:executeGacha:cards',
       )
@@ -128,19 +156,29 @@ export class GachaService {
       if (cardsError && isMissingCardIssuanceColumnError(cardsError)) {
         const fallbackResult = await withRetry(
           () => {
-            let query = this.supabase
+            // Issue #579: fallback 側もパック指定時は intra_rarity_weight を含める
+            // (含めないと発行上限列のデプロイ窓中だけパック内自動配分が
+            // intra=デフォルト1.0 扱いになり配分が静かにズレる)。列リストが
+            // 異なるため primary クエリと同様に select() を分岐ごとに分ける。
+            if (collectionName) {
+              let query = this.supabase
+                .from('cards')
+                .select('id, name, description, image_url, rarity, drop_rate, intra_rarity_weight')
+                .eq('streamer_id', streamerId)
+                .eq('is_active', true)
+
+              query = collectionName === DEFAULT_PACK_SENTINEL
+                ? query.is('collection_name', null)
+                : query.eq('collection_name', collectionName)
+
+              return query
+            }
+
+            return this.supabase
               .from('cards')
               .select('id, name, description, image_url, rarity, drop_rate')
               .eq('streamer_id', streamerId)
               .eq('is_active', true)
-
-            if (collectionName) {
-              query = collectionName === DEFAULT_PACK_SENTINEL
-                ? query.is('collection_name', null)
-                : query.eq('collection_name', collectionName)
-            }
-
-            return query
           },
           'gacha:executeGacha:cards:fallback',
         )
@@ -196,12 +234,72 @@ export class GachaService {
         return err(CARD_ISSUANCE_MESSAGES.soldOut)
       }
 
-      // Select a card based on drop rates
-      // ドロップ率に基づいてカードを選択
-      const selectedCard = selectWeightedCard(normalizeDropRate(availableCards))
+      // Select a card based on drop rates — unless the pool is pack-scoped AND
+      // the streamer is in rarity auto mode, in which case the effective
+      // per-card weight computed from the pack's rarity distribution
+      // (Issue #579, #576 フェーズ2) is used for selection instead.
+      // resolveRarityWeightsForPool returns null for manual mode / unrestricted
+      // draws / no config, in which case behavior is unchanged (drop_rate
+      // renormalized within the pool).
+      //
+      // Issue #108 との合成順序: 実効重みは「発行上限フィルタ後の availableCards」
+      // をプールとして計算する。売り切れカードは抽選プールに存在しないため、
+      // その分の配分は残りのカードへ比例再分配される(#576 設計の欠落レアリティと
+      // 同じ規則)。
+      // ドロップ率に基づいてカードを選択（パック指定+自動モード時はパック内
+      // 実効重みで選択、それ以外は従来どおり drop_rate ベース）
+      const resolvedRarityWeights = collectionName
+        ? resolveRarityWeightsForPool(
+            weightsConfig?.rarityWeightsScope,
+            weightsConfig?.rarityWeights,
+            weightsConfig?.packRarityWeights,
+            collectionName
+          )
+        : null
 
-      if (!selectedCard) {
+      // drop_rate の正規化(DECIMAL文字列→number)は選択方式に関わらず必ず先に
+      // 通す。返却カードの再構築(下記)もこの正規化済み配列を参照することで、
+      // 生 rows の文字列 drop_rate が GachaResult/broadcast へ漏れないようにする
+      // (従来は selectWeightedCard の戻り値=正規化済みクローンをそのまま返して
+      // いたため保証されていた性質。再構築方式でも同じ保証を維持する)。
+      const normalizedCards = normalizeDropRate(availableCards)
+
+      // 選択プールは「id + 選択重み」だけの最小型に落とす(WeightedCard)。
+      // 両分岐の配列型が異なるユニオンのままだと selectWeightedCard の
+      // ジェネリック推論が単一の T を選べないため、明示的に共通型へ寄せる。
+      const selectionPool: Array<{ id: string; drop_rate: number }> = resolvedRarityWeights
+        ? computeEffectiveWeights(normalizedCards, resolvedRarityWeights).map(({ card, effectiveWeight }) => ({
+            id: card.id,
+            drop_rate: effectiveWeight,
+          }))
+        : normalizedCards
+
+      const picked = selectWeightedCard(selectionPool)
+
+      if (!picked) {
         return err('Failed to select card')
+      }
+
+      // 選択には effectiveWeight (パック内実効重み) を drop_rate の代わりに
+      // 使うことがあるが、返す値・下流に渡す値は必ず元カード(正規化済み)から
+      // 再構築する。effectiveWeight は選択専用の一時的な重みであり実際の
+      // drop_rate とは異なる値になりうるため、gacha_history や配信オーバーレイ
+      // へのブロードキャストペイロードに漏れてはならない。intra_rarity_weight も
+      // GachaCard 型に存在しないフィールドなので同様に除外する。
+      const originalCard = normalizedCards.find((card) => card.id === picked.id)
+      if (!originalCard) {
+        return err('Failed to select card')
+      }
+      const selectedCard: GachaCard = {
+        id: originalCard.id,
+        name: originalCard.name,
+        description: originalCard.description,
+        image_url: originalCard.image_url,
+        rarity: originalCard.rarity,
+        drop_rate: originalCard.drop_rate,
+        // Issue #108: legacy フォールバック(executeGachaLegacy)が発行上限の
+        // 再チェックに参照するため、再構築後も必ず引き継ぐ。
+        max_issuance_count: originalCard.max_issuance_count ?? null,
       }
 
       // gacha_history, users, user_cards を1トランザクションでアトミックに実行
@@ -265,7 +363,10 @@ export class GachaService {
     eventId?: string,
     rewardCost?: number,
     // Issue #393: pack scope forwarded to each individual draw.
-    collectionName?: string | null
+    collectionName?: string | null,
+    // Issue #579 (#576 フェーズ2): 各ドローに同じ重み設定を forward する
+    // (複数枚ドローでも同じレアリティ配分を一貫して適用するため)。
+    weightsConfig?: RarityWeightsDrawConfig
   ): Promise<Result<GachaResult>> {
     const cards: GachaCard[] = []
     let firstResult: GachaResult | null = null
@@ -279,7 +380,8 @@ export class GachaService {
         userTwitchUsername,
         drawEventId,
         drawRewardCost,
-        collectionName
+        collectionName,
+        weightsConfig
       )
 
       if (!result.success) {
@@ -408,14 +510,45 @@ export class GachaService {
   ): Promise<Result<GachaResult>> {
     try {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
+      // rarity_weights / rarity_weights_scope / pack_rarity_weights は Issue #579
+      // (#576 フェーズ2) のパック内レアリティ自動配分に使う。
       let { data: streamer, error: streamerError } = await withRetry(
         () => this.supabase
           .from('streamers')
-          .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until')
+          .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, rarity_weights_scope, pack_rarity_weights')
           .eq('twitch_user_id', event.broadcaster_user_id)
           .maybeSingle(),
         'gacha:executeGachaForEventSub:streamer',
       )
+
+      // Issue #579 (#576 フェーズ2): rarity_weights_scope / pack_rarity_weights は
+      // migration 00065(#578)で追加された列で、channel_point_collection_name
+      // (00061)より後発のため、この2列だけが欠落し他の列は揃っている状態が
+      // 現実的な唯一のデプロイ窓シナリオ(逆に collection_name だけが欠落する
+      // ケースでは、より後発のこの2列も必然的に欠落している)。両者は同一
+      // マイグレーションファイルで追加され常に一緒にデプロイされるため、
+      // 既存の1列ずつ剥がすチェイン方式ではなく1回のリトライにまとめる。
+      // rarity_weights (安定した既存列, migration 00025) は保持したまま
+      // 再取得する。欠落時は rarity_weights_scope=null
+      // (resolveRarityWeightsForPool は null/undefined を 'global' として扱う)
+      // / pack_rarity_weights=null (パック別上書きなし) を安全側デフォルトとする。
+      if (
+        streamerError &&
+        (isMissingRarityWeightsScopeColumnError(streamerError) || isMissingPackRarityWeightsColumnError(streamerError))
+      ) {
+        const weightsFallback = await withRetry(
+          () => this.supabase
+            .from('streamers')
+            .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights')
+            .eq('twitch_user_id', event.broadcaster_user_id)
+            .maybeSingle(),
+          'gacha:executeGachaForEventSub:streamer:weights-fallback',
+        )
+        streamer = weightsFallback.data
+          ? { ...weightsFallback.data, rarity_weights_scope: null, pack_rarity_weights: null }
+          : weightsFallback.data
+        streamerError = weightsFallback.error
+      }
 
       // Issue #393: targeted fallback when ONLY channel_point_collection_name is
       // missing (00061 deploy window). Re-select WITHOUT that column but WITH all
@@ -424,17 +557,24 @@ export class GachaService {
       // points without running gacha). Runs before the broad
       // isStreamerSettingsSchemaError fallback, which would otherwise null out
       // raid_gacha_active_until. 列が複数欠落していれば後続の広域 fallback が拾う。
+      // rarity_weights_scope/pack_rarity_weights はこの分岐に来る時点で確実に
+      // 未デプロイ(上のコメント参照)なので選択せず null 固定にする。
       if (streamerError && isMissingCollectionNameColumn(streamerError)) {
         const collectionFallback = await withRetry(
           () => this.supabase
             .from('streamers')
-            .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until')
+            .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights')
             .eq('twitch_user_id', event.broadcaster_user_id)
             .maybeSingle(),
           'gacha:executeGachaForEventSub:streamer:collection-fallback',
         )
         streamer = collectionFallback.data
-          ? { ...collectionFallback.data, channel_point_collection_name: null }
+          ? {
+              ...collectionFallback.data,
+              channel_point_collection_name: null,
+              rarity_weights_scope: null,
+              pack_rarity_weights: null,
+            }
           : collectionFallback.data
         streamerError = collectionFallback.error
       }
@@ -456,6 +596,11 @@ export class GachaService {
               chat_announcement_multi_template: null,
               chat_announcement_multi_show_cards: true,
               raid_gacha_active_until: null,
+              // Issue #579: この分岐も同じ理由でレアリティ重み列は未取得のため
+              // 手動モード相当(rarity_weights=null)に倒す。
+              rarity_weights: null,
+              rarity_weights_scope: null,
+              pack_rarity_weights: null,
             }
           : fallbackResult.data
         streamerError = fallbackResult.error
@@ -482,7 +627,12 @@ export class GachaService {
           drawCount,
           eventId,
           event.reward.cost,
-          collectionName
+          collectionName,
+          {
+            rarityWeightsScope: streamer.rarity_weights_scope,
+            rarityWeights: streamer.rarity_weights,
+            packRarityWeights: streamer.pack_rarity_weights,
+          }
         )
         if (!result.success) return result
         return ok({
