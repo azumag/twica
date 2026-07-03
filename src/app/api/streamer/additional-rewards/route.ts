@@ -20,7 +20,7 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
 }
 
 const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
-  "追加報酬のN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。";
+  "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。";
 
 /**
  * GET: ストリーマーの追加報酬一覧を取得
@@ -224,7 +224,7 @@ export async function POST(request: NextRequest) {
     // メイン報酬が設定されているか確認（追加報酬はメイン報酬設定後のみ追加可能）
     if (!streamer.channel_point_reward_id) {
       return NextResponse.json(
-        { error: "メイン報酬を先に設定してください" },
+        { error: "メインの引き換えを先に設定してください" },
         { status: 400 }
       );
     }
@@ -233,7 +233,7 @@ export async function POST(request: NextRequest) {
     // メイン報酬と同じIDでないか確認
     if (streamer.channel_point_reward_id === rewardId) {
       return NextResponse.json(
-        { error: "この報酬はメイン報酬として既に設定されています" },
+        { error: "このチャネルポイント引き換えはメインの引き換えとして既に設定されています" },
         { status: 400 }
       );
     }
@@ -333,7 +333,7 @@ export async function POST(request: NextRequest) {
       // 一意制約違反を処理（報酬は既に追加済み）
       if (error.code === "23505") {
         return NextResponse.json(
-          { error: "この報酬は既に追加されています" },
+          { error: "このチャネルポイント引き換えは既に追加されています" },
           { status: 409 }
         );
       }

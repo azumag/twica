@@ -195,7 +195,7 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
       expect(screen.getAllByText("カードパック（支援プラン限定機能）").length).toBeGreaterThan(0);
     });
     expect(screen.queryByLabelText("引き換え対象のカードパック")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("追加報酬のカードパック")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("追加の引き換え対象のカードパック")).not.toBeInTheDocument();
   });
 
   it("canManage=false + an existing main-reward binding: shows the select but disabled, plus the upsell hint", async () => {

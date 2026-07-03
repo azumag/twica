@@ -122,7 +122,7 @@ export default async function PlansPage() {
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-blue-400 mt-0.5">✓</span>
-                    <span>効果音の詳細設定（レアリティ・報酬別に複数ルールを登録）</span>
+                    <span>効果音の詳細設定（レアリティ・チャネルポイント引き換え別に複数ルールを登録）</span>
                   </li>
                 </ul>
               </div>
@@ -158,7 +158,7 @@ export default async function PlansPage() {
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-yellow-400 mt-0.5">✓</span>
-                    <span>効果音の詳細設定（レアリティ・報酬別に複数ルールを登録）</span>
+                    <span>効果音の詳細設定（レアリティ・チャネルポイント引き換え別に複数ルールを登録）</span>
                   </li>
                 </ul>
               </div>

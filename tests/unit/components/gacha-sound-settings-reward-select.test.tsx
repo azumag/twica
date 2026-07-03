@@ -94,13 +94,13 @@ describe("GachaSoundSettings reward select (Issue #586)", () => {
     renderComponent();
 
     await waitFor(() => {
-      expect(screen.getByLabelText("対象の報酬")).toBeInTheDocument();
+      expect(screen.getByLabelText("対象のチャネルポイント引き換え")).toBeInTheDocument();
     });
     expect(screen.getByRole("option", { name: "カードガチャ (100 ポイント)" })).toBeInTheDocument();
     // Disabled rewards are still selectable but visibly marked.
     expect(screen.getByRole("option", { name: "レア確定ガチャ (500 ポイント)[無効]" })).toBeInTheDocument();
     // The old raw-ID input must be gone once the select is available.
-    expect(screen.queryByLabelText("報酬ID")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("チャネルポイント引き換えID")).not.toBeInTheDocument();
   });
 
   it("includes an unset option so a rule can be left without a reward target", async () => {
@@ -108,7 +108,7 @@ describe("GachaSoundSettings reward select (Issue #586)", () => {
     renderComponent();
 
     await waitFor(() => {
-      expect(screen.getByRole("option", { name: "-- 報酬を選択 --" })).toBeInTheDocument();
+      expect(screen.getByRole("option", { name: "-- チャネルポイント引き換えを選択 --" })).toBeInTheDocument();
     });
   });
 
@@ -120,7 +120,7 @@ describe("GachaSoundSettings reward select (Issue #586)", () => {
       ] as unknown as Json,
     });
 
-    const select = (await screen.findByLabelText("対象の報酬")) as HTMLSelectElement;
+    const select = (await screen.findByLabelText("対象のチャネルポイント引き換え")) as HTMLSelectElement;
     expect(select.value).toBe("reward-deleted");
     expect(
       screen.getByRole("option", {
@@ -134,11 +134,11 @@ describe("GachaSoundSettings reward select (Issue #586)", () => {
     renderComponent();
 
     await waitFor(() => {
-      expect(screen.getByLabelText("報酬ID")).toBeInTheDocument();
+      expect(screen.getByLabelText("チャネルポイント引き換えID")).toBeInTheDocument();
     });
-    expect(screen.queryByLabelText("対象の報酬")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("対象のチャネルポイント引き換え")).not.toBeInTheDocument();
     expect(
-      screen.getByText("報酬一覧を取得できませんでした。報酬IDを直接入力してください。")
+      screen.getByText("チャネルポイント引き換えの一覧を取得できませんでした。IDを直接入力してください。")
     ).toBeInTheDocument();
   });
 
@@ -148,7 +148,7 @@ describe("GachaSoundSettings reward select (Issue #586)", () => {
     renderComponent({ plan: "basic" });
 
     await waitFor(() => {
-      expect(screen.getByLabelText("報酬ID")).toBeInTheDocument();
+      expect(screen.getByLabelText("チャネルポイント引き換えID")).toBeInTheDocument();
     });
     const calledRewardsEndpoint = fetchMock.mock.calls.some(([input]) =>
       String(input).includes("/api/twitch/rewards")
@@ -161,7 +161,7 @@ describe("GachaSoundSettings reward select (Issue #586)", () => {
     vi.stubGlobal("fetch", fetchMock);
     renderComponent();
 
-    const select = (await screen.findByLabelText("対象の報酬")) as HTMLSelectElement;
+    const select = (await screen.findByLabelText("対象のチャネルポイント引き換え")) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "reward-b" } });
 
     await waitFor(() => {
@@ -201,7 +201,7 @@ describe("GachaSoundSettings reward select (Issue #586)", () => {
     vi.stubGlobal("fetch", fetchMock);
     renderComponent();
 
-    const select = (await screen.findByLabelText("対象の報酬")) as HTMLSelectElement;
+    const select = (await screen.findByLabelText("対象のチャネルポイント引き換え")) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "" } });
 
     await waitFor(() => {
