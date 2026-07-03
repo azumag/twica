@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import OverlayPreview from '@/components/OverlayPreview'
+import type { Card } from '@/types/database'
 
 const STORAGE_KEY = 'twica:overlay-options:streamer-1'
 
@@ -67,6 +68,33 @@ const renderWithIntl = (component: React.ReactElement) => {
   )
 }
 
+// Issue #532 のテスト用カードフィクスチャ。tests/unit/components/sorted-card-grid.test.tsx の
+// baseCard パターンを踏襲し、Card型の必須フィールドを一箇所にまとめる。
+const baseCard = (overrides: Partial<Card>): Card => ({
+  id: 'card-1',
+  streamer_id: 'streamer-1',
+  name: 'カードA',
+  description: null,
+  image_url: null,
+  rarity: 'common',
+  card_number: null,
+  max_issuance_count: null,
+  collection_name: null,
+  drop_rate: 25,
+  intra_rarity_weight: 1,
+  is_active: true,
+  hp: 10,
+  atk: 5,
+  def: 5,
+  spd: 5,
+  skill_type: 'attack',
+  skill_name: 'たいあたり',
+  skill_power: 10,
+  created_at: '2026-04-01T00:00:00Z',
+  updated_at: '2026-04-01T00:00:00Z',
+  ...overrides,
+})
+
 function createLocalStorageMock() {
   const store = new Map<string, string>()
 
@@ -98,6 +126,8 @@ describe('OverlayPreview', () => {
     // vi.stubGlobal で書き換えた window.localStorage を必ずリセットし、
     // 同一プロセス内の他テストファイルへ漏出しないようにする
     vi.unstubAllGlobals()
+    // 一部テストで vi.useFakeTimers() を使うため、他テストへ影響しないよう必ず実タイマーへ戻す
+    vi.useRealTimers()
   })
 
   it('localStorage に保存されたオーバーレイ設定を復元する', async () => {
@@ -247,6 +277,148 @@ describe('OverlayPreview', () => {
       expect(savedOptions).toMatchObject({
         effectStyle: 'confetti',
       })
+    })
+  })
+
+  // Issue #532: オプション変更はiframeのURLには正しく反映されるが、カード非表示中は
+  // 見た目が変わらずユーザーが変化に気づけない。デモ実行直後のオプション変更では
+  // 自動的にプレビューDEMOを再実行し、変更を視覚的に確認できるようにする。
+  describe('Issue #532: デモ実行後のオプション変更で自動再デモ', () => {
+    it('プレビューDEMO実行後にオプションを変更すると、デバウンス後に自動的にプレビューDEMOを再実行する', async () => {
+      vi.useFakeTimers()
+
+      renderWithIntl(
+        <OverlayPreview streamerId="streamer-1" baseUrl="https://example.com" />
+      )
+
+      const iframe = screen.getByTitle('Overlay Preview') as HTMLIFrameElement
+
+      // まず手動でプレビューDEMOを実行する
+      fireEvent.click(screen.getByRole('button', { name: 'プレビューDEMO' }))
+      expect(iframe.src).toContain('demo=true')
+
+      // オプションを変更する（imageOnlyをON）
+      // iframeのsrcはReactが制御するprop（overlayUrlWithParams）にも束縛されているため、
+      // オプション変更直後は通常の再レンダリングで一旦demoパラメータなしのURLに戻る
+      // （triggerDemoによるsrcへの命令的な上書きがReactの再レンダリングで上書き返されるため）。
+      fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+      fireEvent.click(screen.getByText('正方形でも画像のみ表示'))
+
+      // デバウンス時間が経過するまでは自動再デモ（demo=trueの付与）はまだ起きない
+      expect(iframe.src).toContain('imageOnly=true')
+      expect(iframe.src).not.toContain('demo=true')
+
+      // デバウンス（800ms）経過後、自動的にプレビューDEMOが再実行され、
+      // 変更後のオプション（imageOnly=true）が反映されたURLになる
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(800)
+      })
+
+      expect(iframe.src).toContain('imageOnly=true')
+      expect(iframe.src).toContain('demo=true')
+    })
+
+    it('プレビューDEMOを一度も実行していない場合はオプションを変更しても自動的に再デモしない', async () => {
+      vi.useFakeTimers()
+
+      renderWithIntl(
+        <OverlayPreview streamerId="streamer-1" baseUrl="https://example.com" />
+      )
+
+      const iframe = screen.getByTitle('Overlay Preview') as HTMLIFrameElement
+
+      // プレビューDEMOは実行せず、オプションのみ変更する
+      fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+      fireEvent.click(screen.getByText('正方形でも画像のみ表示'))
+
+      // デバウンス時間を十分超えて待つ
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+
+      // iframeのsrcはoptions変更を通常通り反映するが、demo=trueは付与されない
+      // （自動デモが誤って発火していないことの確認）
+      expect(iframe.src).toContain('imageOnly=true')
+      expect(iframe.src).not.toContain('demo=true')
+    })
+
+    it('デモ実行から30秒より後のオプション変更では自動的に再デモしない', async () => {
+      vi.useFakeTimers()
+
+      renderWithIntl(
+        <OverlayPreview streamerId="streamer-1" baseUrl="https://example.com" />
+      )
+
+      const iframe = screen.getByTitle('Overlay Preview') as HTMLIFrameElement
+
+      fireEvent.click(screen.getByRole('button', { name: 'プレビューDEMO' }))
+      expect(iframe.src).toContain('demo=true')
+
+      // 直近デモから30秒(RECENT_DEMO_WINDOW_MS)を超えて時間が経過
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_001)
+      })
+      const srcBeforeOptionChange = iframe.src
+
+      fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+      fireEvent.click(screen.getByText('正方形でも画像のみ表示'))
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+
+      // 30秒ウィンドウを過ぎているため、iframeのsrcはデモ再実行によっては変わらない
+      // （通常のoptions反映によるURL更新は起きるため、demo=trueが付与されないことを確認する）
+      expect(iframe.src).not.toBe(srcBeforeOptionChange)
+      expect(iframe.src).toContain('imageOnly=true')
+      expect(iframe.src).not.toContain('demo=true')
+    })
+  })
+
+  // Issue #532: effectStyle（confetti/hearts等）はlegendaryカードにのみ表示されるため、
+  // ランダムデモがlegendary以外を引くと変更してもエフェクトが確認できない。
+  // 効果種類の変更時にlegendaryカードがあれば自動的にプレビュー用カードへ寄せる。
+  describe('Issue #532: エフェクト種類変更時のlegendaryカード自動選択', () => {
+    it('legendaryカードが存在する場合、エフェクト種類を変更するとそのカードが自動選択される', async () => {
+      const cards: Card[] = [
+        baseCard({ id: 'common-1', name: 'コモンカード', rarity: 'common' }),
+        baseCard({ id: 'legendary-1', name: 'レジェンダリーカード', rarity: 'legendary' }),
+      ]
+
+      renderWithIntl(
+        <OverlayPreview streamerId="streamer-1" baseUrl="https://example.com" cards={cards} />
+      )
+
+      // 変更前はデフォルトの「ランダム」が選択されている
+      expect(screen.getByDisplayValue('ランダム')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+      fireEvent.change(screen.getByLabelText('エフェクト種類'), { target: { value: 'confetti' } })
+
+      await waitFor(() => {
+        expect(screen.getByDisplayValue('レジェンダリーカード (legendary)')).toBeInTheDocument()
+      })
+    })
+
+    it('legendaryカードが存在しない場合、エフェクト種類を変更してもカード選択は変わらない', async () => {
+      const cards: Card[] = [
+        baseCard({ id: 'common-1', name: 'コモンカード', rarity: 'common' }),
+        baseCard({ id: 'rare-1', name: 'レアカード', rarity: 'rare' }),
+      ]
+
+      renderWithIntl(
+        <OverlayPreview streamerId="streamer-1" baseUrl="https://example.com" cards={cards} />
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+      fireEvent.change(screen.getByLabelText('エフェクト種類'), { target: { value: 'confetti' } })
+
+      await waitFor(() => {
+        expect(screen.getByDisplayValue('https://example.com/overlay/streamer-1?effect=confetti')).toBeInTheDocument()
+      })
+
+      // legendaryカードが存在しないため、カード選択はデフォルトの「ランダム」のまま
+      expect(screen.getByDisplayValue('ランダム')).toBeInTheDocument()
     })
   })
 })
