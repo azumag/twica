@@ -17,13 +17,19 @@ describe('card delete cascade indexes migration (00071, Issue #614)', () => {
   )
 
   // 実際の CREATE INDEX 文だけを抽出する(先頭が `--` のコメント行は除外)。
+  // battles 向けの1文は pg_class 存在チェック(DO $$ ... EXECUTE '...' $$)で
+  // 囲まれ EXECUTE 文字列の中に埋め込まれているため、行頭一致ではなく
+  // 非コメント行を連結したテキストに対する正規表現マッチで抽出する
+  // (トップレベルの文・EXECUTE 文字列内の文の両方を同じ形で拾える)。
   // 説明コメント中で「CONCURRENTLY」「CREATE INDEX IF NOT EXISTS」という
-  // 語句そのものに触れているため、行頭アンカー無しの単純な文字列一致だと
-  // コメントを誤検出する。以降の全アサーションはこのフィルタ済み配列を使う。
-  const statementLines = migration
+  // 語句そのものに触れているため、コメント行は事前に除外する。
+  const nonCommentText = migration
     .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith('CREATE INDEX'))
+    .filter((line) => !line.trim().startsWith('--'))
+    .join('\n')
+  const statementLines = [
+    ...nonCommentText.matchAll(/CREATE INDEX IF NOT EXISTS \w+\s*\n?\s*ON \w+\([^)]+\)/g),
+  ].map((m) => m[0].replace(/\s+/g, ' '))
 
   it('references Issue #614', () => {
     expect(migration).toMatch(/#614/)
@@ -88,6 +94,26 @@ describe('card delete cascade indexes migration (00071, Issue #614)', () => {
     for (const statement of statementLines) {
       expect(statement).toContain('IF NOT EXISTS')
     }
+  })
+
+  it('guards only the battles index behind a pg_class existence check (production lacks the battles table per 00024 precedent)', () => {
+    // battles/battle_stats は 00024_fix_rls_policies_security.sql の時点で
+    // 既に本番に存在しないことが判明していたテーブル(battle機能はナビゲーション
+    // からリンクされていない未使用機能で、テーブルがマイグレーション経路外で
+    // 欠落している)。無条件の CREATE INDEX ON battles(...) は本番で
+    // "relation battles does not exist" (42P01) で失敗し、単一トランザクション
+    // のため他3インデックスも巻き添えでロールバックする
+    // (これが実際にこのmigrationを本番で失敗させた障害そのもの)。
+    expect(migration).toMatch(
+      /IF EXISTS \(SELECT 1 FROM pg_class WHERE relname = 'battles'\)[\s\S]*?EXECUTE 'CREATE INDEX IF NOT EXISTS idx_battles_opponent_card_id ON battles\(opponent_card_id\)'/
+    )
+    // gacha_history / card_owner_stats / card_stone_transactions は実在が
+    // 確定しているテーブルなので無条件のままであるべき(過剰な防御は避ける)。
+    // ガードが1箇所(battles)にしか存在しないことで、それを確認する
+    // (説明コメント中の「pg_class」という語自体への言及は除外するため、
+    // コメント除去済みの nonCommentText を数える)。
+    const pgClassGuardCount = (nonCommentText.match(/pg_class/g) || []).length
+    expect(pgClassGuardCount).toBe(1)
   })
 
   it('does not introduce permissive public RLS policies', () => {
