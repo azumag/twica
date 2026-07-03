@@ -12,6 +12,7 @@ import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
+import { computeEffectiveWeights, resolveRarityWeightsForPool } from "@/lib/rarity-weight-calculator";
 import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
 import { MAX_ISSUANCE_COUNT_CAP } from "@/lib/card-issuance";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
@@ -96,6 +97,20 @@ interface CardManagerProps {
   // Display-name override for the "default" (unclassified) pack (Issue #554).
   // null/undefined falls back to the generic label ("デフォルト").
   initialDefaultPackName?: string | null;
+  // Issue #580(#576 フェーズ3): rarity_weights を全パック共通(global)で使うか
+  // パック別(per_pack, initialPackRarityWeights を優先)で使うか。
+  // undefined/null(列未デプロイのデプロイ窓を含む)は 'global' として扱う。
+  // Issue #580 (#576 Phase 3): whether rarity_weights applies globally or
+  // per-pack. undefined/null (including deploy-window column absence) is
+  // treated as 'global'.
+  initialRarityWeightsScope?: "global" | "per_pack" | null;
+  // Issue #580: パック別レアリティ重みの上書きマップ。キーはパック名または
+  // DEFAULT_PACK_SENTINEL。エントリの無いパックはグローバル rarity_weights を
+  // 継承する(アプリ層規約、#578)。null/undefined はエントリなし。
+  // Issue #580: per-pack rarity-weight override map. Keys are pack names or
+  // DEFAULT_PACK_SENTINEL. Packs without an entry inherit the global
+  // rarity_weights (app-layer convention, #578). null/undefined = no entries.
+  initialPackRarityWeights?: Record<string, Record<string, number>> | null;
   // Issue #269再設計: 新規パック登録(パック管理モーダルでの追加)にのみ適用する
   // プラン判定。デフォルトfalse(フェイルクローズ)。
   isPremium?: boolean;
@@ -150,6 +165,8 @@ export default function CardManager({
   initialCustomRarities = [],
   initialCardPackNames = [],
   initialDefaultPackName = null,
+  initialRarityWeightsScope = "global",
+  initialPackRarityWeights = null,
   isPremium = false,
 }: CardManagerProps) {
   // i18n translations
@@ -178,6 +195,14 @@ export default function CardManager({
   const [cardPackNames, setCardPackNames] = useState<string[]>(initialCardPackNames);
   // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554。専用モーダルで管理）
   const [defaultPackName, setDefaultPackName] = useState<string | null>(initialDefaultPackName);
+  // Issue #580: レアリティ重みのスコープ('global'|'per_pack')とパック別上書きマップ。
+  // ドロップ率設定モーダル(DropRateAutoModeContent)が保存・エコーバック同期を行う。
+  const [rarityWeightsScope, setRarityWeightsScope] = useState<"global" | "per_pack">(
+    initialRarityWeightsScope ?? "global"
+  );
+  const [packRarityWeights, setPackRarityWeights] = useState<Record<string, Record<string, number>> | null>(
+    initialPackRarityWeights ?? null
+  );
   const rarityOptions = useMemo(() => {
     const values = new Set<string>(RARITIES.map((rarity) => rarity.value));
     cards.forEach((card) => {
@@ -341,6 +366,52 @@ export default function CardManager({
         .reduce((sum, c) => sum + c.drop_rate, 0),
     [cards, packFilter]
   );
+
+  // Issue #580(#576 フェーズ3): 自動モード時、パックフィルタ選択中の確率列は
+  // totalActiveWeight の単純な drop_rate 比ではなく、実際の抽選ロジック
+  // (#579 GachaService.executeGacha / computeEffectiveWeights)と同じ計算で
+  // 表示する。drop_rate は「配信者の全アクティブカード」を母数に計算された
+  // 値であり、パック内の実際のレアリティ構成比とは一致しないことがあるため、
+  // drop_rate の単純な再正規化(旧#565実装)ではパック抽選時の実確率とズレる
+  // (PR #575 で指摘された不整合の原因)。ここでは resolveRarityWeightsForPool
+  // で解決した重み設定を使い、パック内プールに対して computeEffectiveWeights
+  // を再計算してから、選択時の暗黙の再正規化(selectWeightedCard は渡された
+  // 集合内の比率だけで選ぶ)を明示的に再現する。
+  // 手動モード(rarityWeights===null)またはフィルタ未選択時は null を返し、
+  // CardList 側は従来通り totalActiveWeight ベースの計算にフォールバックする。
+  const packScopedProbabilities = useMemo(() => {
+    if (!packFilter || !rarityWeights || Object.keys(rarityWeights).length === 0) {
+      return null;
+    }
+
+    const pool = cards.filter(
+      (c) => c.is_active && cardMatchesPackKey(c.collection_name, packFilter)
+    );
+    if (pool.length === 0) return null;
+
+    const resolvedWeights = resolveRarityWeightsForPool(
+      rarityWeightsScope,
+      rarityWeights,
+      packRarityWeights,
+      packFilter
+    );
+    // rarityWeights が非空であることは上で確認済みのため理論上 null にはならないが、
+    // 型上のnullable(手動モード用)を安全に扱うためガードする。
+    if (!resolvedWeights) return null;
+
+    const effective = computeEffectiveWeights(pool, resolvedWeights);
+    const totalEffectiveWeight = effective.reduce((sum, e) => sum + e.effectiveWeight, 0);
+
+    const probabilities = new Map<string, number>();
+    for (const { card, effectiveWeight } of effective) {
+      // selectWeightedCard はプール内の相対比率だけで選ぶため、合計<100%の
+      // 場合も実際の抽選確率はプール内合計に対する比率で再正規化される
+      // (rarity-weight-calculator.ts の resolveRarityWeightsForPool コメント参照)。
+      const probability = totalEffectiveWeight > 0 ? (effectiveWeight / totalEffectiveWeight) * 100 : 0;
+      probabilities.set(card.id, probability);
+    }
+    return probabilities;
+  }, [packFilter, rarityWeights, rarityWeightsScope, packRarityWeights, cards]);
 
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
@@ -859,6 +930,18 @@ export default function CardManager({
     [mergeRecalculatedCards]
   );
 
+  // Issue #580: DropRateAutoModeContent が保存成功後にサーバーの永続値
+  // (rarityWeightsScope はサーバーがそのまま受理するため送信値、
+  // packRarityWeights はサーバーのエコーバック値)で state を再同期するための
+  // コールバック。cardPackNames.length===0 のストリーマーでは呼ばれない。
+  const handlePackWeightsApply = useCallback(
+    (nextScope: "global" | "per_pack", nextPackRarityWeights: Record<string, Record<string, number>>) => {
+      setRarityWeightsScope(nextScope);
+      setPackRarityWeights(nextPackRarityWeights);
+    },
+    []
+  );
+
   // Calculate total weight and actual probability
   // 合計重みと実際の確率を計算
   const calculateActualProbability = (dropRate: number): number => {
@@ -874,15 +957,39 @@ export default function CardManager({
 
   // Calculate intra-rarity share and overall probability for auto mode preview
   // 自動モード時のレアリティ内シェアと全体確率を計算
+  //
+  // Issue #580(#576 フェーズ3): このプレビューは「編集中カードが実際に属する
+  // パック」のプールに対して計算する(scope-aware)。パック別配分(per_pack
+  // スコープ)が設定されている場合、そのパック専用の重み(または継承した
+  // グローバル重み)を resolveRarityWeightsForPool で解決してから使う。
+  // 全体確率(overallPercent)は同レアリティ内シェアだけでなく、パック内の
+  // 他レアリティとの合計(<100%になりうる、resolveRarityWeightsForPool の
+  // コメント参照)に対しても再正規化する必要があるため、computeEffectiveWeights
+  // (#579)にプレビュー中のカードを仮想的に含めて計算し、実際の抽選ロジックと
+  // 同じ式を再利用する(手計算で式を重複させて乖離するのを防ぐ)。
   const calculateIntraRarityStats = useCallback((intraWeight: number, rarity: string) => {
     if (!rarityWeights) return null;
-    const targetPercent = rarityWeights[rarity];
+
+    const packKey = formData.collectionName.trim() || DEFAULT_PACK_SENTINEL;
+    const resolvedWeights = resolveRarityWeightsForPool(
+      rarityWeightsScope,
+      rarityWeights,
+      packRarityWeights,
+      packKey
+    );
+    // rarityWeights が非nullであることは上で確認済みのため理論上nullにはならない
+    if (!resolvedWeights) return null;
+
+    const targetPercent = resolvedWeights[rarity];
     if (targetPercent === undefined || targetPercent <= 0) return null;
 
-    // Sum intra weights for all active cards in the same rarity (excluding the editing card)
-    // 同レアリティの全アクティブカードのintra weightを合算（編集中カードは除外）
+    // このカード自身のパック内、同レアリティのアクティブカード(編集中カードは除外)
     const sameRarityCards = cards.filter(
-      c => c.is_active && c.rarity === rarity && (!editingCard || c.id !== editingCard.id)
+      c =>
+        c.is_active &&
+        c.rarity === rarity &&
+        cardMatchesPackKey(c.collection_name, packKey) &&
+        (!editingCard || c.id !== editingCard.id)
     );
     const othersIntraSum = sameRarityCards.reduce(
       (sum, c) => sum + (c.intra_rarity_weight ?? 1.0), 0
@@ -892,13 +999,24 @@ export default function CardManager({
     const intraPercent = totalIntraWeight > 0
       ? (intraWeight / totalIntraWeight) * 100
       : 0;
-    // Overall drop probability (e.g., 4% of all drops)
-    const overallPercent = totalIntraWeight > 0
-      ? (targetPercent / 100) * (intraWeight / totalIntraWeight) * 100
+
+    // 全体確率: パック内プール全体(全レアリティ)に対する実効重みの比率。
+    // プレビュー中のカードを仮想エントリとしてパック内プールに加え、
+    // computeEffectiveWeights で実際の抽選計算式を再利用する。
+    const poolWithoutEditing = cards.filter(
+      c => c.is_active && cardMatchesPackKey(c.collection_name, packKey) && (!editingCard || c.id !== editingCard.id)
+    );
+    const previewCard = { id: "__preview__", rarity, intra_rarity_weight: intraWeight };
+    const effective = computeEffectiveWeights([...poolWithoutEditing, previewCard], resolvedWeights);
+    const totalEffectiveWeight = effective.reduce((sum, e) => sum + e.effectiveWeight, 0);
+    const previewEffectiveWeight = effective.find(e => e.card.id === "__preview__")?.effectiveWeight ?? 0;
+    const overallPercent = totalEffectiveWeight > 0
+      ? (previewEffectiveWeight / totalEffectiveWeight) * 100
       : 0;
+
     const cardCount = sameRarityCards.length + 1; // +1 for current card
-    return { intraPercent, overallPercent, cardCount, targetPercent };
-  }, [cards, editingCard, rarityWeights]);
+    return { intraPercent, overallPercent, cardCount, targetPercent, packKey };
+  }, [cards, editingCard, rarityWeights, rarityWeightsScope, packRarityWeights, formData.collectionName]);
 
   // Handle image removal and let the update API clean up the previous image if needed
   // 画像削除処理。必要なら既存画像のクリーンアップは更新API側で行う
@@ -1879,7 +1997,33 @@ export default function CardManager({
             </div>
             ) : (
               <div className="md:col-span-2">
-                <label className="mb-1 block text-sm text-gray-300">{t("form.intraRarityWeight")}</label>
+                <div className="mb-1 flex items-center gap-2">
+                  <label className="text-sm text-gray-300">{t("form.intraRarityWeight")}</label>
+                  {/* Issue #580: パックが登録されている配信者向けに、この数値が
+                      どのパックのプールを基準にしているかを説明するヘルプへの導線。
+                      「出現確率について」モーダル(dropRateInfo)を手動モードと共用する。 */}
+                  {cardPackNames.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowDropRateInfo(true)}
+                      className="text-gray-400 hover:text-white"
+                      title={t("dropRateInfo.title")}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                {/* Issue #580: プレビュー数値がどのパック(の重み配分)を基準に
+                    計算されているかを明示するラベル。 */}
+                {cardPackNames.length > 0 && (
+                  <p className="mb-2 text-xs text-gray-500">
+                    {t("form.previewPoolLabel", {
+                      pack: formData.collectionName.trim() || (defaultPackName ?? t("cardPackModal.defaultName")),
+                    })}
+                  </p>
+                )}
                 <div className="flex items-center gap-3">
                   <input
                     type="range"
@@ -2197,6 +2341,7 @@ export default function CardManager({
               <CardList
                 cards={displayCards}
                 totalActiveWeight={totalActiveWeight}
+                probabilityOverrides={packScopedProbabilities ?? undefined}
                 onEdit={handleEdit}
                 onDelete={handleDelete}
                 onToggleActive={handleToggleActive}
@@ -2379,6 +2524,19 @@ export default function CardManager({
               <p className="text-sm text-gray-400">
                 {t("dropRateInfo.note")}
               </p>
+              {/* Issue #580(#576 フェーズ3): パックが登録されている配信者にのみ、
+                  パック指定報酬の確率計算とスコープ設定について説明する。
+                  パックが無い配信者にはスコープ概念自体が無意味なため出さない。 */}
+              {cardPackNames.length > 0 && (
+                <div className="rounded-lg bg-gray-700/60 p-4">
+                  <p className="mb-2 text-sm font-medium text-gray-200">
+                    {t("dropRateInfo.packScopeTitle")}
+                  </p>
+                  <p className="text-sm text-gray-400">
+                    {t("dropRateInfo.packScopeDescription")}
+                  </p>
+                </div>
+              )}
             </div>
             <button
               onClick={() => setShowDropRateInfo(false)}
@@ -2519,6 +2677,11 @@ export default function CardManager({
         onRarityWeightsApply={handleRarityWeightsApply}
         rarityWeights={rarityWeights}
         customRarities={customRarities}
+        cardPackNames={cardPackNames}
+        defaultPackName={defaultPackName}
+        rarityWeightsScope={rarityWeightsScope}
+        packRarityWeights={packRarityWeights}
+        onPackWeightsApply={handlePackWeightsApply}
       />
 
       {/* Custom Rarity Modal */}

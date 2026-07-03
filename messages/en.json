@@ -85,7 +85,8 @@
       "selectResolution": "Select Resolution",
       "resolutionStandard": "Standard (800px)",
       "resolutionFullHd": "Full HD (1920px)",
-      "resolution4k": "4K (3840px)"
+      "resolution4k": "4K (3840px)",
+      "previewPoolLabel": "Probability within the \"{pack}\" pack"
     },
     "fileUpload": {
       "formats": "Supported: JPEG, PNG, GIF, WebP | ",
@@ -189,7 +190,9 @@
       "example2": "Card A: 50%, Card B: 25%",
       "example2Result": "→ Card A: 50÷75×100 = 66.7%, Card B: 33.3%",
       "note": "* Paused cards are not included in probability calculation.",
-      "close": "Close"
+      "close": "Close",
+      "packScopeTitle": "About pack-specific rewards",
+      "packScopeDescription": "When a channel point reward is scoped to a specific pack, probabilities are recalculated using only the cards in that pack. In auto mode, the \"By Rarity\" tab of Drop Rate Settings lets you choose whether the distribution is shared across all packs or set individually per pack."
     },
     "dropRateSettings": {
       "button": "Drop Rate Settings",
@@ -200,7 +203,18 @@
       "switchToAuto": "Switch to auto mode",
       "confirmSwitchToManual": "Auto-calculation by rarity will be disabled. Switch?",
       "confirmSwitchToAuto": "Rarity-based probability will be enabled and all card rates will be recalculated. Switch?",
-      "switchFailed": "Failed to switch mode"
+      "switchFailed": "Failed to switch mode",
+      "scopeLabel": "Distribution scope",
+      "scopeGlobal": "One shared distribution",
+      "scopePerPack": "Per-pack distribution",
+      "scopeGlobalHint": "All packs use the same rarity distribution.",
+      "scopePerPackHint": "Each pack can have its own rarity distribution. Packs without a setting inherit the global distribution.",
+      "packSelectLabel": "Pack to configure",
+      "inheritingGlobal": "Inheriting the global setting",
+      "makePackSpecific": "Set specifically for this pack",
+      "revertToInherit": "Revert to inherited",
+      "packTotalWarning": "One or more per-pack distributions do not total 100%",
+      "packScopeDeployWindow": "The distribution scope / per-pack settings feature is not ready yet, so your changes could not be saved. Please try again shortly."
     },
     "customRarity": {
       "button": "Custom Rarities",

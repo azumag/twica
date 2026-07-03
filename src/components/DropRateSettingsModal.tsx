@@ -21,6 +21,20 @@ interface DropRateSettingsModalProps {
   rarityWeights: Record<string, number> | null;
   // カスタムレアリティ名（自動モードで重みを割り当てられるよう一覧へ含める）
   customRarities: string[];
+  // Issue #580(#576 フェーズ3): パック別レアリティ配分UI用のプロップ群。
+  // 事前登録カードパック名(空配列ならスコープ切替UI自体を出さない)。
+  cardPackNames: string[];
+  // 「デフォルト」(未分類)パックの表示名オーバーライド
+  defaultPackName: string | null;
+  // レアリティ重みのスコープ('global'|'per_pack')
+  rarityWeightsScope: "global" | "per_pack";
+  // パック別レアリティ重みの上書きマップ（null = エントリなし）
+  packRarityWeights: Record<string, Record<string, number>> | null;
+  // 保存成功後、サーバーの永続値でスコープ/パック別重みを再同期するコールバック
+  onPackWeightsApply: (
+    scope: "global" | "per_pack",
+    packRarityWeights: Record<string, Record<string, number>>
+  ) => void;
 }
 
 /**
@@ -39,6 +53,11 @@ export default function DropRateSettingsModal({
   onRarityWeightsApply,
   rarityWeights,
   customRarities,
+  cardPackNames,
+  defaultPackName,
+  rarityWeightsScope,
+  packRarityWeights,
+  onPackWeightsApply,
 }: DropRateSettingsModalProps) {
   const t = useTranslations("cardManager");
   const [switching, setSwitching] = useState(false);
@@ -114,6 +133,11 @@ export default function DropRateSettingsModal({
         streamerId={streamerId}
         rarityWeights={rarityWeights}
         customRarities={customRarities}
+        cardPackNames={cardPackNames}
+        defaultPackName={defaultPackName}
+        rarityWeightsScope={rarityWeightsScope}
+        packRarityWeights={packRarityWeights}
+        onPackWeightsApply={onPackWeightsApply}
         onCardsSave={onCardsSave}
         onRarityWeightsApply={onRarityWeightsApply}
         onSwitchToManualMode={() => switchMode(false)}

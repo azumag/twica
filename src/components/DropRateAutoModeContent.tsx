@@ -8,6 +8,8 @@ import { RARITIES } from "@/lib/constants";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import { cardMatchesPackKey } from "@/lib/collection-packs";
 
 interface DropRateAutoModeContentProps {
   cards: Card[];
@@ -15,6 +17,20 @@ interface DropRateAutoModeContentProps {
   rarityWeights: Record<string, number>;
   // カスタムレアリティ名（カード未使用でも重み設定欄に表示するため）
   customRarities: string[];
+  // Issue #580(#576 フェーズ3): パック別レアリティ配分UI用のプロップ群。
+  // 事前登録カードパック名（空配列ならスコープ切替UI自体を出さない）。
+  cardPackNames: string[];
+  // 「デフォルト」(未分類)パックの表示名オーバーライド
+  defaultPackName: string | null;
+  // レアリティ重みのスコープ('global'|'per_pack')
+  rarityWeightsScope: "global" | "per_pack";
+  // パック別レアリティ重みの上書きマップ（null = エントリなし）
+  packRarityWeights: Record<string, Record<string, number>> | null;
+  // 保存成功後、サーバーの永続値でスコープ/パック別重みを再同期するコールバック
+  onPackWeightsApply: (
+    scope: "global" | "per_pack",
+    packRarityWeights: Record<string, Record<string, number>>
+  ) => void;
   onCardsSave: (updatedCards: Card[]) => void;
   onRarityWeightsApply: (
     w: Record<string, number> | null,
@@ -32,6 +48,124 @@ function clampPercent(value: number): number {
 }
 
 /**
+ * Issue #580: 2つのパック別重みマップ(ネストしたRecord<string,Record<string,number>>)
+ * が実質的に等しいかどうかを判定する。保存ボタンの活性化判定(scopeOrPackHasChanges)
+ * に使う。数値比較は他の重み比較と同じ許容誤差(0.001)を用いる。
+ */
+function packWeightsEqual(
+  a: Record<string, Record<string, number>>,
+  b: Record<string, Record<string, number>>
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+
+  for (const key of aKeys) {
+    const aEntry = a[key];
+    const bEntry = b[key];
+    if (!bEntry) return false;
+
+    const aEntryKeys = Object.keys(aEntry);
+    const bEntryKeys = Object.keys(bEntry);
+    if (aEntryKeys.length !== bEntryKeys.length) return false;
+
+    for (const rarityKey of aEntryKeys) {
+      if (!Object.prototype.hasOwnProperty.call(bEntry, rarityKey)) return false;
+      if (Math.abs(aEntry[rarityKey] - bEntry[rarityKey]) > 0.001) return false;
+    }
+  }
+
+  return true;
+}
+
+interface RarityWeightFieldsProps {
+  rarityKeys: string[];
+  values: Record<string, number>;
+  activeCounts: Map<string, number>;
+  getRarityLabel: (rarity: string) => string;
+  activeCardsSuffix: string;
+  noCardsLabel: string;
+  // true の場合、値を編集不可の静的表示にする(パックがグローバル設定を
+  // 継承中のときのベースライン表示に使用)。
+  readOnly?: boolean;
+  onChange?: (rarity: string, value: number) => void;
+}
+
+/**
+ * Issue #580(#576 フェーズ3): レアリティ別%スライダー行の一覧UI。
+ * グローバル配分編集・パック別配分編集(専用設定/継承中の読み取り専用表示)の
+ * 3箇所で同一マークアップが必要になったため、共通コンポーネントとして抽出した
+ * (以前は「レアリティ別設定」タブ内に1箇所だけ直書きしていた)。
+ */
+function RarityWeightFields({
+  rarityKeys,
+  values,
+  activeCounts,
+  getRarityLabel,
+  activeCardsSuffix,
+  noCardsLabel,
+  readOnly = false,
+  onChange,
+}: RarityWeightFieldsProps) {
+  return (
+    <div className="space-y-3">
+      {rarityKeys.map((rarity) => {
+        const count = activeCounts.get(rarity) || 0;
+        const value = values[rarity] ?? 0;
+
+        return (
+          <div key={rarity} className="rounded-lg bg-gray-700 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium text-white">
+                {getRarityLabel(rarity)}
+              </span>
+              <span className="text-xs text-gray-400">
+                {count > 0 ? `${count}${activeCardsSuffix}` : noCardsLabel}
+              </span>
+            </div>
+            {readOnly ? (
+              <div className="flex items-center gap-2">
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-600">
+                  <div
+                    className="h-2 rounded-full bg-gray-500"
+                    style={{ width: `${Math.min(value, 100)}%` }}
+                  />
+                </div>
+                <span className="w-16 text-right text-sm text-gray-300">
+                  {value.toFixed(1)}%
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={value}
+                  onChange={(event) => onChange?.(rarity, Number(event.target.value))}
+                  className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-gray-600 accent-purple-500"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={value}
+                  onChange={(event) => onChange?.(rarity, Number(event.target.value))}
+                  className="w-20 rounded bg-gray-600 px-2 py-1 text-right text-sm text-white"
+                />
+                <span className="w-6 text-sm text-gray-400">%</span>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * DropRateAutoModeContent - 自動モード用の排出確率設定コンテンツ
  *
  * タブ1（レアリティ別設定）: レアリティごとの%スライダー+数値入力
@@ -42,6 +176,11 @@ export default function DropRateAutoModeContent({
   streamerId,
   rarityWeights,
   customRarities,
+  cardPackNames,
+  defaultPackName,
+  rarityWeightsScope,
+  packRarityWeights,
+  onPackWeightsApply,
   onCardsSave,
   onRarityWeightsApply,
   onSwitchToManualMode,
@@ -51,6 +190,10 @@ export default function DropRateAutoModeContent({
   const tRarity = useTranslations("rarity");
   const tCommon = useTranslations("common");
   const tRarityProb = useTranslations("rarityProbability");
+
+  // Issue #580: パックが1件も登録されていない配信者にはスコープ切替UI自体を
+  // 出さない(デフォルトパック=グローバルなので、切替が意味を持たない)。
+  const hasPacks = cardPackNames.length > 0;
 
   const [activeTab, setActiveTab] = useState<"rarity" | "perCard">("rarity");
   const [showHelp, setShowHelp] = useState(false);
@@ -68,6 +211,18 @@ export default function DropRateAutoModeContent({
   const [raritySaving, setRaritySaving] = useState(false);
   const [rarityMessage, setRarityMessage] = useState<string | null>(null);
   const [rarityError, setRarityError] = useState<string | null>(null);
+
+  // === タブ1: パック別配分（Issue #580, #576 フェーズ3）state ===
+  // 配分スコープのドラフト。保存ボタンを押すまでDBへは反映しない
+  // (既存のレアリティ%編集と同じ「明示的な保存」フローに揃える)。
+  const [draftScope, setDraftScope] = useState<"global" | "per_pack">(rarityWeightsScope);
+  // パック別上書きマップのドラフト。キーの無いパックはグローバルを継承する
+  // (#578 のアプリ層規約)。null(エントリなし)は空オブジェクトとして扱う。
+  const [packWeightsDraft, setPackWeightsDraft] = useState<Record<string, Record<string, number>>>(
+    () => packRarityWeights ?? {}
+  );
+  // パック別配分タブで現在選択中のパック。デフォルト(未分類疑似パック)から開始する。
+  const [selectedPackKey, setSelectedPackKey] = useState<string>(DEFAULT_PACK_SENTINEL);
 
   // === タブ2: カードごとの調整 state ===
   const [localIntraWeights, setLocalIntraWeights] = useState<
@@ -144,6 +299,73 @@ export default function DropRateAutoModeContent({
   }, [draftWeights]);
   const isRarityTotalValid = Math.abs(rarityTotal - 100) <= 0.001;
 
+  // === パック別配分（Issue #580） ===
+  // 選択中パック内のアクティブカード数（レアリティ別）。継承中の読み取り専用
+  // ベースライン表示でも「このパックに何枚あるか」を見せるため、専用/継承の
+  // どちらの表示でも同じマップを使う。
+  const packActiveCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const card of cards) {
+      if (!card.is_active) continue;
+      if (!cardMatchesPackKey(card.collection_name, selectedPackKey)) continue;
+      counts.set(card.rarity, (counts.get(card.rarity) || 0) + 1);
+    }
+    return counts;
+  }, [cards, selectedPackKey]);
+
+  const selectedPackHasEntry = Object.prototype.hasOwnProperty.call(
+    packWeightsDraft,
+    selectedPackKey
+  );
+  const selectedPackWeights = useMemo(
+    () => packWeightsDraft[selectedPackKey] ?? {},
+    [packWeightsDraft, selectedPackKey]
+  );
+  const selectedPackTotal = useMemo(
+    () => Object.values(selectedPackWeights).reduce((sum, value) => sum + value, 0),
+    [selectedPackWeights]
+  );
+  const isSelectedPackTotalValid = Math.abs(selectedPackTotal - 100) <= 0.001;
+
+  // 送信対象になる全パックエントリが合計100%かどうか（保存ボタンの活性判定用。
+  // 選択中でないパックに不正な入力が残っていても送信してしまうため、
+  // 全エントリを検証する）。
+  const arePackWeightsValid = useMemo(
+    () =>
+      Object.values(packWeightsDraft).every(
+        (entry) => Math.abs(Object.values(entry).reduce((sum, value) => sum + value, 0) - 100) <= 0.001
+      ),
+    [packWeightsDraft]
+  );
+
+  const scopeHasChanges = draftScope !== rarityWeightsScope;
+  const packWeightsHasChanges = useMemo(
+    () => !packWeightsEqual(packWeightsDraft, packRarityWeights ?? {}),
+    [packWeightsDraft, packRarityWeights]
+  );
+  // hasPacks でない配信者はスコープUI自体が無いため、変更判定にも含めない。
+  const scopeOrPackHasChanges = hasPacks && (scopeHasChanges || packWeightsHasChanges);
+
+  const handleMakePackSpecific = () => {
+    setPackWeightsDraft((prev) => ({ ...prev, [selectedPackKey]: { ...draftWeights } }));
+  };
+
+  const handleRevertToInherit = () => {
+    setPackWeightsDraft((prev) => {
+      const next = { ...prev };
+      delete next[selectedPackKey];
+      return next;
+    });
+  };
+
+  const updateSelectedPackWeight = (rarity: string, value: number) => {
+    const nextValue = clampPercent(value);
+    setPackWeightsDraft((prev) => ({
+      ...prev,
+      [selectedPackKey]: { ...prev[selectedPackKey], [rarity]: nextValue },
+    }));
+  };
+
   // カードごと: intra weight初期化
   useEffect(() => {
     const initial = new Map<string, number>();
@@ -207,15 +429,27 @@ export default function DropRateAutoModeContent({
   }, [draftWeights, rarityWeights, rarityKeys]);
 
   // 両タブの変更を常にチェック（タブ切替後のクローズでも確認ダイアログが出るように）
-  const hasAnyChanges = rarityHasChanges || perCardHasChanges;
+  // Issue #580: スコープ切替/パック別配分の未保存変更も含める。
+  const hasAnyChanges = rarityHasChanges || perCardHasChanges || scopeOrPackHasChanges;
 
   const getRarityLabel = (rarity: string): string => formatRarityLabel(rarity, tRarity);
 
   const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
+  // レアリティ別%の入力欄で使う「n枚」「0枚」ラベル（RarityWeightFieldsへ渡す）
+  const activeCardsSuffix = tRarityProb("activeCards");
+  const noCardsLabel = tRarityProb("noCards");
+
   // === レアリティ別: 保存 ===
   // レアリティ保存後、サーバーがカードのdrop_rateを再計算するため
   // カードごとタブの未保存weight変更は意味を失う → 確認してからリセット
+  //
+  // Issue #580(#576 フェーズ3): hasPacks の配信者は、グローバル配分
+  // (draftWeights)に加えて配分スコープ(draftScope)とパック別上書きマップ
+  // (packWeightsDraft)も同じ保存ボタンで一括送信する(モーダルの既存「明示的
+  // 保存」フローに揃える方針)。packRarityWeights は full-map-replace APIのため、
+  // 変更が無くても常に現在のドラフト全体を送る(既存 packRarityWeights との
+  // 差分計算はしない)。
   const saveRarityWeights = async () => {
     if (perCardHasChanges && !confirm(t("batchDropRate.confirmClose"))) return;
     if (!isRarityTotalValid) {
@@ -223,21 +457,37 @@ export default function DropRateAutoModeContent({
       setRarityError(tRarityProb("totalWarning"));
       return;
     }
+    if (hasPacks && !arePackWeightsValid) {
+      setRarityMessage(null);
+      setRarityError(t("dropRateSettings.packTotalWarning"));
+      return;
+    }
     setRaritySaving(true);
     setRarityMessage(null);
     setRarityError(null);
 
     try {
+      const body: {
+        streamerId: string;
+        rarityWeights: Record<string, number>;
+        rarityWeightsScope?: "global" | "per_pack";
+        packRarityWeights?: Record<string, Record<string, number>>;
+      } = {
+        streamerId,
+        rarityWeights: draftWeights,
+      };
+      if (hasPacks) {
+        body.rarityWeightsScope = draftScope;
+        body.packRarityWeights = packWeightsDraft;
+      }
+
       const response = await fetch("/api/streamer/settings", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         credentials: "include",
-        body: JSON.stringify({
-          streamerId,
-          rarityWeights: draftWeights,
-        }),
+        body: JSON.stringify(body),
       });
 
       const data = await response.json();
@@ -250,6 +500,35 @@ export default function DropRateAutoModeContent({
         ? (data.recalculatedCards as Card[])
         : null;
       onRarityWeightsApply(draftWeights, recalculatedCards);
+
+      if (hasPacks) {
+        if (data.rarityWeightsScopeSkippedDeployWindow || data.packRarityWeightsSkippedDeployWindow) {
+          // デプロイ窓で列自体への書き込みが見送られたケース。rarityWeights
+          // (グローバル配分)は保存できているが、スコープ/パック別配分は
+          // 反映されていないため、GachaSoundSettings.saveRules と同じ
+          // パターンで案内する（成功扱いにはしない）。
+          //
+          // ここで return し、下の tRarityProb("saved") 成功メッセージを
+          // 出さない: 両方のメッセージが同時に表示されると「保存できた」と
+          // 「保存できなかった」が矛盾して見え、ユーザーがスコープ/パック別
+          // 設定は実際には反映されていないことを見落としかねないため
+          // (自己レビューで発見: GachaSoundSettings.saveRules は同種のケースで
+          // 常に return false し、成功メッセージを一切出さない)。
+          setRarityError(t("dropRateSettings.packScopeDeployWindow"));
+          return;
+        }
+
+        // packRarityWeights は常にエコーバックされる(サーバー側でプレミアム
+        // ゲート等により加工されうるため)。応答に無ければ防御的に送信値へ
+        // フォールバックする。rarityWeightsScope はサーバー側の加工シナリオが
+        // 無いためエコー不要（送信値がそのまま正）。
+        const persistedPackWeights = (
+          data.packRarityWeights ?? packWeightsDraft
+        ) as Record<string, Record<string, number>>;
+        setPackWeightsDraft(persistedPackWeights);
+        onPackWeightsApply(draftScope, persistedPackWeights);
+      }
+
       setRarityMessage(tRarityProb("saved"));
     } catch (saveError) {
       logger.error("Failed to save rarity weights:", saveError);
@@ -271,11 +550,15 @@ export default function DropRateAutoModeContent({
   };
 
   // === カードごと: 保存 ===
-  // カードごと保存時にレアリティタブの未保存変更があれば確認
-  // （保存完了後にモーダルが閉じるため、ドラフトが消失する）
+  // カードごと保存時にレアリティタブ(グローバル配分/スコープ切替/パック別配分)の
+  // 未保存変更があれば確認（保存完了後にモーダルが閉じるため、ドラフトが消失する）。
+  // Issue #580自己レビューで発見: scopeOrPackHasChanges を見落とすと、
+  // パック別配分だけを編集した状態でこちらのタブから保存した場合に
+  // 確認なしでドラフトが破棄されてしまう(hasAnyChangesは正しく含めているのに
+  // ここだけ旧来のrarityHasChangesのみだった)。
   const handlePerCardSave = async () => {
     if (!perCardHasChanges) return;
-    if (rarityHasChanges && !confirm(t("batchDropRate.confirmClose"))) return;
+    if ((rarityHasChanges || scopeOrPackHasChanges) && !confirm(t("batchDropRate.confirmClose"))) return;
     setPerCardSaving(true);
     try {
       const updates: Array<{
@@ -463,78 +746,173 @@ export default function DropRateAutoModeContent({
           {activeTab === "rarity" ? (
             /* === タブ1: レアリティ別設定 === */
             <div className="space-y-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="text-sm text-gray-300">
-                  {tRarityProb("total")}:{" "}
-                  <span className="font-medium text-white">
-                    {rarityTotal.toFixed(1)}%
-                  </span>
-                </span>
-                {!isRarityTotalValid && (
-                  <span className="rounded bg-yellow-500/20 px-2 py-1 text-xs text-yellow-300">
-                    {tRarityProb("totalWarning")}
-                  </span>
-                )}
-              </div>
+              {/* Issue #580(#576 フェーズ3): 配分スコープ切替。パックが
+                  1件も無い配信者には出さない(デフォルトパック=グローバルで
+                  意味を持たないため)。 */}
+              {hasPacks && (
+                <div className="rounded-lg bg-gray-700/60 p-3">
+                  <p className="mb-2 text-sm font-medium text-gray-200">
+                    {t("dropRateSettings.scopeLabel")}
+                  </p>
+                  <div
+                    role="radiogroup"
+                    aria-label={t("dropRateSettings.scopeLabel")}
+                    className="inline-flex overflow-hidden rounded-lg border border-gray-600"
+                  >
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={draftScope === "global"}
+                      onClick={() => setDraftScope("global")}
+                      className={`px-3 py-1.5 text-sm transition ${
+                        draftScope === "global"
+                          ? "bg-purple-600 text-white"
+                          : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                      }`}
+                    >
+                      {t("dropRateSettings.scopeGlobal")}
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={draftScope === "per_pack"}
+                      onClick={() => setDraftScope("per_pack")}
+                      className={`px-3 py-1.5 text-sm transition ${
+                        draftScope === "per_pack"
+                          ? "bg-purple-600 text-white"
+                          : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                      }`}
+                    >
+                      {t("dropRateSettings.scopePerPack")}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-gray-400">
+                    {draftScope === "global"
+                      ? t("dropRateSettings.scopeGlobalHint")
+                      : t("dropRateSettings.scopePerPackHint")}
+                  </p>
+                </div>
+              )}
 
-              <div className="space-y-3">
-                {rarityKeys.map((rarity) => {
-                  const count = activeCounts.get(rarity) || 0;
-                  const value = draftWeights[rarity] ?? 0;
+              {hasPacks && draftScope === "per_pack" ? (
+                <>
+                  {/* パック選択 */}
+                  <div>
+                    <label
+                      htmlFor="drop-rate-pack-select"
+                      className="mb-1 block text-sm text-gray-300"
+                    >
+                      {t("dropRateSettings.packSelectLabel")}
+                    </label>
+                    <select
+                      id="drop-rate-pack-select"
+                      value={selectedPackKey}
+                      onChange={(event) => setSelectedPackKey(event.target.value)}
+                      className="w-full rounded-lg bg-gray-700 px-3 py-2 text-sm text-white border border-gray-600"
+                    >
+                      <option value={DEFAULT_PACK_SENTINEL}>
+                        {defaultPackName ?? t("cardPackModal.defaultName")}
+                      </option>
+                      {cardPackNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                  return (
-                    <div key={rarity} className="rounded-lg bg-gray-700 p-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="text-sm font-medium text-white">
-                          {getRarityLabel(rarity)}
-                        </span>
-                        <span className="text-xs text-gray-400">
-                          {count > 0
-                            ? `${count}${tRarityProb("activeCards")}`
-                            : tRarityProb("noCards")}
-                        </span>
+                  {selectedPackHasEntry ? (
+                    <>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <span className="text-sm text-gray-300">
+                            {tRarityProb("total")}:{" "}
+                            <span className="font-medium text-white">
+                              {selectedPackTotal.toFixed(1)}%
+                            </span>
+                          </span>
+                          {!isSelectedPackTotalValid && (
+                            <span className="rounded bg-yellow-500/20 px-2 py-1 text-xs text-yellow-300">
+                              {tRarityProb("totalWarning")}
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRevertToInherit}
+                          className="text-xs text-gray-400 underline hover:text-white"
+                        >
+                          {t("dropRateSettings.revertToInherit")}
+                        </button>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          step={0.1}
-                          value={value}
-                          onChange={(event) => {
-                            const nextValue = clampPercent(
-                              Number(event.target.value)
-                            );
-                            setDraftWeights((prev) => ({
-                              ...prev,
-                              [rarity]: nextValue,
-                            }));
-                          }}
-                          className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-gray-600 accent-purple-500"
-                        />
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          step={0.1}
-                          value={value}
-                          onChange={(event) => {
-                            const nextValue = clampPercent(
-                              Number(event.target.value)
-                            );
-                            setDraftWeights((prev) => ({
-                              ...prev,
-                              [rarity]: nextValue,
-                            }));
-                          }}
-                          className="w-20 rounded bg-gray-600 px-2 py-1 text-right text-sm text-white"
-                        />
-                        <span className="w-6 text-sm text-gray-400">%</span>
+                      <RarityWeightFields
+                        rarityKeys={rarityKeys}
+                        values={selectedPackWeights}
+                        activeCounts={packActiveCounts}
+                        getRarityLabel={getRarityLabel}
+                        activeCardsSuffix={activeCardsSuffix}
+                        noCardsLabel={noCardsLabel}
+                        onChange={updateSelectedPackWeight}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between gap-3 rounded-lg bg-gray-700/40 px-3 py-2">
+                        <span className="text-sm text-gray-300">
+                          {t("dropRateSettings.inheritingGlobal")}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleMakePackSpecific}
+                          className="rounded-lg border border-purple-500 px-3 py-1 text-xs text-purple-300 transition hover:bg-purple-500 hover:text-white"
+                        >
+                          {t("dropRateSettings.makePackSpecific")}
+                        </button>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                      <RarityWeightFields
+                        rarityKeys={rarityKeys}
+                        values={draftWeights}
+                        activeCounts={packActiveCounts}
+                        getRarityLabel={getRarityLabel}
+                        activeCardsSuffix={activeCardsSuffix}
+                        noCardsLabel={noCardsLabel}
+                        readOnly
+                      />
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-sm text-gray-300">
+                      {tRarityProb("total")}:{" "}
+                      <span className="font-medium text-white">
+                        {rarityTotal.toFixed(1)}%
+                      </span>
+                    </span>
+                    {!isRarityTotalValid && (
+                      <span className="rounded bg-yellow-500/20 px-2 py-1 text-xs text-yellow-300">
+                        {tRarityProb("totalWarning")}
+                      </span>
+                    )}
+                  </div>
+                  <RarityWeightFields
+                    rarityKeys={rarityKeys}
+                    values={draftWeights}
+                    activeCounts={activeCounts}
+                    getRarityLabel={getRarityLabel}
+                    activeCardsSuffix={activeCardsSuffix}
+                    noCardsLabel={noCardsLabel}
+                    onChange={(rarity, value) => {
+                      const nextValue = clampPercent(value);
+                      setDraftWeights((prev) => ({
+                        ...prev,
+                        [rarity]: nextValue,
+                      }));
+                    }}
+                  />
+                </>
+              )}
 
               {rarityMessage && (
                 <p className="text-sm text-green-400">{rarityMessage}</p>
@@ -679,7 +1057,12 @@ export default function DropRateAutoModeContent({
               {activeTab === "rarity" ? (
                 <button
                   onClick={saveRarityWeights}
-                  disabled={!rarityHasChanges || raritySaving || !isRarityTotalValid}
+                  disabled={
+                    !(rarityHasChanges || scopeOrPackHasChanges) ||
+                    raritySaving ||
+                    !isRarityTotalValid ||
+                    (hasPacks && !arePackWeightsValid)
+                  }
                   className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {raritySaving

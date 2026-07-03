@@ -70,6 +70,11 @@ export default async function CardsPage() {
       // (TS型は必須だがDB列が存在しない場合、Supabaseは単にキーを省く)、`?? null` で
       // 汎用ラベル表示にフォールバックする。
       initialDefaultPackName={streamerData.streamer.default_card_pack_name ?? null}
+      // Issue #580(#576 フェーズ3): 列未デプロイのデプロイ窓では実行時に
+      // undefined になり得るため、`?? 'global'`/`?? null` で安全側(グローバル
+      // 配分/上書きなし)にフォールバックする(card_pack_names等と同じ方針)。
+      initialRarityWeightsScope={streamerData.streamer.rarity_weights_scope ?? "global"}
+      initialPackRarityWeights={streamerData.streamer.pack_rarity_weights ?? null}
       viewMode="list"
       showViewToggle={true}
       maxImageWidth={maxImageWidth}
