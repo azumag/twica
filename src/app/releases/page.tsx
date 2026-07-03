@@ -11,7 +11,8 @@ export const metadata: Metadata = {
 
 /**
  * リリースノートページ
- * 2026年7月: カードパック初リリース・パック別排出率・効果音詳細設定・発行枚数上限
+ * 2026年7月: カードパック初リリース・支援特典の拡充・内部安定性向上
+ * 2026年3月〜6月: v1.31.0以降のカード管理・ガチャ体験・セキュリティ改善
  * v1.31.0: カード排出確率自動設定・コレクションコンプリート・ガチャ履歴フィルタ
  * v1.27.0: 支援特典システム・Twitchサブスク確認・問い合わせフォーム
  */
@@ -61,19 +62,31 @@ export default async function ReleasesPage() {
 
             <p className="mb-10 leading-relaxed text-gray-400">
               今回のアップデートでは、カードパック機能を初リリースしました。
-              チャネルポイント報酬ごとに抽選対象を分けられるようになり、
-              支援機能としてパックの追加登録や効果音の詳細設定も利用できます。
+              支援特典では、カードパックの追加・報酬ごとのパック抽選・パック別排出率設定を使って、
+              イベント用パックや限定パックを運用しやすくなりました。
+              通常機能として、視聴者がパック別にコレクションを確認できるページも追加しています。
             </p>
 
             <section className="mb-10">
               <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
                 支援機能
               </h2>
+              <p className="mb-6 leading-relaxed text-gray-400">
+                以下の機能は支援プランまたはTwitchサブスク向けの特典です。
+                利用できる内容や特典の考え方は{" "}
+                <Link
+                  href="/plans"
+                  className="font-medium text-purple-300 underline decoration-purple-500/60 underline-offset-4 hover:text-purple-200"
+                >
+                  支援特典ページ
+                </Link>
+                {" "}で確認できます。
+              </p>
 
               <div className="space-y-6">
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-2 text-lg font-semibold text-white">
-                    カードパックの追加登録
+                    カードパックの追加・管理
                   </h3>
                   <p className="text-gray-400">
                     支援プランまたはTwitchサブスクが有効な配信者は、カードパックを追加登録できるようになりました。
@@ -81,8 +94,38 @@ export default async function ReleasesPage() {
                     パック名の入力ミスを防ぎながら運用できます。
                   </p>
                   <p className="mt-3 text-gray-400">
+                    使い方は、カード設定からパックを追加し、各カードの作成・編集画面で所属パックを選ぶだけです。
                     既に登録済みのパックの利用・解除は、支援状態が変わっても行えます。
                     パック名のリネーム、デフォルトパック名の変更、パック別のカード一覧表示にも対応しました。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    報酬ごとのカードパック抽選
+                  </h3>
+                  <p className="text-gray-400">
+                    チャネルポイント報酬ごとに、抽選対象となるカードパックを切り替えられるようになりました。
+                    通常報酬では全カード、特別な報酬ではイベント用パックのみ、といった使い分けができます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    使い方は、カード引き換え設定の追加報酬設定で対象報酬を選び、
+                    その報酬で使うパックを指定します。未指定の場合はこれまで通り全カードが抽選対象です。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    パック別排出率設定
+                  </h3>
+                  <p className="text-gray-400">
+                    ガチャの自動モードで、全体共通のレアリティ配分に加えて、
+                    パックごとのレアリティ配分を設定できるようになりました。
+                    個別設定がないパックは全体設定を引き継ぎます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    使い方は、排出率の設定画面で配分スコープをパック単位に切り替え、
+                    調整したいパックだけレアリティごとの割合を保存します。
                   </p>
                 </div>
 
@@ -95,6 +138,7 @@ export default async function ReleasesPage() {
                     報酬別設定では、報酬IDを手入力するのではなく、報酬名と必要ポイントが分かるプルダウンから選択できます。
                   </p>
                   <p className="mt-3 text-gray-400">
+                    使い方は、効果音設定で対象のレアリティまたは報酬を選び、鳴らしたい音声URLを登録します。
                     複数枚ガチャでは、引いたカード全体を見て、より適切な効果音が選ばれるようになりました。
                     保存後の設定反映や、許可される効果音URLの扱いも改善しています。
                   </p>
@@ -121,36 +165,6 @@ export default async function ReleasesPage() {
               <div className="space-y-6">
                 <div className="rounded-xl bg-gray-800 p-6">
                   <h3 className="mb-2 text-lg font-semibold text-white">
-                    報酬ごとのカードパック抽選
-                  </h3>
-                  <p className="text-gray-400">
-                    チャネルポイント報酬ごとに、抽選対象となるカードパックを切り替えられるようになりました。
-                    通常報酬では全カード、特別な報酬では特定パックのみ、といった使い分けができます。
-                  </p>
-                  <p className="mt-3 text-gray-400">
-                    未指定の場合はこれまで通り全カードが対象です。
-                    未分類カードだけを対象にするデフォルトパックも選択できます。
-                    パック未登録時には不要な選択欄を表示しないなど、設定画面の分かりやすさも改善しました。
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-gray-800 p-6">
-                  <h3 className="mb-2 text-lg font-semibold text-white">
-                    パック別排出率設定
-                  </h3>
-                  <p className="text-gray-400">
-                    ガチャの自動モードで、全体共通のレアリティ配分に加えて、
-                    パックごとのレアリティ配分を設定できるようになりました。
-                    個別設定がないパックは全体設定を引き継ぐため、必要なパックだけ調整できます。
-                  </p>
-                  <p className="mt-3 text-gray-400">
-                    パック指定の抽選では、そのパック内のカード構成とレアリティ配分をもとに抽選されます。
-                    カード一覧や作成・編集画面に表示される確率も、実際の抽選対象に近い内容になるよう改善しました。
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-gray-800 p-6">
-                  <h3 className="mb-2 text-lg font-semibold text-white">
                     パック別コレクション表示
                   </h3>
                   <p className="text-gray-400">
@@ -158,6 +172,7 @@ export default async function ReleasesPage() {
                     全体の収集状況だけでなく、特定パックごとの進捗や達成状況も確認できます。
                   </p>
                   <p className="mt-3 text-gray-400">
+                    使い方は、コレクションページで見たいパックを選択します。
                     達成日時の表示で発生していた画面表示の不一致も修正しました。
                   </p>
                 </div>
@@ -171,6 +186,7 @@ export default async function ReleasesPage() {
                     限定カードや先着カードのように、配布枚数を制限したい運用に対応できます。
                   </p>
                   <p className="mt-3 text-gray-400">
+                    使い方は、カードの作成・編集画面で発行上限を入力します。
                     上限に達したカードが抽選された場合は、可能な範囲で別カードを再抽選します。
                     上限到達と設定不備も区別して扱うようになりました。
                   </p>
@@ -184,6 +200,9 @@ export default async function ReleasesPage() {
                     カード画像としてアニメーションGIFを保持できるようになりました。
                     一般的なGIF形式を正しく判定し、GIF利用時のサイズ上限も画面上で分かりやすく案内します。
                   </p>
+                  <p className="mt-3 text-gray-400">
+                    使い方は、通常のカード画像と同じようにGIFファイルをアップロードします。
+                  </p>
                 </div>
 
                 <div className="rounded-xl bg-gray-800 p-6">
@@ -194,6 +213,214 @@ export default async function ReleasesPage() {
                     カード引き換え設定の詳細モードを、
                     接続状況・メイン報酬・追加の引き換え設定・レイドガチャに整理しました。
                     機能はそのままに、設定内容を見つけやすくしています。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    使い方は、設定画面で目的のセクションを開き、必要な報酬やレイドガチャ項目だけを編集します。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                内部安定性向上
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    カードパックまわりの保存・表示の安定化
+                  </h3>
+                  <p className="text-gray-400">
+                    パック別の設定を追加したあとも、カード作成・報酬設定・排出率設定で同じ情報を参照できるよう、
+                    保存処理と画面表示の整合性を改善しました。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    抽選処理と設定保存のエラー耐性を改善
+                  </h3>
+                  <p className="text-gray-400">
+                    発行上限に達したカードの再抽選、効果音URLの検証、設定保存後の画面反映など、
+                    利用中に迷いやすかった箇所の失敗時の扱いを見直しました。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    ビルド・表示不一致の修正
+                  </h3>
+                  <p className="text-gray-400">
+                    7月アップデートに含まれる画面追加に合わせて、ビルドエラーや初期表示時の差分が起きないよう調整しました。
+                    利用者には見えにくい部分ですが、ページ表示と今後の更新を安定させるための改善です。
+                  </p>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          {/* 2026年3月〜6月 - v1.31.0以降の主要な改善を、機能群ごとにまとめて掲載 */}
+          <div className="mb-16">
+            <div className="mb-8">
+              <div className="mb-2 inline-block rounded-full bg-purple-600 px-3 py-1 text-sm font-medium text-white">
+                2026年3月〜6月の主なアップデート
+              </div>
+              <p className="mt-2 text-sm text-gray-500">v1.31.0以降</p>
+            </div>
+
+            <p className="mb-10 leading-relaxed text-gray-400">
+              7月アップデートとは別に、v1.31.0以降で追加・改善した内容をまとめました。
+              カード管理、ガチャ体験、セキュリティ、運用基盤の改善を継続して行っています。
+            </p>
+
+            <section className="mb-10">
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                カード管理・コレクション
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    カード画像の拡大表示
+                  </h3>
+                  <p className="text-gray-400">
+                    カード一覧やカード管理画面で、画像をクリックして大きく確認できるようになりました。
+                    使い方は、確認したいカード画像をクリックするだけです。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    カード番号の管理
+                  </h3>
+                  <p className="text-gray-400">
+                    コレクション向けのカード番号を設定・一括更新できるようになりました。
+                    使い方は、カード管理画面で番号を編集し、必要に応じて一括更新を実行します。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    未所持カード表示とコンプリート確認
+                  </h3>
+                  <p className="text-gray-400">
+                    視聴者のコレクションで未所持カードを表示できるようになり、コンプリート状況も確認しやすくなりました。
+                    使い方は、コレクションページの表示切り替えで未所持カードの表示を選びます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    カスタムレアリティ
+                  </h3>
+                  <p className="text-gray-400">
+                    配信者ごとの独自レアリティを作成し、カード作成や確率設定で選べるようになりました。
+                    使い方は、レアリティ設定で名称や表示順を登録してから、各カードに割り当てます。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="mb-10">
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                ガチャ体験・チャット通知
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    レイド向け複数枚ガチャ
+                  </h3>
+                  <p className="text-gray-400">
+                    レイド参加などのイベント用途で、複数枚をまとめて引けるガチャを設定できるようになりました。
+                    使い方は、カード引き換え設定のレイドガチャ項目で対象報酬と枚数を設定します。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    チャット通知のカスタマイズ
+                  </h3>
+                  <p className="text-gray-400">
+                    ガチャ結果のチャット通知で、所持済み枚数や総所持数を差し込めるようになりました。
+                    使い方は、通知テンプレートに用意されたプレースホルダーを入れて保存します。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    Botアカウントでの通知送信
+                  </h3>
+                  <p className="text-gray-400">
+                    配信者本人ではなく、連携したBotアカウントからガチャ結果を送信できるようになりました。
+                    使い方は、アカウント連携後に通知送信元としてBotアカウントを選択します。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="mb-10">
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                セキュリティ・認証
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    セッションとCSRF対策の強化
+                  </h3>
+                  <p className="text-gray-400">
+                    ログイン状態を守るため、署名付きセッションCookieと状態変更APIのCSRF対策を強化しました。
+                    利用方法は変わりませんが、ログアウトや設定保存の安全性が向上しています。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    連携アカウントと秘密情報の扱いを改善
+                  </h3>
+                  <p className="text-gray-400">
+                    連携アカウントの表示、再認証、ログ上の秘密情報の伏せ字化を改善しました。
+                    使い方はこれまで通り、アカウント連携画面から必要な連携先を管理します。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                内部安定性・運用基盤
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    外部サービス連携のリトライ改善
+                  </h3>
+                  <p className="text-gray-400">
+                    データベース、画像保存、リアルタイム通知などの一時的な失敗に対して、
+                    リトライやエラー分類を改善しました。通信が不安定な場面でも復旧しやすくしています。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    ビルド・デプロイ基盤の更新
+                  </h3>
+                  <p className="text-gray-400">
+                    Cloudflare Workers Buildsへの対応、OpenNext設定の整理、ビルド方式の調整を行いました。
+                    画面上の使い方は変わりませんが、リリース作業と本番反映を安定させるための改善です。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    データ移行と集計処理の修正
+                  </h3>
+                  <p className="text-gray-400">
+                    ガチャ履歴、カード所有数、ランキング、重複カードなどの集計で、
+                    件数が多い場合や移行途中でも正しく扱えるように修正しました。
                   </p>
                 </div>
               </div>
@@ -221,7 +448,9 @@ export default async function ReleasesPage() {
                     概要
                   </h3>
                   <p className="text-gray-400">
-                    レアリティごとに目標確率を設定するだけで、各カードの排出確率が自動計算されるようになりました。カードの追加・削除時も自動で再計算されるため、手動での調整が不要になります。
+                    レアリティごとに目標確率を設定するだけで、各カードの排出確率が自動計算されるようになりました。
+                    使い方は、排出率設定で自動モードを選び、レアリティごとの割合を保存します。
+                    カードの追加・削除時も自動で再計算されるため、手動での調整が不要になります。
                   </p>
                 </div>
 
@@ -230,7 +459,9 @@ export default async function ReleasesPage() {
                     レアリティ内の偏り設定
                   </h3>
                   <p className="text-gray-400">
-                    同じレアリティのカード間で「出やすさ」に差をつけることができます。各カードの確率プレビューで設定結果を確認でき、「?」アイコンから詳しいヘルプも参照できます。
+                    同じレアリティのカード間で「出やすさ」に差をつけることができます。
+                    使い方は、カードごとの偏り値を調整し、確率プレビューで結果を確認します。
+                    「?」アイコンから詳しいヘルプも参照できます。
                   </p>
                 </div>
 
@@ -244,13 +475,13 @@ export default async function ReleasesPage() {
                 </div>
 
                 <div className="rounded-xl bg-gray-800 p-6">
-                  <h3 className="mb-3 text-lg font-semibold text-white">
-                    既知の制限事項
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    保存と再計算の安定化
                   </h3>
-                  <ul className="ml-4 list-disc space-y-2 text-gray-400">
-                    <li>メタデータ編集時に不要な再計算が発生する場合があります（最適化予定）</li>
-                    <li>初回保存が失敗した場合の復旧手順が煩雑です（リトライ機構を追加予定）</li>
-                  </ul>
+                  <p className="text-gray-400">
+                    自動設定の導入後も、保存失敗時の扱いや不要な再計算を継続して改善しています。
+                    使い方は変わらず、設定を保存すると現在のカード構成に合わせて確率が反映されます。
+                  </p>
                 </div>
               </div>
             </section>
@@ -267,7 +498,9 @@ export default async function ReleasesPage() {
                     概要
                   </h3>
                   <p className="text-gray-400">
-                    コレクションの達成度を確認できるようになりました。全カードを集めるとゴールドの勲章が表示されます。
+                    コレクションの達成度を確認できるようになりました。
+                    使い方は、視聴者のコレクションページを開いて達成状況を確認します。
+                    全カードを集めるとゴールドの勲章が表示されます。
                   </p>
                 </div>
 
@@ -295,6 +528,7 @@ export default async function ReleasesPage() {
                   </h3>
                   <p className="text-gray-400">
                     ガチャ履歴のユーザー別ページから、各視聴者のコレクションコンプリート状況を確認できます。
+                    使い方は、配信者向けのガチャ履歴で対象ユーザーを開き、コレクション状況を確認します。
                   </p>
                 </div>
               </div>
@@ -312,7 +546,9 @@ export default async function ReleasesPage() {
                     登録カードから検索できるフィルタ
                   </h3>
                   <p className="text-gray-400">
-                    ガチャ履歴ページに、登録されているカードから絞り込み検索ができるフィルタ機能を追加しました。特定のカードの排出履歴を簡単に確認できます。
+                    ガチャ履歴ページに、登録されているカードから絞り込み検索ができるフィルタ機能を追加しました。
+                    使い方は、履歴ページのカードフィルタで確認したいカードを選びます。
+                    特定のカードの排出履歴を簡単に確認できます。
                   </p>
                 </div>
               </div>
