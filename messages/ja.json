@@ -427,7 +427,15 @@
       "targetType": "再生条件",
       "rarity": "レアリティ",
       "rewardId": "報酬ID",
-      "rewardPlaceholder": "チャネルポイント報酬ID"
+      "rewardPlaceholder": "チャネルポイント報酬ID",
+      "reward": "対象の報酬",
+      "rewardUnset": "-- 報酬を選択 --",
+      "rewardMissing": "{name}（Twitchで削除された可能性があります。現在の設定は維持されています）",
+      "rewardFetchFailedHint": "報酬一覧を取得できませんでした。報酬IDを直接入力してください。"
+    },
+    "options": {
+      "points": "ポイント",
+      "disabled": "[無効]"
     },
     "targets": {
       "all": "すべてのガチャ",
