@@ -14,7 +14,7 @@ import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from "@/lib/rarity-weight-calculator";
 import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
-import { MAX_ISSUANCE_COUNT_CAP } from "@/lib/card-issuance";
+import { MAX_ISSUANCE_COUNT_CAP, getIssuanceInfo } from "@/lib/card-issuance";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
@@ -2364,19 +2364,42 @@ export default function CardManager({
                   // First 4 cards get priority for LCP optimization
                   // 最初の4枚のカードはLCP最適化のためpriority設定
                   const isPriority = index < 4;
+                  // Issue #542: 上限付きカードのみ発行済み/上限を計算（無制限カードはnull）
+                  const issuanceInfo = getIssuanceInfo(card.max_issuance_count, card.issued_count);
+                  // 既存の「配布停止中」バナー（絶対配置・カード上部フルwidth）と同じ
+                  // 見た目で「売り切れ/残りわずか」も積み重ねて表示する。両方同時に
+                  // 該当するケース（配布停止中 かつ 売り切れ、等）もあり得るため、
+                  // 表示すべきバナーを配列に集約してから描画する。
+                  // Reuse the existing "paused" top banner styling for sold-out /
+                  // low-remaining state. Both can be true at once (e.g. paused AND
+                  // sold out), so collect the banners to render into an array first.
+                  const banners: { key: string; className: string; label: string }[] = [];
+                  if (isPaused) {
+                    banners.push({ key: "paused", className: "bg-yellow-600", label: t("status.paused") });
+                  }
+                  if (issuanceInfo?.soldOut) {
+                    banners.push({ key: "soldOut", className: "bg-red-600", label: t("issuance.soldOut") });
+                  } else if (issuanceInfo?.lowRemaining) {
+                    banners.push({ key: "lowRemaining", className: "bg-yellow-700", label: t("issuance.lowRemaining") });
+                  }
                   return (
                     <div
                       key={card.id}
-                      className={`group relative overflow-hidden rounded-lg bg-gray-700 ${isPaused ? 'opacity-60' : ''}`}
+                      className={`group relative overflow-hidden rounded-lg bg-gray-700 ${isPaused || issuanceInfo?.soldOut ? 'opacity-60' : ''}`}
                     >
-                      {/* Paused badge / 一時停止中バッジ */}
-                      {isPaused && (
-                        <div className="absolute top-0 left-0 right-0 bg-yellow-600 text-white text-xs text-center py-1 z-10">
-                          {t("status.paused")}
+                      {/* Paused / sold-out / low-remaining banners (stacked) */}
+                      {/* 配布停止中・売り切れ・残りわずかバッジ（積み重ね表示） */}
+                      {banners.length > 0 && (
+                        <div className="absolute top-0 left-0 right-0 z-10">
+                          {banners.map((banner) => (
+                            <div key={banner.key} className={`${banner.className} text-white text-xs text-center py-1`}>
+                              {banner.label}
+                            </div>
+                          ))}
                         </div>
                       )}
                       {/* 名前とレアリティを一番上に配置 */}
-                      <div className={`p-3 pb-2 ${isPaused ? 'pt-8' : ''}`}>
+                      <div className={`p-3 pb-2 ${banners.length === 2 ? 'pt-16' : banners.length === 1 ? 'pt-8' : ''}`}>
                         <div className="flex items-center justify-between">
                           <h3 className="font-semibold text-white truncate">{card.name}</h3>
                           <span
@@ -2385,6 +2408,21 @@ export default function CardManager({
                             {getRarityLabel(card.rarity)}
                           </span>
                         </div>
+                        {/* 発行済み / 発行可能枚数（Issue #542。無制限カードは非表示） */}
+                        {/* Issued / max issuance count (Issue #542. Hidden for unlimited cards) */}
+                        {issuanceInfo && (
+                          <p
+                            className={`mt-1 text-xs ${
+                              issuanceInfo.soldOut
+                                ? "text-red-400"
+                                : issuanceInfo.lowRemaining
+                                  ? "text-yellow-400"
+                                  : "text-gray-400"
+                            }`}
+                          >
+                            {t("issuance.issuedOfMax", { issued: issuanceInfo.issued, max: issuanceInfo.max })}
+                          </p>
+                        )}
                       </div>
                       {/* 正方形画像（トリミング） */}
                       {/* 画像がある場合のみクリック可能なボタンでラップし、拡大モーダルを開く */}

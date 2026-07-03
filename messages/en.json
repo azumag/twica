@@ -156,8 +156,14 @@
       "rarity": "Rarity",
       "weight": "Weight",
       "probability": "Probability",
+      "issuance": "Issued",
       "status": "Status",
       "actions": "Actions"
+    },
+    "issuance": {
+      "issuedOfMax": "{issued} / {max} issued",
+      "soldOut": "Sold out",
+      "lowRemaining": "Low stock"
     },
     "status": {
       "distributing": "Active",
