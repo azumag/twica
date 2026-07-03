@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { screen, fireEvent, within } from '@testing-library/react'
+import { screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { baseCard, renderCardManager } from '../../utils/card-manager-test-helpers'
 
@@ -141,5 +141,82 @@ describe('CardManager pack-relative probability (Issue #565)', () => {
     // 未分類は U1 のみ → 100%
     expect(screen.getByText('100.0%')).toBeInTheDocument()
     expect(screen.getByText(HINT)).toBeInTheDocument()
+  })
+})
+
+// Issue #605: パック名リネーム成功時、CardPackModal はカタログ配列(パック名一覧)
+// しか親に伝えられない(onSaved)。バグ修正前は、親(CardManager)が保持する
+// 既存カードの collection_name が旧パック名のまま取り残され、リロードするまで
+// 「別パック(孤立参照)のカード」のように見えてしまっていた。
+// onPackRenamed コールバックで CardManager 側の cards ステートをローカルパッチし、
+// 選択中のパックフィルタも新名へ追従することを、CardManager 経由(単体の
+// CardPackModal ではなく実際の親子配線込み)でエンドツーエンドに検証する。
+describe('CardManager cards follow a pack rename without a reload (Issue #605)', () => {
+  const weaponsCards = [
+    baseCard({ id: 'w1', name: '武器1', collection_name: 'weapons' }),
+    baseCard({ id: 'w2', name: '武器2', collection_name: 'weapons' }),
+  ]
+
+  const selectPackFilter = (value: string) => {
+    fireEvent.change(
+      screen.getByRole('combobox', { name: 'カードパックで絞り込む' }),
+      { target: { value } }
+    )
+  }
+
+  it('re-associates existing cards with the new pack name and keeps an active pack filter following the rename', async () => {
+    // PATCH /api/cards/collections 含め、このテストで発生する全fetchに対して
+    // 一律でリネーム成功レスポンスを返す(card-pack-modal.test.tsx と同じ簡略化。
+    // マウント時の /api/storage-status 取得もこれを受け取るが、storageStatus は
+    // このテストでは未使用/未検証なので実害はない)。
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({ success: true, cardPackNames: ['armory'] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderCardManager(weaponsCards, {
+      initialCardPackNames: ['weapons'],
+      viewMode: 'list',
+    })
+
+    // リネーム前から "weapons" で絞り込んでいたユーザーのシナリオを再現する。
+    selectPackFilter('weapons')
+    expect(screen.getByText('武器1')).toBeInTheDocument()
+    expect(screen.getByText('武器2')).toBeInTheDocument()
+
+    // パック管理モーダルを開き、weapons → armory にインラインリネームする。
+    fireEvent.click(screen.getByRole('button', { name: 'パック管理' }))
+    const renameTrigger = screen.getByLabelText('Rename weapons')
+    const row = renameTrigger.closest('li')!
+    fireEvent.click(renameTrigger)
+    fireEvent.change(within(row).getByRole('textbox'), { target: { value: 'armory' } })
+    fireEvent.click(within(row).getByRole('button', { name: '保存' }))
+
+    // モーダル内のカタログ表示が新名に切り替わるまで待つ
+    // (list の key が変わるため row 参照は以降使い回さない)。
+    await waitFor(() => expect(screen.queryByLabelText('Rename weapons')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Rename armory')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+
+    // 修正前: パックフィルタは "weapons" のまま残り、cards[].collection_name も
+    // 旧名のままなので、絞り込み結果が(存在しないパックへの絞り込みで)空になる。
+    // 修正後: フィルタは自動的に新名 "armory" へ追従し、カードも armory 所属として
+    // 表示され続ける。
+    const filterSelect = screen.getByRole('combobox', { name: 'カードパックで絞り込む' })
+    expect(filterSelect).toHaveValue('armory')
+    expect(screen.getByText('武器1')).toBeInTheDocument()
+    expect(screen.getByText('武器2')).toBeInTheDocument()
+
+    // packFilterOptions は cardPackNames ∪ cards[].collection_name の和集合な
+    // ので、どちらか一方でも旧名のままだと選択肢に残ってしまう。
+    const optionLabels = within(filterSelect)
+      .getAllByRole('option')
+      .map((option) => option.textContent)
+    expect(optionLabels).toContain('armory')
+    expect(optionLabels).not.toContain('weapons')
   })
 })

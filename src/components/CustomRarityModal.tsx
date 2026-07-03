@@ -10,6 +10,7 @@ import {
   RARITY_BIDI_OVERRIDE_REGEX as BIDI_OVERRIDE_REGEX,
 } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { isEnterKeySubmit } from "@/lib/keyboard-utils";
 
 // ここでの事前検証は UX 向上のためで、最終的な検証はサーバーが行う
 // (POST /api/streamer/settings)。検証規則は constants の共通定数を共有する。
@@ -207,7 +208,9 @@ export default function CustomRarityModal({
                 placeholder={t("customRarity.addPlaceholder")}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  // CardPackModal (#613) と同種のIME誤送信バグの再発防止として、
+                  // 同じガードをここにも適用する。
+                  if (isEnterKeySubmit(e)) {
                     e.preventDefault();
                     handleAdd();
                   }
