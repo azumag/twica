@@ -65,6 +65,29 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
 
 const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
 
+/**
+ * get_issued_card_counts RPC (migration 00069) の JSONB 戻り値
+ * ({ "<card_id>": <count>, ... }) を Map<card_id, count> にパースする。
+ * Issue #548: 旧実装の issuedCounts と完全に同じ形状を維持する。
+ *
+ * RPC が未デプロイ/エラー時のフォールバック(select+in→JS集計)と混線しないよう、
+ * 想定外の形(null/配列/非オブジェクト)は空Mapとして扱い、呼び出し側で例外を
+ * 起こさない防御的パースにする。
+ */
+function parseIssuedCardCountsRpc(rpcResult: unknown): Map<string, number> {
+  const counts = new Map<string, number>()
+  if (!rpcResult || typeof rpcResult !== 'object' || Array.isArray(rpcResult)) {
+    return counts
+  }
+  for (const [cardId, rawCount] of Object.entries(rpcResult as Record<string, unknown>)) {
+    const count = Number(rawCount)
+    if (Number.isFinite(count)) {
+      counts.set(cardId, count)
+    }
+  }
+  return counts
+}
+
 function isStreamerSettingsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? ''
   return error?.code === 'PGRST204'
@@ -208,21 +231,11 @@ export class GachaService {
       const limitedCards = cards.filter((card) => card.max_issuance_count !== null && card.max_issuance_count !== undefined)
       let availableCards = cards
       if (limitedCards.length > 0) {
-        const { data: issuedRows, error: issuedError } = await this.supabase
-          .from('user_cards')
-          .select('card_id')
-          .in('card_id', limitedCards.map((card) => card.id))
-
-        if (issuedError) {
-          return err(`Database error: ${issuedError.message}`)
+        const issuedCountsResult = await this.getIssuedCounts(limitedCards.map((card) => card.id))
+        if (!issuedCountsResult.success) {
+          return err(issuedCountsResult.error)
         }
-
-        const issuedCounts = new Map<string, number>()
-        for (const row of issuedRows || []) {
-          const cardId = (row as { card_id?: string }).card_id
-          if (!cardId) continue
-          issuedCounts.set(cardId, (issuedCounts.get(cardId) || 0) + 1)
-        }
+        const issuedCounts = issuedCountsResult.data
 
         availableCards = cards.filter((card) => {
           if (card.max_issuance_count === null || card.max_issuance_count === undefined) return true
@@ -347,6 +360,60 @@ export class GachaService {
     } catch (error) {
       return err(`Unexpected error: ${error}`)
     }
+  }
+
+  /**
+   * 発行上限付きカード(max_issuance_count が設定されたカード)について、
+   * card_id ごとの発行済み枚数を取得する。
+   *
+   * Issue #548: 旧実装は user_cards から該当card_idの行を .in() で全件フェッチし、
+   * アプリ側(JS)で card_id ごとに1行ずつ数えていた。発行数が多い人気の限定
+   * カードほど、件数を知りたいだけなのに数千行をDBからアプリへ転送することになり、
+   * 転送量・メモリ・レイテンシが発行済み枚数に比例して線形に悪化していた。
+   * get_issued_card_counts RPC (migration 00069) はDB側で GROUP BY / COUNT(*) を
+   * 実行し、{ "<card_id>": <count> } 形式のJSONBオブジェクト1個だけを返す。
+   * これにより転送量は「発行上限付きカードの種類数」(通常一桁〜十数件)にしか
+   * 依存しなくなる。
+   *
+   * 無停止デプロイの過渡期でRPCが未デプロイ(42883)の場合は、旧来の
+   * select+in によるフェッチ→JS集計にフォールバックする。Map<card_id, count>
+   * の中身は両経路で完全に同一になるため、呼び出し側(executeGacha)の
+   * フィルタリングロジックへの影響はない。
+   */
+  private async getIssuedCounts(cardIds: string[]): Promise<Result<Map<string, number>>> {
+    const { data: rpcData, error: rpcError } = await withRetry(
+      () => this.supabase.rpc('get_issued_card_counts', { p_card_ids: cardIds }),
+      'gacha:executeGacha:issuedCounts',
+    )
+
+    if (!rpcError) {
+      return ok(parseIssuedCardCountsRpc(rpcData))
+    }
+
+    if (rpcError.code !== '42883') {
+      return err(`Database error: ${rpcError.message}`)
+    }
+
+    logger.warn('get_issued_card_counts not deployed, falling back to per-row aggregation', {
+      cardCount: cardIds.length,
+    })
+
+    const { data: issuedRows, error: issuedError } = await this.supabase
+      .from('user_cards')
+      .select('card_id')
+      .in('card_id', cardIds)
+
+    if (issuedError) {
+      return err(`Database error: ${issuedError.message}`)
+    }
+
+    const issuedCounts = new Map<string, number>()
+    for (const row of issuedRows || []) {
+      const cardId = (row as { card_id?: string }).card_id
+      if (!cardId) continue
+      issuedCounts.set(cardId, (issuedCounts.get(cardId) || 0) + 1)
+    }
+    return ok(issuedCounts)
   }
 
   /**
