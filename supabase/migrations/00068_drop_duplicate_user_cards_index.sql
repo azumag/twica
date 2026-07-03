@@ -1,0 +1,16 @@
+-- Drop duplicate index introduced by 00067_add_card_issuance_limits.sql.
+-- 00001_initial_schema.sql line 70 already creates `idx_user_cards_card_id` on user_cards(card_id),
+-- and 00067_add_card_issuance_limits.sql added `idx_user_cards_card_id_issuance_count`
+-- covering the exact same column set.
+-- Keeping both wastes write-amplification on every user_cards insert/update without any read benefit.
+--
+-- 00067_add_card_issuance_limits.sql で追加された idx_user_cards_card_id_issuance_count は
+-- 00001_initial_schema.sql の idx_user_cards_card_id (user_cards(card_id)) と完全に重複する。
+-- そのまま残すと user_cards への INSERT/UPDATE 時に余分な書き込みコストが発生するため削除する。
+--
+-- NOTE: 番号が 00068 の理由 (Issue #562 の番号衝突解消方針に従った再採番):
+-- このマイグレーションは元々 00057 → 00063 と採番されていたが、main 側で 00063
+-- (default pack name + rename) が別マイグレーションに割り当て済みになったため番号が
+-- 衝突した。対になる 00067_add_card_issuance_limits.sql の cleanup として、その直後の
+-- 番号である 00068 に採番し直している。
+DROP INDEX IF EXISTS idx_user_cards_card_id_issuance_count;

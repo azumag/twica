@@ -6,7 +6,9 @@ import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
+import { type OverlayEffectStyle, normalizeOverlayEffectStyle } from "@/lib/overlay-effect";
 import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
+import { normalizeGachaSoundRules, pickGachaSoundRule, type GachaSoundRule } from "@/lib/gacha-sound-rules";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
@@ -32,6 +34,7 @@ interface GachaResult {
   historyId?: string;
   soundGroupId?: string;
   shouldPlaySound?: boolean;
+  rewardId?: string | null;
 }
 
 interface OverlayPollingEvent {
@@ -40,6 +43,7 @@ interface OverlayPollingEvent {
   redeemedAt: string;
   userTwitchUsername: string;
   card: Pick<Card, "id" | "name" | "description" | "image_url" | "rarity">;
+  rewardId?: string | null;
 }
 
 function fetchJsonWithXhrFallback<T>(url: string): Promise<T> {
@@ -78,12 +82,18 @@ interface SparklePosition {
   animationDuration: string;
 }
 
+// 共有定義に集約: src/lib/overlay-effect.ts を Single Source of Truth とする
+function parseOverlayEffectStyle(value: string | null): OverlayEffectStyle {
+  return normalizeOverlayEffectStyle(value);
+}
+
 /**
  * Overlay display options controlled via URL parameters
  * URLパラメータで制御されるオーバーレイ表示オプション
  * - imageOnly: 画像のみ表示（カード枠・テキストなし）
  * - autoPortrait: 縦長画像を自動検出してオリジナル画像表示
  * - effects: レジェンダリーのキラキラエフェクト表示（デフォルト: true）
+ * - effectStyle: エフェクトの種類（sparkle/confetti/hearts、デフォルト: sparkle）
  * - smallMode: 小さい画像用の縮小表示モード
  * - debug: デバッグモード（接続状態の詳細表示）
  * - portraitShowName: 縦長画像でカード名を表示（画像の下）
@@ -95,6 +105,7 @@ interface OverlayOptions {
   imageOnly: boolean;
   autoPortrait: boolean;
   effects: boolean;
+  effectStyle: OverlayEffectStyle;
   smallMode: boolean;
   displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
   debug: boolean;
@@ -129,6 +140,7 @@ export default function OverlayPage() {
     imageOnly: false,
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
+    effectStyle: "sparkle",
     smallMode: true,     // デフォルトで小さい画像モードを有効化
     displayDuration: 6,  // カードの表示時間（秒）、デフォルト6秒
     debug: false,        // デバッグモード（接続状態の詳細表示）
@@ -151,7 +163,8 @@ export default function OverlayPage() {
   const [soundSettings, setSoundSettings] = useState<{
     soundUrl: string | null;
     soundEnabled: boolean;
-  }>({ soundUrl: null, soundEnabled: true });
+    soundRules: GachaSoundRule[];
+  }>({ soundUrl: null, soundEnabled: true, soundRules: [] });
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
@@ -172,10 +185,13 @@ export default function OverlayPage() {
   const pollCursorRef = useRef(new Date().toISOString());
   const seenHistoryIdsRef = useRef<Set<string>>(new Set());
   const lastPollingErrorLogRef = useRef(0);
-  // 効果音再生用のオーディオ要素への参照
+  // 効果音再生用のオーディオ要素キャッシュ
   // HTMLAudioElementを使用（R2パブリックURLはCORSヘッダーがないためfetch不可、
   // audioタグはCORS不要で読み込める）
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // ルールごと（ruleId）に1つのAudio要素をプリロードして保持する。
+  // 単一audioRefだとレアリティ別など複数音が設定されたとき先頭以外が
+  // プリロードされず初回再生で遅延・無音になる問題を回避する。
+  const audioCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   // ユーザー操作により音声再生がアンロック済みかどうか
   // ブラウザの自動再生ポリシーにより、最初のユーザー操作までplay()は失敗する
   const audioUnlockedRef = useRef(false);
@@ -195,28 +211,48 @@ export default function OverlayPage() {
         const response = await fetch(`/api/streamer/${streamerId}/sound-settings`);
         if (response.ok) {
           const data = await response.json();
+          const soundRules = normalizeGachaSoundRules(data.soundRules);
+          const soundEnabled = data.soundEnabled ?? true;
           setSoundSettings({
             soundUrl: data.soundUrl,
-            soundEnabled: data.soundEnabled ?? true,
+            soundEnabled,
+            soundRules,
           });
-          // 効果音URLが設定されている場合、Audio要素を作成してプリロード
-          // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）
-          if (data.soundUrl && data.soundEnabled) {
-            const audio = new Audio(data.soundUrl);
-            audio.preload = "auto";
-            audioRef.current = audio;
 
-            // 自動再生可能かテスト（ブロックされていればUI表示用フラグを立てる）
-            audio.play().then(() => {
-              // 再生成功 → 即座に停止（プリロード目的）
-              audio.pause();
-              audio.currentTime = 0;
-              audioUnlockedRef.current = true;
-            }).catch(() => {
-              // NotAllowedError: 自動再生ポリシーによりブロック
-              // ユーザー操作後にアンロックされる
-              setAudioBlocked(true);
-            });
+          if (soundEnabled) {
+            // 再生され得る全URL（ルールごと + レガシー単一URL）を収集して
+            // それぞれHTMLAudioElementを作成しプリロードする。
+            // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）。
+            // key: ruleId、レガシーURLは固定キー "__legacy__" を使う。
+            const cache = audioCacheRef.current;
+            const entries: { key: string; url: string }[] = [];
+            for (const rule of soundRules) {
+              if (rule.enabled && rule.url) {
+                entries.push({ key: rule.id, url: rule.url });
+              }
+            }
+            if (data.soundUrl) {
+              entries.push({ key: "__legacy__", url: data.soundUrl });
+            }
+
+            for (const { key, url } of entries) {
+              if (cache.has(key)) continue;
+              const audio = new Audio(url);
+              audio.preload = "auto";
+              cache.set(key, audio);
+
+              // 自動再生可能かテスト（ブロックされていればUI表示用フラグを立てる）
+              audio.play().then(() => {
+                // 再生成功 → 即座に停止（プリロード目的）
+                audio.pause();
+                audio.currentTime = 0;
+                audioUnlockedRef.current = true;
+              }).catch(() => {
+                // NotAllowedError: 自動再生ポリシーによりブロック
+                // ユーザー操作後にアンロックされる
+                setAudioBlocked(true);
+              });
+            }
           }
         }
       } catch (error) {
@@ -233,20 +269,29 @@ export default function OverlayPage() {
   useEffect(() => {
     const unlockAudio = () => {
       if (audioUnlockedRef.current) return;
-      const audio = audioRef.current;
-      if (audio) {
-        // ユーザー操作のコンテキスト内でplay()を呼ぶことでブラウザのロックを解除
-        // Calling play() within user gesture context unlocks browser's autoplay restriction
-        audio.play().then(() => {
-          audio.pause();
-          audio.currentTime = 0;
+      const cache = audioCacheRef.current;
+      if (cache.size === 0) return;
+
+      // ユーザー操作のコンテキスト内で全Audio要素のplay()を呼ぶことで
+      // ブラウザのロックを一括解除する（複数音すべてをアンロック）。
+      // Calling play() within user gesture context unlocks browser's autoplay restriction
+      const audios = Array.from(cache.values());
+      Promise.allSettled(
+        audios.map((audio) =>
+          audio.play().then(() => {
+            audio.pause();
+            audio.currentTime = 0;
+          }),
+        ),
+      ).then((results) => {
+        const anyUnlocked = results.some((r) => r.status === "fulfilled");
+        if (anyUnlocked) {
           audioUnlockedRef.current = true;
           setAudioBlocked(false);
           logger.info("Audio unlocked after user interaction");
-        }).catch(() => {
-          // まだアンロックできない場合は次のクリックで再試行
-        });
-      }
+        }
+        // 全て失敗した場合は次のクリックで再試行
+      });
     };
 
     document.addEventListener("click", unlockAudio);
@@ -278,6 +323,7 @@ export default function OverlayPage() {
         imageOnly: urlParams.get("imageOnly") === "true",
         autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
         effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
+        effectStyle: parseOverlayEffectStyle(urlParams.get("effect")),
         smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
         displayDuration,  // カードの表示時間（秒）
         debug: isDebug,
@@ -336,25 +382,38 @@ export default function OverlayPage() {
    * ユーザー操作によるアンロック後であれば即座に再生される
    * 未アンロック時は再生失敗するがエラーは無視する
    */
-  const playGachaSound = useCallback(() => {
+  const playGachaSound = useCallback((data: GachaResult) => {
     // 効果音が無効または未設定の場合はスキップ
-    if (!soundSettings.soundEnabled || !soundSettings.soundUrl) {
+    const selectedRule = pickGachaSoundRule(soundSettings.soundRules, {
+      rarity: data.card.rarity,
+      rewardId: data.rewardId,
+    });
+    const soundUrl = selectedRule?.url ?? soundSettings.soundUrl;
+    if (!soundSettings.soundEnabled || !soundUrl) {
       return;
     }
 
     try {
-      if (audioRef.current) {
+      // ルールに対応するプリロード済みAudio要素を優先的に使用する。
+      // ルールが選択された場合は rule.id、レガシー単一URLの場合は固定キー。
+      const cacheKey = selectedRule?.id ?? "__legacy__";
+      const cached = audioCacheRef.current.get(cacheKey);
+      if (cached && cached.src === soundUrl) {
         // プリロード済みのAudio要素を使用して再生
-        audioRef.current.currentTime = 0;
-        audioRef.current.play().catch(() => {
+        cached.currentTime = 0;
+        cached.play().catch(() => {
           // 自動再生ポリシーによりブロックされた場合は無視
           // ユーザーがページをクリックすればアンロックされ、次回から再生可能
         });
+      } else {
+        // キャッシュ未生成（取得タイミング差など）のフォールバック
+        const audio = new Audio(soundUrl);
+        audio.play().catch(() => {});
       }
     } catch (error) {
       logger.error("Error playing gacha sound:", error);
     }
-  }, [soundSettings.soundEnabled, soundSettings.soundUrl]);
+  }, [soundSettings.soundEnabled, soundSettings.soundRules, soundSettings.soundUrl]);
 
   /**
    * キューから1件取り出して表示し、終了後に次のアイテムを処理する
@@ -384,10 +443,10 @@ export default function OverlayPage() {
         if (next.soundGroupId) {
           if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
             playedSoundGroupIdsRef.current.add(next.soundGroupId);
-            playGachaSound();
+            playGachaSound(next);
           }
         } else {
-          playGachaSound();
+          playGachaSound(next);
         }
       }
 
@@ -464,6 +523,7 @@ export default function OverlayPage() {
           userTwitchUsername: event.userTwitchUsername,
           historyId: event.id,
           soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
+          rewardId: event.rewardId ?? null,
         });
       }
     } catch (error) {
@@ -533,6 +593,7 @@ export default function OverlayPage() {
           card: payload.card as unknown as Card,
           cards: payload.cards as unknown as Card[] | undefined,
           userTwitchUsername: payload.userTwitchUsername,
+          rewardId: payload.rewardId ?? null,
         });
       }
     }, {
@@ -679,6 +740,56 @@ export default function OverlayPage() {
   // エフェクトを表示するかどうか（オプションで無効化されていない場合のみ）
   const shouldShowEffects = options.effects && result.card.rarity === "legendary";
 
+  const renderOverlayEffects = () => {
+    if (!shouldShowEffects) {
+      return null;
+    }
+
+    // i * 23deg: 23 は 360 と互いに素な素数のため、N=20 個並べても回転角が均等に
+    // 散らばり (周期 360°) 偏りが目立たない。色も 4 色を i%4 で循環させ、視覚的な
+    // ランダム感を低コストで演出する（CSS 1行で済ませる狙い）。
+    const CONFETTI_ROTATION_STEP_DEG = 23;
+    return (
+      <div
+        className="pointer-events-none absolute inset-0 overflow-hidden"
+        // スクリーンリーダーには無意味な装飾なので非読み上げに
+        aria-hidden="true"
+      >
+        {sparklePositions.map((pos, i) => {
+          if (options.effectStyle === "confetti") {
+            return (
+              <div
+                key={i}
+                className={`absolute h-2.5 w-1.5 animate-bounce rounded-sm ${
+                  i % 4 === 0
+                    ? "bg-yellow-300"
+                    : i % 4 === 1
+                      ? "bg-pink-400"
+                      : i % 4 === 2
+                        ? "bg-cyan-300"
+                        : "bg-purple-400"
+                }`}
+                style={{ ...pos, transform: `rotate(${i * CONFETTI_ROTATION_STEP_DEG}deg)` }}
+              />
+            );
+          }
+
+          return (
+            <div
+              key={i}
+              className={`absolute ${
+                options.effectStyle === "hearts" ? "animate-bounce text-pink-300" : "animate-ping"
+              }`}
+              style={pos}
+            >
+              {options.effectStyle === "hearts" ? "♥" : "✨"}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   // 小さい画像モード用のサイズクラス
   // smallModeオプションが有効で、かつ画像が400x400未満の場合のみカードサイズを縮小
   // これにより小さい画像でも適切なサイズで表示され、大きい画像は通常サイズで表示される
@@ -756,20 +867,7 @@ export default function OverlayPage() {
               </div>
             )}
 
-            {/* Sparkle Effects for Legendary (if enabled) */}
-            {shouldShowEffects && (
-              <div className="pointer-events-none absolute inset-0">
-                {sparklePositions.map((pos, i) => (
-                  <div
-                    key={i}
-                    className="absolute animate-ping"
-                    style={pos}
-                  >
-                    ✨
-                  </div>
-                ))}
-              </div>
-            )}
+            {renderOverlayEffects()}
           </div>
         ) : (
           // 通常のカード表示モード
@@ -831,20 +929,7 @@ export default function OverlayPage() {
               </div>
             </div>
 
-            {/* Sparkle Effects for Legendary (if enabled) */}
-            {shouldShowEffects && (
-              <div className="pointer-events-none absolute inset-0">
-                {sparklePositions.map((pos, i) => (
-                  <div
-                    key={i}
-                    className="absolute animate-ping"
-                    style={pos}
-                  >
-                    ✨
-                  </div>
-                ))}
-              </div>
-            )}
+            {renderOverlayEffects()}
           </>
         )}
       </div>

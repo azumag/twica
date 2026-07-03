@@ -41,6 +41,13 @@ esac
 
 if [[ "$mode" == "deploy" ]]; then
   if [[ "$branch" != "$expected_branch" ]]; then
+    if [[ "$target" == "preview" ]]; then
+      echo "Uploading preview version for non-preview branch '$branch' instead of deploying." >&2
+      deploy_command=(npx opennextjs-cloudflare upload --env preview)
+      "${deploy_command[@]}"
+      exit 0
+    fi
+
     echo "Refusing to deploy $target from branch '$branch'; expected '$expected_branch'." >&2
     exit 1
   fi

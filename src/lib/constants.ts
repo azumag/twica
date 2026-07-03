@@ -68,6 +68,11 @@ export const SESSION_CONFIG = {
 export const MAX_RARITY_KEY_LENGTH = 40;
 // 1配信者あたりのカスタムレアリティ数の上限。DB(00049 の CHECK)と整合させる。
 export const MAX_CUSTOM_RARITIES = 50;
+// 1配信者あたりの事前登録カードパック数の上限。DB(00062 の CHECK)と整合させる。
+export const MAX_CARD_PACK_NAMES = 50;
+// pack_rarity_weights のエントリ数上限。事前登録パック上限(50) + __default__(1)。
+// DB(00065 の check_pack_rarity_weights_values)と整合させる。Issue #578
+export const MAX_PACK_RARITY_WEIGHTS_ENTRIES = 51;
 // 制御文字(C0 U+0000-U+001F・DEL U+007F・C1 U+0080-U+009F)。
 // 表示崩れや不可視キー注入を防ぐため禁止。
 export const RARITY_CONTROL_CHAR_REGEX = /[\u0000-\u001F\u007F-\u009F]/;
@@ -253,6 +258,16 @@ export const ERROR_MESSAGES = {
   STREAMER_ID_MISSING: 'Missing streamerId',
   DROP_RATE_INVALID: 'Drop rate must be a number between 0 and 1',
   INTRA_RARITY_WEIGHT_INVALID: 'Intra-rarity weight must be a positive number',
+  // Issue #393: a reward was bound to a pack that has no active cards to draw.
+  COLLECTION_NOT_FOUND: 'No active cards belong to the selected card pack',
+  // Issue #393 redesign: a card/reward tried to bind a NEW pack name that isn't
+  // in the streamer's pre-defined card_pack_names list (distinct from
+  // COLLECTION_NOT_FOUND, which is about an empty-but-registered pack).
+  COLLECTION_NOT_REGISTERED: 'The selected card pack has not been registered. Add it in pack management first.',
+  // Issue #554: PATCH /api/cards/collections (pack rename) returns this when
+  // the `rename_card_pack` RPC is not deployed yet (deploy-window fallback,
+  // mirrors the cardPackNamesSkippedDeployWindow pattern used elsewhere).
+  PACK_RENAME_NOT_READY: 'Pack renaming is not available yet. Please try again shortly.',
   CONTENT_TYPE_MISSING: 'Content-Type header is required',
   CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
   CARD_NAME_REQUIRED: 'Card name is required',
@@ -301,6 +316,8 @@ export const ERROR_MESSAGES = {
   FANBOX_ID_TOO_LONG: 'FANBOX ID is too long',
   // プランダウングレード等でストレージ超過時のエラー
   PLAN_OVER_LIMIT: 'ストレージ容量を超過しています。支援特典をアップグレードするか、画像を削除してください。',
+  // 支援プランが必要な機能へのアクセス拒否
+  PLAN_UPGRADE_REQUIRED: 'この機能は助力プラン以上が必要です',
 
   // Support inquiry errors
   INQUIRY_NOT_FOUND: 'Inquiry not found',

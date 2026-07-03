@@ -1,42 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
-import { NextIntlClientProvider } from 'next-intl'
-import CardManager from '@/components/CardManager'
-import jaMessages from '../../../messages/ja.json'
-import type { Card } from '@/types/database'
+import { screen, fireEvent } from '@testing-library/react'
+import { baseCard, renderCardManager } from '../../utils/card-manager-test-helpers'
 
 vi.mock('@/lib/logger')
-
-const baseCard = (overrides: Partial<Card>): Card => ({
-  id: 'card-1',
-  streamer_id: 'streamer-1',
-  name: 'カードA',
-  description: '',
-  image_url: null,
-  rarity: 'common',
-  card_number: null,
-  drop_rate: 0.25,
-  intra_rarity_weight: 1,
-  is_active: true,
-  hp: 10,
-  atk: 5,
-  def: 5,
-  spd: 5,
-  skill_type: 'attack',
-  skill_name: 'たいあたり',
-  skill_power: 10,
-  created_at: '2026-05-01T00:00:00Z',
-  updated_at: '2026-05-01T00:00:00Z',
-  ...overrides,
-})
-
-const renderCardManager = (cards: Card[]) => {
-  return render(
-    <NextIntlClientProvider locale="ja" messages={jaMessages}>
-      <CardManager streamerId="streamer-1" initialCards={cards} initialRarityWeights={{}} />
-    </NextIntlClientProvider>
-  )
-}
 
 describe('CardManager title search', () => {
   beforeEach(() => {

@@ -4,17 +4,21 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
+import { RARITIES, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
+import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import { cardMatchesPackKey } from "@/lib/collection-packs";
+import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import DropRateSettingsModal from "./DropRateSettingsModal";
 import CustomRarityModal from "./CustomRarityModal";
+import CardPackModal from "./CardPackModal";
 import ExpandableDescription from "./ExpandableDescription";
 
 /** Custom dropdown arrow style for appearance-none select boxes */
@@ -71,12 +75,29 @@ interface CardManagerProps {
   // Plan-based available output widths (default: [800])
   // プラン別選択可能な出力幅（デフォルト: [800]）
   availableWidths?: number[];
+  // Plan-based maximum upload size in bytes (default: UPLOAD_CONFIG.MAX_FILE_SIZE)
+  // GIFはトリミング/再圧縮をスキップして原本送信されるため、UI上でユーザーへ上限を案内するのに利用する
+  // プラン別アップロードサイズ上限（バイト）。GIF原本送信モード時の注意文表示にも用いる
+  maxUploadSize?: number;
   // Initial rarity weights: null/undefined = unset (auto mode with defaults), {} = explicit manual mode, {weights} = auto mode
   // レアリティ確率設定: null/undefined=未設定（自動モードデフォルト化）, {}=手動モード明示, {weights}=自動モード
   initialRarityWeights?: Record<string, number> | null;
   // 配信者が定義したカスタムレアリティ名（rarity_weights とは独立）
   // Streamer-defined custom rarity names (decoupled from rarity_weights)
   initialCustomRarities?: string[];
+  // 配信者が事前登録したカードパック名（Issue #393再設計）。カード作成/編集
+  // フォームの collectionName は自由入力ではなく、このリストからのみ選択する。
+  // Pre-defined card pack names (Issue #393 redesign). The collectionName
+  // field on the card form now only selects from this list, not free text.
+  initialCardPackNames?: string[];
+  // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554）。
+  // null/undefined は汎用ラベル("デフォルト")を意味する(列未デプロイ時も含む)。
+  // Display-name override for the "default" (unclassified) pack (Issue #554).
+  // null/undefined falls back to the generic label ("デフォルト").
+  initialDefaultPackName?: string | null;
+  // Issue #269再設計: 新規パック登録(パック管理モーダルでの追加)にのみ適用する
+  // プラン判定。デフォルトfalse(フェイルクローズ)。
+  isPremium?: boolean;
 }
 
 // Sorting field options
@@ -89,6 +110,8 @@ type CardFormData = {
   rarity: Rarity;
   cardNumber: string;
   maxIssuanceCount: string;
+  // Issue #393: card pack name ("" = unclassified / all cards)
+  collectionName: string;
   dropRate: number;
   intraRarityWeight: number;
 };
@@ -121,8 +144,12 @@ export default function CardManager({
   maxCards,
   maxImageWidth = 800,
   availableWidths = [800],
+  maxUploadSize,
   initialRarityWeights = null,
   initialCustomRarities = [],
+  initialCardPackNames = [],
+  initialDefaultPackName = null,
+  isPremium = false,
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -146,6 +173,10 @@ export default function CardManager({
   });
   // カスタムレアリティ名（ドロップ率設定とは独立。専用モーダルで管理）
   const [customRarities, setCustomRarities] = useState<string[]>(initialCustomRarities);
+  // 事前登録カードパック名（Issue #393再設計。専用モーダルで管理）
+  const [cardPackNames, setCardPackNames] = useState<string[]>(initialCardPackNames);
+  // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554。専用モーダルで管理）
+  const [defaultPackName, setDefaultPackName] = useState<string | null>(initialDefaultPackName);
   const rarityOptions = useMemo(() => {
     const values = new Set<string>(RARITIES.map((rarity) => rarity.value));
     cards.forEach((card) => {
@@ -174,6 +205,11 @@ export default function CardManager({
   const [sortField, setSortField] = useState<SortField>("created_at");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // パックフィルタ（Issue #554）。"" = すべてのパック、DEFAULT_PACK_SENTINEL =
+  // デフォルト(未分類, collection_name IS NULL)のみ、それ以外はパック名の完全一致。
+  // ステータスフィルタと異なり、サーバー(/api/cards)側にこの絞り込みパラメータは
+  // 無いため、常にクライアント側(filteredAndSortedCards)のみで完結させる。
+  const [packFilter, setPackFilter] = useState<string>("");
   const [titleSearchQuery, setTitleSearchQuery] = useState("");
   // Track if this is the first render to skip initial reload
   // 初回レンダリングかどうかを追跡して初期リロードをスキップ
@@ -253,6 +289,14 @@ export default function CardManager({
     } else if (statusFilter === "inactive") {
       nextCards = nextCards.filter(card => !card.is_active);
     }
+    // Issue #554: パックフィルタ。DEFAULT_PACK_SENTINEL は「未分類のみ」
+    // (collection_name IS NULL)、それ以外は選択されたパック名との完全一致。
+    // cardMatchesPackKey は executeGacha の抽選プール絞り込みと同じ述語を
+    // 共有しており(collection-packs.ts)、表示用フィルタと抽選プールの判定が
+    // ズレないようにする。
+    if (packFilter) {
+      nextCards = nextCards.filter(card => cardMatchesPackKey(card.collection_name, packFilter));
+    }
     if (normalizedQuery) {
       nextCards = nextCards.filter(card => card.name.toLowerCase().includes(normalizedQuery));
     }
@@ -265,7 +309,38 @@ export default function CardManager({
     }
 
     return nextCards;
-  }, [cards, sortDirection, sortField, statusFilter, titleSearchQuery]);
+  }, [cards, sortDirection, sortField, statusFilter, packFilter, titleSearchQuery]);
+
+  // Issue #554: パックフィルタの選択肢 = 事前登録カタログ ∪ カード上に実在する
+  // collection_name(パック管理から削除された等の孤立参照も選択肢から漏らさない)。
+  const packFilterOptions = useMemo(() => {
+    const names = new Set<string>(cardPackNames);
+    cards.forEach((card) => {
+      if (card.collection_name) names.add(card.collection_name);
+    });
+    return Array.from(names);
+  }, [cardPackNames, cards]);
+
+  // Calculate total weight for probability calculation.
+  // Issue #565: 確率列の母数は実際の抽選プールに一致させる。パック指定の
+  // 報酬から引いた場合、GachaService.executeGacha は active + collection
+  // で候補を絞り、selectWeightedCard が候補内の drop_rate 比で抽選する
+  // (=パック内で再正規化)。そこでパックフィルタ選択中は同じ絞り込みを
+  // 母数に適用し、「そのパックから引いたときの抽選確率」を表示する。
+  // statusFilter/タイトル検索は表示用フィルタであり抽選プールとは無関係の
+  // ため母数には影響させない。
+  const totalActiveWeight = useMemo(
+    () =>
+      cards
+        .filter(
+          (c) =>
+            c.is_active &&
+            (!packFilter || cardMatchesPackKey(c.collection_name, packFilter))
+        )
+        .reduce((sum, c) => sum + c.drop_rate, 0),
+    [cards, packFilter]
+  );
+
   const [showForm, setShowForm] = useState(false);
   const [editingCard, setEditingCard] = useState<Card | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -276,9 +351,30 @@ export default function CardManager({
     rarity: "common" as Rarity,
     cardNumber: "",
     maxIssuanceCount: "",
+    collectionName: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
   });
+  // Issue #393再設計: 事前登録パック一覧 + (編集中カードの現在値がその一覧に
+  // 無ければ)孤立参照を選択肢として残す(ChannelPointSettingsの「一覧に無い
+  // パックも表示」パターンと同じ。パック管理から削除された後の既存紐付けを
+  // 黙って見えなくしない)。
+  // Issue #567続き: 孤立参照のアンカーは formData.collectionName ではなく
+  // editingCard.collection_name(編集開始時点の元の値)で行う。デフォルトへ
+  // 変更した直後は formData.collectionName が "" になり cardPackNames が
+  // 空だと選択肢がゼロになって select 自体がアンマウントされ、孤立参照へ
+  // 戻せなくなる(下の表示ゲート参照)。editingCard を見ることで、編集
+  // セッション中は select が消えず、いつでも元のパックへ戻せる。
+  const cardPackSelectOptions = useMemo(() => {
+    const options = [...cardPackNames];
+    if (editingCard?.collection_name && !options.includes(editingCard.collection_name)) {
+      options.push(editingCard.collection_name);
+    }
+    if (formData.collectionName && !options.includes(formData.collectionName)) {
+      options.push(formData.collectionName);
+    }
+    return options;
+  }, [cardPackNames, editingCard, formData.collectionName]);
   const descriptionCharacterCount = useMemo(
     () => countCharacters(formData.description),
     [formData.description]
@@ -286,6 +382,10 @@ export default function CardManager({
   const isDescriptionTooLong = descriptionCharacterCount > CARD_DESCRIPTION_MAX_CHARACTERS;
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付けだけ
+  // 保留された稀なケースの通知。resetForm()がuploadErrorを即座にクリアする
+  // ため、フォームの表示状態から独立させる。
+  const [deployWindowNotice, setDeployWindowNotice] = useState(false);
   // Separate state for confirmed image URL (only update on blur)
   // プレビュー表示用の確定済み画像URL（フォーカスが外れた時のみ更新）
   const [confirmedImageUrl, setConfirmedImageUrl] = useState("");
@@ -352,6 +452,8 @@ export default function CardManager({
   const [showBatchDropRateModal, setShowBatchDropRateModal] = useState(false);
   // カスタムレアリティ管理モーダルの状態
   const [showCustomRarityModal, setShowCustomRarityModal] = useState(false);
+  // パック管理モーダルの状態(Issue #393再設計)
+  const [showCardPackModal, setShowCardPackModal] = useState(false);
   // Zoomed card image modal state (opened when user clicks a thumbnail)
   // Uses the original (pre-thumbnail) URL so users see the full-resolution image
   // サムネイルクリック時に表示する拡大画像モーダルの状態
@@ -820,6 +922,7 @@ export default function CardManager({
       rarity: "common",
       cardNumber: "",
       maxIssuanceCount: "",
+      collectionName: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
     });
@@ -857,9 +960,30 @@ export default function CardManager({
       // Cropped image will be compressed to JPEG, so original size doesn't matter
       // トリミング前はファイルタイプのみ検証（サイズチェックはスキップ）
       // トリミング後はJPEGに圧縮されるため、元のサイズは問題にならない
-      const allowedTypes = UPLOAD_CONFIG.ALLOWED_TYPES as readonly string[];
-      if (!allowedTypes.includes(file.type)) {
+      if (!isAllowedCardUploadFile(file)) {
         setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
+        return;
+      }
+      if (shouldPreserveOriginalCardUpload(file)) {
+        // GIFはトリミング/再圧縮されず原本のままアップロードされるため、
+        // クライアント側でもプラン上限を事前にチェックし UX を早期化する
+        // （サーバ側 validateUpload でも最終的に弾かれるが、無駄なネットワークを避ける）
+        const validation = validateUpload(file, maxUploadSize);
+        if (!validation.valid) {
+          setUploadError(getUploadErrorMessage(validation.error!));
+          return;
+        }
+        imageDimensionRequestId.current++;
+        if (croppedPreviewUrl) {
+          URL.revokeObjectURL(croppedPreviewUrl);
+        }
+        setSelectedFileForCrop(null);
+        setSourceImageWidth(null);
+        setCropModeModalOpen(false);
+        setCropModalOpen(false);
+        setSelectedCropMode("square");
+        setCroppedFile(file);
+        setCroppedPreviewUrl(URL.createObjectURL(file));
         return;
       }
       // 画像の実サイズを読み取ってからモーダルを開く
@@ -1040,6 +1164,7 @@ export default function CardManager({
       rarity: card.rarity,
       cardNumber: card.card_number ? String(card.card_number) : "",
       maxIssuanceCount: card.max_issuance_count ? String(card.max_issuance_count) : "",
+      collectionName: card.collection_name || "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
@@ -1131,6 +1256,8 @@ export default function CardManager({
           rarity: formData.rarity,
           cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
           maxIssuanceCount: formData.maxIssuanceCount.trim() === "" ? null : Number(formData.maxIssuanceCount),
+          // Issue #393: send the pack name (trimmed "" → null clears it = all cards)
+          collectionName: formData.collectionName.trim() === "" ? null : formData.collectionName.trim(),
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
@@ -1142,9 +1269,15 @@ export default function CardManager({
         const recalculatedCards = Array.isArray(responseData.recalculatedCards)
           ? (responseData.recalculatedCards as Card[])
           : null;
+        // Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付け
+        // だけ保留された、稀なケース用のフラグ。読み取り後に取り除いて
+        // Card型に無い合成フィールドが state に漏れないようにする。
+        const collectionNameSkippedDeployWindow = responseData.collectionNameSkippedDeployWindow === true;
         const savedCardData = { ...(responseData as Record<string, unknown>) };
         delete savedCardData.recalculatedCards;
+        delete savedCardData.collectionNameSkippedDeployWindow;
         const savedCard = savedCardData as unknown as Card;
+        setDeployWindowNotice(collectionNameSkippedDeployWindow);
 
         if (editingCard) {
           setCards((prevCards) => {
@@ -1293,6 +1426,14 @@ export default function CardManager({
           >
             {t("customRarity.button")}
           </button>
+          {/* Card pack management button (Issue #393再設計) */}
+          {/* パック管理ボタン */}
+          <button
+            onClick={() => setShowCardPackModal(true)}
+            className="rounded-lg border border-purple-600 px-4 py-2 text-purple-400 hover:bg-purple-600 hover:text-white transition whitespace-nowrap"
+          >
+            {t("cardPackModal.button")}
+          </button>
           {/* Emote import button */}
           {/* エモートインポートボタン */}
           <button
@@ -1327,6 +1468,15 @@ export default function CardManager({
           <a href="/plans" className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
             支援特典について
           </a>
+        </div>
+      )}
+
+      {/* Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付けが
+          保留された稀なケース用の通知。フォームは保存成功時に閉じるため
+          form表示状態から独立させたスタンドアロンバナー。 */}
+      {deployWindowNotice && (
+        <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
+          <p className="text-sm text-yellow-300">{t("form.collectionNameDeployWindow")}</p>
         </div>
       )}
 
@@ -1492,6 +1642,46 @@ export default function CardManager({
                         </p>
                       </div>
                     </div>
+                    {/* Issue #393再設計: カードパックは自由入力ではなく、事前に
+                        「パック管理」で登録した一覧から選択する(レアリティselectと
+                        同じパターン)。新規登録はパック管理モーダル側でのみ発生する
+                        ため、ここでの選択は常にゲート対象外。 */}
+                    {/* Issue #567: 選べるパックが1つも無い場合(デフォルト1択)は
+                        セレクト自体を出さない。cardPackSelectOptions は登録済み
+                        パック ∪ 編集中カードの孤立参照(editingCard.collection_name
+                        をアンカーにする。formData の現在値だけを見ると、デフォルト
+                        へ変更した直後に選択肢がゼロになり select ごと消えて孤立
+                        参照へ戻せなくなるため)なので、孤立参照カードの編集セッション
+                        中は select が常にマウントされたままとなり、デフォルトへ
+                        変更してもいつでも元のパックへ戻せる。非表示時は
+                        collectionName が "" のまま = 未分類(null)で保存される。 */}
+                    {cardPackSelectOptions.length > 0 && (
+                      <div className="mt-3 min-w-0">
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.collectionName")}
+                        </label>
+                        <select
+                          name="collectionName"
+                          value={formData.collectionName}
+                          onChange={(e) =>
+                            setFormData({ ...formData, collectionName: e.target.value })
+                          }
+                          className="w-full min-w-0 rounded-lg bg-gray-600 px-4 py-2 text-white"
+                        >
+                          <option value="">
+                            {t("form.collectionNameUnclassified", {
+                              name: defaultPackName ?? t("cardPackModal.defaultName"),
+                            })}
+                          </option>
+                          {cardPackSelectOptions.map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-xs text-gray-300">
+                          {t("form.collectionNameHelp")}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
                 {/* 右カラム: 画像 */}
@@ -1538,8 +1728,8 @@ export default function CardManager({
                   </div>
                 )}
 
-                {/* Show cropped image preview when a file has been cropped */}
-                {/* トリミング済みファイルがある場合はプレビュー表示 */}
+                {/* Show selected upload preview when a file is ready */}
+                {/* アップロード準備済みファイルがある場合はプレビュー表示 */}
                 {croppedFile && croppedPreviewUrl && (
                   <div className="flex items-center gap-3 rounded-lg bg-green-900/30 border border-green-600/50 p-3">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1549,9 +1739,15 @@ export default function CardManager({
                       className={`rounded object-cover ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
+                      <p className="text-sm text-green-300">
+                        {shouldPreserveOriginalCardUpload(croppedFile)
+                          ? t("form.originalAnimatedImage")
+                          : t("form.croppedImage")}
+                      </p>
                       <p className="text-xs text-gray-400">
-                        {planCropModes[selectedCropMode].dimensions}px ({planCropModes[selectedCropMode].label})
+                        {shouldPreserveOriginalCardUpload(croppedFile)
+                          ? t("form.originalAnimatedImageHelp")
+                          : `${planCropModes[selectedCropMode].dimensions}px (${planCropModes[selectedCropMode].label})`}
                       </p>
                     </div>
                     <button
@@ -1593,6 +1789,14 @@ export default function CardManager({
                       {/* File size limit removed since cropping compresses to JPEG */}
                       {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
                       {t("fileUpload.formats")}{t("form.cropNoteWithOptions", { square: planCropModes.square.dimensions, portrait: planCropModes.portrait.dimensions })}
+                      {t("form.animatedGifNote")}
+                    </p>
+                    {/* GIFはトリミング/再圧縮されず原本のままアップロードされるため、
+                        プラン上限 (basic=1MB, support=5MB, patron/twitch_sub=10MB) を明示する */}
+                    <p className="text-xs text-amber-400">
+                      {t("form.animatedGifSizeLimit", {
+                        maxMb: Math.floor((maxUploadSize ?? 1 * 1024 * 1024) / (1024 * 1024)),
+                      })}
                     </p>
                     <input
                       type="url"
@@ -1923,6 +2127,24 @@ export default function CardManager({
               <option value="active">{t("filter.active")}</option>
               <option value="inactive">{t("filter.inactive")}</option>
             </select>
+
+            {/* Pack filter (Issue #554) */}
+            {/* パックフィルター */}
+            <select
+              value={packFilter}
+              onChange={(e) => setPackFilter(e.target.value)}
+              aria-label={t("filter.packLabel")}
+              className="min-w-0 appearance-none rounded-lg bg-gray-700 px-3 py-1.5 pr-8 text-sm text-white border border-gray-600"
+              style={SELECT_ARROW_STYLE}
+            >
+              <option value="">{t("filter.packAll")}</option>
+              <option value={DEFAULT_PACK_SENTINEL}>
+                {defaultPackName ?? t("cardPackModal.defaultName")}
+              </option>
+              {packFilterOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
           </div>
 
           {/* View toggle (shown when showViewToggle is true) */}
@@ -1945,12 +2167,6 @@ export default function CardManager({
         // 並び替え/フィルタリングが適用されたfilteredAndSortedCardsを表示に使用
         const displayCards = maxCards ? filteredAndSortedCards.slice(0, maxCards) : filteredAndSortedCards;
 
-        // Calculate total weight of all active cards for probability calculation
-        // 出現確率計算用の全アクティブカードの重み合計を計算
-        const totalActiveWeight = cards
-          .filter(c => c.is_active)
-          .reduce((sum, c) => sum + c.drop_rate, 0);
-
         if (cards.length === 0) {
           return (
             <p className="text-center text-gray-400">
@@ -1961,6 +2177,16 @@ export default function CardManager({
 
         return (
           <>
+            {/* Issue #565: パックフィルタ選択中は確率列が「そのパックから引いた
+                場合の抽選確率」に切り替わるため、その旨を明示する。確率列は
+                リスト表示にしか無いのでリスト表示時のみ出す。また、絞り込み
+                結果が0件で「該当カードなし」の空状態を表示する場合は確率列
+                自体が存在しないため、ヒントも出さない(displayCards.length > 0)。 */}
+            {packFilter && currentViewMode === "list" && displayCards.length > 0 && (
+              <p className="mb-2 text-xs text-gray-400">
+                {t("filter.packProbabilityHint")}
+              </p>
+            )}
             {displayCards.length === 0 ? (
               <p className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-8 text-center text-gray-400">
                 {t("messages.noMatchingCards")}
@@ -2301,6 +2527,19 @@ export default function CardManager({
         streamerId={streamerId}
         customRarities={customRarities}
         onSaved={setCustomRarities}
+      />
+
+      {/* Card Pack Modal (Issue #393再設計) */}
+      {/* パック管理モーダル */}
+      <CardPackModal
+        isOpen={showCardPackModal}
+        onClose={() => setShowCardPackModal(false)}
+        streamerId={streamerId}
+        cardPackNames={cardPackNames}
+        defaultPackName={defaultPackName}
+        isPremium={isPremium}
+        onSaved={setCardPackNames}
+        onDefaultPackNameSaved={setDefaultPackName}
       />
 
       {/* Emote Import Modal */}

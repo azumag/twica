@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { GachaService } from '@/lib/services/gacha'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { createMockQueryBuilder } from '../utils/supabase-mock'
+import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
@@ -17,7 +18,7 @@ const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 
 // テスト用カードデータ
 const testCards = [
-  { id: 'card-1', name: 'Test Card', description: 'desc', image_url: null, rarity: 'common', drop_rate: 1.0, max_issuance_count: null },
+  { id: 'card-1', name: 'Test Card', description: 'desc', image_url: null, rarity: 'common', collection_name: 'standard', drop_rate: 1.0, max_issuance_count: null },
 ]
 
 /** cardsクエリの共通モック生成。thenableにしてawait対応 */
@@ -413,6 +414,152 @@ describe('GachaService.executeGacha', () => {
       p_event_id: null,
     }))
   })
+
+  // Issue #393: collection (card pack) scoping
+  it('collectionName指定時は対象パックのカードだけを抽選対象にする', async () => {
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-collection' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons')
+
+    expect(result.success).toBe(true)
+    expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'weapons')
+  })
+
+  // Issue #555: 「デフォルトパックのみ」= 未分類カード(collection_name IS NULL)
+  // だけを抽選対象にする。通常のパック名指定(.eq)とは逆に .is で絞り込む必要がある。
+  it('DEFAULT_PACK_SENTINEL指定時は未分類(collection_name IS NULL)のカードだけを抽選対象にする', async () => {
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-default-pack' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, DEFAULT_PACK_SENTINEL)
+
+    expect(result.success).toBe(true)
+    expect(cardsQuery.is).toHaveBeenCalledWith('collection_name', null)
+    // A literal .eq('collection_name', '__default__') would never match any real
+    // card, so the sentinel must never be passed to .eq.
+    expect(cardsQuery.eq).not.toHaveBeenCalledWith('collection_name', DEFAULT_PACK_SENTINEL)
+  })
+
+  it('DEFAULT_PACK_SENTINEL指定+列未デプロイ(READ 42703)なら誤って全カード抽選せず拒否する', async () => {
+    const cardsQuery = createMockQueryBuilder()
+    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({
+        data: null,
+        error: { message: 'column cards.collection_name does not exist', code: '42703' },
+      })
+      return cardsQuery
+    }
+    const mockRpc = vi.fn()
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, DEFAULT_PACK_SENTINEL)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Card collections are not deployed yet')
+    }
+    expect(mockRpc).not.toHaveBeenCalled()
+  })
+
+  it('collection指定なしではcollection_nameで絞り込まない', async () => {
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-all' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+
+    const eqCalls = (cardsQuery.eq as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])
+    expect(eqCalls).not.toContain('collection_name')
+  })
+
+  it('collection未指定では未マイグレーション(42703)でも従来どおりDBエラーを返す(列を参照しない)', async () => {
+    // collection 未指定のクエリは collection_name を一切参照しないため、
+    // この機能を使わない配信者はデプロイ窓で巻き込まれない。万一別カラムの
+    // 読み取りエラー(42703)が来ても collection フォールバックは発火しない。
+    const cardsQuery = createMockQueryBuilder()
+    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({
+        data: null,
+        error: { message: 'column cards.some_other_column does not exist', code: '42703' },
+      })
+      return cardsQuery
+    }
+    const mockRpc = vi.fn()
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('Database error')
+    }
+    expect(mockRpc).not.toHaveBeenCalled()
+  })
+
+  it('collection指定あり+列未デプロイ(READ 42703)なら誤って全カード抽選せず拒否する', async () => {
+    // 実 PostgREST は SELECT/フィルタの列欠落で 42703 ("does not exist") を返す。
+    // PGRST204 だけでなくこの読み取りエラー形でも検知できることを固定する(H1)。
+    const cardsQuery = createMockQueryBuilder()
+    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({
+        data: null,
+        error: { message: 'column cards.collection_name does not exist', code: '42703' },
+      })
+      return cardsQuery
+    }
+    const mockRpc = vi.fn()
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBe('Card collections are not deployed yet')
+    }
+    expect(mockRpc).not.toHaveBeenCalled()
+  })
 })
 
 describe('GachaService.executeGachaForEventSub', () => {
@@ -713,6 +860,163 @@ describe('GachaService.executeGachaForEventSub', () => {
       expect(result.error).toBe('Additional reward options unavailable')
     }
     expect(mockRpc).not.toHaveBeenCalled()
+  })
+
+  // Issue #393: main reward routes its bound pack into the card query
+  it('メイン報酬: channel_point_collection_nameでカードを絞り込む', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        channel_point_collection_name: 'weapons',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        chat_announcement_multi_template: null,
+        chat_announcement_multi_show_cards: true,
+        raid_gacha_active_until: null,
+      },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-main-collection' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'main-reward', cost: 100 },
+    }, 'event-main-collection')
+
+    expect(result.success).toBe(true)
+    expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'weapons')
+  })
+
+  // Issue #393: additional reward routes its own pack into the card query
+  it('追加報酬: reward.collection_nameでカードを絞り込む', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        channel_point_collection_name: null,
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        chat_announcement_multi_template: null,
+        chat_announcement_multi_show_cards: true,
+        raid_gacha_active_until: null,
+      },
+      error: null,
+    })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'ar-1', draw_count: 1, is_raid_limited: false, collection_name: 'characters' },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-additional-collection' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'additional-reward', cost: 100 },
+    }, 'event-additional-collection')
+
+    expect(result.success).toBe(true)
+    expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'characters')
+  })
+
+  // Issue #393 (production review 2-B): when only channel_point_collection_name is
+  // missing in the deploy window, the targeted streamer fallback must preserve
+  // raid_gacha_active_until so a raid-limited reward still fires (not silently
+  // skipped after consuming channel points).
+  it('列未デプロイでも raid_gacha_active_until を保全し raid限定報酬が発火する', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>)
+      // primary select: channel_point_collection_name 列欠落 (READ 42703)
+      .mockResolvedValueOnce({
+        data: null,
+        error: {
+          code: '42703',
+          message: 'column streamers.channel_point_collection_name does not exist',
+        },
+      })
+      // targeted collection fallback: raid_gacha_active_until を含む完全な行
+      .mockResolvedValueOnce({
+        data: {
+          id: 'streamer-1',
+          channel_point_reward_id: 'main-reward',
+          chat_announcement_enabled: false,
+          chat_announcement_template: null,
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: true,
+          raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
+        },
+        error: null,
+      })
+    const additionalRewardQuery = createMockQueryBuilder()
+    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'ar-1', draw_count: 1, is_raid_limited: true, collection_name: null },
+      error: null,
+    })
+    const cardsQuery = createCardsQuery(testCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-raid-deploywindow' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'raid-reward', cost: 500 },
+    }, 'event-raid-deploywindow')
+
+    // raid_gacha_active_until が保全されているため raid限定報酬が発火する
+    expect(result.success).toBe(true)
+    expect(mockRpc).toHaveBeenCalled()
   })
 })
 

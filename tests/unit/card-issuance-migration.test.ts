@@ -4,7 +4,7 @@ import { resolve } from 'path'
 
 describe('card issuance limit migration', () => {
   const migration = readFileSync(
-    resolve(__dirname, '../../supabase/migrations/00062_add_card_issuance_limits.sql'),
+    resolve(__dirname, '../../supabase/migrations/00067_add_card_issuance_limits.sql'),
     'utf-8'
   )
 

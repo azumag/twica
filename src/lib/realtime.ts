@@ -84,6 +84,7 @@ export interface GachaBroadcastPayload {
     rarity: string
   }>
   userTwitchUsername: string
+  rewardId?: string | null
 }
 
 export interface RealtimeError {

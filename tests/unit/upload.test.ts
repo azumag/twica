@@ -369,6 +369,44 @@ describe('POST /api/upload', () => {
       const body = await response.json()
       expect(body.url).toBe('https://blob.vercel-storage.com/test-image.gif')
     })
+
+    it('GIF89a画像（アニメーションGIF）のアップロードに成功する', async () => {
+      // 回帰テスト: アニメーション GIF の主流バージョンである GIF89a が
+      // マジックナンバー判定で拒否されないことを保証する。
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+        version: 1,
+      })
+
+      mockUploadToR2WithRetry.mockResolvedValue({
+        url: 'https://blob.vercel-storage.com/test-image-89a.gif',
+      })
+
+      const imageFile = new File([createMinimalGif89aBuffer()], 'test.gif', {
+        type: 'image/gif',
+      })
+
+      const formData = new FormData()
+      formData.append('file', imageFile)
+
+      const request = new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(200)
+      const body = await response.json()
+      expect(body.url).toBe('https://blob.vercel-storage.com/test-image-89a.gif')
+      expect(mockUploadToR2WithRetry).toHaveBeenCalled()
+      expect(mockUploadToR2WithRetry.mock.calls[0][2]).toBe('image/gif')
+    })
   })
 
   describe('Vercel Blob エラー時', () => {
@@ -424,8 +462,17 @@ function createMinimalPngBuffer(): ArrayBuffer {
 }
 
 function createMinimalGifBuffer(): ArrayBuffer {
+  // GIF87a シグネチャ
   const header = new Uint8Array([
     0x47, 0x49, 0x46, 0x38, 0x37, 0x61
+  ])
+  return header.buffer
+}
+
+function createMinimalGif89aBuffer(): ArrayBuffer {
+  // GIF89a シグネチャ（アニメーション GIF などで一般的に使われるバージョン）
+  const header = new Uint8Array([
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61
   ])
   return header.buffer
 }
@@ -441,9 +488,23 @@ describe('getFileTypeFromBuffer', () => {
     expect(getFileTypeFromBuffer(pngBuffer)).toBe('image/png')
   })
 
-  it('GIFファイルを正しく識別する', () => {
+  it('GIF87aファイルを正しく識別する', () => {
     const gifBuffer = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x37, 0x61])
     expect(getFileTypeFromBuffer(gifBuffer)).toBe('image/gif')
+  })
+
+  it('GIF89aファイルを正しく識別する（アニメーションGIFで一般的）', () => {
+    // Regression test: 元実装は GIF87a (バイト4=0x37) のみを許容していたため、
+    // 一般的に流通する GIF89a (バイト4=0x39) が application/octet-stream に
+    // 落ちて拒否される致命的バグがあった。両バージョンを許容することを確認する。
+    const gif89aBuffer = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
+    expect(getFileTypeFromBuffer(gif89aBuffer)).toBe('image/gif')
+  })
+
+  it('GIFバージョンバイトが不正な場合は拒否する', () => {
+    // 0x37/0x39 以外のバージョン文字は GIF として認めない
+    const invalidGifBuffer = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x30, 0x61])
+    expect(getFileTypeFromBuffer(invalidGifBuffer)).toBe('application/octet-stream')
   })
 
   it('WebPファイルを正しく識別する', () => {

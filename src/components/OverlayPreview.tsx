@@ -4,6 +4,11 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import CopyButton from "@/components/CopyButton";
 import type { Card } from "@/types/database";
+import {
+  type OverlayEffectStyle,
+  OVERLAY_EFFECT_STYLES,
+  normalizeOverlayEffectStyle,
+} from "@/lib/overlay-effect";
 
 /**
  * Overlay preview options interface
@@ -13,6 +18,7 @@ interface OverlayOptions {
   imageOnly: boolean;       // 画像のみ表示（カード枠なし）
   autoPortrait: boolean;    // 縦長画像を自動検出してオリジナル表示
   effects: boolean;         // レジェンダリーのキラキラエフェクト表示
+  effectStyle: OverlayEffectStyle; // レジェンダリーのエフェクト種類
   smallMode: boolean;       // 小さい画像用の縮小表示モード
   displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
   // 縦長画像の付帯情報表示オプション（画像に被らず下に表示）
@@ -27,6 +33,7 @@ const DEFAULT_OVERLAY_OPTIONS: OverlayOptions = {
   imageOnly: false,
   autoPortrait: true,
   effects: true,
+  effectStyle: "sparkle",
   smallMode: true,
   displayDuration: 6,
   portraitShowName: false,
@@ -39,6 +46,10 @@ const OVERLAY_OPTIONS_STORAGE_KEY_PREFIX = "twica:overlay-options:";
 
 function readStoredBoolean(value: unknown, fallback: boolean) {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function readStoredEffectStyle(value: unknown): OverlayEffectStyle {
+  return normalizeOverlayEffectStyle(value);
 }
 
 function clampDisplayDuration(value: unknown) {
@@ -60,6 +71,7 @@ function parseStoredOptions(value: unknown): OverlayOptions {
     imageOnly: readStoredBoolean(stored.imageOnly, DEFAULT_OVERLAY_OPTIONS.imageOnly),
     autoPortrait: readStoredBoolean(stored.autoPortrait, DEFAULT_OVERLAY_OPTIONS.autoPortrait),
     effects: readStoredBoolean(stored.effects, DEFAULT_OVERLAY_OPTIONS.effects),
+    effectStyle: readStoredEffectStyle(stored.effectStyle),
     smallMode: readStoredBoolean(stored.smallMode, DEFAULT_OVERLAY_OPTIONS.smallMode),
     displayDuration: clampDisplayDuration(stored.displayDuration),
     portraitShowName: readStoredBoolean(stored.portraitShowName, DEFAULT_OVERLAY_OPTIONS.portraitShowName),
@@ -74,6 +86,7 @@ function areOverlayOptionsEqual(a: OverlayOptions, b: OverlayOptions) {
     a.imageOnly === b.imageOnly &&
     a.autoPortrait === b.autoPortrait &&
     a.effects === b.effects &&
+    a.effectStyle === b.effectStyle &&
     a.smallMode === b.smallMode &&
     a.displayDuration === b.displayDuration &&
     a.portraitShowName === b.portraitShowName &&
@@ -215,6 +228,7 @@ export default function OverlayPreview({
     if (options.imageOnly) params.set("imageOnly", "true");
     if (!options.autoPortrait) params.set("autoPortrait", "false");  // デフォルトtrue、falseの場合のみ出力
     if (!options.effects) params.set("effects", "false");             // デフォルトtrue、falseの場合のみ出力
+    if (options.effects && options.effectStyle !== "sparkle") params.set("effect", options.effectStyle);
     if (!options.smallMode) params.set("smallMode", "false");        // デフォルトtrue、falseの場合のみ出力
     // カードの表示時間（デフォルト6秒、それ以外の場合のみ出力）
     // Display duration in seconds (default 6, only output if different)
@@ -457,6 +471,28 @@ export default function OverlayPreview({
               <p className="text-xs text-gray-400">{t("options.effectsDescription")}</p>
             </div>
           </label>
+
+          {options.effects && (
+            <label className="block pt-1">
+              <span className="mb-1 block text-sm text-gray-300">{t("options.effectStyle")}</span>
+              <select
+                aria-label={t("options.effectStyle")}
+                value={options.effectStyle}
+                onChange={(e) => setOptions(prev => ({
+                  ...prev,
+                  effectStyle: readStoredEffectStyle(e.target.value),
+                }))}
+                className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
+              >
+                {OVERLAY_EFFECT_STYLES.map((style) => (
+                  <option key={style} value={style}>
+                    {t(`options.effectStyles.${style}`)}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-400">{t("options.effectStyleDescription")}</p>
+            </label>
+          )}
 
           {/* smallMode option */}
           <label className="flex items-center gap-3 cursor-pointer">

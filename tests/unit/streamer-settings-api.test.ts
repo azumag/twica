@@ -5,12 +5,21 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
-import { createSupabaseMock } from '../utils/supabase-mock'
+import { getUserPlan } from '@/lib/plan'
+import { createSupabaseMock, createMockQueryBuilder } from '../utils/supabase-mock'
+import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/request-validation')
+// Issue #269: most pre-existing tests below assume an authorized (non-basic)
+// streamer, since they predate plan gating. Default to a premium plan here so
+// they keep exercising collection-name persistence rather than the gate;
+// gate-specific tests override this per-case. This also covers Issue #176's
+// gachaSoundRules premium gate (support plan by default; basic-plan tests
+// override the mock to exercise the 403 path).
+vi.mock('@/lib/plan')
 // 本物の constants モジュールを保持する。RARITIES が空配列になると
 // route.ts の DEFAULT_RARITY_VALUES が空となり、デフォルトレアリティとの
 // 衝突検出ができなくなるため、ファクトリで実体をそのまま返す。
@@ -28,6 +37,7 @@ const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 const mockValidateContentType = vi.mocked(validateContentType)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
+const mockGetUserPlan = vi.mocked(getUserPlan)
 
 describe('POST /api/streamer/settings', () => {
   beforeEach(() => {
@@ -53,6 +63,8 @@ describe('POST /api/streamer/settings', () => {
 
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
     mockValidateContentType.mockReturnValue(null)
+    // デフォルトは support プラン（gachaSoundRules を使用可能）
+    mockGetUserPlan.mockResolvedValue('support')
   })
 
   it('should update streamer settings with valid data', async () => {
@@ -507,6 +519,130 @@ describe('POST /api/streamer/settings', () => {
     })
   })
 
+  describe('gachaSoundRules premium gate', () => {
+    it('should return 403 for basic plan users attempting to set gachaSoundRules', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [{ id: 'rule1', url: 'https://example.com/s.mp3', enabled: true, label: 'a', targetType: 'all', rarity: null, rewardId: null, rewardName: null }],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(403)
+      const data = await response.json()
+      expect(data.error).toBe('この機能は助力プラン以上が必要です')
+    })
+
+    it('should allow support plan users to set gachaSoundRules', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+
+    it.each(['patron', 'twitch_sub'] as const)('%s plan users can set gachaSoundRules', async (plan) => {
+      mockGetUserPlan.mockResolvedValue(plan)
+
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundRules: [] }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+
+    it('getUserPlan エラー時は basic フォールバックで 403 を返す（セキュリティ正方向）', async () => {
+      // getUserPlan 内で例外が発生した場合、plan.ts が 'basic' にフォールバックするため
+      // gachaSoundRules リクエストは 403 になる（プレミアム機能を誤って許可しない方向のフェイルセーフ）
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundRules: [] }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(403)
+    })
+  })
+
+  describe('gachaSoundUrl URL validation', () => {
+    it('should return 400 for non-HTTPS gachaSoundUrl', async () => {
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundUrl: 'http://example.com/sound.mp3' }),
+      })
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+
+    it('should accept null gachaSoundUrl (delete)', async () => {
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundUrl: null }),
+      })
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+
+    it('should accept HTTPS gachaSoundUrl', async () => {
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundUrl: 'https://example.com/sound.mp3' }),
+      })
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+  })
+
   it('should return 429 when rate limit exceeded', async () => {
     mockCheckRateLimit.mockResolvedValue({
       success: false,
@@ -530,5 +666,1040 @@ describe('POST /api/streamer/settings', () => {
     expect(response.status).toBe(429)
     const data = await response.json()
     expect(data.error).toBe('Too many requests. Please try again later.')
+  })
+
+  // Issue #393: main-reward pack binding
+  it('persists channelPointCollectionName when the pack has active cards', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      // Issue #393再設計: channelPointCollectionName は card_pack_names に
+      // 登録済みである必要がある。
+      data: { id: 'streamer123', twitch_user_id: 'streamer123', card_pack_names: ['weapons'] },
+      error: null,
+    })
+    // existence check: cards query awaited directly → thenable {count}
+    const cardsQuery = createMockQueryBuilder()
+    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({ count: 3, error: null })
+      return cardsQuery
+    }
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        channelPointRewardId: 'reward-123',
+        channelPointCollectionName: 'weapons',
+      }),
+    })
+
+    const response = await POST(request)
+    expect(response.status).toBe(200)
+    expect(streamerQuery.update).toHaveBeenCalledWith(
+      expect.objectContaining({ channel_point_collection_name: 'weapons' })
+    )
+  })
+
+  it('rejects binding the main reward to a pack with no active cards (400)', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      // 'empty-pack' は登録済み(card_pack_names)だが、アクティブカードが無い。
+      data: { id: 'streamer123', twitch_user_id: 'streamer123', card_pack_names: ['empty-pack'] },
+      error: null,
+    })
+    const cardsQuery = createMockQueryBuilder()
+    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({ count: 0, error: null })
+      return cardsQuery
+    }
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue({
+      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        channelPointRewardId: 'reward-123',
+        channelPointCollectionName: 'empty-pack',
+      }),
+    })
+
+    const response = await POST(request)
+    expect(response.status).toBe(400)
+    expect(streamerQuery.update).not.toHaveBeenCalled()
+  })
+
+  it('rejects a present-but-invalid channelPointCollectionName type (400)', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+      error: null,
+    })
+
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue({
+      from: vi.fn(() => streamerQuery),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        channelPointCollectionName: 123,
+      }),
+    })
+
+    const response = await POST(request)
+    expect(response.status).toBe(400)
+  })
+
+  // Issue #393再設計: channelPointCollectionName は登録済みパック名(または
+  // 現在値と同じ/null)であることを要求するmembership検証。
+  describe('card-pack membership validation (Issue #393再設計)', () => {
+    it('rejects binding the main reward to an unregistered pack name (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['characters'] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: 'weapons',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('allows resubmitting the SAME pack value even if it was since removed from the registered list (orphaned pack)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: 'weapons', card_pack_names: [] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 3, error: null })
+        return cardsQuery
+      }
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: 'weapons',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_collection_name: 'weapons' })
+      )
+    })
+
+    it('allows clearing an existing pack binding to null regardless of the registered list', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: 'weapons', card_pack_names: [] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: null,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_collection_name: null })
+      )
+    })
+
+    // Issue #555: DEFAULT_PACK_SENTINEL ("default pack only") is a reserved
+    // value that can never appear in card_pack_names, so the ordinary
+    // membership check must be skipped for it — otherwise no streamer could
+    // ever select it. Existence of at least one active unclassified card is
+    // still required (checkCollectionHasActiveCards below).
+    it('accepts DEFAULT_PACK_SENTINEL without requiring it in card_pack_names, given active unclassified cards', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        // card_pack_names intentionally does NOT (and never can) contain the sentinel.
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons'] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 2, error: null })
+        return cardsQuery
+      }
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: DEFAULT_PACK_SENTINEL,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      // existence check must use the sentinel-aware .is('collection_name', null) path
+      expect(cardsQuery.is).toHaveBeenCalledWith('collection_name', null)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_collection_name: DEFAULT_PACK_SENTINEL })
+      )
+    })
+
+    it('rejects DEFAULT_PACK_SENTINEL when there are zero active unclassified cards (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: [] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 0, error: null })
+        return cardsQuery
+      }
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointCollectionName: DEFAULT_PACK_SENTINEL,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    // Self-review regression guard (carried over from #269): the
+    // ownership-check SELECT reads channel_point_collection_name AND
+    // card_pack_names. Either column being undeployed must not 403/break
+    // unrelated settings saves.
+    it('still saves other settings when channel_point_collection_name is not deployed yet (deploy window)', async () => {
+      const selectQuery = createMockQueryBuilder()
+      ;(selectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: null,
+        error: { code: '42703', message: 'column streamers.channel_point_collection_name does not exist' },
+      })
+      const retrySelectQuery = createMockQueryBuilder()
+      ;(retrySelectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123' },
+        error: null,
+      })
+      const updateQuery = createMockQueryBuilder()
+      let selectCalls = 0
+      const fromMock = vi.fn(() => {
+        selectCalls += 1
+        if (selectCalls === 1) return selectQuery
+        if (selectCalls === 2) return retrySelectQuery
+        return updateQuery
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointRewardId: 'reward-123',
+          channelPointRewardName: 'Test Reward',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(updateQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_reward_id: 'reward-123' })
+      )
+    })
+
+    it('still saves other settings when card_pack_names is not deployed yet (deploy window)', async () => {
+      const selectQuery = createMockQueryBuilder()
+      ;(selectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: null,
+        error: { code: '42703', message: 'column streamers.card_pack_names does not exist' },
+      })
+      const retrySelectQuery = createMockQueryBuilder()
+      ;(retrySelectQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', channel_point_collection_name: null },
+        error: null,
+      })
+      const updateQuery = createMockQueryBuilder()
+      let selectCalls = 0
+      const fromMock = vi.fn(() => {
+        selectCalls += 1
+        if (selectCalls === 1) return selectQuery
+        if (selectCalls === 2) return retrySelectQuery
+        return updateQuery
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          channelPointRewardId: 'reward-123',
+          channelPointRewardName: 'Test Reward',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(updateQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ channel_point_reward_id: 'reward-123' })
+      )
+    })
+  })
+
+  // Issue #269再設計: プレミアムゲートは「パック名一覧への新規追加」に移設。
+  describe('cardPackNames management + premium gate (Issue #269再設計)', () => {
+    it('rejects non-array cardPackNames (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: 'weapons' }),
+      }))
+
+      expect(response.status).toBe(400)
+    })
+
+    it('persists new pack names on a premium plan and returns the persisted list', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: [] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons', 'characters'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNames).toEqual(['weapons', 'characters'])
+      expect(data.cardPackNamesPremiumRequired).toBeUndefined()
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ card_pack_names: ['weapons', 'characters'] })
+      )
+    })
+
+    it('drops NEW pack additions on the basic plan but keeps existing entries and removals (200, flag set)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons'] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      // Request: keep "weapons" (existing), add "armor" (new, should be gated).
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons', 'armor'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNames).toEqual(['weapons'])
+      expect(data.cardPackNamesPremiumRequired).toBe(true)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ card_pack_names: ['weapons'] })
+      )
+    })
+
+    it('allows removing pack names on the basic plan (never gated)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons', 'characters'] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNames).toEqual(['weapons'])
+      expect(data.cardPackNamesPremiumRequired).toBeUndefined()
+      // Removal-only changes never consult getUserPlan.
+      expect(mockGetUserPlan).not.toHaveBeenCalled()
+    })
+
+    it('does not call getUserPlan when cardPackNames is unchanged (no-op)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons'] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(mockGetUserPlan).not.toHaveBeenCalled()
+    })
+
+    // 自己レビューで発見した重大バグの回帰テスト: SELECT側は card_pack_names
+    // を正常に読めても、その後のUPDATEで同列が見つからずフォールバックする
+    // 稀なケース(スキーマキャッシュの伝播遅延等)で、実際には保存されて
+    // いないのに「この内容で保存できた」と偽ってはならない。
+    it('reports the pre-write list (not the requested one) and a deploy-window flag when the UPDATE itself drops card_pack_names', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: ['weapons'] },
+        error: null,
+      })
+      // First update attempt fails because card_pack_names isn't actually
+      // writable yet (e.g. PostgREST schema-cache lag), even though the
+      // SELECT above succeeded moments earlier.
+      ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        eq: vi.fn().mockResolvedValue({
+          error: { code: 'PGRST204', message: "Could not find the 'card_pack_names' column" },
+        }),
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons', 'armor'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      // Must report the list as it actually is in the DB (unchanged), not
+      // the requested ['weapons', 'armor'] which never got persisted.
+      expect(data.cardPackNames).toEqual(['weapons'])
+      expect(data.cardPackNamesSkippedDeployWindow).toBe(true)
+    })
+  })
+
+  // codexチームレビュー指摘の回帰テスト: 同一リクエストで cardPackNames の
+  // 追加とその新パックへの channelPointCollectionName 紐付けを同時に送った
+  // 場合、後者のmembership検証は「ゲート適用後の persistedCardPackNames」に
+  // 対して行われる(リクエスト受信時点の古い一覧に対してではない)。
+  describe('same-request ordering: cardPackNames gate → channelPointCollectionName membership', () => {
+    it('accepts binding to a pack added in the SAME request on a premium plan', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: [] },
+        error: null,
+      })
+      const cardsQuery = createMockQueryBuilder()
+      ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ count: 1, error: null })
+        return cardsQuery
+      }
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          cardPackNames: ['weapons'],
+          channelPointCollectionName: 'weapons',
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ card_pack_names: ['weapons'], channel_point_collection_name: 'weapons' })
+      )
+    })
+
+    it('rejects binding to a pack whose addition was gated out on the basic plan in the SAME request', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123', channel_point_collection_name: null, card_pack_names: [] },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          cardPackNames: ['weapons'],
+          channelPointCollectionName: 'weapons',
+        }),
+      }))
+
+      // "weapons" was dropped from persistedCardPackNames by the gate, so
+      // binding the main reward to it must fail membership validation.
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+  })
+
+  // Issue #554: display-name override for the "default" (unclassified) pack.
+  // No plan gate, no catalog membership check — a pure standalone string field.
+  describe('defaultCardPackName (Issue #554)', () => {
+    it('rejects a reserved (`__`-prefixed) value', async () => {
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: '__default__' }),
+      }))
+
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a value over the max length', async () => {
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: 'a'.repeat(81) }),
+      }))
+
+      expect(response.status).toBe(400)
+    })
+
+    it('saves a trimmed, valid display name', async () => {
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockSupabase = builder.build()
+      const query = builder.getQueryBuilder()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: '  My Pack  ' }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({ default_card_pack_name: 'My Pack' })
+      )
+    })
+
+    it('resets to the generic label when defaultCardPackName is explicitly null', async () => {
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockSupabase = builder.build()
+      const query = builder.getQueryBuilder()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: null }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({ default_card_pack_name: null })
+      )
+    })
+
+    // 自己レビュー観点(card_pack_names と同型): デプロイ窓でUPDATE自体が
+    // default_card_pack_name 列を見つけられなかった場合、実際には保存されて
+    // いないことをフラグで示す(黙って「保存できた」と偽らない)。
+    it('reports a deploy-window flag when the UPDATE drops default_card_pack_name', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+        error: null,
+      })
+      ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        eq: vi.fn().mockResolvedValue({
+          error: { code: 'PGRST204', message: "Could not find the 'default_card_pack_name' column" },
+        }),
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', defaultCardPackName: 'My Pack' }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.defaultCardPackNameSkippedDeployWindow).toBe(true)
+    })
+  })
+
+  // Issue #578 (#576 Phase 1): per-pack rarity weight foundation. This phase
+  // only stores rarityWeightsScope / packRarityWeights — it never recalculates
+  // drop_rate (effective per-pack weights are computed at draw time in #576
+  // Phase 2), and packRarityWeights keys must be members of the effective
+  // pack catalog (cardPackNames in the same request, else the streamer's
+  // current card_pack_names).
+  describe('pack rarity weights (Issue #578)', () => {
+    it('saves a valid rarityWeightsScope + packRarityWeights (named pack + __default__)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          rarityWeightsScope: 'per_pack',
+          packRarityWeights: {
+            weapons: { common: 70, rare: 30 },
+            [DEFAULT_PACK_SENTINEL]: { common: 50, rare: 50 },
+          },
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rarity_weights_scope: 'per_pack',
+          pack_rarity_weights: {
+            weapons: { common: 70, rare: 30 },
+            [DEFAULT_PACK_SENTINEL]: { common: 50, rare: 50 },
+          },
+        })
+      )
+    })
+
+    it('rejects an invalid rarityWeightsScope value (400)', async () => {
+      const mockSupabase = createSupabaseMock().build()
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', rarityWeightsScope: 'bogus' }),
+      }))
+
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a packRarityWeights key that is not in the effective pack catalog (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          // 'armor' is not registered in card_pack_names.
+          packRarityWeights: { armor: { common: 100 } },
+        }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('rejects a packRarityWeights entry whose distribution does not sum to 100% (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packRarityWeights: { weapons: { common: 50, rare: 30 } },
+        }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('rejects a packRarityWeights entry that is an empty object (400) — omit the key to inherit global instead', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packRarityWeights: { weapons: {} },
+        }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('prunes stale pack_rarity_weights entries when cardPackNames is saved (keeps __default__), even though packRarityWeights itself was not sent', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons', 'armor'],
+          pack_rarity_weights: {
+            weapons: { common: 70, rare: 30 },
+            armor: { common: 60, rare: 40 },
+            [DEFAULT_PACK_SENTINEL]: { common: 50, rare: 50 },
+          },
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      // Removing 'armor' from the catalog — packRarityWeights is NOT part of this request.
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: {
+            weapons: { common: 70, rare: 30 },
+            [DEFAULT_PACK_SENTINEL]: { common: 50, rare: 50 },
+          },
+        })
+      )
+    })
+
+    it('prunes weights for a plan-gated new pack and echoes the persisted packRarityWeights back', async () => {
+      // basic プランで cardPackNames に新パック追加 + そのパック向け配分を同時送信
+      // したケース。検証はゲート適用前の要求カタログに対して通るため 400 には
+      // ならず、プレミアムゲートが追加を却下 → prune で配分エントリが落ちる。
+      // クライアントが state を再同期できるよう、確定後の永続値がレスポンスに
+      // エコーバックされることを担保する(cardPackNames と同じ規約)。
+      mockGetUserPlan.mockResolvedValue('basic')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          cardPackNames: ['weapons', 'armor'],
+          packRarityWeights: {
+            weapons: { common: 70, rare: 30 },
+            armor: { common: 100 },
+          },
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.cardPackNamesPremiumRequired).toBe(true)
+      // armor はゲート却下された追加パックなので配分も prune され、
+      // 永続値(weapons のみ)がそのままエコーバックされる。
+      expect(data.packRarityWeights).toEqual({ weapons: { common: 70, rare: 30 } })
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: { weapons: { common: 70, rare: 30 } },
+        })
+      )
+    })
+
+    it('does not trigger drop-rate recalculation when saving rarityWeightsScope/packRarityWeights', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+          channel_point_collection_name: null,
+          card_pack_names: ['weapons'],
+          pack_rarity_weights: null,
+        },
+        error: null,
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          rarityWeightsScope: 'per_pack',
+          packRarityWeights: { weapons: { common: 100 } },
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.recalculatedCards).toBeNull()
+    })
+
+    describe('deploy-window: new columns not yet migrated', () => {
+      it('skips rarity_weights_scope and reports the flag when the UPDATE fails on that column', async () => {
+        const streamerQuery = createMockQueryBuilder()
+        ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+          data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+          error: null,
+        })
+        ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+          eq: vi.fn().mockResolvedValue({
+            error: { code: 'PGRST204', message: "Could not find the 'rarity_weights_scope' column" },
+          }),
+        })
+
+        const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+        vi.mocked(getSupabaseAdmin).mockReturnValue({
+          from: vi.fn(() => streamerQuery),
+        } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+        const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ streamerId: 'streamer123', rarityWeightsScope: 'per_pack' }),
+        }))
+
+        expect(response.status).toBe(200)
+        const data = await response.json()
+        expect(data.rarityWeightsScopeSkippedDeployWindow).toBe(true)
+      })
+
+      it('skips pack_rarity_weights and reports the flag when the UPDATE fails on that column', async () => {
+        const streamerQuery = createMockQueryBuilder()
+        ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+          data: {
+            id: 'streamer123',
+            twitch_user_id: 'streamer123',
+            channel_point_collection_name: null,
+            card_pack_names: ['weapons'],
+            pack_rarity_weights: null,
+          },
+          error: null,
+        })
+        ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+          eq: vi.fn().mockResolvedValue({
+            error: { code: 'PGRST204', message: "Could not find the 'pack_rarity_weights' column" },
+          }),
+        })
+
+        const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+        vi.mocked(getSupabaseAdmin).mockReturnValue({
+          from: vi.fn(() => streamerQuery),
+        } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+        const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            streamerId: 'streamer123',
+            packRarityWeights: { weapons: { common: 100 } },
+          }),
+        }))
+
+        expect(response.status).toBe(200)
+        const data = await response.json()
+        expect(data.packRarityWeightsSkippedDeployWindow).toBe(true)
+      })
+    })
   })
 })

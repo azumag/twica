@@ -6,18 +6,41 @@ import {
   getActiveCardsForStreamer,
   getCollectionCompletions,
   recordCollectionCompletion,
+  recordPackCompletion,
 } from "@/lib/dashboard-data";
 import {
   countOwnedActiveCardTypes,
   createCollectionNumberMap,
   sortCollectedCards,
 } from "@/lib/collection-utils";
+import {
+  computePackProgress,
+  deriveCollectionPackGroups,
+} from "@/lib/collection-packs";
 import StreamerCollection from "@/components/StreamerCollection";
 import type { StreamerCollectionCard } from "@/components/StreamerCollection";
 import { aggregateCustomRarities } from "@/lib/rarity";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
+
+/**
+ * 「今達成しているのに達成レコードがまだ無い」場合に、表示用の履歴へ
+ * 楽観的な達成エントリを合成する（挿入完了を待たずに達成日時を出すための
+ * 既存パターンを、全体/パック別で共有できるよう関数化。Issue #557）。
+ * Synthesize an optimistic "just completed" entry when the achievement isn't
+ * persisted yet — shared by the overall and per-pack displays.
+ */
+function withOptimisticCompletion(
+  history: { total_cards: number; completed_at: string }[],
+  progress: { owned: number; total: number },
+): { total_cards: number; completed_at: string }[] {
+  const isComplete = progress.total > 0 && progress.owned >= progress.total;
+  const hasRecord = history.some((record) => record.total_cards === progress.total);
+  return isComplete && !hasRecord
+    ? [{ total_cards: progress.total, completed_at: new Date().toISOString() }, ...history]
+    : history;
+}
 
 /**
  * Streamer-specific collection page
@@ -102,22 +125,73 @@ export default async function StreamerCollectionPage({
     customRarities,
   };
 
+  // Issue #557: 履歴はパック次元 (collection_name) 付きで返るようになった。
+  // 全体コンプリートの既存ロジックは collection_name IS NULL の行だけを見る
+  // （デプロイ窓で列が無い間は全行が null にフォールバックするため従来同等）。
+  const overallCompletionHistory = completionHistory
+    .filter((record) => record.collection_name === null)
+    .map(({ total_cards, completed_at }) => ({ total_cards, completed_at }));
+
   const progress = {
     owned: countOwnedActiveCardTypes(ownedCards, activeCardIds),
     total: activeCards.length,
   };
   const isCurrentComplete = progress.total > 0 && progress.owned >= progress.total;
-  const hasCurrentCompletionRecord = completionHistory.some(
-    (record) => record.total_cards === progress.total
-  );
-  const completionHistoryForDisplay = isCurrentComplete && !hasCurrentCompletionRecord
-    ? [{ total_cards: progress.total, completed_at: new Date().toISOString() }, ...completionHistory]
-    : completionHistory;
+  const completionHistoryForDisplay = withOptimisticCompletion(overallCompletionHistory, progress);
+
+  // Issue #557: アクティブカードからパックグループを導出（カタログ順、
+  // カタログ外の孤立名は末尾、未分類カードがあればデフォルトパックを先頭）。
+  // デプロイ窓で card_pack_names / default_card_pack_name 列が無い間は
+  // プロパティ自体が undefined になるため ?? でフォールバックする。
+  const packGroups = deriveCollectionPackGroups(activeCards, streamer.card_pack_names ?? []);
+
+  // 名前付きパックが1つも使われていない配信者では、パック機能を一切出さない
+  // （フィルタUI非表示・パック別達成の記録もしない）。デフォルトパックのみの
+  // 状態は全体コンプリートと情報として同一で、UIにも表示されない記録を書く
+  // 意味がないため（YAGNI）。
+  const hasNamedPacks = packGroups.some((group) => !group.isDefault);
+
+  const packs = hasNamedPacks
+    ? packGroups.map((group) => {
+        const packProgress = computePackProgress(ownedCards, activeCards, group.key);
+        const packHistory = completionHistory
+          .filter((record) => record.collection_name === group.key)
+          .map(({ total_cards, completed_at }) => ({ total_cards, completed_at }));
+        return {
+          key: group.key,
+          // デフォルトパックの表示名は配信者のオーバーライド
+          // (default_card_pack_name)。null はクライアント側で汎用ラベルに
+          // フォールバックする。
+          displayName: group.isDefault ? (streamer.default_card_pack_name ?? null) : group.key,
+          progress: packProgress,
+          completionHistory: withOptimisticCompletion(packHistory, packProgress),
+          isComplete: packProgress.total > 0 && packProgress.owned >= packProgress.total,
+          hasStoredRecord: packHistory.some(
+            (record) => record.total_cards === packProgress.total
+          ),
+        };
+      })
+    : [];
 
   // コンプリート達成時にDBに記録（awaitしないとWorkers打ち切りで記録が失われる）
-  // upsert + ignoreDuplicates で高速、重複時はスキップされる
+  // insert + 一意インデックス違反(23505)無視のため重複時はスキップされる。
+  // パック別は取得済み履歴に同一達成が既にあれば書き込み自体を省略する
+  // （毎表示のNパック分の冗長INSERTを避ける。省略判定が競合レースに負けても
+  // 23505を握り潰すだけなので安全）。全体コンプリートは従来どおり達成中は
+  // 常に記録を試みる（既存挙動の維持）。
+  const recordTasks: Promise<void>[] = [];
   if (isCurrentComplete) {
-    await recordCollectionCompletion(session.twitchUserId, streamerId, progress.total);
+    recordTasks.push(recordCollectionCompletion(session.twitchUserId, streamerId, progress.total));
+  }
+  for (const pack of packs) {
+    if (pack.isComplete && !pack.hasStoredRecord) {
+      recordTasks.push(
+        recordPackCompletion(session.twitchUserId, streamerId, pack.progress.total, pack.key)
+      );
+    }
+  }
+  if (recordTasks.length > 0) {
+    await Promise.all(recordTasks);
   }
 
   return (
@@ -132,6 +206,14 @@ export default async function StreamerCollectionPage({
       completionHistory={completionHistoryForDisplay}
       // 未所持カードの画像/詳細を隠すかどうか（show_unowned_cards=false の場合は意味を持たない）
       hideUnownedDetails={!streamer.show_unowned_card_details}
+      // Issue #557: パック絞り込みタブ。isComplete/hasStoredRecord は記録判定用の
+      // サーバー内部値なのでUIへは渡さない。
+      packs={packs.map(({ key, displayName, progress: packProgress, completionHistory: packCompletionHistory }) => ({
+        key,
+        displayName,
+        progress: packProgress,
+        completionHistory: packCompletionHistory,
+      }))}
     />
   );
 }

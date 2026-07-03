@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import dynamic from "next/dynamic";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
-import { getUserPlan, PLAN_MAX_IMAGE_WIDTH, PLAN_AVAILABLE_WIDTHS } from "@/lib/plan";
+import { getUserPlan, PLAN_MAX_IMAGE_WIDTH, PLAN_AVAILABLE_WIDTHS, PLAN_MAX_UPLOAD_SIZE } from "@/lib/plan";
 import type { Card } from "@/types/database";
 
 const CardManager = dynamic(() => import("@/components/CardManager"), {
@@ -54,6 +54,10 @@ export default async function CardsPage() {
   const plan = await getUserPlan(session.twitchUserId);
   const maxImageWidth = PLAN_MAX_IMAGE_WIDTH[plan];
   const availableWidths = PLAN_AVAILABLE_WIDTHS[plan];
+  // Issue #269再設計: 新規カードパック名の登録(パック管理モーダルでの追加)
+  // にのみプランが必要。既存パックの選択・解除はゲート対象外。
+  const isPremium = plan !== "basic";
+  const maxUploadSize = PLAN_MAX_UPLOAD_SIZE[plan];
 
   return (
     <CardManager
@@ -61,10 +65,17 @@ export default async function CardsPage() {
       initialCards={initialCards}
       initialRarityWeights={streamerData.streamer.rarity_weights}
       initialCustomRarities={streamerData.streamer.custom_rarities ?? []}
+      initialCardPackNames={streamerData.streamer.card_pack_names ?? []}
+      // Issue #554: 列未デプロイのデプロイ窓では実行時に undefined になり得るため
+      // (TS型は必須だがDB列が存在しない場合、Supabaseは単にキーを省く)、`?? null` で
+      // 汎用ラベル表示にフォールバックする。
+      initialDefaultPackName={streamerData.streamer.default_card_pack_name ?? null}
       viewMode="list"
       showViewToggle={true}
       maxImageWidth={maxImageWidth}
       availableWidths={availableWidths}
+      isPremium={isPremium}
+      maxUploadSize={maxUploadSize}
     />
   );
 }

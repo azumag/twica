@@ -13,7 +13,8 @@ import {
 import CopyButton from "@/components/CopyButton";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
-import type { Card } from "@/types/database";
+import type { Card, Json } from "@/types/database";
+import type { PlanType } from "@/lib/plan-constants";
 
 // token-manager のサーバー専用モジュールに依存しないよう、戻り値型を inline 宣言。
 // 形状は getCustomBotAccountDisplayForStreamer の戻り値と一致させる。
@@ -60,6 +61,7 @@ function SettingsPanelSkeleton() {
 
 export interface SettingsLayoutData {
   streamerId: string;
+  plan: PlanType;
   baseUrl: string;
   cards: Card[];
   showVoteCampaign: boolean;
@@ -67,10 +69,13 @@ export interface SettingsLayoutData {
   channelPoint: {
     rewardId: string | null;
     rewardName: string | null;
+    // Issue #393: pack bound to the main reward (null = all cards)
+    collectionName: string | null;
   };
   gachaSound: {
     soundUrl: string | null;
     soundEnabled: boolean;
+    soundRules?: Json;
   };
   chatAnnouncement: {
     enabled: boolean;
@@ -81,6 +86,13 @@ export interface SettingsLayoutData {
   visibility: {
     showUnowned: boolean;
     showUnownedDetails: boolean;
+  };
+  // Issue #554: カードパックのプルダウン表示制御 + デフォルト名。未指定
+  // (undefined)の場合は ChannelPointSettings 側が従来どおりの表示にフォール
+  // バックする(後方互換 — 既存の呼び出し元を壊さない)。
+  cardPacks?: {
+    canManage: boolean;
+    defaultPackName: string | null;
   };
   initialModeHint: "simple" | "advanced";
 }
@@ -133,6 +145,8 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
           streamerId={data.streamerId}
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
+          currentCollectionName={data.channelPoint.collectionName}
+          cardPacks={data.cardPacks}
           compact
         />
       </StepCard>
@@ -247,6 +261,8 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           streamerId={data.streamerId}
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
+          currentCollectionName={data.channelPoint.collectionName}
+          cardPacks={data.cardPacks}
         />
       ),
     },
@@ -259,8 +275,12 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       content: (
         <GachaSoundSettings
           streamerId={data.streamerId}
+          plan={data.plan}
           currentSoundUrl={data.gachaSound.soundUrl}
           currentSoundEnabled={data.gachaSound.soundEnabled}
+          currentSoundRules={data.gachaSound.soundRules}
+          currentRewardId={data.channelPoint.rewardId}
+          currentRewardName={data.channelPoint.rewardName}
         />
       ),
     },

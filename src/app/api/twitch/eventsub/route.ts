@@ -436,6 +436,7 @@ interface RedemptionNotifyData {
     card: GachaCard;
     cards?: GachaCard[];
     userTwitchUsername: string;
+    rewardId?: string | null;
   };
   broadcasterTwitchUserId: string;
   streamer: EventSubStreamerInfo;
@@ -621,6 +622,7 @@ async function handleRedemption(messageId: string, event: {
       card: result.data.card,
       cards: result.data.cards,
       userTwitchUsername: result.data.userTwitchUsername,
+      rewardId: result.data.rewardId ?? event.reward.id,
     };
 
     logger.info('[handleRedemption] END', { messageId });

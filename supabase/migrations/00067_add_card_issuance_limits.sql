@@ -1,9 +1,13 @@
 -- Add optional issuance limits per card.
 -- NULL means unlimited. 1 means fully unique. Any positive integer caps total issued copies.
 --
--- NOTE: 番号が 00062 の理由:
--- 本番DBに 00059/00060 が適用済みのため、00056/00057 のままでは out-of-order となり Supabase に拒否される。
--- 00061 は gacha_sound_rules migration (PR #451) に使用済みのため、00062 を使用する。
+-- NOTE: 番号が 00067 の理由 (Issue #562 の番号衝突解消方針に従った再採番):
+-- このマイグレーションは元々 00056/00057 → 00062/00063 と採番されていたが、main 側で
+-- 00062 (card pack names) / 00063 (default pack name + rename) が別マイグレーションに
+-- 割り当て済みになったため番号が衝突した。PR #451 (gacha sound rules) のマージにより
+-- main の最終番号が 00066 になったため、out-of-order 拒否を避けるべく、その次である
+-- 00067 に採番し直している。(対になる cleanup migration は
+-- 00068_drop_duplicate_user_cards_index.sql)
 
 ALTER TABLE cards
   ADD COLUMN IF NOT EXISTS max_issuance_count INTEGER;

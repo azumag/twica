@@ -7,6 +7,12 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger";
+import { resolveCollectionNameField, isRegisteredOrUnchanged, DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import {
+  checkCollectionHasActiveCards,
+  isMissingCollectionNameColumn,
+  isMissingCardPackNamesColumnError,
+} from "@/lib/collections/collection-existence";
 
 function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
   const message = error?.message ?? "";
@@ -63,9 +69,27 @@ export async function GET(request: NextRequest) {
     // このストリーマーの全ての追加報酬を取得
     let { data: rewards, error } = await supabaseAdmin
       .from("streamer_additional_gacha_rewards")
-      .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
+      .select("id, reward_id, reward_name, draw_count, is_raid_limited, collection_name, created_at")
       .eq("streamer_id", streamer.id)
       .order("created_at", { ascending: true });
+
+    // Issue #393: handle "only collection_name column missing" BEFORE the raid
+    // fallback. Both match PGRST204, but the raid fallback would wrongly reset
+    // draw_count / is_raid_limited, losing N-draw config. So check this first and
+    // fall back to "all cards" (collection_name: null) while keeping raid options.
+    // collection_name 列のみ未デプロイのケースを raid fallback より先に処理する。
+    if (error && isMissingCollectionNameColumn(error)) {
+      const fallbackResult = await supabaseAdmin
+        .from("streamer_additional_gacha_rewards")
+        .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
+        .eq("streamer_id", streamer.id)
+        .order("created_at", { ascending: true });
+      rewards = (fallbackResult.data || []).map((reward) => ({
+        ...reward,
+        collection_name: null,
+      }));
+      error = fallbackResult.error;
+    }
 
     if (isRaidOptionsSchemaError(error)) {
       const fallbackResult = await supabaseAdmin
@@ -77,6 +101,7 @@ export async function GET(request: NextRequest) {
         ...reward,
         draw_count: 1,
         is_raid_limited: false,
+        collection_name: null,
       }));
       error = fallbackResult.error;
     }
@@ -144,6 +169,12 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { rewardId, rewardName, drawCount, isRaidLimited } = body;
 
+    // Issue #393: optional pack binding for this additional reward.
+    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
+    if (!collectionNameResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
     if (!rewardId) {
       return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
     }
@@ -165,11 +196,25 @@ export async function POST(request: NextRequest) {
 
     // Get streamer info to verify ownership
     // ストリーマー情報を取得して所有権を確認
-    const { data: streamer } = await supabaseAdmin
+    let { data: streamer, error: streamerSelectError } = await supabaseAdmin
       .from("streamers")
-      .select("id, channel_point_reward_id")
+      .select("id, channel_point_reward_id, card_pack_names")
       .eq("twitch_user_id", session.twitchUserId)
       .maybeSingle();
+
+    // Issue #393再設計: card_pack_names がデプロイ窓で未検出の場合、それだけ
+    // 外して再試行する(所有権確認・メイン報酬確認は継続できるようにする)。
+    let cardPackNamesUnavailable = false;
+    if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
+      const retryResult = await supabaseAdmin
+        .from("streamers")
+        .select("id, channel_point_reward_id")
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = retryResult.data ? { ...retryResult.data, card_pack_names: [] as string[] } : null;
+      streamerSelectError = retryResult.error;
+      cardPackNamesUnavailable = true;
+    }
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
@@ -193,19 +238,82 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Issue #393再設計: 追加報酬に更新エンドポイントは無い(作成/削除のみ)ため、
+    // 非null値は常に「新規紐付け」として扱い、事前登録済みパック名であることを
+    // 要求する(Issue #269のプレミアムゲートは廃止。パック管理モーダルでの
+    // 追加時のみゲートする設計に変更したため、ここではmembership検証のみ行う)。
+    const registeredPackNames: string[] = Array.isArray(streamer.card_pack_names)
+      ? streamer.card_pack_names
+      : [];
+    // Issue #555: DEFAULT_PACK_SENTINEL is a reserved value that can never be a
+    // member of card_pack_names (isReservedCollectionName rejects registering
+    // it), so the ordinary membership check would always reject it. Every
+    // streamer implicitly has this pseudo-pack (their unclassified cards), so
+    // membership validation is skipped for it entirely; existence is verified
+    // separately below via checkCollectionHasActiveCards.
+    if (
+      typeof collectionNameResult.value === "string" &&
+      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
+      !cardPackNamesUnavailable &&
+      !isRegisteredOrUnchanged(collectionNameResult.value, null, registeredPackNames)
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+    }
+
+    // デプロイ窓でmembership検証ができない間は、新しいパック紐付けの書き込み
+    // 自体を見送る(報酬自体の作成は続行)。
+    const collectionNameSkippedDeployWindow =
+      cardPackNamesUnavailable && typeof collectionNameResult.value === "string";
+
+    // Issue #393: when a pack is bound, ensure it actually has active cards so the
+    // reward never resolves to an empty draw pool at redemption time. Skip the
+    // check during the deploy window (column not migrated yet) and when the
+    // assignment could not be persisted anyway.
+    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
+      const existence = await checkCollectionHasActiveCards(
+        supabaseAdmin,
+        streamer.id,
+        collectionNameResult.value
+      );
+      if (existence === "absent") {
+        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+      }
+    }
+
     // Insert the new additional reward
     // 新しい追加報酬を挿入
-    const { data: newReward, error } = await supabaseAdmin
+    // collection_name は値が指定された場合のみ含める。未指定/null の通常作成では
+    // 列を含めないことで、collection_name 列が未デプロイでも作成を壊さない。
+    const insertPayload: Record<string, unknown> = {
+      streamer_id: streamer.id,
+      reward_id: rewardId,
+      reward_name: rewardName || null,
+      draw_count: normalizedDrawCount,
+      is_raid_limited: isRaidLimited ?? false,
+    };
+    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
+      insertPayload.collection_name = collectionNameResult.value;
+    }
+
+    let { data: newReward, error } = await supabaseAdmin
       .from("streamer_additional_gacha_rewards")
-      .insert({
-        streamer_id: streamer.id,
-        reward_id: rewardId,
-        reward_name: rewardName || null,
-        draw_count: normalizedDrawCount,
-        is_raid_limited: isRaidLimited ?? false,
-      })
+      .insert(insertPayload)
       .select()
       .maybeSingle();
+
+    // Issue #393: deploy-window safety. Strip collection_name and retry if the
+    // column is not migrated yet. Must run BEFORE the raid-options check because
+    // both match PGRST204; otherwise we would return a misleading 503.
+    if (error && isMissingCollectionNameColumn(error) && "collection_name" in insertPayload) {
+      delete insertPayload.collection_name;
+      const retryResult = await supabaseAdmin
+        .from("streamer_additional_gacha_rewards")
+        .insert(insertPayload)
+        .select()
+        .maybeSingle();
+      newReward = retryResult.data;
+      error = retryResult.error;
+    }
 
     if (isRaidOptionsSchemaError(error)) {
       logger.warn("Additional reward options schema is not ready; refusing to create a 1-draw fallback reward", {
@@ -236,7 +344,11 @@ export async function POST(request: NextRequest) {
       `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}, drawCount=${normalizedDrawCount}, raidLimited=${isRaidLimited ?? false}`
     );
 
-    return NextResponse.json({ success: true, reward: newReward });
+    return NextResponse.json({
+      success: true,
+      reward: newReward,
+      ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
+    });
   } catch (error) {
     return handleApiError(error, "Additional Rewards API: POST");
   }
