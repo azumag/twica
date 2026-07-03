@@ -3,6 +3,7 @@ import { GachaService } from '@/lib/services/gacha'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { createMockQueryBuilder } from '../utils/supabase-mock'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
+import { CARD_ISSUANCE_MESSAGES } from '@/lib/card-issuance'
 
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
@@ -417,14 +418,164 @@ describe('GachaService.executeGacha', () => {
     const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-legacy-limited')
 
     // Legacy パスでは atomic な発行枚数チェックができないため、
-    // 上限超過リスクを避けて soldOut エラーを返す。
+    // 上限超過リスクを避けて拒否する。R2 (PR #450 follow-up): この拒否は
+    // 本物の soldOut とは別の異常系(RPC未デプロイ)なので、専用の
+    // limitUnavailable を返し、genuine soldOut の文字列とは区別される
+    // (eventsub route.ts のソフトフェイル抑止に巻き込まれずreportErrorが
+    // 発火することを別テストで検証する)。
     expect(result.success).toBe(false)
     if (!result.success) {
-      expect(result.error).toContain('発行可能枚数')
+      expect(result.error).toBe(CARD_ISSUANCE_MESSAGES.limitUnavailable)
+      expect(result.error).not.toBe(CARD_ISSUANCE_MESSAGES.soldOut)
     }
     // gacha_history / user_cards INSERT は実行されていないことを確認
     expect(fromMock).not.toHaveBeenCalledWith('gacha_history')
     expect(fromMock).not.toHaveBeenCalledWith('users')
+  })
+
+  // R1 (PR #450 レビュー follow-up): limit_reached はプール全体の抽選失敗ではなく、
+  // 選ばれたカードだけを除外して残りプールから再抽選すべき。migration 00067 が
+  // gacha_history INSERT より前に limit_reached を返すことを利用し、同じ eventId
+  // でRPCを再実行しても副作用が無いことに依拠する(gacha.ts のコメント参照)。
+  describe('limit_reached 時の再抽選 (R1)', () => {
+    it('limit_reachedを受けたカードをプールから除外し、別カードで同じeventIdでRPCを再実行して成功する', async () => {
+      const cardsQuery = createCardsQuery([
+        { id: 'card-a', name: 'A', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: null },
+        { id: 'card-b', name: 'B', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: null },
+      ] as unknown as typeof testCards)
+      const mockRpc = vi.fn()
+        .mockResolvedValueOnce({ data: { is_duplicate: false, limit_reached: true }, error: null })
+        .mockResolvedValueOnce({ data: { is_duplicate: false, limit_reached: false, history_id: 'h-retry' }, error: null })
+
+      mockGetSupabaseAdmin.mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+        rpc: mockRpc,
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-retry')
+
+      expect(result.success).toBe(true)
+      expect(mockRpc).toHaveBeenCalledTimes(2)
+      const firstCardId = (mockRpc.mock.calls[0][1] as { p_card_id: string }).p_card_id
+      const secondCardId = (mockRpc.mock.calls[1][1] as { p_card_id: string }).p_card_id
+      // 2回目は1回目と別のカードが選ばれている(除外が効いている)
+      expect(secondCardId).not.toBe(firstCardId)
+      // 同じ eventId が両方の呼び出しに渡されている(副作用ゼロなので安全に同一eventIdで再試行できる)
+      expect((mockRpc.mock.calls[0][1] as { p_event_id: string }).p_event_id).toBe('event-retry')
+      expect((mockRpc.mock.calls[1][1] as { p_event_id: string }).p_event_id).toBe('event-retry')
+      if (result.success) {
+        expect(result.data.card.id).toBe(secondCardId)
+      }
+    })
+
+    it('パック内自動配分(effectiveWeight)でも limit_reached 後に残りプールから正しく再選択する', async () => {
+      // 発行上限付き(c1)+無制限(c2)の2枚パック。c1がまず選ばれてlimit_reachedに
+      // なっても、effectiveWeightの再計算を経てc2で成功することを確認する。
+      const packCards = [
+        { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0, max_issuance_count: 1 },
+        { id: 'c2', name: 'Common2', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0, max_issuance_count: null },
+      ]
+      const cardsQuery = createCardsQuery(packCards as unknown as typeof testCards)
+      // c1はまだ未発行(0/1)なので発行上限フィルタ後も初期プールに残る
+      const userCardsQuery = createMockQueryBuilder()
+      ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ data: [], error: null })
+        return userCardsQuery
+      }
+      const mockRpc = vi.fn()
+        .mockResolvedValueOnce({ data: { is_duplicate: false, limit_reached: true }, error: null })
+        .mockResolvedValueOnce({ data: { is_duplicate: false, limit_reached: false, history_id: 'h-effective-retry' }, error: null })
+
+      mockGetSupabaseAdmin.mockReturnValue({
+        from: vi.fn((table: string) => {
+          if (table === 'cards') return cardsQuery
+          if (table === 'user_cards') return userCardsQuery
+          return createMockQueryBuilder()
+        }),
+        rpc: mockRpc,
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-effective-retry', 100, 'weapons', {
+        rarityWeightsScope: 'global',
+        rarityWeights: { common: 100 },
+        packRarityWeights: null,
+      })
+
+      expect(result.success).toBe(true)
+      expect(mockRpc).toHaveBeenCalledTimes(2)
+      const firstCardId = (mockRpc.mock.calls[0][1] as { p_card_id: string }).p_card_id
+      const secondCardId = (mockRpc.mock.calls[1][1] as { p_card_id: string }).p_card_id
+      expect(secondCardId).not.toBe(firstCardId)
+      if (result.success) {
+        expect(result.data.card.id).toBe(secondCardId)
+      }
+    })
+
+    it('全カードでlimit_reachedが続く場合はプールを使い果たしてsoldOutを返す', async () => {
+      const cardsQuery = createCardsQuery([
+        { id: 'card-a', name: 'A', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: 1 },
+        { id: 'card-b', name: 'B', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: 1 },
+      ] as unknown as typeof testCards)
+      // 両カードとも未発行として初期プールに残す
+      const userCardsQuery = createMockQueryBuilder()
+      ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+        resolve({ data: [], error: null })
+        return userCardsQuery
+      }
+      const mockRpc = vi.fn().mockResolvedValue({ data: { is_duplicate: false, limit_reached: true }, error: null })
+
+      mockGetSupabaseAdmin.mockReturnValue({
+        from: vi.fn((table: string) => {
+          if (table === 'cards') return cardsQuery
+          if (table === 'user_cards') return userCardsQuery
+          return createMockQueryBuilder()
+        }),
+        rpc: mockRpc,
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-exhausted')
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error).toBe(CARD_ISSUANCE_MESSAGES.soldOut)
+      }
+      // 2枚のプールを2回で使い果たして打ち切られる
+      expect(mockRpc).toHaveBeenCalledTimes(2)
+    })
+
+    it('再試行回数の上限(5回)を超えたら、プールにまだカードが残っていてもsoldOutで打ち切る', async () => {
+      // 上限より多い6枚のプールを用意し、RPCが常にlimit_reachedを返す異常系でも
+      // 無制限にRPCを叩き続けないことを確認する。
+      const manyCards = Array.from({ length: 6 }, (_, index) => ({
+        id: `card-${index}`,
+        name: `Card ${index}`,
+        description: null,
+        image_url: null,
+        rarity: 'common',
+        drop_rate: 1,
+        max_issuance_count: null,
+      }))
+      const cardsQuery = createCardsQuery(manyCards as unknown as typeof testCards)
+      const mockRpc = vi.fn().mockResolvedValue({ data: { is_duplicate: false, limit_reached: true }, error: null })
+
+      mockGetSupabaseAdmin.mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+        rpc: mockRpc,
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-retry-cap')
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error).toBe(CARD_ISSUANCE_MESSAGES.soldOut)
+      }
+      // 6枚のプールが残っていても再試行は5回で打ち切られる(無制限ループ防止)
+      expect(mockRpc).toHaveBeenCalledTimes(5)
+    })
   })
 
   it('eventId未指定: p_event_idにnullが渡される', async () => {
