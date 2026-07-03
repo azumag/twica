@@ -569,4 +569,49 @@ describe('TwitchChatService', () => {
       expect(message).toBe('SampleUser が Legendary Card を獲得！');
     });
   });
+
+  // Issue #597: ガチャ報告チャットにカードコレクション(パック)名を出すための {packName}
+  describe('buildMessage - パック名プレースホルダー ({packName})', () => {
+    const basePlaceholders = {
+      user: 'SampleUser',
+      card: 'Legendary Card',
+      rarity: 'レジェンダリー',
+    };
+
+    it('{packName} が値に置換される', () => {
+      const message = service.buildMessage(
+        '{user}が『{packName}』パックから{card}を獲得！',
+        { ...basePlaceholders, packName: 'スターターパック' },
+      );
+
+      expect(message).toBe('SampleUserが『スターターパック』パックからLegendary Cardを獲得！');
+    });
+
+    it('{packName} 未指定時（パックに絞られていない抽選）は空文字に置換される', () => {
+      const message = service.buildMessage(
+        '{user}が{card}を獲得！パック: {packName}',
+        basePlaceholders,
+      );
+
+      expect(message).toBe('SampleUserがLegendary Cardを獲得！パック:');
+    });
+
+    it('{packName} が空文字の場合も未指定と同様に空文字へ置換される', () => {
+      const message = service.buildMessage(
+        '{user}が{card}を獲得！パック: {packName}',
+        { ...basePlaceholders, packName: '' },
+      );
+
+      expect(message).toBe('SampleUserがLegendary Cardを獲得！パック:');
+    });
+
+    it('既存プレースホルダーと併用できる', () => {
+      const message = service.buildMessage(
+        '@{user} が【{rarity}】{card}（{packName}）を獲得！',
+        { ...basePlaceholders, packName: 'レアパック' },
+      );
+
+      expect(message).toBe('@SampleUser が【レジェンダリー】Legendary Card（レアパック）を獲得！');
+    });
+  });
 });
