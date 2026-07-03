@@ -1,0 +1,127 @@
+# Post-deploy Smoke Check (#536)
+# デプロイ後スモークテスト
+#
+# Cloudflare Workers Builds は GitHub Actions とは独立して Git push をトリガーに
+# デプロイを実行するため、「Supabase マイグレーション成功をデプロイの条件にする」
+# 真のデプロイゲートはこのアーキテクチャ上実現できない (#536 で検討済み、既存の
+# Cloudflare Workers Builds 連携を崩さずに実現する方法がないため見送り)。
+#
+# 代わりに、本番デプロイ後 最大15分以内に主要ページとDBスキーマの整合性を
+# 定期チェックし、異常があれば GitHub Issue でアラートする「検知して知らせる」
+# 方式を採用する。デプロイを自動でブロック・ロールバックするものではない
+# (ALERTのみ)。#525-527 のようにコードがマイグレーション未適用のDB列/テーブルを
+# 前提にしてしまう事故を、本番影響が続く前に検知することが目的。
+#
+# See also: docs/cloudflare-workers-builds.md
+# ("Operational Runbook: Repairing Migration History")
+#
+# 必要な Secrets (Production 環境, Settings → Environments → Production):
+#   - NEXT_PUBLIC_SUPABASE_URL: 既存の Production 環境シークレットを再利用。
+#   - SUPABASE_SECRET_KEY (または レガシー名の SUPABASE_SERVICE_ROLE_KEY):
+#     DBスキーマチェック用の Supabase 管理者キー。
+#     この Environment には本ワークフロー作成時点でまだ設定されていないため、
+#     有効化前に追加が必要 (追加するまではDBスキーマチェックが失敗として
+#     報告され続ける — これはフェイルセーフとして意図した挙動であり、
+#     チェックを静かにスキップしない)。
+
+name: Smoke Check
+
+on:
+  schedule:
+    # 15分ごとに実行 (UTC)。デプロイの反映漏れをできるだけ早く検知するための頻度。
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "チェック対象のベースURL (空欄なら本番URLを使用)"
+        required: false
+        default: ""
+
+# 前回実行が長引いていても15分ごとの新規実行が積み重ならないようにする
+concurrency:
+  group: smoke-check
+  cancel-in-progress: false
+
+jobs:
+  smoke-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # NEXT_PUBLIC_SUPABASE_URL 等、既存の Production 環境シークレットを再利用する
+    environment: production
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # continue-on-error + 後続ステップでの outcome 判定により、失敗時も
+      # Issue 作成ステップまでワークフローを継続させる。
+      - name: Run smoke check
+        id: smoke
+        continue-on-error: true
+        run: npm run smoke-check 2>&1 | tee smoke-check-output.log
+        env:
+          SMOKE_TEST_BASE_URL: ${{ github.event.inputs.base_url }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # 失敗時のみ実行。同一の障害で15分ごとにIssueが乱立しないよう、
+      # "production-incident" ラベル + 固定タイトルで既存のオープンIssueを検索し、
+      # あればコメント追記、無ければ新規作成する (シンプルな重複防止。
+      # これはあくまでアラート機構であり、厳密な重複排除は行わない)。
+      - name: File or update incident issue on failure
+        if: steps.smoke.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TITLE="[smoke-check] 本番スモークテストが失敗しています"
+          BODY_FILE="$(mktemp)"
+          {
+            echo "## 自動検知: 本番スモークテスト失敗 (#536)"
+            echo ""
+            echo "- Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "- Detected at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo ""
+            echo '```'
+            cat smoke-check-output.log
+            echo '```'
+            echo ""
+            echo "このIssueは \`.github/workflows/smoke-check.yml\` (#536) により自動生成/更新されました。"
+            echo "デプロイを自動でブロック・ロールバックする仕組みではないため、内容を確認し手動で対応してください。"
+            echo "マイグレーション不整合が疑われる場合は \`docs/cloudflare-workers-builds.md\` の"
+            echo "\"Operational Runbook: Repairing Migration History\" を参照してください。"
+          } > "$BODY_FILE"
+
+          EXISTING_NUMBER="$(gh issue list --repo "${{ github.repository }}" \
+            --label production-incident --state open \
+            --search "\"$TITLE\" in:title" \
+            --json number --jq '.[0].number')"
+
+          if [ -n "$EXISTING_NUMBER" ]; then
+            echo "Existing incident issue #$EXISTING_NUMBER found; adding a comment"
+            gh issue comment "$EXISTING_NUMBER" --repo "${{ github.repository }}" --body-file "$BODY_FILE"
+          else
+            echo "No existing open incident issue found; creating a new one"
+            gh issue create --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE" \
+              --label "bug,production-incident"
+          fi
+
+      # Issue 作成後もジョブ自体は失敗として表示させ、Actions タブからも一目で分かるようにする
+      - name: Fail the job if the smoke check failed
+        if: steps.smoke.outcome == 'failure'
+        run: exit 1

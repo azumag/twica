@@ -79,3 +79,97 @@ feature branch to the preview deployment.
   Variables should only contain values required by the Next.js build.
 - Do not enable the GitHub repository variable until Cloudflare Builds has
   successfully deployed both Workers once.
+
+## Operational Runbook: Repairing Migration History
+
+Background: issue #536 (5/31 incident postmortem). Cloudflare Workers Builds
+deploys the app independently of GitHub Actions, so a Worker build can go live
+before (or without) `supabase db push` having applied the matching migration.
+`.github/workflows/ci.yml`'s migration-order check (#541,
+`scripts/check-migration-order.js`) catches the common authoring mistake (a
+new migration numbered lower than what's already merged), and
+`.github/workflows/smoke-check.yml` (#536) alerts after the fact if a deploy
+went out with schema the DB doesn't have yet. This section covers the manual
+recovery tools for when the remote migration history has actually diverged
+from local files or from the live schema. This is a break-glass procedure,
+not a routine step.
+
+### The two tools, and how they differ
+
+- `supabase migration repair <version> --status applied|reverted` only
+  mutates the remote bookkeeping table
+  (`supabase_migrations.schema_migrations`). It does not run any SQL and does
+  not change the actual schema.
+  - `--status applied`: inserts a history row marking `<version>` as applied,
+    without executing it. Use this when the migration's SQL was already run
+    against the remote DB by some other means (applied manually, or applied
+    by a previous `db push` that then failed to record it) and only the
+    history bookkeeping is missing or wrong.
+  - `--status reverted`: deletes the history row for `<version>`. Use this to
+    remove a stale or incorrect entry, e.g. a migration file was deleted or
+    renumbered (as happened repeatedly around #531/#562) and an old number is
+    still recorded remotely.
+- `supabase db push --include-all` force-applies migrations that are missing
+  from the remote history table, bypassing the normal "not in history, so
+  apply" bookkeeping check that also drives the "out of order" rejection.
+  Unlike `migration repair`, this actually executes the migration's SQL
+  against the remote DB.
+
+### When to use which
+
+- `db push` rejects a migration as "out of order", or as already having a
+  lower number than the latest applied migration, but the listed migrations
+  are confirmed genuinely new and unapplied remotely: run
+  `supabase db push --include-all --dry-run` first to see exactly which files
+  it would apply, verify each one against the live schema (Supabase dashboard
+  SQL editor, or `select column_name from information_schema.columns where
+  table_name = '...'`), then run it for real without `--dry-run`.
+- A migration's schema change is confirmed already live remotely, but
+  `supabase migration list --linked` (`npm run db:status`) shows it as
+  missing or unrecorded: use `migration repair <version> --status applied`.
+  Do not use `db push --include-all` for this case. Most of this repo's
+  migrations use `IF NOT EXISTS` guards so a re-run is often harmless, but any
+  migration that isn't idempotent (a bare `INSERT` without `ON CONFLICT`, a
+  one-off data backfill, etc.) can fail loudly or silently duplicate/corrupt
+  data if re-executed.
+- The history table has an entry for a migration number that no longer
+  corresponds to any file in `supabase/migrations/` (deleted or renumbered):
+  `migration repair <old-version> --status reverted`.
+
+### Commands
+
+```bash
+# Inspect remote history vs local files first (npm run db:status)
+npx supabase migration list --linked
+
+# Preview what db push --include-all would apply, before running for real
+npx supabase db push --include-all --dry-run
+
+# Force-apply migrations missing from remote history
+npx supabase db push --include-all
+
+# Mark a migration as applied in history WITHOUT executing its SQL
+npx supabase migration repair <version> --status applied
+
+# Remove a stale/incorrect history entry
+npx supabase migration repair <version> --status reverted
+```
+
+### Do NOT
+
+- Do not run `--include-all` just to make the error go away without first
+  running `--dry-run` and manually checking, for each migration it lists,
+  whether that schema change is already present on the live DB.
+- Do not `migration repair --status applied` a migration whose schema change
+  has not actually been applied remotely. This only edits the bookkeeping
+  table, not the schema, so the app will behave as if the column, table, or
+  function exists and hit the exact #525-527 failure mode (code referencing
+  schema that was never applied).
+- If it's unclear which specific migrations are safe to mark-applied versus
+  safe to re-run, treat it as a P0/P1 incident: get a second engineer to
+  verify against the live schema before mutating remote migration history,
+  rather than guessing under pressure.
+- The flag semantics above are summarized from the official CLI reference; if
+  behavior is ever in doubt, defer to the docs rather than this summary:
+  https://supabase.com/docs/reference/cli/supabase-migration-repair and
+  https://supabase.com/docs/reference/cli/supabase-db-push
