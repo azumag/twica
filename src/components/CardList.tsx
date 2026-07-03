@@ -14,6 +14,18 @@ interface CardListProps {
   // Total weight of all active cards (for calculating actual probability)
   // 全アクティブカードの重み合計（実際の出現確率計算用）
   totalActiveWeight?: number;
+  // Issue #580(#576 フェーズ3): カードID→実際の出現確率(%, 0-100)の事前計算済み
+  // マップ。指定されたカードは totalActiveWeight ベースの単純な比率計算より
+  // このマップの値を優先して表示する。呼び出し元(CardManager)がパック絞込+
+  // 自動モード時に computeEffectiveWeights(#579) で正しい実効確率を算出して
+  // 渡すためのフック。未指定/該当カードなしの場合は従来の
+  // totalActiveWeight 比率計算にフォールバックする(APIを最小限に保つ)。
+  // A pre-computed map of cardId -> actual display probability (%, 0-100).
+  // When present for a card, this value is shown instead of the simple
+  // totalActiveWeight ratio. Lets the caller (CardManager) supply
+  // computeEffectiveWeights-derived (Issue #579) probabilities for the
+  // pack-filtered auto-mode case, keeping this component's API minimal.
+  probabilityOverrides?: Map<string, number>;
   // Callback when edit button is clicked
   // 編集ボタンクリック時のコールバック
   onEdit?: (card: Card) => void;
@@ -46,6 +58,7 @@ const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 export default function CardList({
   cards,
   totalActiveWeight = 0,
+  probabilityOverrides,
   onEdit,
   onDelete,
   onToggleActive,
@@ -59,11 +72,17 @@ export default function CardList({
    * Calculate actual probability for a card based on its weight and total active weight
    * カードの重みと全アクティブ重みから実際の出現確率を計算
    */
-  const calculateActualProbability = (dropRate: number, isActive: boolean): string => {
+  const calculateActualProbability = (card: Card): string => {
     // Inactive cards don't contribute to probability
     // 非アクティブカードは確率に寄与しない
-    if (!isActive || totalActiveWeight === 0) return "-";
-    const probability = (dropRate / totalActiveWeight) * 100;
+    if (!card.is_active) return "-";
+    // Issue #580: 事前計算済みの実効確率があれば優先する
+    const override = probabilityOverrides?.get(card.id);
+    if (override !== undefined) {
+      return `${override.toFixed(1)}%`;
+    }
+    if (totalActiveWeight === 0) return "-";
+    const probability = (card.drop_rate / totalActiveWeight) * 100;
     return `${probability.toFixed(1)}%`;
   };
   if (cards.length === 0) {
@@ -206,7 +225,7 @@ export default function CardList({
                 {/* Actual probability (calculated from weights) */}
                 {/* 出現確率（重みから計算された実際の確率） */}
                 <td className="px-4 py-3 text-sm text-green-400 font-medium">
-                  {calculateActualProbability(card.drop_rate, card.is_active)}
+                  {calculateActualProbability(card)}
                 </td>
 
                 {/* Status */}

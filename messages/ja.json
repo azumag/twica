@@ -85,7 +85,8 @@
       "selectResolution": "解像度を選択",
       "resolutionStandard": "標準 (800px)",
       "resolutionFullHd": "Full HD (1920px)",
-      "resolution4k": "4K (3840px)"
+      "resolution4k": "4K (3840px)",
+      "previewPoolLabel": "「{pack}」パック内での確率"
     },
     "fileUpload": {
       "formats": "対応形式: JPEG, PNG, GIF, WebP | ",
@@ -189,7 +190,9 @@
       "example2": "カードA: 重み50%、カードB: 重み25%",
       "example2Result": "→ カードA: 50÷75×100 = 66.7%、カードB: 33.3%",
       "note": "※ 配布停止中のカードは確率計算に含まれません。",
-      "close": "閉じる"
+      "close": "閉じる",
+      "packScopeTitle": "パック指定の報酬について",
+      "packScopeDescription": "特定のパックに絞ったチャネルポイント報酬から引いた場合、そのパック内のカードだけを対象に確率が再計算されます。自動モードでは「カード排出確率設定」の「レアリティ別設定」タブから、配分をすべてのパックで共通にするか、パックごとに個別に設定するかを選べます。"
     },
     "dropRateSettings": {
       "button": "カード排出確率設定",
@@ -200,7 +203,18 @@
       "switchToAuto": "自動モードに切り替える",
       "confirmSwitchToManual": "レアリティ別の自動計算が無効になります。切り替えますか？",
       "confirmSwitchToAuto": "レアリティ別確率設定が有効になり、全カードの確率が再計算されます。切り替えますか？",
-      "switchFailed": "モードの切り替えに失敗しました"
+      "switchFailed": "モードの切り替えに失敗しました",
+      "scopeLabel": "配分スコープ",
+      "scopeGlobal": "全体で1つの配分",
+      "scopePerPack": "パック別の配分",
+      "scopeGlobalHint": "すべてのパックが同じレアリティ配分を使用します。",
+      "scopePerPackHint": "パックごとに個別のレアリティ配分を設定できます。設定の無いパックはグローバル配分を継承します。",
+      "packSelectLabel": "設定するパック",
+      "inheritingGlobal": "グローバル設定を継承中",
+      "makePackSpecific": "このパック専用に設定する",
+      "revertToInherit": "継承に戻す",
+      "packTotalWarning": "パック別配分のいずれかが合計100%になっていません",
+      "packScopeDeployWindow": "配分スコープ/パック別設定の機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。"
     },
     "customRarity": {
       "button": "レアリティカスタム",
