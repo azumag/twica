@@ -942,6 +942,26 @@ export default function CardManager({
     []
   );
 
+  // Issue #605: CardPackModal でパック名のリネームが成功した際のコールバック。
+  // サーバー側(rename_card_pack RPC)は cards.collection_name を含めて既に
+  // カスケード更新済みだが、CardPackModal はカタログ配列(パック名一覧)しか
+  // 知らず onSaved 経由でもそれしか渡せない。そのため、既存カードの表示が
+  // ここでローカルパッチしない限り旧パック名のまま取り残され、リロードするまで
+  // 「別パックのカード」に見えてしまっていた。handleToggleActive 等と同じ
+  // 「サーバーの実際の変更をローカル state に反映するだけ」の楽観的更新パターン。
+  const handlePackRenamed = useCallback((oldName: string, newName: string) => {
+    setCards((prev) =>
+      prev.map((card) =>
+        card.collection_name === oldName ? { ...card, collection_name: newName } : card
+      )
+    );
+    // 選択中のパックフィルタが今リネームされたパックを指していた場合、新名へ
+    // 追従させる。追従させないと、カタログには存在しない旧名で絞り込んだままになり
+    // (packFilterOptions は cardPackNames ∪ cards の collection_name から作られる
+    // ため、旧名は両方から消える)、フィルタ結果が意図せず0件に見えてしまう。
+    setPackFilter((prev) => (prev === oldName ? newName : prev));
+  }, []);
+
   // Calculate total weight and actual probability
   // 合計重みと実際の確率を計算
   const calculateActualProbability = (dropRate: number): number => {
@@ -2743,6 +2763,7 @@ export default function CardManager({
         isPremium={isPremium}
         onSaved={setCardPackNames}
         onDefaultPackNameSaved={setDefaultPackName}
+        onPackRenamed={handlePackRenamed}
       />
 
       {/* Emote Import Modal */}

@@ -367,4 +367,84 @@ describe("CardPackModal", () => {
       await waitFor(() => expect(onDefaultPackNameSaved).toHaveBeenCalledWith(null));
     });
   });
+
+  // Issue #613: IME(日本語入力等)の変換確定Enterで、追加/保存が誤って
+  // 走ってしまっていた。isComposing中のEnterは無視し、通常のEnterでは
+  // 従来通り動作することを検証する。
+  describe("IME composition guards (Issue #613)", () => {
+    it("does not add a pack on a composing Enter, but does on a normal Enter", () => {
+      renderModal({ isPremium: true, cardPackNames: ["weapons"] });
+
+      const input = screen.getByPlaceholderText("新しいパック名");
+      fireEvent.change(input, { target: { value: "characters" } });
+
+      // IME変換確定中のEnter(isComposing: true) → 追加されない
+      fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+      expect(screen.queryByText("characters")).not.toBeInTheDocument();
+
+      // 変換確定後の通常のEnter(isComposing: false) → 追加される
+      fireEvent.keyDown(input, { key: "Enter", isComposing: false });
+      expect(screen.getByText("characters")).toBeInTheDocument();
+    });
+
+    it("does not save a pack rename on a composing Enter, but does on a normal Enter", async () => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ success: true, cardPackNames: ["armory"] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+      renderModal({ cardPackNames: ["weapons"] });
+
+      const renameTrigger = screen.getByLabelText("Rename weapons");
+      const row = renameTrigger.closest("li")!;
+      fireEvent.click(renameTrigger);
+      const textbox = within(row).getByRole("textbox");
+      fireEvent.change(textbox, { target: { value: "armory" } });
+
+      fireEvent.keyDown(textbox, { key: "Enter", isComposing: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(textbox, { key: "Enter", isComposing: false });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/cards/collections",
+          expect.objectContaining({
+            method: "PATCH",
+            body: JSON.stringify({ streamerId: "streamer-1", oldName: "weapons", newName: "armory" }),
+          })
+        );
+      });
+    });
+
+    it("does not save the default pack rename on a composing Enter, but does on a normal Enter", async () => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+      renderModal({ defaultPackName: null });
+
+      const renameTrigger = screen.getByLabelText("Rename default pack");
+      const row = renameTrigger.closest("li")!;
+      fireEvent.click(renameTrigger);
+      const textbox = within(row).getByRole("textbox");
+      fireEvent.change(textbox, { target: { value: "オリジナルカード" } });
+
+      fireEvent.keyDown(textbox, { key: "Enter", isComposing: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(textbox, { key: "Enter", isComposing: false });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/streamer/settings",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({ streamerId: "streamer-1", defaultCardPackName: "オリジナルカード" }),
+          })
+        );
+      });
+    });
+  });
 });
