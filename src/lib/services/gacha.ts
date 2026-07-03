@@ -88,45 +88,60 @@ export class GachaService {
       // max_issuance_count is selected here (Issue #108) so per-card issuance caps
       // can be enforced below; it falls back to a column-less select via
       // isMissingCardIssuanceColumnError if the migration has not landed yet.
+      //
       // Issue #108 + #393 combined: the pack filter (collectionName) must be
       // applied on BOTH the primary and the issuance-column-missing fallback
-      // query. Building both through this single helper (parameterized on
-      // whether max_issuance_count is selectable) avoids a deploy-window bug
-      // where the fallback would silently ignore the requested pack and draw
-      // from ALL of the streamer's cards.
-      const fetchCards = (includeIssuanceColumn: boolean) => {
-        const columns = includeIssuanceColumn
-          ? 'id, name, description, image_url, rarity, drop_rate, max_issuance_count'
-          : 'id, name, description, image_url, rarity, drop_rate'
-        let query = this.supabase
-          .from('cards')
-          .select(columns)
-          .eq('streamer_id', streamerId)
-          .eq('is_active', true)
-
-        if (collectionName) {
-          // Issue #555: DEFAULT_PACK_SENTINEL means "draw only from unclassified
-          // cards" (collection_name IS NULL) — the inverse of a normal named-pack
-          // filter, which needs `.eq(...)` against a literal string value.
-          // `.eq('collection_name', DEFAULT_PACK_SENTINEL)` would never match any
-          // card (no card's collection_name literally equals that sentinel), so
-          // this must branch to `.is(...)` instead.
-          query = collectionName === DEFAULT_PACK_SENTINEL
-            ? query.is('collection_name', null)
-            : query.eq('collection_name', collectionName)
-        }
-
-        return query
-      }
-
+      // query below, or the fallback would silently ignore the requested pack
+      // and draw from ALL of the streamer's cards during that deploy window.
+      // The filter is duplicated at each call site (rather than hoisted into a
+      // shared helper parameterized by column list) because supabase-js infers
+      // the Row type from a *literal* `.select(...)` string; passing a variable
+      // string collapses the type to something that cannot be spread
+      // (`{ ...card, ... }` below would fail to compile), and a shared helper
+      // generic enough to preserve both literal Row types is not worth the
+      // complexity for two short queries.
       let { data: cards, error: cardsError } = await withRetry(
-        () => fetchCards(true),
+        () => {
+          let query = this.supabase
+            .from('cards')
+            .select('id, name, description, image_url, rarity, drop_rate, max_issuance_count')
+            .eq('streamer_id', streamerId)
+            .eq('is_active', true)
+
+          if (collectionName) {
+            // Issue #555: DEFAULT_PACK_SENTINEL means "draw only from unclassified
+            // cards" (collection_name IS NULL) — the inverse of a normal named-pack
+            // filter, which needs `.eq(...)` against a literal string value.
+            // `.eq('collection_name', DEFAULT_PACK_SENTINEL)` would never match any
+            // card (no card's collection_name literally equals that sentinel), so
+            // this must branch to `.is(...)` instead.
+            query = collectionName === DEFAULT_PACK_SENTINEL
+              ? query.is('collection_name', null)
+              : query.eq('collection_name', collectionName)
+          }
+
+          return query
+        },
         'gacha:executeGacha:cards',
       )
 
       if (cardsError && isMissingCardIssuanceColumnError(cardsError)) {
         const fallbackResult = await withRetry(
-          () => fetchCards(false),
+          () => {
+            let query = this.supabase
+              .from('cards')
+              .select('id, name, description, image_url, rarity, drop_rate')
+              .eq('streamer_id', streamerId)
+              .eq('is_active', true)
+
+            if (collectionName) {
+              query = collectionName === DEFAULT_PACK_SENTINEL
+                ? query.is('collection_name', null)
+                : query.eq('collection_name', collectionName)
+            }
+
+            return query
+          },
           'gacha:executeGacha:cards:fallback',
         )
         cards = fallbackResult.data?.map((card) => ({
