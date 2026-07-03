@@ -61,7 +61,7 @@
       "cardNumberHelp": "空欄なら自動採番されます",
       "maxIssuanceCount": "発行可能枚数",
       "maxIssuanceCountPlaceholder": "例: 1 / 100",
-      "maxIssuanceCountHelp": "空欄なら無制限、1なら完全ユニークです（最大1,000,000まで）",
+      "maxIssuanceCountHelp": "空欄なら無制限、1なら完全ユニークです（最大1,000,000まで）。上限は「現在の所持者数」を基準に判定します（カードが削除・交換等で手放されると枠が空きます）",
       "collectionName": "カードパック",
       "collectionNameUnclassified": "{name}（すべてのカード）",
       "collectionNameHelp": "同じパック名のカードだけがチャネポ報酬の抽選対象になります。パック名は「パック管理」で事前に登録してください。",
