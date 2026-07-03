@@ -8,6 +8,7 @@ import { validateContentType } from '@/lib/request-validation'
 import { getUserPlan } from '@/lib/plan'
 import { createSupabaseMock, createMockQueryBuilder } from '../utils/supabase-mock'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
+import { legacySoundToRules } from '@/lib/gacha-sound-rules'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
@@ -608,6 +609,175 @@ describe('POST /api/streamer/settings', () => {
 
       const response = await POST(request)
       expect(response.status).toBe(403)
+    })
+  })
+
+  describe('gachaSoundRules legacy mirror + save echo (Issue #451 followup F1/F5)', () => {
+    it('F1: mirrors ONLY an enabled all-type rule into gacha_sound_url/gacha_sound_enabled, not any enabled rule', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockSupabase = builder.build()
+      const query = builder.getQueryBuilder()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      // Only a rarity-scoped rule is configured (no catch-all "all" rule).
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'legendary-only', url: 'https://example.com/legendary.mp3', enabled: true, label: 'L', targetType: 'rarity', rarity: 'legendary', rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      // Must NOT mirror the rarity-only rule's URL — there is no "always play"
+      // sound configured, so the legacy mirror must be cleared, not borrow a
+      // rarity-limited sound (that was the bug: legendary-only sound playing
+      // for every rarity via the legacy no-match fallback).
+      expect(query.update).toHaveBeenCalledWith(expect.objectContaining({
+        gacha_sound_url: null,
+        gacha_sound_enabled: false,
+      }))
+    })
+
+    it('F1: mirrors an enabled all-type rule\'s URL even when a rarity rule is also present', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockSupabase = builder.build()
+      const query = builder.getQueryBuilder()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'legendary', url: 'https://example.com/legendary.mp3', enabled: true, label: 'L', targetType: 'rarity', rarity: 'legendary', rewardId: null, rewardName: null },
+            { id: 'catch-all', url: 'https://example.com/all.mp3', enabled: true, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(expect.objectContaining({
+        gacha_sound_url: 'https://example.com/all.mp3',
+        gacha_sound_enabled: true,
+      }))
+    })
+
+    it('F1: does not mirror a DISABLED all-type rule', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const builder = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockSupabase = builder.build()
+      const query = builder.getQueryBuilder()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'catch-all', url: 'https://example.com/all.mp3', enabled: false, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(expect.objectContaining({
+        gacha_sound_url: null,
+        gacha_sound_enabled: false,
+      }))
+    })
+
+    it('F5: echoes the server-normalized (persisted) gachaSoundRules on success, not the raw submitted array', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const mockSupabase = createSupabaseMock()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'keep', url: 'https://example.com/a.mp3', enabled: true, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+            // Dead rule: reward-targeted with an empty rewardId never fires;
+            // normalizeGachaSoundRules drops it server-side.
+            { id: 'dead-reward', url: 'https://example.com/b.mp3', enabled: true, label: 'B', targetType: 'reward', rarity: null, rewardId: '', rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.gachaSoundRules).toHaveLength(1)
+      expect(data.gachaSoundRules[0]).toMatchObject({ id: 'keep' })
+      expect(data.gachaSoundRulesSkippedDeployWindow).toBeUndefined()
+    })
+
+    it('F5: reports a deploy-window flag and the actually-persisted legacy-mirror value when the UPDATE drops gacha_sound_rules', async () => {
+      mockGetUserPlan.mockResolvedValue('support')
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+        error: null,
+      })
+      // First update attempt fails because gacha_sound_rules isn't actually
+      // writable yet (schema-cache lag / migration not deployed).
+      ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        eq: vi.fn().mockResolvedValue({
+          error: { code: 'PGRST204', message: "Could not find the 'gacha_sound_rules' column" },
+        }),
+      })
+
+      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+      vi.mocked(getSupabaseAdmin).mockReturnValue({
+        from: vi.fn(() => streamerQuery),
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'catch-all', url: 'https://example.com/all.mp3', enabled: true, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+          ],
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.gachaSoundRulesSkippedDeployWindow).toBe(true)
+      // gacha_sound_rules列自体は書けなかったが、旧来ミラー列
+      // (gacha_sound_url/gacha_sound_enabled)は書き込めている(グレースフル
+      // デグレード)ため、そこから復元した legacy ルール1件が実態として返る
+      // (クライアントに送信したルール一覧そのものではない)。
+      expect(data.gachaSoundRules).toEqual(
+        legacySoundToRules('https://example.com/all.mp3', true)
+      )
     })
   })
 

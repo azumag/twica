@@ -37,12 +37,42 @@ export const createRuleId = (): string => (
 );
 
 /**
+ * PR #451 レビュー指摘(F4): ALLOWED_SOUND_HOSTS はどの環境設定にも
+ * 設定されていなかったため、「許可ホストで絞り込む」という説明とは裏腹に
+ * 実質的にはHTTPSであれば何でも通ってしまう no-op な保護だった。
+ *
+ * 新たな運用上の設定を1つも増やさずに自己設定的な allowlist にするため、
+ * アプリ自身がアップロード済み効果音／画像の公開URLとして実際に使っている
+ * R2_SOUND_PUBLIC_URL / R2_PUBLIC_URL（いずれも src/lib/r2-client.ts が使う
+ * サーバー専用の環境変数。NEXT_PUBLIC_ プレフィックスが無いためクライアント
+ * バンドルには埋め込まれない = ブラウザ側で呼ばれても値は取れず安全側に倒れる）
+ * のホスト名を許可リストとして導出する。正規に保存された効果音は必ずこの
+ * いずれかのホストに置かれているため、既存の保存済みルールが誤って弾かれる
+ * ことはない。
+ */
+function getDefaultAllowedSoundHosts(): string[] {
+  const hosts = new Set<string>();
+  for (const publicUrlEnv of [process.env.R2_SOUND_PUBLIC_URL, process.env.R2_PUBLIC_URL]) {
+    if (!publicUrlEnv) continue;
+    try {
+      hosts.add(new URL(publicUrlEnv).hostname.toLowerCase());
+    } catch {
+      // 設定ミスで不正なURLが入っていても、機能全体を壊さないよう無視する
+    }
+  }
+  return Array.from(hosts);
+}
+
+/**
  * 効果音 URL が許可されたものかを判定する。
  * - HTTPS 必須（混在コンテンツ・盗聴防止）
- * - process.env.ALLOWED_SOUND_HOSTS（カンマ区切りホスト名）に含まれるか、
+ * - 許可リストは以下の和集合:
+ *   1. R2_SOUND_PUBLIC_URL / R2_PUBLIC_URL から導出したホスト（アプリが
+ *      実際にアップロード先として使っているホスト。上記 getDefaultAllowedSoundHosts 参照）
+ *   2. process.env.ALLOWED_SOUND_HOSTS（カンマ区切りホスト名、任意の追加許可）
  *   または同一オリジンのみ許可
- * - ALLOWED_SOUND_HOSTS が未設定の場合は後方互換のため素通し
- *   （HTTPS チェックのみ適用）
+ * - 上記いずれも未設定の場合（ローカル開発でR2環境変数が無い等）は
+ *   後方互換のため HTTPS チェックのみで素通しする
  */
 export function isAllowedSoundUrl(rawUrl: string): boolean {
   let parsed: URL;
@@ -57,12 +87,15 @@ export function isAllowedSoundUrl(rawUrl: string): boolean {
   // HTTPS 必須
   if (parsed.protocol !== "https:") return false;
 
-  const allowList = (process.env.ALLOWED_SOUND_HOSTS ?? "")
+  const explicitAllowList = (process.env.ALLOWED_SOUND_HOSTS ?? "")
     .split(",")
     .map((host) => host.trim().toLowerCase())
     .filter(Boolean);
 
-  // 後方互換: allowlist 未設定なら HTTPS のみ満たせば許可
+  const allowList = Array.from(new Set([...getDefaultAllowedSoundHosts(), ...explicitAllowList]));
+
+  // 後方互換: 導出・明示のどちらの allowlist も空(ローカル開発でR2/明示設定が
+  // 無い場合)なら HTTPS のみ満たせば許可する
   if (allowList.length === 0) return true;
 
   const hostname = parsed.hostname.toLowerCase();

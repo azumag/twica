@@ -126,14 +126,35 @@ export default function GachaSoundSettings({
         }),
       });
 
+      const data = await response.json().catch(() => null);
+
       if (!response.ok) {
-        const errorData = await response.json();
-        setMessage(errorData.error || t("errors.saveFailed"));
+        setMessage(data?.error || t("errors.saveFailed"));
         setIsError(true);
         return false;
       }
 
-      setRules(nextRules);
+      // F5(#451フォローアップ): 200が返っていても、サーバー側の正規化
+      // (不正URL除外・デッドルール除外・件数上限)やデプロイ窓での書き込み
+      // スキップにより、実際に永続化された値が送信した nextRules と
+      // 食い違うことがある。送信値をそのまま楽観反映すると、UIだけ
+      // 「保存できた」体のまま実態とズレて残ってしまう(サイレント欠損)。
+      // cardPackNames/packRarityWeights と同じパターンで、サーバーが
+      // エコーバックした実際の永続値から state を再同期する。
+      const persisted = Array.isArray(data?.gachaSoundRules)
+        ? normalizeGachaSoundRules(data.gachaSoundRules)
+        : nextRules;
+      setRules(persisted);
+
+      if (data?.gachaSoundRulesSkippedDeployWindow) {
+        // デプロイ窓で gacha_sound_rules 列自体への書き込みが見送られた
+        // (実際にはルール保存されていない)ケース。成功扱いにはせず、
+        // 他のフィールドの deploy-window 案内と同様にユーザーへ知らせる。
+        setMessage(t("errors.deployWindow"));
+        setIsError(true);
+        return false;
+      }
+
       return true;
     } catch (error) {
       logger.error("Save sound rules error:", error);

@@ -462,7 +462,8 @@
       "uploadFailed": "Upload failed",
       "saveFailed": "Failed to save settings",
       "deleteFailed": "Failed to delete",
-      "rateLimit": "Too many requests. Please wait and try again."
+      "rateLimit": "Too many requests. Please wait and try again.",
+      "deployWindow": "The sound rules feature is not ready yet, so your changes could not be saved. Please try again shortly."
     },
     "confirmDelete": "Delete this sound effect?",
     "premiumRequired": "Multiple sounds and targeting are available for support plan subscribers and above."
