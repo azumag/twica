@@ -6,7 +6,14 @@ import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { subscribeToGachaResults } from "@/lib/realtime";
-import { type OverlayEffectStyle, normalizeOverlayEffectStyle } from "@/lib/overlay-effect";
+import {
+  type OverlayEffectStyle,
+  type OverlayEffectParticle,
+  normalizeOverlayEffectStyle,
+  generateOverlayEffectParticles,
+  OVERLAY_EFFECT_PARTICLE_COUNT,
+  OVERLAY_EFFECT_PARTICLE_CONFIG,
+} from "@/lib/overlay-effect";
 import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
 import { normalizeGachaSoundRules, pickGachaSoundRule, type GachaSoundRule } from "@/lib/gacha-sound-rules";
 
@@ -75,13 +82,6 @@ function fetchJsonWithXhrFallback<T>(url: string): Promise<T> {
     });
 }
 
-interface SparklePosition {
-  left: string;
-  top: string;
-  animationDelay: string;
-  animationDuration: string;
-}
-
 // 共有定義に集約: src/lib/overlay-effect.ts を Single Source of Truth とする
 function parseOverlayEffectStyle(value: string | null): OverlayEffectStyle {
   return normalizeOverlayEffectStyle(value);
@@ -116,22 +116,14 @@ interface OverlayOptions {
   portraitShowUsername: boolean;
 }
 
-// Generate sparkle positions outside of render
-function generateSparklePositions(): SparklePosition[] {
-  return [...Array(20)].map(() => ({
-    left: `${Math.random() * 100}%`,
-    top: `${Math.random() * 100}%`,
-    animationDelay: `${Math.random() * 2}s`,
-    animationDuration: `${1 + Math.random()}s`,
-  }));
-}
-
 export default function OverlayPage() {
   const params = useParams();
   const streamerId = params.streamerId as string;
   const [result, setResult] = useState<GachaResult | null>(null);
   const [showCard, setShowCard] = useState(false);
-  const [sparklePositions, setSparklePositions] = useState<SparklePosition[]>([]);
+  // エフェクトパーティクル（スタイルごとの出現位置・タイミング）。
+  // options.effectStyle に応じて generateOverlayEffectParticles で生成する。
+  const [effectParticles, setEffectParticles] = useState<OverlayEffectParticle[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // オーバーレイ表示オプション（URLパラメータで設定）
@@ -432,7 +424,7 @@ export default function OverlayPage() {
     // 画像のアスペクト比をチェック（autoPortraitモード用）
     await checkImageAspectRatio(next.card.image_url);
 
-    setSparklePositions(generateSparklePositions());
+    setEffectParticles(generateOverlayEffectParticles(options.effectStyle, OVERLAY_EFFECT_PARTICLE_COUNT));
     setResult(next);
     setShowCard(false);
 
@@ -460,7 +452,7 @@ export default function OverlayPage() {
         }, 500);
       }, options.displayDuration * 1000);
     }, 100);
-  }, [checkImageAspectRatio, playGachaSound, options.displayDuration]);
+  }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effectStyle]);
 
   // processQueueRefを最新のcallbackで更新
   useEffect(() => {
@@ -745,22 +737,33 @@ export default function OverlayPage() {
       return null;
     }
 
-    // i * 23deg: 23 は 360 と互いに素な素数のため、N=20 個並べても回転角が均等に
-    // 散らばり (周期 360°) 偏りが目立たない。色も 4 色を i%4 で循環させ、視覚的な
-    // ランダム感を低コストで演出する（CSS 1行で済ませる狙い）。
-    const CONFETTI_ROTATION_STEP_DEG = 23;
+    // スタイルごとのアニメーションクラス・出現位置は src/lib/overlay-effect.ts の
+    // OVERLAY_EFFECT_PARTICLE_CONFIG を Single Source of Truth として参照する
+    // （Issue #587: 以前は全スタイルが同じ animate-bounce を共有し、紙吹雪もハートも
+    // 「ぴょこぴょこ上下に動く虫」のような見た目になっていた）。
+    const animationClassName = OVERLAY_EFFECT_PARTICLE_CONFIG[options.effectStyle].animationClassName;
+
     return (
       <div
         className="pointer-events-none absolute inset-0 overflow-hidden"
         // スクリーンリーダーには無意味な装飾なので非読み上げに
         aria-hidden="true"
       >
-        {sparklePositions.map((pos, i) => {
+        {effectParticles.map((particle, i) => {
+          const style = {
+            left: particle.left,
+            top: particle.top,
+            animationDelay: particle.animationDelay,
+            animationDuration: particle.animationDuration,
+          };
+
           if (options.effectStyle === "confetti") {
+            // 紙吹雪: 小さな色付き矩形が上端付近から左右に揺れながら回転しつつ落下する
+            // （overlay-confetti-fall keyframes @ globals.css）
             return (
               <div
                 key={i}
-                className={`absolute h-2.5 w-1.5 animate-bounce rounded-sm ${
+                className={`absolute h-2.5 w-1.5 rounded-sm ${animationClassName} ${
                   i % 4 === 0
                     ? "bg-yellow-300"
                     : i % 4 === 1
@@ -769,20 +772,25 @@ export default function OverlayPage() {
                         ? "bg-cyan-300"
                         : "bg-purple-400"
                 }`}
-                style={{ ...pos, transform: `rotate(${i * CONFETTI_ROTATION_STEP_DEG}deg)` }}
+                style={style}
               />
             );
           }
 
+          if (options.effectStyle === "hearts") {
+            // ハート: カード下部/側面付近から左右に揺れながら拡大→フェードアウトしつつ
+            // 上に浮かび上がる（overlay-hearts-float keyframes @ globals.css）
+            return (
+              <div key={i} className={`absolute text-pink-300 ${animationClassName}`} style={style}>
+                ♥
+              </div>
+            );
+          }
+
+          // sparkle（デフォルト）: 既存の見た目・動きを完全維持（回帰防止）
           return (
-            <div
-              key={i}
-              className={`absolute ${
-                options.effectStyle === "hearts" ? "animate-bounce text-pink-300" : "animate-ping"
-              }`}
-              style={pos}
-            >
-              {options.effectStyle === "hearts" ? "♥" : "✨"}
+            <div key={i} className={`absolute ${animationClassName}`} style={style}>
+              ✨
             </div>
           );
         })}

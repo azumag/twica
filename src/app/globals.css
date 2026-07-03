@@ -14,6 +14,73 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans-stack);
   --font-mono: var(--font-mono-stack);
+
+  /*
+   * Issue #587: overlayのガチャ演出（sparkle/confetti/hearts）のうち、
+   * confetti と hearts が sparkle と同じ上下バウンスを流用しており、紙吹雪もハートも
+   * 「粒がぴょこぴょこ動くだけ」の見た目になっていた。スタイルごとに専用の
+   * アニメーションを定義する（sparkle は既存の Tailwind 組み込み animate-ping を
+   * そのまま使い続けるため変更しない）。
+   * per-particle の animation-delay / animation-duration は
+   * src/app/overlay/[streamerId]/page.tsx 側で inline style により個別に上書きし、
+   * 20個のパーティクルが機械的に同期しないようにしている。
+   */
+  --animate-overlay-effect-confetti: overlay-confetti-fall 2.8s linear infinite;
+  --animate-overlay-effect-hearts: overlay-hearts-float 3.2s ease-in infinite;
+}
+
+@keyframes overlay-confetti-fall {
+  /* 紙吹雪: カード上部付近から出現し、左右に揺れながら回転して落下する */
+  0% {
+    transform: translate(0, 0) rotate(0deg) rotateX(0deg);
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  25% {
+    transform: translate(16px, 70px) rotate(160deg) rotateX(200deg);
+  }
+  50% {
+    transform: translate(-18px, 150px) rotate(320deg) rotateX(20deg);
+  }
+  75% {
+    transform: translate(14px, 230px) rotate(460deg) rotateX(200deg);
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-10px, 300px) rotate(620deg) rotateX(20deg);
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-hearts-float {
+  /* ハート: カード下部/側面付近から出現し、左右に揺れながら拡大したのち
+     縮小・フェードアウトしつつ上に浮かび上がる */
+  0% {
+    transform: translate(0, 0) scale(0.6);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+    transform: translate(6px, -36px) scale(1);
+  }
+  38% {
+    transform: translate(-12px, -96px) scale(1.08);
+  }
+  64% {
+    transform: translate(10px, -160px) scale(1.08);
+  }
+  85% {
+    opacity: 0.85;
+    transform: translate(-6px, -210px) scale(0.95);
+  }
+  100% {
+    transform: translate(0, -250px) scale(0.75);
+    opacity: 0;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
