@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import type { GachaBroadcastPayload, RealtimeError, SubscribeOptions } from '@/lib/realtime'
 import type { GachaSoundRule } from '@/lib/gacha-sound-rules'
-import OverlayPage, { pickSoundBearingCardIndex } from '@/app/overlay/[streamerId]/page'
+import OverlayPage from '@/app/overlay/[streamerId]/page'
+import { pickSoundBearingCardIndex } from '@/lib/gacha-sound-rules'
 
 const { subscribeMock } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
