@@ -150,7 +150,8 @@ export default async function ReleasesPage() {
                   </h3>
                   <p className="text-gray-400">
                     支援特典ページを今回の内容に合わせて更新しました。
-                    カードパックの追加登録やガチャ効果音の詳細設定など、
+                    カードパックの追加登録、ガチャ効果音の詳細設定、
+                    アニメーションGIFを含む1ファイルあたりのアップロード上限など、
                     利用できる特典内容を確認しやすくしています。
                   </p>
                 </div>
@@ -202,6 +203,7 @@ export default async function ReleasesPage() {
                   </p>
                   <p className="mt-3 text-gray-400">
                     使い方は、通常のカード画像と同じようにGIFファイルをアップロードします。
+                    GIFはトリミング・再圧縮せず原本を保持するため、1ファイルあたりの上限は素地1MB、助力5MB、ご贔屓・Twitchサブスク10MBです。
                   </p>
                 </div>
 
