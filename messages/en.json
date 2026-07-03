@@ -407,7 +407,7 @@
   },
   "gachaSoundSettings": {
     "title": "Gacha Sound Effect Settings",
-    "description": "Set the sound effect that plays during gacha animation.",
+    "description": "Upload multiple gacha sounds and choose whether each plays for all draws, a rarity, or a channel point reward.",
     "status": {
       "enabled": "Enabled",
       "disabled": "Disabled"
@@ -417,7 +417,19 @@
       "fileRequirements": "Supported: {formats} | Max size: {maxSize}",
       "currentSound": "Current sound",
       "enableSound": "Enable sound effect",
-      "uploadFirst": "Please upload a file first"
+      "uploadFirst": "Please upload a file first",
+      "noSounds": "No sound effects have been uploaded yet.",
+      "defaultLabel": "Sound effect",
+      "soundName": "Sound name",
+      "targetType": "Playback condition",
+      "rarity": "Rarity",
+      "rewardId": "Reward ID",
+      "rewardPlaceholder": "Channel point reward ID"
+    },
+    "targets": {
+      "all": "All gacha draws",
+      "rarity": "By rarity",
+      "reward": "By channel point reward"
     },
     "buttons": {
       "play": "Play",
@@ -428,6 +440,7 @@
       "uploadSuccess": "Sound effect uploaded",
       "uploading": "Uploading...",
       "saving": "Saving...",
+      "saved": "Sound effect settings saved",
       "enabled": "Sound effect enabled",
       "disabled": "Sound effect disabled",
       "deleted": "Sound effect deleted"
@@ -440,7 +453,8 @@
       "deleteFailed": "Failed to delete",
       "rateLimit": "Too many requests. Please wait and try again."
     },
-    "confirmDelete": "Delete this sound effect?"
+    "confirmDelete": "Delete this sound effect?",
+    "premiumRequired": "Multiple sounds and targeting are available for support plan subscribers and above."
   },
   "chatAnnouncementSettings": {
     "title": "Chat Announcement Settings",

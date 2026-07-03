@@ -21,7 +21,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 function createSoundSettingsClient(response: {
-  data: { gacha_sound_url: string | null; gacha_sound_enabled: boolean | null } | null;
+  data: { gacha_sound_url: string | null; gacha_sound_enabled: boolean | null; gacha_sound_rules?: unknown } | null;
   error: { message: string; code?: string } | null;
   status?: number;
 }) {
@@ -65,9 +65,16 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     await expect(response.json()).resolves.toEqual({
       soundUrl: "https://cdn.example.com/sound.mp3",
       soundEnabled: true,
+      soundRules: [
+        expect.objectContaining({
+          targetType: "all",
+          url: "https://cdn.example.com/sound.mp3",
+          enabled: true,
+        }),
+      ],
     });
     expect(mockSupabase.from).toHaveBeenCalledWith("streamers");
-    expect(mockSupabase.query.select).toHaveBeenCalledWith("gacha_sound_url, gacha_sound_enabled");
+    expect(mockSupabase.query.select).toHaveBeenCalledWith("gacha_sound_url, gacha_sound_enabled, gacha_sound_rules");
     expect(mockSupabase.query.eq).toHaveBeenCalledWith("id", "streamer-1");
   });
 

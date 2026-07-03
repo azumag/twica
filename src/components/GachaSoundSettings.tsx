@@ -1,60 +1,130 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
-import { SOUND_UPLOAD_CONFIG } from "@/lib/constants";
+import { RARITIES, SOUND_UPLOAD_CONFIG } from "@/lib/constants";
+import {
+  createRuleId,
+  legacySoundToRules,
+  normalizeGachaSoundRules,
+  type GachaSoundRule,
+  type GachaSoundTargetType,
+} from "@/lib/gacha-sound-rules";
+import type { Json } from "@/types/database";
+import type { PlanType } from "@/lib/plan-constants";
 
 interface GachaSoundSettingsProps {
   streamerId: string;
-  // 現在の効果音URL（null=未設定）
+  plan: PlanType;
   currentSoundUrl: string | null;
-  // 効果音の有効/無効状態
   currentSoundEnabled: boolean;
+  currentSoundRules?: Json;
+  currentRewardId?: string | null;
+  currentRewardName?: string | null;
 }
 
-/**
- * ガチャ効果音設定コンポーネント
- * 効果音のアップロード、プレビュー再生、有効/無効切り替えを管理
- */
 export default function GachaSoundSettings({
   streamerId,
+  plan,
   currentSoundUrl,
   currentSoundEnabled,
+  currentSoundRules,
+  currentRewardId,
+  currentRewardName,
 }: GachaSoundSettingsProps) {
   const t = useTranslations("gachaSoundSettings");
+  const isPremium = plan !== "basic";
   const tCommon = useTranslations("common");
 
-  // State管理
-  const [soundUrl, setSoundUrl] = useState<string | null>(currentSoundUrl);
-  const [soundEnabled, setSoundEnabled] = useState(currentSoundEnabled);
+  const initialRules = useMemo(() => {
+    const rules = normalizeGachaSoundRules(currentSoundRules);
+    return rules.length > 0 ? rules : legacySoundToRules(currentSoundUrl, currentSoundEnabled);
+  }, [currentSoundEnabled, currentSoundRules, currentSoundUrl]);
+
+  const [rules, setRules] = useState<GachaSoundRule[]>(initialRules);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
 
-  // オーディオ要素への参照
-  const audioRef = useRef<HTMLAudioElement>(null);
-  // ファイル入力への参照
+  const audioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  /**
-   * 効果音ファイルをアップロード
-   * 1MB以下のMP3/WAV/WebM/OGGファイルのみ許可
-   */
+  const enabledRule = rules.find((rule) => rule.enabled);
+
+  const saveRules = useCallback(async (nextRules: GachaSoundRule[]) => {
+    setSaving(true);
+    try {
+      const response = await fetch("/api/streamer/settings", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          streamerId,
+          gachaSoundRules: nextRules,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        setMessage(errorData.error || t("errors.saveFailed"));
+        setIsError(true);
+        return false;
+      }
+
+      setRules(nextRules);
+      return true;
+    } catch (error) {
+      logger.error("Save sound rules error:", error);
+      setMessage(t("errors.saveFailed"));
+      setIsError(true);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }, [streamerId, t]);
+
+  const updateRule = useCallback(async (id: string, patch: Partial<GachaSoundRule>) => {
+    const nextRules = rules.map((rule) => {
+      if (rule.id !== id) return rule;
+      const next = { ...rule, ...patch };
+      if (patch.targetType === "all") {
+        next.rarity = null;
+        next.rewardId = null;
+        next.rewardName = null;
+      }
+      if (patch.targetType === "rarity") {
+        next.rewardId = null;
+        next.rewardName = null;
+        next.rarity = next.rarity ?? "common";
+      }
+      if (patch.targetType === "reward") {
+        next.rarity = null;
+        next.rewardId = next.rewardId ?? currentRewardId ?? "";
+        next.rewardName = next.rewardName ?? currentRewardName ?? null;
+      }
+      return next;
+    });
+
+    const success = await saveRules(nextRules);
+    if (success) {
+      setMessage(t("messages.saved"));
+      setIsError(false);
+    }
+  }, [currentRewardId, currentRewardName, rules, saveRules, t]);
+
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // ファイルサイズチェック（クライアント側）
     if (file.size > SOUND_UPLOAD_CONFIG.MAX_FILE_SIZE) {
       setMessage(t("errors.fileTooLarge"));
       setIsError(true);
       return;
     }
 
-    // ファイルタイプチェック（クライアント側）
     const allowedTypes = SOUND_UPLOAD_CONFIG.ALLOWED_TYPES as readonly string[];
     if (!allowedTypes.includes(file.type)) {
       setMessage(t("errors.invalidFileType"));
@@ -76,22 +146,32 @@ export default function GachaSoundSettings({
         body: formData,
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        setSoundUrl(data.url);
+      if (!response.ok) {
+        const errorData = await response.json();
+        setMessage(errorData.error || (response.status === 429 ? t("errors.rateLimit") : t("errors.uploadFailed")));
+        setIsError(true);
+        return;
+      }
+
+      const data = await response.json();
+      const nextRules: GachaSoundRule[] = [
+        ...rules,
+        {
+          id: createRuleId(),
+          url: data.url,
+          enabled: true,
+          label: file.name.replace(/\.[^.]+$/, "").slice(0, 80) || t("form.defaultLabel"),
+          targetType: "all",
+          rarity: null,
+          rewardId: null,
+          rewardName: null,
+        },
+      ];
+
+      const success = await saveRules(nextRules);
+      if (success) {
         setMessage(t("messages.uploadSuccess"));
         setIsError(false);
-
-        // 自動的に設定を保存
-        await saveSettings(data.url, soundEnabled);
-      } else if (response.status === 429) {
-        const errorData = await response.json();
-        setMessage(errorData.error || t("errors.rateLimit"));
-        setIsError(true);
-      } else {
-        const errorData = await response.json();
-        setMessage(errorData.error || t("errors.uploadFailed"));
-        setIsError(true);
       }
     } catch (error) {
       logger.error("Sound upload error:", error);
@@ -99,91 +179,25 @@ export default function GachaSoundSettings({
       setIsError(true);
     } finally {
       setUploading(false);
-      // ファイル入力をリセット（同じファイルを再度選択可能にする）
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
     }
-  }, [soundEnabled, t, streamerId]);
+  }, [rules, saveRules, t]);
 
-  /**
-   * 効果音設定を保存
-   */
-  const saveSettings = async (url: string | null, enabled: boolean) => {
-    setSaving(true);
-    try {
-      const response = await fetch("/api/streamer/settings", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          streamerId,
-          gachaSoundUrl: url,
-          gachaSoundEnabled: enabled,
-        }),
-      });
+  const handleDelete = useCallback(async (rule: GachaSoundRule) => {
+    if (!confirm(t("confirmDelete"))) return;
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        setMessage(errorData.error || t("errors.saveFailed"));
-        setIsError(true);
-        return false;
-      }
-
-      return true;
-    } catch (error) {
-      logger.error("Save settings error:", error);
-      setMessage(t("errors.saveFailed"));
-      setIsError(true);
-      return false;
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  /**
-   * 効果音の有効/無効を切り替え
-   */
-  const handleToggleEnabled = useCallback(async () => {
-    const newEnabled = !soundEnabled;
-    setSoundEnabled(newEnabled);
-
-    const success = await saveSettings(soundUrl, newEnabled);
-    if (success) {
-      setMessage(newEnabled ? t("messages.enabled") : t("messages.disabled"));
-      setIsError(false);
-    } else {
-      // 失敗した場合は元に戻す
-      setSoundEnabled(!newEnabled);
-    }
-  }, [soundEnabled, soundUrl, t]);
-
-  /**
-   * 効果音を削除
-   */
-  const handleDelete = useCallback(async () => {
-    if (!soundUrl) return;
-
-    // 削除確認
-    if (!confirm(t("confirmDelete"))) {
-      return;
-    }
-
-    setDeleting(true);
+    setDeletingId(rule.id);
     setMessage("");
     setIsError(false);
 
     try {
-      // R2から削除
       const deleteResponse = await fetch("/api/upload/sound", {
         method: "DELETE",
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ url: soundUrl }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: rule.url }),
       });
 
       if (!deleteResponse.ok) {
@@ -193,10 +207,8 @@ export default function GachaSoundSettings({
         return;
       }
 
-      // 設定を更新（URLをnullに）
-      const success = await saveSettings(null, soundEnabled);
+      const success = await saveRules(rules.filter((item) => item.id !== rule.id));
       if (success) {
-        setSoundUrl(null);
         setMessage(t("messages.deleted"));
         setIsError(false);
       }
@@ -205,161 +217,153 @@ export default function GachaSoundSettings({
       setMessage(t("errors.deleteFailed"));
       setIsError(true);
     } finally {
-      setDeleting(false);
+      setDeletingId(null);
     }
-  }, [soundUrl, soundEnabled, t, streamerId]);
+  }, [rules, saveRules, t]);
 
-  /**
-   * プレビュー再生
-   */
-  const handlePlayPreview = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch((error) => {
-        logger.error("Audio play error:", error);
-      });
-    }
+  const handlePlayPreview = useCallback((id: string) => {
+    const audio = audioRefs.current[id];
+    if (!audio) return;
+    audio.currentTime = 0;
+    audio.play().catch((error) => {
+      logger.error("Audio play error:", error);
+    });
   }, []);
 
-  /**
-   * プレビュー停止
-   */
-  const handleStopPreview = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
+  const handleStopPreview = useCallback((id: string) => {
+    const audio = audioRefs.current[id];
+    if (!audio) return;
+    audio.pause();
+    audio.currentTime = 0;
   }, []);
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-white">
-          {t("title")}
-        </h2>
-        {/* 有効/無効ステータス表示 */}
-        <span
-          className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${
-            soundEnabled && soundUrl
-              ? "bg-green-500/20 text-green-400"
-              : "bg-gray-500/20 text-gray-400"
-          }`}
-        >
-          <span
-            className={`h-2 w-2 rounded-full ${
-              soundEnabled && soundUrl ? "bg-green-500" : "bg-gray-500"
-            }`}
-          />
-          {soundEnabled && soundUrl ? t("status.enabled") : t("status.disabled")}
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${
+          enabledRule ? "bg-green-500/20 text-green-400" : "bg-gray-500/20 text-gray-400"
+        }`}>
+          <span className={`h-2 w-2 rounded-full ${enabledRule ? "bg-green-500" : "bg-gray-500"}`} />
+          {enabledRule ? t("status.enabled") : t("status.disabled")}
         </span>
       </div>
 
-      <p className="mb-4 text-sm text-gray-400">
-        {t("description")}
-      </p>
+      <p className="mb-4 text-sm text-gray-400">{t("description")}</p>
 
-      <div className="space-y-4">
-        {/* ファイルアップロード: 既存ファイルがない場合のみ表示 */}
-        {/* 新しいファイルをアップロードするには、先に既存ファイルを削除する必要がある */}
-        {!soundUrl && (
-          <div>
-            <label className="mb-1 block text-sm text-gray-300">
-              {t("form.selectFile")}
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept={SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => `.${ext}`).join(",")}
-                onChange={handleFileUpload}
-                disabled={uploading}
-                className="block w-full text-sm text-gray-400
-                  file:mr-4 file:rounded-lg file:border-0
-                  file:bg-purple-600 file:px-4 file:py-2
-                  file:text-sm file:font-medium file:text-white
-                  hover:file:bg-purple-700 file:disabled:opacity-50
-                  file:cursor-pointer file:disabled:cursor-not-allowed"
-              />
-            </div>
-            <p className="mt-1 text-xs text-gray-500">
-              {t("form.fileRequirements", {
-                formats: SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => ext.toUpperCase()).join(", "),
-                maxSize: "1MB",
-              })}
-            </p>
-          </div>
+      {!isPremium && (
+        <p className="mb-4 rounded-lg bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          {t("premiumRequired")}
+        </p>
+      )}
+
+      {/* inert でキーボード・スクリーンリーダーも含めて完全に無効化 */}
+      <div className={`space-y-4 ${!isPremium ? "opacity-50" : ""}`} inert={!isPremium || undefined}>
+        <div>
+          <label className="mb-1 block text-sm text-gray-300">{t("form.selectFile")}</label>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => `.${ext}`).join(",")}
+            onChange={handleFileUpload}
+            disabled={uploading}
+            className="block w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-purple-700 file:disabled:opacity-50"
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            {t("form.fileRequirements", {
+              formats: SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => ext.toUpperCase()).join(", "),
+              maxSize: "1MB",
+            })}
+          </p>
+        </div>
+
+        {rules.length === 0 && (
+          <p className="rounded-lg bg-gray-700/60 p-3 text-sm text-gray-400">{t("form.noSounds")}</p>
         )}
 
-        {/* 現在の効果音 */}
-        {soundUrl && (
-          <div className="rounded-lg bg-gray-700 p-4">
-            <p className="mb-2 text-sm text-gray-300">
-              {t("form.currentSound")}
-            </p>
-            {/* オーディオプレビュー */}
-            <audio ref={audioRef} src={soundUrl} preload="metadata" />
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handlePlayPreview}
-                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
+        {rules.map((rule) => (
+          <div key={rule.id} className="space-y-3 rounded-lg bg-gray-700 p-4">
+            <audio ref={(element) => { audioRefs.current[rule.id] = element }} src={rule.url} preload="metadata" />
+            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+              <input
+                value={rule.label}
+                onChange={(event) => setRules(current => current.map(item => item.id === rule.id ? { ...item, label: event.target.value } : item))}
+                onBlur={(event) => updateRule(rule.id, { label: event.target.value.trim() || t("form.defaultLabel") })}
+                className="min-w-0 rounded-lg bg-gray-800 px-3 py-2 text-sm text-white"
+                aria-label={t("form.soundName")}
+              />
+              <label className="flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={rule.enabled}
+                  onChange={(event) => updateRule(rule.id, { enabled: event.target.checked })}
+                  className="h-4 w-4 rounded border-gray-500 bg-gray-800"
+                />
+                {t("form.enableSound")}
+              </label>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <select
+                value={rule.targetType}
+                onChange={(event) => updateRule(rule.id, { targetType: event.target.value as GachaSoundTargetType })}
+                className="rounded-lg bg-gray-800 px-3 py-2 text-sm text-white"
+                aria-label={t("form.targetType")}
               >
+                <option value="all">{t("targets.all")}</option>
+                <option value="rarity">{t("targets.rarity")}</option>
+                <option value="reward">{t("targets.reward")}</option>
+              </select>
+
+              {rule.targetType === "rarity" && (
+                <select
+                  value={rule.rarity ?? "common"}
+                  onChange={(event) => updateRule(rule.id, { rarity: event.target.value as GachaSoundRule["rarity"] })}
+                  className="rounded-lg bg-gray-800 px-3 py-2 text-sm text-white"
+                  aria-label={t("form.rarity")}
+                >
+                  {RARITIES.map((rarity) => (
+                    <option key={rarity.value} value={rarity.value}>{rarity.label}</option>
+                  ))}
+                </select>
+              )}
+
+              {rule.targetType === "reward" && (
+                <input
+                  value={rule.rewardId ?? ""}
+                  onChange={(event) => setRules(current => current.map(item => item.id === rule.id ? { ...item, rewardId: event.target.value } : item))}
+                  onBlur={(event) => updateRule(rule.id, {
+                    rewardId: event.target.value.trim(),
+                    rewardName: event.target.value.trim() === currentRewardId ? currentRewardName ?? null : rule.rewardName,
+                  })}
+                  placeholder={currentRewardId ? `${currentRewardName || "Reward"} (${currentRewardId})` : t("form.rewardPlaceholder")}
+                  className="min-w-0 rounded-lg bg-gray-800 px-3 py-2 text-sm text-white"
+                  aria-label={t("form.rewardId")}
+                />
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => handlePlayPreview(rule.id)} className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700">
                 {t("buttons.play")}
               </button>
-              <button
-                onClick={handleStopPreview}
-                className="rounded-lg border border-gray-600 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-600"
-              >
+              <button onClick={() => handleStopPreview(rule.id)} className="rounded-lg border border-gray-600 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-600">
                 {t("buttons.stop")}
               </button>
               <button
-                onClick={handleDelete}
-                disabled={deleting}
+                onClick={() => handleDelete(rule)}
+                disabled={deletingId === rule.id}
                 className="rounded-lg bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {deleting ? tCommon("loading") : t("buttons.delete")}
+                {deletingId === rule.id ? tCommon("loading") : t("buttons.delete")}
               </button>
             </div>
           </div>
-        )}
+        ))}
 
-        {/* 有効/無効切り替え */}
-        <div className="flex items-center gap-3">
-          <label className="relative inline-flex cursor-pointer items-center">
-            <input
-              type="checkbox"
-              checked={soundEnabled}
-              onChange={handleToggleEnabled}
-              disabled={saving || !soundUrl}
-              className="peer sr-only"
-            />
-            <div
-              className={`h-6 w-11 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-disabled:opacity-50 ${
-                !soundUrl ? "opacity-50" : ""
-              }`}
-            />
-          </label>
-          <span className={`text-sm ${soundUrl ? "text-gray-300" : "text-gray-500"}`}>
-            {t("form.enableSound")}
-          </span>
-          {!soundUrl && (
-            <span className="text-xs text-gray-500">
-              ({t("form.uploadFirst")})
-            </span>
-          )}
-        </div>
-
-        {/* ステータスメッセージ */}
-        {message && (
-          <p className={`text-sm ${isError ? "text-red-400" : "text-green-400"}`}>
-            {message}
-          </p>
-        )}
-
-        {/* ローディング表示 */}
+        {message && <p className={`text-sm ${isError ? "text-red-400" : "text-green-400"}`}>{message}</p>}
         {(uploading || saving) && (
-          <p className="text-sm text-gray-400">
-            {uploading ? t("messages.uploading") : t("messages.saving")}
-          </p>
+          <p className="text-sm text-gray-400">{uploading ? t("messages.uploading") : t("messages.saving")}</p>
         )}
       </div>
     </div>

@@ -31,6 +31,7 @@ export default async function SettingsPage() {
     shouldShowVoteCampaign(session.twitchUserId),
     // Issue #554: カードパックのプルダウン表示制御用。dashboard/cards/page.tsx の
     // 既存パターン(plan !== "basic")を踏襲する。
+    // Issue #176: ガチャ効果音ルールのプレミアムゲート判定にも同じ plan を利用する。
     getUserPlan(session.twitchUserId),
   ]);
   if (!streamerData) redirect("/dashboard");
@@ -46,6 +47,7 @@ export default async function SettingsPage() {
   return (
     <SettingsLayout
       streamerId={streamerData.streamer.id}
+      plan={plan}
       baseUrl={process.env.NEXT_PUBLIC_APP_URL || ""}
       cards={streamerData.cards}
       showVoteCampaign={showVoteCampaign}
@@ -58,6 +60,7 @@ export default async function SettingsPage() {
       gachaSound={{
         soundUrl: streamerData.streamer.gacha_sound_url ?? null,
         soundEnabled: streamerData.streamer.gacha_sound_enabled ?? false,
+        soundRules: streamerData.streamer.gacha_sound_rules,
       }}
       chatAnnouncement={{
         enabled: streamerData.streamer.chat_announcement_enabled ?? false,

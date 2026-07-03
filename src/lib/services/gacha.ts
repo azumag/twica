@@ -33,6 +33,7 @@ export interface GachaResult {
   card: GachaCard
   cards?: GachaCard[]
   userTwitchUsername: string
+  rewardId?: string | null
   /** EventSub経由の場合のみ設定。クエリ統合のためガチャ結果と一緒に返す */
   streamer?: EventSubStreamerInfo
 }
@@ -397,6 +398,7 @@ export class GachaService {
         if (!result.success) return result
         return ok({
           ...result.data,
+          rewardId: event.reward.id,
           streamer: {
             id: streamer.id,
             chat_announcement_enabled: streamer.chat_announcement_enabled,
