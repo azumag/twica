@@ -116,6 +116,14 @@ export default async function PlansPage() {
                     <span className="text-blue-400 mt-0.5">✓</span>
                     <span>支援者向け問い合わせフォーム</span>
                   </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-400 mt-0.5">✓</span>
+                    <span>カードパックの追加登録（既存パックの利用・削除は無料のまま）</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-400 mt-0.5">✓</span>
+                    <span>効果音の詳細設定（レアリティ・報酬別に複数ルールを登録）</span>
+                  </li>
                 </ul>
               </div>
 
@@ -143,6 +151,14 @@ export default async function PlansPage() {
                   <li className="flex items-start gap-2">
                     <span className="text-yellow-400 mt-0.5">✓</span>
                     <span>支援者向け問い合わせフォーム</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-yellow-400 mt-0.5">✓</span>
+                    <span>カードパックの追加登録（既存パックの利用・削除は無料のまま）</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-yellow-400 mt-0.5">✓</span>
+                    <span>効果音の詳細設定（レアリティ・報酬別に複数ルールを登録）</span>
                   </li>
                 </ul>
               </div>
@@ -286,10 +302,8 @@ export default async function PlansPage() {
             </h2>
             <div className="rounded-xl bg-gray-800 p-6">
               <ul className="ml-4 list-disc space-y-2 text-gray-400">
-                <li>効果音の細かい設定（レアリティ別の効果音など）</li>
+                <li>パック別レアリティ排出率設定（パックごとにレアリティ配分を変更）</li>
                 <li>動画カード対応</li>
-                <li>複数コレクション</li>
-                <li>N連ガチャ</li>
                 <li>全期間統計</li>
               </ul>
             </div>
