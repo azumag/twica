@@ -8,6 +8,7 @@ import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
 import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
+import { cancelRedemption } from "@/lib/twitch/channel-points";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
@@ -17,6 +18,13 @@ const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
 const CARD_LIST_SEPARATOR = "、";
 const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = '@{user} が{draws}連ガチャで {rarityCounts} を獲得しました！{cards}';
+
+// Issue #544: 売り切れ(発行枚数上限到達)時のチャット通知メッセージ。
+// 配信者ごとのカスタムテンプレートは設けず、固定文言にする
+// (Issue #544 の実装プラン通り。既存の chat_announcement_enabled フラグのみ再利用する)。
+// Issue #546 のポイント返還に成功した場合のみ、返還済みである旨を追記する。
+const SOLD_OUT_CHAT_MESSAGE = 'カードの発行枚数上限に達しているため、カードを付与できませんでした。';
+const SOLD_OUT_CHAT_MESSAGE_REFUNDED_SUFFIX = ' ポイントは返還されました。';
 
 function formatCardNamesForChat(cardNames: string[], maxCharacters: number): string {
   if (cardNames.length === 0) return "";
@@ -205,6 +213,34 @@ async function verifyTwitchSignature(
   }
 }
 
+/**
+ * Cloudflare Workers の waitUntil() でレスポンス返却後にバックグラウンド実行し、
+ * ローカル開発等 waitUntil が使えない環境では同期フォールバックする共通ヘルパー。
+ * ガチャ成功・レイド成功・売り切れ通知(Issue #544/#546)の3箇所で同一パターンが
+ * 必要なため、重複を避けてここに集約する。
+ *
+ * `task` は呼び出し時点で既に開始済みの Promise を渡すこと（この関数自身は
+ * 処理を起動しない）。waitUntil に登録できればそのまま非同期に流れ、登録できない
+ * 環境（ローカル開発等）では task の完了を待ってから返る。
+ *
+ * Run `task` in the background via Cloudflare Workers' waitUntil() so it executes
+ * after the response is returned. Falls back to awaiting synchronously when
+ * waitUntil is unavailable (e.g. local dev). Shared across the 3 call sites that
+ * need this exact pattern (gacha success, raid success, sold-out notification).
+ */
+async function runInBackground(label: string, task: Promise<void>): Promise<void> {
+  try {
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare');
+    const { ctx } = await getCloudflareContext({ async: true });
+    ctx.waitUntil(task);
+  } catch (e) {
+    logger.warn(`[EventSub] waitUntil unavailable (${label}), falling back to sync`, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    await task;
+  }
+}
+
 export async function POST(request: NextRequest) {
   const body = await request.text();
   let data;
@@ -261,33 +297,12 @@ export async function POST(request: NextRequest) {
       // Only await gacha execution; defer notifications via waitUntil() to reduce CPU time
       const result = await handleRedemption(messageId, event);
       if (result) {
-        try {
-          // Cloudflare Workers の waitUntil() でレスポンス返却後にバックグラウンド実行
-          const { getCloudflareContext } = await import('@opennextjs/cloudflare');
-          const { ctx } = await getCloudflareContext({ async: true });
-          ctx.waitUntil(postRedemptionNotify(result));
-        } catch (e) {
-          // ローカル開発等で getCloudflareContext が使えない場合は同期フォールバック
-          // Fallback to sync execution when getCloudflareContext is unavailable (local dev)
-          logger.warn('[EventSub] waitUntil unavailable, falling back to sync', {
-            error: e instanceof Error ? e.message : String(e),
-          });
-          await postRedemptionNotify(result);
-        }
+        await runInBackground('gacha redemption', postRedemptionNotify(result));
       }
     } else if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID) {
       const result = await handleRaidNotification(messageId, event);
       if (result) {
-        try {
-          const { getCloudflareContext } = await import('@opennextjs/cloudflare');
-          const { ctx } = await getCloudflareContext({ async: true });
-          ctx.waitUntil(postRedemptionNotify(result));
-        } catch (e) {
-          logger.warn('[EventSub] waitUntil unavailable for raid gift, falling back to sync', {
-            error: e instanceof Error ? e.message : String(e),
-          });
-          await postRedemptionNotify(result);
-        }
+        await runInBackground('raid gift', postRedemptionNotify(result));
       }
     }
 
@@ -488,6 +503,130 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   }
 }
 
+/** postSoldOutNotify に渡すデータ（Issue #544/#546） */
+interface SoldOutNotifyData {
+  broadcasterTwitchUserId: string;
+  userName: string;
+  rewardId: string;
+  /** EventSub payload の event.id（redemption ID）。無い場合は返還を試みない */
+  redemptionId?: string;
+}
+
+/**
+ * 売り切れ(発行枚数上限到達)確定後の通知処理（チャンネルポイント返還 + チャット通知）。
+ * waitUntil() でレスポンス返却後にバックグラウンド実行される。
+ *
+ * Issue #546: redemptionId がある場合のみチャンネルポイント返還(CANCELED更新)を試みる。
+ * 返還APIの失敗はログ + reportError するのみで、例外を伝播させない
+ * （ガチャ自体は既に失敗しているため、この救済処理の失敗でEventSubレスポンスを悪化させない）。
+ *
+ * Issue #544: 返還の成否に応じてメッセージ文言を変え、chat_announcement_enabled が
+ * 有効な配信者にのみチャット通知する。ガチャ成功時と同じ設定フラグを再利用し、
+ * 売り切れ通知専用のON/OFF設定は追加しない（Issue #544 の実装プラン通り）。
+ *
+ * Post sold-out notifications (channel points refund + chat announcement) run after
+ * response via waitUntil(). A refund failure is logged/reported but never thrown —
+ * the gacha draw has already failed, so a refund-API failure must not cascade into a
+ * worse response to Twitch's EventSub webhook.
+ */
+async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> {
+  const { broadcasterTwitchUserId, userName, rewardId, redemptionId } = data;
+  let refunded = false;
+
+  if (redemptionId) {
+    try {
+      const result = await cancelRedemption({ broadcasterTwitchUserId, rewardId, redemptionId });
+      refunded = result.success;
+
+      if (result.success) {
+        logger.info('[postSoldOutNotify] Channel points refunded', {
+          broadcasterTwitchUserId,
+          rewardId,
+          redemptionId,
+        });
+      } else {
+        logger.warn('[postSoldOutNotify] Failed to refund channel points', {
+          broadcasterTwitchUserId,
+          rewardId,
+          redemptionId,
+          reason: result.reason,
+        });
+        await reportError(new Error(`cancelRedemption failed: ${result.reason ?? 'unknown'}`), {
+          context: 'eventsub:postSoldOutNotify:cancelRedemption',
+          broadcasterTwitchUserId,
+          rewardId,
+          redemptionId,
+        });
+      }
+    } catch (error) {
+      // cancelRedemption 自体は例外を投げない設計だが、念のため二重に防御する。
+      // cancelRedemption never throws by design, but defend defensively anyway.
+      logger.error('[postSoldOutNotify] cancelRedemption threw unexpectedly', {
+        broadcasterTwitchUserId,
+        rewardId,
+        redemptionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await reportError(error, {
+        context: 'eventsub:postSoldOutNotify:cancelRedemption',
+        broadcasterTwitchUserId,
+        rewardId,
+        redemptionId,
+      });
+    }
+  } else {
+    // EventSubのサブスクリプション種別によっては redemption id が payload に
+    // 含まれない可能性があるため、その場合は返還を試みずチャット通知のみ行う。
+    logger.info('[postSoldOutNotify] No redemption id available - skipping refund attempt', {
+      broadcasterTwitchUserId,
+      rewardId,
+    });
+  }
+
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data: streamer, error } = await supabaseAdmin
+      .from('streamers')
+      .select('chat_announcement_enabled')
+      .eq('twitch_user_id', broadcasterTwitchUserId)
+      .maybeSingle();
+
+    if (error) {
+      logger.warn('[postSoldOutNotify] Failed to fetch chat announcement settings', {
+        broadcasterTwitchUserId,
+        error: error.message,
+      });
+      return;
+    }
+
+    if (!streamer?.chat_announcement_enabled) {
+      logger.info('[postSoldOutNotify] Chat announcement skipped - feature disabled', {
+        broadcasterTwitchUserId,
+      });
+      return;
+    }
+
+    const message = `@${userName} ${SOLD_OUT_CHAT_MESSAGE}${refunded ? SOLD_OUT_CHAT_MESSAGE_REFUNDED_SUFFIX : ''}`;
+    const chatService = new TwitchChatService();
+    const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
+
+    if (success) {
+      logger.info('[postSoldOutNotify] Sold-out chat announcement sent', { broadcasterTwitchUserId, refunded });
+    } else {
+      logger.warn('[postSoldOutNotify] Sold-out chat announcement failed', { broadcasterTwitchUserId, refunded });
+    }
+  } catch (error) {
+    logger.warn('[postSoldOutNotify] Chat announcement threw unexpectedly', {
+      broadcasterTwitchUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await reportError(error, {
+      context: 'eventsub:postSoldOutNotify:chatAnnouncement',
+      broadcasterTwitchUserId,
+    });
+  }
+}
+
 /**
  * ガチャ実行とデータ準備を行い、通知に必要なデータを返す。
  * 通知処理自体は呼び出し元で waitUntil() により遅延実行される。
@@ -498,6 +637,7 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
  * @returns 通知データ（通知不要な場合はnull）
  */
 async function handleRedemption(messageId: string, event: {
+  id?: string;
   broadcaster_user_id: string;
   user_id: string;
   user_login: string;
@@ -567,21 +707,51 @@ async function handleRedemption(messageId: string, event: {
         });
         return null;
       }
-      // カード発行可能枚数の上限到達はストリーマーの設定運用の結果であり、
-      // システムバグではない。Sentry/Issue 化を抑止し warn ログのみに留める。
-      // RPC からの 'limit_reached' と、事前フィルタからの soldOut メッセージの両方を扱う。
-      // Card issuance limit reached is the result of streamer configuration, not a system bug.
-      // Suppress Sentry/Issue reporting and emit a warn log only.
+      // カード発行可能枚数の上限到達（本物のsoldOut）、またはRPC未デプロイに
+      // 起因するlegacyフォールバックの拒否(limitUnavailable、#594)。
+      // どちらの場合も視聴者は既にチャンネルポイントを消費済みでカードを
+      // 受け取れていないため、Issue #544/#546 の返還・チャット通知は両方の
+      // ケースで実施する。一方 limitUnavailable は「RPCが本来存在すべきなのに
+      // 存在しない」という異常系(#594で意図的に soldOut と別メッセージに
+      // 分離した)なので、こちらは通常のsoldOutと違い reportError で運用に
+      // 通知する(視聴者救済と運用アラートは独立した関心事のため両方行う)。
+      //
+      // Card issuance limit reached (soldOut) is the result of streamer
+      // configuration, not a system bug — no reportError. limitUnavailable
+      // means the RPC is unexpectedly missing (see #594) — still refund/notify
+      // the viewer (they already spent points), but ALSO reportError since an
+      // unexpectedly-missing RPC is an operational issue that needs attention.
       if (
-        result.error === 'limit_reached' ||
         result.error === CARD_ISSUANCE_MESSAGES.soldOut ||
-        result.error.includes('発行可能枚数')
+        result.error === CARD_ISSUANCE_MESSAGES.limitUnavailable
       ) {
+        const isUnexpectedRpcMissing = result.error === CARD_ISSUANCE_MESSAGES.limitUnavailable;
+
         logger.warn('[handleRedemption] Card issuance limit reached', {
           messageId,
           broadcasterUserId: event.broadcaster_user_id,
           gachaError: result.error,
+          isUnexpectedRpcMissing,
         });
+
+        if (isUnexpectedRpcMissing) {
+          await reportError(new Error(`Gacha execution failed (RPC unexpectedly missing): ${result.error}`), {
+            context: 'eventsub:handleRedemption:limitUnavailable',
+            messageId,
+            broadcasterUserId: event.broadcaster_user_id,
+          });
+        }
+
+        // Issue #544/#546: 視聴者はチャンネルポイントを消費済みなので、
+        // ポイント返還を試み、結果に応じたチャット通知を送る。
+        // 通知処理自体はレスポンスをブロックしないよう waitUntil() で遅延実行する
+        // （ガチャ成功時の postRedemptionNotify と同じパターン）。
+        await runInBackground('soldOut notification', postSoldOutNotify({
+          broadcasterTwitchUserId: event.broadcaster_user_id,
+          userName: event.user_name,
+          rewardId: event.reward.id,
+          redemptionId: event.id,
+        }));
         return null;
       }
 
