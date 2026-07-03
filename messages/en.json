@@ -61,7 +61,7 @@
       "cardNumberHelp": "Leave blank to auto-number",
       "maxIssuanceCount": "Issue Limit",
       "maxIssuanceCountPlaceholder": "e.g. 1 / 100",
-      "maxIssuanceCountHelp": "Blank is unlimited. 1 makes it unique-only. (max 1,000,000)",
+      "maxIssuanceCountHelp": "Blank is unlimited. 1 makes it unique-only. (max 1,000,000) The limit is based on current holder count — a slot reopens if a copy is removed or exchanged.",
       "collectionName": "Card Pack",
       "collectionNameUnclassified": "{name} (all cards)",
       "collectionNameHelp": "Only cards in the same pack are eligible for that channel point reward's gacha. Register pack names in \"Pack Management\" first.",
