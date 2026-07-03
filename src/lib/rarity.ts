@@ -3,6 +3,7 @@ import {
   RARITY_COLORS,
   RARITY_GLOW,
   RARITY_GRADIENT_COLORS,
+  RARITY_ORDER,
 } from "./constants";
 
 export type DefaultRarity = (typeof RARITIES)[number]["value"];
@@ -70,6 +71,36 @@ export function aggregateCustomRarities(
 
 export function getRarityGradientClass(rarity: string): string {
   return RARITY_GRADIENT_COLORS[rarity] ?? DEFAULT_RARITY_GRADIENT_CLASS;
+}
+
+/**
+ * レアリティのソート優先順位（数値ランク）を返す。値が小さいほど希少
+ * （RARITY_ORDER の先頭 = legendary = 0）。
+ *
+ * RARITY_ORDER はビルトイン4種のみを含む固定配列のため、配信者が定義した
+ * カスタムレアリティは Array.prototype.indexOf で見つからず -1 になる。
+ * 呼び出し側がこの -1 をそのまま比較に使うと、"-1 - 0 = -1" となり
+ * カスタムレアリティが legendary (index 0) より希少と誤判定され、
+ * 一覧の先頭に来てしまうバグがあった（Issue #505）。
+ * ここでは -1 を Number.POSITIVE_INFINITY に変換し、カスタムレアリティが
+ * 常に一覧の最後に来るようにする。
+ *
+ * 同じ考え方は gacha-sound-rules.ts の pickSoundBearingCardIndex で
+ * 既に使われている（PR #451/#595 followup）。このヘルパーは
+ * dashboard/page.tsx と collection-utils.ts の同種のソート箇所で
+ * 重複していたロジックを1箇所に集約したもの。
+ */
+export function getRarityRank(rarity: string): number {
+  const index = RARITY_ORDER.indexOf(rarity);
+  return index === -1 ? Number.POSITIVE_INFINITY : index;
+}
+
+/**
+ * レアリティのみを基準にした Array.prototype.sort 用比較関数。
+ * legendary が先頭、カスタムレアリティは末尾に来る（getRarityRank 参照）。
+ */
+export function compareByRarity(a: { rarity: string }, b: { rarity: string }): number {
+  return getRarityRank(a.rarity) - getRarityRank(b.rarity);
 }
 
 export function getRarityGlowClass(rarity: string): string {
