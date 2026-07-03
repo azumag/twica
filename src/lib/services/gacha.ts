@@ -5,6 +5,7 @@ import { Result, ok, err } from '@/types/result'
 import { logger } from '@/lib/logger'
 import { reportError } from '@/lib/sentry/error-handler'
 import { withRetry } from '@/lib/supabase/retry'
+import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError } from '@/lib/card-issuance'
 import {
   isMissingCollectionNameColumn,
   isMissingRarityWeightsScopeColumnError,
@@ -20,6 +21,7 @@ export interface GachaCard {
   image_url: string | null
   rarity: 'common' | 'rare' | 'epic' | 'legendary'
   drop_rate: number
+  max_issuance_count?: number | null
 }
 
 /**
@@ -51,6 +53,7 @@ export interface GachaResult {
   card: GachaCard
   cards?: GachaCard[]
   userTwitchUsername: string
+  rewardId?: string | null
   /** EventSub経由の場合のみ設定。クエリ統合のためガチャ結果と一緒に返す */
   streamer?: EventSubStreamerInfo
 }
@@ -104,46 +107,87 @@ export class GachaService {
       // pack requested the query is byte-identical to the legacy one (zero
       // deploy-window risk); the column is only referenced in the WHERE clause
       // when a specific pack is requested.
+      // max_issuance_count is selected here (Issue #108) so per-card issuance caps
+      // can be enforced below; it falls back to a column-less select via
+      // isMissingCardIssuanceColumnError if the migration has not landed yet.
       //
-      // intra_rarity_weight (migration 00026, 既存の安定列) はパック内レアリティ
-      // 自動配分(Issue #579)の計算にのみ必要なので、パック指定時のみSELECTに
-      // 追加する。パック未指定クエリの文字列は上のコメントどおり従来と完全に
-      // 同一のまま維持する(byte-identical)。
-      // ternary で select() の引数に2つのリテラル文字列型を渡すと、Supabaseの
-      // 型レベルパーサがユニオル型を正しくパースできず ParserError になるため、
-      // 分岐ごとに select() 呼び出し自体を分けて型を安定させる(Issue #579監査で修正)。
-      const fetchCards = () => {
-        if (collectionName) {
-          let query = this.supabase
+      // Issue #108 + #393 combined: the pack filter (collectionName) must be
+      // applied on BOTH the primary and the issuance-column-missing fallback
+      // query below, or the fallback would silently ignore the requested pack
+      // and draw from ALL of the streamer's cards during that deploy window.
+      //
+      // Issue #579 (#576 フェーズ2): intra_rarity_weight (migration 00026, 既存の
+      // 安定列) はパック内レアリティ自動配分の計算にのみ必要なので、パック指定時
+      // のみ SELECT に追加する。supabase-js は select() の *リテラル* 文字列から
+      // Row 型を推論するため(変数文字列や三項式を渡すと型が崩れる)、列リストが
+      // 異なる分岐ごとに select() 呼び出し自体を分ける。パック未指定クエリの
+      // 列リストは従来(main の #108 実装)と完全に同一のまま維持する。
+      let { data: cards, error: cardsError } = await withRetry(
+        () => {
+          if (collectionName) {
+            let query = this.supabase
+              .from('cards')
+              .select('id, name, description, image_url, rarity, drop_rate, max_issuance_count, intra_rarity_weight')
+              .eq('streamer_id', streamerId)
+              .eq('is_active', true)
+
+            // Issue #555: DEFAULT_PACK_SENTINEL means "draw only from unclassified
+            // cards" (collection_name IS NULL) — the inverse of a normal named-pack
+            // filter, which needs `.eq(...)` against a literal string value.
+            // `.eq('collection_name', DEFAULT_PACK_SENTINEL)` would never match any
+            // card (no card's collection_name literally equals that sentinel), so
+            // this must branch to `.is(...)` instead.
+            query = collectionName === DEFAULT_PACK_SENTINEL
+              ? query.is('collection_name', null)
+              : query.eq('collection_name', collectionName)
+
+            return query
+          }
+
+          return this.supabase
             .from('cards')
-            .select('id, name, description, image_url, rarity, drop_rate, intra_rarity_weight')
+            .select('id, name, description, image_url, rarity, drop_rate, max_issuance_count')
             .eq('streamer_id', streamerId)
             .eq('is_active', true)
-
-          // Issue #555: DEFAULT_PACK_SENTINEL means "draw only from unclassified
-          // cards" (collection_name IS NULL) — the inverse of a normal named-pack
-          // filter, which needs `.eq(...)` against a literal string value.
-          // `.eq('collection_name', DEFAULT_PACK_SENTINEL)` would never match any
-          // card (no card's collection_name literally equals that sentinel), so
-          // this must branch to `.is(...)` instead.
-          query = collectionName === DEFAULT_PACK_SENTINEL
-            ? query.is('collection_name', null)
-            : query.eq('collection_name', collectionName)
-
-          return query
-        }
-
-        return this.supabase
-          .from('cards')
-          .select('id, name, description, image_url, rarity, drop_rate')
-          .eq('streamer_id', streamerId)
-          .eq('is_active', true)
-      }
-
-      const { data: cards, error: cardsError } = await withRetry(
-        fetchCards,
+        },
         'gacha:executeGacha:cards',
       )
+
+      if (cardsError && isMissingCardIssuanceColumnError(cardsError)) {
+        const fallbackResult = await withRetry(
+          () => {
+            // Issue #579: fallback 側もパック指定時は intra_rarity_weight を含める
+            // (含めないと発行上限列のデプロイ窓中だけパック内自動配分が
+            // intra=デフォルト1.0 扱いになり配分が静かにズレる)。列リストが
+            // 異なるため primary クエリと同様に select() を分岐ごとに分ける。
+            if (collectionName) {
+              let query = this.supabase
+                .from('cards')
+                .select('id, name, description, image_url, rarity, drop_rate, intra_rarity_weight')
+                .eq('streamer_id', streamerId)
+                .eq('is_active', true)
+
+              query = collectionName === DEFAULT_PACK_SENTINEL
+                ? query.is('collection_name', null)
+                : query.eq('collection_name', collectionName)
+
+              return query
+            }
+
+            return this.supabase
+              .from('cards')
+              .select('id, name, description, image_url, rarity, drop_rate')
+              .eq('streamer_id', streamerId)
+              .eq('is_active', true)
+          },
+          'gacha:executeGacha:cards:fallback',
+        )
+        cards = fallbackResult.data?.map((card) => ({
+          ...card,
+          max_issuance_count: null,
+        })) ?? null
+        cardsError = fallbackResult.error
+      }
 
       if (cardsError) {
         // Deploy-window safety: a pack was requested but the collection_name
@@ -161,6 +205,35 @@ export class GachaService {
         return err(collectionName ? 'No cards available for this collection' : 'No cards available for this streamer')
       }
 
+      const limitedCards = cards.filter((card) => card.max_issuance_count !== null && card.max_issuance_count !== undefined)
+      let availableCards = cards
+      if (limitedCards.length > 0) {
+        const { data: issuedRows, error: issuedError } = await this.supabase
+          .from('user_cards')
+          .select('card_id')
+          .in('card_id', limitedCards.map((card) => card.id))
+
+        if (issuedError) {
+          return err(`Database error: ${issuedError.message}`)
+        }
+
+        const issuedCounts = new Map<string, number>()
+        for (const row of issuedRows || []) {
+          const cardId = (row as { card_id?: string }).card_id
+          if (!cardId) continue
+          issuedCounts.set(cardId, (issuedCounts.get(cardId) || 0) + 1)
+        }
+
+        availableCards = cards.filter((card) => {
+          if (card.max_issuance_count === null || card.max_issuance_count === undefined) return true
+          return (issuedCounts.get(card.id) || 0) < card.max_issuance_count
+        })
+      }
+
+      if (availableCards.length === 0) {
+        return err(CARD_ISSUANCE_MESSAGES.soldOut)
+      }
+
       // Select a card based on drop rates — unless the pool is pack-scoped AND
       // the streamer is in rarity auto mode, in which case the effective
       // per-card weight computed from the pack's rarity distribution
@@ -168,6 +241,11 @@ export class GachaService {
       // resolveRarityWeightsForPool returns null for manual mode / unrestricted
       // draws / no config, in which case behavior is unchanged (drop_rate
       // renormalized within the pool).
+      //
+      // Issue #108 との合成順序: 実効重みは「発行上限フィルタ後の availableCards」
+      // をプールとして計算する。売り切れカードは抽選プールに存在しないため、
+      // その分の配分は残りのカードへ比例再分配される(#576 設計の欠落レアリティと
+      // 同じ規則)。
       // ドロップ率に基づいてカードを選択（パック指定+自動モード時はパック内
       // 実効重みで選択、それ以外は従来どおり drop_rate ベース）
       const resolvedRarityWeights = collectionName
@@ -184,7 +262,7 @@ export class GachaService {
       // 生 rows の文字列 drop_rate が GachaResult/broadcast へ漏れないようにする
       // (従来は selectWeightedCard の戻り値=正規化済みクローンをそのまま返して
       // いたため保証されていた性質。再構築方式でも同じ保証を維持する)。
-      const normalizedCards = normalizeDropRate(cards)
+      const normalizedCards = normalizeDropRate(availableCards)
 
       // 選択プールは「id + 選択重み」だけの最小型に落とす(WeightedCard)。
       // 両分岐の配列型が異なるユニオンのままだと selectWeightedCard の
@@ -219,6 +297,9 @@ export class GachaService {
         image_url: originalCard.image_url,
         rarity: originalCard.rarity,
         drop_rate: originalCard.drop_rate,
+        // Issue #108: legacy フォールバック(executeGachaLegacy)が発行上限の
+        // 再チェックに参照するため、再構築後も必ず引き継ぐ。
+        max_issuance_count: originalCard.max_issuance_count ?? null,
       }
 
       // gacha_history, users, user_cards を1トランザクションでアトミックに実行
@@ -259,6 +340,10 @@ export class GachaService {
       // EventSub重複通知の場合（event_idが既に処理済み）
       if (rpcResult?.is_duplicate) {
         return err('Duplicate event')
+      }
+
+      if (rpcResult?.limit_reached) {
+        return err(CARD_ISSUANCE_MESSAGES.soldOut)
       }
 
       return ok({
@@ -338,6 +423,21 @@ export class GachaService {
     streamerId: string, userTwitchId: string, userTwitchUsername: string,
     selectedCard: GachaCard, eventId?: string, rewardCost?: number
   ): Promise<Result<GachaResult>> {
+    // Legacy パスは execute_gacha_transaction RPC が未デプロイの一時的状態のためのフォールバック。
+    // この経路では FOR UPDATE による行ロックが取れず、発行枚数チェックと INSERT を
+    // アトミックに実行できないため、上限超過の race condition を防げない。
+    // よって発行可能枚数 (max_issuance_count) が設定されたカードは legacy パスでは抽選対象外とする。
+    // limited カードは migration 適用後の RPC パス経由でのみ付与可能。
+    // The legacy fallback runs only while execute_gacha_transaction is missing on the DB.
+    // Without FOR UPDATE row locking we cannot enforce issuance limits atomically here,
+    // so refuse to issue limited cards via this path to avoid over-issuing.
+    if (selectedCard.max_issuance_count !== null && selectedCard.max_issuance_count !== undefined) {
+      logger.warn('Legacy fallback: refused to issue limited card (RPC not deployed yet)', {
+        streamerId, userTwitchId, eventId, cardId: selectedCard.id,
+      })
+      return err(CARD_ISSUANCE_MESSAGES.soldOut)
+    }
+
     // gacha_history upsert（冪等性のためevent_idで重複チェック）
     const { error: historyError } = await this.supabase
       .from('gacha_history')
@@ -537,6 +637,7 @@ export class GachaService {
         if (!result.success) return result
         return ok({
           ...result.data,
+          rewardId: event.reward.id,
           streamer: {
             id: streamer.id,
             chat_announcement_enabled: streamer.chat_announcement_enabled,

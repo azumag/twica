@@ -59,6 +59,9 @@
       "cardNumber": "Card Number",
       "cardNumberPlaceholder": "e.g. 12",
       "cardNumberHelp": "Leave blank to auto-number",
+      "maxIssuanceCount": "Issue Limit",
+      "maxIssuanceCountPlaceholder": "e.g. 1 / 100",
+      "maxIssuanceCountHelp": "Blank is unlimited. 1 makes it unique-only.",
       "collectionName": "Card Pack",
       "collectionNameUnclassified": "{name} (all cards)",
       "collectionNameHelp": "Only cards in the same pack are eligible for that channel point reward's gacha. Register pack names in \"Pack Management\" first.",
@@ -72,16 +75,20 @@
       "descriptionCount": "{current} / {max} characters",
       "currentImage": "Current image",
       "croppedImage": "Cropped image",
+      "originalAnimatedImage": "Animated image",
+      "originalAnimatedImageHelp": "GIF files are saved unchanged to preserve animation",
       "selectCropMode": "Select Crop Size",
       "cropModeDescription": "For Square images, name and description can be shown in the card frame on display. You can toggle this in overlay settings. Portrait images are displayed as-is.",
       "cropNoteWithOptions": "(Crop to Square {square} or Portrait {portrait})",
+      "animatedGifNote": ". GIF files are saved without cropping to preserve animation",
+      "animatedGifSizeLimit": "GIF files are uploaded as-is. Please keep them under {maxMb}MB.",
       "selectResolution": "Select Resolution",
       "resolutionStandard": "Standard (800px)",
       "resolutionFullHd": "Full HD (1920px)",
       "resolution4k": "4K (3840px)"
     },
     "fileUpload": {
-      "formats": "Supported: JPEG, PNG | ",
+      "formats": "Supported: JPEG, PNG, GIF, WebP | ",
       "maxSize": "Max size: {mb}MB"
     },
     "buttons": {
@@ -403,7 +410,7 @@
   },
   "gachaSoundSettings": {
     "title": "Gacha Sound Effect Settings",
-    "description": "Set the sound effect that plays during gacha animation.",
+    "description": "Upload multiple gacha sounds and choose whether each plays for all draws, a rarity, or a channel point reward.",
     "status": {
       "enabled": "Enabled",
       "disabled": "Disabled"
@@ -413,7 +420,19 @@
       "fileRequirements": "Supported: {formats} | Max size: {maxSize}",
       "currentSound": "Current sound",
       "enableSound": "Enable sound effect",
-      "uploadFirst": "Please upload a file first"
+      "uploadFirst": "Please upload a file first",
+      "noSounds": "No sound effects have been uploaded yet.",
+      "defaultLabel": "Sound effect",
+      "soundName": "Sound name",
+      "targetType": "Playback condition",
+      "rarity": "Rarity",
+      "rewardId": "Reward ID",
+      "rewardPlaceholder": "Channel point reward ID"
+    },
+    "targets": {
+      "all": "All gacha draws",
+      "rarity": "By rarity",
+      "reward": "By channel point reward"
     },
     "buttons": {
       "play": "Play",
@@ -424,6 +443,7 @@
       "uploadSuccess": "Sound effect uploaded",
       "uploading": "Uploading...",
       "saving": "Saving...",
+      "saved": "Sound effect settings saved",
       "enabled": "Sound effect enabled",
       "disabled": "Sound effect disabled",
       "deleted": "Sound effect deleted"
@@ -436,7 +456,8 @@
       "deleteFailed": "Failed to delete",
       "rateLimit": "Too many requests. Please wait and try again."
     },
-    "confirmDelete": "Delete this sound effect?"
+    "confirmDelete": "Delete this sound effect?",
+    "premiumRequired": "Multiple sounds and targeting are available for support plan subscribers and above."
   },
   "chatAnnouncementSettings": {
     "title": "Chat Announcement Settings",
@@ -659,6 +680,13 @@
       "autoPortraitDescription": "Automatically switch to image-only mode for portrait images",
       "effects": "Show Effects",
       "effectsDescription": "Show sparkle effects for legendary cards",
+      "effectStyle": "Effect Style",
+      "effectStyleDescription": "Choose the animation used for legendary card reveals",
+      "effectStyles": {
+        "sparkle": "Sparkles",
+        "confetti": "Confetti",
+        "hearts": "Hearts"
+      },
       "smallMode": "Small Image Mode",
       "smallModeDescription": "Smaller display for images under 400x400 (auto-applied)",
       "displayDuration": "Card Display Duration",

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { RARITIES, UPLOAD_CONFIG, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
+import { RARITIES, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
@@ -12,6 +12,7 @@ import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
+import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
@@ -74,6 +75,10 @@ interface CardManagerProps {
   // Plan-based available output widths (default: [800])
   // プラン別選択可能な出力幅（デフォルト: [800]）
   availableWidths?: number[];
+  // Plan-based maximum upload size in bytes (default: UPLOAD_CONFIG.MAX_FILE_SIZE)
+  // GIFはトリミング/再圧縮をスキップして原本送信されるため、UI上でユーザーへ上限を案内するのに利用する
+  // プラン別アップロードサイズ上限（バイト）。GIF原本送信モード時の注意文表示にも用いる
+  maxUploadSize?: number;
   // Initial rarity weights: null/undefined = unset (auto mode with defaults), {} = explicit manual mode, {weights} = auto mode
   // レアリティ確率設定: null/undefined=未設定（自動モードデフォルト化）, {}=手動モード明示, {weights}=自動モード
   initialRarityWeights?: Record<string, number> | null;
@@ -104,6 +109,7 @@ type CardFormData = {
   imageUrl: string;
   rarity: Rarity;
   cardNumber: string;
+  maxIssuanceCount: string;
   // Issue #393: card pack name ("" = unclassified / all cards)
   collectionName: string;
   dropRate: number;
@@ -138,6 +144,7 @@ export default function CardManager({
   maxCards,
   maxImageWidth = 800,
   availableWidths = [800],
+  maxUploadSize,
   initialRarityWeights = null,
   initialCustomRarities = [],
   initialCardPackNames = [],
@@ -343,6 +350,7 @@ export default function CardManager({
     imageUrl: "",
     rarity: "common" as Rarity,
     cardNumber: "",
+    maxIssuanceCount: "",
     collectionName: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
@@ -913,6 +921,7 @@ export default function CardManager({
       imageUrl: "",
       rarity: "common",
       cardNumber: "",
+      maxIssuanceCount: "",
       collectionName: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
@@ -951,9 +960,30 @@ export default function CardManager({
       // Cropped image will be compressed to JPEG, so original size doesn't matter
       // トリミング前はファイルタイプのみ検証（サイズチェックはスキップ）
       // トリミング後はJPEGに圧縮されるため、元のサイズは問題にならない
-      const allowedTypes = UPLOAD_CONFIG.ALLOWED_TYPES as readonly string[];
-      if (!allowedTypes.includes(file.type)) {
+      if (!isAllowedCardUploadFile(file)) {
         setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
+        return;
+      }
+      if (shouldPreserveOriginalCardUpload(file)) {
+        // GIFはトリミング/再圧縮されず原本のままアップロードされるため、
+        // クライアント側でもプラン上限を事前にチェックし UX を早期化する
+        // （サーバ側 validateUpload でも最終的に弾かれるが、無駄なネットワークを避ける）
+        const validation = validateUpload(file, maxUploadSize);
+        if (!validation.valid) {
+          setUploadError(getUploadErrorMessage(validation.error!));
+          return;
+        }
+        imageDimensionRequestId.current++;
+        if (croppedPreviewUrl) {
+          URL.revokeObjectURL(croppedPreviewUrl);
+        }
+        setSelectedFileForCrop(null);
+        setSourceImageWidth(null);
+        setCropModeModalOpen(false);
+        setCropModalOpen(false);
+        setSelectedCropMode("square");
+        setCroppedFile(file);
+        setCroppedPreviewUrl(URL.createObjectURL(file));
         return;
       }
       // 画像の実サイズを読み取ってからモーダルを開く
@@ -1133,6 +1163,7 @@ export default function CardManager({
       imageUrl: card.image_url || "",
       rarity: card.rarity,
       cardNumber: card.card_number ? String(card.card_number) : "",
+      maxIssuanceCount: card.max_issuance_count ? String(card.max_issuance_count) : "",
       collectionName: card.collection_name || "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
@@ -1224,6 +1255,7 @@ export default function CardManager({
           imageUrl: finalImageUrl,
           rarity: formData.rarity,
           cardNumber: formData.cardNumber.trim() === "" ? null : Number(formData.cardNumber),
+          maxIssuanceCount: formData.maxIssuanceCount.trim() === "" ? null : Number(formData.maxIssuanceCount),
           // Issue #393: send the pack name (trimmed "" → null clears it = all cards)
           collectionName: formData.collectionName.trim() === "" ? null : formData.collectionName.trim(),
           dropRate: formData.dropRate,
@@ -1588,6 +1620,27 @@ export default function CardManager({
                           {t("form.cardNumberHelp")}
                         </p>
                       </div>
+                      <div>
+                        <label className="mb-1 block text-sm text-gray-300">
+                          {t("form.maxIssuanceCount")}
+                        </label>
+                        <input
+                          type="number"
+                          name="maxIssuanceCount"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          placeholder={t("form.maxIssuanceCountPlaceholder")}
+                          value={formData.maxIssuanceCount}
+                          onChange={(e) =>
+                            setFormData({ ...formData, maxIssuanceCount: e.target.value })
+                          }
+                          className="w-full rounded-lg bg-gray-600 px-4 py-2 text-white placeholder:text-gray-300"
+                        />
+                        <p className="mt-1 text-xs text-gray-300">
+                          {t("form.maxIssuanceCountHelp")}
+                        </p>
+                      </div>
                     </div>
                     {/* Issue #393再設計: カードパックは自由入力ではなく、事前に
                         「パック管理」で登録した一覧から選択する(レアリティselectと
@@ -1675,8 +1728,8 @@ export default function CardManager({
                   </div>
                 )}
 
-                {/* Show cropped image preview when a file has been cropped */}
-                {/* トリミング済みファイルがある場合はプレビュー表示 */}
+                {/* Show selected upload preview when a file is ready */}
+                {/* アップロード準備済みファイルがある場合はプレビュー表示 */}
                 {croppedFile && croppedPreviewUrl && (
                   <div className="flex items-center gap-3 rounded-lg bg-green-900/30 border border-green-600/50 p-3">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1686,9 +1739,15 @@ export default function CardManager({
                       className={`rounded object-cover ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-green-300">{t("form.croppedImage")}</p>
+                      <p className="text-sm text-green-300">
+                        {shouldPreserveOriginalCardUpload(croppedFile)
+                          ? t("form.originalAnimatedImage")
+                          : t("form.croppedImage")}
+                      </p>
                       <p className="text-xs text-gray-400">
-                        {planCropModes[selectedCropMode].dimensions}px ({planCropModes[selectedCropMode].label})
+                        {shouldPreserveOriginalCardUpload(croppedFile)
+                          ? t("form.originalAnimatedImageHelp")
+                          : `${planCropModes[selectedCropMode].dimensions}px (${planCropModes[selectedCropMode].label})`}
                       </p>
                     </div>
                     <button
@@ -1730,6 +1789,14 @@ export default function CardManager({
                       {/* File size limit removed since cropping compresses to JPEG */}
                       {/* トリミングでJPEGに圧縮されるためファイルサイズ制限を削除 */}
                       {t("fileUpload.formats")}{t("form.cropNoteWithOptions", { square: planCropModes.square.dimensions, portrait: planCropModes.portrait.dimensions })}
+                      {t("form.animatedGifNote")}
+                    </p>
+                    {/* GIFはトリミング/再圧縮されず原本のままアップロードされるため、
+                        プラン上限 (basic=1MB, support=5MB, patron/twitch_sub=10MB) を明示する */}
+                    <p className="text-xs text-amber-400">
+                      {t("form.animatedGifSizeLimit", {
+                        maxMb: Math.floor((maxUploadSize ?? 1 * 1024 * 1024) / (1024 * 1024)),
+                      })}
                     </p>
                     <input
                       type="url"

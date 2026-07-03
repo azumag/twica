@@ -59,6 +59,9 @@
       "cardNumber": "カード番号",
       "cardNumberPlaceholder": "例: 12",
       "cardNumberHelp": "空欄なら自動採番されます",
+      "maxIssuanceCount": "発行可能枚数",
+      "maxIssuanceCountPlaceholder": "例: 1 / 100",
+      "maxIssuanceCountHelp": "空欄なら無制限、1なら完全ユニークです",
       "collectionName": "カードパック",
       "collectionNameUnclassified": "{name}（すべてのカード）",
       "collectionNameHelp": "同じパック名のカードだけがチャネポ報酬の抽選対象になります。パック名は「パック管理」で事前に登録してください。",
@@ -72,16 +75,20 @@
       "descriptionCount": "{current} / {max}文字",
       "currentImage": "現在の画像",
       "croppedImage": "トリミング済み画像",
+      "originalAnimatedImage": "アニメーション画像",
+      "originalAnimatedImageHelp": "GIFはアニメーションを保つため元ファイルのまま保存されます",
       "selectCropMode": "トリミングサイズを選択",
       "cropModeDescription": "正方形の場合、表示時に名前・説明をカード枠に表示できます。オーバーレイ設定で表示非表示を選択できます。ポートレイトはそのまま表示されます。",
       "cropNoteWithOptions": "（正方形{square}またはポートレイト{portrait}にトリミング）",
+      "animatedGifNote": "。GIFはアニメーション保持のためトリミングせず保存します",
+      "animatedGifSizeLimit": "GIFはそのまま送信されるため、{maxMb}MB以下にしてください",
       "selectResolution": "解像度を選択",
       "resolutionStandard": "標準 (800px)",
       "resolutionFullHd": "Full HD (1920px)",
       "resolution4k": "4K (3840px)"
     },
     "fileUpload": {
-      "formats": "対応形式: JPEG, PNG | ",
+      "formats": "対応形式: JPEG, PNG, GIF, WebP | ",
       "maxSize": "最大サイズ: {mb}MB"
     },
     "buttons": {
@@ -403,7 +410,7 @@
   },
   "gachaSoundSettings": {
     "title": "ガチャ効果音設定",
-    "description": "ガチャ演出時に再生される効果音を設定できます。",
+    "description": "ガチャ演出時に再生される効果音を複数登録し、全体・レアリティ別・チャネルポイント報酬別に出し分けできます。",
     "status": {
       "enabled": "有効",
       "disabled": "無効"
@@ -413,7 +420,19 @@
       "fileRequirements": "対応形式: {formats} | 最大サイズ: {maxSize}",
       "currentSound": "現在の効果音",
       "enableSound": "効果音を有効にする",
-      "uploadFirst": "先にファイルをアップロードしてください"
+      "uploadFirst": "先にファイルをアップロードしてください",
+      "noSounds": "効果音はまだ登録されていません。",
+      "defaultLabel": "効果音",
+      "soundName": "効果音名",
+      "targetType": "再生条件",
+      "rarity": "レアリティ",
+      "rewardId": "報酬ID",
+      "rewardPlaceholder": "チャネルポイント報酬ID"
+    },
+    "targets": {
+      "all": "すべてのガチャ",
+      "rarity": "レアリティ別",
+      "reward": "チャネルポイント報酬別"
     },
     "buttons": {
       "play": "再生",
@@ -424,6 +443,7 @@
       "uploadSuccess": "効果音をアップロードしました",
       "uploading": "アップロード中...",
       "saving": "保存中...",
+      "saved": "効果音設定を保存しました",
       "enabled": "効果音を有効にしました",
       "disabled": "効果音を無効にしました",
       "deleted": "効果音を削除しました"
@@ -436,7 +456,8 @@
       "deleteFailed": "削除に失敗しました",
       "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。"
     },
-    "confirmDelete": "この効果音を削除しますか？"
+    "confirmDelete": "この効果音を削除しますか？",
+    "premiumRequired": "複数効果音・ターゲット指定は助力プラン以上の機能です。"
   },
   "chatAnnouncementSettings": {
     "title": "チャット通知設定",
@@ -659,6 +680,13 @@
       "autoPortraitDescription": "ポートレイト画像の場合、自動で画像のみ表示に切り替え",
       "effects": "エフェクト表示",
       "effectsDescription": "レジェンダリーカードのキラキラエフェクトを表示",
+      "effectStyle": "エフェクト種類",
+      "effectStyleDescription": "レジェンダリーカード表示時の演出を選択します",
+      "effectStyles": {
+        "sparkle": "キラキラ",
+        "confetti": "紙吹雪",
+        "hearts": "ハート"
+      },
       "smallMode": "小さい画像モード",
       "smallModeDescription": "400x400未満の画像用に縮小表示（自動適用）",
       "displayDuration": "カードの表示時間",

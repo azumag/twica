@@ -9,6 +9,7 @@ import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
 import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
+import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
@@ -435,6 +436,7 @@ interface RedemptionNotifyData {
     card: GachaCard;
     cards?: GachaCard[];
     userTwitchUsername: string;
+    rewardId?: string | null;
   };
   broadcasterTwitchUserId: string;
   streamer: EventSubStreamerInfo;
@@ -565,6 +567,24 @@ async function handleRedemption(messageId: string, event: {
         });
         return null;
       }
+      // カード発行可能枚数の上限到達はストリーマーの設定運用の結果であり、
+      // システムバグではない。Sentry/Issue 化を抑止し warn ログのみに留める。
+      // RPC からの 'limit_reached' と、事前フィルタからの soldOut メッセージの両方を扱う。
+      // Card issuance limit reached is the result of streamer configuration, not a system bug.
+      // Suppress Sentry/Issue reporting and emit a warn log only.
+      if (
+        result.error === 'limit_reached' ||
+        result.error === CARD_ISSUANCE_MESSAGES.soldOut ||
+        result.error.includes('発行可能枚数')
+      ) {
+        logger.warn('[handleRedemption] Card issuance limit reached', {
+          messageId,
+          broadcasterUserId: event.broadcaster_user_id,
+          gachaError: result.error,
+        });
+        return null;
+      }
+
       // 削除済み/未登録 broadcaster の古い EventSub 通知は設定起因であり、
       // production error としてGitHub Issue化しない。
       if (result.error === 'Streamer not found') {
@@ -602,6 +622,7 @@ async function handleRedemption(messageId: string, event: {
       card: result.data.card,
       cards: result.data.cards,
       userTwitchUsername: result.data.userTwitchUsername,
+      rewardId: result.data.rewardId ?? event.reward.id,
     };
 
     logger.info('[handleRedemption] END', { messageId });

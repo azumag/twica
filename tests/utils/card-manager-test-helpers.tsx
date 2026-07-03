@@ -19,6 +19,7 @@ export const baseCard = (overrides: Partial<Card>): Card => ({
   image_url: null,
   rarity: 'common',
   card_number: null,
+  max_issuance_count: null,
   collection_name: null,
   drop_rate: 0.25,
   intra_rarity_weight: 1,
