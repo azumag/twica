@@ -427,7 +427,15 @@
       "targetType": "Playback condition",
       "rarity": "Rarity",
       "rewardId": "Reward ID",
-      "rewardPlaceholder": "Channel point reward ID"
+      "rewardPlaceholder": "Channel point reward ID",
+      "reward": "Target reward",
+      "rewardUnset": "-- Select Reward --",
+      "rewardMissing": "{name} (may have been deleted on Twitch; the current setting is kept)",
+      "rewardFetchFailedHint": "Couldn't load the reward list. Please enter the reward ID directly."
+    },
+    "options": {
+      "points": "points",
+      "disabled": "[Disabled]"
     },
     "targets": {
       "all": "All gacha draws",
