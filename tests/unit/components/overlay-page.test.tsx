@@ -140,6 +140,111 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
+  it('Issue #587: confetti は紙吹雪専用アニメーションクラスを使い、旧バグのanimate-bounceを共有しない', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?effect=confetti')
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const { container } = render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: { id: 'card-legendary', name: 'Legend', description: null, image_url: null, rarity: 'legendary' },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+
+    // パーティクル数(20個)は変更しない。全て紙吹雪専用クラスを持ち、
+    // 旧実装で共有されていたanimate-bounceは一切使わない。
+    expect(container.querySelectorAll('.animate-overlay-effect-confetti')).toHaveLength(20)
+    expect(container.querySelectorAll('.animate-bounce')).toHaveLength(0)
+  })
+
+  it('Issue #587: hearts はハート専用アニメーションクラスを使い、旧バグのanimate-bounceを共有しない', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?effect=hearts')
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const { container } = render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: { id: 'card-legendary', name: 'Legend', description: null, image_url: null, rarity: 'legendary' },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+
+    expect(container.querySelectorAll('.animate-overlay-effect-hearts')).toHaveLength(20)
+    expect(container.querySelectorAll('.animate-bounce')).toHaveLength(0)
+    expect(screen.getAllByText('♥')).toHaveLength(20)
+  })
+
+  it('sparkle（デフォルト）は既存のanimate-pingを維持する（回帰防止）', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1')
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const { container } = render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: { id: 'card-legendary', name: 'Legend', description: null, image_url: null, rarity: 'legendary' },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+
+    expect(container.querySelectorAll('.animate-ping')).toHaveLength(20)
+    expect(screen.getAllByText('✨')).toHaveLength(20)
+  })
+
   it('複数の効果音ルールをルールごとにプリロードする', async () => {
     const createdUrls: string[] = []
     class MockAudio {
