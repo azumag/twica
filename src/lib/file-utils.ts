@@ -20,10 +20,14 @@ export function getFileTypeFromBuffer(buffer: Buffer): string {
     return 'image/png';
   }
 
+  // GIFシグネチャ: "GIF87a" (47 49 46 38 37 61) または "GIF89a" (47 49 46 38 39 61)
+  // バージョンバイト (index 4) が 0x37 ('7') / 0x39 ('9') のいずれかを許容することで、
+  // 一般的に流通するアニメーション GIF (GIF89a) も正しく判定する
   if (buffer.length >= 6 &&
       firstByte === 0x47 && secondByte === 0x49 &&
       buffer[2] === 0x46 && buffer[3] === 0x38 &&
-      buffer[4] === 0x37 && buffer[5] === 0x61) {
+      (buffer[4] === 0x37 || buffer[4] === 0x39) &&
+      buffer[5] === 0x61) {
     return 'image/gif';
   }
 

@@ -72,16 +72,20 @@
       "descriptionCount": "{current} / {max}文字",
       "currentImage": "現在の画像",
       "croppedImage": "トリミング済み画像",
+      "originalAnimatedImage": "アニメーション画像",
+      "originalAnimatedImageHelp": "GIFはアニメーションを保つため元ファイルのまま保存されます",
       "selectCropMode": "トリミングサイズを選択",
       "cropModeDescription": "正方形の場合、表示時に名前・説明をカード枠に表示できます。オーバーレイ設定で表示非表示を選択できます。ポートレイトはそのまま表示されます。",
       "cropNoteWithOptions": "（正方形{square}またはポートレイト{portrait}にトリミング）",
+      "animatedGifNote": "。GIFはアニメーション保持のためトリミングせず保存します",
+      "animatedGifSizeLimit": "GIFはそのまま送信されるため、{maxMb}MB以下にしてください",
       "selectResolution": "解像度を選択",
       "resolutionStandard": "標準 (800px)",
       "resolutionFullHd": "Full HD (1920px)",
       "resolution4k": "4K (3840px)"
     },
     "fileUpload": {
-      "formats": "対応形式: JPEG, PNG | ",
+      "formats": "対応形式: JPEG, PNG, GIF, WebP | ",
       "maxSize": "最大サイズ: {mb}MB"
     },
     "buttons": {
