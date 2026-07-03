@@ -34,7 +34,7 @@ export async function GET(
     // 配信者の効果音設定のみを取得
     // パブリックエンドポイントなので必要最小限の情報のみ返す
     // 502 一時障害に対するリトライ (Issue #325)
-    let { data: streamer, error, status } = await withRetry(
+    const soundSettingsResult = await withRetry(
       () => supabaseAdmin
         .from("streamers")
         .select("gacha_sound_url, gacha_sound_enabled, gacha_sound_rules")
@@ -42,6 +42,9 @@ export async function GET(
         .maybeSingle(),
       'getSoundSettings',
     );
+    let streamer = soundSettingsResult.data;
+    let error = soundSettingsResult.error;
+    const { status } = soundSettingsResult;
 
     if (error && (error.code === "PGRST204" || error.message.includes("gacha_sound_rules"))) {
       const fallbackResult = await withRetry(
