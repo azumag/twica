@@ -113,6 +113,19 @@ function isRaidGachaActive(activeUntil: string | null | undefined, now = new Dat
   return Number.isFinite(activeUntilTime) && activeUntilTime > now.getTime()
 }
 
+/**
+ * Issue #512: N連ドローの各カードに割り当てる event_id を計算する。
+ * 1枚目は eventId そのもの、2枚目以降は `${eventId}:${連番}` を使う
+ * (execute_gacha_transaction RPC の event_id UNIQUE制約により1枚ずつ
+ * 独立して重複検知できるようにするため)。executeGachaDraws のループと
+ * countCompletedDrawPrefix の両方がこの式を使う — 別々に書くと将来
+ * ズレて再開位置の判定が壊れるため、共通化して1箇所にする。
+ */
+function buildDrawEventId(eventId: string | undefined, index: number): string | undefined {
+  if (!eventId) return eventId
+  return index > 0 ? `${eventId}:${index + 1}` : eventId
+}
+
 export class GachaService {
   private supabase = getSupabaseAdmin()
 
@@ -518,6 +531,48 @@ export class GachaService {
     }
   }
 
+  /**
+   * Issue #512: N連ドロー(executeGachaDraws)の [eventId, eventId:2, ...] のうち、
+   * 先頭から連続して何件が既に gacha_history に存在する(=完了済みである)かを
+   * 数える。EventSub再送(redelivery)がバッチ途中までしか完了していない
+   * ドローのリトライを兼ねるケースで、どこから再開すべきかを判定するために使う。
+   *
+   * event_id は migration 00001 で TEXT UNIQUE(グローバルに一意)なので、
+   * 単純な IN 句の存在チェックだけで安全に判定できる(排他ロックは不要 —
+   * 既にCOMMIT済みの行を読むだけで書き込みとは競合しない)。「先頭から連続」で
+   * カウントを打ち切るのは、ドローループが index=0 から順番にしか進まないため
+   * 通常は歯抜けが起きない前提の下、万一歯抜けがあってもそこで止めて以降を
+   * 未完了扱いにする(実際には完了していない枠を誤ってスキップしない)安全側の
+   * 判定にするため。
+   */
+  private async countCompletedDrawPrefix(eventId: string, drawCount: number): Promise<Result<number>> {
+    const candidateEventIds = Array.from(
+      { length: drawCount },
+      (_, index) => buildDrawEventId(eventId, index) as string
+    )
+
+    const { data, error } = await withRetry(
+      () => this.supabase
+        .from('gacha_history')
+        .select('event_id')
+        .in('event_id', candidateEventIds),
+      'gacha:executeGachaDraws:completedPrefix',
+    )
+
+    if (error) {
+      return err(`Database error: ${error.message}`)
+    }
+
+    const completedEventIds = new Set(
+      (data ?? []).map((row) => (row as { event_id: string | null }).event_id)
+    )
+    let prefixCount = 0
+    while (prefixCount < drawCount && completedEventIds.has(candidateEventIds[prefixCount])) {
+      prefixCount += 1
+    }
+    return ok(prefixCount)
+  }
+
   private async executeGachaDraws(
     streamerId: string,
     userTwitchId: string,
@@ -543,8 +598,33 @@ export class GachaService {
     const cards: GachaCard[] = []
     let firstResult: GachaResult | null = null
 
-    for (let index = 0; index < drawCount; index += 1) {
-      const drawEventId = eventId && index > 0 ? `${eventId}:${index + 1}` : eventId
+    // Issue #512: EventSub再送がバッチ途中(例: 5連中2枚目まで成功、3枚目で
+    // 失敗)のリトライを兼ねる場合、常に index=0 からやり直すと1枚目が
+    // is_duplicate と判定された時点でバッチ全体を「重複だから何もしない」と
+    // 打ち切ってしまい、3枚目以降が永久に実行されないバグがあった(下記
+    // resumeFromIndex 起点のループで解消)。単発ドロー(drawCount<=1)は
+    // 「1枚目のis_duplicate=バッチ全体が重複」が常に正しくこの問題が起きない
+    // ため、追加クエリも不要(ホットパスである単発ガチャに毎回1クエリ増える
+    // 無駄を避ける)。
+    let resumeFromIndex = 0
+    if (eventId && drawCount > 1) {
+      const prefixResult = await this.countCompletedDrawPrefix(eventId, drawCount)
+      if (!prefixResult.success) {
+        return err(prefixResult.error)
+      }
+      resumeFromIndex = prefixResult.data
+
+      // 全ドローが既に完了済み = 設定変更を挟まない通常のEventSub再送
+      // (完全な重複)。呼び出し元は単発ドローの is_duplicate と同じ
+      // 'Duplicate event' を「正常系・再通知不要」として静かにスキップする
+      // 既存分岐を持つため、同じ文言を返して単発ドローと観測可能な挙動を揃える。
+      if (resumeFromIndex >= drawCount) {
+        return err('Duplicate event')
+      }
+    }
+
+    for (let index = resumeFromIndex; index < drawCount; index += 1) {
+      const drawEventId = buildDrawEventId(eventId, index)
       const drawRewardCost = index === 0 ? rewardCost : undefined
       const result = await this.executeGacha(
         streamerId,
@@ -558,16 +638,38 @@ export class GachaService {
       )
 
       if (!result.success) {
-        if (cards.length > 0 && result.error !== 'Duplicate event') {
+        // resumeFromIndex(過去のリトライで既に完了した分)も合わせた、この
+        // バッチ全体での確定済み枚数。cards.length だけで判定すると、再開
+        // 直後の1件目で早速エラーになった場合に「0枚成功」扱いになり、実際は
+        // resumeFromIndex 枚が既に確定済みであるにもかかわらず生の
+        // soldOut/DBエラーがそのまま呼び出し元に伝播してしまう(soldOut側の
+        // 全額返還処理などが、既に一部カードを受け取ったユーザーに対して
+        // 誤って走りかねない)。
+        const totalCompleted = resumeFromIndex + cards.length
+        if (totalCompleted > 0 && result.error !== 'Duplicate event') {
           logger.warn('Multi-draw gacha stopped after partial success', {
             streamerId,
             userTwitchId,
             eventId,
-            completedDraws: cards.length,
+            resumedFromIndex: resumeFromIndex,
+            completedDraws: totalCompleted,
             requestedDraws: drawCount,
             error: result.error,
           })
-          break
+          // Issue #512: 以前はここで break し、firstResult があれば ok(部分的な
+          // cards配列)を返していた。呼び出し元はこれを「N連が要求どおり完了
+          // した」結果と区別できず、視聴者はチャネルポイントを消費したのに
+          // 一部カードしか受け取れないまま何のエラーも報告されなかった
+          // (通知の drawCount 表示も cards.length にフォールバックするため、
+          // 要求連数より少ない結果がそのまま「成功」として表示されてしまう)。
+          // エラーを返して呼び出し元の reportError 経路に乗せる。既に成功
+          // した分は gacha_history 上ロールバックしない(取り消す手段が
+          // なく、ユーザーは既にカードを受け取っているため取り消すべきでも
+          // ない)ため、EventSub再送があれば上の resumeFromIndex 起点の
+          // 再開ロジックにより残りだけ再試行される。
+          return err(
+            `Partial gacha completion: ${totalCompleted}/${drawCount} draws succeeded before error: ${result.error}`
+          )
         }
         return result
       }

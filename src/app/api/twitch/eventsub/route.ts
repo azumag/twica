@@ -662,24 +662,29 @@ async function handleRedemption(messageId: string, event: {
     rewardTitle: event.reward.title,
   });
 
-  const supabaseAdmin = getSupabaseAdmin();
-
-  // 事前の冪等性チェック：既に処理済みのイベントはスキップ
-  // RPC内でもON CONFLICTで重複を検知するが、事前チェックがないと
-  // ストリーマー設定やカード構成が変わった後のリトライで
-  // "Reward ID mismatch" や "No cards available" として誤報告されるため、
-  // この事前SELECTは必要（レビュー指摘 P2）
-  const { data: existingHistory } = await supabaseAdmin
-    .from('gacha_history')
-    .select('id')
-    .eq('event_id', messageId)
-    .maybeSingle();
-
-  if (existingHistory) {
-    logger.info('[handleRedemption] Skipped - already processed', { messageId });
-    return null;
-  }
-
+  // Issue #512: 以前はここで「event_id=messageId(N連の1枚目)の行が存在
+  // するか」だけを見て、存在すれば必ずバッチ全体をスキップしていた。しかし
+  // N連ドロー(追加報酬のdraw_count>1)がバッチ途中で失敗し、EventSub再送が
+  // 残りのドローを完了させようとしても、1枚目が既に存在するというだけで
+  // 再送全体をスキップしてしまい、残りのカードが永久に付与されないバグが
+  // あった。完了済み件数の判定は executeGachaDraws 内の resumeFromIndex
+  // 起点の再開ロジック(countCompletedDrawPrefix)に一本化したため、ここでの
+  // 事前チェックは冗長になった。
+  //
+  // トレードオフ: このチェックはもともと「ストリーマー設定/カード構成が
+  // 変わった後の再送を "Reward ID mismatch" 等の誤ったカテゴリでログ分類
+  // しない」ためのものだった(レビュー指摘 P2)。削除すると、設定変更を
+  // 挟んだ再送は executeGachaForEventSub を毎回最初からやり直すため、
+  // 再送時点の(変更後の)設定でリワード一致判定・draw_count解決が行われる。
+  // 通常の完全一致再送(設定変更なし)は countCompletedDrawPrefix が全件
+  // 一致を検知して従来どおり 'Duplicate event' で静かにスキップするため
+  // 影響はないが、元の処理から再送までの間に「同じreward_idのdraw_countを
+  // 変更する」ような設定変更が挟まった極めて稀なケースでは、変更後のdraw_countを
+  // 基準に不足分(または解釈によっては超過分)が再試行されうる。
+  // gacha_history には各ドローが event_id 付きで確定記録されるため事後に
+  // 監査可能であり、無限に増幅する類の不整合ではないこと、また
+  // このチェックを残したままだと上記の「再送が永久にスキップされる」
+  // バグを再発させてしまうことから、この限定的なリスクは許容する。
   try {
     const gachaService = new GachaService();
     const result = await gachaService.executeGachaForEventSub(event, messageId);
