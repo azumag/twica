@@ -64,7 +64,7 @@
       "maxIssuanceCountHelp": "Blank is unlimited. 1 makes it unique-only. (max 1,000,000) The limit is based on current holder count — a slot reopens if a copy is removed or exchanged.",
       "collectionName": "Card Pack",
       "collectionNameUnclassified": "{name} (all cards)",
-      "collectionNameHelp": "Only cards in the same pack are eligible for that channel point reward's gacha. Register pack names in \"Pack Management\" first.",
+      "collectionNameHelp": "Only cards in the same pack are eligible for that channel point redemption's gacha. Register pack names in \"Pack Management\" first.",
       "collectionNameDeployWindow": "The card was saved, but the pack feature is not ready yet, so the pack assignment was not applied. Please try again shortly.",
       "dropRate": "Drop Rate",
       "intraRarityWeight": "Drop Rate within Rarity",
@@ -148,7 +148,7 @@
       "inactive": "Paused Only",
       "packLabel": "Filter by card pack",
       "packAll": "All packs",
-      "packProbabilityHint": "Probabilities shown are the draw rates when redeeming a reward tied to this pack"
+      "packProbabilityHint": "Probabilities shown are the draw rates when drawing via the channel point redemption tied to this pack"
     },
     "table": {
       "image": "Image",
@@ -197,8 +197,8 @@
       "example2Result": "→ Card A: 50÷75×100 = 66.7%, Card B: 33.3%",
       "note": "* Paused cards are not included in probability calculation.",
       "close": "Close",
-      "packScopeTitle": "About pack-specific rewards",
-      "packScopeDescription": "When a channel point reward is scoped to a specific pack, probabilities are recalculated using only the cards in that pack. In auto mode, the \"By Rarity\" tab of Drop Rate Settings lets you choose whether the distribution is shared across all packs or set individually per pack."
+      "packScopeTitle": "About pack-specific channel point redemptions",
+      "packScopeDescription": "When a channel point redemption is scoped to a specific pack, probabilities are recalculated using only the cards in that pack. In auto mode, the \"By Rarity\" tab of Drop Rate Settings lets you choose whether the distribution is shared across all packs or set individually per pack."
     },
     "dropRateSettings": {
       "button": "Drop Rate Settings",
@@ -251,7 +251,7 @@
       "addPlaceholder": "New pack name",
       "add": "Add",
       "empty": "No packs registered yet",
-      "deleteNote": "Removing a pack does not change existing card/reward bindings (it is only removed from the selection options).",
+      "deleteNote": "Removing a pack does not change existing card/redemption bindings (it is only removed from the selection options).",
       "save": "Save",
       "saving": "Saving...",
       "saveFailed": "Failed to save",
@@ -409,7 +409,7 @@
       "collectionSummary": "Collection Summary",
       "viewAllCollection": "View Full Collection",
       "streamerInfo": "About Streamer Features",
-      "streamerInfoText": "You must be a Twitch Affiliate or Partner to use channel point rewards and card management features.",
+      "streamerInfoText": "You must be a Twitch Affiliate or Partner to use channel point redemptions and card management features.",
       "quickLinks": "Quick Links",
       "storageOverLimit": "Storage limit exceeded",
       "storageOverLimitDescription": "Please upgrade your support benefits or delete unused images. New card creation and image uploads are currently restricted.",
@@ -430,7 +430,7 @@
   },
   "gachaSoundSettings": {
     "title": "Gacha Sound Effect Settings",
-    "description": "Upload multiple gacha sounds and choose whether each plays for all draws, a rarity, or a channel point reward.",
+    "description": "Upload multiple gacha sounds and choose whether each plays for all draws, a rarity, or a specific channel point redemption.",
     "status": {
       "enabled": "Enabled",
       "disabled": "Disabled"
@@ -446,12 +446,12 @@
       "soundName": "Sound name",
       "targetType": "Playback condition",
       "rarity": "Rarity",
-      "rewardId": "Reward ID",
-      "rewardPlaceholder": "Channel point reward ID",
-      "reward": "Target reward",
-      "rewardUnset": "-- Select Reward --",
+      "rewardId": "Redemption ID",
+      "rewardPlaceholder": "Channel point redemption ID",
+      "reward": "Target redemption",
+      "rewardUnset": "-- Select Redemption --",
       "rewardMissing": "{name} (may have been deleted on Twitch; the current setting is kept)",
-      "rewardFetchFailedHint": "Couldn't load the reward list. Please enter the reward ID directly."
+      "rewardFetchFailedHint": "Couldn't load the redemption list. Please enter the ID directly."
     },
     "options": {
       "points": "points",
@@ -460,7 +460,7 @@
     "targets": {
       "all": "All gacha draws",
       "rarity": "By rarity",
-      "reward": "By channel point reward"
+      "reward": "By channel point redemption"
     },
     "buttons": {
       "play": "Play",
@@ -582,29 +582,29 @@
     "sections": {
       "connection": "Connection Status",
       "connectionDesc": "Registration status of Twitch EventSub (notifications). If card redemption is not working, check here for errors.",
-      "mainReward": "Main Reward",
-      "mainRewardDesc": "Choose the channel point reward that triggers card redemption and the card pack it draws from."
+      "mainReward": "Main Redemption",
+      "mainRewardDesc": "Choose the channel point redemption that triggers card draws, and the card pack it draws from."
     },
     "messages": {
       "affiliateRequired": "You must be a Twitch Affiliate or Partner to use channel points.",
       "rateLimit": "Too many requests. Please wait and try again.",
-      "fetchFailed": "Failed to fetch rewards. Please log in again.",
-      "rewardCreated": "Reward created",
+      "fetchFailed": "Failed to fetch redemptions. Please log in again.",
+      "rewardCreated": "Redemption created",
       "errorOccurred": "An error occurred",
-      "createRewardFailed": "Failed to create reward",
+      "createRewardFailed": "Failed to create redemption",
       "saveFailed": "Failed to save settings",
       "saveSuccess": "Saved (EventSub registration complete)",
       "eventsubFailed": "Settings saved, but EventSub registration failed. Please verify the URL is accessible externally.",
-      "scopeRequired": "To enable the Channel Points integration, please grant Twitch permission to read and manage your channel point rewards.",
+      "scopeRequired": "To enable the Channel Points integration, please grant Twitch permission to read and manage your channel point redemptions.",
       "reauthorizeFailed": "Re-authentication failed. Please try again later."
     },
     "form": {
-      "selectReward": "Select channel point reward for card redemption",
-      "noRewards": "No channel point rewards available. Create a new one?",
+      "selectReward": "Select the channel point redemption that triggers card draws",
+      "noRewards": "No channel point redemptions available. Create a new one?",
       "selected": "Selected:",
       "id": "ID:",
-      "rewardId": "Reward ID:",
-      "allRewards": "All Rewards",
+      "rewardId": "Redemption ID:",
+      "allRewards": "All Redemptions",
       "eventsubStatus": "EventSub Status",
       "raidEventSubStatus": "Raid auto-enable",
       "raidEventSubActive": "Incoming raid notifications are subscribed.",
@@ -614,7 +614,7 @@
       "localTunnelNote": "* EventSub is not available in local environment"
     },
     "buttons": {
-      "createReward": "Create TwiCa Reward (100 points)",
+      "createReward": "Create TwiCa Redemption (100 points)",
       "saveEventSub": "Save & Register EventSub",
       "disconnect": "Disconnect",
       "disconnecting": "Disconnecting...",
@@ -627,22 +627,22 @@
       "disconnectConfirm": "Are you sure you want to disconnect channel points? This will also remove EventSub subscriptions."
     },
     "options": {
-      "selectReward": "-- Select Reward --",
+      "selectReward": "-- Select Redemption --",
       "points": "points",
       "disabled": "[Disabled]"
     },
     "additionalRewards": {
       "title": "Additional Redemption Settings",
-      "description": "Trigger the same gacha with multiple channel point rewards",
-      "selectToAdd": "-- Select reward to add --",
+      "description": "Trigger the same gacha with multiple channel point redemptions",
+      "selectToAdd": "-- Select redemption to add --",
       "remove": "Remove",
-      "addSuccess": "Additional reward registered",
-      "removeSuccess": "Additional reward removed",
-      "addFailed": "Failed to register additional reward",
-      "removeFailed": "Failed to remove additional reward",
-      "removeConfirm": "Remove this additional reward? EventSub subscription will also be removed.",
-      "cannotUseAsMain": "This reward is registered as an additional reward. Please remove it from additional rewards first.",
-      "cannotUseAsAdditional": "This reward is already set as the main reward.",
+      "addSuccess": "Additional redemption registered",
+      "removeSuccess": "Additional redemption removed",
+      "addFailed": "Failed to register additional redemption",
+      "removeFailed": "Failed to remove additional redemption",
+      "removeConfirm": "Remove this additional redemption? EventSub subscription will also be removed.",
+      "cannotUseAsMain": "This redemption is already registered as an additional redemption. Please remove it first.",
+      "cannotUseAsAdditional": "This redemption is already set as the main redemption.",
       "drawCount": "Cards per redemption",
       "raidOnly": "Raid only",
       "multiDraw": "{count} draws",
@@ -664,7 +664,7 @@
     },
     "collections": {
       "mainLabel": "Card pack for redemption",
-      "additionalLabel": "Additional reward card pack",
+      "additionalLabel": "Additional redemption card pack",
       "all": "All cards",
       "defaultOnly": "{name} (unclassified cards only)",
       "defaultOnlyName": "Default pack",
@@ -749,7 +749,7 @@
   },
   "settingsPage": {
     "title": "Stream Settings",
-    "description": "Configure OBS overlay and channel point rewards.",
+    "description": "Configure OBS overlay and channel point redemptions.",
     "viewMode": {
       "simple": "Simple",
       "advanced": "Advanced",
@@ -768,7 +768,7 @@
       "section": {
         "overlay": "Overlay",
         "overlayDesc": "OBS URL & effects",
-        "reward": "Reward",
+        "reward": "Redemption",
         "rewardDesc": "Channel-point link",
         "sound": "Sound",
         "soundDesc": "Gacha sound effect",
@@ -828,7 +828,7 @@
       "title": "Streamer Features",
       "description": "Twitch Affiliates and Partners can access the following features:",
       "feature1": "Create and manage original cards",
-      "feature2": "Set up channel point reward integration",
+      "feature2": "Set up channel point redemption integration",
       "feature3": "Customize stream overlay"
     }
   },
@@ -840,7 +840,7 @@
       "title": "For Viewers",
       "step1": {
         "title": "Use Channel Points in Stream",
-        "description": "Watch a TwiCa-enabled stream and redeem the card gacha using channel points. Exchange points for the reward set by the streamer (e.g., \"Card Gacha\"). You can draw gacha even without logging in to TwiCa."
+        "description": "Watch a TwiCa-enabled stream and redeem the card gacha using channel points. Use the channel point redemption set up by the streamer (e.g., \"Card Gacha\"). You can draw gacha even without logging in to TwiCa."
       },
       "step2": {
         "title": "Get Cards",
@@ -867,8 +867,8 @@
         "description": "Create original cards from \"Card Management\" on your dashboard. Set card name, image, rarity, and drop rate."
       },
       "step3": {
-        "title": "Set Up Channel Point Reward",
-        "description": "Select or create a channel point reward from \"Stream Settings\" on your dashboard. Click \"Save & Register EventSub\" to complete the Twitch integration."
+        "title": "Set Up Channel Point Redemption",
+        "description": "Select or create a channel point redemption from \"Stream Settings\" on your dashboard. Click \"Save & Register EventSub\" to complete the Twitch integration."
       },
       "step4": {
         "title": "Add Overlay to OBS",
@@ -915,7 +915,7 @@
       "title": "For Viewers",
       "login": {
         "question": "Do I need to log in to draw gacha?",
-        "answer": "No. You can draw gacha from a TwiCa-enabled stream's channel point reward without logging in to TwiCa. Twitch login is required to view your collection."
+        "answer": "No. You can draw gacha from a TwiCa-enabled stream's channel point redemption without logging in to TwiCa. Twitch login is required to view your collection."
       },
       "collection": {
         "question": "Where can I see cards I received?",
@@ -930,11 +930,11 @@
       "title": "For Streamers",
       "affiliate": {
         "question": "Are there requirements for streamer features?",
-        "answer": "Channel point reward integration requires Twitch Affiliate or Partner status. Log in with an eligible account to use streamer features."
+        "answer": "Channel point redemption integration requires Twitch Affiliate or Partner status. Log in with an eligible account to use streamer features."
       },
       "setup": {
         "question": "What should I set up first?",
-        "answer": "Create cards, select or create a channel point reward in Stream Settings, then save and register EventSub."
+        "answer": "Create cards, select or create a channel point redemption in Stream Settings, then save and register EventSub."
       },
       "overlay": {
         "question": "What should I add to OBS?",
@@ -949,7 +949,7 @@
       "title": "Troubleshooting",
       "eventsub": {
         "question": "Gacha does not run after a channel point redemption",
-        "answer": "Check the EventSub status in Stream Settings. If it is not connected, save and register it again. Also confirm that the Twitch reward is enabled."
+        "answer": "Check the EventSub status in Stream Settings. If it is not connected, save and register it again. Also confirm that the channel point redemption is enabled on Twitch."
       },
       "imageUpload": {
         "question": "Image upload fails",
@@ -1106,7 +1106,7 @@
       "title": "Article 2: How We Use Your Information",
       "item1": "User authentication and login session management",
       "item2": "Providing gacha functionality and managing card collections",
-      "item3": "Twitch API integration (channel point reward management, chat announcements, etc.)",
+      "item3": "Twitch API integration (channel point redemption management, chat announcements, etc.)",
       "item4": "Access analytics for service improvement and operations"
     },
     "article3": {

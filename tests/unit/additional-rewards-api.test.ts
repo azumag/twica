@@ -432,7 +432,7 @@ describe('/api/streamer/additional-rewards raid options', () => {
 
     expect(response.status).toBe(503)
     await expect(response.json()).resolves.toEqual({
-      error: '追加報酬のN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。',
+      error: '追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。',
     })
   })
 

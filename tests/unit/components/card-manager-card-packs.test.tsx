@@ -101,7 +101,7 @@ describe('CardManager pack-relative probability (Issue #565)', () => {
     )
   }
 
-  const HINT = '確率はこのパックが指定された報酬から引いた場合の抽選確率です'
+  const HINT = '確率はこのパックが指定されたチャネルポイント引き換えから引いた場合の抽選確率です'
 
   it('shows probabilities against all active cards when no pack filter is selected', () => {
     renderCardManager(packCards, {
