@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { GachaService } from '@/lib/services/gacha'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { createMockQueryBuilder } from '../utils/supabase-mock'
@@ -22,7 +22,7 @@ const testCards = [
 ]
 
 /** cardsクエリの共通モック生成。thenableにしてawait対応 */
-function createCardsQuery(cards: typeof testCards | []) {
+function createCardsQuery<T extends Record<string, unknown>>(cards: T[]) {
   const q = createMockQueryBuilder()
   ;(q as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
     resolve({ data: cards, error: null })
@@ -402,6 +402,176 @@ describe('GachaService.executeGacha', () => {
     }
     expect(mockRpc).not.toHaveBeenCalled()
   })
+
+  // Issue #579 (#576 フェーズ2): パック内レアリティ自動配分。
+  // Math.randomを固定し、実効重み(effectiveWeight)から導かれる境界どおりに
+  // 選択されることを決定的に検証する(統計的サンプリングは使わない)。
+  describe('パック内レアリティ自動配分 (effectiveWeight)', () => {
+    const packCards = [
+      { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
+      { id: 'c2', name: 'Common2', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
+      { id: 'r1', name: 'Rare1', description: null, image_url: null, rarity: 'rare', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
+    ]
+
+    let randomSpy: ReturnType<typeof vi.spyOn> | null = null
+
+    afterEach(() => {
+      randomSpy?.mockRestore()
+      randomSpy = null
+    })
+
+    function setupCardsAndRpc<T extends Record<string, unknown>>(cards: T[]) {
+      const cardsQuery = createCardsQuery(cards)
+      const mockRpc = vi.fn().mockResolvedValue({ data: { is_duplicate: false }, error: null })
+      mockGetSupabaseAdmin.mockReturnValue({
+        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
+        rpc: mockRpc,
+      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      return { cardsQuery, mockRpc }
+    }
+
+    it('自動モード: 実効重みの境界どおりにrareカードを選択する', async () => {
+      // c1: 60%*(1/2)=0.3, c2: 60%*(1/2)=0.3, r1: 40%*(1/1)=0.4
+      // 境界(x10000): c1=[0,3000) c2=[3000,6000) r1=[6000,10000)
+      setupCardsAndRpc(packCards)
+      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.65) // -> 6500 -> r1
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
+        rarityWeightsScope: 'global',
+        rarityWeights: { common: 60, rare: 40 },
+        packRarityWeights: null,
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.card.id).toBe('r1')
+      }
+    })
+
+    it('自動モード: 実効重みの境界どおりにcommonカード(c2)を選択する', async () => {
+      setupCardsAndRpc(packCards)
+      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.35) // -> 3500 -> c2
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
+        rarityWeightsScope: 'global',
+        rarityWeights: { common: 60, rare: 40 },
+        packRarityWeights: null,
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.card.id).toBe('c2')
+      }
+    })
+
+    it('選択に使ったeffectiveWeightがselectedCardのdrop_rateやAPI応答に漏れない(元のdrop_rateのまま)', async () => {
+      setupCardsAndRpc(packCards)
+      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.65) // -> r1
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
+        rarityWeightsScope: 'global',
+        rarityWeights: { common: 60, rare: 40 },
+        packRarityWeights: null,
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        // effectiveWeight(0.4)ではなく元カードのdrop_rate(1.0)がそのまま返る
+        expect(result.data.card.drop_rate).toBe(1.0)
+        expect(result.data.card).not.toHaveProperty('intra_rarity_weight')
+      }
+    })
+
+    it('手動モード回帰: rarityWeights未設定ならdrop_rateベースの選択に戻る(effectiveWeightは無視)', async () => {
+      const manualCards = [
+        { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 0.5, intra_rarity_weight: 1.0 },
+        { id: 'c2', name: 'Common2', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 0.3, intra_rarity_weight: 1.0 },
+        { id: 'r1', name: 'Rare1', description: null, image_url: null, rarity: 'rare', collection_name: 'weapons', drop_rate: 0.2, intra_rarity_weight: 1.0 },
+      ]
+      // drop_rate境界(x10000): c1=[0,5000) c2=[5000,8000) r1=[8000,10000)
+      setupCardsAndRpc(manualCards)
+      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.85) // -> 8500 -> r1 (drop_rateベース)
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
+        rarityWeightsScope: 'global',
+        rarityWeights: null, // 手動モード
+        packRarityWeights: null,
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.card.id).toBe('r1')
+      }
+    })
+
+    it('無制限抽選(collectionName未指定)ではweightsConfigを無視しdrop_rateベースのまま選択する', async () => {
+      const unrestrictedPool = [
+        { id: 'a1', name: 'A', description: null, image_url: null, rarity: 'common', drop_rate: 0.9 },
+        { id: 'a2', name: 'B', description: null, image_url: null, rarity: 'rare', drop_rate: 0.1 },
+      ]
+      // drop_rate境界(x10000): a1=[0,9000) a2=[9000,10000)
+      // もしeffectiveWeight(common:95,rare:5→a1=[0,9500))が誤って使われるとa1が選ばれてしまう境界を選ぶ
+      setupCardsAndRpc(unrestrictedPool)
+      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.92) // -> 9200
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, null, {
+        rarityWeightsScope: 'global',
+        rarityWeights: { common: 95, rare: 5 },
+        packRarityWeights: null,
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        // drop_rateベースならa2、effectiveWeightが誤って使われればa1になる
+        expect(result.data.card.id).toBe('a2')
+      }
+    })
+
+    it('DEFAULT_PACK_SENTINEL + パック別重みの__default__エントリが優先される', async () => {
+      const defaultPackCards = [
+        { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: null, drop_rate: 1.0, intra_rarity_weight: 1.0 },
+        { id: 'r1', name: 'Rare1', description: null, image_url: null, rarity: 'rare', collection_name: null, drop_rate: 1.0, intra_rarity_weight: 1.0 },
+      ]
+      // __default__エントリ: common 20%, rare 80% → 境界(x10000): c1=[0,2000) r1=[2000,10000)
+      setupCardsAndRpc(defaultPackCards)
+      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5) // -> 5000 -> r1 (__default__エントリなら) / c1 (グローバルなら)
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, DEFAULT_PACK_SENTINEL, {
+        rarityWeightsScope: 'per_pack',
+        rarityWeights: { common: 70, rare: 30 },
+        packRarityWeights: { [DEFAULT_PACK_SENTINEL]: { common: 20, rare: 80 } },
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.card.id).toBe('r1')
+      }
+    })
+
+    it('per_pack継承: パック別重みにエントリが無ければグローバル重みにフォールバックする', async () => {
+      // per_pack scopeだが 'weapons' にエントリが無い → グローバル(common:60,rare:40)を継承
+      setupCardsAndRpc(packCards)
+      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.65) // -> 6500 -> r1 (グローバル境界どおり)
+
+      const service = new GachaService()
+      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
+        rarityWeightsScope: 'per_pack',
+        rarityWeights: { common: 60, rare: 40 },
+        packRarityWeights: { characters: { common: 10, rare: 90 } }, // 'weapons'にエントリ無し
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.card.id).toBe('r1')
+      }
+    })
+  })
 })
 
 describe('GachaService.executeGachaForEventSub', () => {
@@ -746,6 +916,67 @@ describe('GachaService.executeGachaForEventSub', () => {
 
     expect(result.success).toBe(true)
     expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'weapons')
+  })
+
+  // Issue #579 (#576 フェーズ2): executeGachaForEventSubが取得したstreamer行の
+  // rarity_weights_scope/rarity_weights/pack_rarity_weightsが、パック内自動配分の
+  // 実効重み計算までちゃんと流れ込むことを、乱数固定で決定的に検証する。
+  it('メイン報酬: streamerのper_packレアリティ重み設定が実効重み選択まで伝播する', async () => {
+    const streamerQuery = createMockQueryBuilder()
+    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        channel_point_collection_name: 'weapons',
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        chat_announcement_multi_template: null,
+        chat_announcement_multi_show_cards: true,
+        raid_gacha_active_until: null,
+        rarity_weights_scope: 'per_pack',
+        rarity_weights: { common: 70, rare: 30 },
+        pack_rarity_weights: { weapons: { common: 20, rare: 80 } },
+      },
+      error: null,
+    })
+    const weightedPackCards = [
+      { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
+      { id: 'r1', name: 'Rare1', description: null, image_url: null, rarity: 'rare', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
+    ]
+    const cardsQuery = createCardsQuery(weightedPackCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-per-pack-propagation' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'streamers') return streamerQuery
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    // weapons専用重み(common:20%,rare:80%) → 境界(x10000): c1=[0,2000) r1=[2000,10000)
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9) // -> 9000 -> r1
+    try {
+      const service = new GachaService()
+      const result = await service.executeGachaForEventSub({
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'user-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'main-reward', cost: 100 },
+      }, 'event-per-pack-propagation')
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.card.id).toBe('r1')
+      }
+    } finally {
+      randomSpy.mockRestore()
+    }
   })
 
   // Issue #393: additional reward routes its own pack into the card query
