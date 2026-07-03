@@ -65,6 +65,12 @@ export interface ChatMessagePlaceholders {
   // コンプ進捗用: 配信者のアクティブカードの総種類数（オプション）
   // Collection progress: total number of active card types for this streamer (optional)
   all?: number
+  // 獲得したカードが属するパックの表示名（オプション）。抽選がパックに絞られて
+  // いない場合や値が空文字の場合は未指定として扱われ、プレースホルダーは空文字に置換される
+  // Display name of the pack the obtained card belongs to (optional). Treated as
+  // unset when the draw wasn't restricted to a pack or the value is an empty
+  // string; the placeholder is then replaced with an empty string (Issue #597)
+  packName?: string
 }
 
 /**
@@ -366,6 +372,14 @@ export class TwitchChatService {
       message = message.replace(/\{newCardCount\}/g, String(placeholders.newCardCount))
     } else {
       message = message.replace(/\{newCardCount\}/g, '')
+    }
+
+    if (placeholders.packName) {
+      message = message.replace(/\{packName\}/g, placeholders.packName)
+    } else {
+      // パック未指定の抽選（無制限ガチャ）の場合は空文字に置換
+      // Strip the placeholder when the draw wasn't restricted to a pack
+      message = message.replace(/\{packName\}/g, '')
     }
 
     // 連続する空白を1つにまとめ、前後の空白を削除

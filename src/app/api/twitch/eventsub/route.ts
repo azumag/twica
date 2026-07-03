@@ -11,12 +11,19 @@ import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders 
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
+import { resolvePackDisplayName } from "@/lib/collection-packs";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
 const CARD_LIST_SEPARATOR = "、";
 const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = '@{user} が{draws}連ガチャで {rarityCounts} を獲得しました！{cards}';
+// Issue #597: {packName} でデフォルト(未分類)パックの表示名オーバーライドが
+// 未設定の場合のフォールバックラベル。チャット文言は他の箇所(rarityMap等)と
+// 同様に i18n非対応でハードコードする。messages/*.json の
+// "collections.defaultOnlyName"（コレクションページのパックタブ用ラベル）と
+// 同じ文言に揃えている。
+const DEFAULT_PACK_CHAT_FALLBACK_LABEL = "デフォルトパック";
 
 function formatCardNamesForChat(cardNames: string[], maxCharacters: number): string {
   if (cardNames.length === 0) return "";
@@ -437,6 +444,9 @@ interface RedemptionNotifyData {
     cards?: GachaCard[];
     userTwitchUsername: string;
     rewardId?: string | null;
+    // Issue #597: {packName} プレースホルダ解決用。抽選がパックに絞られて
+    // いない場合(無制限ガチャ、raid gacha 等)は null/undefined。
+    collectionName?: string | null;
   };
   broadcasterTwitchUserId: string;
   streamer: EventSubStreamerInfo;
@@ -464,7 +474,8 @@ async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
       data.gachaResult.card,
       data.gachaResult.userTwitchUsername,
       data.userId,
-      data.gachaResult.cards
+      data.gachaResult.cards,
+      data.gachaResult.collectionName
     ),
   ]);
 
@@ -623,6 +634,7 @@ async function handleRedemption(messageId: string, event: {
       cards: result.data.cards,
       userTwitchUsername: result.data.userTwitchUsername,
       rewardId: result.data.rewardId ?? event.reward.id,
+      collectionName: result.data.collectionName ?? null,
     };
 
     logger.info('[handleRedemption] END', { messageId });
@@ -651,6 +663,7 @@ async function handleRedemption(messageId: string, event: {
  * @param userName - ガチャを引いたユーザー名
  * @param userId - ガチャを引いたユーザーのTwitch ID
  * @param cards - 複数枚ガチャ時の獲得カード一覧
+ * @param collectionName - 抽選が絞られたパックの collection_name（無制限ガチャは null/undefined、Issue #597）
  */
 async function sendChatAnnouncement(
   broadcasterTwitchUserId: string,
@@ -660,11 +673,13 @@ async function sendChatAnnouncement(
     chat_announcement_template: string | null;
     chat_announcement_multi_template: string | null;
     chat_announcement_multi_show_cards: boolean;
+    default_card_pack_name?: string | null;
   },
   card: GachaCard,
   userName: string,
   userId: string,
-  cards?: GachaCard[]
+  cards?: GachaCard[],
+  collectionName?: string | null
 ): Promise<void> {
   const drawnCards = cards && cards.length > 0 ? cards : [card];
   const isMultiDraw = drawnCards.length > 1;
@@ -828,6 +843,17 @@ async function sendChatAnnouncement(
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://twica.live';
   const collectionUrl = `${baseUrl}/collection/${streamer.id}`;
 
+  // Issue #597: {packName} 用に、抽選が絞られたパックの表示名を解決する。
+  // DBクエリ不要（collectionName/default_card_pack_name は既に取得済み）のため
+  // 他プレースホルダーのような needsX ガードは不要。
+  // Resolve the {packName} display name. No extra DB query needed (both inputs
+  // are already fetched), unlike the other placeholders gated behind needsX.
+  const packName = resolvePackDisplayName(
+    collectionName,
+    streamer.default_card_pack_name ?? null,
+    DEFAULT_PACK_CHAT_FALLBACK_LABEL
+  );
+
   // メッセージのプレースホルダーを構築
   // Build message placeholders
   const placeholders: ChatMessagePlaceholders = {
@@ -848,6 +874,7 @@ async function sendChatAnnouncement(
     unique: uniqueCount,
     all: allCount,
     url: collectionUrl,
+    packName: packName || undefined,
   };
 
   // チャットサービスでメッセージを構築・送信

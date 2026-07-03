@@ -47,6 +47,11 @@ export interface EventSubStreamerInfo {
   chat_announcement_template: string | null
   chat_announcement_multi_template: string | null
   chat_announcement_multi_show_cards: boolean
+  // Issue #597: {packName} プレースホルダでデフォルト(未分類)パックの表示名
+  // オーバーライドとして使う(#554 の default_card_pack_name)。raid gacha 経路
+  // (executeGachaForRaidEvent)はパックに絞られることが無いため未取得のまま
+  // (undefined)でもよいよう optional にする。
+  default_card_pack_name?: string | null
 }
 
 export interface GachaResult {
@@ -54,6 +59,10 @@ export interface GachaResult {
   cards?: GachaCard[]
   userTwitchUsername: string
   rewardId?: string | null
+  // Issue #597: 抽選をパックに絞った際の collection_name(DEFAULT_PACK_SENTINEL
+  // を含む)。無制限抽選(パック指定なし)の場合は null/undefined。チャット通知
+  // の {packName} プレースホルダ解決に使う。
+  collectionName?: string | null
   /** EventSub経由の場合のみ設定。クエリ統合のためガチャ結果と一緒に返す */
   streamer?: EventSubStreamerInfo
 }
@@ -588,10 +597,12 @@ export class GachaService {
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
       // rarity_weights / rarity_weights_scope / pack_rarity_weights は Issue #579
       // (#576 フェーズ2) のパック内レアリティ自動配分に使う。
+      // default_card_pack_name (migration 00063, Issue #554) は {packName} プレースホルダで
+      // デフォルト(未分類)パックの表示名オーバーライドとして使う(Issue #597)。
       let { data: streamer, error: streamerError } = await withRetry(
         () => this.supabase
           .from('streamers')
-          .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, rarity_weights_scope, pack_rarity_weights')
+          .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, rarity_weights_scope, pack_rarity_weights, default_card_pack_name')
           .eq('twitch_user_id', event.broadcaster_user_id)
           .maybeSingle(),
         'gacha:executeGachaForEventSub:streamer',
@@ -612,10 +623,13 @@ export class GachaService {
         streamerError &&
         (isMissingRarityWeightsScopeColumnError(streamerError) || isMissingPackRarityWeightsColumnError(streamerError))
       ) {
+        // default_card_pack_name (00063) は rarity_weights_scope/pack_rarity_weights
+        // (00065) より先行するマイグレーションのため、この分岐に来る時点で確実に
+        // デプロイ済み。選択して問題ない。
         const weightsFallback = await withRetry(
           () => this.supabase
             .from('streamers')
-            .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights')
+            .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, default_card_pack_name')
             .eq('twitch_user_id', event.broadcaster_user_id)
             .maybeSingle(),
           'gacha:executeGachaForEventSub:streamer:weights-fallback',
@@ -650,6 +664,10 @@ export class GachaService {
               channel_point_collection_name: null,
               rarity_weights_scope: null,
               pack_rarity_weights: null,
+              // default_card_pack_name (00063) は channel_point_collection_name (00061)
+              // より後発のマイグレーションのため、この分岐に来る時点で確実に未デプロイ。
+              // 選択せず null 固定にする(Issue #597)。
+              default_card_pack_name: null,
             }
           : collectionFallback.data
         streamerError = collectionFallback.error
@@ -677,6 +695,10 @@ export class GachaService {
               rarity_weights: null,
               rarity_weights_scope: null,
               pack_rarity_weights: null,
+              // Issue #597: この分岐は channel_point_collection_name(00061)より
+              // 前段の欠落まで拾う最も古いフォールバックのため、default_card_pack_name
+              // (00063)も確実に未デプロイ。選択せず null 固定にする。
+              default_card_pack_name: null,
             }
           : fallbackResult.data
         streamerError = fallbackResult.error
@@ -714,12 +736,16 @@ export class GachaService {
         return ok({
           ...result.data,
           rewardId: event.reward.id,
+          // Issue #597: {packName} プレースホルダ解決用に、この抽選が絞られた
+          // パックの collection_name をそのまま結果に持たせる。
+          collectionName: collectionName ?? null,
           streamer: {
             id: streamer.id,
             chat_announcement_enabled: streamer.chat_announcement_enabled,
             chat_announcement_template: streamer.chat_announcement_template,
             chat_announcement_multi_template: streamer.chat_announcement_multi_template,
             chat_announcement_multi_show_cards: streamer.chat_announcement_multi_show_cards ?? true,
+            default_card_pack_name: streamer.default_card_pack_name ?? null,
           },
         })
       }
