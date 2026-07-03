@@ -156,6 +156,33 @@ describe('EventSub redemption: card issuance limit error handling', () => {
     expect(mockReport).not.toHaveBeenCalled()
   })
 
+  it('R2 (PR #450 follow-up): レガシーフォールバックの拒否(limitUnavailable)は genuine soldOut と区別され reportError を呼ぶ', async () => {
+    // execute_gacha_transaction RPC が未デプロイのまま limited カードが選ばれた
+    // 場合、GachaService.executeGachaLegacy は CARD_ISSUANCE_MESSAGES.soldOut
+    // ではなく専用の limitUnavailable を返す(src/lib/services/gacha.ts)。
+    // これは「発行枚数上限に達した」という運用上正常な状態ではなく、
+    // 「RPC関数が本番に存在しない」という本来あってはならない異常事態なので、
+    // eventsub route のソフトフェイル抑止リストに含めず reportError を発火させ、
+    // 確実にアラートされることを検証する。
+    const { CARD_ISSUANCE_MESSAGES } = await import('@/lib/card-issuance')
+    const { GachaService } = await import('@/lib/services/gacha')
+    const { reportError } = await import('@/lib/sentry/error-handler')
+    const mockReport = vi.mocked(reportError)
+    vi.mocked(GachaService).mockImplementation(() => ({
+      executeGachaForEventSub: vi.fn().mockResolvedValue({
+        success: false,
+        error: CARD_ISSUANCE_MESSAGES.limitUnavailable,
+      }),
+    }) as unknown as InstanceType<typeof GachaService>)
+
+    const { POST } = await import('@/app/api/twitch/eventsub/route')
+    const req = await buildRedemptionRequest('msg-limit-unavailable-1')
+    const res = await POST(req as unknown as import('next/server').NextRequest)
+
+    expect(res.status).toBe(200)
+    expect(mockReport).toHaveBeenCalledTimes(1)
+  })
+
   it('limit_reached 以外のエラーは引き続き reportError を呼ぶ (回帰防止)', async () => {
     const { GachaService } = await import('@/lib/services/gacha')
     const { reportError } = await import('@/lib/sentry/error-handler')
