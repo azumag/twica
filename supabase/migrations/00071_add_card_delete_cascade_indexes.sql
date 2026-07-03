@@ -56,12 +56,27 @@
 --
 -- 命名規則は既存の idx_user_cards_card_id (00001) に倣い
 -- idx_<table>_<column> とする。
+--
+-- battles テーブルのみ存在チェックで囲む: 00024_fix_rls_policies_security.sql
+-- が明記する通り、本番環境には battles/battle_stats テーブルが存在しない
+-- (battle 機能はどのナビゲーションからもリンクされていない未使用機能で、
+-- テーブル自体がマイグレーション経路外で欠落している)。無条件の
+-- CREATE INDEX ON battles(...) は本番で
+-- "relation battles does not exist" (42P01) で失敗し、本ファイルは
+-- 単一トランザクションのため他3つのインデックスも道連れでロールバックし、
+-- 後続マイグレーションを全てブロックしていた。00024 と同じ
+-- pg_class 存在チェックで回避する。
 
 CREATE INDEX IF NOT EXISTS idx_gacha_history_card_id
   ON gacha_history(card_id);
 
-CREATE INDEX IF NOT EXISTS idx_battles_opponent_card_id
-  ON battles(opponent_card_id);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'battles') THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_battles_opponent_card_id ON battles(opponent_card_id)';
+  END IF;
+END
+$$;
 
 CREATE INDEX IF NOT EXISTS idx_card_owner_stats_card_id
   ON card_owner_stats(card_id);
