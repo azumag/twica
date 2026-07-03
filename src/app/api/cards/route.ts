@@ -19,6 +19,7 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { logger } from "@/lib/logger";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
 import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 import type { ApiRateLimitResponse } from "@/types/api";
@@ -82,7 +83,7 @@ export async function POST(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
-    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber } = body;
+    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber, maxIssuanceCount } = body;
 
     // Issue #393: optional card pack name. Centralized helper distinguishes
     // "omitted" from "present-but-invalid" so bad types are rejected, not ignored.
@@ -137,6 +138,14 @@ export async function POST(request: NextRequest) {
     ) {
       return NextResponse.json(
         { error: CARD_NUMBER_MESSAGES.invalid },
+        { status: 400 }
+      );
+    }
+
+    const parsedIssuanceLimit = parseCardIssuanceLimit(maxIssuanceCount);
+    if (parsedIssuanceLimit === "invalid") {
+      return NextResponse.json(
+        { error: CARD_ISSUANCE_MESSAGES.invalid },
         { status: 400 }
       );
     }
@@ -216,6 +225,7 @@ export async function POST(request: NextRequest) {
       image_url: imageUrl,
       rarity: normalizedRarity,
       card_number: cardNumber ?? null,
+      max_issuance_count: parsedIssuanceLimit,
       drop_rate: dropRate,
     };
     // Issue #393: persist the pack name when provided (null clears it = all cards).
@@ -235,6 +245,16 @@ export async function POST(request: NextRequest) {
 
     if (error && isMissingCardNumberColumnError(error)) {
       delete insertData.card_number;
+      const retryResult = await supabaseAdmin
+        .from("cards")
+        .insert(insertData)
+        .select()
+        .maybeSingle();
+      card = retryResult.data;
+      error = retryResult.error;
+    }
+    if (error && isMissingCardIssuanceColumnError(error)) {
+      delete insertData.max_issuance_count;
       const retryResult = await supabaseAdmin
         .from("cards")
         .insert(insertData)

@@ -232,6 +232,7 @@ export interface Database {
           image_url: string | null
           rarity: Rarity
           card_number: number | null
+          max_issuance_count: number | null
           // 所属カードパック名（NULL=未分類=全カード抽選対象）。Issue #393
           // Pack this card belongs to (NULL = unclassified = drawable from any reward)
           collection_name: string | null
@@ -257,6 +258,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           card_number?: number | null
+          max_issuance_count?: number | null
           collection_name?: string | null
           drop_rate?: number
           intra_rarity_weight?: number
@@ -279,6 +281,7 @@ export interface Database {
           image_url?: string | null
           rarity?: Rarity
           card_number?: number | null
+          max_issuance_count?: number | null
           collection_name?: string | null
           drop_rate?: number
           intra_rarity_weight?: number
