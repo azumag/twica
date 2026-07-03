@@ -257,101 +257,168 @@ export class GachaService {
           )
         : null
 
-      // drop_rate の正規化(DECIMAL文字列→number)は選択方式に関わらず必ず先に
-      // 通す。返却カードの再構築(下記)もこの正規化済み配列を参照することで、
-      // 生 rows の文字列 drop_rate が GachaResult/broadcast へ漏れないようにする
-      // (従来は selectWeightedCard の戻り値=正規化済みクローンをそのまま返して
-      // いたため保証されていた性質。再構築方式でも同じ保証を維持する)。
-      const normalizedCards = normalizeDropRate(availableCards)
+      // R1 (PR #450 レビュー follow-up): execute_gacha_transaction は、選択した
+      // カードが「同時実行中の別ドローに先に発行枠を取られた」または「選択後に
+      // 行自体が消えた」場合に limit_reached:true を返す(migration 00067
+      // L44-65: FOR UPDATE ロック取得後の NOT FOUND / 上限到達チェックは、どちらも
+      // gacha_history への INSERT (L67) より前に return するため、副作用ゼロで
+      // 中断される)。したがって同じ eventId で RPC を再実行しても二重付与や
+      // 二重履歴は発生しない — 安全に「選び直して再試行」できる。
+      //
+      // 修正前は limit_reached を「抽選全体の失敗」として即 soldOut を返して
+      // いたため、フェッチ済みプールの残り(多くの場合 90% 以上を占める無制限
+      // カード)がまだ選べるにもかかわらず、ユーザーはチャネルポイントを消費した
+      // 上でカードを受け取れなかった。max_issuance_count=1 の「ユニークカード」
+      // 争奪タイミング(バーストで同一カードに複数ドローが殺到する場面)で最も
+      // 深刻だった。
+      //
+      // 対策: limit_reached を受けたら、選ばれたカードだけをローカルの抽選
+      // プールから除外し、残りのプールに対して選択ロジック(実効重み/手動を
+      // 問わず selectCardFromPool に共通化)を再実行してから RPC を呼び直す。
+      // MAX_LIMIT_REACHED_RETRIES=5 で打ち切るのは、(a) 少数の上限カードへの
+      // バーストであれば数回の再選択で豊富な残りプールへ確実に落ちる一方、
+      // (b) 何らかの異常(例: プール全体が上限到達直前)で毎回 limit_reached が
+      // 続く場合に、1回のガチャで無制限に RPC を叩き続けてDB/RPCへ負荷を
+      // かけ続けることを防ぐため。プールが尽きた場合、または再試行上限に
+      // 達した場合のみ soldOut を返す。
+      const MAX_LIMIT_REACHED_RETRIES = 5
+      let pool = availableCards
 
-      // 選択プールは「id + 選択重み」だけの最小型に落とす(WeightedCard)。
-      // 両分岐の配列型が異なるユニオンのままだと selectWeightedCard の
-      // ジェネリック推論が単一の T を選べないため、明示的に共通型へ寄せる。
-      const selectionPool: Array<{ id: string; drop_rate: number }> = resolvedRarityWeights
-        ? computeEffectiveWeights(normalizedCards, resolvedRarityWeights).map(({ card, effectiveWeight }) => ({
-            id: card.id,
-            drop_rate: effectiveWeight,
-          }))
-        : normalizedCards
+      for (let attempt = 1; ; attempt += 1) {
+        const selectedCard = this.selectCardFromPool(pool, resolvedRarityWeights)
 
-      const picked = selectWeightedCard(selectionPool)
-
-      if (!picked) {
-        return err('Failed to select card')
-      }
-
-      // 選択には effectiveWeight (パック内実効重み) を drop_rate の代わりに
-      // 使うことがあるが、返す値・下流に渡す値は必ず元カード(正規化済み)から
-      // 再構築する。effectiveWeight は選択専用の一時的な重みであり実際の
-      // drop_rate とは異なる値になりうるため、gacha_history や配信オーバーレイ
-      // へのブロードキャストペイロードに漏れてはならない。intra_rarity_weight も
-      // GachaCard 型に存在しないフィールドなので同様に除外する。
-      const originalCard = normalizedCards.find((card) => card.id === picked.id)
-      if (!originalCard) {
-        return err('Failed to select card')
-      }
-      const selectedCard: GachaCard = {
-        id: originalCard.id,
-        name: originalCard.name,
-        description: originalCard.description,
-        image_url: originalCard.image_url,
-        rarity: originalCard.rarity,
-        drop_rate: originalCard.drop_rate,
-        // Issue #108: legacy フォールバック(executeGachaLegacy)が発行上限の
-        // 再チェックに参照するため、再構築後も必ず引き継ぐ。
-        max_issuance_count: originalCard.max_issuance_count ?? null,
-      }
-
-      // gacha_history, users, user_cards を1トランザクションでアトミックに実行
-      // 従来は3回の個別DB操作で中間状態（履歴あり・カード未付与）が発生しえた
-      const { data: rpcResult, error: rpcError } = await withRetry(
-        () => this.supabase.rpc('execute_gacha_transaction', {
-          p_event_id: eventId || null,
-          p_user_twitch_id: userTwitchId,
-          p_user_twitch_username: userTwitchUsername,
-          p_card_id: selectedCard.id,
-          p_streamer_id: streamerId,
-          p_reward_cost: rewardCost ?? null,
-        }),
-        'gacha:executeGacha:rpc',
-      )
-
-      if (rpcError) {
-        // RPC関数が未デプロイの場合（マイグレーション前）は旧ロジックにフォールバック
-        // 無停止デプロイ時にアプリコードが先にデプロイされても、
-        // ユーザーのチャネルポイントが消費されカード未付与になることを防ぐ
-        // TODO: マイグレーション適用確認後にフォールバックを削除
-        if (rpcError.code === '42883') {
-          logger.warn('execute_gacha_transaction not found, falling back to legacy operations', {
-            streamerId, userTwitchId, eventId,
-          })
-          return this.executeGachaLegacy(streamerId, userTwitchId, userTwitchUsername, selectedCard, eventId, rewardCost)
+        if (!selectedCard) {
+          return err('Failed to select card')
         }
 
-        await reportError(new Error(`Gacha RPC failed: ${rpcError.message}`), {
-          context: 'gacha:executeGacha:rpc',
-          streamerId,
-          userTwitchId,
-          eventId,
+        // gacha_history, users, user_cards を1トランザクションでアトミックに実行
+        // 従来は3回の個別DB操作で中間状態（履歴あり・カード未付与）が発生しえた
+        const { data: rpcResult, error: rpcError } = await withRetry(
+          () => this.supabase.rpc('execute_gacha_transaction', {
+            p_event_id: eventId || null,
+            p_user_twitch_id: userTwitchId,
+            p_user_twitch_username: userTwitchUsername,
+            p_card_id: selectedCard.id,
+            p_streamer_id: streamerId,
+            p_reward_cost: rewardCost ?? null,
+          }),
+          'gacha:executeGacha:rpc',
+        )
+
+        if (rpcError) {
+          // RPC関数が未デプロイの場合（マイグレーション前）は旧ロジックにフォールバック
+          // 無停止デプロイ時にアプリコードが先にデプロイされても、
+          // ユーザーのチャネルポイントが消費されカード未付与になることを防ぐ
+          // TODO: マイグレーション適用確認後にフォールバックを削除
+          if (rpcError.code === '42883') {
+            logger.warn('execute_gacha_transaction not found, falling back to legacy operations', {
+              streamerId, userTwitchId, eventId,
+            })
+            return this.executeGachaLegacy(streamerId, userTwitchId, userTwitchUsername, selectedCard, eventId, rewardCost)
+          }
+
+          await reportError(new Error(`Gacha RPC failed: ${rpcError.message}`), {
+            context: 'gacha:executeGacha:rpc',
+            streamerId,
+            userTwitchId,
+            eventId,
+          })
+          return err(`Failed to execute gacha transaction: ${rpcError.message}`)
+        }
+
+        // EventSub重複通知の場合（event_idが既に処理済み）
+        if (rpcResult?.is_duplicate) {
+          return err('Duplicate event')
+        }
+
+        if (rpcResult?.limit_reached) {
+          pool = pool.filter((card) => card.id !== selectedCard.id)
+          if (attempt >= MAX_LIMIT_REACHED_RETRIES || pool.length === 0) {
+            return err(CARD_ISSUANCE_MESSAGES.soldOut)
+          }
+          continue
+        }
+
+        return ok({
+          card: selectedCard,
+          userTwitchUsername,
         })
-        return err(`Failed to execute gacha transaction: ${rpcError.message}`)
       }
-
-      // EventSub重複通知の場合（event_idが既に処理済み）
-      if (rpcResult?.is_duplicate) {
-        return err('Duplicate event')
-      }
-
-      if (rpcResult?.limit_reached) {
-        return err(CARD_ISSUANCE_MESSAGES.soldOut)
-      }
-
-      return ok({
-        card: selectedCard,
-        userTwitchUsername,
-      })
     } catch (error) {
       return err(`Unexpected error: ${error}`)
+    }
+  }
+
+  /**
+   * 抽選プールから1枚選択し、返却/RPC送信用に再構築したカードを返す。
+   * executeGacha の初回選択と、limit_reached 時の再抽選(R1: PR #450
+   * follow-up)の両方から呼ばれる共通ロジック。呼び出しごとに(縮小した)
+   * プールを渡すことで、pack-scoped 自動配分の effectiveWeight もその都度
+   * プール全体で再計算され、正しく再正規化される(normalizeDropRate による
+   * 型保証含め、executeGacha 直書き時と同じ挙動を維持)。
+   *
+   * プールが空、または全カードの選択重みが0で選択不能な場合は null を返す。
+   */
+  private selectCardFromPool<
+    T extends {
+      id: string
+      name: string
+      description: string | null
+      image_url: string | null
+      rarity: GachaCard['rarity']
+      drop_rate: unknown
+      max_issuance_count?: number | null
+      intra_rarity_weight?: number | null
+    }
+  >(pool: T[], resolvedRarityWeights: Record<string, number> | null): GachaCard | null {
+    if (pool.length === 0) {
+      return null
+    }
+
+    // drop_rate の正規化(DECIMAL文字列→number)は選択方式に関わらず必ず先に
+    // 通す。返却カードの再構築(下記)もこの正規化済み配列を参照することで、
+    // 生 rows の文字列 drop_rate が GachaResult/broadcast へ漏れないようにする
+    // (従来は selectWeightedCard の戻り値=正規化済みクローンをそのまま返して
+    // いたため保証されていた性質。再構築方式でも同じ保証を維持する)。
+    const normalizedCards = normalizeDropRate(pool)
+
+    // 選択プールは「id + 選択重み」だけの最小型に落とす(WeightedCard)。
+    // 両分岐の配列型が異なるユニオンのままだと selectWeightedCard の
+    // ジェネリック推論が単一の T を選べないため、明示的に共通型へ寄せる。
+    const selectionPool: Array<{ id: string; drop_rate: number }> = resolvedRarityWeights
+      ? computeEffectiveWeights(normalizedCards, resolvedRarityWeights).map(({ card, effectiveWeight }) => ({
+          id: card.id,
+          drop_rate: effectiveWeight,
+        }))
+      : normalizedCards
+
+    const picked = selectWeightedCard(selectionPool)
+
+    if (!picked) {
+      return null
+    }
+
+    // 選択には effectiveWeight (パック内実効重み) を drop_rate の代わりに
+    // 使うことがあるが、返す値・下流に渡す値は必ず元カード(正規化済み)から
+    // 再構築する。effectiveWeight は選択専用の一時的な重みであり実際の
+    // drop_rate とは異なる値になりうるため、gacha_history や配信オーバーレイ
+    // へのブロードキャストペイロードに漏れてはならない。intra_rarity_weight も
+    // GachaCard 型に存在しないフィールドなので同様に除外する。
+    const originalCard = normalizedCards.find((card) => card.id === picked.id)
+    if (!originalCard) {
+      return null
+    }
+
+    return {
+      id: originalCard.id,
+      name: originalCard.name,
+      description: originalCard.description,
+      image_url: originalCard.image_url,
+      rarity: originalCard.rarity,
+      drop_rate: originalCard.drop_rate,
+      // Issue #108: legacy フォールバック(executeGachaLegacy)が発行上限の
+      // 再チェックに参照するため、再構築後も必ず引き継ぐ。
+      max_issuance_count: originalCard.max_issuance_count ?? null,
     }
   }
 
@@ -431,11 +498,20 @@ export class GachaService {
     // The legacy fallback runs only while execute_gacha_transaction is missing on the DB.
     // Without FOR UPDATE row locking we cannot enforce issuance limits atomically here,
     // so refuse to issue limited cards via this path to avoid over-issuing.
+    //
+    // R2 (PR #450 レビュー follow-up): この拒否は「本物の soldOut (発行枚数上限に
+    // 到達済み)」とは全く別の異常系(RPC関数が本番に存在しない = マイグレーション
+    // 未適用のはずが後続コードだけ先にデプロイされた不整合状態)である。以前は
+    // soldOut と同一の文字列を返していたため、eventsub route.ts のソフトフェイル
+    // 抑止フィルタ(発行枚数上限到達は運用上正常なので reportError しない)に巻き
+    // 込まれ、この深刻な不整合が本番で一切アラートされなかった。専用の
+    // limitUnavailable を返すことで、genuine soldOut の抑止は維持したまま、この
+    // ケースだけ確実に reportError が発火するようにする。
     if (selectedCard.max_issuance_count !== null && selectedCard.max_issuance_count !== undefined) {
       logger.warn('Legacy fallback: refused to issue limited card (RPC not deployed yet)', {
         streamerId, userTwitchId, eventId, cardId: selectedCard.id,
       })
-      return err(CARD_ISSUANCE_MESSAGES.soldOut)
+      return err(CARD_ISSUANCE_MESSAGES.limitUnavailable)
     }
 
     // gacha_history upsert（冪等性のためevent_idで重複チェック）

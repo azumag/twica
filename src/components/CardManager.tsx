@@ -13,6 +13,7 @@ import { countCharacters } from "@/lib/text-utils";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
 import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
+import { MAX_ISSUANCE_COUNT_CAP } from "@/lib/card-issuance";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
@@ -1628,6 +1629,7 @@ export default function CardManager({
                           type="number"
                           name="maxIssuanceCount"
                           min="1"
+                          max={MAX_ISSUANCE_COUNT_CAP}
                           step="1"
                           inputMode="numeric"
                           placeholder={t("form.maxIssuanceCountPlaceholder")}
