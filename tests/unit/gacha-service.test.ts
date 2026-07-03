@@ -70,6 +70,38 @@ describe('GachaService.executeGacha', () => {
     })
   })
 
+  it('drop_rate が DECIMAL 文字列で返っても、結果カードの drop_rate は number に正規化される', async () => {
+    // Supabase JS client は DECIMAL(5,4) を文字列で返す場合がある
+    // (normalizeDropRate の存在理由)。返却カードを生 rows から再構築する
+    // 実装(#579)でも、正規化済み配列を参照して string が GachaResult /
+    // overlay broadcast へ漏れないことを担保する回帰テスト。
+    const stringDropRateCards = [
+      { id: 'card-1', name: 'Test Card', description: 'desc', image_url: null, rarity: 'common', drop_rate: '0.3000' as unknown as number },
+    ]
+    const cardsQuery = createCardsQuery(stringDropRateCards)
+    const mockRpc = vi.fn().mockResolvedValue({
+      data: { is_duplicate: false, history_id: 'h-1' },
+      error: null,
+    })
+
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn((table: string) => {
+        if (table === 'cards') return cardsQuery
+        return createMockQueryBuilder()
+      }),
+      rpc: mockRpc,
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+
+    const service = new GachaService()
+    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.card.drop_rate).toBe(0.3)
+      expect(typeof result.data.card.drop_rate).toBe('number')
+    }
+  })
+
   it('重複イベント: is_duplicate=true で Duplicate event エラーを返す', async () => {
     const cardsQuery = createCardsQuery(testCards)
 

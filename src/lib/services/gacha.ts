@@ -179,12 +179,22 @@ export class GachaService {
           )
         : null
 
-      const selectionPool = resolvedRarityWeights
-        ? computeEffectiveWeights(cards, resolvedRarityWeights).map(({ card, effectiveWeight }) => ({
+      // drop_rate の正規化(DECIMAL文字列→number)は選択方式に関わらず必ず先に
+      // 通す。返却カードの再構築(下記)もこの正規化済み配列を参照することで、
+      // 生 rows の文字列 drop_rate が GachaResult/broadcast へ漏れないようにする
+      // (従来は selectWeightedCard の戻り値=正規化済みクローンをそのまま返して
+      // いたため保証されていた性質。再構築方式でも同じ保証を維持する)。
+      const normalizedCards = normalizeDropRate(cards)
+
+      // 選択プールは「id + 選択重み」だけの最小型に落とす(WeightedCard)。
+      // 両分岐の配列型が異なるユニオンのままだと selectWeightedCard の
+      // ジェネリック推論が単一の T を選べないため、明示的に共通型へ寄せる。
+      const selectionPool: Array<{ id: string; drop_rate: number }> = resolvedRarityWeights
+        ? computeEffectiveWeights(normalizedCards, resolvedRarityWeights).map(({ card, effectiveWeight }) => ({
             id: card.id,
             drop_rate: effectiveWeight,
           }))
-        : normalizeDropRate(cards)
+        : normalizedCards
 
       const picked = selectWeightedCard(selectionPool)
 
@@ -193,12 +203,12 @@ export class GachaService {
       }
 
       // 選択には effectiveWeight (パック内実効重み) を drop_rate の代わりに
-      // 使うことがあるが、返す値・下流に渡す値は必ず元カードから再構築する。
-      // effectiveWeight は選択専用の一時的な重みであり実際の drop_rate とは
-      // 異なる値になりうるため、gacha_history や配信オーバーレイへの
-      // ブロードキャストペイロードに漏れてはならない。intra_rarity_weight も
+      // 使うことがあるが、返す値・下流に渡す値は必ず元カード(正規化済み)から
+      // 再構築する。effectiveWeight は選択専用の一時的な重みであり実際の
+      // drop_rate とは異なる値になりうるため、gacha_history や配信オーバーレイ
+      // へのブロードキャストペイロードに漏れてはならない。intra_rarity_weight も
       // GachaCard 型に存在しないフィールドなので同様に除外する。
-      const originalCard = cards.find((card) => card.id === picked.id)
+      const originalCard = normalizedCards.find((card) => card.id === picked.id)
       if (!originalCard) {
         return err('Failed to select card')
       }
