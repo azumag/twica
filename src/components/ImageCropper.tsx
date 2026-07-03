@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useMemo } from "react";
 import ReactCrop, { type Crop, centerCrop, makeAspectCrop } from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
+import { getColorManaged2DContext } from "@/lib/canvas-color-space";
 
 // Crop mode type: square or portrait
 // トリミングモードの型：正方形またはポートレイト
@@ -139,7 +140,10 @@ export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCa
     // Create an offscreen canvas for the crop operation
     // クロップ操作用のオフスクリーンCanvasを作成
     const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
+    // Display P3等の広色域で撮影された高解像度写真をsRGB canvasに描画すると
+    // 色域がクリップされ明度・彩度が下がって見えるため（#615）、可能な場合は
+    // Display P3 コンテキストを使用し、非対応環境ではsRGBにフォールバックする
+    const ctx = getColorManaged2DContext(canvas);
     if (!ctx) return null;
 
     // Calculate the actual pixel values from the percentage-based crop
