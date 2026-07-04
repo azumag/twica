@@ -16,70 +16,240 @@
   --font-mono: var(--font-mono-stack);
 
   /*
-   * Issue #587: overlayのガチャ演出（sparkle/confetti/hearts）のうち、
-   * confetti と hearts が sparkle と同じ上下バウンスを流用しており、紙吹雪もハートも
-   * 「粒がぴょこぴょこ動くだけ」の見た目になっていた。スタイルごとに専用の
-   * アニメーションを定義する（sparkle は既存の Tailwind 組み込み animate-ping を
-   * そのまま使い続けるため変更しない）。
-   * per-particle の animation-delay / animation-duration は
-   * src/app/overlay/[streamerId]/page.tsx 側で inline style により個別に上書きし、
-   * 20個のパーティクルが機械的に同期しないようにしている。
+   * オーバーレイのガチャ演出（レアリティ別エフェクト）。
+   *
+   * 各スタイルは専用のキーフレーム overlay-effect-<style> を持つ。
+   * per-particle の見た目（色・サイズ・軌道）と揺れ幅・回転量・落下距離などは
+   * src/lib/overlay-effect.ts が各パーティクルに固有の CSS カスタムプロパティ
+   * （--fx-fall / --fx-sway / --fx-rot 等）と inline style として与え、この
+   * キーフレームが var(...) で参照する。これにより1つの演出内でもパーティクルが
+   * 機械的に同期せず、自然なばらつきのある見た目になる。
+   * animation-delay / animation-duration も overlay page 側で inline 上書きする。
+   *
+   * duration の既定値（3s 等）は inline の animation-duration で上書きされるため、
+   * ここでは timing-function（緩急）と方向づけのためだけの目安値。
    */
-  --animate-overlay-effect-confetti: overlay-confetti-fall 2.8s linear infinite;
-  --animate-overlay-effect-hearts: overlay-hearts-float 3.2s ease-in infinite;
+  --animate-overlay-effect-sparkle: overlay-effect-sparkle 1.6s ease-in-out infinite;
+  --animate-overlay-effect-confetti: overlay-effect-confetti 3s linear infinite;
+  --animate-overlay-effect-hearts: overlay-effect-hearts 3.4s ease-in infinite;
+  --animate-overlay-effect-fireworks: overlay-effect-fireworks 1.5s cubic-bezier(0.15, 0.6, 0.3, 1) infinite;
+  --animate-overlay-effect-stars: overlay-effect-stars 1.8s ease-in infinite;
+  --animate-overlay-effect-bubbles: overlay-effect-bubbles 4s ease-out infinite;
+  --animate-overlay-effect-petals: overlay-effect-petals 3.8s linear infinite;
+  --animate-overlay-effect-snow: overlay-effect-snow 4.6s linear infinite;
+  --animate-overlay-effect-coins: overlay-effect-coins 2.4s ease-in infinite;
 }
 
-@keyframes overlay-confetti-fall {
-  /* 紙吹雪: カード上部付近から出現し、左右に揺れながら回転して落下する */
+@keyframes overlay-effect-sparkle {
+  /* キラキラ: その場で回転しながら拡大→縮小し明滅する星形 */
   0% {
-    transform: translate(0, 0) rotate(0deg) rotateX(0deg);
+    transform: scale(0) rotate(0deg);
+    opacity: 0;
+  }
+  25% {
+    transform: scale(var(--fx-scale, 1)) rotate(calc(var(--fx-rot, 120deg) * 0.4));
+    opacity: 1;
+  }
+  60% {
+    transform: scale(calc(var(--fx-scale, 1) * 0.85)) rotate(calc(var(--fx-rot, 120deg) * 0.7));
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(0) rotate(var(--fx-rot, 120deg));
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-effect-confetti {
+  /* 紙吹雪: 左右に揺れ（--fx-sway）ながら3D回転して落下（--fx-fall / --fx-spin） */
+  0% {
+    transform: translateY(0) translateX(0) rotateZ(0deg) rotateX(0deg);
     opacity: 0;
   }
   8% {
     opacity: 1;
   }
   25% {
-    transform: translate(16px, 70px) rotate(160deg) rotateX(200deg);
+    transform: translateY(calc(var(--fx-fall) * 0.25)) translateX(var(--fx-sway))
+      rotateZ(calc(var(--fx-spin) * 0.25)) rotateX(180deg);
   }
   50% {
-    transform: translate(-18px, 150px) rotate(320deg) rotateX(20deg);
+    transform: translateY(calc(var(--fx-fall) * 0.5)) translateX(calc(var(--fx-sway) * -1))
+      rotateZ(calc(var(--fx-spin) * 0.5)) rotateX(360deg);
   }
   75% {
-    transform: translate(14px, 230px) rotate(460deg) rotateX(200deg);
+    transform: translateY(calc(var(--fx-fall) * 0.75)) translateX(var(--fx-sway))
+      rotateZ(calc(var(--fx-spin) * 0.75)) rotateX(540deg);
   }
   92% {
     opacity: 1;
   }
   100% {
-    transform: translate(-10px, 300px) rotate(620deg) rotateX(20deg);
+    transform: translateY(var(--fx-fall)) translateX(0) rotateZ(var(--fx-spin)) rotateX(720deg);
     opacity: 0;
   }
 }
 
-@keyframes overlay-hearts-float {
-  /* ハート: カード下部/側面付近から出現し、左右に揺れながら拡大したのち
-     縮小・フェードアウトしつつ上に浮かび上がる */
+@keyframes overlay-effect-hearts {
+  /* ハート: 左右に揺れながら拡縮しつつ上へ浮かび上がる（--fx-rise は正の距離、上方向へ） */
   0% {
-    transform: translate(0, 0) scale(0.6);
+    transform: translateY(0) translateX(0) scale(0.5);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(calc(var(--fx-rise) * -0.15)) translateX(var(--fx-sway)) scale(var(--fx-scale, 1));
+  }
+  50% {
+    transform: translateY(calc(var(--fx-rise) * -0.5)) translateX(calc(var(--fx-sway) * -1)) scale(var(--fx-scale, 1));
+  }
+  80% {
+    opacity: 0.8;
+    transform: translateY(calc(var(--fx-rise) * -0.8)) translateX(var(--fx-sway)) scale(calc(var(--fx-scale, 1) * 0.9));
+  }
+  100% {
+    transform: translateY(calc(var(--fx-rise) * -1)) translateX(0) scale(0.55);
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-effect-fireworks {
+  /* 花火: 放射方向（--fx-dx/--fx-dy）へ飛び散り、後半は重力で少し落ちて消える */
+  0% {
+    transform: translate(0, 0) scale(0.2);
     opacity: 0;
   }
   12% {
     opacity: 1;
-    transform: translate(6px, -36px) scale(1);
+    transform: translate(calc(var(--fx-dx) * 0.35), calc(var(--fx-dy) * 0.35)) scale(1);
   }
-  38% {
-    transform: translate(-12px, -96px) scale(1.08);
-  }
-  64% {
-    transform: translate(10px, -160px) scale(1.08);
-  }
-  85% {
-    opacity: 0.85;
-    transform: translate(-6px, -210px) scale(0.95);
+  60% {
+    opacity: 1;
+    transform: translate(calc(var(--fx-dx) * 0.9), calc(var(--fx-dy) * 0.9 + 18px)) scale(0.85);
   }
   100% {
-    transform: translate(0, -250px) scale(0.75);
+    transform: translate(var(--fx-dx), calc(var(--fx-dy) + 60px)) scale(0.3);
     opacity: 0;
+  }
+}
+
+@keyframes overlay-effect-stars {
+  /* 流れ星: 進行方向（--fx-angle）を向いた光の筋が斜めに走る（--fx-dx/--fx-dy） */
+  0% {
+    transform: translate(0, 0) rotate(var(--fx-angle)) scaleX(0.3);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--fx-dx), var(--fx-dy)) rotate(var(--fx-angle)) scaleX(1);
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-effect-bubbles {
+  /* シャボン玉: ゆらゆら（--fx-sway）揺れながら上昇（--fx-rise）してわずかに膨らむ */
+  0% {
+    transform: translateY(0) translateX(0) scale(0.6);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.9;
+  }
+  50% {
+    transform: translateY(calc(var(--fx-rise) * -0.5)) translateX(var(--fx-sway)) scale(1);
+  }
+  85% {
+    opacity: 0.9;
+    transform: translateY(calc(var(--fx-rise) * -0.85)) translateX(calc(var(--fx-sway) * -1)) scale(1.05);
+  }
+  100% {
+    transform: translateY(calc(var(--fx-rise) * -1)) translateX(0) scale(1.1);
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-effect-petals {
+  /* 花びら: 回転（--fx-rot）・横揺れ（--fx-sway）しながら舞い落ちる（--fx-fall） */
+  0% {
+    transform: translateY(0) translateX(0) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  50% {
+    transform: translateY(calc(var(--fx-fall) * 0.5)) translateX(var(--fx-sway)) rotate(calc(var(--fx-rot) * 0.5));
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(var(--fx-fall)) translateX(calc(var(--fx-sway) * -1)) rotate(var(--fx-rot));
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-effect-snow {
+  /* 雪: ゆっくり左右に揺れ（--fx-sway）ながら降る（--fx-fall）。透明度はパーティクル毎 */
+  0% {
+    transform: translateY(0) translateX(0);
+    opacity: 0;
+  }
+  12% {
+    opacity: var(--fx-opacity, 0.9);
+  }
+  50% {
+    transform: translateY(calc(var(--fx-fall) * 0.5)) translateX(var(--fx-sway));
+  }
+  88% {
+    opacity: var(--fx-opacity, 0.9);
+  }
+  100% {
+    transform: translateY(var(--fx-fall)) translateX(calc(var(--fx-sway) * -1));
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-effect-coins {
+  /* コイン: 横フリップ（rotateY: --fx-spin）しながら落下（--fx-fall） */
+  0% {
+    transform: translateY(0) rotateY(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(var(--fx-fall)) rotateY(var(--fx-spin));
+    opacity: 0;
+  }
+}
+
+/*
+ * OBS 等でアニメーション抑制設定（prefers-reduced-motion）が有効な環境では
+ * 目に負担のある高速演出を止め、静かにフェードのみ行う（アクセシビリティ配慮）。
+ */
+@media (prefers-reduced-motion: reduce) {
+  [class*="animate-overlay-effect-"] {
+    animation: overlay-effect-reduced-fade 2s ease-in-out infinite !important;
+  }
+}
+
+@keyframes overlay-effect-reduced-fade {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.9;
   }
 }
 

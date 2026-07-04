@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
@@ -9,9 +9,11 @@ import { subscribeToGachaResults } from "@/lib/realtime";
 import {
   type OverlayEffectStyle,
   type OverlayEffectParticle,
-  normalizeOverlayEffectStyle,
+  type RarityEffectMap,
+  parseRarityEffectMap,
+  resolveEffectForRarity,
   generateOverlayEffectParticles,
-  OVERLAY_EFFECT_PARTICLE_COUNT,
+  DEFAULT_RARITY_EFFECT_MAP,
   OVERLAY_EFFECT_PARTICLE_CONFIG,
 } from "@/lib/overlay-effect";
 import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
@@ -87,18 +89,13 @@ function fetchJsonWithXhrFallback<T>(url: string): Promise<T> {
     });
 }
 
-// 共有定義に集約: src/lib/overlay-effect.ts を Single Source of Truth とする
-function parseOverlayEffectStyle(value: string | null): OverlayEffectStyle {
-  return normalizeOverlayEffectStyle(value);
-}
-
 /**
  * Overlay display options controlled via URL parameters
  * URLパラメータで制御されるオーバーレイ表示オプション
  * - imageOnly: 画像のみ表示（カード枠・テキストなし）
  * - autoPortrait: 縦長画像を自動検出してオリジナル画像表示
- * - effects: レジェンダリーのキラキラエフェクト表示（デフォルト: true）
- * - effectStyle: エフェクトの種類（sparkle/confetti/hearts、デフォルト: sparkle）
+ * - effects: エフェクト表示のマスタースイッチ（デフォルト: true。false で全レアリティ無効）
+ * - rarityEffectMap: レアリティ→エフェクト種別のマップ（URL `fx=` / レガシー `effect=` 由来）
  * - smallMode: 小さい画像用の縮小表示モード
  * - debug: デバッグモード（接続状態の詳細表示）
  * - portraitShowName: 縦長画像でカード名を表示（画像の下）
@@ -110,7 +107,7 @@ interface OverlayOptions {
   imageOnly: boolean;
   autoPortrait: boolean;
   effects: boolean;
-  effectStyle: OverlayEffectStyle;
+  rarityEffectMap: RarityEffectMap;
   smallMode: boolean;
   displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
   debug: boolean;
@@ -126,9 +123,12 @@ export default function OverlayPage() {
   const streamerId = params.streamerId as string;
   const [result, setResult] = useState<GachaResult | null>(null);
   const [showCard, setShowCard] = useState(false);
-  // エフェクトパーティクル（スタイルごとの出現位置・タイミング）。
-  // options.effectStyle に応じて generateOverlayEffectParticles で生成する。
+  // エフェクトパーティクル（スタイルごとの出現位置・タイミング・見た目）。
+  // 表示するカードのレアリティ→スタイルを解決し generateOverlayEffectParticles で生成する。
   const [effectParticles, setEffectParticles] = useState<OverlayEffectParticle[]>([]);
+  // 現在表示中カードに対して解決されたエフェクトスタイル（"none" なら演出なし）。
+  // レアリティ別マップ（options.rarityEffectMap）と effects スイッチから決まる。
+  const [activeEffectStyle, setActiveEffectStyle] = useState<OverlayEffectStyle>("none");
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // オーバーレイ表示オプション（URLパラメータで設定）
@@ -137,7 +137,8 @@ export default function OverlayPage() {
     imageOnly: false,
     autoPortrait: true,  // デフォルトでポートレイト画像を自動検出
     effects: true,
-    effectStyle: "sparkle",
+    // 既定は「legendary のみ sparkle」（従来挙動の非破壊維持）。URL 解析で上書きされる。
+    rarityEffectMap: { ...DEFAULT_RARITY_EFFECT_MAP },
     smallMode: true,     // デフォルトで小さい画像モードを有効化
     displayDuration: 6,  // カードの表示時間（秒）、デフォルト6秒
     debug: false,        // デバッグモード（接続状態の詳細表示）
@@ -320,7 +321,8 @@ export default function OverlayPage() {
         imageOnly: urlParams.get("imageOnly") === "true",
         autoPortrait: urlParams.get("autoPortrait") !== "false",  // デフォルトはtrue
         effects: urlParams.get("effects") !== "false",             // デフォルトはtrue
-        effectStyle: parseOverlayEffectStyle(urlParams.get("effect")),
+        // レアリティ別マップ（新方式 fx=）。無ければレガシー effect=（legendary専用）→既定の順で解決。
+        rarityEffectMap: parseRarityEffectMap(urlParams.get("fx"), urlParams.get("effect")),
         smallMode: urlParams.get("smallMode") !== "false",         // デフォルトはtrue
         displayDuration,  // カードの表示時間（秒）
         debug: isDebug,
@@ -440,7 +442,13 @@ export default function OverlayPage() {
     // 画像のアスペクト比をチェック（autoPortraitモード用）
     await checkImageAspectRatio(next.card.image_url);
 
-    setEffectParticles(generateOverlayEffectParticles(options.effectStyle, OVERLAY_EFFECT_PARTICLE_COUNT));
+    // このカードのレアリティに紐づくエフェクトを解決する。
+    // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
+    const resolvedStyle = options.effects
+      ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
+      : "none";
+    setActiveEffectStyle(resolvedStyle);
+    setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
     setResult(next);
     setShowCard(false);
 
@@ -468,7 +476,7 @@ export default function OverlayPage() {
         }, 500);
       }, options.displayDuration * 1000);
     }, 100);
-  }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effectStyle]);
+  }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap]);
 
   // processQueueRefを最新のcallbackで更新
   useEffect(() => {
@@ -753,19 +761,23 @@ export default function OverlayPage() {
   // imageOnlyが有効、またはautoPortraitが有効で縦長画像の場合
   const shouldShowImageOnly = options.imageOnly || (options.autoPortrait && isPortraitImage);
 
-  // エフェクトを表示するかどうか（オプションで無効化されていない場合のみ）
-  const shouldShowEffects = options.effects && result.card.rarity === "legendary";
+  // エフェクトを表示するかどうか。
+  // レアリティ別に解決したスタイル（activeEffectStyle）が "none" 以外で、
+  // かつパーティクルが生成されている場合のみ描画する。
+  const shouldShowEffects = activeEffectStyle !== "none" && effectParticles.length > 0;
 
   const renderOverlayEffects = () => {
     if (!shouldShowEffects) {
       return null;
     }
 
-    // スタイルごとのアニメーションクラス・出現位置は src/lib/overlay-effect.ts の
-    // OVERLAY_EFFECT_PARTICLE_CONFIG を Single Source of Truth として参照する
-    // （Issue #587: 以前は全スタイルが同じ animate-bounce を共有し、紙吹雪もハートも
-    // 「ぴょこぴょこ上下に動く虫」のような見た目になっていた）。
-    const animationClassName = OVERLAY_EFFECT_PARTICLE_CONFIG[options.effectStyle].animationClassName;
+    // スタイルごとのアニメーションクラスは src/lib/overlay-effect.ts の
+    // OVERLAY_EFFECT_PARTICLE_CONFIG を Single Source of Truth として参照する。
+    // パーティクルの色・サイズ・形状・軌道パラメータ（CSS変数）は生成時に
+    // particle.visualStyle として個別に埋め込まれるため、ここでの描画は
+    // スタイルに依存しない汎用ループになる（従来のスタイル別 if 分岐を廃止）。
+    const config = OVERLAY_EFFECT_PARTICLE_CONFIG[activeEffectStyle];
+    const animationClassName = config.animationClassName;
 
     return (
       <div
@@ -773,51 +785,21 @@ export default function OverlayPage() {
         // スクリーンリーダーには無意味な装飾なので非読み上げに
         aria-hidden="true"
       >
-        {effectParticles.map((particle, i) => {
-          const style = {
-            left: particle.left,
-            top: particle.top,
-            animationDelay: particle.animationDelay,
-            animationDuration: particle.animationDuration,
-          };
-
-          if (options.effectStyle === "confetti") {
-            // 紙吹雪: 小さな色付き矩形が上端付近から左右に揺れながら回転しつつ落下する
-            // （overlay-confetti-fall keyframes @ globals.css）
-            return (
-              <div
-                key={i}
-                className={`absolute h-2.5 w-1.5 rounded-sm ${animationClassName} ${
-                  i % 4 === 0
-                    ? "bg-yellow-300"
-                    : i % 4 === 1
-                      ? "bg-pink-400"
-                      : i % 4 === 2
-                        ? "bg-cyan-300"
-                        : "bg-purple-400"
-                }`}
-                style={style}
-              />
-            );
-          }
-
-          if (options.effectStyle === "hearts") {
-            // ハート: カード下部/側面付近から左右に揺れながら拡大→フェードアウトしつつ
-            // 上に浮かび上がる（overlay-hearts-float keyframes @ globals.css）
-            return (
-              <div key={i} className={`absolute text-pink-300 ${animationClassName}`} style={style}>
-                ♥
-              </div>
-            );
-          }
-
-          // sparkle（デフォルト）: 既存の見た目・動きを完全維持（回帰防止）
-          return (
-            <div key={i} className={`absolute ${animationClassName}`} style={style}>
-              ✨
-            </div>
-          );
-        })}
+        {effectParticles.map((particle, i) => (
+          <div
+            key={i}
+            className={`absolute ${animationClassName}`}
+            style={{
+              left: particle.left,
+              top: particle.top,
+              animationDelay: particle.animationDelay,
+              animationDuration: particle.animationDuration,
+              ...particle.visualStyle,
+            } as CSSProperties}
+          >
+            {particle.content}
+          </div>
+        ))}
       </div>
     );
   };
