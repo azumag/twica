@@ -4,6 +4,7 @@ import type { GachaBroadcastPayload, RealtimeError, SubscribeOptions } from '@/l
 import type { GachaSoundRule } from '@/lib/gacha-sound-rules'
 import OverlayPage from '@/app/overlay/[streamerId]/page'
 import { pickSoundBearingCardIndex } from '@/lib/gacha-sound-rules'
+import { OVERLAY_EFFECT_PARTICLE_CONFIG } from '@/lib/overlay-effect'
 
 const { subscribeMock } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
@@ -142,9 +143,12 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
-  it('Issue #587: confetti は紙吹雪専用アニメーションクラスを使い、旧バグのanimate-bounceを共有しない', async () => {
-    vi.useFakeTimers()
-    window.history.replaceState({}, '', '/overlay/streamer-1?effect=confetti')
+  // エフェクト演出を1枚のカードで発火させる共通ヘルパ
+  const renderWithGacha = async (
+    search: string,
+    card: { id: string; name: string; rarity: string },
+  ) => {
+    window.history.replaceState({}, '', `/overlay/streamer-1${search}`)
 
     let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
     subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
@@ -153,7 +157,7 @@ describe('OverlayPage', () => {
       return vi.fn()
     })
 
-    const { container } = render(<OverlayPage />)
+    const view = render(<OverlayPage />)
 
     await act(async () => {
       await Promise.resolve()
@@ -163,7 +167,7 @@ describe('OverlayPage', () => {
     act(() => {
       onGachaResult?.({
         type: 'gacha',
-        card: { id: 'card-legendary', name: 'Legend', description: null, image_url: null, rarity: 'legendary' },
+        card: { description: null, image_url: null, ...card },
         userTwitchUsername: 'Viewer',
       })
     })
@@ -172,79 +176,90 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
 
-    // パーティクル数(20個)は変更しない。全て紙吹雪専用クラスを持ち、
-    // 旧実装で共有されていたanimate-bounceは一切使わない。
-    expect(container.querySelectorAll('.animate-overlay-effect-confetti')).toHaveLength(20)
+    return view
+  }
+
+  it('confetti は紙吹雪専用アニメーションクラスを使い、旧バグのanimate-bounceを共有しない', async () => {
+    vi.useFakeTimers()
+    const { container } = await renderWithGacha('?effect=confetti', {
+      id: 'card-legendary',
+      name: 'Legend',
+      rarity: 'legendary',
+    })
+
+    // 全て紙吹雪専用クラスを持ち、旧実装で共有されていたanimate-bounceは一切使わない。
+    expect(container.querySelectorAll('.animate-overlay-effect-confetti')).toHaveLength(
+      OVERLAY_EFFECT_PARTICLE_CONFIG.confetti.particleCount,
+    )
     expect(container.querySelectorAll('.animate-bounce')).toHaveLength(0)
   })
 
-  it('Issue #587: hearts はハート専用アニメーションクラスを使い、旧バグのanimate-bounceを共有しない', async () => {
+  it('hearts はハート専用アニメーションクラスを使い、♥グリフを表示する', async () => {
     vi.useFakeTimers()
-    window.history.replaceState({}, '', '/overlay/streamer-1?effect=hearts')
-
-    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
-    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
-      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
-      options.onSuccess?.()
-      return vi.fn()
+    const { container } = await renderWithGacha('?effect=hearts', {
+      id: 'card-legendary',
+      name: 'Legend',
+      rarity: 'legendary',
     })
 
-    const { container } = render(<OverlayPage />)
-
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    act(() => {
-      onGachaResult?.({
-        type: 'gacha',
-        card: { id: 'card-legendary', name: 'Legend', description: null, image_url: null, rarity: 'legendary' },
-        userTwitchUsername: 'Viewer',
-      })
-    })
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(100)
-    })
-
-    expect(container.querySelectorAll('.animate-overlay-effect-hearts')).toHaveLength(20)
+    const heartCount = OVERLAY_EFFECT_PARTICLE_CONFIG.hearts.particleCount
+    expect(container.querySelectorAll('.animate-overlay-effect-hearts')).toHaveLength(heartCount)
     expect(container.querySelectorAll('.animate-bounce')).toHaveLength(0)
-    expect(screen.getAllByText('♥')).toHaveLength(20)
+    expect(screen.getAllByText('♥')).toHaveLength(heartCount)
   })
 
-  it('sparkle（デフォルト）は既存のanimate-pingを維持する（回帰防止）', async () => {
+  it('sparkle（デフォルト）は専用キラキラアニメーションクラスで描画される', async () => {
     vi.useFakeTimers()
-    window.history.replaceState({}, '', '/overlay/streamer-1')
-
-    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
-    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
-      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
-      options.onSuccess?.()
-      return vi.fn()
+    const { container } = await renderWithGacha('', {
+      id: 'card-legendary',
+      name: 'Legend',
+      rarity: 'legendary',
     })
 
-    const { container } = render(<OverlayPage />)
+    expect(container.querySelectorAll('.animate-overlay-effect-sparkle')).toHaveLength(
+      OVERLAY_EFFECT_PARTICLE_CONFIG.sparkle.particleCount,
+    )
+    // 旧実装の animate-ping には依存しない
+    expect(container.querySelectorAll('.animate-ping')).toHaveLength(0)
+  })
 
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
+  it('レアリティ別: 既定では legendary 以外にエフェクトを出さない（従来挙動の維持）', async () => {
+    vi.useFakeTimers()
+    const { container } = await renderWithGacha('', {
+      id: 'card-common',
+      name: 'Common',
+      rarity: 'common',
     })
 
-    act(() => {
-      onGachaResult?.({
-        type: 'gacha',
-        card: { id: 'card-legendary', name: 'Legend', description: null, image_url: null, rarity: 'legendary' },
-        userTwitchUsername: 'Viewer',
-      })
+    // common は既定 "none" のためパーティクルは一切描画されない
+    expect(container.querySelectorAll('[class*="animate-overlay-effect-"]')).toHaveLength(0)
+  })
+
+  it('レアリティ別: fx= でレアリティごとに別々のエフェクトを割り当てられる', async () => {
+    vi.useFakeTimers()
+    // epic には confetti、legendary には fireworks を割り当てる
+    const { container } = await renderWithGacha('?fx=epic:confetti,legendary:fireworks', {
+      id: 'card-epic',
+      name: 'Epic',
+      rarity: 'epic',
     })
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(100)
+    // epic カードなので confetti のみが描画される
+    expect(container.querySelectorAll('.animate-overlay-effect-confetti')).toHaveLength(
+      OVERLAY_EFFECT_PARTICLE_CONFIG.confetti.particleCount,
+    )
+    expect(container.querySelectorAll('.animate-overlay-effect-fireworks')).toHaveLength(0)
+  })
+
+  it('effects=false のときは legendary でもエフェクトを出さない', async () => {
+    vi.useFakeTimers()
+    const { container } = await renderWithGacha('?effects=false&effect=fireworks', {
+      id: 'card-legendary',
+      name: 'Legend',
+      rarity: 'legendary',
     })
 
-    expect(container.querySelectorAll('.animate-ping')).toHaveLength(20)
-    expect(screen.getAllByText('✨')).toHaveLength(20)
+    expect(container.querySelectorAll('[class*="animate-overlay-effect-"]')).toHaveLength(0)
   })
 
   it('複数の効果音ルールをルールごとにプリロードする', async () => {

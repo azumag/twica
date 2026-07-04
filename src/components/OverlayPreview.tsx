@@ -4,11 +4,22 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import CopyButton from "@/components/CopyButton";
 import type { Card } from "@/types/database";
+import { RARITIES } from "@/lib/constants";
 import {
   type OverlayEffectStyle,
+  type RarityEffectMap,
   OVERLAY_EFFECT_STYLES,
+  DEFAULT_BUILTIN_RARITY_EFFECTS,
   normalizeOverlayEffectStyle,
+  serializeRarityEffectMap,
 } from "@/lib/overlay-effect";
+
+/** 設定 UI で個別にエフェクトを割り当てられるビルトインレアリティ */
+type BuiltinRarity = (typeof RARITIES)[number]["value"];
+// RARITIES（constants）から派生させ、レアリティ値リストの二重管理を避ける。
+const BUILTIN_RARITIES: readonly BuiltinRarity[] = RARITIES.map((rarity) => rarity.value);
+/** レアリティ→エフェクトの割り当て（UI 状態） */
+type RarityEffects = Record<BuiltinRarity, OverlayEffectStyle>;
 
 /**
  * Overlay preview options interface
@@ -17,8 +28,8 @@ import {
 interface OverlayOptions {
   imageOnly: boolean;       // 画像のみ表示（カード枠なし）
   autoPortrait: boolean;    // 縦長画像を自動検出してオリジナル表示
-  effects: boolean;         // レジェンダリーのキラキラエフェクト表示
-  effectStyle: OverlayEffectStyle; // レジェンダリーのエフェクト種類
+  effects: boolean;         // エフェクト表示のマスタースイッチ
+  rarityEffects: RarityEffects; // レアリティ別のエフェクト種類
   smallMode: boolean;       // 小さい画像用の縮小表示モード
   displayDuration: number;  // カードの表示時間（秒）、デフォルト6秒
   // 縦長画像の付帯情報表示オプション（画像に被らず下に表示）
@@ -33,7 +44,7 @@ const DEFAULT_OVERLAY_OPTIONS: OverlayOptions = {
   imageOnly: false,
   autoPortrait: true,
   effects: true,
-  effectStyle: "sparkle",
+  rarityEffects: { ...DEFAULT_BUILTIN_RARITY_EFFECTS },
   smallMode: true,
   displayDuration: 6,
   portraitShowName: false,
@@ -61,8 +72,36 @@ function readStoredBoolean(value: unknown, fallback: boolean) {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function readStoredEffectStyle(value: unknown): OverlayEffectStyle {
-  return normalizeOverlayEffectStyle(value);
+/**
+ * 保存済み設定からレアリティ別エフェクトを復元する。
+ * - 新形式 rarityEffects（レアリティ→スタイル）があればそれを正規化して使う。
+ * - 旧形式（単一 effectStyle）しか無い場合は「legendary のみその値、他は none」へ
+ *   移行する（従来はエフェクトが legendary にのみ表示されていたため、配信者の
+ *   以前の選択を legendary の演出として引き継ぐ）。
+ */
+function readStoredRarityEffects(stored: Partial<Record<string, unknown>>): RarityEffects {
+  const raw = stored.rarityEffects;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const source = raw as Record<string, unknown>;
+    const result = { ...DEFAULT_BUILTIN_RARITY_EFFECTS };
+    for (const rarity of BUILTIN_RARITIES) {
+      if (rarity in source) {
+        result[rarity] = normalizeOverlayEffectStyle(source[rarity]);
+      }
+    }
+    return result;
+  }
+
+  if (typeof stored.effectStyle === "string") {
+    return {
+      common: "none",
+      rare: "none",
+      epic: "none",
+      legendary: normalizeOverlayEffectStyle(stored.effectStyle),
+    };
+  }
+
+  return { ...DEFAULT_BUILTIN_RARITY_EFFECTS };
 }
 
 function clampDisplayDuration(value: unknown) {
@@ -84,7 +123,7 @@ function parseStoredOptions(value: unknown): OverlayOptions {
     imageOnly: readStoredBoolean(stored.imageOnly, DEFAULT_OVERLAY_OPTIONS.imageOnly),
     autoPortrait: readStoredBoolean(stored.autoPortrait, DEFAULT_OVERLAY_OPTIONS.autoPortrait),
     effects: readStoredBoolean(stored.effects, DEFAULT_OVERLAY_OPTIONS.effects),
-    effectStyle: readStoredEffectStyle(stored.effectStyle),
+    rarityEffects: readStoredRarityEffects(stored),
     smallMode: readStoredBoolean(stored.smallMode, DEFAULT_OVERLAY_OPTIONS.smallMode),
     displayDuration: clampDisplayDuration(stored.displayDuration),
     portraitShowName: readStoredBoolean(stored.portraitShowName, DEFAULT_OVERLAY_OPTIONS.portraitShowName),
@@ -94,12 +133,21 @@ function parseStoredOptions(value: unknown): OverlayOptions {
   };
 }
 
+function areRarityEffectsEqual(a: RarityEffects, b: RarityEffects) {
+  return BUILTIN_RARITIES.every((rarity) => a[rarity] === b[rarity]);
+}
+
+/** レアリティ別エフェクトが既定（legendary のみ sparkle）と一致するか */
+function isDefaultRarityEffects(value: RarityEffects) {
+  return areRarityEffectsEqual(value, DEFAULT_BUILTIN_RARITY_EFFECTS);
+}
+
 function areOverlayOptionsEqual(a: OverlayOptions, b: OverlayOptions) {
   return (
     a.imageOnly === b.imageOnly &&
     a.autoPortrait === b.autoPortrait &&
     a.effects === b.effects &&
-    a.effectStyle === b.effectStyle &&
+    areRarityEffectsEqual(a.rarityEffects, b.rarityEffects) &&
     a.smallMode === b.smallMode &&
     a.displayDuration === b.displayDuration &&
     a.portraitShowName === b.portraitShowName &&
@@ -146,6 +194,7 @@ export default function OverlayPreview({
 }: OverlayPreviewProps) {
   const t = useTranslations("overlaySettings");
   const tDashboard = useTranslations("dashboard");
+  const tRarity = useTranslations("rarity");
   const storageKey = `${OVERLAY_OPTIONS_STORAGE_KEY_PREFIX}${streamerId}`;
 
   // オーバーレイオプションの状態管理
@@ -257,7 +306,24 @@ export default function OverlayPreview({
     if (options.imageOnly) params.set("imageOnly", "true");
     if (!options.autoPortrait) params.set("autoPortrait", "false");  // デフォルトtrue、falseの場合のみ出力
     if (!options.effects) params.set("effects", "false");             // デフォルトtrue、falseの場合のみ出力
-    if (options.effects && options.effectStyle !== "sparkle") params.set("effect", options.effectStyle);
+    // レアリティ別エフェクトの符号化。既定（legendary のみ sparkle）のままなら
+    // URL をクリーンに保つため何も出力しない。effects=false のときは全レアリティ
+    // 無効なので出力しない。
+    // - legendary だけに演出を割り当てた一般的なケースは、可読性と後方互換のため
+    //   レガシー `effect=` 形式で出力する（旧オーバーレイURLもこの形式を解釈する）。
+    //   ※このケースは serializeRarityEffectMap を通さず effect= に直接載せる近道。
+    // - 複数レアリティに割り当てた場合のみ新形式 `fx=`（serializeRarityEffectMap）を使う。
+    // overlay page 側の parseRarityEffectMap が両形式を解釈する（fx 優先、なければ effect）。
+    if (options.effects && !isDefaultRarityEffects(options.rarityEffects)) {
+      const re = options.rarityEffects;
+      const onlyLegendaryHasEffect =
+        re.common === "none" && re.rare === "none" && re.epic === "none" && re.legendary !== "none";
+      if (onlyLegendaryHasEffect) {
+        params.set("effect", re.legendary);
+      } else {
+        params.set("fx", serializeRarityEffectMap(re as RarityEffectMap));
+      }
+    }
     if (!options.smallMode) params.set("smallMode", "false");        // デフォルトtrue、falseの場合のみ出力
     // カードの表示時間（デフォルト6秒、それ以外の場合のみ出力）
     // Display duration in seconds (default 6, only output if different)
@@ -437,20 +503,22 @@ export default function OverlayPreview({
   // Filter only active cards for demo/gacha
   const activeCards = cards.filter(card => card.is_active);
 
-  // Issue #532: effectStyle（confetti/hearts等）はlegendaryカードにのみ表示される
-  // （overlay page側の shouldShowEffects 条件）ため、ランダムデモがlegendary以外を
-  // 引くと変更してもエフェクトが確認できない。効果種類を変えたら、選択可能な
-  // legendaryカードがあればプレビュー用カードを自動的にそちらへ寄せる。
-  // legendaryカードが存在しない場合は選択を変更しない（存在しないカードを捏造しない）。
-  const handleEffectStyleChange = (value: string) => {
+  // レアリティ別にエフェクトを割り当てる。エフェクトはそのレアリティのカードに
+  // のみ表示されるため、変更したレアリティのカードが存在すればプレビュー用カードを
+  // 自動的にそちらへ寄せ、変更結果をすぐ確認できるようにする（Issue #532 の踏襲）。
+  // 該当レアリティのカードが無い場合は選択を変更しない（存在しないカードを捏造しない）。
+  const handleRarityEffectChange = (rarity: BuiltinRarity, value: string) => {
     setOptions(prev => ({
       ...prev,
-      effectStyle: readStoredEffectStyle(value),
+      rarityEffects: {
+        ...prev.rarityEffects,
+        [rarity]: normalizeOverlayEffectStyle(value),
+      },
     }));
 
-    const legendaryCard = activeCards.find((card) => card.rarity === "legendary");
-    if (legendaryCard) {
-      setSelectedCardId(legendaryCard.id);
+    const matchingCard = activeCards.find((card) => card.rarity === rarity);
+    if (matchingCard) {
+      setSelectedCardId(matchingCard.id);
     }
   };
 
@@ -568,23 +636,42 @@ export default function OverlayPreview({
             </div>
           </label>
 
+          {/* レアリティ別エフェクト割り当て */}
+          {/* Per-rarity effect assignment: each rarity can be bound to a distinct effect. */}
           {options.effects && (
-            <label className="block pt-1">
-              <span className="mb-1 block text-sm text-gray-300">{t("options.effectStyle")}</span>
-              <select
-                aria-label={t("options.effectStyle")}
-                value={options.effectStyle}
-                onChange={(e) => handleEffectStyleChange(e.target.value)}
-                className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
-              >
-                {OVERLAY_EFFECT_STYLES.map((style) => (
-                  <option key={style} value={style}>
-                    {t(`options.effectStyles.${style}`)}
-                  </option>
+            <div className="pt-1">
+              <span className="mb-1 block text-sm text-gray-300">{t("options.rarityEffects")}</span>
+              <p className="mb-3 text-xs text-gray-400">{t("options.rarityEffectsDescription")}</p>
+              {/*
+                割り当て対象はビルトイン4レアリティのみ。カスタムレアリティは
+                従来どおり演出なし（旧実装ではエフェクトは legendary 限定だったため非退行）。
+                必要なら fx= を手書きすればカスタムレアリティにも指定は可能
+                （overlay 側の parse は任意のレアリティ名を受理する）。
+              */}
+              <div className="space-y-2">
+                {RARITIES.map((rarity) => (
+                  <div key={rarity.value} className="flex items-center gap-3">
+                    <span
+                      className={`inline-flex w-24 shrink-0 items-center justify-center rounded-full px-2 py-1 text-xs font-medium text-white ${rarity.color}`}
+                    >
+                      {tRarity(rarity.value)}
+                    </span>
+                    <select
+                      aria-label={t("options.rarityEffectLabel", { rarity: tRarity(rarity.value) })}
+                      value={options.rarityEffects[rarity.value as BuiltinRarity]}
+                      onChange={(e) => handleRarityEffectChange(rarity.value as BuiltinRarity, e.target.value)}
+                      className="flex-1 rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
+                    >
+                      {OVERLAY_EFFECT_STYLES.map((style) => (
+                        <option key={style} value={style}>
+                          {t(`options.effectStyles.${style}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 ))}
-              </select>
-              <p className="mt-1 text-xs text-gray-400">{t("options.effectStyleDescription")}</p>
-            </label>
+              </div>
+            </div>
           )}
 
           {/* smallMode option */}

@@ -11,6 +11,12 @@ const messages = {
     copy: 'コピー',
     copied: 'コピーしました',
   },
+  rarity: {
+    common: 'コモン',
+    rare: 'レア',
+    epic: 'エピック',
+    legendary: 'レジェンダリー',
+  },
   dashboard: {
     obsOverlayUrl: 'OBSオーバーレイURL',
     obsOverlayDescription: 'OBSに設定するURLです',
@@ -35,12 +41,20 @@ const messages = {
       autoPortraitDescription: '説明',
       effects: 'エフェクト表示',
       effectsDescription: '説明',
-      effectStyle: 'エフェクト種類',
-      effectStyleDescription: '説明',
+      rarityEffects: 'レアリティ別エフェクト',
+      rarityEffectsDescription: '説明',
+      rarityEffectLabel: '{rarity} のエフェクト',
       effectStyles: {
+        none: 'なし',
         sparkle: 'キラキラ',
         confetti: '紙吹雪',
         hearts: 'ハート',
+        fireworks: '花火',
+        stars: '流れ星',
+        bubbles: 'シャボン玉',
+        petals: '花びら',
+        snow: '雪',
+        coins: 'コイン',
       },
       smallMode: '小さい画像モード',
       smallModeDescription: '説明',
@@ -184,7 +198,7 @@ describe('OverlayPreview', () => {
         autoPortrait: true,
         effects: true,
         smallMode: true,
-        effectStyle: 'sparkle',
+        rarityEffects: { common: 'none', rare: 'none', epic: 'none', legendary: 'sparkle' },
         displayDuration: 6,
         portraitShowName: false,
         portraitShowRarity: true,
@@ -194,14 +208,15 @@ describe('OverlayPreview', () => {
     })
   })
 
-  it('effects=true 時に保存された effectStyle を URL の effect= に復元する', async () => {
-    // Regression: 既存の「設定復元」テストでは effects: false のため URL から effect=
-    // が省略され、effectStyle の永続化往復が検証されていなかった。
+  it('effects=true 時に legendary のみ設定した場合はレガシー effect= に復元する（後方互換）', async () => {
+    // Regression: 既存の「設定復元」テストでは effects: false のため URL から演出
+    // パラメータが省略され、永続化往復が検証されていなかった。
+    // legendary のみに演出を割り当てた一般ケースは、可読性・後方互換のため effect= を使う。
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       imageOnly: false,
       autoPortrait: true,
       effects: true,
-      effectStyle: 'hearts',
+      rarityEffects: { common: 'none', rare: 'none', epic: 'none', legendary: 'hearts' },
       smallMode: true,
       displayDuration: 6,
       portraitShowName: false,
@@ -225,13 +240,12 @@ describe('OverlayPreview', () => {
     })
   })
 
-  it('未知の effectStyle が永続化されている場合は sparkle に正規化する', async () => {
-    // 任意ユーザー編集 / 古いバージョンの値が紛れた場合のフェイルセーフ。
+  it('複数レアリティに割り当てた場合は fx= 形式で符号化する', async () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       imageOnly: false,
       autoPortrait: true,
       effects: true,
-      effectStyle: 'unknown-value',
+      rarityEffects: { common: 'none', rare: 'none', epic: 'confetti', legendary: 'fireworks' },
       smallMode: true,
       displayDuration: 6,
       portraitShowName: false,
@@ -249,14 +263,75 @@ describe('OverlayPreview', () => {
     )
 
     await waitFor(() => {
-      // sparkle はデフォルトのため URL に effect= は付かない（既存の URL 構築仕様）
+      // URLSearchParams が ':' → '%3A'、',' → '%2C' を符号化する
+      expect(
+        screen.getByDisplayValue('https://example.com/overlay/streamer-1?fx=epic%3Aconfetti%2Clegendary%3Afireworks')
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('旧形式の単一 effectStyle は legendary の演出として移行される', async () => {
+    // 旧バージョンの localStorage（単一 effectStyle）を後方互換で読み込む。
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      imageOnly: false,
+      autoPortrait: true,
+      effects: true,
+      effectStyle: 'confetti',
+      smallMode: true,
+      displayDuration: 6,
+      portraitShowName: false,
+      portraitShowRarity: true,
+      portraitShowDescription: false,
+      portraitShowUsername: false,
+    }))
+
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        baseUrl="https://example.com"
+        showPreview={false}
+      />
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.getByDisplayValue('https://example.com/overlay/streamer-1?effect=confetti')
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('未知の effectStyle が永続化されている場合は sparkle に正規化する', async () => {
+    // 任意ユーザー編集 / 古いバージョンの値が紛れた場合のフェイルセーフ。
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      imageOnly: false,
+      autoPortrait: true,
+      effects: true,
+      rarityEffects: { common: 'none', rare: 'none', epic: 'none', legendary: 'unknown-value' },
+      smallMode: true,
+      displayDuration: 6,
+      portraitShowName: false,
+      portraitShowRarity: true,
+      portraitShowDescription: false,
+      portraitShowUsername: false,
+    }))
+
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        baseUrl="https://example.com"
+        showPreview={false}
+      />
+    )
+
+    await waitFor(() => {
+      // legendary が sparkle（既定）に正規化されるため URL に演出パラメータは付かない
       expect(
         screen.getByDisplayValue('https://example.com/overlay/streamer-1')
       ).toBeInTheDocument()
     })
   })
 
-  it('エフェクト種類を選択すると overlay URL と localStorage に反映する', async () => {
+  it('レアリティのエフェクトを選択すると overlay URL と localStorage に反映する', async () => {
     renderWithIntl(
       <OverlayPreview
         streamerId="streamer-1"
@@ -266,7 +341,7 @@ describe('OverlayPreview', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
-    fireEvent.change(screen.getByLabelText('エフェクト種類'), { target: { value: 'confetti' } })
+    fireEvent.change(screen.getByLabelText('レジェンダリー のエフェクト'), { target: { value: 'confetti' } })
 
     await waitFor(() => {
       expect(screen.getByDisplayValue('https://example.com/overlay/streamer-1?effect=confetti')).toBeInTheDocument()
@@ -274,9 +349,29 @@ describe('OverlayPreview', () => {
 
     await waitFor(() => {
       const savedOptions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-      expect(savedOptions).toMatchObject({
-        effectStyle: 'confetti',
+      expect(savedOptions.rarityEffects).toMatchObject({
+        legendary: 'confetti',
       })
+    })
+  })
+
+  it('コモンなど legendary 以外にも演出を割り当てられる（fx= 形式）', async () => {
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        baseUrl="https://example.com"
+        showPreview={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+    fireEvent.change(screen.getByLabelText('コモン のエフェクト'), { target: { value: 'snow' } })
+
+    await waitFor(() => {
+      // common に演出、legendary は既定 sparkle → fx= に両方が入る
+      expect(
+        screen.getByDisplayValue('https://example.com/overlay/streamer-1?fx=common%3Asnow%2Clegendary%3Asparkle')
+      ).toBeInTheDocument()
     })
   })
 
@@ -375,11 +470,10 @@ describe('OverlayPreview', () => {
     })
   })
 
-  // Issue #532: effectStyle（confetti/hearts等）はlegendaryカードにのみ表示されるため、
-  // ランダムデモがlegendary以外を引くと変更してもエフェクトが確認できない。
-  // 効果種類の変更時にlegendaryカードがあれば自動的にプレビュー用カードへ寄せる。
-  describe('Issue #532: エフェクト種類変更時のlegendaryカード自動選択', () => {
-    it('legendaryカードが存在する場合、エフェクト種類を変更するとそのカードが自動選択される', async () => {
+  // Issue #532 の踏襲: 変更したレアリティのカードがあれば自動的にプレビュー用カードへ寄せる。
+  // レアリティごとに演出を割り当てられるようになったため、対象は「変更したレアリティ」のカード。
+  describe('Issue #532: エフェクト変更時の該当レアリティカード自動選択', () => {
+    it('該当レアリティのカードが存在する場合、そのレアリティの演出を変更するとカードが自動選択される', async () => {
       const cards: Card[] = [
         baseCard({ id: 'common-1', name: 'コモンカード', rarity: 'common' }),
         baseCard({ id: 'legendary-1', name: 'レジェンダリーカード', rarity: 'legendary' }),
@@ -393,14 +487,32 @@ describe('OverlayPreview', () => {
       expect(screen.getByDisplayValue('ランダム')).toBeInTheDocument()
 
       fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
-      fireEvent.change(screen.getByLabelText('エフェクト種類'), { target: { value: 'confetti' } })
+      fireEvent.change(screen.getByLabelText('レジェンダリー のエフェクト'), { target: { value: 'confetti' } })
 
       await waitFor(() => {
         expect(screen.getByDisplayValue('レジェンダリーカード (legendary)')).toBeInTheDocument()
       })
     })
 
-    it('legendaryカードが存在しない場合、エフェクト種類を変更してもカード選択は変わらない', async () => {
+    it('コモンの演出を変更すると、コモンカードが自動選択される', async () => {
+      const cards: Card[] = [
+        baseCard({ id: 'common-1', name: 'コモンカード', rarity: 'common' }),
+        baseCard({ id: 'legendary-1', name: 'レジェンダリーカード', rarity: 'legendary' }),
+      ]
+
+      renderWithIntl(
+        <OverlayPreview streamerId="streamer-1" baseUrl="https://example.com" cards={cards} />
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+      fireEvent.change(screen.getByLabelText('コモン のエフェクト'), { target: { value: 'snow' } })
+
+      await waitFor(() => {
+        expect(screen.getByDisplayValue('コモンカード (common)')).toBeInTheDocument()
+      })
+    })
+
+    it('該当レアリティのカードが存在しない場合、演出を変更してもカード選択は変わらない', async () => {
       const cards: Card[] = [
         baseCard({ id: 'common-1', name: 'コモンカード', rarity: 'common' }),
         baseCard({ id: 'rare-1', name: 'レアカード', rarity: 'rare' }),
@@ -411,7 +523,7 @@ describe('OverlayPreview', () => {
       )
 
       fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
-      fireEvent.change(screen.getByLabelText('エフェクト種類'), { target: { value: 'confetti' } })
+      fireEvent.change(screen.getByLabelText('レジェンダリー のエフェクト'), { target: { value: 'confetti' } })
 
       await waitFor(() => {
         expect(screen.getByDisplayValue('https://example.com/overlay/streamer-1?effect=confetti')).toBeInTheDocument()
