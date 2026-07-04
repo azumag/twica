@@ -134,11 +134,19 @@ interface OverlayOptions {
 // リロード対象外として扱われる(overlay-version.ts 参照)。
 const CURRENT_OVERLAY_VERSION = process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev";
 
-// Issue #569: バージョン確認・自動リロード関連の時間定数。
-// 「10分」は設計上、(1)Realtime接続中にバージョン確認だけを行う間隔 と
-// (2)不一致検出からリロード実行までのランダムジッター上限 の両方に使われるため
-// 定数を共有する。
-const TEN_MINUTES_MS = 10 * 60 * 1000;
+// Issue #569: Realtime接続中に「バージョン確認だけ」を行う間隔。
+// 接続中はフォールバックポーリング本来の目的(イベント取得)を行わず、
+// この間隔でoverlayVersionだけを軽量に確認する(pollOverlayEvents参照)。
+// レビュー指摘: 以前はリロードジッター上限(RELOAD_JITTER_MAX_MS)と同じ
+// 定数(TEN_MINUTES_MS)を共有していたが、「確認間隔」と「ジッター上限」は
+// 意味の異なる独立したチューニング値であり、結合していると片方だけを
+// 変更したい場合に紛らわしいため分離した。値は据え置き(10分)。
+const VERSION_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+// Issue #569: バージョン不一致検出からリロード実行までのランダムジッター上限。
+// サンダリングハード回避のため、0〜この値の範囲でリロード実行タイミングを
+// 散らす(checkOverlayVersion参照)。VERSION_CHECK_INTERVAL_MSと値はどちらも
+// 10分だが、意味的に独立したチューニング値のため別定数として管理する。
+const RELOAD_JITTER_MAX_MS = 10 * 60 * 1000;
 // 演出中で実行を見送った場合の再試行間隔(演出を壊さないための待ち時間)
 const RELOAD_DEFER_RETRY_MS = 30 * 1000;
 
@@ -693,8 +701,8 @@ export default function OverlayPage() {
     addDebugLogRef.current(`[version] mismatch detected: ${CURRENT_OVERLAY_VERSION} -> ${received}`);
 
     // サンダリングハード回避: 全クライアントが同時に新バージョンを検知しても
-    // 一斉リロード→同時アクセス集中が起きないよう、0〜10分でランダムに散らす
-    const jitterMs = Math.floor(Math.random() * TEN_MINUTES_MS);
+    // 一斉リロード→同時アクセス集中が起きないよう、0〜RELOAD_JITTER_MAX_MSでランダムに散らす
+    const jitterMs = Math.floor(Math.random() * RELOAD_JITTER_MAX_MS);
     reloadTimeoutRef.current = setTimeout(() => {
       attemptReload();
     }, jitterMs);
@@ -716,15 +724,15 @@ export default function OverlayPage() {
 
     if (connectionStatusRef.current === "connected") {
       // Issue #569: Realtime接続中もこの関数は3秒おきに呼ばれ続けるが、
-      // 従来は何もせず早期returnしていた。ここに「10分に1回、バージョン確認だけ
-      // 行う」経路を追加する。
+      // 従来は何もせず早期returnしていた。ここに「VERSION_CHECK_INTERVAL_MSに
+      // 1回、バージョン確認だけ行う」経路を追加する。
       // 理由: Realtime受信イベントにはhistoryId/eventIdが無くseenHistoryIdsRefに
       // 登録されないため、接続中にevents配列を処理すると同一演出がポーリング
       // 経路からも再生され二重演出になる。そのため接続中は応答のoverlayVersion
       // だけを読み、events配列には一切触れない(表示・カーソル前進・seen登録の
       // いずれも行わない)。
       const now = Date.now();
-      if (now - lastVersionCheckAtRef.current < TEN_MINUTES_MS) {
+      if (now - lastVersionCheckAtRef.current < VERSION_CHECK_INTERVAL_MS) {
         return;
       }
       lastVersionCheckAtRef.current = now;
