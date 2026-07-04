@@ -10,6 +10,7 @@ import {
   type RarityEffectMap,
   OVERLAY_EFFECT_STYLES,
   DEFAULT_BUILTIN_RARITY_EFFECTS,
+  isOverlayEffectStyle,
   normalizeOverlayEffectStyle,
   serializeRarityEffectMap,
 } from "@/lib/overlay-effect";
@@ -85,8 +86,13 @@ function readStoredRarityEffects(stored: Partial<Record<string, unknown>>): Rari
     const source = raw as Record<string, unknown>;
     const result = { ...DEFAULT_BUILTIN_RARITY_EFFECTS };
     for (const rarity of BUILTIN_RARITIES) {
-      if (rarity in source) {
-        result[rarity] = normalizeOverlayEffectStyle(source[rarity]);
+      // 不正な値（未知スタイル）はそのレアリティの既定値のまま据え置く。
+      // normalizeOverlayEffectStyle で sparkle に丸めてしまうと、保存データが
+      // 破損しただけで「割り当てていないレアリティに演出が出る」誤爆になる
+      // （deserializeRarityEffectMap が未知スタイルをスキップするのと同じ方針）。
+      const value = source[rarity];
+      if (isOverlayEffectStyle(value)) {
+        result[rarity] = value;
       }
     }
     return result;
@@ -94,9 +100,7 @@ function readStoredRarityEffects(stored: Partial<Record<string, unknown>>): Rari
 
   if (typeof stored.effectStyle === "string") {
     return {
-      common: "none",
-      rare: "none",
-      epic: "none",
+      ...DEFAULT_BUILTIN_RARITY_EFFECTS,
       legendary: normalizeOverlayEffectStyle(stored.effectStyle),
     };
   }
@@ -646,7 +650,9 @@ export default function OverlayPreview({
                 割り当て対象はビルトイン4レアリティのみ。カスタムレアリティは
                 従来どおり演出なし（旧実装ではエフェクトは legendary 限定だったため非退行）。
                 必要なら fx= を手書きすればカスタムレアリティにも指定は可能
-                （overlay 側の parse は任意のレアリティ名を受理する）。
+                （overlay 側の parse は任意のレアリティ名を受理する）。ただし "," や ":" を
+                区切り文字として使うため、レアリティ名にこれらの文字を含む場合は
+                encodeURIComponent でエンコードしてから埋め込む必要がある。
               */}
               <div className="space-y-2">
                 {RARITIES.map((rarity) => (

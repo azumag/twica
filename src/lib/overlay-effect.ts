@@ -1,3 +1,5 @@
+import { MAX_RARITY_KEY_LENGTH } from "./constants";
+
 /**
  * Overlay effect style: shared single source of truth.
  * オーバーレイのガチャ演出（レアリティ別エフェクト）に関する型・定数・
@@ -105,11 +107,14 @@ export const DEFAULT_BUILTIN_RARITY_EFFECTS: Readonly<Record<"common" | "rare" |
 
 /**
  * URL に `fx=` が無く、レガシー `effect=` も無い場合に用いる既定マップ。
- * DEFAULT_BUILTIN_RARITY_EFFECTS のうち "none" でないものだけを持つ
- * （= legendary: sparkle）。resolveEffectForRarity は未登録レアリティを
+ * DEFAULT_BUILTIN_RARITY_EFFECTS から "none" でないものだけを抽出して導出する
+ * （= legendary: sparkle）。手書きの二重管理を避け、既定値の変更が両方の
+ * 定数に自動で反映されるようにする。resolveEffectForRarity は未登録レアリティを
  * "none" とみなすため、これで「legendary のみ sparkle」を表現できる。
  */
-export const DEFAULT_RARITY_EFFECT_MAP: RarityEffectMap = { legendary: "sparkle" };
+export const DEFAULT_RARITY_EFFECT_MAP: RarityEffectMap = Object.fromEntries(
+  Object.entries(DEFAULT_BUILTIN_RARITY_EFFECTS).filter(([, style]) => style !== "none"),
+);
 
 /** 全レアリティ演出オフを表す `fx=` のセンチネル値（曖昧な空文字を避ける） */
 const RARITY_EFFECT_MAP_OFF_SENTINEL = "off";
@@ -130,30 +135,34 @@ export function resolveEffectForRarity(map: RarityEffectMap, rarity: string): Ov
  * - 演出が1つも無い（全レアリティ none）場合は "off" を返す（空文字だと
  *   `fx=` が生成され曖昧・環境によって欠落しうるため、明示的センチネルを使う）。
  *
+ * レアリティ名は `,` `:` を区切り文字として使うため encodeURIComponent で
+ * エスケープする（カスタムレアリティ名にこれらの文字が含まれても壊れないように）。
+ * スタイル値は OVERLAY_EFFECT_STYLES の固定集合なので区切り文字を含まずエスケープ不要。
+ *
  * 例: { epic:"confetti", legendary:"fireworks" } → "epic:confetti,legendary:fireworks"
  */
 export function serializeRarityEffectMap(map: RarityEffectMap): string {
   const pairs = Object.entries(map)
     .filter(([, style]) => style !== "none" && isOverlayEffectStyle(style))
-    .map(([rarity, style]) => `${rarity}:${style}`);
+    .map(([rarity, style]) => `${encodeURIComponent(rarity)}:${style}`);
   return pairs.length > 0 ? pairs.join(",") : RARITY_EFFECT_MAP_OFF_SENTINEL;
 }
 
-/** レアリティ名の最大長。constants.MAX_RARITY_KEY_LENGTH と整合（循環 import を避けるため即値）。 */
-const MAX_RARITY_KEY_LENGTH_FOR_FX = 40;
 /** 攻撃的な入力でマップが肥大化しないための上限（ビルトイン4種＋カスタム分の余裕）。 */
 const MAX_RARITY_EFFECT_ENTRIES = 60;
 
 /**
  * `fx=` の値をレアリティ別マップにデコードする。
  * "off"／空文字は「全レアリティ演出なし」（空マップ）。
- * 不正なペア（レアリティ名が長すぎる/空、未知スタイル）はスキップする
+ * 不正なペア（レアリティ名が長すぎる/空、デコード不能、未知スタイル）はスキップする
  * （未知スタイルを sparkle 等に丸めると誤爆するため、その項目自体を無視する）。
  */
 function deserializeRarityEffectMap(fxValue: string): RarityEffectMap {
   // split 前に入力長を制限しておく（防御的: 極端に長い値の split を避ける。
-  // 実用上は「レアリティ名:スタイル」× 数十件で十分収まる長さ）。
-  const trimmed = fxValue.trim().slice(0, MAX_RARITY_EFFECT_ENTRIES * (MAX_RARITY_KEY_LENGTH_FOR_FX + 16));
+  // 実用上は「レアリティ名:スタイル」× 数十件で十分収まる長さ。encodeURIComponent は
+  // 文字数を増やす方向にしか働かないため、この上限でデコード後の正当な値を誤って
+  // 切り詰めることはない）。
+  const trimmed = fxValue.trim().slice(0, MAX_RARITY_EFFECT_ENTRIES * (MAX_RARITY_KEY_LENGTH * 3 + 16));
   if (trimmed === "" || trimmed === RARITY_EFFECT_MAP_OFF_SENTINEL) {
     return {};
   }
@@ -165,9 +174,15 @@ function deserializeRarityEffectMap(fxValue: string): RarityEffectMap {
     if (Object.keys(map).length >= MAX_RARITY_EFFECT_ENTRIES) break;
     const separatorIndex = pair.indexOf(":");
     if (separatorIndex <= 0) continue;
-    const rarity = pair.slice(0, separatorIndex).trim();
     const style = pair.slice(separatorIndex + 1).trim();
-    if (rarity.length === 0 || rarity.length > MAX_RARITY_KEY_LENGTH_FOR_FX) continue;
+    let rarity: string;
+    try {
+      rarity = decodeURIComponent(pair.slice(0, separatorIndex).trim());
+    } catch {
+      // 不正な %エンコーディングはこのペアごとスキップする
+      continue;
+    }
+    if (rarity.length === 0 || rarity.length > MAX_RARITY_KEY_LENGTH) continue;
     // 未知スタイルは丸めずスキップ（isOverlayEffectStyle は "none" も真だが、
     // 明示 none は演出なしとして受理してよい）
     if (!isOverlayEffectStyle(style)) continue;
@@ -246,7 +261,7 @@ export interface OverlayEffectParticleConfig {
 
 /* ---- 生成ヘルパ（自然なばらつきのための乱数ユーティリティ） ---- */
 function rand(min: number, max: number): number {
-  return min + Math.random() * (max - min);
+  return randomInRange([min, max]);
 }
 function pick<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)];

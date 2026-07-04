@@ -227,4 +227,19 @@ describe('overlay-effect: レアリティ別マップ', () => {
     // legendary:bogus は未知スタイルなのでスキップ、epic:snow のみ残る
     expect(parseRarityEffectMap('legendary:bogus,epic:snow,:hearts', null)).toEqual({ epic: 'snow' })
   })
+
+  it('serialize/deserialize: レアリティ名に区切り文字（, や :）を含んでも往復できる', () => {
+    // カスタムレアリティ名が "," や ":" を含んでいても serialize/deserialize で
+    // 壊れないことを確認する（レビュー指摘: 区切り文字のエスケープ漏れ）
+    const map = { 'boss,rare': 'fireworks' as const, 'a:b': 'confetti' as const }
+    const serialized = serializeRarityEffectMap(map)
+    expect(parseRarityEffectMap(serialized, null)).toEqual(map)
+  })
+
+  it('parse: 手書きの fx= でレアリティ名を encodeURIComponent すれば区切り文字を含めて指定できる', () => {
+    // アプリが生成する fx= はレアリティ名を encodeURIComponent するため、
+    // 手書きする場合も同様にエンコードすれば区切り文字を含むカスタム
+    // レアリティ名を安全に指定できることを確認する
+    expect(parseRarityEffectMap('boss%2Crare:fireworks', null)).toEqual({ 'boss,rare': 'fireworks' })
+  })
 })

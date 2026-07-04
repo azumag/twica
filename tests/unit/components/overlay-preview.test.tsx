@@ -331,6 +331,40 @@ describe('OverlayPreview', () => {
     })
   })
 
+  it('未知の effectStyle が非legendaryレアリティに永続化されている場合は sparkle に丸めず既定値（none）のまま残す', async () => {
+    // レビュー指摘: normalizeOverlayEffectStyle は未知の値を一律 sparkle に丸めるため、
+    // common のように既定が "none" のレアリティに破損データが入ると誤って演出が
+    // 出てしまう。既定値のまま据え置くのが正しい（deserializeRarityEffectMap が
+    // 未知スタイルをスキップするのと同じ方針）。
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      imageOnly: false,
+      autoPortrait: true,
+      effects: true,
+      rarityEffects: { common: 'unknown-value', rare: 'none', epic: 'none', legendary: 'none' },
+      smallMode: true,
+      displayDuration: 6,
+      portraitShowName: false,
+      portraitShowRarity: true,
+      portraitShowDescription: false,
+      portraitShowUsername: false,
+    }))
+
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        baseUrl="https://example.com"
+        showPreview={false}
+      />
+    )
+
+    await waitFor(() => {
+      // common は既定の "none" のまま（"sparkle" に誤って丸められない）
+      expect(
+        screen.getByDisplayValue('https://example.com/overlay/streamer-1?fx=off')
+      ).toBeInTheDocument()
+    })
+  })
+
   it('レアリティのエフェクトを選択すると overlay URL と localStorage に反映する', async () => {
     renderWithIntl(
       <OverlayPreview
