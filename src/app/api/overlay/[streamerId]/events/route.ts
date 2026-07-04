@@ -212,7 +212,14 @@ export async function GET(
       })
       .filter((event): event is NonNullable<typeof event> => event !== null);
 
-    return NextResponse.json({ events });
+    // Issue #569: overlay クライアントのバージョン不一致検出用。既存キー(events)は
+    // そのままに overlayVersion を追加するだけなので後方互換(未知キーは無視される)。
+    // NEXT_PUBLIC_OVERLAY_VERSION は next.config.ts の env 設定でビルド時に
+    // インライン化される値(未設定になるケースは無いはずだが、念のため 'dev' にフォールバック)。
+    return NextResponse.json({
+      events,
+      overlayVersion: process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev",
+    });
   } catch (error) {
     return handleApiError(error, "Overlay Events API");
   }

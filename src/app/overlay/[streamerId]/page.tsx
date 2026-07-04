@@ -23,6 +23,15 @@ import {
   pickSoundBearingCardIndex,
   type GachaSoundRule,
 } from "@/lib/gacha-sound-rules";
+import {
+  shouldScheduleReload,
+  isReloadCooldownActive,
+  serializePollState,
+  parsePollState,
+  parseReloadCooldownRecord,
+  RELOAD_COOLDOWN_MS,
+  POLLSTATE_TTL_MS,
+} from "@/lib/overlay-version";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
@@ -118,6 +127,25 @@ interface OverlayOptions {
   portraitShowUsername: boolean;
 }
 
+// Issue #569: このクライアント自身のビルドバージョン。next.config.ts の `env` 設定に
+// より、process.env.NEXT_PUBLIC_OVERLAY_VERSION はビルド時にリテラル文字列として
+// インライン化される(実行時にサーバーから取得するわけではない)。
+// 'dev' はローカル開発時などの既定値で、shouldScheduleReload 側で意図的に
+// リロード対象外として扱われる(overlay-version.ts 参照)。
+const CURRENT_OVERLAY_VERSION = process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev";
+
+// Issue #569: バージョン確認・自動リロード関連の時間定数。
+// 「10分」は設計上、(1)Realtime接続中にバージョン確認だけを行う間隔 と
+// (2)不一致検出からリロード実行までのランダムジッター上限 の両方に使われるため
+// 定数を共有する。
+const TEN_MINUTES_MS = 10 * 60 * 1000;
+// 演出中で実行を見送った場合の再試行間隔(演出を壊さないための待ち時間)
+const RELOAD_DEFER_RETRY_MS = 30 * 1000;
+
+// sessionStorage キー。リロード前後で状態を引き継ぐために使う
+const RELOAD_COOLDOWN_STORAGE_KEY = "twica-overlay-reload";
+const POLLSTATE_STORAGE_KEY = "twica-overlay-pollstate";
+
 export default function OverlayPage() {
   const params = useParams();
   const streamerId = params.streamerId as string;
@@ -183,6 +211,26 @@ export default function OverlayPage() {
   const pollCursorRef = useRef(new Date().toISOString());
   const seenHistoryIdsRef = useRef<Set<string>>(new Set());
   const lastPollingErrorLogRef = useRef(0);
+  // Issue #569: バージョン不一致検出＋自動リロード用のref群。
+  // showCardは演出中判定にrefで参照する必要がある(setTimeoutコールバック内で
+  // stateを直接読むとクロージャ生成時点の古い値のままになるため)。
+  const showCardRef = useRef(showCard);
+  // Realtime接続中にバージョン確認だけを行う最終実行時刻(10分に1回に絞るため)。
+  // 0で初期化し、接続後最初のポーリングTickで即座に1回だけ確認を行う(以降は
+  // 10分間隔に絞られる)。Date.now()はレンダー中に呼べない(React Compilerの
+  // purityルールで検出される)ため、ここでは呼ばずrefの初期値は0固定にする。
+  const lastVersionCheckAtRef = useRef(0);
+  // ジッター待機中/演出中の再試行待ち(＝リロードが予約済み)かどうか。
+  // 二重にsetTimeoutを積んでしまわないようにするフラグ
+  const reloadScheduledRef = useRef(false);
+  // 不一致検出時に受信した「新しい」バージョン文字列。ジッター発火時・
+  // 演出中の再試行時にクールダウン判定・記録で使う
+  const detectedNewVersionRef = useRef<string | null>(null);
+  // ジッター/再試行のsetTimeoutハンドル。アンマウント時にクリアするため保持する
+  const reloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // attemptReloadの再帰呼び出し用ref(processQueueRefと同じパターン)。
+  // useCallback内で自身の最新版を安全に参照するために使う
+  const attemptReloadRef = useRef<() => void>(() => {});
   // 効果音再生用のオーディオ要素キャッシュ
   // HTMLAudioElementを使用（R2パブリックURLはCORSヘッダーがないためfetch不可、
   // audioタグはCORS不要で読み込める）
@@ -199,6 +247,40 @@ export default function OverlayPage() {
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
   }, [connectionStatus]);
+
+  // Issue #569: showCardをrefにミラーする(setTimeoutコールバック内で
+  // 「今演出中かどうか」を古いクロージャ値ではなく最新値で判定するため)
+  useEffect(() => {
+    showCardRef.current = showCard;
+  }, [showCard]);
+
+  // Issue #569: マウント時、直前のバージョン起因リロードでpollCursor/
+  // seenHistoryIdsをsessionStorageに退避していた場合はここで復元する。
+  // TTL(15分)超過や壊れたJSONの場合はparsePollStateがnullを返すため、
+  // その場合は何も復元されず通常どおり「今」を起点にポーリングを開始する。
+  // このeffectは他のeffect(ポーリングスケジューラ・Realtime購読)より前に
+  // 定義しているため、それらが最初に動く前に確実に復元が完了する。
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(POLLSTATE_STORAGE_KEY);
+      const restored = parsePollState(raw, Date.now(), POLLSTATE_TTL_MS);
+      if (restored) {
+        pollCursorRef.current = restored.pollCursor;
+        seenHistoryIdsRef.current = new Set(restored.seenHistoryIds);
+      }
+      // 復元の成否に関わらず使用後(またはTTL切れ)は必ず削除し、残骸を残さない
+      sessionStorage.removeItem(POLLSTATE_STORAGE_KEY);
+    } catch {
+      // OBSブラウザソース等でsessionStorageが無効/利用不可でも本体動作を壊さない
+    }
+
+    // アンマウント時、ジッター/演出中再試行待ちのタイマーが残っていればクリアする
+    return () => {
+      if (reloadTimeoutRef.current) {
+        clearTimeout(reloadTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // 効果音設定を取得し、HTMLAudioElementでプリロード
   // オーバーレイ初期化時にstreamerの効果音設定をAPIから取得
@@ -516,21 +598,153 @@ export default function OverlayPage() {
   }, [enqueueResult]);
 
   /**
+   * Issue #569: バージョン不一致検出後、ジッター待機を経て実際にリロードするか
+   * どうかを判定・実行する。ジッター発火時と「演出中につき延期」からの再試行時の
+   * 両方からこの同じ関数が呼ばれる(再帰)。
+   *
+   * 自身の再帰呼び出しは attemptReloadRef 経由で行う(processQueueRef と同じ
+   * パターン)。useCallback内で定義中の変数を直接自己参照すると、ESLintの
+   * React Compiler向けルール(react-hooks/immutability)が
+   * 「宣言前アクセス」として検出するため、既存コードと同じ ref 間接参照に揃える。
+   */
+  const attemptReload = useCallback(() => {
+    // 演出中(キュー処理中・キュー待ち・カード表示中)は演出を壊さないよう
+    // 30秒後に同じ判定をやり直す(設計上の要件3番)
+    const isMidDisplay =
+      isDisplayingRef.current || queueRef.current.length > 0 || showCardRef.current;
+    if (isMidDisplay) {
+      addDebugLogRef.current("[version] reload deferred: display in progress");
+      reloadTimeoutRef.current = setTimeout(() => {
+        attemptReloadRef.current();
+      }, RELOAD_DEFER_RETRY_MS);
+      return;
+    }
+
+    // スケジュール時に必ず設定されるため通常は非nullだが、型上の防御として確認する
+    const targetVersion = detectedNewVersionRef.current;
+    if (!targetVersion) {
+      reloadScheduledRef.current = false;
+      return;
+    }
+
+    // 実行直前にクールダウン判定(sessionStorageアクセスはOBS等で無効な場合に
+    // 備えtry/catchで包む。読み取り失敗時はクールダウン無しとして扱う。
+    // JSONの形状検証はparseReloadCooldownRecord(overlay-version.ts)に委譲し、
+    // parsePollStateと同じ「壊れたデータでも例外を投げずnullを返す」方針に揃える)
+    let cooldownRecord: ReturnType<typeof parseReloadCooldownRecord> = null;
+    try {
+      cooldownRecord = parseReloadCooldownRecord(sessionStorage.getItem(RELOAD_COOLDOWN_STORAGE_KEY));
+    } catch {
+      cooldownRecord = null;
+    }
+
+    if (isReloadCooldownActive(cooldownRecord, targetVersion, Date.now(), RELOAD_COOLDOWN_MS)) {
+      addDebugLogRef.current(`[version] reload skipped: cooldown active for ${targetVersion}`);
+      // クールダウン明け後にもう一度チャンスを与えるため予約フラグを解除する。
+      // 次のポーリング/バージョン確認サイクルで不一致が再検出されれば再スケジュールされる。
+      reloadScheduledRef.current = false;
+      return;
+    }
+
+    // クールダウン記録と、リロード後に復元するポーリング状態をsessionStorageへ退避する。
+    // 退避に失敗してもリロード自体は続行する(取りこぼし防止より前進を優先)
+    try {
+      sessionStorage.setItem(
+        RELOAD_COOLDOWN_STORAGE_KEY,
+        JSON.stringify({ version: targetVersion, reloadedAt: Date.now() }),
+      );
+      sessionStorage.setItem(
+        POLLSTATE_STORAGE_KEY,
+        serializePollState({
+          pollCursor: pollCursorRef.current,
+          seenHistoryIds: Array.from(seenHistoryIdsRef.current),
+          savedAt: Date.now(),
+        }),
+      );
+    } catch {
+      // OBSブラウザソース等でsessionStorageが無効/利用不可でも本体動作を壊さない
+    }
+
+    addDebugLogRef.current(`[version] reloading to ${targetVersion}`);
+    // リロード窓での演出取りこぼしを防ぐため、演出中でなくクールダウンもクリアな
+    // 「今」のタイミングで遅延せず即座にリロードする
+    location.reload();
+  }, []);
+
+  // attemptReloadRefを最新のcallbackで更新(processQueueRefと同じパターン)
+  useEffect(() => {
+    attemptReloadRef.current = attemptReload;
+  }, [attemptReload]);
+
+  /**
+   * Issue #569: ポーリング応答のoverlayVersionを自身のビルドバージョンと比較し、
+   * 不一致ならリロードをスケジュールする。
+   */
+  const checkOverlayVersion = useCallback((received: string | undefined) => {
+    if (!shouldScheduleReload(CURRENT_OVERLAY_VERSION, received)) {
+      return;
+    }
+    if (reloadScheduledRef.current) {
+      // 既にジッター待機/演出中の再試行待ちの場合は再スケジュールしない(設計2番)
+      return;
+    }
+    reloadScheduledRef.current = true;
+    detectedNewVersionRef.current = received as string;
+    addDebugLogRef.current(`[version] mismatch detected: ${CURRENT_OVERLAY_VERSION} -> ${received}`);
+
+    // サンダリングハード回避: 全クライアントが同時に新バージョンを検知しても
+    // 一斉リロード→同時アクセス集中が起きないよう、0〜10分でランダムに散らす
+    const jitterMs = Math.floor(Math.random() * TEN_MINUTES_MS);
+    reloadTimeoutRef.current = setTimeout(() => {
+      attemptReload();
+    }, jitterMs);
+  }, [attemptReload]);
+
+  /**
    * Realtime が購読できない環境向けの polling fallback。
    * Supabase Realtime の public channel join が CHANNEL_ERROR になる場合でも、
    * ガチャ履歴から overlay 表示を継続できるようにする。
    */
   const pollOverlayEvents = useCallback(async () => {
+    // 3秒おきのポーリングURLは接続中/未接続どちらの経路でも同一なため共通化する
+    const buildEventsUrl = () => {
+      const url = new URL(`/api/overlay/${streamerId}/events`, window.location.origin);
+      url.searchParams.set("since", pollCursorRef.current);
+      url.searchParams.set("_", String(Date.now()));
+      return url.toString();
+    };
+
     if (connectionStatusRef.current === "connected") {
+      // Issue #569: Realtime接続中もこの関数は3秒おきに呼ばれ続けるが、
+      // 従来は何もせず早期returnしていた。ここに「10分に1回、バージョン確認だけ
+      // 行う」経路を追加する。
+      // 理由: Realtime受信イベントにはhistoryId/eventIdが無くseenHistoryIdsRefに
+      // 登録されないため、接続中にevents配列を処理すると同一演出がポーリング
+      // 経路からも再生され二重演出になる。そのため接続中は応答のoverlayVersion
+      // だけを読み、events配列には一切触れない(表示・カーソル前進・seen登録の
+      // いずれも行わない)。
+      const now = Date.now();
+      if (now - lastVersionCheckAtRef.current < TEN_MINUTES_MS) {
+        return;
+      }
+      lastVersionCheckAtRef.current = now;
+
+      try {
+        const data = await fetchJsonWithXhrFallback<{ overlayVersion?: string }>(buildEventsUrl());
+        checkOverlayVersion(data.overlayVersion);
+      } catch {
+        // バージョン確認専用の背景チェックであり演出表示には無関係なため、
+        // 失敗時はログを出さず静かに次の10分後の機会に委ねる
+      }
       return;
     }
 
     try {
-      const url = new URL(`/api/overlay/${streamerId}/events`, window.location.origin);
-      url.searchParams.set("since", pollCursorRef.current);
-      url.searchParams.set("_", String(Date.now()));
-
-      const data = await fetchJsonWithXhrFallback<{ events?: OverlayPollingEvent[] }>(url.toString());
+      const data = await fetchJsonWithXhrFallback<{
+        events?: OverlayPollingEvent[];
+        overlayVersion?: string;
+      }>(buildEventsUrl());
+      checkOverlayVersion(data.overlayVersion);
       const events = data.events ?? [];
       for (const event of events) {
         if (seenHistoryIdsRef.current.has(event.id)) {
@@ -558,7 +772,7 @@ export default function OverlayPage() {
         addDebugLogRef.current("Polling fallback network error; retrying");
       }
     }
-  }, [streamerId]);
+  }, [streamerId, checkOverlayVersion]);
 
   useEffect(() => {
     let stopped = false;
