@@ -35,3 +35,17 @@ vi.mock('@/lib/supabase/admin', () => ({
   // logger.error → logErrorFromLogger → logErrorToSupabase で使用される
   getSupabaseAdmin: vi.fn(() => createMockSupabaseClient()),
 }))
+
+// #570: pg 直結経路（postgres.js + Drizzle）のグローバルモック。
+// 既存テストは DB_DRIVER 未設定（= 'postgrest' 経路）で動くため getDb は呼ばれない。
+// 万一呼ばれた場合はフラグ分岐漏れ（設計違反）を即検出できるよう throw するスタブにする。
+// pg 経路をテストしたいファイルでは vi.mocked(getDb).mockResolvedValue(...) で上書きする。
+// エクスポート形状は実モジュール（src/lib/db/client.ts）の実行時エクスポート（getDb のみ）と一致させること。
+vi.mock('@/lib/db/client', () => ({
+  getDb: vi.fn(() => {
+    throw new Error(
+      'getDb() must not be called in unit tests: DB_DRIVER defaults to postgrest. ' +
+        'Override with vi.mocked(getDb).mockResolvedValue(...) to test the pg path.'
+    )
+  }),
+}))

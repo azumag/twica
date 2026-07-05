@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import type { GachaBroadcastPayload, RealtimeError, SubscribeOptions } from '@/lib/realtime'
 import type { GachaSoundRule } from '@/lib/gacha-sound-rules'
 import OverlayPage from '@/app/overlay/[streamerId]/page'
 import { pickSoundBearingCardIndex } from '@/lib/gacha-sound-rules'
 import { OVERLAY_EFFECT_PARTICLE_CONFIG } from '@/lib/overlay-effect'
+import { serializePollState } from '@/lib/overlay-version'
 
 const { subscribeMock } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
@@ -438,6 +439,271 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Gamma')).toBeInTheDocument()
     expect(playedSrcs).toEqual(['https://example.com/legendary.mp3'])
+  })
+
+  // Issue #569 厳格レビュー指摘(High): attemptReload / checkOverlayVersion /
+  // mount時pollstate復元は、テスト環境では page.tsx トップレベルの
+  // `CURRENT_OVERLAY_VERSION = process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev"`
+  // が常に 'dev' に評価される(tests/setup.tsで当該環境変数を設定していない)ため、
+  // shouldScheduleReloadが常にfalseを返し、通常のOverlayPageインポートでは
+  // この経路が一度も実行されない。
+  // vi.stubEnv + vi.resetModules + 動的importで「'dev'ではないビルド」を
+  // このdescribe専用に用意し、実際に不一致検出→ジッター待機→リロードの
+  // 経路を駆動して検証する。
+  describe('Issue #569: バージョン不一致検出とアイドル時自動リロード', () => {
+    // window.location を丸ごと差し替えるため、テストごとに元のLocationへ
+    // 復元する(そうしないと以降のテスト・describeでwindow.history.replaceState
+    // との整合が壊れる)
+    const originalLocation = window.location
+    let OverlayPageV: typeof OverlayPage
+
+    // page.tsx の RELOAD_COOLDOWN_STORAGE_KEY / POLLSTATE_STORAGE_KEY は
+    // overlay-version.tsの純粋関数群とは異なりpage.tsx内部の実装詳細のため
+    // 非exportになっている。ここでは実装と同じリテラル値を直接指定する
+    // (page.tsx側でキー名を変更した場合はこのテストも追随して更新が必要)。
+    const RELOAD_COOLDOWN_STORAGE_KEY = 'twica-overlay-reload'
+    const POLLSTATE_STORAGE_KEY = 'twica-overlay-pollstate'
+
+    // page.tsx内部の時間定数(非export)と同じ値をテスト側でも保持する。
+    // 実装側(VERSION_CHECK_INTERVAL_MS/RELOAD_JITTER_MAX_MS/RELOAD_DEFER_RETRY_MS)
+    // を変更した場合は、ここも追随して更新すること。
+    const RELOAD_JITTER_MAX_MS = 10 * 60 * 1000
+    const RELOAD_DEFER_RETRY_MS = 30 * 1000
+
+    beforeAll(async () => {
+      // CURRENT_OVERLAY_VERSION はモジュールのトップレベルで一度だけ評価される
+      // ため、'dev'以外の値にするには「環境変数スタブ→モジュールキャッシュ破棄→
+      // 再import」が必要になる。ファイル先頭で静的importした既存の OverlayPage
+      // はこの後も'dev'ビルドのまま維持される(他のテストへは影響しない)。
+      vi.stubEnv('NEXT_PUBLIC_OVERLAY_VERSION', 'v-a')
+      vi.resetModules()
+      const mod = await import('@/app/overlay/[streamerId]/page')
+      OverlayPageV = mod.default
+    })
+
+    afterAll(() => {
+      vi.unstubAllEnvs()
+    })
+
+    beforeEach(() => {
+      // cooldown/pollstateの仕込みがテスト間で残らないようにする
+      sessionStorage.clear()
+    })
+
+    afterEach(() => {
+      // Math.randomスパイ等をテストごとに元へ戻す
+      vi.restoreAllMocks()
+      // window.locationを元のLocationオブジェクトへ戻す
+      Object.defineProperty(window, 'location', { value: originalLocation, configurable: true })
+    })
+
+    /**
+     * location.reloadをスパイに差し替える(既存のLocationプロパティは維持する)。
+     * 注意: happy-domのLocationはhref/origin/search等をprototype上のgetterとして
+     * 実装しており、いずれもインスタンス自身のenumerableプロパティではない。
+     * そのため `{ ...window.location }` は何もフィールドをコピーできず
+     * (origin等がundefinedになり、page.tsx内の `new URL(path, location.origin)`
+     * がInvalid URLで例外を投げてしまう)、各プロパティをgetter経由で明示的に
+     * 読み出してコピーする必要がある。
+     */
+    const stubLocationReload = () => {
+      const reloadMock = vi.fn()
+      const current = window.location
+      Object.defineProperty(window, 'location', {
+        value: {
+          hash: current.hash,
+          host: current.host,
+          hostname: current.hostname,
+          href: current.href,
+          origin: current.origin,
+          pathname: current.pathname,
+          port: current.port,
+          protocol: current.protocol,
+          search: current.search,
+          reload: reloadMock,
+        },
+        configurable: true,
+      })
+      return reloadMock
+    }
+
+    /**
+     * overlay events ポーリング(かつsound-settings取得)の共通fetchレスポンスを
+     * 組み立てる。このテストファイルの既存の流儀(fetchはURLを区別せず単一の
+     * レスポンス形状を返す)に合わせ、events/overlayVersionとsoundUrl/soundEnabled
+     * を同居させる。
+     */
+    const stubEventsFetch = (overlayVersion: string) => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          soundUrl: null,
+          soundEnabled: false,
+          events: [],
+          overlayVersion,
+        }),
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      return fetchMock
+    }
+
+    it('フォールバックポーリングでoverlayVersion不一致を検出し、ジッター上限まで進めるとlocation.reloadが呼ばれる', async () => {
+      vi.useFakeTimers()
+      // ジッターを上限近くに固定し、「上限まで進めれば必ず発火する」ことを検証する
+      vi.spyOn(Math, 'random').mockReturnValue(0.999999)
+      const reloadMock = stubLocationReload()
+      stubEventsFetch('v-b')
+
+      render(<OverlayPageV />)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      // 最初のフォールバックポーリング(3秒後)でoverlayVersion不一致を検出し、
+      // ジッター待機(setTimeout)をスケジュールする
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000)
+      })
+      expect(reloadMock).not.toHaveBeenCalled()
+
+      // ジッター上限まで進めると、スケジュールされたリロードが実行される
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RELOAD_JITTER_MAX_MS)
+      })
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('演出中(showCard)にジッターが発火した場合は即座にreloadされず、演出終了後に呼ばれる', async () => {
+      vi.useFakeTimers()
+      // ジッターをほぼ0にして、最初のポーリング直後に発火させる
+      vi.spyOn(Math, 'random').mockReturnValue(0)
+      const reloadMock = stubLocationReload()
+      stubEventsFetch('v-b')
+
+      let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+      subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+        onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+        options.onError?.(connectionError)
+        return vi.fn()
+      })
+
+      render(<OverlayPageV />)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      // カードを表示させ、演出中(showCard=true)の状態を作る
+      act(() => {
+        onGachaResult?.({
+          type: 'gacha',
+          card: { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare' },
+          userTwitchUsername: 'Viewer',
+        })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+      expect(screen.getByText('Alpha')).toBeInTheDocument()
+
+      // 3秒後のポーリングでバージョン不一致を検出。ジッターはほぼ0のため直後に
+      // 発火するが、演出中(showCard=true)のため即座にはreloadされない
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000)
+      })
+      expect(reloadMock).not.toHaveBeenCalled()
+
+      // 演出のhide(6秒後)・クリア(その0.5秒後)を別々のactで個別にflushしてから
+      // 残りの再試行間隔を進める。ここを1回の巨大なadvanceTimersByTimeAsyncに
+      // まとめると、setShowCard(false)によるReact状態更新がshowCardRefへ
+      // ミラーされる(useEffect)前に再試行タイマーの判定が実行されてしまい、
+      // 「演出はとっくに終わっているのにshowCardRef.currentがstaleなtrueのまま」
+      // という誤検知でテストが不安定になることを確認済み(fake timers配下で
+      // 大量のタイマーを一度に進めた際のReactバッチング起因)。
+      // 演出終了の前後で明示的にactの区切りを入れ、Reactに反映の機会を与える。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000) // 表示から6秒後: hideタイマー発火(showCard: true→false)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000) // さらに0.5秒後: クリアタイマー発火(result: null、isDisplaying: false)
+      })
+      expect(reloadMock).not.toHaveBeenCalled()
+
+      // 演出(表示6秒+後片付け0.5秒)は既に終わっているはずなので、演出中の
+      // 再試行間隔(30秒)が経過すると今度はreloadが呼ばれる
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RELOAD_DEFER_RETRY_MS - 4000)
+      })
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('同一バージョンのクールダウン記録がsessionStorageにある場合、リロードはスキップされる', async () => {
+      vi.useFakeTimers()
+      vi.spyOn(Math, 'random').mockReturnValue(0.999999)
+      const reloadMock = stubLocationReload()
+
+      // mount前に、これから検出する予定のバージョン'v-b'に対する直近リロード
+      // 記録を仕込んでおく(60分クールダウン中なのでスキップされるはず)
+      sessionStorage.setItem(
+        RELOAD_COOLDOWN_STORAGE_KEY,
+        JSON.stringify({ version: 'v-b', reloadedAt: Date.now() }),
+      )
+      stubEventsFetch('v-b')
+
+      render(<OverlayPageV />)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RELOAD_JITTER_MAX_MS)
+      })
+
+      expect(reloadMock).not.toHaveBeenCalled()
+    })
+
+    it('mount時にsessionStorageのpollstateスナップショットを復元し、次のポーリングのsinceに反映する', async () => {
+      vi.useFakeTimers()
+
+      const restoredCursor = '2026-06-01T00:00:00.000Z'
+      sessionStorage.setItem(
+        POLLSTATE_STORAGE_KEY,
+        serializePollState({
+          pollCursor: restoredCursor,
+          seenHistoryIds: ['h-restored-1'],
+          savedAt: Date.now(),
+        }),
+      )
+      // このテストはpollstate復元のみに関心があるため、overlayVersionは現行
+      // ビルド('v-a')と一致させリロード関連の副作用を起こさないようにする
+      const fetchMock = stubEventsFetch('v-a')
+
+      render(<OverlayPageV />)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000)
+      })
+
+      const eventsCall = fetchMock.mock.calls.find(([url]) =>
+        String(url).includes('/api/overlay/streamer-1/events'),
+      )
+      expect(eventsCall).toBeDefined()
+      const requestedUrl = new URL(String(eventsCall?.[0]))
+      expect(requestedUrl.searchParams.get('since')).toBe(restoredCursor)
+    })
   })
 })
 

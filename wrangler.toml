@@ -72,6 +72,36 @@ binding = "R2_SOUNDS"
 bucket_name = "twica-sound-prod"
 preview_bucket_name = "twica-sound-dev"
 
+# ============================================================
+# Hyperdrive binding for direct Postgres access (#570, #568 Phase 1)
+# Postgres 直結アクセス用 Hyperdrive バインディング (#570, #568 Phase 1)
+# ============================================================
+#
+# DB_DRIVER=pg-read/pg で有効になる新データアクセス経路（postgres.js + Drizzle）が
+# 使用する。フラグ未設定の間はコードから参照されないため、このバインディングが
+# 無くてもデプロイ・動作に影響はない（安全にコメントアウトのまま置ける）。
+#
+# 作成手順（リポジトリオーナーが実行）:
+#   wrangler hyperdrive create twica-hyperdrive-prod \
+#     --connection-string="<本番 Supabase の Direct connection 文字列>" \
+#     --caching-disabled
+#
+# --caching-disabled が必須である理由:
+#   Hyperdrive のクエリキャッシュはデフォルト有効（max_age 60s）。Phase 1 は
+#   PostgREST（毎回実クエリ）との完全パリティが目的であり、キャッシュが有効だと
+#   overlay ポーリングの新着イベントが最大 60 秒遅延する等の挙動差が出るため。
+#
+# 実 id は上記コマンドの出力をユーザーが作成後に記入すること。
+# プレースホルダ id のまま有効化（コメント解除）してはならない（デプロイが壊れる）。
+#
+# localConnectionString は `wrangler dev` 実行時のみ使われるローカル接続先
+# （next dev は process.env.DATABASE_URL を使う。docs/db-driver-migration.md 参照）。
+#
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "<wrangler hyperdrive create twica-hyperdrive-prod の出力 id を記入>"
+# localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
 # Environment variables that must survive deploys (Dashboard-only vars get overwritten)
 # デプロイ時に上書きされないよう、Dashboard のみで設定していた変数をここに明示する
 [vars]
@@ -162,3 +192,19 @@ bucket_name = "twica-dev"
 [[env.preview.r2_buckets]]
 binding = "R2_SOUNDS"
 bucket_name = "twica-sound-dev"
+
+# Hyperdrive binding for preview environment (#570)
+# プレビュー環境用 Hyperdrive バインディング (#570)
+#
+# [env.preview] はトップレベルのバインディングをマージではなく上書きするため、
+# （KV・R2 と同様）Hyperdrive も preview 側に明示的な再宣言が必要。
+# preview 用は別の Hyperdrive config（preview プロジェクトの Supabase に接続）を作る:
+#   wrangler hyperdrive create twica-hyperdrive-preview \
+#     --connection-string="<preview Supabase の Direct connection 文字列>" \
+#     --caching-disabled
+# --caching-disabled 必須の理由・id 記入ルールはトップレベルの [[hyperdrive]] コメント参照。
+#
+# [[env.preview.hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "<wrangler hyperdrive create twica-hyperdrive-preview の出力 id を記入>"
+# localConnectionString = "postgres://user:password@localhost:5432/postgres"

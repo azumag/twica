@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { GET } from "@/app/api/overlay/[streamerId]/events/route";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -180,5 +180,96 @@ describe("GET /api/overlay/[streamerId]/events", () => {
     );
 
     expect(res.status).toBe(500);
+  });
+});
+
+// Issue #569: overlay のバージョン不一致検出＋アイドル時自動リロード機構向けに、
+// ポーリング応答へ overlayVersion を追加したことを検証する。
+describe("GET /api/overlay/[streamerId]/events: overlayVersion (Issue #569)", () => {
+  const originalOverlayVersion = process.env.NEXT_PUBLIC_OVERLAY_VERSION;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCheckRateLimit.mockResolvedValue({
+      success: true,
+      limit: 120,
+      remaining: 119,
+      reset: Date.now() + 60000,
+    });
+  });
+
+  afterEach(() => {
+    // 他のテストファイル/テストへ影響しないよう、テスト前の値へ必ず戻す
+    if (originalOverlayVersion !== undefined) {
+      process.env.NEXT_PUBLIC_OVERLAY_VERSION = originalOverlayVersion;
+    } else {
+      delete process.env.NEXT_PUBLIC_OVERLAY_VERSION;
+    }
+  });
+
+  it("NEXT_PUBLIC_OVERLAY_VERSION未設定時はoverlayVersion: 'dev'を返す", async () => {
+    delete process.env.NEXT_PUBLIC_OVERLAY_VERSION;
+
+    const historyQuery = createHistoryQuery({ data: [], error: null });
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn(() => historyQuery),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(
+      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
+      createRouteParams("streamer-1")
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.overlayVersion).toBe("dev");
+  });
+
+  it("NEXT_PUBLIC_OVERLAY_VERSION設定時はその値をoverlayVersionとして返す", async () => {
+    process.env.NEXT_PUBLIC_OVERLAY_VERSION = "abc123def456";
+
+    const historyQuery = createHistoryQuery({ data: [], error: null });
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn(() => historyQuery),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(
+      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
+      createRouteParams("streamer-1")
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.overlayVersion).toBe("abc123def456");
+  });
+
+  it("events配列を含む応答でもoverlayVersionが同居する(既存フィールドとの後方互換)", async () => {
+    process.env.NEXT_PUBLIC_OVERLAY_VERSION = "v-test";
+
+    const historyQuery = createHistoryQuery({
+      data: [
+        {
+          id: "h1",
+          event_id: "event-1",
+          redeemed_at: "2026-01-01T00:00:01Z",
+          user_twitch_username: "viewer1",
+          reward_id: null,
+          cards: { id: "c1", name: "Card1", description: null, image_url: null, rarity: "rare" },
+        },
+      ],
+      error: null,
+    });
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn(() => historyQuery),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+
+    const res = await GET(
+      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
+      createRouteParams("streamer-1")
+    );
+
+    const body = await res.json();
+    expect(body.overlayVersion).toBe("v-test");
+    expect(body.events).toHaveLength(1);
   });
 });

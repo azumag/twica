@@ -6,6 +6,40 @@ import { normalizeDropRate } from "@/lib/card-utils";
 import { reportError } from "@/lib/sentry/error-handler";
 import { withRetry } from "@/lib/supabase/retry";
 import { logPerf, perfStart } from "@/lib/perf";
+// ---------------------------------------------------------------------------
+// #571: pg 直結経路 (DB_DRIVER=pg-read/pg) 用の import。
+// フラグ未設定時（既定 'postgrest'）は isPgReadEnabled() が false を返すため
+// getDb() は一切呼ばれず、既存の supabase-js 経路が従来どおり実行される。
+// count は既存コードの `const { count } = await ...` 分割代入と名前が衝突する
+// ため countRows に alias する。
+// ---------------------------------------------------------------------------
+import {
+  and,
+  asc,
+  count as countRows,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  ilike,
+  inArray,
+  lt,
+} from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgMissingColumnError } from "@/lib/db/errors";
+import { isPgReadEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+// schema のテーブル名（cards / streamers 等）は本モジュールのローカル変数名・
+// 型名と紛らわしいため、Table サフィックスを付けて import する
+// （announcements.ts パイロットと同じ規約）
+import {
+  cards as cardsTable,
+  collectionCompletions as collectionCompletionsTable,
+  gachaHistory as gachaHistoryTable,
+  streamers as streamersTable,
+  userCards as userCardsTable,
+  users as usersTable,
+} from "@/lib/db/schema";
 // Issue #557: デプロイ窓 (00064 未適用) の collection_name 列欠落検知に再利用。
 // 既存ヘルパは "collection_name" 文言でゲートしており、collection_completions
 // の同名列にもそのまま一致する。
@@ -22,6 +56,74 @@ interface GachaHistoryWithCard extends GachaHistory {
 }
 
 /**
+ * getStreamerData の Drizzle（pg 直結）実装 (#571)
+ *
+ * PostgREST 実装との対応:
+ * - `streamers.*, cards!cards_streamer_id_fkey(*)` の埋め込み1リクエストを、
+ *   streamers LEFT JOIN cards の1クエリで置き換える（往復回数のパリティ）。
+ *   JOIN 条件 cards.streamer_id = streamers.id は FK 制約
+ *   cards_streamer_id_fkey が表す関係そのものであり、PostgREST の埋め込みヒント
+ *   （PGRST201 回避）と同じリレーションを SQL で明示していることになる。
+ * - PostgREST の max-rows(1000) は「トップレベル行」にのみ適用され、埋め込み
+ *   配列は打ち切られない。よってこの JOIN にも LIMIT は付けない（カード全件）。
+ * - streamers.twitch_user_id は UNIQUE（migration 00001）のため streamer は
+ *   最大1行。JOIN の複数行はすべて同一 streamer で、カードだけが異なる。
+ * - .maybeSingle() のエラー（およびクエリ失敗全般）は既存実装が分割代入で
+ *   握り潰して null 扱いにしているため、pg 版も catch して null を返す
+ *   （外部挙動のパリティ。ログだけは切替検証のため残す）。
+ *
+ * 日付の既知の表現差（パイロット announcements.ts と同様）: pg 直結は PG テキスト
+ * 形式（'2026-03-10 12:00:00.123456+00'）、PostgREST は ISO 8601 を返す。本モジュール
+ * の消費側はすべて new Date() / Date.parse 経由で日付を扱うため影響はない
+ * （文字列を直接パースする消費側を追加する場合は注意）。他の xxxPg も同様。
+ */
+async function getStreamerDataPg(
+  twitchUserId: string
+): Promise<{ streamer: Streamer; cards: Card[] } | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
+        // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ streamer: streamersTable, card: cardsTable })
+          .from(streamersTable)
+          .leftJoin(cardsTable, eq(cardsTable.streamer_id, streamersTable.id))
+          .where(eq(streamersTable.twitch_user_id, twitchUserId));
+      },
+      "getStreamerData",
+      { idempotent: true },
+    );
+
+    if (rows.length === 0) return null;
+
+    // LEFT JOIN なのでカード0枚でも streamer 行は1行返る（card は null）。
+    // PostgREST の cards: [] と同じく空配列に落とす。
+    // ソートは既存実装と同一の JS ソート（created_at 降順）。
+    // Drizzle スキーマの行は Card 型に無い生成カラム rarity_order も含むが、
+    // PostgREST の `cards(*)` も実 DB の全列（rarity_order 含む）を返すため
+    // むしろ形状は一致する。型だけ既存の戻り値型に合わせてキャストする
+    // （値の変換はしない）。
+    const cards = normalizeDropRate(
+      rows.flatMap((row) => (row.card ? [row.card as unknown as Card] : []))
+    ).sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    // 既存実装は `{ cards: _cardsNested, ...streamerData }` でネストを除いた
+    // streamer 列のみを返す。pg 版の streamer 行は最初からネストを含まない。
+    const streamer = rows[0].streamer as unknown as Streamer;
+    return { streamer, cards };
+  } catch (error) {
+    // 既存実装はエラー時に streamer=null → return null（呼び出し側は
+    // /dashboard へのリダイレクト等で扱う）。同じ外部挙動に合わせる。
+    logger.error("Error in getStreamerData (pg)", { error });
+    return null;
+  }
+}
+
+/**
  * Get streamer data with cards - cached per request
  * Single query using Supabase relations to reduce network round-trips
  *
@@ -29,6 +131,12 @@ interface GachaHistoryWithCard extends GachaHistory {
  * Supabaseのリレーションを使用して1回のクエリで取得し、ネットワーク往復を削減
  */
 export const getStreamerData = cache(async (twitchUserId: string) => {
+  // #571: DB_DRIVER=pg-read/pg のときのみ Drizzle 直結経路へ切り替える。
+  // フラグ未設定時は素通りし、以下の既存 supabase-js 実装が従来どおり実行される。
+  if (isPgReadEnabled()) {
+    return getStreamerDataPg(twitchUserId);
+  }
+
   const supabaseAdmin = getSupabaseAdmin();
 
   // Single query: get streamer with their cards using foreign key relation
@@ -74,6 +182,115 @@ export const getStreamerData = cache(async (twitchUserId: string) => {
 })
 
 /**
+ * getStreamerDataPaginated の Drizzle（pg 直結）実装 (#571)
+ *
+ * PostgREST 実装との対応（3クエリ構成をそのまま踏襲）:
+ * 1. streamers: .maybeSingle() 相当。twitch_user_id は UNIQUE のため LIMIT 1 で
+ *    0行 → null / 1行 → その行、という同じ外部挙動になる。
+ * 2. cards の総数: `{ count: "exact", head: true }` 相当を COUNT(*) で取得。
+ * 3. cards のページ: `.range(offset, offset + perPage - 1)` は
+ *    LIMIT perPage OFFSET offset と等価。
+ *
+ * エラー時の挙動は既存実装（分割代入でエラーを握り潰す）に合わせ、クエリ単位で
+ * catch して同じフォールバック値に落とす:
+ *   streamer 失敗 → null（関数全体が null）/ count 失敗 → 0 / cards 失敗 → []
+ */
+async function getStreamerDataPaginatedPg(
+  twitchUserId: string,
+  page: number,
+  perPage: number
+): Promise<{
+  streamer: Streamer;
+  cards: Card[];
+  pagination: { page: number; perPage: number; total: number; totalPages: number };
+} | null> {
+  const start = Date.now();
+
+  let streamer: Streamer | null;
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select()
+          .from(streamersTable)
+          .where(eq(streamersTable.twitch_user_id, twitchUserId))
+          .limit(1);
+      },
+      "getStreamerDataPaginated(streamer)",
+      { idempotent: true },
+    );
+    // Drizzle 行は NULL 制約の型差（DDL 準拠）があるが値は同一のため、既存の
+    // 戻り値型に合わせるキャストのみ行う（値の変換はしない）。
+    streamer = (rows[0] ?? null) as unknown as Streamer | null;
+  } catch (error) {
+    logger.error("Error in getStreamerDataPaginated (pg:streamer)", { error });
+    streamer = null;
+  }
+
+  if (!streamer) return null;
+  // クロージャ内での TS null 絞り込みを保つため id を確定させる
+  const streamerId = streamer.id;
+
+  let totalCount = 0;
+  try {
+    totalCount = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        const result = await db
+          .select({ count: countRows() })
+          .from(cardsTable)
+          .where(eq(cardsTable.streamer_id, streamerId));
+        return result[0]?.count ?? 0;
+      },
+      "getStreamerDataPaginated(count)",
+      { idempotent: true },
+    );
+  } catch (error) {
+    // 既存実装は count エラー時 null → `totalCount || 0` で 0 扱い
+    logger.error("Error in getStreamerDataPaginated (pg:count)", { error });
+    totalCount = 0;
+  }
+
+  const offset = (page - 1) * perPage;
+  let cards: Card[] = [];
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select()
+          .from(cardsTable)
+          .where(eq(cardsTable.streamer_id, streamerId))
+          .orderBy(desc(cardsTable.created_at))
+          .limit(perPage)
+          .offset(offset);
+      },
+      "getStreamerDataPaginated(cards)",
+      { idempotent: true },
+    );
+    cards = rows as unknown as Card[];
+  } catch (error) {
+    // 既存実装は cards エラー時 null → `cards || []` で [] 扱い
+    logger.error("Error in getStreamerDataPaginated (pg:cards)", { error });
+    cards = [];
+  }
+
+  logger.info(`[Perf] getStreamerDataPaginated: ${Date.now() - start}ms (page ${page}, ${cards.length} cards)`);
+
+  return {
+    streamer,
+    cards,
+    pagination: {
+      page,
+      perPage,
+      total: totalCount,
+      totalPages: Math.ceil(totalCount / perPage),
+    },
+  };
+}
+
+/**
  * Get streamer data with paginated cards
  * サーバーサイドページング対応の配信者データとカード取得
  */
@@ -82,6 +299,11 @@ export const getStreamerDataPaginated = cache(async (
   page: number = 1,
   perPage: number = 8
 ) => {
+  // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
+  if (isPgReadEnabled()) {
+    return getStreamerDataPaginatedPg(twitchUserId, page, perPage);
+  }
+
   const supabaseAdmin = getSupabaseAdmin();
   const start = Date.now();
 
@@ -252,7 +474,45 @@ export const getUserCards = cache(async (twitchUserId: string): Promise<CardWith
   return result;
 })
 
+/**
+ * getRecentGachaHistory の Drizzle（pg 直結）実装 (#571)
+ *
+ * PostgREST の `*, cards(*)` 埋め込みは、gacha_history.card_id → cards.id の
+ * 多対一 FK に基づき「単一オブジェクト（マッチなしなら null）」を cards キーに
+ * ネストする。pg 版は LEFT JOIN + ネスト選択（cards: cardsTable）で同じ形状を
+ * 直接得る（Drizzle は LEFT JOIN でマッチしなかったネストオブジェクトを null に
+ * する。card_id は NOT NULL FK のため実データでは常にオブジェクト）。
+ * エラー時は既存実装（分割代入で握り潰し → []）と同じ外部挙動。
+ */
+async function getRecentGachaHistoryPg(): Promise<GachaHistoryWithCard[]> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ ...getTableColumns(gachaHistoryTable), cards: cardsTable })
+          .from(gachaHistoryTable)
+          .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+          .orderBy(desc(gachaHistoryTable.redeemed_at))
+          .limit(10);
+      },
+      "getRecentGachaHistory",
+      { idempotent: true },
+    );
+    // 既存実装と同じく戻り値型へのキャストのみ（値の変換はしない）
+    return rows as unknown as GachaHistoryWithCard[];
+  } catch (error) {
+    logger.error("Error in getRecentGachaHistory (pg)", { error });
+    return [];
+  }
+}
+
 export async function getRecentGachaHistory(): Promise<GachaHistoryWithCard[]> {
+  // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
+  if (isPgReadEnabled()) {
+    return getRecentGachaHistoryPg();
+  }
+
   const supabaseAdmin = getSupabaseAdmin();
 
   const { data: history } = await supabaseAdmin
@@ -297,6 +557,112 @@ interface PaginatedGachaHistory {
 }
 
 /**
+ * getGachaHistoryForStreamer の Drizzle（pg 直結）実装 (#571)
+ *
+ * PostgREST 実装との対応:
+ * - `*, cards(*)` / `cards!inner(*)` の埋め込み → LEFT JOIN + ネスト選択。
+ *   rarity フィルタ時に PostgREST が !inner を使うのは「埋め込みフィルタで
+ *   トップレベル行も絞り込む」ためだが、SQL では LEFT JOIN + WHERE
+ *   cards.rarity = X が INNER JOIN + 同条件と完全に等価（NULL 拡張行は WHERE で
+ *   落ちる）なので、JOIN 種別を分岐せず常に LEFT JOIN + WHERE で両ケースを表現
+ *   できる。rarity フィルタなしの場合も card_id は NOT NULL FK（cards.id への
+ *   参照）のため LEFT JOIN は行数を増減させず、!inner の有無による差は出ない。
+ * - `{ count: "exact" }` はフィルタ適用後のトップレベル行数 → 同じ WHERE の
+ *   COUNT(*) クエリ。上記と同じ理由で JOIN しても行数は変わらないため、rarity
+ *   条件が cards 列を参照できるよう count クエリにも同じ LEFT JOIN を張る。
+ * - `.ilike()` の LIKE パターン（% と _ を \ でエスケープ）はバインド値として
+ *   そのまま PostgreSQL に渡り、既定のエスケープ文字も \ なので意味論は同一。
+ * - `.range(offset, offset + perPage - 1)` = LIMIT perPage OFFSET offset。
+ * - エラー時: 既存実装は分割代入で握り潰し data=null / count=null →
+ *   { history: [], total: 0, totalPages: 0 }。単一リクエスト失敗で両方 null に
+ *   なる挙動に合わせ、pg 版も rows/count のどちらが失敗しても同じ空結果を返す。
+ */
+async function getGachaHistoryForStreamerPg(
+  streamerId: string,
+  filters: GachaHistoryFilters
+): Promise<PaginatedGachaHistory> {
+  const { page = 1, perPage = 20, username, rarity, cardId, userId, from, to } = filters;
+
+  // WHERE 条件は PostgREST 版のフィルタと1対1対応で組み立てる
+  const conditions = [eq(gachaHistoryTable.streamer_id, streamerId)];
+  if (username) {
+    // Escape LIKE pattern characters to prevent unintended matching
+    // LIKEパターン文字をエスケープして意図しないマッチを防止（既存実装と同一）
+    const escaped = username.replace(/%/g, "\\%").replace(/_/g, "\\_");
+    conditions.push(ilike(gachaHistoryTable.user_twitch_username, `%${escaped}%`));
+  }
+  if (rarity) {
+    conditions.push(eq(cardsTable.rarity, rarity));
+  }
+  if (cardId) {
+    conditions.push(eq(gachaHistoryTable.card_id, cardId));
+  }
+  if (userId) {
+    conditions.push(eq(gachaHistoryTable.user_twitch_id, userId));
+  }
+  if (from) {
+    conditions.push(gte(gachaHistoryTable.redeemed_at, from));
+  }
+  if (to) {
+    // 「次の日未満」で "to" 日付全体を含める（既存実装と同一のUTC解釈）
+    const nextDay = new Date(`${to}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    conditions.push(lt(gachaHistoryTable.redeemed_at, nextDay.toISOString()));
+  }
+  const whereClause = and(...conditions);
+  const offset = (page - 1) * perPage;
+
+  try {
+    const [rows, total] = await Promise.all([
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ ...getTableColumns(gachaHistoryTable), cards: cardsTable })
+            .from(gachaHistoryTable)
+            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+            .where(whereClause)
+            .orderBy(desc(gachaHistoryTable.redeemed_at))
+            .limit(perPage)
+            .offset(offset);
+        },
+        "getGachaHistoryForStreamer(rows)",
+        { idempotent: true },
+      ),
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          const result = await db
+            .select({ count: countRows() })
+            .from(gachaHistoryTable)
+            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+            .where(whereClause);
+          return result[0]?.count ?? 0;
+        },
+        "getGachaHistoryForStreamer(count)",
+        { idempotent: true },
+      ),
+    ]);
+
+    return {
+      history: rows as unknown as GachaHistoryWithCard[],
+      pagination: {
+        page,
+        perPage,
+        total,
+        totalPages: Math.ceil(total / perPage),
+      },
+    };
+  } catch (error) {
+    logger.error("Error in getGachaHistoryForStreamer (pg)", { error });
+    return {
+      history: [],
+      pagination: { page, perPage, total: 0, totalPages: 0 },
+    };
+  }
+}
+
+/**
  * Get gacha history for a streamer with pagination and filters
  * Supports filtering by username, rarity, and date range
  * 配信者向け: ページネーション・フィルタ付きガチャ履歴取得
@@ -306,6 +672,11 @@ export async function getGachaHistoryForStreamer(
   streamerId: string,
   filters: GachaHistoryFilters = {}
 ): Promise<PaginatedGachaHistory> {
+  // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
+  if (isPgReadEnabled()) {
+    return getGachaHistoryForStreamerPg(streamerId, filters);
+  }
+
   const { page = 1, perPage = 20, username, rarity, cardId, userId, from, to } = filters;
   const supabaseAdmin = getSupabaseAdmin();
 
@@ -371,6 +742,80 @@ export async function getGachaHistoryForStreamer(
 }
 
 /**
+ * getGachaHistoryForUser の Drizzle（pg 直結）実装 (#571)
+ *
+ * PostgREST の `*, cards(*), streamers(twitch_display_name)` は、いずれも
+ * 多対一 FK（card_id → cards.id / streamer_id → streamers.id）に基づく
+ * 「単一オブジェクト」埋め込み。pg 版は 2 つの LEFT JOIN + ネスト選択で
+ * 同じ形状を得る。streamers は twitch_display_name の 1 列だけを選択した
+ * ネストオブジェクト（{ twitch_display_name } | null）にし、列を絞った埋め込み
+ * の形状（GachaHistoryTable が entry.streamers.twitch_display_name として消費）
+ * を厳密に再現する。count は WHERE のみで決まる（JOIN は多対一で行数不変）ため
+ * gacha_history 単独の COUNT(*) で等価。
+ * エラー時は getGachaHistoryForStreamerPg と同じく空結果（既存挙動どおり）。
+ */
+async function getGachaHistoryForUserPg(
+  userTwitchId: string,
+  filters: { page?: number; perPage?: number }
+): Promise<PaginatedGachaHistory> {
+  const { page = 1, perPage = 20 } = filters;
+  const offset = (page - 1) * perPage;
+
+  try {
+    const [rows, total] = await Promise.all([
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              ...getTableColumns(gachaHistoryTable),
+              cards: cardsTable,
+              streamers: { twitch_display_name: streamersTable.twitch_display_name },
+            })
+            .from(gachaHistoryTable)
+            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+            .leftJoin(streamersTable, eq(gachaHistoryTable.streamer_id, streamersTable.id))
+            .where(eq(gachaHistoryTable.user_twitch_id, userTwitchId))
+            .orderBy(desc(gachaHistoryTable.redeemed_at))
+            .limit(perPage)
+            .offset(offset);
+        },
+        "getGachaHistoryForUser(rows)",
+        { idempotent: true },
+      ),
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          const result = await db
+            .select({ count: countRows() })
+            .from(gachaHistoryTable)
+            .where(eq(gachaHistoryTable.user_twitch_id, userTwitchId));
+          return result[0]?.count ?? 0;
+        },
+        "getGachaHistoryForUser(count)",
+        { idempotent: true },
+      ),
+    ]);
+
+    return {
+      history: rows as unknown as GachaHistoryWithCard[],
+      pagination: {
+        page,
+        perPage,
+        total,
+        totalPages: Math.ceil(total / perPage),
+      },
+    };
+  } catch (error) {
+    logger.error("Error in getGachaHistoryForUser (pg)", { error });
+    return {
+      history: [],
+      pagination: { page, perPage, total: 0, totalPages: 0 },
+    };
+  }
+}
+
+/**
  * Get gacha history for a specific user with pagination
  * 視聴者向け: ページネーション付きの自分のガチャ履歴取得
  */
@@ -378,6 +823,11 @@ export async function getGachaHistoryForUser(
   userTwitchId: string,
   filters: { page?: number; perPage?: number } = {}
 ): Promise<PaginatedGachaHistory> {
+  // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
+  if (isPgReadEnabled()) {
+    return getGachaHistoryForUserPg(userTwitchId, filters);
+  }
+
   const { page = 1, perPage = 20 } = filters;
   const supabaseAdmin = getSupabaseAdmin();
 
@@ -1269,10 +1719,59 @@ async function fetchCardOwnerStatsFromUserCards(
 }
 
 /**
+ * fetchActiveCardsForStreamerFromDB の Drizzle（pg 直結）実装 (#571)
+ *
+ * フラグ分岐は unstable_cache の「中」（fetchActiveCardsForStreamerFromDB 冒頭）
+ * で行うため、キャッシュキー・タグ・TTL の構造は両経路で完全に同一
+ * （getActiveCardsForStreamer 側は無変更）。
+ *
+ * LIMIT 1000 の根拠: 既存 PostgREST 経路は Supabase 既定の max-rows=1000 で
+ * トップレベル行が暗黙に打ち切られる。1配信者のアクティブカードが 1000 を
+ * 超えることは実運用上考えにくいが、アプリ層に枚数上限の不変条件が無いため、
+ * 超えた場合の挙動も既存経路と一致するよう明示的に LIMIT 1000 を付ける
+ * （挙動パリティ優先。上限撤廃は移行完了後に別途判断する）。
+ * エラー時は既存実装（分割代入で握り潰し → cards=null → []）と同じ外部挙動。
+ */
+async function fetchActiveCardsForStreamerFromDBPg(streamerId: string): Promise<Card[]> {
+  const startTotal = Date.now();
+  const startQuery = Date.now();
+  try {
+    const cards = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select()
+          .from(cardsTable)
+          .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+          // generated column rarity_order によるレアリティ順の安定ソート
+          // （PostgREST 版と同一。asc/desc の NULL 順序は両経路とも PostgreSQL
+          // 既定（ASC=NULLS LAST / DESC=NULLS FIRST）で一致する）
+          .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at))
+          .limit(1000);
+      },
+      "getActiveCardsForStreamer",
+      { idempotent: true },
+    );
+    logger.info(`[Perf] getActiveCardsForStreamer query: ${Date.now() - startQuery}ms`);
+    logger.info(`[Perf] getActiveCardsForStreamer total: ${Date.now() - startTotal}ms`);
+    return normalizeDropRate(cards as unknown as Card[]);
+  } catch (error) {
+    logger.error("Error in getActiveCardsForStreamer (pg)", { error });
+    return [];
+  }
+}
+
+/**
  * Internal function to fetch active cards for a specific streamer from database
  * 内部関数: 特定配信者のアクティブカードをデータベースから取得
  */
 async function fetchActiveCardsForStreamerFromDB(streamerId: string): Promise<Card[]> {
+  // #571: pg 直結経路。unstable_cache の内側で分岐することでキャッシュ構造を
+  // 変えない（フラグ未設定時は素通り。getStreamerDataPg 参照）
+  if (isPgReadEnabled()) {
+    return fetchActiveCardsForStreamerFromDBPg(streamerId);
+  }
+
   const startTotal = Date.now();
   const supabaseAdmin = getSupabaseAdmin();
 
@@ -1317,9 +1816,89 @@ export interface ActiveCardCountForStreamer {
   activeCardIds: Set<string>;
 }
 
+/**
+ * getActiveCardCountsForStreamers の Drizzle（pg 直結）実装 (#571)
+ *
+ * 前処理（重複除去・空入力の早期 return）と JS 側集計は経路非依存だが、
+ * 「関数冒頭でのフラグ分岐 + 既存実装無変更」の規約を守るため、pg 版にも
+ * 同じ前処理を意図的に複製している（挙動パリティの検証容易性を優先）。
+ *
+ * LIMIT 1000 の根拠: 既存 PostgREST 経路は max-rows=1000 でトップレベル行が
+ * 暗黙に打ち切られる。この関数は複数配信者のアクティブカードを合算で取得する
+ * ため、コレクションの多いユーザーでは 1000 行超が現実に起こりうる。ここで
+ * LIMIT を外すと pg 経路だけカウントが変わってしまうため、明示 LIMIT 1000 で
+ * 既存挙動（打ち切りによる過少カウントも含めて）を再現する。
+ * エラー時は既存実装と同じく reportError + 全ゼロの counts を返す。
+ */
+async function getActiveCardCountsForStreamersPg(
+  streamerIds: string[]
+): Promise<Map<string, ActiveCardCountForStreamer>> {
+  const startedAt = perfStart();
+  const uniqueStreamerIds = Array.from(new Set(streamerIds.filter(Boolean)));
+  const counts = new Map<string, ActiveCardCountForStreamer>();
+  for (const streamerId of uniqueStreamerIds) {
+    counts.set(streamerId, { totalActive: 0, activeCardIds: new Set() });
+  }
+
+  if (uniqueStreamerIds.length === 0) {
+    logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, { streamerCount: 0 });
+    return counts;
+  }
+
+  let data: Array<{ id: string; streamer_id: string }>;
+  try {
+    data = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ id: cardsTable.id, streamer_id: cardsTable.streamer_id })
+          .from(cardsTable)
+          .where(
+            and(
+              inArray(cardsTable.streamer_id, uniqueStreamerIds),
+              eq(cardsTable.is_active, true),
+            )
+          )
+          .limit(1000);
+      },
+      "getActiveCardCountsForStreamers",
+      { idempotent: true },
+    );
+  } catch (error) {
+    reportError(
+      new Error(
+        `active card count batch query failed: ${error instanceof Error ? error.message : String(error)}`
+      )
+    );
+    logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, {
+      streamerCount: uniqueStreamerIds.length,
+      failed: true,
+    });
+    return counts;
+  }
+
+  for (const row of data) {
+    const entry = counts.get(row.streamer_id);
+    if (!entry) continue;
+    entry.totalActive += 1;
+    entry.activeCardIds.add(row.id);
+  }
+
+  logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, {
+    streamerCount: uniqueStreamerIds.length,
+    activeCardCount: data.length,
+  });
+  return counts;
+}
+
 export async function getActiveCardCountsForStreamers(
   streamerIds: string[]
 ): Promise<Map<string, ActiveCardCountForStreamer>> {
+  // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
+  if (isPgReadEnabled()) {
+    return getActiveCardCountsForStreamersPg(streamerIds);
+  }
+
   const startedAt = perfStart();
   const uniqueStreamerIds = Array.from(new Set(streamerIds.filter(Boolean)));
   const counts = new Map<string, ActiveCardCountForStreamer>();
@@ -1477,10 +2056,45 @@ export const getUserCardsForStreamer = cache(async (
 });
 
 /**
+ * getStreamerById の Drizzle（pg 直結）実装 (#571)
+ *
+ * .maybeSingle() 相当: id は主キーのため最大1行。0行なら null。
+ * streamerId は URL パラメータ由来で不正な UUID 文字列が渡りうるが、その場合は
+ * PostgreSQL が 22P02 を返す。既存 PostgREST 経路も同様にエラー → data=null →
+ * null を返すため、pg 版も catch して null に落とす（外部挙動のパリティ）。
+ */
+async function getStreamerByIdPg(streamerId: string): Promise<Streamer | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select()
+          .from(streamersTable)
+          .where(eq(streamersTable.id, streamerId))
+          .limit(1);
+      },
+      "getStreamerById",
+      { idempotent: true },
+    );
+    // 既存の戻り値型に合わせるキャスト（値の変換はしない。getStreamerDataPg 参照）
+    return (rows[0] ?? null) as unknown as Streamer | null;
+  } catch (error) {
+    logger.error("Error in getStreamerById (pg)", { error });
+    return null;
+  }
+}
+
+/**
  * Get streamer info by ID
  * 配信者IDから配信者情報を取得
  */
 export const getStreamerById = cache(async (streamerId: string): Promise<Streamer | null> => {
+  // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
+  if (isPgReadEnabled()) {
+    return getStreamerByIdPg(streamerId);
+  }
+
   const supabaseAdmin = getSupabaseAdmin();
 
   const { data: streamer } = await supabaseAdmin
@@ -1493,6 +2107,122 @@ export const getStreamerById = cache(async (streamerId: string): Promise<Streame
 });
 
 /**
+ * getUserCardDetail の Drizzle（pg 直結）実装 (#571)
+ *
+ * PostgREST 実装との対応（3クエリ構成をそのまま踏襲）:
+ * 1. cards + streamers 埋め込み: `*, streamers!cards_streamer_id_fkey(*)` は
+ *    cards.streamer_id → streamers.id の多対一 FK に基づく単一オブジェクト埋め込み。
+ *    LEFT JOIN + ネスト選択（streamers: streamersTable）で同じ形状を得る。
+ *    重要: 既存実装は `{ ...cardWithStreamer, streamer, count }` と spread で返す
+ *    ため、戻り値には埋め込みキー `streamers` が残る。pg 版も同じ spread 構成に
+ *    して実行時形状（streamers と streamer の両方を含む）を厳密に一致させる。
+ * 2. users: twitch_user_id は UNIQUE のため LIMIT 1 で .maybeSingle() と同挙動。
+ * 3. user_cards の所持数: `{ count: "exact", head: true }` 相当の COUNT(*)。
+ *
+ * エラー時の挙動は既存実装（各クエリのエラーを分割代入で握り潰す）に合わせ、
+ * クエリ単位で catch して null / 0 に落とし、後続の [Perf] ログと return null の
+ * 流れ（card not found / user not found / user doesn't own card）を共有する。
+ * cardId / streamerId は URL 由来で不正 UUID がありうる（22P02 → null）。
+ */
+async function getUserCardDetailPg(
+  twitchUserId: string,
+  streamerId: string,
+  cardId: string
+): Promise<CardWithDetails | null> {
+  const start = Date.now();
+
+  let card: (Card & { streamers: Streamer }) | null;
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ ...getTableColumns(cardsTable), streamers: streamersTable })
+          .from(cardsTable)
+          .leftJoin(streamersTable, eq(cardsTable.streamer_id, streamersTable.id))
+          // id は主キーのため最大1行（LIMIT 1 は .maybeSingle() と同挙動）
+          .where(and(eq(cardsTable.id, cardId), eq(cardsTable.streamer_id, streamerId)))
+          .limit(1);
+      },
+      "getUserCardDetail(card)",
+      { idempotent: true },
+    );
+    // streamer_id は NOT NULL FK のため streamers は実データで常に非 null。
+    // 既存の消費形状（Card & { streamers: Streamer }）へのキャストのみ行う。
+    card = (rows[0] ?? null) as unknown as (Card & { streamers: Streamer }) | null;
+  } catch (error) {
+    logger.error("Error in getUserCardDetail (pg:card)", { error });
+    card = null;
+  }
+
+  if (!card) {
+    logger.info(`[Perf] getUserCardDetail (card not found): ${Date.now() - start}ms`);
+    return null;
+  }
+
+  let user: { id: string } | null;
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ id: usersTable.id })
+          .from(usersTable)
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .limit(1);
+      },
+      "getUserCardDetail(user)",
+      { idempotent: true },
+    );
+    user = rows[0] ?? null;
+  } catch (error) {
+    logger.error("Error in getUserCardDetail (pg:user)", { error });
+    user = null;
+  }
+
+  if (!user) {
+    logger.info(`[Perf] getUserCardDetail (user not found): ${Date.now() - start}ms`);
+    return null;
+  }
+  // クロージャ内での TS null 絞り込みを保つため id を確定させる
+  const userId = user.id;
+
+  let ownershipCount = 0;
+  try {
+    ownershipCount = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        const result = await db
+          .select({ count: countRows() })
+          .from(userCardsTable)
+          .where(and(eq(userCardsTable.user_id, userId), eq(userCardsTable.card_id, cardId)));
+        return result[0]?.count ?? 0;
+      },
+      "getUserCardDetail(count)",
+      { idempotent: true },
+    );
+  } catch (error) {
+    // 既存実装は count エラー時 null → `count ?? 0` で 0 扱い（= 未所持と同じ）
+    logger.error("Error in getUserCardDetail (pg:count)", { error });
+    ownershipCount = 0;
+  }
+
+  if (ownershipCount === 0) {
+    logger.info(`[Perf] getUserCardDetail (user doesn't own card): ${Date.now() - start}ms`);
+    return null;
+  }
+
+  logger.info(`[Perf] getUserCardDetail: ${Date.now() - start}ms`);
+
+  // 既存実装と同一の spread 構成（streamers キーも残る）
+  return {
+    ...card,
+    streamer: card.streamers,
+    count: ownershipCount,
+  };
+}
+
+/**
  * Get a specific user's card with details
  * Returns the card with count (how many the user owns) if the user owns it, null otherwise
  * 特定のユーザーのカード情報を詳細付きで取得
@@ -1503,6 +2233,11 @@ export const getUserCardDetail = cache(async (
   streamerId: string,
   cardId: string
 ): Promise<CardWithDetails | null> => {
+  // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
+  if (isPgReadEnabled()) {
+    return getUserCardDetailPg(twitchUserId, streamerId, cardId);
+  }
+
   const start = Date.now();
   const supabaseAdmin = getSupabaseAdmin();
 
@@ -1669,6 +2404,95 @@ export interface CollectionCompletionRecord {
 }
 
 /**
+ * getCollectionCompletions の Drizzle（pg 直結）実装 (#571)
+ *
+ * PostgREST 実装との対応:
+ * - select("total_cards, completed_at, collection_name") と同じ3列の列指定 select。
+ * - Issue #557 / migration 00064 のデプロイ窓（collection_name 列が未適用）では、
+ *   pg 直結は PostgreSQL の 42703 (undefined_column) を throw する。既存経路が
+ *   isMissingCollectionNameColumn（読み取りは 42703 を検知）で旧列リストへ
+ *   フォールバックするのと同じく、pg 版は isPgMissingColumnError (SQLSTATE 42703、
+ *   src/lib/db/errors.ts) でフォールバックする。このクエリで参照する列のうち
+ *   00064 で追加されたのは collection_name だけなので、42703 はデプロイ窓の
+ *   列欠落と一意に対応する。
+ * - フォールバック行は既存実装と同じく collection_name: null を補完して返す
+ *   （列が無い間はパック別レコード自体が存在し得ないため、これが唯一忠実な解釈）。
+ * - その他のエラーは既存実装と同じくログして []（ページ表示を壊さない）。
+ *
+ * LIMIT 1000 の根拠: 既存経路は max-rows=1000 で暗黙に打ち切られる。達成記録が
+ * 1000 行を超えることは実運用上まず無いが、上限の不変条件も無いため、既存挙動
+ * との完全一致を優先して明示 LIMIT 1000 を付ける（fetchActiveCardsForStreamerFromDBPg
+ * と同じ方針）。
+ */
+async function getCollectionCompletionsPg(
+  twitchUserId: string,
+  streamerId: string,
+): Promise<CollectionCompletionRecord[]> {
+  try {
+    return await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            total_cards: collectionCompletionsTable.total_cards,
+            completed_at: collectionCompletionsTable.completed_at,
+            collection_name: collectionCompletionsTable.collection_name,
+          })
+          .from(collectionCompletionsTable)
+          .where(
+            and(
+              eq(collectionCompletionsTable.twitch_user_id, twitchUserId),
+              eq(collectionCompletionsTable.streamer_id, streamerId),
+            )
+          )
+          .orderBy(desc(collectionCompletionsTable.completed_at))
+          .limit(1000);
+      },
+      "dashboard:getCollectionCompletions",
+      { idempotent: true },
+    );
+  } catch (error) {
+    if (isPgMissingColumnError(error)) {
+      // Deploy window fallback: 未デプロイ列を除いた旧列リストで再取得し、
+      // 全行を全体コンプリート（collection_name: null）として返す
+      try {
+        const legacy = await withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            return db
+              .select({
+                total_cards: collectionCompletionsTable.total_cards,
+                completed_at: collectionCompletionsTable.completed_at,
+              })
+              .from(collectionCompletionsTable)
+              .where(
+                and(
+                  eq(collectionCompletionsTable.twitch_user_id, twitchUserId),
+                  eq(collectionCompletionsTable.streamer_id, streamerId),
+                )
+              )
+              .orderBy(desc(collectionCompletionsTable.completed_at))
+              .limit(1000);
+          },
+          "dashboard:getCollectionCompletions:legacy",
+          { idempotent: true },
+        );
+        return legacy.map((row) => ({ ...row, collection_name: null }));
+      } catch (legacyError) {
+        logger.error(
+          `Failed to fetch collection completions (legacy): ${legacyError instanceof Error ? legacyError.message : String(legacyError)}`
+        );
+        return [];
+      }
+    }
+    logger.error(
+      `Failed to fetch collection completions: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return [];
+  }
+}
+
+/**
  * Get past collection completion records for a user and streamer
  * Returns records sorted by completed_at DESC (newest first)
  *
@@ -1686,6 +2510,12 @@ export const getCollectionCompletions = cache(async (
 ): Promise<CollectionCompletionRecord[]> => {
   const cachedFetch = unstable_cache(
     async (): Promise<CollectionCompletionRecord[]> => {
+      // #571: pg 直結経路。unstable_cache の内側で分岐することでキャッシュ
+      // キー・タグ・TTL の構造を変えない（フラグ未設定時は素通り）
+      if (isPgReadEnabled()) {
+        return getCollectionCompletionsPg(twitchUserId, streamerId);
+      }
+
       const supabaseAdmin = getSupabaseAdmin();
       const { data, error } = await withRetry(
         () => supabaseAdmin

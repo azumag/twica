@@ -7,8 +7,18 @@
  */
 
 import { cache } from 'react'
+import { desc, eq } from 'drizzle-orm'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { withRetry } from '@/lib/supabase/retry'
+import { getDb } from '@/lib/db/client'
+import { isPgReadEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+// schema のテーブル名（announcements）はこのモジュールのローカル変数名と紛らわしい
+// ため、Table サフィックスを付けて import する
+import {
+  announcementReads as announcementReadsTable,
+  announcements as announcementsTable,
+} from '@/lib/db/schema'
 import { logger } from './logger'
 
 export interface UnreadAnnouncement {
@@ -92,6 +102,112 @@ export function hasAnnouncementBeenPublishedAt(
 }
 
 /**
+ * getUnreadAnnouncements の Drizzle（pg 直結）実装 (#570 パイロット)
+ *
+ * DB_DRIVER=pg-read/pg のときのみ使われる、PostgREST 実装と同一のクエリ意味論を
+ * 持つ読み取り経路。戻り値の形状（snake_case キー、日付は文字列）を既存実装と
+ * 完全に一致させることが要件（呼び出し側は経路を意識しない）。
+ *
+ * PostgREST 実装との対応:
+ * - announcements: is_published = true を created_at 降順で取得
+ *   （表示期限の判定は既存実装と同じく isAnnouncementVisibleAt でサーバー側 JS 処理）
+ * - announcement_reads: twitch_user_id 一致の既読 ID を取得
+ * - いずれかが失敗したら空配列（バナー非表示の安全側）を返し、logger.error に記録
+ *   （既存実装の annError / readError / catch と同じ外部挙動）
+ *
+ * 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ * timestamptz 列は Drizzle スキーマの mode: 'string' により文字列のまま返る
+ * （Date オブジェクトへの変換はしない。既存実装のパリティ要件）。
+ * 既知の表現差: pg 直結は PG テキスト形式（'2026-03-10 12:00:00.123456+00'）、
+ * PostgREST は ISO 8601（'2026-03-10T12:00:00.123456+00:00'）を返す。いずれも
+ * V8 の Date.parse で同一時刻に解釈され、本モジュールの消費側（isAnnouncementVisibleAt
+ * と AnnouncementBanner）は Date.parse 経由でしか日付を扱わないため影響はない。
+ * 文字列を直接パースする消費側を今後追加する場合はこの差に注意すること。
+ */
+async function getUnreadAnnouncementsPg(twitchUserId: string): Promise<UnreadAnnouncement[]> {
+  // どちらのクエリで失敗したかを catch 節のログで判別するためのフェーズタグ。
+  // PostgREST 経路が annError / readError を別メッセージでログしているのに合わせ、
+  // preview 切替検証（wrangler tail での原因切り分け）を容易にする。
+  let phase: 'announcements' | 'reads' = 'announcements'
+  try {
+    const now = new Date()
+
+    const announcements = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
+        // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({
+            id: announcementsTable.id,
+            title: announcementsTable.title,
+            body: announcementsTable.body,
+            severity: announcementsTable.severity,
+            published_at: announcementsTable.published_at,
+            expires_at: announcementsTable.expires_at,
+            created_at: announcementsTable.created_at,
+          })
+          .from(announcementsTable)
+          .where(eq(announcementsTable.is_published, true))
+          .orderBy(desc(announcementsTable.created_at))
+      },
+      'getUnreadAnnouncements(announcements)',
+      { idempotent: true },
+    )
+
+    if (announcements.length === 0) {
+      return []
+    }
+
+    const visibleAnnouncements = announcements.filter((announcement) =>
+      isAnnouncementVisibleAt(announcement, now)
+    )
+
+    if (visibleAnnouncements.length === 0) {
+      return []
+    }
+
+    phase = 'reads'
+    const reads = await withDbRetry(
+      async () => {
+        const { db } = await getDb()
+        return db
+          .select({ announcement_id: announcementReadsTable.announcement_id })
+          .from(announcementReadsTable)
+          .where(eq(announcementReadsTable.twitch_user_id, twitchUserId))
+      },
+      'getUnreadAnnouncements(reads)',
+      { idempotent: true },
+    )
+
+    const readIds = new Set(reads.map(r => r.announcement_id))
+
+    return visibleAnnouncements
+      .filter(a => !readIds.has(a.id))
+      .map(a => ({
+        id: a.id,
+        title: a.title,
+        body: a.body,
+        // severity は DB の CHECK 制約で 'info' | 'warning' | 'critical' が保証
+        // されている。PostgREST 経路も型検証なしで同じ生値を返しており、既存の
+        // 戻り値型に合わせるキャスト（値の変換はしない）。
+        severity: a.severity as UnreadAnnouncement['severity'],
+        published_at: a.published_at,
+        // created_at の DDL は DEFAULT now()（NOT NULL なし）のため Drizzle 型は
+        // string | null だが、実運用で NULL にはならない。PostgREST 経路の
+        // 戻り値型（string）に合わせるキャスト（値の変換はしない）。
+        created_at: a.created_at as string,
+      }))
+  } catch (error) {
+    // 既存実装と同じく「取得失敗時は未読バナーを出さない」安全側の挙動。
+    // phase により announcements / reads どちらの取得で失敗したかを判別できる
+    // （PostgREST 経路の annError / readError 別ログと同等の粒度）。
+    logger.error(`Error in getUnreadAnnouncements (pg:${phase})`, { error })
+    return []
+  }
+}
+
+/**
  * 未読のお知らせを取得（ダッシュボードバナー表示用）
  * 公開中 かつ 期限内 かつ 未読 のお知らせを取得する
  *
@@ -99,6 +215,13 @@ export function hasAnnouncementBeenPublishedAt(
  * @returns 未読お知らせ一覧（公開日時の降順）
  */
 export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promise<UnreadAnnouncement[]> => {
+  // #570 パイロット: DB_DRIVER=pg-read/pg のときのみ Drizzle 直結経路へ切り替える。
+  // フラグ未設定時（既定 'postgrest'）はこの分岐を素通りし、以下の既存 supabase-js
+  // 実装が従来と完全に同一に実行される（挙動不変が Phase 1 の最重要安全要件）。
+  if (isPgReadEnabled()) {
+    return getUnreadAnnouncementsPg(twitchUserId)
+  }
+
   try {
     const supabase = getSupabaseAdmin()
     const now = new Date()
