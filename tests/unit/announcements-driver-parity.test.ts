@@ -6,6 +6,7 @@
  * 日付は文字列）」を返すことが Phase 1 の要件（呼び出し側は経路を意識しない）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { desc, eq } from 'drizzle-orm'
 import { getUnreadAnnouncements } from '@/lib/announcements'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
@@ -126,10 +127,27 @@ function createSupabaseClientMock() {
 // 本実装は列キー = DB 列名なので、射影キー = fields のキーで良い）。
 // ---------------------------------------------------------------------------
 
+/** select(...).from(table).where(...).orderBy(...) 1呼び出し分の記録 */
+interface DrizzleCallRecord {
+  table: unknown
+  whereCondition?: unknown
+  orderByCondition?: unknown
+}
+
 function createDrizzleDbMock() {
+  // 先行レビュー指摘への対応: 従来はフィールド射影の一致のみを検証しており、
+  // where/orderBy に渡る実引数の回帰（例: is_published の絞り込み漏れ、ソート列/
+  // 方向の取り違え）を検知できなかった。from() 呼び出しごとに where/orderBy の
+  // 実引数を calls に記録し、テスト側で drizzle-orm の式を組み立てて toEqual で
+  // 構造比較できるようにする（token-manager-driver-parity.test.ts の
+  // updateCalls/where 記録と同じ方針）。
+  const calls: DrizzleCallRecord[] = []
   return {
+    calls,
     select: vi.fn((fields: Record<string, unknown>) => ({
       from: vi.fn((table: unknown) => {
+        const call: DrizzleCallRecord = { table }
+        calls.push(call)
         const rows =
           table === announcementsTable
             ? ANNOUNCEMENT_ROWS
@@ -142,8 +160,14 @@ function createDrizzleDbMock() {
           )
         )
         const builder: any = {
-          where: vi.fn(() => builder),
-          orderBy: vi.fn(() => builder),
+          where: vi.fn((condition: unknown) => {
+            call.whereCondition = condition
+            return builder
+          }),
+          orderBy: vi.fn((condition: unknown) => {
+            call.orderByCondition = condition
+            return builder
+          }),
           then: (onFulfilled: any, onRejected: any) =>
             Promise.resolve(projected).then(onFulfilled, onRejected),
         }
@@ -199,6 +223,23 @@ describe('getUnreadAnnouncements: postgrest / pg 経路の形状互換 (#570)', 
     // 形状互換の本体: キー・値とも完全一致
     expect(pgResult).toEqual(postgrestResult)
     expect(postgrestResult).toEqual(EXPECTED)
+  })
+
+  // 先行レビュー指摘への対応: フィールド射影の一致だけでは、where/orderBy に渡す
+  // 実引数の回帰（例: is_published の絞り込み漏れ、ソート列/方向の取り違え）を
+  // 検知できない。実装（getUnreadAnnouncementsPg）と同じ式を drizzle-orm の
+  // eq/desc で組み立てて toEqual で構造比較する。
+  it('pgクエリが announcements への where(is_published=true)・orderBy(created_at desc) を正しい実引数で呼び出す', async () => {
+    const { db } = await runPgPath()
+
+    expect(db.calls).toHaveLength(2)
+    expect(db.calls[0].table).toBe(announcementsTable)
+    expect(db.calls[0].whereCondition).toEqual(eq(announcementsTable.is_published, true))
+    expect(db.calls[0].orderByCondition).toEqual(desc(announcementsTable.created_at))
+
+    // announcement_reads 側も twitch_user_id の絞り込み取り違えを検知できるようにする
+    expect(db.calls[1].table).toBe(announcementReadsTable)
+    expect(db.calls[1].whereCondition).toEqual(eq(announcementReadsTable.twitch_user_id, 'viewer-1'))
   })
 
   it('日付フィールドは両経路とも文字列（Date オブジェクトではない）で返る', async () => {

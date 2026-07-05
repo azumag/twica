@@ -289,6 +289,7 @@ function toOverlayHistoryRow(
  */
 function isMissingRewardIdColumnErrorPg(error: unknown): boolean {
   if (!isPgMissingColumnError(error)) return false;
+  // 先行レビュー指摘への対応: supabase-js 版と異なり message しか見ないが、postgres.js の 42703 は PostgreSQL 本体が生成し列名を必ず message に含む(PostgREST 経由のように details/hint 側に情報が回る余地が無い)ため、message のみの判定で実害は無い。
   const message = (error as { message?: unknown } | null)?.message;
   return typeof message === "string" && message.includes("reward_id");
 }
