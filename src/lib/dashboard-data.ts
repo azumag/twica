@@ -12,6 +12,7 @@ import { logPerf, perfStart } from "@/lib/perf";
 // getDb() は一切呼ばれず、既存の supabase-js 経路が従来どおり実行される。
 // count は既存コードの `const { count } = await ...` 分割代入と名前が衝突する
 // ため countRows に alias する。
+// #573 で読み取り RPC（get_user_card_counts 等）の pg 直結分岐にも同じ基盤を使う。
 // ---------------------------------------------------------------------------
 import {
   and,
@@ -25,8 +26,8 @@ import {
   inArray,
   lt,
 } from "drizzle-orm";
-import { getDb } from "@/lib/db/client";
-import { isPgMissingColumnError } from "@/lib/db/errors";
+import { getDb, type DbHandle } from "@/lib/db/client";
+import { isPgFunctionNotFoundError, isPgMissingColumnError } from "@/lib/db/errors";
 import { isPgReadEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
 // schema のテーブル名（cards / streamers 等）は本モジュールのローカル変数名・
@@ -349,6 +350,79 @@ export const getStreamerDataPaginated = cache(async (
 })
 
 /**
+ * pg 直結経路の RPC エラーを PostgREST .rpc() の error と同じ「code + message」
+ * 形状へ正規化するための最小型 (#573)。postgres.js はエラーを throw するため、
+ * 既存コードの `rpcError.code === "42883"` / `rpcError.message` 分岐を両経路で
+ * 共有するにはこの形への詰め替えが必要（gacha.ts の GachaRpcDriverError と同じ設計）。
+ * code を optional にしているのは、接続断系(CONNECTION_CLOSED 等)や非 Error
+ * オブジェクトが throw された場合に SQLSTATE が存在しないため。
+ */
+interface DashboardRpcDriverError {
+  code?: string;
+  message: string;
+}
+
+/**
+ * 読み取り RPC を pg 直結(postgres.js)で実行し、PostgREST .rpc() と同一の
+ * { data, error } 形状へ正規化して返す共通ヘルパー (#573)。
+ *
+ * 本モジュールの RPC 呼び出し（get_user_card_counts / get_gacha_users_for_streamer /
+ * get_gacha_drop_stats / get_channel_point_usage_stats / get_card_owner_stats）は
+ * すべて RETURNS JSONB のため、行集合展開（select * from fn(...)）は不要で、
+ * スカラー SELECT + rows[0].result で PostgREST .rpc() の data と同一形状の値が
+ * 得られる（postgres.js は fetch_types:false でも json/jsonb の組み込みパーサで
+ * JS 値化する。根拠は gacha.ts executeGachaTransactionRpcPg の doc コメント参照）。
+ *
+ * gacha.ts executeGachaTransactionRpcPg と同じく、分岐は「RPC を実行して
+ * { data, error } を得る」部分だけに絞る設計: この形へ正規化することで、直後の
+ * 既存エラー分岐（42883 → 警告ログ + 既存 postgrest フォールバック、その他 →
+ * reportError + 既存フォールバック）と成功時のパース処理を両経路で完全に共有し、
+ * 経路によって外部挙動が変わる余地を分岐点1箇所に閉じ込める。
+ *
+ * 42883 (undefined_function) = RPC 未デプロイのデプロイ窓。isPgFunctionNotFoundError
+ * を明示的に使い code:'42883' へ正規化するのは、検知ロジックを src/lib/db/errors.ts
+ * に一元化し、将来判定方法が変わっても正規化後の code が '42883' で安定するように
+ * するため（gacha.ts と同じ判断）。呼び出し側の既存 42883 分岐はそのまま
+ * 本番実績のある postgrest フォールバックへ流れる。
+ *
+ * リトライ: 対象 RPC はすべて読み取り専用のため冪等としてリトライを opt-in する。
+ * リトライ回数・バックオフは既存 postgrest 経路の withRetry（オプション未指定）と
+ * 同じ既定値（[100,300,1000]ms・最大3回）で特性が揃う。
+ * 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの回復には
+ * クライアント再取得が必要。src/lib/db/retry.ts 参照）。
+ */
+async function executeDashboardRpcPg<T>(
+  context: string,
+  runQuery: (sql: DbHandle["sql"]) => Promise<T>,
+): Promise<{ data: T | null; error: DashboardRpcDriverError | null }> {
+  try {
+    const data = await withDbRetry(
+      async () => {
+        const { sql } = await getDb();
+        return runQuery(sql);
+      },
+      context,
+      { idempotent: true },
+    );
+    return { data, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (isPgFunctionNotFoundError(error)) {
+      return { data: null, error: { code: "42883", message } };
+    }
+
+    // その他のエラー(接続断・SQLSTATE 各種・非 Error throw)は code をそのまま
+    // 透過し、呼び出し側の既存分岐で PostgREST エラーと同じ外部挙動になる。
+    const code = (error as { code?: unknown } | null)?.code;
+    return {
+      data: null,
+      error: { code: typeof code === "string" ? code : undefined, message },
+    };
+  }
+}
+
+/**
  * RPC get_user_card_counts の結果を CardWithDetails[] に変換する
  * RPCはDB側でGROUP BY集計済みのため、JS側での集計は不要
  * to_jsonb経由のDECIMAL→文字列変換に備えてnormalizeDropRateを適用
@@ -379,10 +453,32 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
 
   // RPC: DB側でGROUP BY集計（ユニークカード種類数のみ返却、行数制限の影響なし）
   const startQuery = Date.now();
-  const { data: rpcResult, error: rpcError } = await withRetry(
-    () => supabaseAdmin.rpc("get_user_card_counts", { p_twitch_user_id: twitchUserId }),
-    "get_user_card_counts",
-  );
+  // #573: DB_DRIVER=pg-read/pg のときのみ RPC 実行を pg 直結へ切り替える。
+  // pg 側は PostgREST .rpc() と同一の { data, error } 形状へ正規化して返すため、
+  // この直後の成功時パース（parseRpcCardCounts）・42883 分岐（→ 既存 postgrest
+  // 直接クエリフォールバック）・その他エラー分岐（reportError + 同フォールバック）は
+  // 両経路で完全に共有される。42883/実行時エラー時のフォールバックを postgrest の
+  // まま残すのは gacha.ts getIssuedCounts と同じ判断: 異常時の最後の安全弁は
+  // 本番実績のある既存経路へ逃がし、直接クエリ集計ロジックの pg 複製
+  // （恒久的な重複コード）を避ける。
+  // 引数リストは既存 .rpc() 呼び出しと同一（p_twitch_user_id のみ。p_streamer_id は
+  // DEFAULT NULL に任せる）。text 引数は名前付き引数の関数解決で一意に強制される
+  // ためキャスト不要（gacha.ts executeGachaTransactionRpcPg の doc コメント参照）。
+  const { data: rpcResult, error: rpcError } = isPgReadEnabled()
+    ? await executeDashboardRpcPg("get_user_card_counts(pg)", async (sql) => {
+        // migration 00031: RETURNS JSONB（{ count, card, streamer } オブジェクトの
+        // 配列）。PostgREST .rpc() の data と同じ「行配列」がそのまま得られる。
+        const rows = await sql<{ result: unknown }[]>`
+          select get_user_card_counts(
+            p_twitch_user_id => ${twitchUserId}
+          ) as result
+        `;
+        return rows[0]?.result ?? null;
+      })
+    : await withRetry(
+        () => supabaseAdmin.rpc("get_user_card_counts", { p_twitch_user_id: twitchUserId }),
+        "get_user_card_counts",
+      );
 
   if (!rpcError) {
     logger.info(`[Perf] getUserCards RPC: ${Date.now() - startQuery}ms`);
@@ -884,6 +980,111 @@ function normalizeUniqueCardIds(cardIds: unknown): string[] {
 }
 
 /**
+ * getGachaUsersForStreamer のフォールバック集約用クエリの Drizzle（pg 直結）実装 (#573)。
+ *
+ * ユーザータブは RPC 失敗時にもクライアント側集約で必ず表示を維持する設計のため
+ * （握り潰すと配信者に「ユーザーなし」と誤表示される）、pg 経路でも同じ
+ * フォールバックを pg で再現する。他の統計系 RPC（getGachaStats 等）が
+ * フォールバック集計を postgrest のまま共有するのと異なり、この関数の
+ * フォールバックは gacha_history / cards の単純な2クエリ + 共有可能な JS 集約で
+ * 構成されており、クエリ部分だけの差し替えで済む（集約ロジックは呼び出し側で
+ * 両経路共有のまま）。
+ *
+ * PostgREST 実装との対応:
+ * - gacha_history: select("user_twitch_id, user_twitch_username, card_id, redeemed_at")
+ *   + streamer_id filter + redeemed_at 降順 + limit(10000) を列指定 select で忠実に再現。
+ * - cards: select("id") + streamer_id / is_active filter。既存経路は limit 無指定の
+ *   ため PostgREST max-rows=1000 でトップレベル行が暗黙に打ち切られる。pg 経路だけ
+ *   件数が変わらないよう明示 LIMIT 1000 を付ける（#571 の
+ *   fetchActiveCardsForStreamerFromDBPg と同じ挙動パリティ優先の方針）。
+ * - 戻り値は PostgREST の { data, error } 形状にクエリ単位で正規化する。片方の
+ *   失敗がもう片方を巻き込まない点（分割代入で独立に消費される）も既存と同じ。
+ *
+ * 日付は pg 直結だと PG テキスト形式になる既知の表現差があるが、消費側
+ * （lastDrawAt の文字列比較・表示）への影響は #571 の他関数と同じ扱い。
+ */
+async function fetchGachaUsersFallbackRowsPg(streamerId: string): Promise<
+  [
+    {
+      data: Array<{
+        user_twitch_id: string;
+        user_twitch_username: string | null;
+        card_id: string;
+        redeemed_at: string;
+      }> | null;
+      error: { message: string } | null;
+    },
+    { data: Array<{ id: string }> | null; error: { message: string } | null },
+  ]
+> {
+  return Promise.all([
+    (async () => {
+      try {
+        const rows = await withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            return db
+              .select({
+                user_twitch_id: gachaHistoryTable.user_twitch_id,
+                user_twitch_username: gachaHistoryTable.user_twitch_username,
+                card_id: gachaHistoryTable.card_id,
+                redeemed_at: gachaHistoryTable.redeemed_at,
+              })
+              .from(gachaHistoryTable)
+              .where(eq(gachaHistoryTable.streamer_id, streamerId))
+              .orderBy(desc(gachaHistoryTable.redeemed_at))
+              .limit(10000);
+          },
+          "getGachaUsersForStreamer(fallback:history)",
+          { idempotent: true },
+        );
+        // redeemed_at は Drizzle スキーマ上 nullable だが実データは DEFAULT now() で
+        // 常に非 null。既存 supabase 生成型（string）に合わせるキャストのみ行う
+        // （値の変換はしない。#571 の他 xxxPg と同じ方針）。
+        return {
+          data: rows as unknown as Array<{
+            user_twitch_id: string;
+            user_twitch_username: string | null;
+            card_id: string;
+            redeemed_at: string;
+          }>,
+          error: null,
+        };
+      } catch (error) {
+        return {
+          data: null,
+          error: { message: error instanceof Error ? error.message : String(error) },
+        };
+      }
+    })(),
+    (async () => {
+      try {
+        const rows = await withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            return db
+              .select({ id: cardsTable.id })
+              .from(cardsTable)
+              .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+              .limit(1000);
+          },
+          "getGachaUsersForStreamer(fallback:activeCards)",
+          { idempotent: true },
+        );
+        return { data: rows, error: null };
+      } catch (error) {
+        // 既存経路は activeCardsResult.error を参照しない（data null → 空 Set 扱い）。
+        // 同じ外部挙動になるよう data: null に落とすだけにする。
+        return {
+          data: null,
+          error: { message: error instanceof Error ? error.message : String(error) },
+        };
+      }
+    })(),
+  ]);
+}
+
+/**
  * Get aggregated user list for a streamer's gacha history
  * RPC get_gacha_users_for_streamer でDB側集計を行い、件数制限なしで正確なカード所有状況を返す
  * RPC未デプロイ時はクライアント側集約にフォールバック（10,000件制限付き）
@@ -898,12 +1099,30 @@ export async function getGachaUsersForStreamer(
   const offset = (page - 1) * perPage;
 
   // RPC: DB側でGROUP BY集約 + ページネーション（件数制限なし）
-  const { data: rpcResult, error: rpcError } = await supabaseAdmin
-    .rpc("get_gacha_users_for_streamer", {
-      p_streamer_id: streamerId,
-      p_limit: perPage,
-      p_offset: offset,
-    });
+  // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」1箇所だけ
+  // （executeDashboardRpcPg の doc コメント参照）。成功時のパース・エラー時の
+  // ログ分岐（42883 → warn / その他 → reportError）は両経路で共有され、
+  // フォールバック集約のクエリ実行だけが下でもう1箇所分岐する。
+  // uuid / integer 引数は明示キャストで型解決を固定する（gacha.ts と同じ規約）。
+  const { data: rpcResult, error: rpcError } = isPgReadEnabled()
+    ? await executeDashboardRpcPg("get_gacha_users_for_streamer(pg)", async (sql) => {
+        // migration 00032/00046: RETURNS JSONB ({ users: [...], total: n })。
+        // PostgREST .rpc() の data と同じオブジェクトがそのまま得られる。
+        const rows = await sql<{ result: unknown }[]>`
+          select get_gacha_users_for_streamer(
+            p_streamer_id => ${streamerId}::uuid,
+            p_limit => ${perPage}::integer,
+            p_offset => ${offset}::integer
+          ) as result
+        `;
+        return rows[0]?.result ?? null;
+      })
+    : await supabaseAdmin
+        .rpc("get_gacha_users_for_streamer", {
+          p_streamer_id: streamerId,
+          p_limit: perPage,
+          p_offset: offset,
+        });
 
   if (!rpcError && rpcResult) {
     // RPC成功: DB側集約結果をGachaUserEntry[]に変換
@@ -937,19 +1156,25 @@ export async function getGachaUsersForStreamer(
   }
 
   // フォールバック: 既存のクライアント側集約ロジック（10,000件制限あり）
-  const [historyResult, activeCardsResult] = await Promise.all([
-    supabaseAdmin
-      .from("gacha_history")
-      .select("user_twitch_id, user_twitch_username, card_id, redeemed_at")
-      .eq("streamer_id", streamerId)
-      .order("redeemed_at", { ascending: false })
-      .limit(10000),
-    supabaseAdmin
-      .from("cards")
-      .select("id")
-      .eq("streamer_id", streamerId)
-      .eq("is_active", true),
-  ]);
+  // #573: pg 経路では同じフォールバッククエリを pg で再現する
+  // （fetchGachaUsersFallbackRowsPg の doc コメント参照）。クエリ結果は
+  // { data, error } 形状で正規化されるため、以降の集約・ページング処理は
+  // 両経路で完全に共有される。
+  const [historyResult, activeCardsResult] = isPgReadEnabled()
+    ? await fetchGachaUsersFallbackRowsPg(streamerId)
+    : await Promise.all([
+        supabaseAdmin
+          .from("gacha_history")
+          .select("user_twitch_id, user_twitch_username, card_id, redeemed_at")
+          .eq("streamer_id", streamerId)
+          .order("redeemed_at", { ascending: false })
+          .limit(10000),
+        supabaseAdmin
+          .from("cards")
+          .select("id")
+          .eq("streamer_id", streamerId)
+          .eq("is_active", true),
+      ]);
 
   // フォールバックDBエラー時はreportErrorで検知可能にする
   if (historyResult.error) {
@@ -1495,19 +1720,54 @@ export async function getGachaStats(
   // 期間タブでは「その期間にそのカードを引いたユーザー」を
   // get_gacha_drop_stats が gacha_history からDB側で集計して返す。
   // 全期間の所持ユーザーは「カード別」タブ(getGachaCardOwnerStats)に分離。
-  const [dropStatsResult, channelPointResult] = await Promise.all([
-    supabaseAdmin
-      .rpc("get_gacha_drop_stats", {
-        p_streamer_id: streamerId,
-        p_from_date: fromDateIso,
-      }),
-    supabaseAdmin
-      .rpc("get_channel_point_usage_stats", {
-        p_streamer_id: streamerId,
-        p_from_date: null,
-        p_limit: 10,
-      }),
-  ]);
+  //
+  // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」2箇所だけ
+  // （executeDashboardRpcPg の doc コメント参照）。executeDashboardRpcPg は
+  // エラーを reject せず { data, error } に正規化するため、Promise.all が
+  // 片方の失敗でもう片方を巻き込むことはない（PostgREST の独立した2結果と
+  // 同じ性質）。以降のパース・42883 警告・reportError・履歴集計フォールバック
+  // （fetchGachaDropStatsFromHistory / fetchChannelPointUsageStatsFromHistory は
+  // 本番実績のある postgrest 実装のまま）は両経路で完全に共有される。
+  // 引数リスト・値は既存 .rpc() 呼び出しと同一に揃え、uuid / timestamptz /
+  // integer は明示キャストで型解決を固定する（gacha.ts と同じ規約）。
+  const [dropStatsResult, channelPointResult] = isPgReadEnabled()
+    ? await Promise.all([
+        executeDashboardRpcPg("get_gacha_drop_stats(pg)", async (sql) => {
+          // migration 00038/00050/00052: RETURNS JSONB
+          // ({ total_draws, card_stats: [...], rarity_stats: [...] })
+          const rows = await sql<{ result: unknown }[]>`
+            select get_gacha_drop_stats(
+              p_streamer_id => ${streamerId}::uuid,
+              p_from_date => ${fromDateIso}::timestamptz
+            ) as result
+          `;
+          return rows[0]?.result ?? null;
+        }),
+        executeDashboardRpcPg("get_channel_point_usage_stats(pg)", async (sql) => {
+          // migration 00036/00039: RETURNS JSONB ({ total_points, ranking: [...] })
+          const rows = await sql<{ result: unknown }[]>`
+            select get_channel_point_usage_stats(
+              p_streamer_id => ${streamerId}::uuid,
+              p_from_date => ${null}::timestamptz,
+              p_limit => ${10}::integer
+            ) as result
+          `;
+          return rows[0]?.result ?? null;
+        }),
+      ])
+    : await Promise.all([
+        supabaseAdmin
+          .rpc("get_gacha_drop_stats", {
+            p_streamer_id: streamerId,
+            p_from_date: fromDateIso,
+          }),
+        supabaseAdmin
+          .rpc("get_channel_point_usage_stats", {
+            p_streamer_id: streamerId,
+            p_from_date: null,
+            p_limit: 10,
+          }),
+      ]);
 
   // RPC が使えない場合（未デプロイ=42883 や実行時エラー）は履歴から直接集計する。
   // ここで握り潰すと配信者には恒久的に「データなし」と誤表示されるため、
@@ -1565,9 +1825,25 @@ export async function getGachaCardOwnerStats(
 ): Promise<GachaCardOwnerStatsResult> {
   const supabaseAdmin = getSupabaseAdmin();
 
-  const rpcResult = await supabaseAdmin.rpc("get_card_owner_stats", {
-    p_streamer_id: streamerId,
-  });
+  // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」1箇所だけ
+  // （executeDashboardRpcPg の doc コメント参照）。以降のパース・42883 警告・
+  // reportError・user_cards 集計フォールバック（fetchCardOwnerStatsFromUserCards
+  // は本番実績のある postgrest 実装のまま）は両経路で完全に共有される。
+  // 引数リストは既存 .rpc() 呼び出しと同一（p_streamer_id のみ。p_limit_per_card は
+  // DEFAULT に任せる）。uuid 引数は明示キャストで型解決を固定する。
+  const rpcResult = isPgReadEnabled()
+    ? await executeDashboardRpcPg("get_card_owner_stats(pg)", async (sql) => {
+        // migration 00051: RETURNS JSONB ({ card_stats: [...] })
+        const rows = await sql<{ result: unknown }[]>`
+          select get_card_owner_stats(
+            p_streamer_id => ${streamerId}::uuid
+          ) as result
+        `;
+        return rows[0]?.result ?? null;
+      })
+    : await supabaseAdmin.rpc("get_card_owner_stats", {
+        p_streamer_id: streamerId,
+      });
 
   const parsed = parseCardOwnerStatsRpc(rpcResult.data);
   if (parsed) {
@@ -1960,13 +2236,28 @@ async function fetchUserCardsForStreamerFromDB(
 
   // RPC: DB側でGROUP BY集計 + streamer_idフィルタ
   const startQuery = Date.now();
-  const { data: rpcResult, error: rpcError } = await withRetry(
-    () => supabaseAdmin.rpc("get_user_card_counts", {
-      p_twitch_user_id: twitchUserId,
-      p_streamer_id: streamerId,
-    }),
-    "get_user_card_counts_for_streamer",
-  );
+  // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」1箇所だけ。
+  // 成功時パース・42883 分岐・その他エラー分岐と postgrest 直接クエリ
+  // フォールバックの共有方針は fetchUserCardsFromDB の分岐コメント参照。
+  // uuid 引数（p_streamer_id）は明示キャストで型解決を固定する。
+  const { data: rpcResult, error: rpcError } = isPgReadEnabled()
+    ? await executeDashboardRpcPg("get_user_card_counts_for_streamer(pg)", async (sql) => {
+        // migration 00031: RETURNS JSONB（{ count, card, streamer } の行配列）
+        const rows = await sql<{ result: unknown }[]>`
+          select get_user_card_counts(
+            p_twitch_user_id => ${twitchUserId},
+            p_streamer_id => ${streamerId}::uuid
+          ) as result
+        `;
+        return rows[0]?.result ?? null;
+      })
+    : await withRetry(
+        () => supabaseAdmin.rpc("get_user_card_counts", {
+          p_twitch_user_id: twitchUserId,
+          p_streamer_id: streamerId,
+        }),
+        "get_user_card_counts_for_streamer",
+      );
 
   if (!rpcError) {
     logger.info(`[Perf] getUserCardsForStreamer RPC: ${Date.now() - startQuery}ms`);
