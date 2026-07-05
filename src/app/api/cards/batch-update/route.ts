@@ -6,8 +6,9 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
-import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+import { recalculateIfAutoMode, executeBatchUpdateCardDropRatesRpcPg } from "@/lib/recalculate-drop-rates";
 import { logger } from "@/lib/logger";
+import { isPgWriteEnabled } from "@/lib/db/flags";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 /**
@@ -179,13 +180,18 @@ export async function POST(request: NextRequest) {
       }
       return payload;
     });
-    const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc(
-      "batch_update_card_drop_rates",
-      {
-        p_streamer_id: streamerId,
-        p_updates: rpcPayload,
-      }
-    );
+    // #573: isPgWriteEnabled() のときだけ pg 直結経路へ分岐する。pg 側の { data, error }
+    // 正規化は recalculate-drop-rates.ts の executeBatchUpdateCardDropRatesRpcPg を
+    // 共有する(同じ RPC を呼ぶ実装を2箇所に重複させない。doc コメント参照)。
+    const { data: rpcResult, error: rpcError } = isPgWriteEnabled()
+      ? await executeBatchUpdateCardDropRatesRpcPg(streamerId, rpcPayload)
+      : await supabaseAdmin.rpc(
+          "batch_update_card_drop_rates",
+          {
+            p_streamer_id: streamerId,
+            p_updates: rpcPayload,
+          }
+        );
 
     if (rpcError) {
       return handleDatabaseError(rpcError, "Cards Batch Update API: Failed to update cards");
