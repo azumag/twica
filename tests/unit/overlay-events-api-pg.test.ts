@@ -1,7 +1,8 @@
 /**
  * Issue #571 (#570 パイロット踏襲): overlay ポーリング API の pg 直結経路テスト。
  *
- * tests/unit/overlay-events-api.test.ts (既存 postgrest 経路のテスト、無変更) と
+ * tests/unit/overlay-events-api.test.ts (既存 postgrest 経路のケースは無変更のまま、
+ * #569 で overlayVersion の describe が追加されている) と
  * tests/unit/announcements-driver-parity.test.ts (pg/postgrest 形状互換テストの
  * 確立パターン) の両方を踏襲する。DB_DRIVER フラグで分岐する pg 経路について:
  *   1. 応答形状が既存 postgrest 経路と deepEqual であること

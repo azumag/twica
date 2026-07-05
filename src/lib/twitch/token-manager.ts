@@ -50,9 +50,15 @@ export class TwitchTokenError extends Error {
  * - users を twitch_user_id で 1 行取得。既存の .maybeSingle() は twitch_user_id の
  *   UNIQUE 制約（migration 00001）により最大 1 行なので、LIMIT 1 + rows[0] ?? null で
  *   同じ外部挙動になる（0 行はエラーではなく null）。
- * - PGRST204（トークン列未デプロイ）のデプロイ窓フォールバックは、pg 直結では
- *   SELECT の列欠落が SQLSTATE 42703 (undefined_column) になるため
- *   isPgMissingColumnError で再現する。
+ * - 列未デプロイ時の 42703 → warn + null について: 既存 postgrest 経路の PGRST204
+ *   分岐は SELECT では実際には作動しない（PGRST204 はリクエストボディの列が
+ *   スキーマキャッシュに無い「書き込み時」のコード。SELECT の列欠落は PostgREST
+ *   でも PostgreSQL の 42703 がエラー応答としてそのまま返り、既存実装は
+ *   TwitchTokenError('DATABASE_ERROR') として throw する）。つまり pg 版の
+ *   isPgMissingColumnError → warn + null は PGRST204 の忠実な再現ではなく、
+ *   トークン列追加マイグレーション前のコードが先行デプロイされる窓（SELECT 系
+ *   デプロイ窓）で、トークン取得を例外で落とすのではなく「トークン無し」として
+ *   安全側に倒すための意図的な動作である。
  * - 取得後の期限判定は既存実装と同一ロジック。期限切れ時の refreshTwitchAccessToken は
  *   共有関数のまま呼び、その内部で isPgWriteEnabled() により独立して経路が選ばれる
  *   （pg-read では読み取りのみ pg、書き込みは PostgREST という運用モードそのもの）。

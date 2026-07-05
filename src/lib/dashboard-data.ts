@@ -386,8 +386,12 @@ interface DashboardRpcDriverError {
  * 本番実績のある postgrest フォールバックへ流れる。
  *
  * リトライ: 対象 RPC はすべて読み取り専用のため冪等としてリトライを opt-in する。
- * リトライ回数・バックオフは既存 postgrest 経路の withRetry（オプション未指定）と
- * 同じ既定値（[100,300,1000]ms・最大3回）で特性が揃う。
+ * 既存 postgrest 経路のうち get_user_card_counts 系の呼び出しは withRetry を
+ * 使っており、リトライ回数・バックオフの既定値（[100,300,1000]ms・最大3回）が
+ * 同じため特性が揃う。それ以外の RPC・クエリの postgrest 版はリトライ無しだが、
+ * pg 直結はリクエストスコープ接続の破棄（cross-request I/O エラー）からの回復に
+ * リトライが必要なため、pg 側は意図的に一律 withDbRetry を付けている
+ * （対象が読み取り・冪等のため安全）。
  * 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの回復には
  * クライアント再取得が必要。src/lib/db/retry.ts 参照）。
  */
@@ -992,7 +996,10 @@ function normalizeUniqueCardIds(cardIds: unknown): string[] {
  *
  * PostgREST 実装との対応:
  * - gacha_history: select("user_twitch_id, user_twitch_username, card_id, redeemed_at")
- *   + streamer_id filter + redeemed_at 降順 + limit(10000) を列指定 select で忠実に再現。
+ *   + streamer_id filter + redeemed_at 降順を列指定 select で再現。行数は既存経路の
+ *   .limit(10000) が Supabase 既定の max-rows=1000 で実効 1000 行にキャップされる
+ *   ため、pg 経路は明示 LIMIT 1000 で現行本番の実効挙動に合わせる（下の
+ *   コメント参照）。
  * - cards: select("id") + streamer_id / is_active filter。既存経路は limit 無指定の
  *   ため PostgREST max-rows=1000 でトップレベル行が暗黙に打ち切られる。pg 経路だけ
  *   件数が変わらないよう明示 LIMIT 1000 を付ける（#571 の
@@ -1033,7 +1040,12 @@ async function fetchGachaUsersFallbackRowsPg(streamerId: string): Promise<
               .from(gachaHistoryTable)
               .where(eq(gachaHistoryTable.streamer_id, streamerId))
               .orderBy(desc(gachaHistoryTable.redeemed_at))
-              .limit(10000);
+              // 既存 postgrest 経路の .limit(10000) は Supabase 既定の
+              // max-rows=1000 で実効 1000 行にキャップされるため、pg 直結も
+              // それに合わせて LIMIT 1000 とする（現行本番の実効挙動との
+              // パリティ）。max-rows 設定を既定から変更している場合はこの値も
+              // 合わせること（docs/db-driver-migration.md の preview 検証項目参照）。
+              .limit(1000);
           },
           "getGachaUsersForStreamer(fallback:history)",
           { idempotent: true },
