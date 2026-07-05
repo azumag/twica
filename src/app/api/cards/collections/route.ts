@@ -12,6 +12,98 @@ import {
 } from "@/lib/collections/collection-existence";
 import { validatePackName } from "@/lib/validation/collection-name";
 import type { ApiRateLimitResponse } from "@/types/api";
+// ---------------------------------------------------------------------------
+// #573: rename_card_pack RPC の pg 直結経路 (isPgWriteEnabled()) 用。フラグ未設定時
+// (既定 'postgrest')はこれらのモジュールの実行パスに一切入らないため、import が
+// 存在するだけでは挙動に影響しない(#570 の設計。tests/setup.ts の getDb throw
+// スタブが「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
+// ---------------------------------------------------------------------------
+import { getDb } from "@/lib/db/client";
+import { isPgWriteEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { isPgFunctionNotFoundError } from "@/lib/db/errors";
+
+/**
+ * rename_card_pack RPC のエラーを PostgREST .rpc() の error と同じ
+ * 「code + message」形状へ正規化するための最小型(#573)。postgres.js は
+ * PostgrestError と異なりエラーを throw するため、既存のエラー分岐
+ * (isMissingRenameCardPackFunctionError / RENAME_CARD_PACK_VALIDATION_ERRORS /
+ * handleDatabaseError)を両経路で共有するにはこの形への詰め替えが必要
+ * (gacha.ts GachaRpcDriverError と同じ設計)。
+ */
+interface RenameCardPackRpcDriverError {
+  code?: string;
+  message: string;
+}
+
+/**
+ * rename_card_pack RPC (migration 00063 で新設、00064/00065 でカスケード対象を
+ * 拡張。RETURNS void)の pg 直結(postgres.js)実装 (#573)。
+ *
+ * PostgREST .rpc() は RETURNS void の関数呼び出しで data=null を返す。この route は
+ * data を一切参照せず rpcError の有無だけを見るため、pg 経路でも data は常に
+ * null に固定してよい。
+ *
+ * 名前付き引数の理由は gacha.ts executeGachaTransactionRpcPg の doc コメントと
+ * 同じ(将来の引数追加・並び替えでの取り違え事故防止)。p_streamer_id は ::uuid
+ * キャストで型解決を固定する。p_old_name / p_new_name は TEXT のため、名前付き
+ * 引数の関数解決で一意に text へ強制され明示キャスト不要(同 doc コメント参照)。
+ *
+ * 冪等性判断(plpgsql根拠。migration 00065 が最新定義):
+ *   SELECT ordinality - 1 INTO v_old_index
+ *   FROM jsonb_array_elements_text(v_catalog) WITH ORDINALITY AS t(name, ordinality)
+ *   WHERE t.name = p_old_name LIMIT 1;
+ *   IF v_old_index IS NULL THEN RAISE EXCEPTION 'OLD_NAME_NOT_FOUND'; END IF;
+ *   ...(カタログのエントリを old→new に書き換え、cards / streamers / rewards /
+ *       collection_completions へカスケード)
+ * この関数は「カタログ内の1エントリを old_name → new_name へ改名し、他の全
+ * テーブルへカスケードする」一度きりの状態遷移であり、「同一値への UPDATE」には
+ * 当たらない。1回目の実行が実際にはコミット済みで応答だけが接続断で失われた
+ * 場合、同一引数での再実行は上記ガードにヒットする — old_name は既に new_name
+ * へ改名済みでカタログに存在しないため OLD_NAME_NOT_FOUND 例外で失敗する。この
+ * 例外は下の RENAME_CARD_PACK_VALIDATION_ERRORS により 400(無効なリクエスト)
+ * へマッピングされるため、実際には改名が成功しているにもかかわらずユーザーには
+ * 失敗したように見えてしまう(「消費・一度きりの状態遷移」に該当)。
+ * よって非冪等(既定 = リトライなし)として扱う。
+ */
+async function renameCardPackRpcPg(
+  streamerId: string,
+  oldName: string,
+  newName: string
+): Promise<{ data: null; error: RenameCardPackRpcDriverError | null }> {
+  try {
+    await withDbRetry(async () => {
+      // 規約: getDb() は queryFn の中で呼ぶ(src/lib/db/retry.ts 参照)
+      const { sql } = await getDb();
+      return sql`
+        select rename_card_pack(
+          p_streamer_id => ${streamerId}::uuid,
+          p_old_name => ${oldName},
+          p_new_name => ${newName}
+        )
+      `;
+    }, "rename_card_pack(pg)");
+    // 非冪等のため withDbRetry の第3引数(idempotent オプション)は渡さない
+    // (既定 false = 接続断でもリトライしない。上記コメント参照)
+    return { data: null, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    // 42883 (undefined_function) = RPC 未デプロイのデプロイ窓。既存の
+    // isMissingRenameCardPackFunctionError(rpcError.code === "42883" 判定)を
+    // pg 経路でも成立させるため、isPgFunctionNotFoundError で検知を一元化し
+    // code を安定して '42883' に正規化する(gacha.ts と同じ判断)。
+    if (isPgFunctionNotFoundError(error)) {
+      return { data: null, error: { code: "42883", message } };
+    }
+
+    const code = (error as { code?: unknown } | null)?.code;
+    return {
+      data: null,
+      error: { code: typeof code === "string" ? code : undefined, message },
+    };
+  }
+}
 
 /**
  * GET /api/cards/collections?streamerId=...
@@ -235,11 +327,18 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    const { error: rpcError } = await supabaseAdmin.rpc("rename_card_pack", {
-      p_streamer_id: streamerId,
-      p_old_name: oldName,
-      p_new_name: newName,
-    });
+    // #573: isPgWriteEnabled() のときだけ pg 直結経路へ分岐する。pg 側は
+    // PostgREST .rpc() と同一の { data, error } 形状へ正規化して返す
+    // (renameCardPackRpcPg の doc コメント参照)ため、直後の既存エラー分岐
+    // (isMissingRenameCardPackFunctionError → 503 / RENAME_CARD_PACK_VALIDATION_ERRORS
+    // → 400 / それ以外 → handleDatabaseError)はそのまま両経路で共有される。
+    const { error: rpcError } = isPgWriteEnabled()
+      ? await renameCardPackRpcPg(streamerId, oldName, newName)
+      : await supabaseAdmin.rpc("rename_card_pack", {
+          p_streamer_id: streamerId,
+          p_old_name: oldName,
+          p_new_name: newName,
+        });
 
     if (rpcError) {
       if (isMissingRenameCardPackFunctionError(rpcError)) {
