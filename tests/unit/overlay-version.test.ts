@@ -149,14 +149,14 @@ describe("serializePollState / parsePollState (round-trip)", () => {
   });
 
   it("savedAtからちょうどttlMs経過した境界ではまだ有効(復元される)", () => {
-    const state = { pollCursor: "cursor", seenHistoryIds: [], savedAt: 1000 };
+    const state = { pollCursor: "2026-07-04T00:00:00.000Z", seenHistoryIds: [], savedAt: 1000 };
     const serialized = serializePollState(state);
     const now = 1000 + POLLSTATE_TTL_MS;
     expect(parsePollState(serialized, now, POLLSTATE_TTL_MS)).toEqual(state);
   });
 
   it("savedAtからttlMsを1msでも超えるとTTL切れでnullを返す", () => {
-    const state = { pollCursor: "cursor", seenHistoryIds: [], savedAt: 1000 };
+    const state = { pollCursor: "2026-07-04T00:00:00.000Z", seenHistoryIds: [], savedAt: 1000 };
     const serialized = serializePollState(state);
     const now = 1000 + POLLSTATE_TTL_MS + 1;
     expect(parsePollState(serialized, now, POLLSTATE_TTL_MS)).toBeNull();
@@ -199,18 +199,56 @@ describe("parsePollState: 壊れた入力への耐性", () => {
   });
 
   it("savedAtが欠けている/数値でない場合はnullを返す", () => {
-    const raw = JSON.stringify({ pollCursor: "c", seenHistoryIds: [], savedAt: "not-a-number" });
+    const raw = JSON.stringify({
+      pollCursor: "2026-07-04T00:00:00.000Z",
+      seenHistoryIds: [],
+      savedAt: "not-a-number",
+    });
     expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toBeNull();
   });
 
   it("seenHistoryIdsが配列でない場合はnullを返す", () => {
-    const raw = JSON.stringify({ pollCursor: "c", seenHistoryIds: "not-an-array", savedAt: 0 });
+    const raw = JSON.stringify({
+      pollCursor: "2026-07-04T00:00:00.000Z",
+      seenHistoryIds: "not-an-array",
+      savedAt: 0,
+    });
     expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toBeNull();
+  });
+
+  // pollCursor は復元後そのまま ?since= としてサーバへ送られ、日付として解釈
+  // できない値は API 側で 400 拒否される。壊れた/汚染された sessionStorage から
+  // の復元で全ポーリングが 400 になるのを防ぐため、parsePollState 自体が弾く。
+  it("pollCursorが日付として解釈できない文字列の場合はnullを返す(以後のポーリングが全て400になるのを防ぐ)", () => {
+    const raw = JSON.stringify({
+      pollCursor: "not-a-date",
+      seenHistoryIds: ["h1"],
+      savedAt: 0,
+    });
+    expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toBeNull();
+  });
+
+  it("pollCursorが空文字列の場合はnullを返す", () => {
+    const raw = JSON.stringify({ pollCursor: "", seenHistoryIds: [], savedAt: 0 });
+    expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toBeNull();
+  });
+
+  it("pollCursorが正当なISO日付文字列なら復元される(妥当性検証のデグレ防止)", () => {
+    const raw = JSON.stringify({
+      pollCursor: "2026-07-04T12:34:56.789Z",
+      seenHistoryIds: ["h1"],
+      savedAt: 0,
+    });
+    expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toEqual({
+      pollCursor: "2026-07-04T12:34:56.789Z",
+      seenHistoryIds: ["h1"],
+      savedAt: 0,
+    });
   });
 
   it("seenHistoryIds配列内に文字列以外が混じっていても、文字列要素だけを残して復元する", () => {
     const raw = JSON.stringify({
-      pollCursor: "c",
+      pollCursor: "2026-07-04T00:00:00.000Z",
       seenHistoryIds: ["h1", 123, null, "h2", { bad: true }],
       savedAt: 0,
     });

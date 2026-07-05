@@ -3,15 +3,18 @@
  * postgrest / pg 直結ドライバ切替パリティテスト
  *
  * sendChatAnnouncement の {num}/{unique} は getSupabaseAdminNoCache 経由の RPC で
- * 取得される。DB_DRIVER=pg-read/pg のときのみ RPC 実行が pg 直結
+ * 取得される。この呼び出しはガチャ EventSub フロー内のため、全体フラグではなく
+ * ガチャ経路専用の getGachaDbDriver() === 'pg' のときのみ RPC 実行が pg 直結
  * (fetchUserCardCountsRpcPg) に切り替わることを固定する:
  *   1. フラグ未設定時(既定 'postgrest')は getDb が一切呼ばれず既存挙動が不変
- *   2. pg 経路では NoCache クライアントの rpc へ流れず、同一 RPC データから
- *      同一のプレースホルダ({num}=当選カード所持数 / {unique}=アクティブ種類数)が
- *      組み立てられる（名前付き引数 + ::uuid 明示キャスト）
+ *   2. pg 経路(GACHA_DB_DRIVER=pg)では NoCache クライアントの rpc へ流れず、
+ *      同一 RPC データから同一のプレースホルダ({num}=当選カード所持数 /
+ *      {unique}=アクティブ種類数)が組み立てられる（名前付き引数 + ::uuid 明示キャスト）
  *   3. 既存 postgrest 経路のこの呼び出しには 42883 フォールバックが無いため、
  *      pg 経路でも特別扱いせず「warn ログ + プレースホルダ未定義のまま通知送信」
  *      の同じ外部挙動になる（postgrest へのフォールスルーもしない）
+ *   4. GACHA_DB_DRIVER=postgrest による緊急ロールバックはガチャ実行(execute_gacha_
+ *      transaction)と通知経路を一括で旧経路へ戻す(経路の食い違いを作らない)
  *
  * モックの流儀は tests/unit/eventsub-reward-mismatch.test.ts（EventSub 署名付き
  * POST + GachaService / chat-service モック）と
@@ -222,8 +225,10 @@ describe('EventSub get_user_card_counts ドライバパリティ (#573)', () => 
     expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
   })
 
-  it('pg 経路(DB_DRIVER=pg-read): 名前付き引数の SQL で実行され、同一データから同一プレースホルダになる(NoCache rpc は不呼出)', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
+  it('pg 経路(GACHA_DB_DRIVER=pg): 名前付き引数の SQL で実行され、同一データから同一プレースホルダになる(NoCache rpc は不呼出)', async () => {
+    // DB_DRIVER 未設定のまま GACHA_DB_DRIVER=pg だけでガチャ経路(通知含む)が
+    // 切り替わる(gacha-rpc-driver-parity.test.ts と同じフラグの流儀)
+    vi.stubEnv('GACHA_DB_DRIVER', 'pg')
     const rpc = vi.fn()
     mockGetSupabaseAdminNoCache.mockReturnValue({
       rpc,
@@ -256,7 +261,7 @@ describe('EventSub get_user_card_counts ドライバパリティ (#573)', () => 
     // 既存 postgrest 経路のこの呼び出しには 42883 フォールバックが無い
     // （エラー種別を問わず warn + プレースホルダ空文字化）ため、pg 経路でも
     // 42883 を特別扱いしないこと＝「既存にない保護を勝手に増やさない」を固定する。
-    vi.stubEnv('DB_DRIVER', 'pg-read')
+    vi.stubEnv('GACHA_DB_DRIVER', 'pg')
     const rpc = vi.fn()
     mockGetSupabaseAdminNoCache.mockReturnValue({
       rpc,
@@ -286,5 +291,32 @@ describe('EventSub get_user_card_counts ドライバパリティ (#573)', () => 
     expect(mockReportError).not.toHaveBeenCalled()
     // postgrest RPC へのフォールスルーはしない
     expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('緊急ロールバック(DB_DRIVER=pg + GACHA_DB_DRIVER=postgrest): 通知経路もガチャ経路と揃って postgrest で実行される', async () => {
+    // GACHA_DB_DRIVER=postgrest はガチャ実行フロー全体(execute_gacha_transaction と
+    // このチャット通知用 RPC)を1つのレバーで旧経路へ戻す。通知経路が全体フラグ
+    // (DB_DRIVER)で分岐していると、ロールバック時に通知だけ pg 直結に残る
+    // 「経路の食い違い」が起きるため、それが無いこと(getDb 不呼出 + NoCache rpc
+    // 呼出)を固定する。
+    vi.stubEnv('DB_DRIVER', 'pg')
+    vi.stubEnv('GACHA_DB_DRIVER', 'postgrest')
+    const rpc = vi.fn().mockResolvedValue({ data: USER_CARD_COUNT_ROWS, error: null })
+    mockGetSupabaseAdminNoCache.mockReturnValue({
+      rpc,
+    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+
+    const response = await POST(await createRedemptionRequest('eventsub-counts-rollback'))
+
+    expect(response.status).toBe(200)
+    expect(rpc).toHaveBeenCalledWith('get_user_card_counts', {
+      p_twitch_user_id: 'viewer-1',
+      p_streamer_id: 'streamer-1',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(mocks.buildMessage).toHaveBeenCalledWith(
+      '@{user} {card} 所持{num}枚目 コンプ進捗{unique}',
+      expect.objectContaining({ num: 3, unique: 1 }),
+    )
   })
 })

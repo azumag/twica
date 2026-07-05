@@ -44,14 +44,6 @@ export function isPgFunctionNotFoundError(e: unknown): boolean {
 }
 
 /**
- * SQLSTATE 23505 unique_violation: 一意制約違反。
- * 冪等性キー（event_id / request_id 等）の重複挿入検知に使う。
- */
-export function isPgUniqueViolationError(e: unknown): boolean {
-  return getSqlState(e) === '23505'
-}
-
-/**
  * SQLSTATE 42P01 undefined_table: テーブルが存在しない。
  * テーブル追加マイグレーション前のデプロイ窓で発生。
  */

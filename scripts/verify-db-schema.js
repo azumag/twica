@@ -9,7 +9,10 @@
  * 切り替える「前」に確認する。列名・データ型・NOT NULL 制約の3点を照合し、
  * 差分を表形式で出力する。テーブルの抜け漏れは双方向で検出する
  * （schema.ts にあって DB に無いテーブル / DB の public スキーマにあって
- * schema.ts に定義が無いテーブルの両方）。差分ゼロなら exit 0、差分ありなら
+ * schema.ts に定義が無いテーブルの両方）。列照合の後に、接続ロールで全テーブルへ
+ * SELECT 1 件のスモーククエリを発行し、RLS / GRANT 起因で行が見えない・権限エラーに
+ * なるテーブルを検出する（smokeCheckTableAccess のコメント参照）。
+ * 差分ゼロ・アクセス失敗ゼロなら exit 0、差分または権限エラーありなら
  * exit 1（接続失敗などの運用エラーは exit 2）。
  *
  * 使い方:
@@ -191,6 +194,48 @@ async function fetchDbColumns(sql, tableNames) {
   return tables
 }
 
+/**
+ * 接続ロールでの各テーブルへの SELECT アクセス可否を検証するスモークチェック。
+ * schema.ts の全テーブルへ「SELECT 1 件」のクエリを発行する。
+ *
+ * 背景（このチェックが必要な理由）:
+ * information_schema の列照合が通っても、接続ロール（twica_app）が RLS / GRANT の
+ * 設定不備でデータに到達できないケースは検出できない。特に一部テーブル
+ * （storage_usage / blob_files / errors / support_codes / user_licenses）の RLS
+ * ポリシーは JWT クレーム述語（auth.jwt() / auth.role()）で書かれており、
+ * PostgREST の JWT を持たない pg 直結では述語が常に偽になる。BYPASSRLS を
+ * 付与し忘れたロールで接続すると、これらのテーブルは「エラーなく 0 行」に
+ * 見えてしまう（docs/db-driver-migration.md のセットアップ手順 1 参照）。
+ *
+ * 判定の設計（0 行を failure にしない理由）:
+ * - RLS は SELECT ではエラーを出さず行を黙って隠すため、「RLS で全行不可視」と
+ *   「本当に空のテーブル」はクエリ結果からは区別できない。空テーブルは 0 行が
+ *   正常なので、0 行は情報表示（警告）に留め、運用者が preview の実データ量と
+ *   突き合わせて判断する（例: storage_usage は 00006 で '_global_' 行を必ず
+ *   初期挿入しているため、0 行なら RLS 断絶がほぼ確定）。
+ * - 一方、権限エラー（SQLSTATE 42501 insufficient_privilege 等）は GRANT 不足が
+ *   一意に確定する明確な失敗のため、failure（exit 1）として扱う。
+ *
+ * @returns {{ failures: Array<{ tableName: string, error: unknown }>, emptyTables: string[] }}
+ */
+async function smokeCheckTableAccess(sql, tableNames) {
+  const failures = []
+  const emptyTables = []
+  for (const tableName of tableNames) {
+    try {
+      // sql(tableName) は postgres.js の識別子エスケープ（テーブル名はスキーマ由来の
+      // 固定値だが、文字列連結ではなく識別子ヘルパーで安全に埋め込む）
+      const rows = await sql`select 1 as ok from ${sql(tableName)} limit 1`
+      if (rows.length === 0) {
+        emptyTables.push(tableName)
+      }
+    } catch (error) {
+      failures.push({ tableName, error })
+    }
+  }
+  return { failures, emptyTables }
+}
+
 /** schema.ts と DB の列情報を照合し、差分の配列を返す */
 function diffSchemas(schemaTables, dbTables, allDbTableNames = []) {
   const diffs = []
@@ -297,6 +342,29 @@ async function main() {
       console.error(`\nFound ${diffs.length} difference(s):\n`)
       printDiffTable(diffs)
       exitCode = 1
+    }
+
+    // 列照合の後に、接続ロールで全テーブルへの SELECT アクセス可否を検証する
+    // （failure / 情報表示の判定基準は smokeCheckTableAccess のコメント参照）
+    const { failures, emptyTables } = await smokeCheckTableAccess(sql, [...schemaTables.keys()])
+    if (failures.length === 0) {
+      console.log(`OK: SELECT smoke query succeeded on all ${schemaTables.size} tables for the connecting role.`)
+    } else {
+      console.error(`\nSELECT smoke query failed on ${failures.length} table(s) (missing GRANT for the connecting role?):\n`)
+      for (const { tableName, error } of failures) {
+        const code = error && typeof error === 'object' && typeof error.code === 'string' ? error.code : 'unknown'
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(`  ${tableName}: [${code}] ${message}`)
+      }
+      exitCode = 1
+    }
+    if (emptyTables.length > 0) {
+      // 0 行は「空テーブル（正常）」と「RLS で全行不可視（BYPASSRLS 付与漏れ）」を
+      // 区別できないため failure にはしない。運用者向けの警告表示に留める。
+      console.warn(`\nWARN: ${emptyTables.length} table(s) returned 0 rows. Empty tables are normal, but if the`)
+      console.warn('table should contain data, suspect RLS filtering for the connecting role')
+      console.warn("(e.g. storage_usage always has the '_global_' seed row; 0 rows there means RLS is blocking):")
+      console.warn(`  ${emptyTables.join(', ')}`)
     }
   } catch (error) {
     console.error('Failed to verify schema against the database:')

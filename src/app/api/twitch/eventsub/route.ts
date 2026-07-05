@@ -19,7 +19,7 @@ import { resolvePackDisplayName } from "@/lib/collection-packs";
 // tests/setup.ts の getDb throw スタブも「postgrest 経路で getDb が呼ばれない」
 // ことを構造的に保証している)。
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled } from "@/lib/db/flags";
+import { getGachaDbDriver } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
@@ -838,7 +838,8 @@ async function handleRedemption(messageId: string, event: {
 
 /**
  * sendChatAnnouncement の {num}/{unique}/{newCards} 用 get_user_card_counts RPC の
- * pg 直結(postgres.js)実装 (#573)。DB_DRIVER=pg-read/pg のときのみ呼ばれる。
+ * pg 直結(postgres.js)実装 (#573)。getGachaDbDriver() === 'pg' のときのみ呼ばれる
+ * (フラグ分岐の判断根拠は呼び出し側 userCardCountsPromise のコメント参照)。
  *
  * PostgREST .rpc() と同一の { data, error } 形状へ正規化して返すことで、呼び出し側の
  * 既存分岐（error → logger.warn + プレースホルダを未定義のまま空文字化 / data →
@@ -1002,13 +1003,18 @@ async function sendChatAnnouncement(
     // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
     // RPC does not filter by is_active, so we filter on the client.
     //
-    // #573: DB_DRIVER=pg-read/pg のときのみ RPC 実行を pg 直結へ切り替える。
+    // #573: この呼び出しはガチャ EventSub フロー内（ガチャ成功後のチャット通知）
+    // のため、全体フラグ（DB_DRIVER / isPgReadEnabled）ではなく execute_gacha_transaction
+    // と同じ getGachaDbDriver() で分岐する。GACHA_DB_DRIVER=postgrest による緊急
+    // ロールバック時に通知経路だけ pg 直結に残る「経路の食い違い」を作らない —
+    // ロールバックは1つのレバーでガチャ実行フロー全体を旧経路へ戻せる必要がある
+    // （gacha.ts getIssuedCounts と同じ判断）。
     // pg 側は同一の { data, error } 形状へ正規化して返すため、下の
     // userCardCountsResult の消費コード（error → warn / data → 集計）は
     // 両経路で完全に共有される（NoCache 相当である根拠・エラー処理方針は
     // fetchUserCardCountsRpcPg の doc コメント参照）。
     const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo)
-      ? (isPgReadEnabled()
+      ? (getGachaDbDriver() === 'pg'
           ? fetchUserCardCountsRpcPg(userId, streamer.id)
           : supabaseAdminNoCache.rpc('get_user_card_counts', {
               p_twitch_user_id: userId,
