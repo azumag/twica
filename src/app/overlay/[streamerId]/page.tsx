@@ -149,6 +149,10 @@ const VERSION_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 const RELOAD_JITTER_MAX_MS = 10 * 60 * 1000;
 // 演出中で実行を見送った場合の再試行間隔(演出を壊さないための待ち時間)
 const RELOAD_DEFER_RETRY_MS = 30 * 1000;
+// SREレビュー指摘対応: 効果音の長さ(audio.duration)が有限値で取得できない場合
+// (メタデータ未ロードでNaN等)に使う「再生終了見込み」の安全上限。
+// リロード延期判定(soundPlayingUntilRef)のフォールバックにのみ使う
+const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
 const RELOAD_COOLDOWN_STORAGE_KEY = "twica-overlay-reload";
@@ -249,6 +253,15 @@ export default function OverlayPage() {
   // ユーザー操作により音声再生がアンロック済みかどうか
   // ブラウザの自動再生ポリシーにより、最初のユーザー操作までplay()は失敗する
   const audioUnlockedRef = useRef(false);
+  // SREレビュー指摘対応: 効果音の「再生終了見込み時刻」(epoch ms)。
+  // attemptReloadのisMidDisplay判定(isDisplayingRef/queueRef/showCardRef)は
+  // カード演出の状態しか見ておらず、displayDurationより長い効果音の再生中に
+  // location.reload()が割り込むと配信画面で音が不自然に途切れる。再生開始時に
+  // この時刻を記録し、時刻を過ぎるまでリロードを延期する(配信画面の音途切れ防止)。
+  // ended/pauseで過去時刻(0)へ戻すため、通常は見込みより早く解除される。
+  // 万一イベントが発火しなくても、時刻経過で自然に判定がfalseへ戻るため
+  // リロードが恒久的に止まることはない
+  const soundPlayingUntilRef = useRef(0);
   // 音声がブラウザのAutoplayポリシーでブロックされているかどうか（UI表示用）
   const [audioBlocked, setAudioBlocked] = useState(false);
 
@@ -494,6 +507,35 @@ export default function OverlayPage() {
     }
 
     try {
+      // SREレビュー指摘対応: 再生開始時に「再生終了見込み時刻」をsoundPlayingUntilRefへ
+      // 記録し、効果音再生中の自動リロード(attemptReload)を延期して配信画面の
+      // 音途切れを防ぐ。durationはメタデータ未ロード時NaN・ライブ系でInfinityに
+      // なりうるため、有限値のときだけ実尺を採用し、それ以外は安全上限へフォールバック。
+      // 戻り値のクリア関数は、play()失敗(自動再生ブロック=音は鳴っていない)時に
+      // 不要な延期を即解除するために使う。
+      const markSoundPlaying = (audio: HTMLAudioElement) => {
+        const durationMs = Number.isFinite(audio.duration)
+          ? audio.duration * 1000
+          : SOUND_DURATION_FALLBACK_MS;
+        const until = Date.now() + durationMs;
+        // 複数の音が重なった場合(前の音が鳴り終わる前に次のカードの音が始まる等)は
+        // より遅い終了見込みを保持する
+        soundPlayingUntilRef.current = Math.max(soundPlayingUntilRef.current, until);
+        const clearGuard = () => {
+          // 自分の予約が現在値のときだけ過去時刻(0)へ戻す。後続のより長い再生の
+          // 予約(Math.maxで勝った値)を、先に終わった音のイベントで消さないため
+          if (soundPlayingUntilRef.current === until) {
+            soundPlayingUntilRef.current = 0;
+          }
+        };
+        // 再生終了/停止時は見込み時刻を待たず即座に延期を解除する。
+        // addEventListenerの蓄積ではなくプロパティ代入を使うのは、キャッシュ済み
+        // Audio要素の再再生時に古いハンドラを自然に置き換えるため
+        audio.onended = clearGuard;
+        audio.onpause = clearGuard;
+        return clearGuard;
+      };
+
       // ルールに対応するプリロード済みAudio要素を優先的に使用する。
       // ルールが選択された場合は rule.id、レガシー単一URLの場合は固定キー。
       const cacheKey = selectedRule?.id ?? "__legacy__";
@@ -501,14 +543,20 @@ export default function OverlayPage() {
       if (cached && cached.src === soundUrl) {
         // プリロード済みのAudio要素を使用して再生
         cached.currentTime = 0;
+        const clearGuard = markSoundPlaying(cached);
         cached.play().catch(() => {
           // 自動再生ポリシーによりブロックされた場合は無視
           // ユーザーがページをクリックすればアンロックされ、次回から再生可能
+          // (音は鳴っていないため、リロード延期ガードも即解除する)
+          clearGuard();
         });
       } else {
         // キャッシュ未生成（取得タイミング差など）のフォールバック
         const audio = new Audio(soundUrl);
-        audio.play().catch(() => {});
+        const clearGuard = markSoundPlaying(audio);
+        audio.play().catch(() => {
+          clearGuard();
+        });
       }
     } catch (error) {
       logger.error("Error playing gacha sound:", error);
@@ -617,9 +665,15 @@ export default function OverlayPage() {
    */
   const attemptReload = useCallback(() => {
     // 演出中(キュー処理中・キュー待ち・カード表示中)は演出を壊さないよう
-    // 30秒後に同じ判定をやり直す(設計上の要件3番)
+    // 30秒後に同じ判定をやり直す(設計上の要件3番)。
+    // SREレビュー指摘対応: displayDurationより長い効果音がまだ鳴っている間の
+    // リロードは配信画面の音を不自然に途切れさせるため、効果音の再生終了見込み
+    // 時刻(soundPlayingUntilRef、playGachaSound参照)も延期条件に含める
     const isMidDisplay =
-      isDisplayingRef.current || queueRef.current.length > 0 || showCardRef.current;
+      isDisplayingRef.current ||
+      queueRef.current.length > 0 ||
+      showCardRef.current ||
+      Date.now() < soundPlayingUntilRef.current;
     if (isMidDisplay) {
       addDebugLogRef.current("[version] reload deferred: display in progress");
       reloadTimeoutRef.current = setTimeout(() => {

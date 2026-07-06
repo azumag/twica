@@ -130,6 +130,22 @@ export async function withDbRetry<T>(
       // 非冪等（既定）は分類すらせず即 throw（上記の二重実行リスク回避）。
       // 恒久的エラー・リトライ回数到達時もそのまま呼び出し元へ伝播する。
       if (!idempotent || !isRetryableDbError(error) || attempt >= maxRetries) {
+        // 最終 throw の直前に必ず [db:pg] タグ付き warn を1行出す（SRE レビュー指摘）。
+        // リトライ中の warn だけでは、非冪等（既定）の即 throw・非リトライ対象エラー・
+        // リトライ上限到達という「最も重要な失敗モード」が一切ログに残らず、
+        // docs/db-driver-migration.md の監視手順（wrangler tail で [db:pg] を検索）が
+        // 機能しない。この warn により pg 経路の全失敗がタグ検索可能になる
+        // （監視手順の実効性確保）。エラー自体は呼び出し元へそのまま伝播するため、
+        // 外部挙動（throw されるエラー）は変えない。
+        const reason = !idempotent
+          ? 'non-idempotent'
+          : !isRetryableDbError(error)
+            ? 'non-retryable'
+            : 'max-retries-exhausted'
+        logger.warn(`[DB Retry] [db:pg] ${context} failed (no retry: ${reason})`, {
+          code: (error as { code?: unknown })?.code,
+          error: error instanceof Error ? error.message : String(error),
+        })
         throw error
       }
 

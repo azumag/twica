@@ -5,6 +5,14 @@ import { Result, ok, err } from '@/types/result'
 import { logger } from '@/lib/logger'
 import { reportError } from '@/lib/sentry/error-handler'
 import { withRetry } from '@/lib/supabase/retry'
+// #573: ガチャ経路(チャネルポイント消費を伴う課金系クリティカルパス)の pg 直結分岐用。
+// フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに一切入らないため、
+// import が存在するだけでは挙動に影響しない(#570 の設計。tests/setup.ts の getDb
+// throw スタブも「postgrest 経路で getDb が呼ばれない」ことを構造的に保証している)。
+import { getDb } from '@/lib/db/client'
+import { getGachaDbDriver } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import { isPgFunctionNotFoundError } from '@/lib/db/errors'
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError } from '@/lib/card-issuance'
 import {
   isMissingCollectionNameColumn,
@@ -73,6 +81,34 @@ function isRaidOptionsSchemaError(error: { message?: string; code?: string } | n
 }
 
 const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
+
+/**
+ * execute_gacha_transaction RPC (migration 00070, RETURNS JSONB) の戻り値の形状。
+ * plpgsql 側の jsonb_build_object が返すプレーンオブジェクトで、PostgREST .rpc() の
+ * data と pg 直結(postgres.js)の rows[0].result は同一形状になる(#573)。
+ * 3キーとも「返らないことがある」(例: is_duplicate:true の early return では
+ * limit_reached / history_id が無い)ため全て optional。既存コードも
+ * rpcResult?.is_duplicate / rpcResult?.limit_reached と optional アクセスで
+ * 消費しており、この型はその実態を明文化したもの。
+ */
+interface GachaTransactionRpcResult {
+  is_duplicate?: boolean
+  limit_reached?: boolean
+  history_id?: string | null
+}
+
+/**
+ * pg 直結経路のエラーを PostgREST .rpc() の error と同じ「code + message」形状へ
+ * 正規化するための最小型(#573)。postgres.js は PostgrestError と異なりエラーを
+ * throw するため、executeGacha 内の既存エラー分岐(42883→legacy フォールバック、
+ * reportError + err())を両経路で共有するにはこの形への詰め替えが必要。
+ * code を optional にしているのは、接続断系(CONNECTION_CLOSED 等)や
+ * 非 Error オブジェクトが throw された場合に SQLSTATE が存在しないため。
+ */
+interface GachaRpcDriverError {
+  code?: string
+  message: string
+}
 
 /**
  * get_issued_card_counts RPC (migration 00069) の JSONB 戻り値
@@ -336,18 +372,42 @@ export class GachaService {
 
         // gacha_history, users, user_cards を1トランザクションでアトミックに実行
         // 従来は3回の個別DB操作で中間状態（履歴あり・カード未付与）が発生しえた
-        const { data: rpcResult, error: rpcError } = await withRetry(
-          () => this.supabase.rpc('execute_gacha_transaction', {
-            p_event_id: eventId || null,
-            p_user_twitch_id: userTwitchId,
-            p_user_twitch_username: userTwitchUsername,
-            p_card_id: selectedCard.id,
-            p_streamer_id: streamerId,
-            p_reward_cost: rewardCost ?? null,
-            p_reward_id: rewardId ?? null,
-          }),
-          'gacha:executeGacha:rpc',
-        )
+        //
+        // #573: ガチャ書き込み(課金系・EventSub 高頻度のクリティカルパス)の pg 直結分岐。
+        // 全体フラグ(DB_DRIVER)ではなく getGachaDbDriver() で分岐する:
+        // GACHA_DB_DRIVER はガチャ経路「だけ」を全体フラグと独立に即時ロールバック/
+        // 先行切替できる緊急スイッチ(本番障害時の影響範囲を最小化する独立レバー。
+        // src/lib/db/flags.ts 参照)。フラグ未設定時は従来どおり下の supabase-js
+        // (PostgREST)経路が無変更のまま実行される。
+        //
+        // 分岐は「RPC を実行して { data, error } を得る」部分だけに絞る。pg 側
+        // (executeGachaTransactionRpcPg)が PostgREST .rpc() と同一の { data, error }
+        // 形状へ正規化して返すため、この直後のエラー分岐(42883→executeGachaLegacy
+        // フォールバック、reportError + err())と is_duplicate / limit_reached の
+        // 後続処理(limit_reached 再抽選ループ含む)は両経路で完全に共有される —
+        // 経路によって外部挙動が変わる余地を分岐点1箇所に閉じ込めるための設計。
+        const { data: rpcResult, error: rpcError } = getGachaDbDriver() === 'pg'
+          ? await this.executeGachaTransactionRpcPg({
+              eventId: eventId || null,
+              userTwitchId,
+              userTwitchUsername,
+              cardId: selectedCard.id,
+              streamerId,
+              rewardCost: rewardCost ?? null,
+              rewardId: rewardId ?? null,
+            })
+          : await withRetry(
+              () => this.supabase.rpc('execute_gacha_transaction', {
+                p_event_id: eventId || null,
+                p_user_twitch_id: userTwitchId,
+                p_user_twitch_username: userTwitchUsername,
+                p_card_id: selectedCard.id,
+                p_streamer_id: streamerId,
+                p_reward_cost: rewardCost ?? null,
+                p_reward_id: rewardId ?? null,
+              }),
+              'gacha:executeGacha:rpc',
+            )
 
         if (rpcError) {
           // RPC関数が未デプロイの場合（マイグレーション前）は旧ロジックにフォールバック
@@ -405,6 +465,135 @@ export class GachaService {
   }
 
   /**
+   * execute_gacha_transaction RPC の pg 直結(postgres.js)実装 (#573)。
+   * GACHA_DB_DRIVER=pg (または DB_DRIVER=pg かつ GACHA_DB_DRIVER 未設定)のときのみ
+   * executeGacha から呼ばれる。PostgREST .rpc() と同一の { data, error } 形状を
+   * 返すことで、呼び出し側の後続分岐(42883 フォールバック・is_duplicate・
+   * limit_reached 再抽選)を両経路で共有する。
+   *
+   * 名前付き引数(p_event_id => ...)で呼ぶ理由: 位置引数だと将来のパラメータ追加・
+   * 並び替えで「隣の引数へズレたまま型だけ合ってしまう」取り違え事故(課金系では
+   * 致命的)を検出できない。migration 00070 のシグネチャ(7引数、末尾2つは
+   * DEFAULT NULL)と名前で1対1対応させ、PostgREST .rpc() が名前付きで呼ぶ挙動とも
+   * 揃える。値はすべて postgres.js のバインドパラメータとして送られるため
+   * SQL インジェクションは構造的に不可能。uuid 引数は明示 ::uuid キャストで
+   * 型解決を固定する(integer も同様)。text 引数は unknown のまま送っても
+   * 名前付き引数の関数解決で text へ一意に強制されるためキャスト不要。
+   *
+   * jsonb 戻り値: postgres.js は fetch_types:false (src/lib/db/client.ts)でも
+   * json/jsonb (OID 114/3802) の組み込みパーサ(JSON.parse)を常に登録している
+   * (node_modules/postgres/src/types.js の types.json.from: [114, 3802] で確認)。
+   * したがって RETURNS JSONB の値は rows[0].result で既に JS オブジェクトになって
+   * おり、PostgREST .rpc() の data ({ is_duplicate?, limit_reached?, history_id? })
+   * と同一形状。drizzle() が上書きするのは timestamp/date 系パーサのみで
+   * json/jsonb には影響しない。
+   *
+   * リトライ: withDbRetry(..., { idempotent: eventId !== null })。
+   * - eventId が非 null の場合のみリトライを許可する。RPC は gacha_history へ
+   *   ON CONFLICT (event_id) DO NOTHING で INSERT し(migration 00070)、重複時は
+   *   users/user_cards への書き込み前に is_duplicate:true で early return するため、
+   *   同一 event_id での再実行は副作用ゼロ(=冪等)。接続断リトライ後の
+   *   is_duplicate:true は「初回が実はコミットされていた」ケースを含むが、これは
+   *   EventSub 再送と同じ err('Duplicate event') 扱いが正しい(カードは初回実行分が
+   *   既に付与済みで、二重付与も未付与も起きない)。
+   * - demo ガチャ(src/app/api/gacha/route.ts、eventId=null)は冪等キーが無く、
+   *   再実行のたびに新しい履歴行+カード付与が発生するためリトライ禁止
+   *   (withDbRetry の既定 idempotent:false は接続断=「コミット済みか不明」を
+   *   二重排出させないための安全側動作。src/lib/db/retry.ts 参照)。既存 postgrest
+   *   経路の withRetry は eventId に関わらず 502/503 をリトライするが、あちらは
+   *   HTTP ゲートウェイ層のエラー分類であり、pg 直結では接続断の結果不明性を
+   *   優先して非冪等時はリトライしない(意図的な安全側の差)。
+   * - リトライ回数・バックオフは既存 withRetry と同一の既定値
+   *   ([100,300,1000]ms・最大3回)で、冪等時のリトライ特性は両経路で揃う。
+   */
+  private async executeGachaTransactionRpcPg(params: {
+    eventId: string | null
+    userTwitchId: string
+    userTwitchUsername: string
+    cardId: string
+    streamerId: string
+    rewardCost: number | null
+    rewardId: string | null
+  }): Promise<{ data: GachaTransactionRpcResult | null; error: GachaRpcDriverError | null }> {
+    try {
+      // セキュリティレビュー指摘対応: 接続断リトライが実際に発生したかどうかを
+      // 観測するため、queryFn の実行回数をクロージャでカウントする(外部挙動は不変)。
+      let attemptCount = 0
+      const data = await withDbRetry(
+        async () => {
+          attemptCount += 1
+          // 規約: getDb() は queryFn の中で呼ぶ(リクエストスコープ破棄からの回復には
+          // クライアント再取得が必要。src/lib/db/retry.ts 参照)
+          const { sql } = await getDb()
+          const rows = await sql<{ result: GachaTransactionRpcResult | null }[]>`
+            select execute_gacha_transaction(
+              p_event_id => ${params.eventId},
+              p_user_twitch_id => ${params.userTwitchId},
+              p_user_twitch_username => ${params.userTwitchUsername},
+              p_card_id => ${params.cardId}::uuid,
+              p_streamer_id => ${params.streamerId}::uuid,
+              p_reward_cost => ${params.rewardCost}::integer,
+              p_reward_id => ${params.rewardId}
+            ) as result
+          `
+          return rows[0]?.result ?? null
+        },
+        'gacha:executeGacha:rpc(pg)',
+        { idempotent: params.eventId !== null },
+      )
+      // 2回以上実行された(=接続断リトライが発生した)後の is_duplicate / limit_reached
+      // は、「初回実行が実はコミット済みで応答だけ失われた」ケースを含む。
+      // - is_duplicate: ON CONFLICT (event_id) により再実行が重複扱いになった
+      // - limit_reached: migration 00070 の評価順序では発行上限チェックが event_id
+      //   重複チェックより先に走るため、発行上限付きカードでは重複でも上限到達として
+      //   返る(その後の再抽選 → is_duplicate → err('Duplicate event') に至る)
+      // どちらもカード付与・ポイント消費は初回分の1回で正しく完結している
+      // (データ不整合なし)が、視聴者への演出・チャット通知が欠落する。ログ無しでは
+      // 本物の EventSub 再送の is_duplicate と区別できないため、warn で観測可能に
+      // する(既知の稀な事象。plpgsql の評価順序修正は migration が必要なため
+      // Phase 2 対応。docs/db-driver-migration.md 参照)。戻り値は変更しない。
+      // ログにトークン等の秘密情報は含めない。
+      if (attemptCount >= 2 && (data?.is_duplicate || data?.limit_reached)) {
+        logger.warn(
+          `[db:pg] gacha rpc returned ${data.is_duplicate ? 'is_duplicate' : 'limit_reached'} after connection retry — 初回実行がコミット済みだった可能性があり、その場合視聴者への演出が欠落する(既知の稀な事象、docs/db-driver-migration.md 参照)`,
+          {
+            eventId: params.eventId,
+            streamerId: params.streamerId,
+            userTwitchId: params.userTwitchId,
+            cardId: params.cardId,
+            attempts: attemptCount,
+          },
+        )
+      }
+      return { data, error: null }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
+      // 42883 (undefined_function) = RPC 未デプロイのデプロイ窓。code:'42883' へ
+      // 正規化して返し、呼び出し側の既存分岐(rpcError.code === '42883' →
+      // executeGachaLegacy)にそのまま乗せる。executeGachaLegacy は postgrest 実装の
+      // まま変更しない: 異常時(マイグレーションとコードのデプロイ順ズレ)に頼る
+      // 最後の安全弁は、本番実績のある既存経路へ逃がすほうが「新経路の不具合が
+      // フォールバック先まで巻き込む」リスクを避けられるため(#573 の設計判断)。
+      // isPgFunctionNotFoundError を明示的に使うのは、検知ロジックを
+      // src/lib/db/errors.ts に一元化し、将来判定方法が変わっても正規化後の
+      // code が '42883' で安定するようにするため。
+      if (isPgFunctionNotFoundError(error)) {
+        return { data: null, error: { code: '42883', message } }
+      }
+
+      // その他のエラー(接続断・SQLSTATE 各種・非 Error throw)は code をそのまま
+      // 透過し、呼び出し側の既存分岐で PostgREST エラーと同じ外部挙動
+      // (reportError + err('Failed to execute gacha transaction: ...'))になる。
+      const code = (error as { code?: unknown } | null)?.code
+      return {
+        data: null,
+        error: { code: typeof code === 'string' ? code : undefined, message },
+      }
+    }
+  }
+
+  /**
    * 発行上限付きカード(max_issuance_count が設定されたカード)について、
    * card_id ごとの発行済み枚数を取得する。
    *
@@ -423,6 +612,71 @@ export class GachaService {
    * フィルタリングロジックへの影響はない。
    */
   private async getIssuedCounts(cardIds: string[]): Promise<Result<Map<string, number>>> {
+    // #573: get_issued_card_counts はガチャ実行フロー(executeGacha)の内部呼び出しで
+    // あるため、全体フラグ(DB_DRIVER)ではなく execute_gacha_transaction と同じ
+    // getGachaDbDriver() で分岐する。GACHA_DB_DRIVER=postgrest による緊急ロール
+    // バックのとき、この呼び出しだけ pg 直結に残る「経路の食い違い」を作らない —
+    // ロールバックは1つのレバーでガチャ実行フロー全体を旧経路へ戻せる必要がある。
+    if (getGachaDbDriver() === 'pg') {
+      try {
+        const rpcData = await withDbRetry(
+          async () => {
+            // 規約: getDb() は queryFn の中で呼ぶ(src/lib/db/retry.ts 参照)
+            const { sql } = await getDb()
+            // migration 00069 の定義は RETURNS JSONB ({ "<card_id>": <count> })。
+            // RETURNS TABLE ではないため行集合展開(select * from fn(...))は不要で、
+            // スカラー SELECT + rows[0].result で PostgREST .rpc() の data と同一
+            // 形状のオブジェクトが得られる(jsonb→JS オブジェクト変換の根拠は
+            // executeGachaTransactionRpcPg の doc コメント参照)。両経路とも
+            // 同じ parseIssuedCardCountsRpc に通すため Map の中身も完全一致する。
+            //
+            // p_card_ids (uuid[]) の渡し方: postgres.js は fetch_types:false
+            // (src/lib/db/client.ts)では配列型の型情報(typeArrayMap)を接続時に
+            // 取得しないため、JS 配列をそのままバインドすると PG の配列リテラル
+            // ではなく 'id1,id2' 形式の壊れたテキストに直列化される
+            // (node_modules/postgres/src/types.js の inferType が配列を unknown
+            // 扱いにし、connection.js の Bind が '' + x で文字列化するため。
+            // sql.array() ヘルパーも typeArrayMap が空のため同様に壊れる)。
+            // その値は関数解決に失敗して 42883 を誘発し、下の「未デプロイ」
+            // フォールバックへ*静かに常時*落ちてしまう(性能改善 #548 が無効化
+            // されたままアラートも出ない)。これを避けるため、カンマ結合した
+            // テキスト1個をバインドし DB 側で string_to_array(...)::uuid[] に
+            // 展開する。値は常にバインドパラメータのままなので SQL インジェク
+            // ションは構造的に不可能。cardIds は DB 由来の UUID(16進+ハイフン)
+            // でカンマを含まず、区切りが曖昧になることもない。
+            const rows = await sql<{ result: unknown }[]>`
+              select get_issued_card_counts(
+                p_card_ids => string_to_array(${cardIds.join(',')}, ',')::uuid[]
+              ) as result
+            `
+            return rows[0]?.result
+          },
+          'gacha:executeGacha:issuedCounts(pg)',
+          // 読み取り専用(migration 00069 で STABLE 宣言)のため冪等としてリトライを
+          // opt-in する。リトライ回数・バックオフは既存 postgrest 経路の withRetry
+          // (オプション未指定)と同じ既定値([100,300,1000]ms・最大3回)で特性が揃う。
+          { idempotent: true },
+        )
+        return ok(parseIssuedCardCountsRpc(rpcData))
+      } catch (error) {
+        if (!isPgFunctionNotFoundError(error)) {
+          // 既存 postgrest 経路の非 42883 エラーと同じ外部挙動(`Database error:`
+          // プレフィックスの err)に揃える。
+          return err(`Database error: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        // 42883 = RPC 未デプロイのデプロイ窓。異常時は本番実績のある既存経路へ
+        // 逃がす方針(#573、executeGachaTransactionRpcPg と同じ判断)に従い、下の
+        // 既存 postgrest 実装へフォールスルーする。既存実装は自身の 42883
+        // フォールバック(select+in→JS 集計)を持つため最終的に旧来の集計へ到達
+        // する。PostgREST rpc の1往復が余分に挟まるが、マイグレーション未適用の
+        // 過渡期にのみ発生する一時状態であり、select+in 集計ロジックをここへ
+        // 複製する(恒久的な重複コード)より安全と判断した。
+        logger.warn('get_issued_card_counts pg path unavailable (42883), falling back to postgrest path', {
+          cardCount: cardIds.length,
+        })
+      }
+    }
+
     const { data: rpcData, error: rpcError } = await withRetry(
       () => this.supabase.rpc('get_issued_card_counts', { p_card_ids: cardIds }),
       'gacha:executeGacha:issuedCounts',

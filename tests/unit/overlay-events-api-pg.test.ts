@@ -1,7 +1,8 @@
 /**
  * Issue #571 (#570 パイロット踏襲): overlay ポーリング API の pg 直結経路テスト。
  *
- * tests/unit/overlay-events-api.test.ts (既存 postgrest 経路のテスト、無変更) と
+ * tests/unit/overlay-events-api.test.ts (既存 postgrest 経路のケースは無変更のまま、
+ * #569 で overlayVersion の describe が追加されている) と
  * tests/unit/announcements-driver-parity.test.ts (pg/postgrest 形状互換テストの
  * 確立パターン) の両方を踏襲する。DB_DRIVER フラグで分岐する pg 経路について:
  *   1. 応答形状が既存 postgrest 経路と deepEqual であること
@@ -13,10 +14,15 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { and, asc, eq, gt } from "drizzle-orm";
 import { GET } from "@/app/api/overlay/[streamerId]/events/route";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getDb } from "@/lib/db/client";
+import {
+  gachaHistory as gachaHistoryTable,
+  cards as cardsTable,
+} from "@/lib/db/schema";
 import { createMockQueryBuilder } from "../utils/supabase-mock";
 
 vi.mock("@/lib/rate-limit");
@@ -60,6 +66,17 @@ function createHistoryQuery(response: { data: unknown; error: unknown }) {
   return q;
 }
 
+/** select(...).from(...).leftJoin(...).where(...).orderBy(...).limit(...) 1呼び出し分の記録 */
+interface DrizzleOverlayCallRecord {
+  fields: Record<string, unknown>;
+  fromTable?: unknown;
+  joinTable?: unknown;
+  joinCondition?: unknown;
+  whereCondition?: unknown;
+  orderByCondition?: unknown;
+  limitValue?: number;
+}
+
 /**
  * pg 直結(Drizzle)経路のモック。
  * db.select(fields).from(table).leftJoin(table2, cond).where(cond).orderBy(cond).limit(n)
@@ -69,18 +86,42 @@ function createHistoryQuery(response: { data: unknown; error: unknown }) {
  * (announcements-driver-parity.test.ts の createDrizzleDbMock と同じ方針)。
  * responses は呼び出し回数ごとの応答(行 or エラー)を並べた配列で、
  * reward_id 列欠落フォールバックの「1回目失敗・2回目成功」を再現できる。
+ *
+ * 先行レビュー指摘への対応: 従来はフィールド射影のみを検証しており、leftJoin の
+ * 結合先の取り違えや where/limit/orderBy に渡る実引数の回帰(例: limit(10)→limit(5)、
+ * where の結合先/条件の取り違え)を検知できなかった。select() 呼び出しごとに
+ * from/leftJoin/where/orderBy/limit の実引数を calls に記録し、テスト側で
+ * drizzle-orm の式を組み立てて toEqual で構造比較できるようにする
+ * (token-manager-driver-parity.test.ts の updateCalls/where 記録と同じ方針)。
  */
 function createDrizzleOverlayDbMock(
   responses: Array<{ rows?: Record<string, unknown>[]; error?: unknown }>
 ) {
   let callCount = 0;
+  const calls: DrizzleOverlayCallRecord[] = [];
   const select = vi.fn((fields: Record<string, unknown>) => {
+    const call: DrizzleOverlayCallRecord = { fields };
+    calls.push(call);
     const builder: any = {
-      from: vi.fn(() => builder),
-      leftJoin: vi.fn(() => builder),
-      where: vi.fn(() => builder),
-      orderBy: vi.fn(() => builder),
-      limit: vi.fn(() => {
+      from: vi.fn((table: unknown) => {
+        call.fromTable = table;
+        return builder;
+      }),
+      leftJoin: vi.fn((table: unknown, condition: unknown) => {
+        call.joinTable = table;
+        call.joinCondition = condition;
+        return builder;
+      }),
+      where: vi.fn((condition: unknown) => {
+        call.whereCondition = condition;
+        return builder;
+      }),
+      orderBy: vi.fn((condition: unknown) => {
+        call.orderByCondition = condition;
+        return builder;
+      }),
+      limit: vi.fn((n: number) => {
+        call.limitValue = n;
         const response = responses[Math.min(callCount, responses.length - 1)];
         callCount += 1;
         if (response.error) {
@@ -94,7 +135,7 @@ function createDrizzleOverlayDbMock(
     };
     return builder;
   });
-  return { select };
+  return { select, calls };
 }
 
 beforeEach(() => {
@@ -254,6 +295,33 @@ describe("GET /api/overlay/[streamerId]/events: pg 経路の応答形状互換 (
     const { db } = await runPgPath();
     expect(mockGetSupabaseAdmin).not.toHaveBeenCalled();
     expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  // 先行レビュー指摘への対応: フィールド射影の一致だけでは、leftJoin の結合先
+  // テーブル取り違えや where/orderBy/limit に渡す実引数の回帰(例: limit(10)→
+  // limit(5)、streamer_id と別列の取り違え)を検知できない。実装
+  // (fetchOverlayHistoryWithRewardIdPg)と同じ式を drizzle-orm の and/eq/gt/asc で
+  // 組み立てて toEqual で構造比較することで、これらの回帰を検知できるようにする。
+  it("pgクエリが cards への leftJoin・where 条件式・orderBy・limit(10) を正しい実引数で呼び出す", async () => {
+    const { db } = await runPgPath();
+
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.fromTable).toBe(gachaHistoryTable);
+    // leftJoin の結合先が cards テーブルであること(結合先取り違えの回帰検知)
+    expect(call.joinTable).toBe(cardsTable);
+    expect(call.joinCondition).toEqual(eq(gachaHistoryTable.card_id, cardsTable.id));
+    // where 条件式の構造(and(eq(streamer_id,...), gt(redeemed_at,...)))が
+    // 実装が組み立てるものと同一であること
+    expect(call.whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, "streamer-1"),
+        gt(gachaHistoryTable.redeemed_at, "2026-01-01T00:00:00.000Z")
+      )
+    );
+    expect(call.orderByCondition).toEqual(asc(gachaHistoryTable.redeemed_at));
+    // limit(10)→limit(5) のような回帰を検知する
+    expect(call.limitValue).toBe(10);
   });
 });
 

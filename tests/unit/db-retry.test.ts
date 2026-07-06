@@ -81,7 +81,13 @@ describe('withDbRetry', () => {
     const queryFn = vi.fn().mockRejectedValue(error)
     await expect(withDbRetry(queryFn, 'test')).rejects.toBe(error)
     expect(queryFn).toHaveBeenCalledTimes(1)
-    expect(logger.warn).not.toHaveBeenCalled()
+    // SRE レビュー指摘対応: 即 throw でも [db:pg] タグ付き warn を1行出す
+    // （wrangler tail の監視手順が pg 経路の全失敗モードで機能するための観測ログ）
+    expect(logger.warn).toHaveBeenCalledTimes(1)
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[db:pg] test failed (no retry: non-idempotent)'),
+      expect.objectContaining({ code: 'CONNECTION_CLOSED' })
+    )
   })
 
   it('idempotent: true なら接続断エラーでリトライし、回復したら値を返す', async () => {
@@ -109,6 +115,11 @@ describe('withDbRetry', () => {
       withDbRetry(queryFn, 'test', { idempotent: true, delays: [0, 0, 0] })
     ).rejects.toBe(error)
     expect(queryFn).toHaveBeenCalledTimes(1)
+    // 非リトライ対象エラーの即 throw も [db:pg] タグ付きで観測できること
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[db:pg] test failed (no retry: non-retryable)'),
+      expect.objectContaining({ code: '23505' })
+    )
   })
 
   it('cross-request I/O エラーは idempotent: true でリトライされる', async () => {
@@ -137,6 +148,11 @@ describe('withDbRetry', () => {
       })
     ).rejects.toBe(error)
     expect(queryFn).toHaveBeenCalledTimes(3)
+    // リトライ上限到達（最も重要な失敗モード）も [db:pg] タグ付きで観測できること
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[db:pg] test failed (no retry: max-retries-exhausted)'),
+      expect.objectContaining({ code: 'ECONNRESET' })
+    )
   })
 
   it('既定の delays は [100, 300, 1000]（supabase/retry.ts と同一）で進行する', async () => {

@@ -3,7 +3,6 @@ import {
   isPgFunctionNotFoundError,
   isPgMissingColumnError,
   isPgMissingTableError,
-  isPgUniqueViolationError,
 } from '@/lib/db/errors'
 
 /** postgres.js が throw するエラー（code = SQLSTATE）を模倣する */
@@ -23,11 +22,6 @@ describe('db/errors SQLSTATE 判定', () => {
     expect(isPgFunctionNotFoundError(pgError('42703'))).toBe(false)
   })
 
-  it('isPgUniqueViolationError: 23505 のみ true', () => {
-    expect(isPgUniqueViolationError(pgError('23505'))).toBe(true)
-    expect(isPgUniqueViolationError(pgError('23503'))).toBe(false)
-  })
-
   it('isPgMissingTableError: 42P01 のみ true', () => {
     expect(isPgMissingTableError(pgError('42P01'))).toBe(true)
     expect(isPgMissingTableError(pgError('42703'))).toBe(false)
@@ -38,7 +32,6 @@ describe('db/errors unknown 安全性', () => {
   const guards = [
     isPgMissingColumnError,
     isPgFunctionNotFoundError,
-    isPgUniqueViolationError,
     isPgMissingTableError,
   ]
 

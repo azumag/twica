@@ -13,6 +13,14 @@ import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolvePackDisplayName } from "@/lib/collection-packs";
+// #573: チャット通知プレースホルダ用 get_user_card_counts（読み取り専用 RPC）の
+// pg 直結分岐用。フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに
+// 一切入らないため、import が存在するだけでは挙動に影響しない(#570 の設計。
+// tests/setup.ts の getDb throw スタブも「postgrest 経路で getDb が呼ばれない」
+// ことを構造的に保証している)。
+import { getDb } from "@/lib/db/client";
+import { getGachaDbDriver } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
@@ -829,6 +837,64 @@ async function handleRedemption(messageId: string, event: {
 }
 
 /**
+ * sendChatAnnouncement の {num}/{unique}/{newCards} 用 get_user_card_counts RPC の
+ * pg 直結(postgres.js)実装 (#573)。getGachaDbDriver() === 'pg' のときのみ呼ばれる
+ * (フラグ分岐の判断根拠は呼び出し側 userCardCountsPromise のコメント参照)。
+ *
+ * PostgREST .rpc() と同一の { data, error } 形状へ正規化して返すことで、呼び出し側の
+ * 既存分岐（error → logger.warn + プレースホルダを未定義のまま空文字化 / data →
+ * 行配列の集計）を両経路で完全に共有する（gacha.ts executeGachaTransactionRpcPg と
+ * 同じ「分岐は RPC 実行の1箇所だけ」の設計）。
+ *
+ * キャッシュ非依存性: 既存経路がここで getSupabaseAdminNoCache（Cloudflare fetch
+ * キャッシュを無効化したクライアント）を使うのは、直前のガチャで増えた所持数を
+ * 通知に正確に反映するため。pg 直結は HTTP 層を介さず毎回 PostgreSQL へ直接
+ * クエリする（キャッシュ層が存在しない）ため、NoCache クライアントと同じ
+ * 「常に最新を読む」性質が構造的に保たれる。
+ *
+ * エラー処理: 既存 postgrest 経路のこの呼び出しには 42883（RPC 未デプロイ）
+ * フォールバックが無い（エラー種別を問わず warn ログ + プレースホルダ空文字化）。
+ * よって pg 版でも 42883 を特別扱いせず、あらゆるエラーを { data: null, error }
+ * に正規化して既存と同じ外部挙動にする — 既存にない保護を勝手に増やさない
+ * (#573 の方針)。通知はカウント無しでも必ず送信されるため、ここでの失敗が
+ * チャット通知全体を落とすことはない。
+ *
+ * migration 00031: RETURNS JSONB（{ count, card, streamer } の行配列）。スカラー
+ * SELECT + rows[0].result で PostgREST .rpc() の data と同一形状になる（jsonb →
+ * JS 値変換の根拠は gacha.ts executeGachaTransactionRpcPg の doc コメント参照）。
+ * 名前付き引数 + uuid 明示キャストも gacha.ts と同じ規約。読み取り専用のため
+ * 冪等としてリトライを opt-in する（バックオフは既存 withRetry と同じ既定値）。
+ */
+async function fetchUserCardCountsRpcPg(
+  userId: string,
+  streamerId: string
+): Promise<{ data: unknown; error: { message: string } | null }> {
+  try {
+    const data = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { sql } = await getDb();
+        const rows = await sql<{ result: unknown }[]>`
+          select get_user_card_counts(
+            p_twitch_user_id => ${userId},
+            p_streamer_id => ${streamerId}::uuid
+          ) as result
+        `;
+        return rows[0]?.result ?? null;
+      },
+      "eventsub:sendChatAnnouncement:userCardCounts(pg)",
+      { idempotent: true },
+    );
+    return { data, error: null };
+  } catch (error) {
+    return {
+      data: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+/**
  * チャット通知を送信する
  * Send chat announcement for gacha result
  *
@@ -936,11 +1002,24 @@ async function sendChatAnnouncement(
     // {num} / {unique}: use RPC returning pre-aggregated per-card counts.
     // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
     // RPC does not filter by is_active, so we filter on the client.
+    //
+    // #573: この呼び出しはガチャ EventSub フロー内（ガチャ成功後のチャット通知）
+    // のため、全体フラグ（DB_DRIVER / isPgReadEnabled）ではなく execute_gacha_transaction
+    // と同じ getGachaDbDriver() で分岐する。GACHA_DB_DRIVER=postgrest による緊急
+    // ロールバック時に通知経路だけ pg 直結に残る「経路の食い違い」を作らない —
+    // ロールバックは1つのレバーでガチャ実行フロー全体を旧経路へ戻せる必要がある
+    // （gacha.ts getIssuedCounts と同じ判断）。
+    // pg 側は同一の { data, error } 形状へ正規化して返すため、下の
+    // userCardCountsResult の消費コード（error → warn / data → 集計）は
+    // 両経路で完全に共有される（NoCache 相当である根拠・エラー処理方針は
+    // fetchUserCardCountsRpcPg の doc コメント参照）。
     const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo)
-      ? supabaseAdminNoCache.rpc('get_user_card_counts', {
-          p_twitch_user_id: userId,
-          p_streamer_id: streamer.id,
-        })
+      ? (getGachaDbDriver() === 'pg'
+          ? fetchUserCardCountsRpcPg(userId, streamer.id)
+          : supabaseAdminNoCache.rpc('get_user_card_counts', {
+              p_twitch_user_id: userId,
+              p_streamer_id: streamer.id,
+            }))
       : null;
 
     // transient な transport / runtime 例外が throw されるとチャット通知全体が

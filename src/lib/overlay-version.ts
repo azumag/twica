@@ -147,6 +147,7 @@ export function serializePollState(state: {
  * - JSON として parse できない(壊れたデータ)
  * - 期待する形状(pollCursor: string, seenHistoryIds: string[], savedAt: number)
  *   を満たさない
+ * - pollCursor が日付として解釈できない(Date.parse が NaN)
  * - savedAt から now までの経過が ttlMs を超えている(TTL切れ)
  *
  * OBS ブラウザソース等 sessionStorage の内容が外部から書き換えられ得る前提を
@@ -173,6 +174,13 @@ export function parsePollState(
   if (typeof candidate.pollCursor !== "string") return null;
   if (typeof candidate.savedAt !== "number") return null;
   if (!Array.isArray(candidate.seenHistoryIds)) return null;
+
+  // pollCursor は復元後そのまま次回ポーリングの ?since= としてサーバへ送られ、
+  // API 側(normalizeDateParam)は日付として解釈できない since を 400 で拒否する。
+  // 壊れた/外部から書き換えられた sessionStorage から不正な pollCursor を復元して
+  // しまうと以後のポーリングが全て 400 で失敗し続けるため、日付として解釈できない
+  // カーソルはここで捨てて「復元しない(今を起点に再開)」へ安全に倒す。
+  if (!Number.isFinite(Date.parse(candidate.pollCursor))) return null;
 
   if (now - candidate.savedAt > ttlMs) return null;
 
