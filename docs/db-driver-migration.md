@@ -98,6 +98,11 @@ env 変更はビルド不要で秒単位で反映される（Cloudflare では�
 3. prod で同順（pg-read → 検証 → pg）
 4. 問題発生時: env を戻す（ガチャ経路のみ戻す場合は `GACHA_DB_DRIVER=postgrest`）
 
+（推奨）ガチャ経路はチャネルポイント消費を伴う課金系クリティカルパスのため段階
+切替する: `DB_DRIVER=pg` にする前に `GACHA_DB_DRIVER=postgrest` を明示設定して
+ガチャ経路だけ旧経路に固定し、他経路の検証完了後に `GACHA_DB_DRIVER=pg`
+（または未設定に戻す）でガチャを単独切替・検証する。
+
 ## 検証
 
 - 切替前: `scripts/verify-db-schema.js` を preview / prod それぞれの
@@ -109,6 +114,13 @@ env 変更はビルド不要で秒単位で反映される（Cloudflare では�
   DATABASE_URL="<Direct connection 文字列>" node scripts/verify-db-schema.js
   ```
 - 切替後: `wrangler tail` で `[db:pg]` タグのエラーと `CONNECTION_*` 系エラーを監視する。
+- 自動 smoke-check（15分毎）は pg 経路のエンドポイントを踏まない（`/` と `/plans` の
+  HTTP チェックと supabase-js 経由のスキーマチェックのみ）ため、切替直後は
+  `wrangler tail` での手動監視を最低30分継続すること。
+- ユニットテスト（parity テスト群）は実 DB・実ドライバを経由しないモック比較であり、
+  両経路のモックに同じ誤った前提を書くと検出できない（例: 日付文字列の形式差
+  — pg 直結の PG テキスト形式 vs PostgREST の ISO 8601 — はモックでは再現して
+  いない）。preview での実機確認が実 DB に対する唯一の検証機会である。
 - preview で `DB_DRIVER=pg-read` にした際、ダッシュボードのお知らせバナー表示
   （パイロット経路 `getUnreadAnnouncements`）が postgrest 時と同一であることを
   目視確認する（日付シリアライズ差の実機確認を兼ねる）。
@@ -117,8 +129,17 @@ env 変更はビルド不要で秒単位で反映される（Cloudflare では�
     長時間クエリの打ち切り挙動を preview で確認すること
   - 連続リクエスト時に `Cannot perform I/O on behalf of a different request`
     エラーがゼロであること（クライアントのリクエストスコープ管理の検証）
+  - ガチャを実際に1回引いてカードが付与され、overlay 演出・チャット通知が出ること
+    （EventSub 経由。可能なら重複再送・上限付きカードの再抽選も確認する）
+  - ダッシュボードの主要タブ（カード一覧・ガチャ履歴・統計・カード別所持統計・
+    ガチャユーザー一覧）が postgrest 時と同一表示になること
+  - Twitch トークンリフレッシュ（時間経過後のダッシュボード操作）と
+    BOT アカウント経由のチャット送信が動くこと
   - 支援コードの有効化・解除が動作すること（support_codes / user_licenses は
     JWT クレーム述語の RLS で守られており、BYPASSRLS 未付与の断絶はここで顕在化する）
+  - 運用注意（サポート対応）: 支援コード有効化の失敗申告を受けた場合、再試行を
+    案内する前に user_licenses と support_codes.activation_count を確認する
+    （接続断で「実際には有効化済みだが失敗表示」になるケースがあるため）
   - 画像アップロード / 削除で storage_usage の使用量が増減すること
     （storage_usage / blob_files も同様に JWT クレーム述語の RLS 対象）
   - Supabase の max-rows 設定値（API 設定）が既定 1000 のままか確認すること。
@@ -130,3 +151,11 @@ env 変更はビルド不要で秒単位で反映される（Cloudflare では�
 - 旧経路（supabase-js）の削除は Phase 4（#568）で実施する。それまで両経路を維持する。
 - Hyperdrive config は**未作成**（上記セットアップはユーザー操作待ち）。
   このコードはフラグ未設定なら Hyperdrive なしで安全にデプロイできる。
+- 既知の稀な事象: 接続断リトライ後の再実行で、発行上限付きカードの場合に
+  limit_reached が event_id 重複チェックより先に評価され
+  （`execute_gacha_transaction` の評価順序、migration 00070）、結果として
+  演出・通知が欠落することがある（カード付与とポイント消費は正しく1回のみで、
+  データ不整合はない）。ログの
+  `[db:pg] gacha rpc returned ... after connection retry` で観測可能。
+  Phase 2 で plpgsql の重複チェックを上限チェックより先に移す migration を
+  提案する（#568）。

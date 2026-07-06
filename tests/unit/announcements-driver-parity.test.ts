@@ -20,7 +20,15 @@ import {
 // 実時刻に依存しないよう、過去/未来の判定は十分に離れた日時を使う
 // ---------------------------------------------------------------------------
 
-/** announcements テーブルの行（SELECT 対象列のみ。日付は PostgREST が返す文字列形式） */
+/**
+ * announcements テーブルの行（SELECT 対象列のみ。日付は PostgREST が返す文字列形式）
+ *
+ * 注意: このモックは PostgREST/pg の日付形式差（pg 直結の timestamptz は PG テキスト
+ * 形式 '2026-03-10 12:00:00.123456+00'、PostgREST は ISO 8601）を再現しない —
+ * 両経路に同一の文字列を与えているため、形式差起因の不具合はこのテストでは
+ * 検出できない（実害がないことの根拠は src/lib/announcements.ts のコメント参照）。
+ * 形式差の実機確認は preview 検証（docs/db-driver-migration.md）に委ねる。
+ */
 const ANNOUNCEMENT_ROWS = [
   {
     // 表示対象: 公開中・期限内・未読

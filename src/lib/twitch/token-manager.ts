@@ -819,7 +819,14 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
             .where(eq(usersTable.twitch_user_id, twitchUserId));
         },
         'refreshTwitchAccessToken(save)',
-        // リトライしても同じトークン値を書く UPDATE のため冪等（リトライ可）
+        // リトライしても同じトークン値を書く UPDATE のため冪等（リトライ可）。
+        // なお、このリトライは同一呼び出し内の再送としては冪等だが、リトライ待機
+        // （バックオフ合計で最大約1.4秒 = 100+300+1000ms）の間に別リクエストの並行
+        // リフレッシュが新しいトークンを書き込んだ場合、古い値で上書きする競合窓を
+        // 広げる側面がある。この競合自体は postgrest 経路の並行リフレッシュにも
+        // 存在する既知の性質であり（検知手段のないブラインド UPDATE）、リトライ禁止に
+        // すると一時障害だけで確実にトークンが失われる方が害が大きいため、リトライを
+        // 許容する。根本対応（楽観ロック）は Phase 2 以降の検討事項。
         { idempotent: true },
       );
     } catch (error) {
@@ -940,7 +947,10 @@ async function saveTwitchTokensPg(twitchUserId: string, tokens: TwitchTokens): P
           .where(eq(usersTable.twitch_user_id, twitchUserId));
       },
       'saveTwitchTokens',
-      // リトライしても同じトークン値を書く UPDATE のため冪等（リトライ可）
+      // リトライしても同じトークン値を書く UPDATE のため冪等（リトライ可）。
+      // リトライ待機中に並行リフレッシュの新しいトークンを古い値で上書きする
+      // 競合窓を広げる側面とその許容判断（リトライ禁止による確実なトークン喪失の
+      // ほうが害が大きい）は refreshTwitchAccessTokenPg の同箇所コメントを参照。
       { idempotent: true },
     );
   } catch (error) {
@@ -1000,7 +1010,11 @@ async function deleteTwitchTokensPg(twitchUserId: string): Promise<void> {
           .where(eq(usersTable.twitch_user_id, twitchUserId));
       },
       'deleteTwitchTokens',
-      // 常に同じ値（NULL）を書く UPDATE のためリトライしても冪等
+      // 常に同じ値（NULL）を書く UPDATE のためリトライしても冪等。
+      // リトライ待機中の並行リフレッシュとの競合窓（この関数の場合は、待機中に
+      // 書き込まれた新トークンを NULL で上書きする＝ログアウト意図どおりの結果に
+      // なる側面が強い）とリトライ許容の判断根拠は refreshTwitchAccessTokenPg の
+      // 同箇所コメントを参照。
       { idempotent: true },
     );
   } catch (error) {

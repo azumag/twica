@@ -516,8 +516,12 @@ export class GachaService {
     rewardId: string | null
   }): Promise<{ data: GachaTransactionRpcResult | null; error: GachaRpcDriverError | null }> {
     try {
+      // セキュリティレビュー指摘対応: 接続断リトライが実際に発生したかどうかを
+      // 観測するため、queryFn の実行回数をクロージャでカウントする(外部挙動は不変)。
+      let attemptCount = 0
       const data = await withDbRetry(
         async () => {
+          attemptCount += 1
           // 規約: getDb() は queryFn の中で呼ぶ(リクエストスコープ破棄からの回復には
           // クライアント再取得が必要。src/lib/db/retry.ts 参照)
           const { sql } = await getDb()
@@ -537,6 +541,30 @@ export class GachaService {
         'gacha:executeGacha:rpc(pg)',
         { idempotent: params.eventId !== null },
       )
+      // 2回以上実行された(=接続断リトライが発生した)後の is_duplicate / limit_reached
+      // は、「初回実行が実はコミット済みで応答だけ失われた」ケースを含む。
+      // - is_duplicate: ON CONFLICT (event_id) により再実行が重複扱いになった
+      // - limit_reached: migration 00070 の評価順序では発行上限チェックが event_id
+      //   重複チェックより先に走るため、発行上限付きカードでは重複でも上限到達として
+      //   返る(その後の再抽選 → is_duplicate → err('Duplicate event') に至る)
+      // どちらもカード付与・ポイント消費は初回分の1回で正しく完結している
+      // (データ不整合なし)が、視聴者への演出・チャット通知が欠落する。ログ無しでは
+      // 本物の EventSub 再送の is_duplicate と区別できないため、warn で観測可能に
+      // する(既知の稀な事象。plpgsql の評価順序修正は migration が必要なため
+      // Phase 2 対応。docs/db-driver-migration.md 参照)。戻り値は変更しない。
+      // ログにトークン等の秘密情報は含めない。
+      if (attemptCount >= 2 && (data?.is_duplicate || data?.limit_reached)) {
+        logger.warn(
+          `[db:pg] gacha rpc returned ${data.is_duplicate ? 'is_duplicate' : 'limit_reached'} after connection retry — 初回実行がコミット済みだった可能性があり、その場合視聴者への演出が欠落する(既知の稀な事象、docs/db-driver-migration.md 参照)`,
+          {
+            eventId: params.eventId,
+            streamerId: params.streamerId,
+            userTwitchId: params.userTwitchId,
+            cardId: params.cardId,
+            attempts: attemptCount,
+          },
+        )
+      }
       return { data, error: null }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
