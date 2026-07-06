@@ -13,6 +13,7 @@ import {
 import CopyButton from "@/components/CopyButton";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
+import { legacySoundToRules, normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 import type { Card, Json } from "@/types/database";
 import type { PlanType } from "@/lib/plan-constants";
 
@@ -222,9 +223,22 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
   const collectionUrl = `${data.baseUrl}/collection/${data.streamerId}`;
 
   const rewardStatus: SettingsSection["status"] = data.channelPoint.rewardId ? "active" : "empty";
-  const soundStatus: SettingsSection["status"] = data.gachaSound.soundEnabled
+  // Issue #638(回帰): gacha_sound_enabled は PR #595 F1 で「有効なcatch-all
+  // ルールがある場合のみtrue」を返す互換ミラーに変更された。これをそのまま
+  // ステータスドット判定に使うと、レアリティ別・報酬別ルールしか設定して
+  // いない配信者でも常に「無効」(灰色)表示になってしまう。GachaSoundSettings
+  // (initialRules)と同じ「ルールがあればそれを、無ければレガシー値をルール化
+  // したもの」にフォールバックする方式で実効ルールを求め、その中に有効な
+  // ルールが1件でもあるかで判定する。これは GachaSoundSettings 内のバッジ
+  // (enabledRule = rules.find((rule) => rule.enabled))と同じ判定基準であり、
+  // セクション一覧のドットとセクション内バッジの表示が食い違わないようにする。
+  const effectiveSoundRules = (() => {
+    const rules = normalizeGachaSoundRules(data.gachaSound.soundRules);
+    return rules.length > 0 ? rules : legacySoundToRules(data.gachaSound.soundUrl, data.gachaSound.soundEnabled);
+  })();
+  const soundStatus: SettingsSection["status"] = effectiveSoundRules.some((rule) => rule.enabled)
     ? "active"
-    : data.gachaSound.soundUrl
+    : effectiveSoundRules.length > 0
       ? "configured"
       : "empty";
   const announcementStatus: SettingsSection["status"] = data.chatAnnouncement.enabled

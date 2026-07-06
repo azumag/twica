@@ -181,6 +181,43 @@ export function pickGachaSoundRule(
   return enabled.find((rule) => rule.targetType === "all") ?? null;
 }
 
+/**
+ * 実際に再生してよい効果音(URL + プリロードキャッシュキー)を1つ解決する
+ * (Issue #638 の回帰修正)。
+ *
+ * PR #595 (F1) でサーバー側は互換ミラー列 gacha_sound_enabled /
+ * gacha_sound_url を「有効な catch-all(targetType === "all")ルールが
+ * ある場合のみ true/URL」に変更した。このミラーは、レアリティ／報酬別
+ * ルールを理解しない“旧オーバーレイクライアント(キャッシュ済み・未更新の
+ * ブラウザソース)”との後方互換のためだけに存在する値であり、ルール対応
+ * クライアントの再生可否を左右する値ではない。
+ * ところが新クライアント側の一部(オーバーレイの再生ゲート・設定画面の
+ * ステータスドット)がこのミラーを「効果音機能全体の有効フラグ」として
+ * 参照し続けていたため、レアリティ別・報酬別ルールしか設定していない
+ * 配信者はミラーが常に false になり、実際には有効なルールがあるのに
+ * 効果音が一切鳴らない/未設定に見える、という回帰が起きていた。
+ *
+ * そのため soundRules が1件でもある(=ルール対応データ)場合は
+ * soundEnabled(ミラー)を一切参照せず、ルール自身の enabled のみで
+ * 再生可否を決める。soundRules が空(純レガシー・ルール未対応データ)の
+ * 場合のみ、従来どおり soundEnabled + soundUrl のペアで判定する。
+ */
+export function resolvePlayableGachaSound(
+  settings: { soundUrl: string | null; soundEnabled: boolean; soundRules: GachaSoundRule[] },
+  context: PickSoundContext,
+): { url: string; cacheKey: string } | null {
+  if (settings.soundRules.length > 0) {
+    const rule = pickGachaSoundRule(settings.soundRules, context);
+    return rule ? { url: rule.url, cacheKey: rule.id } : null;
+  }
+
+  if (settings.soundEnabled && settings.soundUrl) {
+    return { url: settings.soundUrl, cacheKey: "__legacy__" };
+  }
+
+  return null;
+}
+
 export function legacySoundToRules(soundUrl: string | null, soundEnabled: boolean): GachaSoundRule[] {
   if (!soundUrl) return [];
   return [{

@@ -19,8 +19,8 @@ import {
 import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
 import {
   normalizeGachaSoundRules,
-  pickGachaSoundRule,
   pickSoundBearingCardIndex,
+  resolvePlayableGachaSound,
   type GachaSoundRule,
 } from "@/lib/gacha-sound-rules";
 import {
@@ -320,40 +320,48 @@ export default function OverlayPage() {
             soundRules,
           });
 
-          if (soundEnabled) {
-            // 再生され得る全URL（ルールごと + レガシー単一URL）を収集して
-            // それぞれHTMLAudioElementを作成しプリロードする。
-            // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）。
-            // key: ruleId、レガシーURLは固定キー "__legacy__" を使う。
-            const cache = audioCacheRef.current;
-            const entries: { key: string; url: string }[] = [];
-            for (const rule of soundRules) {
-              if (rule.enabled && rule.url) {
-                entries.push({ key: rule.id, url: rule.url });
-              }
+          // Issue #638(回帰): 以前はここを `if (soundEnabled)` で丸ごと
+          // ゲートしていたが、soundEnabled はレガシー互換ミラー
+          // (catch-allルールの有無に連動、PR #595 F1)であり、レアリティ別・
+          // 報酬別ルールしか設定していない配信ではこれが false になり得る。
+          // その結果、実際には有効なルールがあるのにプリロードが一切
+          // 行われず、初回再生が遅延・無音になっていた。
+          // 再生され得る全URL（ルールごと + レガシー単一URL）を収集して
+          // それぞれHTMLAudioElementを作成しプリロードする。
+          // HTMLAudioElementはCORS不要で外部URLから読み込める（fetchとは異なる）。
+          // key: ruleId、レガシーURLは固定キー "__legacy__" を使う。
+          const cache = audioCacheRef.current;
+          const entries: { key: string; url: string }[] = [];
+          // (a) 有効なルールのURLは soundEnabled(ミラー)に関係なく常に対象にする
+          for (const rule of soundRules) {
+            if (rule.enabled && rule.url) {
+              entries.push({ key: rule.id, url: rule.url });
             }
-            if (data.soundUrl) {
-              entries.push({ key: "__legacy__", url: data.soundUrl });
-            }
+          }
+          // (b) レガシー単一URLは、再生ロジック(resolvePlayableGachaSound)と
+          // 同じ条件(ルールが空 かつ soundEnabled)の場合のみ対象にする。
+          // ルールが非空ならレガシーURLは再生され得ないためプリロード不要。
+          if (soundRules.length === 0 && soundEnabled && data.soundUrl) {
+            entries.push({ key: "__legacy__", url: data.soundUrl });
+          }
 
-            for (const { key, url } of entries) {
-              if (cache.has(key)) continue;
-              const audio = new Audio(url);
-              audio.preload = "auto";
-              cache.set(key, audio);
+          for (const { key, url } of entries) {
+            if (cache.has(key)) continue;
+            const audio = new Audio(url);
+            audio.preload = "auto";
+            cache.set(key, audio);
 
-              // 自動再生可能かテスト（ブロックされていればUI表示用フラグを立てる）
-              audio.play().then(() => {
-                // 再生成功 → 即座に停止（プリロード目的）
-                audio.pause();
-                audio.currentTime = 0;
-                audioUnlockedRef.current = true;
-              }).catch(() => {
-                // NotAllowedError: 自動再生ポリシーによりブロック
-                // ユーザー操作後にアンロックされる
-                setAudioBlocked(true);
-              });
-            }
+            // 自動再生可能かテスト（ブロックされていればUI表示用フラグを立てる）
+            audio.play().then(() => {
+              // 再生成功 → 即座に停止（プリロード目的）
+              audio.pause();
+              audio.currentTime = 0;
+              audioUnlockedRef.current = true;
+            }).catch(() => {
+              // NotAllowedError: 自動再生ポリシーによりブロック
+              // ユーザー操作後にアンロックされる
+              setAudioBlocked(true);
+            });
           }
         }
       } catch (error) {
@@ -485,24 +493,23 @@ export default function OverlayPage() {
    * 未アンロック時は再生失敗するがエラーは無視する
    */
   const playGachaSound = useCallback((data: GachaResult) => {
-    // 効果音が無効または未設定の場合はスキップ
-    const selectedRule = pickGachaSoundRule(soundSettings.soundRules, {
-      rarity: data.card.rarity,
-      rewardId: data.rewardId,
-    });
-    // PR #451 レビュー指摘(F1b): soundRules が1件以上ある(=このクライアントは
-    // ルールベースの音を理解している)のにどのルールにも一致しなかった場合、
-    // 「何も鳴らさない」が正しい挙動。以前はここで soundSettings.soundUrl
-    // (サーバー側がミラーしていた「有効な最初のルール」のURL)にフォール
-    // バックしていたため、例えば'legendary'限定ルールしか設定していない
-    // 配信でも、それ以外の全レアリティでレジェンダリー音が鳴ってしまって
-    // いた(サーバー側 F1 のミラー修正とセットで直る問題)。
-    // レガシー設定(soundRulesが空=ルール未対応の単一URL設定)の場合のみ、
-    // 従来どおり soundUrl にフォールバックする。
-    const soundUrl = soundSettings.soundRules.length > 0
-      ? (selectedRule?.url ?? null)
-      : soundSettings.soundUrl;
-    if (!soundSettings.soundEnabled || !soundUrl) {
+    // Issue #638(回帰): PR #595 F1でサーバー側ミラー(soundEnabled/soundUrl)は
+    // 「有効なcatch-all(targetType==='all')ルールがある場合のみtrue/URL」を
+    // 返すよう修正された。しかしここで soundEnabled を再生可否のゲートに
+    // 使い続けていたため、レアリティ別・報酬別ルールしか設定していない
+    // 配信では常にミラーがfalseになり、効果音が一切鳴らなくなっていた。
+    // resolvePlayableGachaSound はルール対応クライアント向けに「ミラーを
+    // 見ない」判定(ルール自身のenabledで再生可否を決める)を行うため、
+    // これに委譲する(レガシー設定=ルール空の場合のみミラーを見る)。
+    const playable = resolvePlayableGachaSound(
+      {
+        soundUrl: soundSettings.soundUrl,
+        soundEnabled: soundSettings.soundEnabled,
+        soundRules: soundSettings.soundRules,
+      },
+      { rarity: data.card.rarity, rewardId: data.rewardId },
+    );
+    if (!playable) {
       return;
     }
 
@@ -537,10 +544,10 @@ export default function OverlayPage() {
       };
 
       // ルールに対応するプリロード済みAudio要素を優先的に使用する。
-      // ルールが選択された場合は rule.id、レガシー単一URLの場合は固定キー。
-      const cacheKey = selectedRule?.id ?? "__legacy__";
-      const cached = audioCacheRef.current.get(cacheKey);
-      if (cached && cached.src === soundUrl) {
+      // ルールが選択された場合は rule.id、レガシー単一URLの場合は固定キー
+      // ("__legacy__")。いずれも resolvePlayableGachaSound の戻り値に含まれる。
+      const cached = audioCacheRef.current.get(playable.cacheKey);
+      if (cached && cached.src === playable.url) {
         // プリロード済みのAudio要素を使用して再生
         cached.currentTime = 0;
         const clearGuard = markSoundPlaying(cached);
@@ -552,7 +559,7 @@ export default function OverlayPage() {
         });
       } else {
         // キャッシュ未生成（取得タイミング差など）のフォールバック
-        const audio = new Audio(soundUrl);
+        const audio = new Audio(playable.url);
         const clearGuard = markSoundPlaying(audio);
         audio.play().catch(() => {
           clearGuard();
@@ -984,12 +991,23 @@ export default function OverlayPage() {
     }
   }, [triggerDemo]);
 
+  // Issue #638(回帰): レガシーミラー(soundEnabled && soundUrl)を「効果音が
+  // 設定されているか」の判定に使うと、レアリティ別・報酬別ルールしか
+  // 設定していない配信では常にfalseになり、自動再生ブロック時の案内
+  // (Click to enable sound)が表示されなくなる。resolvePlayableGachaSound は
+  // rarity/rewardIdのコンテキストを要求し表示判定には使えないため、ここでは
+  // 「有効なルールが1件でもあるか」（ルール非空時）または従来どおりの
+  // レガシーミラー判定（ルール空＝純レガシー設定時）で代用する。
+  const hasPlayableSound = soundSettings.soundRules.length > 0
+    ? soundSettings.soundRules.some((rule) => rule.enabled)
+    : soundSettings.soundEnabled && !!soundSettings.soundUrl;
+
   if (!result) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-transparent">
         {/* 音声がブラウザの自動再生ポリシーでブロックされている場合の表示 */}
         {/* 通常の配信オーバーレイには運用メッセージを出さず、debug=true の調査時のみ表示する */}
-        {options.debug && audioBlocked && soundSettings.soundEnabled && soundSettings.soundUrl && (
+        {options.debug && audioBlocked && hasPlayableSound && (
           <div className="fixed top-4 left-4 rounded bg-yellow-600/90 px-3 py-2 text-xs text-white cursor-pointer"
             onClick={() => {
               // クリックイベントはdocumentのunlockAudioハンドラーでも処理される

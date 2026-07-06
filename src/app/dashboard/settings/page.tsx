@@ -4,6 +4,7 @@ import { getStreamerData } from "@/lib/dashboard-data";
 import { getCustomBotAccountDisplayForStreamer } from "@/lib/twitch/token-manager";
 import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { getUserPlan } from "@/lib/plan";
+import { normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 import SettingsLayout from "@/components/SettingsLayout";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
@@ -38,8 +39,17 @@ export default async function SettingsPage() {
 
   const botAccount = await getCustomBotAccountDisplayForStreamer(streamerData.streamer.id);
 
+  // Issue #638(回帰): gacha_sound_enabled は PR #595 F1 で「有効なcatch-all
+  // ルールがある場合のみtrue」を返す互換ミラーに変更されたため、レアリティ別・
+  // 報酬別ルールしか設定していない配信者はこの条件だけでは検知できず、
+  // 既に効果音を使っているのに初期モードが simple に戻ってしまう。
+  // 実際に有効なルールが1件でもあれば「詳細設定を使用中」とみなす条件を追加する。
+  const hasEnabledGachaSoundRule = normalizeGachaSoundRules(streamerData.streamer.gacha_sound_rules)
+    .some((rule) => rule.enabled);
+
   const hasAdvancedSettingsInUse =
     Boolean(streamerData.streamer.gacha_sound_enabled) ||
+    hasEnabledGachaSoundRule ||
     Boolean(streamerData.streamer.chat_announcement_enabled) ||
     Boolean(streamerData.streamer.show_unowned_cards) ||
     Boolean(streamerData.streamer.show_unowned_card_details);

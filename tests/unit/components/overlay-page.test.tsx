@@ -296,8 +296,11 @@ describe('OverlayPage', () => {
     await waitFor(() => {
       expect(createdUrls).toContain('https://example.com/rare.mp3')
       expect(createdUrls).toContain('https://example.com/legendary.mp3')
-      expect(createdUrls).toContain('https://example.com/legacy.mp3')
     })
+    // Issue #638: soundRulesが非空の場合、レガシー単一URLは再生ロジック
+    // (resolvePlayableGachaSound)上そもそも使われないため、プリロードもしない
+    // (無駄なリクエストを避ける)。
+    expect(createdUrls).not.toContain('https://example.com/legacy.mp3')
   })
 
   it('ルールが設定されているのにどれも一致しない場合、レガシーURLへフォールバックせず無音になる（F1b）', async () => {
@@ -439,6 +442,66 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Gamma')).toBeInTheDocument()
     expect(playedSrcs).toEqual(['https://example.com/legendary.mp3'])
+  })
+
+  it('Issue #638の再現・修正確認: レアリティ限定ルールのみ設定(soundEnabledミラーはfalse)でも一致すれば効果音が鳴る', async () => {
+    vi.useFakeTimers()
+
+    const playedSrcs: string[] = []
+    class MockAudio {
+      currentTime = 0
+      preload = ''
+      src: string
+      constructor(src?: string) { this.src = src ?? '' }
+      play() {
+        playedSrcs.push(this.src)
+        return Promise.resolve()
+      }
+      pause() {}
+    }
+    vi.stubGlobal('Audio', MockAudio as unknown as typeof Audio)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        // PR #595 F1により、catch-allルールが無い設定ではサーバーはミラーを
+        // soundUrl: null / soundEnabled: false で返す。ここで soundEnabled を
+        // 再生ゲートに使うと(#638の回帰)、rarity限定ルールがあっても無音になる。
+        soundUrl: null,
+        soundEnabled: false,
+        soundRules: [
+          { id: 'rare-rule', url: 'https://example.com/rare.mp3', enabled: true, targetType: 'rarity', rarity: 'rare' },
+        ],
+      }),
+    }))
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    playedSrcs.length = 0
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare' },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Alpha')).toBeInTheDocument()
+    expect(playedSrcs).toEqual(['https://example.com/rare.mp3'])
   })
 
   // Issue #569 厳格レビュー指摘(High): attemptReload / checkOverlayVersion /
