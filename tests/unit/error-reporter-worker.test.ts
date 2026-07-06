@@ -579,5 +579,86 @@ describe('reporter worker', () => {
       expect(createBody.body).toContain('`line1 # fake heading`');
       expect(createBody.body).not.toContain('\nline1\n# fake heading');
     });
+
+    it('未知カテゴリに改行/見出し注入を含んでいても inlineCode で無害化される', async () => {
+      // category は DB の CHECK 制約 + API 側バリデーションで bug/feature/other に
+      // 限定されるが、Worker 自身もこの不変条件に依存せず防御的であるべき。
+      // label（フォールバック時は category そのもの）が本文にそのまま展開されず、
+      // inlineCode を通ることを検証する。
+      const inquiry = makeInquiry({ category: 'weird\n# injected heading' });
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      expect(createBody.body).toContain('`weird # injected heading`');
+      expect(createBody.body).not.toContain('\nweird\n# injected heading');
+    });
+  });
+
+  describe('processInquiries: 冪等性の保険', () => {
+    it('新規作成に成功しても処理済みマーク(PATCH)が失敗した場合は例外が伝播する', async () => {
+      // フラグが false のまま残るため、次回実行時に search で拾われて重複作成が
+      // 防がれる想定（本命の冪等性）。ここでは PATCH 失敗時に例外が正しく
+      // 伝播し、個別 try/catch で処理が打ち切られることのみ検証する。
+      const inquiry = makeInquiry();
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 5, html_url: 'https://github.com/test/5' }),
+      });
+      // PATCH 失敗
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('db error'),
+      });
+
+      await processInquiries(mockEnv);
+
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to process inquiry inq-1'),
+        expect.any(Error)
+      );
+    });
+
+    it('GitHub Search API 自体が失敗した場合は既存なし扱いで新規作成に進む', async () => {
+      // searchIssue は API 失敗時に例外を投げず null を返す設計（本命の冪等性は
+      // github_issue_created フラグであり、search はあくまで補助のため）。
+      const inquiry = makeInquiry();
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      // search 失敗（403 = レート制限等）
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 403 });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 8, html_url: 'https://github.com/test/8' }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      // search 失敗後も create → patch まで進む
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      const createCall = fetchMock.mock.calls[2];
+      expect(createCall[0]).toContain('/repos/testowner/testrepo/issues');
+      expect(createCall[1].method).toBe('POST');
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('GitHub search API failed')
+      );
+    });
   });
 });

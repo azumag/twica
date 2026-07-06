@@ -25,9 +25,9 @@
 --   PostgreSQL 11+ では定数 DEFAULT 付きの列追加・DEFAULT 変更いずれも
 --   メタデータのみの操作で、テーブル全体の書き換えや長時間ロックは発生しない。
 ALTER TABLE support_inquiries
-  ADD COLUMN github_issue_created BOOLEAN NOT NULL DEFAULT TRUE,
-  ADD COLUMN github_issue_number INTEGER,
-  ADD COLUMN github_issue_url TEXT;
+  ADD COLUMN IF NOT EXISTS github_issue_created BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS github_issue_number INTEGER,
+  ADD COLUMN IF NOT EXISTS github_issue_url TEXT;
 
 -- 以後の新規問い合わせは未処理(FALSE)で始まり、Cron Worker が拾って Issue 化する。
 ALTER TABLE support_inquiries
@@ -38,7 +38,7 @@ ALTER TABLE support_inquiries
 -- created_at 昇順（FIFO）で取得するため created_at をキーにする（errors 版の
 -- idx_errors_pending は先頭列に定数の github_issue_created を含めていたが、
 -- 部分述語で既に FALSE 固定のため created_at 単独で十分）。
-CREATE INDEX idx_support_inquiries_pending
+CREATE INDEX IF NOT EXISTS idx_support_inquiries_pending
   ON support_inquiries(created_at)
   WHERE github_issue_created = FALSE;
 

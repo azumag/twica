@@ -501,7 +501,7 @@ function buildInquiryIssue(inquiry: InquiryRecord): { title: string; body: strin
   // （投稿者による @メンション通知スパム・リンク/画像・偽の見出し行注入を防ぐ）。
   const body = `## 新規問い合わせ
 
-**カテゴリ**: ${label} (${inlineCode(inquiry.category)})
+**カテゴリ**: ${inlineCode(label)} (${inlineCode(inquiry.category)})
 **投稿者**: ${inlineCode(inquiry.twitch_display_name)} (${inlineCode(inquiry.twitch_user_id)})
 **件名**: ${inlineCode(inquiry.subject)}
 **投稿日時**: ${inquiry.created_at}
@@ -531,7 +531,8 @@ async function markInquiryProcessed(
   issueUrl: string,
   env: Env
 ): Promise<void> {
-  await supabasePatch(env, `support_inquiries?id=eq.${id}`, {
+  // id はサーバ生成 UUID だが、将来の型変更に対する防御として encode しておく
+  await supabasePatch(env, `support_inquiries?id=eq.${encodeURIComponent(id)}`, {
     github_issue_created: true,
     github_issue_number: issueNumber,
     github_issue_url: issueUrl,
@@ -561,7 +562,9 @@ export async function processInquiries(env: Env): Promise<void> {
       // 冪等性の保険: 直前の実行で「作成成功 → 処理済みマーク失敗」となった場合に
       // 二重作成しないよう既存 Issue を検索する。本命の冪等性は github_issue_created
       // フラグ + create→mark の順序であり、検索は非同期インデックス依存の補助。
-      const query = `repo:${env.GITHUB_REPO_OWNER}/${env.GITHUB_REPO_NAME} is:issue "Inquiry-ID: ${inquiry.id}"`
+      // label:support-inquiry も条件に含め、無関係 Issue の本文に同じ文字列が
+      // 偶然/意図的に含まれていた場合の誤マッチ面を減らす。
+      const query = `repo:${env.GITHUB_REPO_OWNER}/${env.GITHUB_REPO_NAME} is:issue label:support-inquiry "Inquiry-ID: ${inquiry.id}"`
       const existing = await searchIssue(env, query)
 
       let issueNumber: number
