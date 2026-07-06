@@ -376,7 +376,7 @@ export const userLicenses = pgTable('user_licenses', {
 
 // -----------------------------------------------------------------------------
 // support_inquiries（支援者限定問い合わせ）
-// 根拠: 00019 初版
+// 根拠: 00019 初版, 00072 GitHub Issue 追跡カラム追加（Issue #633）
 // -----------------------------------------------------------------------------
 export const supportInquiries = pgTable('support_inquiries', {
   id: uuid('id').primaryKey().default(sql`uuid_generate_v4()`),
@@ -391,6 +391,12 @@ export const supportInquiries = pgTable('support_inquiries', {
   status: text('status').notNull().default('open'),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
+  // Cron Worker (twica-error-reporter) による GitHub Issue 発行状況（00072）。
+  // errors テーブルは DDL が単なる DEFAULT FALSE だが、support_inquiries の DDL は
+  // NOT NULL DEFAULT FALSE のため notNull を付与する（eq.false ポーリングで NULL 漏れ防止）。
+  github_issue_created: boolean('github_issue_created').notNull().default(false),
+  github_issue_number: integer('github_issue_number'),
+  github_issue_url: text('github_issue_url'),
 })
 
 // -----------------------------------------------------------------------------

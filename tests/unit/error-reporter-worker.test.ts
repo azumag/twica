@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import worker from '../../workers/error-reporter/src/index';
+import worker, { processErrors, processInquiries } from '../../workers/error-reporter/src/index';
 
-// Worker の scheduled ハンドラをテストする
-// 内部関数は export されていないため、scheduled 経由で統合的にテスト
+// Reporter Worker（twica-error-reporter）は errors と support_inquiries の両方を
+// GitHub Issue 化する。内部関数は export されていないため、
+//   - scheduled: env 検証と「エラー/問い合わせの独立実行」を統合的にテスト
+//   - processErrors / processInquiries: 各処理フローを個別にテスト
+// global.fetch をモックして「どの外部 API を何回・どんな内容で叩いたか」を検証する。
 
 const mockEnv = {
   SUPABASE_URL: 'https://test.supabase.co',
@@ -23,10 +26,22 @@ const makeErrorRecord = (overrides = {}) => ({
   ...overrides,
 });
 
+const makeInquiry = (overrides = {}) => ({
+  id: 'inq-1',
+  twitch_user_id: 'user-123',
+  twitch_display_name: 'TestUser',
+  category: 'bug',
+  subject: 'Test subject',
+  body: 'Test body',
+  status: 'open',
+  created_at: '2026-01-01T00:00:00Z',
+  ...overrides,
+});
+
 const mockEvent = {} as ScheduledController;
 const mockCtx = { waitUntil: vi.fn() } as unknown as ExecutionContext;
 
-describe('error-reporter worker', () => {
+describe('reporter worker', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -64,17 +79,47 @@ describe('error-reporter worker', () => {
     });
   });
 
-  describe('未処理エラーがない場合', () => {
-    it('Supabase から空配列が返った場合は GitHub API を呼ばない', async () => {
-      // fetchPendingErrors → 空配列
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([]),
-      });
+  describe('scheduled: エラー処理と問い合わせ処理の独立実行', () => {
+    it('両処理とも未処理なしなら fetch は2回（errors + support_inquiries のポーリング）', async () => {
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // errors
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // inquiries
 
       await worker.scheduled(mockEvent, mockEnv, mockCtx);
 
-      // Supabase への fetch のみ（GitHub API は呼ばれない）
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][0]).toContain('/rest/v1/errors');
+      expect(fetchMock.mock.calls[1][0]).toContain('/rest/v1/support_inquiries');
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending inquiries'));
+    });
+
+    it('エラー処理が失敗しても問い合わせ処理は実行される', async () => {
+      // processErrors: fetchPendingErrors が 500 で失敗
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('err') });
+      // processInquiries: 未処理なし
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+
+      await expect(worker.scheduled(mockEvent, mockEnv, mockCtx)).resolves.toBeUndefined();
+
+      // エラー側は 'Cron job failed' を記録し、問い合わせ側は最後まで実行される
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('[Error Reporter] Cron job failed'),
+        expect.any(Error)
+      );
+      expect(fetchMock.mock.calls[1][0]).toContain('/rest/v1/support_inquiries');
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending inquiries'));
+    });
+  });
+
+  // ===========================================================================
+  // processErrors（errors テーブル → GitHub Issue）
+  // ===========================================================================
+  describe('processErrors: 未処理エラーがない場合', () => {
+    it('Supabase から空配列が返った場合は GitHub API を呼ばない', async () => {
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+
+      await processErrors(mockEnv);
+
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(console.log).toHaveBeenCalledWith(
         expect.stringContaining('No pending errors')
@@ -82,35 +127,25 @@ describe('error-reporter worker', () => {
     });
   });
 
-  describe('新規 Issue 作成フロー', () => {
+  describe('processErrors: 新規 Issue 作成フロー', () => {
     it('未処理エラーがあり既存 Issue がない場合、新規 Issue を作成して処理済みマークする', async () => {
       const errorRecord = makeErrorRecord();
 
-      // 1. fetchPendingErrors → エラー1件
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([errorRecord]),
-      });
-      // 2. findExistingIssue (GitHub search) → 該当なし
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([errorRecord]) });
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
       });
-      // 3. createGitHubIssue → 成功
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ number: 42, html_url: 'https://github.com/test/42' }),
       });
-      // 4. markErrorsAsProcessed (Supabase PATCH) → 成功
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
 
-      await worker.scheduled(mockEvent, mockEnv, mockCtx);
+      await processErrors(mockEnv);
 
       expect(fetchMock).toHaveBeenCalledTimes(4);
 
-      // GitHub Issue 作成 API の呼び出しを検証
       const createIssueCall = fetchMock.mock.calls[2];
       expect(createIssueCall[0]).toContain('/repos/testowner/testrepo/issues');
       const createBody = JSON.parse(createIssueCall[1].body);
@@ -118,10 +153,8 @@ describe('error-reporter worker', () => {
       expect(createBody.body).toContain('Signature:');
       expect(createBody.labels).toContain('bug');
       expect(createBody.labels).toContain('auto-generated');
-      // preview 環境のラベルが追加される
       expect(createBody.labels).toContain('preview');
 
-      // Supabase PATCH の呼び出しを検証
       const patchCall = fetchMock.mock.calls[3];
       expect(patchCall[0]).toContain('/rest/v1/errors');
       const patchBody = JSON.parse(patchCall[1].body);
@@ -130,16 +163,11 @@ describe('error-reporter worker', () => {
     });
   });
 
-  describe('既存 Issue へのコメント追加フロー', () => {
+  describe('processErrors: 既存 Issue へのコメント追加フロー', () => {
     it('既存 Issue がある場合はコメントを追加する', async () => {
       const errorRecord = makeErrorRecord();
 
-      // 1. fetchPendingErrors
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([errorRecord]),
-      });
-      // 2. findExistingIssue → 既存 Issue あり
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([errorRecord]) });
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({
@@ -147,30 +175,22 @@ describe('error-reporter worker', () => {
           items: [{ number: 10, html_url: 'https://github.com/test/10' }],
         }),
       });
-      // 3. addCommentToIssue → 成功
       fetchMock.mockResolvedValueOnce({ ok: true });
-      // 4. markErrorsAsProcessed → 成功
       fetchMock.mockResolvedValueOnce({ ok: true });
 
-      await worker.scheduled(mockEvent, mockEnv, mockCtx);
+      await processErrors(mockEnv);
 
-      // コメント追加 API の呼び出しを検証
       const commentCall = fetchMock.mock.calls[2];
       expect(commentCall[0]).toContain('/issues/10/comments');
       expect(commentCall[1].method).toBe('POST');
     });
   });
 
-  describe('addCommentToIssue 失敗時', () => {
+  describe('processErrors: addCommentToIssue 失敗時', () => {
     it('コメント追加失敗時は markErrorsAsProcessed がスキップされる', async () => {
       const errorRecord = makeErrorRecord();
 
-      // 1. fetchPendingErrors
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([errorRecord]),
-      });
-      // 2. findExistingIssue → 既存 Issue あり
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([errorRecord]) });
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({
@@ -178,10 +198,9 @@ describe('error-reporter worker', () => {
           items: [{ number: 10, html_url: 'https://github.com/test/10' }],
         }),
       });
-      // 3. addCommentToIssue → 失敗（403）
       fetchMock.mockResolvedValueOnce({ ok: false, status: 403 });
 
-      await worker.scheduled(mockEvent, mockEnv, mockCtx);
+      await processErrors(mockEnv);
 
       // markErrorsAsProcessed (PATCH) は呼ばれない（fetch は3回のみ）
       expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -192,35 +211,27 @@ describe('error-reporter worker', () => {
     });
   });
 
-  describe('エラーグループ化（シグネチャ重複排除）', () => {
+  describe('processErrors: エラーグループ化（シグネチャ重複排除）', () => {
     it('同一メッセージのエラーは1つの Issue にまとめられる', async () => {
       const error1 = makeErrorRecord({ id: 'uuid-1', created_at: '2026-01-01T00:00:00Z' });
       const error2 = makeErrorRecord({ id: 'uuid-2', created_at: '2026-01-01T01:00:00Z' });
 
-      // 1. fetchPendingErrors → 同一シグネチャのエラー2件
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([error1, error2]),
-      });
-      // 2. findExistingIssue → 該当なし
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([error1, error2]) });
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
       });
-      // 3. createGitHubIssue → 成功
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ number: 50, html_url: 'https://github.com/test/50' }),
       });
-      // 4. markErrorsAsProcessed → 成功
       fetchMock.mockResolvedValueOnce({ ok: true });
 
-      await worker.scheduled(mockEvent, mockEnv, mockCtx);
+      await processErrors(mockEnv);
 
       // Issue は1つだけ作成される（search 1回 + create 1回 + patch 1回）
       expect(fetchMock).toHaveBeenCalledTimes(4);
 
-      // PATCH に両方の ID が含まれる
       const patchCall = fetchMock.mock.calls[3];
       expect(patchCall[0]).toContain('uuid-1');
       expect(patchCall[0]).toContain('uuid-2');
@@ -230,109 +241,79 @@ describe('error-reporter worker', () => {
       const error1 = makeErrorRecord({ id: 'uuid-1', message: 'Error A' });
       const error2 = makeErrorRecord({ id: 'uuid-2', message: 'Error B' });
 
-      // 1. fetchPendingErrors → 異なるシグネチャのエラー2件
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([error1, error2]),
-      });
-      // 2. findExistingIssue(group1) → なし
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([error1, error2]) });
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
       });
-      // 3. createGitHubIssue(group1)
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ number: 51, html_url: 'https://github.com/test/51' }),
       });
-      // 4. markErrorsAsProcessed(group1)
       fetchMock.mockResolvedValueOnce({ ok: true });
-      // 5. findExistingIssue(group2) → なし
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
       });
-      // 6. createGitHubIssue(group2)
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ number: 52, html_url: 'https://github.com/test/52' }),
       });
-      // 7. markErrorsAsProcessed(group2)
       fetchMock.mockResolvedValueOnce({ ok: true });
 
-      await worker.scheduled(mockEvent, mockEnv, mockCtx);
+      await processErrors(mockEnv);
 
-      // 2つの Issue が作成される
       expect(fetchMock).toHaveBeenCalledTimes(7);
     });
   });
 
-  describe('MAX_NEW_ISSUES_PER_RUN 制限', () => {
+  describe('processErrors: MAX_NEW_ISSUES_PER_RUN 制限', () => {
     it('1回の実行で最大5件の新規 Issue しか作成しない', async () => {
-      // 6つの異なるエラーを生成
       const errors = Array.from({ length: 6 }, (_, i) =>
         makeErrorRecord({ id: `uuid-${i}`, message: `Error ${i}` })
       );
 
-      // 1. fetchPendingErrors
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(errors),
-      });
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(errors) });
 
-      // 各グループに対して search → create → patch を繰り返す
       for (let i = 0; i < 6; i++) {
-        // findExistingIssue → なし
         fetchMock.mockResolvedValueOnce({
           ok: true,
           json: () => Promise.resolve({ total_count: 0, items: [] }),
         });
         if (i < 5) {
-          // createGitHubIssue
           fetchMock.mockResolvedValueOnce({
             ok: true,
             json: () => Promise.resolve({ number: 100 + i, html_url: `https://github.com/test/${100 + i}` }),
           });
-          // markErrorsAsProcessed
           fetchMock.mockResolvedValueOnce({ ok: true });
         }
       }
 
-      await worker.scheduled(mockEvent, mockEnv, mockCtx);
+      await processErrors(mockEnv);
 
-      // 6番目のグループは search のみで create されない
-      // fetch: 1 (pendingErrors) + 5 * 3 (search+create+patch) + 1 (search for 6th) = 17
       expect(console.log).toHaveBeenCalledWith(
         expect.stringContaining('Max new issues limit')
       );
     });
   });
 
-  describe('Supabase API エラー', () => {
-    it('fetchPendingErrors が失敗しても例外を外に漏らさない', async () => {
+  describe('processErrors: Supabase API エラー', () => {
+    it('fetchPendingErrors が失敗した場合は例外を投げる（scheduled 側で捕捉される）', async () => {
       fetchMock.mockResolvedValueOnce({
         ok: false,
         status: 500,
         text: () => Promise.resolve('Internal Server Error'),
       });
 
-      // 例外が投げられないことを確認（scheduled 内の try-catch で捕捉される）
-      await expect(worker.scheduled(mockEvent, mockEnv, mockCtx)).resolves.toBeUndefined();
-      expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Cron job failed'),
-        expect.any(Error)
-      );
+      await expect(processErrors(mockEnv)).rejects.toThrow(/Supabase fetch error/);
     });
   });
 
-  describe('production 環境のラベル', () => {
+  describe('processErrors: production 環境のラベル', () => {
     it('production 環境のエラーには環境ラベルが付かない', async () => {
       const errorRecord = makeErrorRecord({ environment: 'production' });
 
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([errorRecord]),
-      });
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([errorRecord]) });
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -343,11 +324,172 @@ describe('error-reporter worker', () => {
       });
       fetchMock.mockResolvedValueOnce({ ok: true });
 
-      await worker.scheduled(mockEvent, mockEnv, mockCtx);
+      await processErrors(mockEnv);
 
       const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
       expect(createBody.labels).toEqual(['bug', 'auto-generated']);
       expect(createBody.labels).not.toContain('production');
+    });
+  });
+
+  // ===========================================================================
+  // processInquiries（support_inquiries テーブル → GitHub Issue）
+  // ===========================================================================
+  describe('processInquiries: 未処理問い合わせがない場合', () => {
+    it('空配列なら GitHub API を呼ばず、FIFO・limit=10 でポーリングする', async () => {
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+
+      await processInquiries(mockEnv);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const fetchUrl = fetchMock.mock.calls[0][0];
+      expect(fetchUrl).toContain('/rest/v1/support_inquiries');
+      expect(fetchUrl).toContain('github_issue_created=eq.false');
+      expect(fetchUrl).toContain('order=created_at.asc');
+      expect(fetchUrl).toContain('limit=10');
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('No pending inquiries')
+      );
+    });
+  });
+
+  describe('processInquiries: 新規 Issue 作成フロー', () => {
+    it('既存 Issue がない場合、新規 Issue を作成して処理済みマークする', async () => {
+      const inquiry = makeInquiry();
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 42, html_url: 'https://github.com/test/42' }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+
+      const createCall = fetchMock.mock.calls[2];
+      expect(createCall[0]).toContain('/repos/testowner/testrepo/issues');
+      expect(createCall[1].method).toBe('POST');
+      const createBody = JSON.parse(createCall[1].body);
+      expect(createBody.title).toContain('[問い合わせ/バグ報告]');
+      expect(createBody.title).toContain('Test subject');
+      expect(createBody.body).toContain('Inquiry-ID: inq-1');
+      expect(createBody.body).toContain('TestUser');
+      expect(createBody.labels).toContain('support-inquiry');
+      expect(createBody.labels).toContain('auto-generated');
+
+      const patchCall = fetchMock.mock.calls[3];
+      expect(patchCall[0]).toContain('/rest/v1/support_inquiries');
+      expect(patchCall[0]).toContain('id=eq.inq-1');
+      expect(patchCall[1].method).toBe('PATCH');
+      const patchBody = JSON.parse(patchCall[1].body);
+      expect(patchBody.github_issue_created).toBe(true);
+      expect(patchBody.github_issue_number).toBe(42);
+      expect(patchBody.github_issue_url).toBe('https://github.com/test/42');
+    });
+
+    it('本文中のバッククォート連より長いフェンスで囲む（フェンス脱出防止）', async () => {
+      const inquiry = makeInquiry({ body: 'contains ``` triple backticks' });
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      // 本文の最長 ``` (3連) より長い ```` (4連) フェンスで囲まれる
+      expect(createBody.body).toContain('````\ncontains ``` triple backticks\n````');
+    });
+  });
+
+  describe('processInquiries: 既存 Issue が見つかった場合（冪等性）', () => {
+    it('既存 Issue があれば新規作成せず、それでも処理済みマークする', async () => {
+      const inquiry = makeInquiry();
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          total_count: 1,
+          items: [{ number: 10, html_url: 'https://github.com/test/10' }],
+        }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      // create を挟まないので fetch は3回（GET + search + PATCH）
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      const patchCall = fetchMock.mock.calls[2];
+      expect(patchCall[0]).toContain('/rest/v1/support_inquiries');
+      expect(patchCall[1].method).toBe('PATCH');
+      const patchBody = JSON.parse(patchCall[1].body);
+      expect(patchBody.github_issue_created).toBe(true);
+      expect(patchBody.github_issue_number).toBe(10);
+
+      const postedToIssues = fetchMock.mock.calls.some(
+        (c) => typeof c[0] === 'string' && c[0].endsWith('/issues') && c[1]?.method === 'POST'
+      );
+      expect(postedToIssues).toBe(false);
+    });
+  });
+
+  describe('processInquiries: 個別エラーの分離', () => {
+    it('1件の作成が失敗しても他の問い合わせは処理される', async () => {
+      const inquiry1 = makeInquiry({ id: 'inq-1' });
+      const inquiry2 = makeInquiry({ id: 'inq-2' });
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([inquiry1, inquiry2]),
+      });
+      // inq-1: search なし → create 失敗（500）
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('server error'),
+      });
+      // inq-2: search なし → create 成功 → PATCH 成功
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 99, html_url: 'https://github.com/test/99' }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      // GET(1) + inq-1[search, create-fail](2) + inq-2[search, create, patch](3) = 6
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to process inquiry inq-1'),
+        expect.any(Error)
+      );
+
+      const lastCall = fetchMock.mock.calls[5];
+      expect(lastCall[0]).toContain('id=eq.inq-2');
+      expect(lastCall[1].method).toBe('PATCH');
     });
   });
 });

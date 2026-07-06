@@ -1,10 +1,13 @@
-# Error Reporter Cron Worker
-# エラーレポーター定期実行Worker
+# Reporter Cron Worker
+# レポーター定期実行Worker
 #
-# Supabase errors テーブルから未処理エラーを取得し、
-# GitHub Issue を自動作成する。Tail Workers (有料) の無料代替。
+# Supabase から未処理レコードを取得し GitHub Issue を自動作成する。
+#   - errors テーブル: 未処理エラー（Tail Workers 有料の無料代替）
+#   - support_inquiries テーブル: 新規問い合わせの通知（Issue #633）
+# 同一の secrets・cron・デプロイを共有するため単一 Worker に集約している。
 #
-# See: https://github.com/azumag/twica/issues/239
+# See: https://github.com/azumag/twica/issues/239 (errors)
+#      https://github.com/azumag/twica/issues/633 (inquiries)
 
 name = "twica-error-reporter"
 main = "src/index.ts"

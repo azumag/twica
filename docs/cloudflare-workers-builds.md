@@ -4,7 +4,7 @@ TwiCa deploys the Next.js Worker through Cloudflare Workers Builds. GitHub
 Actions remains responsible for Supabase migrations from the existing GitHub
 Environment secrets, remains available as a fallback until the Cloudflare
 connection is confirmed, and continues to deploy the auxiliary error-reporter
-Worker after the cutover.
+Cron Worker after the cutover.
 
 ## Build Targets
 
@@ -69,6 +69,31 @@ feature branch to the preview deployment.
    it skips the legacy app deploy while still applying Supabase migrations from
    GitHub Environment secrets, and deploys `workers/error-reporter` for
    production.
+
+## Auxiliary Cron Worker
+
+`workers/error-reporter` (`twica-error-reporter`) is a single Cron Worker
+(`*/5 * * * *`) that files GitHub Issues from two Supabase tables using the same
+Transactional Outbox pattern (poll unprocessed rows, create an Issue, mark
+processed). Both jobs run sequentially in one invocation and are isolated, so a
+failure in one does not block the other:
+
+- `errors` → Issues for unprocessed application errors (see issue #239).
+- `support_inquiries` → Issues that notify the maintainer of new support
+  inquiries (see issue #633).
+
+Both jobs are consolidated into one Worker on purpose: they share the same
+secrets, cron schedule, and deploy step, so keeping them separate would only
+duplicate operational setup. The Worker needs these Cloudflare secrets (set via
+`wrangler secret put` or the Cloudflare Dashboard). Until they are set, the
+Worker validates env and returns early on each run, so it is harmless:
+
+- `SUPABASE_URL`
+- `SUPABASE_SECRET_KEY` (or legacy `SUPABASE_SERVICE_ROLE_KEY`)
+- `GITHUB_TOKEN` (Fine-grained PAT, scopes: Issues read/write)
+
+`GITHUB_REPO_OWNER` / `GITHUB_REPO_NAME` are non-secret and set in the Worker's
+`wrangler.toml` `[vars]`.
 
 ## Safety Rules
 
