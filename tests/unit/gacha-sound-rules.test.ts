@@ -4,6 +4,8 @@ import {
   legacySoundToRules,
   normalizeGachaSoundRules,
   pickGachaSoundRule,
+  resolvePlayableGachaSound,
+  type GachaSoundRule,
 } from "@/lib/gacha-sound-rules";
 
 describe("gacha sound rules", () => {
@@ -142,5 +144,83 @@ describe("gacha sound rules", () => {
     const rules = normalizeGachaSoundRules(input);
     expect(rules).toHaveLength(MAX_GACHA_SOUND_RULES);
     expect(rules[0].id).toBe("rule-0");
+  });
+
+  describe("resolvePlayableGachaSound (Issue #638)", () => {
+    const rule = (overrides: Partial<GachaSoundRule>): GachaSoundRule => ({
+      id: "id",
+      url: "https://example.com/s.mp3",
+      enabled: true,
+      label: "L",
+      targetType: "all",
+      rarity: null,
+      rewardId: null,
+      rewardName: null,
+      ...overrides,
+    });
+
+    it("#638の再現ケース: rarity限定の有効ルールのみ設定されている配信は、レガシーミラー(soundEnabled)がfalseでも一致すれば再生できる", () => {
+      const rules = [rule({ id: "legendary-rule", targetType: "rarity", rarity: "legendary" })];
+      // PR #595 F1により、catch-allルールが無いためサーバー側ミラーは
+      // soundEnabled=falseで届く。これに引きずられず一致すれば再生できることを確認する。
+      const result = resolvePlayableGachaSound(
+        { soundUrl: null, soundEnabled: false, soundRules: rules },
+        { rarity: "legendary", rewardId: null },
+      );
+      expect(result).toEqual({ url: "https://example.com/s.mp3", cacheKey: "legendary-rule" });
+    });
+
+    it("報酬限定ルールも同様に、ミラーがfalseでもrewardId一致で再生できる", () => {
+      const rules = [
+        rule({ id: "reward-rule", url: "https://example.com/reward.mp3", targetType: "reward", rewardId: "reward-1" }),
+      ];
+      const result = resolvePlayableGachaSound(
+        { soundUrl: null, soundEnabled: false, soundRules: rules },
+        { rarity: "common", rewardId: "reward-1" },
+      );
+      expect(result).toEqual({ url: "https://example.com/reward.mp3", cacheKey: "reward-rule" });
+    });
+
+    it("ルールが非空でもどれにも一致しなければnull(レガシーurlがあってもフォールバックしない、F1bの維持)", () => {
+      const rules = [rule({ id: "legendary-rule", targetType: "rarity", rarity: "legendary" })];
+      const result = resolvePlayableGachaSound(
+        { soundUrl: "https://example.com/legacy.mp3", soundEnabled: true, soundRules: rules },
+        { rarity: "common", rewardId: null },
+      );
+      expect(result).toBeNull();
+    });
+
+    it("ルールが空 + レガシーurl + soundEnabled: trueなら、レガシーurlを__legacy__キーで返す", () => {
+      const result = resolvePlayableGachaSound(
+        { soundUrl: "https://example.com/legacy.mp3", soundEnabled: true, soundRules: [] },
+        { rarity: "common", rewardId: null },
+      );
+      expect(result).toEqual({ url: "https://example.com/legacy.mp3", cacheKey: "__legacy__" });
+    });
+
+    it("ルールが空 + レガシーurl + soundEnabled: falseならnull", () => {
+      const result = resolvePlayableGachaSound(
+        { soundUrl: "https://example.com/legacy.mp3", soundEnabled: false, soundRules: [] },
+        { rarity: "common", rewardId: null },
+      );
+      expect(result).toBeNull();
+    });
+
+    it("ルールが空 + url: nullならnull", () => {
+      const result = resolvePlayableGachaSound(
+        { soundUrl: null, soundEnabled: true, soundRules: [] },
+        { rarity: "common", rewardId: null },
+      );
+      expect(result).toBeNull();
+    });
+
+    it("無効化(enabled: false)されたルールのみの場合はnull", () => {
+      const rules = [rule({ id: "disabled-rule", enabled: false, targetType: "all" })];
+      const result = resolvePlayableGachaSound(
+        { soundUrl: null, soundEnabled: true, soundRules: rules },
+        { rarity: "common", rewardId: null },
+      );
+      expect(result).toBeNull();
+    });
   });
 });
