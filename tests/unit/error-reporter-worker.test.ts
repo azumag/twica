@@ -492,4 +492,92 @@ describe('reporter worker', () => {
       expect(lastCall[1].method).toBe('PATCH');
     });
   });
+
+  // 共通ヘルパへ集約したヘッダの契約を固定する（githubHeaders / supabase 認証ヘッダ改変時の回帰検知）
+  describe('リクエストヘッダ契約', () => {
+    it('GitHub POST と Supabase PATCH が期待するヘッダを送る', async () => {
+      const inquiry = makeInquiry();
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 7, html_url: 'https://github.com/test/7' }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      const createHeaders = fetchMock.mock.calls[2][1].headers;
+      expect(createHeaders['Authorization']).toBe('Bearer gh-token');
+      expect(createHeaders['Accept']).toBe('application/vnd.github+json');
+      expect(createHeaders['X-GitHub-Api-Version']).toBe('2022-11-28');
+      expect(createHeaders['User-Agent']).toBe('twica-error-reporter');
+      expect(createHeaders['Content-Type']).toBe('application/json');
+
+      const patchHeaders = fetchMock.mock.calls[3][1].headers;
+      expect(patchHeaders['apikey']).toBe('test-key');
+      expect(patchHeaders['Authorization']).toBe('Bearer test-key');
+      expect(patchHeaders['Content-Type']).toBe('application/json');
+      expect(patchHeaders['Prefer']).toBe('return=minimal');
+    });
+
+    it('SUPABASE_SECRET_KEY が SERVICE_ROLE_KEY より優先される', async () => {
+      const env = { ...mockEnv, SUPABASE_SECRET_KEY: 'secret-key' };
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+
+      await processInquiries(env);
+
+      expect(fetchMock.mock.calls[0][1].headers['apikey']).toBe('secret-key');
+    });
+  });
+
+  describe('processInquiries: 入力の無害化とカテゴリ', () => {
+    it('未知のカテゴリはそのまま表示される', async () => {
+      const inquiry = makeInquiry({ category: 'weird' });
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      expect(createBody.title).toContain('[問い合わせ/weird]');
+    });
+
+    it('件名・表示名は inlineCode で無害化され、改行や markdown 注入を防ぐ', async () => {
+      const inquiry = makeInquiry({
+        twitch_display_name: '@everyone',
+        subject: 'line1\n# fake heading',
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ total_count: 0, items: [] }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
+      });
+      fetchMock.mockResolvedValueOnce({ ok: true });
+
+      await processInquiries(mockEnv);
+
+      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      // 表示名はインラインコード化され、@everyone は生メンションとして展開されない
+      expect(createBody.body).toContain('`@everyone`');
+      // 件名の改行は空白へ畳まれ、行頭 '# ' の見出し注入は無効化される
+      expect(createBody.body).toContain('`line1 # fake heading`');
+      expect(createBody.body).not.toContain('\nline1\n# fake heading');
+    });
+  });
 });

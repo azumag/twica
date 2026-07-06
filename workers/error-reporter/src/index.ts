@@ -414,7 +414,7 @@ export async function processErrors(env: Env): Promise<void> {
 // error 処理との違い: 問い合わせは1件ずつ一意なのでグループ化・再発コメント不要。
 // =============================================================================
 
-/** Supabase support_inquiries テーブルのレコード型（必要な列のみ） */
+/** Supabase support_inquiries テーブルのレコード型（Issue 化に必要な列のみ） */
 interface InquiryRecord {
   id: string
   twitch_user_id: string
@@ -423,9 +423,11 @@ interface InquiryRecord {
   category: string
   subject: string
   body: string
-  status: string
   created_at: string
 }
+
+/** fetchPendingInquiries で取得する列（InquiryRecord に対応。body 以外の余計な列は引かない） */
+const INQUIRY_SELECT_COLUMNS = 'id,twitch_user_id,twitch_display_name,category,subject,body,created_at'
 
 /**
  * 1回の実行で処理する問い合わせの最大件数。
@@ -458,11 +460,29 @@ function fenceInquiryBody(body: string): string {
   return `${fence}\n${body}\n${fence}`
 }
 
-/** 未処理問い合わせを取得する（FIFO・上限つき）。 */
+/**
+ * ユーザー入力を安全なインラインコードスパンとして描画する。
+ * 改行を空白へ畳んで1行に収め、markdown 描画（@メンションによる他ユーザーへの
+ * 通知スパム・画像/リンク・整形崩し）や偽の見出し行の注入を無効化する。
+ * 値に含まれるバッククォート連より1つ長いデリミタを使い、必要なら CommonMark に
+ * 従いスペースパディングしてエスケープする。件名・表示名など fenced ブロック外に
+ * 展開する自由入力フィールドに使う（本文は fenceInquiryBody で保護済み）。
+ */
+function inlineCode(value: string): string {
+  const collapsed = value.replace(/\s+/g, ' ').trim()
+  const runs = collapsed.match(/`+/g)
+  const ticks = '`'.repeat((runs ? Math.max(...runs.map(r => r.length)) : 0) + 1)
+  // 先頭/末尾がバッククォートだとデリミタと隣接して壊れるためスペースパディング
+  const needsPad = collapsed.startsWith('`') || collapsed.endsWith('`')
+  const inner = needsPad ? ` ${collapsed} ` : collapsed
+  return `${ticks}${inner}${ticks}`
+}
+
+/** 未処理問い合わせを取得する（FIFO・上限つき・必要列のみ）。 */
 async function fetchPendingInquiries(env: Env): Promise<InquiryRecord[]> {
   return supabaseSelect<InquiryRecord[]>(
     env,
-    `support_inquiries?github_issue_created=eq.false&order=created_at.asc&limit=${MAX_INQUIRIES_PER_RUN}`
+    `support_inquiries?select=${INQUIRY_SELECT_COLUMNS}&github_issue_created=eq.false&order=created_at.asc&limit=${MAX_INQUIRIES_PER_RUN}`
   )
 }
 
@@ -477,11 +497,13 @@ function buildInquiryIssue(inquiry: InquiryRecord): { title: string; body: strin
   const singleLineSubject = inquiry.subject.replace(/\s+/g, ' ').trim()
   const title = `[問い合わせ/${label}] ${singleLineSubject}`.slice(0, 120)
 
+  // fenced ブロック外に出す自由入力フィールドは inlineCode で無害化する
+  // （投稿者による @メンション通知スパム・リンク/画像・偽の見出し行注入を防ぐ）。
   const body = `## 新規問い合わせ
 
-**カテゴリ**: ${label} (\`${inquiry.category}\`)
-**投稿者**: ${inquiry.twitch_display_name} (\`${inquiry.twitch_user_id}\`)
-**件名**: ${inquiry.subject}
+**カテゴリ**: ${label} (${inlineCode(inquiry.category)})
+**投稿者**: ${inlineCode(inquiry.twitch_display_name)} (${inlineCode(inquiry.twitch_user_id)})
+**件名**: ${inlineCode(inquiry.subject)}
 **投稿日時**: ${inquiry.created_at}
 
 ### 本文
@@ -496,7 +518,13 @@ Inquiry-ID: ${inquiry.id}
   return { title, body, labels: ['support-inquiry', 'auto-generated'] }
 }
 
-/** 問い合わせを処理済みに更新する（発行した Issue の番号・URL を記録）。 */
+/**
+ * 問い合わせを処理済みに更新する（発行した Issue の番号・URL を記録）。
+ * この PATCH は support_inquiries の update_support_inquiries_updated_at トリガ
+ * (00019) を発火させ、対象行の updated_at を発行時刻に1度だけ書き換える。
+ * ユーザー向け一覧・詳細は created_at ソートで updated_at に依存しないため実害は
+ * 無いが、将来 updated_at を「最終更新」として表示する場合は考慮すること。
+ */
 async function markInquiryProcessed(
   id: string,
   issueNumber: number,
