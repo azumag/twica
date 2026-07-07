@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { RarityBadge } from '../components/RarityBadge'
 import { Streamer, Card } from '../types/database'
+
+const PAGE_SIZE_OPTIONS = [20, 50, 100]
+
+// レアリティ集計用サマリー取得の上限件数。
+// 従来の .range(0, 9999) と同じ上限を維持する（新規バックエンドエンドポイントは追加しない）。
+const SUMMARY_FETCH_SIZE = 10000
 
 /**
  * StreamerCards - ストリーマーが登録しているカード一覧ページ
@@ -14,8 +21,18 @@ export function StreamerCards() {
   const { streamerId } = useParams<{ streamerId: string }>()
   const navigate = useNavigate()
   const [streamer, setStreamer] = useState<Streamer | null>(null)
+
+  // --- テーブル用（サーバーサイドページネーション） ---
   const [cards, setCards] = useState<Card[]>([])
+  const [totalCount, setTotalCount] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+
+  // --- レアリティ別サマリー統計用（ページングとは独立させ、常に全件ベースの正確な数値を保つ） ---
+  const [allCards, setAllCards] = useState<Card[]>([])
+  const [summaryLoading, setSummaryLoading] = useState(true)
+
   // コピー成功時のフィードバック用
   const [copiedId, setCopiedId] = useState<string | null>(null)
   // 説明文の展開状態を管理するSet（展開されているカードのIDを保持）
@@ -37,53 +54,92 @@ export function StreamerCards() {
     })
   }
 
-  useEffect(() => {
-    if (streamerId) {
-      fetchStreamerAndCards()
-    }
-  }, [streamerId])
-
   /**
-   * ストリーマー情報とそのカード一覧を取得
+   * ストリーマー情報を取得
    */
-  async function fetchStreamerAndCards() {
-    // streamerIdが未定義の場合は処理しない
+  async function fetchStreamer() {
     if (!streamerId) return
-
-    setLoading(true)
     try {
-      // ストリーマー情報とカード一覧を並列取得
-      const [streamerResult, cardsResult] = await Promise.all([
-        supabase
-          .from('streamers')
-          .select('*')
-          .eq('id', streamerId)
-          .single(),
-        supabase
-          .from('cards')
-          .select('*')
-          .eq('streamer_id', streamerId)
-          .order('rarity', { ascending: false }) // レアリティ順（legendary優先）
-          .order('created_at', { ascending: false })
-          .range(0, 9999), // 最大10000件まで取得（Supabaseのデフォルト制限回避）
-      ])
+      const { data, error } = await supabase
+        .from('streamers')
+        .select('*')
+        .eq('id', streamerId)
+        .single()
 
-      if (streamerResult.error) {
-        console.error('Streamer not found:', streamerResult.error)
+      if (error) {
+        console.error('Streamer not found:', error)
         return
       }
-      if (cardsResult.error) {
-        console.error('Cards fetch error:', cardsResult.error)
-      }
-
-      setStreamer(streamerResult.data as Streamer)
-      setCards((cardsResult.data || []) as Card[])
+      setStreamer(data as Streamer)
     } catch (error) {
-      console.error('Error fetching data:', error)
+      console.error('Error fetching streamer:', error)
+    }
+  }
+
+  /**
+   * カード一覧（現在ページ分）をサーバーサイドページネーションで取得
+   */
+  async function fetchCardsPage() {
+    if (!streamerId) return
+    setLoading(true)
+    try {
+      const { rows, count } = await adminApi.getStreamerCards({ streamerId, page: currentPage, pageSize })
+      setCards(rows)
+      setTotalCount(count)
+    } catch (error) {
+      console.error('Cards fetch error:', error)
     } finally {
       setLoading(false)
     }
   }
+
+  /**
+   * レアリティ別サマリー統計用に全カード（最大SUMMARY_FETCH_SIZE件）を取得。
+   * 既存エンドポイントのみを使う制約のため、専用の集計APIではなくgetStreamerCardsを
+   * 大きいpageSizeで呼び出す形で対応（テーブル表示用のページングとは別リクエスト）。
+   */
+  async function fetchAllCardsForSummary() {
+    if (!streamerId) return
+    setSummaryLoading(true)
+    try {
+      const { rows } = await adminApi.getStreamerCards({
+        streamerId,
+        page: 1,
+        pageSize: SUMMARY_FETCH_SIZE,
+      })
+      setAllCards(rows)
+    } catch (error) {
+      console.error('Cards summary fetch error:', error)
+    } finally {
+      setSummaryLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (streamerId) {
+      fetchStreamer()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamerId])
+
+  // streamerId変更時はページを1に戻す（別ストリーマーへ遷移した際に前のページ番号が残らないように）
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [streamerId])
+
+  useEffect(() => {
+    if (streamerId) {
+      fetchCardsPage()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamerId, currentPage, pageSize])
+
+  useEffect(() => {
+    if (streamerId) {
+      fetchAllCardsForSummary()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamerId])
 
   /**
    * 画像URLをクリップボードにコピー
@@ -217,8 +273,8 @@ export function StreamerCards() {
     },
   ]
 
-  // レアリティごとのカード数を集計
-  const rarityCount = cards.reduce(
+  // レアリティごとのカード数を集計（ページングとは独立した全件取得結果から算出）
+  const rarityCount = allCards.reduce(
     (acc, card) => {
       acc[card.rarity] = (acc[card.rarity] || 0) + 1
       return acc
@@ -289,7 +345,7 @@ export function StreamerCards() {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">総カード数</p>
-          <p className="text-2xl font-bold">{cards.length}</p>
+          <p className="text-2xl font-bold">{totalCount}</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4 border-l-4 border-amber-400">
           <p className="text-sm text-gray-500">Legendary</p>
@@ -316,6 +372,12 @@ export function StreamerCards() {
           </p>
         </div>
       </div>
+      {/* レアリティ集計は上限件数まで（従来のrange(0,9999)と同じ制約）のため、超過時は注記 */}
+      {!summaryLoading && allCards.length >= SUMMARY_FETCH_SIZE && (
+        <p className="text-xs text-amber-600">
+          ※ レアリティ内訳は先頭{SUMMARY_FETCH_SIZE.toLocaleString()}件からの算出です（総カード数は正確な値です）。
+        </p>
+      )}
 
       {/* カード一覧テーブル */}
       <div className="bg-white rounded-lg shadow">
@@ -331,6 +393,17 @@ export function StreamerCards() {
           keyExtractor={(card) => card.id}
           loading={loading}
           emptyMessage="カードが登録されていません"
+          pagination={{
+            currentPage,
+            pageSize,
+            totalItems: totalCount,
+            onPageChange: setCurrentPage,
+            onPageSizeChange: (size) => {
+              setPageSize(size)
+              setCurrentPage(1)
+            },
+            pageSizeOptions: PAGE_SIZE_OPTIONS,
+          }}
         />
       </div>
     </div>

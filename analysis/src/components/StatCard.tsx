@@ -24,7 +24,7 @@ const colorClasses = {
 
 /**
  * StatCard component for displaying key metrics
- * Used throughout the dashboard to show statistics like total users, battles, etc.
+ * Used throughout the dashboard to show statistics like total users, cards, etc.
  */
 export function StatCard({
   title,

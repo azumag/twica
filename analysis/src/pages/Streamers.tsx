@@ -1,30 +1,9 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { StreamerPopup } from '../components/StreamerPopup'
 import { Streamer } from '../types/database'
-
-// 投票キャンペーンの識別子（2026選挙応援キャンペーン）
-// キャンペーン終了後はこの定数とクエリを削除すること
-const VOTE_CAMPAIGN_TYPE = 'campaign' as const
-const VOTE_CAMPAIGN_MEMO = '2026選挙応援' as const
-
-/**
- * SHA-256ハッシュの先頭8文字を取得（ユーザープレフィックス用）
- * blob_filesテーブルのuser_prefixと同じ方式で生成
- * アップロード時にsha256Prefix(twitchUserId)でプレフィックスが生成されるため、
- * ストリーマーのtwitch_user_idから同じプレフィックスを計算して突き合わせる
- */
-async function sha256Prefix(data: string): Promise<string> {
-  const encoder = new TextEncoder()
-  const dataBuffer = encoder.encode(data)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  const hash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-  return hash.substring(0, 8)
-}
 
 // Extended streamer type with card statistics and storage usage
 // ストリーマーのカード統計とストレージ使用量を含む拡張型
@@ -55,28 +34,6 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-/**
- * Supabaseの1000行デフォルト制限を回避するバッチ取得ヘルパー
- * 1000行ずつ.range()で取得し、全行を結合して返す
- * buildQueryは呼び出すたびに新しいクエリを生成する関数（.range()は自動付与）
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchAllPaged(buildQuery: () => any): Promise<{ data: any[]; error: any }> {
-  const BATCH_SIZE = 1000
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const all: any[] = []
-  let from = 0
-  while (true) {
-    const { data, error } = await buildQuery().range(from, from + BATCH_SIZE - 1)
-    if (error) return { data: all, error }
-    if (!data || data.length === 0) break
-    all.push(...data)
-    if (data.length < BATCH_SIZE) break
-    from += BATCH_SIZE
-  }
-  return { data: all, error: null }
 }
 
 // ソート順の定義
@@ -121,124 +78,14 @@ export function Streamers() {
 
   /**
    * Fetches all streamers with card counts and storage usage
-   * Supabaseのリレーション機能を使って効率的にカード数を取得
-   * ストレージ使用量はstorage_usageテーブル（集計済み）から取得
-   * 本番のstorage-status APIと同じデータソースを使用することで正確な値を表示
-   * blob_filesの全行再集計ではSupabaseのデフォルト行数上限(1000行)で途中切れが発生するため不採用
+   * カード数・ストレージ使用量・チャット送信可否・投票キャンペーン適用状況は
+   * すべてサーバーサイド（/__admin/streamers）で集計済みのため、1回のAPI呼び出しで完結する
    */
   async function fetchStreamers() {
     setLoading(true)
     try {
-      // ストリーマーとstorage_usageとstorage_bonusを並行取得（第1段階）
-      // cards(count) はカード数のみ取得
-      // storage_usageはuser_prefixごとの集計済みバイト数を保持（本番APIと同じデータソース）
-      // streamer_storage_bonusから投票キャンペーンボーナス適用済みストリーマーを取得
-      // fetchAllPagedで1000行制限を回避して全行取得
-      const [streamersResult, storageUsageResult, storageBonusResult, chatAccessResult] = await Promise.all([
-        fetchAllPaged(() =>
-          supabase.from('streamers').select('*, cards(count)')
-            .order('created_at', { ascending: false })
-            .order('id', { ascending: true }) // 安定ソート: created_atが同一の場合にページ間で行の重複/欠落を防ぐ
-        ),
-        fetchAllPaged(() =>
-          supabase.from('storage_usage').select('user_prefix, bytes_used').neq('user_prefix', '_global_')
-        ),
-        fetchAllPaged(() =>
-          supabase.from('streamer_storage_bonus').select('streamer_id').eq('type', VOTE_CAMPAIGN_TYPE).eq('memo', VOTE_CAMPAIGN_MEMO)
-        ),
-        adminApi.getStreamerChatAccess(),
-      ])
-
-      // 全てのクエリのエラーチェック
-      if (streamersResult.error) throw streamersResult.error
-      if (storageUsageResult.error) {
-        console.error('Failed to fetch storage usage:', storageUsageResult.error)
-        // 続行は可能だが、ストレージ情報が0になることを記録
-      }
-      if (storageBonusResult.error) {
-        console.error('Failed to fetch vote campaign bonus:', storageBonusResult.error)
-        // 続行は可能だが、投票キャンペーン情報が空になることを記録
-      }
-
-      // ストリーマーのtwitch_user_id一覧を抽出する（storage prefix計算用）
-      const streamerTwitchIds = (streamersResult.data || []).map(
-        (s: { twitch_user_id: string }) => s.twitch_user_id
-      )
-      const chatAccessByStreamerId = new Map(
-        chatAccessResult.map((access) => [access.streamer_id, access])
-      )
-
-      // storage_usageテーブルからuser_prefixごとの使用量Mapを構築
-      // storage_usageはアップロード/削除時にRPCで自動更新される集計済みテーブルのため、
-      // blob_filesの全行スキャン（1000行制限あり）より正確かつ高速
-      const storageUsageData = (storageUsageResult.data || []) as { user_prefix: string; bytes_used: number }[]
-      const storageSizeByPrefix = new Map<string, number>()
-      storageUsageData.forEach((row) => {
-        storageSizeByPrefix.set(row.user_prefix, row.bytes_used)
-      })
-
-      // 投票キャンペーン適用済みストリーマーのIDセット構築
-      const voteCampaignBonusData = (storageBonusResult.data || []) as { streamer_id: string }[]
-      const voteCampaignStreamerIdSet = new Set(
-        voteCampaignBonusData.map(row => row.streamer_id)
-      )
-
-      // 各ストリーマーのtwitch_user_idからSHA256プレフィックスを計算
-      // storage_usageのuser_prefixと突き合わせるために必要
-      const prefixByTwitchId = new Map<string, string>()
-      await Promise.all(
-        streamerTwitchIds.map(async (twitchId: string) => {
-          const prefix = await sha256Prefix(twitchId)
-          prefixByTwitchId.set(twitchId, prefix)
-        })
-      )
-
-      // 型定義: Supabaseのリレーション結果の形式
-      type StreamerWithRelations = Streamer & {
-        cards: { count: number }[]
-      }
-
-      // Supabaseのリレーション結果を変換
-      const rawData = streamersResult.data as unknown as StreamerWithRelations[]
-      const streamersWithStats: StreamerWithStats[] = (rawData || []).map((streamer) => {
-        // Supabaseのリレーションカウントは { count: number } の配列として返る
-        const cardCount = streamer.cards?.[0]?.count ?? 0
-
-        // user_prefix（SHA256先頭8文字）でblob_filesの合計サイズを参照
-        const userPrefix = prefixByTwitchId.get(streamer.twitch_user_id) || ''
-        const storageBytes = storageSizeByPrefix.get(userPrefix) || 0
-
-        const chatAccess = chatAccessByStreamerId.get(streamer.id)
-
-        // 投票キャンペーンボーナスの有無を確認
-        const hasVoteCampaignBonus = voteCampaignStreamerIdSet.has(streamer.id)
-
-        return {
-          id: streamer.id,
-          twitch_user_id: streamer.twitch_user_id,
-          twitch_username: streamer.twitch_username,
-          twitch_display_name: streamer.twitch_display_name,
-          twitch_profile_image_url: streamer.twitch_profile_image_url,
-          channel_point_reward_id: streamer.channel_point_reward_id,
-          channel_point_reward_name: streamer.channel_point_reward_name,
-          is_active: streamer.is_active,
-          gacha_sound_url: streamer.gacha_sound_url,
-          gacha_sound_enabled: streamer.gacha_sound_enabled,
-          chat_announcement_enabled: streamer.chat_announcement_enabled,
-          chat_announcement_template: streamer.chat_announcement_template,
-          created_at: streamer.created_at,
-          updated_at: streamer.updated_at,
-          card_count: cardCount,
-          storage_bytes: storageBytes,
-          has_chat_scope: chatAccess?.has_chat_scope ?? false,
-          chat_send_available: chatAccess?.chat_send_available ?? false,
-          has_active_bot_sender: chatAccess?.has_active_bot_sender ?? false,
-          chat_sender_mode: chatAccess?.sender_mode ?? 'streamer',
-          has_vote_campaign_bonus: hasVoteCampaignBonus,
-        }
-      })
-
-      setStreamers(streamersWithStats)
+      const streamers = await adminApi.getStreamers()
+      setStreamers(streamers)
     } catch (error) {
       console.error('Error fetching streamers:', error)
     } finally {
