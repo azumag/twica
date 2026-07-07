@@ -58,15 +58,27 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.end(JSON.stringify(payload))
 }
 
+// CSVの数式インジェクション対策（OWASP CSV Injection）:
+// Excel/Google Sheets等は先頭が =, +, -, @ (またはTab/CR)のセルを数式として評価する。
+// streamer表示名・ユーザー名・カード名はユーザー起因の値になりうるため、
+// 該当パターンならシングルクォートを前置して文字列として解釈させる
+function sanitizeCsvFormula(str: string): string {
+  if (/^[=+\-@\t\r]/.test(str)) {
+    return `'${str}`
+  }
+  return str
+}
+
 // CSVフィールドの最小限の正しいエスケープ（RFC4180）:
 // カンマ・ダブルクォート・改行(\n/\r)を含む場合のみダブルクォートで囲み、
 // フィールド内のダブルクォートは二重化する
 function csvEscapeField(value: unknown): string {
   const str = value === null || value === undefined ? '' : String(value)
-  if (/[",\n\r]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`
+  const sanitized = sanitizeCsvFormula(str)
+  if (/[",\n\r]/.test(sanitized)) {
+    return `"${sanitized.replace(/"/g, '""')}"`
   }
-  return str
+  return sanitized
 }
 
 function toCsvRow(fields: unknown[]): string {
@@ -121,13 +133,19 @@ function isMissingRpcError(error: unknown): boolean {
   return code === '42883' || code === 'PGRST202'
 }
 
+// 戻り値を `T | null` にすると「RPC未適用（フォールバックすべき）」と
+// 「RPCは成功したがたまたまfalsyな値(null/0/空文字)を返した」を呼び出し側の
+// truthyチェック(`if (result) ...`)で区別できず、後者が誤ってフォールバック側に
+// 落ちて本来のバグを隠してしまう。found フラグで明示的に区別する
+type RpcResult<T> = { found: true; data: T } | { found: false }
+
 async function tryJsonbRpc<T>(
   client: SupabaseClient<Database>,
   functionName: string
-): Promise<T | null> {
+): Promise<RpcResult<T>> {
   const { data, error } = await client.rpc(functionName as never)
-  if (!error) return data as T
-  if (isMissingRpcError(error)) return null
+  if (!error) return { found: true, data: data as T }
+  if (isMissingRpcError(error)) return { found: false }
   throw error
 }
 
@@ -156,6 +174,33 @@ function getFromDateForRange(range: TimeRange): string | null {
   if (range === 'all') return null
   const daysMap = { '7d': 7, '30d': 30, '90d': 90 }
   return new Date(Date.now() - daysMap[range] * 86400000).toISOString()
+}
+
+const VALID_TIME_RANGES: readonly TimeRange[] = ['7d', '30d', '90d', 'all']
+
+// 不正な range 文字列を受け取ると daysMap[range] が undefined になり、
+// getFromDateForRange() 内で NaN 経由の Invalid Date → toISOString() 例外という
+// 分かりにくい500になる。ここで早期にバリデーションして400を返す
+function parseTimeRange(raw: string | null): TimeRange {
+  if (raw === null) return 'all'
+  if ((VALID_TIME_RANGES as readonly string[]).includes(raw)) return raw as TimeRange
+  throw Object.assign(new Error(`Invalid range: ${raw}`), { statusCode: 400 })
+}
+
+// page/pageSizeが未検証だと page=0 や負値で range() に負のoffsetが渡り、
+// PostgRESTエラー経由の素の500として露出してしまう。ここで検証して400を返す
+function parsePagination(url: URL): { page: number; pageSize: number } {
+  const page = Number(url.searchParams.get('page') || '1')
+  const pageSize = Number(url.searchParams.get('pageSize') || '20')
+  if (!Number.isInteger(page) || page < 1) {
+    throw Object.assign(new Error('page must be a positive integer'), { statusCode: 400 })
+  }
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
+    throw Object.assign(new Error('pageSize must be a positive integer up to 1000'), {
+      statusCode: 400,
+    })
+  }
+  return { page, pageSize }
 }
 
 async function fetchUsersForTwitchIds(
@@ -247,35 +292,26 @@ async function listLicenses(client: SupabaseClient<Database>) {
 }
 
 async function listAnnouncements(client: SupabaseClient<Database>) {
-  const announcements = (await fetchAllPaged(() =>
+  // announcementごとに個別のcountクエリを発行するとN件でN+1ラウンドトリップになる。
+  // announcement_reads.announcement_id → announcements.id は単一FK(曖昧さなし)なので、
+  // 他のRPCフォールバック箇所(user_cards(count)など)と同じくPostgRESTのネスト埋め込み
+  // count集約で1クエリにまとめる
+  const rows = (await fetchAllPaged(() =>
     client
       .from('announcements')
-      .select('*')
+      .select('*, announcement_reads(count)')
       .order('created_at', { ascending: false })
-  )) as Database['public']['Tables']['announcements']['Row'][]
+  )) as (Database['public']['Tables']['announcements']['Row'] & {
+    announcement_reads: { count: number }[]
+  })[]
 
-  // 既読数は「read rows を全件取得してNode側で数える」のではなく、DB側の
-  // COUNTだけを返すheadクエリで取得する。PostgREST/Supabase RESTは通常1回の
-  // select返却行数に上限があり、announcement_readsが1000件を超えると全件取得型の
-  // 集計は過小表示になる。count: 'exact' + head: true なら行データを転送せず、
-  // announcement_id indexを使って正確な件数だけを返せるため、上限制約・帯域・
-  // Nodeメモリ使用量のすべてを避けられる。
-  const readCountsByAnnouncementId = new Map<string, number>()
-  await Promise.all(
-    announcements.map(async (announcement) => {
-      const { count, error } = await client
-        .from('announcement_reads')
-        .select('*', { count: 'exact', head: true })
-        .eq('announcement_id', announcement.id)
-      if (error) throw error
-      readCountsByAnnouncementId.set(announcement.id, count || 0)
-    })
-  )
-
-  return announcements.map((announcement) => ({
-    ...announcement,
-    read_count: readCountsByAnnouncementId.get(announcement.id) || 0,
-  }))
+  return rows.map((row) => {
+    const { announcement_reads, ...announcement } = row
+    return {
+      ...announcement,
+      read_count: announcement_reads?.[0]?.count ?? 0,
+    }
+  })
 }
 
 // 直近30日分、日次バケットの{date, count}配列を返す共通ヘルパー。
@@ -321,7 +357,7 @@ async function getDailyGrowth(
 // 表示に必要な情報(表示名/アイコン)はトップ10のstreamer_idだけ後引きする
 async function getStreamerLeaderboard(client: SupabaseClient<Database>) {
   const rpcRows = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamer_leaderboard')
-  if (rpcRows) return rpcRows
+  if (rpcRows.found) return rpcRows.data
 
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
@@ -367,7 +403,7 @@ async function getStreamerLeaderboard(client: SupabaseClient<Database>) {
 
 async function getOverview(client: SupabaseClient<Database>) {
   const rpcOverview = await tryJsonbRpc<unknown>(client, 'get_analysis_overview')
-  if (rpcOverview) return rpcOverview
+  if (rpcOverview.found) return rpcOverview.data
 
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
@@ -440,14 +476,21 @@ async function getOverview(client: SupabaseClient<Database>) {
 
 // analysis/src/pages/Users.tsx の fetchUsers() が期待する形と揃える
 // (user.user_cards?.[0]?.count ?? 0 で件数を取り出すマッピングがそのまま動く形)
+//
+// select('*') は使わない: users テーブルには twitch_access_token / twitch_refresh_token
+// などのOAuth秘匿情報が実カラムとして存在する（analysis の Database 型には未反映）ため、
+// admin API のJSONレスポンスに含めないよう、フロントが使う列だけを明示的に指定する
+const USER_SAFE_COLUMNS =
+  'id, twitch_user_id, twitch_username, twitch_display_name, twitch_profile_image_url, tos_accepted_at, twitch_scopes, created_at, updated_at'
+
 async function listUsers(client: SupabaseClient<Database>) {
   const rpcUsers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_users')
-  if (rpcUsers) return rpcUsers
+  if (rpcUsers.found) return rpcUsers.data
 
   return fetchAllPaged(() =>
     client
       .from('users')
-      .select('*, user_cards(count)')
+      .select(`${USER_SAFE_COLUMNS}, user_cards(count)`)
       .order('created_at', { ascending: false })
   )
 }
@@ -457,7 +500,7 @@ async function listUsers(client: SupabaseClient<Database>) {
 // 処理に統合する。SHA-256はNodeの同期API(createHash)で計算するため高速。
 async function listStreamersWithStats(client: SupabaseClient<Database>) {
   const rpcStreamers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamers')
-  if (rpcStreamers) return rpcStreamers
+  if (rpcStreamers.found) return rpcStreamers.data
 
   type StreamerWithCardCount = Streamer & { cards: { count: number }[] }
 
@@ -668,7 +711,12 @@ async function getGachaTable(
   }
 
   const offset = (page - 1) * pageSize
-  query = query.order('redeemed_at', { ascending: false }).range(offset, offset + pageSize - 1)
+  // redeemed_at のみだと同一タイムスタンプの行が多い場合にページ跨ぎで重複/欠落しうるため、
+  // id を安定ソートのタイブレーカーとして追加する(listStreamersWithStatsと同じ対策)
+  query = query
+    .order('redeemed_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(offset, offset + pageSize - 1)
 
   const { data, count, error } = await query
   if (error) throw error
@@ -743,7 +791,9 @@ async function getGachaExportRows(
       query = query.lt('redeemed_at', nextDay.toISOString())
     }
 
-    return query.order('redeemed_at', { ascending: false })
+    // getGachaTableと同じ理由でid をタイブレーカーに追加(range()を跨ぐ全件取得のため
+    // 同一redeemed_atの行が多いと安定ソートなしでは重複/欠落しうる)
+    return query.order('redeemed_at', { ascending: false }).order('id', { ascending: false })
   }
 
   const rows = await fetchAllPaged(buildQuery, GACHA_EXPORT_ROW_LIMIT)
@@ -781,7 +831,7 @@ async function handleGachaExport(
   res: ServerResponse
 ): Promise<void> {
   try {
-    const range = (url.searchParams.get('range') || 'all') as TimeRange
+    const range = parseTimeRange(url.searchParams.get('range'))
     const username = url.searchParams.get('username') || ''
     const rarity = url.searchParams.get('rarity') || ''
     const from = url.searchParams.get('from') || ''
@@ -825,7 +875,12 @@ async function getDropRateStats(
 
 // analysis/src/pages/UserCards.tsx の :userId (内部users.id) からユーザーとカード所持サマリーを返す
 async function getUserCardsSummary(client: SupabaseClient<Database>, userId: string) {
-  const { data: user, error } = await client.from('users').select('*').eq('id', userId).single()
+  // select('*') は使わない（USER_SAFE_COLUMNSの定義コメント参照: OAuthトークン漏洩防止）
+  const { data: user, error } = await client
+    .from('users')
+    .select(USER_SAFE_COLUMNS)
+    .eq('id', userId)
+    .single()
   if (error) {
     // PGRST116: .single()で0件/複数件だった場合のPostgRESTエラーコード
     if ((error as { code?: string }).code === 'PGRST116') {
@@ -949,21 +1004,20 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   }
 
   if (req.method === 'GET' && path === '/gacha/chart') {
-    const range = (url.searchParams.get('range') || 'all') as TimeRange
+    const range = parseTimeRange(url.searchParams.get('range'))
     const streamerId = url.searchParams.get('streamerId') || undefined
     return getGachaChart(client, { range, streamerId })
   }
 
   if (req.method === 'GET' && path === '/gacha/summary') {
-    const range = (url.searchParams.get('range') || 'all') as TimeRange
+    const range = parseTimeRange(url.searchParams.get('range'))
     const streamerId = url.searchParams.get('streamerId') || undefined
     return getGachaSummary(client, { range, streamerId })
   }
 
   if (req.method === 'GET' && path === '/gacha/table') {
-    const range = (url.searchParams.get('range') || 'all') as TimeRange
-    const page = Number(url.searchParams.get('page') || '1')
-    const pageSize = Number(url.searchParams.get('pageSize') || '20')
+    const range = parseTimeRange(url.searchParams.get('range'))
+    const { page, pageSize } = parsePagination(url)
     const username = url.searchParams.get('username') || ''
     const rarity = url.searchParams.get('rarity') || ''
     const from = url.searchParams.get('from') || ''
@@ -977,7 +1031,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
     if (!streamerId) {
       throw Object.assign(new Error('streamerId is required'), { statusCode: 400 })
     }
-    const range = (url.searchParams.get('range') || 'all') as TimeRange
+    const range = parseTimeRange(url.searchParams.get('range'))
     return getDropRateStats(client, { streamerId, range })
   }
 
@@ -994,8 +1048,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
     if (!userId) {
       throw Object.assign(new Error('userId is required'), { statusCode: 400 })
     }
-    const page = Number(url.searchParams.get('page') || '1')
-    const pageSize = Number(url.searchParams.get('pageSize') || '20')
+    const { page, pageSize } = parsePagination(url)
     return getUserCardsTable(client, { userId, page, pageSize })
   }
 
@@ -1004,8 +1057,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
     if (!streamerId) {
       throw Object.assign(new Error('streamerId is required'), { statusCode: 400 })
     }
-    const page = Number(url.searchParams.get('page') || '1')
-    const pageSize = Number(url.searchParams.get('pageSize') || '20')
+    const { page, pageSize } = parsePagination(url)
     return getStreamerCardsPage(client, { streamerId, page, pageSize })
   }
 

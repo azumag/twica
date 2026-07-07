@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { adminApi } from '../lib/adminApi'
 import type { UserCardCountEntry, UserCardsTableRow } from '../lib/adminApi'
@@ -56,40 +56,47 @@ export function UserCards() {
   /**
    * ユーザー情報とカード所持サマリー（種別ごとの所持数）を取得
    */
-  async function fetchSummary() {
+  async function fetchSummary(isCancelled: () => boolean) {
     if (!userId) return
 
     setSummaryLoading(true)
     setSummaryError(null)
     try {
       const data = await adminApi.getUserCardsSummary(userId)
+      if (isCancelled()) return
       setUser(data.user)
       setCardCounts(data.cardCounts)
     } catch (err) {
+      if (isCancelled()) return
       console.error('Failed to fetch user cards summary:', err)
       setSummaryError(err instanceof Error ? err.message : 'ユーザー情報の取得に失敗しました')
     } finally {
-      setSummaryLoading(false)
+      if (!isCancelled()) setSummaryLoading(false)
     }
   }
 
   /**
    * 所持カード詳細（コピー単位）をページネーション付きで取得
+   * page を引数で明示的に受け取る: userId変更時に「ページを1に戻すeffect」と
+   * 「取得effect」が同一コミット内でcurrentPageのstate更新を共有できず、
+   * 前ユーザーのページ番号のまま新ユーザーを取得してしまう競合を避けるため
    */
-  async function fetchTable() {
+  async function fetchTable(page: number, isCancelled: () => boolean) {
     if (!userId) return
 
     setTableLoading(true)
     setTableError(null)
     try {
-      const { rows, count } = await adminApi.getUserCardsTable({ userId, page: currentPage, pageSize })
+      const { rows, count } = await adminApi.getUserCardsTable({ userId, page, pageSize })
+      if (isCancelled()) return
       setTableRows(rows)
       setTableCount(count)
     } catch (err) {
+      if (isCancelled()) return
       console.error('Failed to fetch user cards table:', err)
       setTableError(err instanceof Error ? err.message : 'カード一覧の取得に失敗しました')
     } finally {
-      setTableLoading(false)
+      if (!isCancelled()) setTableLoading(false)
     }
   }
 
@@ -100,18 +107,40 @@ export function UserCards() {
       setTableLoading(false)
       return
     }
-    fetchSummary()
+    // userIdを素早く連続変更すると古いレスポンスが後から返って新しい表示を
+    // 上書きしうるため、クリーンアップでcancelledを立てて破棄する
+    let cancelled = false
+    fetchSummary(() => cancelled)
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId])
 
-  // userId変更時はページを1に戻す（別ユーザーへ遷移した際に前のページ番号が残らないように）
-  useEffect(() => {
-    setCurrentPage(1)
-  }, [userId])
-
+  // userId変更時はページを1に戻して取得する。setCurrentPage(1)とfetchTable()を
+  // 別々のeffectに分けると、同一コミット内では新しいcurrentPageがまだ反映されず
+  // 前ユーザーのページ番号で新ユーザーを取得する一過性の誤フェッチが発生するため、
+  // prevUserIdRefでuserId変更を検知する1本のeffectにまとめる。
+  // currentPageが1でなかった場合はsetCurrentPage(1)だけ行ってこのpassでは取得せず、
+  // 1に更新された次のpassで(userIdChanged=false, currentPage=1)として単発取得する
+  // (即時fetchTable(1)も呼ぶと、リセット後の再発火と合わせて同一ページを二重取得してしまうため)
+  const prevUserIdRef = useRef(userId)
   useEffect(() => {
     if (!userId) return
-    fetchTable()
+
+    const userIdChanged = prevUserIdRef.current !== userId
+    prevUserIdRef.current = userId
+
+    if (userIdChanged && currentPage !== 1) {
+      setCurrentPage(1)
+      return
+    }
+
+    let cancelled = false
+    fetchTable(currentPage, () => cancelled)
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, currentPage, pageSize])
 

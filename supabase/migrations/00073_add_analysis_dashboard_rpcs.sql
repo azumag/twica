@@ -142,12 +142,25 @@ WITH card_counts AS (
   FROM user_cards
   GROUP BY user_id
 )
+-- users.* を to_jsonb() で丸ごと展開すると、analysis側の Database 型に存在しない
+-- twitch_access_token / twitch_refresh_token / twitch_token_expires_at 等の
+-- 実カラム（migration 00004/00023で追加）まで analysis dashboard の JSON レスポンスに
+-- 漏れてしまう。フロントエンドの User 型（analysis/src/types/database.ts）が実際に
+-- 使う列だけを明示的に選択し、将来カラムが増えても自動で露出しないようにする。
 SELECT COALESCE(jsonb_agg(
-  to_jsonb(u.*)
-    || jsonb_build_object(
-      'user_cards',
-      jsonb_build_array(jsonb_build_object('count', COALESCE(cc.card_count, 0)))
-    )
+  jsonb_build_object(
+    'id', u.id,
+    'twitch_user_id', u.twitch_user_id,
+    'twitch_username', u.twitch_username,
+    'twitch_display_name', u.twitch_display_name,
+    'twitch_profile_image_url', u.twitch_profile_image_url,
+    'tos_accepted_at', u.tos_accepted_at,
+    'twitch_scopes', u.twitch_scopes,
+    'created_at', u.created_at,
+    'updated_at', u.updated_at,
+    'user_cards',
+    jsonb_build_array(jsonb_build_object('count', COALESCE(cc.card_count, 0)))
+  )
   ORDER BY u.created_at DESC
 ), '[]'::jsonb)
 FROM users u

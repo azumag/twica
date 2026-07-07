@@ -125,21 +125,29 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
+    // timeRangeの素早い切替時に古いレスポンスが後から返って新しい表示を
+    // 上書きしないよう、クリーンアップでcancelledを立てる
+    let cancelled = false
 
     const fetchChartData = async () => {
       setChartLoading(true)
       setChartError(null)
       try {
         const data = await adminApi.getGachaChart({ range: timeRange, streamerId })
+        if (cancelled) return
         setChartData(data)
       } catch (err) {
+        if (cancelled) return
         setChartError(`Chart data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
       } finally {
-        setChartLoading(false)
+        if (!cancelled) setChartLoading(false)
       }
     }
 
     fetchChartData()
+    return () => {
+      cancelled = true
+    }
   }, [streamerId, timeRange])
 
   // ========================================
@@ -176,34 +184,41 @@ export function StreamerGachaHistory() {
   // fetchTableData: テーブル用データ取得（ページ/フィルタ/timeRange変更時）
   // /__admin/gacha/table 経由（サーバーサイドページネーション + フィルタ、count: 'exact'相当）
   // ========================================
-  const fetchTableData = useCallback(async () => {
+  useEffect(() => {
     if (!streamerId) return
-    setTableLoading(true)
-    setTableError(null)
+    let cancelled = false
 
-    try {
-      const { rows, count } = await adminApi.getGachaTable({
-        range: timeRange,
-        page: currentPage,
-        pageSize,
-        username: filters.username,
-        rarity: filters.rarity,
-        from: filters.from,
-        to: filters.to,
-        streamerId,
-      })
-      setTableData(rows)
-      setTotalCount(count)
-    } catch (err) {
-      setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
-    } finally {
-      setTableLoading(false)
+    const fetchTableData = async () => {
+      setTableLoading(true)
+      setTableError(null)
+
+      try {
+        const { rows, count } = await adminApi.getGachaTable({
+          range: timeRange,
+          page: currentPage,
+          pageSize,
+          username: filters.username,
+          rarity: filters.rarity,
+          from: filters.from,
+          to: filters.to,
+          streamerId,
+        })
+        if (cancelled) return
+        setTableData(rows)
+        setTotalCount(count)
+      } catch (err) {
+        if (cancelled) return
+        setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      } finally {
+        if (!cancelled) setTableLoading(false)
+      }
+    }
+
+    fetchTableData()
+    return () => {
+      cancelled = true
     }
   }, [streamerId, timeRange, currentPage, pageSize, filters])
-
-  useEffect(() => {
-    fetchTableData()
-  }, [fetchTableData])
 
   const resetFilters = useCallback(() => {
     // デバウンスタイマーが残存していると古い入力値が再適用されるためキャンセル
@@ -412,7 +427,11 @@ export function StreamerGachaHistory() {
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">ユニークユーザー</p>
-          <p className="text-2xl font-bold">{uniqueUsers.toLocaleString()}</p>
+          {chartLoading ? (
+            <div className="h-7 w-20 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold">{uniqueUsers.toLocaleString()}</p>
+          )}
           {/* uniqueUsers に対応する正確な集計RPCがないため、引き続きチャートの10000件上限からの近似値 */}
           {chartData.length >= 10000 && (
             <p className="text-xs text-amber-600 mt-1">※ 直近10,000件からの概算です</p>

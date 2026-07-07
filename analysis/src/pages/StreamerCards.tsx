@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { adminApi } from '../lib/adminApi'
@@ -57,7 +57,7 @@ export function StreamerCards() {
   /**
    * ストリーマー情報を取得
    */
-  async function fetchStreamer() {
+  async function fetchStreamer(isCancelled: () => boolean) {
     if (!streamerId) return
     try {
       const { data, error } = await supabase
@@ -66,30 +66,37 @@ export function StreamerCards() {
         .eq('id', streamerId)
         .single()
 
+      if (isCancelled()) return
       if (error) {
         console.error('Streamer not found:', error)
         return
       }
       setStreamer(data as Streamer)
     } catch (error) {
+      if (isCancelled()) return
       console.error('Error fetching streamer:', error)
     }
   }
 
   /**
    * カード一覧（現在ページ分）をサーバーサイドページネーションで取得
+   * page を引数で明示的に受け取る: streamerId変更時に「ページを1に戻すeffect」と
+   * 「取得effect」が同一コミット内でcurrentPageのstate更新を共有できず、
+   * 前ストリーマーのページ番号のまま新ストリーマーを取得してしまう競合を避けるため
    */
-  async function fetchCardsPage() {
+  async function fetchCardsPage(page: number, isCancelled: () => boolean) {
     if (!streamerId) return
     setLoading(true)
     try {
-      const { rows, count } = await adminApi.getStreamerCards({ streamerId, page: currentPage, pageSize })
+      const { rows, count } = await adminApi.getStreamerCards({ streamerId, page, pageSize })
+      if (isCancelled()) return
       setCards(rows)
       setTotalCount(count)
     } catch (error) {
+      if (isCancelled()) return
       console.error('Cards fetch error:', error)
     } finally {
-      setLoading(false)
+      if (!isCancelled()) setLoading(false)
     }
   }
 
@@ -98,7 +105,7 @@ export function StreamerCards() {
    * 既存エンドポイントのみを使う制約のため、専用の集計APIではなくgetStreamerCardsを
    * 大きいpageSizeで呼び出す形で対応（テーブル表示用のページングとは別リクエスト）。
    */
-  async function fetchAllCardsForSummary() {
+  async function fetchAllCardsForSummary(isCancelled: () => boolean) {
     if (!streamerId) return
     setSummaryLoading(true)
     try {
@@ -107,36 +114,61 @@ export function StreamerCards() {
         page: 1,
         pageSize: SUMMARY_FETCH_SIZE,
       })
+      if (isCancelled()) return
       setAllCards(rows)
     } catch (error) {
+      if (isCancelled()) return
       console.error('Cards summary fetch error:', error)
     } finally {
-      setSummaryLoading(false)
+      if (!isCancelled()) setSummaryLoading(false)
     }
   }
 
   useEffect(() => {
-    if (streamerId) {
-      fetchStreamer()
+    if (!streamerId) return
+    // streamerIdを素早く連続変更すると古いレスポンスが後から返って新しい表示を
+    // 上書きしうるため、クリーンアップでcancelledを立てて破棄する
+    let cancelled = false
+    fetchStreamer(() => cancelled)
+    return () => {
+      cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamerId])
 
-  // streamerId変更時はページを1に戻す（別ストリーマーへ遷移した際に前のページ番号が残らないように）
+  // streamerId変更時はページを1に戻して取得する。setCurrentPage(1)とfetchCardsPage()を
+  // 別々のeffectに分けると、同一コミット内では新しいcurrentPageがまだ反映されず
+  // 前ストリーマーのページ番号で新ストリーマーを取得する一過性の誤フェッチが発生するため、
+  // prevStreamerIdRefでstreamerId変更を検知する1本のeffectにまとめる。
+  // currentPageが1でなかった場合はsetCurrentPage(1)だけ行ってこのpassでは取得せず、
+  // 1に更新された次のpassで(streamerIdChanged=false, currentPage=1)として単発取得する
+  // (即時fetchCardsPage(1)も呼ぶと、リセット後の再発火と合わせて同一ページを二重取得してしまうため)
+  const prevStreamerIdRef = useRef(streamerId)
   useEffect(() => {
-    setCurrentPage(1)
-  }, [streamerId])
+    if (!streamerId) return
 
-  useEffect(() => {
-    if (streamerId) {
-      fetchCardsPage()
+    const streamerIdChanged = prevStreamerIdRef.current !== streamerId
+    prevStreamerIdRef.current = streamerId
+
+    if (streamerIdChanged && currentPage !== 1) {
+      setCurrentPage(1)
+      return
+    }
+
+    let cancelled = false
+    fetchCardsPage(currentPage, () => cancelled)
+    return () => {
+      cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamerId, currentPage, pageSize])
 
   useEffect(() => {
-    if (streamerId) {
-      fetchAllCardsForSummary()
+    if (!streamerId) return
+    let cancelled = false
+    fetchAllCardsForSummary(() => cancelled)
+    return () => {
+      cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamerId])

@@ -103,6 +103,10 @@ export function Gacha() {
   // fetchSummary: チャート/統計用集計データ取得（timeRange/selectedStreamerId変更時）
   // ========================================
   useEffect(() => {
+    // フィルタ切替を素早く行うと後発リクエストより先発リクエストが遅れて返ることがあるため、
+    // このeffectのクリーンアップでcancelledを立てて古いレスポンスによる上書きを防ぐ
+    let cancelled = false
+
     const fetchSummary = async () => {
       setChartLoading(true)
       setChartError(null)
@@ -111,46 +115,58 @@ export function Gacha() {
           range: timeRange,
           streamerId: selectedStreamerId || undefined,
         })
+        if (cancelled) return
         setSummary(data)
       } catch (err) {
+        if (cancelled) return
         setChartError(`Chart data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
       } finally {
-        setChartLoading(false)
+        if (!cancelled) setChartLoading(false)
       }
     }
 
     fetchSummary()
+    return () => {
+      cancelled = true
+    }
   }, [timeRange, selectedStreamerId])
 
   // ========================================
   // fetchTableData: テーブル用データ取得（ページ/フィルタ/timeRange/selectedStreamerId変更時）
   // ========================================
-  const fetchTableData = useCallback(async () => {
-    setTableLoading(true)
-    setTableError(null)
-    try {
-      const { rows, count } = await adminApi.getGachaTable({
-        range: timeRange,
-        page: currentPage,
-        pageSize,
-        username: filters.username,
-        rarity: filters.rarity,
-        from: filters.from,
-        to: filters.to,
-        streamerId: selectedStreamerId || undefined,
-      })
-      setTableData(rows)
-      setTotalCount(count)
-    } catch (err) {
-      setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
-    } finally {
-      setTableLoading(false)
+  useEffect(() => {
+    let cancelled = false
+
+    const fetchTableData = async () => {
+      setTableLoading(true)
+      setTableError(null)
+      try {
+        const { rows, count } = await adminApi.getGachaTable({
+          range: timeRange,
+          page: currentPage,
+          pageSize,
+          username: filters.username,
+          rarity: filters.rarity,
+          from: filters.from,
+          to: filters.to,
+          streamerId: selectedStreamerId || undefined,
+        })
+        if (cancelled) return
+        setTableData(rows)
+        setTotalCount(count)
+      } catch (err) {
+        if (cancelled) return
+        setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      } finally {
+        if (!cancelled) setTableLoading(false)
+      }
+    }
+
+    fetchTableData()
+    return () => {
+      cancelled = true
     }
   }, [timeRange, currentPage, pageSize, filters, selectedStreamerId])
-
-  useEffect(() => {
-    fetchTableData()
-  }, [fetchTableData])
 
   const resetFilters = useCallback(() => {
     // デバウンスタイマーが残存していると古い入力値が再適用されるためキャンセル
@@ -195,6 +211,37 @@ export function Gacha() {
     () => [...streamers].sort((a, b) => b.card_count - a.card_count),
     [streamers]
   )
+
+  // CSVエクスポート: window.location.href によるフルページ遷移だと、サーバーが
+  // エラー(JSON/500)を返した場合にSPAの状態(フィルタ等)が失われた上にエラーも
+  // 画面に表示されない。fetch + blobダウンロードに切り替え、失敗時はtableErrorに出す
+  const handleExportCsv = useCallback(async () => {
+    const url = adminApi.getGachaExportUrl({
+      range: timeRange,
+      username: filters.username,
+      rarity: filters.rarity,
+      from: filters.from,
+      to: filters.to,
+      streamerId: selectedStreamerId || undefined,
+    })
+    try {
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Export failed (status ${response.status})`)
+      }
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = 'gacha-export.csv'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(objectUrl)
+    } catch (err) {
+      setTableError(`Export error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    }
+  }, [timeRange, filters, selectedStreamerId])
 
   // Table column definitions
   const columns = [
@@ -297,19 +344,35 @@ export function Gacha() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Gacha</p>
-          <p className="text-2xl font-bold">{totalGacha.toLocaleString()}</p>
+          {chartLoading ? (
+            <div className="h-7 w-20 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold">{totalGacha.toLocaleString()}</p>
+          )}
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Unique Users</p>
-          <p className="text-2xl font-bold">{uniqueUsers.toLocaleString()}</p>
+          {chartLoading ? (
+            <div className="h-7 w-20 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold">{uniqueUsers.toLocaleString()}</p>
+          )}
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Legendary Pulls</p>
-          <p className="text-2xl font-bold text-amber-600">{legendaryCount.toLocaleString()}</p>
+          {chartLoading ? (
+            <div className="h-7 w-16 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold text-amber-600">{legendaryCount.toLocaleString()}</p>
+          )}
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Legendary Rate</p>
-          <p className="text-2xl font-bold">{legendaryRate}%</p>
+          {chartLoading ? (
+            <div className="h-7 w-14 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold">{legendaryRate}%</p>
+          )}
         </div>
       </div>
       {/* Charts Section */}
@@ -418,16 +481,7 @@ export function Gacha() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900">Gacha History</h2>
           <button
-            onClick={() =>
-              (window.location.href = adminApi.getGachaExportUrl({
-                range: timeRange,
-                username: filters.username,
-                rarity: filters.rarity,
-                from: filters.from,
-                to: filters.to,
-                streamerId: selectedStreamerId || undefined,
-              }))
-            }
+            onClick={handleExportCsv}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors"
           >
             Export CSV
