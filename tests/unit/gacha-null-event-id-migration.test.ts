@@ -8,9 +8,9 @@ import { resolve } from 'path'
 // NULLを明示的に拒否するようにした migration の内容を、
 // gacha-history-reward-id-migration.test.ts (00070) と同じく
 // SQLテキストへの静的正規表現アサーションで検証する(実DB実行はしない)。
-describe('reject null gacha event_id migration (00073)', () => {
+describe('reject null gacha event_id migration (00074)', () => {
   const migration = readFileSync(
-    resolve(__dirname, '../../supabase/migrations/00073_reject_null_gacha_event_id.sql'),
+    resolve(__dirname, '../../supabase/migrations/00074_reject_null_gacha_event_id.sql'),
     'utf-8'
   )
 

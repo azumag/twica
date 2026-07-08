@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
     // 経由しないため元々 eventId を渡しておらず、RPCへは p_event_id=null が
     // 渡っていた。NULL同士はUNIQUE制約上「重複」とみなされないため、
     // RPC側はNULLでの呼び出しを明示的に拒否するようになった(migration
-    // 00073)。ここで毎回一意な合成IDを渡すことで、この手動ドローAPIの
+    // 00074)。ここで毎回一意な合成IDを渡すことで、この手動ドローAPIの
     // 既存挙動(呼ぶたびに新しい抽選として成功する)を変えずにNULL拒否と
     // 両立させる。
     const manualDrawEventId = `manual:${crypto.randomUUID()}`;
