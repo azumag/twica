@@ -4,6 +4,7 @@ import { getSession } from "@/lib/session";
 import { getUserPlan } from "@/lib/plan";
 import { getUserInquiries } from "@/lib/support-inquiries";
 import InquiryForm from "@/components/InquiryForm";
+import DeleteInquiryButton from "@/components/DeleteInquiryButton";
 
 /**
  * 問い合わせ一覧ページ
@@ -59,13 +60,15 @@ export default async function InquiriesPage() {
       ) : (
         <div className="space-y-3">
           {inquiries.map((inquiry) => (
-            <Link
+            <div
               key={inquiry.id}
-              href={`/dashboard/inquiries/${inquiry.id}`}
-              className="block rounded-xl bg-gray-800 border border-gray-700 p-4 hover:border-gray-600 transition-colors"
+              className="rounded-xl bg-gray-800 border border-gray-700 p-4 transition-colors hover:border-gray-600"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
+                <Link
+                  href={`/dashboard/inquiries/${inquiry.id}`}
+                  className="min-w-0 flex-1"
+                >
                   <div className="mb-1 flex items-center gap-2">
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -88,12 +91,15 @@ export default async function InquiriesPage() {
                   <p className="mt-1 truncate text-sm text-gray-400">
                     {inquiry.body}
                   </p>
+                </Link>
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <span className="text-xs text-gray-500">
+                    {new Date(inquiry.created_at).toLocaleDateString()}
+                  </span>
+                  <DeleteInquiryButton inquiryId={inquiry.id} />
                 </div>
-                <span className="shrink-0 text-xs text-gray-500">
-                  {new Date(inquiry.created_at).toLocaleDateString()}
-                </span>
               </div>
-            </Link>
+            </div>
           ))}
         </div>
       )}

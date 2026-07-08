@@ -1234,6 +1234,10 @@
       "submitFailed": "送信に失敗しました",
       "replySuccess": "返信を送信しました",
       "replyFailed": "返信の送信に失敗しました",
+      "delete": "削除",
+      "deleting": "削除中...",
+      "deleteConfirm": "このお問い合わせを削除しますか？\\n\\n関連するメッセージも削除されます。",
+      "deleteFailed": "削除に失敗しました",
       "networkError": "ネットワークエラーが発生しました"
     }
   },

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { GET, POST } from "@/app/api/support-inquiries/route";
-import { GET as GET_DETAIL } from "@/app/api/support-inquiries/[id]/route";
+import { DELETE as DELETE_DETAIL, GET as GET_DETAIL } from "@/app/api/support-inquiries/[id]/route";
 import { POST as POST_MESSAGE } from "@/app/api/support-inquiries/[id]/messages/route";
 import { getSession } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -59,6 +59,12 @@ function createPostRequest(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+function createDeleteRequest(path: string): NextRequest {
+  return new NextRequest(new URL(`http://localhost${path}`), {
+    method: "DELETE",
   });
 }
 
@@ -299,6 +305,109 @@ describe("GET /api/support-inquiries/[id]", () => {
       { params: Promise.resolve({ id: VALID_UUID }) }
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("DELETE /api/support-inquiries/[id]", () => {
+  const VALID_UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockValidateCSRFToken.mockResolvedValue({ valid: true });
+    mockCheckRateLimit.mockResolvedValue({
+      success: true,
+      limit: 10,
+      remaining: 9,
+      reset: Date.now() + 60000,
+    });
+  });
+
+  it("returns 403 when CSRF token is invalid", async () => {
+    mockValidateCSRFToken.mockResolvedValue({ valid: false });
+    const res = await DELETE_DETAIL(
+      createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`),
+      { params: Promise.resolve({ id: VALID_UUID }) }
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    mockGetSession.mockResolvedValue(null);
+    const res = await DELETE_DETAIL(
+      createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`),
+      { params: Promise.resolve({ id: VALID_UUID }) }
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 400 for invalid UUID format", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION);
+    mockGetUserPlan.mockResolvedValue("support");
+    const res = await DELETE_DETAIL(
+      createDeleteRequest("/api/support-inquiries/invalid-id"),
+      { params: Promise.resolve({ id: "invalid-id" }) }
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when the inquiry does not belong to the user", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION);
+    mockGetUserPlan.mockResolvedValue("support");
+
+    const mockQuery = createMockQueryBuilder(
+      createMockResponse(null, new Error("Not found"))
+    );
+    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
+
+    const res = await DELETE_DETAIL(
+      createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`),
+      { params: Promise.resolve({ id: VALID_UUID }) }
+    );
+
+    expect(res.status).toBe(404);
+    expect(mockQuery.delete).toHaveBeenCalled();
+    expect(mockQuery.eq).toHaveBeenCalledWith("id", VALID_UUID);
+    expect(mockQuery.eq).toHaveBeenCalledWith("twitch_user_id", "user123");
+  });
+
+  it("returns 429 when rate limited", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION);
+    mockGetUserPlan.mockResolvedValue("support");
+    mockCheckRateLimit.mockResolvedValue({
+      success: false,
+      limit: 10,
+      remaining: 0,
+      reset: Date.now() + 60000,
+    });
+
+    const res = await DELETE_DETAIL(
+      createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`),
+      { params: Promise.resolve({ id: VALID_UUID }) }
+    );
+
+    expect(res.status).toBe(429);
+  });
+
+  it("deletes the user's own inquiry", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION);
+    mockGetUserPlan.mockResolvedValue("support");
+
+    const mockQuery = createMockQueryBuilder(
+      createMockResponse({ id: VALID_UUID })
+    );
+    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
+
+    const res = await DELETE_DETAIL(
+      createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`),
+      { params: Promise.resolve({ id: VALID_UUID }) }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(mockQuery.delete).toHaveBeenCalled();
+    expect(mockQuery.select).toHaveBeenCalledWith("id");
+    expect(mockQuery.eq).toHaveBeenCalledWith("id", VALID_UUID);
+    expect(mockQuery.eq).toHaveBeenCalledWith("twitch_user_id", "user123");
   });
 });
 

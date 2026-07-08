@@ -5,6 +5,7 @@ import { getSession } from "@/lib/session";
 import { getUserPlan } from "@/lib/plan";
 import { getInquiryWithMessages } from "@/lib/support-inquiries";
 import InquiryThread from "@/components/InquiryThread";
+import DeleteInquiryButton from "@/components/DeleteInquiryButton";
 
 /**
  * 問い合わせ詳細ページ
@@ -67,20 +68,23 @@ export default async function InquiryDetailPage({
 
       {/* 問い合わせヘッダー */}
       <div className="mb-6 rounded-xl bg-gray-800 border border-gray-700 p-6">
-        <div className="mb-3 flex items-center gap-2">
-          <span className="rounded-full bg-gray-600 px-2 py-0.5 text-xs font-medium text-gray-300">
-            {t(categoryLabels[inquiry.category] || "form.categoryOther")}
-          </span>
-          <span
-            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-              statusColors[inquiry.status] || ""
-            }`}
-          >
-            {t(`list.status.${inquiry.status}` as 'list.status.open' | 'list.status.in_progress' | 'list.status.resolved' | 'list.status.closed')}
-          </span>
-          <span className="text-xs text-gray-500">
-            {new Date(inquiry.created_at).toLocaleString()}
-          </span>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-gray-600 px-2 py-0.5 text-xs font-medium text-gray-300">
+              {t(categoryLabels[inquiry.category] || "form.categoryOther")}
+            </span>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                statusColors[inquiry.status] || ""
+              }`}
+            >
+              {t(`list.status.${inquiry.status}` as 'list.status.open' | 'list.status.in_progress' | 'list.status.resolved' | 'list.status.closed')}
+            </span>
+            <span className="text-xs text-gray-500">
+              {new Date(inquiry.created_at).toLocaleString()}
+            </span>
+          </div>
+          <DeleteInquiryButton inquiryId={inquiry.id} redirectToList />
         </div>
         <h1 className="text-xl font-bold text-white">{inquiry.subject}</h1>
       </div>

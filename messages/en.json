@@ -1237,6 +1237,10 @@
       "submitFailed": "Failed to submit inquiry",
       "replySuccess": "Reply sent successfully",
       "replyFailed": "Failed to send reply",
+      "delete": "Delete",
+      "deleting": "Deleting...",
+      "deleteConfirm": "Delete this inquiry?\\n\\nRelated messages will also be deleted.",
+      "deleteFailed": "Failed to delete inquiry",
       "networkError": "A network error occurred"
     }
   },
