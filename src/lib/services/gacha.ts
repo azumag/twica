@@ -1282,7 +1282,8 @@ export class GachaService {
 
         // Additional reward matched, execute gacha
         // 追加報酬が一致したのでガチャを実行
-        const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 10)
+        // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+        const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 15)
         logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}, drawCount=${drawCount}, raidLimited=${Boolean(additionalReward.is_raid_limited)}, collectionName=${additionalReward.collection_name ?? 'all'}`)
         // Issue #393: 追加報酬に紐付くパックで抽選対象を絞る
         return await executeAndAttachStreamer(drawCount, additionalReward.collection_name)
@@ -1331,7 +1332,8 @@ export class GachaService {
         return err('Streamer not found')
       }
 
-      const drawCount = Math.min(Math.max(Number(streamer.raid_gacha_draw_count ?? 0), 0), 10)
+      // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+      const drawCount = Math.min(Math.max(Number(streamer.raid_gacha_draw_count ?? 0), 0), 15)
       if (drawCount < 1) {
         return err('Raid gacha disabled')
       }

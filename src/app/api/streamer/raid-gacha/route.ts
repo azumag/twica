@@ -119,9 +119,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const requestedDrawCount = body.drawCount === undefined ? 0 : Number(body.drawCount);
 
-    if (!Number.isInteger(requestedDrawCount) || requestedDrawCount < 0 || requestedDrawCount > 10) {
+    // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+    if (!Number.isInteger(requestedDrawCount) || requestedDrawCount < 0 || requestedDrawCount > 15) {
       return NextResponse.json(
-        { error: "drawCount must be an integer between 0 and 10" },
+        { error: "drawCount must be an integer between 0 and 15" },
         { status: 400 },
       );
     }

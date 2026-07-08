@@ -392,7 +392,7 @@ describe('/api/streamer/additional-rewards raid options', () => {
 
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toEqual({
-      error: 'drawCount must be an integer between 1 and 10',
+      error: 'drawCount must be an integer between 1 and 15',
     })
   })
 
