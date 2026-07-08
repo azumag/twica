@@ -75,3 +75,4 @@ analysis/dist
 # and must never be tracked — they break Cloudflare Workers Builds' submodule clone.
 .codex-*/
 twica-maker-*/
+.claude/worktrees/
