@@ -1,9 +1,15 @@
-import { useEffect, useState, useMemo } from 'react'
-import { supabase } from '../lib/supabase'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { DataTable } from '../components/DataTable'
 import { RarityBadge } from '../components/RarityBadge'
 import { StreamerPopup } from '../components/StreamerPopup'
-import { GachaHistory, Card, Streamer, Rarity } from '../types/database'
+import { Rarity } from '../types/database'
+import {
+  adminApi,
+  TimeRange,
+  GachaSummary,
+  GachaTableRow,
+  StreamerWithStats,
+} from '../lib/adminApi'
 import {
   LineChart,
   Line,
@@ -19,10 +25,15 @@ import {
   Bar,
 } from 'recharts'
 
-// Type for gacha history with joined card and streamer data
-interface GachaWithDetails extends GachaHistory {
-  cards: Card
-  streamers: Streamer
+/**
+ * フィルタ状態の型
+ * username: ILIKE部分一致、rarity: 完全一致、from/to: 日付範囲
+ */
+interface FilterState {
+  username: string
+  rarity: Rarity | ''
+  from: string
+  to: string
 }
 
 // Color mapping for rarity in charts
@@ -33,138 +44,211 @@ const RARITY_COLORS: Record<Rarity, string> = {
   legendary: '#f59e0b',
 }
 
+const PAGE_SIZE_OPTIONS = [20, 50, 100]
+
 /**
- * Gacha page - Displays gacha history, statistics, and analytics
- * Includes time-series charts, rarity distribution, and popular cards ranking
+ * Gacha page - Displays gacha history, statistics, and analytics across all streamers
+ * Includes time-series charts, rarity distribution, popular cards ranking, a streamer
+ * filter, and a paginated/filterable history table (server-side, via /__admin/gacha/*)
  */
 export function Gacha() {
-  const [gachaHistory, setGachaHistory] = useState<GachaWithDetails[]>([])
-  const [loading, setLoading] = useState(true)
-  const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d' | 'all'>('all')
-  const [error, setError] = useState<string | null>(null)
+  const [timeRange, setTimeRange] = useState<TimeRange>('all')
+  const [chartError, setChartError] = useState<string | null>(null)
+  const [tableError, setTableError] = useState<string | null>(null)
 
+  // --- 全ストリーマー一覧（ストリーマーフィルタのドロップダウン用、マウント時に一度だけ取得） ---
+  const [streamers, setStreamers] = useState<StreamerWithStats[]>([])
+  const [selectedStreamerId, setSelectedStreamerId] = useState('')
+
+  // --- チャート/統計用集計データ（/__admin/gacha/summary でDB側GROUP BY済み） ---
+  const [summary, setSummary] = useState<GachaSummary>({
+    totalGacha: 0,
+    uniqueUsers: 0,
+    legendaryCount: 0,
+    dailyGachaData: [],
+    rarityDistribution: [],
+    popularCards: [],
+  })
+  const [chartLoading, setChartLoading] = useState(true)
+
+  // --- テーブル用データ（サーバーサイドページネーション + フィルタ） ---
+  const [tableData, setTableData] = useState<GachaTableRow[]>([])
+  const [tableLoading, setTableLoading] = useState(true)
+  const [totalCount, setTotalCount] = useState(0)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+
+  // --- フィルタ state ---
+  const [filters, setFilters] = useState<FilterState>({ username: '', rarity: '', from: '', to: '' })
+  // デバウンス用: 入力中のユーザー名
+  const [usernameInput, setUsernameInput] = useState('')
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ========================================
+  // fetchStreamers: ストリーマーフィルタ用の一覧取得（マウント時に一度だけ）
+  // ========================================
   useEffect(() => {
-    fetchGachaHistory()
-  }, [timeRange])
+    ;(async () => {
+      try {
+        const data = await adminApi.getStreamers()
+        setStreamers(data)
+      } catch (err) {
+        // ドロップダウンが空のままになるだけなので致命的ではない
+        console.error('Failed to fetch streamers:', err)
+      }
+    })()
+  }, [])
 
-  /**
-   * Fetches gacha history with card and streamer details
-   */
-  async function fetchGachaHistory() {
-    setLoading(true)
-    setError(null)
+  // ========================================
+  // fetchSummary: チャート/統計用集計データ取得（timeRange/selectedStreamerId変更時）
+  // ========================================
+  useEffect(() => {
+    // フィルタ切替を素早く行うと後発リクエストより先発リクエストが遅れて返ることがあるため、
+    // このeffectのクリーンアップでcancelledを立てて古いレスポンスによる上書きを防ぐ
+    let cancelled = false
+
+    const fetchSummary = async () => {
+      setChartLoading(true)
+      setChartError(null)
+      try {
+        const data = await adminApi.getGachaSummary({
+          range: timeRange,
+          streamerId: selectedStreamerId || undefined,
+        })
+        if (cancelled) return
+        setSummary(data)
+      } catch (err) {
+        if (cancelled) return
+        setChartError(`Chart data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      } finally {
+        if (!cancelled) setChartLoading(false)
+      }
+    }
+
+    fetchSummary()
+    return () => {
+      cancelled = true
+    }
+  }, [timeRange, selectedStreamerId])
+
+  // ========================================
+  // fetchTableData: テーブル用データ取得（ページ/フィルタ/timeRange/selectedStreamerId変更時）
+  // ========================================
+  useEffect(() => {
+    let cancelled = false
+
+    const fetchTableData = async () => {
+      setTableLoading(true)
+      setTableError(null)
+      try {
+        const { rows, count } = await adminApi.getGachaTable({
+          range: timeRange,
+          page: currentPage,
+          pageSize,
+          username: filters.username,
+          rarity: filters.rarity,
+          from: filters.from,
+          to: filters.to,
+          streamerId: selectedStreamerId || undefined,
+        })
+        if (cancelled) return
+        setTableData(rows)
+        setTotalCount(count)
+      } catch (err) {
+        if (cancelled) return
+        setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      } finally {
+        if (!cancelled) setTableLoading(false)
+      }
+    }
+
+    fetchTableData()
+    return () => {
+      cancelled = true
+    }
+  }, [timeRange, currentPage, pageSize, filters, selectedStreamerId])
+
+  const resetFilters = useCallback(() => {
+    // デバウンスタイマーが残存していると古い入力値が再適用されるためキャンセル
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    setFilters({ username: '', rarity: '', from: '', to: '' })
+    setUsernameInput('')
+    setSelectedStreamerId('')
+    setCurrentPage(1)
+  }, [])
+
+  // アンマウント時にデバウンスタイマーをクリーンアップ
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [])
+
+  // ユーザー名入力の300msデバウンス
+  const handleUsernameChange = useCallback((value: string) => {
+    setUsernameInput(value)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      setFilters((prev) => ({ ...prev, username: value }))
+      setCurrentPage(1)
+    }, 300)
+  }, [])
+
+  // timeRange変更時にページを1に戻す
+  const handleTimeRangeChange = useCallback((range: TimeRange) => {
+    setTimeRange(range)
+    setCurrentPage(1)
+  }, [])
+
+  // ストリーマーフィルタ変更時にページを1に戻す
+  const handleStreamerChange = useCallback((streamerId: string) => {
+    setSelectedStreamerId(streamerId)
+    setCurrentPage(1)
+  }, [])
+
+  // ストリーマーフィルタ用ドロップダウンの選択肢（カード数の多い順）
+  const sortedStreamers = useMemo(
+    () => [...streamers].sort((a, b) => b.card_count - a.card_count),
+    [streamers]
+  )
+
+  // CSVエクスポート: window.location.href によるフルページ遷移だと、サーバーが
+  // エラー(JSON/500)を返した場合にSPAの状態(フィルタ等)が失われた上にエラーも
+  // 画面に表示されない。fetch + blobダウンロードに切り替え、失敗時はtableErrorに出す
+  const handleExportCsv = useCallback(async () => {
+    const url = adminApi.getGachaExportUrl({
+      range: timeRange,
+      username: filters.username,
+      rarity: filters.rarity,
+      from: filters.from,
+      to: filters.to,
+      streamerId: selectedStreamerId || undefined,
+    })
     try {
-      // Build query based on time range
-      let query = supabase
-        .from('gacha_history')
-        .select('*, cards(*), streamers(*)')
-        .order('redeemed_at', { ascending: false })
-
-      // Apply date filter if not 'all'
-      if (timeRange !== 'all') {
-        const now = new Date()
-        const daysMap = { '7d': 7, '30d': 30, '90d': 90 }
-        const startDate = new Date(now.getTime() - daysMap[timeRange] * 24 * 60 * 60 * 1000).toISOString()
-        query = query.gte('redeemed_at', startDate)
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Export failed (status ${response.status})`)
       }
-
-      const { data, error: queryError } = await query
-
-      if (queryError) {
-        // Display detailed error information for debugging
-        setError(`Query Error: ${queryError.message} (Code: ${queryError.code})`)
-        console.error('Supabase query error:', queryError)
-        return
-      }
-
-      console.log('Gacha history fetched:', data?.length || 0, 'records')
-      setGachaHistory((data as unknown as GachaWithDetails[]) || [])
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = 'gacha-export.csv'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(objectUrl)
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
-      setError(`Fetch Error: ${errorMessage}`)
-      console.error('Error fetching gacha history:', err)
-    } finally {
-      setLoading(false)
+      setTableError(`Export error: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
-  }
-
-  /**
-   * Calculates daily gacha counts for the line chart
-   */
-  const dailyGachaData = useMemo(() => {
-    const dailyCounts = new Map<string, number>()
-
-    gachaHistory.forEach((gacha) => {
-      const date = new Date(gacha.redeemed_at).toLocaleDateString('ja-JP')
-      dailyCounts.set(date, (dailyCounts.get(date) || 0) + 1)
-    })
-
-    // Convert to array sorted by date
-    const entries = Array.from(dailyCounts.entries())
-      .map(([date, count]) => ({ date, count }))
-      .sort((a, b) => {
-        const dateA = new Date(a.date.replace(/\//g, '-'))
-        const dateB = new Date(b.date.replace(/\//g, '-'))
-        return dateA.getTime() - dateB.getTime()
-      })
-
-    return entries
-  }, [gachaHistory])
-
-  /**
-   * Calculates rarity distribution for the pie chart
-   */
-  const rarityDistribution = useMemo(() => {
-    const counts: Record<Rarity, number> = {
-      common: 0,
-      rare: 0,
-      epic: 0,
-      legendary: 0,
-    }
-
-    gachaHistory.forEach((gacha) => {
-      if (gacha.cards?.rarity) {
-        counts[gacha.cards.rarity]++
-      }
-    })
-
-    return Object.entries(counts)
-      .filter(([, count]) => count > 0)
-      .map(([rarity, count]) => ({
-        name: rarity.charAt(0).toUpperCase() + rarity.slice(1),
-        value: count,
-        rarity: rarity as Rarity,
-      }))
-  }, [gachaHistory])
-
-  /**
-   * Calculates popular cards ranking
-   */
-  const popularCards = useMemo(() => {
-    const cardCounts = new Map<string, { card: Card; count: number }>()
-
-    gachaHistory.forEach((gacha) => {
-      if (gacha.cards) {
-        const existing = cardCounts.get(gacha.cards.id)
-        if (existing) {
-          existing.count++
-        } else {
-          cardCounts.set(gacha.cards.id, { card: gacha.cards, count: 1 })
-        }
-      }
-    })
-
-    return Array.from(cardCounts.values())
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10)
-  }, [gachaHistory])
+  }, [timeRange, filters, selectedStreamerId])
 
   // Table column definitions
   const columns = [
     {
       key: 'redeemed_at',
       header: 'Date',
-      render: (gacha: GachaWithDetails) => (
+      render: (gacha: GachaTableRow) => (
         <span className="text-gray-600 text-sm">
           {new Date(gacha.redeemed_at).toLocaleString('ja-JP')}
         </span>
@@ -173,14 +257,14 @@ export function Gacha() {
     {
       key: 'user',
       header: 'User',
-      render: (gacha: GachaWithDetails) => (
+      render: (gacha: GachaTableRow) => (
         <span className="font-medium">{gacha.user_twitch_username || 'Unknown'}</span>
       ),
     },
     {
       key: 'card',
       header: 'Card',
-      render: (gacha: GachaWithDetails) => (
+      render: (gacha: GachaTableRow) => (
         <div className="flex items-center space-x-2">
           {gacha.cards?.image_url && (
             <img
@@ -196,13 +280,13 @@ export function Gacha() {
     {
       key: 'rarity',
       header: 'Rarity',
-      render: (gacha: GachaWithDetails) =>
+      render: (gacha: GachaTableRow) =>
         gacha.cards?.rarity ? <RarityBadge rarity={gacha.cards.rarity} /> : '-',
     },
     {
       key: 'streamer',
       header: 'Streamer',
-      render: (gacha: GachaWithDetails) => (
+      render: (gacha: GachaTableRow) => (
         <StreamerPopup streamer={gacha.streamers}>
           <span className="text-gray-600 hover:text-purple-600">
             {gacha.streamers?.twitch_display_name || 'Unknown'}
@@ -212,10 +296,10 @@ export function Gacha() {
     },
   ]
 
-  // Calculate summary statistics
-  const totalGacha = gachaHistory.length
-  const uniqueUsers = new Set(gachaHistory.map((g) => g.user_twitch_id)).size
-  const legendaryCount = gachaHistory.filter((g) => g.cards?.rarity === 'legendary').length
+  // Calculate summary statistics (DB集計済みデータ)
+  const totalGacha = summary.totalGacha
+  const uniqueUsers = summary.uniqueUsers
+  const legendaryCount = summary.legendaryCount
   const legendaryRate = totalGacha > 0 ? ((legendaryCount / totalGacha) * 100).toFixed(2) : '0'
 
   return (
@@ -231,7 +315,7 @@ export function Gacha() {
           {(['7d', '30d', '90d', 'all'] as const).map((range) => (
             <button
               key={range}
-              onClick={() => setTimeRange(range)}
+              onClick={() => handleTimeRangeChange(range)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                 timeRange === range
                   ? 'bg-blue-500 text-white'
@@ -245,12 +329,13 @@ export function Gacha() {
       </div>
 
       {/* Error Display */}
-      {error && (
+      {(chartError || tableError) && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <p className="text-red-800 font-medium">Error loading data</p>
-          <p className="text-red-600 text-sm mt-1">{error}</p>
+          {chartError && <p className="text-red-600 text-sm mt-1">{chartError}</p>}
+          {tableError && <p className="text-red-600 text-sm mt-1">{tableError}</p>}
           <p className="text-red-500 text-xs mt-2">
-            Check browser console for details. Verify that RLS policies allow SELECT for anon key.
+            Check browser console for details.
           </p>
         </div>
       )}
@@ -259,36 +344,51 @@ export function Gacha() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Gacha</p>
-          <p className="text-2xl font-bold">{totalGacha}</p>
+          {chartLoading ? (
+            <div className="h-7 w-20 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold">{totalGacha.toLocaleString()}</p>
+          )}
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Unique Users</p>
-          <p className="text-2xl font-bold">{uniqueUsers}</p>
+          {chartLoading ? (
+            <div className="h-7 w-20 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold">{uniqueUsers.toLocaleString()}</p>
+          )}
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Legendary Pulls</p>
-          <p className="text-2xl font-bold text-amber-600">{legendaryCount}</p>
+          {chartLoading ? (
+            <div className="h-7 w-16 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold text-amber-600">{legendaryCount.toLocaleString()}</p>
+          )}
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Legendary Rate</p>
-          <p className="text-2xl font-bold">{legendaryRate}%</p>
+          {chartLoading ? (
+            <div className="h-7 w-14 bg-gray-100 animate-pulse rounded mt-1" />
+          ) : (
+            <p className="text-2xl font-bold">{legendaryRate}%</p>
+          )}
         </div>
       </div>
-
       {/* Charts Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Daily Gacha Line Chart */}
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Daily Gacha Count</h2>
-          {loading ? (
+          {chartLoading ? (
             <div className="h-64 bg-gray-100 animate-pulse rounded" />
-          ) : dailyGachaData.length === 0 ? (
+          ) : summary.dailyGachaData.length === 0 ? (
             <div className="h-64 flex items-center justify-center text-gray-500">
               No data available
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={256}>
-              <LineChart data={dailyGachaData}>
+              <LineChart data={summary.dailyGachaData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
@@ -308,9 +408,9 @@ export function Gacha() {
         {/* Rarity Distribution Pie Chart */}
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Rarity Distribution</h2>
-          {loading ? (
+          {chartLoading ? (
             <div className="h-64 bg-gray-100 animate-pulse rounded" />
-          ) : rarityDistribution.length === 0 ? (
+          ) : summary.rarityDistribution.length === 0 ? (
             <div className="h-64 flex items-center justify-center text-gray-500">
               No data available
             </div>
@@ -318,7 +418,7 @@ export function Gacha() {
             <ResponsiveContainer width="100%" height={256}>
               <PieChart>
                 <Pie
-                  data={rarityDistribution}
+                  data={summary.rarityDistribution}
                   cx="50%"
                   cy="50%"
                   labelLine={false}
@@ -327,7 +427,7 @@ export function Gacha() {
                   fill="#8884d8"
                   dataKey="value"
                 >
-                  {rarityDistribution.map((entry, index) => (
+                  {summary.rarityDistribution.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={RARITY_COLORS[entry.rarity]} />
                   ))}
                 </Pie>
@@ -341,16 +441,16 @@ export function Gacha() {
       {/* Popular Cards Ranking */}
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">Popular Cards (Top 10)</h2>
-        {loading ? (
+        {chartLoading ? (
           <div className="h-64 bg-gray-100 animate-pulse rounded" />
-        ) : popularCards.length === 0 ? (
+        ) : summary.popularCards.length === 0 ? (
           <div className="h-64 flex items-center justify-center text-gray-500">
             No data available
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={300}>
             <BarChart
-              data={popularCards}
+              data={summary.popularCards}
               layout="vertical"
               margin={{ left: 100 }}
             >
@@ -378,19 +478,131 @@ export function Gacha() {
 
       {/* Gacha History Table */}
       <div>
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Recent Gacha History</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">Gacha History</h2>
+          <button
+            onClick={handleExportCsv}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors"
+          >
+            Export CSV
+          </button>
+        </div>
+
+        {/* Filter Panel */}
+        <div className="bg-white rounded-lg shadow p-4 mb-4">
+          <div className="flex flex-wrap items-end gap-4">
+            {/* Streamer Filter */}
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Streamer</label>
+              <select
+                value={selectedStreamerId}
+                onChange={(e) => handleStreamerChange(e.target.value)}
+                className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All Streamers</option>
+                {sortedStreamers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.twitch_display_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Username Filter */}
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Username</label>
+              <input
+                type="text"
+                value={usernameInput}
+                onChange={(e) => handleUsernameChange(e.target.value)}
+                placeholder="Partial match"
+                className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-40"
+              />
+            </div>
+
+            {/* Rarity Filter */}
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Rarity</label>
+              <select
+                value={filters.rarity}
+                onChange={(e) => {
+                  setFilters((prev) => ({ ...prev, rarity: e.target.value as Rarity | '' }))
+                  setCurrentPage(1)
+                }}
+                className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All</option>
+                <option value="legendary">Legendary</option>
+                <option value="epic">Epic</option>
+                <option value="rare">Rare</option>
+                <option value="common">Common</option>
+              </select>
+            </div>
+
+            {/* From Date Filter */}
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">From</label>
+              <input
+                type="date"
+                value={filters.from}
+                onChange={(e) => {
+                  setFilters((prev) => ({ ...prev, from: e.target.value }))
+                  setCurrentPage(1)
+                }}
+                className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* To Date Filter */}
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">To</label>
+              <input
+                type="date"
+                value={filters.to}
+                onChange={(e) => {
+                  setFilters((prev) => ({ ...prev, to: e.target.value }))
+                  setCurrentPage(1)
+                }}
+                className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Reset Button */}
+            <button
+              onClick={resetFilters}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-100 transition-colors"
+            >
+              Reset
+            </button>
+          </div>
+          {/* 日付フィルタ使用時、上部の期間タブがテーブルに適用されないことを注記 */}
+          {(filters.from || filters.to) && (
+            <p className="text-xs text-gray-400 mt-2">
+              When From/To dates are set, the time range buttons above no longer apply to the table
+              (charts and summary stats still follow the time range buttons).
+            </p>
+          )}
+        </div>
+
+        {/* Table (server-side pagination) */}
         <DataTable
           columns={columns}
-          data={gachaHistory.slice(0, 50)}
+          data={tableData}
           keyExtractor={(gacha) => gacha.id}
-          loading={loading}
+          loading={tableLoading}
           emptyMessage="No gacha history"
+          pagination={{
+            currentPage,
+            pageSize,
+            totalItems: totalCount,
+            onPageChange: setCurrentPage,
+            onPageSizeChange: (size) => {
+              setPageSize(size)
+              setCurrentPage(1)
+            },
+            pageSizeOptions: PAGE_SIZE_OPTIONS,
+          }}
         />
-        {gachaHistory.length > 50 && (
-          <p className="text-center text-gray-500 mt-4 text-sm">
-            Showing 50 of {gachaHistory.length} records
-          </p>
-        )}
       </div>
     </div>
   )

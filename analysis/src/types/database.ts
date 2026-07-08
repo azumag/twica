@@ -12,7 +12,6 @@ export type Json =
 
 export type Rarity = 'common' | 'rare' | 'epic' | 'legendary'
 export type SkillType = 'attack' | 'defense' | 'heal' | 'special'
-export type BattleResult = 'win' | 'lose' | 'draw'
 export type ChatSenderMode = 'streamer' | 'custom_bot' | 'official_bot'
 export type TwitchBotOwnerType = 'streamer' | 'system'
 export type TwitchBotStatus = 'active' | 'revoked' | 'error'
@@ -293,73 +292,6 @@ export interface Database {
           redeemed_at?: string
         }
       }
-      battles: {
-        Row: {
-          id: string
-          user_id: string
-          user_card_id: string
-          opponent_card_id: string | null
-          opponent_card_data: Json | null
-          result: BattleResult
-          turn_count: number
-          battle_log: Json | null
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          user_card_id: string
-          opponent_card_id?: string | null
-          opponent_card_data?: Json | null
-          result: BattleResult
-          turn_count?: number
-          battle_log?: Json | null
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          user_card_id?: string
-          opponent_card_id?: string | null
-          opponent_card_data?: Json | null
-          result?: BattleResult
-          turn_count?: number
-          battle_log?: Json | null
-          created_at?: string
-        }
-      }
-      battle_stats: {
-        Row: {
-          id: string
-          user_id: string
-          total_battles: number
-          wins: number
-          losses: number
-          draws: number
-          win_rate: number
-          updated_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          total_battles?: number
-          wins?: number
-          losses?: number
-          draws?: number
-          win_rate?: number
-          updated_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          total_battles?: number
-          wins?: number
-          losses?: number
-          draws?: number
-          win_rate?: number
-          updated_at?: string
-        }
-      }
       // ユーザーごとの集計済みストレージ使用量テーブル
       // recordBlobFile/removeBlobFileの呼び出し時にRPCで自動更新される
       // '_global_'はグローバル合計を表す特殊なuser_prefix
@@ -589,8 +521,6 @@ export type Card = Database['public']['Tables']['cards']['Row']
 export type User = Database['public']['Tables']['users']['Row']
 export type UserCard = Database['public']['Tables']['user_cards']['Row']
 export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
-export type Battle = Database['public']['Tables']['battles']['Row']
-export type BattleStats = Database['public']['Tables']['battle_stats']['Row']
 export type BlobFile = Database['public']['Tables']['blob_files']['Row']
 export type StreamerStorageBonus = Database['public']['Tables']['streamer_storage_bonus']['Row']
 // お知らせのヘルパー型
@@ -604,7 +534,6 @@ export type CardWithStreamer = Card & {
 
 export type UserWithStats = User & {
   card_count?: number
-  battle_stats?: BattleStats | null
 }
 
 export type GachaHistoryWithDetails = GachaHistory & {

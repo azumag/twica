@@ -1,30 +1,39 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { adminApi } from '../lib/adminApi'
+import type { UserCardCountEntry, UserCardsTableRow } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { RarityBadge } from '../components/RarityBadge'
-import { User, Card, Streamer } from '../types/database'
+import { User } from '../types/database'
 
-// ユーザーが所持しているカードの詳細情報
-interface UserCardWithDetails {
-  id: string
-  card_id: string
-  obtained_at: string
-  card: Card
-  streamer: Streamer | null
-}
+const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
 /**
  * UserCards - ユーザーが取得したカード一覧ページ
  * URLパラメータからユーザーIDを取得し、そのユーザーが所持するカード詳細を表示
+ *
+ * データ取得は2系統に分離:
+ * - サマリー（ユーザー情報 + カード種別ごとの所持数）: adminApi.getUserCardsSummary
+ * - カード詳細テーブル（コピー単位、サーバーサイドページネーション）: adminApi.getUserCardsTable
  */
 export function UserCards() {
   const { userId } = useParams<{ userId: string }>()
   const navigate = useNavigate()
+
+  // --- サマリー用 state（ユーザー情報 + レアリティ/ストリーマー別集計） ---
   const [user, setUser] = useState<User | null>(null)
-  const [userCards, setUserCards] = useState<UserCardWithDetails[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [cardCounts, setCardCounts] = useState<UserCardCountEntry[]>([])
+  const [summaryLoading, setSummaryLoading] = useState(true)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+
+  // --- テーブル用 state（カード所持詳細、ページネーション） ---
+  const [tableRows, setTableRows] = useState<UserCardsTableRow[]>([])
+  const [tableCount, setTableCount] = useState(0)
+  const [tableLoading, setTableLoading] = useState(true)
+  const [tableError, setTableError] = useState<string | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+
   // 説明文の展開状態を管理するSet（展開されているカードのIDを保持）
   const [expandedDescriptions, setExpandedDescriptions] = useState<Set<string>>(new Set())
 
@@ -44,100 +53,96 @@ export function UserCards() {
     })
   }
 
-  useEffect(() => {
-    if (userId) {
-      fetchUserAndCards()
-    } else {
-      setError('ユーザーIDが指定されていません')
-      setLoading(false)
-    }
-  }, [userId])
-
   /**
-   * ユーザー情報とそのカード一覧を取得
+   * ユーザー情報とカード所持サマリー（種別ごとの所持数）を取得
    */
-  async function fetchUserAndCards() {
+  async function fetchSummary(isCancelled: () => boolean) {
     if (!userId) return
 
-    setLoading(true)
+    setSummaryLoading(true)
+    setSummaryError(null)
     try {
-      // ユーザー情報を取得
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .single()
-
-      if (userError) {
-        console.error('User not found:', userError)
-        setError(`ユーザーが見つかりません: ${userError.message}`)
-        setLoading(false)
-        return
-      }
-
-      setUser(userData as User)
-
-      // ユーザーのカード一覧を取得（カード情報も結合）
-      // NOTE: cardsテーブルの実際のカラムに合わせてクエリを修正
-      const { data: userCardsData, error: cardsError } = await supabase
-        .from('user_cards')
-        .select(`
-          id,
-          card_id,
-          obtained_at,
-          cards (
-            id,
-            streamer_id,
-            name,
-            description,
-            image_url,
-            rarity,
-            drop_rate,
-            is_active,
-            created_at,
-            updated_at
-          )
-        `)
-        .eq('user_id', userId)
-        .order('obtained_at', { ascending: false })
-        .range(0, 9999)
-
-      if (cardsError) {
-        console.error('Cards fetch error:', cardsError)
-      }
-
-      // ストリーマー情報を取得
-      const { data: streamersData } = await supabase
-        .from('streamers')
-        .select('*')
-
-      const streamersMap = new Map<string, Streamer>()
-      const streamersArray = (streamersData || []) as Streamer[]
-      streamersArray.forEach((s) => {
-        streamersMap.set(s.id, s)
-      })
-
-      // データを整形
-      const cardsWithDetails: UserCardWithDetails[] = ((userCardsData || []) as unknown as {
-        id: string
-        card_id: string
-        obtained_at: string
-        cards: Card
-      }[]).map((uc) => ({
-        id: uc.id,
-        card_id: uc.card_id,
-        obtained_at: uc.obtained_at,
-        card: uc.cards,
-        streamer: uc.cards ? streamersMap.get(uc.cards.streamer_id) || null : null,
-      }))
-
-      setUserCards(cardsWithDetails)
-    } catch (error) {
-      console.error('Error fetching data:', error)
+      const data = await adminApi.getUserCardsSummary(userId)
+      if (isCancelled()) return
+      setUser(data.user)
+      setCardCounts(data.cardCounts)
+    } catch (err) {
+      if (isCancelled()) return
+      console.error('Failed to fetch user cards summary:', err)
+      setSummaryError(err instanceof Error ? err.message : 'ユーザー情報の取得に失敗しました')
     } finally {
-      setLoading(false)
+      if (!isCancelled()) setSummaryLoading(false)
     }
   }
+
+  /**
+   * 所持カード詳細（コピー単位）をページネーション付きで取得
+   * page を引数で明示的に受け取る: userId変更時に「ページを1に戻すeffect」と
+   * 「取得effect」が同一コミット内でcurrentPageのstate更新を共有できず、
+   * 前ユーザーのページ番号のまま新ユーザーを取得してしまう競合を避けるため
+   */
+  async function fetchTable(page: number, isCancelled: () => boolean) {
+    if (!userId) return
+
+    setTableLoading(true)
+    setTableError(null)
+    try {
+      const { rows, count } = await adminApi.getUserCardsTable({ userId, page, pageSize })
+      if (isCancelled()) return
+      setTableRows(rows)
+      setTableCount(count)
+    } catch (err) {
+      if (isCancelled()) return
+      console.error('Failed to fetch user cards table:', err)
+      setTableError(err instanceof Error ? err.message : 'カード一覧の取得に失敗しました')
+    } finally {
+      if (!isCancelled()) setTableLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!userId) {
+      setSummaryError('ユーザーIDが指定されていません')
+      setSummaryLoading(false)
+      setTableLoading(false)
+      return
+    }
+    // userIdを素早く連続変更すると古いレスポンスが後から返って新しい表示を
+    // 上書きしうるため、クリーンアップでcancelledを立てて破棄する
+    let cancelled = false
+    fetchSummary(() => cancelled)
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId])
+
+  // userId変更時はページを1に戻して取得する。setCurrentPage(1)とfetchTable()を
+  // 別々のeffectに分けると、同一コミット内では新しいcurrentPageがまだ反映されず
+  // 前ユーザーのページ番号で新ユーザーを取得する一過性の誤フェッチが発生するため、
+  // prevUserIdRefでuserId変更を検知する1本のeffectにまとめる。
+  // currentPageが1でなかった場合はsetCurrentPage(1)だけ行ってこのpassでは取得せず、
+  // 1に更新された次のpassで(userIdChanged=false, currentPage=1)として単発取得する
+  // (即時fetchTable(1)も呼ぶと、リセット後の再発火と合わせて同一ページを二重取得してしまうため)
+  const prevUserIdRef = useRef(userId)
+  useEffect(() => {
+    if (!userId) return
+
+    const userIdChanged = prevUserIdRef.current !== userId
+    prevUserIdRef.current = userId
+
+    if (userIdChanged && currentPage !== 1) {
+      setCurrentPage(1)
+      return
+    }
+
+    let cancelled = false
+    fetchTable(currentPage, () => cancelled)
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, currentPage, pageSize])
 
   // テーブルのカラム定義
   // NOTE: cardsテーブルにはステータス・スキル情報が存在しないため、基本情報のみ表示
@@ -145,12 +150,12 @@ export function UserCards() {
     {
       key: 'image',
       header: '画像',
-      render: (uc: UserCardWithDetails) => (
+      render: (row: UserCardsTableRow) => (
         <div className="flex items-center">
-          {uc.card?.image_url ? (
+          {row.cards?.image_url ? (
             <img
-              src={uc.card.image_url}
-              alt={uc.card.name}
+              src={row.cards.image_url}
+              alt={row.cards.name}
               className="w-12 h-12 rounded object-cover"
             />
           ) : (
@@ -164,22 +169,22 @@ export function UserCards() {
     {
       key: 'name',
       header: 'カード名',
-      render: (uc: UserCardWithDetails) => (
+      render: (row: UserCardsTableRow) => (
         <div>
-          <p className="font-medium text-gray-900">{uc.card?.name || 'Unknown'}</p>
-          {uc.card?.description && (
+          <p className="font-medium text-gray-900">{row.cards?.name || 'Unknown'}</p>
+          {row.cards?.description && (
             <p
               className={`text-xs text-gray-500 cursor-pointer hover:text-gray-700 ${
-                !expandedDescriptions.has(uc.id) ? 'truncate max-w-xs' : ''
+                !expandedDescriptions.has(row.id) ? 'truncate max-w-xs' : ''
               }`}
               onClick={(e) => {
                 // 親要素への伝播を防止（行クリックイベント等と干渉しないように）
                 e.stopPropagation()
-                toggleDescription(uc.id)
+                toggleDescription(row.id)
               }}
-              title={!expandedDescriptions.has(uc.id) ? 'クリックで全文表示' : 'クリックで折りたたむ'}
+              title={!expandedDescriptions.has(row.id) ? 'クリックで全文表示' : 'クリックで折りたたむ'}
             >
-              {uc.card.description}
+              {row.cards.description}
             </p>
           )}
         </div>
@@ -188,12 +193,12 @@ export function UserCards() {
     {
       key: 'streamer',
       header: 'ストリーマー',
-      render: (uc: UserCardWithDetails) => (
+      render: (row: UserCardsTableRow) => (
         <div className="flex items-center space-x-2">
-          {uc.streamer?.twitch_profile_image_url ? (
+          {row.streamer?.twitch_profile_image_url ? (
             <img
-              src={uc.streamer.twitch_profile_image_url}
-              alt={uc.streamer.twitch_display_name}
+              src={row.streamer.twitch_profile_image_url}
+              alt={row.streamer.twitch_display_name}
               className="w-6 h-6 rounded-full"
             />
           ) : (
@@ -202,7 +207,7 @@ export function UserCards() {
             </div>
           )}
           <span className="text-sm text-gray-700">
-            {uc.streamer?.twitch_display_name || 'Unknown'}
+            {row.streamer?.twitch_display_name || 'Unknown'}
           </span>
         </div>
       ),
@@ -210,15 +215,15 @@ export function UserCards() {
     {
       key: 'rarity',
       header: 'レアリティ',
-      render: (uc: UserCardWithDetails) =>
-        uc.card ? <RarityBadge rarity={uc.card.rarity} /> : <span>-</span>,
+      render: (row: UserCardsTableRow) =>
+        row.cards ? <RarityBadge rarity={row.cards.rarity} /> : <span>-</span>,
     },
     {
       key: 'drop_rate',
       header: 'ドロップ率',
-      render: (uc: UserCardWithDetails) =>
-        uc.card ? (
-          <span className="text-sm">{(uc.card.drop_rate * 100).toFixed(1)}%</span>
+      render: (row: UserCardsTableRow) =>
+        row.cards ? (
+          <span className="text-sm">{(row.cards.drop_rate * 100).toFixed(1)}%</span>
         ) : (
           <span>-</span>
         ),
@@ -226,54 +231,35 @@ export function UserCards() {
     {
       key: 'obtained_at',
       header: '取得日時',
-      render: (uc: UserCardWithDetails) => (
+      render: (row: UserCardsTableRow) => (
         <span className="text-xs text-gray-500">
-          {new Date(uc.obtained_at).toLocaleString('ja-JP')}
+          {new Date(row.obtained_at).toLocaleString('ja-JP')}
         </span>
       ),
     },
   ]
 
-  // レアリティごとのカード数を集計
-  const rarityCount = userCards.reduce(
-    (acc, uc) => {
-      if (uc.card) {
-        acc[uc.card.rarity] = (acc[uc.card.rarity] || 0) + 1
-      }
+  // 総所持カード数（コピー数含む）: 各エントリのcountを合算
+  const totalCards = cardCounts.reduce((sum, entry) => sum + entry.count, 0)
+
+  // レアリティごとのカード数を集計（コピー数を反映するためentry.countを加算）
+  const rarityCount = cardCounts.reduce(
+    (acc, entry) => {
+      acc[entry.card.rarity] = (acc[entry.card.rarity] || 0) + entry.count
       return acc
     },
     {} as Record<string, number>
   )
 
-  // ストリーマーごとのカード数を集計
-  const streamerCount = userCards.reduce(
-    (acc, uc) => {
-      const name = uc.streamer?.twitch_display_name || 'Unknown'
-      acc[name] = (acc[name] || 0) + 1
+  // ストリーマーごとのカード数を集計（コピー数を反映するためentry.countを加算）
+  const streamerCount = cardCounts.reduce(
+    (acc, entry) => {
+      const name = entry.streamer?.twitch_display_name || 'Unknown'
+      acc[name] = (acc[name] || 0) + entry.count
       return acc
     },
     {} as Record<string, number>
   )
-
-  // エラー表示
-  if (error) {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center space-x-4">
-          <button
-            onClick={() => navigate('/users')}
-            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <span className="text-gray-600">← 戻る</span>
-          </button>
-          <h1 className="text-2xl font-bold text-gray-900">エラー</h1>
-        </div>
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-700">{error}</p>
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className="space-y-6">
@@ -324,11 +310,23 @@ export function UserCards() {
         )}
       </div>
 
+      {/* エラー表示 */}
+      {(summaryError || tableError) && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <p className="text-red-800 font-medium">データの読み込みエラー</p>
+          {summaryError && <p className="text-red-600 text-sm mt-1">{summaryError}</p>}
+          {tableError && <p className="text-red-600 text-sm mt-1">{tableError}</p>}
+          <p className="text-red-500 text-xs mt-2">
+            詳細はブラウザコンソールを確認してください。
+          </p>
+        </div>
+      )}
+
       {/* サマリー統計 */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">総カード数</p>
-          <p className="text-2xl font-bold">{userCards.length}</p>
+          <p className="text-2xl font-bold">{totalCards}</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4 border-l-4 border-amber-400">
           <p className="text-sm text-gray-500">Legendary</p>
@@ -357,7 +355,7 @@ export function UserCards() {
       </div>
 
       {/* ストリーマー別カード数 */}
-      {Object.keys(streamerCount).length > 0 && (
+      {!summaryLoading && Object.keys(streamerCount).length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <h3 className="text-sm font-medium text-gray-700 mb-2">
             ストリーマー別カード数
@@ -385,10 +383,21 @@ export function UserCards() {
         </div>
         <DataTable
           columns={columns}
-          data={userCards}
-          keyExtractor={(uc) => uc.id}
-          loading={loading}
+          data={tableRows}
+          keyExtractor={(row) => row.id}
+          loading={tableLoading}
           emptyMessage="カードを所持していません"
+          pagination={{
+            currentPage,
+            pageSize,
+            totalItems: tableCount,
+            onPageChange: setCurrentPage,
+            onPageSizeChange: (size) => {
+              setPageSize(size)
+              setCurrentPage(1)
+            },
+            pageSizeOptions: PAGE_SIZE_OPTIONS,
+          }}
         />
       </div>
     </div>

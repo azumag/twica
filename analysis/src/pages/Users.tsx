@@ -1,21 +1,20 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
-import { User, BattleStats } from '../types/database'
+import { User } from '../types/database'
 
 // Extended user type with aggregated statistics
 interface UserWithStats extends User {
   card_count: number
-  battle_stats: BattleStats | null
 }
 
 // ソート順の定義
-type SortOrder = 'card_count_desc' | 'card_count_asc' | 'win_rate_desc' | 'battles_desc' | 'created_at_desc' | 'name_asc'
+type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'name_asc'
 
 /**
  * Users page - Displays all registered users with their statistics
- * Shows card ownership counts, battle statistics, and ToS acceptance status
+ * Shows card ownership counts and ToS acceptance status
  */
 export function Users() {
   const [users, setUsers] = useState<UserWithStats[]>([])
@@ -39,41 +38,16 @@ export function Users() {
   }, [searchTerm, sortOrder, hideZeroCards])
 
   /**
-   * Fetches all users with their card counts and battle statistics
-   * Supabaseのリレーション機能を使って効率的にカード数を取得
+   * Fetches all users with their card counts
+   * サーバーサイド（/__admin/users）でカード数を集計済みのデータを取得
    */
   async function fetchUsers() {
     setLoading(true)
     try {
-      // ユーザー情報とカード数をリレーション機能で取得、バトル統計は別クエリ
-      const [usersResult, battleStatsResult] = await Promise.all([
-        supabase
-          .from('users')
-          .select('*, user_cards(count)')
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('battle_stats')
-          .select('*'),
-      ])
-
-      if (usersResult.error) throw usersResult.error
-
-      // 型定義: Supabaseのリレーションカウント結果の形式
-      type UserWithCardCount = User & {
-        user_cards: { count: number }[]
-      }
-
-      const rawData = usersResult.data as unknown as UserWithCardCount[]
-      const battleStatsData = (battleStatsResult.data || []) as BattleStats[]
-
-      // Create a map of user_id -> battle stats
-      const battleStatsMap = new Map<string, BattleStats>()
-      battleStatsData.forEach((bs) => {
-        battleStatsMap.set(bs.user_id, bs)
-      })
+      const rawData = await adminApi.getUsers()
 
       // Combine users with their statistics
-      const usersWithStats: UserWithStats[] = (rawData || []).map((user) => {
+      const usersWithStats: UserWithStats[] = rawData.map((user) => {
         const cardCount = user.user_cards?.[0]?.count ?? 0
         return {
           id: user.id,
@@ -86,7 +60,6 @@ export function Users() {
           created_at: user.created_at,
           updated_at: user.updated_at,
           card_count: cardCount,
-          battle_stats: battleStatsMap.get(user.id) || null,
         }
       })
 
@@ -118,14 +91,6 @@ export function Users() {
         return b.card_count - a.card_count
       case 'card_count_asc':
         return a.card_count - b.card_count
-      case 'win_rate_desc':
-        const aWinRate = a.battle_stats?.win_rate ?? -1
-        const bWinRate = b.battle_stats?.win_rate ?? -1
-        return bWinRate - aWinRate
-      case 'battles_desc':
-        const aBattles = a.battle_stats?.total_battles ?? 0
-        const bBattles = b.battle_stats?.total_battles ?? 0
-        return bBattles - aBattles
       case 'name_asc':
         return a.twitch_display_name.localeCompare(b.twitch_display_name)
       case 'created_at_desc':
@@ -174,45 +139,6 @@ export function Users() {
       ),
     },
     {
-      key: 'battles',
-      header: 'Battles',
-      render: (user: UserWithStats) => (
-        <div className="text-sm">
-          {user.battle_stats ? (
-            <>
-              <span className="font-medium">{user.battle_stats.total_battles}</span>
-              <span className="text-gray-500 ml-1">
-                ({user.battle_stats.wins}W / {user.battle_stats.losses}L)
-              </span>
-            </>
-          ) : (
-            <span className="text-gray-400">-</span>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'win_rate',
-      header: 'Win Rate',
-      render: (user: UserWithStats) => (
-        <div>
-          {user.battle_stats && user.battle_stats.total_battles > 0 ? (
-            <span
-              className={`font-medium ${
-                user.battle_stats.win_rate >= 50
-                  ? 'text-green-600'
-                  : 'text-red-600'
-              }`}
-            >
-              {user.battle_stats.win_rate.toFixed(1)}%
-            </span>
-          ) : (
-            <span className="text-gray-400">-</span>
-          )}
-        </div>
-      ),
-    },
-    {
       key: 'tos',
       header: 'ToS',
       render: (user: UserWithStats) => (
@@ -241,7 +167,6 @@ export function Users() {
   // Calculate summary statistics（全データに基づく）
   const totalCards = users.reduce((sum, u) => sum + u.card_count, 0)
   const usersWithTos = users.filter((u) => u.tos_accepted_at).length
-  const usersWithBattles = users.filter((u) => u.battle_stats && u.battle_stats.total_battles > 0).length
   const usersWithCards = users.filter((u) => u.card_count > 0).length
 
   return (
@@ -253,7 +178,7 @@ export function Users() {
       </div>
 
       {/* Summary Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Users</p>
           <p className="text-2xl font-bold">{users.length}</p>
@@ -270,10 +195,6 @@ export function Users() {
               ({users.length > 0 ? ((usersWithTos / users.length) * 100).toFixed(1) : 0}%)
             </span>
           </p>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4">
-          <p className="text-sm text-gray-500">Active Battlers</p>
-          <p className="text-2xl font-bold">{usersWithBattles}</p>
         </div>
       </div>
 
@@ -304,8 +225,6 @@ export function Users() {
             >
               <option value="card_count_desc">カード数 (多い順)</option>
               <option value="card_count_asc">カード数 (少ない順)</option>
-              <option value="win_rate_desc">勝率 (高い順)</option>
-              <option value="battles_desc">バトル数 (多い順)</option>
               <option value="name_asc">名前 (A-Z)</option>
               <option value="created_at_desc">登録日 (新しい順)</option>
             </select>

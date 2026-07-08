@@ -14,7 +14,6 @@ const navItems: NavItem[] = [
   { path: '/users', label: 'Users', icon: '👥' },
   { path: '/streamers', label: 'Streamers', icon: '🎮' },
   { path: '/gacha', label: 'Gacha', icon: '🎰' },
-  { path: '/battles', label: 'Battles', icon: '⚔️' },
   { path: '/announcements', label: 'Announcements', icon: '📢' },
   { path: '/licenses', label: 'Licenses', icon: '🎫' },
   { path: '/inquiries', label: 'Inquiries', icon: '💬' },

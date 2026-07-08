@@ -1,11 +1,18 @@
-import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '../lib/supabase'
+import { useEffect, useState, useCallback, Fragment } from 'react'
+import { adminApi } from '../lib/adminApi'
 import { RarityBadge } from './RarityBadge'
 import { Rarity } from '../types/database'
 
 interface DropRateStatsProps {
   streamerId: string
   timeRange: '7d' | '30d' | '90d' | 'all'
+}
+
+interface CardStatDrawer {
+  userTwitchId: string
+  username: string
+  drawCount: number
+  lastDrawnAt: string
 }
 
 interface CardStat {
@@ -16,6 +23,8 @@ interface CardStat {
   configuredRate: number
   actualCount: number
   actualRate: number
+  drawerCount: number
+  drawers: CardStatDrawer[]
 }
 
 interface RarityStat {
@@ -35,117 +44,67 @@ export function DropRateStats({ streamerId, timeRange }: DropRateStatsProps) {
   const [rarityStats, setRarityStats] = useState<RarityStat[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // 「カード別排出率比較」テーブルで排出者一覧を展開中のカードID集合
+  const [expandedCardIds, setExpandedCardIds] = useState<Set<string>>(new Set())
 
   const fetchStats = useCallback(async () => {
     setLoading(true)
     setError(null)
 
-    // 期間フィルタの開始日を算出
-    let fromDate: string | null = null
-    if (timeRange !== 'all') {
-      const daysMap = { '7d': 7, '30d': 30, '90d': 90 }
-      const now = new Date()
-      fromDate = new Date(now.getTime() - daysMap[timeRange] * 24 * 60 * 60 * 1000).toISOString()
-    }
+    try {
+      // __admin/drop-rate-stats 経由で get_gacha_drop_stats RPC を呼び出す。
+      // DBサイドの正確なCOUNT/GROUP BY集計のため、10000件キャップや近似値の懸念はない。
+      const data = await adminApi.getDropRateStats({ streamerId, range: timeRange })
 
-    // 3つの独立クエリを並列実行してレイテンシを削減
-    // 1. count-onlyクエリで正確な総回数（1000行制限回避）
-    // 2. card_id + rarity で排出回数集計（limit 10000で近似）
-    // 3. 全アクティブカード（排出0回も含めるため）
-    let countQuery = supabase
-      .from('gacha_history')
-      .select('id', { count: 'exact', head: true })
-      .eq('streamer_id', streamerId)
-    let historyQuery = supabase
-      .from('gacha_history')
-      .select('card_id, cards(rarity)')
-      .eq('streamer_id', streamerId)
-      .limit(10000)
-    const cardsQuery = supabase
-      .from('cards')
-      .select('id, name, rarity, image_url, drop_rate')
-      .eq('streamer_id', streamerId)
-      .eq('is_active', true)
+      const stats: CardStat[] = data.card_stats.map((c) => ({
+        cardId: c.card_id,
+        cardName: c.card_name,
+        rarity: c.rarity,
+        imageUrl: c.image_url,
+        configuredRate: c.configured_rate,
+        actualCount: c.actual_count,
+        actualRate: c.actual_rate,
+        drawerCount: c.drawer_count,
+        drawers: c.drawers.map((d) => ({
+          userTwitchId: d.user_twitch_id,
+          username: d.username,
+          drawCount: d.draw_count,
+          lastDrawnAt: d.last_drawn_at,
+        })),
+      }))
 
-    if (fromDate) {
-      countQuery = countQuery.gte('redeemed_at', fromDate)
-      historyQuery = historyQuery.gte('redeemed_at', fromDate)
-    }
+      // レアリティ優先（legendary→common）、同レアリティ内は設定率降順でソート
+      // RPCは rarity_order ASC, created_at DESC で返す（同レアリティ内は作成日時順）ため、
+      // 「設定率が高い順」という現行UXを保つにはクライアント側の再ソートが必要
+      const rarityOrder: Record<string, number> = { legendary: 0, epic: 1, rare: 2, common: 3 }
+      stats.sort((a, b) => (rarityOrder[a.rarity] ?? 9) - (rarityOrder[b.rarity] ?? 9) || b.configuredRate - a.configuredRate)
 
-    const [countResult, historyResult, cardsResult] = await Promise.all([
-      countQuery,
-      historyQuery,
-      cardsQuery,
-    ])
-
-    if (countResult.error || historyResult.error || cardsResult.error) {
-      console.error('DropRateStats fetch error:', countResult.error, historyResult.error, cardsResult.error)
+      setTotalDraws(data.total_draws)
+      setCardStats(stats)
+      setRarityStats(data.rarity_stats)
+    } catch (err) {
+      console.error('DropRateStats fetch error:', err)
       setError('排出率データの取得に失敗しました')
+    } finally {
       setLoading(false)
-      return
     }
-
-    const safeTotal = countResult.count || 0
-    // Supabase の型推論が select('card_id, cards(rarity)') に対して不完全なため明示キャスト
-    const history = (historyResult.data || []) as unknown as Array<{ card_id: string; cards: { rarity: string } | null }>
-    const allCards = (cardsResult.data || []) as unknown as Array<{
-      id: string; name: string; rarity: string; image_url: string | null; drop_rate: number
-    }>
-
-    // カードごとの排出回数を集計
-    const drawCounts = new Map<string, number>()
-    for (const h of history) {
-      drawCounts.set(h.card_id, (drawCounts.get(h.card_id) || 0) + 1)
-    }
-
-    // 設定重み合計（パーセンテージ計算用）
-    // drop_rate は Supabase DECIMAL型のため Number() でキャスト
-    const totalWeight = allCards.reduce((sum, c) => sum + Number(c.drop_rate || 0), 0)
-
-    // カードごとの統計を構築
-    // 率計算の分母は count-only クエリの正確な総数 (safeTotal) を使用
-    // （参照実装 dashboard-data.ts:getGachaStats と同一ロジック）
-    // 10000件超のとき actualCount はサンプルからの近似値だが、
-    // 分母を正確な総数にすることで設定率との比較精度を維持
-    const stats: CardStat[] = allCards.map((card) => {
-      const actualCount = drawCounts.get(card.id) || 0
-      return {
-        cardId: card.id,
-        cardName: card.name,
-        rarity: card.rarity as Rarity,
-        imageUrl: card.image_url,
-        configuredRate: totalWeight > 0 ? (Number(card.drop_rate) / totalWeight) * 100 : 0,
-        actualCount,
-        actualRate: safeTotal > 0 ? (actualCount / safeTotal) * 100 : 0,
-      }
-    })
-
-    // レアリティレベルの統計を構築
-    const rarityMap = new Map<string, number>()
-    for (const h of history) {
-      if (h.cards) {
-        rarityMap.set(h.cards.rarity, (rarityMap.get(h.cards.rarity) || 0) + 1)
-      }
-    }
-
-    const rStats: RarityStat[] = ['legendary', 'epic', 'rare', 'common'].map((rarity) => {
-      const count = rarityMap.get(rarity) || 0
-      return { rarity, count, rate: safeTotal > 0 ? (count / safeTotal) * 100 : 0 }
-    })
-
-    // レアリティ優先（legendary→common）、同レアリティ内は設定率降順でソート
-    const rarityOrder: Record<string, number> = { legendary: 0, epic: 1, rare: 2, common: 3 }
-    stats.sort((a, b) => (rarityOrder[a.rarity] ?? 9) - (rarityOrder[b.rarity] ?? 9) || b.configuredRate - a.configuredRate)
-
-    setTotalDraws(safeTotal)
-    setCardStats(stats)
-    setRarityStats(rStats)
-    setLoading(false)
   }, [streamerId, timeRange])
 
   useEffect(() => {
     fetchStats()
   }, [fetchStats])
+
+  const toggleExpanded = useCallback((cardId: string) => {
+    setExpandedCardIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(cardId)) {
+        next.delete(cardId)
+      } else {
+        next.add(cardId)
+      }
+      return next
+    })
+  }, [])
 
   if (loading) {
     return (
@@ -186,12 +145,6 @@ export function DropRateStats({ streamerId, timeRange }: DropRateStatsProps) {
       <div className="bg-blue-50 rounded-lg p-4 text-center">
         <p className="text-3xl font-bold text-blue-700">{totalDraws.toLocaleString()}</p>
         <p className="text-sm text-blue-500">総ガチャ回数（{timeRangeLabel}）</p>
-        {/* カード別集計は10000件上限のため、超過時は近似値になることを注記 */}
-        {totalDraws > 10000 && (
-          <p className="text-xs text-amber-600 mt-1">
-            ※ カード別排出率はサンプル10,000件からの近似値です
-          </p>
-        )}
       </div>
 
       {/* レアリティ別サマリー（4カラムグリッド） */}
@@ -231,31 +184,64 @@ export function DropRateStats({ streamerId, timeRange }: DropRateStatsProps) {
                 const highlightClass = (card.configuredRate > 0 || card.actualRate > 0) && deviation > 5
                   ? 'bg-yellow-50'
                   : ''
+                const isExpanded = expandedCardIds.has(card.cardId)
+                const hasDrawers = card.drawerCount > 0
                 return (
-                  <tr key={card.cardId} className={highlightClass}>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        {card.imageUrl ? (
-                          <img src={card.imageUrl} alt={card.cardName} className="w-6 h-6 rounded object-cover" />
-                        ) : (
-                          <div className="w-6 h-6 rounded bg-gray-200 flex items-center justify-center text-xs">?</div>
-                        )}
-                        <span className="text-gray-800">{card.cardName}</span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <RarityBadge rarity={card.rarity} />
-                    </td>
-                    <td className="px-3 py-2 text-right text-gray-600">
-                      {card.configuredRate.toFixed(1)}%
-                    </td>
-                    <td className="px-3 py-2 text-right font-medium text-gray-900">
-                      {card.actualRate.toFixed(1)}%
-                    </td>
-                    <td className="px-3 py-2 text-right text-gray-600">
-                      {card.actualCount.toLocaleString()}
-                    </td>
-                  </tr>
+                  <Fragment key={card.cardId}>
+                    <tr className={highlightClass}>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          {card.imageUrl ? (
+                            <img src={card.imageUrl} alt={card.cardName} className="w-6 h-6 rounded object-cover" />
+                          ) : (
+                            <div className="w-6 h-6 rounded bg-gray-200 flex items-center justify-center text-xs">?</div>
+                          )}
+                          <span className="text-gray-800">{card.cardName}</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2">
+                        <RarityBadge rarity={card.rarity} />
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-600">
+                        {card.configuredRate.toFixed(1)}%
+                      </td>
+                      <td className="px-3 py-2 text-right font-medium text-gray-900">
+                        {card.actualRate.toFixed(1)}%
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-600">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span>{card.actualCount.toLocaleString()}</span>
+                          {hasDrawers && (
+                            <button
+                              type="button"
+                              onClick={() => toggleExpanded(card.cardId)}
+                              className="text-xs text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                              title={isExpanded ? 'クリックで折りたたむ' : 'クリックで排出者一覧を表示'}
+                            >
+                              {card.drawerCount.toLocaleString()}人{isExpanded ? ' ▲' : ' ▼'}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {isExpanded && hasDrawers && (
+                      <tr className="bg-gray-50">
+                        <td colSpan={5} className="px-3 py-2">
+                          <p className="text-xs text-gray-500 mb-1">
+                            排出者一覧（上位{card.drawers.length}人{card.drawerCount > card.drawers.length ? `/ 全${card.drawerCount}人` : ''}）
+                          </p>
+                          <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-0.5 text-xs text-gray-600">
+                            {card.drawers.map((drawer) => (
+                              <li key={drawer.userTwitchId} className="flex justify-between gap-2">
+                                <span className="truncate">{drawer.username}</span>
+                                <span className="text-gray-400 shrink-0">{drawer.drawCount.toLocaleString()}回</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </tbody>
