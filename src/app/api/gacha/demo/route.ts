@@ -20,6 +20,7 @@ import { getDb } from "@/lib/db/client";
 import { isPgReadEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable } from "@/lib/db/schema";
+import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
 
 /**
  * cardId 直接指定時のカード取得の pg 直結実装 (#663)
@@ -27,18 +28,38 @@ import { cards as cardsTable } from "@/lib/db/schema";
  * LIMIT 1 + rows[0] ?? null で同じ外部挙動。既存コードは取得失敗時に
  * ランダム選択へフォールバックするだけで throw しないため、pg 版もエラーは
  * 握りつぶして null を返す（同じフォールバック挙動）。
+ *
+ * self-review fix (外部レビュー指摘): 無指定 `.select()` は schema.ts の静的
+ * 列リストを生成するため、本番に実在しない8列(card_number/hp/atk/...、
+ * cards-safe-columns.ts参照)を含む SELECT は必ず失敗する。このルートは元々
+ * catch で null を返し呼び出し元がデモカードへフォールバックする設計のため
+ * throw はしないが、その結果「配信者の実カードが一切表示されずデモカードに
+ * 静かにすり替わる」という気付きにくい壊れ方をする。cards/route.ts と同じ
+ * パターン（無指定 select を試行→列欠落エラー検知→CARDS_SAFE_COLUMNS で
+ * 再試行）を適用し、本番でも実カードを返せるようにする。
  */
 async function fetchCardByIdPg(cardId: string): Promise<Card | null> {
-  try {
-    const rows = await withDbRetry(
+  async function selectRow(useSafeColumns: boolean) {
+    return withDbRetry(
       async () => {
         // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
         const { db } = await getDb();
-        return db.select().from(cardsTable).where(eq(cardsTable.id, cardId)).limit(1);
+        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
+        return query.from(cardsTable).where(eq(cardsTable.id, cardId)).limit(1);
       },
       "gacha/demo(fetch card by id)",
       { idempotent: true },
     );
+  }
+
+  try {
+    let rows;
+    try {
+      rows = await selectRow(false);
+    } catch (error) {
+      if (!isMissingCardsBattleColumnError(error)) throw error;
+      rows = await selectRow(true);
+    }
     return (rows[0] as unknown as Card) ?? null;
   } catch {
     return null;
@@ -51,21 +72,35 @@ async function fetchCardByIdPg(cardId: string): Promise<Card | null> {
  * and(eq(...), eq(...)) と等価。既存コードは取得失敗時にデモカードへ
  * フォールバックするだけで throw しないため、pg 版もエラーは握りつぶして
  * 空配列を返す（同じフォールバック挙動）。
+ *
+ * self-review fix (外部レビュー指摘): fetchCardByIdPg と同じ理由で、無指定
+ * `.select()` は本番未デプロイ8列の欠落により必ず失敗する。同じ
+ * 「無指定 select 試行→列欠落エラー検知→CARDS_SAFE_COLUMNS で再試行」を適用する。
  */
 async function fetchActiveCardsForStreamerPg(streamerId: string): Promise<Card[]> {
-  try {
-    const rows = await withDbRetry(
+  async function selectRows(useSafeColumns: boolean) {
+    return withDbRetry(
       async () => {
         // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
         const { db } = await getDb();
-        return db
-          .select()
+        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
+        return query
           .from(cardsTable)
           .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)));
       },
       "gacha/demo(fetch streamer cards)",
       { idempotent: true },
     );
+  }
+
+  try {
+    let rows;
+    try {
+      rows = await selectRows(false);
+    } catch (error) {
+      if (!isMissingCardsBattleColumnError(error)) throw error;
+      rows = await selectRows(true);
+    }
     return rows as unknown as Card[];
   } catch {
     return [];

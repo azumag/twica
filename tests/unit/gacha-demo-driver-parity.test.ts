@@ -43,6 +43,35 @@ const CARD_ROW = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
+// 本番未デプロイ8列(card_number/hp/atk/def/spd/skill_type/skill_name/skill_power)を
+// 除いた行。CARDS_SAFE_COLUMNS 再試行の成功レスポンスを模す (#663 self-review fix、
+// 外部レビュー指摘: fetchCardByIdPg/fetchActiveCardsForStreamerPg にも
+// cards/route.ts と同じ列欠落フォールバックが必要)。
+const SAFE_CARD_ROW = {
+  id: 'card-1',
+  streamer_id: 'streamer-1',
+  name: 'カード1',
+  description: null,
+  image_url: null,
+  rarity: 'common',
+  rarity_order: 4,
+  drop_rate: 0.25,
+  intra_rarity_weight: 1,
+  max_issuance_count: null,
+  collection_name: null,
+  is_active: true,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
+// pg (postgres.js) が本番未デプロイ列に対して throw する 42703 相当のエラー。
+// isMissingCardsBattleColumnError の判定ロジック（"column" を含むテキスト +
+// 欠落8列のいずれかの列名を含む）に一致させる。
+const MISSING_BATTLE_COLUMN_ERROR = {
+  code: '42703',
+  message: 'column "hp" of relation "cards" does not exist',
+}
+
 interface PgResponse {
   rows?: Array<Record<string, unknown>>
   error?: unknown
@@ -154,6 +183,43 @@ describe('POST /api/gacha/demo: postgrest / pg 経路の互換 (#663)', () => {
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
     expect(body.userTwitchUsername).toBe('DemoUser')
+  })
+
+  it('DB_DRIVER=pg-read: cardId指定時、cardsテーブルの本番未デプロイ8列欠落エラーからCARDS_SAFE_COLUMNSで再試行し実カードが返る（#663 self-review fix）', async () => {
+    vi.stubEnv('DB_DRIVER', 'pg-read')
+    const pg = createDrizzleDbMock({
+      selects: [{ error: MISSING_BATTLE_COLUMN_ERROR }, { rows: [SAFE_CARD_ROW] }],
+    })
+    primePgDb(pg)
+
+    const { POST } = await import('@/app/api/gacha/demo/route')
+    const response = await POST(createRequest({ cardId: 'card-1' }))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    // デモカードへのフォールバックではなく、実カード(card-1)が返ることを検証する。
+    // 列欠落フォールバックが無いと catch で null 扱いになりデモカードにすり替わる。
+    expect(body.card.id).toBe('card-1')
+    expect(body.card.streamer_id).toBe('streamer-1')
+    expect(pg.db.select).toHaveBeenCalledTimes(2)
+  })
+
+  it('DB_DRIVER=pg-read: streamerId指定時、cardsテーブルの本番未デプロイ8列欠落エラーからCARDS_SAFE_COLUMNSで再試行し実カードが返る（#663 self-review fix）', async () => {
+    vi.stubEnv('DB_DRIVER', 'pg-read')
+    const pg = createDrizzleDbMock({
+      selects: [{ error: MISSING_BATTLE_COLUMN_ERROR }, { rows: [SAFE_CARD_ROW] }],
+    })
+    primePgDb(pg)
+
+    const { POST } = await import('@/app/api/gacha/demo/route')
+    const response = await POST(createRequest({ streamerId: 'streamer-1' }))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    // デモカードへのフォールバックではなく、配信者の実カード(card-1)が返ることを検証する。
+    expect(body.card.id).toBe('card-1')
+    expect(body.card.streamer_id).toBe('streamer-1')
+    expect(pg.db.select).toHaveBeenCalledTimes(2)
   })
 
   it('DB_DRIVER=pg-read: supabaseUrl/supabaseKey が未設定でもpg経路は動作する（アドホッククライアント非依存の検証）', async () => {
