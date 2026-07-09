@@ -20,6 +20,21 @@ import { hasTwitchSub } from '@/lib/twitch/sub-check'
 import { PLAN_PRIORITY, PLAN_STORAGE_BONUS } from '@/lib/plan-constants'
 import { logPerf, perfStart } from '@/lib/perf'
 import type { PlanType } from '@/lib/plan-constants'
+// -----------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。
+// getLicensePlan / getCachedTwitchSubPlan はどちらも読み取り専用のため
+// isPgReadEnabled() で分岐する。既存 supabase-js 実装は 1 文字も変えず、
+// フラグ未設定時は完全に従来どおり動く。
+// -----------------------------------------------------------------------------
+import { and, eq, inArray } from 'drizzle-orm'
+import { getDb } from '@/lib/db/client'
+import { isPgReadEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import {
+  supportCodes as supportCodesTable,
+  userLicenses as userLicensesTable,
+  users as usersTable,
+} from '@/lib/db/schema'
 
 // サーバー側コードからの既存 import を壊さないよう re-export
 export type { PlanType } from '@/lib/plan-constants'
@@ -86,10 +101,69 @@ export const getUserPlanSnapshot = cache(async function getUserPlanSnapshot(twit
 })
 
 /**
+ * getLicensePlan の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - `.select('plan_type, support_codes!inner(status)')` の埋め込み + `.in('support_codes.status', ...)`
+ *   は user_licenses INNER JOIN support_codes（FK: user_licenses.code_id →
+ *   support_codes.id、migration 00017）+ status の inArray() が等価。
+ *   戻り値の消費側は plan_type しか読まないため、support_codes.status は
+ *   JOIN 条件にのみ使い、select 列には含めない。
+ * - エラー/例外時は 'basic' を返す既存の安全側デグレードと同じ外部挙動。
+ */
+async function getLicensePlanPg(twitchUserId: string): Promise<PlanType> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ plan_type: userLicensesTable.plan_type })
+          .from(userLicensesTable)
+          .innerJoin(supportCodesTable, eq(userLicensesTable.code_id, supportCodesTable.id))
+          .where(
+            and(
+              eq(userLicensesTable.twitch_user_id, twitchUserId),
+              inArray(supportCodesTable.status, ['active', 'rotating'])
+            )
+          )
+      },
+      'getLicensePlan',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true },
+    )
+
+    if (rows.length === 0) {
+      return 'basic'
+    }
+
+    // 最上位プランを判定（patron > support > basic）
+    let highestPlan: PlanType = 'basic'
+    for (const license of rows) {
+      const planType = license.plan_type as PlanType
+      if (PLAN_PRIORITY[planType] > PLAN_PRIORITY[highestPlan]) {
+        highestPlan = planType
+      }
+    }
+
+    return highestPlan
+  } catch (error) {
+    logger.error('[Plan] Error getting license plan:', error)
+    return 'basic'
+  }
+}
+
+/**
  * DBライセンスベースのプラン判定（従来のロジック）
  * user_licenses と support_codes(status) をJOINし、有効なコードに紐づくライセンスのみ有効とする。
  */
 async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  if (isPgReadEnabled()) {
+    return getLicensePlanPg(twitchUserId)
+  }
+
   try {
     const supabaseAdmin = getSupabaseAdmin()
 
@@ -128,7 +202,50 @@ async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
   }
 }
 
+/**
+ * getCachedTwitchSubPlan の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - `.maybeSingle()` は twitch_user_id が UNIQUE ではない前提（database.ts に制約
+ *   記載なし）だが、既存実装が maybeSingle（0〜1行）を仮定しているため、
+ *   LIMIT 1 + rows[0] ?? null で同じ外部挙動にする。
+ * - エラー/該当なしは 'basic' を返す既存の安全側デグレードと同じ。
+ */
+async function getCachedTwitchSubPlanPg(twitchUserId: string): Promise<PlanType> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ twitch_has_sub: usersTable.twitch_has_sub })
+          .from(usersTable)
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .limit(1)
+      },
+      'getCachedTwitchSubPlan',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true },
+    )
+    const user = rows[0] ?? null
+
+    if (!user) {
+      return 'basic'
+    }
+
+    return user.twitch_has_sub === true ? 'twitch_sub' : 'basic'
+  } catch (error) {
+    logger.error('[Plan] Error getting cached Twitch sub plan:', error)
+    return 'basic'
+  }
+}
+
 async function getCachedTwitchSubPlan(twitchUserId: string): Promise<PlanType> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  if (isPgReadEnabled()) {
+    return getCachedTwitchSubPlanPg(twitchUserId)
+  }
+
   try {
     const supabaseAdmin = getSupabaseAdmin()
     const { data, error } = await withRetry(

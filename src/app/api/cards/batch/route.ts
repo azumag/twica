@@ -13,6 +13,19 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
+// -----------------------------------------------------------------------------
+// #663 (#570/#572 パイロット踏襲): pg 直結経路。POST は読み取り（所有権確認）と
+// 書き込み（一括 INSERT）が混在するため、DB アクセス部分は isPgWriteEnabled()
+// で分岐する（token-manager.ts の getBotAccountForChat と同じ方針）。既存
+// supabase-js 実装は 1 文字も変えず、フラグ未設定時（既定 'postgrest'）は
+// 完全に従来どおり動く。フォールバックチェーンは無い（postgrest 経路も無い）。
+// -----------------------------------------------------------------------------
+import { and, eq } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgWriteEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
+import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 import type { Rarity } from "@/types/database";
 
@@ -27,6 +40,87 @@ interface BatchCardInput {
   dropRate: number;
   description?: string;
   intraRarityWeight?: number;
+}
+
+/**
+ * POST /api/cards/batch の streamer 所有権確認 (id, rarity_weights) の
+ * pg 直結実装 (#663)。フォールバックチェーンは無い(postgrest 経路にも無い)。
+ *
+ * PostgREST 実装との対応:
+ * - postgrest 経路は `data` のみ分割代入し error を確認しない
+ *   （`const { data: streamer } = await ...`）ため、いかなるエラーも `!streamer`
+ *   の 403 分岐に落ちる。pg 版も同じ外部挙動に合わせ、throw せず null を返す。
+ */
+async function selectStreamerForBatchCreatePg(
+  streamerId: string,
+  twitchUserId: string
+): Promise<{ id: string; rarity_weights: Record<string, number> | null } | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ id: streamersTable.id, rarity_weights: streamersTable.rarity_weights })
+          .from(streamersTable)
+          .where(and(eq(streamersTable.id, streamerId), eq(streamersTable.twitch_user_id, twitchUserId)))
+          .limit(1);
+      },
+      "Cards Batch API: streamer ownership check",
+      { idempotent: true }
+    );
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /api/cards/batch の一括 INSERT の pg 直結実装 (#663)。
+ * 入力値のデプロイ窓フォールバックチェーンは無い(postgrest 経路にも無い。
+ * cardsToInsert は card_number/hp/atk 等の本番未デプロイ列を最初から
+ * 含めない)。
+ *
+ * PostgREST 実装との対応:
+ * - `.insert(cardsToInsert).select()` は `.insert(...).values(...).returning()`
+ *   が等価（RETURNING で挿入行を1回の往復で取得）。
+ * - ON CONFLICT の無い一括 INSERT のため非冪等（withDbRetry にオプションを
+ *   渡さない = リトライなし。二重作成を避けるため）。
+ *
+ * self-review fix: 無指定 `.returning()` は schema.ts の静的列リストを生成する
+ * ため、本番に実在しない8列(card_number/hp/atk/def/spd/skill_*、
+ * cards-safe-columns.ts参照)を含む RETURNING は必ず失敗する。cardsToInsert
+ * 自体はこれらの列を含まないため INSERT の VALUES 自体は成功しうるが、
+ * RETURNING が無関係にそれらを要求するため失敗する。検知したら RETURNING を
+ * CARDS_SAFE_COLUMNS（8列除外）へ切り替えて一度だけ再試行する。
+ */
+async function insertCardsBatchPg(
+  cardsToInsert: Record<string, unknown>[]
+): Promise<{ createdCards: Record<string, unknown>[] | null; error: unknown }> {
+  async function attemptInsert(
+    useSafeReturning = false
+  ): Promise<{ createdCards: Record<string, unknown>[] | null; error: unknown }> {
+    try {
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          const query = db.insert(cardsTable).values(cardsToInsert as (typeof cardsTable.$inferInsert)[]);
+          return useSafeReturning ? query.returning(CARDS_SAFE_COLUMNS) : query.returning();
+        },
+        "Cards Batch API: bulk insert cards"
+        // ON CONFLICT の無い INSERT は再実行で二重作成になりうるため非冪等（既定 = リトライなし）
+      );
+      return { createdCards: rows, error: null };
+    } catch (error) {
+      return { createdCards: null, error };
+    }
+  }
+
+  let { createdCards, error } = await attemptInsert();
+  if (error && isMissingCardsBattleColumnError(error)) {
+    ({ createdCards, error } = await attemptInsert(true));
+  }
+  return { createdCards, error };
 }
 
 /**
@@ -108,12 +202,19 @@ export async function POST(request: NextRequest) {
 
     // Verify streamer owns this streamer profile
     // 配信者がこのstreamerプロフィールを所有しているか確認
-    const { data: streamer } = await supabaseAdmin
-      .from("streamers")
-      .select("id, rarity_weights")
-      .eq("id", streamerId)
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
+    let streamer: { id: string; rarity_weights: Record<string, number> | null } | null;
+
+    if (isPgWriteEnabled()) {
+      streamer = await selectStreamerForBatchCreatePg(streamerId, session.twitchUserId);
+    } else {
+      const { data } = await supabaseAdmin
+        .from("streamers")
+        .select("id, rarity_weights")
+        .eq("id", streamerId)
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = data;
+    }
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
@@ -174,10 +275,21 @@ export async function POST(request: NextRequest) {
 
     // Insert all cards at once
     // 全カードを一度に挿入
-    const { data: createdCards, error } = await supabaseAdmin
-      .from("cards")
-      .insert(cardsToInsert)
-      .select();
+    let createdCards: Record<string, unknown>[] | null;
+    let error: unknown;
+
+    if (isPgWriteEnabled()) {
+      const result = await insertCardsBatchPg(cardsToInsert);
+      createdCards = result.createdCards;
+      error = result.error;
+    } else {
+      const result = await supabaseAdmin
+        .from("cards")
+        .insert(cardsToInsert)
+        .select();
+      createdCards = result.data;
+      error = result.error;
+    }
 
     if (error) {
       return handleDatabaseError(error, "Cards Batch API: Failed to create cards");

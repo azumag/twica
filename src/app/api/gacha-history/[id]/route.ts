@@ -5,9 +5,79 @@ import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
+// ---------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
+// isPgReadEnabled() / isPgWriteEnabled() が false を返すため getDb() は一切
+// 呼ばれず、既存の supabase-js 経路が従来どおり実行される。
+// ---------------------------------------------------------------------------
+import { eq } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { gachaHistory as gachaHistoryTable } from "@/lib/db/schema";
 
 interface DeleteRequestBody {
   userId: string;
+}
+
+interface GachaHistoryDriverError {
+  message: string;
+}
+
+/**
+ * gacha_history 所有者確認の pg 直結実装 (#663)
+ * PostgREST 実装との対応: .maybeSingle() は id が PK のため最大 1 行、
+ * LIMIT 1 + rows[0] ?? null で同じ外部挙動。
+ */
+async function fetchGachaHistoryOwnerPg(
+  id: string
+): Promise<{ data: { user_twitch_id: string | null } | null; error: GachaHistoryDriverError | null }> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ user_twitch_id: gachaHistoryTable.user_twitch_id })
+          .from(gachaHistoryTable)
+          .where(eq(gachaHistoryTable.id, id))
+          .limit(1);
+      },
+      "gacha-history/[id](fetch owner)",
+      { idempotent: true },
+    );
+    return { data: rows[0] ?? null, error: null };
+  } catch (error) {
+    return {
+      data: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+/**
+ * gacha_history の DELETE の pg 直結実装 (#663)
+ *
+ * PK（id）指定の DELETE は再実行しても最終状態（対象行が存在しない）が同じ
+ * ため冪等（storage-db.ts removeBlobFilePg と同じ判断）。接続断リトライを許可する。
+ */
+async function deleteGachaHistoryPg(id: string): Promise<{ error: GachaHistoryDriverError | null }> {
+  try {
+    await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db.delete(gachaHistoryTable).where(eq(gachaHistoryTable.id, id));
+      },
+      "gacha-history/[id](delete)",
+      { idempotent: true },
+    );
+    return { error: null };
+  } catch (error) {
+    return {
+      error: { message: error instanceof Error ? error.message : String(error) },
+    };
+  }
 }
 
 export async function DELETE(
@@ -53,14 +123,15 @@ export async function DELETE(
       return NextResponse.json({ error: "userId is required" }, { status: 400 });
     }
 
-    const supabaseAdmin = getSupabaseAdmin();
-
     // Verify the gacha history belongs to the user
-    const { data: history, error: fetchError } = await supabaseAdmin
-      .from("gacha_history")
-      .select("user_twitch_id")
-      .eq("id", id)
-      .maybeSingle();
+    // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+    const { data: history, error: fetchError } = isPgReadEnabled()
+      ? await fetchGachaHistoryOwnerPg(id)
+      : await getSupabaseAdmin()
+          .from("gacha_history")
+          .select("user_twitch_id")
+          .eq("id", id)
+          .maybeSingle();
 
     if (fetchError || !history) {
       return handleDatabaseError(fetchError, "Fetching gacha history for deletion");
@@ -70,10 +141,13 @@ export async function DELETE(
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    const { error } = await supabaseAdmin
-      .from("gacha_history")
-      .delete()
-      .eq("id", id);
+    // #663: 書き込みのため isPgWriteEnabled() で分岐。
+    const { error } = isPgWriteEnabled()
+      ? await deleteGachaHistoryPg(id)
+      : await getSupabaseAdmin()
+          .from("gacha_history")
+          .delete()
+          .eq("id", id);
 
     if (error) {
       return handleDatabaseError(error, "Deleting gacha history");

@@ -91,16 +91,13 @@ preview_bucket_name = "twica-sound-dev"
 #   PostgREST（毎回実クエリ）との完全パリティが目的であり、キャッシュが有効だと
 #   overlay ポーリングの新着イベントが最大 60 秒遅延する等の挙動差が出るため。
 #
-# 実 id は上記コマンドの出力をユーザーが作成後に記入すること。
-# プレースホルダ id のまま有効化（コメント解除）してはならない（デプロイが壊れる）。
-#
 # localConnectionString は `wrangler dev` 実行時のみ使われるローカル接続先
 # （next dev は process.env.DATABASE_URL を使う。docs/db-driver-migration.md 参照）。
-#
-# [[hyperdrive]]
-# binding = "HYPERDRIVE"
-# id = "<wrangler hyperdrive create twica-hyperdrive-prod の出力 id を記入>"
-# localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "38f11f06161c4c538694522e4ede74f5"
+localConnectionString = "postgres://user:password@localhost:5432/postgres"
 
 # Environment variables that must survive deploys (Dashboard-only vars get overwritten)
 # デプロイ時に上書きされないよう、Dashboard のみで設定していた変数をここに明示する
@@ -203,8 +200,8 @@ bucket_name = "twica-sound-dev"
 #     --connection-string="<preview Supabase の Direct connection 文字列>" \
 #     --caching-disabled
 # --caching-disabled 必須の理由・id 記入ルールはトップレベルの [[hyperdrive]] コメント参照。
-#
-# [[env.preview.hyperdrive]]
-# binding = "HYPERDRIVE"
-# id = "<wrangler hyperdrive create twica-hyperdrive-preview の出力 id を記入>"
-# localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
+[[env.preview.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "1e3f6c4569bf4202a41c42711c878b86"
+localConnectionString = "postgres://user:password@localhost:5432/postgres"

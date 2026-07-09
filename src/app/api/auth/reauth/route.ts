@@ -12,10 +12,61 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-l
 import { randomBytesHex } from '@/lib/crypto-utils'
 import { getBaseUrl } from '@/lib/url-utils'
 import { validateCSRFToken } from '@/lib/csrf'
+// ---------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
+// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
+// supabase-js 経路が従来どおり実行される。
+// ---------------------------------------------------------------------------
+import { eq } from 'drizzle-orm'
+import { getDb } from '@/lib/db/client'
+import { isPgReadEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import { isPgMissingColumnError } from '@/lib/db/errors'
+import { users as usersTable } from '@/lib/db/schema'
 
 // 有効な追加スコープのリスト（セキュリティ: 許可されたスコープのみ受け付ける）
 // List of valid additional scopes (security: only accept allowed scopes)
 const VALID_ADDITIONAL_SCOPES: string[] = Object.values(ADDITIONAL_SCOPES)
+
+/**
+ * 既存の追加スコープ取得の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約
+ * （migration 00001、token-manager.ts 等と同じ根拠）により最大 1 行のため、
+ * LIMIT 1 + rows[0] ?? null で同じ外部挙動。既存コードは PGRST204（列未デプロイ）
+ * のみ許容してそれ以外のエラーは 503 にするため、pg 版も 42703
+ * (isPgMissingColumnError) だけを「スコープなし」として許容し、それ以外は
+ * 呼び出し元へ throw で伝播する。
+ */
+async function fetchPreservedScopesPg(
+  twitchUserId: string
+): Promise<{ data: { twitch_scopes: string[] | null } | null; error: { code?: string; message: string } | null }> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ twitch_scopes: usersTable.twitch_scopes })
+          .from(usersTable)
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .limit(1)
+      },
+      'reauth(scope fetch)',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true },
+    )
+    return { data: rows[0] ?? null, error: null }
+  } catch (error) {
+    if (isPgMissingColumnError(error)) {
+      return { data: null, error: { code: '42703', message: 'twitch_scopes column not found' } }
+    }
+    return {
+      data: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    }
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -56,14 +107,19 @@ export async function POST(request: Request) {
 
     // 既存の追加スコープも再認証要求に含める（user:write:chat などの消失防止）
     // Include already granted additional scopes so re-auth does not drop existing permissions.
-    const supabaseAdmin = getSupabaseAdmin()
-    const { data: user, error: scopeFetchError } = await supabaseAdmin
-      .from('users')
-      .select('twitch_scopes')
-      .eq('twitch_user_id', session.twitchUserId)
-      .maybeSingle()
+    // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+    const { data: user, error: scopeFetchError } = isPgReadEnabled()
+      ? await fetchPreservedScopesPg(session.twitchUserId)
+      : await getSupabaseAdmin()
+          .from('users')
+          .select('twitch_scopes')
+          .eq('twitch_user_id', session.twitchUserId)
+          .maybeSingle()
 
-    if (scopeFetchError && scopeFetchError.code !== 'PGRST204') {
+    // PGRST204（postgrest 経路）/ 42703（pg 経路、isPgMissingColumnError 相当）は
+    // どちらも「twitch_scopes 列未デプロイのデプロイ窓」を表す同じ意味のコードで、
+    // 既存コードはこれだけ許容してスコープなしとして処理を続ける。
+    if (scopeFetchError && scopeFetchError.code !== 'PGRST204' && scopeFetchError.code !== '42703') {
       logger.error('Re-auth scope fetch failed', {
         twitchUserId: session.twitchUserId,
         error: scopeFetchError.message,

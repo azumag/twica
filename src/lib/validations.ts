@@ -1,23 +1,22 @@
 import { getSupabaseAdmin } from './supabase/admin'
 import { CARD_DESCRIPTION_MAX_CHARACTERS, ERROR_MESSAGES } from './constants'
 import { countCharacters } from './text-utils'
+// -----------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。validateDropRateSum は読み取り専用の
+// ため isPgReadEnabled() で分岐する。既存 supabase-js 実装は 1 文字も変えず、
+// フラグ未設定時は完全に従来どおり動く。
+// -----------------------------------------------------------------------------
+import { and, eq } from 'drizzle-orm'
+import { getDb } from './db/client'
+import { isPgReadEnabled } from './db/flags'
+import { withDbRetry } from './db/retry'
+import { cards as cardsTable } from './db/schema'
 
-export async function validateDropRateSum(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
-  streamerId: string,
+function sumDropRates(
+  cards: Array<{ id: string; drop_rate: number }>,
   newDropRate: number,
   excludeCardId?: string
-): Promise<{ valid: boolean; error?: string }> {
-  const { data: cards, error } = await supabaseAdmin
-    .from('cards')
-    .select('id, drop_rate')
-    .eq('streamer_id', streamerId)
-    .eq('is_active', true)
-
-  if (error) {
-    return { valid: false, error: 'Failed to validate drop rates' }
-  }
-
+): { valid: boolean; error?: string } {
   const currentSum = cards
     .filter((c) => c.id !== excludeCardId)
     .reduce((sum, c) => sum + (c.drop_rate || 0), 0)
@@ -32,6 +31,65 @@ export async function validateDropRateSum(
   }
 
   return { valid: true }
+}
+
+/**
+ * validateDropRateSum の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - cards を streamer_id = X AND is_active = true で取得。
+ * - 取得失敗時は同じエラーメッセージ（'Failed to validate drop rates'）を返す。
+ */
+async function validateDropRateSumPg(
+  streamerId: string,
+  newDropRate: number,
+  excludeCardId?: string
+): Promise<{ valid: boolean; error?: string }> {
+  let cards: Array<{ id: string; drop_rate: number }>
+  try {
+    cards = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ id: cardsTable.id, drop_rate: cardsTable.drop_rate })
+          .from(cardsTable)
+          .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+      },
+      'validateDropRateSum',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true },
+    )
+  } catch {
+    return { valid: false, error: 'Failed to validate drop rates' }
+  }
+
+  return sumDropRates(cards, newDropRate, excludeCardId)
+}
+
+export async function validateDropRateSum(
+  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
+  streamerId: string,
+  newDropRate: number,
+  excludeCardId?: string
+): Promise<{ valid: boolean; error?: string }> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  if (isPgReadEnabled()) {
+    return validateDropRateSumPg(streamerId, newDropRate, excludeCardId)
+  }
+
+  const { data: cards, error } = await supabaseAdmin
+    .from('cards')
+    .select('id, drop_rate')
+    .eq('streamer_id', streamerId)
+    .eq('is_active', true)
+
+  if (error) {
+    return { valid: false, error: 'Failed to validate drop rates' }
+  }
+
+  return sumDropRates(cards, newDropRate, excludeCardId)
 }
 
 export function validateCardName(name: unknown): { valid: boolean; error?: string } {

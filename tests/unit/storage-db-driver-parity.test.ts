@@ -10,12 +10,14 @@
  *   同一 fixture での戻り値一致を検証する。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import {
   recordBlobFile,
   removeBlobFile,
   getStorageBonusBytes,
   hasStorageBonusByTwitchUserId,
+  getStorageUsageFromDB,
+  getAllStorageUsage,
 } from '@/lib/storage-db'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
@@ -23,6 +25,7 @@ import {
   blobFiles as blobFilesTable,
   streamers as streamersTable,
   streamerStorageBonus as streamerStorageBonusTable,
+  storageUsage as storageUsageTable,
 } from '@/lib/db/schema'
 
 vi.mock('@/lib/logger', () => ({
@@ -55,6 +58,7 @@ function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult
       select: vi.fn(() => builder),
       eq: vi.fn(() => builder),
       in: vi.fn(() => builder),
+      order: vi.fn(() => builder),
       maybeSingle: vi.fn(() => Promise.resolve(resolved)),
       insert: vi.fn((values: unknown) => {
         insertCalls.push({ table, values })
@@ -87,7 +91,7 @@ function createDrizzleDbMock(config: {
   let selectIndex = 0
   let insertIndex = 0
   let deleteIndex = 0
-  const selectCalls: Array<{ joins: Array<{ table: unknown; on: unknown }>; where?: unknown }> = []
+  const selectCalls: Array<{ joins: Array<{ table: unknown; on: unknown }>; where?: unknown; orderBy?: unknown }> = []
   const insertCalls: Array<{ table: unknown; values?: Record<string, unknown> }> = []
   const deleteCalls: Array<{ table: unknown; where?: unknown }> = []
 
@@ -96,7 +100,7 @@ function createDrizzleDbMock(config: {
       const responses = config.selects ?? [{ rows: [] }]
       const response = responses[Math.min(selectIndex, responses.length - 1)]
       selectIndex += 1
-      const call: { joins: Array<{ table: unknown; on: unknown }>; where?: unknown } = { joins: [] }
+      const call: { joins: Array<{ table: unknown; on: unknown }>; where?: unknown; orderBy?: unknown } = { joins: [] }
       selectCalls.push(call)
       const resolve = () =>
         response.error
@@ -118,6 +122,10 @@ function createDrizzleDbMock(config: {
         }),
         where: vi.fn((condition: unknown) => {
           call.where = condition
+          return builder
+        }),
+        orderBy: vi.fn((condition: unknown) => {
+          call.orderBy = condition
           return builder
         }),
         limit: vi.fn(() => builder),
@@ -408,6 +416,120 @@ describe('storage-db: postgrest / pg 経路の互換 (#572)', () => {
         )
         expect(pg.selectCalls[0].where).toEqual(eq(streamersTable.twitch_user_id, 'twitch-user-1'))
       }
+    })
+  })
+
+  describe('getStorageUsageFromDB（読み取り: isPgReadEnabled、#663）', () => {
+    const USER_PREFIX = 'prefix12'
+    const GLOBAL_PREFIX = '_global_'
+
+    it('userとglobal両方の行がある場合、両経路の戻り値が一致する', async () => {
+      const rows = [
+        { user_prefix: USER_PREFIX, bytes_used: 1000 },
+        { user_prefix: GLOBAL_PREFIX, bytes_used: 5000 },
+      ]
+
+      vi.stubEnv('DB_DRIVER', undefined)
+      const client = createSupabaseClientMock({ storage_usage: [{ data: rows }] })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+      const postgrestResult = await getStorageUsageFromDB(USER_PREFIX)
+
+      vi.stubEnv('DB_DRIVER', 'pg-read')
+      const pg = createDrizzleDbMock({ selects: [{ rows }] })
+      primePgDb(pg)
+      const pgResult = await getStorageUsageFromDB(USER_PREFIX)
+
+      expect(pgResult).toEqual(postgrestResult)
+      expect(pgResult).toEqual({
+        userUsage: 1000,
+        globalUsage: 5000,
+        userLimitReached: false,
+        globalLimitReached: false,
+        userLimitBytes: pgResult.userLimitBytes,
+        globalLimitBytes: pgResult.globalLimitBytes,
+      })
+
+      // pg 経路のクエリが user_prefix IN (userPrefix, GLOBAL_PREFIX) 相当で発行される
+      expect(pg.selectCalls[0].where).toEqual(
+        inArray(storageUsageTable.user_prefix, [USER_PREFIX, GLOBAL_PREFIX])
+      )
+    })
+
+    it('該当行が無い場合、両経路とも0を返す', async () => {
+      vi.stubEnv('DB_DRIVER', undefined)
+      const client = createSupabaseClientMock({ storage_usage: [{ data: [] }] })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+      const postgrestResult = await getStorageUsageFromDB(USER_PREFIX)
+
+      vi.stubEnv('DB_DRIVER', 'pg-read')
+      const pg = createDrizzleDbMock({ selects: [{ rows: [] }] })
+      primePgDb(pg)
+      const pgResult = await getStorageUsageFromDB(USER_PREFIX)
+
+      expect(pgResult).toEqual(postgrestResult)
+      expect(pgResult.userUsage).toBe(0)
+      expect(pgResult.globalUsage).toBe(0)
+    })
+
+    it('pg 経路で取得エラー時は例外を投げず安全側のデフォルト値を返す（既存と同じ外部挙動）', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg-read')
+      const pg = createDrizzleDbMock({ selects: [{ error: { code: '08006', message: 'connection failure' } }] })
+      primePgDb(pg)
+
+      const result = await getStorageUsageFromDB(USER_PREFIX)
+
+      expect(result).toEqual({
+        userUsage: 0,
+        globalUsage: 0,
+        userLimitReached: false,
+        globalLimitReached: false,
+        userLimitBytes: result.userLimitBytes,
+        globalLimitBytes: result.globalLimitBytes,
+      })
+    })
+  })
+
+  describe('getAllStorageUsage（読み取り: isPgReadEnabled、#663）', () => {
+    const ROWS = [
+      { user_prefix: 'aaaaaaaa', bytes_used: 9000, blob_count: 3 },
+      { user_prefix: 'bbbbbbbb', bytes_used: 1000, blob_count: 1 },
+    ]
+
+    it('bytes_used降順で両経路の戻り値が一致する', async () => {
+      vi.stubEnv('DB_DRIVER', undefined)
+      const client = createSupabaseClientMock({ storage_usage: [{ data: ROWS }] })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+      const postgrestResult = await getAllStorageUsage()
+
+      vi.stubEnv('DB_DRIVER', 'pg-read')
+      const pg = createDrizzleDbMock({ selects: [{ rows: ROWS }] })
+      primePgDb(pg)
+      const pgResult = await getAllStorageUsage()
+
+      expect(pgResult).toEqual(postgrestResult)
+      expect(pgResult).toEqual([
+        { userPrefix: 'aaaaaaaa', bytesUsed: 9000, blobCount: 3 },
+        { userPrefix: 'bbbbbbbb', bytesUsed: 1000, blobCount: 1 },
+      ])
+
+      // pg 経路のクエリが bytes_used 降順で発行される
+      expect(pg.selectCalls[0].orderBy).toEqual(desc(storageUsageTable.bytes_used))
+    })
+
+    it('pg 経路で取得エラー時は throw する（既存と同じ外部挙動、デフォルト値へのフォールバックはしない）', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg-read')
+      const pg = createDrizzleDbMock({ selects: [{ error: { code: '08006', message: 'connection failure' } }] })
+      primePgDb(pg)
+
+      await expect(getAllStorageUsage()).rejects.toBeTruthy()
+    })
+
+    it('postgrest 経路（フラグ未設定）では getDb が一切呼ばれない', async () => {
+      vi.stubEnv('DB_DRIVER', undefined)
+      const client = createSupabaseClientMock({ storage_usage: [{ data: ROWS }] })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+      await getAllStorageUsage()
+      expect(getDb).not.toHaveBeenCalled()
     })
   })
 })

@@ -8,6 +8,116 @@ import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
+// ---------------------------------------------------------------------------
+// #663 (#572 sub-check.ts の hasTwitchSub 踏襲): pg 直結経路。フラグ未設定時
+// （既定 'postgrest'）は isPgWriteEnabled() が false を返すため getDb() は
+// 一切呼ばれず、既存の supabase-js 経路が従来どおり実行される。
+// このルートは読み取り（読み戻し検証）と書き込み（キャッシュ保存）が混在するため
+// isPgWriteEnabled() で分岐する（token-manager.ts 冒頭のフラグ使い分け方針）。
+// ---------------------------------------------------------------------------
+import { eq } from 'drizzle-orm'
+import { getDb } from '@/lib/db/client'
+import { isPgWriteEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import { isPgMissingColumnError } from '@/lib/db/errors'
+import { users as usersTable } from '@/lib/db/schema'
+
+interface PersistDriverError {
+  code?: string
+  message: string
+}
+
+/**
+ * サブスク確認結果の保存（UPSERT）の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応: onConflict('twitch_user_id') の UPSERT は、users の
+ * twitch_user_id UNIQUE 制約（migration 00001、token-manager.ts 等と同じ根拠）を
+ * conflict target とした INSERT ... ON CONFLICT DO UPDATE と等価。
+ * .select('twitch_user_id').maybeSingle() は .returning({twitch_user_id}) の
+ * rows[0] ?? null で同じ外部挙動（0 行 = 環境依存でレスポンス行が空のケース）。
+ * 42703（列未デプロイ）は既存の PGRST204 分岐と同じ「保存はスキップし手動確認の
+ * 結果自体は返す」安全側フォールバックに揃える。
+ *
+ * 保存する値（twitchUsername 等）は呼び出し元で計算済みの固定値のため、
+ * 接続断リトライしても同じ内容を書く UPSERT ＝冪等。
+ */
+async function persistSubscriptionResultPg(payload: {
+  twitchUserId: string
+  twitchUsername: string
+  twitchDisplayName: string
+  twitchProfileImageUrl: string | null | undefined
+  verifiedAt: string
+  hasSub: boolean
+}): Promise<{ data: { twitch_user_id: string } | null; error: PersistDriverError | null }> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        const values = {
+          twitch_user_id: payload.twitchUserId,
+          twitch_username: payload.twitchUsername,
+          twitch_display_name: payload.twitchDisplayName,
+          twitch_profile_image_url: payload.twitchProfileImageUrl ?? null,
+          twitch_sub_verified_at: payload.verifiedAt,
+          twitch_has_sub: payload.hasSub,
+        }
+        return db
+          .insert(usersTable)
+          .values(values)
+          .onConflictDoUpdate({ target: usersTable.twitch_user_id, set: values })
+          .returning({ twitch_user_id: usersTable.twitch_user_id })
+      },
+      'check-subscription(persist)',
+      { idempotent: true },
+    )
+    return { data: rows[0] ?? null, error: null }
+  } catch (error) {
+    if (isPgMissingColumnError(error)) {
+      return { data: null, error: { code: '42703', message: 'schema mismatch' } }
+    }
+    return {
+      data: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    }
+  }
+}
+
+/**
+ * 保存確認の読み戻し（persistedUser が空だった場合の検証読み取り）の pg 直結実装 (#663)
+ * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約により
+ * 最大 1 行のため LIMIT 1 + rows[0] ?? null で同じ外部挙動。
+ */
+async function verifySubscriptionPersistPg(
+  twitchUserId: string
+): Promise<{
+  data: { twitch_has_sub: boolean | null; twitch_sub_verified_at: string | null } | null
+  error: PersistDriverError | null
+}> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb()
+        return db
+          .select({
+            twitch_has_sub: usersTable.twitch_has_sub,
+            twitch_sub_verified_at: usersTable.twitch_sub_verified_at,
+          })
+          .from(usersTable)
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .limit(1)
+      },
+      'check-subscription(verify)',
+      { idempotent: true },
+    )
+    return { data: rows[0] ?? null, error: null }
+  } catch (error) {
+    return {
+      data: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    }
+  }
+}
 
 /**
  * Twitch サブスク状態を手動確認する POST API
@@ -93,27 +203,38 @@ export async function POST(request: Request) {
     // users 行が欠けている環境でも保存できるよう upsert を使用する。
     const supabaseAdmin = getSupabaseAdmin()
     const verifiedAt = new Date().toISOString()
-    const { data: persistedUser, error: persistError } = await supabaseAdmin
-      .from('users')
-      .upsert({
-        twitch_user_id: session.twitchUserId,
-        twitch_username: session.twitchUsername,
-        twitch_display_name: session.twitchDisplayName,
-        twitch_profile_image_url: session.twitchProfileImageUrl,
-        twitch_sub_verified_at: verifiedAt,
-        twitch_has_sub: hasSub,
-      }, {
-        onConflict: 'twitch_user_id',
-      })
-      .select('twitch_user_id')
-      .maybeSingle()
+    // #663: 書き込み（読み戻し検証を含む）のため isPgWriteEnabled() で分岐。
+    const { data: persistedUser, error: persistError } = isPgWriteEnabled()
+      ? await persistSubscriptionResultPg({
+          twitchUserId: session.twitchUserId,
+          twitchUsername: session.twitchUsername,
+          twitchDisplayName: session.twitchDisplayName,
+          twitchProfileImageUrl: session.twitchProfileImageUrl,
+          verifiedAt,
+          hasSub,
+        })
+      : await supabaseAdmin
+          .from('users')
+          .upsert({
+            twitch_user_id: session.twitchUserId,
+            twitch_username: session.twitchUsername,
+            twitch_display_name: session.twitchDisplayName,
+            twitch_profile_image_url: session.twitchProfileImageUrl,
+            twitch_sub_verified_at: verifiedAt,
+            twitch_has_sub: hasSub,
+          }, {
+            onConflict: 'twitch_user_id',
+          })
+          .select('twitch_user_id')
+          .maybeSingle()
 
     let saved = true
     let saveFailureCode: string | undefined
     if (persistError) {
-      // PGRST204: スキーマ差分（カラム未適用等）で保存だけ失敗するケース。
+      // PGRST204（postgrest 経路）/ 42703（pg 経路、isPgMissingColumnError 相当）は
+      // どちらも「スキーマ差分（カラム未適用等）で保存だけ失敗するケース」を表す。
       // 手動確認結果は返せるため、API全体は成功として扱う。
-      if (persistError.code === 'PGRST204') {
+      if (persistError.code === 'PGRST204' || persistError.code === '42703') {
         saved = false
         saveFailureCode = persistError.code
         logger.warn('[TwitchSub] Persist skipped due to schema mismatch:', {
@@ -136,11 +257,13 @@ export async function POST(request: Request) {
     } else if (!persistedUser) {
       // 環境/レスポンス設定により、更新成功でも返却行が空になるケースがある。
       // その場合は再読込して実際に保存できたかを検証する。
-      const { data: latestUser, error: verifyError } = await supabaseAdmin
-        .from('users')
-        .select('twitch_has_sub, twitch_sub_verified_at')
-        .eq('twitch_user_id', session.twitchUserId)
-        .maybeSingle()
+      const { data: latestUser, error: verifyError } = isPgWriteEnabled()
+        ? await verifySubscriptionPersistPg(session.twitchUserId)
+        : await supabaseAdmin
+            .from('users')
+            .select('twitch_has_sub, twitch_sub_verified_at')
+            .eq('twitch_user_id', session.twitchUserId)
+            .maybeSingle()
 
       const verifiedAtMs = latestUser?.twitch_sub_verified_at
         ? new Date(latestUser.twitch_sub_verified_at).getTime()
