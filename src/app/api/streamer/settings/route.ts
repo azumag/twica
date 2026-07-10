@@ -39,6 +39,28 @@ import {
   type GachaSoundRule,
 } from "@/lib/gacha-sound-rules";
 import { getUserPlan } from "@/lib/plan";
+// -----------------------------------------------------------------------------
+// #663 (#570/#572 パイロット踏襲): pg 直結経路。
+// この POST ハンドラは streamers への複数回の UPDATE・streamer_chat_sender_settings
+// への upsert・twitch_bot_accounts への DELETE を含む、読み書き混在(所有権確認の
+// SELECT も含む)の複合ハンドラのため、リクエスト内の全 DB アクセスを
+// isPgWriteEnabled() で1回だけ判定して分岐する（battle/start route・sub-check.ts
+// 冒頭のフラグ使い分け方針と同じ。読み書きで経路が混ざると障害切り分けが困難に
+// なるため）。フラグ未設定時（既定 'postgrest'）はこれらのモジュールの実行パスに
+// 一切入らないため、import が存在するだけでは挙動に影響しない。
+// 既存 supabase-js 実装は1文字も変更せず、if/else で使い分ける（外側スコープで
+// 共有する必要がある変数の宣言位置のみ、TypeScript のスコープ上やむを得ず
+// 最小限の機械的な調整を行っている。各所にその旨のコメントを付す）。
+// -----------------------------------------------------------------------------
+import { and, eq } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgWriteEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import {
+  streamers as streamersTable,
+  streamerChatSenderSettings as streamerChatSenderSettingsTable,
+  twitchBotAccounts as twitchBotAccountsTable,
+} from "@/lib/db/schema";
 
 
 type RarityWeightsValidation =
@@ -235,6 +257,428 @@ function prunePackRarityWeights(
   return pruned;
 }
 
+/**
+ * pg 直結クエリの結果を PostgREST の { data, error } 応答形状へ正規化するための
+ * 最小型 (#663)。postgres.js はエラーを throw するため、既存の
+ * 「if (xxxError || !xxxData) ...」という分岐を両経路で共有するにはこの詰め替えが
+ * 必要（battle/start route の PgQueryResult と同じ設計。ファイル単位で個別定義する
+ * 既存の慣習に合わせる）。
+ */
+interface PgQueryResult<T> {
+  data: T | null;
+  error: unknown;
+}
+
+type StreamerSettingsOwnerRow = {
+  id: string;
+  channel_point_collection_name: string | null;
+  card_pack_names: string[];
+  pack_rarity_weights: Record<string, Record<string, number>> | null;
+};
+
+/**
+ * 「Verify ownership」SELECT の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - .eq("id", ...).eq("twitch_user_id", ...).maybeSingle() は id が streamers の
+ *   PRIMARY KEY のため LIMIT 1 + rows[0] ?? null が同じ外部挙動。
+ * - pack_rarity_weights(00065) → card_pack_names(00062) →
+ *   channel_point_collection_name(00061) の順に列を剥がして再試行する、既存の
+ *   3段デプロイ窓フォールバックを同じ順序・同じ理由でそのまま踏襲する
+ *   （マイグレーションは番号順に適用されるため、新しい列ほど先に未デプロイになる
+ *   ＝新しい列から順に剥がす、という既存実装の前提を維持する）。
+ * - 列欠落の判定は postgrest 経路と同じ既存ヘルパー（isMissingPackRarityWeightsColumnError
+ *   等、@/lib/collections/collection-existence）をそのまま再利用する。これらは
+ *   error.message 等のテキストのみで判定しており（PostgREST 固有の PGRST204 コード
+ *   チェックに加えて "does not exist" / 列名文字列のテキストマッチを OR で見る)、
+ *   postgres.js の PostgresError も同じ標準的な文言
+ *   （例: `column "pack_rarity_weights" does not exist"`）を message に持つため、
+ *   PGRST204 チェックは素通りするがテキストマッチで同じ判定結果になる。
+ * - 各試行は読み取り専用のため冪等（idempotent: true）としてリトライを opt-in する。
+ *
+ * 全試行が失敗した場合（＝いずれの既知列欠落パターンにも当てはまらない予期しない
+ * エラーだった場合）は、streamer=null のまま返す。既存 postgrest 経路もこの場合
+ * streamerSelectError を握り潰さず保持しつつ、呼び出し元は `!streamer` のみで
+ * 403 FORBIDDEN を返す（500 にはしない）という既存の外部挙動をそのまま再現する。
+ */
+async function fetchStreamerForSettingsPg(
+  streamerId: string,
+  twitchUserId: string
+): Promise<PgQueryResult<StreamerSettingsOwnerRow>> {
+  const ownerCondition = and(
+    eq(streamersTable.id, streamerId),
+    eq(streamersTable.twitch_user_id, twitchUserId)
+  );
+
+  let streamer: StreamerSettingsOwnerRow | null;
+  let streamerSelectError: unknown;
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamersTable.id,
+            channel_point_collection_name: streamersTable.channel_point_collection_name,
+            card_pack_names: streamersTable.card_pack_names,
+            pack_rarity_weights: streamersTable.pack_rarity_weights,
+          })
+          .from(streamersTable)
+          .where(ownerCondition)
+          .limit(1);
+      },
+      "streamerSettings(select owner, all columns)",
+      { idempotent: true }
+    );
+    streamer = rows[0] ?? null;
+    streamerSelectError = null;
+  } catch (error) {
+    streamer = null;
+    streamerSelectError = error;
+  }
+
+  // Issue #578: pack_rarity_weights は最新の列のため最初に剥がして再試行する。
+  if (
+    streamerSelectError &&
+    isMissingPackRarityWeightsColumnError(streamerSelectError as { message?: string; code?: string })
+  ) {
+    try {
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              id: streamersTable.id,
+              channel_point_collection_name: streamersTable.channel_point_collection_name,
+              card_pack_names: streamersTable.card_pack_names,
+            })
+            .from(streamersTable)
+            .where(ownerCondition)
+            .limit(1);
+        },
+        "streamerSettings(select owner, no pack_rarity_weights)",
+        { idempotent: true }
+      );
+      const row = rows[0] ?? null;
+      streamer = row ? { ...row, pack_rarity_weights: null } : null;
+      streamerSelectError = null;
+    } catch (retryError) {
+      streamer = null;
+      streamerSelectError = retryError;
+    }
+  }
+
+  // Issue #393再設計 / #269: card_pack_names のデプロイ窓フォールバック。
+  if (
+    streamerSelectError &&
+    isMissingCardPackNamesColumnError(streamerSelectError as { message?: string; code?: string })
+  ) {
+    try {
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              id: streamersTable.id,
+              channel_point_collection_name: streamersTable.channel_point_collection_name,
+            })
+            .from(streamersTable)
+            .where(ownerCondition)
+            .limit(1);
+        },
+        "streamerSettings(select owner, no card_pack_names)",
+        { idempotent: true }
+      );
+      const row = rows[0] ?? null;
+      streamer = row ? { ...row, card_pack_names: [], pack_rarity_weights: null } : null;
+      streamerSelectError = null;
+    } catch (retryError) {
+      streamer = null;
+      streamerSelectError = retryError;
+    }
+  }
+
+  // channel_point_collection_name のデプロイ窓フォールバック。
+  if (
+    streamerSelectError &&
+    isMissingCollectionNameColumn(streamerSelectError as { message?: string; code?: string })
+  ) {
+    try {
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db.select({ id: streamersTable.id }).from(streamersTable).where(ownerCondition).limit(1);
+        },
+        "streamerSettings(select owner, id only)",
+        { idempotent: true }
+      );
+      const row = rows[0] ?? null;
+      streamer = row
+        ? { ...row, channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }
+        : null;
+      streamerSelectError = null;
+    } catch (retryError) {
+      streamer = null;
+      streamerSelectError = retryError;
+    }
+  }
+
+  return { data: streamer, error: streamerSelectError };
+}
+
+/**
+ * disconnectBot（BOT連携解除）の pg 直結実装 (#663)
+ *
+ * streamer_chat_sender_settings への upsert + twitch_bot_accounts への DELETE の
+ * 2ステップ。twitch_bot_accounts は Twitch アクセストークン等の認証情報を保持する
+ * テーブルのため、特に慎重に冪等性を判断する。
+ *
+ * 冪等性判断:
+ * - upsert（streamer_chat_sender_settings）: 書き込む値（sender_mode: "streamer",
+ *   custom_bot_account_id: null）は呼び出し前から固定された定数であり、現在の
+ *   DB の状態には一切依存しない（queryFn の外で事前計算済みと同視できる）。
+ *   PK（streamer_id, migration 00040）を conflict target とする ON CONFLICT DO
+ *   UPDATE のため、リトライしても最終状態は変わらない。よって冪等
+ *   （idempotent: true）としてリトライを opt-in する
+ *   （src/lib/twitch/linked-account-auth.ts の persistLinkedAccountPg と同じ判断）。
+ * - delete（twitch_bot_accounts）: 単純な DELETE には冪等キーが無く、接続断は
+ *   「クエリがサーバーに届いたか不明」を意味する。gacha-history route の DELETE と
+ *   同じ既定方針（冪等キーの無い DELETE は既定=リトライなし）に加え、本テーブルは
+ *   認証情報（アクセストークン等）を保持するため、リトライによる不必要な追加実行を
+ *   避けてより慎重に扱う（idempotent オプションは付けない）。
+ *
+ * 既存 postgrest 経路の各エラーは個別の context 文字列で handleDatabaseError に
+ * 渡されるため、pg 版もどちらのステップで失敗したかを { error, context } で返し、
+ * 呼び出し元がそのまま handleDatabaseError(error, context) できるようにする。
+ */
+async function disconnectBotPg(
+  streamerId: string
+): Promise<{ error: unknown; context: string } | null> {
+  try {
+    await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .insert(streamerChatSenderSettingsTable)
+          .values({
+            streamer_id: streamerId,
+            sender_mode: "streamer",
+            custom_bot_account_id: null,
+          })
+          .onConflictDoUpdate({
+            target: streamerChatSenderSettingsTable.streamer_id,
+            set: {
+              sender_mode: "streamer",
+              custom_bot_account_id: null,
+            },
+          });
+      },
+      "streamerSettings(disconnect bot: upsert sender settings)",
+      { idempotent: true }
+    );
+  } catch (error) {
+    return { error, context: "Streamer Settings API: Disconnect BOT sender settings" };
+  }
+
+  try {
+    await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .delete(twitchBotAccountsTable)
+          .where(
+            and(
+              eq(twitchBotAccountsTable.streamer_id, streamerId),
+              eq(twitchBotAccountsTable.owner_type, "streamer")
+            )
+          );
+      },
+      "streamerSettings(disconnect bot: delete bot account)"
+      // idempotent 指定なし（既定=リトライなし）。判断根拠は関数doc参照。
+    );
+  } catch (error) {
+    return { error, context: "Streamer Settings API: Disconnect BOT account" };
+  }
+
+  return null;
+}
+
+interface StreamerUpdateWriteFlags {
+  rarityWeightsScopeWriteSkipped: boolean;
+  packRarityWeightsWriteSkipped: boolean;
+  cardPackNamesWriteSkipped: boolean;
+  defaultCardPackNameWriteSkipped: boolean;
+  gachaSoundRulesWriteSkipped: boolean;
+}
+
+/**
+ * 列欠落エラー（pg 直結: SQLSTATE 42703 相当）かどうかを、既存の
+ * isMissingXxxColumnError 系ヘルパーと同じ「message テキストに列名が含まれるか」
+ * という方式で判定する。gacha_sound_rules は collection-existence.ts に対応する
+ * ヘルパーが無い（postgrest 経路も `error.code === "PGRST204" ||
+ * error.message.includes("gacha_sound_rules")` という直書きのインライン判定の
+ * ため、同じ流儀をここでも直書きする（列ごとに専用関数を増やす一貫性より、
+ * 既存コードとの対応関係を優先する）。
+ */
+function isMissingGachaSoundRulesColumnMessage(error: unknown): boolean {
+  const message = (error as { message?: unknown } | null)?.message;
+  return typeof message === "string" && message.includes("gacha_sound_rules");
+}
+
+/**
+ * streamers への主 UPDATE（+ デプロイ窓フォールバック cascades）の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - .update(updateData).eq("id", streamerId) の戻り値 { error } は素の UPDATE
+ *   （0 行更新でもエラーにならない）で、pg 版も同様に .returning() 等は使わず
+ *   エラー有無のみを見る（既存実装と同じ外部挙動）。
+ * - rarity_weights_scope(00065) → pack_rarity_weights(00065) → card_pack_names(00062)
+ *   → default_card_pack_name(00063) → channel_point_collection_name(00061) の順に
+ *   列を剥がして UPDATE を再試行する既存の5段デプロイ窓カスケードを、同じ順序・
+ *   同じ列欠落判定（既存 isMissingXxxColumnError ヘルパーの再利用。理由は
+ *   fetchStreamerForSettingsPg の doc コメント参照）でそのまま踏襲する。
+ *   channel_point_collection_name のフォールバックのみ、既存実装が対応する
+ *   xxxWriteSkipped フラグを持たない非対称仕様であり、それもそのまま再現する
+ *   （レスポンスに channelPointCollectionNameSkippedDeployWindow は存在しない）。
+ * - gacha_sound_rules 未デプロイ時は列を落とした legacyUpdateData で再試行する
+ *   既存のグレースフルデグレードを再現する。
+ *
+ * 冪等性判断（重要）:
+ * updateData の各値はすべて呼び出し元（POST ハンドラ）がリクエスト受信後・DB
+ * アクセス開始前に検証・正規化して確定させた「最終値」であり（queryFn の外で
+ * 事前計算済み）、現在の DB 行の値を読んでその場で加算・追記するような差分更新
+ * （例: カウンタの +1 や配列への追記）は一切含まれない。よって同一 updateData で
+ * UPDATE を再実行しても最終的な行の状態は変わらない（単純な SET col = <確定値> の
+ * 繰り返しは、通常のトリガー（このテーブルは updated_at 自動更新トリガーのみ、
+ * migration 00001）以外の副作用を持たない）。ゆえに各 UPDATE 試行は冪等
+ * （idempotent: true）としてリトライを opt-in する。
+ * なお、リトライ待機中に別リクエストが同じ行を更新した場合に後勝ちで上書きする
+ * 競合は、単純な SET ベースの UPDATE 自体が元々持つ性質であり、postgrest 経路にも
+ * 同様に存在する（今回のリトライ追加によって新たに生じるものではない）。
+ */
+async function updateStreamerSettingsPg(
+  streamerId: string,
+  updateData: Record<string, unknown>,
+  gachaSoundRulesRequested: boolean
+): Promise<{ error: unknown } & StreamerUpdateWriteFlags> {
+  const flags: StreamerUpdateWriteFlags = {
+    rarityWeightsScopeWriteSkipped: false,
+    packRarityWeightsWriteSkipped: false,
+    cardPackNamesWriteSkipped: false,
+    defaultCardPackNameWriteSkipped: false,
+    gachaSoundRulesWriteSkipped: false,
+  };
+
+  async function runUpdate(data: Record<string, unknown>, context: string): Promise<unknown> {
+    try {
+      await withDbRetry(
+        async () => {
+          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+          const { db } = await getDb();
+          return db
+            .update(streamersTable)
+            // updateData は streamers の列名のみで構成される動的な部分更新オブジェクト
+            // （型を合わせるだけのキャスト。値の変換はしない）
+            .set(data as Partial<typeof streamersTable.$inferInsert>)
+            .where(eq(streamersTable.id, streamerId));
+        },
+        context,
+        // 事前計算済みの確定値を SET するだけの UPDATE のため冪等（関数doc参照）
+        { idempotent: true }
+      );
+      return null;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  let error = await runUpdate(updateData, "streamerSettings(update streamers)");
+
+  // Issue #578: このフェーズで新規追加された列を最初に剥がす。
+  if (
+    error &&
+    isMissingRarityWeightsScopeColumnError(error as { message?: string; code?: string }) &&
+    "rarity_weights_scope" in updateData
+  ) {
+    delete updateData.rarity_weights_scope;
+    flags.rarityWeightsScopeWriteSkipped = true;
+    error =
+      Object.keys(updateData).length > 0
+        ? await runUpdate(updateData, "streamerSettings(update streamers, no rarity_weights_scope)")
+        : null;
+  }
+
+  if (
+    error &&
+    isMissingPackRarityWeightsColumnError(error as { message?: string; code?: string }) &&
+    "pack_rarity_weights" in updateData
+  ) {
+    delete updateData.pack_rarity_weights;
+    flags.packRarityWeightsWriteSkipped = true;
+    error =
+      Object.keys(updateData).length > 0
+        ? await runUpdate(updateData, "streamerSettings(update streamers, no pack_rarity_weights)")
+        : null;
+  }
+
+  // Issue #393再設計: card_pack_names / channel_point_collection_name のどちらか
+  // （または両方）が未デプロイの可能性があるため、都度1列だけ剥がして再試行する。
+  if (
+    error &&
+    isMissingCardPackNamesColumnError(error as { message?: string; code?: string }) &&
+    "card_pack_names" in updateData
+  ) {
+    delete updateData.card_pack_names;
+    flags.cardPackNamesWriteSkipped = true;
+    error =
+      Object.keys(updateData).length > 0
+        ? await runUpdate(updateData, "streamerSettings(update streamers, no card_pack_names)")
+        : null;
+  }
+
+  if (
+    error &&
+    isMissingDefaultCardPackNameColumnError(error as { message?: string; code?: string }) &&
+    "default_card_pack_name" in updateData
+  ) {
+    delete updateData.default_card_pack_name;
+    flags.defaultCardPackNameWriteSkipped = true;
+    error =
+      Object.keys(updateData).length > 0
+        ? await runUpdate(updateData, "streamerSettings(update streamers, no default_card_pack_name)")
+        : null;
+  }
+
+  if (
+    error &&
+    isMissingCollectionNameColumn(error as { message?: string; code?: string }) &&
+    "channel_point_collection_name" in updateData
+  ) {
+    delete updateData.channel_point_collection_name;
+    // 既存 postgrest 経路と同じく、この列のみ xxxWriteSkipped フラグを持たない
+    // 非対称仕様をそのまま再現する（意図的な既存挙動。修正しない）。
+    error =
+      Object.keys(updateData).length > 0
+        ? await runUpdate(updateData, "streamerSettings(update streamers, no channel_point_collection_name)")
+        : null;
+  }
+
+  // Issue #176: gacha_sound_rules はこのフィーチャーで新規追加された列。
+  // デプロイ窓では未デプロイの可能性があるため、列を落として旧来の
+  // gacha_sound_url/gacha_sound_enabled のみで再試行する（グレースフルデグレード）。
+  if (error && gachaSoundRulesRequested && isMissingGachaSoundRulesColumnMessage(error)) {
+    logger.warn("gacha_sound_rules column not available yet; saving legacy sound fallback only");
+    const legacyUpdateData = { ...updateData };
+    delete legacyUpdateData.gacha_sound_rules;
+    flags.gachaSoundRulesWriteSkipped = true;
+    error = await runUpdate(legacyUpdateData, "streamerSettings(update streamers, no gacha_sound_rules)");
+  }
+
+  return { error, ...flags };
+}
+
 export async function POST(request: NextRequest) {
   // Content-Type validation - must be the first check
   const contentTypeValidation = validateContentType(request, 'application/json')
@@ -275,6 +719,12 @@ export async function POST(request: NextRequest) {
 
   try {
     const supabaseAdmin = getSupabaseAdmin();
+    // #663: streamers への複数回の UPDATE・streamer_chat_sender_settings への
+    // upsert・twitch_bot_accounts への DELETE を含む読み書き混在ハンドラのため、
+    // 以降の全 DB アクセスを isPgWriteEnabled() で分岐する（ファイル冒頭のコメント
+    // 参照）。判定はここで1回だけ行って固定し、リクエスト処理の途中で環境変数が
+    // 変わっても経路が混在しないようにする（battle/start route と同じ方針）。
+    const usePgWrite = isPgWriteEnabled();
     const body = await request.json();
     const {
       streamerId,
@@ -420,70 +870,91 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify ownership
-    let { data: streamer, error: streamerSelectError } = await supabaseAdmin
-      .from("streamers")
-      .select("id, channel_point_collection_name, card_pack_names, pack_rarity_weights")
-      .eq("id", streamerId)
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
+    // #663: usePgWrite で分岐する。pg 経路は fetchStreamerForSettingsPg に切り出し
+    // 済み（デプロイ窓の3段カスケードの詳細はその doc コメント参照）。
+    // streamer/streamerSelectError をこの if/else の外側スコープで共有する必要が
+    // あるため外側で宣言し、postgrest 分岐（else 節）側は最初の1文だけ
+    // `let { data, error } = ...` の宣言形から代入式へ変更している（TypeScript の
+    // スコープ上やむを得ない機械的な調整であり、クエリ自体・以降のカスケード
+    // ロジックは一切変更していない）。
+    let streamer: {
+      id: string;
+      channel_point_collection_name: string | null;
+      card_pack_names: string[];
+      pack_rarity_weights: Record<string, Record<string, number>> | null;
+    } | null;
+    let streamerSelectError: unknown;
 
-    // Issue #578: pack_rarity_weights はこのフェーズで新規追加された列。デプロイ窓では
-    // 他の列より先に(あるいは他が既に安定デプロイ済みの状態で単独で)未デプロイになり
-    // うるため、既存の card_pack_names / channel_point_collection_name と同じチェイン
-    // 方式で、まずこの列だけ剥がして再試行する。プルーニング(下記)に使う現在値の
-    // 読み取りが目的で、未デプロイなら「保存されているエントリなし」= null 扱いにする。
-    if (streamerSelectError && isMissingPackRarityWeightsColumnError(streamerSelectError)) {
-      const retryResult = await supabaseAdmin
+    if (usePgWrite) {
+      const ownerResult = await fetchStreamerForSettingsPg(streamerId, session.twitchUserId);
+      streamer = ownerResult.data;
+      streamerSelectError = ownerResult.error;
+    } else {
+      ({ data: streamer, error: streamerSelectError } = await supabaseAdmin
         .from("streamers")
-        .select("id, channel_point_collection_name, card_pack_names")
+        .select("id, channel_point_collection_name, card_pack_names, pack_rarity_weights")
         .eq("id", streamerId)
         .eq("twitch_user_id", session.twitchUserId)
-        .maybeSingle();
-      streamer = retryResult.data
-        ? { ...retryResult.data, pack_rarity_weights: null as Record<string, Record<string, number>> | null }
-        : null;
-      streamerSelectError = retryResult.error;
-    }
+        .maybeSingle());
 
-    // Issue #393再設計 / #269: このownership確認SELECTは channel_point_collection_name
-    // と card_pack_names の現在値を読むために2列を含む。デプロイ窓ではどちらか
-    // (または両方)が未デプロイになりうるため、都度1列だけ剥がして再試行する
-    // (既存の card_number → collection_name と同じチェイン方式)。どちらの列も
-    // 未デプロイの通常設定保存を403にしないための安全策(#269自己レビューで
-    // 発見・修正した回帰の再発防止)。
-    if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
-      const retryResult = await supabaseAdmin
-        .from("streamers")
-        .select("id, channel_point_collection_name")
-        .eq("id", streamerId)
-        .eq("twitch_user_id", session.twitchUserId)
-        .maybeSingle();
-      streamer = retryResult.data
-        ? {
-            ...retryResult.data,
-            card_pack_names: [] as string[],
-            pack_rarity_weights: null as Record<string, Record<string, number>> | null,
-          }
-        : null;
-      streamerSelectError = retryResult.error;
-    }
+      // Issue #578: pack_rarity_weights はこのフェーズで新規追加された列。デプロイ窓では
+      // 他の列より先に(あるいは他が既に安定デプロイ済みの状態で単独で)未デプロイになり
+      // うるため、既存の card_pack_names / channel_point_collection_name と同じチェイン
+      // 方式で、まずこの列だけ剥がして再試行する。プルーニング(下記)に使う現在値の
+      // 読み取りが目的で、未デプロイなら「保存されているエントリなし」= null 扱いにする。
+      if (streamerSelectError && isMissingPackRarityWeightsColumnError(streamerSelectError)) {
+        const retryResult = await supabaseAdmin
+          .from("streamers")
+          .select("id, channel_point_collection_name, card_pack_names")
+          .eq("id", streamerId)
+          .eq("twitch_user_id", session.twitchUserId)
+          .maybeSingle();
+        streamer = retryResult.data
+          ? { ...retryResult.data, pack_rarity_weights: null as Record<string, Record<string, number>> | null }
+          : null;
+        streamerSelectError = retryResult.error;
+      }
 
-    if (streamerSelectError && isMissingCollectionNameColumn(streamerSelectError)) {
-      const retryResult = await supabaseAdmin
-        .from("streamers")
-        .select("id")
-        .eq("id", streamerId)
-        .eq("twitch_user_id", session.twitchUserId)
-        .maybeSingle();
-      streamer = retryResult.data
-        ? {
-            ...retryResult.data,
-            channel_point_collection_name: null,
-            card_pack_names: [] as string[],
-            pack_rarity_weights: null as Record<string, Record<string, number>> | null,
-          }
-        : null;
-      streamerSelectError = retryResult.error;
+      // Issue #393再設計 / #269: このownership確認SELECTは channel_point_collection_name
+      // と card_pack_names の現在値を読むために2列を含む。デプロイ窓ではどちらか
+      // (または両方)が未デプロイになりうるため、都度1列だけ剥がして再試行する
+      // (既存の card_number → collection_name と同じチェイン方式)。どちらの列も
+      // 未デプロイの通常設定保存を403にしないための安全策(#269自己レビューで
+      // 発見・修正した回帰の再発防止)。
+      if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
+        const retryResult = await supabaseAdmin
+          .from("streamers")
+          .select("id, channel_point_collection_name")
+          .eq("id", streamerId)
+          .eq("twitch_user_id", session.twitchUserId)
+          .maybeSingle();
+        streamer = retryResult.data
+          ? {
+              ...retryResult.data,
+              card_pack_names: [] as string[],
+              pack_rarity_weights: null as Record<string, Record<string, number>> | null,
+            }
+          : null;
+        streamerSelectError = retryResult.error;
+      }
+
+      if (streamerSelectError && isMissingCollectionNameColumn(streamerSelectError)) {
+        const retryResult = await supabaseAdmin
+          .from("streamers")
+          .select("id")
+          .eq("id", streamerId)
+          .eq("twitch_user_id", session.twitchUserId)
+          .maybeSingle();
+        streamer = retryResult.data
+          ? {
+              ...retryResult.data,
+              channel_point_collection_name: null,
+              card_pack_names: [] as string[],
+              pack_rarity_weights: null as Record<string, Record<string, number>> | null,
+            }
+          : null;
+        streamerSelectError = retryResult.error;
+      }
     }
 
     if (!streamer) {
@@ -714,26 +1185,35 @@ export async function POST(request: NextRequest) {
 
     let botDisconnected = false;
     if (disconnectBot === true) {
-      const { error: senderSettingsError } = await supabaseAdmin
-        .from("streamer_chat_sender_settings")
-        .upsert({
-          streamer_id: streamerId,
-          sender_mode: "streamer",
-          custom_bot_account_id: null,
-        });
+      // #663: usePgWrite で分岐する。pg 経路は disconnectBotPg に切り出し済み
+      // （upsert / delete それぞれの冪等性判断は関数 doc コメント参照）。
+      if (usePgWrite) {
+        const disconnectError = await disconnectBotPg(streamerId);
+        if (disconnectError) {
+          return handleDatabaseError(disconnectError.error, disconnectError.context);
+        }
+      } else {
+        const { error: senderSettingsError } = await supabaseAdmin
+          .from("streamer_chat_sender_settings")
+          .upsert({
+            streamer_id: streamerId,
+            sender_mode: "streamer",
+            custom_bot_account_id: null,
+          });
 
-      if (senderSettingsError) {
-        return handleDatabaseError(senderSettingsError, "Streamer Settings API: Disconnect BOT sender settings");
-      }
+        if (senderSettingsError) {
+          return handleDatabaseError(senderSettingsError, "Streamer Settings API: Disconnect BOT sender settings");
+        }
 
-      const { error: botDeleteError } = await supabaseAdmin
-        .from("twitch_bot_accounts")
-        .delete()
-        .eq("streamer_id", streamerId)
-        .eq("owner_type", "streamer");
+        const { error: botDeleteError } = await supabaseAdmin
+          .from("twitch_bot_accounts")
+          .delete()
+          .eq("streamer_id", streamerId)
+          .eq("owner_type", "streamer");
 
-      if (botDeleteError) {
-        return handleDatabaseError(botDeleteError, "Streamer Settings API: Disconnect BOT account");
+        if (botDeleteError) {
+          return handleDatabaseError(botDeleteError, "Streamer Settings API: Disconnect BOT account");
+        }
       }
 
       botDisconnected = true;
@@ -767,105 +1247,126 @@ export async function POST(request: NextRequest) {
     let gachaSoundRulesWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
-      let { error } = await supabaseAdmin
-        .from("streamers")
-        .update(updateData)
-        .eq("id", streamerId);
+      // #663: usePgWrite で分岐する。pg 経路は updateStreamerSettingsPg に切り出し
+      // 済み（5段デプロイ窓カスケードの詳細・冪等性判断は関数 doc コメント参照）。
+      // updateData は参照渡しでどちらの経路からも同じオブジェクトを変更するため、
+      // 後続のレスポンス構築（updateData.gacha_sound_url 等の参照）は分岐不要。
+      if (usePgWrite) {
+        const updateResult = await updateStreamerSettingsPg(
+          streamerId,
+          updateData,
+          gachaSoundRules !== undefined
+        );
+        rarityWeightsScopeWriteSkipped = updateResult.rarityWeightsScopeWriteSkipped;
+        packRarityWeightsWriteSkipped = updateResult.packRarityWeightsWriteSkipped;
+        cardPackNamesWriteSkipped = updateResult.cardPackNamesWriteSkipped;
+        defaultCardPackNameWriteSkipped = updateResult.defaultCardPackNameWriteSkipped;
+        gachaSoundRulesWriteSkipped = updateResult.gachaSoundRulesWriteSkipped;
 
-      // Issue #578: このフェーズで新規追加された列を最初に剥がす(他の既存列より
-      // 未デプロイである可能性が高いため)。
-      if (error && isMissingRarityWeightsScopeColumnError(error) && "rarity_weights_scope" in updateData) {
-        delete updateData.rarity_weights_scope;
-        rarityWeightsScopeWriteSkipped = true;
-        if (Object.keys(updateData).length > 0) {
-          const retryResult = await supabaseAdmin
-            .from("streamers")
-            .update(updateData)
-            .eq("id", streamerId);
-          error = retryResult.error;
-        } else {
-          error = null;
+        if (updateResult.error) {
+          return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
         }
-      }
-
-      if (error && isMissingPackRarityWeightsColumnError(error) && "pack_rarity_weights" in updateData) {
-        delete updateData.pack_rarity_weights;
-        packRarityWeightsWriteSkipped = true;
-        if (Object.keys(updateData).length > 0) {
-          const retryResult = await supabaseAdmin
-            .from("streamers")
-            .update(updateData)
-            .eq("id", streamerId);
-          error = retryResult.error;
-        } else {
-          error = null;
-        }
-      }
-
-      // Issue #393再設計: 書き込み時点で card_pack_names / channel_point_collection_name
-      // のどちらか(または両方)が未デプロイの可能性があるため、都度1列だけ剥がして再試行する。
-      if (error && isMissingCardPackNamesColumnError(error) && "card_pack_names" in updateData) {
-        delete updateData.card_pack_names;
-        cardPackNamesWriteSkipped = true;
-        if (Object.keys(updateData).length > 0) {
-          const retryResult = await supabaseAdmin
-            .from("streamers")
-            .update(updateData)
-            .eq("id", streamerId);
-          error = retryResult.error;
-        } else {
-          error = null;
-        }
-      }
-
-      if (error && isMissingDefaultCardPackNameColumnError(error) && "default_card_pack_name" in updateData) {
-        delete updateData.default_card_pack_name;
-        defaultCardPackNameWriteSkipped = true;
-        if (Object.keys(updateData).length > 0) {
-          const retryResult = await supabaseAdmin
-            .from("streamers")
-            .update(updateData)
-            .eq("id", streamerId);
-          error = retryResult.error;
-        } else {
-          error = null;
-        }
-      }
-
-      if (error && isMissingCollectionNameColumn(error) && "channel_point_collection_name" in updateData) {
-        delete updateData.channel_point_collection_name;
-        if (Object.keys(updateData).length > 0) {
-          const retryResult = await supabaseAdmin
-            .from("streamers")
-            .update(updateData)
-            .eq("id", streamerId);
-          error = retryResult.error;
-        } else {
-          error = null;
-        }
-      }
-
-      // Issue #176: gacha_sound_rules はこのフィーチャーで新規追加された列。
-      // デプロイ窓では未デプロイの可能性があるため、列を落として旧来の
-      // gacha_sound_url/gacha_sound_enabled のみで再試行する(グレースフルデグレード)。
-      if (
-        error &&
-        gachaSoundRules !== undefined &&
-        (error.code === "PGRST204" || error.message.includes("gacha_sound_rules"))
-      ) {
-        logger.warn("gacha_sound_rules column not available yet; saving legacy sound fallback only");
-        const legacyUpdateData = { ...updateData };
-        delete legacyUpdateData.gacha_sound_rules;
-        gachaSoundRulesWriteSkipped = true;
-        const fallbackResult = await supabaseAdmin
+      } else {
+        let { error } = await supabaseAdmin
           .from("streamers")
-          .update(legacyUpdateData)
+          .update(updateData)
           .eq("id", streamerId);
-        error = fallbackResult.error;
-      }
 
-      if (error) {
-        return handleDatabaseError(error, "Streamer Settings API: PUT");
+        // Issue #578: このフェーズで新規追加された列を最初に剥がす(他の既存列より
+        // 未デプロイである可能性が高いため)。
+        if (error && isMissingRarityWeightsScopeColumnError(error) && "rarity_weights_scope" in updateData) {
+          delete updateData.rarity_weights_scope;
+          rarityWeightsScopeWriteSkipped = true;
+          if (Object.keys(updateData).length > 0) {
+            const retryResult = await supabaseAdmin
+              .from("streamers")
+              .update(updateData)
+              .eq("id", streamerId);
+            error = retryResult.error;
+          } else {
+            error = null;
+          }
+        }
+
+        if (error && isMissingPackRarityWeightsColumnError(error) && "pack_rarity_weights" in updateData) {
+          delete updateData.pack_rarity_weights;
+          packRarityWeightsWriteSkipped = true;
+          if (Object.keys(updateData).length > 0) {
+            const retryResult = await supabaseAdmin
+              .from("streamers")
+              .update(updateData)
+              .eq("id", streamerId);
+            error = retryResult.error;
+          } else {
+            error = null;
+          }
+        }
+
+        // Issue #393再設計: 書き込み時点で card_pack_names / channel_point_collection_name
+        // のどちらか(または両方)が未デプロイの可能性があるため、都度1列だけ剥がして再試行する。
+        if (error && isMissingCardPackNamesColumnError(error) && "card_pack_names" in updateData) {
+          delete updateData.card_pack_names;
+          cardPackNamesWriteSkipped = true;
+          if (Object.keys(updateData).length > 0) {
+            const retryResult = await supabaseAdmin
+              .from("streamers")
+              .update(updateData)
+              .eq("id", streamerId);
+            error = retryResult.error;
+          } else {
+            error = null;
+          }
+        }
+
+        if (error && isMissingDefaultCardPackNameColumnError(error) && "default_card_pack_name" in updateData) {
+          delete updateData.default_card_pack_name;
+          defaultCardPackNameWriteSkipped = true;
+          if (Object.keys(updateData).length > 0) {
+            const retryResult = await supabaseAdmin
+              .from("streamers")
+              .update(updateData)
+              .eq("id", streamerId);
+            error = retryResult.error;
+          } else {
+            error = null;
+          }
+        }
+
+        if (error && isMissingCollectionNameColumn(error) && "channel_point_collection_name" in updateData) {
+          delete updateData.channel_point_collection_name;
+          if (Object.keys(updateData).length > 0) {
+            const retryResult = await supabaseAdmin
+              .from("streamers")
+              .update(updateData)
+              .eq("id", streamerId);
+            error = retryResult.error;
+          } else {
+            error = null;
+          }
+        }
+
+        // Issue #176: gacha_sound_rules はこのフィーチャーで新規追加された列。
+        // デプロイ窓では未デプロイの可能性があるため、列を落として旧来の
+        // gacha_sound_url/gacha_sound_enabled のみで再試行する(グレースフルデグレード)。
+        if (
+          error &&
+          gachaSoundRules !== undefined &&
+          (error.code === "PGRST204" || error.message.includes("gacha_sound_rules"))
+        ) {
+          logger.warn("gacha_sound_rules column not available yet; saving legacy sound fallback only");
+          const legacyUpdateData = { ...updateData };
+          delete legacyUpdateData.gacha_sound_rules;
+          gachaSoundRulesWriteSkipped = true;
+          const fallbackResult = await supabaseAdmin
+            .from("streamers")
+            .update(legacyUpdateData)
+            .eq("id", streamerId);
+          error = fallbackResult.error;
+        }
+
+        if (error) {
+          return handleDatabaseError(error, "Streamer Settings API: PUT");
+        }
       }
     }
 
