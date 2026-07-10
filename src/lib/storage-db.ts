@@ -21,14 +21,17 @@ import { logger } from './logger';
 //   本ファイルの書き込み関数内に閉じているため、同一ファイルを 2 段階で触らず
 //   ここで一括置換する（getDb() の sql タグで
 //   `select update_storage_usage(p_xxx => ...)` を名前付き引数呼び出しする）。
+// - #663: 残余の storage_usage 読み取り（getStorageUsageFromDB /
+//   getAllStorageUsage）も読み取り専用のため isPgReadEnabled() で分岐。
 // 既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時は完全に従来どおり動く。
 // -----------------------------------------------------------------------------
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
 import { isPgReadEnabled, isPgWriteEnabled } from '@/lib/db/flags';
 import { withDbRetry } from '@/lib/db/retry';
 import {
   blobFiles as blobFilesTable,
+  storageUsage as storageUsageTable,
   streamers as streamersTable,
   streamerStorageBonus as streamerStorageBonusTable,
 } from '@/lib/db/schema';
@@ -58,7 +61,87 @@ export interface BlobFileInfo {
  * @param userPrefix - ユーザー識別用のプレフィックス（8文字のハッシュ）
  * @returns ストレージ使用量情報
  */
+/**
+ * getStorageUsageFromDB の pg 直結実装 (#663、#572 パターン踏襲)
+ *
+ * PostgREST 実装との対応:
+ * - .in('user_prefix', [userPrefix, GLOBAL_PREFIX]) は Drizzle の inArray で等価
+ *   （user_prefix は PK のため最大 2 行）。
+ * - 取得失敗は log + `Failed to get storage usage: ...` の throw → 外側 catch で
+ *   log + デフォルト値（制限未到達扱い）に落とす二段構え。エラー時にアップロードを
+ *   ブロックしない安全側の外部挙動を既存実装と完全に一致させる（エラーメッセージ
+ *   本文はドライバ由来で異なるが、Error の形状・プレフィックス・ログの流れは同一）。
+ * - bytes_used は bigint 列だが Drizzle スキーマの mode: 'number' により number で
+ *   返る（PostgREST 経路の JSON number と同じ形状）。
+ * - 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ */
+async function getStorageUsageFromDBPg(userPrefix: string): Promise<StorageUsageResult> {
+  try {
+    // ユーザーとグローバルの使用量を同時に取得（既存実装と同じ 1 クエリ構成）
+    let data: Array<{ user_prefix: string; bytes_used: number }>;
+    try {
+      data = await withDbRetry(
+        async () => {
+          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+          const { db } = await getDb();
+          return db
+            .select({
+              user_prefix: storageUsageTable.user_prefix,
+              bytes_used: storageUsageTable.bytes_used,
+            })
+            .from(storageUsageTable)
+            .where(inArray(storageUsageTable.user_prefix, [userPrefix, GLOBAL_PREFIX]));
+        },
+        'getStorageUsageFromDB',
+        // 読み取り専用クエリのため冪等（リトライ可）
+        { idempotent: true },
+      );
+    } catch (selectError) {
+      logger.error('[StorageDB] Failed to get storage usage:', selectError);
+      throw new Error(
+        `Failed to get storage usage: ${selectError instanceof Error ? selectError.message : String(selectError)}`
+      );
+    }
+
+    // 結果を解析
+    const userRow = data.find(r => r.user_prefix === userPrefix);
+    const globalRow = data.find(r => r.user_prefix === GLOBAL_PREFIX);
+
+    const userUsage = userRow?.bytes_used ?? 0;
+    const globalUsage = globalRow?.bytes_used ?? 0;
+
+    logger.info(`[StorageDB] Usage - User: ${userPrefix} = ${userUsage} bytes, Global = ${globalUsage} bytes`);
+
+    return {
+      userUsage,
+      globalUsage,
+      userLimitReached: userUsage >= UPLOAD_CONFIG.USER_STORAGE_LIMIT,
+      globalLimitReached: globalUsage >= UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
+      userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
+      globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
+    };
+  } catch (error) {
+    // 使用量を確認できない場合は、アップロードをブロックしないように制限に達していないと仮定
+    // ただし、エラーログは出力する（既存と同じ）
+    logger.error('[StorageDB] Failed to get storage usage, returning defaults:', error);
+    return {
+      userUsage: 0,
+      globalUsage: 0,
+      userLimitReached: false,
+      globalLimitReached: false,
+      userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
+      globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
+    };
+  }
+}
+
 export async function getStorageUsageFromDB(userPrefix: string): Promise<StorageUsageResult> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  if (isPgReadEnabled()) {
+    return getStorageUsageFromDBPg(userPrefix);
+  }
+
   try {
     const supabaseAdmin = getSupabaseAdmin();
 
@@ -597,11 +680,71 @@ export const shouldShowVoteCampaign = cache(async function shouldShowVoteCampaig
  *
  * @returns 全ユーザーの使用量一覧
  */
+/**
+ * getAllStorageUsage の pg 直結実装 (#663、#572 パターン踏襲)
+ *
+ * PostgREST 実装との対応:
+ * - .order('bytes_used', { ascending: false }) は ORDER BY bytes_used DESC と等価。
+ * - 取得失敗は log + `Failed to get all storage usage: ...` の throw → 外側 catch で
+ *   log + 再 throw（管理用途のためエラーを握り潰さない。既存と同じ流れ。
+ *   エラーメッセージ本文はドライバ由来で異なるが、Error の形状・プレフィックス・
+ *   ログの流れは同一）。
+ * - camelCase への詰め替え（userPrefix / bytesUsed / blobCount）も既存実装と同一。
+ * - 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ */
+async function getAllStorageUsagePg(): Promise<Array<{
+  userPrefix: string;
+  bytesUsed: number;
+  blobCount: number;
+}>> {
+  try {
+    let data: Array<{ user_prefix: string; bytes_used: number; blob_count: number }>;
+    try {
+      data = await withDbRetry(
+        async () => {
+          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+          const { db } = await getDb();
+          return db
+            .select({
+              user_prefix: storageUsageTable.user_prefix,
+              bytes_used: storageUsageTable.bytes_used,
+              blob_count: storageUsageTable.blob_count,
+            })
+            .from(storageUsageTable)
+            .orderBy(desc(storageUsageTable.bytes_used));
+        },
+        'getAllStorageUsage',
+        // 読み取り専用クエリのため冪等（リトライ可）
+        { idempotent: true },
+      );
+    } catch (selectError) {
+      logger.error('[StorageDB] Failed to get all storage usage:', selectError);
+      throw new Error(
+        `Failed to get all storage usage: ${selectError instanceof Error ? selectError.message : String(selectError)}`
+      );
+    }
+
+    return data.map(row => ({
+      userPrefix: row.user_prefix,
+      bytesUsed: row.bytes_used,
+      blobCount: row.blob_count,
+    }));
+  } catch (error) {
+    logger.error('[StorageDB] Error getting all storage usage:', error);
+    throw error;
+  }
+}
+
 export async function getAllStorageUsage(): Promise<Array<{
   userPrefix: string;
   bytesUsed: number;
   blobCount: number;
 }>> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  if (isPgReadEnabled()) {
+    return getAllStorageUsagePg();
+  }
+
   try {
     const supabaseAdmin = getSupabaseAdmin();
 

@@ -11,6 +11,158 @@ import { logger } from '@/lib/logger'
 import { getBaseUrl } from '@/lib/url-utils'
 import { signSession } from '@/lib/session'
 import { handleLinkedAccountCallback } from '@/lib/twitch/linked-account-auth'
+// -----------------------------------------------------------------------------
+// #663 (#570/#572 パターン踏襲): pg 直結経路。
+// このルートは users / streamers への upsert（書き込み）と読み取り（スコープ乖離
+// チェック・TOS 確認）が混在するため、ルート内の DB アクセス全体を
+// isPgWriteEnabled() で分岐する（読み書きで経路が混ざると障害切り分けが困難になる
+// ため。sub-check.ts 冒頭コメント参照。pg-read モードでは本ルートは従来の PostgREST
+// 経路のまま動く）。既存 supabase-js 実装は無変更で残し（else 節への再インデント
+// のみ）、フラグ未設定時は完全に従来どおり動く。
+// 共有関数 saveTwitchScopes の内部では独立にフラグ分岐される。
+// -----------------------------------------------------------------------------
+import { eq } from 'drizzle-orm'
+import { getDb } from '@/lib/db/client'
+import { isPgWriteEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import { streamers as streamersTable, users as usersTable } from '@/lib/db/schema'
+
+/**
+ * スコープ乖離チェック用の users.twitch_scopes 取得の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - users.twitch_user_id は UNIQUE（migration 00001）のため最大 1 行。
+ *   .maybeSingle() は LIMIT 1 + rows[0] ?? null で同じ外部挙動（0 行はエラーではなく null）。
+ * - twitch_scopes は text[] 列のため必ず Drizzle スキーマ経由で読む
+ *   （src/lib/db/client.ts の fetch_types: false の注意書き参照）。
+ * - エラーは throw のまま伝播させ、ハンドラ側で既存経路の existingScopeError 分岐
+ *   （fail-safe の skipScopeSave）と同じ外部挙動に落とす。
+ */
+async function fetchExistingUserScopesPg(
+  twitchUserId: string
+): Promise<{ twitch_scopes: string[] | null } | null> {
+  const rows = await withDbRetry(
+    async () => {
+      // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+      const { db } = await getDb()
+      return db
+        .select({ twitch_scopes: usersTable.twitch_scopes })
+        .from(usersTable)
+        .where(eq(usersTable.twitch_user_id, twitchUserId))
+        .limit(1)
+    },
+    'authCallback(existing scopes)',
+    // 読み取り専用クエリのため冪等（リトライ可）
+    { idempotent: true },
+  )
+  return rows[0] ?? null
+}
+
+/**
+ * users への upsert の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - supabase-js の .upsert(values, { onConflict: 'twitch_user_id' }) は
+ *   INSERT ... ON CONFLICT (twitch_user_id) DO UPDATE SET（送信した全列を
+ *   EXCLUDED の値で上書き）に相当する。twitch_user_id は users の UNIQUE 制約
+ *   （migration 00001）が conflict target。Drizzle の .onConflictDoUpdate({ target,
+ *   set: values }) は同じ列に同じ値を書くため意味論が一致する（conflict target 列
+ *   自体への set は同値の no-op で、PostgREST も payload に含めて送る挙動と同じ）。
+ * - updated_at は両経路とも payload に含めない（DB 側の挙動が経路によらず共通）。
+ * - エラーは throw のまま伝播させ、ハンドラ側で既存経路と同じ「log + throw →
+ *   database_error 応答」の流れに合わせる。
+ *
+ * 冪等性: values は呼び出し元で事前計算済み（expires_at の ISO 文字列を含む）で、
+ * ON CONFLICT DO UPDATE はリトライしても同じ最終状態になるため idempotent: true
+ * （linked-account-auth.ts の sender settings upsert と同じ判断）。
+ */
+async function upsertUserPg(values: {
+  twitch_user_id: string
+  twitch_username: string
+  twitch_display_name: string
+  twitch_profile_image_url: string | null
+  twitch_access_token: string
+  twitch_refresh_token: string
+  twitch_token_expires_at: string
+}): Promise<void> {
+  await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .insert(usersTable)
+        .values(values)
+        .onConflictDoUpdate({
+          target: usersTable.twitch_user_id,
+          set: values,
+        })
+    },
+    'authCallback(users upsert)',
+    { idempotent: true },
+  )
+}
+
+/**
+ * streamers への upsert の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - conflict target は streamers.twitch_user_id の UNIQUE 制約（migration 00001）。
+ *   意味論の対応は upsertUserPg のコメント参照。
+ * - エラー処理はハンドラ側（呼び出し元のコメント参照）。
+ *
+ * 冪等性: values は事前計算済みの ON CONFLICT DO UPDATE のため idempotent: true。
+ */
+async function upsertStreamerPg(values: {
+  twitch_user_id: string
+  twitch_username: string
+  twitch_display_name: string
+  twitch_profile_image_url: string | null
+}): Promise<void> {
+  await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .insert(streamersTable)
+        .values(values)
+        .onConflictDoUpdate({
+          target: streamersTable.twitch_user_id,
+          set: values,
+        })
+    },
+    'authCallback(streamers upsert)',
+    { idempotent: true },
+  )
+}
+
+/**
+ * TOS 同意確認用の users.tos_accepted_at 取得の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - .maybeSingle() は users.twitch_user_id の UNIQUE 制約（migration 00001）により
+ *   LIMIT 1 + rows[0] ?? null で同じ外部挙動。
+ * - tos_accepted_at は timestamptz。pg 直結は PG テキスト形式の文字列で返る
+ *   （PostgREST は ISO 8601）が、消費側は「null かどうか」の判定とログ出力のみで
+ *   文字列のパース・表示は行わないため表現差の影響はない。
+ * - エラーは throw のまま伝播させ、ハンドラ側で「data=null 扱い」（既存経路は
+ *   .maybeSingle() の error を確認しない）と同じ外部挙動に落とす。
+ */
+async function fetchTosAcceptedAtPg(
+  twitchUserId: string
+): Promise<{ tos_accepted_at: string | null } | null> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .select({ tos_accepted_at: usersTable.tos_accepted_at })
+        .from(usersTable)
+        .where(eq(usersTable.twitch_user_id, twitchUserId))
+        .limit(1)
+    },
+    'authCallback(tos check)',
+    // 読み取り専用クエリのため冪等（リトライ可）
+    { idempotent: true },
+  )
+  return rows[0] ?? null
+}
 
 export async function GET(request: NextRequest) {
   // 開発環境ではリクエストのホストから動的にベースURLを取得
@@ -70,6 +222,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // #663: 読み書き混在ルートのため、DB アクセス全体を isPgWriteEnabled() で分岐する
+    // （ファイル冒頭コメント参照）。リクエスト途中で経路が揺れないよう 1 回だけ評価する。
+    // supabaseAdmin のクライアント生成自体は I/O を伴わないため、既存コードの位置の
+    // まま無変更で残す（pg 経路では以降の else 節でのみ使用される）。
+    const usePgWrite = isPgWriteEnabled()
     const supabaseAdmin = getSupabaseAdmin()
     // Twitchへのトークン交換リクエストでは、元のリダイレクトURIと一致する必要がある
     const redirectUri = `${baseUrl}/api/auth/twitch/callback`
@@ -142,21 +299,45 @@ export async function GET(request: NextRequest) {
     let skipScopeSave = false
     if (!isReauthFlow && !scopeRestoreFailed && !isScopeRecovery) {
       try {
-        const { data: existingUser, error: existingScopeError } = await supabaseAdmin
-          .from('users')
-          .select('twitch_scopes')
-          .eq('twitch_user_id', twitchUser.id)
-          .maybeSingle()
+        // #663: 既存スコープの読み取りのみ経路分岐する。読み取り失敗時はどちらの
+        // 経路も existingUser=null のまま skipScopeSave=true（fail-safe）となり、
+        // 後段の乖離チェック（両経路共有・既存ロジック無変更）に到達しない。
+        let existingUser: { twitch_scopes: string[] | null } | null = null
+        if (usePgWrite) {
+          try {
+            existingUser = await fetchExistingUserScopesPg(twitchUser.id)
+          } catch (existingScopeError) {
+            // 既存経路の existingScopeError 分岐と同じ fail-safe（スキップ）
+            skipScopeSave = true
+            logger.warn('Auth callback: Skipping scope save due to existing scope read failure', {
+              twitchUserId: twitchUser.id,
+              error:
+                existingScopeError instanceof Error
+                  ? existingScopeError.message
+                  : String(existingScopeError),
+            })
+          }
+        } else {
+          const { data, error: existingScopeError } = await supabaseAdmin
+            .from('users')
+            .select('twitch_scopes')
+            .eq('twitch_user_id', twitchUser.id)
+            .maybeSingle()
 
-        if (existingScopeError) {
-          // DB読み取り失敗: fail-safe(スキップ)で保護。リダイレクトできない（スコープ不明）
-          // DB read failure: fail-safe skip. Cannot redirect (unknown scopes).
-          skipScopeSave = true
-          logger.warn('Auth callback: Skipping scope save due to existing scope read failure', {
-            twitchUserId: twitchUser.id,
-            error: existingScopeError.message,
-          })
-        } else if (existingUser?.twitch_scopes) {
+          if (existingScopeError) {
+            // DB読み取り失敗: fail-safe(スキップ)で保護。リダイレクトできない（スコープ不明）
+            // DB read failure: fail-safe skip. Cannot redirect (unknown scopes).
+            skipScopeSave = true
+            logger.warn('Auth callback: Skipping scope save due to existing scope read failure', {
+              twitchUserId: twitchUser.id,
+              error: existingScopeError.message,
+            })
+          } else {
+            existingUser = data
+          }
+        }
+
+        if (existingUser?.twitch_scopes) {
           const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
           const existingAdditional = (existingUser.twitch_scopes as string[]).filter(
             (s: string) => validAdditionalScopes.includes(s)
@@ -206,32 +387,60 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-      // upsertのエラーを明示的にチェック（Supabase JSはエラー時にthrowせずerrorオブジェクトを返す）
-      // Explicitly check upsert error (Supabase JS returns error object instead of throwing)
-      const { error: upsertError } = await supabaseAdmin
-        .from('users')
-        .upsert({
-          twitch_user_id: twitchUser.id,
-          twitch_username: twitchUser.login,
-          twitch_display_name: twitchUser.display_name,
-          twitch_profile_image_url: twitchUser.profile_image_url,
-          twitch_access_token: tokens.access_token,
-          twitch_refresh_token: tokens.refresh_token,
-          twitch_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
-        }, {
-          onConflict: 'twitch_user_id',
-        })
+      if (usePgWrite) {
+        // pg 直結: 失敗（throw）時は既存経路の「upsertError を log + throw」と同じく、
+        // この try の catch（database_error 応答）へ伝播させる。
+        try {
+          await upsertUserPg({
+            twitch_user_id: twitchUser.id,
+            twitch_username: twitchUser.login,
+            twitch_display_name: twitchUser.display_name,
+            twitch_profile_image_url: twitchUser.profile_image_url,
+            twitch_access_token: tokens.access_token,
+            twitch_refresh_token: tokens.refresh_token,
+            // withDbRetry の queryFn 再実行時にも同じ値を書くよう、ここで 1 度だけ計算
+            // した値を渡す（upsertUserPg の冪等性コメント参照）
+            twitch_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+          })
+        } catch (upsertError) {
+          // details / hint は PostgREST 応答固有のフィールドのため pg 直結には無い
+          // （ログ内容の差のみで外部挙動は同一）
+          logger.error('Auth callback: User upsert failed', {
+            twitchUserId: twitchUser.id,
+            error: upsertError,
+            code: (upsertError as { code?: string })?.code,
+            message: upsertError instanceof Error ? upsertError.message : String(upsertError),
+          })
+          throw upsertError
+        }
+      } else {
+        // upsertのエラーを明示的にチェック（Supabase JSはエラー時にthrowせずerrorオブジェクトを返す）
+        // Explicitly check upsert error (Supabase JS returns error object instead of throwing)
+        const { error: upsertError } = await supabaseAdmin
+          .from('users')
+          .upsert({
+            twitch_user_id: twitchUser.id,
+            twitch_username: twitchUser.login,
+            twitch_display_name: twitchUser.display_name,
+            twitch_profile_image_url: twitchUser.profile_image_url,
+            twitch_access_token: tokens.access_token,
+            twitch_refresh_token: tokens.refresh_token,
+            twitch_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+          }, {
+            onConflict: 'twitch_user_id',
+          })
 
-      if (upsertError) {
-        logger.error('Auth callback: User upsert failed', {
-          twitchUserId: twitchUser.id,
-          error: upsertError,
-          code: upsertError.code,
-          message: upsertError.message,
-          details: upsertError.details,
-          hint: upsertError.hint,
-        })
-        throw upsertError
+        if (upsertError) {
+          logger.error('Auth callback: User upsert failed', {
+            twitchUserId: twitchUser.id,
+            error: upsertError,
+            code: upsertError.code,
+            message: upsertError.message,
+            details: upsertError.details,
+            hint: upsertError.hint,
+          })
+          throw upsertError
+        }
       }
 
       // トークン交換時に付与されたスコープをDBに全置換で保存する。
@@ -291,24 +500,51 @@ export async function GET(request: NextRequest) {
     }
 
     if (canBeStreamer) {
-      try {
-        await supabaseAdmin
-          .from('streamers')
-          .upsert({
+      if (usePgWrite) {
+        try {
+          await upsertStreamerPg({
             twitch_user_id: twitchUser.id,
             twitch_username: twitchUser.login,
             twitch_display_name: twitchUser.display_name,
             twitch_profile_image_url: twitchUser.profile_image_url,
-          }, {
-            onConflict: 'twitch_user_id',
           })
-      } catch (error) {
-        return handleAuthError(
-          error,
-          'database_error',
-          { operation: 'upsert_streamer', twitchUserId: twitchUser.id },
-          { baseUrl }
-        )
+        } catch (streamerUpsertError) {
+          // パリティ上の重要判断: 既存 postgrest 経路は .upsert() の error オブジェクトを
+          // 確認していない（supabase-js は DB エラーで throw せず error を返すため、
+          // 下の catch は実質デッドコードで、streamers upsert の DB エラーはログイン
+          // 継続を妨げない）。pg 直結では失敗が throw になるため、ここで握りつぶして
+          // 「streamers upsert が失敗してもログインは成功する」同じ外部挙動に合わせる。
+          // ここで database_error を返すと、一時的な DB エラーでログイン全体が失敗する
+          // 挙動変更（ユーザー影響のある回帰）になってしまう。切替検証用に warn を残す。
+          logger.warn('Auth callback: streamers upsert failed (login continues; postgrest parity)', {
+            twitchUserId: twitchUser.id,
+            error:
+              streamerUpsertError instanceof Error
+                ? streamerUpsertError.message
+                : String(streamerUpsertError),
+            code: (streamerUpsertError as { code?: string })?.code,
+          })
+        }
+      } else {
+        try {
+          await supabaseAdmin
+            .from('streamers')
+            .upsert({
+              twitch_user_id: twitchUser.id,
+              twitch_username: twitchUser.login,
+              twitch_display_name: twitchUser.display_name,
+              twitch_profile_image_url: twitchUser.profile_image_url,
+            }, {
+              onConflict: 'twitch_user_id',
+            })
+        } catch (error) {
+          return handleAuthError(
+            error,
+            'database_error',
+            { operation: 'upsert_streamer', twitchUserId: twitchUser.id },
+            { baseUrl }
+          )
+        }
       }
     }
 
@@ -334,11 +570,27 @@ export async function GET(request: NextRequest) {
     // Check if user has accepted Terms of Service
     let hasTosAccepted = false
     try {
-      const { data: userData } = await supabaseAdmin
-        .from('users')
-        .select('tos_accepted_at')
-        .eq('twitch_user_id', twitchUser.id)
-        .maybeSingle()
+      // #663: TOS 確認の読み取りのみ経路分岐する。判定・ログは両経路で共有（無変更）。
+      let userData: { tos_accepted_at: string | null } | null
+      if (usePgWrite) {
+        try {
+          userData = await fetchTosAcceptedAtPg(twitchUser.id)
+        } catch {
+          // 既存 postgrest 経路は .maybeSingle() の error を確認しない（エラー時は
+          // data=null → 下の判定が「undefined !== null = true」となり TOS ページへ
+          // 飛ばさずログインを継続する）。pg 直結の throw も null に落として同じ
+          // 外部挙動にする（ここで外側 catch に伝播させると hasTosAccepted=false の
+          // まま TOS ページへ飛ぶ、経路による挙動差が生じてしまう）。
+          userData = null
+        }
+      } else {
+        const { data } = await supabaseAdmin
+          .from('users')
+          .select('tos_accepted_at')
+          .eq('twitch_user_id', twitchUser.id)
+          .maybeSingle()
+        userData = data
+      }
 
       hasTosAccepted = userData?.tos_accepted_at !== null
 

@@ -20,6 +20,22 @@ import { hasTwitchSub } from '@/lib/twitch/sub-check'
 import { PLAN_PRIORITY, PLAN_STORAGE_BONUS } from '@/lib/plan-constants'
 import { logPerf, perfStart } from '@/lib/perf'
 import type { PlanType } from '@/lib/plan-constants'
+// -----------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。
+// getLicensePlan / getCachedTwitchSubPlan はいずれも読み取り専用のため
+// isPgReadEnabled() で分岐する（読み書き混在の hasTwitchSub は sub-check.ts 側で
+// #572 移行済み）。既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時は
+// 完全に従来どおり動く。
+// -----------------------------------------------------------------------------
+import { and, eq, inArray } from 'drizzle-orm'
+import { getDb } from '@/lib/db/client'
+import { isPgReadEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import {
+  supportCodes as supportCodesTable,
+  userLicenses as userLicensesTable,
+  users as usersTable,
+} from '@/lib/db/schema'
 
 // サーバー側コードからの既存 import を壊さないよう re-export
 export type { PlanType } from '@/lib/plan-constants'
@@ -86,10 +102,78 @@ export const getUserPlanSnapshot = cache(async function getUserPlanSnapshot(twit
 })
 
 /**
+ * getLicensePlan の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - `support_codes!inner(status)` の埋め込み + `.in('support_codes.status', [...])`
+ *   は「status が active/rotating の support_code を持つ user_licenses 行だけを
+ *   返す」INNER JOIN のため、INNER JOIN ... ON (FK 一致 AND status IN (...)) が
+ *   等価。JOIN 条件の FK は user_licenses.code_id → support_codes.id
+ *   （migration 00017）。code_id は PK 参照のため 1 ライセンスに付き最大 1 コード
+ *   で、JOIN による行の重複は発生しない（既存経路と同じ行数）。
+ * - 行の形状は既存経路が { plan_type, support_codes: { status } }、pg 経路は
+ *   { plan_type } だが、消費はこの関数内の plan_type のみで外部には出ない
+ *   （戻り値 PlanType のパリティのみが要件）。
+ * - クエリ失敗は既存の error 分岐と同じログ + 'basic'（pg はエラーが throw に
+ *   なるため catch で吸収）。データ 0 件も同じく 'basic'。
+ */
+async function getLicensePlanPg(twitchUserId: string): Promise<PlanType> {
+  try {
+    const data = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
+        // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ plan_type: userLicensesTable.plan_type })
+          .from(userLicensesTable)
+          .innerJoin(
+            supportCodesTable,
+            and(
+              eq(supportCodesTable.id, userLicensesTable.code_id),
+              inArray(supportCodesTable.status, ['active', 'rotating'])
+            )
+          )
+          .where(eq(userLicensesTable.twitch_user_id, twitchUserId))
+      },
+      'getLicensePlan',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true },
+    )
+
+    if (data.length === 0) {
+      return 'basic'
+    }
+
+    // 最上位プランを判定（patron > support > basic）
+    let highestPlan: PlanType = 'basic'
+    for (const license of data) {
+      const planType = license.plan_type as PlanType
+      if (PLAN_PRIORITY[planType] > PLAN_PRIORITY[highestPlan]) {
+        highestPlan = planType
+      }
+    }
+
+    return highestPlan
+  } catch (error) {
+    // 既存実装の error 分岐（logger.error + 'basic'）と同じ外部挙動。
+    // プラン判定失敗時はユーザーに不利にしない安全側に倒す。
+    logger.error('[Plan] Failed to get license plan:', error)
+    return 'basic'
+  }
+}
+
+/**
  * DBライセンスベースのプラン判定（従来のロジック）
  * user_licenses と support_codes(status) をJOINし、有効なコードに紐づくライセンスのみ有効とする。
  */
 async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  if (isPgReadEnabled()) {
+    return getLicensePlanPg(twitchUserId)
+  }
+
   try {
     const supabaseAdmin = getSupabaseAdmin()
 
@@ -128,7 +212,59 @@ async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
   }
 }
 
+/**
+ * getCachedTwitchSubPlan の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - .maybeSingle() は users.twitch_user_id の UNIQUE 制約（migration 00001）に
+ *   より最大 1 行のため、LIMIT 1 + rows[0] ?? null が同じ外部挙動。
+ * - 既存実装はクエリ失敗（error）時に「ログを出さず」'basic' を返す
+ *   （if (error || !data) return 'basic'。外側 catch のログには到達しない）。
+ *   一方、pg 版は withDbRetry の queryFn 内で throw される例外を単一の catch で
+ *   受けるため、この catch は旧実装の①（無ログの error 分岐）と②（想定外の例外、
+ *   catch節で logger.error）の両方を兼ねる。②相当（DB接続断など）を無ログで
+ *   握り潰すと Sentry/GitHub Issue 自動化パイプラインに乗らず可観測性が後退する
+ *   ため、旧実装の catch 節と同じ logger.error を残し、失敗はログに記録した上で
+ *   安全側の 'basic' を返す。
+ */
+async function getCachedTwitchSubPlanPg(twitchUserId: string): Promise<PlanType> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ twitch_has_sub: usersTable.twitch_has_sub })
+          .from(usersTable)
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .limit(1)
+      },
+      'getCachedTwitchSubPlan',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true },
+    )
+    const data = rows[0] ?? null
+
+    if (!data) {
+      return 'basic'
+    }
+
+    return data.twitch_has_sub === true ? 'twitch_sub' : 'basic'
+  } catch (error) {
+    // 旧実装の catch 節（予期しない例外）と同じログを出力する（上記コメント参照）。
+    // ここでログを落とすと DB 接続断等の想定外障害が無音になり、Sentry/GitHub
+    // Issue 自動化パイプラインをトリガーできなくなるため必須。
+    logger.error('[Plan] Error getting cached Twitch sub plan:', error)
+    return 'basic'
+  }
+}
+
 async function getCachedTwitchSubPlan(twitchUserId: string): Promise<PlanType> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  if (isPgReadEnabled()) {
+    return getCachedTwitchSubPlanPg(twitchUserId)
+  }
+
   try {
     const supabaseAdmin = getSupabaseAdmin()
     const { data, error } = await withRetry(

@@ -11,9 +11,51 @@ import { getBaseUrl } from '@/lib/url-utils'
 import { getSession, parseSession, verifySession } from '@/lib/session'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
+// -----------------------------------------------------------------------------
+// #663 (#570/#572 パターン踏襲): pg 直結経路。
+// このルートの DB アクセスは users.twitch_scopes の読み取り（スコープ復元）のみの
+// ため isPgReadEnabled() で分岐する。既存 supabase-js 実装は無変更で残し（else 節
+// への再インデントのみ）、フラグ未設定時は完全に従来どおり動く。
+// -----------------------------------------------------------------------------
+import { eq } from 'drizzle-orm'
+import { getDb } from '@/lib/db/client'
+import { isPgReadEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import { users as usersTable } from '@/lib/db/schema'
 
 // Web Crypto APIのcrypto.randomUUID()を使用（Cloudflare Workers互換）
 // Using Web Crypto API crypto.randomUUID() for Cloudflare Workers compatibility
+
+/**
+ * ログイン時スコープ復元用の users.twitch_scopes 取得の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - users.twitch_user_id は UNIQUE（migration 00001）のため最大 1 行。
+ *   .maybeSingle() は LIMIT 1 + rows[0] ?? null で同じ外部挙動（0 行はエラーではなく null）。
+ * - twitch_scopes は text[] 列のため必ず Drizzle スキーマ経由で読む
+ *   （src/lib/db/client.ts の fetch_types: false の注意書き参照）。
+ * - エラーは throw のまま呼び出し元へ伝播させ、ハンドラ側で既存経路の dbError 分岐
+ *   （scopeRestoreFailed ガードの設定）と同じ外部挙動に落とす。
+ */
+async function fetchUserScopesForLoginPg(
+  twitchUserId: string
+): Promise<{ twitch_scopes: string[] | null } | null> {
+  const rows = await withDbRetry(
+    async () => {
+      // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+      const { db } = await getDb()
+      return db
+        .select({ twitch_scopes: usersTable.twitch_scopes })
+        .from(usersTable)
+        .where(eq(usersTable.twitch_user_id, twitchUserId))
+        .limit(1)
+    },
+    'login(scope preservation)',
+    // 読み取り専用クエリのため冪等（リトライ可）
+    { idempotent: true },
+  )
+  return rows[0] ?? null
+}
 
 export async function GET(request: Request) {
   // Use Web Crypto API (Cloudflare Workers compatible)
@@ -122,25 +164,52 @@ export async function GET(request: Request) {
       }
 
       if (twitchUserId) {
-        const supabaseAdmin = getSupabaseAdmin()
-        const { data: user, error: dbError } = await supabaseAdmin
-          .from('users')
-          .select('twitch_scopes')
-          .eq('twitch_user_id', twitchUserId)
-          .maybeSingle()
+        // #663: この DB アクセスは読み取り専用のため isPgReadEnabled() で分岐。
+        // フラグ未設定時（既定 'postgrest'）は else 節の既存 supabase-js 実装が
+        // 従来どおり実行される。取得失敗時はどちらの経路も user=null のまま
+        // scopeRestoreFailed ガードを立てる（後段の共有ロジックはスコープ復元を
+        // スキップする）ため、外部挙動は完全に一致する。
+        let user: { twitch_scopes: string[] | null } | null = null
+        if (isPgReadEnabled()) {
+          try {
+            user = await fetchUserScopesForLoginPg(twitchUserId)
+          } catch (dbError) {
+            // 既存経路の dbError 分岐と同じ外部挙動: ガード（scopeRestoreFailed）を
+            // 立てて callback での全置換を抑止する（ログ文言も既存経路に揃える）。
+            logger.warn('Login: scope preservation DB query failed', {
+              twitchUserId,
+              error: dbError instanceof Error ? dbError.message : String(dbError),
+              code: (dbError as { code?: string })?.code,
+            })
+            scopeRestoreFailed = true
+          }
+        } else {
+          const supabaseAdmin = getSupabaseAdmin()
+          const { data, error: dbError } = await supabaseAdmin
+            .from('users')
+            .select('twitch_scopes')
+            .eq('twitch_user_id', twitchUserId)
+            .maybeSingle()
 
-        if (dbError) {
-          // DB障害時: スコープ復元に失敗したことをcallbackに伝達する
-          // callbackで全置換すると追加スコープが消失するため、ガードが必要
-          // DB failure: signal to callback that scope restoration failed
-          // Without this guard, callback's full-replace would silently drop additional scopes
-          logger.warn('Login: scope preservation DB query failed', {
-            twitchUserId,
-            error: dbError.message,
-            code: dbError.code,
-          })
-          scopeRestoreFailed = true
-        } else if (user?.twitch_scopes) {
+          if (dbError) {
+            // DB障害時: スコープ復元に失敗したことをcallbackに伝達する
+            // callbackで全置換すると追加スコープが消失するため、ガードが必要
+            // DB failure: signal to callback that scope restoration failed
+            // Without this guard, callback's full-replace would silently drop additional scopes
+            logger.warn('Login: scope preservation DB query failed', {
+              twitchUserId,
+              error: dbError.message,
+              code: dbError.code,
+            })
+            scopeRestoreFailed = true
+          } else {
+            user = data
+          }
+        }
+
+        // 両経路共通の後段（既存ロジック無変更。dbError 時は user=null のため
+        // 既存の else-if と同じく到達しない）
+        if (user?.twitch_scopes) {
           const validAdditionalScopes = Object.values(ADDITIONAL_SCOPES) as string[]
           preservedScopes = user.twitch_scopes.filter(
             (s: string) => validAdditionalScopes.includes(s)

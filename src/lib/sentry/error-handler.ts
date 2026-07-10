@@ -35,6 +35,10 @@
  */
 
 import { sanitizeContext, extractErrorMessage } from '@/lib/log-sanitizer'
+// #663: pg 直結経路の context (jsonb) 列型に合わせるための型 import（型のみの
+// import はクライアントバンドルに含まれないため静的で安全。実装モジュール
+// （db/client 等）は既存の supabase/admin と同様に dynamic import する）
+import type { Json } from '@/types/database'
 
 /**
  * error から message と stack を統一的に解決する。
@@ -51,6 +55,63 @@ function resolveErrorInfo(error: unknown): { message: string; stack: string | nu
 const MAX_MESSAGE_LENGTH = 10000
 const MAX_STACK_LENGTH = 50000
 
+/**
+ * errors テーブルへの記録の pg 直結実装 (#663)
+ *
+ * 【最重要】この関数はエラー報告経路であり、ここで throw が呼び出し元まで漏れると
+ * 「エラー記録の失敗」が「本来のリクエスト処理の失敗」という二次障害に化ける。
+ * 必ず logErrorToSupabase の try ブロックの中から await され、失敗はすべて既存の
+ * catch（console.warn のみ）で握り潰される構造を維持すること。この関数自体は
+ * throw してよい（呼び出し元の catch が既存実装と同一の握り潰し挙動を保証する）。
+ *
+ * PostgREST 実装との対応:
+ * - INSERT の列・切り詰め・sanitizeContext・environment 判定は既存実装と同一。
+ * - 既知の挙動差（ログ 1 行のみ）: 既存経路は insert の { error } を確認しない
+ *   ため INSERT 失敗が完全に無音だが、pg 経路は失敗が throw になり呼び出し元
+ *   catch の console.warn に到達する（getSupabaseAdmin() が throw するケースと
+ *   同じ経路）。呼び出し元へ throw が漏れない点は同一で、切替検証にも有用な差
+ *   のため許容する。
+ * - context は jsonb 列（schema.ts で $type<Json>）。sanitizeContext の戻り値
+ *   （Record<string, unknown>）は PostgREST 経路もそのまま JSON 化して送って
+ *   おり、値の変換をしないキャストのみ行う。
+ *
+ * ON CONFLICT の無い INSERT はリトライで二重記録（GitHub Issue の重複作成）に
+ * なりうるため非冪等（既定 = リトライなし）。withDbRetry で包むのは失敗時の
+ * [db:pg] タグ付き warn（監視手順）のため。
+ * なお withDbRetry の失敗ログは logger.warn（console 出力のみ）であり、
+ * logger.error → logErrorFromLogger → 本関数 の再帰は発生しない。
+ */
+async function logErrorToPgErrors(
+  errorType: string,
+  message: string,
+  stackTrace: string | null,
+  context: Record<string, unknown>
+): Promise<void> {
+  const { getDb } = await import('@/lib/db/client')
+  const { withDbRetry } = await import('@/lib/db/retry')
+  const { errors: errorsTable } = await import('@/lib/db/schema')
+
+  // 環境判定: NEXT_PUBLIC_APP_URL に 'preview' が含まれるかで判定（既存と同一）
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
+  const environment = appUrl.includes('preview') ? 'preview' : 'production'
+
+  await withDbRetry(
+    async () => {
+      // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+      const { db } = await getDb()
+      return db.insert(errorsTable).values({
+        error_type: errorType,
+        message: message.slice(0, MAX_MESSAGE_LENGTH),
+        stack_trace: stackTrace?.slice(0, MAX_STACK_LENGTH) || null,
+        // 機密情報（userId, token 等）を除外してから記録
+        context: sanitizeContext(context) as Json,
+        environment,
+      })
+    },
+    'logErrorToSupabase(insert errors)',
+  )
+}
+
 async function logErrorToSupabase(
   errorType: string,
   message: string,
@@ -64,6 +125,17 @@ async function logErrorToSupabase(
   }
 
   try {
+    // #663: errors への INSERT（書き込み）を含むため isPgWriteEnabled() で分岐。
+    // フラグ判定・pg 経路の失敗もすべてこの try の catch（console.warn のみ）で
+    // 握り潰され、エラー報告経路から呼び出し元へ throw が漏れることはない
+    // （既存実装と同一の安全性）。フラグ未設定時（既定 'postgrest'）は素通りし、
+    // 以下の既存実装が従来どおり動く。
+    const { isPgWriteEnabled } = await import('@/lib/db/flags')
+    if (isPgWriteEnabled()) {
+      await logErrorToPgErrors(errorType, message, stackTrace, context)
+      return
+    }
+
     const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
     const supabase = getSupabaseAdmin()
 

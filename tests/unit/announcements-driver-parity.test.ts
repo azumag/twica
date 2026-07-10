@@ -1,5 +1,6 @@
 /**
  * #570 パイロット: getUnreadAnnouncements の postgrest 経路 / pg 経路の形状互換テスト
+ * #663: getAllAnnouncements（履歴ページ用）のケースを追記
  *
  * 同一 fixture を両経路のモックに与え、戻り値が deepEqual であることを検証する。
  * pg 経路（Drizzle）は PostgREST 経路と「完全に同じ戻り値形状（snake_case キー、
@@ -7,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { desc, eq } from 'drizzle-orm'
-import { getUnreadAnnouncements } from '@/lib/announcements'
+import { getUnreadAnnouncements, getAllAnnouncements } from '@/lib/announcements'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
 import {
@@ -36,6 +37,7 @@ const ANNOUNCEMENT_ROWS = [
     title: '新機能のお知らせ',
     body: 'ガチャ演出を刷新しました',
     severity: 'info',
+    is_published: true,
     published_at: '2020-01-01T00:00:00.000+00:00',
     expires_at: '2999-01-01T00:00:00.000+00:00',
     created_at: '2020-01-02T00:00:00.000+00:00',
@@ -46,6 +48,7 @@ const ANNOUNCEMENT_ROWS = [
     title: 'メンテナンスのお知らせ',
     body: '深夜にメンテナンスを行います',
     severity: 'warning',
+    is_published: true,
     published_at: '2020-01-01T00:00:00.000+00:00',
     expires_at: null,
     created_at: '2020-01-01T00:00:00.000+00:00',
@@ -56,6 +59,7 @@ const ANNOUNCEMENT_ROWS = [
     title: '過去のお知らせ',
     body: '終了済みキャンペーン',
     severity: 'info',
+    is_published: true,
     published_at: '2020-01-01T00:00:00.000+00:00',
     expires_at: '2020-02-01T00:00:00.000+00:00',
     created_at: '2019-12-31T00:00:00.000+00:00',
@@ -66,6 +70,7 @@ const ANNOUNCEMENT_ROWS = [
     title: '未来のお知らせ',
     body: 'まだ見えないはず',
     severity: 'critical',
+    is_published: true,
     published_at: '2999-01-01T00:00:00.000+00:00',
     expires_at: null,
     created_at: '2019-12-30T00:00:00.000+00:00',
@@ -76,14 +81,15 @@ const ANNOUNCEMENT_ROWS = [
     title: '公開日時なしのお知らせ',
     body: 'published_at は null',
     severity: 'info',
+    is_published: true,
     published_at: null,
     expires_at: null,
     created_at: '2019-12-29T00:00:00.000+00:00',
   },
 ]
 
-/** announcement_reads テーブルの行（a2 のみ既読） */
-const READ_ROWS = [{ announcement_id: 'a2' }]
+/** announcement_reads テーブルの行（a2 のみ既読。read_at は getAllAnnouncements 用） */
+const READ_ROWS = [{ announcement_id: 'a2', read_at: '2020-01-05T00:00:00.000+00:00' }]
 
 /** 両経路が返すべき期待値（a1 と a5 が未読・表示対象） */
 const EXPECTED = [
@@ -120,8 +126,14 @@ function createThenableBuilder(result: { data: unknown; error: null }) {
   return builder
 }
 
-function createSupabaseClientMock() {
+function createSupabaseClientMock(options: {
+  /** #663: エラー系パリティ用に、指定テーブルの応答を { data: null, error } にする */
+  errorTable?: string
+} = {}) {
   const from = vi.fn((table: string) => {
+    if (table === options.errorTable) {
+      return createThenableBuilder({ data: null, error: { message: 'boom' } } as any)
+    }
     const data = table === 'announcements' ? ANNOUNCEMENT_ROWS : READ_ROWS
     return createThenableBuilder({ data, error: null })
   })
@@ -142,7 +154,10 @@ interface DrizzleCallRecord {
   orderByCondition?: unknown
 }
 
-function createDrizzleDbMock() {
+function createDrizzleDbMock(options: {
+  /** #663: エラー系パリティ用に、指定テーブルへのクエリを reject させる */
+  errorTable?: unknown
+} = {}) {
   // 先行レビュー指摘への対応: 従来はフィールド射影の一致のみを検証しており、
   // where/orderBy に渡る実引数の回帰（例: is_published の絞り込み漏れ、ソート列/
   // 方向の取り違え）を検知できなかった。from() 呼び出しごとに where/orderBy の
@@ -177,7 +192,10 @@ function createDrizzleDbMock() {
             return builder
           }),
           then: (onFulfilled: any, onRejected: any) =>
-            Promise.resolve(projected).then(onFulfilled, onRejected),
+            (table === options.errorTable
+              ? Promise.reject(new Error('boom'))
+              : Promise.resolve(projected)
+            ).then(onFulfilled, onRejected),
         }
         return builder
       }),
@@ -285,5 +303,135 @@ describe('getUnreadAnnouncements: postgrest / pg 経路の形状互換 (#570)', 
 
     expect(result).toEqual(EXPECTED)
     expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #663: getAllAnnouncements（履歴ページ用、既読フラグ付き）のパリティ
+// getUnreadAnnouncements と異なり、表示判定は hasAnnouncementBeenPublishedAt
+// （公開日時のみ。期限切れ a3 も含まれる）で、既読行も is_read/read_at 付きで返る。
+// ---------------------------------------------------------------------------
+
+/** 両経路が返すべき期待値（a4 = 未来公開のみ除外。a2 は既読 + read_at 付き） */
+const EXPECTED_ALL = [
+  {
+    id: 'a1',
+    title: '新機能のお知らせ',
+    body: 'ガチャ演出を刷新しました',
+    severity: 'info',
+    is_published: true,
+    published_at: '2020-01-01T00:00:00.000+00:00',
+    expires_at: '2999-01-01T00:00:00.000+00:00',
+    created_at: '2020-01-02T00:00:00.000+00:00',
+    is_read: false,
+    read_at: null,
+  },
+  {
+    id: 'a2',
+    title: 'メンテナンスのお知らせ',
+    body: '深夜にメンテナンスを行います',
+    severity: 'warning',
+    is_published: true,
+    published_at: '2020-01-01T00:00:00.000+00:00',
+    expires_at: null,
+    created_at: '2020-01-01T00:00:00.000+00:00',
+    is_read: true,
+    read_at: '2020-01-05T00:00:00.000+00:00',
+  },
+  {
+    // 期限切れだが履歴ページでは表示対象（getUnread との仕様差の検証を兼ねる）
+    id: 'a3',
+    title: '過去のお知らせ',
+    body: '終了済みキャンペーン',
+    severity: 'info',
+    is_published: true,
+    published_at: '2020-01-01T00:00:00.000+00:00',
+    expires_at: '2020-02-01T00:00:00.000+00:00',
+    created_at: '2019-12-31T00:00:00.000+00:00',
+    is_read: false,
+    read_at: null,
+  },
+  {
+    id: 'a5',
+    title: '公開日時なしのお知らせ',
+    body: 'published_at は null',
+    severity: 'info',
+    is_published: true,
+    published_at: null,
+    expires_at: null,
+    created_at: '2019-12-29T00:00:00.000+00:00',
+    is_read: false,
+    read_at: null,
+  },
+]
+
+describe('getAllAnnouncements: postgrest / pg 経路の形状互換 (#663)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  async function runPostgrestPath(options: { errorTable?: string } = {}) {
+    vi.stubEnv('DB_DRIVER', undefined)
+    const client = createSupabaseClientMock(options)
+    vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+    const result = await getAllAnnouncements('viewer-1')
+    return { result, client }
+  }
+
+  async function runPgPath(options: { errorTable?: unknown } = {}) {
+    vi.stubEnv('DB_DRIVER', 'pg-read')
+    const db = createDrizzleDbMock(options)
+    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
+    const result = await getAllAnnouncements('viewer-1')
+    return { result, db }
+  }
+
+  it('同一 fixture で両経路の戻り値が deepEqual になる', async () => {
+    const { result: postgrestResult, client } = await runPostgrestPath()
+    const { result: pgResult, db } = await runPgPath()
+
+    expect(client.from).toHaveBeenCalledWith('announcements')
+    expect(client.from).toHaveBeenCalledWith('announcement_reads')
+    expect(db.select).toHaveBeenCalledTimes(2)
+
+    expect(pgResult).toEqual(postgrestResult)
+    expect(postgrestResult).toEqual(EXPECTED_ALL)
+  })
+
+  it('pgクエリが where(is_published=true)・orderBy(created_at desc)・reads の twitch_user_id 絞り込みを正しい実引数で呼び出す', async () => {
+    const { db } = await runPgPath()
+
+    expect(db.calls).toHaveLength(2)
+    expect(db.calls[0].table).toBe(announcementsTable)
+    expect(db.calls[0].whereCondition).toEqual(eq(announcementsTable.is_published, true))
+    expect(db.calls[0].orderByCondition).toEqual(desc(announcementsTable.created_at))
+    expect(db.calls[1].table).toBe(announcementReadsTable)
+    expect(db.calls[1].whereCondition).toEqual(eq(announcementReadsTable.twitch_user_id, 'viewer-1'))
+  })
+
+  it('既読情報の取得失敗時: 両経路とも「全件既読扱い（is_read: true, read_at: null）」のフォールバックを返す', async () => {
+    const { result: postgrestResult } = await runPostgrestPath({ errorTable: 'announcement_reads' })
+    const { result: pgResult } = await runPgPath({ errorTable: announcementReadsTable })
+
+    const expectedFallback = EXPECTED_ALL.map(a => ({ ...a, is_read: true, read_at: null }))
+    expect(pgResult).toEqual(postgrestResult)
+    expect(postgrestResult).toEqual(expectedFallback)
+  })
+
+  it('お知らせ本体の取得失敗時: 両経路とも空配列を返す', async () => {
+    const { result: postgrestResult } = await runPostgrestPath({ errorTable: 'announcements' })
+    const { result: pgResult } = await runPgPath({ errorTable: announcementsTable })
+
+    expect(postgrestResult).toEqual([])
+    expect(pgResult).toEqual([])
+  })
+
+  it('postgrest 経路（フラグ未設定）では getDb が一切呼ばれない（挙動不変の検証）', async () => {
+    await runPostgrestPath()
+    expect(getDb).not.toHaveBeenCalled()
   })
 })

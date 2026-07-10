@@ -12,10 +12,55 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-l
 import { randomBytesHex } from '@/lib/crypto-utils'
 import { getBaseUrl } from '@/lib/url-utils'
 import { validateCSRFToken } from '@/lib/csrf'
+// -----------------------------------------------------------------------------
+// #663 (#570/#572 パターン踏襲): pg 直結経路。
+// このルート自体の DB アクセスは users.twitch_scopes の読み取りのみのため
+// isPgReadEnabled() で分岐する。書き込み（deleteTwitchTokens）は共有関数のまま呼び、
+// その内部で isPgWriteEnabled() により独立して経路が選ばれる（pg-read = 読み取り
+// のみ pg、書き込みは PostgREST という運用モードそのもの。token-manager.ts の
+// getTwitchAccessToken と同じ設計判断）。既存 supabase-js 実装は無変更で残す。
+// -----------------------------------------------------------------------------
+import { eq } from 'drizzle-orm'
+import { getDb } from '@/lib/db/client'
+import { isPgReadEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import { isPgMissingColumnError } from '@/lib/db/errors'
+import { users as usersTable } from '@/lib/db/schema'
 
 // 有効な追加スコープのリスト（セキュリティ: 許可されたスコープのみ受け付ける）
 // List of valid additional scopes (security: only accept allowed scopes)
 const VALID_ADDITIONAL_SCOPES: string[] = Object.values(ADDITIONAL_SCOPES)
+
+/**
+ * 再認証前の既存スコープ取得の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - users.twitch_user_id は UNIQUE（migration 00001）のため最大 1 行。
+ *   .maybeSingle() は LIMIT 1 + rows[0] ?? null で同じ外部挙動（0 行はエラーではなく null）。
+ * - twitch_scopes は text[] 列のため必ず Drizzle スキーマ経由で読む
+ *   （src/lib/db/client.ts の fetch_types: false の注意書き参照）。
+ * - エラーは throw のまま呼び出し元へ伝播させ、ハンドラ側で PGRST204 相当
+ *   （SQLSTATE 42703）の継続 / それ以外の 503 を既存経路と突き合わせる。
+ */
+async function fetchUserScopesForReauthPg(
+  twitchUserId: string
+): Promise<{ twitch_scopes: string[] | null } | null> {
+  const rows = await withDbRetry(
+    async () => {
+      // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+      const { db } = await getDb()
+      return db
+        .select({ twitch_scopes: usersTable.twitch_scopes })
+        .from(usersTable)
+        .where(eq(usersTable.twitch_user_id, twitchUserId))
+        .limit(1)
+    },
+    'reauth(scope fetch)',
+    // 読み取り専用クエリのため冪等（リトライ可）
+    { idempotent: true },
+  )
+  return rows[0] ?? null
+}
 
 export async function POST(request: Request) {
   try {
@@ -56,23 +101,53 @@ export async function POST(request: Request) {
 
     // 既存の追加スコープも再認証要求に含める（user:write:chat などの消失防止）
     // Include already granted additional scopes so re-auth does not drop existing permissions.
-    const supabaseAdmin = getSupabaseAdmin()
-    const { data: user, error: scopeFetchError } = await supabaseAdmin
-      .from('users')
-      .select('twitch_scopes')
-      .eq('twitch_user_id', session.twitchUserId)
-      .maybeSingle()
+    // #663: このルートの DB アクセスは読み取り専用のため isPgReadEnabled() で分岐。
+    // フラグ未設定時（既定 'postgrest'）は else 節の既存 supabase-js 実装が従来どおり動く。
+    let user: { twitch_scopes: string[] | null } | null
+    if (isPgReadEnabled()) {
+      try {
+        user = await fetchUserScopesForReauthPg(session.twitchUserId)
+      } catch (scopeFetchError) {
+        // PGRST204（列がスキーマキャッシュに無い）は pg 直結では SQLSTATE 42703 に
+        // 相当する。既存経路はこのコードのみ続行（error 時は data=null →
+        // preservedScopes=[]）するため、同じ外部挙動に合わせて user=null で継続する。
+        // それ以外の DB エラーは既存経路と同じログ + 503 応答。
+        if (!isPgMissingColumnError(scopeFetchError)) {
+          logger.error('Re-auth scope fetch failed', {
+            twitchUserId: session.twitchUserId,
+            error:
+              scopeFetchError instanceof Error
+                ? scopeFetchError.message
+                : String(scopeFetchError),
+            code: (scopeFetchError as { code?: string })?.code,
+          })
+          return NextResponse.json(
+            { error: 'Failed to prepare re-authorization. Please try again.' },
+            { status: 503 }
+          )
+        }
+        user = null
+      }
+    } else {
+      const supabaseAdmin = getSupabaseAdmin()
+      const { data, error: scopeFetchError } = await supabaseAdmin
+        .from('users')
+        .select('twitch_scopes')
+        .eq('twitch_user_id', session.twitchUserId)
+        .maybeSingle()
 
-    if (scopeFetchError && scopeFetchError.code !== 'PGRST204') {
-      logger.error('Re-auth scope fetch failed', {
-        twitchUserId: session.twitchUserId,
-        error: scopeFetchError.message,
-        code: scopeFetchError.code,
-      })
-      return NextResponse.json(
-        { error: 'Failed to prepare re-authorization. Please try again.' },
-        { status: 503 }
-      )
+      if (scopeFetchError && scopeFetchError.code !== 'PGRST204') {
+        logger.error('Re-auth scope fetch failed', {
+          twitchUserId: session.twitchUserId,
+          error: scopeFetchError.message,
+          code: scopeFetchError.code,
+        })
+        return NextResponse.json(
+          { error: 'Failed to prepare re-authorization. Please try again.' },
+          { status: 503 }
+        )
+      }
+      user = data
     }
 
     const preservedScopes = (user?.twitch_scopes ?? []).filter((scope: string) =>

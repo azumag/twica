@@ -27,39 +27,55 @@ describe('sentry/error-handler', () => {
   });
 
   describe('全 report 関数が Promise を返す', () => {
-    it('reportError は Promise を返す', () => {
+    // #663 で error-handler.ts に pg 直結経路（flags/db モジュールの動的 import）が
+    // 追加され、fire-and-forget の Supabase 記録が完了するまでの経路が1段階
+    // 非同期に伸びた。ここで Promise を await せず放置すると、次のテストの
+    // beforeEach（vi.clearAllMocks）実行後に非同期処理が完了して mockInsert を
+    // 呼んでしまい、後続テストのアサーションを汚染するレースが発生する
+    // （実際に発生していた既知の回帰: 'Error オブジェクトの場合〜' テストの
+    // mockInsert 呼び出し引数がこのブロックの 'test' Error に汚染されていた）。
+    // Promise であることの検証はそのままに、必ず await して後続テストへの
+    // 汚染を防ぐ。
+    it('reportError は Promise を返す', async () => {
       const result = reportError(new Error('test'));
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportApiError は Promise を返す', () => {
+    it('reportApiError は Promise を返す', async () => {
       const result = reportApiError('/api/test', 'GET', new Error('test'));
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportAuthError は Promise を返す', () => {
+    it('reportAuthError は Promise を返す', async () => {
       const result = reportAuthError(new Error('test'), { provider: 'twitch' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportGachaError は Promise を返す', () => {
+    it('reportGachaError は Promise を返す', async () => {
       const result = reportGachaError(new Error('test'), { streamerId: '123' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportBattleError は Promise を返す', () => {
+    it('reportBattleError は Promise を返す', async () => {
       const result = reportBattleError(new Error('test'), { battleId: '1' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportRealtimeError は Promise を返す', () => {
+    it('reportRealtimeError は Promise を返す', async () => {
       const result = reportRealtimeError(new Error('test'), { action: 'subscribe' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportSecurityError は Promise を返す', () => {
+    it('reportSecurityError は Promise を返す', async () => {
       const result = reportSecurityError(new Error('test'), { action: 'csrf' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
   });
 

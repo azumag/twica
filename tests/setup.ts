@@ -26,10 +26,6 @@ Object.defineProperty(global.navigator, 'clipboard', {
 })
 
 // Global mocks
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: vi.fn(() => createMockSupabaseClient()),
-}))
-
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: vi.fn(() => createMockSupabaseClient()),
   // logger.error → logErrorFromLogger → logErrorToSupabase で使用される

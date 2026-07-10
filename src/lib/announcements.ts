@@ -287,12 +287,156 @@ export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promis
 })
 
 /**
+ * getAllAnnouncements の Drizzle（pg 直結）実装 (#663、#570 パイロット踏襲)
+ *
+ * PostgREST 実装との対応（getUnreadAnnouncementsPg と同じ read パターン。ただし
+ * エラー時の外部挙動がフェーズごとに異なるため、単一 catch ではなくフェーズ別の
+ * try/catch で既存実装の分岐を 1 つずつ再現する）:
+ * - announcements 取得失敗（annError 相当）→ 'Failed to fetch all announcements'
+ *   ログ + 空配列（既存と同じ）
+ * - announcement_reads 取得失敗（readError 相当）→ 'Failed to fetch announcement
+ *   reads for history' ログ + 「全件既読扱い（is_read: true, read_at: null）」の
+ *   フォールバック（既存と同じ。空配列ではない点が getUnread と異なる）
+ * - それ以外の予期しない例外 → 'Error in getAllAnnouncements' ログ + 空配列
+ *
+ * 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ * 日付の既知の表現差（getUnreadAnnouncementsPg のコメント参照）: pg 直結は PG
+ * テキスト形式、PostgREST は ISO 8601 を返すが、本関数の消費側は
+ * src/app/dashboard/announcements/page.tsx（created_at を new Date() 経由で表示、
+ * read_at / published_at / expires_at は直接表示しない）と
+ * hasAnnouncementBeenPublishedAt（Date.parse 経由）のみで、いずれも両形式を同一
+ * 時刻に解釈するため生文字列のまま返す（dashboard-data.ts と同じ方針）。
+ */
+async function getAllAnnouncementsPg(twitchUserId: string): Promise<AnnouncementWithReadStatus[]> {
+  try {
+    const now = new Date()
+
+    let announcements: Array<{
+      id: string
+      title: string
+      body: string
+      severity: string
+      is_published: boolean
+      published_at: string | null
+      expires_at: string | null
+      created_at: string | null
+    }>
+    try {
+      announcements = await withDbRetry(
+        async () => {
+          // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
+          // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
+          const { db } = await getDb()
+          return db
+            .select({
+              id: announcementsTable.id,
+              title: announcementsTable.title,
+              body: announcementsTable.body,
+              severity: announcementsTable.severity,
+              is_published: announcementsTable.is_published,
+              published_at: announcementsTable.published_at,
+              expires_at: announcementsTable.expires_at,
+              created_at: announcementsTable.created_at,
+            })
+            .from(announcementsTable)
+            .where(eq(announcementsTable.is_published, true))
+            .orderBy(desc(announcementsTable.created_at))
+        },
+        'getAllAnnouncements(announcements)',
+        { idempotent: true },
+      )
+    } catch (annError) {
+      // 既存実装の annError 分岐と同じ外部挙動（ログ + 空配列）。
+      // ログの error はメッセージ文字列（既存は annError.message）に合わせる。
+      logger.error('Failed to fetch all announcements', {
+        error: annError instanceof Error ? annError.message : String(annError),
+      })
+      return []
+    }
+
+    if (announcements.length === 0) {
+      return []
+    }
+
+    const publishedAnnouncements = announcements.filter((announcement) =>
+      hasAnnouncementBeenPublishedAt(announcement, now)
+    )
+
+    if (publishedAnnouncements.length === 0) {
+      return []
+    }
+
+    // severity / created_at のキャストは getUnreadAnnouncementsPg と同じ根拠:
+    // severity は DB の CHECK 制約で 'info' | 'warning' | 'critical' が保証され、
+    // created_at は DDL が DEFAULT now()（NOT NULL なし）のため Drizzle 型は
+    // string | null だが実運用で NULL にならない。いずれも値の変換はしない。
+    const toRow = (
+      a: (typeof publishedAnnouncements)[number],
+      isRead: boolean,
+      readAt: string | null
+    ): AnnouncementWithReadStatus => ({
+      id: a.id,
+      title: a.title,
+      body: a.body,
+      severity: a.severity as AnnouncementWithReadStatus['severity'],
+      is_published: a.is_published,
+      published_at: a.published_at,
+      expires_at: a.expires_at,
+      created_at: a.created_at as string,
+      is_read: isRead,
+      read_at: readAt,
+    })
+
+    let reads: Array<{ announcement_id: string; read_at: string | null }>
+    try {
+      reads = await withDbRetry(
+        async () => {
+          const { db } = await getDb()
+          return db
+            .select({
+              announcement_id: announcementReadsTable.announcement_id,
+              read_at: announcementReadsTable.read_at,
+            })
+            .from(announcementReadsTable)
+            .where(eq(announcementReadsTable.twitch_user_id, twitchUserId))
+        },
+        'getAllAnnouncements(reads)',
+        { idempotent: true },
+      )
+    } catch (readError) {
+      // 既読情報の取得に失敗した場合は全お知らせを既読扱いで返す（既存の
+      // readError 分岐と同じ外部挙動: 空配列ではなくフォールバック表示）
+      logger.error('Failed to fetch announcement reads for history', {
+        error: readError instanceof Error ? readError.message : String(readError),
+      })
+      return publishedAnnouncements.map(a => toRow(a, true, null))
+    }
+
+    const readMap = new Map(reads.map(r => [r.announcement_id, r.read_at]))
+
+    return publishedAnnouncements.map(a =>
+      toRow(a, readMap.has(a.id), readMap.get(a.id) ?? null)
+    )
+  } catch (error) {
+    logger.error('Error in getAllAnnouncements', { error })
+    return []
+  }
+}
+
+/**
  * 全お知らせを取得（履歴ページ用、既読フラグ付き）
  *
  * @param twitchUserId - TwitchユーザーID
  * @returns 全お知らせ一覧（既読フラグ付き、作成日時の降順）
  */
 export async function getAllAnnouncements(twitchUserId: string): Promise<AnnouncementWithReadStatus[]> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐（getUnreadAnnouncements
+  // と同じ read パターン）。フラグ未設定時（既定 'postgrest'）はこの分岐を素通りし、
+  // 以下の既存 supabase-js 実装が従来と完全に同一に実行される。
+  if (isPgReadEnabled()) {
+    return getAllAnnouncementsPg(twitchUserId)
+  }
+
   try {
     const supabase = getSupabaseAdmin()
     const now = new Date()

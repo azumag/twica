@@ -18,9 +18,16 @@ import { resolvePackDisplayName } from "@/lib/collection-packs";
 // 一切入らないため、import が存在するだけでは挙動に影響しない(#570 の設計。
 // tests/setup.ts の getDb throw スタブも「postgrest 経路で getDb が呼ばれない」
 // ことを構造的に保証している)。
+// #663: 同じガチャ EventSub フロー内の残余 2 箇所（postSoldOutNotify の
+// streamers.chat_announcement_enabled 読み取り / {all} プレースホルダ用の
+// cards count クエリ）の pg 直結分岐用に drizzle-orm と schema を追加する。
+// count は既存コードの分割代入 `{ count }` と名前が紛らわしいため countRows に
+// alias する（dashboard-data.ts と同じ規約）。
+import { and, count as countRows, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { getGachaDbDriver } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
+import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
@@ -532,6 +539,52 @@ interface SoldOutNotifyData {
 }
 
 /**
+ * postSoldOutNotify 内の streamers.chat_announcement_enabled 読み取りの
+ * pg 直結(Drizzle)実装 (#663、#573 の fetchUserCardCountsRpcPg パターン踏襲)。
+ * getGachaDbDriver() === 'pg' のときのみ呼ばれる（フラグ分岐の判断根拠は
+ * 呼び出し側のコメント参照）。
+ *
+ * PostgREST 実装との対応:
+ * - .maybeSingle() は streamers.twitch_user_id の UNIQUE 制約（migration 00001）
+ *   により最大 1 行のため、LIMIT 1 + rows[0] ?? null が同じ外部挙動
+ *   （0 行 → data: null / 1 行 → その行）。
+ * - PostgREST 経路はエラーを throw せず { data: null, error } で返すため、pg 側も
+ *   throw を catch して同一の { data, error } 形状へ正規化する。これにより
+ *   呼び出し側の既存分岐（error → warn + return / 無効 → info + skip）を両経路で
+ *   完全に共有する（fetchUserCardCountsRpcPg と同じ「分岐はクエリ実行の1箇所だけ」
+ *   の設計）。
+ * - 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ */
+async function fetchSoldOutChatSettingsPg(
+  broadcasterTwitchUserId: string
+): Promise<{
+  data: { chat_announcement_enabled: boolean } | null;
+  error: { message: string } | null;
+}> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ chat_announcement_enabled: streamersTable.chat_announcement_enabled })
+          .from(streamersTable)
+          .where(eq(streamersTable.twitch_user_id, broadcasterTwitchUserId))
+          .limit(1);
+      },
+      "eventsub:postSoldOutNotify:chatSettings(pg)",
+      { idempotent: true },
+    );
+    return { data: rows[0] ?? null, error: null };
+  } catch (error) {
+    return {
+      data: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+/**
  * 売り切れ(発行枚数上限到達)確定後の通知処理（チャンネルポイント返還 + チャット通知）。
  * waitUntil() でレスポンス返却後にバックグラウンド実行される。
  *
@@ -603,12 +656,21 @@ async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> {
   }
 
   try {
-    const supabaseAdmin = getSupabaseAdmin();
-    const { data: streamer, error } = await supabaseAdmin
-      .from('streamers')
-      .select('chat_announcement_enabled')
-      .eq('twitch_user_id', broadcasterTwitchUserId)
-      .maybeSingle();
+    // #663: この読み取りはガチャ EventSub フロー内（売り切れ確定後の救済通知）の
+    // ため、全体フラグ（DB_DRIVER / isPgReadEnabled）ではなく execute_gacha_
+    // transaction と同じ getGachaDbDriver() で分岐する。GACHA_DB_DRIVER=postgrest
+    // による緊急ロールバック時に通知経路だけ pg 直結に残る「経路の食い違い」を
+    // 作らない — ロールバックは1つのレバーでガチャ実行フロー全体を旧経路へ
+    // 戻せる必要がある（sendChatAnnouncement 内 userCardCountsPromise と同じ判断）。
+    // pg 側は同一の { data, error } 形状へ正規化して返すため、以下の消費コード
+    // （error → warn / 無効 → skip）は両経路で完全に共有される。
+    const { data: streamer, error } = getGachaDbDriver() === 'pg'
+      ? await fetchSoldOutChatSettingsPg(broadcasterTwitchUserId)
+      : await getSupabaseAdmin()
+          .from('streamers')
+          .select('chat_announcement_enabled')
+          .eq('twitch_user_id', broadcasterTwitchUserId)
+          .maybeSingle();
 
     if (error) {
       logger.warn('[postSoldOutNotify] Failed to fetch chat announcement settings', {
@@ -837,6 +899,50 @@ async function handleRedemption(messageId: string, event: {
 }
 
 /**
+ * sendChatAnnouncement の {all} プレースホルダ用「配信者のアクティブカード総数」
+ * クエリの pg 直結(Drizzle)実装 (#663、#573 の fetchUserCardCountsRpcPg パターン
+ * 踏襲)。getGachaDbDriver() === 'pg' のときのみ呼ばれる（フラグ分岐の判断根拠は
+ * 呼び出し側 allCountPromise のコメント参照）。
+ *
+ * PostgREST 実装との対応:
+ * - .select('id', { count: 'exact', head: true }) は「行を返さず件数だけ取る」
+ *   COUNT クエリのため、Drizzle の count() 集計（SELECT count(*)）が等価。
+ * - 呼び出し側の既存分岐（allCountResult?.error → warn / count ?? 0）を両経路で
+ *   完全に共有するため、あらゆるエラーを { count: null, error } に正規化して返す
+ *   （fetchUserCardCountsRpcPg の { data, error } 正規化と同じ設計）。
+ * - キャッシュ非依存性: 既存経路の getSupabaseAdminNoCache と同じ「常に最新を
+ *   読む」性質は、HTTP キャッシュ層を持たない pg 直結では構造的に保たれる
+ *   （fetchUserCardCountsRpcPg の doc コメント参照）。
+ * - 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ */
+async function fetchActiveCardCountPg(
+  streamerId: string
+): Promise<{ count: number | null; error: { message: string } | null }> {
+  try {
+    const activeCardCount = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        const rows = await db
+          .select({ count: countRows() })
+          .from(cardsTable)
+          .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)));
+        // count(*) は必ず 1 行返るが、消費側の `count ?? 0` と同じ安全側の既定値に倒す
+        return rows[0]?.count ?? 0;
+      },
+      "eventsub:sendChatAnnouncement:allCardCount(pg)",
+      { idempotent: true },
+    );
+    return { count: activeCardCount, error: null };
+  } catch (error) {
+    return {
+      count: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+/**
  * sendChatAnnouncement の {num}/{unique}/{newCards} 用 get_user_card_counts RPC の
  * pg 直結(postgres.js)実装 (#573)。getGachaDbDriver() === 'pg' のときのみ呼ばれる
  * (フラグ分岐の判断根拠は呼び出し側 userCardCountsPromise のコメント参照)。
@@ -988,12 +1094,21 @@ async function sendChatAnnouncement(
 
     // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
     // {all}: count active cards for this streamer (user-independent)
+    //
+    // #663: この呼び出しもガチャ EventSub フロー内のため、下の
+    // userCardCountsPromise と同じく getGachaDbDriver() で分岐する（判断根拠は
+    // そちらのコメント参照。GACHA_DB_DRIVER=postgrest の緊急ロールバック1レバーで
+    // 通知経路も一括で旧経路へ戻る）。pg 側は { count, error } の同一形状へ
+    // 正規化して返すため、下の allCountResult の消費コード（error → warn /
+    // count ?? 0）は両経路で完全に共有される。
     const allCountPromise = needsAllCount
-      ? supabaseAdminNoCache
-          .from('cards')
-          .select('id', { count: 'exact', head: true })
-          .eq('streamer_id', streamer.id)
-          .eq('is_active', true)
+      ? (getGachaDbDriver() === 'pg'
+          ? fetchActiveCardCountPg(streamer.id)
+          : supabaseAdminNoCache
+              .from('cards')
+              .select('id', { count: 'exact', head: true })
+              .eq('streamer_id', streamer.id)
+              .eq('is_active', true))
       : null;
 
     // {num} / {unique} は RPC `get_user_card_counts` で DB 側 GROUP BY 済みの
