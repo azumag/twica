@@ -23,10 +23,170 @@ import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssu
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
 import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 import type { ApiRateLimitResponse } from "@/types/api";
+// ---------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。POST は cards への INSERT(書き込み)を
+// 含むため、streamer 所有権確認も含めたリクエスト内の全 DB アクセスを
+// isPgWriteEnabled() で分岐する(読み書きで経路が混ざると障害切り分けが困難に
+// なるため。battle/start route と同じ判断)。GET は読み取り専用のため
+// isPgReadEnabled() で分岐する(pg-read でも切替)。
+// フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに一切入らない
+// ため、import が存在するだけでは挙動に影響しない(tests/setup.ts の getDb throw
+// スタブが「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
+// ---------------------------------------------------------------------------
+import { and, eq, inArray, count as sqlCount, sql } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { isPgMissingColumnError } from "@/lib/db/errors";
+import { cards as cardsTable, streamers as streamersTable, userCards as userCardsTable } from "@/lib/db/schema";
 
 // Cache TTL for cards list (30 seconds to balance freshness and CPU usage)
 // カード一覧のキャッシュTTL（新鮮さとCPU使用量のバランスで30秒）
 const CARDS_CACHE_TTL = 30;
+
+/**
+ * POST /api/cards の streamer 所有権確認 + card_pack_names(事前登録パック一覧)
+ * 取得の pg 直結実装 (#663)。
+ *
+ * PostgREST 実装との対応:
+ * - .eq("id", ...).eq("twitch_user_id", ...).maybeSingle() は streamers.id が
+ *   PK のため LIMIT 1 + rows[0] ?? null で同じ外部挙動。
+ * - card_pack_names 列未デプロイ(42703)時は既存実装と同じく列を落として再試行し、
+ *   cardPackNamesUnavailable=true で呼び出し元にフォールバックを伝える。
+ *   isMissingCardPackNamesColumnError の pg 版として isPgMissingColumnError を使う
+ *   (postgres.js の PostgresError は `details` ではなく `detail` を持つが、既存の
+ *   isMissingCardPackNamesColumnError は message 文字列一致でも成立するため、
+ *   ここでは SQLSTATE 42703 で直接判定する方が確実)。
+ * - 列未デプロイ以外のエラーは既存 postgrest 経路と同じく区別せず streamer=null
+ *   扱いにする(既存実装が `!streamer` だけで 403 判定しているため。エラー種別を
+ *   問わず「取得できなければ403」という既存の緩い判定に合わせる)。
+ * 読み取り専用クエリのため冪等(idempotent: true)としてリトライを opt-in する。
+ */
+async function fetchStreamerForCardCreatePg(
+  streamerId: string,
+  twitchUserId: string
+): Promise<{
+  streamer: { id: string; rarity_weights: Record<string, number> | null; card_pack_names: string[] } | null;
+  cardPackNamesUnavailable: boolean;
+}> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamersTable.id,
+            rarity_weights: streamersTable.rarity_weights,
+            card_pack_names: streamersTable.card_pack_names,
+          })
+          .from(streamersTable)
+          .where(and(eq(streamersTable.id, streamerId), eq(streamersTable.twitch_user_id, twitchUserId)))
+          .limit(1);
+      },
+      "Cards API: POST streamer ownership(pg)",
+      { idempotent: true }
+    );
+    const row = rows[0] ?? null;
+    return {
+      streamer: row ? { id: row.id, rarity_weights: row.rarity_weights, card_pack_names: row.card_pack_names ?? [] } : null,
+      cardPackNamesUnavailable: false,
+    };
+  } catch (error) {
+    if (!isPgMissingColumnError(error)) {
+      return { streamer: null, cardPackNamesUnavailable: false };
+    }
+    try {
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ id: streamersTable.id, rarity_weights: streamersTable.rarity_weights })
+            .from(streamersTable)
+            .where(and(eq(streamersTable.id, streamerId), eq(streamersTable.twitch_user_id, twitchUserId)))
+            .limit(1);
+        },
+        "Cards API: POST streamer ownership fallback(pg)",
+        { idempotent: true }
+      );
+      const row = rows[0] ?? null;
+      return {
+        streamer: row ? { id: row.id, rarity_weights: row.rarity_weights, card_pack_names: [] } : null,
+        cardPackNamesUnavailable: true,
+      };
+    } catch {
+      return { streamer: null, cardPackNamesUnavailable: true };
+    }
+  }
+}
+
+/**
+ * POST /api/cards の cards INSERT の pg 直結実装 (#663)。
+ *
+ * PostgREST 実装との対応:
+ * - .insert(insertData).select().maybeSingle() は「挿入行の全列を返す」ため、
+ *   Drizzle の .returning()(引数なし = 全列)+ rows[0] ?? null が同じ外部挙動。
+ * - card_number / max_issuance_count / collection_name 列の未デプロイ時カスケード
+ *   リトライは、既存実装と同じ判定関数(isMissingCardNumberColumnError /
+ *   isMissingCardIssuanceColumnError / isMissingCollectionNameColumn)をそのまま
+ *   再利用する。これらは message 文字列の部分一致で判定しており、postgres.js が
+ *   ネイティブに投げる 42703("column ... does not exist")のメッセージにも
+ *   同じ列名 + "column"/"does not exist" が含まれるため、PostgREST 固有の
+ *   PGRST204 判定と共存させても両ドライバで機能する(postgres.js の PostgresError
+ *   は `details` ではなく `detail` を持つが、判定に必要な情報は message 自体に
+ *   含まれるため影響しない)。card_number 一意制約違反(23505)も
+ *   isCardNumberConflictError で同様に検知できる。
+ * - 既存実装は各 if を独立に順次評価する(else if ではない)ため、この関数も同じ
+ *   順序(card_number → max_issuance_count → collection_name)で 1 回ずつ再試行する
+ *   カスケードを再現する。
+ *
+ * 冪等性判断(リトライ不可の根拠 — 重要): このカード作成 INSERT には一意制約
+ * (card_number 重複時のみ)以外に冪等キーが無い一般的な新規作成であり、接続断は
+ * 「クエリがサーバーに到達しコミット済みかどうか不明」を意味する。自動リトライ
+ * すると同一カードの二重作成(在庫の実質的な水増し・発行枚数上限のすり抜け)に
+ * つながるため、非冪等(withDbRetry 既定 = リトライなし)として扱う。
+ */
+async function insertCardPg(
+  insertData: Record<string, unknown>
+): Promise<{ data: Record<string, unknown> | null; error: unknown }> {
+  const data = { ...insertData };
+  let result: Record<string, unknown> | null = null;
+  let lastError: unknown = null;
+
+  const tryInsert = async (): Promise<void> => {
+    try {
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db.insert(cardsTable).values(data as never).returning();
+        },
+        "Cards API: POST insert card(pg)"
+        // 非冪等のため withDbRetry の第3引数(idempotent オプション)は渡さない
+        // (既定 false = 接続断でもリトライしない。上記 doc コメント参照)
+      );
+      result = rows[0] ?? null;
+      lastError = null;
+    } catch (error) {
+      lastError = error;
+    }
+  };
+
+  await tryInsert();
+
+  if (lastError && isMissingCardNumberColumnError(lastError)) {
+    delete data.card_number;
+    await tryInsert();
+  }
+  if (lastError && isMissingCardIssuanceColumnError(lastError)) {
+    delete data.max_issuance_count;
+    await tryInsert();
+  }
+  if (lastError && isMissingCollectionNameColumn(lastError as { message?: string; code?: string; hint?: string }) && "collection_name" in data) {
+    delete data.collection_name;
+    await tryInsert();
+  }
+
+  return { data: result, error: lastError };
+}
 
 export async function POST(request: NextRequest) {
   // Content-Type validation - must be the first check
@@ -80,6 +240,12 @@ export async function POST(request: NextRequest) {
         { status: 507 }
       );
     }
+
+    // #663: cards への INSERT(書き込み)を含むハンドラのため、以降の全 DB アクセスを
+    // usePgWrite で分岐する(ファイル冒頭のコメント参照)。判定はここで 1 回だけ
+    // 行って固定し、リクエスト処理の途中で環境変数が変わっても経路が混在しない
+    // ようにする(battle/start route と同じ設計)。
+    const usePgWrite = isPgWriteEnabled();
 
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
@@ -161,27 +327,41 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify streamer owns this streamer profile
-    let { data: streamer, error: streamerSelectError } = await supabaseAdmin
-      .from("streamers")
-      .select("id, rarity_weights, card_pack_names")
-      .eq("id", streamerId)
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
-
-    // Issue #393再設計: card_pack_names(事前登録パック一覧)列がデプロイ窓で
-    // まだ無い場合、membership検証ができない。ownership確認自体は
-    // rarity_weightsのみで継続できるようフォールバックする。
+    //
+    // #663: pg 経路(usePgWrite)では fetchStreamerForCardCreatePg に委譲する。
+    // postgrest 経路は既存実装のまま(内側の変数名のみ streamer → streamerData に
+    // 変更。if/else 分岐の外側で共有する streamer 変数とのシャドーイングを避ける
+    // ための構造上の都合であり、クエリ・条件分岐ロジックは無変更)。
+    let streamer: { id: string; rarity_weights: Record<string, number> | null; card_pack_names: string[] } | null;
     let cardPackNamesUnavailable = false;
-    if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
-      const retryResult = await supabaseAdmin
+
+    if (usePgWrite) {
+      const result = await fetchStreamerForCardCreatePg(streamerId, session.twitchUserId);
+      streamer = result.streamer;
+      cardPackNamesUnavailable = result.cardPackNamesUnavailable;
+    } else {
+      let { data: streamerData, error: streamerSelectError } = await supabaseAdmin
         .from("streamers")
-        .select("id, rarity_weights")
+        .select("id, rarity_weights, card_pack_names")
         .eq("id", streamerId)
         .eq("twitch_user_id", session.twitchUserId)
         .maybeSingle();
-      streamer = retryResult.data ? { ...retryResult.data, card_pack_names: [] as string[] } : null;
-      streamerSelectError = retryResult.error;
-      cardPackNamesUnavailable = true;
+
+      // Issue #393再設計: card_pack_names(事前登録パック一覧)列がデプロイ窓で
+      // まだ無い場合、membership検証ができない。ownership確認自体は
+      // rarity_weightsのみで継続できるようフォールバックする。
+      if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
+        const retryResult = await supabaseAdmin
+          .from("streamers")
+          .select("id, rarity_weights")
+          .eq("id", streamerId)
+          .eq("twitch_user_id", session.twitchUserId)
+          .maybeSingle();
+        streamerData = retryResult.data ? { ...retryResult.data, card_pack_names: [] as string[] } : null;
+        streamerSelectError = retryResult.error;
+        cardPackNamesUnavailable = true;
+      }
+      streamer = streamerData;
     }
 
     if (!streamer) {
@@ -237,46 +417,61 @@ export async function POST(request: NextRequest) {
       insertData.intra_rarity_weight = intraRarityWeight;
     }
 
-    let { data: card, error } = await supabaseAdmin
-      .from("cards")
-      .insert(insertData)
-      .select()
-      .maybeSingle();
+    // #663: pg 経路(usePgWrite)では insertCardPg に委譲する。postgrest 経路は
+    // 既存実装のまま(内側の変数名のみ card → cardData に変更。if/else 分岐の
+    // 外側で共有する card 変数とのシャドーイングを避けるための構造上の都合であり、
+    // クエリ・カスケードリトライの条件分岐ロジックは無変更)。
+    let card: Record<string, unknown> | null;
+    let error: unknown;
 
-    if (error && isMissingCardNumberColumnError(error)) {
-      delete insertData.card_number;
-      const retryResult = await supabaseAdmin
+    if (usePgWrite) {
+      const result = await insertCardPg(insertData);
+      card = result.data;
+      error = result.error;
+    } else {
+      let { data: cardData, error: insertError } = await supabaseAdmin
         .from("cards")
         .insert(insertData)
         .select()
         .maybeSingle();
-      card = retryResult.data;
-      error = retryResult.error;
-    }
-    if (error && isMissingCardIssuanceColumnError(error)) {
-      delete insertData.max_issuance_count;
-      const retryResult = await supabaseAdmin
-        .from("cards")
-        .insert(insertData)
-        .select()
-        .maybeSingle();
-      card = retryResult.data;
-      error = retryResult.error;
-    }
 
-    // Issue #393: deploy-window safety. If collection_name is not migrated yet,
-    // retry without it so card creation still succeeds (the pack is dropped for
-    // this card; the streamer can re-assign it once the column is live). Mirrors
-    // the card_number missing-column retry above.
-    if (error && isMissingCollectionNameColumn(error) && "collection_name" in insertData) {
-      delete insertData.collection_name;
-      const retryResult = await supabaseAdmin
-        .from("cards")
-        .insert(insertData)
-        .select()
-        .maybeSingle();
-      card = retryResult.data;
-      error = retryResult.error;
+      if (insertError && isMissingCardNumberColumnError(insertError)) {
+        delete insertData.card_number;
+        const retryResult = await supabaseAdmin
+          .from("cards")
+          .insert(insertData)
+          .select()
+          .maybeSingle();
+        cardData = retryResult.data;
+        insertError = retryResult.error;
+      }
+      if (insertError && isMissingCardIssuanceColumnError(insertError)) {
+        delete insertData.max_issuance_count;
+        const retryResult = await supabaseAdmin
+          .from("cards")
+          .insert(insertData)
+          .select()
+          .maybeSingle();
+        cardData = retryResult.data;
+        insertError = retryResult.error;
+      }
+
+      // Issue #393: deploy-window safety. If collection_name is not migrated yet,
+      // retry without it so card creation still succeeds (the pack is dropped for
+      // this card; the streamer can re-assign it once the column is live). Mirrors
+      // the card_number missing-column retry above.
+      if (insertError && isMissingCollectionNameColumn(insertError) && "collection_name" in insertData) {
+        delete insertData.collection_name;
+        const retryResult = await supabaseAdmin
+          .from("cards")
+          .insert(insertData)
+          .select()
+          .maybeSingle();
+        cardData = retryResult.data;
+        insertError = retryResult.error;
+      }
+      card = cardData;
+      error = insertError;
     }
 
     if (error) {
@@ -395,6 +590,178 @@ async function attachIssuedCounts<T extends CardWithIssuanceLimit>(
 }
 
 /**
+ * attachIssuedCounts の pg 直結実装 (#663)。
+ *
+ * PostgREST 実装との対応:
+ * - .in("card_id", limitedCardIds) は Drizzle の inArray で等価。取得後に
+ *   JS 側で card_id ごとに件数を集計するロジックも既存実装と同一
+ *   (GROUP BY を使わず Postgres 側の集計方式を揃える理由は既存コメント参照)。
+ * - 取得失敗はログのみでカード一覧自体は返す(ベストエフォート。既存と同じ)。
+ * 読み取り専用クエリのため冪等(idempotent: true)としてリトライを opt-in する。
+ */
+async function attachIssuedCountsPg<T extends CardWithIssuanceLimit>(
+  cards: T[]
+): Promise<Array<T & { issued_count?: number }>> {
+  const limitedCardIds = cards
+    .filter((card) => card.max_issuance_count !== null && card.max_issuance_count !== undefined)
+    .map((card) => card.id);
+
+  if (limitedCardIds.length === 0) {
+    return cards;
+  }
+
+  let issuedRows: Array<{ card_id: string }>;
+  try {
+    issuedRows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ card_id: userCardsTable.card_id })
+          .from(userCardsTable)
+          .where(inArray(userCardsTable.card_id, limitedCardIds));
+      },
+      "Cards API: attachIssuedCounts(pg)",
+      { idempotent: true }
+    );
+  } catch (error) {
+    logger.error("Cards API: Failed to fetch issued counts (Issue #542, pg)", error);
+    return cards;
+  }
+
+  const issuedCounts = new Map<string, number>();
+  for (const row of issuedRows) {
+    issuedCounts.set(row.card_id, (issuedCounts.get(row.card_id) || 0) + 1);
+  }
+
+  return cards.map((card) => {
+    if (card.max_issuance_count === null || card.max_issuance_count === undefined) {
+      return card;
+    }
+    return { ...card, issued_count: issuedCounts.get(card.id) ?? 0 };
+  });
+}
+
+/**
+ * fetchCardsFromDB の pg 直結実装 (#663)。unstable_cache の「中」
+ * (fetchCardsFromDB 冒頭)で分岐するため、キャッシュキー・タグ・TTL の構造は
+ * 両経路で完全に同一(dashboard-data.ts の fetchActiveCardsForStreamerFromDB と
+ * 同じ設計)。
+ *
+ * PostgREST 実装との対応:
+ * - count は既存実装が 1 クエリ({ count: "exact" })で行と同時取得するが、
+ *   Drizzle には同等の単一往復手段が無いため、まず count(*) だけを取得し
+ *   (並び替え列に依存しないため card_number 未デプロイの影響を受けない)、
+ *   その後に行本体を取得する 2 クエリ構成にする(同一 Hyperdrive 接続内の
+ *   追加ラウンドトリップであり、Cloudflare のサブリクエスト制限には数えない)。
+ * - nullsFirst:false(常に NULLS LAST)は asc()/desc() ヘルパーに nulls 指定が
+ *   無いため、raw sql フラグメントで明示する。
+ * - card_number / display_order ソートで列未デプロイ(42703)の場合、既存実装と
+ *   同じく created_at 昇順(呼び出し時の ascending 値)へフォールバックする。
+ *   count は並び替え列に依存しないため再取得しない(既存実装は同一 where 条件で
+ *   再取得するだけで値は変わらないため、外部挙動としては同じ)。
+ */
+async function fetchCardsFromDBPg(
+  streamerId: string,
+  limit: number,
+  offset: number,
+  sortField: SortField,
+  sortDirection: SortDirection,
+  statusFilter: StatusFilter,
+  includeInactive: boolean
+): Promise<{ cards: unknown[]; count: number | null }> {
+  const start = Date.now();
+
+  const buildConditions = () => {
+    const conditions = [eq(cardsTable.streamer_id, streamerId)];
+    if (statusFilter === "active") {
+      conditions.push(eq(cardsTable.is_active, true));
+    } else if (statusFilter === "inactive") {
+      conditions.push(eq(cardsTable.is_active, false));
+    } else if (!includeInactive && statusFilter === "all") {
+      // Legacy behavior handled in caller (postgrest 経路と同じく no-op)
+    }
+    return conditions;
+  };
+
+  const total = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      const rows = await db
+        .select({ value: sqlCount() })
+        .from(cardsTable)
+        .where(and(...buildConditions()));
+      return rows[0]?.value ?? 0;
+    },
+    "fetchCardsFromDB(count,pg)",
+    { idempotent: true }
+  );
+
+  const ascending = sortDirection === "asc";
+  const dbSortField = sortField === "rarity"
+    ? "rarity_order"
+    : sortField === "display_order"
+      ? "card_number"
+      : sortField;
+
+  const sortColumn =
+    dbSortField === "rarity_order" ? cardsTable.rarity_order
+      : dbSortField === "card_number" ? cardsTable.card_number
+        : dbSortField === "drop_rate" ? cardsTable.drop_rate
+          : cardsTable.created_at;
+
+  // PostgREST の nullsFirst:false(常に NULLS LAST)を再現する raw sql フラグメント
+  const orderByNullsLast = (column: typeof sortColumn, asc: boolean) =>
+    asc ? sql`${column} ASC NULLS LAST` : sql`${column} DESC NULLS LAST`;
+
+  let cardRows: Record<string, unknown>[];
+  try {
+    cardRows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        const base = db.select().from(cardsTable).where(and(...buildConditions()));
+        const ordered = sortField === "display_order"
+          ? base.orderBy(orderByNullsLast(cardsTable.card_number, ascending), orderByNullsLast(cardsTable.created_at, true))
+          : base.orderBy(orderByNullsLast(sortColumn, ascending));
+        return ordered.limit(limit).offset(offset);
+      },
+      "fetchCardsFromDB(rows,pg)",
+      { idempotent: true }
+    );
+  } catch (fetchError) {
+    if (
+      (sortField === "card_number" || sortField === "display_order") &&
+      isPgMissingColumnError(fetchError)
+    ) {
+      cardRows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select()
+            .from(cardsTable)
+            .where(and(...buildConditions()))
+            .orderBy(orderByNullsLast(cardsTable.created_at, ascending))
+            .limit(limit)
+            .offset(offset);
+        },
+        "fetchCardsFromDB(rows fallback,pg)",
+        { idempotent: true }
+      );
+    } else {
+      throw fetchError;
+    }
+  }
+
+  // Issue #542: 限定カードにのみ発行済み枚数(issued_count)を付与する
+  const cardsWithIssuedCounts = await attachIssuedCountsPg(
+    normalizeDropRate(cardRows as Array<{ drop_rate: unknown } & CardWithIssuanceLimit>)
+  );
+
+  logger.info(`[Perf] fetchCardsFromDB(pg): ${Date.now() - start}ms (${cardRows.length} cards)`);
+
+  return { cards: cardsWithIssuedCounts, count: total };
+}
+
+/**
  * Internal function to fetch cards from database (used for caching)
  * データベースからカードを取得する内部関数（キャッシュ用）
  */
@@ -407,6 +774,13 @@ async function fetchCardsFromDB(
   statusFilter: StatusFilter,
   includeInactive: boolean
 ): Promise<{ cards: unknown[]; count: number | null }> {
+  // #663: 読み取り専用の内部関数のため isPgReadEnabled() で分岐する。
+  // unstable_cache の「中」で分岐するためキャッシュ構造は両経路で同一
+  // (dashboard-data.ts の fetchActiveCardsForStreamerFromDB と同じ設計)。
+  if (isPgReadEnabled()) {
+    return fetchCardsFromDBPg(streamerId, limit, offset, sortField, sortDirection, statusFilter, includeInactive);
+  }
+
   const start = Date.now();
   const supabaseAdmin = getSupabaseAdmin();
 
@@ -479,6 +853,41 @@ async function fetchCardsFromDB(
   return { cards: cardsWithIssuedCounts, count };
 }
 
+/**
+ * GET /api/cards の streamer 所有権確認の pg 直結実装 (#663)。
+ *
+ * .eq("id", ...).eq("twitch_user_id", ...).maybeSingle() は streamers.id が PK の
+ * ため LIMIT 1 + rows[0] ?? null で同じ外部挙動。session が無い場合
+ * (twitchUserId が undefined)は既存実装の `.eq("twitch_user_id", undefined)` と
+ * 同様に「一致する行が無い」という結果に倒す(twitch_user_id は NOT NULL のため
+ * 空文字と一致する streamer は実運用上存在しない)。
+ * 取得失敗時も既存実装(`if (streamerError || !streamer) return 403`、エラー種別を
+ * 区別せず 403 に倒す)と同じ外部挙動にするため、例外を握りつぶして null を返す。
+ * 読み取り専用クエリのため冪等(idempotent: true)としてリトライを opt-in する。
+ */
+async function fetchCardsListStreamerOwnershipPg(
+  streamerId: string,
+  twitchUserId: string | undefined
+): Promise<{ id: string } | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ id: streamersTable.id })
+          .from(streamersTable)
+          .where(and(eq(streamersTable.id, streamerId), eq(streamersTable.twitch_user_id, twitchUserId ?? "")))
+          .limit(1);
+      },
+      "GET /api/cards(streamer ownership,pg)",
+      { idempotent: true }
+    );
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(request: NextRequest) {
   const session = await getSession();
   const { searchParams } = new URL(request.url);
@@ -537,13 +946,16 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // #663: 読み取り専用のため isPgReadEnabled() で分岐する(pg-read でも切替)。
     const supabaseAdmin = getSupabaseAdmin();
-    const { data: streamer, error: streamerError } = await supabaseAdmin
-      .from("streamers")
-      .select("id")
-      .eq("id", streamerId)
-      .eq("twitch_user_id", session?.twitchUserId)
-      .maybeSingle();
+    const { data: streamer, error: streamerError } = isPgReadEnabled()
+      ? { data: await fetchCardsListStreamerOwnershipPg(streamerId, session?.twitchUserId), error: null }
+      : await supabaseAdmin
+          .from("streamers")
+          .select("id")
+          .eq("id", streamerId)
+          .eq("twitch_user_id", session?.twitchUserId)
+          .maybeSingle();
 
     if (streamerError || !streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });

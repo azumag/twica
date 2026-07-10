@@ -15,6 +15,86 @@ import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import type { ApiRateLimitResponse } from "@/types/api";
 import type { Rarity } from "@/types/database";
+// ---------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。この POST は cards への一括 INSERT
+// (書き込み)を含むため、streamer 所有権確認も含めたリクエスト内の全 DB
+// アクセスを isPgWriteEnabled() で分岐する(読み書きで経路が混ざると障害切り
+// 分けが困難になるため。battle/start route と同じ判断)。フラグ未設定時
+// (既定 'postgrest')はこれらのモジュールの実行パスに一切入らないため、import
+// が存在するだけでは挙動に影響しない(tests/setup.ts の getDb throw スタブが
+// 「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
+// ---------------------------------------------------------------------------
+import { and, eq } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgWriteEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
+
+/**
+ * POST /api/cards/batch の streamer 所有権確認の pg 直結実装 (#663)。
+ *
+ * .eq("id", ...).eq("twitch_user_id", ...).maybeSingle() は streamers.id が PK
+ * のため LIMIT 1 + rows[0] ?? null で同じ外部挙動。取得失敗は既存実装と同じく
+ * 区別せず null 扱いにする(既存実装が `!streamer` だけで 403 判定しているため。
+ * この select は rarity_weights/id のみで card_pack_names 等の新しい列を含まない
+ * ため、列未デプロイのカスケードフォールバックは元々存在しない)。
+ * 読み取り専用クエリのため冪等(idempotent: true)としてリトライを opt-in する。
+ */
+async function fetchStreamerForBatchCreatePg(
+  streamerId: string,
+  twitchUserId: string
+): Promise<{ id: string; rarity_weights: Record<string, number> | null } | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ id: streamersTable.id, rarity_weights: streamersTable.rarity_weights })
+          .from(streamersTable)
+          .where(and(eq(streamersTable.id, streamerId), eq(streamersTable.twitch_user_id, twitchUserId)))
+          .limit(1);
+      },
+      "Cards Batch API: streamer ownership(pg)",
+      { idempotent: true }
+    );
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /api/cards/batch の cards 一括 INSERT の pg 直結実装 (#663)。
+ *
+ * .insert(cardsToInsert).select() は「挿入した全行の全列」を返すため、
+ * Drizzle の .returning()(引数なし = 全列)が同じ外部挙動。この一括 INSERT は
+ * card_number / max_issuance_count / collection_name を含まないため(cardsToInsert
+ * の構築ロジック参照)、既存実装にも列未デプロイのカスケードフォールバックは
+ * 存在せず、pg 版もそれをそのまま再現する(無い物を追加しない)。
+ *
+ * 冪等性判断(リトライ不可の根拠): POST /api/cards の insertCardPg と同じ理由
+ * (一意制約・冪等キーの無い一般的な複数件同時作成)。接続断を自動リトライすると
+ * カードの二重作成(最大50件が丸ごと重複)につながるため、非冪等(withDbRetry
+ * 既定 = リトライなし)として扱う。
+ */
+async function insertCardsBatchPg(
+  cardsToInsert: Array<Record<string, unknown>>
+): Promise<{ data: Record<string, unknown>[] | null; error: unknown }> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db.insert(cardsTable).values(cardsToInsert as never[]).returning();
+      },
+      "Cards Batch API: insert cards(pg)"
+      // 非冪等のため withDbRetry の第3引数(idempotent オプション)は渡さない
+      // (既定 false = 接続断でもリトライしない。上記 doc コメント参照)
+    );
+    return { data: rows, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
+}
 
 /**
  * Card data for batch creation
@@ -83,6 +163,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // #663: cards への一括 INSERT(書き込み)を含むハンドラのため、以降の全 DB
+    // アクセスを usePgWrite で分岐する(ファイル冒頭のコメント参照)。判定は
+    // ここで 1 回だけ行って固定し、リクエスト処理の途中で環境変数が変わっても
+    // 経路が混在しないようにする(battle/start route と同じ設計)。
+    const usePgWrite = isPgWriteEnabled();
+
     const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json();
     const { streamerId, cards } = body as { streamerId: string; cards: BatchCardInput[] };
@@ -108,12 +194,14 @@ export async function POST(request: NextRequest) {
 
     // Verify streamer owns this streamer profile
     // 配信者がこのstreamerプロフィールを所有しているか確認
-    const { data: streamer } = await supabaseAdmin
-      .from("streamers")
-      .select("id, rarity_weights")
-      .eq("id", streamerId)
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
+    const { data: streamer } = usePgWrite
+      ? { data: await fetchStreamerForBatchCreatePg(streamerId, session.twitchUserId) }
+      : await supabaseAdmin
+          .from("streamers")
+          .select("id, rarity_weights")
+          .eq("id", streamerId)
+          .eq("twitch_user_id", session.twitchUserId)
+          .maybeSingle();
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
@@ -174,10 +262,12 @@ export async function POST(request: NextRequest) {
 
     // Insert all cards at once
     // 全カードを一度に挿入
-    const { data: createdCards, error } = await supabaseAdmin
-      .from("cards")
-      .insert(cardsToInsert)
-      .select();
+    const { data: createdCards, error } = usePgWrite
+      ? await insertCardsBatchPg(cardsToInsert)
+      : await supabaseAdmin
+          .from("cards")
+          .insert(cardsToInsert)
+          .select();
 
     if (error) {
       return handleDatabaseError(error, "Cards Batch API: Failed to create cards");

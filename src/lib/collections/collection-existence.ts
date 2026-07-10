@@ -11,6 +11,17 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+// Issue #663: 読み取り専用（COUNT のみ）の pg 直結経路。
+// getDb() は withDbRetry の queryFn 内で呼ぶ規約（src/lib/db/retry.ts 参照）。
+// count は下の postgrest 経路の分割代入 `const { count, error }` と名前が
+// 紛らわしいため countRows という別名で import する
+// （src/app/api/twitch/eventsub/route.ts の fetchActiveCardCountPg と同じ理由）。
+import { and, count as countRows, eq, isNull } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgReadEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { isPgMissingColumnError } from "@/lib/db/errors";
+import { cards as cardsTable } from "@/lib/db/schema";
 
 /**
  * Detect the "collection_name column is not deployed yet" schema error.
@@ -201,6 +212,66 @@ export type CollectionExistenceResult =
   | "schema-not-ready"; // collection_name column not deployed yet (deploy window)
 
 /**
+ * checkCollectionHasActiveCards の pg 直結（Drizzle）実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - `.select("id", { count: "exact", head: true })`（行データを取らず件数のみ
+ *   問い合わせる COUNT クエリ）は Drizzle の count() 集計（SELECT count(*)）が
+ *   等価（src/app/api/twitch/eventsub/route.ts の fetchActiveCardCountPg と
+ *   同じ対応）。
+ * - DEFAULT_PACK_SENTINEL のときは isNull(collection_name)、それ以外は
+ *   eq(collection_name, collectionName) で分岐（既存の .is()/.eq() 分岐と同じ）。
+ * - isMissingCollectionNameColumn（PGRST204 / 42703 の両形状を text で判定）に
+ *   対応する pg 版は isPgMissingColumnError（SQLSTATE 42703）。このクエリが
+ *   参照する列のうち streamer_id / is_active は初版から存在し、collection_name
+ *   のみ後発（00061）のため、42703 が起きるとすれば collection_name 起因と
+ *   考えて良い（getCollectionCompletionsPg 等と同じ判断根拠）。
+ * - 上記以外のエラーは既存実装と同じく呼び出し元へ throw する（「空パックかも
+ *   しれないのに保存成功」を防ぐフェイルクローズを維持する）。
+ *
+ * 読み取り専用（COUNT のみ）のため冪等（idempotent: true）としてリトライを
+ * opt-in する。
+ */
+async function checkCollectionHasActiveCardsPg(
+  streamerId: string,
+  collectionName: string
+): Promise<CollectionExistenceResult> {
+  try {
+    const activeCount = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        const packCondition =
+          collectionName === DEFAULT_PACK_SENTINEL
+            ? isNull(cardsTable.collection_name)
+            : eq(cardsTable.collection_name, collectionName);
+        const [row] = await db
+          .select({ count: countRows() })
+          .from(cardsTable)
+          .where(
+            and(
+              eq(cardsTable.streamer_id, streamerId),
+              eq(cardsTable.is_active, true),
+              packCondition
+            )
+          );
+        // count(*) は必ず 1 行返るが、消費側の `count ?? 0` と同じ安全側の既定値
+        return row?.count ?? 0;
+      },
+      "checkCollectionHasActiveCards",
+      { idempotent: true }
+    );
+
+    return activeCount > 0 ? "exists" : "absent";
+  } catch (error) {
+    if (isPgMissingColumnError(error)) {
+      return "schema-not-ready";
+    }
+    throw error;
+  }
+}
+
+/**
  * Check whether a streamer has at least one ACTIVE card in the given pack.
  *
  * Gacha only draws from `is_active = true` cards, so a pack made of only inactive
@@ -216,6 +287,12 @@ export async function checkCollectionHasActiveCards(
   streamerId: string,
   collectionName: string
 ): Promise<CollectionExistenceResult> {
+  // Issue #663: 読み取り専用（COUNT のみ）のため isPgReadEnabled() で分岐。
+  // フラグ未設定時（既定 'postgrest'）は以下の既存実装が従来どおり動く。
+  if (isPgReadEnabled()) {
+    return checkCollectionHasActiveCardsPg(streamerId, collectionName);
+  }
+
   let query = supabaseAdmin
     .from("cards")
     .select("id", { count: "exact", head: true })

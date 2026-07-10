@@ -13,6 +13,13 @@ import {
   getGachaHistoryForUser,
   getGachaUsersForStreamer,
 } from "@/lib/dashboard-data";
+// #663: streamers.id 単一行取得の pg 直結経路（読み取り専用）。
+// getDb() は withDbRetry の queryFn 内で呼ぶ規約（src/lib/db/retry.ts 参照）。
+import { eq } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgReadEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { streamers as streamersTable } from "@/lib/db/schema";
 
 const VALID_RARITIES = ["common", "rare", "epic", "legendary"];
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
@@ -26,6 +33,48 @@ function safeParseInt(value: string | null, defaultValue: number): number {
   if (!value) return defaultValue;
   const parsed = parseInt(value, 10);
   return Number.isNaN(parsed) ? defaultValue : parsed;
+}
+
+/**
+ * セッションの twitch_user_id から streamers.id を取得する pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - 既存実装は `const { data: streamer } = await supabaseAdmin.from("streamers")
+ *   .select("id").eq("twitch_user_id", ...).maybeSingle();` のとおり error を
+ *   分割代入せず握りつぶしている（DB エラーも 0 行もどちらも streamer=null と
+ *   なり、呼び出し元で 404 STREAMER_NOT_FOUND 扱いになる）。pg 経路も同じ外部
+ *   挙動に合わせるため、クエリが throw しても呼び出し元へは伝播させず null を
+ *   返す（既存の「エラー種別を問わず 404」という挙動を忠実に再現する）。
+ * - .maybeSingle() は twitch_user_id が実質的に一意（1配信者1アカウント運用）
+ *   のため LIMIT 1 + rows[0] ?? null が同じ外部挙動（他の移行済みモジュールと
+ *   同じ判断根拠。twitch_user_id 自体に DB 制約としての UNIQUE は無いが、
+ *   既存実装が .maybeSingle()（複数行なら例外的にエラー）を使っている以上、
+ *   実運用上は 1 行に収まる前提での実装であり、その前提を変えない）。
+ *
+ * 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ */
+async function getStreamerIdByTwitchUserIdPg(
+  twitchUserId: string
+): Promise<{ id: string } | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ id: streamersTable.id })
+          .from(streamersTable)
+          .where(eq(streamersTable.twitch_user_id, twitchUserId))
+          .limit(1);
+      },
+      "gacha-history:getStreamerId",
+      { idempotent: true }
+    );
+    return rows[0] ?? null;
+  } catch {
+    // 既存実装は取得エラーを握りつぶすため、pg 経路も同じ挙動（null → 404）にする
+    return null;
+  }
 }
 
 /**
@@ -86,12 +135,20 @@ export async function GET(request: NextRequest) {
     if (isStreamer && view !== "personal") {
       // Streamer: get their streamer_id
       // 配信者: streamer_idを取得
-      const supabaseAdmin = getSupabaseAdmin();
-      const { data: streamer } = await supabaseAdmin
-        .from("streamers")
-        .select("id")
-        .eq("twitch_user_id", session.twitchUserId)
-        .maybeSingle();
+      // #663: 読み取り専用のため isPgReadEnabled() で分岐。フラグ未設定時
+      // （既定 'postgrest'）は else 節の既存 supabase-js 実装が従来どおり動く。
+      let streamer: { id: string } | null;
+      if (isPgReadEnabled()) {
+        streamer = await getStreamerIdByTwitchUserIdPg(session.twitchUserId);
+      } else {
+        const supabaseAdmin = getSupabaseAdmin();
+        const { data } = await supabaseAdmin
+          .from("streamers")
+          .select("id")
+          .eq("twitch_user_id", session.twitchUserId)
+          .maybeSingle();
+        streamer = data;
+      }
 
       if (!streamer) {
         return NextResponse.json(

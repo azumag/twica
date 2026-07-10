@@ -9,6 +9,45 @@ import {
 } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { getGachaStats, getGachaCardOwnerStats } from "@/lib/dashboard-data";
+// #663: streamers.id 単一行取得の pg 直結経路（読み取り専用）。
+// getDb() は withDbRetry の queryFn 内で呼ぶ規約（src/lib/db/retry.ts 参照）。
+import { eq } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgReadEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { streamers as streamersTable } from "@/lib/db/schema";
+
+/**
+ * セッションの twitch_user_id から streamers.id を取得する pg 直結実装 (#663)
+ *
+ * src/app/api/gacha-history/route.ts の getStreamerIdByTwitchUserIdPg と
+ * 同一のクエリ・パリティ判断（DB エラーも 0 行も等しく null → 404 扱い、
+ * 読み取り専用のため idempotent: true）。ルートごとに自己完結させる
+ * YAGNI 方針（共有ヘルパーファイルを新設しない）により、あえて重複させている。
+ */
+async function getStreamerIdByTwitchUserIdPg(
+  twitchUserId: string
+): Promise<{ id: string } | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ id: streamersTable.id })
+          .from(streamersTable)
+          .where(eq(streamersTable.twitch_user_id, twitchUserId))
+          .limit(1);
+      },
+      "gacha-stats:getStreamerId",
+      { idempotent: true }
+    );
+    return rows[0] ?? null;
+  } catch {
+    // 既存実装は取得エラーを握りつぶすため、pg 経路も同じ挙動（null → 404）にする
+    return null;
+  }
+}
 
 /**
  * GET /api/gacha-stats
@@ -73,12 +112,20 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const supabaseAdmin = getSupabaseAdmin();
-    const { data: streamer } = await supabaseAdmin
-      .from("streamers")
-      .select("id")
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
+    // #663: 読み取り専用のため isPgReadEnabled() で分岐。フラグ未設定時
+    // （既定 'postgrest'）は else 節の既存 supabase-js 実装が従来どおり動く。
+    let streamer: { id: string } | null;
+    if (isPgReadEnabled()) {
+      streamer = await getStreamerIdByTwitchUserIdPg(session.twitchUserId);
+    } else {
+      const supabaseAdmin = getSupabaseAdmin();
+      const { data } = await supabaseAdmin
+        .from("streamers")
+        .select("id")
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = data;
+    }
 
     if (!streamer) {
       return NextResponse.json(

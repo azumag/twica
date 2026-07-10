@@ -4,6 +4,18 @@ import { logger } from "@/lib/logger";
 import { createClient } from "@supabase/supabase-js";
 import { broadcastGachaResult, GachaBroadcastPayload } from "@/lib/realtime";
 import { getSupabaseElevatedKey, getSupabasePublicKey } from "@/lib/supabase/keys";
+// -----------------------------------------------------------------------------
+// #663: pg 直結経路（読み取り専用）の import。
+// このルートは cards テーブルの読み取りのみのため isPgReadEnabled() で分岐する
+// （書き込みを含む関数は isPgWriteEnabled() を使うが、本ルートには該当しない）。
+// フラグ未設定時（既定 'postgrest'）は isPgReadEnabled() が false を返し getDb() は
+// 一切呼ばれないため、既存の supabase-js 実装が従来どおり実行される（挙動不変）。
+// -----------------------------------------------------------------------------
+import { and, eq, getTableColumns } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgReadEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { cards as cardsTable } from "@/lib/db/schema";
 
 // Demo cards for testing overlay (used when streamer has no cards)
 // 配信者がカードを持っていない場合に使用されるデモカード
@@ -87,6 +99,79 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
 ];
 
 /**
+ * cardId 指定時のカード取得（pg 直結実装, #663）
+ *
+ * PostgREST 実装（下記 POST 内の `.from("cards").select("*").eq("id", cardId)
+ * .maybeSingle()`）との対応:
+ * - id は主キー（migration 00001）のため一致行は最大1行。.maybeSingle() と同じ
+ *   外部挙動を LIMIT 1 + `rows[0] ?? null` で再現する。
+ * - 取得失敗（接続断・不正な cardId 形式による 22P02 等）は既存実装の
+ *   `if (!error && card)` 分岐と同じく null を返し、呼び出し元でランダム選択
+ *   （さらにはデモカード）へのフォールバックに委ねる。これは本ルートの最重要
+ *   要件（エラー時はデモカードへ静かにフォールバックする既存挙動）を維持するため。
+ * - 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ * - getTableColumns(cardsTable) の spread は Card 型に無い生成カラム rarity_order も
+ *   含むが、PostgREST の `select("*")` も実 DB の全列（rarity_order 含む）を返す
+ *   ため形状は一致する（dashboard-data.ts の getStreamerDataPg と同じ既知事項）。
+ */
+async function fetchCardByIdPg(cardId: string): Promise<Card | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
+        // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ ...getTableColumns(cardsTable) })
+          .from(cardsTable)
+          .where(eq(cardsTable.id, cardId))
+          .limit(1);
+      },
+      "gacha/demo(cardById)",
+      { idempotent: true },
+    );
+    return (rows[0] ?? null) as unknown as Card | null;
+  } catch (error) {
+    // 既存実装のエラー分岐と同じ外部挙動（null を返し呼び出し元でフォールバック）。
+    logger.error("Demo gacha: failed to fetch card by id (pg)", { error });
+    return null;
+  }
+}
+
+/**
+ * streamerId 指定時のアクティブカード一覧取得（pg 直結実装, #663）
+ *
+ * PostgREST 実装（下記 POST 内の `.from("cards").select("*").eq("streamer_id",
+ * streamerId).eq("is_active", true)`）との対応:
+ * - streamer_id 一致 かつ is_active = true の絞り込みをそのまま AND 条件として
+ *   再現する。
+ * - 取得失敗時は既存実装の `if (!error && cards && cards.length > 0)` 分岐と
+ *   同じく空配列を返し、呼び出し元でデモカードへのフォールバックに委ねる。
+ * - 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
+ */
+async function fetchActiveCardsByStreamerPg(streamerId: string): Promise<Card[]> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ ...getTableColumns(cardsTable) })
+          .from(cardsTable)
+          .where(
+            and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)),
+          );
+      },
+      "gacha/demo(cardsByStreamer)",
+      { idempotent: true },
+    );
+    return rows as unknown as Card[];
+  } catch (error) {
+    logger.error("Demo gacha: failed to fetch streamer cards (pg)", { error });
+    return [];
+  }
+}
+
+/**
  * Demo gacha endpoint for testing overlay without authentication
  * This endpoint returns a random card from streamer's cards (if available) or demo cards
  * デモガチャエンドポイント - 認証なしでオーバーレイをテスト
@@ -152,39 +237,61 @@ export async function POST(request: NextRequest) {
 
     // 特定のカードIDが指定されている場合、そのカードを直接取得
     // If specific cardId is provided, fetch that card directly
-    if (cardId && cardId !== "random" && supabaseUrl && supabaseKey) {
-      const supabase = createClient(supabaseUrl, supabaseKey);
+    if (cardId && cardId !== "random") {
+      // #663: 読み取り専用のためフラグは isPgReadEnabled() で分岐。
+      // フラグ未設定時（既定 'postgrest'）は else 節（既存 supabase-js 実装、
+      // 無変更）が従来どおり実行される。
+      if (isPgReadEnabled()) {
+        const card = await fetchCardByIdPg(cardId);
+        if (card) {
+          return respondWithCard(card, streamerId);
+        }
+        // カードが見つからない場合はランダム選択にフォールバック
+      } else if (supabaseUrl && supabaseKey) {
+        const supabase = createClient(supabaseUrl, supabaseKey);
 
-      const { data: card, error } = await supabase
-        .from("cards")
-        .select("*")
-        .eq("id", cardId)
-        .maybeSingle();
+        const { data: card, error } = await supabase
+          .from("cards")
+          .select("*")
+          .eq("id", cardId)
+          .maybeSingle();
 
-      if (!error && card) {
-        return respondWithCard(card, streamerId);
+        if (!error && card) {
+          return respondWithCard(card, streamerId);
+        }
+        // カードが見つからない場合はランダム選択にフォールバック
       }
-      // カードが見つからない場合はランダム選択にフォールバック
     }
 
     // 配信者IDが指定されている場合、その配信者のカードを取得
     // If streamerId is provided, fetch streamer's cards
-    if (streamerId && supabaseUrl && supabaseKey) {
-      const supabase = createClient(supabaseUrl, supabaseKey);
+    if (streamerId) {
+      // #663: 読み取り専用のためフラグは isPgReadEnabled() で分岐。
+      if (isPgReadEnabled()) {
+        const cards = await fetchActiveCardsByStreamerPg(streamerId);
+        if (cards.length > 0) {
+          // 配信者のカードからランダムに選択
+          const randomCard = cards[Math.floor(Math.random() * cards.length)];
 
-      // 配信者のアクティブなカードを取得
-      const { data: cards, error } = await supabase
-        .from("cards")
-        .select("*")
-        .eq("streamer_id", streamerId)
-        .eq("is_active", true);
+          return respondWithCard(randomCard, streamerId);
+        }
+      } else if (supabaseUrl && supabaseKey) {
+        const supabase = createClient(supabaseUrl, supabaseKey);
 
-      if (!error && cards && cards.length > 0) {
-        // 配信者のカードからランダムに選択
-        // Select random card from streamer's cards
-        const randomCard = cards[Math.floor(Math.random() * cards.length)];
+        // 配信者のアクティブなカードを取得
+        const { data: cards, error } = await supabase
+          .from("cards")
+          .select("*")
+          .eq("streamer_id", streamerId)
+          .eq("is_active", true);
 
-        return respondWithCard(randomCard, streamerId);
+        if (!error && cards && cards.length > 0) {
+          // 配信者のカードからランダムに選択
+          // Select random card from streamer's cards
+          const randomCard = cards[Math.floor(Math.random() * cards.length)];
+
+          return respondWithCard(randomCard, streamerId);
+        }
       }
     }
 
