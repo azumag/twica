@@ -44,7 +44,7 @@ describe('/api/streamer/raid-gacha drawCount boundary validation', () => {
       twitchUserId: 'streamer-twitch-1',
       twitchUsername: 'streamer',
       twitchDisplayName: 'Streamer',
-      twitchProfileImageUrl: null,
+      twitchProfileImageUrl: 'https://example.com/avatar.png',
       broadcasterType: 'affiliate',
       expiresAt: Date.now() + 60_000,
       version: 1,
