@@ -27,8 +27,8 @@ import {
   lt,
 } from "drizzle-orm";
 import { getDb, type DbHandle } from "@/lib/db/client";
-import { isPgFunctionNotFoundError, isPgMissingColumnError } from "@/lib/db/errors";
-import { isPgReadEnabled } from "@/lib/db/flags";
+import { isPgFunctionNotFoundError, isPgMissingColumnError, isPgUniqueViolationError } from "@/lib/db/errors";
+import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
 // Issue #685: cards テーブルの本番未デプロイ8列（card_number/hp/atk/def/spd/
 // skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバック。
@@ -2685,12 +2685,56 @@ const UNIQUE_VIOLATION_CODE = "23505";
  * Shared write path for completion records (overall + per-pack).
  * INSERT + ignore 23505 (already recorded — the expected steady-state case),
  * report anything else. Never throws: エラーでページ表示を壊さない。
+ *
+ * pg 直結分岐 (#663 Category A, 2026-07-11): このテーブルへの書き込みだけ
+ * isPgWriteEnabled() 分岐が漏れていた（read 側の getCollectionCompletionsPg は
+ * #571 で既に移行済み）。UNIQUE_VIOLATION_CODE ('23505') 判定・
+ * isMissingCollectionNameColumn（デプロイ窓フォールバック）は postgrest 経路の
+ * 既存ロジックをそのまま流用し、pg 版は isPgUniqueViolationError /
+ * isPgMissingColumnError で同じ SQLSTATE 23505 / 42703 を判定する対の
+ * ヘルパーを使う（getCollectionCompletionsPg と同じ方針）。
+ * INSERT は非冪等な操作だが、対象テーブルの一意インデックス
+ * (idx_collection_completions_overall_unique /
+ * idx_collection_completions_pack_unique, migration 00064) が
+ * (twitch_user_id, streamer_id, [collection_name,] total_cards) の重複を
+ * DB側で必ず弾くため、接続断からのリトライで二重挿入されても 23505 として
+ * 検知でき同じ「無視」扱いになる。したがって idempotent: true は安全。
  */
 async function insertCompletionRecord(
   row: Database["public"]["Tables"]["collection_completions"]["Insert"],
   context: string,
 ): Promise<void> {
   const { twitch_user_id: twitchUserId, streamer_id: streamerId, total_cards: totalCards } = row;
+
+  if (isPgWriteEnabled()) {
+    try {
+      await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db.insert(collectionCompletionsTable).values({
+            twitch_user_id: row.twitch_user_id,
+            streamer_id: row.streamer_id,
+            total_cards: row.total_cards,
+            // 全体コンプリートの INSERT は collection_name キー自体を省略する
+            // (postgrest 経路と同じ、00064 未適用スキーマとの互換のため)。
+            ...("collection_name" in row ? { collection_name: row.collection_name } : {}),
+          });
+        },
+        `dashboard:${context}`,
+        { idempotent: true },
+      );
+      return;
+    } catch (error) {
+      if (isPgUniqueViolationError(error)) return;
+      if ("collection_name" in row && isPgMissingColumnError(error)) return;
+      logger.error(`Failed to record collection completion: ${error instanceof Error ? error.message : String(error)}`);
+      reportError(error instanceof Error ? error : new Error(String(error)), {
+        context, twitchUserId, streamerId, totalCards,
+      });
+      return;
+    }
+  }
+
   try {
     const supabaseAdmin = getSupabaseAdmin();
     const { error } = await supabaseAdmin

@@ -291,12 +291,126 @@ export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promis
 })
 
 /**
+ * getAllAnnouncements の Drizzle（pg 直結）実装 (#663 Category A, 2026-07-11)
+ *
+ * 姉妹関数 getUnreadAnnouncementsPg と同じ基盤（withDbRetry / idempotent:true /
+ * announcements → reads の2段クエリ）を使うが、エラー時のフォールバックは
+ * postgrest 実装の非対称な挙動をそのまま再現する必要がある:
+ * - announcements 取得失敗 → [] を返す（履歴自体を表示しない安全側）
+ * - reads 取得失敗          → 全件を既読扱いで返す（未読バナーと違い、履歴ページで
+ *   全件「未読」に見えるより「既読」扱いのほうが無害という既存実装の判断）
+ * このため reads クエリだけ内側の try/catch で個別にフォールバックし、外側の
+ * catch は announcements 取得失敗（またはその他の予期しないエラー）専用として [] を返す。
+ */
+async function getAllAnnouncementsPg(twitchUserId: string): Promise<AnnouncementWithReadStatus[]> {
+  try {
+    const now = new Date()
+
+    const announcements = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({
+            id: announcementsTable.id,
+            title: announcementsTable.title,
+            body: announcementsTable.body,
+            severity: announcementsTable.severity,
+            is_published: announcementsTable.is_published,
+            published_at: announcementsTable.published_at,
+            expires_at: announcementsTable.expires_at,
+            created_at: announcementsTable.created_at,
+          })
+          .from(announcementsTable)
+          .where(eq(announcementsTable.is_published, true))
+          .orderBy(desc(announcementsTable.created_at))
+      },
+      'getAllAnnouncements(announcements)',
+      { idempotent: true },
+    )
+
+    if (announcements.length === 0) {
+      return []
+    }
+
+    const publishedAnnouncements = announcements.filter((announcement) =>
+      hasAnnouncementBeenPublishedAt(announcement, now)
+    )
+
+    if (publishedAnnouncements.length === 0) {
+      return []
+    }
+
+    let reads: { announcement_id: string; read_at: string | null }[]
+    try {
+      reads = await withDbRetry(
+        async () => {
+          const { db } = await getDb()
+          return db
+            .select({
+              announcement_id: announcementReadsTable.announcement_id,
+              read_at: announcementReadsTable.read_at,
+            })
+            .from(announcementReadsTable)
+            .where(eq(announcementReadsTable.twitch_user_id, twitchUserId))
+        },
+        'getAllAnnouncements(reads)',
+        { idempotent: true },
+      )
+    } catch (readsError) {
+      // 既読情報の取得に失敗した場合、全お知らせを既読扱いにする
+      // （postgrest 経路の readError 分岐と同じ安全側フォールバック）
+      logger.error('Error in getAllAnnouncements (pg:reads)', { error: readsError })
+      return publishedAnnouncements.map(a => ({
+        id: a.id,
+        title: a.title,
+        body: a.body,
+        severity: a.severity as AnnouncementWithReadStatus['severity'],
+        is_published: a.is_published,
+        published_at: a.published_at,
+        expires_at: a.expires_at,
+        created_at: a.created_at as string,
+        is_read: true,
+        read_at: null,
+      }))
+    }
+
+    const readMap = new Map(reads.map(r => [r.announcement_id, r.read_at]))
+
+    return publishedAnnouncements.map(a => ({
+      id: a.id,
+      title: a.title,
+      body: a.body,
+      severity: a.severity as AnnouncementWithReadStatus['severity'],
+      is_published: a.is_published,
+      published_at: a.published_at,
+      expires_at: a.expires_at,
+      created_at: a.created_at as string,
+      is_read: readMap.has(a.id),
+      read_at: readMap.get(a.id) ?? null,
+    }))
+  } catch (error) {
+    // announcements 取得失敗、またはその他の予期しないエラー。
+    // reads 取得失敗は上の内側 try/catch で個別に処理済みのためここには来ない。
+    logger.error('Error in getAllAnnouncements (pg:announcements)', { error })
+    return []
+  }
+}
+
+/**
  * 全お知らせを取得（履歴ページ用、既読フラグ付き）
  *
  * @param twitchUserId - TwitchユーザーID
  * @returns 全お知らせ一覧（既読フラグ付き、作成日時の降順）
  */
 export async function getAllAnnouncements(twitchUserId: string): Promise<AnnouncementWithReadStatus[]> {
+  // #570 パイロット踏襲: DB_DRIVER=pg-read/pg のときのみ Drizzle 直結経路へ切り替える。
+  // フラグ未設定時（既定 'postgrest'）はこの分岐を素通りし、以下の既存 supabase-js
+  // 実装が従来と完全に同一に実行される（挙動不変が Phase 1 の最重要安全要件）。
+  if (isPgReadEnabled()) {
+    return getAllAnnouncementsPg(twitchUserId)
+  }
+
   try {
     const supabase = getSupabaseAdmin()
     const now = new Date()
