@@ -9,7 +9,9 @@
  *   2. reward_id 列欠落(42703, Issue #591 デプロイ窓)フォールバック
  *   3. 0 イベント時
  *   4. since カーソルの往復互換(pg のテキスト形式 redeemedAt がクライアント側
- *      Date.parse 正規化を経て次回 since として問題なく受理されること)
+ *      Date.parse 正規化を経て次回 since として問題なく受理されること。#688 で
+ *      pg 直結の実挙動は ISO 8601 に正規化されたため、下の該当 it() は現在は
+ *      正規化前形式に対する防御的テストという位置づけ。詳細はそのコメント参照)
  * を検証する。フルスイートは実行せず、このファイル(と関連する変更分)のみを対象とする。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -465,12 +467,16 @@ describe("GET /api/overlay/[streamerId]/events: pg経路の0件応答", () => {
 describe("GET /api/overlay/[streamerId]/events: pg経路のredeemedAt/sinceカーソル往復互換", () => {
   it("PGテキスト形式のredeemedAtがクライアント正規化(Date.parse→toISOString)を経て次回sinceとして受理される", async () => {
     vi.stubEnv("DB_DRIVER", "pg-read");
-    // pg 直結はスペース区切り・マイクロ秒精度の PG テキスト形式で timestamptz を返す
-    // (drizzle-orm/postgres-js がパーサをパススルーに上書きするため。
-    // src/lib/db/client.ts のコメント参照)。PostgREST の T区切りISO8601とは
-    // 表現が異なるが、overlay クライアント(page.tsx の pollOverlayEvents)は
-    // Date.parse() 経由でのみこの値を消費するため、ここでは同じ正規化ロジックを
-    // 再現して破綻しないことを検証する。
+    // 注意(#688 で更新): 本番の pg 直結経路は src/lib/db/client.ts の
+    // installIsoTimestampParsers() により接続確立時に ISO 8601 へ正規化されるため、
+    // 実際には PostgREST と同じ T区切り ISO 8601 が返る(以前はスペース区切り・
+    // マイクロ秒精度の PG テキスト形式のまま返っていた)。このテストは getDb()
+    // 自体をモックしており src/lib/db/client.ts の正規化パーサを経由しないため、
+    // fixture には意図的に正規化前の PG テキスト形式を与えている。目的は「万一
+    // PG テキスト形式のまま値が来ても overlay クライアント
+    // (page.tsx の pollOverlayEvents)の Date.parse() 経由の消費が破綻しない」ことを
+    // 保証する防御的テスト(defense in depth)であり、pg 直結の現在の実挙動を
+    // 表すものではない。
     const db = createDrizzleOverlayDbMock([
       {
         rows: [

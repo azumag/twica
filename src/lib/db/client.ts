@@ -67,6 +67,141 @@ const requestScopedHandles = new WeakMap<object, DbHandle>()
 let nodeSingletonHandle: DbHandle | null = null
 
 /**
+ * PG テキスト形式の timestamp/timestamptz 文字列にのみ一致する正規表現。
+ *
+ * 一致対象（終端まで完全一致 = ^...$ でアンカー。部分一致では安全側に倒せない
+ * ため必ずフルマッチさせる）:
+ *   YYYY-MM-DD HH:MM:SS[.f{1,6}][±HH または ±HH:MM]
+ * 具体例: '2024-01-01 12:00:00.123456+00' / '2024-01-01 12:00:00+09:30' /
+ *         '2024-01-01 12:00:00'（timestamp without time zone、オフセット無し）
+ *
+ * 意図的に一致させない（= 呼び出し元でパススルーさせる）もの:
+ *   - ±HH:MM:SS 形式のオフセット（歴史的タイムゾーン。ISO 8601 非準拠で
+ *     この関数の変換対象外。offset 部分は [+-]\d{2}(:\d{2})? までしか
+ *     受理しないため、末尾に :SS が残ると $ 終端アンカーに一致せず全体マッチ失敗する）
+ *   - 'infinity' / '-infinity'
+ *   - BC 日付（例 '0001-01-01 00:00:00+00 BC'。末尾の ' BC' が $ に一致しない）
+ *   - year 10000 以上（PostgreSQL は5桁以上の年を返す。例 '10000-01-01 00:00:00+00'）
+ *     は日付部分が \d{4} に一致せずパススルーされる（Twitch 関連の実データで
+ *     西暦10000年以降の日時が発生することはあり得ないため実害はない）
+ *   - その他パターン不一致の文字列全般（既に ISO 8601 形式の文字列を含む。
+ *     ISO 8601 は日付・時刻区切りが 'T' であり、この正規表現が要求する
+ *     半角スペース区切りに一致しないため自然にパススルーされる＝冪等）
+ *
+ * キャプチャは番号参照（1=date, 2=time, 3=fraction, 4=offset）。named capture
+ * groups（ES2018 構文）は tsconfig の target: ES2017 で TS1503 になるため使えない。
+ *
+ * 前提: 接続先 PostgreSQL の DateStyle が既定の ISO であること（Supabase の既定。
+ * 万一 DateStyle が変更されると全タイムスタンプがパターン不一致→無変換パススルー
+ * となり、Safari での日付パース問題が再発する。その場合もエラーにはならないため、
+ * preview 検証チェックリスト（docs/db-driver-migration.md）の ISO 8601 実機確認が
+ * 検出手段になる）。
+ */
+const PG_TIMESTAMP_PATTERN =
+  /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d{1,6})?([+-]\d{2}(?::\d{2})?)?$/
+
+/**
+ * PG テキスト形式の timestamp/timestamptz 文字列を ISO 8601（PostgREST が返す
+ * 形式）に変換する純関数（#688）。
+ *
+ * 変換仕様:
+ * - 日付と時刻の間の半角スペース → 'T'
+ * - 小数秒は PG が返す桁数（1〜6桁。PG は末尾ゼロを削って可変長で返す）を
+ *   そのまま維持する。PostgREST も同じ生テキストを JSON 化するだけなので、
+ *   桁数を揃えず維持することがパリティになる（0埋めや切り詰めをしない）。
+ * - オフセット ±HH → ±HH:00 に正規化（PostgREST の ISO 8601 出力と同形式にする）。
+ *   ±HH:MM はそのまま維持。
+ * - オフセット無し（timestamp without time zone、OID 1114）→ オフセットを
+ *   付けず 'YYYY-MM-DDTHH:MM:SS[.ffffff]' を返す（PostgREST の timestamp
+ *   （tz無し）列の出力と同形式）。
+ *
+ * 上記の変換パターンに一致しない入力（PG_TIMESTAMP_PATTERN 参照: 歴史的
+ * ±HH:MM:SS オフセット、infinity/-infinity、BC 日付、空文字列、既に ISO 8601
+ * 形式の文字列、その他任意の文字列）は安全側で無変換のまま返す
+ * （変換に失敗して値を壊すより、PG テキスト形式のまま返すほうが安全という判断。
+ * なお infinity のパススルーは PostgREST の出力とも一致する）。
+ */
+export function normalizePgTimestampString(value: string): string {
+  const match = PG_TIMESTAMP_PATTERN.exec(value)
+  if (!match) {
+    return value
+  }
+
+  // 番号キャプチャ: [1]=date, [2]=time, [3]=fraction（省略時 undefined）, [4]=offset（同）
+  const [, date, time, fraction, offset] = match
+  const isoBody = `${date}T${time}${fraction ?? ''}`
+
+  if (offset === undefined) {
+    // timestamp without time zone（OID 1114）: PostgREST の対応する出力と同じく
+    // オフセットを付けない。
+    return isoBody
+  }
+
+  // offset は '[+-]\d{2}' （length 3, 例 '+09'）か '[+-]\d{2}:\d{2}'
+  // （length 6, 例 '+09:30'）のいずれかのみが PG_TIMESTAMP_PATTERN を通過する。
+  // 前者は ':00' を補って ±HH:MM 形式に揃える（PostgREST の ISO 8601 出力仕様）。
+  return offset.length === 3 ? `${isoBody}${offset}:00` : `${isoBody}${offset}`
+}
+
+/**
+ * postgres.js クライアントの最小構造型。実体は postgres.Sql だが、単体テストで
+ * fake オブジェクトを渡せるよう options.parsers のみを要求する構造型にする
+ * （r2-client.ts の R2BucketLike と同じ最小インターフェース方針）。
+ */
+interface PostgresParsersLike {
+  options: {
+    parsers: Record<number, (value: string) => unknown>
+  }
+}
+
+/**
+ * timestamp(OID 1114)/timestamptz(OID 1184) のパーサを ISO 8601 正規化パーサ
+ * （normalizePgTimestampString）に in-place で差し替える（#688）。
+ *
+ * 呼び出しタイミングの制約: createHandle() 内で `drizzle(sql, { schema })` の
+ * **後**に呼ぶこと。drizzle-orm 0.45.2 の construct()
+ * （node_modules/drizzle-orm/postgres-js/driver.cjs:46-53）が
+ * `client.options.parsers[type] = transparentParser`（対象 OID:
+ * "1184","1082","1083","1114","1182","1185","1115","1231"）で 1114/1184 を
+ * 含めて透過パーサに in-place 上書きするため、drizzle() より前に本関数を呼んでも
+ * 直後の drizzle() 呼び出しで正規化が消される。
+ *
+ * 実装上絶対に守る必要がある2点（いずれも postgres.js 3.4.9 のソースで実測確認済み。
+ * どちらか一方でも破ると正規化が「サイレントに」効かなくなるため、根拠込みで
+ * ここに残す）:
+ *
+ * 1. `sql.options.parsers` オブジェクトそのものを差し替えてはならない
+ *    （`sql.options.parsers = { ...旧, 1184: fn }` のようなコードは絶対禁止。
+ *    必ず `sql.options.parsers[1184] = fn` のようにプロパティ単位で書き換える）。
+ *    理由: postgres.js は `postgres()` 呼び出し時点で
+ *    （node_modules/postgres/cjs/src/index.js:65
+ *    `[...Array(options.max)].map(() => Connection(options, queues, ...))`）
+ *    max 個の Connection を eager に生成する。各 Connection は
+ *    node_modules/postgres/cjs/src/connection.js:52-70 付近で
+ *    `const { ..., parsers, ... } = options` と分割代入しており、この時点で
+ *    `options.parsers` オブジェクトへの「参照」をクロージャに捕まえる（値の
+ *    コピーではない）。したがってプロパティ単位の書き換えは全 Connection に
+ *    伝播するが、オブジェクト自体の差し替えは「Connection 群が握っているのは
+ *    古いオブジェクトへの参照のまま」になり、以後 sql.options.parsers を
+ *    上書きしても各 Connection には一切反映されない（エラーにならず単に無視
+ *    されるため、発見が非常に困難な不具合になる）。
+ *
+ * 2. 本関数は createHandle() 内・そのクライアントで最初のクエリが発行される前に
+ *    完了させる必要がある。理由: node_modules/postgres/cjs/src/connection.js の
+ *    RowDescription ハンドラ（632行目付近の `parser: parsers[type]`）は列メタ
+ *    データ受信時点の parsers[type] を「解決済み関数」として
+ *    `query.statement.columns` に固定し、prepared statement は
+ *    クエリ signature ごとに接続内キャッシュされる（同ファイル 632行目付近
+ *    `query.prepare && (statements[query.signature] = query.statement)`）。
+ *    そのため、あるクエリ形状について一度カラム定義が解決された後にパーサを
+ *    差し替えても、そのクエリ形状の以後の実行には反映されない可能性がある。
+ */
+export function installIsoTimestampParsers(client: PostgresParsersLike): void {
+  client.options.parsers[1114] = normalizePgTimestampString
+  client.options.parsers[1184] = normalizePgTimestampString
+}
+
+/**
  * postgres.js クライアントと Drizzle インスタンスを生成する。
  *
  * オプションの根拠:
@@ -81,11 +216,23 @@ let nodeSingletonHandle: DbHandle | null = null
  *   必ず Drizzle スキーマ経由（db.select 等）で読むこと。Drizzle が schema 定義に
  *   基づいて配列をパースする。生 SQL（sql`...` / db.execute）で array 列を
  *   SELECT すると '{a,b}' の生文字列が返り、値の形状が壊れる。
- *   ※補足: drizzle() はこのクライアントの timestamp/timestamptz/date パーサを
- *   透過（文字列パススルー）に上書きするため、日時列は Date ではなく PG テキスト
- *   形式の文字列で返る（schema.ts の mode: 'string' が期待する入力）。プロセスの
- *   タイムゾーンに依存する Date 変換は発生しない（drizzle-orm/postgres-js/driver の
- *   construct() を実測確認済み）。
+ *   ※補足（#688 で更新）: drizzle() はこのクライアントの timestamp/timestamptz/date
+ *   パーサを透過（文字列パススルー）に上書きする。そのままでは日時列が PG テキスト
+ *   形式の文字列（例 '2024-01-01 12:00:00.123456+00'）で返ってしまい、Safari(JSC) の
+ *   new Date() ではこの形式のパースが仕様上保証されない。そのため createHandle() は
+ *   drizzle() 呼び出しの直後に installIsoTimestampParsers() を呼び、
+ *   timestamp(OID 1114)/timestamptz(OID 1184) のパーサを ISO 8601 文字列
+ *   （PostgREST が返す形式と同じ）に正規化するパーサへ差し替える。根拠・実装上の
+ *   制約は installIsoTimestampParsers 自身のコメントを参照。date(OID 1082) は
+ *   'YYYY-MM-DD' で元々 ISO 8601 準拠のため対象外。time/timetz（1083/1266）や
+ *   timestamp[]/timestamptz[] 配列（1115/1185 等）は現行スキーマに該当列が無く
+ *   （配列列はそもそも fetch_types: false により postgres.js 側でパースされない）
+ *   対象外だが、将来これらの型の列を追加する場合は同様の正規化パーサ登録が必要に
+ *   なる点に注意。schema.ts は引き続き mode: 'string' のため、Drizzle が返す値は
+ *   Date ではなく文字列のまま（プロセスのタイムゾーンに依存する Date 変換は
+ *   発生しない。drizzle-orm/postgres-js/driver の construct() を実測確認済み）。
+ *   ISO 8601 正規化そのものはタイムゾーン変換を一切行わない（オフセット表記の
+ *   桁揃えのみ）ため、この性質に影響しない。
  * - prepare は指定しない（デフォルト true）
  *   Hyperdrive は prepared statements をサポートし、キャッシュもする。
  *   false にすると Hyperdrive 側で追加の往復が発生する。
@@ -104,6 +251,10 @@ function createHandle(connectionString: string): DbHandle {
     idle_timeout: 20,
   })
   const db = drizzle(sql, { schema })
+  // #688: drizzle() が transparentParser で上書きした直後、かつこの sql
+  // クライアントで最初のクエリが発行される前に正規化パーサを設定する
+  // （呼び出し順序の根拠は installIsoTimestampParsers 自身のコメント参照）。
+  installIsoTimestampParsers(sql)
   return { db, sql }
 }
 

@@ -40,12 +40,27 @@ vi.mock('@/lib/supabase/admin', () => ({
 // 既存テストは DB_DRIVER 未設定（= 'postgrest' 経路）で動くため getDb は呼ばれない。
 // 万一呼ばれた場合はフラグ分岐漏れ（設計違反）を即検出できるよう throw するスタブにする。
 // pg 経路をテストしたいファイルでは vi.mocked(getDb).mockResolvedValue(...) で上書きする。
-// エクスポート形状は実モジュール（src/lib/db/client.ts）の実行時エクスポート（getDb のみ）と一致させること。
-vi.mock('@/lib/db/client', () => ({
-  getDb: vi.fn(() => {
-    throw new Error(
-      'getDb() must not be called in unit tests: DB_DRIVER defaults to postgrest. ' +
-        'Override with vi.mocked(getDb).mockResolvedValue(...) to test the pg path.'
-    )
-  }),
-}))
+//
+// エクスポート形状は実モジュール（src/lib/db/client.ts）の実行時エクスポートと一致させる
+// こと。#688 で normalizePgTimestampString / installIsoTimestampParsers が追加され、
+// getDb 以外にも実行時エクスポートが増えた。この2つは DB 接続を持たない純関数
+// （timestamp 文字列の正規化・postgres.js クライアントへのパーサ差し替え）なので、
+// vi.importActual で実体を re-export し、getDb だけを throw スタブに差し替える
+// （docs/TESTING_SUPABASE_MOCKS.md や tests/unit/gacha-history-api.test.ts 等の
+// `@/lib/supabase/admin` importOriginal パターンと同じ方針。手動での形状同期を避け、
+// #688 のようなエクスポート追加時にこのファイルを追随し忘れるリスクを構造的に消す）。
+// なお tests/unit/db-client.test.ts / db-client-timestamp-normalization.test.ts は
+// 冒頭で vi.unmock('@/lib/db/client') してこのグローバルモック自体を無効化した上で
+// 実装本体（getDb 含む）を検証しているため、ここでの re-export 方式とは独立している。
+vi.mock('@/lib/db/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/db/client')>()
+  return {
+    ...actual,
+    getDb: vi.fn(() => {
+      throw new Error(
+        'getDb() must not be called in unit tests: DB_DRIVER defaults to postgrest. ' +
+          'Override with vi.mocked(getDb).mockResolvedValue(...) to test the pg path.'
+      )
+    }),
+  }
+})

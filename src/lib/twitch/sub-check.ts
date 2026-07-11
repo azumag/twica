@@ -64,9 +64,11 @@ export function isTwitchSubCheckEnabled(): boolean {
  *   同じ値を書く UPDATE（= 冪等）になるようにする。
  * - twitch_scopes は text[] 列のため Drizzle スキーマ経由で読む
  *   （src/lib/db/client.ts の fetch_types: false の注意書き参照）。
- * - twitch_sub_verified_at は pg 直結だと PG テキスト形式の文字列で返るが、
- *   消費は new Date() 経由のキャッシュ期限判定のみ（戻り値には含めない）ため
- *   表現差の影響はない（token-manager.ts 冒頭コメントと同じ既知事項）。
+ * - twitch_sub_verified_at は pg 直結だと src/lib/db/client.ts の
+ *   installIsoTimestampParsers() により ISO 8601 に正規化された文字列で返る
+ *   （#688。正規化前は PG テキスト形式だった）。消費は new Date() 経由の
+ *   キャッシュ期限判定のみ（戻り値には含めない）ため、正規化前後どちらの形式でも
+ *   影響はない（token-manager.ts 冒頭コメントと同じ既知事項）。
  */
 async function hasTwitchSubPg(twitchUserId: string): Promise<boolean> {
   try {

@@ -1,7 +1,7 @@
 import { getTranslations } from "next-intl/server";
 import dynamic from "next/dynamic";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import {
   getGachaHistoryForStreamer,
   getGachaHistoryForUser,
@@ -37,12 +37,10 @@ export default async function GachaHistoryPage() {
   if (isStreamer) {
     // Get streamer_id for the current user
     // 現在のユーザーのstreamer_idを取得
-    const supabaseAdmin = getSupabaseAdmin();
-    const { data: streamer } = await supabaseAdmin
-      .from("streamers")
-      .select("id")
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
+    // #711: user-data.ts の getStreamerIdByTwitchUserId に委譲
+    // （isPgReadEnabled() による経路分岐は関数内部で行われるため、このページは
+    // フラグを意識しない）。
+    const streamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
 
     if (!streamer) {
       return null;

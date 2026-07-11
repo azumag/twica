@@ -118,11 +118,15 @@ export function hasAnnouncementBeenPublishedAt(
  * 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
  * timestamptz 列は Drizzle スキーマの mode: 'string' により文字列のまま返る
  * （Date オブジェクトへの変換はしない。既存実装のパリティ要件）。
- * 既知の表現差: pg 直結は PG テキスト形式（'2026-03-10 12:00:00.123456+00'）、
- * PostgREST は ISO 8601（'2026-03-10T12:00:00.123456+00:00'）を返す。いずれも
- * V8 の Date.parse で同一時刻に解釈され、本モジュールの消費側（isAnnouncementVisibleAt
- * と AnnouncementBanner）は Date.parse 経由でしか日付を扱わないため影響はない。
- * 文字列を直接パースする消費側を今後追加する場合はこの差に注意すること。
+ * 表現形式（#688 で更新）: pg 直結・PostgREST いずれも ISO 8601
+ * （'2026-03-10T12:00:00.123456+00:00'）を返す。pg 直結は元々 PG テキスト形式
+ * （'2026-03-10 12:00:00.123456+00'）で timestamptz を返していたが、Safari(JSC) の
+ * new Date() ではその形式のパースが保証されないため、src/lib/db/client.ts の
+ * installIsoTimestampParsers() が接続確立時に ISO 8601 へ正規化するパーサへ
+ * 差し替えている（#688）。本モジュールの消費側（isAnnouncementVisibleAt と
+ * AnnouncementBanner）は Date.parse 経由でしか日付を扱わないため、正規化前の
+ * PG テキスト形式でも実害はなかったが、正規化後は PostgREST 経路と文字列表現も
+ * 完全一致する。
  */
 async function getUnreadAnnouncementsPg(twitchUserId: string): Promise<UnreadAnnouncement[]> {
   // どちらのクエリで失敗したかを catch 節のログで判別するためのフェーズタグ。
