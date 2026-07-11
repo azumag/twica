@@ -229,8 +229,12 @@ LEFT JOIN card_counts cc ON cc.streamer_id = s.id
 LEFT JOIN users u ON u.twitch_user_id = s.twitch_user_id
 LEFT JOIN streamer_chat_sender_settings css ON css.streamer_id = s.id
 LEFT JOIN twitch_bot_accounts bot ON bot.id = css.custom_bot_account_id
+-- digest() は pgcrypto 由来で、Supabase のデフォルト構成では public ではなく
+-- extensions スキーマにインストールされる。本関数は SET search_path = public
+-- (SECURITY DEFINER の search_path 固定によるインジェクション対策) のため、
+-- search_path を広げる代わりに呼び出し側を extensions.digest(...) と明示修飾する。
 LEFT JOIN storage_usage su
-  ON su.user_prefix = substring(encode(digest(s.twitch_user_id, 'sha256'), 'hex') from 1 for 8)
+  ON su.user_prefix = substring(encode(extensions.digest(s.twitch_user_id, 'sha256'), 'hex') from 1 for 8)
 LEFT JOIN vote_campaign_bonus vcb ON vcb.streamer_id = s.id;
 $$;
 
