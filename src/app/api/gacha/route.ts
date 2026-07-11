@@ -78,7 +78,22 @@ export async function POST(request: NextRequest) {
     }
 
     const gachaService = new GachaService();
-    const result = await gachaService.executeGacha(streamerId, session.twitchUserId, session.twitchUsername);
+    // Issue #661: execute_gacha_transaction RPC は p_event_id (Twitch EventSub の
+    // messageId) を唯一の重複防止キーとして使う (gacha_history.event_id の
+    // UNIQUE制約 + ON CONFLICT DO NOTHING)。このエンドポイントは EventSub を
+    // 経由しないため元々 eventId を渡しておらず、RPCへは p_event_id=null が
+    // 渡っていた。NULL同士はUNIQUE制約上「重複」とみなされないため、
+    // RPC側はNULLでの呼び出しを明示的に拒否するようになった(migration
+    // 00076)。ここで毎回一意な合成IDを渡すことで、この手動ドローAPIの
+    // 既存挙動(呼ぶたびに新しい抽選として成功する)を変えずにNULL拒否と
+    // 両立させる。
+    const manualDrawEventId = `manual:${crypto.randomUUID()}`;
+    const result = await gachaService.executeGacha(
+      streamerId,
+      session.twitchUserId,
+      session.twitchUsername,
+      manualDrawEventId
+    );
 
     if (!result.success) {
       // Map GachaService errors to standardized error messages
