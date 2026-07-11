@@ -38,10 +38,17 @@
 - チャンネル内トレード可 ⇔ 対象配信者の `trade_enabled = true`
 - クロスチャンネルトレード可 ⇔ **両方の配信者**の `trade_enabled = true` かつ `cross_channel_trade_enabled = true`
 - 判定は「オファー作成時」と「応諾(成立)時」の両方で行う。設定オフ後の既存openオファーは一覧から非表示になり応諾も拒否される(オファー自体は削除しない。再有効化で復活)
+- ゲート判定がANDなので、`cross_channel_trade_enabled=true` かつ `trade_enabled=false` の保存はサーバ側で許容してよい(実害なし。UI側で子トグルをdisabledにするのみ)
+
+### カードの is_active との関係
+
+- 出品時の「欲しいカード」選択肢はアクティブカードのみ(カタログから選ぶため)
+- 応諾・既存オファーの表示は、カードが後から非アクティブ化されても許可する
+  (トレードは所有済みコピーの移転であり新規発行ではないため、非アクティブ化の意図「新規入手停止」と矛盾しない)
 
 ## 4. DB設計
 
-スキーマの正はSupabaseマイグレーション(`supabase/migrations/000XX_add_card_trading.sql`)。`src/lib/db/schema.ts` にDrizzle型ミラーを追記。
+スキーマの正はSupabaseマイグレーション(`supabase/migrations/000XX_add_card_trading.sql`)。`src/lib/db/schema.ts` にDrizzle型ミラーを追記(settings APIにはpg直結の二重パスがあるためミラー追加は必須)。
 
 ### 4.1 trade_offers テーブル
 
@@ -52,39 +59,59 @@ CREATE TABLE trade_offers (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   -- 出品者
   offerer_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  -- 渡すカードの特定の1枚(所有権チェック・ロック対象)
-  offered_user_card_id UUID NOT NULL REFERENCES user_cards(id) ON DELETE CASCADE,
-  -- 一覧表示・フィルタ用の非正規化(offered_user_card_id から導出可能だが JOIN 削減のため保持)
+  -- 渡すカードの特定の1枚。
+  -- 意図的にFKを張らない: user_cards行はカードストーン交換RPC等でDELETEされうるため、
+  -- FK CASCADEにすると completed 行(=トレード履歴)が取引相手の後日の行動で消えてしまう。
+  -- openオファーの整合性は部分UNIQUE(下記)+応諾時の実在チェックで担保する。
+  offered_user_card_id UUID NOT NULL,
+  -- 一覧表示・フィルタ用の非正規化。クライアントからは受け取らず、
+  -- サーバが offered_user_card_id / wanted_card_id から導出してINSERTする
   offered_card_id UUID NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
   offered_streamer_id UUID NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
   -- 欲しいカード(種別指定。特定の1枚ではない)
   wanted_card_id UUID NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
   wanted_streamer_id UUID NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
-  -- チャンネル内/クロスの判別(offered_streamer_id = wanted_streamer_id かどうか)
-  is_cross_channel BOOLEAN NOT NULL,
+  -- チャンネル内/クロスの判別。生成列にして非正規化不整合を排除
+  is_cross_channel BOOLEAN GENERATED ALWAYS AS (offered_streamer_id <> wanted_streamer_id) STORED,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'completed', 'cancelled')),
-  -- 成立情報
+  -- 成立情報(記録用。accepted_user_card_id もFKなし: 移転後も記録を残す)
   accepted_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-  accepted_user_card_id UUID,  -- 応諾者が渡した1枚(記録用・FKなし: 移転後も記録を残す)
+  accepted_user_card_id UUID,
   completed_at TIMESTAMPTZ,
-  -- 作成の冪等性キー(card_stone_transactions と同パターン)
+  -- 冪等性キー: 作成用(request_id)と応諾用(accepted_request_id)を分離
   request_id UUID,
+  accepted_request_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- 同一カード同士の交換は無意味なので禁止
   CONSTRAINT trade_offers_different_cards CHECK (offered_card_id <> wanted_card_id)
 );
 
--- 同じ1枚を複数のopenオファーに同時出品することを防ぐ(部分UNIQUE)
+-- 同じ1枚を複数のopenオファーに同時出品することを防ぐ(部分UNIQUE。FKなしでも機能する)
 CREATE UNIQUE INDEX idx_trade_offers_open_user_card
   ON trade_offers(offered_user_card_id) WHERE status = 'open';
 -- 作成の冪等性
 CREATE UNIQUE INDEX idx_trade_offers_offerer_request
   ON trade_offers(offerer_user_id, request_id) WHERE request_id IS NOT NULL;
--- 一覧クエリ用
-CREATE INDEX idx_trade_offers_open_offered_streamer ON trade_offers(offered_streamer_id) WHERE status = 'open';
-CREATE INDEX idx_trade_offers_open_wanted_streamer ON trade_offers(wanted_streamer_id) WHERE status = 'open';
-CREATE INDEX idx_trade_offers_offerer ON trade_offers(offerer_user_id);
+-- 一覧クエリ用(created_at DESC ページネーションに直接使える複合部分インデックス)
+CREATE INDEX idx_trade_offers_open_offered_streamer
+  ON trade_offers(offered_streamer_id, created_at DESC) WHERE status = 'open';
+CREATE INDEX idx_trade_offers_open_wanted_streamer
+  ON trade_offers(wanted_streamer_id, created_at DESC) WHERE status = 'open';
+-- 出品上限チェック・マイトレード「出品中」タブ用
+CREATE INDEX idx_trade_offers_open_offerer
+  ON trade_offers(offerer_user_id) WHERE status = 'open';
+-- FKカスケード支持インデックス(00071 の教訓: 部分インデックスはカスケード削除の参照行検索に使えない)
+CREATE INDEX idx_trade_offers_offerer_user_id ON trade_offers(offerer_user_id);
+CREATE INDEX idx_trade_offers_offered_card_id ON trade_offers(offered_card_id);
+CREATE INDEX idx_trade_offers_offered_streamer_id ON trade_offers(offered_streamer_id);
+CREATE INDEX idx_trade_offers_wanted_card_id ON trade_offers(wanted_card_id);
+CREATE INDEX idx_trade_offers_wanted_streamer_id ON trade_offers(wanted_streamer_id);
+CREATE INDEX idx_trade_offers_accepted_by_user_id ON trade_offers(accepted_by_user_id);
+
+-- updated_at 自動更新(00001 の既存トリガー関数を再利用)
+CREATE TRIGGER update_trade_offers_updated_at BEFORE UPDATE ON trade_offers
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 ```
 
 RLS: 既存パターンに厳密に従う(`00024` の教訓 — 必ず `TO service_role` を明示)。
@@ -95,6 +122,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.trade_offers TO service_rol
 CREATE POLICY "Service can manage trade_offers" ON trade_offers
   FOR ALL TO service_role USING (true) WITH CHECK (true);
 ```
+
+注意点:
+
+- ユーザー退会時は `offerer_user_id` のCASCADEで相手側の成立履歴も消える。これは既存の全面CASCADE方針(users削除で user_cards 等も消える)と整合する**意図的な**挙動
+- 将来カードストーン交換(`exchange_duplicate_card_for_stones`、現状 `src/` から未呼び出しの休眠機能)をAPIに配線する際は、
+  同RPCの交換対象選択クエリに「openオファー出品中のコピーを除外」する条件追加が必要(子issueに明記)
 
 ### 4.2 streamers への設定カラム追加
 
@@ -110,12 +143,13 @@ ALTER TABLE streamers
 
 `trade_offers` の completed 行がそのまま履歴になる(status + accepted_* + completed_at)。
 別テーブル `trade_history` は作らない(YAGNI。監査要件が出たら追加)。
+このため §4.1 の通り `offered_user_card_id` / `accepted_user_card_id` にはFKを張らず、行が独立に生存するようにしている。
 
 ### 4.4 成立RPC: accept_trade_offer
 
 成立処理は競合(同一オファーへの同時応諾、出品カードの喪失)があるため、
 `exchange_duplicate_card_for_stones`(migration 00059/00060)と同じ
-**SECURITY DEFINER plpgsql RPC + FOR UPDATE ロック + request_id 冪等性** で実装する。
+**SECURITY DEFINER plpgsql RPC + FOR UPDATE ロック + 冪等性キー** で実装する。
 
 ```
 accept_trade_offer(
@@ -129,32 +163,46 @@ accept_trade_offer(
 
 1. 応諾者 `users.id` を解決
 2. `SELECT ... FROM trade_offers WHERE id = p_trade_offer_id FOR UPDATE` — オファー行をロック
-3. 検証(失敗時はエラーコードを含むJSONBを返す):
+3. **冪等リプレイ判定(すべての検証より前に行う。00060 と同じく、成立後にレスポンスをロストした
+   クライアントの再送が `TRADE_ALREADY_COMPLETED` にならないようにするため)**:
+   `status = 'completed' AND accepted_by_user_id = 応諾者 AND accepted_request_id = p_request_id`
+   なら成立済み結果JSONBを再返却して終了。
+   リプレイ判定はこのオファー行内の値照合で完結するため、`accepted_request_id` に UNIQUE制約は付けない
+4. 検証(失敗時はエラーコードを含むJSONBを返す):
    - `status = 'open'` であること(二重成立防止)
    - 応諾者 ≠ 出品者(自己応諾禁止)
    - 設定ゲート再チェック: 両配信者の `trade_enabled`(クロスなら `cross_channel_trade_enabled` も)
    - 出品カード実在チェック: `SELECT ... FROM user_cards WHERE id = offered_user_card_id AND user_id = offerer_user_id FOR UPDATE`
-     — 出品者がその1枚をまだ所有しているか。喪失していたら offer を `cancelled` にして 'OFFER_INVALID' を返す
+     — 行が存在しない(削除済み)または所有者が変わっている場合は offer を `cancelled` に更新して 'OFFER_INVALID' を返す
+     (このパスで cancelled 更新をコミットするために、00060 の RAISE EXCEPTION 方式ではなく
+     「エラーコード入りJSONB返却」方式を採る。RPC内コメントに理由を書くこと)
    - 応諾者の支払いカード選択: `SELECT id FROM user_cards WHERE user_id = 応諾者 AND card_id = wanted_card_id
-     AND id NOT IN (自分のopenオファーの offered_user_card_id) ORDER BY obtained_at ASC, id ASC LIMIT 1 FOR UPDATE`
-     — 最も古い1枚を自動選択(出品中の1枚は除外)。無ければ 'CARD_NOT_OWNED'
-4. 冪等性: `INSERT`ではなく`trade_offers`のUPDATE前に、`accepted_by_user_id`と`request_id`一致なら成立済み結果を再返却
-   (二重POST対策。詳細は 00060 の再生パターンを踏襲)
+     AND id NOT IN (SELECT offered_user_card_id FROM trade_offers WHERE offerer_user_id = 応諾者 AND status = 'open')
+     ORDER BY obtained_at ASC, id ASC LIMIT 1 FOR UPDATE`
+     — 最も古い1枚を自動選択(自分が出品中の1枚は支払いに使えない)。無ければ 'CARD_NOT_OWNED'
 5. 所有権の移転(row-per-copy なので UPDATE で user_id を付け替える):
    - `UPDATE user_cards SET user_id = 応諾者, obtained_at = now() WHERE id = offered_user_card_id`
    - `UPDATE user_cards SET user_id = 出品者, obtained_at = now() WHERE id = 応諾者の支払いカードid`
    - ※ 新規発行ではないため `max_issuance_count`(発行上限)には影響しない
-6. `UPDATE trade_offers SET status='completed', accepted_by_user_id=..., accepted_user_card_id=..., completed_at=now(), request_id=p_request_id(応諾側キーとして別カラム accepted_request_id に保存)`
+   - ※ `card_owner_stats` トリガー(00051)はOLD/NEW双方を再集計するため user_id 付け替えと整合
+6. `UPDATE trade_offers SET status='completed', accepted_by_user_id=..., accepted_user_card_id=...,
+   accepted_request_id=p_request_id, completed_at=now()`
 7. 成立結果JSONBを返す(両カード情報を含む)
 
-補足: オファー作成時の request_id は出品の冪等性、応諾時のキーは `accepted_request_id UUID` カラム(+ 部分UNIQUE `(accepted_by_user_id, accepted_request_id)`)として分離する。
+ロックとデッドロックの方針:
 
-権限: `REVOKE ALL ... FROM PUBLIC; GRANT EXECUTE ... TO service_role;` + `SET search_path = public, pg_temp`。
+- ロック順は「オファー行 → 出品者の user_cards 行 → 応諾者の支払い user_cards 行」で固定
+- 手順4の支払いカード選択で「自分が出品中のコピー」を除外する規則が、相互応諾の典型的な循環ロックを塞ぐ
+- それでも複数の並行応諾が同一ユーザーの複数コピーに交差するケースで 40P01(deadlock_detected)は理論上残る。
+  **API層で 40P01 を捕捉し、1回リトライ→失敗なら「混雑しています。再試行してください」エラーに写像する**
+- `FOR UPDATE` は述語で除外された行をロックしない点をRPC内コメントに明記
+
+権限: `REVOKE ALL ... FROM PUBLIC; GRANT EXECUTE ... TO service_role;` + `SECURITY DEFINER SET search_path = public, pg_temp`。
 
 ### 4.5 キャンセル
 
 出品者本人によるキャンセルは競合が単純(open→cancelled のCAS)なので、RPCにせず
-API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_user_id=? AND status='open'` の条件付きUPDATEで実装する。
+API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_user_id=? AND status='open'` の条件付きUPDATEで実装する(更新0行なら404/409相当を返す)。
 
 ## 5. API設計
 
@@ -167,7 +215,27 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
 | GET | `/api/trades/mine` | 自分のオファー一覧(open/completed/cancelled、自分が応諾した取引も含む) |
 | POST | `/api/trades/[id]/accept` | 応諾 `{ requestId }` → RPC呼び出し |
 | POST | `/api/trades/[id]/cancel` | 出品者本人のキャンセル |
-| POST | `/api/streamer/settings` | 既存エンドポイントに `tradeEnabled` / `crossChannelTradeEnabled` キーを追加 |
+| POST | `/api/streamer/settings` | 既存エンドポイントに `tradeEnabled` / `crossChannelTradeEnabled` キーを追加(既存の厳格boolean検証パターンに従う) |
+
+### 一覧クエリの実装方式(GET /api/trades)
+
+- 基本クエリ: PostgREST で `trade_offers` に `status=eq.open` + streamerフィルタ + `order=created_at.desc` + range ページネーション。
+  カード・配信者情報は埋め込み(`offered_card:cards!offered_card_id(...)` 等)で取得
+- 設定ゲートフィルタ: offered側/wanted側の2系統の `streamers!inner(...)` 埋め込みフィルタ
+  (`offered_streamer.trade_enabled=eq.true` 等)で実現する。クロスタブでは両側の
+  `cross_channel_trade_enabled=eq.true` も条件に加える。PostgRESTで表現困難な場合は一覧用VIEWを検討(実装時判断)
+- **応諾可否(canAccept)**: ログインユーザーの支払い可能カードを別クエリ1本で取得し
+  (自分の所持 `user_cards` から「自分がopenオファーに出品中の `offered_user_card_id`」を除外して card_id 集合を作る)、
+  アプリ側で各オファーに `canAccept: boolean` を付与して返す。
+  **除外規則を §4.4 手順4 と完全に一致させる**こと(「ボタン有効なのに押すと CARD_NOT_OWNED」の食い違い防止)。
+  クエリは2本固定でありN+1にはならない
+
+### オファー作成の冪等性(POST /api/trades)
+
+- `requestId` はクライアントが `crypto.randomUUID()` で生成し、**リトライ間で同一キーを保持**する
+  (このリポジトリにAPI層のrequestId前例はまだ無いため、この規約を本機能で確立する)
+- 部分UNIQUE `(offerer_user_id, request_id)` の違反(23505)を捕捉した場合は、
+  既存オファーを取得して **200でリプレイ返却**する(409/500にしない)
 
 ### バリデーション(POST /api/trades)
 
@@ -175,12 +243,14 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
 - その行が他のopenオファーに出品中でないこと(部分UNIQUEで最終防衛、事前チェックでUX向上)
 - 設定ゲート(§3)を満たすこと
 - `offered_card_id <> wanted_card_id`
-- 1ユーザーの同時openオファー上限 **10件**(スパム対策。定数 `TRADE_MAX_OPEN_OFFERS`)
+- 「欲しいカード」は `cards.is_active = true` のみ指定可(§3参照)
+- 1ユーザーの同時openオファー上限 **10件**(スパム対策。定数 `TRADE_MAX_OPEN_OFFERS`)。
+  COUNT→INSERT の並行POSTで僅かに超過しうるが、rate limitがあるため許容する
 - rate limit: 既存 `rateLimits` に `tradeWrite`(例: 10回/分)/ `tradeRead` を追加
 
 ### エラーコード
 
-`ERROR_MESSAGES` に追加: `TRADE_DISABLED` / `TRADE_OFFER_NOT_FOUND` / `TRADE_ALREADY_COMPLETED` / `TRADE_SELF_ACCEPT` / `TRADE_CARD_NOT_OWNED` / `TRADE_OFFER_LIMIT` など。i18nはUI側で対応表を持つ。
+`ERROR_MESSAGES` に追加: `TRADE_DISABLED` / `TRADE_OFFER_NOT_FOUND` / `TRADE_ALREADY_COMPLETED` / `TRADE_SELF_ACCEPT` / `TRADE_CARD_NOT_OWNED` / `TRADE_OFFER_LIMIT` / `TRADE_BUSY`(デッドロックリトライ失敗)など。i18nはUI側で対応表を持つ。
 
 ## 6. UI/UX設計
 
@@ -225,9 +295,9 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
 
 - オファー行は「もらえるカード(左)⇄ 渡すカード(右)」を**応諾者視点**で表示する
   (出品者視点だと左右が逆になり混乱するため、ボード閲覧者=応諾候補者の視点で統一)
-- 応諾ボタンの状態:
-  - 募集カードを所持 → 有効(purple)
-  - 未所持 → 無効(gray)+「所持していません」ラベル
+- 応諾ボタンの状態(APIの `canAccept` を使用):
+  - 募集カードを支払い可能な形で所持 → 有効(purple)
+  - 未所持(または全コピー出品中)→ 無効(gray)+「所持していません」ラベル
   - 自分の出品 → 「自分の出品」バッジ+キャンセルボタン
 - クロスチャンネルタブでは各カードに配信者アイコン+名前を小さく併記(どのチャンネルのカードか一目で分かるように)
 - 未ログイン時は閲覧可・応諾ボタンでログイン導線(既存 `returnTo` パターン)
@@ -274,8 +344,9 @@ Step 2: 欲しいカードを選ぶ
 
 ### 6.7 配信者ダッシュボード設定UI
 
-`src/app/dashboard/settings` の既存 `CardVisibilitySettings.tsx` と同型の
-`TradeSettings.tsx` を追加(hand-rolled toggle + `POST /api/streamer/settings` + 楽観的更新):
+既存 `src/components/CardVisibilitySettings.tsx` と同型の `TradeSettings.tsx` を
+`src/components/` に追加し、`src/app/dashboard/settings/page.tsx` に組み込む
+(hand-rolled toggle + `POST /api/streamer/settings` + 楽観的更新):
 
 ```
 カードトレード
@@ -288,6 +359,8 @@ Step 2: 欲しいカードを選ぶ
 
 - 親トグルOFF時は子トグルをdisabled表示(依存関係を視覚化)
 - 注意書き: 「OFFにすると進行中の出品は一時的に非表示・応諾不可になります(削除はされません)」
+- 実装漏れ注意: `src/app/dashboard/settings/page.tsx` 側の streamers SELECT に新フラグを追加(初期値取得)、
+  `/collection/[streamerId]` のトレードボタン表示用に streamer フェッチへ `trade_enabled` を追加
 
 ### 6.8 アクセシビリティ / 空状態
 
@@ -297,11 +370,12 @@ Step 2: 欲しいカードを選ぶ
 
 ## 7. セキュリティ・整合性の要点
 
-- 成立はRPC内の単一トランザクション+行ロック(二重成立・所有喪失・同時応諾に対して安全)
-- 冪等性キー(requestId)を作成・応諾の両方に適用(モバイル回線の二重POST対策)
+- 成立はRPC内の単一トランザクション+行ロック(二重成立・所有喪失・同時応諾に対して安全)。デッドロックはAPI層で40P01捕捉+リトライ
+- 冪等性キー(requestId)を作成・応諾の両方に適用(モバイル回線の二重POST対策)。リプレイ判定は検証より前(§4.4 手順3)
 - CSRF・rate limit・セッション認証は既存ミドルウェア関数を全POSTに適用
 - RLSは `TO service_role` を明示(00024の教訓)
 - 出品一覧APIは設定ゲートをサーバー側で必ず適用(URLを直接叩かれてもOFFチャンネルのオファーは返さない)
+- 非正規化カラム(offered_card_id 等)はサーバ導出のみ。クライアントから受けるIDは `offeredUserCardId` / `wantedCardId` / `requestId` に限定
 - 譲渡そのものに手数料・回数制限は設けないが、上限10件/ユーザーの同時出品制限でスパム抑止
 - RMT(リアルマネートレード)対策は本フェーズではスコープ外とし、規約(TOS)への追記検討のみ子issueに記載
 
@@ -323,4 +397,11 @@ MVPでは通知なし(マイトレード画面で確認)。フェーズ2で:
 6. **視聴者UI: 出品フロー+マイトレード**
 7. **フェーズ2: 成立通知(Realtime)** ※優先度低
 
-テスト方針: 2はRPCのSQLテスト(同時応諾・喪失・冪等性)、3はAPI統合テスト、5/6はコンポーネント単体テスト+E2Eシナリオ追記(`E2E_TEST_CASES.md`)。
+テスト方針: 2はRPCのSQLテスト(同時応諾・喪失・冪等リプレイ)、3はAPI統合テスト(23505リプレイ・40P01写像を含む)、5/6はコンポーネント単体テスト+E2Eシナリオ追記(`E2E_TEST_CASES.md`)。
+
+## 10. レビュー履歴
+
+- 初版に対する厳格レビュー(subagent。codexは本環境に未導入のため代替)で以下を修正済み:
+  - 重大: 冪等リプレイ判定を全検証より前に移動(§4.4 手順3)/ `offered_user_card_id` のFK CASCADE廃止(履歴消滅・OFFER_INVALIDパス不成立の矛盾解消)
+  - 中: デッドロック方針明記 / 一覧クエリ方式と `canAccept` 仕様確定 / 作成冪等性の23505リプレイ仕様 / インデックス再設計(複合部分+FK支持)/ `is_active` 方針確定
+  - 軽微: `is_cross_channel` 生成列化、updated_atトリガー、上限チェック競合の許容明記、コンポーネントパス修正、実装漏れ注意の追記ほか
