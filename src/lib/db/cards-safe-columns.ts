@@ -94,3 +94,24 @@ export function isMissingCardsBattleColumnError(error: unknown): boolean {
 
   return CARDS_MISSING_IN_PRODUCTION_COLUMNS.some((column) => text.includes(column));
 }
+
+/**
+ * 「まず無指定/全列で試行 → 列欠落エラー検知 → CARDS_SAFE_COLUMNS で再試行」
+ * パターンの共通化 (#685 self-review fix)。src/lib/dashboard-data.ts の7箇所
+ * （getStreamerDataPg 等）で同一の try/catch/retry が反復していたため抽出した。
+ *
+ * attempt(useSafeColumns) は呼び出し側が useSafeColumns の値に応じてクエリの
+ * 列指定（無指定 or CARDS_SAFE_COLUMNS 等への差し替え）を切り替える形で実装する。
+ * isMissingCardsBattleColumnError に該当しないエラーはそのまま再送出し、
+ * 呼び出し側の既存 catch（エラー時の外部挙動パリティ維持）に委ねる。
+ */
+export async function withCardsBattleColumnFallback<T>(
+  attempt: (useSafeColumns: boolean) => Promise<T>
+): Promise<T> {
+  try {
+    return await attempt(false);
+  } catch (error) {
+    if (!isMissingCardsBattleColumnError(error)) throw error;
+    return attempt(true);
+  }
+}

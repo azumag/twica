@@ -30,6 +30,12 @@ import { getDb, type DbHandle } from "@/lib/db/client";
 import { isPgFunctionNotFoundError, isPgMissingColumnError } from "@/lib/db/errors";
 import { isPgReadEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
+// Issue #685: cards テーブルの本番未デプロイ8列（card_number/hp/atk/def/spd/
+// skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバック。
+// src/app/api/cards/route.ts の fetchCardsFromDBPg で確立したパターン（無指定
+// select → 列欠落エラー検知 → CARDS_SAFE_COLUMNS で再試行）を本モジュールにも
+// 適用する。詳細は cards-safe-columns.ts のコメント参照。
+import { CARDS_SAFE_COLUMNS, withCardsBattleColumnFallback } from "@/lib/db/cards-safe-columns";
 // schema のテーブル名（cards / streamers 等）は本モジュールのローカル変数名・
 // 型名と紛らわしいため、Table サフィックスを付けて import する
 // （announcements.ts パイロットと同じ規約）
@@ -85,14 +91,20 @@ interface GachaHistoryWithCard extends GachaHistory {
 async function getStreamerDataPg(
   twitchUserId: string
 ): Promise<{ streamer: Streamer; cards: Card[] } | null> {
-  try {
-    const rows = await withDbRetry(
+  // Issue #685: card: cardsTable のネスト select は cards の全列（本番未デプロイ
+  // 8列を含む）を要求する。まず無指定で試み、列欠落エラーなら CARDS_SAFE_COLUMNS
+  // へ差し替えて再試行する（cards-safe-columns.ts 参照）。
+  async function selectStreamerWithCards(useSafeColumns: boolean) {
+    return withDbRetry(
       async () => {
         // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
         // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
         const { db } = await getDb();
         return db
-          .select({ streamer: streamersTable, card: cardsTable })
+          .select({
+            streamer: streamersTable,
+            card: useSafeColumns ? CARDS_SAFE_COLUMNS : cardsTable,
+          })
           .from(streamersTable)
           .leftJoin(cardsTable, eq(cardsTable.streamer_id, streamersTable.id))
           .where(eq(streamersTable.twitch_user_id, twitchUserId));
@@ -100,6 +112,10 @@ async function getStreamerDataPg(
       "getStreamerData",
       { idempotent: true },
     );
+  }
+
+  try {
+    const rows = await withCardsBattleColumnFallback(selectStreamerWithCards);
 
     if (rows.length === 0) return null;
 
@@ -259,12 +275,14 @@ async function getStreamerDataPaginatedPg(
 
   const offset = (page - 1) * perPage;
   let cards: Card[] = [];
-  try {
-    const rows = await withDbRetry(
+  // Issue #685: 無指定 select() は cards の本番未デプロイ8列を要求する。
+  // 列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
+  async function selectCards(useSafeColumns: boolean) {
+    return withDbRetry(
       async () => {
         const { db } = await getDb();
-        return db
-          .select()
+        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
+        return query
           .from(cardsTable)
           .where(eq(cardsTable.streamer_id, streamerId))
           .orderBy(desc(cardsTable.created_at))
@@ -274,6 +292,9 @@ async function getStreamerDataPaginatedPg(
       "getStreamerDataPaginated(cards)",
       { idempotent: true },
     );
+  }
+  try {
+    const rows = await withCardsBattleColumnFallback(selectCards);
     cards = rows as unknown as Card[];
   } catch (error) {
     // 既存実装は cards エラー時 null → `cards || []` で [] 扱い
@@ -588,21 +609,30 @@ export const getUserCards = cache(async (twitchUserId: string): Promise<CardWith
  * する。card_id は NOT NULL FK のため実データでは常にオブジェクト）。
  * エラー時は既存実装（分割代入で握り潰し → []）と同じ外部挙動。
  */
+// Issue #685: cards: cardsTable のネスト select は cards の本番未デプロイ8列を
+// 要求する。列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
+async function selectRecentGachaHistory(useSafeColumns: boolean) {
+  return withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select({
+          ...getTableColumns(gachaHistoryTable),
+          cards: useSafeColumns ? CARDS_SAFE_COLUMNS : cardsTable,
+        })
+        .from(gachaHistoryTable)
+        .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+        .orderBy(desc(gachaHistoryTable.redeemed_at))
+        .limit(10);
+    },
+    "getRecentGachaHistory",
+    { idempotent: true },
+  );
+}
+
 async function getRecentGachaHistoryPg(): Promise<GachaHistoryWithCard[]> {
   try {
-    const rows = await withDbRetry(
-      async () => {
-        const { db } = await getDb();
-        return db
-          .select({ ...getTableColumns(gachaHistoryTable), cards: cardsTable })
-          .from(gachaHistoryTable)
-          .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
-          .orderBy(desc(gachaHistoryTable.redeemed_at))
-          .limit(10);
-      },
-      "getRecentGachaHistory",
-      { idempotent: true },
-    );
+    const rows = await withCardsBattleColumnFallback(selectRecentGachaHistory);
     // 既存実装と同じく戻り値型へのキャストのみ（値の変換はしない）
     return rows as unknown as GachaHistoryWithCard[];
   } catch (error) {
@@ -716,23 +746,32 @@ async function getGachaHistoryForStreamerPg(
   const whereClause = and(...conditions);
   const offset = (page - 1) * perPage;
 
+  // Issue #685: cards: cardsTable のネスト select は cards の本番未デプロイ8列を
+  // 要求する。count クエリは cards の列を選択しない（leftJoin は行数維持のみ）ため
+  // 対象外。列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
+  async function selectRows(useSafeColumns: boolean) {
+    return withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            ...getTableColumns(gachaHistoryTable),
+            cards: useSafeColumns ? CARDS_SAFE_COLUMNS : cardsTable,
+          })
+          .from(gachaHistoryTable)
+          .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+          .where(whereClause)
+          .orderBy(desc(gachaHistoryTable.redeemed_at))
+          .limit(perPage)
+          .offset(offset);
+      },
+      "getGachaHistoryForStreamer(rows)",
+      { idempotent: true },
+    );
+  }
   try {
     const [rows, total] = await Promise.all([
-      withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          return db
-            .select({ ...getTableColumns(gachaHistoryTable), cards: cardsTable })
-            .from(gachaHistoryTable)
-            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
-            .where(whereClause)
-            .orderBy(desc(gachaHistoryTable.redeemed_at))
-            .limit(perPage)
-            .offset(offset);
-        },
-        "getGachaHistoryForStreamer(rows)",
-        { idempotent: true },
-      ),
+      withCardsBattleColumnFallback(selectRows),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -865,28 +904,34 @@ async function getGachaHistoryForUserPg(
   const { page = 1, perPage = 20 } = filters;
   const offset = (page - 1) * perPage;
 
+  // Issue #685: cards: cardsTable のネスト select は cards の本番未デプロイ8列を
+  // 要求する。count クエリは cards を選択しない（JOINすら行わない）ため対象外。
+  // 列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
+  async function selectRows(useSafeColumns: boolean) {
+    return withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            ...getTableColumns(gachaHistoryTable),
+            cards: useSafeColumns ? CARDS_SAFE_COLUMNS : cardsTable,
+            streamers: { twitch_display_name: streamersTable.twitch_display_name },
+          })
+          .from(gachaHistoryTable)
+          .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+          .leftJoin(streamersTable, eq(gachaHistoryTable.streamer_id, streamersTable.id))
+          .where(eq(gachaHistoryTable.user_twitch_id, userTwitchId))
+          .orderBy(desc(gachaHistoryTable.redeemed_at))
+          .limit(perPage)
+          .offset(offset);
+      },
+      "getGachaHistoryForUser(rows)",
+      { idempotent: true },
+    );
+  }
   try {
     const [rows, total] = await Promise.all([
-      withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          return db
-            .select({
-              ...getTableColumns(gachaHistoryTable),
-              cards: cardsTable,
-              streamers: { twitch_display_name: streamersTable.twitch_display_name },
-            })
-            .from(gachaHistoryTable)
-            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
-            .leftJoin(streamersTable, eq(gachaHistoryTable.streamer_id, streamersTable.id))
-            .where(eq(gachaHistoryTable.user_twitch_id, userTwitchId))
-            .orderBy(desc(gachaHistoryTable.redeemed_at))
-            .limit(perPage)
-            .offset(offset);
-        },
-        "getGachaHistoryForUser(rows)",
-        { idempotent: true },
-      ),
+      withCardsBattleColumnFallback(selectRows),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -2025,25 +2070,33 @@ async function fetchCardOwnerStatsFromUserCards(
  * （挙動パリティ優先。上限撤廃は移行完了後に別途判断する）。
  * エラー時は既存実装（分割代入で握り潰し → cards=null → []）と同じ外部挙動。
  */
+// Issue #685: 無指定 select() は cards の本番未デプロイ8列を要求する。
+// 列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
+async function selectActiveCardsForStreamer(streamerId: string, useSafeColumns: boolean) {
+  return withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
+      return query
+        .from(cardsTable)
+        .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+        // generated column rarity_order によるレアリティ順の安定ソート
+        // （PostgREST 版と同一。asc/desc の NULL 順序は両経路とも PostgreSQL
+        // 既定（ASC=NULLS LAST / DESC=NULLS FIRST）で一致する）
+        .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at))
+        .limit(1000);
+    },
+    "getActiveCardsForStreamer",
+    { idempotent: true },
+  );
+}
+
 async function fetchActiveCardsForStreamerFromDBPg(streamerId: string): Promise<Card[]> {
   const startTotal = Date.now();
   const startQuery = Date.now();
   try {
-    const cards = await withDbRetry(
-      async () => {
-        const { db } = await getDb();
-        return db
-          .select()
-          .from(cardsTable)
-          .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
-          // generated column rarity_order によるレアリティ順の安定ソート
-          // （PostgREST 版と同一。asc/desc の NULL 順序は両経路とも PostgreSQL
-          // 既定（ASC=NULLS LAST / DESC=NULLS FIRST）で一致する）
-          .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at))
-          .limit(1000);
-      },
-      "getActiveCardsForStreamer",
-      { idempotent: true },
+    const cards = await withCardsBattleColumnFallback((useSafeColumns) =>
+      selectActiveCardsForStreamer(streamerId, useSafeColumns)
     );
     logger.info(`[Perf] getActiveCardsForStreamer query: ${Date.now() - startQuery}ms`);
     logger.info(`[Perf] getActiveCardsForStreamer total: ${Date.now() - startTotal}ms`);
@@ -2439,13 +2492,17 @@ async function getUserCardDetailPg(
 ): Promise<CardWithDetails | null> {
   const start = Date.now();
 
-  let card: (Card & { streamers: Streamer }) | null;
-  try {
-    const rows = await withDbRetry(
+  // Issue #685: getTableColumns(cardsTable) は cards の本番未デプロイ8列を
+  // 要求する。列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
+  async function selectCardDetail(useSafeColumns: boolean) {
+    return withDbRetry(
       async () => {
         const { db } = await getDb();
         return db
-          .select({ ...getTableColumns(cardsTable), streamers: streamersTable })
+          .select({
+            ...(useSafeColumns ? CARDS_SAFE_COLUMNS : getTableColumns(cardsTable)),
+            streamers: streamersTable,
+          })
           .from(cardsTable)
           .leftJoin(streamersTable, eq(cardsTable.streamer_id, streamersTable.id))
           // id は主キーのため最大1行（LIMIT 1 は .maybeSingle() と同挙動）
@@ -2455,6 +2512,11 @@ async function getUserCardDetailPg(
       "getUserCardDetail(card)",
       { idempotent: true },
     );
+  }
+
+  let card: (Card & { streamers: Streamer }) | null;
+  try {
+    const rows = await withCardsBattleColumnFallback(selectCardDetail);
     // streamer_id は NOT NULL FK のため streamers は実データで常に非 null。
     // 既存の消費形状（Card & { streamers: Streamer }）へのキャストのみ行う。
     card = (rows[0] ?? null) as unknown as (Card & { streamers: Streamer }) | null;
