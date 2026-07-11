@@ -69,7 +69,7 @@ describe("POST /api/gacha", () => {
     }) as unknown as GachaService);
   });
 
-  // Issue #661: execute_gacha_transaction RPC (migration 00074) now rejects
+  // Issue #661: execute_gacha_transaction RPC (migration 00076) now rejects
   // p_event_id = NULL. This route previously called executeGacha without an
   // eventId at all, which propagated as NULL all the way to the RPC. It must
   // now always supply a non-null, per-request-unique synthetic event id so

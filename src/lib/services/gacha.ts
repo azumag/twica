@@ -496,7 +496,7 @@ export class GachaService {
    *   is_duplicate:true は「初回が実はコミットされていた」ケースを含むが、これは
    *   EventSub 再送と同じ err('Duplicate event') 扱いが正しい(カードは初回実行分が
    *   既に付与済みで、二重付与も未付与も起きない)。
-   * - Issue #661 (migration 00074) 以降、RPC 自体が p_event_id=NULL を
+   * - Issue #661 (migration 00076) 以降、RPC 自体が p_event_id=NULL を
    *   RAISE EXCEPTION で拒否するため、eventId=null での呼び出しは(このメソッドに
    *   到達する前段の呼び出し元がすべて非 null を渡す設計であることも合わせ、
    *   下記参照)構造的に発生しない。手動ドローAPI(src/app/api/gacha/route.ts)は
