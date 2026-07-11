@@ -77,10 +77,19 @@ export async function getTosAcceptanceRow(twitchUserId: string): Promise<TosAcce
     } catch (error) {
       // pg 直結（postgres.js/Drizzle）はクエリエラーを throw するため、ここで
       // 捕捉して postgrest の { data: null, error } と同じ外形へ写像する。
-      // ヘルパー内での追加ログはしない（既存粒度の維持: postgrest 経路もヘルパー
-      // 相当箇所ではログせず route.ts の GET だけがログする。pg 側の失敗自体は
-      // withDbRetry が最終 throw 直前に [db:pg] タグ付き warn を必ず出すため、
-      // 監視手順（wrangler tail での [db:pg] 検索）から漏れることもない）。
+      // ログを出す理由（チームレビュー SRE 指摘）: error を無視する呼び出し元
+      // （tos/page.tsx）経由の pg 障害は、ここでログしないと withDbRetry の
+      // console warn（errors テーブル→GitHub Issue 自動起票の対象外）しか痕跡が
+      // 残らず、同ファイルの他2ヘルパー（logger.error 済み）と観測性が非対称に
+      // なる。トレードオフ: error を検査する呼び出し元（route.ts GET）経由では
+      // route 側の既存ログと合わせて同一障害が errors テーブルに2行記録されるが、
+      // 二重起票のノイズより page 経路の可視性を優先する（クロスレビューで
+      // セキュリティ・QA 両視点の異議なしを確認済み）。この catch は
+      // DB_DRIVER=pg-read/pg 時のみ実行されるため、フラグ未設定時のログは不変。
+      logger.error('Failed to fetch tos_accepted_at (pg), mapping to { row: null, error }', {
+        twitchUserId,
+        error,
+      })
       return {
         row: null,
         error: { message: error instanceof Error ? error.message : String(error) },

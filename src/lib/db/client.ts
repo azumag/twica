@@ -90,6 +90,12 @@ let nodeSingletonHandle: DbHandle | null = null
  *
  * キャプチャは番号参照（1=date, 2=time, 3=fraction, 4=offset）。named capture
  * groups（ES2018 構文）は tsconfig の target: ES2017 で TS1503 になるため使えない。
+ *
+ * 前提: 接続先 PostgreSQL の DateStyle が既定の ISO であること（Supabase の既定。
+ * 万一 DateStyle が変更されると全タイムスタンプがパターン不一致→無変換パススルー
+ * となり、Safari での日付パース問題が再発する。その場合もエラーにはならないため、
+ * preview 検証チェックリスト（docs/db-driver-migration.md）の ISO 8601 実機確認が
+ * 検出手段になる）。
  */
 const PG_TIMESTAMP_PATTERN =
   /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d{1,6})?([+-]\d{2}(?::\d{2})?)?$/

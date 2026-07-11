@@ -180,6 +180,10 @@ describe('user-data.ts: postgrest / pg 経路の形状互換 (#711)', () => {
       // 呼び出し元が error を検査する場合（route GET）は message を使え、
       // 無視する場合（tos/page.tsx）は row=null → 「行なし」扱い（クセにより true）
       expect(result.row?.tos_accepted_at !== null).toBe(true)
+      // pg 例外は errors テーブル→Issue 起票に届く logger.error で記録される
+      // （getTwitchSubRow / getStreamerIdByTwitchUserId のテストと対称。
+      //  tos/page.tsx 経由の pg 障害の可視性を固定する）
+      expect(logger.error).toHaveBeenCalled()
     })
 
     it('pgクエリが正しい列・where・limit(1)で呼び出される', async () => {

@@ -163,6 +163,22 @@ env 変更はビルド不要で秒単位で反映される（Cloudflare では�
   - Supabase の max-rows 設定値（API 設定）が既定 1000 のままか確認すること。
     変更している場合は `src/lib/dashboard-data.ts` の明示 LIMIT 群
     （コメントで max-rows を参照している箇所）を実値に合わせる
+  - （#690/#711 で pg 化したルートの確認。各項目 DB_DRIVER 未設定と pg-read/pg の
+    両方で実施し一致を確認する）:
+    - TOS 同意フロー: 未同意アカウントでログイン → `/tos` で同意ボタンが表示
+      → 押下 → `/dashboard` へ遷移 → `/tos` 再訪でボタンが消えていること。
+      POST（同意の書き込み）は `DB_DRIVER=pg` でのみ pg 経路になる点に注意
+      （`pg-read` では POST は postgrest のまま）
+    - `/dashboard/account`: Twitch サブスク状態表示が両経路で同一であること
+      （可能ならサブスクあり/なし両方のアカウントで）
+    - `/dashboard/history`: 配信者アカウントで履歴タブが表示され日時表示が一致する
+      こと。非配信者登録アカウントでページがクラッシュせず非表示になること
+      （streamers 解決の null マスク経路の確認）
+    - 報酬設定画面（channel-point-bootstrap diagnostics）: 追加報酬リストの表示順
+      （created_at 昇順）・ドロー数・レイド限定バッジが一致すること
+      （追加報酬 0 件のアカウントでも確認）
+    - 報酬設定画面から報酬追加を1回実施し EventSub 登録が成功すること
+      （eventsub/subscribe の streamers 解決経路）
 
 ## スコープ外 / 未実施事項
 
