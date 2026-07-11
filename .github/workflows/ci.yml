@@ -22,6 +22,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Typecheck
+        # #588: 型エラーの検出漏れ防止のため tsc --noEmit をゲート化する。
+        # 既に依存インストール済みの test job に同居させ、新規 job による
+        # 追加の npm ci / セットアップコストを避ける。
+        run: npm run typecheck
+
       - name: Unit tests
         run: npm run test:unit
 

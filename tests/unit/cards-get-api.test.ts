@@ -69,7 +69,7 @@ function setupCardsMock(options: {
   }
   // PostgREST returns result via implicit await (thenable)
   // PostgRESTは暗黙のawait（thenable）で結果を返す
-  ;(cardsQuery as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
+  ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
     resolve(cardsResponse)
     return cardsQuery
   }
@@ -77,10 +77,8 @@ function setupCardsMock(options: {
   // Issue #542: 発行済み枚数集計用のuser_cardsクエリビルダー（暗黙のawaitに対応）
   // user_cards query builder for the issued_count aggregation (implicit await)
   const userCardsQuery = createMockQueryBuilder()
-  // Note: 既存の cardsQuery 等は `as Record<string, unknown>` で直接キャストしているが、
-  // MockQueryBuilder<unknown> と Record<string, unknown> は型として十分重ならず
-  // TS2352になる（tsc baseline比較のため、新規コードではここだけ `as unknown` を
-  // 経由してこのエラーパターンを増やさないようにする）。
+  // MockQueryBuilder<unknown> と Record<string, unknown> は型として十分重ならないため
+  // 直接キャストは TS2352 になる。`unknown` を経由して安全にキャストする。
   ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
     resolve({ data: options.userCards ?? [], error: options.userCardsError ?? null })
     return userCardsQuery
@@ -97,7 +95,9 @@ function setupCardsMock(options: {
     return createMockQueryBuilder()
   })
 
-  mockGetSupabaseAdmin.mockReturnValue({ from } as ReturnType<typeof getSupabaseAdmin>)
+  // モックの `{ from }` は SupabaseClient の一部プロパティしか持たないため、
+  // `unknown` を経由してキャストする(既存テストで確立されたパターンに合わせる)。
+  mockGetSupabaseAdmin.mockReturnValue({ from } as unknown as ReturnType<typeof getSupabaseAdmin>)
 
   return { streamerQuery, cardsQuery, userCardsQuery, from }
 }
@@ -113,13 +113,13 @@ function setupCardsMockWithRetry(options: {
   )
 
   const firstCardsQuery = createMockQueryBuilder()
-  ;(firstCardsQuery as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
+  ;(firstCardsQuery as unknown as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
     resolve({ data: null, error: options.firstCardsError, count: null })
     return firstCardsQuery
   }
 
   const retryCardsQuery = createMockQueryBuilder()
-  ;(retryCardsQuery as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
+  ;(retryCardsQuery as unknown as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
     resolve({
       data: options.retryCards ?? [],
       error: null,
@@ -140,7 +140,7 @@ function setupCardsMockWithRetry(options: {
 
   mockGetSupabaseAdmin.mockReturnValue({
     from,
-  } as ReturnType<typeof getSupabaseAdmin>)
+  } as unknown as ReturnType<typeof getSupabaseAdmin>)
 
   return { firstCardsQuery, retryCardsQuery }
 }
@@ -154,12 +154,16 @@ function createRequest(params: Record<string, string> = {}): NextRequest {
 describe('GET /api/cards', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // `issuedAt` は SessionPayload に存在しないフィールド(本番コードでも未参照)のため削除し、
+    // 他のテストと同じ形で必須フィールドを揃える。
     mockGetSession.mockResolvedValue({
       twitchUserId: 'user123',
       twitchUsername: 'testuser',
       twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/avatar.png',
       broadcasterType: 'affiliate',
-      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      version: 1,
     })
     mockCheckRateLimit.mockResolvedValue({
       success: true,
