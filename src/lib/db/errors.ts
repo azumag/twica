@@ -50,3 +50,13 @@ export function isPgFunctionNotFoundError(e: unknown): boolean {
 export function isPgMissingTableError(e: unknown): boolean {
   return getSqlState(e) === '42P01'
 }
+
+/**
+ * SQLSTATE 23505 unique_violation: 一意制約違反。
+ * PostgREST 経路の { error: { code: '23505' } } 判定に相当
+ * （dashboard-data.ts の insertCompletionRecord 等、重複挿入を無視する
+ * 既存パターンを pg 直結でも再現するために使う）。
+ */
+export function isPgUniqueViolationError(e: unknown): boolean {
+  return getSqlState(e) === '23505'
+}

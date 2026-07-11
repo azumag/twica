@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { desc, eq } from 'drizzle-orm'
-import { getUnreadAnnouncements } from '@/lib/announcements'
+import { getUnreadAnnouncements, getAllAnnouncements } from '@/lib/announcements'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
 import {
@@ -40,36 +40,44 @@ const ANNOUNCEMENT_ROWS = [
     title: '新機能のお知らせ',
     body: 'ガチャ演出を刷新しました',
     severity: 'info',
+    // #663 Category A: getAllAnnouncements の select 対象列（is_published）。
+    // is_published(既読/未読バナー側)selectには含まれないが、fixture 行に持たせても
+    // getUnreadAnnouncementsPg 側は select(fields) の projection でキーを絞るため無害。
+    is_published: true,
     published_at: '2020-01-01T00:00:00.000+00:00',
     expires_at: '2999-01-01T00:00:00.000+00:00',
     created_at: '2020-01-02T00:00:00.000+00:00',
   },
   {
-    // 既読のため除外される
+    // 既読のため未読バナーからは除外される（履歴では is_read: true で表示対象）
     id: 'a2',
     title: 'メンテナンスのお知らせ',
     body: '深夜にメンテナンスを行います',
     severity: 'warning',
+    is_published: true,
     published_at: '2020-01-01T00:00:00.000+00:00',
     expires_at: null,
     created_at: '2020-01-01T00:00:00.000+00:00',
   },
   {
-    // 期限切れのため除外される
+    // 期限切れ: 未読バナーからは除外されるが、履歴（getAllAnnouncements）は
+    // hasAnnouncementBeenPublishedAt を使い expires_at を見ないため表示対象になる
     id: 'a3',
     title: '過去のお知らせ',
     body: '終了済みキャンペーン',
     severity: 'info',
+    is_published: true,
     published_at: '2020-01-01T00:00:00.000+00:00',
     expires_at: '2020-02-01T00:00:00.000+00:00',
     created_at: '2019-12-31T00:00:00.000+00:00',
   },
   {
-    // 公開予定（未来）のため除外される
+    // 公開予定（未来）のため両方から除外される
     id: 'a4',
     title: '未来のお知らせ',
     body: 'まだ見えないはず',
     severity: 'critical',
+    is_published: true,
     published_at: '2999-01-01T00:00:00.000+00:00',
     expires_at: null,
     created_at: '2019-12-30T00:00:00.000+00:00',
@@ -80,14 +88,19 @@ const ANNOUNCEMENT_ROWS = [
     title: '公開日時なしのお知らせ',
     body: 'published_at は null',
     severity: 'info',
+    is_published: true,
     published_at: null,
     expires_at: null,
     created_at: '2019-12-29T00:00:00.000+00:00',
   },
 ]
 
-/** announcement_reads テーブルの行（a2 のみ既読） */
-const READ_ROWS = [{ announcement_id: 'a2' }]
+/**
+ * announcement_reads テーブルの行（a2 のみ既読）。
+ * read_at は getAllAnnouncements（履歴ページ）のみが参照する列。
+ * getUnreadAnnouncementsPg は announcement_id のみ select するため無害。
+ */
+const READ_ROWS = [{ announcement_id: 'a2', read_at: '2020-01-05T00:00:00.000+00:00' }]
 
 /** 両経路が返すべき期待値（a1 と a5 が未読・表示対象） */
 const EXPECTED = [
@@ -106,6 +119,63 @@ const EXPECTED = [
     severity: 'info',
     published_at: null,
     created_at: '2019-12-29T00:00:00.000+00:00',
+  },
+]
+
+/**
+ * getAllAnnouncements（履歴ページ）が両経路で返すべき期待値。
+ * a4（未来公開）のみ除外。a3（期限切れ）は getUnreadAnnouncements と異なり
+ * 含まれる点に注意（hasAnnouncementBeenPublishedAt は expires_at を見ない）。
+ * created_at 降順: a1 > a2 > a3 > a5。
+ */
+const EXPECTED_ALL = [
+  {
+    id: 'a1',
+    title: '新機能のお知らせ',
+    body: 'ガチャ演出を刷新しました',
+    severity: 'info',
+    is_published: true,
+    published_at: '2020-01-01T00:00:00.000+00:00',
+    expires_at: '2999-01-01T00:00:00.000+00:00',
+    created_at: '2020-01-02T00:00:00.000+00:00',
+    is_read: false,
+    read_at: null,
+  },
+  {
+    id: 'a2',
+    title: 'メンテナンスのお知らせ',
+    body: '深夜にメンテナンスを行います',
+    severity: 'warning',
+    is_published: true,
+    published_at: '2020-01-01T00:00:00.000+00:00',
+    expires_at: null,
+    created_at: '2020-01-01T00:00:00.000+00:00',
+    is_read: true,
+    read_at: '2020-01-05T00:00:00.000+00:00',
+  },
+  {
+    id: 'a3',
+    title: '過去のお知らせ',
+    body: '終了済みキャンペーン',
+    severity: 'info',
+    is_published: true,
+    published_at: '2020-01-01T00:00:00.000+00:00',
+    expires_at: '2020-02-01T00:00:00.000+00:00',
+    created_at: '2019-12-31T00:00:00.000+00:00',
+    is_read: false,
+    read_at: null,
+  },
+  {
+    id: 'a5',
+    title: '公開日時なしのお知らせ',
+    body: 'published_at は null',
+    severity: 'info',
+    is_published: true,
+    published_at: null,
+    expires_at: null,
+    created_at: '2019-12-29T00:00:00.000+00:00',
+    is_read: false,
+    read_at: null,
   },
 ]
 
@@ -289,5 +359,136 @@ describe('getUnreadAnnouncements: postgrest / pg 経路の形状互換 (#570)', 
 
     expect(result).toEqual(EXPECTED)
     expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * #663 Category A (2026-07-11): getAllAnnouncements（履歴ページ）は
+ * isPgReadEnabled() 分岐が漏れていた（姉妹関数 getUnreadAnnouncements は
+ * #570 パイロットで既に移行済み）。上と同じ形状互換方針で pg 直結分岐を検証する。
+ */
+describe('getAllAnnouncements: postgrest / pg 経路の形状互換 (#663 Category A)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  async function runPostgrestPathAll() {
+    vi.stubEnv('DB_DRIVER', undefined)
+    const client = createSupabaseClientMock()
+    vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+    const result = await getAllAnnouncements('viewer-1')
+    return { result, client }
+  }
+
+  async function runPgPathAll() {
+    vi.stubEnv('DB_DRIVER', 'pg-read')
+    const db = createDrizzleDbMock()
+    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
+    const result = await getAllAnnouncements('viewer-1')
+    return { result, db }
+  }
+
+  it('同一 fixture で両経路の戻り値が deepEqual になる（期限切れも含む・is_read/read_at 付き）', async () => {
+    const { result: postgrestResult, client } = await runPostgrestPathAll()
+    const { result: pgResult, db } = await runPgPathAll()
+
+    expect(client.from).toHaveBeenCalledWith('announcements')
+    expect(client.from).toHaveBeenCalledWith('announcement_reads')
+    expect(db.select).toHaveBeenCalledTimes(2)
+
+    expect(pgResult).toEqual(postgrestResult)
+    expect(postgrestResult).toEqual(EXPECTED_ALL)
+  })
+
+  it('pgクエリが announcements への where(is_published=true)・orderBy(created_at desc) を正しい実引数で呼び出す', async () => {
+    const { db } = await runPgPathAll()
+
+    expect(db.calls).toHaveLength(2)
+    expect(db.calls[0].table).toBe(announcementsTable)
+    expect(db.calls[0].whereCondition).toEqual(eq(announcementsTable.is_published, true))
+    expect(db.calls[0].orderByCondition).toEqual(desc(announcementsTable.created_at))
+
+    expect(db.calls[1].table).toBe(announcementReadsTable)
+    expect(db.calls[1].whereCondition).toEqual(eq(announcementReadsTable.twitch_user_id, 'viewer-1'))
+  })
+
+  it('postgrest 経路（フラグ未設定）では getDb が一切呼ばれない（挙動不変の検証）', async () => {
+    await runPostgrestPathAll()
+    expect(getDb).not.toHaveBeenCalled()
+  })
+
+  it('pg 経路では supabase-js クライアントが一切呼ばれない', async () => {
+    const { result, client } = await (async () => {
+      vi.stubEnv('DB_DRIVER', 'pg-read')
+      const supabaseClient = createSupabaseClientMock()
+      vi.mocked(getSupabaseAdmin).mockReturnValue(supabaseClient as any)
+      const db = createDrizzleDbMock()
+      vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
+      const res = await getAllAnnouncements('viewer-1')
+      return { result: res, client: supabaseClient }
+    })()
+
+    expect(result).toEqual(EXPECTED_ALL)
+    expect(client.from).not.toHaveBeenCalled()
+  })
+
+  // postgrest 経路の非対称フォールバック（announcements 失敗→[]、reads 失敗→全件既読扱い）
+  // を pg 経路でも再現できているかは、実装の中で最もバグを埋め込みやすい箇所
+  // （getUnreadAnnouncementsPg は両フェーズとも一律 [] を返すのに対し、こちらは
+  // reads フェーズだけ別のフォールバックを持つ非対称構造のため）。
+  it('reads クエリが失敗した場合、pg 経路は全お知らせを既読扱い（read_at: null）で返す', async () => {
+    vi.stubEnv('DB_DRIVER', 'pg-read')
+    const db = createDrizzleDbMock()
+    // 1回目の select (announcements) は正常応答、2回目の select (reads) は throw する
+    // ようラップする。実装は announcements → reads の順で呼ぶことに依存しているため、
+    // 呼び出し順の回帰があればこのテストが意味をなさなくなる（下の calls 検証で担保）。
+    let callCount = 0
+    const originalSelect = db.select
+    db.select = vi.fn((fields: Record<string, unknown>) => {
+      callCount += 1
+      if (callCount === 2) {
+        return {
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              then: (onFulfilled: any, onRejected: any) =>
+                Promise.reject(new Error('connection lost')).then(onFulfilled, onRejected),
+            })),
+          })),
+        }
+      }
+      return (originalSelect as any)(fields)
+    }) as any
+    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
+
+    const result = await getAllAnnouncements('viewer-1')
+
+    expect(callCount).toBe(2)
+    expect(result).toEqual(
+      EXPECTED_ALL.map((a) => ({ ...a, is_read: true, read_at: null }))
+    )
+  })
+
+  it('announcements クエリが失敗した場合、pg 経路は空配列を返す', async () => {
+    vi.stubEnv('DB_DRIVER', 'pg-read')
+    const db = createDrizzleDbMock()
+    db.select = vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(() => ({
+            then: (onFulfilled: any, onRejected: any) =>
+              Promise.reject(new Error('connection lost')).then(onFulfilled, onRejected),
+          })),
+        })),
+      })),
+    })) as any
+    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
+
+    const result = await getAllAnnouncements('viewer-1')
+
+    expect(result).toEqual([])
   })
 })

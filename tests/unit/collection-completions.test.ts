@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { reportError } from '@/lib/sentry/error-handler';
 import { logger } from '@/lib/logger';
+import { getDb } from '@/lib/db/client';
+import { collectionCompletions as collectionCompletionsTable } from '@/lib/db/schema';
 
 // Supabase admin モック
 const mockInsert = vi.fn();
@@ -147,6 +149,140 @@ describe('collection-completions', () => {
       await expect(recordPackCompletion('user1', 'streamer1', 3, 'weapons')).resolves.toBeUndefined();
       expect(logger.error).toHaveBeenCalled();
       expect(reportError).toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * #663 Category A (2026-07-11): insertCompletionRecord は isPgWriteEnabled()
+   * 分岐が漏れていた（read 側の getCollectionCompletionsPg は #571 で既に移行済み）。
+   * postgrest 経路の上記テストと対になるシナリオを pg 直結（DB_DRIVER=pg）でも検証する。
+   */
+  describe('insertCompletionRecord: pg 直結分岐 (#663 Category A)', () => {
+    interface PgInsertResponse {
+      error?: { code: string };
+    }
+
+    function createDrizzleInsertMock(responses: PgInsertResponse[] = [{}]) {
+      let callIndex = 0;
+      const calls: Array<{ table: unknown; values?: Record<string, unknown> }> = [];
+      const db = {
+        insert: vi.fn((table: unknown) => {
+          const response = responses[Math.min(callIndex, responses.length - 1)];
+          callIndex += 1;
+          const call: { table: unknown; values?: Record<string, unknown> } = { table };
+          calls.push(call);
+          const resolve = () =>
+            response.error ? Promise.reject(response.error) : Promise.resolve([]);
+          const builder: any = {
+            values: vi.fn((values: Record<string, unknown>) => {
+              call.values = values;
+              return builder;
+            }),
+            then: (onFulfilled: any, onRejected: any) => resolve().then(onFulfilled, onRejected),
+          };
+          return builder;
+        }),
+      };
+      return { db, calls };
+    }
+
+    beforeEach(() => {
+      vi.stubEnv('DB_DRIVER', 'pg');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('recordCollectionCompletion は collection_name を含まない values で insert する', async () => {
+      const { db, calls } = createDrizzleInsertMock();
+      vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any);
+      const { recordCollectionCompletion } = await import('@/lib/dashboard-data');
+
+      await recordCollectionCompletion('user1', 'streamer1', 5);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].table).toBe(collectionCompletionsTable);
+      expect(calls[0].values).toEqual({
+        twitch_user_id: 'user1',
+        streamer_id: 'streamer1',
+        total_cards: 5,
+      });
+      expect('collection_name' in (calls[0].values ?? {})).toBe(false);
+    });
+
+    it('recordPackCompletion は collection_name (パックキー) を含めて insert する', async () => {
+      const { db, calls } = createDrizzleInsertMock();
+      vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any);
+      const { recordPackCompletion } = await import('@/lib/dashboard-data');
+
+      await recordPackCompletion('user1', 'streamer1', 3, 'weapons');
+
+      expect(calls[0].values).toEqual({
+        twitch_user_id: 'user1',
+        streamer_id: 'streamer1',
+        total_cards: 3,
+        collection_name: 'weapons',
+      });
+    });
+
+    it('一意制約違反(SQLSTATE 23505)は既達成の正常系として黙って成功扱いにする', async () => {
+      const { db } = createDrizzleInsertMock([{ error: { code: '23505' } }]);
+      vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any);
+      const { recordCollectionCompletion } = await import('@/lib/dashboard-data');
+
+      await expect(recordCollectionCompletion('user1', 'streamer1', 5)).resolves.toBeUndefined();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(reportError).not.toHaveBeenCalled();
+    });
+
+    it('collection_name 列未デプロイ(SQLSTATE 42703)は静かにスキップする(デプロイ窓)', async () => {
+      const { db } = createDrizzleInsertMock([{ error: { code: '42703' } }]);
+      vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any);
+      const { recordPackCompletion } = await import('@/lib/dashboard-data');
+
+      await expect(
+        recordPackCompletion('user1', 'streamer1', 3, 'weapons')
+      ).resolves.toBeUndefined();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(reportError).not.toHaveBeenCalled();
+    });
+
+    it('42703以外のエラーは logger.error + reportError する', async () => {
+      const { db } = createDrizzleInsertMock([{ error: { code: '42501' } }]);
+      vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any);
+      const { recordCollectionCompletion } = await import('@/lib/dashboard-data');
+
+      await expect(recordCollectionCompletion('user1', 'streamer1', 5)).resolves.toBeUndefined();
+      expect(logger.error).toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalled();
+    });
+
+    it('予期しない例外時にもthrowしない（fire-and-forget）', async () => {
+      const db = {
+        insert: vi.fn(() => {
+          throw new Error('network error');
+        }),
+      };
+      vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any);
+      const { recordCollectionCompletion } = await import('@/lib/dashboard-data');
+
+      await expect(recordCollectionCompletion('user1', 'streamer1', 5)).resolves.toBeUndefined();
+    });
+
+    it('postgrest 経路（DB_DRIVER=pg-read）では getDb ではなく supabase-js insert が使われる', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg-read');
+      mockInsert.mockResolvedValue({ error: null });
+      const { recordCollectionCompletion } = await import('@/lib/dashboard-data');
+
+      await recordCollectionCompletion('user1', 'streamer1', 5);
+
+      expect(mockInsert).toHaveBeenCalledWith({
+        twitch_user_id: 'user1',
+        streamer_id: 'streamer1',
+        total_cards: 5,
+      });
+      expect(getDb).not.toHaveBeenCalled();
     });
   });
 
