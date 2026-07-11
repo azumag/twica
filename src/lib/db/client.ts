@@ -84,9 +84,12 @@ let nodeSingletonHandle: DbHandle | null = null
  *   - その他パターン不一致の文字列全般（既に ISO 8601 形式の文字列を含む。
  *     ISO 8601 は日付・時刻区切りが 'T' であり、この正規表現が要求する
  *     半角スペース区切りに一致しないため自然にパススルーされる＝冪等）
+ *
+ * キャプチャは番号参照（1=date, 2=time, 3=fraction, 4=offset）。named capture
+ * groups（ES2018 構文）は tsconfig の target: ES2017 で TS1503 になるため使えない。
  */
 const PG_TIMESTAMP_PATTERN =
-  /^(?<date>\d{4}-\d{2}-\d{2}) (?<time>\d{2}:\d{2}:\d{2})(?<fraction>\.\d{1,6})?(?<offset>[+-]\d{2}(?::\d{2})?)?$/
+  /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d{1,6})?([+-]\d{2}(?::\d{2})?)?$/
 
 /**
  * PG テキスト形式の timestamp/timestamptz 文字列を ISO 8601（PostgREST が返す
@@ -111,11 +114,12 @@ const PG_TIMESTAMP_PATTERN =
  */
 export function normalizePgTimestampString(value: string): string {
   const match = PG_TIMESTAMP_PATTERN.exec(value)
-  if (!match?.groups) {
+  if (!match) {
     return value
   }
 
-  const { date, time, fraction, offset } = match.groups
+  // 番号キャプチャ: [1]=date, [2]=time, [3]=fraction（省略時 undefined）, [4]=offset（同）
+  const [, date, time, fraction, offset] = match
   const isoBody = `${date}T${time}${fraction ?? ''}`
 
   if (offset === undefined) {
