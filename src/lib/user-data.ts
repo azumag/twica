@@ -1,9 +1,9 @@
 /**
  * users / streamers テーブルの単純クエリ用データアクセスヘルパー (#711)
  *
- * tos/accept API ルートと複数の Server Component（/tos, /dashboard/account,
- * /dashboard/history）から呼ばれる、cards に依存しない単純な単一行読み取りを
- * 集約する。#570 パイロット（src/lib/announcements.ts）・#572（token-manager.ts）と
+ * tos/accept API ルート・eventsub/subscribe API ルート（POST、#690 の重複統合）・
+ * 複数の Server Component（/tos, /dashboard/account, /dashboard/history）から
+ * 呼ばれる、cards に依存しない単純な単一行読み取りを集約する。#570 パイロット（src/lib/announcements.ts）・#572（token-manager.ts）と
  * 同じ分岐パターン: isPgReadEnabled() で supabase-js 実装 / Drizzle 実装を切り替え、
  * DB_DRIVER 未設定時（既定 'postgrest'）はこのモジュールの pg 経路は一切実行されず、
  * 挙動は完全に従来どおりになる。
