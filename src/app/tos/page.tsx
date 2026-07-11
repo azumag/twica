@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
 import PublicFooter from "@/components/PublicFooter";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { getTosAcceptanceRow } from "@/lib/user-data";
 import TosAcceptButton from "@/components/TosAcceptButton";
 
 export const metadata: Metadata = {
@@ -19,19 +19,30 @@ export default async function TosPage() {
 
   // ログインユーザーの場合、TOS同意状態を確認
   // Check TOS acceptance status for logged-in users
+  //
+  // #711: users.tos_accepted_at の読み取りは user-data.ts の
+  // getTosAcceptanceRow に委譲（isPgReadEnabled() による経路分岐は関数内部で
+  // 行われるため、このページはフラグを意識しない）。
   let hasAccepted = false;
   if (session) {
     try {
-      const supabaseAdmin = getSupabaseAdmin();
-      const { data: userData } = await supabaseAdmin
-        .from('users')
-        .select('tos_accepted_at')
-        .eq('twitch_user_id', session.twitchUserId)
-        .maybeSingle();
+      // 既存実装（`const { data: userData } = ...maybeSingle()`）と同じく error は
+      // 意図的に無視する。getTosAcceptanceRow は throw せず { row, error } を返す
+      // 契約のため、クエリエラー時は row=null → 下の判定が
+      // `undefined !== null` → true となり、旧 postgrest 経路の
+      // 「クエリエラー時も hasAccepted=true」という外部挙動がそのまま維持される
+      // （src/lib/user-data.ts の TosAcceptanceRowResult コメント参照）。
+      const { row: userData } = await getTosAcceptanceRow(session.twitchUserId);
 
+      // 既存実装のクセ（修正は別Issue）: 行が存在しない場合 userData は null になり
+      // `undefined !== null` → true と評価されるため、未登録ユーザーでも
+      // hasAccepted: true 扱いになる。Phase 1 は挙動パリティ維持が最優先のため、
+      // pg 経路でも忠実に再現する。
       hasAccepted = userData?.tos_accepted_at !== null;
     } catch {
-      // エラーの場合は未同意として扱う
+      // エラーの場合は未同意として扱う（既存どおり「本当に throw された場合」
+      // ——getSupabaseAdmin() の設定不備等——のみここに到達する。クエリエラーは
+      // 上記のとおり row=null として無視され、この catch には来ない）
       // Treat as not accepted on error
       hasAccepted = false;
     }
