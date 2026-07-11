@@ -73,10 +73,14 @@ interface GachaHistoryWithCard extends GachaHistory {
  *   握り潰して null 扱いにしているため、pg 版も catch して null を返す
  *   （外部挙動のパリティ。ログだけは切替検証のため残す）。
  *
- * 日付の既知の表現差（パイロット announcements.ts と同様）: pg 直結は PG テキスト
- * 形式（'2026-03-10 12:00:00.123456+00'）、PostgREST は ISO 8601 を返す。本モジュール
- * の消費側はすべて new Date() / Date.parse 経由で日付を扱うため影響はない
- * （文字列を直接パースする消費側を追加する場合は注意）。他の xxxPg も同様。
+ * 日付の表現形式（#688 で更新。パイロット announcements.ts と同様）: pg 直結・
+ * PostgREST いずれも ISO 8601 を返す。pg 直結は元々 PG テキスト形式
+ * （'2026-03-10 12:00:00.123456+00'）で返していたが、src/lib/db/client.ts の
+ * installIsoTimestampParsers() が接続確立時に ISO 8601 へ正規化するパーサへ
+ * 差し替えている。本モジュールの消費側はすべて new Date() / Date.parse 経由で
+ * 日付を扱うため正規化前後どちらの形式でも影響はなかったが、正規化後は文字列
+ * 表現も PostgREST 経路と一致する（文字列を直接パースする消費側を追加する場合は
+ * 表現が一致していることを前提にしてよい）。他の xxxPg も同様。
  */
 async function getStreamerDataPg(
   twitchUserId: string
@@ -1007,7 +1011,8 @@ function normalizeUniqueCardIds(cardIds: unknown): string[] {
  * - 戻り値は PostgREST の { data, error } 形状にクエリ単位で正規化する。片方の
  *   失敗がもう片方を巻き込まない点（分割代入で独立に消費される）も既存と同じ。
  *
- * 日付は pg 直結だと PG テキスト形式になる既知の表現差があるが、消費側
+ * 日付は pg 直結だと src/lib/db/client.ts の installIsoTimestampParsers() により
+ * ISO 8601 に正規化される（#688。正規化前は PG テキスト形式だった）ため、消費側
  * （lastDrawAt の文字列比較・表示）への影響は #571 の他関数と同じ扱い。
  */
 async function fetchGachaUsersFallbackRowsPg(streamerId: string): Promise<

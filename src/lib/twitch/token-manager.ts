@@ -14,11 +14,13 @@ import { logger } from '@/lib/logger';
 //   （pg のときのみ切替。読み書きで別経路が混ざると障害切り分けが困難になるため、
 //   混在関数は関数全体を書き込みフラグで分岐する）
 //
-// 日付の既知の表現差（announcements.ts / dashboard-data.ts パイロットと同様）:
-// pg 直結の timestamptz は PG テキスト形式（'2026-03-10 12:00:00.123456+00'）、
-// PostgREST は ISO 8601 を返す。本モジュールの日付消費はすべて new Date() 経由の
-// 期限判定のみで（日付文字列を戻り値として返す関数は無い）、V8 は両形式を同一
-// 時刻に解釈するため影響はない。
+// 日付の表現形式（#688 で更新。announcements.ts / dashboard-data.ts パイロットと同様）:
+// pg 直結の timestamptz は src/lib/db/client.ts の installIsoTimestampParsers()
+// により接続確立時に ISO 8601 へ正規化されるため、PostgREST 経路と表現形式が
+// 一致する（正規化前は PG テキスト形式 '2026-03-10 12:00:00.123456+00' だった）。
+// 本モジュールの日付消費はすべて new Date() 経由の期限判定のみで（日付文字列を
+// 戻り値として返す関数は無い）、正規化前後どちらの形式でも V8 は同一時刻に解釈
+// するため実害はなかったが、正規化後は文字列表現も PostgREST 経路と一致する。
 // -----------------------------------------------------------------------------
 import { and, asc, eq } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';

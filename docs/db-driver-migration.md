@@ -118,12 +118,30 @@ env 変更はビルド不要で秒単位で反映される（Cloudflare では�
   HTTP チェックと supabase-js 経由のスキーマチェックのみ）ため、切替直後は
   `wrangler tail` での手動監視を最低30分継続すること。
 - ユニットテスト（parity テスト群）は実 DB・実ドライバを経由しないモック比較であり、
-  両経路のモックに同じ誤った前提を書くと検出できない（例: 日付文字列の形式差
-  — pg 直結の PG テキスト形式 vs PostgREST の ISO 8601 — はモックでは再現して
-  いない）。preview での実機確認が実 DB に対する唯一の検証機会である。
+  両経路のモックに同じ誤った前提を書くと検出できない（`getDb()` 自体をモックする
+  parity テストは `src/lib/db/client.ts` の `installIsoTimestampParsers()` を
+  一切経由しないため、日付文字列の正規化ロジックそのものはこれらのテストでは
+  検証できない）。正規化ロジック自体は `tests/unit/db-client-timestamp-normalization.test.ts`
+  でユニットテスト済みだが、実 DB を経由した実機確認は preview 検証が唯一の機会。
+- **Issue #688（pg 直結タイムスタンプの ISO 8601 正規化）関連チェックリスト**
+  （リポジトリオーナー作業。DB_DRIVER=pg-read/pg を有効化する preview で実施）:
+  - [ ] pg 経路のレスポンス（お知らせバナー・ダッシュボード各タブ・overlay
+    イベント等、timestamp/timestamptz 列を含むすべてのエンドポイント）で
+    日時が ISO 8601（例 `2026-03-10T12:00:00.123456+00:00`、T区切り）で
+    返っていることを確認する（`curl` や DevTools の Network タブで応答 JSON を
+    直接確認。PG テキスト形式 `2026-03-10 12:00:00.123456+00` が漏れていないか
+    ＝ `src/lib/db/client.ts` の `installIsoTimestampParsers()` が効いているかの
+    実機確認）。
+  - [ ] **Safari 実機（iOS/iPadOS 含む）での確認**。Safari(JSC) は PG テキスト
+    形式の `new Date()` パースが仕様上保証されないため、Chrome/Firefox（V8/
+    SpiderMonkey は緩やかにパースできてしまい問題を検出できない）だけでの確認は
+    不十分。ダッシュボードの日付表示（お知らせバナー・ガチャ履歴の日時等）と
+    ソート順が Safari で postgrest 経路（DB_DRIVER 未設定）・pg 経路
+    （DB_DRIVER=pg-read/pg）の両方で一致することを確認する。
 - preview で `DB_DRIVER=pg-read` にした際、ダッシュボードのお知らせバナー表示
   （パイロット経路 `getUnreadAnnouncements`）が postgrest 時と同一であることを
-  目視確認する（日付シリアライズ差の実機確認を兼ねる）。
+  目視確認する（#688 適用後は日付表現形式も両経路で一致するはずであり、
+  ここでの目視確認はその実機確認を兼ねる）。
 - preview での確認項目:
   - `statement_timeout` が Hyperdrive を透過するか未確認（既知リスク）。
     長時間クエリの打ち切り挙動を preview で確認すること

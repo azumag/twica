@@ -115,14 +115,23 @@ function resolveCard(cards: OverlayHistoryRow["cards"]): OverlayHistoryCard | nu
 // (既定 'postgrest') は下の GET ハンドラの else 節(既存 supabase-js 実装、無変更)
 // のみが実行される。
 //
-// redeemedAt の表現形式について(判断根拠):
-// pg 直結は drizzle-orm/postgres-js が timestamp/timestamptz パーサをパススルーに
+// redeemedAt の表現形式について(判断根拠。#688 で更新):
+// pg 直結は元々 drizzle-orm/postgres-js が timestamp/timestamptz パーサをパススルーに
 // 上書きするため、PG の ISO スタイルテキスト形式(例: "2026-03-10 12:34:56.123456+00"、
-// スペース区切り・オフセットは分が0なら "+00" のみ)の文字列を返す。一方 PostgREST は
-// ISO 8601 (例: "2026-03-10T12:34:56.123456+00:00"、T区切り)を返す
-// (src/lib/db/client.ts の createHandle コメント、src/lib/announcements.ts の
-// getUnreadAnnouncementsPg コメント参照)。
-// この差がクライアントに影響するかを実際に確認した:
+// スペース区切り・オフセットは分が0なら "+00" のみ)の文字列を返していた。Safari(JSC)
+// の new Date() ではこの形式のパースが仕様上保証されないため、Issue #688 で
+// src/lib/db/client.ts の installIsoTimestampParsers() を導入し、接続確立時
+// (createHandle() 内、drizzle() 呼び出しの直後)に timestamp/timestamptz のパーサを
+// ISO 8601 に正規化するものへ差し替えた。そのため #688 適用後、pg 直結経路の
+// redeemedAt は PostgREST と同じ ISO 8601 (例: "2026-03-10T12:34:56.123456+00:00"、
+// T区切り)で返る。このルート自身では正規化ヘルパーを呼んでおらず、あくまで
+// src/lib/db/client.ts が返す文字列をそのまま使っているだけである点に注意
+// (正規化ロジックの詳細・実装上の制約は同ファイルの installIsoTimestampParsers
+// コメント参照)。
+//
+// #688 適用前の判断根拠(記録として残す。現在は前提が変わっているため注意):
+// PG テキスト形式のままだった当時、この差がクライアントに影響するかを実際に
+// 確認していた:
 //   1. overlay クライアント(src/app/overlay/[streamerId]/page.tsx の
 //      pollOverlayEvents)は event.redeemedAt を Date.parse() 経由でのみ消費し、
 //      パース成功時は new Date(ms).toISOString() で正規化してから
@@ -137,8 +146,10 @@ function resolveCard(cards: OverlayHistoryRow["cards"]): OverlayHistoryCard | nu
 //      経路に切り替わってもポーリングカーソルの単調性・往復互換は既存
 //      (PostgREST)経路と同じ挙動になる。ミリ秒未満(マイクロ秒)の切り捨ては
 //      両経路で等しく発生する既存の性質であり、本対応による新規回帰ではない。
-// 以上より、redeemedAt は pg のテキスト形式のまま返し、追加の正規化ヘルパーは
-// 導入しない(getUnreadAnnouncementsPg と同じ判断)。
+// この Date.parse ベースの消費方式自体は #688 後も変わらないため、上記の
+// 往復互換(3.)は ISO 8601 に統一された現在も引き続き成立する。V8 は緩やかな
+// パーサのため PG テキスト形式でも実害はなかったが、Safari(JSC) はそうではない
+// というのが #688 でのセントラル正規化導入の理由(Issue #688 参照)。
 //
 // leftJoin + flat 列エイリアスについて:
 // gacha_history.card_id は ON DELETE CASCADE (00071マイグレーション) のため
