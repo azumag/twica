@@ -13,6 +13,11 @@
  *      両経路とも404 + STREAMER_NOT_FOUND
  *   4. フラグ分岐（postgrest経路でgetDb不使用／pg経路でsupabase-js不使用）
  *   5. pgクエリの実引数（where/orderBy/limit）の構造比較
+ *   6. 【厳格レビュー指摘 nit-4】縮退フォールバック自身も失敗するケース:
+ *      getOwnedStreamer/getAdditionalRewards それぞれで「初回スキーマエラー →
+ *      フォールバッククエリも失敗」した場合に両経路とも500になり、応答本文まで
+ *      一致すること（片方のドライバだけ200相当を返す・エラー種別を誤判定して
+ *      ステータスがズレる、といったリグレッションを検知する）
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { NextRequest } from 'next/server'
@@ -23,6 +28,7 @@ import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { hasScope, getTwitchAccessToken } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
+import { ERROR_MESSAGES } from '@/lib/constants'
 import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
@@ -449,5 +455,89 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: streamer行な�
     // streamer 未検出のため追加報酬クエリには到達しない(両経路とも)
     expect(supabase.from).not.toHaveBeenCalledWith('streamer_additional_gacha_rewards')
     expect(db.select).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 厳格レビュー指摘 (nit-4): 縮退フォールバック自身も失敗するケース。
+// 「初回スキーマエラー→フォールバックへ切り替え」までは上の describe
+// ブロックで検証済みだが、フォールバッククエリ自体が失敗した場合の経路は
+// 未検証だった。getOwnedStreamer は { streamer: null, error } を返し
+// handleDatabaseError 経由で固定レスポンス({ error: 'Database error' }, 500)、
+// getAdditionalRewards は throw して外側の try/catch → handleApiError 経由で
+// 固定レスポンス({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500) になる
+// （いずれも postgrest/pg で同一コードパスを通るため、エラー内容によらず
+// レスポンス本文は固定値。route.ts の該当 JSDoc 参照）。
+// ---------------------------------------------------------------------------
+describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: 縮退フォールバック自身も失敗するケース (#690 厳格レビュー nit-4)', () => {
+  it('getOwnedStreamer: 初回スキーマエラー→縮退fallbackも失敗した場合、両経路とも500 + { error: "Database error" }でdeepEqualになる', async () => {
+    const { res: postgrestRes, body: postgrestBody } = await runPostgrestPath([
+      {
+        data: null,
+        error: { code: 'PGRST204', message: 'column streamers.raid_gacha_draw_count does not exist' },
+      },
+      // フォールバッククエリ自体も失敗（スキーマエラーである必要はない。
+      // isRaidStateSchemaError は初回エラーにのみ適用され、フォールバック結果の
+      // error はそのまま返るだけのため任意のエラー種別でよい）
+      { data: null, error: { message: 'connection failure during fallback' } },
+    ])
+    const { res: pgRes, body: pgBody } = await runPgPath([
+      {
+        error: {
+          code: '42703',
+          message: 'column "raid_gacha_draw_count" of relation "streamers" does not exist',
+        },
+      },
+      // フォールバッククエリの2回目も throw（getOwnedStreamerPg は内側 try/catch で
+      // 捕捉し { streamer: null, error: fallbackError } に写像する）。
+      // 42601(syntax_error)は RETRYABLE_SQLSTATES に含まれない恒久的エラーの例
+      // （上の「42703以外の恒久的エラーは...」テストと同じ選択。retryable な
+      // コードだと withDbRetry のバックオフ待機でテストが不必要に遅くなるため）。
+      { error: { code: '42601', message: 'syntax error during fallback' } },
+    ])
+
+    expect(postgrestRes.status).toBe(500)
+    expect(pgRes.status).toBe(500)
+    expect(postgrestBody).toEqual({ error: 'Database error' })
+    expect(pgBody).toEqual(postgrestBody)
+  })
+
+  it('getAdditionalRewards: streamerは正常取得、追加報酬側の初回スキーマエラー→縮退fallbackも失敗した場合、両経路とも500 + { error: INTERNAL_ERROR }でdeepEqualになる', async () => {
+    const { res: postgrestRes, body: postgrestBody } = await runPostgrestPath(
+      [{ data: FULL_STREAMER_ROW, error: null }],
+      [
+        {
+          data: null,
+          error: {
+            code: 'PGRST204',
+            message: 'column streamer_additional_gacha_rewards.draw_count does not exist',
+          },
+        },
+        // フォールバッククエリ自体も失敗（getAdditionalRewards は
+        // fallbackResult.error をそのまま `error` に代入し、最終的に throw する
+        // ため任意のエラー種別でよい）
+        { data: null, error: { message: 'connection failure during fallback' } },
+      ]
+    )
+    const { res: pgRes, body: pgBody } = await runPgPath(
+      [{ rows: [FULL_STREAMER_ROW] }],
+      [
+        {
+          error: {
+            code: '42703',
+            message: 'column "draw_count" of relation "streamer_additional_gacha_rewards" does not exist',
+          },
+        },
+        // getAdditionalRewardsPg のフォールバック select は try/catch で囲われて
+        // いないため、この throw がそのまま呼び出し元(GET の外側 try/catch)まで
+        // 伝播する。42601 は非 retryable（上の getOwnedStreamer テストと同じ理由）。
+        { error: { code: '42601', message: 'syntax error during fallback' } },
+      ]
+    )
+
+    expect(postgrestRes.status).toBe(500)
+    expect(pgRes.status).toBe(500)
+    expect(postgrestBody).toEqual({ error: ERROR_MESSAGES.INTERNAL_ERROR })
+    expect(pgBody).toEqual(postgrestBody)
   })
 })

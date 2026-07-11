@@ -144,6 +144,14 @@ async function getSubscriptionsByUserId(
  *   環境ではこの分岐はほぼ発火しないが、src/lib/db/errors.ts の
  *   「デプロイ窓フォールバック」規約（isPgMissingColumnError = 42703 判定）に
  *   準拠して同等の縮退フォールバックを用意しておく）。
+ * - 発火条件の差について（厳格レビュー指摘・意図的な差）: pg 側は 42703
+ *   （未定義列）のみで発火し、postgrest 側の isRaidOptionsSchemaError
+ *   （PGRST204、または message に draw_count/is_raid_limited を含む任意エラー）
+ *   より条件が厳密に狭い。支配的シナリオ（デプロイ窓での列欠落そのもの）では
+ *   両者とも発火するため一致するが、PGRST204 は PostgREST のスキーマキャッシュ
+ *   固有のエラーコードで pg 直結には存在しない概念であり、message 文字列一致による
+ *   広い判定を pg 側にそのまま移植する意味がない。db/errors.ts の SQLSTATE
+ *   ベース判定規約に沿ってこの差を意図的に許容している。
  * - フォールバック時は draw_count: 1 / is_raid_limited: false を補完する
  *   （PostgREST 版と同じデフォルト値。streamerAdditionalGachaRewards スキーマの
  *   DEFAULT 値とも一致）。
@@ -258,6 +266,15 @@ async function getAdditionalRewards(streamerId: string) {
  *   理由（本番適用済みならほぼ発火しないが、デプロイ窓フォールバック規約に
  *   準拠するため）で isPgMissingColumnError（42703）検知の縮退フォールバック
  *   を用意する。
+ * - 発火条件の差について（厳格レビュー指摘・意図的な差）: pg 側は 42703
+ *   （未定義列）のみで発火し、postgrest 側の isRaidStateSchemaError
+ *   （PGRST204、または message に raid_gacha_active_until/raid_gacha_draw_count
+ *   を含む任意エラー）より条件が厳密に狭い。支配的シナリオ（デプロイ窓での
+ *   列欠落そのもの）では両者とも発火するため一致するが、PGRST204 は PostgREST の
+ *   スキーマキャッシュ固有のエラーコードで pg 直結には存在しない概念であり、
+ *   message 文字列一致による広い判定を pg 側にそのまま移植する意味がない。
+ *   db/errors.ts の SQLSTATE ベース判定規約に沿ってこの差を意図的に許容している
+ *   （getAdditionalRewardsPg と同じ判断）。
  * - フォールバック時は raid_gacha_draw_count: 0 を補完する（PostgREST 版と
  *   同じデフォルト値。streamers スキーマの DEFAULT 値とも一致）。
  * - 戻り値の外形（呼び出し側から見た挙動）を完全パリティで維持するため、

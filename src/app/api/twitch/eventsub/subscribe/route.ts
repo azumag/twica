@@ -1,19 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES, TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { validateCSRFToken } from "@/lib/csrf";
-// Issue #690 (#570 パイロット踏襲): pg 直結の読み取り経路。DB_DRIVER=pg-read/pg の
-// ときのみ使われる。getDb() は withDbRetry の queryFn 内で呼ぶ規約
-// (src/lib/db/retry.ts 参照)。フラグ未設定時はこれらのモジュールは一切呼ばれない。
-import { eq } from "drizzle-orm";
-import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled } from "@/lib/db/flags";
-import { withDbRetry } from "@/lib/db/retry";
-import { streamers as streamersTable } from "@/lib/db/schema";
+// 厳格レビュー指摘 (minor-1): streamer 存在確認クエリ（postgrest/pg 分岐込み）は
+// src/lib/user-data.ts の getStreamerIdByTwitchUserId() に統合済み
+// （src/app/dashboard/history/page.tsx の実装 #711 と完全に同一クエリだった重複を
+// 解消）。このファイルは DB_DRIVER フラグや getDb 等の pg 直結モジュールを直接
+// 参照しない（ヘルパー内部に閉じる）。
+import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -280,61 +277,6 @@ async function getSubscriptionsByUserId(
   return allData;
 }
 
-/**
- * Issue #690: 「streamer が rewardId 登録者本人か」を確認するための最小クエリ
- * (id のみ) の pg 直結実装。
- *
- * PostgREST 実装（下の POST 内 else 節）との対応:
- * - `.from("streamers").select("id").eq("twitch_user_id", ...).maybeSingle()`
- *   は streamers.twitch_user_id が UNIQUE 制約（migration 00001）を持つため、
- *   「0 行または 1 行」しか返り得ない。Drizzle 側は `.limit(1)` + `rows[0] ?? null`
- *   で同じ外部挙動になる（src/lib/twitch/token-manager.ts の
- *   getBotAccountForChatPg と同じパターン）。
- * - streamer が存在するかどうかの判定にしか使われない（id の値自体は呼び出し元で
- *   参照されない）ため、select 列は id のみで PostgREST 版と同一。
- *
- * エラー時の挙動について（判断根拠・Phase 1 パリティ原則）:
- * 元の PostgREST 実装は `{ data: streamer }` のみを分割代入しており `error` を
- * 一切見ていない。そのため PostgREST 側で一時的な DB エラーが起きても
- * `data` は null になり、「streamer が見つからない」(404 STREAMER_NOT_FOUND)
- * として扱われる。DB 障害を STREAMER_NOT_FOUND にマスクするのは既存実装由来の
- * 潜在バグだが、Phase 1 の原則は「呼び出し側は経路を意識しない＝外部挙動の
- * 完全パリティ。バグ修正は別 Issue」であるため、pg 直結でもこの挙動を
- * **意図的に再現** する: postgres.js の例外は catch して logger.error に記録
- * （postgrest 経路には無い pg 固有の失敗モードなので観測性だけは確保する）した上で
- * null を返し、呼び出し元の既存分岐により 404 になる。
- * この潜在バグの修正は postgrest / pg 両経路同時に別 Issue で行うこと
- * （片側だけ直すと preview 切替検証での経路間挙動比較にノイズが入る。
- * tos/accept の「行なし→accepted:true」再現等、他ルートの同種判断とも整合）。
- */
-async function getStreamerIdPg(twitchUserId: string): Promise<{ id: string } | null> {
-  try {
-    const rows = await withDbRetry(
-      async () => {
-        // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
-        // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
-        const { db } = await getDb();
-        return db
-          .select({ id: streamersTable.id })
-          .from(streamersTable)
-          .where(eq(streamersTable.twitch_user_id, twitchUserId))
-          .limit(1);
-      },
-      "eventsubSubscribe(streamer)",
-      // 読み取り専用クエリのため冪等（idempotent: true でリトライを opt-in）
-      { idempotent: true },
-    );
-    return rows[0] ?? null;
-  } catch (error) {
-    // 上記 JSDoc 参照: PostgREST 経路（error 無視 → data null → 404）との
-    // 完全パリティのため、DB 例外も「streamer 未検出」に写像する。
-    // ログの (pg:...) タグは announcements.ts の getUnreadAnnouncementsPg と
-    // 同じ流儀（wrangler tail での経路別の原因切り分け用）。
-    logger.error("Error in eventsubSubscribe streamer lookup (pg:streamers)", { error });
-    return null;
-  }
-}
-
 export async function POST(request: NextRequest) {
   // 状態変更 API（EventSub 登録）のため CSRF 検証を最初に行う。
   // 不正オリジンからのリクエストは認証/レートリミット処理の前に弾く。
@@ -378,21 +320,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Get streamer info
-    // Issue #690 (#570 パイロット踏襲): DB_DRIVER=pg-read/pg のときのみ pg 直結の
-    // getStreamerIdPg へ切り替える。フラグ未設定時（既定 'postgrest'）は else 節の
-    // 既存 supabase-js 実装がそのまま実行され、挙動は完全に不変。
-    let streamer: { id: string } | null;
-    if (isPgReadEnabled()) {
-      streamer = await getStreamerIdPg(session.twitchUserId);
-    } else {
-      const supabaseAdmin = getSupabaseAdmin();
-      const { data } = await supabaseAdmin
-        .from("streamers")
-        .select("id")
-        .eq("twitch_user_id", session.twitchUserId)
-        .maybeSingle();
-      streamer = data;
-    }
+    // 厳格レビュー指摘 (minor-1): postgrest/pg 分岐は getStreamerIdByTwitchUserId()
+    // 内部に閉じており、DB_DRIVER 未設定時（既定 'postgrest'）の挙動は完全に不変
+    // （ヘルパーの JSDoc・src/lib/db/flags.ts 参照）。
+    const streamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });

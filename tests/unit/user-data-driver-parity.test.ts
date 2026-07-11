@@ -263,8 +263,10 @@ describe('user-data.ts: postgrest / pg 経路の形状互換 (#711)', () => {
       const pg = createDrizzleDbMock({ error: new Error('pg boom') })
       primePgDb(pg)
       await expect(getTwitchSubRow('user-1')).resolves.toBeNull()
-      // pg 経路はエラーを握りつぶす際に warn ログを残すこと
-      expect(logger.warn).toHaveBeenCalled()
+      // pg 経路はエラーを握りつぶす際に error ログを残すこと（厳格レビュー指摘:
+      // logger.error に統一。パイロット群との観測性の非対称を避けるため。
+      // src/lib/user-data.ts の catch 節コメント参照）
+      expect(logger.error).toHaveBeenCalled()
     })
 
     it('pgクエリが正しい列・where・limit(1)で呼び出される', async () => {
@@ -330,8 +332,9 @@ describe('user-data.ts: postgrest / pg 経路の形状互換 (#711)', () => {
       const pg = createDrizzleDbMock({ error: new Error('pg boom') })
       primePgDb(pg)
       await expect(getStreamerIdByTwitchUserId('user-1')).resolves.toBeNull()
-      // 原因調査用の warn ログが残ること（外部挙動には影響しない内部ログ）
-      expect(logger.warn).toHaveBeenCalled()
+      // 原因調査用の error ログが残ること（外部挙動には影響しない内部ログ。
+      // 厳格レビュー指摘によりログレベルは warn ではなく error に統一）
+      expect(logger.error).toHaveBeenCalled()
     })
 
     it('pgクエリが正しい列・where・limit(1)で呼び出される', async () => {

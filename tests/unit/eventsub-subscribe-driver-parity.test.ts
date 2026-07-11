@@ -1,7 +1,19 @@
 /**
  * Issue #690 (#570 パイロット踏襲): EventSub subscribe API の「streamer 存在確認」
- * クエリ（POST 内、322行目付近の旧 supabaseAdmin.from("streamers")...maybeSingle()）
- * について、postgrest 経路 / pg 経路の応答互換性を検証する。
+ * クエリについて、postgrest 経路 / pg 経路の応答互換性を検証する。
+ *
+ * 厳格レビュー指摘 (minor-1) により、streamer 存在確認クエリ（postgrest/pg 分岐を
+ * 含む実装本体）は route.ts から src/lib/user-data.ts の
+ * getStreamerIdByTwitchUserId() に統合された（dashboard/history ページの実装 #711
+ * と完全に同一クエリだった重複の解消）。route.ts は素通しでこのヘルパーを呼ぶだけに
+ * なったため、本ファイルは「route.ts がヘルパーの戻り値をどう扱うか（見つかれば
+ * 後続処理へ、見つからなければ 404）」を検証する。ヘルパー自体の postgrest/pg
+ * 分岐・エラー写像の詳細な網羅テストは tests/unit/user-data-driver-parity.test.ts
+ * （getStreamerIdByTwitchUserId の describe ブロック）が担当する。ここでは
+ * `@/lib/db/client` の getDb を直接モックして「route.ts 経由でもヘルパー内部の
+ * pg 直結クエリが同じ形で発火する」ところまでは重複して検証し（呼び出し配線の
+ * 取り違えを検知するため）、エラー分類の網羅性はユニットテストの重複を避けるため
+ * user-data-driver-parity.test.ts に委ねる。
  *
  * このファイルは「streamer 存在確認クエリ」に焦点を絞る（EventSub 登録の残り部分
  * ―Twitch API 呼び出しの詳細―は tests/unit/eventsub-subscribe-csrf.test.ts が
@@ -20,11 +32,13 @@
  *      DB 障害が起きても data=null → 404(STREAMER_NOT_FOUND)という誤ったレスポンスに
  *      なる(既存実装由来の潜在バグ)。Phase 1 のパリティ原則(呼び出し側は経路を
  *      意識しない＝外部挙動の完全パリティ。バグ修正は別 Issue で postgrest/pg
- *      両経路同時に行う)に従い、pg 版(getStreamerIdPg)も例外を logger.error に
- *      記録した上で null を返し、同じ 404 になるよう **意図的に再現** している
- *      (route.ts の getStreamerIdPg の JSDoc 参照。tos/accept の
- *      「行なし→accepted:true」再現等、他ルートの同種判断とも整合)。
- *      この再現が今後のリグレッションで 500 等に変わらないよう固定するテストを含む。
+ *      両経路同時に行う)に従い、pg 版(getStreamerIdByTwitchUserId)も例外を
+ *      logger.error に記録した上で null を返し、同じ 404 になるよう
+ *      **意図的に再現** している (src/lib/user-data.ts の getStreamerIdByTwitchUserId
+ *      の JSDoc 参照。tos/accept の「行なし→accepted:true」再現等、他ルートの
+ *      同種判断とも整合)。この再現が今後のリグレッションで 500 等に変わらないよう
+ *      固定するテストを含む（このファイルでは route.ts 経由の外部挙動として固定し、
+ *      ヘルパー単体でのエラー分類の網羅は user-data-driver-parity.test.ts が担う）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { NextRequest } from 'next/server'
@@ -260,9 +274,10 @@ describe('POST /api/twitch/eventsub/subscribe: streamer 存在確認クエリの
 
   // 統括レビュー判断への対応(ファイル冒頭コメント5参照): DB 障害を
   // STREAMER_NOT_FOUND(404)にマスクするのは既存 postgrest 実装由来の潜在バグだが、
-  // Phase 1 のパリティ原則に従い pg 経路でも意図的に再現する(getStreamerIdPg は
-  // 例外を logger.error に記録して null を返す)。この「既存バグの意図的再現」が
-  // 今後のリグレッションで 500 等に変わらないよう固定する。
+  // Phase 1 のパリティ原則に従い pg 経路でも意図的に再現する(統合先の
+  // getStreamerIdByTwitchUserId(src/lib/user-data.ts) は例外を logger.error に
+  // 記録して null を返す)。この「既存バグの意図的再現」が route.ts 経由の外部挙動
+  // として今後のリグレッションで 500 等に変わらないよう固定する。
   it('pg 経路: streamers クエリが例外(DB障害等)を throw した場合も404 + STREAMER_NOT_FOUND(既存バグの意図的再現)になる', async () => {
     vi.stubEnv('DB_DRIVER', 'pg-read')
     // 42601(syntax_error)は src/lib/db/retry.ts の RETRYABLE_SQLSTATES に含まれない

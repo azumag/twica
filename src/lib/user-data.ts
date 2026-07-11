@@ -136,7 +136,14 @@ export async function getTwitchSubRow(
     } catch (error) {
       // 既存 supabase-js 実装が業務エラーを無視して null を返すのと同じ外部挙動
       // （アカウント設定ページのレンダリングをブロックしない安全側の判断）。
-      logger.warn('Failed to fetch twitch_has_sub (pg), returning null', { twitchUserId, error })
+      // ログレベルは warn ではなく error にする（厳格レビュー指摘）: パイロット群
+      // （announcements.ts:209 の getUnreadAnnouncements、dashboard-data.ts:126 の
+      // getStreamerData 等）は pg 例外を安全側の値へ写像する際に一貫して
+      // logger.error を使っており、logger.error だけが errors テーブル経由の
+      // GitHub Issue 自動起票（src/lib/logger.ts:34-38 の logErrorFromLogger）まで
+      // 届く。warn のままだと同種の DB 障害でも本関数だけ起票対象から漏れ、
+      // 観測性がパイロット群と非対称になるため error に統一する。
+      logger.error('Failed to fetch twitch_has_sub (pg), returning null', { twitchUserId, error })
       return null
     }
   }
@@ -155,7 +162,10 @@ export async function getTwitchSubRow(
 
 /**
  * streamers.id を twitch_user_id から1行取得する。
- * 呼び出し元: src/app/dashboard/history/page.tsx
+ * 呼び出し元: src/app/dashboard/history/page.tsx、
+ * src/app/api/twitch/eventsub/subscribe/route.ts の POST（#690 で個別実装していた
+ * getStreamerIdPg と完全に同一クエリだったため、厳格レビュー指摘によりこのヘルパー
+ * 1箇所に統合。route.ts 側は本関数を呼ぶだけで postgrest/pg 分岐を持たない）。
  *
  * 既存実装は `{ data: streamer }` のみを分割代入し error を見ない（かつページ全体も
  * try/catch で囲っていない）。したがって postgrest 経路のエラー時挙動は
@@ -164,6 +174,15 @@ export async function getTwitchSubRow(
  * するため、そのまま伝播させると保護のない Server Component がクラッシュして
  * postgrest 経路（静かに null 表示）と外部挙動が食い違う。両ドライバで外部挙動を
  * 一致させるため、pg の例外はここで catch して null（= 行なしと同じ扱い）に写像する。
+ *
+ * 注意（DB障害マスクの既存バグを直す場合）: 上記の「DB障害時も『streamer なし』に
+ * マスクする」挙動は history/page.tsx 由来の既存の潜在バグであり、eventsub/subscribe
+ * ルートが本関数に統合された今は両呼び出し元とも本関数経由で同じマスクを受ける
+ * （eventsub/subscribe 側は結果的に 404 STREAMER_NOT_FOUND、history 側はページ
+ * 非表示になる）。postgrest / pg 両経路の実装がこの関数1箇所（下の pg 分岐の catch
+ * と、下半分の postgrest 分岐の error 無視）に閉じているため、将来この挙動自体を
+ * 修正する場合もこのヘルパー内の該当2箇所を直すだけでよく、呼び出し元
+ * （route.ts / page.tsx）を個別に直す必要はない。
  */
 export async function getStreamerIdByTwitchUserId(
   twitchUserId: string
@@ -187,9 +206,12 @@ export async function getStreamerIdByTwitchUserId(
       return rows[0] ?? null
     } catch (error) {
       // postgrest 経路が error を無視して null 表示になるのと同じ外部挙動に写像
-      // （上記コメント参照）。原因調査用に warn を残す（getTwitchSubRow と同粒度。
-      // 既存 postgrest 経路のログは増やさない = pg 経路のみの内部ログ）。
-      logger.warn('Failed to fetch streamer id (pg), returning null', { twitchUserId, error })
+      // （上記コメント参照）。原因調査用にログを残す（pg 経路のみの内部ログ。
+      // 既存 postgrest 経路のログは増やさない）。
+      // ログレベルは warn ではなく error にする（厳格レビュー指摘。理由は
+      // getTwitchSubRow の catch 節コメント参照: パイロット群との観測性の非対称を
+      // 避けるため、pg 例外→安全側マッピング時は logger.error に統一する）。
+      logger.error('Failed to fetch streamer id (pg), returning null', { twitchUserId, error })
       return null
     }
   }
