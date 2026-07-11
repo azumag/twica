@@ -35,7 +35,7 @@ import { withDbRetry } from "@/lib/db/retry";
 // src/app/api/cards/route.ts の fetchCardsFromDBPg で確立したパターン（無指定
 // select → 列欠落エラー検知 → CARDS_SAFE_COLUMNS で再試行）を本モジュールにも
 // 適用する。詳細は cards-safe-columns.ts のコメント参照。
-import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
+import { CARDS_SAFE_COLUMNS, withCardsBattleColumnFallback } from "@/lib/db/cards-safe-columns";
 // schema のテーブル名（cards / streamers 等）は本モジュールのローカル変数名・
 // 型名と紛らわしいため、Table サフィックスを付けて import する
 // （announcements.ts パイロットと同じ規約）
@@ -115,13 +115,7 @@ async function getStreamerDataPg(
   }
 
   try {
-    let rows: Awaited<ReturnType<typeof selectStreamerWithCards>>;
-    try {
-      rows = await selectStreamerWithCards(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      rows = await selectStreamerWithCards(true);
-    }
+    const rows = await withCardsBattleColumnFallback(selectStreamerWithCards);
 
     if (rows.length === 0) return null;
 
@@ -300,13 +294,7 @@ async function getStreamerDataPaginatedPg(
     );
   }
   try {
-    let rows: Awaited<ReturnType<typeof selectCards>>;
-    try {
-      rows = await selectCards(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      rows = await selectCards(true);
-    }
+    const rows = await withCardsBattleColumnFallback(selectCards);
     cards = rows as unknown as Card[];
   } catch (error) {
     // 既存実装は cards エラー時 null → `cards || []` で [] 扱い
@@ -644,13 +632,7 @@ async function selectRecentGachaHistory(useSafeColumns: boolean) {
 
 async function getRecentGachaHistoryPg(): Promise<GachaHistoryWithCard[]> {
   try {
-    let rows: Awaited<ReturnType<typeof selectRecentGachaHistory>>;
-    try {
-      rows = await selectRecentGachaHistory(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      rows = await selectRecentGachaHistory(true);
-    }
+    const rows = await withCardsBattleColumnFallback(selectRecentGachaHistory);
     // 既存実装と同じく戻り値型へのキャストのみ（値の変換はしない）
     return rows as unknown as GachaHistoryWithCard[];
   } catch (error) {
@@ -787,18 +769,9 @@ async function getGachaHistoryForStreamerPg(
       { idempotent: true },
     );
   }
-  async function fetchRowsWithFallback() {
-    try {
-      return await selectRows(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      return selectRows(true);
-    }
-  }
-
   try {
     const [rows, total] = await Promise.all([
-      fetchRowsWithFallback(),
+      withCardsBattleColumnFallback(selectRows),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -956,18 +929,9 @@ async function getGachaHistoryForUserPg(
       { idempotent: true },
     );
   }
-  async function fetchRowsWithFallback() {
-    try {
-      return await selectRows(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      return selectRows(true);
-    }
-  }
-
   try {
     const [rows, total] = await Promise.all([
-      fetchRowsWithFallback(),
+      withCardsBattleColumnFallback(selectRows),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -2131,13 +2095,9 @@ async function fetchActiveCardsForStreamerFromDBPg(streamerId: string): Promise<
   const startTotal = Date.now();
   const startQuery = Date.now();
   try {
-    let cards: Awaited<ReturnType<typeof selectActiveCardsForStreamer>>;
-    try {
-      cards = await selectActiveCardsForStreamer(streamerId, false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      cards = await selectActiveCardsForStreamer(streamerId, true);
-    }
+    const cards = await withCardsBattleColumnFallback((useSafeColumns) =>
+      selectActiveCardsForStreamer(streamerId, useSafeColumns)
+    );
     logger.info(`[Perf] getActiveCardsForStreamer query: ${Date.now() - startQuery}ms`);
     logger.info(`[Perf] getActiveCardsForStreamer total: ${Date.now() - startTotal}ms`);
     return normalizeDropRate(cards as unknown as Card[]);
@@ -2556,13 +2516,7 @@ async function getUserCardDetailPg(
 
   let card: (Card & { streamers: Streamer }) | null;
   try {
-    let rows: Awaited<ReturnType<typeof selectCardDetail>>;
-    try {
-      rows = await selectCardDetail(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      rows = await selectCardDetail(true);
-    }
+    const rows = await withCardsBattleColumnFallback(selectCardDetail);
     // streamer_id は NOT NULL FK のため streamers は実データで常に非 null。
     // 既存の消費形状（Card & { streamers: Streamer }）へのキャストのみ行う。
     card = (rows[0] ?? null) as unknown as (Card & { streamers: Streamer }) | null;

@@ -235,9 +235,25 @@ function createDrizzleDbMock(config: DrizzleMockConfig = {}) {
         const joins: Array<{ table: Table; on: SQL }> = []
 
         const evaluate = () => {
-          const errorQueue = config.errors?.get(mainTable)
-          if (errorQueue && errorQueue.length > 0) {
-            throw errorQueue.shift()
+          const selection = fields ?? (getTableColumns(mainTable) as Record<string, unknown>)
+          // 集計（count() 等）を含む選択は、実 SQL の SELECT count(*) と同じく
+          // マッチ行数に関わらず常に 1 行を返す
+          const hasAggregate = Object.values(selection).some((f) => is(f, SQL))
+
+          // Issue #685 self-review fix: エラーキューは mainTable 単位だが、rows と
+          // count が同一 mainTable を Promise.all で共有する関数（例:
+          // getGachaHistoryForStreamerPg）では、集計クエリは実列を一切選択しない
+          // ため列欠落エラー（isMissingCardsBattleColumnError 等）を構造的に
+          // 受け取り得ない。集計クエリにだけエラーキューを適用しないことで、
+          // rows/count どちらが先に評価されてもテストが決定的になる
+          // （評価順序への依存を無くす。以前は配列リテラル評価順序 +
+          // withDbRetry の実装により rows が先に消費される前提で書かれていたが、
+          // その前提は実装の些細な変更で崩れうる脆弱な仮定だった）。
+          if (!hasAggregate) {
+            const errorQueue = config.errors?.get(mainTable)
+            if (errorQueue && errorQueue.length > 0) {
+              throw errorQueue.shift()
+            }
           }
 
           // 行コンテキスト: テーブル → その行（LEFT JOIN 不一致は null）
@@ -303,10 +319,9 @@ function createDrizzleDbMock(config: DrizzleMockConfig = {}) {
               })
             )
 
-          const selection = fields ?? (getTableColumns(mainTable) as Record<string, unknown>)
           // 集計（count() 等）を含む選択は、実 SQL の SELECT count(*) と同じく
-          // マッチ行数に関わらず常に 1 行を返す
-          const hasAggregate = Object.values(selection).some((f) => is(f, SQL))
+          // マッチ行数に関わらず常に 1 行を返す（selection/hasAggregate は
+          // 関数先頭で計算済み）
           if (hasAggregate) {
             return [project(selection, new Map())]
           }
@@ -468,9 +483,11 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
       expect((pgResult as any).cards[0]).not.toHaveProperty('card_number')
       expect((pgResult as any).cards[0]).toMatchObject({ id: 'card-new', name: 'Card One' })
       // 2回目(最後)の select 呼び出しの card フィールドが CARDS_SAFE_COLUMNS であることを確認
-      // select() の fields 引数は型上 optional だが、この時点で最低1回は
-      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
-      // 保証されているため non-null アサーションで受ける。
+      // select() の fields 引数は型上 optional（引数なし呼び出しも存在する）
+      // だが、直前で db.select.mock.calls が最低1回は記録されていることを
+      // 呼び出し自体で保証しており、かつこのテストが検証したい「最後の」
+      // 呼び出しは実装上必ず fields を明示的に渡す形になっているため、
+      // ここに限り non-null アサーションで受けてよい。
       const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
       expect(lastCall.card).toEqual(CARDS_SAFE_COLUMNS)
     })
@@ -541,10 +558,11 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
     })
 
     // Issue #685: cards の無指定 select() は本番未デプロイ8列を要求する。
-    // count → cards は逐次実行（Promise.all ではない）のため、エラーキューを
-    // 2件（count 用 1件 + cards 初回試行用 1件）積んでも消費順序は決定的。
-    // count は独自リトライを持たないため 1回目のエラーでそのまま totalCount=0
-    // に落ちる（既存の「count エラー時 0 扱い」と同じ経路）。cards は
+    // count（{ count: countRows() } のみを選択）は cards の実列を一切選択しない
+    // ため、本番の postgres.js でも列欠落エラーを構造的に受け取り得ない。モック
+    // 側も集計クエリをエラーキュー対象外にしている（createDrizzleDbMock の
+    // hasAggregate 判定）ため、エラーは cards 側の初回試行にのみ適用され、count
+    // は counts フィクスチャの本物の値をそのまま返す。cards は
     // isMissingCardsBattleColumnError 判定を通り CARDS_SAFE_COLUMNS で再試行し
     // 成功する。
     it('本番未デプロイ8列(hp等)SELECTフォールバック: cardsはCARDS_SAFE_COLUMNSで再試行し成功する', async () => {
@@ -554,22 +572,22 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
             [streamersTable, [STREAMER]],
             [cardsTable, [CARD_NEW, CARD_OLD]],
           ]),
-          errors: new Map([
-            [cardsTable, [missingCardsBattleColumnError(), missingCardsBattleColumnError()]],
-          ]),
+          counts: new Map([[cardsTable, 2]]),
+          errors: new Map([[cardsTable, [missingCardsBattleColumnError()]]]),
         },
         () => getStreamerDataPaginated('twitch-user-1', 1, 20)
       )
 
-      // count 側は1回目のエラーをそのまま消費し、既存の「count エラー時 0 扱い」
-      // に落ちる（本テストの主眼は cards 側のフォールバックのため許容する）。
-      expect((pgResult as any).pagination.total).toBe(0)
+      // count は集計クエリのためエラーキューの影響を受けず、常に本物の total を返す
+      expect((pgResult as any).pagination.total).toBe(2)
       expect((pgResult as any).cards).toHaveLength(2)
       expect((pgResult as any).cards[0]).not.toHaveProperty('hp')
       expect((pgResult as any).cards[0]).toMatchObject({ id: 'card-new' })
-      // select() の fields 引数は型上 optional だが、この時点で最低1回は
-      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
-      // 保証されているため non-null アサーションで受ける。
+      // select() の fields 引数は型上 optional（引数なし呼び出しも存在する）
+      // だが、直前で db.select.mock.calls が最低1回は記録されていることを
+      // 呼び出し自体で保証しており、かつこのテストが検証したい「最後の」
+      // 呼び出しは実装上必ず fields を明示的に渡す形になっているため、
+      // ここに限り non-null アサーションで受けてよい。
       const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
       expect(lastCall).toEqual(CARDS_SAFE_COLUMNS)
     })
@@ -634,9 +652,11 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
       const entry = (pgResult as any[])[0]
       expect(entry.cards).not.toHaveProperty('hp')
       expect(entry.cards).toMatchObject({ id: entry.card_id })
-      // select() の fields 引数は型上 optional だが、この時点で最低1回は
-      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
-      // 保証されているため non-null アサーションで受ける。
+      // select() の fields 引数は型上 optional（引数なし呼び出しも存在する）
+      // だが、直前で db.select.mock.calls が最低1回は記録されていることを
+      // 呼び出し自体で保証しており、かつこのテストが検証したい「最後の」
+      // 呼び出しは実装上必ず fields を明示的に渡す形になっているため、
+      // ここに限り non-null アサーションで受けてよい。
       const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
       expect(lastCall.cards).toEqual(CARDS_SAFE_COLUMNS)
     })
@@ -732,13 +752,13 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
     })
 
     // Issue #685: cards: cardsTable のネスト select は本番未デプロイ8列を要求する。
-    // rows と count はどちらも .from(gachaHistoryTable) だが Promise.all で並行実行
-    // されるため、mainTable キー共有のモックのエラーキューを rows/count どちらが
-    // 消費するかは一見曖昧に見える。しかし ECMAScript の配列リテラル評価順序
-    // （[fetchRowsWithFallback(), countPromise] は左から順に同期的に呼び出される）
-    // と withDbRetry が queryFn を即座に呼ぶ実装（追加の非同期ホップなし）により、
-    // rows 側の getDb() 待機が count 側より先にスケジュールされ、決定的に rows が
-    // 先にキューを消費する（本テストで実測確認）。
+    // rows と count はどちらも .from(gachaHistoryTable) を使うが、count 側は
+    // { count: countRows() } の集計のみで cards の列を一切選択しないため、
+    // 本番の postgres.js でも列欠落エラー（isMissingCardsBattleColumnError 該当）
+    // を構造的に受け取り得ない。モック側もこれに合わせて集計クエリをエラーキュー
+    // の対象外にしている（createDrizzleDbMock の hasAggregate 判定、上部参照）ため、
+    // rows/count が Promise.all で並行実行されても消費順序に曖昧さはなく、count は
+    // 常に本物の total（42）を返す。
     it('本番未デプロイ8列(hp等)SELECTフォールバック: rowsはCARDS_SAFE_COLUMNSで再試行し成功する', async () => {
       const { result: pgResult, db } = await runPg(
         {
@@ -753,14 +773,42 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
       )
 
       expect(pgResult.history).toHaveLength(2)
+      // count は集計クエリのためエラーキューの影響を受けず、常に本物の total を返す
       expect(pgResult.pagination.total).toBe(42)
       const entry = (pgResult.history as any[])[0]
       expect(entry.cards).not.toHaveProperty('hp')
-      // select() の fields 引数は型上 optional だが、この時点で最低1回は
-      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
-      // 保証されているため non-null アサーションで受ける。
+      // select() の fields 引数は型上 optional（引数なし呼び出しも存在する）
+      // だが、直前で db.select.mock.calls が最低1回は記録されていることを
+      // 呼び出し自体で保証しており、かつこのテストが検証したい「最後の」
+      // 呼び出しは実装上必ず fields を明示的に渡す形になっているため、
+      // ここに限り non-null アサーションで受けてよい。
       const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
       expect(lastCall.cards).toEqual(CARDS_SAFE_COLUMNS)
+    })
+
+    // Issue #685 self-review fix: rows/count が Promise.all で並行実行される
+    // 構成で、本番未デプロイ8列に該当しないエラーが rows 側で発生した場合に
+    // フォールバックせずそのまま呼び出し元の catch（history: [] 扱い）に
+    // 落ちることを確認する。
+    it('本番未デプロイ8列に該当しないエラーではフォールバックせず空結果を返す', async () => {
+      const { result: pgResult } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [gachaHistoryTable, [HISTORY_NEW, HISTORY_OLD]],
+            [cardsTable, [CARD_OLD, CARD_NEW]],
+          ]),
+          counts: new Map([[gachaHistoryTable, 42]]),
+          errors: new Map([
+            [gachaHistoryTable, [Object.assign(new Error('permission denied'), { code: '42501' })]],
+          ]),
+        },
+        () => getGachaHistoryForStreamer('streamer-1', { page: 1, perPage: 20 })
+      )
+
+      expect(pgResult).toEqual({
+        history: [],
+        pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
+      })
     })
   })
 
@@ -809,8 +857,9 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
     })
 
     // Issue #685: getGachaHistoryForStreamer と同じ rows/count 並行実行構成
-    // （どちらも .from(gachaHistoryTable)）。配列リテラル評価順序により rows が
-    // 先にエラーキューを消費することを実測確認済み（同パターンで5回連続green）。
+    // （どちらも .from(gachaHistoryTable)）。count は集計クエリのためエラー
+    // キュー対象外（上部 createDrizzleDbMock の hasAggregate 判定参照）であり、
+    // 消費順序に曖昧さはない。
     it('本番未デプロイ8列(hp等)SELECTフォールバック: rowsはCARDS_SAFE_COLUMNSで再試行し成功する', async () => {
       const { result: pgResult, db } = await runPg(
         {
@@ -830,11 +879,37 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
       const entry = (pgResult as any).history[0]
       expect(entry.cards).not.toHaveProperty('hp')
       expect(entry.streamers).toEqual({ twitch_display_name: 'Streamer One' })
-      // select() の fields 引数は型上 optional だが、この時点で最低1回は
-      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
-      // 保証されているため non-null アサーションで受ける。
+      // select() の fields 引数は型上 optional（引数なし呼び出しも存在する）
+      // だが、直前で db.select.mock.calls が最低1回は記録されていることを
+      // 呼び出し自体で保証しており、かつこのテストが検証したい「最後の」
+      // 呼び出しは実装上必ず fields を明示的に渡す形になっているため、
+      // ここに限り non-null アサーションで受けてよい。
       const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
       expect(lastCall.cards).toEqual(CARDS_SAFE_COLUMNS)
+    })
+
+    // Issue #685 self-review fix: getGachaHistoryForStreamer と同様、rows/count
+    // 並行実行構成での「該当しないエラーはフォールバックしない」ことの確認。
+    it('本番未デプロイ8列に該当しないエラーではフォールバックせず空結果を返す', async () => {
+      const { result: pgResult } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [gachaHistoryTable, [HISTORY_NEW]],
+            [cardsTable, [CARD_NEW]],
+            [streamersTable, [STREAMER]],
+          ]),
+          counts: new Map([[gachaHistoryTable, 1]]),
+          errors: new Map([
+            [gachaHistoryTable, [Object.assign(new Error('permission denied'), { code: '42501' })]],
+          ]),
+        },
+        () => getGachaHistoryForUser('viewer-1')
+      )
+
+      expect(pgResult).toEqual({
+        history: [],
+        pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
+      })
     })
   })
 
@@ -871,9 +946,11 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
       expect(pgResult).toHaveLength(2)
       expect((pgResult as any[])[0]).not.toHaveProperty('hp')
       expect((pgResult as any[])[0]).not.toHaveProperty('card_number')
-      // select() の fields 引数は型上 optional だが、この時点で最低1回は
-      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
-      // 保証されているため non-null アサーションで受ける。
+      // select() の fields 引数は型上 optional（引数なし呼び出しも存在する）
+      // だが、直前で db.select.mock.calls が最低1回は記録されていることを
+      // 呼び出し自体で保証しており、かつこのテストが検証したい「最後の」
+      // 呼び出しは実装上必ず fields を明示的に渡す形になっているため、
+      // ここに限り non-null アサーションで受けてよい。
       const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
       expect(lastCall).toEqual(CARDS_SAFE_COLUMNS)
     })
