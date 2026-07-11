@@ -11,6 +11,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+// -----------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。checkCollectionHasActiveCards は
+// 読み取り専用（COUNT のみ）のため isPgReadEnabled() で分岐する。既存 supabase-js
+// 実装は 1 文字も変えず、フラグ未設定時は完全に従来どおり動く。
+// -----------------------------------------------------------------------------
+import { and, count, eq, isNull } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { isPgReadEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { cards as cardsTable } from "@/lib/db/schema";
 
 /**
  * Detect the "collection_name column is not deployed yet" schema error.
@@ -201,6 +211,59 @@ export type CollectionExistenceResult =
   | "schema-not-ready"; // collection_name column not deployed yet (deploy window)
 
 /**
+ * checkCollectionHasActiveCards の pg 直結実装 (#663)
+ *
+ * PostgREST 実装との対応:
+ * - `{ count: "exact", head: true }` は drizzle-orm の count() ヘルパー
+ *   （`sql`count(*)`.mapWith(Number)` 相当）で件数のみ取得する形に置き換える。
+ * - DEFAULT_PACK_SENTINEL の場合は isNull(collection_name)、それ以外は
+ *   eq(collection_name, collectionName)（postgrest 経路と同じ分岐）。
+ * - isMissingCollectionNameColumn は message テキスト（"does not exist" /
+ *   "schema cache"）ベースの汎用判定のため、pg（postgres.js）が throw する
+ *   PostgresError（code: '42703', message に "does not exist" を含む）も
+ *   そのまま判定できる。pg 専用の判定関数は不要（既存ヘルパーをそのまま再利用）。
+ * - 想定外のエラーは throw して呼び出し元で 500 にする（既存と同じ）。
+ */
+async function checkCollectionHasActiveCardsPg(
+  streamerId: string,
+  collectionName: string
+): Promise<CollectionExistenceResult> {
+  const collectionCondition =
+    collectionName === DEFAULT_PACK_SENTINEL
+      ? isNull(cardsTable.collection_name)
+      : eq(cardsTable.collection_name, collectionName);
+
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ count: count() })
+          .from(cardsTable)
+          .where(
+            and(
+              eq(cardsTable.streamer_id, streamerId),
+              eq(cardsTable.is_active, true),
+              collectionCondition
+            )
+          );
+      },
+      "checkCollectionHasActiveCards",
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true },
+    );
+
+    return (rows[0]?.count ?? 0) > 0 ? "exists" : "absent";
+  } catch (error) {
+    if (isMissingCollectionNameColumn(error as { message?: string; code?: string } | null | undefined)) {
+      return "schema-not-ready";
+    }
+    throw error;
+  }
+}
+
+/**
  * Check whether a streamer has at least one ACTIVE card in the given pack.
  *
  * Gacha only draws from `is_active = true` cards, so a pack made of only inactive
@@ -216,6 +279,12 @@ export async function checkCollectionHasActiveCards(
   streamerId: string,
   collectionName: string
 ): Promise<CollectionExistenceResult> {
+  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  if (isPgReadEnabled()) {
+    return checkCollectionHasActiveCardsPg(streamerId, collectionName);
+  }
+
   let query = supabaseAdmin
     .from("cards")
     .select("id", { count: "exact", head: true })

@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   isMissingCollectionNameColumn,
   isMissingDefaultCardPackNameColumnError,
@@ -7,6 +8,8 @@ import {
 } from "@/lib/collections/collection-existence";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { createMockQueryBuilder } from "../../utils/supabase-mock";
+import { getDb } from "@/lib/db/client";
+import { cards as cardsTable } from "@/lib/db/schema";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 
@@ -208,5 +211,122 @@ describe("checkCollectionHasActiveCards", () => {
 
     const result = await checkCollectionHasActiveCards(supabase, "streamer-1", DEFAULT_PACK_SENTINEL);
     expect(result).toBe("schema-not-ready");
+  });
+});
+
+// #663: pg 直結経路（postgrest 経路との形状互換）
+describe("checkCollectionHasActiveCards: postgrest / pg 経路の互換 (#663)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function createDrizzleDbMock(config: { rowCount?: number; error?: unknown }) {
+    const calls: Array<{ whereCondition?: unknown }> = [];
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => {
+          const call: { whereCondition?: unknown } = {};
+          calls.push(call);
+          const builder: any = {
+            where: vi.fn((condition: unknown) => {
+              call.whereCondition = condition;
+              return builder;
+            }),
+            then: (onFulfilled: any, onRejected: any) =>
+              (config.error
+                ? Promise.reject(config.error)
+                : Promise.resolve([{ count: config.rowCount ?? 0 }])
+              ).then(onFulfilled, onRejected),
+          };
+          return builder;
+        }),
+      })),
+    };
+    return { db, calls };
+  }
+
+  it("通常のパック名: 両経路とも exists/absent が一致する", async () => {
+    const cardsQuery = createMockQueryBuilder();
+    (cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({ count: 3, error: null });
+      return cardsQuery;
+    };
+    const supabase = { from: vi.fn(() => cardsQuery) } as unknown as SupabaseClient<Database>;
+
+    vi.stubEnv("DB_DRIVER", undefined);
+    const postgrestResult = await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
+
+    vi.stubEnv("DB_DRIVER", "pg-read");
+    const pg = createDrizzleDbMock({ rowCount: 3 });
+    vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
+    const pgResult = await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
+
+    expect(pgResult).toEqual(postgrestResult);
+    expect(pgResult).toBe("exists");
+    expect(pg.calls[0].whereCondition).toEqual(
+      and(
+        eq(cardsTable.streamer_id, "streamer-1"),
+        eq(cardsTable.is_active, true),
+        eq(cardsTable.collection_name, "weapons")
+      )
+    );
+  });
+
+  it("DEFAULT_PACK_SENTINEL: pg 経路は isNull(collection_name) で判定し absent を返す", async () => {
+    const supabase = { from: vi.fn() } as unknown as SupabaseClient<Database>;
+
+    vi.stubEnv("DB_DRIVER", "pg-read");
+    const pg = createDrizzleDbMock({ rowCount: 0 });
+    vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
+    const pgResult = await checkCollectionHasActiveCards(supabase, "streamer-1", DEFAULT_PACK_SENTINEL);
+
+    expect(pgResult).toBe("absent");
+    expect(pg.calls[0].whereCondition).toEqual(
+      and(
+        eq(cardsTable.streamer_id, "streamer-1"),
+        eq(cardsTable.is_active, true),
+        isNull(cardsTable.collection_name)
+      )
+    );
+  });
+
+  it("pg 経路で列未デプロイエラー(42703)時は schema-not-ready を返す", async () => {
+    const supabase = { from: vi.fn() } as unknown as SupabaseClient<Database>;
+
+    vi.stubEnv("DB_DRIVER", "pg-read");
+    const pg = createDrizzleDbMock({
+      error: { code: "42703", message: "column cards.collection_name does not exist" },
+    });
+    vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
+
+    const result = await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
+    expect(result).toBe("schema-not-ready");
+  });
+
+  it("pg 経路で想定外のエラーは throw する", async () => {
+    const supabase = { from: vi.fn() } as unknown as SupabaseClient<Database>;
+
+    vi.stubEnv("DB_DRIVER", "pg-read");
+    const pg = createDrizzleDbMock({ error: { code: "08006", message: "connection failure" } });
+    vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
+
+    await expect(checkCollectionHasActiveCards(supabase, "streamer-1", "weapons")).rejects.toBeTruthy();
+  });
+
+  it("postgrest 経路（フラグ未設定）では getDb が一切呼ばれない", async () => {
+    const cardsQuery = createMockQueryBuilder();
+    (cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
+      resolve({ count: 1, error: null });
+      return cardsQuery;
+    };
+    const supabase = { from: vi.fn(() => cardsQuery) } as unknown as SupabaseClient<Database>;
+
+    vi.stubEnv("DB_DRIVER", undefined);
+    await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
+    expect(getDb).not.toHaveBeenCalled();
   });
 });

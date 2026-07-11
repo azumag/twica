@@ -11,6 +11,53 @@ import { getBaseUrl } from '@/lib/url-utils'
 import { getSession, parseSession, verifySession } from '@/lib/session'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
+// ---------------------------------------------------------------------------
+// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
+// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
+// supabase-js 経路が従来どおり実行される。
+// ---------------------------------------------------------------------------
+import { eq } from 'drizzle-orm'
+import { getDb } from '@/lib/db/client'
+import { isPgReadEnabled } from '@/lib/db/flags'
+import { withDbRetry } from '@/lib/db/retry'
+import { users as usersTable } from '@/lib/db/schema'
+
+/**
+ * ログイン時のスコープ復元読み取りの pg 直結実装 (#663)
+ * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約
+ * （migration 00001）により最大 1 行のため、LIMIT 1 + rows[0] ?? null で同じ
+ * 外部挙動。
+ */
+async function fetchScopeRestorationUserPg(
+  twitchUserId: string
+): Promise<{ data: { twitch_scopes: string[] | null } | null; error: { code?: string; message: string } | null }> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ twitch_scopes: usersTable.twitch_scopes })
+          .from(usersTable)
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .limit(1)
+      },
+      'login(scope restore)',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true },
+    )
+    return { data: rows[0] ?? null, error: null }
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code
+    return {
+      data: null,
+      error: {
+        code: typeof code === 'string' ? code : undefined,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    }
+  }
+}
 
 // Web Crypto APIのcrypto.randomUUID()を使用（Cloudflare Workers互換）
 // Using Web Crypto API crypto.randomUUID() for Cloudflare Workers compatibility
@@ -122,12 +169,14 @@ export async function GET(request: Request) {
       }
 
       if (twitchUserId) {
-        const supabaseAdmin = getSupabaseAdmin()
-        const { data: user, error: dbError } = await supabaseAdmin
-          .from('users')
-          .select('twitch_scopes')
-          .eq('twitch_user_id', twitchUserId)
-          .maybeSingle()
+        // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+        const { data: user, error: dbError } = isPgReadEnabled()
+          ? await fetchScopeRestorationUserPg(twitchUserId)
+          : await getSupabaseAdmin()
+              .from('users')
+              .select('twitch_scopes')
+              .eq('twitch_user_id', twitchUserId)
+              .maybeSingle()
 
         if (dbError) {
           // DB障害時: スコープ復元に失敗したことをcallbackに伝達する
