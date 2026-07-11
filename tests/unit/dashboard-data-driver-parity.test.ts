@@ -35,6 +35,16 @@ import {
   userCards as userCardsTable,
   users as usersTable,
 } from '@/lib/db/schema'
+// Issue #685: cards の本番未デプロイ8列（card_number/hp/atk/def/spd/skill_type/
+// skill_name/skill_power、#625）に対する SELECT フォールバックの検証に使う
+import { CARDS_SAFE_COLUMNS } from '@/lib/db/cards-safe-columns'
+
+/** postgres.js が投げる SQLSTATE 42703（列欠落）相当のエラー（cards-safe-columns.ts 参照） */
+function missingCardsBattleColumnError(column: string = 'hp') {
+  return Object.assign(new Error(`column "${column}" of relation "cards" does not exist`), {
+    code: '42703',
+  })
+}
 
 // logger.error は実装だと Supabase errors パイプラインへ fire-and-forget するため、
 // テストでは副作用のないモックに差し替える（既存 dashboard 系テストと同じ）
@@ -433,6 +443,54 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
       expect(postgrestResult).toBeNull()
       expect(pgResult).toBeNull()
     })
+
+    // Issue #685: card: cardsTable のネスト select は cards の本番未デプロイ8列
+    // （card_number/hp/atk/def/spd/skill_type/skill_name/skill_power、#625）を
+    // 要求するため本番で 42703 になる。列欠落エラーなら CARDS_SAFE_COLUMNS へ
+    // 差し替えて再試行することを検証する（rows/count の Promise.all を伴わない
+    // 単一クエリのため、エラーキューの消費順序に曖昧さがない）。
+    it('本番未デプロイ8列(hp等)SELECTフォールバック: CARDS_SAFE_COLUMNSで再試行し成功する', async () => {
+      const { result: pgResult, db } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [streamersTable, [STREAMER]],
+            [cardsTable, [CARD_OLD, CARD_NEW]],
+          ]),
+          errors: new Map([[streamersTable, [missingCardsBattleColumnError()]]]),
+        },
+        () => getStreamerData('twitch-user-1')
+      )
+
+      expect((pgResult as any).cards).toHaveLength(2)
+      // CARDS_SAFE_COLUMNS は hp 等の8列を含まないため、フォールバック後の
+      // カードにはこれらのキー自体が存在しない（production の select("*") と同じ）。
+      expect((pgResult as any).cards[0]).not.toHaveProperty('hp')
+      expect((pgResult as any).cards[0]).not.toHaveProperty('card_number')
+      expect((pgResult as any).cards[0]).toMatchObject({ id: 'card-new', name: 'Card One' })
+      // 2回目(最後)の select 呼び出しの card フィールドが CARDS_SAFE_COLUMNS であることを確認
+      // select() の fields 引数は型上 optional だが、この時点で最低1回は
+      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
+      // 保証されているため non-null アサーションで受ける。
+      const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
+      expect(lastCall.card).toEqual(CARDS_SAFE_COLUMNS)
+    })
+
+    it('本番未デプロイ8列に該当しないエラーではフォールバックせず null を返す（既存挙動）', async () => {
+      const { result: pgResult } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [streamersTable, [STREAMER]],
+            [cardsTable, [CARD_OLD, CARD_NEW]],
+          ]),
+          errors: new Map([
+            [streamersTable, [Object.assign(new Error('permission denied'), { code: '42501' })]],
+          ]),
+        },
+        () => getStreamerData('twitch-user-1')
+      )
+
+      expect(pgResult).toBeNull()
+    })
   })
 
   describe('getStreamerDataPaginated', () => {
@@ -481,6 +539,40 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
       expect(postgrestResult).toBeNull()
       expect(pgResult).toBeNull()
     })
+
+    // Issue #685: cards の無指定 select() は本番未デプロイ8列を要求する。
+    // count → cards は逐次実行（Promise.all ではない）のため、エラーキューを
+    // 2件（count 用 1件 + cards 初回試行用 1件）積んでも消費順序は決定的。
+    // count は独自リトライを持たないため 1回目のエラーでそのまま totalCount=0
+    // に落ちる（既存の「count エラー時 0 扱い」と同じ経路）。cards は
+    // isMissingCardsBattleColumnError 判定を通り CARDS_SAFE_COLUMNS で再試行し
+    // 成功する。
+    it('本番未デプロイ8列(hp等)SELECTフォールバック: cardsはCARDS_SAFE_COLUMNSで再試行し成功する', async () => {
+      const { result: pgResult, db } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [streamersTable, [STREAMER]],
+            [cardsTable, [CARD_NEW, CARD_OLD]],
+          ]),
+          errors: new Map([
+            [cardsTable, [missingCardsBattleColumnError(), missingCardsBattleColumnError()]],
+          ]),
+        },
+        () => getStreamerDataPaginated('twitch-user-1', 1, 20)
+      )
+
+      // count 側は1回目のエラーをそのまま消費し、既存の「count エラー時 0 扱い」
+      // に落ちる（本テストの主眼は cards 側のフォールバックのため許容する）。
+      expect((pgResult as any).pagination.total).toBe(0)
+      expect((pgResult as any).cards).toHaveLength(2)
+      expect((pgResult as any).cards[0]).not.toHaveProperty('hp')
+      expect((pgResult as any).cards[0]).toMatchObject({ id: 'card-new' })
+      // select() の fields 引数は型上 optional だが、この時点で最低1回は
+      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
+      // 保証されているため non-null アサーションで受ける。
+      const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
+      expect(lastCall).toEqual(CARDS_SAFE_COLUMNS)
+    })
   })
 
   describe('getRecentGachaHistory', () => {
@@ -521,6 +613,32 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
           expect(entry.redeemed_at).not.toBeInstanceOf(Date)
         }
       }
+    })
+
+    // Issue #685: cards: cardsTable のネスト select は本番未デプロイ8列を要求する。
+    // 単一クエリ（Promise.all を伴わない）のため、エラーキューの消費順序に
+    // 曖昧さがない。
+    it('本番未デプロイ8列(hp等)SELECTフォールバック: CARDS_SAFE_COLUMNSで再試行し成功する', async () => {
+      const { result: pgResult, db } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [gachaHistoryTable, [HISTORY_NEW, HISTORY_OLD]],
+            [cardsTable, [CARD_OLD, CARD_NEW]],
+          ]),
+          errors: new Map([[gachaHistoryTable, [missingCardsBattleColumnError()]]]),
+        },
+        () => getRecentGachaHistory()
+      )
+
+      expect(pgResult).toHaveLength(2)
+      const entry = (pgResult as any[])[0]
+      expect(entry.cards).not.toHaveProperty('hp')
+      expect(entry.cards).toMatchObject({ id: entry.card_id })
+      // select() の fields 引数は型上 optional だが、この時点で最低1回は
+      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
+      // 保証されているため non-null アサーションで受ける。
+      const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
+      expect(lastCall.cards).toEqual(CARDS_SAFE_COLUMNS)
     })
   })
 
@@ -612,6 +730,38 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
         pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
       })
     })
+
+    // Issue #685: cards: cardsTable のネスト select は本番未デプロイ8列を要求する。
+    // rows と count はどちらも .from(gachaHistoryTable) だが Promise.all で並行実行
+    // されるため、mainTable キー共有のモックのエラーキューを rows/count どちらが
+    // 消費するかは一見曖昧に見える。しかし ECMAScript の配列リテラル評価順序
+    // （[fetchRowsWithFallback(), countPromise] は左から順に同期的に呼び出される）
+    // と withDbRetry が queryFn を即座に呼ぶ実装（追加の非同期ホップなし）により、
+    // rows 側の getDb() 待機が count 側より先にスケジュールされ、決定的に rows が
+    // 先にキューを消費する（本テストで実測確認）。
+    it('本番未デプロイ8列(hp等)SELECTフォールバック: rowsはCARDS_SAFE_COLUMNSで再試行し成功する', async () => {
+      const { result: pgResult, db } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [gachaHistoryTable, [HISTORY_NEW, HISTORY_OLD]],
+            [cardsTable, [CARD_OLD, CARD_NEW]],
+          ]),
+          counts: new Map([[gachaHistoryTable, 42]]),
+          errors: new Map([[gachaHistoryTable, [missingCardsBattleColumnError()]]]),
+        },
+        () => getGachaHistoryForStreamer('streamer-1', { page: 1, perPage: 20 })
+      )
+
+      expect(pgResult.history).toHaveLength(2)
+      expect(pgResult.pagination.total).toBe(42)
+      const entry = (pgResult.history as any[])[0]
+      expect(entry.cards).not.toHaveProperty('hp')
+      // select() の fields 引数は型上 optional だが、この時点で最低1回は
+      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
+      // 保証されているため non-null アサーションで受ける。
+      const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
+      expect(lastCall.cards).toEqual(CARDS_SAFE_COLUMNS)
+    })
   })
 
   describe('getGachaHistoryForUser', () => {
@@ -657,6 +807,35 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
       expect(Array.isArray(entry.cards)).toBe(false)
       expect(typeof entry.redeemed_at).toBe('string')
     })
+
+    // Issue #685: getGachaHistoryForStreamer と同じ rows/count 並行実行構成
+    // （どちらも .from(gachaHistoryTable)）。配列リテラル評価順序により rows が
+    // 先にエラーキューを消費することを実測確認済み（同パターンで5回連続green）。
+    it('本番未デプロイ8列(hp等)SELECTフォールバック: rowsはCARDS_SAFE_COLUMNSで再試行し成功する', async () => {
+      const { result: pgResult, db } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [gachaHistoryTable, [HISTORY_NEW]],
+            [cardsTable, [CARD_NEW]],
+            [streamersTable, [STREAMER]],
+          ]),
+          counts: new Map([[gachaHistoryTable, 1]]),
+          errors: new Map([[gachaHistoryTable, [missingCardsBattleColumnError()]]]),
+        },
+        () => getGachaHistoryForUser('viewer-1')
+      )
+
+      expect((pgResult as any).history).toHaveLength(1)
+      expect((pgResult as any).pagination.total).toBe(1)
+      const entry = (pgResult as any).history[0]
+      expect(entry.cards).not.toHaveProperty('hp')
+      expect(entry.streamers).toEqual({ twitch_display_name: 'Streamer One' })
+      // select() の fields 引数は型上 optional だが、この時点で最低1回は
+      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
+      // 保証されているため non-null アサーションで受ける。
+      const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
+      expect(lastCall.cards).toEqual(CARDS_SAFE_COLUMNS)
+    })
   })
 
   describe('getActiveCardsForStreamer', () => {
@@ -676,6 +855,27 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
         expect(typeof card.drop_rate).toBe('number')
         expect(typeof card.created_at).toBe('string')
       }
+    })
+
+    // Issue #685: 無指定 select() は本番未デプロイ8列を要求する。単一クエリ
+    // （Promise.all を伴わない）のため、エラーキューの消費順序に曖昧さがない。
+    it('本番未デプロイ8列(hp等)SELECTフォールバック: CARDS_SAFE_COLUMNSで再試行し成功する', async () => {
+      const { result: pgResult, db } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([[cardsTable, [CARD_NEW, CARD_OLD]]]),
+          errors: new Map([[cardsTable, [missingCardsBattleColumnError()]]]),
+        },
+        () => getActiveCardsForStreamer('streamer-1')
+      )
+
+      expect(pgResult).toHaveLength(2)
+      expect((pgResult as any[])[0]).not.toHaveProperty('hp')
+      expect((pgResult as any[])[0]).not.toHaveProperty('card_number')
+      // select() の fields 引数は型上 optional だが、この時点で最低1回は
+      // 呼び出し済み（かつ全呼び出しが明示的に fields を渡す実装）であることが
+      // 保証されているため non-null アサーションで受ける。
+      const lastCall = db.select.mock.calls[db.select.mock.calls.length - 1][0]!
+      expect(lastCall).toEqual(CARDS_SAFE_COLUMNS)
     })
   })
 
@@ -814,6 +1014,34 @@ describe('dashboard-data: postgrest / pg 経路の形状互換 (#571)', () => {
 
       expect(postgrestResult).toBeNull()
       expect(pgResult).toBeNull()
+    })
+
+    // Issue #685: getTableColumns(cardsTable) のスプレッドは本番未デプロイ8列を
+    // 要求する。card 取得（.from(cardsTable)）は user/count 取得より前に完了する
+    // 逐次ステップのため、エラーキューの消費順序に曖昧さがない。
+    it('本番未デプロイ8列(hp等)SELECTフォールバック: CARDS_SAFE_COLUMNSで再試行し成功する', async () => {
+      const { result: pgResult, db } = await runPg(
+        {
+          tables: new Map<Table, Array<Record<string, unknown>>>([
+            [cardsTable, [CARD_NEW]],
+            [streamersTable, [STREAMER]],
+            [usersTable, [USER_ROW]],
+          ]),
+          counts: new Map([[userCardsTable, 2]]),
+          errors: new Map([[cardsTable, [missingCardsBattleColumnError()]]]),
+        },
+        () => getUserCardDetail('viewer-1', 'streamer-1', 'card-new')
+      )
+
+      expect(pgResult).not.toBeNull()
+      expect(pgResult).not.toHaveProperty('hp')
+      expect(pgResult).toMatchObject({ id: 'card-new', streamer: STREAMER, count: 2 })
+      const cardsCalls = db.select.mock.calls.filter((call: any[]) => {
+        const fields = call[0]
+        return fields && 'streamers' in fields
+      })
+      const lastCardsCall = cardsCalls[cardsCalls.length - 1][0]
+      expect(lastCardsCall).toEqual({ ...CARDS_SAFE_COLUMNS, streamers: streamersTable })
     })
 
     it('カードなし（0行）では両経路とも null を返す', async () => {
