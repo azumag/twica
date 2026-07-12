@@ -168,7 +168,8 @@ export default function ChannelPointSettings({
           logger.info("[AdditionalRewards] Bootstrapped additional rewards", { count: data.additionalRewards.length });
         }
         if (typeof data.raidGiftDrawCount !== "undefined") {
-          setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.raidGiftDrawCount ?? 0))));
+          // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+          setRaidGiftDrawCount(Math.min(15, Math.max(0, Number(data.raidGiftDrawCount ?? 0))));
         }
       }
     } catch (err) {
@@ -250,7 +251,8 @@ export default function ChannelPointSettings({
       });
       if (response.ok) {
         const data = await response.json();
-        setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.drawCount ?? 0))));
+        // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+        setRaidGiftDrawCount(Math.min(15, Math.max(0, Number(data.drawCount ?? 0))));
       }
     } catch {
       logger.error("Failed to fetch raid gacha status");
@@ -275,7 +277,8 @@ export default function ChannelPointSettings({
         return;
       }
 
-      setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(data.drawCount ?? 0))));
+      // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+      setRaidGiftDrawCount(Math.min(15, Math.max(0, Number(data.drawCount ?? 0))));
       setMessage(t("additionalRewards.raidGiftSaved"));
     } catch {
       setMessage(t("additionalRewards.raidStatusFailed"));
@@ -1327,9 +1330,12 @@ export default function ChannelPointSettings({
                    <input
                      type="number"
                      min={1}
-                     max={10}
+                     max={15}
                      value={additionalDrawCount}
-                     onChange={(e) => setAdditionalDrawCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
+                     // Issue #641: onChange clamp must match the `max` attribute above,
+                     // otherwise keyboard-entered values beyond the old 10 cap would be
+                     // silently truncated back down (max alone doesn't block typed input).
+                     onChange={(e) => setAdditionalDrawCount(Math.min(15, Math.max(1, Number(e.target.value) || 1)))}
                      className="h-7 w-12 rounded bg-gray-800 px-2 text-sm text-gray-100 focus:outline-none"
                    />
                  </label>
@@ -1370,10 +1376,13 @@ export default function ChannelPointSettings({
                  <input
                    type="number"
                    min={0}
-                   max={10}
+                   max={15}
                    aria-label={t("additionalRewards.raidGiftCountLabel")}
                    value={raidGiftDrawCount}
-                   onChange={(e) => setRaidGiftDrawCount(Math.min(10, Math.max(0, Number(e.target.value) || 0)))}
+                   // Issue #641: onChange clamp must match the `max` attribute above,
+                   // otherwise keyboard-entered values beyond the old 10 cap would be
+                   // silently truncated back down (max alone doesn't block typed input).
+                   onChange={(e) => setRaidGiftDrawCount(Math.min(15, Math.max(0, Number(e.target.value) || 0)))}
                    className="h-9 w-16 rounded-md border border-gray-600 bg-gray-700 px-2 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
                  />
                  <button

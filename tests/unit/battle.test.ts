@@ -109,6 +109,8 @@ describe('toBattleCard', () => {
       image_url: 'https://example.com/image.jpg',
       rarity: 'rare',
       card_number: null,
+      // Card.max_issuance_count は `number | null` 必須フィールド。
+      max_issuance_count: null,
       collection_name: null,
       drop_rate: 0.1,
       intra_rarity_weight: 1.0,
@@ -390,6 +392,10 @@ describe('generateCPUOpponent', () => {
     image_url: 'https://example.com/image.jpg',
     rarity: 'common',
     card_number: null,
+    // Card.max_issuance_count は `number | null`(undefined 非許容)。overrides のみに
+    // 委ねると Partial<Card> 由来で `undefined` を許容してしまい型不一致になるため、
+    // ベースオブジェクト側で明示的にデフォルト値を持たせる。
+    max_issuance_count: null,
     collection_name: null,
     drop_rate: 0.1,
     intra_rarity_weight: 1.0,

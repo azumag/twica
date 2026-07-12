@@ -22,8 +22,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Typecheck
+        # #588: 型エラーの検出漏れ防止のため tsc --noEmit をゲート化する。
+        # 既に依存インストール済みの test job に同居させ、新規 job による
+        # 追加の npm ci / セットアップコストを避ける。
+        run: npm run typecheck
+
       - name: Unit tests
-        run: npm run test:unit
+        # 失敗時に大量の成功ログで原因が埋もれないよう、最初の失敗で停止し、
+        # 機械可読なJSONレポートを生成する。失敗時のみ次のstepでartifact化する。
+        run: npm run test:unit -- --reporter=json --outputFile=vitest-report.json --bail=1
+
+      - name: Upload failed unit test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-unit-report
+          path: vitest-report.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Integration tests
         run: npm run test:integration

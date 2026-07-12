@@ -334,9 +334,9 @@ describe('GachaService.executeGacha', () => {
 
   it('発行上限に達したカードを抽選候補から除外する', async () => {
     const cardsQuery = createCardsQuery([
-      { id: 'sold-out-card', name: 'Sold Out', description: null, image_url: null, rarity: 'legendary', drop_rate: 100, max_issuance_count: 1 },
-      { id: 'available-card', name: 'Available', description: null, image_url: null, rarity: 'common', drop_rate: 1, max_issuance_count: null },
-    ] as typeof testCards)
+      { id: 'sold-out-card', name: 'Sold Out', description: 'desc', image_url: null, rarity: 'legendary', collection_name: 'standard', drop_rate: 100, max_issuance_count: 1 },
+      { id: 'available-card', name: 'Available', description: 'desc', image_url: null, rarity: 'common', collection_name: 'standard', drop_rate: 1, max_issuance_count: null },
+    ])
     const mockRpc = createRpcMock({
       issuedCounts: { 'sold-out-card': 1 },
       transactionResponses: [{ data: { is_duplicate: false, limit_reached: false, history_id: 'h-1' }, error: null }],
@@ -358,9 +358,9 @@ describe('GachaService.executeGacha', () => {
 
   it('発行枚数チェックRPCは limitedCards のIDのみに絞り込む（無制限カードIDを含まない）', async () => {
     const cardsQuery = createCardsQuery([
-      { id: 'unlimited-card', name: 'Unlimited', description: null, image_url: null, rarity: 'common', drop_rate: 1, max_issuance_count: null },
-      { id: 'limited-card', name: 'Limited', description: null, image_url: null, rarity: 'rare', drop_rate: 1, max_issuance_count: 5 },
-    ] as typeof testCards)
+      { id: 'unlimited-card', name: 'Unlimited', description: 'desc', image_url: null, rarity: 'common', collection_name: 'standard', drop_rate: 1, max_issuance_count: null },
+      { id: 'limited-card', name: 'Limited', description: 'desc', image_url: null, rarity: 'rare', collection_name: 'standard', drop_rate: 1, max_issuance_count: 5 },
+    ])
     const mockRpc = createRpcMock({
       transactionResponses: [{ data: { is_duplicate: false, history_id: 'h-1' }, error: null }],
     })
@@ -378,8 +378,8 @@ describe('GachaService.executeGacha', () => {
 
   it('全カードが発行上限に達している場合はエラーを返す', async () => {
     const cardsQuery = createCardsQuery([
-      { id: 'sold-out-card', name: 'Sold Out', description: null, image_url: null, rarity: 'legendary', drop_rate: 100, max_issuance_count: 1 },
-    ] as typeof testCards)
+      { id: 'sold-out-card', name: 'Sold Out', description: 'desc', image_url: null, rarity: 'legendary', collection_name: 'standard', drop_rate: 100, max_issuance_count: 1 },
+    ])
     const mockRpc = createRpcMock({
       issuedCounts: { 'sold-out-card': 1 },
       transactionResponses: [],
