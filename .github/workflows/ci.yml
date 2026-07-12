@@ -29,7 +29,9 @@ jobs:
         run: npm run typecheck
 
       - name: Unit tests
-        run: npm run test:unit
+        # 失敗時に大量の成功ログで原因が埋もれないよう、最初の失敗で停止し
+        # compactなdot reporterを使う。ローカルのtest:unitコマンド自体は変更しない。
+        run: npm run test:unit -- --reporter=dot --bail=1
 
       - name: Integration tests
         run: npm run test:integration
