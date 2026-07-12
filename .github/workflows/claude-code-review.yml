@@ -5,10 +5,14 @@
 #
 # 前提となるリポジトリ設定(ワークフローだけでは動かない):
 #   1. Claude GitHub App のインストール: https://github.com/apps/claude
-#   2. リポジトリシークレット ANTHROPIC_API_KEY の登録
+#   2. ローカルで `claude setup-token` を実行し、Claude Pro/Max/Team/Enterprise
+#      サブスクリプション枠に紐づく OAuth トークン(sk-ant-oat01-...)を発行する
+#      (有効期限 1 年。API 従量課金は発生しない)
+#   3. リポジトリシークレット CLAUDE_CODE_OAUTH_TOKEN にそのトークンを登録
 #      (Settings → Secrets and variables → Actions)
-#   ※ ANTHROPIC_API_KEY 未登録の間はレビューステップがスキップされるだけで、
-#     ジョブは失敗しない(下のステップレベル if を参照)。
+#   ※ CLAUDE_CODE_OAUTH_TOKEN 未登録の間はレビューステップがスキップされるだけで、
+#     ジョブは失敗しない(下のステップレベル if を参照)。トークンは 1 年で
+#     失効するため、失効前に再発行・再登録が必要。
 #
 # 運用上の注意: このジョブはあくまで補助的なレビューであり、branch protection の
 # required status checks には追加しないこと(レビューの失敗でマージを
@@ -55,23 +59,23 @@ jobs:
       pull-requests: write
       # claude-code-action が Claude GitHub App と OIDC トークン交換を行うために必要。
       id-token: write
-    # ANTHROPIC_API_KEY 未登録の環境ではレビューを実行できないため、
+    # CLAUDE_CODE_OAUTH_TOKEN 未登録の環境ではレビューを実行できないため、
     # ジョブを「失敗」させず各ステップを「スキップ」で済ませる(main への全 PR に
     # 赤い ✗ が付き続けるのを防ぐ)。secrets コンテキストは if 条件で直接参照
     # できない仕様のため、公式推奨どおり env 経由で判定する。
     env:
-      ANTHROPIC_API_KEY_CONFIGURED: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+      CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
 
     steps:
       - name: Checkout repository
-        if: env.ANTHROPIC_API_KEY_CONFIGURED == 'true'
+        if: env.CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED == 'true'
         uses: actions/checkout@v4
 
       - name: Run Claude Code Review
-        if: env.ANTHROPIC_API_KEY_CONFIGURED == 'true'
+        if: env.CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED == 'true'
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # レビュー観点は CLAUDE.md の「review aspects」に揃える。
           # PR タイトル・本文など攻撃者が制御できる文字列は ${{ }} で埋め込まない
           # (式インジェクション対策。number と repository は安全な値のみ)。
