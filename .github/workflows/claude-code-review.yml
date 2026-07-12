@@ -7,6 +7,12 @@
 #   1. Claude GitHub App のインストール: https://github.com/apps/claude
 #   2. リポジトリシークレット ANTHROPIC_API_KEY の登録
 #      (Settings → Secrets and variables → Actions)
+#   ※ ANTHROPIC_API_KEY 未登録の間はレビューステップがスキップされるだけで、
+#     ジョブは失敗しない(下のステップレベル if を参照)。
+#
+# 運用上の注意: このジョブはあくまで補助的なレビューであり、branch protection の
+# required status checks には追加しないこと(レビューの失敗でマージを
+# ブロックすべきではない)。
 name: Claude Code Review
 
 on:
@@ -37,22 +43,35 @@ jobs:
     # レビュー 1 回は通常数分で終わる。暴走時の runner 課金を抑える上限
     # (デフォルトは 360 分と長すぎるため明示する)。
     timeout-minutes: 15
+    # GITHUB_TOKEN を最小権限に絞る。contents: read が「レビューがコードを
+    # 変更・push できない」ことの本質的な防御線(後述の claude_args のツール制限は
+    # あくまで二層目の防御)。安易に contents: write へ緩めないこと。
     permissions:
       contents: read
       # レビュー結果を PR コメントとして投稿するために write が必要。
       pull-requests: write
       # claude-code-action が Claude GitHub App と OIDC トークン交換を行うために必要。
       id-token: write
+    # ANTHROPIC_API_KEY 未登録の環境ではレビューを実行できないため、
+    # ジョブを「失敗」させず各ステップを「スキップ」で済ませる(main への全 PR に
+    # 赤い ✗ が付き続けるのを防ぐ)。secrets コンテキストは if 条件で直接参照
+    # できない仕様のため、公式推奨どおり env 経由で判定する。
+    env:
+      ANTHROPIC_API_KEY_CONFIGURED: ${{ secrets.ANTHROPIC_API_KEY != '' }}
 
     steps:
       - name: Checkout repository
+        if: env.ANTHROPIC_API_KEY_CONFIGURED == 'true'
         uses: actions/checkout@v4
 
       - name: Run Claude Code Review
+        if: env.ANTHROPIC_API_KEY_CONFIGURED == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # レビュー観点は CLAUDE.md の「review aspects」に揃える。
+          # PR タイトル・本文など攻撃者が制御できる文字列は ${{ }} で埋め込まない
+          # (式インジェクション対策。number と repository は安全な値のみ)。
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -76,7 +95,14 @@ jobs:
             `gh pr comment <PR番号> --edit-last --create-if-none --body "..."`
             を使って投稿すること。--edit-last により push のたびにコメントが
             積み上がらず、常に 1 つのレビューコメントが最新の内容に更新される。
-          # ツールを「diff/PR 情報の取得」と「コメント投稿」のみに制限し、
-          # レビューが誤ってコードを変更・push できないようにする。
-          # (リポジトリ内ファイルの読み取りは Read/Grep/Glob がデフォルトで使える)
-          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          # ツール制限(GITHUB_TOKEN の contents: read に次ぐ二層目の防御):
+          # - --allowedTools は「追加許可」であり、action がデフォルトで持つ
+          #   ファイル編集・コミット系の base tools を除外しない。そのため
+          #   --disallowedTools で編集系ツールを明示的に無効化し、diff 経由の
+          #   プロンプトインジェクションがあってもコード変更に至らないようにする。
+          # - Bash は diff/PR 情報の取得とコメント投稿に使う gh コマンドのみ許可。
+          # - --max-turns は巨大 diff や暴走時の API コスト上限。
+          claude_args: >-
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit"
+            --max-turns 30
