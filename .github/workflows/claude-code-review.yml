@@ -43,9 +43,12 @@ jobs:
     # レビュー 1 回は通常数分で終わる。暴走時の runner 課金を抑える上限
     # (デフォルトは 360 分と長すぎるため明示する)。
     timeout-minutes: 15
-    # GITHUB_TOKEN を最小権限に絞る。contents: read が「レビューがコードを
-    # 変更・push できない」ことの本質的な防御線(後述の claude_args のツール制限は
-    # あくまで二層目の防御)。安易に contents: write へ緩めないこと。
+    # GITHUB_TOKEN を最小権限に絞る。ただし注意: github_token 入力を渡さない構成では
+    # action が OIDC 交換で得る Claude App トークンが使われ、これは workflow の
+    # permissions には束縛されず App のインストール権限(Contents: RW 等)を持つ。
+    # したがってコード変更防止の実効的な防御線は下の claude_args のツール制限であり、
+    # この permissions は checkout が永続化する GITHUB_TOKEN 資格情報側の防御。
+    # ツール制限を緩める免罪符にはならないこと。
     permissions:
       contents: read
       # レビュー結果を PR コメントとして投稿するために write が必要。
@@ -95,14 +98,15 @@ jobs:
             `gh pr comment <PR番号> --edit-last --create-if-none --body "..."`
             を使って投稿すること。--edit-last により push のたびにコメントが
             積み上がらず、常に 1 つのレビューコメントが最新の内容に更新される。
-          # ツール制限(GITHUB_TOKEN の contents: read に次ぐ二層目の防御):
+          # ツール制限(コード変更防止の実効的な防御線。上の permissions のコメント参照):
           # - --allowedTools は「追加許可」であり、action がデフォルトで持つ
           #   ファイル編集・コミット系の base tools を除外しない。そのため
-          #   --disallowedTools で編集系ツールを明示的に無効化し、diff 経由の
-          #   プロンプトインジェクションがあってもコード変更に至らないようにする。
+          #   --disallowedTools で編集系ツールとコミット/削除用の MCP ツールを
+          #   明示的に無効化し、diff 経由のプロンプトインジェクションがあっても
+          #   コード変更に至らないようにする。
           # - Bash は diff/PR 情報の取得とコメント投稿に使う gh コマンドのみ許可。
           # - --max-turns は巨大 diff や暴走時の API コスト上限。
           claude_args: >-
             --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
-            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit"
+            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
             --max-turns 30
