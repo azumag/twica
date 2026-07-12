@@ -496,13 +496,22 @@ export class GachaService {
    *   is_duplicate:true は「初回が実はコミットされていた」ケースを含むが、これは
    *   EventSub 再送と同じ err('Duplicate event') 扱いが正しい(カードは初回実行分が
    *   既に付与済みで、二重付与も未付与も起きない)。
-   * - demo ガチャ(src/app/api/gacha/route.ts、eventId=null)は冪等キーが無く、
-   *   再実行のたびに新しい履歴行+カード付与が発生するためリトライ禁止
-   *   (withDbRetry の既定 idempotent:false は接続断=「コミット済みか不明」を
-   *   二重排出させないための安全側動作。src/lib/db/retry.ts 参照)。既存 postgrest
-   *   経路の withRetry は eventId に関わらず 502/503 をリトライするが、あちらは
-   *   HTTP ゲートウェイ層のエラー分類であり、pg 直結では接続断の結果不明性を
-   *   優先して非冪等時はリトライしない(意図的な安全側の差)。
+   * - Issue #661 (migration 00076) 以降、RPC 自体が p_event_id=NULL を
+   *   RAISE EXCEPTION で拒否するため、eventId=null での呼び出しは(このメソッドに
+   *   到達する前段の呼び出し元がすべて非 null を渡す設計であることも合わせ、
+   *   下記参照)構造的に発生しない。手動ドローAPI(src/app/api/gacha/route.ts)は
+   *   #661 対応で `manual:${crypto.randomUUID()}` という毎回一意な合成 event_id を
+   *   渡すよう修正済みで、これも ON CONFLICT (event_id) DO NOTHING により冪等
+   *   (=リトライ安全)になった。したがって現状、`executeGacha` の全呼び出し元
+   *   (route.ts の手動ドロー、executeGachaDraws 経由の EventSub/raid N連)が
+   *   非 null の一意な event_id を渡すため `idempotent: eventId !== null` は
+   *   実質的に常に true として評価される。型シグネチャ上 `eventId: string | null`
+   *   を維持しているのは、将来この不変条件が崩れた場合にも
+   *   (a) RPC 側の NULL 拒否、(b) ここでの idempotent:false によるリトライ抑止、
+   *   の二重防御を残すため(意図的な安全側の設計。片方だけに依存しない)。
+   *   既存 postgrest 経路の withRetry は eventId に関わらず 502/503 をリトライ
+   *   するが、あちらは HTTP ゲートウェイ層のエラー分類であり、pg 直結では
+   *   接続断の結果不明性を優先して非冪等時はリトライしない(意図的な安全側の差)。
    * - リトライ回数・バックオフは既存 withRetry と同一の既定値
    *   ([100,300,1000]ms・最大3回)で、冪等時のリトライ特性は両経路で揃う。
    */
@@ -1282,7 +1291,8 @@ export class GachaService {
 
         // Additional reward matched, execute gacha
         // 追加報酬が一致したのでガチャを実行
-        const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 10)
+        // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+        const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 15)
         logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}, drawCount=${drawCount}, raidLimited=${Boolean(additionalReward.is_raid_limited)}, collectionName=${additionalReward.collection_name ?? 'all'}`)
         // Issue #393: 追加報酬に紐付くパックで抽選対象を絞る
         return await executeAndAttachStreamer(drawCount, additionalReward.collection_name)
@@ -1331,7 +1341,8 @@ export class GachaService {
         return err('Streamer not found')
       }
 
-      const drawCount = Math.min(Math.max(Number(streamer.raid_gacha_draw_count ?? 0), 0), 10)
+      // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+      const drawCount = Math.min(Math.max(Number(streamer.raid_gacha_draw_count ?? 0), 0), 15)
       if (drawCount < 1) {
         return err('Raid gacha disabled')
       }

@@ -67,14 +67,18 @@ vi.mock('@/lib/supabase/admin', () => ({
 }))
 
 // twitch auth
-const mockIsInvalidAuthorizationCodeError = vi.fn(() => false)
+// 実関数 isInvalidAuthorizationCodeError(error: unknown) と同じ引数個数で宣言する。
+// vi.fn の型はコールバック引数から推論されるため、0引数のままだと
+// モックするモジュールの型 (error: unknown) => boolean と合わずコンパイルエラーになる。
+const mockIsInvalidAuthorizationCodeError = vi.fn((_error: unknown) => false)
 vi.mock('@/lib/twitch/auth', () => ({
   getTwitchAuthUrl: vi.fn((_redirectUri: string, _state: string, additionalScopes?: string[]) =>
     `https://twitch.tv/authorize?scopes=${(additionalScopes ?? []).join(',')}`
   ),
   exchangeCodeForTokens: vi.fn(),
   getTwitchUser: vi.fn(),
-  isInvalidAuthorizationCodeError: (...args: unknown[]) => mockIsInvalidAuthorizationCodeError(...args),
+  // mock自体の引数型が実関数と一致しているため、spreadラッパーを介さず直接割り当てる
+  isInvalidAuthorizationCodeError: mockIsInvalidAuthorizationCodeError,
 }))
 
 // token-manager
@@ -91,7 +95,9 @@ vi.mock('@/lib/rate-limit', () => ({
 }))
 
 // error handlers and sentry
-const mockHandleAuthError = vi.fn((_err: unknown, code: string) => ({
+// 実関数 handleAuthError(error, errorType, context?, options?) と同じ引数個数で宣言する。
+// 2引数のままだとモックするモジュールの型(4引数)と合わずコンパイルエラーになる。
+const mockHandleAuthError = vi.fn((_err: unknown, code: string, _context?: Record<string, unknown>, _options?: { returnJson?: boolean; baseUrl?: string }) => ({
   type: 'error',
   code,
   cookies: {
@@ -103,7 +109,8 @@ const mockHandleAuthError = vi.fn((_err: unknown, code: string) => ({
   },
 }))
 vi.mock('@/lib/auth-error-handler', () => ({
-  handleAuthError: (...args: unknown[]) => mockHandleAuthError(...args),
+  // 同上: mock自体の引数型が実関数と一致しているため直接割り当てる
+  handleAuthError: mockHandleAuthError,
 }))
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportAuthError: vi.fn(),

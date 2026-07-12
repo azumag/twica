@@ -42,7 +42,10 @@ describe('/api/streamer/additional-rewards raid options', () => {
       twitchUserId: 'streamer-twitch-1',
       twitchUsername: 'streamer',
       twitchDisplayName: 'Streamer',
-      twitchProfileImageUrl: null,
+      // SessionPayload.twitchProfileImageUrl は string 必須（null 非許容）。
+      // 実際のセッション生成元(callback route)でも Twitch API の profile_image_url を
+      // そのまま格納するため、他のテストと同様にプレースホルダURL文字列を使う。
+      twitchProfileImageUrl: 'https://example.com/avatar.png',
       broadcasterType: 'affiliate',
       expiresAt: Date.now() + 60_000,
       version: 1,
@@ -392,7 +395,7 @@ describe('/api/streamer/additional-rewards raid options', () => {
 
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toEqual({
-      error: 'drawCount must be an integer between 1 and 10',
+      error: 'drawCount must be an integer between 1 and 15',
     })
   })
 

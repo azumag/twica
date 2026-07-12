@@ -18,6 +18,10 @@ const baseCard = (overrides: Partial<Card>): Card => ({
   image_url: 'https://example.com/card-a.png',
   rarity: 'common',
   card_number: null,
+  // Card.max_issuance_count は `number | null`(undefined 非許容)。overrides のみに
+  // 委ねると Partial<Card> 由来で `undefined` を許容してしまい型不一致になるため、
+  // ベースオブジェクト側で明示的にデフォルト値を持たせる。
+  max_issuance_count: null,
   collection_name: null,
   drop_rate: 25,
   intra_rarity_weight: 1,

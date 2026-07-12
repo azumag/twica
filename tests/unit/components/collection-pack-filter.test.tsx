@@ -20,6 +20,10 @@ const baseCard = (overrides: Partial<StreamerCollectionCard>): StreamerCollectio
   image_url: null,
   rarity: 'common',
   card_number: null,
+  // StreamerCollectionCard.max_issuance_count は `number | null`(undefined 非許容)。
+  // overrides のみに委ねると Partial<> 由来で `undefined` を許容してしまい型不一致に
+  // なるため、ベースオブジェクト側で明示的にデフォルト値を持たせる。
+  max_issuance_count: null,
   collection_name: null,
   drop_rate: 25,
   intra_rarity_weight: 1,
