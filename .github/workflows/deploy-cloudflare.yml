@@ -59,6 +59,11 @@ on:
         options:
           - preview
           - production
+      include_all_migrations:
+        description: "Preview only: repair an out-of-order migration history"
+        required: false
+        default: false
+        type: boolean
 
 # Prevent concurrent deployments to the same environment
 # 同一環境への同時デプロイを防止
@@ -100,10 +105,25 @@ jobs:
             echo "::error::Production migrations are only allowed from the main branch"
             exit 1
           fi
-          supabase db push --db-url "$SUPABASE_DB_URL" --yes
+
+          # 00073 was merged to main after preview had already applied 00075/00076.
+          # Supabase correctly rejects that out-of-order history by default.  The
+          # escape hatch is deliberately restricted to a manual preview dispatch:
+          # keeping --include-all on normal pushes would hide future numbering
+          # regressions and could apply an old production migration unexpectedly.
+          if [ "$INCLUDE_ALL_MIGRATIONS" = "true" ]; then
+            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ "$RESOLVED_ENV" != "preview" ]; then
+              echo "::error::include_all_migrations is allowed only for a manual preview deployment"
+              exit 1
+            fi
+            supabase db push --db-url "$SUPABASE_DB_URL" --yes --include-all
+          else
+            supabase db push --db-url "$SUPABASE_DB_URL" --yes
+          fi
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           RESOLVED_ENV: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+          INCLUDE_ALL_MIGRATIONS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_all_migrations || 'false' }}
 
   legacy-app-deploy:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'
