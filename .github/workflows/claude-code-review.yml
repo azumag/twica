@@ -28,25 +28,25 @@ jobs:
   claude-review:
     # - draft PR は作業途中のためレビューしない(ready_for_review で拾う)。
     # - fork からの PR では GitHub がシークレットを渡さないため ANTHROPIC_API_KEY が使えず
-    #   必ず失敗する。無駄な失敗 run を作らないよう最初から実行しない。
+    #   必ず失敗する。head.repo.full_name の比較で除外する(fork 判定と異なり、
+    #   fork リポジトリが削除済みで head.repo が null の場合もまとめて除外できる)。
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.fork == false
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # レビュー 1 回は通常数分で終わる。暴走時の runner 課金を抑える上限
+    # (デフォルトは 360 分と長すぎるため明示する)。
+    timeout-minutes: 15
     permissions:
       contents: read
       # レビュー結果を PR コメントとして投稿するために write が必要。
       pull-requests: write
-      issues: write
       # claude-code-action が Claude GitHub App と OIDC トークン交換を行うために必要。
       id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          # レビューは `gh pr diff` / `gh pr view` ベースで行うため全履歴は不要。
-          fetch-depth: 1
 
       - name: Run Claude Code Review
         uses: anthropics/claude-code-action@v1
@@ -72,7 +72,11 @@ jobs:
             実害のほぼない指摘(些細なスタイル等)は省くこと。
             指摘には該当ファイル・行を明示し、修正案を添えること。
 
-            レビュー結果は Bash ツールの `gh pr comment` で PR にコメントとして投稿すること。
-          # ツールを gh の読み取り系 + コメント投稿のみに制限し、
+            レビュー結果は Bash ツールで
+            `gh pr comment <PR番号> --edit-last --create-if-none --body "..."`
+            を使って投稿すること。--edit-last により push のたびにコメントが
+            積み上がらず、常に 1 つのレビューコメントが最新の内容に更新される。
+          # ツールを「diff/PR 情報の取得」と「コメント投稿」のみに制限し、
           # レビューが誤ってコードを変更・push できないようにする。
-          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh issue view:*),Bash(gh search:*)"'
+          # (リポジトリ内ファイルの読み取りは Read/Grep/Glob がデフォルトで使える)
+          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
