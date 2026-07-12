@@ -44,6 +44,10 @@ const limitedTestCards = [
   { id: 'available-card', name: 'Available', description: null, image_url: null, rarity: 'common', drop_rate: 1, max_issuance_count: null },
 ]
 
+// 各テストが setupSupabase に渡した抽選プールを、同じテスト内の PG 読み取り
+// mock でも共有する。これにより driver 切替前後で入力カードだけは完全に一致する。
+let currentTestCards: Array<Record<string, unknown>> = testCards
+
 /** cards クエリの thenable モック(gacha-service.test.ts と同じ流儀) */
 function createCardsQuery<T extends Record<string, unknown>>(cards: T[]) {
   const q = createMockQueryBuilder()
@@ -90,22 +94,33 @@ function renderSqlCall(sqlMock: ReturnType<typeof vi.fn>, index: number) {
   return { text: strings.join('$'), values }
 }
 
-function setupPgSql(responses: Array<{ rows?: unknown[]; reject?: unknown }>) {
+function setupPgSql(
+  responses: Array<{ rows?: unknown[]; reject?: unknown }>,
+  cards: Array<Record<string, unknown>> = currentTestCards,
+) {
   const sqlMock = createSqlMock(responses)
-  vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+  // #718 で PG 経路は RPC 書き込みだけでなく、抽選プールの cards 読み取りも
+  // Drizzle に統一された。where() の Promise だけで実装の await 形状を再現し、
+  // SQL タグ用 responses の消費順序を変えず既存 RPC アサーションを保つ。
+  const where = vi.fn().mockResolvedValue(cards)
+  const from = vi.fn().mockReturnValue({ where })
+  const select = vi.fn().mockReturnValue({ from })
+  vi.mocked(getDb).mockResolvedValue({ db: { select } as never, sql: sqlMock as never })
   return sqlMock
 }
 
 /**
- * supabase-js クライアントモック。cards 読み取りは #573 の対象外(常に postgrest)
- * なので、pg 経路のテストでも必ず必要になる。
+ * supabase-js クライアントモック。PG経路ではcardsをDrizzleから読むが、
+ * 42883時のlegacy fallbackやdriver間の入力カード共有も検証するため保持する。
+ * PG readそのものとPostgREST不使用はgacha-service.test.tsで明示的に固定する。
  */
 function setupSupabase(options?: {
   cards?: Array<Record<string, unknown>>
   rpc?: ReturnType<typeof vi.fn>
   tables?: Record<string, unknown>
 }) {
-  const cardsQuery = createCardsQuery(options?.cards ?? testCards)
+  currentTestCards = options?.cards ?? testCards
+  const cardsQuery = createCardsQuery(currentTestCards)
   const rpc = options?.rpc ?? vi.fn()
   const fromMock = vi.fn((table: string) => {
     if (table === 'cards') return cardsQuery
@@ -122,6 +137,7 @@ function setupSupabase(options?: {
 describe('ガチャ RPC ドライバパリティ (#573)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    currentTestCards = testCards
   })
 
   // 環境変数は vi.stubEnv + vi.unstubAllEnvs で確実に復元する
