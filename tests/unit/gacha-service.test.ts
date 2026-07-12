@@ -4,18 +4,156 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { createMockQueryBuilder } from '../utils/supabase-mock'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { CARD_ISSUANCE_MESSAGES } from '@/lib/card-issuance'
+import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/supabase/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
   return { ...actual, getSupabaseAdmin: vi.fn() }
+})
+
+/**
+ * Issue #718: GACHA_DB_DRIVER=pg で追加した課金系read pathを、実際の
+ * GachaService公開メソッド経由で通す回帰テスト。単にgetDbを呼ぶだけでなく、
+ * 選択列を固定し、Supabase table queryへ混在しないことも検証する。
+ */
+describe('GachaService PG read paths (Issue #718)', () => {
+  function limitQuery(rows: unknown[]) {
+    return {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubEnv('GACHA_DB_DRIVER', 'pg')
+    mockGetSupabaseAdmin.mockReturnValue({
+      from: vi.fn(),
+      rpc: vi.fn(),
+    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('EventSub streamerと追加報酬をPGで読み、未一致を安全に拒否する', async () => {
+    const select = vi.fn()
+      .mockReturnValueOnce(limitQuery([{
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        channel_point_collection_name: null,
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        chat_announcement_multi_template: null,
+        chat_announcement_multi_show_cards: true,
+        raid_gacha_active_until: null,
+        rarity_weights: null,
+        rarity_weights_scope: null,
+        pack_rarity_weights: null,
+        default_card_pack_name: null,
+      }]))
+      .mockReturnValueOnce(limitQuery([]))
+    mockGetDb.mockResolvedValue({ db: { select } as never, sql: vi.fn() as never })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'unknown-reward', cost: 100 },
+    }, 'event-pg-read')
+
+    expect(result).toEqual({ success: false, error: 'Reward ID mismatch' })
+    expect(select).toHaveBeenCalledTimes(2)
+    expect(Object.keys(select.mock.calls[0][0])).toEqual(expect.arrayContaining([
+      'id', 'channel_point_reward_id', 'rarity_weights_scope', 'pack_rarity_weights',
+    ]))
+    expect(Object.keys(select.mock.calls[1][0])).toEqual([
+      'id', 'draw_count', 'is_raid_limited', 'collection_name',
+    ])
+    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalled()
+  })
+
+  it('raid streamerをPGで読み、無効設定ならカード発行前に停止する', async () => {
+    const select = vi.fn().mockReturnValueOnce(limitQuery([{
+      id: 'streamer-1',
+      chat_announcement_enabled: false,
+      chat_announcement_template: null,
+      chat_announcement_multi_template: null,
+      chat_announcement_multi_show_cards: true,
+      raid_gacha_draw_count: 0,
+    }]))
+    mockGetDb.mockResolvedValue({ db: { select } as never, sql: vi.fn() as never })
+
+    const result = await new GachaService().executeGachaForRaidEvent({
+      to_broadcaster_user_id: 'broadcaster-1',
+      from_broadcaster_user_id: 'raider-1',
+    }, 'raid-event-pg-read')
+
+    expect(result.success).toBe(false)
+    expect(select).toHaveBeenCalledTimes(1)
+    expect(Object.keys(select.mock.calls[0][0])).toEqual(expect.arrayContaining([
+      'id', 'raid_gacha_draw_count', 'chat_announcement_multi_show_cards',
+    ]))
+    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalled()
+  })
+
+  it('N連再開判定でgacha_historyをPG読取し、権限エラーを発行前に返す', async () => {
+    const permissionError = Object.assign(new Error('permission denied'), { code: '42501' })
+    const select = vi.fn()
+      .mockReturnValueOnce(limitQuery([{
+        id: 'streamer-1',
+        channel_point_reward_id: 'main-reward',
+        channel_point_collection_name: null,
+        chat_announcement_enabled: false,
+        chat_announcement_template: null,
+        chat_announcement_multi_template: null,
+        chat_announcement_multi_show_cards: true,
+        raid_gacha_active_until: null,
+        rarity_weights: null,
+        rarity_weights_scope: null,
+        pack_rarity_weights: null,
+        default_card_pack_name: null,
+      }]))
+      .mockReturnValueOnce(limitQuery([{
+        id: 'additional-1',
+        draw_count: 2,
+        is_raid_limited: false,
+        collection_name: null,
+      }]))
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(permissionError) }),
+      })
+    mockGetDb.mockResolvedValue({ db: { select } as never, sql: vi.fn() as never })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'additional-reward', cost: 100 },
+    }, 'event-prefix-pg-read')
+
+    expect(result.success).toBe(false)
+    expect(select).toHaveBeenCalledTimes(3)
+    expect(Object.keys(select.mock.calls[2][0])).toEqual(['event_id'])
+    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalled()
+  })
 })
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn(),
   reportApiError: vi.fn(),
   logErrorFromLogger: vi.fn(),
 }))
+vi.mock('@/lib/db/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/db/client')>()
+  return { ...actual, getDb: vi.fn() }
+})
 
 const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
+const mockGetDb = vi.mocked(getDb)
 
 // テスト用カードデータ
 const testCards = [

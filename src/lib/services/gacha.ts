@@ -251,30 +251,48 @@ export class GachaService {
       }> | null
       let cardsError: GachaReadDriverError | null
 
+      // Drizzle側はSupabase SDKの文字列リテラル型推論制約を受けないため、primaryと
+      // max_issuance_count未デプロイ時fallbackで同じpredicate/列定義を共有する。
+      // includeIssuanceLimit=false のときだけ当該列をSQLから外し、呼出側contractは
+      // nullを補って維持する。これにより片側だけpack条件を直し忘れる事故を防ぐ。
+      const loadPgCards = async (includeIssuanceLimit: boolean) => {
+        const { db } = await getDb()
+        const predicates = [
+          eq(cardsTable.streamer_id, streamerId),
+          eq(cardsTable.is_active, true),
+        ]
+        if (collectionName) {
+          predicates.push(collectionName === DEFAULT_PACK_SENTINEL
+            ? isNull(cardsTable.collection_name)
+            : eq(cardsTable.collection_name, collectionName))
+        }
+        const rows = await db.select({
+          id: cardsTable.id,
+          name: cardsTable.name,
+          description: cardsTable.description,
+          image_url: cardsTable.image_url,
+          rarity: cardsTable.rarity,
+          drop_rate: cardsTable.drop_rate,
+          ...(includeIssuanceLimit ? { max_issuance_count: cardsTable.max_issuance_count } : {}),
+          ...(collectionName ? { intra_rarity_weight: cardsTable.intra_rarity_weight } : {}),
+        }).from(cardsTable).where(and(...predicates))
+
+        return rows.map(row => ({
+          ...row,
+          max_issuance_count:
+            includeIssuanceLimit && 'max_issuance_count' in row
+              ? row.max_issuance_count ?? null
+              : null,
+        }))
+      }
+
       if (getGachaDbDriver() === 'pg') {
         try {
-          cards = await withDbRetry(async () => {
-            const { db } = await getDb()
-            const predicates = [
-              eq(cardsTable.streamer_id, streamerId),
-              eq(cardsTable.is_active, true),
-            ]
-            if (collectionName) {
-              predicates.push(collectionName === DEFAULT_PACK_SENTINEL
-                ? isNull(cardsTable.collection_name)
-                : eq(cardsTable.collection_name, collectionName))
-            }
-            return db.select({
-              id: cardsTable.id,
-              name: cardsTable.name,
-              description: cardsTable.description,
-              image_url: cardsTable.image_url,
-              rarity: cardsTable.rarity,
-              drop_rate: cardsTable.drop_rate,
-              max_issuance_count: cardsTable.max_issuance_count,
-              ...(collectionName ? { intra_rarity_weight: cardsTable.intra_rarity_weight } : {}),
-            }).from(cardsTable).where(and(...predicates))
-          }, 'gacha:executeGacha:cards', { idempotent: true })
+          cards = await withDbRetry(
+            () => loadPgCards(true),
+            'gacha:executeGacha:cards',
+            { idempotent: true }
+          )
           cardsError = null
         } catch (error) {
           cards = null
@@ -318,28 +336,11 @@ export class GachaService {
       if (cardsError && isMissingCardIssuanceColumnError(cardsError)) {
         if (getGachaDbDriver() === 'pg') {
           try {
-            const fallbackCards = await withDbRetry(async () => {
-              const { db } = await getDb()
-              const predicates = [
-                eq(cardsTable.streamer_id, streamerId),
-                eq(cardsTable.is_active, true),
-              ]
-              if (collectionName) {
-                predicates.push(collectionName === DEFAULT_PACK_SENTINEL
-                  ? isNull(cardsTable.collection_name)
-                  : eq(cardsTable.collection_name, collectionName))
-              }
-              return db.select({
-                id: cardsTable.id,
-                name: cardsTable.name,
-                description: cardsTable.description,
-                image_url: cardsTable.image_url,
-                rarity: cardsTable.rarity,
-                drop_rate: cardsTable.drop_rate,
-                ...(collectionName ? { intra_rarity_weight: cardsTable.intra_rarity_weight } : {}),
-              }).from(cardsTable).where(and(...predicates))
-            }, 'gacha:executeGacha:cards:fallback', { idempotent: true })
-            cards = fallbackCards.map(card => ({ ...card, max_issuance_count: null }))
+            cards = await withDbRetry(
+              () => loadPgCards(false),
+              'gacha:executeGacha:cards:fallback',
+              { idempotent: true }
+            )
             cardsError = null
           } catch (error) {
             cards = null
