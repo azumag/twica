@@ -55,7 +55,7 @@ describe('GachaService PG read paths (Issue #718)', () => {
     expect(result.success).toBe(true)
     expect(select).toHaveBeenCalledTimes(1)
     expect(Object.keys(select.mock.calls[0][0])).toContain('max_issuance_count')
-    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalledWith('cards')
+    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
   })
 
   it('max_issuance_count未デプロイ時はPG内で列なし再読取しnullを補う', async () => {
@@ -90,7 +90,7 @@ describe('GachaService PG read paths (Issue #718)', () => {
     if (result.success) {
       expect(result.data.card.max_issuance_count).toBeNull()
     }
-    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalledWith('cards')
+    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
   })
 
   it('streamer列欠落時はPostgRESTへ跨がずfail-closedする', async () => {
@@ -119,7 +119,7 @@ describe('GachaService PG read paths (Issue #718)', () => {
     })
     expect(select).toHaveBeenCalledTimes(1)
     // 異なるproviderへ跨ぐfallbackは抽選プールのsplit-brainを起こすため禁止する。
-    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalled()
+    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
   })
 
   it('EventSub streamerと追加報酬をPGで読み、未一致を安全に拒否する', async () => {
@@ -157,7 +157,7 @@ describe('GachaService PG read paths (Issue #718)', () => {
     expect(Object.keys(select.mock.calls[1][0])).toEqual([
       'id', 'draw_count', 'is_raid_limited', 'collection_name',
     ])
-    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalled()
+    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
   })
 
   it('raid streamerをPGで読み、無効設定ならカード発行前に停止する', async () => {
@@ -181,7 +181,7 @@ describe('GachaService PG read paths (Issue #718)', () => {
     expect(Object.keys(select.mock.calls[0][0])).toEqual(expect.arrayContaining([
       'id', 'raid_gacha_draw_count', 'chat_announcement_multi_show_cards',
     ]))
-    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalled()
+    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
   })
 
   it('N連再開判定でgacha_historyをPG読取し、権限エラーを発行前に返す', async () => {
@@ -223,7 +223,7 @@ describe('GachaService PG read paths (Issue #718)', () => {
     expect(result.success).toBe(false)
     expect(select).toHaveBeenCalledTimes(3)
     expect(Object.keys(select.mock.calls[2][0])).toEqual(['event_id'])
-    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalled()
+    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
   })
 })
 vi.mock('@/lib/sentry/error-handler', () => ({
