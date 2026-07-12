@@ -270,7 +270,7 @@ describe("streamer/raid-gacha: postgrest / pg 経路の互換 (#663)", () => {
     it("postgrest 経路: drawCount が範囲外なら400", async () => {
       vi.stubEnv("DB_DRIVER", undefined);
       const { POST } = await loadRoute();
-      const response = await POST(postRequest({ drawCount: 11 }));
+      const response = await POST(postRequest({ drawCount: 16 }));
       expect(response.status).toBe(400);
     });
 
