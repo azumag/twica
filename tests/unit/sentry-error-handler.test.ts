@@ -164,6 +164,19 @@ describe('sentry/error-handler', () => {
       expect(mockFrom).not.toHaveBeenCalled();
     });
 
+    it('DB_DRIVER=pg-readではwriteを従来のPostgREST経路に留める', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg-read');
+
+      await reportError(new Error('read-only rollout'));
+
+      expect(getDb).not.toHaveBeenCalled();
+      expect(mockPgInsert).not.toHaveBeenCalled();
+      expect(mockFrom).toHaveBeenCalledWith('errors');
+      expect(mockInsert).toHaveBeenCalledWith(expect.objectContaining({
+        message: 'read-only rollout',
+      }));
+    });
+
     it('PG insert失敗は呼び出し元へ伝播せずconsole警告へフォールバックする', async () => {
       vi.stubEnv('DB_DRIVER', 'pg');
       mockPgValues.mockRejectedValueOnce(new Error('database unavailable'));
@@ -176,7 +189,7 @@ describe('sentry/error-handler', () => {
       );
     });
 
-    it('失敗後に再入ガードが解除され、次のエラーは記録できる', async () => {
+    it('失敗後も次のエラーは記録できる', async () => {
       vi.stubEnv('DB_DRIVER', 'pg');
       mockPgValues
         .mockRejectedValueOnce(new Error('temporary failure'))
@@ -189,27 +202,22 @@ describe('sentry/error-handler', () => {
       expect(mockPgValues.mock.calls[1][0]).toEqual(expect.objectContaining({ message: 'second' }));
     });
 
-    it('同一エラーの再入だけを抑止し、進行中のinsert完了後にガードを解除する', async () => {
+    it('別requestで並行発生した同一内容のエラーをどちらも記録する', async () => {
       vi.stubEnv('DB_DRIVER', 'pg');
       let releaseInsert!: () => void;
       mockPgValues.mockReturnValueOnce(new Promise<void>((resolve) => {
         releaseInsert = resolve;
       }));
 
-      const first = reportError('recursive');
+      const first = reportError('same incident');
       await waitForMockCalls(mockPgValues, 1);
-      const nested = reportError('recursive');
-      await nested;
+      const concurrent = reportError('same incident');
+      await waitForMockCalls(mockPgValues, 2);
 
-      expect(mockPgValues).toHaveBeenCalledTimes(1);
-      expect(console.warn).toHaveBeenCalledWith(
-        '[Error Tracking] Recursive error persistence was suppressed',
-      );
+      expect(mockPgValues).toHaveBeenCalledTimes(2);
 
       releaseInsert();
-      await first;
-      await reportError('recursive');
-      expect(mockPgValues).toHaveBeenCalledTimes(2);
+      await Promise.all([first, concurrent]);
     });
   });
 
