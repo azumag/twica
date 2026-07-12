@@ -38,6 +38,61 @@ describe('GachaService PG read paths (Issue #718)', () => {
     vi.unstubAllEnvs()
   })
 
+  it('executeGachaのcardsをPGで読み、PostgRESTのcards tableへ触れない', async () => {
+    const where = vi.fn().mockResolvedValue(testCards)
+    const select = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({ where }),
+    })
+    const sql = vi.fn().mockResolvedValue([{
+      result: { is_duplicate: false, limit_reached: false, history_id: 'history-pg-read' },
+    }])
+    mockGetDb.mockResolvedValue({ db: { select } as never, sql: sql as never })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-cards-pg-read'
+    )
+
+    expect(result.success).toBe(true)
+    expect(select).toHaveBeenCalledTimes(1)
+    expect(Object.keys(select.mock.calls[0][0])).toContain('max_issuance_count')
+    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalledWith('cards')
+  })
+
+  it('max_issuance_count未デプロイ時はPG内で列なし再読取しnullを補う', async () => {
+    const missingColumn = Object.assign(
+      new Error('column max_issuance_count does not exist'),
+      { code: '42703' }
+    )
+    const select = vi.fn()
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(missingColumn) }),
+      })
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(testCards.map(card => {
+          const { max_issuance_count: _omitted, ...withoutLimit } = card
+          void _omitted
+          return withoutLimit
+        })) }),
+      })
+    const sql = vi.fn().mockResolvedValue([{
+      result: { is_duplicate: false, limit_reached: false, history_id: 'history-pg-fallback' },
+    }])
+    mockGetDb.mockResolvedValue({ db: { select } as never, sql: sql as never })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-cards-pg-fallback'
+    )
+
+    expect(result.success).toBe(true)
+    expect(select).toHaveBeenCalledTimes(2)
+    expect(Object.keys(select.mock.calls[0][0])).toContain('max_issuance_count')
+    expect(Object.keys(select.mock.calls[1][0])).not.toContain('max_issuance_count')
+    if (result.success) {
+      expect(result.data.card.max_issuance_count).toBeNull()
+    }
+    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalledWith('cards')
+  })
+
   it('EventSub streamerと追加報酬をPGで読み、未一致を安全に拒否する', async () => {
     const select = vi.fn()
       .mockReturnValueOnce(limitQuery([{

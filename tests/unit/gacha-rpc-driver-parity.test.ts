@@ -110,8 +110,9 @@ function setupPgSql(
 }
 
 /**
- * supabase-js クライアントモック。cards 読み取りは #573 の対象外(常に postgrest)
- * なので、pg 経路のテストでも必ず必要になる。
+ * supabase-js クライアントモック。PG経路ではcardsをDrizzleから読むが、
+ * 42883時のlegacy fallbackやdriver間の入力カード共有も検証するため保持する。
+ * PG readそのものとPostgREST不使用はgacha-service.test.tsで明示的に固定する。
  */
 function setupSupabase(options?: {
   cards?: Array<Record<string, unknown>>
