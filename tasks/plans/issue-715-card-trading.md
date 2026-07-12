@@ -135,7 +135,7 @@ CREATE POLICY "Service can manage trade_offers" ON trade_offers
 
 - ユーザー退会時は `offerer_user_id` のCASCADEで相手側の成立履歴も消える。これは既存の全面CASCADE方針(users削除で user_cards 等も消える)と整合する**意図的な**挙動
 - 将来カードストーン交換(`exchange_duplicate_card_for_stones`、現状 `src/` から未呼び出しの休眠機能)をAPIに配線する際は、
-  同RPCの交換対象選択クエリに「openオファー出品中のコピーを除外」する条件追加が必要(子issueに明記)
+  同RPCの交換対象選択クエリに「openオファー出品中のコピーを除外」する条件追加が必要(子issue #2 の注意事項に明記)
 
 ### 4.2 streamers への設定カラム追加
 
@@ -243,7 +243,9 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
   `cross_channel_trade_enabled=eq.true` も条件に加える。PostgRESTで表現困難な場合は一覧用VIEWを検討(実装時判断)
 - **応諾可否(canAccept)**: ログインユーザーの支払い可能カードを別クエリ1本で取得し
   (自分の所持 `user_cards` から「自分がopenオファーに出品中の `offered_user_card_id`」を除外して card_id 集合を作る)、
-  アプリ側で各オファーに `canAccept: boolean` を付与して返す。
+  アプリ側で各オファーに `canAccept` を付与して返す。自分の出品は `isOwnOffer: true` を返して
+  `canAccept` 計算から除外する(UIは「自分の出品」バッジ+キャンセルボタン表示。
+  自己応諾はサーバ側でも `TRADE_SELF_ACCEPT` で禁止済み)。
   **除外規則を §4.4 手順4 と完全に一致させる**こと(「ボタン有効なのに押すと CARD_NOT_OWNED」の食い違い防止)。
   クエリは2本固定でありN+1にはならない
 
@@ -358,6 +360,7 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
   - `TRADE_ALREADY_COMPLETED` / `OFFER_INVALID`: 「この取引は成立済み(または無効)です」→ 閉じたら一覧refetch
   - `TRADE_BUSY`: 「混雑しています。しばらくしてから再試行してください」
   - `TRADE_CARD_NOT_OWNED`: 「交換に出せるカードがありません」
+  - `TRADE_SELF_ACCEPT`: 「自分の出品には応じられません」(通常UIからは到達しないが文言は定義しておく)
 - モーダルのアクセシビリティ: 既存モーダルコンポーネントのfocus管理パターンを踏襲し、
   focus trap + `aria-modal` + Escで閉じる。**初期フォーカスは非破壊的な「キャンセル」ボタン**に置く
   (即時成立・取消不可の操作のため、Enter連打での誤成立を防ぐ)
@@ -450,7 +453,7 @@ MVPでは通知なし(マイトレード画面で確認)。フェーズ2で:
 6. **視聴者UI: トレードボード+応諾フロー**
 7. **視聴者UI: 出品フロー+マイトレード**
 8. **rate limit KVストレージ配線**(§5参照。トレード一般公開前の必須条件。既存機能にも波及するため独立issue)
-9. **フェーズ2: 成立通知(Realtime)+不正検知の検討** ※優先度低
+9. **フェーズ2: 成立通知(Realtime)+不正検知・RMT対策(TOS追記含む)の検討** ※優先度低
 
 テスト方針: 2はRPCのSQLテスト(同時応諾・喪失・冪等リプレイ)、3/4はAPI統合テスト(23505リプレイ・40P01写像を含む)、6/7はコンポーネント単体テスト+E2Eシナリオ追記(`E2E_TEST_CASES.md`)。
 
