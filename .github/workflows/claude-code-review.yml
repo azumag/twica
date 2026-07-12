@@ -1,0 +1,78 @@
+# main への PR を Claude Code で自動レビューするワークフロー。
+# anthropics/claude-code-action@v1 の公式推奨構成
+# (https://github.com/anthropics/claude-code-action / https://code.claude.com/docs/en/github-actions)
+# をベースに、このリポジトリの運用(preview → main フロー、CLAUDE.md のレビュー観点)に合わせている。
+#
+# 前提となるリポジトリ設定(ワークフローだけでは動かない):
+#   1. Claude GitHub App のインストール: https://github.com/apps/claude
+#   2. リポジトリシークレット ANTHROPIC_API_KEY の登録
+#      (Settings → Secrets and variables → Actions)
+name: Claude Code Review
+
+on:
+  pull_request:
+    # opened/synchronize: PR 作成時と push のたびにレビュー。
+    # reopened: 再オープン時は最新状態を再レビュー。
+    # ready_for_review: draft 解除のタイミングでレビュー(draft 中は下の if でスキップするため、
+    #                   解除時に一度レビューが走るようにする)。
+    types: [opened, synchronize, reopened, ready_for_review]
+    # ユーザー要件: main への PR のみを対象とする(preview への PR ではコストをかけない)。
+    branches: [main]
+
+# 同一 PR で push が連続した場合、古いレビュー実行をキャンセルして API コストを抑える。
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # - draft PR は作業途中のためレビューしない(ready_for_review で拾う)。
+    # - fork からの PR では GitHub がシークレットを渡さないため ANTHROPIC_API_KEY が使えず
+    #   必ず失敗する。無駄な失敗 run を作らないよう最初から実行しない。
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # レビュー結果を PR コメントとして投稿するために write が必要。
+      pull-requests: write
+      issues: write
+      # claude-code-action が Claude GitHub App と OIDC トークン交換を行うために必要。
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # レビューは `gh pr diff` / `gh pr view` ベースで行うため全履歴は不要。
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # レビュー観点は CLAUDE.md の「review aspects」に揃える。
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            この Pull Request をレビューし、日本語でフィードバックしてください。
+            まず `gh pr diff` で差分を取得し、必要に応じて関連ソースを読んで文脈を確認すること。
+
+            レビュー観点(リポジトリの CLAUDE.md に準拠):
+            - コード品質とベストプラクティス
+            - 潜在的なバグとエッジケース
+            - パフォーマンスへの影響
+            - セキュリティ上の問題
+            - コードの簡潔性(過度な抽象化・複雑化、YAGNI 違反)
+            - 単体テストのカバレッジは十分か
+
+            本番障害・破壊的変更・ユーザー影響につながる問題を最重要視し、
+            実害のほぼない指摘(些細なスタイル等)は省くこと。
+            指摘には該当ファイル・行を明示し、修正案を添えること。
+
+            レビュー結果は Bash ツールの `gh pr comment` で PR にコメントとして投稿すること。
+          # ツールを gh の読み取り系 + コメント投稿のみに制限し、
+          # レビューが誤ってコードを変更・push できないようにする。
+          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh issue view:*),Bash(gh search:*)"'
