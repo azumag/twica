@@ -187,7 +187,16 @@ function buildDrawEventId(eventId: string | undefined, index: number): string | 
 }
 
 export class GachaService {
-  private supabase = getSupabaseAdmin()
+  /**
+   * PostgREST経路を実際に使う時だけSupabase admin clientを生成する。
+   * GACHA_DB_DRIVER=pg では全read/writeをHyperdriveへ揃えているため、class fieldで
+   * eagerly生成すると、Phase 4でSupabase環境変数を削除した後もconstructorだけで
+   * throwしてPG経路へ到達できない。getSupabaseAdmin()自体がsingletonなので、
+   * getter化してもPostgREST経路でclientを繰り返し生成するコストは発生しない。
+   */
+  private get supabase() {
+    return getSupabaseAdmin()
+  }
 
   async executeGacha(
     streamerId: string,

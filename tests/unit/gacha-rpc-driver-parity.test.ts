@@ -200,7 +200,11 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
     })
 
     it('正常系: 名前付き引数の SQL が実行され ok(card) が返る(supabase rpc は不呼出)', async () => {
-      const { rpc } = setupSupabase()
+      // Phase 4でSupabase env/clientが存在しなくてもPG経路がconstructorから完走する
+      // ことを固定する。単なるfrom()未呼出ではeager client生成の退行を検知できない。
+      mockGetSupabaseAdmin.mockImplementation(() => {
+        throw new Error('Supabase environment must not be required in PG mode')
+      })
       const sqlMock = setupPgSql([
         { rows: [{ result: { is_duplicate: false, limit_reached: false, history_id: 'h-pg-1' } }] },
       ])
@@ -227,8 +231,8 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       expect(text).toContain('p_reward_id => $')
       expect(values).toEqual(['event-1', 'user-1', 'testuser', 'card-1', 'streamer-1', null, null])
 
-      // 書き込み RPC が postgrest 経路へ流れていないこと
-      expect(rpc).not.toHaveBeenCalled()
+      // client生成を含め、PostgREST経路へ一切触れていないこと
+      expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
     })
 
     it('rewardCost / rewardId は bind 値としてそのまま渡される', async () => {
