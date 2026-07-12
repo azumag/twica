@@ -48,17 +48,18 @@ COMMENT ON COLUMN streamers.publish_live_status IS '配信中ディレクトリ(
 COMMENT ON COLUMN streamers.publish_stats IS '/liveでのカード統計公開オプトイン (issue #632)';
 
 -- 公開ディレクトリ用read RPC: オプトイン配信者と公開可能な集計のみを返す
+-- RETURNS JSONB（行オブジェクトの配列）とする。RETURNS TABLE にしない。
+-- 理由: pg直結パリティヘルパー executeDashboardRpcPg (dashboard-data.ts) は
+-- 「RPCがすべて RETURNS JSONB だからスカラーSELECTで両経路が同一形状になる」前提であり、
+-- RETURNS TABLE + BIGINT だと postgres.js (fetch_types: false) が int8 を文字列で返し
+-- PostgREST経路(数値)と型パリティが壊れるため。JSONB内で数値はJSON number に正規化される。
 CREATE OR REPLACE FUNCTION get_live_directory_streamers()
-RETURNS TABLE (
-  streamer_id UUID,
-  twitch_user_id TEXT,
-  twitch_username TEXT,
-  twitch_display_name TEXT,
-  twitch_profile_image_url TEXT,
-  publish_stats BOOLEAN,
-  card_count BIGINT,          -- publish_stats=false なら NULL
-  redemption_count BIGINT     -- 同上
-) ...
+RETURNS JSONB ...
+-- 各要素: { "streamerId": uuid, "twitchUserId": text, "twitchUsername": text,
+--          "twitchDisplayName": text, "twitchProfileImageUrl": text,
+--          "publishStats": bool,
+--          "cardCount": number|null,        -- publish_stats=false なら null
+--          "redemptionCount": number|null } -- 同上
 ```
 
 - RPCは `SECURITY DEFINER` + `search_path` 固定 + **`REVOKE ALL FROM PUBLIC; GRANT EXECUTE TO service_role` のみ**（既存 `00073` の流儀）。呼び出しはサーバ側の `getSupabaseAdmin()`（service role）経由に限定し、anon/authenticated へは公開しない。`publish_live_status = TRUE AND is_active = TRUE` でサーバ側フィルタ（クライアントに非公開者を渡さない）。
@@ -76,14 +77,15 @@ RETURNS TABLE (
 ### ライブ一覧取得（新規lib、公開APIルートは作らない）
 - `src/lib/live-directory.ts`（新規）
   - `getLiveDirectory(): Promise<LiveDirectoryEntry[]>`。**キャッシュはCloudflare KVで自前実装**（`unstable_cache`/ISRは本番no-opのため使わない）:
-    - 既存バインディング `RATE_LIMIT_KV`（wrangler.toml で prod/preview 両方に定義済み）を `getCloudflareContext({ async: true })`（`src/lib/r2-client.ts` と同パターン）で取得し、キー `live-directory:v1` に JSON を `expirationTtl: 60` で保存。専用namespaceの新設はYAGNI（キーprefixで分離。将来必要なら移行）。
+    - バインディング `RATE_LIMIT_KV`（wrangler.toml で prod/preview 両方に宣言済み。ただし**実行時に使用しているコードは現状ゼロ**＝レート制限は実際にはMemoryRateLimitStorageで動作しており、本機能がこのnamespaceの最初の本番コンシューマになる。C実装時にpreviewで疎通確認すること）を `getCloudflareContext({ async: true })`（`src/lib/r2-client.ts` と同パターン）で取得し、キー `live-directory:v1` に JSON を `expirationTtl: 60` で保存。namespaceが実質空のためキー衝突リスクはなし。専用namespaceの新設はYAGNI（キーprefixで分離。将来必要なら移行）。
     - cache hit → KVの値をそのまま返す。miss → RPC + Helix を実行して書き戻し。
     - KV未使用環境（ローカル `next dev` 等）はプロセス内メモ化（timestamp付きモジュール変数）にフォールバック。
     - TTL切れ瞬間のスタンピードは、同時computeがHelix/DBの単発呼び出し数件で頭打ちのため許容（分散ロックはYAGNI）。
   - 手順: RPCでオプトイン配信者取得 → `twitch_user_id` を100件ずつ `GET https://api.twitch.tv/helix/streams` → ライブ中のみ合成して返す。
-  - **app access token 共通化**: client_credentials 実装は現在3箇所に重複している（`eventsub/subscribe/route.ts` / `eventsub/debug/route.ts` / `channel-point-bootstrap/route.ts`）。`src/lib/twitch/app-token.ts` へ抽出し**3箇所すべてを置き換える**。抽出ヘルパーは `expires_in` を尊重した有効期限付きキャッシュ（KV: キー `twitch:app-token`、TTL = expires_in の8割程度）を持ち、毎回の新規発行をやめる。トークンはサーバ側KVのみに保存しクライアントへ渡さない。
+  - **app access token 共通化**: client_credentials 実装は現在3箇所に重複している（`eventsub/subscribe/route.ts` / `eventsub/debug/route.ts` / `channel-point-bootstrap/route.ts`）。`src/lib/twitch/app-token.ts` へ抽出し**3箇所すべてを置き換える**。抽出ヘルパーは有効期限付きキャッシュ（KV: キー `twitch:app-token`、TTL = `min(expires_in × 0.8, 4時間)` — expires_inは約60日あるため上限を短く固定し、死んだトークンの長期残留を防ぐ）を持ち、毎回の新規発行をやめる。トークンはサーバ側KVのみに保存しクライアントへ渡さない。
+  - **token失効時の自己回復（必須）**: `TWITCH_CLIENT_SECRET` ローテーション等でキャッシュ済みトークンが失効した場合に既存3ルート（EventSub subscribe 含む本番経路）を壊さないため、**Helix/EventSub呼び出しが401を返したらKVキーを削除して1回だけ再発行・リトライ**する（業界標準の対処）。この共通化は「毎回新規発行」だった既存挙動をキャッシュ化する変更なので、この自己回復がないと既存経路の劣化になる。
   - RPC呼び出しは `getSupabaseAdmin().rpc()`。**pg直結パリティ**（`DB_DRIVER=pg`）は現行規約（dashboard-data.ts の `.rpc()` パリティ実装、#718参照）に従い**最初から両経路実装**し、driver-parityテストを追加する（この経路だけPostgREST依存を残すと #718 と同種の残存になるため）。
-  - Helix障害時はエラーを投げず空配列＋`reportError`（`src/lib/sentry/error-handler.ts`）で通知（公開ページを500にしない。障害が「誰も配信していない」と区別できるようSentryで観測する）。オプトイン0件ならHelixを呼ばない。
+  - Helix障害時はエラーを投げず空配列＋`reportError`（`src/lib/sentry/error-handler.ts`）で通知（公開ページを500にしない。障害が「誰も配信していない」と区別できるようSentryで観測する）。**RPC/DB障害時（migration未適用デプロイ窓の42883含む）も同一方針**: throwせず空配列＋`reportError`。オプトイン0件ならHelixを呼ばない。
 - ページはserver componentから直接この関数を呼ぶ。**公開JSON APIは追加しない**（攻撃面・rate limit管理を増やさない。必要になったら別Issue）。
 - `/live` はページルートのため middleware のグローバルAPIレート制限（`/api/*` のみ）の対象外だが、KVキャッシュにより1リクエストあたりの原価は「KV read 1回」まで下がるため、追加のページレート制限は設けない（KV書き込み側はTTL内1回）。
 
@@ -165,7 +167,7 @@ interface LiveDirectoryEntry {
 ## テスト方針（各子Issueに分配）
 
 - B: settings routeの新フラグ受理/検証/欠落カラムfallback（追加1段）テスト（`tests/unit/api/`）、トグルcomponentテスト（`tests/unit/components/`、`chat-announcement-settings.test.tsx` 踏襲）
-- C: RPC結果整形・Helixバッチ分割（101人→2リクエスト）・Helix障害時の空配列fallback＋`reportError`呼び出し・`publish_stats=false` のNULLマスク・KVキャッシュhit/miss/ローカルフォールバック・app-tokenキャッシュ再利用のユニットテスト（Helix/KVはモック）。RPCのdriver-parityテスト（`tests/unit/*driver-parity*` 踏襲）。app-token共通化による既存3ルートのregressionテスト
+- C: RPC結果整形・Helixバッチ分割（101人→2リクエスト）・Helix/RPC障害時の空配列fallback＋`reportError`呼び出し・`publish_stats=false` のNULLマスク・KVキャッシュhit/miss/ローカルフォールバック・app-tokenキャッシュ再利用・**401→キャッシュ破棄→1回だけ再発行リトライ**のユニットテスト（Helix/KVはモック）。RPCのdriver-parityテスト（値と**型**の両方をアサート、`tests/unit/*driver-parity*` 踏襲）。app-token共通化による既存3ルートのregressionテスト
 - D: ソート順（stats null末尾含む）・空状態のcomponentテスト。`/live` が `getSession` を呼ばないことの構造テスト
 - 既存機能（ガチャ/設定/overlay）のregressionは既存テストで担保。migrationは `check:migration-order` を通す
 
