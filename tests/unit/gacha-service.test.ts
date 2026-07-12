@@ -93,6 +93,35 @@ describe('GachaService PG read paths (Issue #718)', () => {
     expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalledWith('cards')
   })
 
+  it('streamer列欠落時はPostgRESTへ跨がずfail-closedする', async () => {
+    const missingColumn = Object.assign(
+      new Error('column rarity_weights_scope does not exist'),
+      { code: '42703' }
+    )
+    const select = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockRejectedValue(missingColumn) }),
+      }),
+    })
+    mockGetDb.mockResolvedValue({ db: { select } as never, sql: vi.fn() as never })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'reward-1', cost: 100 },
+    }, 'event-schema-not-ready')
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Database error fetching streamer: column rarity_weights_scope does not exist',
+    })
+    expect(select).toHaveBeenCalledTimes(1)
+    // 異なるproviderへ跨ぐfallbackは抽選プールのsplit-brainを起こすため禁止する。
+    expect(mockGetSupabaseAdmin.mock.results[0].value.from).not.toHaveBeenCalled()
+  })
+
   it('EventSub streamerと追加報酬をPGで読み、未一致を安全に拒否する', async () => {
     const select = vi.fn()
       .mockReturnValueOnce(limitQuery([{
