@@ -38,7 +38,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vitest-unit-report
-          path: vitest-report.json
+          path: |
+            vitest-report.json
+            tests/unit/raid-gacha-driver-parity.test.ts
           if-no-files-found: ignore
           retention-days: 7
 
