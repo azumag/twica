@@ -13,6 +13,13 @@ import { getDb } from '@/lib/db/client'
 import { getGachaDbDriver } from '@/lib/db/flags'
 import { withDbRetry } from '@/lib/db/retry'
 import { isPgFunctionNotFoundError } from '@/lib/db/errors'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
+import {
+  cards as cardsTable,
+  gachaHistory,
+  streamerAdditionalGachaRewards,
+  streamers,
+} from '@/lib/db/schema'
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError } from '@/lib/card-issuance'
 import {
   isMissingCollectionNameColumn,
@@ -27,7 +34,10 @@ export interface GachaCard {
   name: string
   description: string | null
   image_url: string | null
-  rarity: 'common' | 'rare' | 'epic' | 'legendary'
+  // migration 00048 で固定 CHECK は撤廃され、配信者定義のカスタムレアリティを
+  // 許可している。PG 経路の schema.ts も text として扱うため、旧4種 union に
+  // 狭めると正しい DB 行を型上だけ拒否してしまう。
+  rarity: string
   drop_rate: number
   max_issuance_count?: number | null
 }
@@ -108,6 +118,20 @@ interface GachaTransactionRpcResult {
 interface GachaRpcDriverError {
   code?: string
   message: string
+}
+
+interface GachaReadDriverError {
+  code?: string
+  message: string
+}
+
+function normalizePgReadError(error: unknown): GachaReadDriverError {
+  return {
+    code: typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : undefined,
+    message: error instanceof Error ? error.message : String(error),
+  }
 }
 
 /**
@@ -211,8 +235,54 @@ export class GachaService {
       // Row 型を推論するため(変数文字列や三項式を渡すと型が崩れる)、列リストが
       // 異なる分岐ごとに select() 呼び出し自体を分ける。パック未指定クエリの
       // 列リストは従来(main の #108 実装)と完全に同一のまま維持する。
-      let { data: cards, error: cardsError } = await withRetry(
-        () => {
+      // #718: ガチャの読み取りと書き込みは同じ GACHA_DB_DRIVER で切り替える。
+      // DB_DRIVER と分離すると、緊急ロールバック時に抽選プールだけ別 provider を
+      // 読み続ける split-brain が起きるため、課金系クリティカルパスを一つの
+      // rollback unit として扱う。PG 読み取りは冪等なので接続断リトライを許可する。
+      let cards: Array<{
+        id: string
+        name: string
+        description: string | null
+        image_url: string | null
+        rarity: string
+        drop_rate: number
+        max_issuance_count: number | null
+        intra_rarity_weight?: number | null
+      }> | null
+      let cardsError: GachaReadDriverError | null
+
+      if (getGachaDbDriver() === 'pg') {
+        try {
+          cards = await withDbRetry(async () => {
+            const { db } = await getDb()
+            const predicates = [
+              eq(cardsTable.streamer_id, streamerId),
+              eq(cardsTable.is_active, true),
+            ]
+            if (collectionName) {
+              predicates.push(collectionName === DEFAULT_PACK_SENTINEL
+                ? isNull(cardsTable.collection_name)
+                : eq(cardsTable.collection_name, collectionName))
+            }
+            return db.select({
+              id: cardsTable.id,
+              name: cardsTable.name,
+              description: cardsTable.description,
+              image_url: cardsTable.image_url,
+              rarity: cardsTable.rarity,
+              drop_rate: cardsTable.drop_rate,
+              max_issuance_count: cardsTable.max_issuance_count,
+              ...(collectionName ? { intra_rarity_weight: cardsTable.intra_rarity_weight } : {}),
+            }).from(cardsTable).where(and(...predicates))
+          }, 'gacha:executeGacha:cards', { idempotent: true })
+          cardsError = null
+        } catch (error) {
+          cards = null
+          cardsError = normalizePgReadError(error)
+        }
+      } else {
+        const result = await withRetry(
+          () => {
           if (collectionName) {
             let query = this.supabase
               .from('cards')
@@ -239,12 +309,45 @@ export class GachaService {
             .eq('streamer_id', streamerId)
             .eq('is_active', true)
         },
-        'gacha:executeGacha:cards',
-      )
+          'gacha:executeGacha:cards',
+        )
+        cards = result.data
+        cardsError = result.error
+      }
 
       if (cardsError && isMissingCardIssuanceColumnError(cardsError)) {
-        const fallbackResult = await withRetry(
-          () => {
+        if (getGachaDbDriver() === 'pg') {
+          try {
+            const fallbackCards = await withDbRetry(async () => {
+              const { db } = await getDb()
+              const predicates = [
+                eq(cardsTable.streamer_id, streamerId),
+                eq(cardsTable.is_active, true),
+              ]
+              if (collectionName) {
+                predicates.push(collectionName === DEFAULT_PACK_SENTINEL
+                  ? isNull(cardsTable.collection_name)
+                  : eq(cardsTable.collection_name, collectionName))
+              }
+              return db.select({
+                id: cardsTable.id,
+                name: cardsTable.name,
+                description: cardsTable.description,
+                image_url: cardsTable.image_url,
+                rarity: cardsTable.rarity,
+                drop_rate: cardsTable.drop_rate,
+                ...(collectionName ? { intra_rarity_weight: cardsTable.intra_rarity_weight } : {}),
+              }).from(cardsTable).where(and(...predicates))
+            }, 'gacha:executeGacha:cards:fallback', { idempotent: true })
+            cards = fallbackCards.map(card => ({ ...card, max_issuance_count: null }))
+            cardsError = null
+          } catch (error) {
+            cards = null
+            cardsError = normalizePgReadError(error)
+          }
+        } else {
+          const fallbackResult = await withRetry(
+            () => {
             // Issue #579: fallback 側もパック指定時は intra_rarity_weight を含める
             // (含めないと発行上限列のデプロイ窓中だけパック内自動配分が
             // intra=デフォルト1.0 扱いになり配分が静かにズレる)。列リストが
@@ -269,13 +372,14 @@ export class GachaService {
               .eq('streamer_id', streamerId)
               .eq('is_active', true)
           },
-          'gacha:executeGacha:cards:fallback',
-        )
-        cards = fallbackResult.data?.map((card) => ({
-          ...card,
-          max_issuance_count: null,
-        })) ?? null
-        cardsError = fallbackResult.error
+            'gacha:executeGacha:cards:fallback',
+          )
+          cards = fallbackResult.data?.map((card) => ({
+            ...card,
+            max_issuance_count: null,
+          })) ?? null
+          cardsError = fallbackResult.error
+        }
       }
 
       if (cardsError) {
@@ -814,13 +918,32 @@ export class GachaService {
       (_, index) => buildDrawEventId(eventId, index) as string
     )
 
-    const { data, error } = await withRetry(
-      () => this.supabase
-        .from('gacha_history')
-        .select('event_id')
-        .in('event_id', candidateEventIds),
-      'gacha:executeGachaDraws:completedPrefix',
-    )
+    let data: Array<{ event_id: string | null }> | null
+    let error: GachaReadDriverError | null
+    if (getGachaDbDriver() === 'pg') {
+      try {
+        data = await withDbRetry(async () => {
+          const { db } = await getDb()
+          return db.select({ event_id: gachaHistory.event_id })
+            .from(gachaHistory)
+            .where(inArray(gachaHistory.event_id, candidateEventIds))
+        }, 'gacha:executeGachaDraws:completedPrefix', { idempotent: true })
+        error = null
+      } catch (queryError) {
+        data = null
+        error = normalizePgReadError(queryError)
+      }
+    } else {
+      const result = await withRetry(
+        () => this.supabase
+          .from('gacha_history')
+          .select('event_id')
+          .in('event_id', candidateEventIds),
+        'gacha:executeGachaDraws:completedPrefix',
+      )
+      data = result.data
+      error = result.error
+    }
 
     if (error) {
       return err(`Database error: ${error.message}`)
@@ -1070,14 +1193,59 @@ export class GachaService {
       // (#576 フェーズ2) のパック内レアリティ自動配分に使う。
       // default_card_pack_name (migration 00063, Issue #554) は {packName} プレースホルダで
       // デフォルト(未分類)パックの表示名オーバーライドとして使う(Issue #597)。
-      let { data: streamer, error: streamerError } = await withRetry(
-        () => this.supabase
-          .from('streamers')
-          .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, rarity_weights_scope, pack_rarity_weights, default_card_pack_name')
-          .eq('twitch_user_id', event.broadcaster_user_id)
-          .maybeSingle(),
-        'gacha:executeGachaForEventSub:streamer',
-      )
+      let streamer: {
+        id: string
+        channel_point_reward_id: string | null
+        channel_point_collection_name: string | null
+        chat_announcement_enabled: boolean
+        chat_announcement_template: string | null
+        chat_announcement_multi_template: string | null
+        chat_announcement_multi_show_cards: boolean
+        raid_gacha_active_until: string | null
+        rarity_weights: Record<string, number> | null
+        rarity_weights_scope: string | null
+        pack_rarity_weights: Record<string, Record<string, number>> | null
+        default_card_pack_name: string | null
+      } | null
+      let streamerError: GachaReadDriverError | null
+
+      if (getGachaDbDriver() === 'pg') {
+        try {
+          const rows = await withDbRetry(async () => {
+            const { db } = await getDb()
+            return db.select({
+              id: streamers.id,
+              channel_point_reward_id: streamers.channel_point_reward_id,
+              channel_point_collection_name: streamers.channel_point_collection_name,
+              chat_announcement_enabled: streamers.chat_announcement_enabled,
+              chat_announcement_template: streamers.chat_announcement_template,
+              chat_announcement_multi_template: streamers.chat_announcement_multi_template,
+              chat_announcement_multi_show_cards: streamers.chat_announcement_multi_show_cards,
+              raid_gacha_active_until: streamers.raid_gacha_active_until,
+              rarity_weights: streamers.rarity_weights,
+              rarity_weights_scope: streamers.rarity_weights_scope,
+              pack_rarity_weights: streamers.pack_rarity_weights,
+              default_card_pack_name: streamers.default_card_pack_name,
+            }).from(streamers).where(eq(streamers.twitch_user_id, event.broadcaster_user_id)).limit(1)
+          }, 'gacha:executeGachaForEventSub:streamer', { idempotent: true })
+          streamer = rows[0] ?? null
+          streamerError = null
+        } catch (error) {
+          streamer = null
+          streamerError = normalizePgReadError(error)
+        }
+      } else {
+        const result = await withRetry(
+          () => this.supabase
+            .from('streamers')
+            .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, rarity_weights_scope, pack_rarity_weights, default_card_pack_name')
+            .eq('twitch_user_id', event.broadcaster_user_id)
+            .maybeSingle(),
+          'gacha:executeGachaForEventSub:streamer',
+        )
+        streamer = result.data
+        streamerError = result.error
+      }
 
       // Issue #579 (#576 フェーズ2): rarity_weights_scope / pack_rarity_weights は
       // migration 00065(#578)で追加された列で、channel_point_collection_name
@@ -1090,7 +1258,12 @@ export class GachaService {
       // 再取得する。欠落時は rarity_weights_scope=null
       // (resolveRarityWeightsForPool は null/undefined を 'global' として扱う)
       // / pack_rarity_weights=null (パック別上書きなし) を安全側デフォルトとする。
+      // PG フラグは必要 migration の適用確認後にだけ有効化する運用契約のため、
+      // PG 側で 42703 が出た場合に PostgREST へ跨いだ fallback は行わない。
+      // ここで旧経路へ混ぜると Phase 2 の provider 切替後に古い DB を読んで抽選する
+      // 危険がある。PG 経路はエラーとして停止し、GACHA_DB_DRIVER 全体を戻す。
       if (
+        getGachaDbDriver() !== 'pg' &&
         streamerError &&
         (isMissingRarityWeightsScopeColumnError(streamerError) || isMissingPackRarityWeightsColumnError(streamerError))
       ) {
@@ -1120,7 +1293,7 @@ export class GachaService {
       // raid_gacha_active_until. 列が複数欠落していれば後続の広域 fallback が拾う。
       // rarity_weights_scope/pack_rarity_weights はこの分岐に来る時点で確実に
       // 未デプロイ(上のコメント参照)なので選択せず null 固定にする。
-      if (streamerError && isMissingCollectionNameColumn(streamerError)) {
+      if (getGachaDbDriver() !== 'pg' && streamerError && isMissingCollectionNameColumn(streamerError)) {
         const collectionFallback = await withRetry(
           () => this.supabase
             .from('streamers')
@@ -1144,7 +1317,7 @@ export class GachaService {
         streamerError = collectionFallback.error
       }
 
-      if (isStreamerSettingsSchemaError(streamerError)) {
+      if (getGachaDbDriver() !== 'pg' && isStreamerSettingsSchemaError(streamerError)) {
         const fallbackResult = await withRetry(
           () => this.supabase
             .from('streamers')
@@ -1234,21 +1407,52 @@ export class GachaService {
 
       // Check if the reward ID matches any additional reward
       // 追加報酬のいずれかと一致するかチェック
-      let { data: additionalReward, error: additionalError } = await withRetry(
-        () => this.supabase
-          .from('streamer_additional_gacha_rewards')
-          .select('id, draw_count, is_raid_limited, collection_name')
-          .eq('streamer_id', streamer.id)
-          .eq('reward_id', event.reward.id)
-          .maybeSingle(),
-        'gacha:executeGachaForEventSub:additionalReward',
-      )
+      let additionalReward: {
+        id: string
+        draw_count: number
+        is_raid_limited: boolean
+        collection_name: string | null
+      } | null
+      let additionalError: GachaReadDriverError | null
+      if (getGachaDbDriver() === 'pg') {
+        try {
+          const rows = await withDbRetry(async () => {
+            const { db } = await getDb()
+            return db.select({
+              id: streamerAdditionalGachaRewards.id,
+              draw_count: streamerAdditionalGachaRewards.draw_count,
+              is_raid_limited: streamerAdditionalGachaRewards.is_raid_limited,
+              collection_name: streamerAdditionalGachaRewards.collection_name,
+            }).from(streamerAdditionalGachaRewards).where(and(
+              eq(streamerAdditionalGachaRewards.streamer_id, streamer.id),
+              eq(streamerAdditionalGachaRewards.reward_id, event.reward.id),
+            )).limit(1)
+          }, 'gacha:executeGachaForEventSub:additionalReward', { idempotent: true })
+          additionalReward = rows[0] ?? null
+          additionalError = null
+        } catch (error) {
+          additionalReward = null
+          additionalError = normalizePgReadError(error)
+        }
+      } else {
+        const result = await withRetry(
+          () => this.supabase
+            .from('streamer_additional_gacha_rewards')
+            .select('id, draw_count, is_raid_limited, collection_name')
+            .eq('streamer_id', streamer.id)
+            .eq('reward_id', event.reward.id)
+            .maybeSingle(),
+          'gacha:executeGachaForEventSub:additionalReward',
+        )
+        additionalReward = result.data
+        additionalError = result.error
+      }
 
       // Deploy-window fallback: only the collection_name column is missing.
       // Handled separately from raid-option errors so we don't needlessly block
       // the additional reward gacha (it just falls back to "all cards").
       // collection_name 列のみ未デプロイなら null fallback（追加報酬ガチャは止めない）。
-      if (additionalError && isMissingCollectionNameColumn(additionalError)) {
+      if (getGachaDbDriver() !== 'pg' && additionalError && isMissingCollectionNameColumn(additionalError)) {
         const fallbackResult = await withRetry(
           () => this.supabase
             .from('streamer_additional_gacha_rewards')
@@ -1314,13 +1518,48 @@ export class GachaService {
     eventId?: string
   ): Promise<Result<GachaResult>> {
     try {
-      let { data: streamer, error: streamerError } = await this.supabase
-        .from('streamers')
-        .select('id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_draw_count')
-        .eq('twitch_user_id', event.to_broadcaster_user_id)
-        .maybeSingle()
+      let streamer: {
+        id: string
+        chat_announcement_enabled: boolean
+        chat_announcement_template: string | null
+        chat_announcement_multi_template: string | null
+        chat_announcement_multi_show_cards: boolean
+        raid_gacha_draw_count: number
+      } | null
+      let streamerError: GachaReadDriverError | null
+      if (getGachaDbDriver() === 'pg') {
+        try {
+          const rows = await withDbRetry(async () => {
+            const { db } = await getDb()
+            return db.select({
+              id: streamers.id,
+              chat_announcement_enabled: streamers.chat_announcement_enabled,
+              chat_announcement_template: streamers.chat_announcement_template,
+              chat_announcement_multi_template: streamers.chat_announcement_multi_template,
+              chat_announcement_multi_show_cards: streamers.chat_announcement_multi_show_cards,
+              raid_gacha_draw_count: streamers.raid_gacha_draw_count,
+            }).from(streamers).where(eq(streamers.twitch_user_id, event.to_broadcaster_user_id)).limit(1)
+          }, 'gacha:executeGachaForRaidEvent:streamer', { idempotent: true })
+          streamer = rows[0] ?? null
+          streamerError = null
+        } catch (error) {
+          streamer = null
+          streamerError = normalizePgReadError(error)
+        }
+      } else {
+        const result = await withRetry(
+          () => this.supabase
+            .from('streamers')
+            .select('id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_draw_count')
+            .eq('twitch_user_id', event.to_broadcaster_user_id)
+            .maybeSingle(),
+          'gacha:executeGachaForRaidEvent:streamer',
+        )
+        streamer = result.data
+        streamerError = result.error
+      }
 
-      if (isStreamerSettingsSchemaError(streamerError)) {
+      if (getGachaDbDriver() !== 'pg' && isStreamerSettingsSchemaError(streamerError)) {
         const fallbackResult = await this.supabase
           .from('streamers')
           .select('id, chat_announcement_enabled, chat_announcement_template')
