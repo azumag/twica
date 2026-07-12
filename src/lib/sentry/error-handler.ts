@@ -58,15 +58,8 @@ function persistedContext(context: Record<string, unknown>): Json {
   // unsupported `undefined` properties before the insert; the cast is safe
   // because JSON.parse can only produce the Json union declared by the schema.
   const serialized = JSON.stringify(sanitizeContext(context))
-  return serialized === undefined ? {} : JSON.parse(serialized) as Json
+  return JSON.parse(serialized) as Json
 }
-
-// Error persistence must never call logger.error: logger.error delegates back to
-// logErrorFromLogger, which would recursively insert another errors row. Track
-// active fingerprints instead of one global boolean so unrelated concurrent
-// requests in the same Cloudflare isolate can still record different errors.
-// The catch path below must use console.warn directly as the primary invariant.
-const activePersistenceKeys = new Set<string>()
 
 async function logErrorToDatabase(
   errorType: string,
@@ -80,13 +73,6 @@ async function logErrorToDatabase(
     return
   }
 
-  const persistenceKey = `${errorType}\u0000${message}\u0000${stackTrace ?? ''}`
-  if (activePersistenceKeys.has(persistenceKey)) {
-    console.warn('[Error Tracking] Recursive error persistence was suppressed')
-    return
-  }
-
-  activePersistenceKeys.add(persistenceKey)
   try {
     // 環境判定: NEXT_PUBLIC_APP_URL に 'preview' が含まれるかで判定
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
@@ -133,9 +119,10 @@ async function logErrorToDatabase(
   } catch (err) {
     // エラーDBへの記録失敗はメインのエラー処理を阻害しない
     // エラー詳細を出力して Cloudflare Workers Observability (wrangler tail) で確認可能にする
+    // logger.error は logErrorFromLogger() を経由してこの関数へ戻るため使用禁止。
+    // console.warn を直接使うことを再帰防止の唯一の仕組みにし、同一isolate内の別
+    // requestで同じエラーが並行発生しても観測データを誤って捨てない。
     console.warn('[Error Tracking] Failed to persist error:', err)
-  } finally {
-    activePersistenceKeys.delete(persistenceKey)
   }
 }
 
