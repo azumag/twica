@@ -65,12 +65,20 @@ CREATE TABLE trade_offers (
   -- openオファーの整合性は部分UNIQUE(下記)+応諾時の実在チェックで担保する。
   offered_user_card_id UUID NOT NULL,
   -- 一覧表示・フィルタ用の非正規化。クライアントからは受け取らず、
-  -- サーバが offered_user_card_id / wanted_card_id から導出してINSERTする
-  offered_card_id UUID NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  -- サーバが offered_user_card_id / wanted_card_id から導出してINSERTする。
+  -- cards へのFKは ON DELETE SET NULL: 既存の DELETE /api/cards/[id] はカード定義を
+  -- 無条件ハード削除するため、CASCADEにすると配信者のカード整理で completed 行(=トレード履歴)が
+  -- 消えてしまう(クロスチャンネルでは相手配信者の操作で自分の履歴が消える)。
+  -- 表示は下記スナップショットにフォールバックする
+  offered_card_id UUID REFERENCES cards(id) ON DELETE SET NULL,
   offered_streamer_id UUID NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
   -- 欲しいカード(種別指定。特定の1枚ではない)
-  wanted_card_id UUID NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  wanted_card_id UUID REFERENCES cards(id) ON DELETE SET NULL,
   wanted_streamer_id UUID NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
+  -- カード定義削除後も履歴表示できるよう、出品時に両カードの表示情報
+  -- (name / rarity / image_url)をスナップショット保存する
+  offered_card_snapshot JSONB NOT NULL,
+  wanted_card_snapshot JSONB NOT NULL,
   -- チャンネル内/クロスの判別。生成列にして非正規化不整合を排除
   is_cross_channel BOOLEAN GENERATED ALWAYS AS (offered_streamer_id <> wanted_streamer_id) STORED,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'completed', 'cancelled')),
@@ -171,15 +179,21 @@ accept_trade_offer(
 4. 検証(失敗時はエラーコードを含むJSONBを返す):
    - `status = 'open'` であること(二重成立防止)
    - 応諾者 ≠ 出品者(自己応諾禁止)
+   - `offered_card_id IS NOT NULL AND wanted_card_id IS NOT NULL`(カード定義が削除済み(SET NULL)の
+     オファーは成立不能)— NULLなら offer を `cancelled` に更新して 'OFFER_INVALID'
    - 設定ゲート再チェック: 両配信者の `trade_enabled`(クロスなら `cross_channel_trade_enabled` も)
    - 出品カード実在チェック: `SELECT ... FROM user_cards WHERE id = offered_user_card_id AND user_id = offerer_user_id FOR UPDATE`
      — 行が存在しない(削除済み)または所有者が変わっている場合は offer を `cancelled` に更新して 'OFFER_INVALID' を返す
      (このパスで cancelled 更新をコミットするために、00060 の RAISE EXCEPTION 方式ではなく
      「エラーコード入りJSONB返却」方式を採る。RPC内コメントに理由を書くこと)
-   - 応諾者の支払いカード選択: `SELECT id FROM user_cards WHERE user_id = 応諾者 AND card_id = wanted_card_id
-     AND id NOT IN (SELECT offered_user_card_id FROM trade_offers WHERE offerer_user_id = 応諾者 AND status = 'open')
-     ORDER BY obtained_at ASC, id ASC LIMIT 1 FOR UPDATE`
-     — 最も古い1枚を自動選択(自分が出品中の1枚は支払いに使えない)。無ければ 'CARD_NOT_OWNED'
+   - 応諾者の支払いカード選択(**2段構成**。00059/00060 と同じパターン):
+     1. `PERFORM 1 FROM user_cards WHERE user_id = 応諾者 AND card_id = wanted_card_id
+        AND id NOT IN (SELECT offered_user_card_id FROM trade_offers WHERE offerer_user_id = 応諾者 AND status = 'open')
+        FOR UPDATE` — 候補コピーを **LIMITなしで全ロック**
+        (`ORDER BY ... LIMIT 1 ... FOR UPDATE` の単一クエリだと、ロック待ち中に対象行が条件を外れた場合に
+        次点の行へ繰り上がらず、使用可能なコピーが残っているのに 'CARD_NOT_OWNED' を誤返却しうるため)
+     2. ロック確定後に同条件+`ORDER BY obtained_at ASC, id ASC LIMIT 1` で最も古い1枚を選定。
+        0件なら 'CARD_NOT_OWNED'
 5. 所有権の移転(row-per-copy なので UPDATE で user_id を付け替える):
    - `UPDATE user_cards SET user_id = 応諾者, obtained_at = now() WHERE id = offered_user_card_id`
    - `UPDATE user_cards SET user_id = 出品者, obtained_at = now() WHERE id = 応諾者の支払いカードid`
@@ -194,7 +208,8 @@ accept_trade_offer(
 - ロック順は「オファー行 → 出品者の user_cards 行 → 応諾者の支払い user_cards 行」で固定
 - 手順4の支払いカード選択で「自分が出品中のコピー」を除外する規則が、相互応諾の典型的な循環ロックを塞ぐ
 - それでも複数の並行応諾が同一ユーザーの複数コピーに交差するケースで 40P01(deadlock_detected)は理論上残る。
-  **API層で 40P01 を捕捉し、1回リトライ→失敗なら「混雑しています。再試行してください」エラーに写像する**
+  **API層で 40P01 を捕捉し、短いジッター付きで1回リトライ→失敗なら「混雑しています。再試行してください」(TRADE_BUSY)に写像する**
+  (将来pg直結パスを追加する場合は postgres.js のエラー形状でも同様の捕捉が必要)
 - `FOR UPDATE` は述語で除外された行をロックしない点をRPC内コメントに明記
 
 権限: `REVOKE ALL ... FROM PUBLIC; GRANT EXECUTE ... TO service_role;` + `SECURITY DEFINER SET search_path = public, pg_temp`。
@@ -221,6 +236,8 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
 
 - 基本クエリ: PostgREST で `trade_offers` に `status=eq.open` + streamerフィルタ + `order=created_at.desc` + range ページネーション。
   カード・配信者情報は埋め込み(`offered_card:cards!offered_card_id(...)` 等)で取得
+- カード定義が削除済み(`offered_card_id` / `wanted_card_id` が NULL)のopenオファーは一覧から除外する。
+  マイトレードの成立履歴表示では `*_card_snapshot` にフォールバックして「削除済みカード」として表示する
 - 設定ゲートフィルタ: offered側/wanted側の2系統の `streamers!inner(...)` 埋め込みフィルタ
   (`offered_streamer.trade_enabled=eq.true` 等)で実現する。クロスタブでは両側の
   `cross_channel_trade_enabled=eq.true` も条件に加える。PostgRESTで表現困難な場合は一覧用VIEWを検討(実装時判断)
@@ -244,9 +261,13 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
 - 設定ゲート(§3)を満たすこと
 - `offered_card_id <> wanted_card_id`
 - 「欲しいカード」は `cards.is_active = true` のみ指定可(§3参照)
+- 受け取るID(`offeredUserCardId` / `wantedCardId` / `requestId` / パスの `[id]`)はAPI層でUUID形式を
+  事前検証し、不正形式は400を返す(Postgres の 22P02 に頼らない。既存の厳格boolean検証と同じ思想)
 - 1ユーザーの同時openオファー上限 **10件**(スパム対策。定数 `TRADE_MAX_OPEN_OFFERS`)。
   COUNT→INSERT の並行POSTで僅かに超過しうるが、rate limitがあるため許容する
-- rate limit: 既存 `rateLimits` に `tradeWrite`(例: 10回/分)/ `tradeRead` を追加
+- rate limit: 既存 `rateLimits` に `tradeWrite`(例: 10回/分)/ `tradeRead` を追加。
+  **実装時の確認事項**: 本番で rate limit ストレージが KV(分散)になっていることを確認する。
+  既定の `MemoryRateLimitStorage` はインスタンスローカルで、複数インスタンス環境では抑止効果が弱まる
 
 ### エラーコード
 
@@ -377,6 +398,11 @@ Step 2: 欲しいカードを選ぶ
 - 出品一覧APIは設定ゲートをサーバー側で必ず適用(URLを直接叩かれてもOFFチャンネルのオファーは返さない)
 - 非正規化カラム(offered_card_id 等)はサーバ導出のみ。クライアントから受けるIDは `offeredUserCardId` / `wantedCardId` / `requestId` に限定
 - 譲渡そのものに手数料・回数制限は設けないが、上限10件/ユーザーの同時出品制限でスパム抑止
+- **複数アカウントによるカード集約リスク**: 本機能はプラットフォーム初のユーザー間所有権移転であり、
+  サブアカウントで「レア出品⇄コモン募集」を作り本アカウントで応諾すれば、複数アカウントの排出を
+  1アカウントに集約できる。完全な対策はMVPでは行わない(YAGNI)が、事後検知できるよう
+  応諾APIで offerer/accepter の twitch_user_id とrate-limit identifier(IP由来)を構造化ログに残す。
+  不正検知の本格対応はフェーズ2の検討項目として子issueに記載
 - RMT(リアルマネートレード)対策は本フェーズではスコープ外とし、規約(TOS)への追記検討のみ子issueに記載
 
 ## 8. 通知(フェーズ2・優先度低)
@@ -405,3 +431,9 @@ MVPでは通知なし(マイトレード画面で確認)。フェーズ2で:
   - 重大: 冪等リプレイ判定を全検証より前に移動(§4.4 手順3)/ `offered_user_card_id` のFK CASCADE廃止(履歴消滅・OFFER_INVALIDパス不成立の矛盾解消)
   - 中: デッドロック方針明記 / 一覧クエリ方式と `canAccept` 仕様確定 / 作成冪等性の23505リプレイ仕様 / インデックス再設計(複合部分+FK支持)/ `is_active` 方針確定
   - 軽微: `is_cross_channel` 生成列化、updated_atトリガー、上限チェック競合の許容明記、コンポーネントパス修正、実装漏れ注意の追記ほか
+- チームレビュー(DB/セキュリティ担当)で以下を修正済み:
+  - 重大: `offered_card_id` / `wanted_card_id` の CASCADE → **SET NULL + カード情報のJSONBスナップショット**
+    (既存 DELETE /api/cards/[id] は無条件ハード削除のため、CASCADEだと配信者のカード整理で成立履歴が消える)
+  - 中: 支払いカード選定を「LIMITなし全ロック→選定」の2段構成に修正(00059/00060 のパターン準拠)/
+    複数アカウント集約リスクの明記と応諾ログ方針 / rate limit の KVストレージ確認事項
+  - 軽微: API層でのUUID形式事前検証 / 40P01リトライのジッター・pg直結時の注意
