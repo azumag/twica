@@ -3,6 +3,7 @@ import { updateSession } from '@/lib/supabase/middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setSecurityHeaders } from '@/lib/security-headers'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { hasInvalidOverlayEventsStreamerId } from '@/lib/overlay-route-validation'
 import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
 
 // Next.js 16 recommends proxy.ts, but Proxy always builds as Node.js runtime
@@ -77,6 +78,17 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
+
+  // Issue #657: 不正な streamerId をDBクエリへ渡す前に拒否する。
+  // OBSブラウザソース等のURL末尾に文字列が混入しても、PostgreSQLの22P02を
+  // 継続発生させず、入力エラーとして400を返す。
+  if (hasInvalidOverlayEventsStreamerId(pathname)) {
+    const errorResponse = NextResponse.json(
+      { error: 'Invalid streamer ID' },
+      { status: 400 }
+    )
+    return setSecurityHeaders(errorResponse, pathname)
+  }
 
   const response = await updateSession(request)
   // パスに基づいて適切なセキュリティヘッダーを設定
