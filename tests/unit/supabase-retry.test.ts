@@ -87,6 +87,28 @@ describe('withRetry', () => {
     expect(queryFn).toHaveBeenCalledTimes(2)
   })
 
+  it('Cloudflare 525 のエラーコードをリトライする', async () => {
+    const queryFn = vi.fn()
+      .mockResolvedValueOnce({
+        error: { message: 'error code: 525' },
+      })
+      .mockResolvedValueOnce({ data: 'ok', error: null })
+    const result = await withRetry(queryFn, 'getLicensePlan', { delays: [0, 0, 0] })
+    expect(result.error).toBeNull()
+    expect(queryFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('SSL handshake failed メッセージをリトライする', async () => {
+    const queryFn = vi.fn()
+      .mockResolvedValueOnce({
+        error: { message: 'SSL handshake failed' },
+      })
+      .mockResolvedValueOnce({ data: 'ok', error: null })
+    const result = await withRetry(queryFn, 'test', { delays: [0, 0, 0] })
+    expect(result.error).toBeNull()
+    expect(queryFn).toHaveBeenCalledTimes(2)
+  })
+
   it('テキストパターン "bad gateway" でもリトライする', async () => {
     const queryFn = vi.fn()
       .mockResolvedValueOnce({
