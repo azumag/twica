@@ -29,9 +29,18 @@ jobs:
         run: npm run typecheck
 
       - name: Unit tests
-        # 失敗時に大量の成功ログで原因が埋もれないよう、最初の失敗で停止し
-        # compactなdot reporterを使う。ローカルのtest:unitコマンド自体は変更しない。
-        run: npm run test:unit -- --reporter=dot --bail=1
+        # 失敗時に大量の成功ログで原因が埋もれないよう、最初の失敗で停止し、
+        # 機械可読なJSONレポートを生成する。失敗時のみ次のstepでartifact化する。
+        run: npm run test:unit -- --reporter=json --outputFile=vitest-report.json --bail=1
+
+      - name: Upload failed unit test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-unit-report
+          path: vitest-report.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Integration tests
         run: npm run test:integration
