@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   reportError,
   reportApiError,
@@ -9,6 +9,7 @@ import {
   reportSecurityError,
   logErrorFromLogger,
 } from '@/lib/sentry/error-handler';
+import { getDb } from '@/lib/db/client';
 
 // Supabase admin のモック
 const mockInsert = vi.fn().mockResolvedValue({ error: null });
@@ -18,48 +19,84 @@ vi.mock('@/lib/supabase/admin', () => ({
   getSupabaseAdmin: () => ({ from: mockFrom }),
 }));
 
+vi.mock('@/lib/db/client', () => ({
+  getDb: vi.fn(),
+}));
+
+const mockPgValues = vi.fn().mockResolvedValue(undefined);
+const mockPgInsert = vi.fn().mockReturnValue({ values: mockPgValues });
+
+/**
+ * 動的 import を含む非同期経路が対象 mock へ到達するまで、タイマーに依存せず待つ。
+ * 上限を設けることで、実装が mock を呼ばない回帰時にもテストがハングしない。
+ */
+async function waitForMockCalls(mock: ReturnType<typeof vi.fn>, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (mock.mock.calls.length >= count) return;
+    await Promise.resolve();
+  }
+  throw new Error(`Expected mock to be called ${count} time(s), received ${mock.mock.calls.length}`);
+}
+
 describe('sentry/error-handler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('DB_DRIVER', 'postgrest');
+    vi.stubEnv('NEXT_RUNTIME', 'nodejs');
     // console 出力を抑制
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getDb).mockResolvedValue({
+      db: { insert: mockPgInsert } as never,
+      sql: {} as never,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   describe('全 report 関数が Promise を返す', () => {
-    it('reportError は Promise を返す', () => {
+    it('reportError は Promise を返す', async () => {
       const result = reportError(new Error('test'));
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportApiError は Promise を返す', () => {
+    it('reportApiError は Promise を返す', async () => {
       const result = reportApiError('/api/test', 'GET', new Error('test'));
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportAuthError は Promise を返す', () => {
+    it('reportAuthError は Promise を返す', async () => {
       const result = reportAuthError(new Error('test'), { provider: 'twitch' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportGachaError は Promise を返す', () => {
+    it('reportGachaError は Promise を返す', async () => {
       const result = reportGachaError(new Error('test'), { streamerId: '123' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportBattleError は Promise を返す', () => {
+    it('reportBattleError は Promise を返す', async () => {
       const result = reportBattleError(new Error('test'), { battleId: '1' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportRealtimeError は Promise を返す', () => {
+    it('reportRealtimeError は Promise を返す', async () => {
       const result = reportRealtimeError(new Error('test'), { action: 'subscribe' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
 
-    it('reportSecurityError は Promise を返す', () => {
+    it('reportSecurityError は Promise を返す', async () => {
       const result = reportSecurityError(new Error('test'), { action: 'csrf' });
       expect(result).toBeInstanceOf(Promise);
+      await result;
     });
   });
 
@@ -103,6 +140,76 @@ describe('sentry/error-handler', () => {
           context: { endpoint: '/api/users', method: 'POST', extra: 'data' },
         })
       );
+    });
+  });
+
+  describe('PG 直結へのエラーログ記録 (#711 C)', () => {
+    it('DB_DRIVER=pg では Drizzle insert を使い PostgREST を呼ばない', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg');
+      vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica-preview.example');
+
+      await reportError(new Error('pg error'), {
+        token: 'secret',
+        safe: 'visible',
+      });
+
+      expect(getDb).toHaveBeenCalledTimes(1);
+      expect(mockPgInsert).toHaveBeenCalledTimes(1);
+      expect(mockPgValues).toHaveBeenCalledWith(expect.objectContaining({
+        error_type: '[Error]',
+        message: 'pg error',
+        context: { token: '[REDACTED]', safe: 'visible' },
+        environment: 'preview',
+      }));
+      expect(mockFrom).not.toHaveBeenCalled();
+    });
+
+    it('PG insert失敗は呼び出し元へ伝播せずconsole警告へフォールバックする', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg');
+      mockPgValues.mockRejectedValueOnce(new Error('database unavailable'));
+
+      await expect(reportError(new Error('original error'))).resolves.toBeUndefined();
+
+      expect(console.warn).toHaveBeenCalledWith(
+        '[Error Tracking] Failed to persist error:',
+        expect.objectContaining({ message: 'database unavailable' }),
+      );
+    });
+
+    it('失敗後に再入ガードが解除され、次のエラーは記録できる', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg');
+      mockPgValues
+        .mockRejectedValueOnce(new Error('temporary failure'))
+        .mockResolvedValueOnce(undefined);
+
+      await reportError(new Error('first'));
+      await reportError(new Error('second'));
+
+      expect(mockPgValues).toHaveBeenCalledTimes(2);
+      expect(mockPgValues.mock.calls[1][0]).toEqual(expect.objectContaining({ message: 'second' }));
+    });
+
+    it('同一エラーの再入だけを抑止し、進行中のinsert完了後にガードを解除する', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg');
+      let releaseInsert!: () => void;
+      mockPgValues.mockReturnValueOnce(new Promise<void>((resolve) => {
+        releaseInsert = resolve;
+      }));
+
+      const first = reportError('recursive');
+      await waitForMockCalls(mockPgValues, 1);
+      const nested = reportError('recursive');
+      await nested;
+
+      expect(mockPgValues).toHaveBeenCalledTimes(1);
+      expect(console.warn).toHaveBeenCalledWith(
+        '[Error Tracking] Recursive error persistence was suppressed',
+      );
+
+      releaseInsert();
+      await first;
+      await reportError('recursive');
+      expect(mockPgValues).toHaveBeenCalledTimes(2);
     });
   });
 
