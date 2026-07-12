@@ -37,7 +37,7 @@ concurrency:
 jobs:
   claude-review:
     # - draft PR は作業途中のためレビューしない(ready_for_review で拾う)。
-    # - fork からの PR では GitHub がシークレットを渡さないため ANTHROPIC_API_KEY が使えず
+    # - fork からの PR では GitHub がシークレットを渡さないため CLAUDE_CODE_OAUTH_TOKEN が使えず
     #   必ず失敗する。head.repo.full_name の比較で除外する(fork 判定と異なり、
     #   fork リポジトリが削除済みで head.repo が null の場合もまとめて除外できる)。
     if: >-
