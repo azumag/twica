@@ -8,6 +8,7 @@ import { getFileTypeFromBuffer, getFileExtension, isValidExtension } from '@/lib
 import { logger } from '@/lib/logger';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadToR2WithRetry } from '@/lib/r2-client';
+import { retryCloudflareR2Upload } from '@/lib/r2-retry-policy';
 import { recordBlobFile } from '@/lib/storage-db';
 import { getStorageUsage } from '@/lib/storage-usage';
 import { sha256Prefix } from '@/lib/crypto-utils';
@@ -170,7 +171,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     fileName = `${userPrefixForFile}_${uniqueSuffix}.${ext}`;
 
     // R2にアップロード（Vercel Blobの代わり）
-    const uploadResult = await uploadToR2WithRetry(fileName, buffer, actualType);
+    const uploadResult = await retryCloudflareR2Upload(
+      () => uploadToR2WithRetry(fileName!, buffer!, actualType)
+    );
 
     if ('error' in uploadResult) {
       return handleBlobError(
