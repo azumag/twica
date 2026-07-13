@@ -1,9 +1,9 @@
 /**
  * Supabase Query Retry Utility
- * Supabaseクエリのリトライユーティリティ (Issue #339, #326, #325)
+ * Supabaseクエリのリトライユーティリティ (Issue #339, #326, #325, #645, #646)
  *
- * Supabase PostgREST が一時的に 502/503 を返す場合に指数バックオフでリトライする。
- * Cloudflare Workers 環境でのネットワーク一時障害に対応。
+ * Supabase PostgREST が一時的な5xxを返す場合に指数バックオフでリトライする。
+ * Cloudflare Workers 環境でのネットワーク・SSLハンドシェイク一時障害に対応。
  */
 
 import { logger } from '@/lib/logger'
@@ -16,16 +16,22 @@ interface RetryOptions {
 
 const DEFAULT_DELAYS = [100, 300, 1000]
 
-// 500/502/503 はインフラ一時障害のためリトライ対象
-const RETRYABLE_STATUS_CODES = [500, 502, 503]
+// 500/502/503 は上流インフラ障害、522 は接続タイムアウト、525 はSSL handshake失敗のためリトライ対象
+const RETRYABLE_STATUS_CODES = [500, 502, 503, 522, 525]
 
-// Supabase/PostgREST が返すエラーメッセージのテキストパターン
-// ステータスコード数字が含まれない場合（"Bad Gateway" 等）にも対応
-const RETRYABLE_MESSAGE_PATTERNS = ['internal server error', 'bad gateway', 'service unavailable']
+// Supabase/PostgREST/Cloudflare が返すエラーメッセージのテキストパターン
+// ステータスコード数字が含まれない場合にも対応
+const RETRYABLE_MESSAGE_PATTERNS = [
+  'internal server error',
+  'bad gateway',
+  'service unavailable',
+  'connection timed out',
+  'ssl handshake failed',
+]
 
 /**
  * Supabase クエリ結果に対するリトライラッパー
- * { data, error } 形式のレスポンスで 502/503 相当のエラーの場合にリトライする。
+ * { data, error } 形式のレスポンスで一時的な5xx相当のエラーの場合にリトライする。
  * ステータスコード数字・テキストメッセージの両方でマッチする。
  *
  * @param queryFn - Supabase クエリを返す関数（await前のPromiseを返す）
