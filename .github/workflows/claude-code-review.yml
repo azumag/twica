@@ -1,7 +1,7 @@
-# main への PR を Claude Code で自動レビューするワークフロー。
+# preview への PR を Claude Code で自動レビューするワークフロー。
 # anthropics/claude-code-action@v1 の公式推奨構成
 # (https://github.com/anthropics/claude-code-action / https://code.claude.com/docs/en/github-actions)
-# をベースに、このリポジトリの運用(preview → main フロー、CLAUDE.md のレビュー観点)に合わせている。
+# をベースに、このリポジトリの運用(feature → preview → main フロー、CLAUDE.md のレビュー観点)に合わせている。
 #
 # 前提となるリポジトリ設定(ワークフローだけでは動かない):
 #   1. Claude GitHub App のインストール: https://github.com/apps/claude
@@ -26,8 +26,8 @@ on:
     # ready_for_review: draft 解除のタイミングでレビュー(draft 中は下の if でスキップするため、
     #                   解除時に一度レビューが走るようにする)。
     types: [opened, synchronize, reopened, ready_for_review]
-    # ユーザー要件: main への PR のみを対象とする(preview への PR ではコストをかけない)。
-    branches: [main]
+    # preview への PR のみを対象とし、main への昇格 PR では重複レビューしない。
+    branches: [preview]
 
 # 同一 PR で push が連続した場合、古いレビュー実行をキャンセルして API コストを抑える。
 concurrency:
@@ -60,7 +60,7 @@ jobs:
       # claude-code-action が Claude GitHub App と OIDC トークン交換を行うために必要。
       id-token: write
     # CLAUDE_CODE_OAUTH_TOKEN 未登録の環境ではレビューを実行できないため、
-    # ジョブを「失敗」させず各ステップを「スキップ」で済ませる(main への全 PR に
+    # ジョブを「失敗」させず各ステップを「スキップ」で済ませる(preview への全 PR に
     # 赤い ✗ が付き続けるのを防ぐ)。secrets コンテキストは if 条件で直接参照
     # できない仕様のため、公式推奨どおり env 経由で判定する。
     env:
