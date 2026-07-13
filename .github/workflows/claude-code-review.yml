@@ -1,0 +1,116 @@
+# preview への PR を Claude Code で自動レビューするワークフロー。
+# anthropics/claude-code-action@v1 の公式推奨構成
+# (https://github.com/anthropics/claude-code-action / https://code.claude.com/docs/en/github-actions)
+# をベースに、このリポジトリの運用(feature → preview → main フロー、CLAUDE.md のレビュー観点)に合わせている。
+#
+# 前提となるリポジトリ設定(ワークフローだけでは動かない):
+#   1. Claude GitHub App のインストール: https://github.com/apps/claude
+#   2. ローカルで `claude setup-token` を実行し、Claude Pro/Max/Team/Enterprise
+#      サブスクリプション枠に紐づく OAuth トークン(sk-ant-oat01-...)を発行する
+#      (有効期限 1 年。API 従量課金は発生しない)
+#   3. リポジトリシークレット CLAUDE_CODE_OAUTH_TOKEN にそのトークンを登録
+#      (Settings → Secrets and variables → Actions)
+#   ※ CLAUDE_CODE_OAUTH_TOKEN 未登録の間はレビューステップがスキップされるだけで、
+#     ジョブは失敗しない(下のステップレベル if を参照)。トークンは 1 年で
+#     失効するため、失効前に再発行・再登録が必要。
+#
+# 運用上の注意: このジョブはあくまで補助的なレビューであり、branch protection の
+# required status checks には追加しないこと(レビューの失敗でマージを
+# ブロックすべきではない)。
+name: Claude Code Review
+
+on:
+  pull_request:
+    # opened/synchronize: PR 作成時と push のたびにレビュー。
+    # reopened: 再オープン時は最新状態を再レビュー。
+    # ready_for_review: draft 解除のタイミングでレビュー(draft 中は下の if でスキップするため、
+    #                   解除時に一度レビューが走るようにする)。
+    types: [opened, synchronize, reopened, ready_for_review]
+    # preview への PR のみを対象とし、main への昇格 PR では重複レビューしない。
+    branches: [preview]
+
+# 同一 PR で push が連続した場合、古いレビュー実行をキャンセルして API コストを抑える。
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # - draft PR は作業途中のためレビューしない(ready_for_review で拾う)。
+    # - fork からの PR では GitHub がシークレットを渡さないため CLAUDE_CODE_OAUTH_TOKEN が使えず
+    #   必ず失敗する。head.repo.full_name の比較で除外する(fork 判定と異なり、
+    #   fork リポジトリが削除済みで head.repo が null の場合もまとめて除外できる)。
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    # レビュー 1 回は通常数分で終わる。暴走時の runner 課金を抑える上限
+    # (デフォルトは 360 分と長すぎるため明示する)。
+    timeout-minutes: 15
+    # GITHUB_TOKEN を最小権限に絞る。ただし注意: github_token 入力を渡さない構成では
+    # action が OIDC 交換で得る Claude App トークンが使われ、これは workflow の
+    # permissions には束縛されず App のインストール権限(Contents: RW 等)を持つ。
+    # したがってコード変更防止の実効的な防御線は下の claude_args のツール制限であり、
+    # この permissions は checkout が永続化する GITHUB_TOKEN 資格情報側の防御。
+    # ツール制限を緩める免罪符にはならないこと。
+    permissions:
+      contents: read
+      # レビュー結果を PR コメントとして投稿するために write が必要。
+      pull-requests: write
+      # claude-code-action が Claude GitHub App と OIDC トークン交換を行うために必要。
+      id-token: write
+    # CLAUDE_CODE_OAUTH_TOKEN 未登録の環境ではレビューを実行できないため、
+    # ジョブを「失敗」させず各ステップを「スキップ」で済ませる(preview への全 PR に
+    # 赤い ✗ が付き続けるのを防ぐ)。secrets コンテキストは if 条件で直接参照
+    # できない仕様のため、公式推奨どおり env 経由で判定する。
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+
+    steps:
+      - name: Checkout repository
+        if: env.CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED == 'true'
+        uses: actions/checkout@v4
+
+      - name: Run Claude Code Review
+        if: env.CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # レビュー観点は CLAUDE.md の「review aspects」に揃える。
+          # PR タイトル・本文など攻撃者が制御できる文字列は ${{ }} で埋め込まない
+          # (式インジェクション対策。number と repository は安全な値のみ)。
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            この Pull Request をレビューし、日本語でフィードバックしてください。
+            まず `gh pr diff` で差分を取得し、必要に応じて関連ソースを読んで文脈を確認すること。
+
+            レビュー観点(リポジトリの CLAUDE.md に準拠):
+            - コード品質とベストプラクティス
+            - 潜在的なバグとエッジケース
+            - パフォーマンスへの影響
+            - セキュリティ上の問題
+            - コードの簡潔性(過度な抽象化・複雑化、YAGNI 違反)
+            - 単体テストのカバレッジは十分か
+
+            本番障害・破壊的変更・ユーザー影響につながる問題を最重要視し、
+            実害のほぼない指摘(些細なスタイル等)は省くこと。
+            指摘には該当ファイル・行を明示し、修正案を添えること。
+
+            レビュー結果は Bash ツールで
+            `gh pr comment <PR番号> --edit-last --create-if-none --body "..."`
+            を使って投稿すること。--edit-last により push のたびにコメントが
+            積み上がらず、常に 1 つのレビューコメントが最新の内容に更新される。
+          # ツール制限(コード変更防止の実効的な防御線。上の permissions のコメント参照):
+          # - --allowedTools は「追加許可」であり、action がデフォルトで持つ
+          #   ファイル編集・コミット系の base tools を除外しない。そのため
+          #   --disallowedTools で編集系ツールとコミット/削除用の MCP ツールを
+          #   明示的に無効化し、diff 経由のプロンプトインジェクションがあっても
+          #   コード変更に至らないようにする。
+          # - Bash は diff/PR 情報の取得とコメント投稿に使う gh コマンドのみ許可。
+          # - --max-turns は巨大 diff や暴走時の API コスト上限。
+          claude_args: >-
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
+            --max-turns 30
