@@ -1,6 +1,6 @@
 /**
  * Supabase Query Retry Utility
- * Supabaseクエリのリトライユーティリティ (Issue #339, #326, #325, #646)
+ * Supabaseクエリのリトライユーティリティ (Issue #339, #326, #325, #645, #646)
  *
  * Supabase PostgREST が一時的な5xxを返す場合に指数バックオフでリトライする。
  * Cloudflare Workers 環境でのネットワーク・SSLハンドシェイク一時障害に対応。
@@ -16,8 +16,8 @@ interface RetryOptions {
 
 const DEFAULT_DELAYS = [100, 300, 1000]
 
-// 500/502/503 は上流インフラ障害、525 はCloudflare SSL handshake失敗のためリトライ対象
-const RETRYABLE_STATUS_CODES = [500, 502, 503, 525]
+// 500/502/503 は上流インフラ障害、522 は接続タイムアウト、525 はSSL handshake失敗のためリトライ対象
+const RETRYABLE_STATUS_CODES = [500, 502, 503, 522, 525]
 
 // Supabase/PostgREST/Cloudflare が返すエラーメッセージのテキストパターン
 // ステータスコード数字が含まれない場合にも対応
@@ -25,6 +25,7 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   'internal server error',
   'bad gateway',
   'service unavailable',
+  'connection timed out',
   'ssl handshake failed',
 ]
 
