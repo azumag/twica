@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
-describe('gacha drop stats covering index migration (00072, Issue #672)', () => {
+describe('gacha drop stats covering index migration (20260713080000, Issue #672)', () => {
   const migration = readFileSync(
     resolve(
       __dirname,
-      '../../supabase/migrations/00072_add_gacha_drop_stats_covering_index.sql'
+      '../../supabase/migrations/20260713080000_add_gacha_drop_stats_covering_index.sql'
     ),
     'utf-8'
   )
