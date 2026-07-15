@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createHash } from 'node:crypto'
 import type { Plugin } from 'vite'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import type { Card, Database, Streamer } from '../src/types/database'
+import type { Card, Database, InquiryStatus, Rarity, Streamer } from '../src/types/database'
 import {
   buildStreamerChatAccessRows,
   type ChatAccessBotAccountRow,
@@ -10,6 +10,13 @@ import {
   type ChatAccessStreamerRow,
   type ChatAccessUserScopeRow,
 } from '../src/lib/chatAnnouncementAccess'
+import {
+  getAnalysisDbDriver,
+  getOverviewPg,
+  getStreamerLeaderboardPg,
+  listStreamersWithStatsPg,
+  listUsersPg,
+} from './adminApiPg'
 
 type Env = Record<string, string>
 
@@ -39,6 +46,7 @@ type RouteContext = {
   client: SupabaseClient<Database>
   url: URL
   body: unknown
+  env: Env
 }
 
 function stripKeyWhitespace(value: string | undefined): string | undefined {
@@ -355,7 +363,9 @@ async function getDailyGrowth(
 
 // 直近30日の gacha_history を streamer_id のみ取得し、Node側で集計してトップ10を返す。
 // 表示に必要な情報(表示名/アイコン)はトップ10のstreamer_idだけ後引きする
-async function getStreamerLeaderboard(client: SupabaseClient<Database>) {
+export async function getStreamerLeaderboard(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') return getStreamerLeaderboardPg(env)
+
   const rpcRows = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamer_leaderboard')
   if (rpcRows.found) return rpcRows.data
 
@@ -401,7 +411,9 @@ async function getStreamerLeaderboard(client: SupabaseClient<Database>) {
   })
 }
 
-async function getOverview(client: SupabaseClient<Database>) {
+export async function getOverview(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') return getOverviewPg(env)
+
   const rpcOverview = await tryJsonbRpc<unknown>(client, 'get_analysis_overview')
   if (rpcOverview.found) return rpcOverview.data
 
@@ -483,7 +495,9 @@ async function getOverview(client: SupabaseClient<Database>) {
 const USER_SAFE_COLUMNS =
   'id, twitch_user_id, twitch_username, twitch_display_name, twitch_profile_image_url, tos_accepted_at, twitch_scopes, created_at, updated_at'
 
-async function listUsers(client: SupabaseClient<Database>) {
+export async function listUsers(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') return listUsersPg(env)
+
   const rpcUsers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_users')
   if (rpcUsers.found) return rpcUsers.data
 
@@ -498,7 +512,9 @@ async function listUsers(client: SupabaseClient<Database>) {
 // analysis/src/pages/Streamers.tsx の fetchStreamers() が現在ブラウザ側で行っている
 // 4つの並列クエリ + SHA-256計算(crypto.subtle, 1配信者ずつ非同期)を1本のサーバーサイド
 // 処理に統合する。SHA-256はNodeの同期API(createHash)で計算するため高速。
-async function listStreamersWithStats(client: SupabaseClient<Database>) {
+export async function listStreamersWithStats(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') return listStreamersWithStatsPg(env)
+
   const rpcStreamers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamers')
   if (rpcStreamers.found) return rpcStreamers.data
 
@@ -697,7 +713,10 @@ async function getGachaTable(
   }
 
   if (rarity) {
-    query = query.eq('cards.rarity', rarity)
+    // rarityはクエリパラメータ由来の任意文字列（バリデーションなしは既存挙動を維持）。
+    // Rarity型に合致しない値の場合はPostgREST側で単に0件ヒットになるだけで実害はないため、
+    // 実行時の挙動を変えない型アサーションで対応する
+    query = query.eq('cards.rarity', rarity as Rarity)
   }
 
   if (from) {
@@ -778,7 +797,8 @@ async function getGachaExportRows(
     }
 
     if (rarity) {
-      query = query.eq('cards.rarity', rarity)
+      // getGachaTable()と同じ理由: バリデーションなしの既存挙動を維持したまま型だけ合わせる
+      query = query.eq('cards.rarity', rarity as Rarity)
     }
 
     if (from) {
@@ -981,26 +1001,26 @@ function announcementPayload(body: unknown) {
 }
 
 async function handleRoute(ctx: RouteContext): Promise<unknown> {
-  const { client, req, url, body } = ctx
+  const { client, req, url, body, env } = ctx
   const path = url.pathname.replace(/^\/__admin/, '')
 
   if (req.method === 'GET' && path === '/overview') {
-    return getOverview(client)
+    return getOverview(client, env)
   }
 
   // getStreamerLeaderboard()は直近30日のgacha_history全件(~65,000行超)をfetchAllPagedで
   // ページングして集計するため20秒前後かかる。getOverview()と分離し、Overviewページ側で
   // 独立ロードできるようにする(他の統計をブロックしないため)
   if (req.method === 'GET' && path === '/overview/leaderboard') {
-    return getStreamerLeaderboard(client)
+    return getStreamerLeaderboard(client, env)
   }
 
   if (req.method === 'GET' && path === '/users') {
-    return listUsers(client)
+    return listUsers(client, env)
   }
 
   if (req.method === 'GET' && path === '/streamers') {
-    return listStreamersWithStats(client)
+    return listStreamersWithStats(client, env)
   }
 
   if (req.method === 'GET' && path === '/gacha/chart') {
@@ -1130,7 +1150,10 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
       .order('created_at', { ascending: false })
 
     if (status !== 'all') {
-      query = query.eq('status', status)
+      // statusはクエリパラメータ由来の任意文字列（バリデーションなしは既存挙動を維持）。
+      // 不正な値の場合はPostgREST側で単に0件ヒットになるだけで実害はないため、
+      // 実行時の挙動を変えない型アサーションで対応する
+      query = query.eq('status', status as InquiryStatus)
     }
 
     const { data, error } = await query
@@ -1266,7 +1289,7 @@ export function localAdminApiPlugin(env: Env): Plugin {
           }
 
           const body = await readBody(req)
-          const result = await handleRoute({ req, res, client, body, url })
+          const result = await handleRoute({ req, res, client, body, url, env })
           sendJson(res, 200, result)
         } catch (error) {
           const status = typeof (error as { statusCode?: unknown }).statusCode === 'number'
