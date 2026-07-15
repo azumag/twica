@@ -135,3 +135,22 @@ export async function listUsersPg(env: Record<string, string>): Promise<unknown>
 export async function listStreamersWithStatsPg(env: Record<string, string>): Promise<unknown> {
   return callAnalysisJsonFunction(env, (sql) => sql`select get_analysis_streamers() as result`)
 }
+
+/**
+ * `get_analysis_gacha_summary(p_from_date, p_streamer_id)` を呼ぶ。他の `*Pg` 関数と
+ * 異なり引数を取る唯一の関数。値は postgres.js のタグ付きテンプレート経由でバインド
+ * パラメータとして渡す（文字列連結ではないため SQL インジェクションの余地はない）。
+ * `p_streamer_id` 省略時は SQL 関数側の `DEFAULT NULL` に委ねず明示的に `null` を渡す
+ * （呼び出し元の `params.streamerId ?? null` で undefined を吸収するため、この関数
+ * 自体は常に2引数で呼ぶ）。
+ */
+export async function getGachaSummaryPg(
+  env: Record<string, string>,
+  params: { fromDate: string | null; streamerId: string | null }
+): Promise<unknown> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) =>
+      sql`select get_analysis_gacha_summary(${params.fromDate}, ${params.streamerId}) as result`
+  )
+}

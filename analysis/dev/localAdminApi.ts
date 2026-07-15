@@ -12,6 +12,7 @@ import {
 } from '../src/lib/chatAnnouncementAccess'
 import {
   getAnalysisDbDriver,
+  getGachaSummaryPg,
   getOverviewPg,
   getStreamerLeaderboardPg,
   listStreamersWithStatsPg,
@@ -616,11 +617,17 @@ async function getGachaChart(
   return data || []
 }
 
-async function getGachaSummary(
+export async function getGachaSummary(
   client: SupabaseClient<Database>,
-  params: { range: TimeRange; streamerId?: string }
+  params: { range: TimeRange; streamerId?: string },
+  env: Env
 ) {
   const fromDate = getFromDateForRange(params.range)
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getGachaSummaryPg(env, { fromDate, streamerId: params.streamerId ?? null })
+  }
+
   const { data, error } = await client.rpc('get_analysis_gacha_summary' as never, {
     p_from_date: fromDate,
     p_streamer_id: params.streamerId ?? null,
@@ -1032,7 +1039,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   if (req.method === 'GET' && path === '/gacha/summary') {
     const range = parseTimeRange(url.searchParams.get('range'))
     const streamerId = url.searchParams.get('streamerId') || undefined
-    return getGachaSummary(client, { range, streamerId })
+    return getGachaSummary(client, { range, streamerId }, env)
   }
 
   if (req.method === 'GET' && path === '/gacha/table') {

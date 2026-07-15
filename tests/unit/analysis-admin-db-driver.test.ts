@@ -1,6 +1,6 @@
 /**
  * #700（#574 / #568 Phase 1-5）analysis ダッシュボード admin backend の
- * pg 直結切替（最初の4エンドポイント: overview / leaderboard / users / streamers）のテスト。
+ * pg 直結切替（overview / leaderboard / users / streamers / gacha summary）のテスト。
  *
  * `tests/unit/db-flags.test.ts`（フラグのデフォルト・trim・不正値の扱い）と
  * `tests/unit/storage-db-driver-parity.test.ts`（フラグ未設定時に旧経路のみが
@@ -35,13 +35,19 @@ function fakeRpcClient(result: unknown): any {
   }
 }
 
-/** query()に渡されたSQLテンプレート文字列を集約して返す fake sql タグ関数 */
+/**
+ * query()に渡されたSQLテンプレート文字列を集約して返す fake sql タグ関数。
+ * postgres.js のタグ付きテンプレート呼び出し（strings, ...values）を模すため
+ * 可変長引数を受ける（getGachaSummaryPg のようにバインド値を持つ呼び出しもある）
+ */
 function fakeSqlTag(result: unknown) {
   const calls: string[][] = []
-  const tag = vi.fn((strings: TemplateStringsArray) => {
-    calls.push(Array.from(strings))
-    return Promise.resolve([{ result }])
-  })
+  const tag = vi.fn<(strings: TemplateStringsArray, ...values: unknown[]) => Promise<{ result: unknown }[]>>(
+    (strings) => {
+      calls.push(Array.from(strings))
+      return Promise.resolve([{ result }])
+    }
+  )
   return { tag, calls }
 }
 
@@ -125,8 +131,8 @@ describe('adminApiPg: pg直結クエリ', () => {
     expect(calls[0].join('')).toContain('get_analysis_streamers()')
   })
 
-  // 4関数とも callAnalysisJsonFunction() を共有しているため、エラー伝播の検証は
-  // 代表として getOverviewPg 1件で行う（4関数分の重複は無意味な繰り返しになるため）。
+  // 5関数とも callAnalysisJsonFunction() を共有しているため、エラー伝播の検証は
+  // 代表として getOverviewPg 1件で行う（5関数分の重複は無意味な繰り返しになるため）。
   it('sql クエリが reject したら呼び出し元にそのまま伝播する', async () => {
     const failure = new Error('connection refused')
     const tag = vi.fn().mockRejectedValue(failure)
@@ -134,6 +140,36 @@ describe('adminApiPg: pg直結クエリ', () => {
     mod.__setAnalysisSqlFactoryForTests(() => tag as never)
 
     await expect(mod.getOverviewPg({})).rejects.toThrow('connection refused')
+  })
+
+  // getGachaSummaryPg は唯一引数を取る関数なので、バインドパラメータとして
+  // 正しく渡っていることを個別に検証する（他4関数と違い表形式に混ぜない）
+  it('getGachaSummaryPg: get_analysis_gacha_summary(p_from_date, p_streamer_id) を呼ぶ', async () => {
+    const { tag, calls } = fakeSqlTag({ totalGacha: 42 })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getGachaSummaryPg(
+      {},
+      { fromDate: '2024-01-01T00:00:00.000Z', streamerId: 'streamer-1' }
+    )
+
+    expect(data).toEqual({ totalGacha: 42 })
+    expect(calls[0].join('')).toContain('get_analysis_gacha_summary(')
+    // タグ関数呼び出し全体の第2・第3引数がバインドされた値そのもの（文字列連結ではない）
+    expect(tag.mock.calls[0][1]).toBe('2024-01-01T00:00:00.000Z')
+    expect(tag.mock.calls[0][2]).toBe('streamer-1')
+  })
+
+  it('getGachaSummaryPg: streamerId 省略時は null をバインドする', async () => {
+    const { tag } = fakeSqlTag({ totalGacha: 0 })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await mod.getGachaSummaryPg({}, { fromDate: null, streamerId: null })
+
+    expect(tag.mock.calls[0][1]).toBeNull()
+    expect(tag.mock.calls[0][2]).toBeNull()
   })
 })
 
@@ -208,3 +244,62 @@ describe.each(ROUTED_ENDPOINTS)(
     })
   }
 )
+
+// getGachaSummary は他4関数と違い tryJsonbRpc() を経由せず client.rpc() を直接
+// 2引数(関数名 + パラメータオブジェクト)で呼ぶため、表形式のROUTED_ENDPOINTSには
+// 混ぜず個別に検証する
+describe('localAdminApi: getGachaSummary の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase RPC 経路のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeRpcClient({ totalGacha: 1 })
+    const { getGachaSummary } = await importLocalAdminApi()
+
+    const data = await getGachaSummary(client, { range: 'all', streamerId: 'streamer-1' }, {})
+
+    expect(data).toEqual({ totalGacha: 1 })
+    expect(client.rpc).toHaveBeenCalledWith('get_analysis_gacha_summary', {
+      p_from_date: null,
+      p_streamer_id: 'streamer-1',
+    })
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag({ totalGacha: 9 })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeRpcClient({ totalGacha: 1 })
+    const { getGachaSummary } = await importLocalAdminApi()
+
+    const data = await getGachaSummary(
+      client,
+      { range: 'all', streamerId: 'streamer-1' },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual({ totalGacha: 9 })
+    expect(client.rpc).not.toHaveBeenCalled()
+    expect(tag.mock.calls[0][2]).toBe('streamer-1')
+  })
+
+  // streamerId未指定（全配信者対象、ダッシュボード既定表示で最も多いケース）は
+  // analysis/src/pages/Gacha.tsx から `streamerId: undefined` で渡ってくる。
+  // postgres.js はタグ付きテンプレートに undefined が渡ると
+  // UNDEFINED_VALUE エラーで即throwするため（transform.undefined未設定時の既定挙動）、
+  // getGachaSummary() 内の `params.streamerId ?? null` によるnull変換が必須。
+  // この変換が将来のリファクタで失われても検出できるよう、undefined入力を明示的に検証する
+  it('ANALYSIS_DB_DRIVER=pg かつ streamerId 未指定でも UNDEFINED_VALUE エラーにならない', async () => {
+    const { tag } = fakeSqlTag({ totalGacha: 3 })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeRpcClient({ totalGacha: 1 })
+    const { getGachaSummary } = await importLocalAdminApi()
+
+    const data = await getGachaSummary(
+      client,
+      { range: 'all', streamerId: undefined },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual({ totalGacha: 3 })
+    expect(tag.mock.calls[0][2]).toBeNull()
+  })
+})
