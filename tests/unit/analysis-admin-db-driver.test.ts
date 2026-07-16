@@ -1879,3 +1879,109 @@ describe('localAdminApi: deleteAnnouncement の ANALYSIS_DB_DRIVER による経�
     expect(client.from).not.toHaveBeenCalled()
   })
 })
+
+// localAdminApiPlugin の configureServer() 自体の回帰確認。
+// 上のブロック群はいずれも getXxx(client, env) 等の個別関数を直接呼んでおり、
+// HTTPディスパッチ層（configureServer内の`client ||= getSupabaseClient(env)`/
+// sentinel分岐と、handleRoute()・handleGachaExport()呼び出し）は経由しない。
+// ここではpg専用構成（Supabase資格情報を一切設定しない）で実際のmiddleware
+// ハンドラを呼び出し、資格情報エラーが発生しないこと自体を検証する
+// （バグ修正の回帰確認）。
+
+/**
+ * localAdminApiPlugin(env) からconfigureServer()経由でHTTPハンドラ本体を取り出す。
+ * Plugin型はanalysis/node_modules/viteから解決される別物理パッケージの型
+ * （このファイル冒頭のSupabaseClient型コメントと同じ「別npmパッケージ」問題）
+ * のため、テスト専用の最小限fake serverで済ませany経由にする。
+ */
+async function captureAdminApiHandler(
+  env: Record<string, string>
+): Promise<(req: unknown, res: unknown) => Promise<void>> {
+  const { localAdminApiPlugin } = await importLocalAdminApi()
+  const plugin = localAdminApiPlugin(env) as any
+  const server: any = { middlewares: { use: vi.fn() } }
+  plugin.configureServer(server)
+  expect(server.middlewares.use).toHaveBeenCalledWith('/__admin', expect.any(Function))
+  return server.middlewares.use.mock.calls[0][1]
+}
+
+// __setAnalysisSqlFactoryForTests()でsql factoryを差し替えているため、以下の
+// DASHBOARD_DATABASE_URLは実際には読まれない（ANALYSIS_DB_DRIVER=pgの構成らしい
+// 見た目を保つためだけに設定する）
+const PG_ONLY_ENV = {
+  ANALYSIS_DB_DRIVER: 'pg',
+  DASHBOARD_DATABASE_URL: 'postgres://fake-host/fake-db',
+}
+
+describe('localAdminApiPlugin: configureServer のpg専用構成での資格情報ガード（回帰確認）', () => {
+  it('ANALYSIS_DB_DRIVER=pg・Supabase資格情報なしでも「Missing local admin Supabase credentials」500にならない（/overview, handleRoute経路）', async () => {
+    const { tag } = fakeSqlTag({ stats: { totalUsers: 1 } })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    // VITE_DASHBOARD_SUPABASE_URL / DASHBOARD_SUPABASE_SECRET_KEY 等のSupabase
+    // 資格情報は意図的に一切含めない（バグの再現条件そのもの）
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+    // connectのミドルウェアマウント('/__admin')によりreq.urlからは既に
+    // /__adminプレフィックスが取り除かれた状態でハンドラに渡る（本体側コメント参照）
+    const req: any = {
+      method: 'GET',
+      url: '/overview',
+      socket: { remoteAddress: '127.0.0.1' },
+    }
+    const res: any = { setHeader: vi.fn(), end: vi.fn() }
+
+    await handler(req, res)
+
+    expect(res.end).toHaveBeenCalledTimes(1)
+    const body = res.end.mock.calls[0][0] as string
+    // 修正前は資格情報ガードがどのルートよりも先に発火し、常にこの500になっていた
+    expect(body).not.toContain('Missing local admin Supabase credentials')
+    expect(res.statusCode).not.toBe(500)
+    // ついでにpg経路が実際に動作していること（overviewの結果がpg経路のfakeから
+    // 返っていること）も確認する
+    expect(JSON.parse(body)).toEqual({ stats: { totalUsers: 1 } })
+  })
+
+  // /gacha/export は他ルートと違いhandleRoute()+sendJson()の汎用ディスパッチを
+  // 経由せず、configureServer内で先取りしてhandleGachaExport(client, ...)を直接
+  // 呼ぶ別経路（本体側コメント参照）。修正では2箇所（handleGachaExport呼び出しと
+  // handleRoute呼び出し）の両方でclientの扱いを変えたため、片方だけ確認して
+  // 満足しないよう個別に回帰確認する
+  it('ANALYSIS_DB_DRIVER=pg・Supabase資格情報なしでも「Missing local admin Supabase credentials」500にならない（/gacha/export, handleGachaExport経路）', async () => {
+    const exportRows = [
+      {
+        redeemed_at: '2024-01-01T00:00:00Z',
+        user_twitch_username: 'alice',
+        cards: { name: 'card-a', rarity: 'legendary' },
+        streamers: { twitch_display_name: 'streamer-a' },
+      },
+    ]
+    const { tag } = fakeSqlTag(exportRows)
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+    const req: any = {
+      method: 'GET',
+      url: '/gacha/export',
+      socket: { remoteAddress: '127.0.0.1' },
+    }
+    const res: any = { setHeader: vi.fn(), end: vi.fn() }
+
+    await handler(req, res)
+
+    expect(res.end).toHaveBeenCalledTimes(1)
+    const body = res.end.mock.calls[0][0] as string
+    // handleGachaExportはJSONではなくtext/csvを返すため他ルートと文言の入れ物が
+    // 違うが、資格情報エラーの文言自体を含まないことをそのまま確認できる
+    expect(body).not.toContain('Missing local admin Supabase credentials')
+    expect(res.statusCode).not.toBe(500)
+    // pg経路が実際に動作していること（CSVヘッダ＋fakeの行がそのまま返っている
+    // こと）も確認する
+    expect(body).toContain('redeemed_at,streamer,username,card_name,rarity')
+    expect(body).toContain('streamer-a')
+  })
+})

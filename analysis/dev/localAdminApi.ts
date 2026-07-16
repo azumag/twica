@@ -152,6 +152,22 @@ function getSupabaseClient(env: Env): SupabaseClient<Database> {
   })
 }
 
+/**
+ * pg専用構成（ANALYSIS_DB_DRIVER=pg）でSupabaseクライアントの代わりに使うsentinel。
+ * 触れた瞬間に自己説明的なエラーを投げるため、将来pg分岐より前にclientを参照する
+ * バグが混入しても、原因不明のnull参照エラーではなくその場で気づける。
+ */
+function createSupabaseClientAccessSentinel(): SupabaseClient<Database> {
+  return new Proxy({} as SupabaseClient<Database>, {
+    get() {
+      throw new Error(
+        'Supabase client accessed under ANALYSIS_DB_DRIVER=pg — pg経路のバグです。' +
+          'ルートラッパー関数は getAnalysisDbDriver(env) === "pg" を判定してから client に触れること。'
+      )
+    },
+  })
+}
+
 function requireObject(body: unknown): Record<string, unknown> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new Error('Request body must be a JSON object')
@@ -1565,7 +1581,14 @@ export function localAdminApiPlugin(env: Env): Plugin {
         const url = new URL(req.url || '/', 'http://localhost')
 
         try {
-          client ||= getSupabaseClient(env)
+          // pgドライバ時はSupabaseクライアントを構築せず、代わりにsentinelを使う
+          // （全ルートラッパーはpg分岐で client に触れず xxxPg(env, ...) に委譲する。
+          // 詳細は createSupabaseClientAccessSentinel() のコメント参照）。
+          if (getAnalysisDbDriver(env) !== 'pg') {
+            client ||= getSupabaseClient(env)
+          } else {
+            client ||= createSupabaseClientAccessSentinel()
+          }
 
           // CSVを返すエクスポート用ルートはJSON専用のhandleRoute()+sendJson()の
           // 汎用ディスパッチに乗せられないため、ここで先取りして個別処理する。
