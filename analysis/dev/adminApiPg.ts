@@ -19,7 +19,15 @@
  * 仕組みを丸ごと持ち込む必要がない。
  *
  * 関数名は SQL インジェクション対策として動的に組み立てず、呼び出す関数ごとに
- * 個別のリテラル SQL を書く（4関数のみなので汎用ヘルパーで動的合成する必要もない）。
+ * 個別のリテラル SQL を書く。
+ *
+ * gacha chart/table/export（`getGachaChartPg` 以下）は上記と異なり、対応する
+ * `get_analysis_*()` SQL 関数が存在しない（絞り込み条件が可変で、既存の
+ * `00073_add_analysis_dashboard_rpcs.sql` のような固定引数のRPC化に馴染まないため）。
+ * そのため、この3関数のみ postgres.js のフラグメント合成（`sql`` を `${}` でネスト、
+ * postgres.js README「nesting sql`` fragments」参照）で動的 WHERE 句を組み立てる。
+ * 値は必ずバインドパラメータとして渡され文字列連結は一切行わないため、
+ * 条件の有無を動的に変えてもインジェクションの余地はない。
  */
 
 import postgres from 'postgres'
@@ -47,6 +55,11 @@ export function getAnalysisDbDriver(env: Record<string, string>): AnalysisDbDriv
  * `DASHBOARD_DATABASE_URL` のロールは `docs/db-driver-migration.md` と同じ要領で
  * `grant service_role to <role>` 済みである必要がある（未付与だと接続自体は成功し、
  * 呼び出し時に "permission denied for function" で失敗する）。
+ *
+ * gacha chart/table/export（`getGachaChartPg` 以下）は SQL 関数を経由せず
+ * `gacha_history`/`cards`/`streamers` を直接 SELECT するため、上記の EXECUTE 権限に加えて
+ * これら3テーブルへの SELECT 権限も必要（`grant service_role to <role>` なら
+ * service_role が持つテーブル権限も継承されるため、通常は追加のGRANT操作は不要）。
  */
 function resolveDashboardDatabaseUrl(env: Record<string, string>): string {
   const url = env.DASHBOARD_DATABASE_URL?.trim()
@@ -153,4 +166,184 @@ export async function getGachaSummaryPg(
     (sql) =>
       sql`select get_analysis_gacha_summary(${params.fromDate}, ${params.streamerId}) as result`
   )
+}
+
+/** getGachaChartPg/getGachaTablePg/getGachaExportRowsPg が共有する絞り込み条件。 */
+export interface GachaHistoryFilters {
+  streamerId?: string
+  /** ISO文字列。範囲の下限（含む）。未指定なら絞り込まない。 */
+  fromDate?: string | null
+  /** ISO文字列。範囲の上限（含まない、exclusive）。未指定なら絞り込まない。 */
+  toDateExclusive?: string | null
+  /** ILIKE パターン文字列（`%`/`_` エスケープ済みの状態で呼び出し元から渡すこと）。 */
+  usernameIlike?: string
+  rarity?: string
+}
+
+/**
+ * gacha_history + cards + streamers の共通 FROM/JOIN/WHERE フラグメント。
+ * card_id/streamer_id は `gacha_history` の NOT NULL 外部キー
+ * （00001_initial_schema.sql）のため INNER JOIN で常に正しい
+ * （PostgREST 版が rarity フィルタ時だけ `cards!inner` を使い分けていたのは
+ * PostgREST 埋め込みの仕様に起因するもので、素の SQL では区別不要）。
+ *
+ * データ取得クエリと件数取得クエリの両方からこの関数を呼び、FROM/JOIN/WHERE を
+ * 完全に共有する（件数と行データで条件がずれるバグを構造的に防ぐ）。
+ *
+ * export しているのはテストのため（動的に組み立てたSQLフラグメントは、外側の
+ * クエリ全体を検証するより、この関数単体でフィルタの組み合わせごとに検証する
+ * 方がテストしやすいため個別に公開する。本番コードからの利用は同一ファイル内
+ * の3関数のみを想定）。
+ */
+export function gachaHistoryFromWhere(sql: postgres.Sql, filters: GachaHistoryFilters) {
+  return sql`
+    FROM gacha_history gh
+    JOIN cards c ON c.id = gh.card_id
+    JOIN streamers s ON s.id = gh.streamer_id
+    WHERE TRUE
+    ${filters.streamerId ? sql`AND gh.streamer_id = ${filters.streamerId}` : sql``}
+    ${filters.fromDate ? sql`AND gh.redeemed_at >= ${filters.fromDate}` : sql``}
+    ${filters.toDateExclusive ? sql`AND gh.redeemed_at < ${filters.toDateExclusive}` : sql``}
+    ${filters.usernameIlike ? sql`AND gh.user_twitch_username ILIKE ${filters.usernameIlike}` : sql``}
+    ${filters.rarity ? sql`AND c.rarity = ${filters.rarity}` : sql``}
+  `
+}
+
+/**
+ * ダッシュボードのガチャチャートが期待する行を返す（GachaChartRow 相当）。
+ * `getGachaChart()`（PostgREST版）は `.limit(10000)` を指定しているが、
+ * Supabase の max-rows API 設定（既定 1000）により実際には最大1000件しか
+ * 返っていない（`docs/db-driver-migration.md` 参照、`getGachaExportRows` の
+ * fetchAllPaged 導入理由と同じ制約）。pg 直結には PostgREST の max-rows は
+ * 適用されないため、ここではコードが本来意図している10000件の上限をそのまま使う
+ * （既存の実挙動＝1000件を人為的に再現するのではなく、コードの記述どおりの
+ * 上限に揃える。管理者用の内部チャートであり、より完全なデータが出ることは
+ * リスクではない）。
+ *
+ * timestamp/timestamptz を生列として SELECT すると postgres.js が JS Date
+ * オブジェクトへ変換してしまい、呼び出し元が期待する ISO 文字列と型が
+ * 食い違う（かつファイル冒頭の「jsonb 列1本しかSELECTしない」前提も崩れる）。
+ * そのため jsonb_build_object() で個々の値を明示的に組み立てる
+ * （timestamptz を jsonb_build_object の値として渡すと to_jsonb() と同じ
+ * ISO 8601 変換が適用される）。
+ */
+export async function getGachaChartPg(
+  env: Record<string, string>,
+  filters: Pick<GachaHistoryFilters, 'streamerId' | 'fromDate'>
+): Promise<unknown> {
+  return callAnalysisJsonFunction(env, (sql) => sql`
+    SELECT COALESCE(jsonb_agg(row_json ORDER BY sort_redeemed_at DESC), '[]'::jsonb) AS result
+    FROM (
+      SELECT
+        jsonb_build_object(
+          'id', gh.id,
+          'redeemed_at', gh.redeemed_at,
+          'card_id', gh.card_id,
+          'user_twitch_id', gh.user_twitch_id,
+          'streamer_id', gh.streamer_id,
+          'cards', jsonb_build_object(
+            'id', c.id, 'name', c.name, 'rarity', c.rarity, 'image_url', c.image_url
+          ),
+          'streamers', to_jsonb(s.*)
+        ) AS row_json,
+        gh.redeemed_at AS sort_redeemed_at
+      ${gachaHistoryFromWhere(sql, filters)}
+      ORDER BY gh.redeemed_at DESC
+      LIMIT 10000
+    ) chart
+  `)
+}
+
+/**
+ * 件数のみを取得する（`getGachaTablePg` 専用）。`count(*) OVER()` ウィンドウ関数で
+ * 1クエリに統合する案もあったが、要求ページが最終ページを超えて0行になった場合に
+ * 件数自体も取れなくなる（ウィンドウ関数は結果行にしか付与されないため）。
+ * PostgREST版（`{ count: 'exact' }`）は常に正確な件数を返すため、その挙動に
+ * 合わせて素直に別クエリにする。
+ *
+ * 既知のトレードオフ: この件数クエリと `getGachaTablePg` のデータクエリは
+ * `Promise.all` で並行実行される別クエリ（別スナップショット）のため、
+ * 両者の間に同時書き込みが挟まると件数と実際の行データがわずかにずれうる
+ * （PostgREST版は単一クエリのため常に一貫していた）。`gacha_history` は
+ * INSERT/SELECT のみの追記専用テーブルであり、ズレても「直近の並行insert数件分
+ * だけ件数が古い」程度に留まる。内部管理ダッシュボードでの許容範囲と判断し、
+ * 単一クエリ化（ウィンドウ関数）よりも「最終ページでも件数が必ず取れる」正しさを
+ * 優先した。
+ */
+async function countGachaHistory(
+  sql: postgres.Sql,
+  filters: GachaHistoryFilters
+): Promise<number> {
+  const rows = await sql`SELECT count(*)::int AS count ${gachaHistoryFromWhere(sql, filters)}`
+  return rows[0]?.count ?? 0
+}
+
+/**
+ * ダッシュボードのガチャ履歴テーブル（ページネーション付き）が期待する
+ * `{ rows, count }` を返す（`getGachaTable()` 相当）。
+ */
+export async function getGachaTablePg(
+  env: Record<string, string>,
+  filters: GachaHistoryFilters,
+  pagination: { offset: number; pageSize: number }
+): Promise<{ rows: unknown[]; count: number }> {
+  const sql = getAnalysisSql(env)
+
+  const [count, rows] = await Promise.all([
+    countGachaHistory(sql, filters),
+    callAnalysisJsonFunction(env, () => sql`
+      SELECT COALESCE(
+        jsonb_agg(row_json ORDER BY sort_redeemed_at DESC, sort_id DESC), '[]'::jsonb
+      ) AS result
+      FROM (
+        SELECT
+          to_jsonb(gh.*) || jsonb_build_object(
+            'cards', to_jsonb(c.*),
+            'streamers', to_jsonb(s.*)
+          ) AS row_json,
+          gh.redeemed_at AS sort_redeemed_at,
+          gh.id AS sort_id
+        ${gachaHistoryFromWhere(sql, filters)}
+        ORDER BY gh.redeemed_at DESC, gh.id DESC
+        LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}
+      ) page
+    `) as Promise<unknown[]>,
+  ])
+
+  return { rows, count }
+}
+
+// CSVエクスポートの安全上限。PostgREST経路側にも同値の上限 GACHA_EXPORT_ROW_LIMIT
+// （localAdminApi.ts）が独立定義されている。import循環を避けるため定数を共有して
+// いない。上限値を変更する場合は両方揃えること
+const GACHA_EXPORT_ROW_LIMIT_PG = 50000
+
+/**
+ * CSVエクスポート用の行を返す（`getGachaExportRows()` 相当）。PostgREST版は
+ * max-rows制約により `fetchAllPaged` で1000件ずつバッチ取得しているが、
+ * pg直結にはその制約がないため単発の `LIMIT` クエリで完結する。
+ */
+export async function getGachaExportRowsPg(
+  env: Record<string, string>,
+  filters: GachaHistoryFilters
+): Promise<unknown[]> {
+  return callAnalysisJsonFunction(env, (sql) => sql`
+    SELECT COALESCE(
+      jsonb_agg(row_json ORDER BY sort_redeemed_at DESC, sort_id DESC), '[]'::jsonb
+    ) AS result
+    FROM (
+      SELECT
+        jsonb_build_object(
+          'redeemed_at', gh.redeemed_at,
+          'user_twitch_username', gh.user_twitch_username,
+          'cards', jsonb_build_object('name', c.name, 'rarity', c.rarity),
+          'streamers', jsonb_build_object('twitch_display_name', s.twitch_display_name)
+        ) AS row_json,
+        gh.redeemed_at AS sort_redeemed_at,
+        gh.id AS sort_id
+      ${gachaHistoryFromWhere(sql, filters)}
+      ORDER BY gh.redeemed_at DESC, gh.id DESC
+      LIMIT ${GACHA_EXPORT_ROW_LIMIT_PG}
+    ) exported
+  `) as Promise<unknown[]>
 }

@@ -1,6 +1,7 @@
 /**
  * #700（#574 / #568 Phase 1-5）analysis ダッシュボード admin backend の
- * pg 直結切替（overview / leaderboard / users / streamers / gacha summary）のテスト。
+ * pg 直結切替（overview / leaderboard / users / streamers / gacha summary /
+ * gacha chart・table・export）のテスト。
  *
  * `tests/unit/db-flags.test.ts`（フラグのデフォルト・trim・不正値の扱い）と
  * `tests/unit/storage-db-driver-parity.test.ts`（フラグ未設定時に旧経路のみが
@@ -28,26 +29,100 @@ async function importLocalAdminApi() {
 // から解決される。root の tests/unit/ から `SupabaseClient` 型を import すると
 // クラスの protected メンバー起因でクロスパッケージの型不一致エラーになるため
 // （postgres.js と同じ「別npmパッケージの独自 node_modules」問題）、ここでは
-// rpc() だけを実装する最小限の fake を any で渡す（.rpc() しか呼ばれない経路のみ検証対象）。
+// rpc()/from() だけを実装する最小限の fake を any で渡す。
 function fakeRpcClient(result: unknown): any {
   return {
     rpc: vi.fn().mockResolvedValue({ data: result, error: null }),
+    from: vi.fn(),
   }
 }
 
+// getGachaChart/getGachaTable/getGachaExportRows の Supabase 経路（default モード）
+// が使う `.from().select().order()...` チェーンの最小限のスタブ。
+// storage-db-driver-parity.test.ts の builder パターンを踏襲する。
+// count は getGachaTable の `{ count: 'exact' }` 用。
+function fakeQueryBuilderClient(resolved: { data: unknown; count?: number; error?: unknown }): any {
+  const builder: any = {
+    select: vi.fn(() => builder),
+    order: vi.fn(() => builder),
+    limit: vi.fn(() => builder),
+    eq: vi.fn(() => builder),
+    gte: vi.fn(() => builder),
+    lt: vi.fn(() => builder),
+    ilike: vi.fn(() => builder),
+    range: vi.fn(() => builder),
+    then: (onFulfilled: any, onRejected: any) =>
+      Promise.resolve({
+        data: resolved.data,
+        count: resolved.count ?? null,
+        error: resolved.error ?? null,
+      }).then(onFulfilled, onRejected),
+  }
+  const from = vi.fn(() => builder)
+  return { from, rpc: vi.fn(), builder }
+}
+
 /**
- * query()に渡されたSQLテンプレート文字列を集約して返す fake sql タグ関数。
- * postgres.js のタグ付きテンプレート呼び出し（strings, ...values）を模すため
- * 可変長引数を受ける（getGachaSummaryPg のようにバインド値を持つ呼び出しもある）
+ * postgres.js のタグ付きテンプレート呼び出し（fragment合成含む）を模す fake sql。
+ *
+ * gachaHistoryFromWhere() 等は `sql`` を `${}` でネストしてWHERE句を動的に組み立てる
+ * （postgres.js の「fragment合成」機能、README「nesting sql`` fragments」参照）。
+ * この fake は、ネストされた fragment を実際に await されるまで解決しない thenable
+ * として表現し、最終的に await された時点で全フラグメントを1本のテキスト＋
+ * バインド値配列に平坦化して calls に記録する（＝実際にDBへ発行される最終クエリの
+ * 形を模す）。fragment合成のない単純な呼び出し（getOverviewPg等）でも、
+ * calls には従来どおり1件だけ記録される。
+ *
+ * count は `count(*)` を含むクエリ（getGachaTablePg の件数クエリ）専用の戻り値。
+ * 未指定時は result と同じ値を使う（count(*)を使わない関数のテストでは無関係なため）。
  */
-function fakeSqlTag(result: unknown) {
-  const calls: string[][] = []
-  const tag = vi.fn<(strings: TemplateStringsArray, ...values: unknown[]) => Promise<{ result: unknown }[]>>(
-    (strings) => {
-      calls.push(Array.from(strings))
-      return Promise.resolve([{ result }])
+interface FakeFragment {
+  __fakeFragment: true
+  strings: readonly string[]
+  values: unknown[]
+}
+
+function isFakeFragment(value: unknown): value is FakeFragment {
+  return !!value && typeof value === 'object' && (value as FakeFragment).__fakeFragment === true
+}
+
+function flattenFragment(
+  strings: readonly string[],
+  values: readonly unknown[]
+): { text: string; values: unknown[] } {
+  let text = strings[0]
+  const flatValues: unknown[] = []
+  values.forEach((value, index) => {
+    if (isFakeFragment(value)) {
+      const inner = flattenFragment(value.strings, value.values)
+      text += inner.text
+      flatValues.push(...inner.values)
+    } else {
+      flatValues.push(value)
     }
-  )
+    text += strings[index + 1]
+  })
+  return { text, values: flatValues }
+}
+
+function fakeSqlTag(result: unknown, count: unknown = result) {
+  const calls: { text: string; values: unknown[] }[] = []
+
+  const tag = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const fragment: FakeFragment & PromiseLike<unknown> = {
+      __fakeFragment: true,
+      strings,
+      values,
+      then(onFulfilled, onRejected) {
+        const flattened = flattenFragment(strings, values)
+        calls.push(flattened)
+        const rows = flattened.text.includes('count(*)') ? [{ count }] : [{ result }]
+        return Promise.resolve(rows).then(onFulfilled as never, onRejected as never)
+      },
+    }
+    return fragment
+  })
+
   return { tag, calls }
 }
 
@@ -95,7 +170,7 @@ describe('adminApiPg: pg直結クエリ', () => {
     const data = await mod.getOverviewPg({})
 
     expect(data).toEqual({ stats: { totalUsers: 3 } })
-    expect(calls[0].join('')).toContain('get_analysis_overview()')
+    expect(calls[0].text).toContain('get_analysis_overview()')
   })
 
   it('getStreamerLeaderboardPg: get_analysis_streamer_leaderboard() を呼ぶ', async () => {
@@ -106,7 +181,7 @@ describe('adminApiPg: pg直結クエリ', () => {
     const data = await mod.getStreamerLeaderboardPg({})
 
     expect(data).toEqual([{ streamerId: 's1', drawCount: 5 }])
-    expect(calls[0].join('')).toContain('get_analysis_streamer_leaderboard()')
+    expect(calls[0].text).toContain('get_analysis_streamer_leaderboard()')
   })
 
   it('listUsersPg: get_analysis_users() を呼ぶ', async () => {
@@ -117,7 +192,7 @@ describe('adminApiPg: pg直結クエリ', () => {
     const data = await mod.listUsersPg({})
 
     expect(data).toEqual([{ id: 'u1' }])
-    expect(calls[0].join('')).toContain('get_analysis_users()')
+    expect(calls[0].text).toContain('get_analysis_users()')
   })
 
   it('listStreamersWithStatsPg: get_analysis_streamers() を呼ぶ', async () => {
@@ -128,7 +203,7 @@ describe('adminApiPg: pg直結クエリ', () => {
     const data = await mod.listStreamersWithStatsPg({})
 
     expect(data).toEqual([{ id: 'st1' }])
-    expect(calls[0].join('')).toContain('get_analysis_streamers()')
+    expect(calls[0].text).toContain('get_analysis_streamers()')
   })
 
   // 5関数とも callAnalysisJsonFunction() を共有しているため、エラー伝播の検証は
@@ -155,7 +230,7 @@ describe('adminApiPg: pg直結クエリ', () => {
     )
 
     expect(data).toEqual({ totalGacha: 42 })
-    expect(calls[0].join('')).toContain('get_analysis_gacha_summary(')
+    expect(calls[0].text).toContain('get_analysis_gacha_summary(')
     // タグ関数呼び出し全体の第2・第3引数がバインドされた値そのもの（文字列連結ではない）
     expect(tag.mock.calls[0][1]).toBe('2024-01-01T00:00:00.000Z')
     expect(tag.mock.calls[0][2]).toBe('streamer-1')
@@ -170,6 +245,146 @@ describe('adminApiPg: pg直結クエリ', () => {
 
     expect(tag.mock.calls[0][1]).toBeNull()
     expect(tag.mock.calls[0][2]).toBeNull()
+  })
+})
+
+describe('adminApiPg: gachaHistoryFromWhere（動的WHERE句の組み立て）', () => {
+  it('フィルタなしなら WHERE TRUE のみ（絞り込み条件は付かない）', async () => {
+    const { tag, calls } = fakeSqlTag(null)
+    const mod = await importAdminApiPg()
+
+    await mod.gachaHistoryFromWhere(tag as never, {})
+
+    expect(calls[0].text).toContain('FROM gacha_history gh')
+    expect(calls[0].text).toContain('JOIN cards c ON c.id = gh.card_id')
+    expect(calls[0].text).toContain('JOIN streamers s ON s.id = gh.streamer_id')
+    expect(calls[0].text).toContain('WHERE TRUE')
+    expect(calls[0].text).not.toContain('AND')
+    expect(calls[0].values).toEqual([])
+  })
+
+  it('streamerId のみ指定: gh.streamer_id 条件だけが追加される', async () => {
+    const { tag, calls } = fakeSqlTag(null)
+    const mod = await importAdminApiPg()
+
+    await mod.gachaHistoryFromWhere(tag as never, { streamerId: 'streamer-1' })
+
+    expect(calls[0].text).toContain('AND gh.streamer_id = ')
+    expect(calls[0].text).not.toContain('AND gh.redeemed_at')
+    expect(calls[0].text).not.toContain('AND gh.user_twitch_username')
+    expect(calls[0].text).not.toContain('AND c.rarity')
+    expect(calls[0].values).toEqual(['streamer-1'])
+  })
+
+  it('全フィルタ指定: 5条件すべてがこの順序でバインドされる', async () => {
+    const { tag, calls } = fakeSqlTag(null)
+    const mod = await importAdminApiPg()
+
+    await mod.gachaHistoryFromWhere(tag as never, {
+      streamerId: 'streamer-1',
+      fromDate: '2024-01-01T00:00:00Z',
+      toDateExclusive: '2024-02-01T00:00:00Z',
+      usernameIlike: '%alice%',
+      rarity: 'legendary',
+    })
+
+    expect(calls[0].values).toEqual([
+      'streamer-1',
+      '2024-01-01T00:00:00Z',
+      '2024-02-01T00:00:00Z',
+      '%alice%',
+      'legendary',
+    ])
+    expect(calls[0].text).toContain('AND gh.streamer_id = ')
+    expect(calls[0].text).toContain('AND gh.redeemed_at >= ')
+    expect(calls[0].text).toContain('AND gh.redeemed_at < ')
+    expect(calls[0].text).toContain('AND gh.user_twitch_username ILIKE ')
+    expect(calls[0].text).toContain('AND c.rarity = ')
+  })
+})
+
+describe('adminApiPg: getGachaChartPg', () => {
+  it('LIMIT 10000・jsonb整形した行配列を返し、フィルタがバインドされる', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'g1' }])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getGachaChartPg(
+      {},
+      { streamerId: 'streamer-1', fromDate: '2024-01-01T00:00:00Z' }
+    )
+
+    expect(data).toEqual([{ id: 'g1' }])
+    expect(calls).toHaveLength(1)
+    // 外側の jsonb_agg にも明示 ORDER BY を持たせている（サブクエリの
+    // ORDER BY + LIMIT の並び順に暗黙で依存しない防御的な集約）
+    expect(calls[0].text).toContain('jsonb_agg(row_json ORDER BY sort_redeemed_at DESC)')
+    expect(calls[0].text).toContain('LIMIT 10000')
+    expect(calls[0].text).toContain('AND gh.streamer_id = ')
+    expect(calls[0].values).toEqual(['streamer-1', '2024-01-01T00:00:00Z'])
+  })
+})
+
+describe('adminApiPg: getGachaTablePg', () => {
+  it('件数クエリとデータクエリを共有WHEREで別々に発行し、{rows, count}を返す', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'g1' }], 42)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getGachaTablePg(
+      {},
+      { streamerId: 'streamer-1' },
+      { offset: 20, pageSize: 10 }
+    )
+
+    expect(data).toEqual({ rows: [{ id: 'g1' }], count: 42 })
+    expect(calls).toHaveLength(2)
+
+    const countCall = calls.find((call) => call.text.includes('count(*)'))
+    const dataCall = calls.find((call) => call.text.includes('jsonb_agg'))
+    expect(countCall).toBeDefined()
+    expect(dataCall).toBeDefined()
+
+    // 件数クエリとデータクエリのWHERE条件（バインド値）が一致していること
+    // （countGachaHistory/getGachaTablePg が同じ gachaHistoryFromWhere を共有するため）
+    expect(countCall?.values).toEqual(['streamer-1'])
+    expect(dataCall?.values).toEqual(['streamer-1', 10, 20])
+    expect(dataCall?.text).toContain('LIMIT ')
+    expect(dataCall?.text).toContain('OFFSET ')
+    expect(dataCall?.text).toContain('ORDER BY gh.redeemed_at DESC, gh.id DESC')
+  })
+
+  it('該当0件でもcountを正しく取得できる（count(*)は常に1行返るため、要求ページが最終ページを超えても件数が消えない）', async () => {
+    const { tag } = fakeSqlTag([], 0)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getGachaTablePg({}, {}, { offset: 1000, pageSize: 20 })
+
+    expect(data).toEqual({ rows: [], count: 0 })
+  })
+})
+
+describe('adminApiPg: getGachaExportRowsPg', () => {
+  it('LIMIT 50000・単発クエリでCSV出力用の狭い列を返す', async () => {
+    const { tag, calls } = fakeSqlTag([{ redeemed_at: '2024-01-01T00:00:00Z' }])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getGachaExportRowsPg({}, { rarity: 'legendary' })
+
+    expect(data).toEqual([{ redeemed_at: '2024-01-01T00:00:00Z' }])
+    // getGachaChartPg/getGachaTablePgと違いページングやcountクエリを伴わない単発クエリ
+    expect(calls).toHaveLength(1)
+    // LIMIT はバインドパラメータとして渡すため（GACHA_EXPORT_ROW_LIMIT_PG）、
+    // テキストではなく values の末尾を確認する
+    expect(calls[0].text).toContain('LIMIT ')
+    expect(calls[0].values.at(-1)).toBe(50000)
+    expect(calls[0].text).toContain('AND c.rarity = ')
+    // chart/tableと違い user_twitch_id / card_id 等の広い列は SELECT リストに含めない
+    // （JOIN条件としては gh.card_id を常に参照するため、出力列に絞ってチェックする）
+    expect(calls[0].text).not.toContain('user_twitch_id')
+    expect(calls[0].text).not.toContain("'card_id'")
   })
 })
 
@@ -301,5 +516,201 @@ describe('localAdminApi: getGachaSummary の ANALYSIS_DB_DRIVER による経路�
 
     expect(data).toEqual({ totalGacha: 3 })
     expect(tag.mock.calls[0][2]).toBeNull()
+  })
+})
+
+describe('localAdminApi: escapeIlikePattern/computeExclusiveToDateIso/resolveGachaDateFilters', () => {
+  it('escapeIlikePattern: % と _ をエスケープする', async () => {
+    const { escapeIlikePattern } = await importLocalAdminApi()
+    expect(escapeIlikePattern('100%_off')).toBe('100\\%\\_off')
+  })
+
+  it('computeExclusiveToDateIso: 指定日の翌日0時(UTC)のISO文字列を返す', async () => {
+    const { computeExclusiveToDateIso } = await importLocalAdminApi()
+    expect(computeExclusiveToDateIso('2024-01-31')).toBe('2024-02-01T00:00:00.000Z')
+  })
+
+  it('resolveGachaDateFilters: from/toとも未指定ならrangeのfromDateのみ使う', async () => {
+    const { resolveGachaDateFilters } = await importLocalAdminApi()
+    expect(resolveGachaDateFilters({ range: 'all', from: '', to: '' })).toEqual({
+      fromDate: undefined,
+      toDateExclusive: undefined,
+    })
+  })
+
+  it('resolveGachaDateFilters: fromが指定されるとrangeは無視される', async () => {
+    const { resolveGachaDateFilters } = await importLocalAdminApi()
+    const result = resolveGachaDateFilters({ range: '7d', from: '2024-01-01', to: '' })
+    expect(result.fromDate).toBe('2024-01-01T00:00:00Z')
+  })
+
+  it('resolveGachaDateFilters: toのみ指定でも独立に適用される（fromはrangeで絞り込まれない）', async () => {
+    const { resolveGachaDateFilters } = await importLocalAdminApi()
+    const result = resolveGachaDateFilters({ range: '7d', from: '', to: '2024-01-31' })
+    expect(result.fromDate).toBeUndefined()
+    expect(result.toDateExclusive).toBe('2024-02-01T00:00:00.000Z')
+  })
+
+  it('resolveGachaDateFilters: from/to両方指定なら両方とも独立に適用される（rangeは無視）', async () => {
+    const { resolveGachaDateFilters } = await importLocalAdminApi()
+    const result = resolveGachaDateFilters({ range: '7d', from: '2024-01-01', to: '2024-01-31' })
+    expect(result.fromDate).toBe('2024-01-01T00:00:00Z')
+    expect(result.toDateExclusive).toBe('2024-02-01T00:00:00.000Z')
+  })
+})
+
+describe('localAdminApi: getGachaChart の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const rows = [{ id: 'g1', redeemed_at: '2024-01-01T00:00:00Z' }]
+    const client = fakeQueryBuilderClient({ data: rows })
+    const { getGachaChart } = await importLocalAdminApi()
+
+    const data = await getGachaChart(client, { range: 'all', streamerId: 'streamer-1' }, {})
+
+    expect(data).toEqual(rows)
+    expect(client.from).toHaveBeenCalledWith('gacha_history')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'g1' }])
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [{ id: 'legacy' }] })
+    const { getGachaChart } = await importLocalAdminApi()
+
+    const data = await getGachaChart(
+      client,
+      { range: 'all', streamerId: 'streamer-1' },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual([{ id: 'g1' }])
+    expect(client.from).not.toHaveBeenCalled()
+    expect(calls[0].values).toEqual(['streamer-1'])
+  })
+})
+
+describe('localAdminApi: getGachaTable の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  const tableParams = {
+    range: 'all' as const,
+    page: 3,
+    pageSize: 10,
+    username: '',
+    rarity: '',
+    from: '',
+    to: '',
+    streamerId: undefined,
+  }
+
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const rows = [{ id: 'g1' }]
+    const client = fakeQueryBuilderClient({ data: rows, count: 42 })
+    const { getGachaTable } = await importLocalAdminApi()
+
+    const data = await getGachaTable(client, tableParams, {})
+
+    expect(data).toEqual({ rows, count: 42 })
+    expect(client.from).toHaveBeenCalledWith('gacha_history')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路（page/pageSizeからのoffset計算含む）を呼ぶ', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'g1' }], 7)
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [{ id: 'legacy' }], count: 1 })
+    const { getGachaTable } = await importLocalAdminApi()
+
+    const data = await getGachaTable(client, tableParams, { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual({ rows: [{ id: 'g1' }], count: 7 })
+    expect(client.from).not.toHaveBeenCalled()
+    // page=3, pageSize=10 → offset=(3-1)*10=20
+    const dataCall = calls.find((call) => call.text.includes('jsonb_agg'))
+    expect(dataCall?.values).toEqual([10, 20])
+  })
+
+  // gachaHistoryFromWhere自体は単体テスト済みだが、それだけでは
+  // 「getGachaTableがusername/rarity/from/toを正しくGachaHistoryFiltersへ
+  // 詰め替えているか（%ラップ・エスケープ・from/to優先ロジック含む）」という
+  // “配線”部分の退行を検出できない。ここでは全フィルタを指定した状態で
+  // pg経路を通し、gachaHistoryFromWhereへ渡る直前の値を検証する
+  it('ANALYSIS_DB_DRIVER=pg: username/rarity/from/to/streamerId が正しく詰め替えられる', async () => {
+    const { tag, calls } = fakeSqlTag([], 0)
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [], count: 0 })
+    const { getGachaTable } = await importLocalAdminApi()
+
+    await getGachaTable(
+      client,
+      {
+        range: '7d',
+        page: 1,
+        pageSize: 20,
+        username: '100%_off',
+        rarity: 'legendary',
+        from: '2024-01-01',
+        to: '2024-01-31',
+        streamerId: 'streamer-9',
+      },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    const countCall = calls.find((call) => call.text.includes('count(*)'))
+    // gachaHistoryFromWhereへの引数順（streamerId, fromDate, toDateExclusive,
+    // usernameIlike, rarity）どおりにバインドされていること。
+    // usernameIlikeは `%` ラップ済み・`%`/`_` エスケープ済みであること
+    // （エスケープが抜けると '100%_off' のまま渡り ILIKE のワイルドカード動作が変わる）。
+    // from/toを両方指定しているので range('7d')は無視され、from/toがそのまま使われる
+    expect(countCall?.values).toEqual([
+      'streamer-9',
+      '2024-01-01T00:00:00Z',
+      '2024-02-01T00:00:00.000Z',
+      '%100\\%\\_off%',
+      'legendary',
+    ])
+  })
+})
+
+describe('localAdminApi: getGachaExportRows の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  const exportParams = {
+    range: 'all' as const,
+    username: '',
+    rarity: '',
+    from: '',
+    to: '',
+    streamerId: undefined,
+  }
+
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const rows = [
+      {
+        redeemed_at: '2024-01-01T00:00:00Z',
+        user_twitch_username: 'alice',
+        cards: null,
+        streamers: null,
+      },
+    ]
+    const client = fakeQueryBuilderClient({ data: rows })
+    const { getGachaExportRows } = await importLocalAdminApi()
+
+    const data = await getGachaExportRows(client, exportParams, {})
+
+    expect(data).toEqual(rows)
+    expect(client.from).toHaveBeenCalledWith('gacha_history')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路（LIMIT 50000の単発クエリ）を呼ぶ', async () => {
+    const { tag, calls } = fakeSqlTag([{ redeemed_at: '2024-01-01T00:00:00Z' }])
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [] })
+    const { getGachaExportRows } = await importLocalAdminApi()
+
+    const data = await getGachaExportRows(client, exportParams, { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual([{ redeemed_at: '2024-01-01T00:00:00Z' }])
+    expect(client.from).not.toHaveBeenCalled()
+    expect(calls).toHaveLength(1)
   })
 })

@@ -12,7 +12,10 @@ import {
 } from '../src/lib/chatAnnouncementAccess'
 import {
   getAnalysisDbDriver,
+  getGachaChartPg,
+  getGachaExportRowsPg,
   getGachaSummaryPg,
+  getGachaTablePg,
   getOverviewPg,
   getStreamerLeaderboardPg,
   listStreamersWithStatsPg,
@@ -593,10 +596,17 @@ export async function listStreamersWithStats(client: SupabaseClient<Database>, e
 // analysis/src/pages/StreamerGachaHistory.tsx のチャート用クエリと同一ロジック。
 // streamerId未指定時は全ストリーマー横断(analysis/src/pages/Gacha.tsx相当)になるため
 // streamers(*) も併せて埋め込む
-async function getGachaChart(
+export async function getGachaChart(
   client: SupabaseClient<Database>,
-  params: { range: TimeRange; streamerId?: string }
+  params: { range: TimeRange; streamerId?: string },
+  env: Env
 ) {
+  const fromDate = getFromDateForRange(params.range)
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getGachaChartPg(env, { streamerId: params.streamerId, fromDate })
+  }
+
   let query = client
     .from('gacha_history')
     .select('id, redeemed_at, card_id, user_twitch_id, streamer_id, cards(id, name, rarity, image_url), streamers(*)')
@@ -607,7 +617,6 @@ async function getGachaChart(
     query = query.eq('streamer_id', params.streamerId)
   }
 
-  const fromDate = getFromDateForRange(params.range)
   if (fromDate) {
     query = query.gte('redeemed_at', fromDate)
   }
@@ -638,7 +647,7 @@ export async function getGachaSummary(
   // RPC未適用の開発環境だけ従来の10,000件bounded集計に戻す。
   // 通常経路はDB側GROUP BY済みの小さいJSONを返し、gacha画面初期表示で
   // 履歴行を大量転送しないことを性能改善の主目的としている。
-  const chartRows = await getGachaChart(client, params)
+  const chartRows = await getGachaChart(client, params, env)
   const dailyCounts = new Map<string, number>()
   const rarityCounts = new Map<string, number>()
   const cardCounts = new Map<string, { card: GachaChartCard; count: number }>()
@@ -661,7 +670,7 @@ export async function getGachaSummary(
   }
 
   return {
-    totalGacha: chartRows.length,
+    totalGacha: (chartRows as GachaChartRow[]).length,
     uniqueUsers: new Set((chartRows as GachaChartRow[]).map((row) => row.user_twitch_id)).size,
     legendaryCount,
     dailyGachaData: Array.from(dailyCounts.entries())
@@ -678,9 +687,45 @@ export async function getGachaSummary(
   }
 }
 
+// ILIKE 部分一致用のパターン文字エスケープ（%/_）。
+// getGachaTable/getGachaExportRows のSupabase経路・pg経路の両方で共有する
+// (exportはテストのため。呼び出し元はこのファイル内の2関数のみを想定)
+export function escapeIlikePattern(value: string): string {
+  return value.replace(/%/g, '\\%').replace(/_/g, '\\_')
+}
+
+// to（YYYY-MM-DD）を「翌日0時（exclusive上限）」のISO文字列に変換する。
+// getGachaTable/getGachaExportRows のSupabase経路・pg経路の両方で共有する
+// (exportはテストのため。呼び出し元はこのファイル内の2関数のみを想定)
+export function computeExclusiveToDateIso(to: string): string {
+  const nextDay = new Date(`${to}T00:00:00Z`)
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1)
+  return nextDay.toISOString()
+}
+
+// getGachaTable/getGachaExportRowsの日付フィルタ計算をpg経路向けに切り出したもの。
+// 「from/toが両方未指定ならrangeを使う。片方でも指定されていればrangeは無視し、
+// from/toをそれぞれ独立に適用する」という、両関数のSupabase経路と同一のロジック
+// (exportはテストのため。呼び出し元はこのファイル内の2関数のみを想定)
+export function resolveGachaDateFilters(params: {
+  range: TimeRange
+  from: string
+  to: string
+}): { fromDate?: string; toDateExclusive?: string } {
+  const { range, from, to } = params
+  const fromDate =
+    !from && !to
+      ? (getFromDateForRange(range) ?? undefined)
+      : from
+        ? `${from}T00:00:00Z`
+        : undefined
+  const toDateExclusive = to ? computeExclusiveToDateIso(to) : undefined
+  return { fromDate, toDateExclusive }
+}
+
 // analysis/src/pages/StreamerGachaHistory.tsx のテーブル用クエリと同一ロジック。
 // streamerIdが指定されている場合のみ絞り込む点だけが per-streamer 版との違い
-async function getGachaTable(
+export async function getGachaTable(
   client: SupabaseClient<Database>,
   params: {
     range: TimeRange
@@ -691,9 +736,25 @@ async function getGachaTable(
     from: string
     to: string
     streamerId?: string
-  }
+  },
+  env: Env
 ) {
   const { range, page, pageSize, username, rarity, from, to, streamerId } = params
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    const { fromDate, toDateExclusive } = resolveGachaDateFilters({ range, from, to })
+    return getGachaTablePg(
+      env,
+      {
+        streamerId,
+        fromDate,
+        toDateExclusive,
+        usernameIlike: username ? `%${escapeIlikePattern(username)}%` : undefined,
+        rarity: rarity || undefined,
+      },
+      { offset: (page - 1) * pageSize, pageSize }
+    )
+  }
 
   // レアリティフィルタ時は !inner JOIN で正確なcountを保証
   const joinType = rarity ? 'cards!inner(*)' : 'cards(*)'
@@ -715,8 +776,7 @@ async function getGachaTable(
 
   // ユーザー名フィルタ（ILIKE部分一致、パターン文字エスケープ）
   if (username) {
-    const escaped = username.replace(/%/g, '\\%').replace(/_/g, '\\_')
-    query = query.ilike('user_twitch_username', `%${escaped}%`)
+    query = query.ilike('user_twitch_username', `%${escapeIlikePattern(username)}%`)
   }
 
   if (rarity) {
@@ -731,9 +791,7 @@ async function getGachaTable(
   }
 
   if (to) {
-    const nextDay = new Date(`${to}T00:00:00Z`)
-    nextDay.setUTCDate(nextDay.getUTCDate() + 1)
-    query = query.lt('redeemed_at', nextDay.toISOString())
+    query = query.lt('redeemed_at', computeExclusiveToDateIso(to))
   }
 
   const offset = (page - 1) * pageSize
@@ -752,6 +810,9 @@ async function getGachaTable(
 // GET /__admin/gacha/export 用の行取得。getGachaTable()と同じフィルタロジックだが
 // ページネーションなし・全件取得（安全のため50,000件上限）。取得する列も
 // CSV出力に必要な最小限（redeemed_at / username / card名・レアリティ / streamer名）に絞る
+//
+// pg経路側にも同値の上限 GACHA_EXPORT_ROW_LIMIT_PG（adminApiPg.ts）が独立定義されている。
+// import循環を避けるため定数を共有していない。上限値を変更する場合は両方揃えること
 const GACHA_EXPORT_ROW_LIMIT = 50000
 
 type GachaExportRow = {
@@ -761,7 +822,7 @@ type GachaExportRow = {
   streamers: { twitch_display_name: string } | { twitch_display_name: string }[] | null
 }
 
-async function getGachaExportRows(
+export async function getGachaExportRows(
   client: SupabaseClient<Database>,
   params: {
     range: TimeRange
@@ -770,9 +831,21 @@ async function getGachaExportRows(
     from: string
     to: string
     streamerId?: string
-  }
+  },
+  env: Env
 ): Promise<GachaExportRow[]> {
   const { range, username, rarity, from, to, streamerId } = params
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    const { fromDate, toDateExclusive } = resolveGachaDateFilters({ range, from, to })
+    return getGachaExportRowsPg(env, {
+      streamerId,
+      fromDate,
+      toDateExclusive,
+      usernameIlike: username ? `%${escapeIlikePattern(username)}%` : undefined,
+      rarity: rarity || undefined,
+    }) as Promise<GachaExportRow[]>
+  }
 
   // レアリティフィルタ時は !inner JOIN で絞り込みが効くようにする（getGachaTableと同様）
   const joinType = rarity ? 'cards!inner(name, rarity)' : 'cards(name, rarity)'
@@ -799,8 +872,7 @@ async function getGachaExportRows(
 
     // ユーザー名フィルタ（ILIKE部分一致、パターン文字エスケープ）
     if (username) {
-      const escaped = username.replace(/%/g, '\\%').replace(/_/g, '\\_')
-      query = query.ilike('user_twitch_username', `%${escaped}%`)
+      query = query.ilike('user_twitch_username', `%${escapeIlikePattern(username)}%`)
     }
 
     if (rarity) {
@@ -813,9 +885,7 @@ async function getGachaExportRows(
     }
 
     if (to) {
-      const nextDay = new Date(`${to}T00:00:00Z`)
-      nextDay.setUTCDate(nextDay.getUTCDate() + 1)
-      query = query.lt('redeemed_at', nextDay.toISOString())
+      query = query.lt('redeemed_at', computeExclusiveToDateIso(to))
     }
 
     // getGachaTableと同じ理由でid をタイブレーカーに追加(range()を跨ぐ全件取得のため
@@ -855,7 +925,8 @@ function buildGachaExportCsv(rows: GachaExportRow[]): string {
 async function handleGachaExport(
   client: SupabaseClient<Database>,
   url: URL,
-  res: ServerResponse
+  res: ServerResponse,
+  env: Env
 ): Promise<void> {
   try {
     const range = parseTimeRange(url.searchParams.get('range'))
@@ -865,7 +936,11 @@ async function handleGachaExport(
     const to = url.searchParams.get('to') || ''
     const streamerId = url.searchParams.get('streamerId') || undefined
 
-    const rows = await getGachaExportRows(client, { range, username, rarity, from, to, streamerId })
+    const rows = await getGachaExportRows(
+      client,
+      { range, username, rarity, from, to, streamerId },
+      env
+    )
     const csv = buildGachaExportCsv(rows)
 
     res.statusCode = 200
@@ -1033,7 +1108,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   if (req.method === 'GET' && path === '/gacha/chart') {
     const range = parseTimeRange(url.searchParams.get('range'))
     const streamerId = url.searchParams.get('streamerId') || undefined
-    return getGachaChart(client, { range, streamerId })
+    return getGachaChart(client, { range, streamerId }, env)
   }
 
   if (req.method === 'GET' && path === '/gacha/summary') {
@@ -1050,7 +1125,11 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
     const from = url.searchParams.get('from') || ''
     const to = url.searchParams.get('to') || ''
     const streamerId = url.searchParams.get('streamerId') || undefined
-    return getGachaTable(client, { range, page, pageSize, username, rarity, from, to, streamerId })
+    return getGachaTable(
+      client,
+      { range, page, pageSize, username, rarity, from, to, streamerId },
+      env
+    )
   }
 
   if (req.method === 'GET' && path === '/drop-rate-stats') {
@@ -1291,7 +1370,7 @@ export function localAdminApiPlugin(env: Env): Plugin {
           // 既に/__adminプレフィックスが取り除かれている点に注意（handleRoute内のpath
           // 変換と同様）
           if (req.method === 'GET' && url.pathname === '/gacha/export') {
-            await handleGachaExport(client, url, res)
+            await handleGachaExport(client, url, res, env)
             return
           }
 
