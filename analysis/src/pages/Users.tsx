@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { User } from '../types/database'
 
 // Extended user type with aggregated statistics
@@ -27,49 +28,53 @@ export function Users() {
   // ページネーション状態
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [error, setError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
+  const [retryToken, setRetryToken] = useState(0)
 
+  // Fetches all users with their card counts
+  // サーバーサイド（/__admin/users）でカード数を集計済みのデータを取得
   useEffect(() => {
-    fetchUsers()
-  }, [])
+    const controller = new AbortController()
+    ;(async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const rawData = await adminApi.getUsers({ signal: controller.signal })
+
+        // Combine users with their statistics
+        const usersWithStats: UserWithStats[] = rawData.map((user) => {
+          const cardCount = user.user_cards?.[0]?.count ?? 0
+          return {
+            id: user.id,
+            twitch_user_id: user.twitch_user_id,
+            twitch_username: user.twitch_username,
+            twitch_display_name: user.twitch_display_name,
+            twitch_profile_image_url: user.twitch_profile_image_url,
+            tos_accepted_at: user.tos_accepted_at,
+            twitch_scopes: user.twitch_scopes ?? [],
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+            card_count: cardCount,
+          }
+        })
+
+        setUsers(usersWithStats)
+      } catch (err) {
+        if (controller.signal.aborted) return
+        console.error('Error fetching users:', err)
+        setError((err instanceof Error && err.message) || 'ユーザー一覧の取得に失敗しました')
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    })()
+    return () => controller.abort()
+  }, [retryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
     setCurrentPage(1)
   }, [searchTerm, sortOrder, hideZeroCards])
-
-  /**
-   * Fetches all users with their card counts
-   * サーバーサイド（/__admin/users）でカード数を集計済みのデータを取得
-   */
-  async function fetchUsers() {
-    setLoading(true)
-    try {
-      const rawData = await adminApi.getUsers()
-
-      // Combine users with their statistics
-      const usersWithStats: UserWithStats[] = rawData.map((user) => {
-        const cardCount = user.user_cards?.[0]?.count ?? 0
-        return {
-          id: user.id,
-          twitch_user_id: user.twitch_user_id,
-          twitch_username: user.twitch_username,
-          twitch_display_name: user.twitch_display_name,
-          twitch_profile_image_url: user.twitch_profile_image_url,
-          tos_accepted_at: user.tos_accepted_at,
-          twitch_scopes: user.twitch_scopes ?? [],
-          created_at: user.created_at,
-          updated_at: user.updated_at,
-          card_count: cardCount,
-        }
-      })
-
-      setUsers(usersWithStats)
-    } catch (error) {
-      console.error('Error fetching users:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   // Filter users based on search term and hideZeroCards flag
   const filteredUsers = users.filter((user) => {
@@ -176,6 +181,8 @@ export function Users() {
         <h1 className="text-2xl font-bold text-gray-900">Users</h1>
         <p className="text-gray-500 mt-1">Manage and view all registered users</p>
       </div>
+
+      <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
 
       {/* Summary Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

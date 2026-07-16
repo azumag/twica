@@ -108,9 +108,16 @@ jobs:
           #   --disallowedTools で編集系ツールとコミット/削除用の MCP ツールを
           #   明示的に無効化し、diff 経由のプロンプトインジェクションがあっても
           #   コード変更に至らないようにする。
+          # - Read/Grep/Glob はチェックアウト済みのPRコード(読み取り専用)を対象に
+          #   文脈確認のため許可する。編集・書き込み系ではないため
+          #   disallowedTools の防御線と両立する。上のプロンプトが「必要に応じて
+          #   関連ソースを読んで文脈を確認すること」と指示しているにもかかわらず
+          #   これらを許可していなかったため、大きめのdiffではファイル参照のたびに
+          #   permission denial が発生し、レビューコメント投稿(gh pr comment)まで
+          #   到達できずジョブだけ緑になる不具合があった(#771で発覚)。
           # - Bash は diff/PR 情報の取得とコメント投稿に使う gh コマンドのみ許可。
           # - --max-turns は巨大 diff や暴走時の API コスト上限。
           claude_args: >-
-            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
             --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
             --max-turns 30

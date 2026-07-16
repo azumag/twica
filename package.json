@@ -27,6 +27,7 @@
     "db:push": "npx supabase db push",
     "db:push:dry": "npx supabase db push --dry-run",
     "check:migration-order": "node scripts/check-migration-order.js",
+    "check:analysis-browser-supabase": "node scripts/check-analysis-browser-supabase.js",
     "smoke-check": "node scripts/smoke-check.js",
     "migrate:vercel-to-r2": "node scripts/migrate-vercel-blob-to-r2.js",
     "migrate:vercel-to-r2:dry": "node scripts/migrate-vercel-blob-to-r2.js --dry-run",

@@ -45,6 +45,68 @@ jobs:
       - name: Integration tests
         run: npm run test:integration
 
+  analysis:
+    # #701 サブタスク7: analysis/(admin dashboard)のtypecheck/buildをroot CIへ統合し、
+    # ブラウザ側へのSupabase直接依存の再導入をCIで機械的に防ぐ。analysisはroot workspaceの
+    # 一部ではなく独自のpackage.json/package-lock.jsonを持つ別npmパッケージのため、
+    # root `npm ci` とは別に `analysis/` 配下で独立してインストールする
+    name: Analysis dashboard (guard / typecheck / build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            analysis/package-lock.json
+
+      - name: Browser Supabase dependency guard
+        # analysis/src(ブラウザ配信コード)への@supabase直接import・
+        # VITE_*SUPABASE*環境変数の再混入をチェック(#701)。npm installなしで動く
+        # 純粋なNodeスクリプトのため、依存インストールより先に実行してフィードバックを早める
+        run: node scripts/check-analysis-browser-supabase.js
+
+      - name: Install analysis dependencies
+        run: npm ci
+        working-directory: analysis
+
+      - name: Typecheck analysis
+        run: npx tsc --noEmit
+        working-directory: analysis
+
+      - name: Build analysis
+        run: npm run build
+        working-directory: analysis
+
+      - name: Verify built bundle has no Supabase string
+        # regexベースのソーススキャン(1つ前のstep)は、境界外(analysis/dev/**)からの
+        # 間接import経由での混入や難読化された文字列連結までは検知できない。
+        # ビルド成果物そのものをgrepすることで、最終的にブラウザへ配信される
+        # bundleに"supabase"文字列が一切含まれないことを直接検証する
+        # (regexガードが「うっかり再導入」を防ぎ、この一手が「最終成果物」を保証する二段構え)
+        #
+        # fail-closed: グロブが1件もマッチしない(ビルド成果物のパスが変わった等)場合、
+        # 展開されないグロブ文字列に対する grep はエラー終了するが、その終了コードは
+        # `if` の条件としては「偽」扱いになり、そのままだと「一致なし」と誤認して
+        # 静かに通過してしまう(fail-open)。ファイル件数を事前に明示チェックして防ぐ
+        run: |
+          shopt -s nullglob
+          bundle_files=(analysis/dist/assets/*.js)
+          if [ ${#bundle_files[@]} -eq 0 ]; then
+            echo "::error::analysis/dist/assets/*.js にJSファイルが見つかりません。ビルド成果物の出力先が変わっていないか確認してください。"
+            exit 1
+          fi
+          if grep -ril "supabase" "${bundle_files[@]}"; then
+            echo "::error::analysis の本番bundleに'supabase'という文字列が含まれています。上記ファイルを確認してください。"
+            exit 1
+          fi
+          echo "OK: bundleにSupabase文字列は含まれていません (${#bundle_files[@]} ファイルを検証)"
+
   lint:
     # preview → main PR のときだけ lint を実行（不要な CI 実行を削減）
     if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref == 'preview'

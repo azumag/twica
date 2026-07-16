@@ -74,6 +74,7 @@ export interface Database {
           created_at?: string
           updated_at?: string
         }
+        Relationships: []
       }
       cards: {
         Row: {
@@ -133,6 +134,7 @@ export interface Database {
           created_at?: string
           updated_at?: string
         }
+        Relationships: []
       }
       users: {
         Row: {
@@ -172,6 +174,36 @@ export interface Database {
           created_at?: string
           updated_at?: string
         }
+        Relationships: []
+      }
+      // ユーザーの支援プランライセンス（コードが有効な限りライセンスも有効、有効期限なし）
+      // メインアプリの src/types/database.ts と同一定義（analysis 側で欠落していたため追加）
+      user_licenses: {
+        Row: {
+          id: string
+          twitch_user_id: string
+          code_id: string
+          plan_type: 'support' | 'patron'
+          fanbox_id: string | null
+          activated_at: string
+        }
+        Insert: {
+          id?: string
+          twitch_user_id: string
+          code_id: string
+          plan_type: 'support' | 'patron'
+          fanbox_id?: string | null
+          activated_at?: string
+        }
+        Update: {
+          id?: string
+          twitch_user_id?: string
+          code_id?: string
+          plan_type?: 'support' | 'patron'
+          fanbox_id?: string | null
+          activated_at?: string
+        }
+        Relationships: []
       }
       twitch_bot_accounts: {
         Row: {
@@ -222,6 +254,7 @@ export interface Database {
           created_at?: string
           updated_at?: string
         }
+        Relationships: []
       }
       streamer_chat_sender_settings: {
         Row: {
@@ -245,6 +278,7 @@ export interface Database {
           created_at?: string
           updated_at?: string
         }
+        Relationships: []
       }
       user_cards: {
         Row: {
@@ -265,6 +299,7 @@ export interface Database {
           card_id?: string
           obtained_at?: string
         }
+        Relationships: []
       }
       gacha_history: {
         Row: {
@@ -291,6 +326,23 @@ export interface Database {
           streamer_id?: string
           redeemed_at?: string
         }
+        // card_id/streamer_idはINITIAL SCHEMA(00001)でREFERENCES指定のみ(制約名省略)のため、
+        // Postgresのデフォルト命名規則 <table>_<column>_fkey が適用される。
+        // getGachaChart()等の cards(...)/streamers(...) 埋め込みselectを解決するために必要
+        Relationships: [
+          {
+            foreignKeyName: 'gacha_history_card_id_fkey'
+            columns: ['card_id']
+            referencedRelation: 'cards'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'gacha_history_streamer_id_fkey'
+            columns: ['streamer_id']
+            referencedRelation: 'streamers'
+            referencedColumns: ['id']
+          },
+        ]
       }
       // ユーザーごとの集計済みストレージ使用量テーブル
       // recordBlobFile/removeBlobFileの呼び出し時にRPCで自動更新される
@@ -314,6 +366,7 @@ export interface Database {
           blob_count?: number
           updated_at?: string
         }
+        Relationships: []
       }
       // Storage tracking tables for monitoring blob file usage per user/streamer
       // blob_filesはカード画像のストレージ情報を管理し、URLをキーにファイルサイズを記録
@@ -339,6 +392,7 @@ export interface Database {
           storage_type?: 'r2' | 'vercel'
           created_at?: string
         }
+        Relationships: []
       }
       // お知らせテーブル - 管理者がユーザー向けに投稿するお知らせ
       announcements: {
@@ -431,6 +485,7 @@ export interface Database {
           memo?: string
           created_at?: string
         }
+        Relationships: []
       }
       // 問い合わせ本体テーブル - 支援者が投稿する問い合わせ
       support_inquiries: {
@@ -501,6 +556,41 @@ export interface Database {
           referencedRelation: 'support_inquiries'
           referencedColumns: ['id']
         }]
+      }
+      // 支援コード（共有コードマスタ）。00017_add_support_plans.sqlで追加。
+      // 分析ダッシュボード側の型定義に欠落していたため、メインアプリのschemaに合わせて追加
+      support_codes: {
+        Row: {
+          id: string
+          code_hash: string
+          plan_type: 'support' | 'patron'
+          status: 'active' | 'rotating' | 'revoked'
+          memo: string | null
+          activation_count: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          code_hash: string
+          plan_type: 'support' | 'patron'
+          status?: 'active' | 'rotating' | 'revoked'
+          memo?: string | null
+          activation_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          code_hash?: string
+          plan_type?: 'support' | 'patron'
+          status?: 'active' | 'rotating' | 'revoked'
+          memo?: string | null
+          activation_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
     }
     Views: {

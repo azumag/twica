@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { RarityBadge } from '../components/RarityBadge'
 import { Streamer, Card } from '../types/database'
 
@@ -28,10 +28,17 @@ export function StreamerCards() {
   const [loading, setLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [streamerError, setStreamerError] = useState<string | null>(null)
+  const [cardsError, setCardsError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更すると対応するeffectを再実行させる）
+  const [streamerRetryToken, setStreamerRetryToken] = useState(0)
+  const [cardsRetryToken, setCardsRetryToken] = useState(0)
 
   // --- レアリティ別サマリー統計用（ページングとは独立させ、常に全件ベースの正確な数値を保つ） ---
   const [allCards, setAllCards] = useState<Card[]>([])
   const [summaryLoading, setSummaryLoading] = useState(true)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [summaryRetryToken, setSummaryRetryToken] = useState(0)
 
   // コピー成功時のフィードバック用
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -57,24 +64,16 @@ export function StreamerCards() {
   /**
    * ストリーマー情報を取得
    */
-  async function fetchStreamer(isCancelled: () => boolean) {
+  async function fetchStreamer(signal: AbortSignal) {
     if (!streamerId) return
+    setStreamerError(null)
     try {
-      const { data, error } = await supabase
-        .from('streamers')
-        .select('*')
-        .eq('id', streamerId)
-        .single()
-
-      if (isCancelled()) return
-      if (error) {
-        console.error('Streamer not found:', error)
-        return
-      }
-      setStreamer(data as Streamer)
-    } catch (error) {
-      if (isCancelled()) return
-      console.error('Error fetching streamer:', error)
+      const data = await adminApi.getStreamer(streamerId, { signal })
+      setStreamer(data)
+    } catch (err) {
+      if (signal.aborted) return
+      console.error('Error fetching streamer:', err)
+      setStreamerError((err instanceof Error && err.message) || 'ストリーマー情報の取得に失敗しました')
     }
   }
 
@@ -84,19 +83,20 @@ export function StreamerCards() {
    * 「取得effect」が同一コミット内でcurrentPageのstate更新を共有できず、
    * 前ストリーマーのページ番号のまま新ストリーマーを取得してしまう競合を避けるため
    */
-  async function fetchCardsPage(page: number, isCancelled: () => boolean) {
+  async function fetchCardsPage(page: number, signal: AbortSignal) {
     if (!streamerId) return
     setLoading(true)
+    setCardsError(null)
     try {
-      const { rows, count } = await adminApi.getStreamerCards({ streamerId, page, pageSize })
-      if (isCancelled()) return
+      const { rows, count } = await adminApi.getStreamerCards({ streamerId, page, pageSize }, { signal })
       setCards(rows)
       setTotalCount(count)
-    } catch (error) {
-      if (isCancelled()) return
-      console.error('Cards fetch error:', error)
+    } catch (err) {
+      if (signal.aborted) return
+      console.error('Cards fetch error:', err)
+      setCardsError((err instanceof Error && err.message) || 'カード一覧の取得に失敗しました')
     } finally {
-      if (!isCancelled()) setLoading(false)
+      if (!signal.aborted) setLoading(false)
     }
   }
 
@@ -105,36 +105,38 @@ export function StreamerCards() {
    * 既存エンドポイントのみを使う制約のため、専用の集計APIではなくgetStreamerCardsを
    * 大きいpageSizeで呼び出す形で対応（テーブル表示用のページングとは別リクエスト）。
    */
-  async function fetchAllCardsForSummary(isCancelled: () => boolean) {
+  async function fetchAllCardsForSummary(signal: AbortSignal) {
     if (!streamerId) return
     setSummaryLoading(true)
+    setSummaryError(null)
     try {
-      const { rows } = await adminApi.getStreamerCards({
-        streamerId,
-        page: 1,
-        pageSize: SUMMARY_FETCH_SIZE,
-      })
-      if (isCancelled()) return
+      const { rows } = await adminApi.getStreamerCards(
+        {
+          streamerId,
+          page: 1,
+          pageSize: SUMMARY_FETCH_SIZE,
+        },
+        { signal }
+      )
       setAllCards(rows)
-    } catch (error) {
-      if (isCancelled()) return
-      console.error('Cards summary fetch error:', error)
+    } catch (err) {
+      if (signal.aborted) return
+      console.error('Cards summary fetch error:', err)
+      setSummaryError((err instanceof Error && err.message) || 'サマリー統計の取得に失敗しました')
     } finally {
-      if (!isCancelled()) setSummaryLoading(false)
+      if (!signal.aborted) setSummaryLoading(false)
     }
   }
 
   useEffect(() => {
     if (!streamerId) return
-    // streamerIdを素早く連続変更すると古いレスポンスが後から返って新しい表示を
-    // 上書きしうるため、クリーンアップでcancelledを立てて破棄する
-    let cancelled = false
-    fetchStreamer(() => cancelled)
-    return () => {
-      cancelled = true
-    }
+    // streamerIdを素早く連続変更すると後発リクエストと先発リクエストが競合しうるため、
+    // AbortControllerで先発リクエスト自体を中断する
+    const controller = new AbortController()
+    fetchStreamer(controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamerId])
+  }, [streamerId, streamerRetryToken])
 
   // streamerId変更時はページを1に戻して取得する。setCurrentPage(1)とfetchCardsPage()を
   // 別々のeffectに分けると、同一コミット内では新しいcurrentPageがまだ反映されず
@@ -155,23 +157,19 @@ export function StreamerCards() {
       return
     }
 
-    let cancelled = false
-    fetchCardsPage(currentPage, () => cancelled)
-    return () => {
-      cancelled = true
-    }
+    const controller = new AbortController()
+    fetchCardsPage(currentPage, controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamerId, currentPage, pageSize])
+  }, [streamerId, currentPage, pageSize, cardsRetryToken])
 
   useEffect(() => {
     if (!streamerId) return
-    let cancelled = false
-    fetchAllCardsForSummary(() => cancelled)
-    return () => {
-      cancelled = true
-    }
+    const controller = new AbortController()
+    fetchAllCardsForSummary(controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamerId])
+  }, [streamerId, summaryRetryToken])
 
   /**
    * 画像URLをクリップボードにコピー
@@ -372,6 +370,15 @@ export function StreamerCards() {
           </div>
         )}
       </div>
+
+      <ErrorBanner
+        messages={[streamerError, cardsError, summaryError]}
+        onRetry={() => {
+          setStreamerRetryToken((t) => t + 1)
+          setCardsRetryToken((t) => t + 1)
+          setSummaryRetryToken((t) => t + 1)
+        }}
+      />
 
       {/* サマリー統計 */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
