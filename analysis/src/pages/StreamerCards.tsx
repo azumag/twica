@@ -56,14 +56,13 @@ export function StreamerCards() {
   /**
    * ストリーマー情報を取得
    */
-  async function fetchStreamer(isCancelled: () => boolean) {
+  async function fetchStreamer(signal: AbortSignal) {
     if (!streamerId) return
     try {
-      const data = await adminApi.getStreamer(streamerId)
-      if (isCancelled()) return
+      const data = await adminApi.getStreamer(streamerId, { signal })
       setStreamer(data)
     } catch (error) {
-      if (isCancelled()) return
+      if (signal.aborted) return
       console.error('Error fetching streamer:', error)
     }
   }
@@ -74,19 +73,18 @@ export function StreamerCards() {
    * 「取得effect」が同一コミット内でcurrentPageのstate更新を共有できず、
    * 前ストリーマーのページ番号のまま新ストリーマーを取得してしまう競合を避けるため
    */
-  async function fetchCardsPage(page: number, isCancelled: () => boolean) {
+  async function fetchCardsPage(page: number, signal: AbortSignal) {
     if (!streamerId) return
     setLoading(true)
     try {
-      const { rows, count } = await adminApi.getStreamerCards({ streamerId, page, pageSize })
-      if (isCancelled()) return
+      const { rows, count } = await adminApi.getStreamerCards({ streamerId, page, pageSize }, { signal })
       setCards(rows)
       setTotalCount(count)
     } catch (error) {
-      if (isCancelled()) return
+      if (signal.aborted) return
       console.error('Cards fetch error:', error)
     } finally {
-      if (!isCancelled()) setLoading(false)
+      if (!signal.aborted) setLoading(false)
     }
   }
 
@@ -95,34 +93,34 @@ export function StreamerCards() {
    * 既存エンドポイントのみを使う制約のため、専用の集計APIではなくgetStreamerCardsを
    * 大きいpageSizeで呼び出す形で対応（テーブル表示用のページングとは別リクエスト）。
    */
-  async function fetchAllCardsForSummary(isCancelled: () => boolean) {
+  async function fetchAllCardsForSummary(signal: AbortSignal) {
     if (!streamerId) return
     setSummaryLoading(true)
     try {
-      const { rows } = await adminApi.getStreamerCards({
-        streamerId,
-        page: 1,
-        pageSize: SUMMARY_FETCH_SIZE,
-      })
-      if (isCancelled()) return
+      const { rows } = await adminApi.getStreamerCards(
+        {
+          streamerId,
+          page: 1,
+          pageSize: SUMMARY_FETCH_SIZE,
+        },
+        { signal }
+      )
       setAllCards(rows)
     } catch (error) {
-      if (isCancelled()) return
+      if (signal.aborted) return
       console.error('Cards summary fetch error:', error)
     } finally {
-      if (!isCancelled()) setSummaryLoading(false)
+      if (!signal.aborted) setSummaryLoading(false)
     }
   }
 
   useEffect(() => {
     if (!streamerId) return
-    // streamerIdを素早く連続変更すると古いレスポンスが後から返って新しい表示を
-    // 上書きしうるため、クリーンアップでcancelledを立てて破棄する
-    let cancelled = false
-    fetchStreamer(() => cancelled)
-    return () => {
-      cancelled = true
-    }
+    // streamerIdを素早く連続変更すると後発リクエストと先発リクエストが競合しうるため、
+    // AbortControllerで先発リクエスト自体を中断する
+    const controller = new AbortController()
+    fetchStreamer(controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamerId])
 
@@ -145,21 +143,17 @@ export function StreamerCards() {
       return
     }
 
-    let cancelled = false
-    fetchCardsPage(currentPage, () => cancelled)
-    return () => {
-      cancelled = true
-    }
+    const controller = new AbortController()
+    fetchCardsPage(currentPage, controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamerId, currentPage, pageSize])
 
   useEffect(() => {
     if (!streamerId) return
-    let cancelled = false
-    fetchAllCardsForSummary(() => cancelled)
-    return () => {
-      cancelled = true
-    }
+    const controller = new AbortController()
+    fetchAllCardsForSummary(controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamerId])
 

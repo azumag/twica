@@ -104,14 +104,17 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
+    const controller = new AbortController()
     ;(async () => {
       try {
-        const data = await adminApi.getStreamer(streamerId)
+        const data = await adminApi.getStreamer(streamerId, { signal: controller.signal })
         setStreamer(data)
       } catch (error) {
+        if (controller.signal.aborted) return
         setChartError((error as Error).message)
       }
     })()
+    return () => controller.abort()
   }, [streamerId])
 
   // ========================================
@@ -120,29 +123,29 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
-    // timeRangeの素早い切替時に古いレスポンスが後から返って新しい表示を
-    // 上書きしないよう、クリーンアップでcancelledを立てる
-    let cancelled = false
+    // timeRangeの素早い切替時に後発リクエストと先発リクエストが競合しうるため、
+    // AbortControllerで先発リクエスト自体を中断する
+    const controller = new AbortController()
 
     const fetchChartData = async () => {
       setChartLoading(true)
       setChartError(null)
       try {
-        const data = await adminApi.getGachaChart({ range: timeRange, streamerId })
-        if (cancelled) return
+        const data = await adminApi.getGachaChart(
+          { range: timeRange, streamerId },
+          { signal: controller.signal }
+        )
         setChartData(data)
       } catch (err) {
-        if (cancelled) return
+        if (controller.signal.aborted) return
         setChartError(`Chart data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
       } finally {
-        if (!cancelled) setChartLoading(false)
+        if (!controller.signal.aborted) setChartLoading(false)
       }
     }
 
     fetchChartData()
-    return () => {
-      cancelled = true
-    }
+    return () => controller.abort()
   }, [streamerId, timeRange])
 
   // ========================================
@@ -152,27 +155,27 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
-    let cancelled = false
+    const controller = new AbortController()
 
     const fetchDropRateStats = async () => {
       setDropRateStatsLoading(true)
       setDropRateStatsError(null)
       try {
-        const data = await adminApi.getDropRateStats({ streamerId, range: timeRange })
-        if (!cancelled) setDropRateStats(data)
+        const data = await adminApi.getDropRateStats(
+          { streamerId, range: timeRange },
+          { signal: controller.signal }
+        )
+        setDropRateStats(data)
       } catch (err) {
-        if (!cancelled) {
-          setDropRateStatsError(err instanceof Error ? err.message : 'Unknown error')
-        }
+        if (controller.signal.aborted) return
+        setDropRateStatsError(err instanceof Error ? err.message : 'Unknown error')
       } finally {
-        if (!cancelled) setDropRateStatsLoading(false)
+        if (!controller.signal.aborted) setDropRateStatsLoading(false)
       }
     }
 
     fetchDropRateStats()
-    return () => {
-      cancelled = true
-    }
+    return () => controller.abort()
   }, [streamerId, timeRange])
 
   // ========================================
@@ -181,38 +184,38 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
-    let cancelled = false
+    const controller = new AbortController()
 
     const fetchTableData = async () => {
       setTableLoading(true)
       setTableError(null)
 
       try {
-        const { rows, count } = await adminApi.getGachaTable({
-          range: timeRange,
-          page: currentPage,
-          pageSize,
-          username: filters.username,
-          rarity: filters.rarity,
-          from: filters.from,
-          to: filters.to,
-          streamerId,
-        })
-        if (cancelled) return
+        const { rows, count } = await adminApi.getGachaTable(
+          {
+            range: timeRange,
+            page: currentPage,
+            pageSize,
+            username: filters.username,
+            rarity: filters.rarity,
+            from: filters.from,
+            to: filters.to,
+            streamerId,
+          },
+          { signal: controller.signal }
+        )
         setTableData(rows)
         setTotalCount(count)
       } catch (err) {
-        if (cancelled) return
+        if (controller.signal.aborted) return
         setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
       } finally {
-        if (!cancelled) setTableLoading(false)
+        if (!controller.signal.aborted) setTableLoading(false)
       }
     }
 
     fetchTableData()
-    return () => {
-      cancelled = true
-    }
+    return () => controller.abort()
   }, [streamerId, timeRange, currentPage, pageSize, filters])
 
   const resetFilters = useCallback(() => {

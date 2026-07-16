@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { Announcement } from '../types/database'
@@ -43,20 +43,31 @@ export function Announcements() {
   const [form, setForm] = useState(INITIAL_FORM)
   const [saving, setSaving] = useState(false)
 
-  // お知らせ一覧を取得
+  // お知らせ一覧を取得。マウント時だけでなく作成/編集/削除/公開切替の成功後にも
+  // 再取得のため呼ばれる。素早く連続して呼ばれた場合に備え、fetchAbortRefで
+  // 前回リクエストを追跡し新しい呼び出しのたびに確実に中断する
+  const fetchAbortRef = useRef<AbortController | null>(null)
+
   const fetchAnnouncements = async () => {
+    fetchAbortRef.current?.abort()
+    const controller = new AbortController()
+    fetchAbortRef.current = controller
+
     setLoading(true)
     try {
-      setAnnouncements(await adminApi.getAnnouncements())
+      setAnnouncements(await adminApi.getAnnouncements({ signal: controller.signal }))
     } catch (error) {
+      if (controller.signal.aborted) return
       console.error('Failed to fetch announcements:', error)
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) setLoading(false)
     }
   }
 
   useEffect(() => {
     fetchAnnouncements()
+    return () => fetchAbortRef.current?.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // フォームリセット

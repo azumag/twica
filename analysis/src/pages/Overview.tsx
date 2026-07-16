@@ -45,50 +45,47 @@ export function Overview() {
   const [leaderboard, setLeaderboard] = useState<StreamerLeaderboardEntry[]>([])
   const [leaderboardLoading, setLeaderboardLoading] = useState(true)
 
+  // Fetches all dashboard statistics via the /__admin API
+  // Performs multiple queries in parallel for efficiency
   useEffect(() => {
-    fetchData()
+    const controller = new AbortController()
+    ;(async () => {
+      setLoading(true)
+      try {
+        const data = await adminApi.getOverview({ signal: controller.signal })
+        setStats(data.stats)
+        setRecentGacha(data.recentGacha as (GachaHistory & { cards: Card; streamers: Streamer })[])
+        setUserGrowth(data.userGrowth)
+        setGachaGrowth(data.gachaGrowth)
+      } catch (error) {
+        if (controller.signal.aborted) return
+        console.error('Error fetching dashboard data:', error)
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    })()
+    return () => controller.abort()
   }, [])
 
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
 
     const fetchLeaderboard = async () => {
       setLeaderboardLoading(true)
       try {
-        const data = await adminApi.getOverviewLeaderboard()
-        if (!cancelled) setLeaderboard(data)
+        const data = await adminApi.getOverviewLeaderboard({ signal: controller.signal })
+        setLeaderboard(data)
       } catch (error) {
+        if (controller.signal.aborted) return
         console.error('Error fetching streamer leaderboard:', error)
       } finally {
-        if (!cancelled) setLeaderboardLoading(false)
+        if (!controller.signal.aborted) setLeaderboardLoading(false)
       }
     }
 
     fetchLeaderboard()
-
-    return () => {
-      cancelled = true
-    }
+    return () => controller.abort()
   }, [])
-
-  /**
-   * Fetches all dashboard statistics via the /__admin API
-   * Performs multiple queries in parallel for efficiency
-   */
-  async function fetchData() {
-    setLoading(true)
-    try {
-      const data = await adminApi.getOverview()
-      setStats(data.stats)
-      setRecentGacha(data.recentGacha as (GachaHistory & { cards: Card; streamers: Streamer })[])
-      setUserGrowth(data.userGrowth)
-      setGachaGrowth(data.gachaGrowth)
-    } catch (error) {
-      console.error('Error fetching dashboard data:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   /**
    * Formats a timestamp into a relative time string (e.g., "2 hours ago")

@@ -28,48 +28,47 @@ export function Users() {
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
 
+  // Fetches all users with their card counts
+  // サーバーサイド（/__admin/users）でカード数を集計済みのデータを取得
   useEffect(() => {
-    fetchUsers()
+    const controller = new AbortController()
+    ;(async () => {
+      setLoading(true)
+      try {
+        const rawData = await adminApi.getUsers({ signal: controller.signal })
+
+        // Combine users with their statistics
+        const usersWithStats: UserWithStats[] = rawData.map((user) => {
+          const cardCount = user.user_cards?.[0]?.count ?? 0
+          return {
+            id: user.id,
+            twitch_user_id: user.twitch_user_id,
+            twitch_username: user.twitch_username,
+            twitch_display_name: user.twitch_display_name,
+            twitch_profile_image_url: user.twitch_profile_image_url,
+            tos_accepted_at: user.tos_accepted_at,
+            twitch_scopes: user.twitch_scopes ?? [],
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+            card_count: cardCount,
+          }
+        })
+
+        setUsers(usersWithStats)
+      } catch (error) {
+        if (controller.signal.aborted) return
+        console.error('Error fetching users:', error)
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    })()
+    return () => controller.abort()
   }, [])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
     setCurrentPage(1)
   }, [searchTerm, sortOrder, hideZeroCards])
-
-  /**
-   * Fetches all users with their card counts
-   * サーバーサイド（/__admin/users）でカード数を集計済みのデータを取得
-   */
-  async function fetchUsers() {
-    setLoading(true)
-    try {
-      const rawData = await adminApi.getUsers()
-
-      // Combine users with their statistics
-      const usersWithStats: UserWithStats[] = rawData.map((user) => {
-        const cardCount = user.user_cards?.[0]?.count ?? 0
-        return {
-          id: user.id,
-          twitch_user_id: user.twitch_user_id,
-          twitch_username: user.twitch_username,
-          twitch_display_name: user.twitch_display_name,
-          twitch_profile_image_url: user.twitch_profile_image_url,
-          tos_accepted_at: user.tos_accepted_at,
-          twitch_scopes: user.twitch_scopes ?? [],
-          created_at: user.created_at,
-          updated_at: user.updated_at,
-          card_count: cardCount,
-        }
-      })
-
-      setUsers(usersWithStats)
-    } catch (error) {
-      console.error('Error fetching users:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   // Filter users based on search term and hideZeroCards flag
   const filteredUsers = users.filter((user) => {

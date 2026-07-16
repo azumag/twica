@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import type { SupportCode, UserLicense, SupportCodeStatus, PlanType } from '../types/database'
@@ -69,40 +69,63 @@ export function Licenses() {
   // Twitchサブスク数
   const [twitchSubCount, setTwitchSubCount] = useState(0)
 
+  // 3つとも、マウント時に加えてミューテーション成功後の再取得でも呼ばれるため、
+  // それぞれ専用のAbortControllerRefで前回リクエストを追跡し、素早い連続呼び出しでも
+  // 実際にリクエストを中断できるようにする（3つは互いに独立したデータ・loading
+  // stateのため、controllerも個別に持つ）
+  const codesAbortRef = useRef<AbortController | null>(null)
+  const licensesAbortRef = useRef<AbortController | null>(null)
+  const twitchSubsAbortRef = useRef<AbortController | null>(null)
+
   // コード一覧を取得
   const fetchCodes = async () => {
+    codesAbortRef.current?.abort()
+    const controller = new AbortController()
+    codesAbortRef.current = controller
+
     setLoading(true)
     try {
-      setCodes(await adminApi.getSupportCodes())
+      setCodes(await adminApi.getSupportCodes({ signal: controller.signal }))
     } catch (error) {
+      if (controller.signal.aborted) return
       console.error('Failed to fetch support codes:', error)
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) setLoading(false)
     }
   }
 
   // ライセンス一覧を取得（ユーザー名も結合）
   const fetchLicenses = async () => {
+    licensesAbortRef.current?.abort()
+    const controller = new AbortController()
+    licensesAbortRef.current = controller
+
     setLicensesLoading(true)
     try {
-      setLicenses(await adminApi.getLicenses())
+      setLicenses(await adminApi.getLicenses({ signal: controller.signal }))
     } catch (error) {
+      if (controller.signal.aborted) return
       console.error('Failed to fetch licenses:', error)
     } finally {
-      setLicensesLoading(false)
+      if (!controller.signal.aborted) setLicensesLoading(false)
     }
   }
 
   const fetchTwitchSubs = async () => {
+    twitchSubsAbortRef.current?.abort()
+    const controller = new AbortController()
+    twitchSubsAbortRef.current = controller
+
     setTwitchSubsLoading(true)
     try {
-      const { rows, count } = await adminApi.getTwitchSubs()
+      const { rows, count } = await adminApi.getTwitchSubs({ signal: controller.signal })
       setTwitchSubs(rows)
       setTwitchSubCount(count)
     } catch (error) {
+      if (controller.signal.aborted) return
       console.error('Failed to fetch twitch subs:', error)
     } finally {
-      setTwitchSubsLoading(false)
+      if (!controller.signal.aborted) setTwitchSubsLoading(false)
     }
   }
 
@@ -110,6 +133,12 @@ export function Licenses() {
     fetchCodes()
     fetchLicenses()
     fetchTwitchSubs()
+    return () => {
+      codesAbortRef.current?.abort()
+      licensesAbortRef.current?.abort()
+      twitchSubsAbortRef.current?.abort()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // SHA-256ハッシュを計算（Web Crypto API）

@@ -67,31 +67,30 @@ export function Streamers() {
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
 
+  // Fetches all streamers with card counts and storage usage
+  // カード数・ストレージ使用量・チャット送信可否・投票キャンペーン適用状況は
+  // すべてサーバーサイド（/__admin/streamers）で集計済みのため、1回のAPI呼び出しで完結する
   useEffect(() => {
-    fetchStreamers()
+    const controller = new AbortController()
+    ;(async () => {
+      setLoading(true)
+      try {
+        const streamers = await adminApi.getStreamers({ signal: controller.signal })
+        setStreamers(streamers)
+      } catch (error) {
+        if (controller.signal.aborted) return
+        console.error('Error fetching streamers:', error)
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    })()
+    return () => controller.abort()
   }, [])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
     setCurrentPage(1)
   }, [sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, searchQuery])
-
-  /**
-   * Fetches all streamers with card counts and storage usage
-   * カード数・ストレージ使用量・チャット送信可否・投票キャンペーン適用状況は
-   * すべてサーバーサイド（/__admin/streamers）で集計済みのため、1回のAPI呼び出しで完結する
-   */
-  async function fetchStreamers() {
-    setLoading(true)
-    try {
-      const streamers = await adminApi.getStreamers()
-      setStreamers(streamers)
-    } catch (error) {
-      console.error('Error fetching streamers:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   // Table column definitions
   const columns = [
