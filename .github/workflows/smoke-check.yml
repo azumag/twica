@@ -27,9 +27,10 @@
 name: Smoke Check
 
 on:
-  schedule:
-    # 15分ごとに実行 (UTC)。デプロイの反映漏れをできるだけ早く検知するための頻度。
-    - cron: "*/15 * * * *"
+  # 15分ごとの定期実行 (cron) は無駄なCI消費として一時停止中。
+  # 再度有効化する場合は以下のコメントアウトを解除すること。
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       base_url:
