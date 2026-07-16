@@ -12,12 +12,16 @@ import {
 } from '../src/lib/chatAnnouncementAccess'
 import {
   getAnalysisDbDriver,
+  getDropRateStatsPg,
   getGachaChartPg,
   getGachaExportRowsPg,
   getGachaSummaryPg,
   getGachaTablePg,
   getOverviewPg,
+  getStreamerCardsPagePg,
   getStreamerLeaderboardPg,
+  getUserCardsSummaryPg,
+  getUserCardsTablePg,
   listStreamersWithStatsPg,
   listUsersPg,
 } from './adminApiPg'
@@ -496,7 +500,9 @@ export async function getOverview(client: SupabaseClient<Database>, env: Env) {
 // select('*') は使わない: users テーブルには twitch_access_token / twitch_refresh_token
 // などのOAuth秘匿情報が実カラムとして存在する（analysis の Database 型には未反映）ため、
 // admin API のJSONレスポンスに含めないよう、フロントが使う列だけを明示的に指定する
-const USER_SAFE_COLUMNS =
+// exportはテストのため（adminApiPg.ts の getUserCardsSummaryPg が同じ列集合を
+// 独立に jsonb_build_object() として持つため、テストで両者の列集合一致を検証する）
+export const USER_SAFE_COLUMNS =
   'id, twitch_user_id, twitch_username, twitch_display_name, twitch_profile_image_url, tos_accepted_at, twitch_scopes, created_at, updated_at'
 
 export async function listUsers(client: SupabaseClient<Database>, env: Env) {
@@ -961,14 +967,24 @@ async function handleGachaExport(
 
 // analysis/src/components/DropRateStats.tsx が呼んでいるロジックのRPC版薄いラッパー。
 // get_gacha_drop_stats の戻り値(JSONB)をそのまま返す — サーバー側での再整形はしない
-async function getDropRateStats(
+export async function getDropRateStats(
   client: SupabaseClient<Database>,
-  params: { streamerId: string; range: TimeRange }
+  params: { streamerId: string; range: TimeRange },
+  env: Env
 ) {
-  const fromDate = getFromDateForRange(params.range)
+  const fromDate = getFromDateForRange(params.range) ?? '1970-01-01T00:00:00Z'
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getDropRateStatsPg(env, {
+      streamerId: params.streamerId,
+      fromDate,
+      limitPerCard: 20,
+    })
+  }
+
   const { data, error } = await client.rpc('get_gacha_drop_stats' as never, {
     p_streamer_id: params.streamerId,
-    p_from_date: fromDate ?? '1970-01-01T00:00:00Z',
+    p_from_date: fromDate,
     p_limit_per_card: 20,
   } as never)
   if (error) throw error
@@ -976,7 +992,11 @@ async function getDropRateStats(
 }
 
 // analysis/src/pages/UserCards.tsx の :userId (内部users.id) からユーザーとカード所持サマリーを返す
-async function getUserCardsSummary(client: SupabaseClient<Database>, userId: string) {
+export async function getUserCardsSummary(client: SupabaseClient<Database>, userId: string, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getUserCardsSummaryPg(env, userId)
+  }
+
   // select('*') は使わない（USER_SAFE_COLUMNSの定義コメント参照: OAuthトークン漏洩防止）
   const { data: user, error } = await client
     .from('users')
@@ -1001,12 +1021,17 @@ async function getUserCardsSummary(client: SupabaseClient<Database>, userId: str
 
 // analysis/src/pages/UserCards.tsx が現在.range(0, 9999)で単発取得しているuser_cardsの
 // サーバーサイドページネーション版。streamerは各カードのstreamer_idからまとめて引き当てて埋め込む
-async function getUserCardsTable(
+export async function getUserCardsTable(
   client: SupabaseClient<Database>,
-  params: { userId: string; page: number; pageSize: number }
+  params: { userId: string; page: number; pageSize: number },
+  env: Env
 ) {
   const { userId, page, pageSize } = params
   const offset = (page - 1) * pageSize
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getUserCardsTablePg(env, { userId, offset, pageSize })
+  }
 
   const { data, count, error } = await client
     .from('user_cards')
@@ -1051,12 +1076,17 @@ async function getUserCardsTable(
 
 // analysis/src/pages/StreamerCards.tsx が現在.range(0, 9999)で単発取得しているcardsの
 // サーバーサイドページネーション版。並び順(レアリティ降順→作成日降順)は既存と同一
-async function getStreamerCardsPage(
+export async function getStreamerCardsPage(
   client: SupabaseClient<Database>,
-  params: { streamerId: string; page: number; pageSize: number }
+  params: { streamerId: string; page: number; pageSize: number },
+  env: Env
 ) {
   const { streamerId, page, pageSize } = params
   const offset = (page - 1) * pageSize
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getStreamerCardsPagePg(env, { streamerId, offset, pageSize })
+  }
 
   const { data, count, error } = await client
     .from('cards')
@@ -1138,7 +1168,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
       throw Object.assign(new Error('streamerId is required'), { statusCode: 400 })
     }
     const range = parseTimeRange(url.searchParams.get('range'))
-    return getDropRateStats(client, { streamerId, range })
+    return getDropRateStats(client, { streamerId, range }, env)
   }
 
   if (req.method === 'GET' && path === '/user-cards/summary') {
@@ -1146,7 +1176,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
     if (!userId) {
       throw Object.assign(new Error('userId is required'), { statusCode: 400 })
     }
-    return getUserCardsSummary(client, userId)
+    return getUserCardsSummary(client, userId, env)
   }
 
   if (req.method === 'GET' && path === '/user-cards/table') {
@@ -1155,7 +1185,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
       throw Object.assign(new Error('userId is required'), { statusCode: 400 })
     }
     const { page, pageSize } = parsePagination(url)
-    return getUserCardsTable(client, { userId, page, pageSize })
+    return getUserCardsTable(client, { userId, page, pageSize }, env)
   }
 
   if (req.method === 'GET' && path === '/streamer-cards') {
@@ -1164,7 +1194,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
       throw Object.assign(new Error('streamerId is required'), { statusCode: 400 })
     }
     const { page, pageSize } = parsePagination(url)
-    return getStreamerCardsPage(client, { streamerId, page, pageSize })
+    return getStreamerCardsPage(client, { streamerId, page, pageSize }, env)
   }
 
   if (req.method === 'GET' && path === '/support-codes') {

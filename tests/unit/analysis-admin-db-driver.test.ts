@@ -388,6 +388,123 @@ describe('adminApiPg: getGachaExportRowsPg', () => {
   })
 })
 
+describe('adminApiPg: getDropRateStatsPg', () => {
+  it('get_gacha_drop_stats(streamerId, fromDate, limitPerCard) を呼ぶ', async () => {
+    const { tag, calls } = fakeSqlTag({ totalDraws: 10 })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getDropRateStatsPg(
+      {},
+      { streamerId: 'streamer-1', fromDate: '1970-01-01T00:00:00Z', limitPerCard: 20 }
+    )
+
+    expect(data).toEqual({ totalDraws: 10 })
+    expect(calls[0].text).toContain('get_gacha_drop_stats(')
+    expect(calls[0].values).toEqual(['streamer-1', '1970-01-01T00:00:00Z', 20])
+  })
+})
+
+describe('adminApiPg: getUserCardsSummaryPg', () => {
+  it('ユーザー行(狭い列)とget_user_card_counts()の結果を返す', async () => {
+    const mod = await importAdminApiPg()
+    const tag = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const flattened = flattenFragment(strings, values)
+      if (flattened.text.includes('FROM users')) {
+        return Promise.resolve([
+          { twitch_user_id: 'twitch-1', user_json: { id: 'user-1', twitch_user_id: 'twitch-1' } },
+        ])
+      }
+      return Promise.resolve([{ result: [{ card: { id: 'c1' }, count: 3 }] }])
+    })
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getUserCardsSummaryPg({}, 'user-1')
+
+    expect(data).toEqual({
+      user: { id: 'user-1', twitch_user_id: 'twitch-1' },
+      cardCounts: [{ card: { id: 'c1' }, count: 3 }],
+    })
+    // 2つ目のクエリ(get_user_card_counts)は1つ目で取得したtwitch_user_idをバインドすること
+    const rpcCall = tag.mock.calls.find((call) =>
+      Array.from(call[0] as TemplateStringsArray).join('').includes('get_user_card_counts')
+    )
+    expect(rpcCall?.[1]).toBe('twitch-1')
+  })
+
+  // USER_SAFE_COLUMNS（localAdminApi.ts）と jsonb_build_object() の列集合
+  // （adminApiPg.ts）は別ファイルで独立管理されているため、片方だけ更新される
+  // ドリフトをここで検出する。twitch_access_token 等のOAuth秘匿列が誤って
+  // 含まれていないことも合わせて確認する
+  it('USER_SAFE_COLUMNSと同じ列集合をjsonb化し、OAuth秘匿列を含めない', async () => {
+    const { tag, calls } = fakeSqlTag(null)
+    const mod = await importAdminApiPg()
+    const localAdminApi = await importLocalAdminApi()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await mod.getUserCardsSummaryPg({}, 'user-1').catch(() => {})
+
+    const userCall = calls.find((call) => call.text.includes('FROM users'))
+    expect(userCall).toBeDefined()
+    for (const column of localAdminApi.USER_SAFE_COLUMNS.split(',').map((c) => c.trim())) {
+      expect(userCall?.text).toContain(`'${column}'`)
+    }
+    expect(userCall?.text).not.toContain('twitch_access_token')
+    expect(userCall?.text).not.toContain('twitch_refresh_token')
+    expect(userCall?.text).not.toContain('to_jsonb(u.*)')
+  })
+
+  it('該当ユーザーが存在しない場合は404相当のエラーをthrowする（PostgREST版PGRST116と同じ契約）', async () => {
+    const mod = await importAdminApiPg()
+    const tag = vi.fn().mockResolvedValue([])
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await expect(mod.getUserCardsSummaryPg({}, 'missing-user')).rejects.toMatchObject({
+      message: 'User not found',
+      statusCode: 404,
+    })
+  })
+})
+
+describe('adminApiPg: getUserCardsTablePg', () => {
+  it('user_cards→cards→streamersをJOINしたページ結果と件数を返す', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'uc1' }], 5)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getUserCardsTablePg(
+      {},
+      { userId: 'user-1', offset: 20, pageSize: 10 }
+    )
+
+    expect(data).toEqual({ rows: [{ id: 'uc1' }], count: 5 })
+    const countCall = calls.find((call) => call.text.includes('count(*)'))
+    const dataCall = calls.find((call) => call.text.includes('jsonb_agg'))
+    expect(countCall?.values).toEqual(['user-1'])
+    expect(dataCall?.text).toContain('JOIN cards c ON c.id = uc.card_id')
+    expect(dataCall?.text).toContain('JOIN streamers s ON s.id = c.streamer_id')
+    expect(dataCall?.values).toEqual(['user-1', 10, 20])
+  })
+})
+
+describe('adminApiPg: getStreamerCardsPagePg', () => {
+  it('cardsをrarity降順(アルファベット)→created_at降順でページングして返す', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'card1' }], 3)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getStreamerCardsPagePg(
+      {},
+      { streamerId: 'streamer-1', offset: 0, pageSize: 20 }
+    )
+
+    expect(data).toEqual({ rows: [{ id: 'card1' }], count: 3 })
+    const dataCall = calls.find((call) => call.text.includes('jsonb_agg'))
+    expect(dataCall?.text).toContain('ORDER BY c.rarity DESC, c.created_at DESC')
+    expect(dataCall?.values).toEqual(['streamer-1', 20, 0])
+  })
+})
+
 // 移植済み4関数（getOverview/getStreamerLeaderboard/listUsers/listStreamersWithStats）
 // はいずれも同じ「先頭1行の分岐」パターンなので、4関数まとめて表形式で回帰確認する
 // （tests/unit/storage-db-driver-parity.test.ts と同じく全関数を漏れなく検証する）
@@ -712,5 +829,163 @@ describe('localAdminApi: getGachaExportRows の ANALYSIS_DB_DRIVER による経�
     expect(data).toEqual([{ redeemed_at: '2024-01-01T00:00:00Z' }])
     expect(client.from).not.toHaveBeenCalled()
     expect(calls).toHaveLength(1)
+  })
+})
+
+describe('localAdminApi: getDropRateStats の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase RPC 経路のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeRpcClient({ totalDraws: 1 })
+    const { getDropRateStats } = await importLocalAdminApi()
+
+    const data = await getDropRateStats(client, { streamerId: 'streamer-1', range: 'all' }, {})
+
+    expect(data).toEqual({ totalDraws: 1 })
+    expect(client.rpc).toHaveBeenCalledWith('get_gacha_drop_stats', {
+      p_streamer_id: 'streamer-1',
+      p_from_date: '1970-01-01T00:00:00Z',
+      p_limit_per_card: 20,
+    })
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag({ totalDraws: 9 })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeRpcClient({ totalDraws: 1 })
+    const { getDropRateStats } = await importLocalAdminApi()
+
+    const data = await getDropRateStats(
+      client,
+      { streamerId: 'streamer-1', range: 'all' },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual({ totalDraws: 9 })
+    expect(client.rpc).not.toHaveBeenCalled()
+  })
+})
+
+// getUserCardsSummary の default 経路は .from('users')...(builder) と
+// .rpc('get_user_card_counts', ...) の両方を使うため、builder+rpc両対応のfakeが必要
+function fakeUserCardsSummaryClient(user: unknown, cardCounts: unknown): any {
+  const builder: any = {
+    select: vi.fn(() => builder),
+    eq: vi.fn(() => builder),
+    single: vi.fn(() => builder),
+    then: (onFulfilled: any, onRejected: any) =>
+      Promise.resolve({ data: user, error: null }).then(onFulfilled, onRejected),
+  }
+  return {
+    from: vi.fn(() => builder),
+    rpc: vi.fn().mockResolvedValue({ data: cardCounts, error: null }),
+    builder,
+  }
+}
+
+describe('localAdminApi: getUserCardsSummary の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()+rpc() のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeUserCardsSummaryClient(
+      { id: 'user-1', twitch_user_id: 'twitch-1' },
+      [{ card: { id: 'c1' }, count: 2 }]
+    )
+    const { getUserCardsSummary } = await importLocalAdminApi()
+
+    const data = await getUserCardsSummary(client, 'user-1', {})
+
+    expect(data).toEqual({
+      user: { id: 'user-1', twitch_user_id: 'twitch-1' },
+      cardCounts: [{ card: { id: 'c1' }, count: 2 }],
+    })
+    expect(client.from).toHaveBeenCalledWith('users')
+    // select('*') に退行するとOAuth秘匿列（twitch_access_token等）が漏れるため、
+    // USER_SAFE_COLUMNSがそのまま渡っていることを明示的に検証する
+    const localAdminApi = await importLocalAdminApi()
+    expect(client.builder.select).toHaveBeenCalledWith(localAdminApi.USER_SAFE_COLUMNS)
+    expect(client.rpc).toHaveBeenCalledWith('get_user_card_counts', { p_twitch_user_id: 'twitch-1' })
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const mod = await importAdminApiPg()
+    const tag = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const flattened = flattenFragment(strings, values)
+      if (flattened.text.includes('FROM users')) {
+        return Promise.resolve([{ twitch_user_id: 'twitch-9', user_json: { id: 'pg-user' } }])
+      }
+      return Promise.resolve([{ result: [{ card: { id: 'c9' }, count: 4 }] }])
+    })
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeUserCardsSummaryClient({ id: 'legacy' }, [])
+    const { getUserCardsSummary } = await importLocalAdminApi()
+
+    const data = await getUserCardsSummary(client, 'user-1', { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual({ user: { id: 'pg-user' }, cardCounts: [{ card: { id: 'c9' }, count: 4 }] })
+    expect(client.from).not.toHaveBeenCalled()
+    expect(client.rpc).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: getUserCardsTable の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const client = fakeQueryBuilderClient({ data: [], count: 0 })
+    const { getUserCardsTable } = await importLocalAdminApi()
+
+    const data = await getUserCardsTable(client, { userId: 'user-1', page: 1, pageSize: 20 }, {})
+
+    expect(data).toEqual({ rows: [], count: 0 })
+    expect(client.from).toHaveBeenCalledWith('user_cards')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路（page/pageSizeからのoffset計算含む）を呼ぶ', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'uc1' }], 1)
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [], count: 0 })
+    const { getUserCardsTable } = await importLocalAdminApi()
+
+    const data = await getUserCardsTable(
+      client,
+      { userId: 'user-1', page: 2, pageSize: 15 },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual({ rows: [{ id: 'uc1' }], count: 1 })
+    expect(client.from).not.toHaveBeenCalled()
+    // page=2, pageSize=15 → offset=(2-1)*15=15
+    const dataCall = calls.find((call) => call.text.includes('jsonb_agg'))
+    expect(dataCall?.values).toEqual(['user-1', 15, 15])
+  })
+})
+
+describe('localAdminApi: getStreamerCardsPage の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const client = fakeQueryBuilderClient({ data: [], count: 0 })
+    const { getStreamerCardsPage } = await importLocalAdminApi()
+
+    const data = await getStreamerCardsPage(
+      client,
+      { streamerId: 'streamer-1', page: 1, pageSize: 20 },
+      {}
+    )
+
+    expect(data).toEqual({ rows: [], count: 0 })
+    expect(client.from).toHaveBeenCalledWith('cards')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag([{ id: 'card1' }], 1)
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [], count: 0 })
+    const { getStreamerCardsPage } = await importLocalAdminApi()
+
+    const data = await getStreamerCardsPage(
+      client,
+      { streamerId: 'streamer-1', page: 1, pageSize: 20 },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual({ rows: [{ id: 'card1' }], count: 1 })
+    expect(client.from).not.toHaveBeenCalled()
   })
 })

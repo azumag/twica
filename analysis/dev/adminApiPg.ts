@@ -14,9 +14,11 @@
  * また JSONB の中に埋め込まれた timestamp/timestamptz は PostgreSQL の
  * `to_jsonb()`/`to_char()` が自前で ISO 8601（'T'区切り）にシリアライズするため、
  * `src/lib/db/client.ts` の `installIsoTimestampParsers()`（生の timestamp/timestamptz
- * "列" 型を受け取る場合の PG テキスト形式→ISO 8601 変換）はそもそも対象外
- * （このモジュールは jsonb 列 1本しか SELECT しない）。よって Drizzle + 型正規化の
- * 仕組みを丸ごと持ち込む必要がない。
+ * "列" 型を受け取る場合の PG テキスト形式→ISO 8601 変換）はそもそも対象外。
+ * よって Drizzle + 型正規化の仕組みを丸ごと持ち込む必要がない
+ * （`getUserCardsSummaryPg` が例外的に `twitch_user_id` を生の TEXT 列として
+ * SELECT するが、text/int4 等は postgres.js の既定パーサでそのまま安全に
+ * 扱える型であり、timestamp/timestamptz のような変換問題は生じない）。
  *
  * 関数名は SQL インジェクション対策として動的に組み立てず、呼び出す関数ごとに
  * 個別のリテラル SQL を書く。
@@ -56,10 +58,11 @@ export function getAnalysisDbDriver(env: Record<string, string>): AnalysisDbDriv
  * `grant service_role to <role>` 済みである必要がある（未付与だと接続自体は成功し、
  * 呼び出し時に "permission denied for function" で失敗する）。
  *
- * gacha chart/table/export（`getGachaChartPg` 以下）は SQL 関数を経由せず
- * `gacha_history`/`cards`/`streamers` を直接 SELECT するため、上記の EXECUTE 権限に加えて
- * これら3テーブルへの SELECT 権限も必要（`grant service_role to <role>` なら
- * service_role が持つテーブル権限も継承されるため、通常は追加のGRANT操作は不要）。
+ * gacha chart/table/export・user-cards・streamer-cards（`getGachaChartPg` 以下）は
+ * SQL 関数を経由せず `gacha_history`/`cards`/`streamers`/`users`/`user_cards` を
+ * 直接 SELECT するため、上記の EXECUTE 権限に加えてこれらテーブルへの SELECT 権限も
+ * 必要（`grant service_role to <role>` なら service_role が持つテーブル権限も
+ * 継承されるため、通常は追加のGRANT操作は不要）。
  */
 function resolveDashboardDatabaseUrl(env: Record<string, string>): string {
   const url = env.DASHBOARD_DATABASE_URL?.trim()
@@ -346,4 +349,159 @@ export async function getGachaExportRowsPg(
       LIMIT ${GACHA_EXPORT_ROW_LIMIT_PG}
     ) exported
   `) as Promise<unknown[]>
+}
+
+/**
+ * `get_gacha_drop_stats(p_streamer_id, p_from_date, p_limit_per_card)` を呼ぶ
+ * （`getDropRateStats()` 相当）。`00038`〜`00052` で拡張済みの既存 SQL 関数を
+ * そのまま呼ぶだけで、gacha summary と同じパラメータ化 RPC 呼び出しパターン。
+ */
+export async function getDropRateStatsPg(
+  env: Record<string, string>,
+  params: { streamerId: string; fromDate: string; limitPerCard: number }
+): Promise<unknown> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) =>
+      sql`select get_gacha_drop_stats(${params.streamerId}, ${params.fromDate}, ${params.limitPerCard}) as result`
+  )
+}
+
+/**
+ * ユーザー詳細（`USER_SAFE_COLUMNS` 相当の狭い列。localAdminApi.ts の同名定数と
+ * 同じ列集合を維持すること — OAuth トークン等の秘匿列を誤って jsonb に含めない）
+ * と、`get_user_card_counts()` RPC によるカード所持サマリーを返す
+ * （`getUserCardsSummary()` 相当）。
+ *
+ * user_id（analysis内部ID）→ twitch_user_id の変換が必要なため、
+ * 他の *Pg 関数と異なり2ステップになる（1クエリでユーザー行を取得し、その
+ * twitch_user_id を使って2つ目のRPCを呼ぶ）。
+ */
+export async function getUserCardsSummaryPg(
+  env: Record<string, string>,
+  userId: string
+): Promise<{ user: unknown; cardCounts: unknown }> {
+  const sql = getAnalysisSql(env)
+
+  const userRows = await sql<{ twitch_user_id: string; user_json: unknown }[]>`
+    SELECT
+      u.twitch_user_id AS twitch_user_id,
+      jsonb_build_object(
+        'id', u.id,
+        'twitch_user_id', u.twitch_user_id,
+        'twitch_username', u.twitch_username,
+        'twitch_display_name', u.twitch_display_name,
+        'twitch_profile_image_url', u.twitch_profile_image_url,
+        'tos_accepted_at', u.tos_accepted_at,
+        'twitch_scopes', u.twitch_scopes,
+        'created_at', u.created_at,
+        'updated_at', u.updated_at
+      ) AS user_json
+    FROM users u
+    WHERE u.id = ${userId}
+  `
+  const userRow = userRows[0]
+  if (!userRow) {
+    // PostgREST版（PGRST116）と同じ 404 契約に揃える
+    throw Object.assign(new Error('User not found'), { statusCode: 404 })
+  }
+
+  const cardCounts = await callAnalysisJsonFunction(
+    env,
+    () => sql`select get_user_card_counts(${userRow.twitch_user_id}) as result`
+  )
+
+  return { user: userRow.user_json, cardCounts }
+}
+
+/**
+ * ユーザーのカード所持一覧（ページネーション付き、cards/streamersを埋め込み）を
+ * 返す（`getUserCardsTable()` 相当）。`user_cards.card_id`/`cards.streamer_id` は
+ * ともに NOT NULL 外部キー（00001_initial_schema.sql）のため、PostgREST版が
+ * streamerを別クエリで後引きしていたのとは異なり、pg直結では単純な INNER JOIN
+ * 3段で1クエリに統合できる。
+ */
+export async function getUserCardsTablePg(
+  env: Record<string, string>,
+  params: { userId: string; offset: number; pageSize: number }
+): Promise<{ rows: unknown[]; count: number }> {
+  const sql = getAnalysisSql(env)
+
+  const [countRows, rows] = await Promise.all([
+    sql`
+      SELECT count(*)::int AS count
+      FROM user_cards uc
+      WHERE uc.user_id = ${params.userId}
+    `,
+    callAnalysisJsonFunction(env, () => sql`
+      SELECT COALESCE(jsonb_agg(row_json ORDER BY sort_obtained_at DESC), '[]'::jsonb) AS result
+      FROM (
+        SELECT
+          jsonb_build_object(
+            'id', uc.id,
+            'card_id', uc.card_id,
+            'obtained_at', uc.obtained_at,
+            'cards', jsonb_build_object(
+              'id', c.id,
+              'streamer_id', c.streamer_id,
+              'name', c.name,
+              'description', c.description,
+              'image_url', c.image_url,
+              'rarity', c.rarity,
+              'drop_rate', c.drop_rate,
+              'is_active', c.is_active,
+              'created_at', c.created_at,
+              'updated_at', c.updated_at
+            ),
+            'streamer', to_jsonb(s.*)
+          ) AS row_json,
+          uc.obtained_at AS sort_obtained_at
+        FROM user_cards uc
+        JOIN cards c ON c.id = uc.card_id
+        JOIN streamers s ON s.id = c.streamer_id
+        WHERE uc.user_id = ${params.userId}
+        ORDER BY uc.obtained_at DESC
+        LIMIT ${params.pageSize} OFFSET ${params.offset}
+      ) page
+    `) as Promise<unknown[]>,
+  ])
+
+  return { rows, count: countRows[0]?.count ?? 0 }
+}
+
+/**
+ * 配信者のカード一覧（ページネーション付き）を返す（`getStreamerCardsPage()` 相当）。
+ * 並び順は PostgREST 版 `.order('rarity', { ascending: false })` と同じ、
+ * rarity列（TEXT）のアルファベット降順（tier順ではない、既存挙動をそのまま維持）。
+ */
+export async function getStreamerCardsPagePg(
+  env: Record<string, string>,
+  params: { streamerId: string; offset: number; pageSize: number }
+): Promise<{ rows: unknown[]; count: number }> {
+  const sql = getAnalysisSql(env)
+
+  const [countRows, rows] = await Promise.all([
+    sql`
+      SELECT count(*)::int AS count
+      FROM cards c
+      WHERE c.streamer_id = ${params.streamerId}
+    `,
+    callAnalysisJsonFunction(env, () => sql`
+      SELECT COALESCE(
+        jsonb_agg(row_json ORDER BY sort_rarity DESC, sort_created_at DESC), '[]'::jsonb
+      ) AS result
+      FROM (
+        SELECT
+          to_jsonb(c.*) AS row_json,
+          c.rarity AS sort_rarity,
+          c.created_at AS sort_created_at
+        FROM cards c
+        WHERE c.streamer_id = ${params.streamerId}
+        ORDER BY c.rarity DESC, c.created_at DESC
+        LIMIT ${params.pageSize} OFFSET ${params.offset}
+      ) page
+    `) as Promise<unknown[]>,
+  ])
+
+  return { rows, count: countRows[0]?.count ?? 0 }
 }
