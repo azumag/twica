@@ -57,9 +57,37 @@ type AnnouncementInput = Pick<
   'title' | 'body' | 'severity' | 'is_published' | 'published_at' | 'expires_at'
 >
 
-type AdminApiError = {
+type AdminApiErrorPayload = {
   error?: string
+  code?: string
   details?: unknown
+}
+
+/**
+ * `/__admin` APIが返す構造化エラー。レスポンスJSON本文は`AdminApiErrorPayload`の
+ * フラットな形（`{error: string, code?: string, details?: unknown}`、ネストしない）
+ * を前提とする。#694（中央集約maintenance mode）が実装される場合、サーバー側は
+ * この形に沿って`{error: '...', code: 'maintenance_read_only', details: {...}}`を
+ * 返すことを想定している（現時点で#694は未実装のためそのcodeはまだ存在しない）。
+ * ここでは特定のcode値をハードコードせず、サーバーが送ってきた`code`/`details`を
+ * そのまま透過的に保持するだけに留める。これにより#694実装後もこのクラス自体の
+ * 変更は不要（呼び出し元がcodeで分岐する処理を追加するだけで済む）。
+ *
+ * `code: 'timeout'`は本ファイル内でクライアント側から合成する特別な値（サーバーが
+ * 返すものではない）。`request()`のAbortSignalタイムアウト発火時に使う。
+ */
+export class AdminApiRequestError extends Error {
+  readonly status: number
+  readonly code?: string
+  readonly details?: unknown
+
+  constructor(message: string, status: number, code?: string, details?: unknown) {
+    super(message)
+    this.name = 'AdminApiRequestError'
+    this.status = status
+    this.code = code
+    this.details = details
+  }
 }
 
 export type TimeRange = '7d' | '30d' | '90d' | 'all'
@@ -190,23 +218,55 @@ function buildQueryString(params: Record<string, string | number | undefined>): 
   return search.toString()
 }
 
+// リクエストがハングしたまま返ってこない事故(サーバープロセスの停止・ネットワーク
+// 断等)を防ぐデフォルトタイムアウト。getStreamerLeaderboard()はgacha_history全件
+// (~65,000行超)をNode側でfetchAllPagedしながら集計するため既知で約20秒かかる
+// (Overview.tsx/localAdminApi.tsのコメント参照)。誤って正常な低速リクエストを
+// 打ち切らないよう、その3倍程度の余裕を持たせた値にする
+const DEFAULT_TIMEOUT_MS = 60_000
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/__admin${path}`, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      ...(init?.headers || {}),
-    },
-  })
+  let response: Response
+  try {
+    response = await fetch(`/__admin${path}`, {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        ...(init?.headers || {}),
+      },
+      // 呼び出し元が独自のsignal(例: コンポーネントunmount時のキャンセル)を渡した場合は
+      // そちらを尊重し、タイムアウト用の既定signalで上書きしない
+      signal: init?.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    })
+  } catch (error) {
+    // AbortSignal.timeout()発火時、fetchは name='TimeoutError' のDOMExceptionでreject
+    // する(呼び出し元が自前のAbortControllerで能動的に中断した場合の name='AbortError'
+    // とは区別される)。ここを素通しするとブラウザ依存の低レベル英語メッセージが
+    // そのままUIに出て、かつ他のエラーと違いAdminApiRequestErrorでも無いため
+    // 呼び出し元がタイムアウトかどうか判別できない。構造化エラーの枠に正規化する
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      throw new AdminApiRequestError(
+        `Admin APIへのリクエストがタイムアウトしました(${DEFAULT_TIMEOUT_MS / 1000}秒)`,
+        0,
+        'timeout'
+      )
+    }
+    throw error
+  }
 
   if (!response.ok) {
-    let payload: AdminApiError | undefined
+    let payload: AdminApiErrorPayload | undefined
     try {
       payload = await response.json()
     } catch {
       payload = undefined
     }
-    throw new Error(payload?.error || `Admin API request failed: ${response.status}`)
+    throw new AdminApiRequestError(
+      payload?.error || `Admin API request failed: ${response.status}`,
+      response.status,
+      payload?.code,
+      payload?.details
+    )
   }
 
   return response.json() as Promise<T>
