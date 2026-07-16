@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { RarityBadge } from '../components/RarityBadge'
@@ -60,18 +59,9 @@ export function StreamerCards() {
   async function fetchStreamer(isCancelled: () => boolean) {
     if (!streamerId) return
     try {
-      const { data, error } = await supabase
-        .from('streamers')
-        .select('*')
-        .eq('id', streamerId)
-        .single()
-
+      const data = await adminApi.getStreamer(streamerId)
       if (isCancelled()) return
-      if (error) {
-        console.error('Streamer not found:', error)
-        return
-      }
-      setStreamer(data as Streamer)
+      setStreamer(data)
     } catch (error) {
       if (isCancelled()) return
       console.error('Error fetching streamer:', error)

@@ -248,6 +248,28 @@ describe('adminApiPg: pg直結クエリ', () => {
   })
 })
 
+describe('adminApiPg: getStreamerByIdPg', () => {
+  it('idで1件を取得しto_jsonbで返す', async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'streamer-1', name: 'テスト配信者' })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getStreamerByIdPg({}, 'streamer-1')
+
+    expect(data).toEqual({ id: 'streamer-1', name: 'テスト配信者' })
+    expect(calls[0].text).toContain('FROM streamers s WHERE s.id = ')
+    expect(calls[0].values).toEqual(['streamer-1'])
+  })
+
+  it('対象0件なら明示的に404を投げる（Supabase版の.single()が実際には素の500になる非対称の意図的改善）', async () => {
+    const { tag } = fakeSqlTag(undefined)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await expect(mod.getStreamerByIdPg({}, 'missing')).rejects.toMatchObject({ statusCode: 404 })
+  })
+})
+
 describe('adminApiPg: gachaHistoryFromWhere（動的WHERE句の組み立て）', () => {
   it('フィルタなしなら WHERE TRUE のみ（絞り込み条件は付かない）', async () => {
     const { tag, calls } = fakeSqlTag(null)
@@ -914,6 +936,45 @@ describe.each(ROUTED_ENDPOINTS)(
     })
   }
 )
+
+// getStreamerByIdはRPCではなくfrom().select().eq().single()を使うため、
+// 表形式のROUTED_ENDPOINTSには混ぜず個別に検証する（#701: StreamerCards.tsx/
+// StreamerGachaHistory.tsxのブラウザ直接Supabase読み取りを置き換える新規エンドポイント）
+describe('localAdminApi: getStreamerById の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from().select().eq().single() のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeWriteBuilderClient({ data: { id: 'streamer-1', name: 'テスト配信者' } })
+    const { getStreamerById } = await importLocalAdminApi()
+
+    const data = await getStreamerById(client, 'streamer-1', {})
+
+    expect(data).toEqual({ id: 'streamer-1', name: 'テスト配信者' })
+    expect(client.from).toHaveBeenCalledWith('streamers')
+    expect(client.builder.eq).toHaveBeenCalledWith('id', 'streamer-1')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag({ id: 'streamer-pg', name: 'PG配信者' })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeWriteBuilderClient({ data: null })
+    const { getStreamerById } = await importLocalAdminApi()
+
+    const data = await getStreamerById(client, 'streamer-1', { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual({ id: 'streamer-pg', name: 'PG配信者' })
+    expect(client.from).not.toHaveBeenCalled()
+  })
+
+  it('未設定・対象0件（PGRST116）なら404相当のエラーをthrowする（pg経路とparityが取れている）', async () => {
+    const client = fakeWriteBuilderClient({ data: null, error: { code: 'PGRST116' } })
+    const { getStreamerById } = await importLocalAdminApi()
+
+    await expect(getStreamerById(client, 'missing', {})).rejects.toMatchObject({
+      message: 'Streamer not found',
+      statusCode: 404,
+    })
+  })
+})
 
 // getGachaSummary は他4関数と違い tryJsonbRpc() を経由せず client.rpc() を直接
 // 2引数(関数名 + パラメータオブジェクト)で呼ぶため、表形式のROUTED_ENDPOINTSには

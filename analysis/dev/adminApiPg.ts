@@ -155,6 +155,36 @@ export async function listStreamersWithStatsPg(env: Record<string, string>): Pro
 }
 
 /**
+ * ストリーマー1件をidで取得する（`GET /streamers/:id` 相当、#701向けに新規追加。
+ * `StreamerCards`/`StreamerGachaHistory`ページがブラウザから直接Supabaseへ
+ * `.from('streamers').select('*').eq('id', id).single()` していた箇所を置き換える）。
+ * 対象0件時は明示的に404を投げる。Supabase経路（`localAdminApi.ts`の
+ * `getStreamerById`）もPGRST116を検知して同じく404にマッピングしているため、
+ * このエンドポイントは両経路でステータスコードのparityが取れている
+ * （`updateSupportCodeStatusPg`等の「pg経路のみ404、Supabase経路は素の500」という
+ * 意図的divergenceパターンとは異なる）。
+ *
+ * `to_jsonb(s.*)` で全列を返す。`streamers`テーブルには`users`テーブルの
+ * twitch_access_token/twitch_refresh_tokenのような秘匿列が無い（BOTのOAuth
+ * トークンは`twitch_bot_accounts`テーブルに分離済み、00040_add_bot_account_settings.sql
+ * 参照）ため、`USER_SAFE_COLUMNS`のような列制限は不要と判断した。将来streamersに
+ * 秘匿列が追加された場合はこのエンドポイントも見直すこと。
+ */
+export async function getStreamerByIdPg(
+  env: Record<string, string>,
+  id: string
+): Promise<unknown> {
+  const result = await callAnalysisJsonFunction(
+    env,
+    (sql) => sql`SELECT to_jsonb(s.*) AS result FROM streamers s WHERE s.id = ${id}`
+  )
+  if (result === undefined) {
+    throw Object.assign(new Error('Streamer not found'), { statusCode: 404 })
+  }
+  return result
+}
+
+/**
  * `get_analysis_gacha_summary(p_from_date, p_streamer_id)` を呼ぶ。他の `*Pg` 関数と
  * 異なり引数を取る唯一の関数。値は postgres.js のタグ付きテンプレート経由でバインド
  * パラメータとして渡す（文字列連結ではないため SQL インジェクションの余地はない）。

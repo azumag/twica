@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
 import {
   adminApi,
   DropRateStatsResponse,
@@ -106,16 +105,12 @@ export function StreamerGachaHistory() {
   useEffect(() => {
     if (!streamerId) return
     ;(async () => {
-      const { data, error: err } = await supabase
-        .from('streamers')
-        .select('*')
-        .eq('id', streamerId)
-        .single()
-      if (err) {
-        setChartError(`Streamer not found: ${err.message}`)
-        return
+      try {
+        const data = await adminApi.getStreamer(streamerId)
+        setStreamer(data)
+      } catch (error) {
+        setChartError((error as Error).message)
       }
-      setStreamer(data as Streamer)
     })()
   }, [streamerId])
 

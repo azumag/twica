@@ -22,6 +22,7 @@ import {
   getGachaSummaryPg,
   getGachaTablePg,
   getOverviewPg,
+  getStreamerByIdPg,
   getStreamerCardsPagePg,
   getStreamerLeaderboardPg,
   getSupportInquiriesPg,
@@ -785,6 +786,33 @@ export async function listStreamersWithStats(client: SupabaseClient<Database>, e
   })
 }
 
+// #701: StreamerCards.tsx/StreamerGachaHistory.tsxがブラウザから直接
+// supabase.from('streamers').select('*').eq('id', id).single() していた箇所を
+// /__admin API経由に置き換えるための単一ストリーマー取得エンドポイント。
+//
+// 意図的な挙動変化: 旧ブラウザ経路はanon/publishable key + RLSポリシー
+// 「Active streamers are viewable by everyone」(USING (is_active = true)、
+// 00001_initial_schema.sql)の制約下にあり、is_active=falseのstreamerは
+// 0件（エラー表示）だった。この新経路はservice-role/pg直結のためinactiveな
+// streamerも返す。管理ダッシュボードの`/streamers`一覧は元々is_activeを問わず
+// 全件表示しているため、この単体取得もそれに揃える形の意図的な改善である
+// （既存の一覧表示との一貫性が取れていなかった旧挙動の方が不整合だった）。
+export async function getStreamerById(client: SupabaseClient<Database>, id: string, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getStreamerByIdPg(env, id)
+  }
+  const { data, error } = await client.from('streamers').select('*').eq('id', id).single()
+  if (error) {
+    // PGRST116: .single()で0件/複数件だった場合のPostgRESTエラーコード
+    // (getUserCardsSummaryの404マッピングと同じパターン)
+    if ((error as { code?: string }).code === 'PGRST116') {
+      throw Object.assign(new Error('Streamer not found'), { statusCode: 404 })
+    }
+    throw error
+  }
+  return data
+}
+
 // analysis/src/pages/StreamerGachaHistory.tsx のチャート用クエリと同一ロジック。
 // streamerId未指定時は全ストリーマー横断(analysis/src/pages/Gacha.tsx相当)になるため
 // streamers(*) も併せて埋め込む
@@ -1384,6 +1412,11 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
 
   if (req.method === 'GET' && path === '/streamers') {
     return listStreamersWithStats(client, env)
+  }
+
+  const streamerByIdMatch = path.match(/^\/streamers\/([^/]+)$/)
+  if (req.method === 'GET' && streamerByIdMatch) {
+    return getStreamerById(client, streamerByIdMatch[1], env)
   }
 
   if (req.method === 'GET' && path === '/gacha/chart') {

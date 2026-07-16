@@ -217,6 +217,7 @@ export const adminApi = {
   getOverviewLeaderboard: () => request<StreamerLeaderboardEntry[]>('/overview/leaderboard'),
   getUsers: () => request<UserWithCardCount[]>('/users'),
   getStreamers: () => request<StreamerWithStats[]>('/streamers'),
+  getStreamer: (id: string) => request<Streamer>(`/streamers/${id}`),
   getGachaChart: (params: { range: TimeRange; streamerId?: string }) =>
     request<GachaChartRow[]>(`/gacha/chart?${buildQueryString(params)}`),
   getGachaSummary: (params: { range: TimeRange; streamerId?: string }) =>

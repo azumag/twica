@@ -72,7 +72,7 @@ export function Overview() {
   }, [])
 
   /**
-   * Fetches all dashboard statistics from Supabase
+   * Fetches all dashboard statistics via the /__admin API
    * Performs multiple queries in parallel for efficiency
    */
   async function fetchData() {
