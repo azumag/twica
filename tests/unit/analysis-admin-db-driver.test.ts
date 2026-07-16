@@ -719,6 +719,130 @@ describe('adminApiPg: createSupportInquiryMessagePg', () => {
   })
 })
 
+describe('adminApiPg: listAnnouncementsPg', () => {
+  it('read_countを相関サブクエリで計算しcreated_at降順で返す', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'ann1', read_count: 3 }])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.listAnnouncementsPg({})
+
+    expect(data).toEqual([{ id: 'ann1', read_count: 3 }])
+    expect(calls[0].text).toContain(
+      'FROM announcement_reads ar WHERE ar.announcement_id = a.id'
+    )
+    expect(calls[0].text).toContain('ORDER BY sort_created_at DESC')
+    expect(calls[0].values).toEqual([])
+  })
+})
+
+describe('adminApiPg: createAnnouncementPg', () => {
+  it('read_countを0固定でマージしてINSERTする', async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'ann1', title: 'タイトル' })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const payload = {
+      title: 'タイトル',
+      body: '本文',
+      severity: 'info',
+      is_published: true,
+      published_at: null,
+      expires_at: null,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    const data = await mod.createAnnouncementPg({}, payload)
+
+    expect(data).toEqual({ id: 'ann1', title: 'タイトル' })
+    expect(calls[0].text).toContain('INSERT INTO announcements')
+    expect(calls[0].text).toContain("jsonb_build_object('read_count', 0)")
+    expect(calls[0].values).toEqual([
+      'タイトル',
+      '本文',
+      'info',
+      true,
+      null,
+      null,
+      '2026-01-01T00:00:00.000Z',
+    ])
+  })
+})
+
+describe('adminApiPg: updateAnnouncementPg', () => {
+  it("title/body/severityを含む更新はSET句にフィールド全体を含める", async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'ann1', title: '更新後' })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const update = {
+      title: '更新後',
+      body: '本文',
+      severity: 'warning',
+      is_published: true,
+      published_at: null,
+      expires_at: null,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    const data = await mod.updateAnnouncementPg({}, 'ann1', update)
+
+    expect(data).toEqual({ id: 'ann1', title: '更新後' })
+    expect(calls[0].text).toContain('UPDATE announcements')
+    expect(calls[0].text).toContain('title = ')
+    expect(calls[0].text).toContain('severity = ')
+    expect(calls[0].values).toEqual([
+      '更新後',
+      '本文',
+      'warning',
+      true,
+      null,
+      null,
+      '2026-01-01T00:00:00.000Z',
+      'ann1',
+    ])
+  })
+
+  it('公開状態トグルのみの更新はSET句をis_published/updated_atの2列に絞る', async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'ann1', is_published: false })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const update = { is_published: false, updated_at: '2026-01-01T00:00:00.000Z' }
+    const data = await mod.updateAnnouncementPg({}, 'ann1', update)
+
+    expect(data).toEqual({ id: 'ann1', is_published: false })
+    expect(calls[0].text).not.toContain('title = ')
+    expect(calls[0].text).toContain('is_published = ')
+    expect(calls[0].values).toEqual([false, '2026-01-01T00:00:00.000Z', 'ann1'])
+  })
+
+  it('対象0件なら明示的に404を投げる（PostgREST版のPGRST116が実際には素の500になる非対称の意図的改善）', async () => {
+    const { tag } = fakeSqlTag(undefined)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await expect(
+      mod.updateAnnouncementPg({}, 'missing', {
+        is_published: true,
+        updated_at: '2026-01-01T00:00:00.000Z',
+      })
+    ).rejects.toMatchObject({ statusCode: 404 })
+  })
+})
+
+describe('adminApiPg: deleteAnnouncementPg', () => {
+  it('対象0件でもエラーにせず常にokを返す（PostgREST版の既存挙動を維持）', async () => {
+    const { tag, calls } = fakeSqlTag(undefined)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.deleteAnnouncementPg({}, 'ann1')
+
+    expect(data).toEqual({ ok: true })
+    expect(calls[0].text).toContain('DELETE FROM announcements')
+    expect(calls[0].values).toEqual(['ann1'])
+  })
+})
+
 // 移植済み4関数（getOverview/getStreamerLeaderboard/listUsers/listStreamersWithStats）
 // はいずれも同じ「先頭1行の分岐」パターンなので、4関数まとめて表形式で回帰確認する
 // （tests/unit/storage-db-driver-parity.test.ts と同じく全関数を漏れなく検証する）
@@ -1236,6 +1360,7 @@ function fakeWriteBuilderClient(resolved: { data: unknown; error?: unknown }): a
   const builder: any = {
     insert: vi.fn(() => builder),
     update: vi.fn(() => builder),
+    delete: vi.fn(() => builder),
     select: vi.fn(() => builder),
     eq: vi.fn(() => builder),
     single: vi.fn(() => builder),
@@ -1500,6 +1625,196 @@ describe('localAdminApi: createSupportInquiryMessage の ANALYSIS_DB_DRIVER に�
     })
 
     expect(data).toEqual({ id: 'msg-pg', sender_type: 'admin' })
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: listAnnouncements の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const client = fakeQueryBuilderClient({ data: [] })
+    const { listAnnouncements } = await importLocalAdminApi()
+
+    const data = await listAnnouncements(client, {})
+
+    expect(data).toEqual([])
+    expect(client.from).toHaveBeenCalledWith('announcements')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag([{ id: 'ann-pg', read_count: 2 }])
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [] })
+    const { listAnnouncements } = await importLocalAdminApi()
+
+    const data = await listAnnouncements(client, { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual([{ id: 'ann-pg', read_count: 2 }])
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: createAnnouncement の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の insert().select().single() のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeWriteBuilderClient({ data: { id: 'ann1', title: 'タイトル' } })
+    const { createAnnouncement } = await importLocalAdminApi()
+
+    const data = await createAnnouncement(
+      client,
+      { title: 'タイトル', body: '本文', severity: 'info', is_published: true },
+      {}
+    )
+
+    expect(data).toEqual({ id: 'ann1', title: 'タイトル', read_count: 0 })
+    expect(client.builder.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'タイトル',
+        body: '本文',
+        severity: 'info',
+        is_published: true,
+      })
+    )
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag({ id: 'ann-pg', title: 'タイトル', read_count: 0 })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeWriteBuilderClient({ data: null })
+    const { createAnnouncement } = await importLocalAdminApi()
+
+    const data = await createAnnouncement(
+      client,
+      { title: 'タイトル', body: '本文', severity: 'info', is_published: true },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual({ id: 'ann-pg', title: 'タイトル', read_count: 0 })
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+// updateAnnouncement の default 経路は announcements への update().select().single() と
+// announcement_reads へのcountクエリという異なる2テーブルへの問い合わせを行うため、
+// テーブル名で戻り値を出し分ける専用fakeが必要（fakeWriteBuilderClientは単一テーブル前提）
+function fakeAnnouncementUpdateClient(resolved: { data: unknown; count: number }): any {
+  const writeBuilder: any = {
+    update: vi.fn(() => writeBuilder),
+    eq: vi.fn(() => writeBuilder),
+    select: vi.fn(() => writeBuilder),
+    single: vi.fn(() => writeBuilder),
+    then: (onFulfilled: any, onRejected: any) =>
+      Promise.resolve({ data: resolved.data, error: null }).then(onFulfilled, onRejected),
+  }
+  const countBuilder: any = {
+    select: vi.fn(() => countBuilder),
+    eq: vi.fn(() => countBuilder),
+    then: (onFulfilled: any, onRejected: any) =>
+      Promise.resolve({ count: resolved.count, error: null }).then(onFulfilled, onRejected),
+  }
+  const from = vi.fn((table: string) => (table === 'announcement_reads' ? countBuilder : writeBuilder))
+  return { from, rpc: vi.fn(), writeBuilder, countBuilder }
+}
+
+describe('localAdminApi: updateAnnouncement の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定・title/body/severityを含むbodyなら Supabase のupdate()に全フィールドを渡し、pg 経路には触れない', async () => {
+    const client = fakeAnnouncementUpdateClient({
+      data: { id: 'ann1', title: '更新後' },
+      count: 3,
+    })
+    const { updateAnnouncement } = await importLocalAdminApi()
+
+    const data = await updateAnnouncement(
+      client,
+      'ann1',
+      { title: '更新後', body: '本文', severity: 'warning', is_published: true },
+      {}
+    )
+
+    expect(data).toEqual({ id: 'ann1', title: '更新後', read_count: 3 })
+    expect(client.from).toHaveBeenCalledWith('announcements')
+    expect(client.from).toHaveBeenCalledWith('announcement_reads')
+    expect(client.writeBuilder.eq).toHaveBeenCalledWith('id', 'ann1')
+    expect(client.writeBuilder.update).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '更新後', body: '本文', severity: 'warning' })
+    )
+  })
+
+  it('未設定・is_publishedのみのbody（UIの公開トグル操作）なら部分更新のみをupdate()に渡す', async () => {
+    const client = fakeAnnouncementUpdateClient({
+      data: { id: 'ann1', is_published: false },
+      count: 1,
+    })
+    const { updateAnnouncement } = await importLocalAdminApi()
+
+    const data = await updateAnnouncement(client, 'ann1', { is_published: false }, {})
+
+    expect(data).toEqual({ id: 'ann1', is_published: false, read_count: 1 })
+    const updateArg = client.writeBuilder.update.mock.calls[0][0]
+    expect(updateArg).not.toHaveProperty('title')
+    expect(updateArg).toMatchObject({ is_published: false })
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg・title/body/severityを含むbodyなら全フィールドのSET句でpg経路を呼ぶ', async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'ann-pg', title: '更新後', read_count: 3 })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeAnnouncementUpdateClient({ data: null, count: 0 })
+    const { updateAnnouncement } = await importLocalAdminApi()
+
+    const data = await updateAnnouncement(
+      client,
+      'ann1',
+      { title: '更新後', body: '本文', severity: 'warning', is_published: true },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual({ id: 'ann-pg', title: '更新後', read_count: 3 })
+    expect(client.from).not.toHaveBeenCalled()
+    expect(calls[0].text).toContain('title = ')
+    expect(calls[0].values).toEqual(['更新後', '本文', 'warning', true, null, null, expect.any(String), 'ann1'])
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg・is_publishedのみのbodyならSET句をis_published/updated_atの2列に絞ってpg経路を呼ぶ', async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'ann-pg', is_published: false, read_count: 0 })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeAnnouncementUpdateClient({ data: null, count: 0 })
+    const { updateAnnouncement } = await importLocalAdminApi()
+
+    const data = await updateAnnouncement(client, 'ann1', { is_published: false }, {
+      ANALYSIS_DB_DRIVER: 'pg',
+    })
+
+    expect(data).toEqual({ id: 'ann-pg', is_published: false, read_count: 0 })
+    expect(client.from).not.toHaveBeenCalled()
+    expect(calls[0].text).not.toContain('title = ')
+    expect(calls[0].values).toEqual([false, expect.any(String), 'ann1'])
+  })
+})
+
+describe('localAdminApi: deleteAnnouncement の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の delete().eq() のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeWriteBuilderClient({ data: null })
+    const { deleteAnnouncement } = await importLocalAdminApi()
+
+    const data = await deleteAnnouncement(client, 'ann1', {})
+
+    expect(data).toEqual({ ok: true })
+    expect(client.builder.delete).toHaveBeenCalled()
+    expect(client.builder.eq).toHaveBeenCalledWith('id', 'ann1')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag(undefined)
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeWriteBuilderClient({ data: null })
+    const { deleteAnnouncement } = await importLocalAdminApi()
+
+    const data = await deleteAnnouncement(client, 'ann1', { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual({ ok: true })
     expect(client.from).not.toHaveBeenCalled()
   })
 })

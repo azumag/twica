@@ -11,8 +11,10 @@ import {
   type ChatAccessUserScopeRow,
 } from '../src/lib/chatAnnouncementAccess'
 import {
+  createAnnouncementPg,
   createSupportCodePg,
   createSupportInquiryMessagePg,
+  deleteAnnouncementPg,
   getAnalysisDbDriver,
   getDropRateStatsPg,
   getGachaChartPg,
@@ -25,6 +27,7 @@ import {
   getSupportInquiriesPg,
   getUserCardsSummaryPg,
   getUserCardsTablePg,
+  listAnnouncementsPg,
   listLicensesPg,
   listStreamersWithStatsPg,
   listSupportCodesPg,
@@ -32,6 +35,7 @@ import {
   listTwitchSubsPg,
   listUsersPg,
   revokeSupportCodePg,
+  updateAnnouncementPg,
   updateSupportCodeStatusPg,
   updateSupportInquiryStatusPg,
 } from './adminApiPg'
@@ -486,7 +490,10 @@ export async function createSupportInquiryMessage(
   return data
 }
 
-async function listAnnouncements(client: SupabaseClient<Database>) {
+export async function listAnnouncements(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listAnnouncementsPg(env)
+  }
   // announcementごとに個別のcountクエリを発行するとN件でN+1ラウンドトリップになる。
   // announcement_reads.announcement_id → announcements.id は単一FK(曖昧さなし)なので、
   // 他のRPCフォールバック箇所(user_cards(count)など)と同じくPostgRESTのネスト埋め込み
@@ -1291,6 +1298,71 @@ function announcementPayload(body: unknown) {
   }
 }
 
+export async function createAnnouncement(client: SupabaseClient<Database>, body: unknown, env: Env) {
+  const payload = announcementPayload(body)
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return createAnnouncementPg(env, payload)
+  }
+  const { data, error } = await client
+    .from('announcements')
+    .insert(payload as never)
+    .select()
+    .single()
+  if (error) throw error
+  return {
+    ...data,
+    read_count: 0,
+  }
+}
+
+export async function updateAnnouncement(
+  client: SupabaseClient<Database>,
+  id: string,
+  body: unknown,
+  env: Env
+) {
+  const payload = requireObject(body)
+  const update =
+    'title' in payload || 'body' in payload || 'severity' in payload
+      ? announcementPayload(body)
+      : {
+          is_published: !!payload.is_published,
+          updated_at: new Date().toISOString(),
+        }
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return updateAnnouncementPg(env, id, update)
+  }
+
+  const { data, error } = await client
+    .from('announcements')
+    .update(update as never)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+
+  const { count, error: countError } = await client
+    .from('announcement_reads')
+    .select('id', { count: 'exact', head: true })
+    .eq('announcement_id', id)
+  if (countError) throw countError
+
+  return {
+    ...data,
+    read_count: count || 0,
+  }
+}
+
+export async function deleteAnnouncement(client: SupabaseClient<Database>, id: string, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return deleteAnnouncementPg(env, id)
+  }
+  const { error } = await client.from('announcements').delete().eq('id', id)
+  if (error) throw error
+  return { ok: true }
+}
+
 async function handleRoute(ctx: RouteContext): Promise<unknown> {
   const { client, req, url, body, env } = ctx
   const path = url.pathname.replace(/^\/__admin/, '')
@@ -1410,60 +1482,20 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   }
 
   if (req.method === 'GET' && path === '/announcements') {
-    return listAnnouncements(client)
+    return listAnnouncements(client, env)
   }
 
   if (req.method === 'POST' && path === '/announcements') {
-    const payload = announcementPayload(body)
-    const { data, error } = await client
-      .from('announcements')
-      .insert(payload as never)
-      .select()
-      .single()
-    if (error) throw error
-    return {
-      ...data,
-      read_count: 0,
-    }
+    return createAnnouncement(client, body, env)
   }
 
   const announcementMatch = path.match(/^\/announcements\/([^/]+)$/)
   if (announcementMatch && req.method === 'PATCH') {
-    const payload = requireObject(body)
-    const update = 'title' in payload || 'body' in payload || 'severity' in payload
-      ? announcementPayload(body)
-      : {
-          is_published: !!payload.is_published,
-          updated_at: new Date().toISOString(),
-        }
-
-    const { data, error } = await client
-      .from('announcements')
-      .update(update as never)
-      .eq('id', announcementMatch[1])
-      .select()
-      .single()
-    if (error) throw error
-
-    const { count, error: countError } = await client
-      .from('announcement_reads')
-      .select('id', { count: 'exact', head: true })
-      .eq('announcement_id', announcementMatch[1])
-    if (countError) throw countError
-
-    return {
-      ...data,
-      read_count: count || 0,
-    }
+    return updateAnnouncement(client, announcementMatch[1], body, env)
   }
 
   if (announcementMatch && req.method === 'DELETE') {
-    const { error } = await client
-      .from('announcements')
-      .delete()
-      .eq('id', announcementMatch[1])
-    if (error) throw error
-    return { ok: true }
+    return deleteAnnouncement(client, announcementMatch[1], env)
   }
 
   const inquiryMatch = path.match(/^\/support-inquiries\/([^/]+)$/)

@@ -782,3 +782,149 @@ export async function createSupportInquiryMessagePg(
     `
   )
 }
+
+/** `localAdminApi.ts` の `announcementPayload()` の戻り値と同じ形状。severityの値バリデーションは
+ * 行わない（`announcements` テーブルのCHECK制約に委ねる。既存挙動と同じ）。 */
+export interface AnnouncementFieldsPayload {
+  title: string
+  body: string
+  severity: unknown
+  is_published: boolean
+  published_at: string | null
+  expires_at: string | null
+  updated_at: string
+}
+
+/**
+ * お知らせ一覧を作成日降順で返す（`GET /announcements` 相当）。PostgREST版は
+ * `announcement_reads(count)` のネスト埋め込みcount集約（`listAnnouncements`の
+ * コメント参照）で1クエリに収めているが、pg直結側では素直に相関サブクエリで
+ * `read_count` を計算し `to_jsonb(a.*) || jsonb_build_object(...)` で行本体に
+ * マージする（`listLicensesPg` と同じ「row_json + sort列」パターン）。
+ *
+ * 件数は `count(*)` ではなく `count(ar.announcement_id)` で数える。理由は2つ:
+ * 1) `announcement_id` は NOT NULL かつ `idx_announcement_reads_announcement_id`
+ *    に含まれるため index-only scan の対象になり得る（`id`だと対象外でheap
+ *    フェッチが要る）。2) テスト側の `fakeSqlTag`（`tests/unit/analysis-admin-db-driver.test.ts`）
+ *    は `text.includes('count(*)')` を「独立したcount専用クエリ（`getGachaTablePg`等）」
+ *    の目印にしており、`result`列を返すこのクエリに `count(*)` を書くと誤って
+ *    `count`列を返す形で解決されテストが壊れる。`updateAnnouncementPg` の
+ *    read_countサブクエリも同じ理由で揃えてある。
+ */
+export async function listAnnouncementsPg(env: Record<string, string>): Promise<unknown[]> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      SELECT COALESCE(jsonb_agg(row_json ORDER BY sort_created_at DESC), '[]'::jsonb) AS result
+      FROM (
+        SELECT
+          to_jsonb(a.*) || jsonb_build_object(
+            'read_count',
+            (SELECT count(ar.announcement_id) FROM announcement_reads ar WHERE ar.announcement_id = a.id)
+          ) AS row_json,
+          a.created_at AS sort_created_at
+        FROM announcements a
+      ) page
+    `
+  ) as Promise<unknown[]>
+}
+
+/**
+ * お知らせを新規作成する（`POST /announcements` 相当）。新規作成直後は
+ * `announcement_reads` に紐づく行が存在し得ないため、PostgREST版と同じく
+ * `read_count` はDBに問い合わせず `0` 固定でマージする。
+ */
+export async function createAnnouncementPg(
+  env: Record<string, string>,
+  payload: AnnouncementFieldsPayload
+): Promise<unknown> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      WITH inserted AS (
+        INSERT INTO announcements (title, body, severity, is_published, published_at, expires_at, updated_at)
+        VALUES (
+          ${payload.title}, ${payload.body}, ${payload.severity as never},
+          ${payload.is_published}, ${payload.published_at}, ${payload.expires_at}, ${payload.updated_at}
+        )
+        RETURNING *
+      )
+      SELECT to_jsonb(inserted.*) || jsonb_build_object('read_count', 0) AS result FROM inserted
+    `
+  )
+}
+
+interface AnnouncementPublishToggleUpdate {
+  is_published: boolean
+  updated_at: string
+}
+
+/**
+ * お知らせを更新する（`PATCH /announcements/:id` 相当）。
+ *
+ * PostgREST版のルートは呼び出し元のPATCH bodyの内容によってSET句が変わる:
+ * `title`/`body`/`severity` のいずれかを含む場合は全フィールド更新
+ * （`announcementPayload()` 相当）、それ以外（公開状態トグルのみのUI操作）は
+ * `is_published`/`updated_at` のみの部分更新。この分岐は呼び出し元
+ * （`localAdminApi.ts` の `updateAnnouncement`）に残し、ここでは分岐後の
+ * 具体的なSET句を `gachaHistoryFromWhere` と同じくフラグメント合成で組み立てる
+ * （postgres.jsの `sql(obj)` 動的ヘルパーは使わない: 既存のfragment合成の仕組みを
+ * 再利用でき、テストのfakeSqlTagもタグ付きテンプレートのfragment合成のみ対応済み
+ * のため、新しいAPI表面を増やさずに済む）。
+ *
+ * 対象0件時は `updateSupportCodeStatusPg`/`updateSupportInquiryStatusPg` と同じ
+ * 「意図的な404改善」（PostgREST版の `.single()` はPGRST116を返すが`statusCode`が
+ * 無く実際には素の500として露出する）。
+ */
+export async function updateAnnouncementPg(
+  env: Record<string, string>,
+  id: string,
+  update: AnnouncementFieldsPayload | AnnouncementPublishToggleUpdate
+): Promise<unknown> {
+  const result = await callAnalysisJsonFunction(env, (sql) => {
+    const setFragment =
+      'title' in update
+        ? sql`
+            title = ${update.title}, body = ${update.body}, severity = ${update.severity as never},
+            is_published = ${update.is_published}, published_at = ${update.published_at},
+            expires_at = ${update.expires_at}, updated_at = ${update.updated_at}
+          `
+        : sql`is_published = ${update.is_published}, updated_at = ${update.updated_at}`
+
+    return sql`
+      WITH updated AS (
+        UPDATE announcements
+        SET ${setFragment}
+        WHERE id = ${id}
+        RETURNING *
+      )
+      -- 集約関数の選定理由はlistAnnouncementsPgのdocコメント参照
+      SELECT to_jsonb(updated.*) || jsonb_build_object(
+        'read_count',
+        (SELECT count(ar.announcement_id) FROM announcement_reads ar WHERE ar.announcement_id = updated.id)
+      ) AS result
+      FROM updated
+    `
+  })
+  if (result === undefined) {
+    throw Object.assign(new Error('Announcement not found'), { statusCode: 404 })
+  }
+  return result
+}
+
+/**
+ * お知らせを削除する（`DELETE /announcements/:id` 相当）。PostgREST版は
+ * `.delete().eq('id', id)` の結果件数を検査しない（`error` の有無しか見ない）ため、
+ * 存在しないidを渡してもSQLエラーにならない限り `{ok: true}` を返す。この
+ * 「削除0件でも成功扱い」という既存挙動をそのまま踏襲し、更新系（404を返す）とは
+ * 意図的に非対称にする（`revokeSupportCodePg`の「成功偽装」コメントと同種の既存
+ * 挙動維持であり、新たな仕様変更ではない）。
+ */
+export async function deleteAnnouncementPg(
+  env: Record<string, string>,
+  id: string
+): Promise<{ ok: true }> {
+  const sql = getAnalysisSql(env)
+  await sql`DELETE FROM announcements WHERE id = ${id}`
+  return { ok: true }
+}
