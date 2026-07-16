@@ -62,7 +62,13 @@ export function DataTable<T>({
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
+        {/* テーブル自体のaria-busyだけでは読み上げない支援技術があるため、
+            テーブル外に視覚的に隠した状態文言をaria-liveで別途通知する
+            (#701 UI state/UX: table loading semantics) */}
+        <p className="sr-only" role="status" aria-live="polite">
+          読み込み中です
+        </p>
+        <table className="min-w-full divide-y divide-gray-200" aria-busy="true">
           <thead className="bg-gray-50">
             <tr>
               {columns.map((col) => (
@@ -106,7 +112,7 @@ export function DataTable<T>({
   return (
     <div className="bg-white rounded-lg shadow">
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
+        <table className="min-w-full divide-y divide-gray-200" aria-busy="false">
           <thead className="bg-gray-50">
             <tr>
               {columns.map((col) => (
