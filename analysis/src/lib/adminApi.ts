@@ -234,9 +234,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         'content-type': 'application/json',
         ...(init?.headers || {}),
       },
-      // 呼び出し元が独自のsignal(例: コンポーネントunmount時のキャンセル)を渡した場合は
-      // そちらを尊重し、タイムアウト用の既定signalで上書きしない
-      signal: init?.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+      // 呼び出し元が独自のsignal(例: コンポーネントunmount時のキャンセル)を渡した場合、
+      // それで単純に上書きすると既定のタイムアウト保護が消えてしまう(呼び出し元の
+      // signalさえabortしなければ、ハングしたリクエストが無期限に残る)。
+      // AbortSignal.anyでどちらか早く発火した方を採用し、両方の保護を両立させる
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, AbortSignal.timeout(DEFAULT_TIMEOUT_MS)])
+        : AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     })
   } catch (error) {
     // AbortSignal.timeout()発火時、fetchは name='TimeoutError' のDOMExceptionでreject
@@ -272,31 +276,46 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+// 呼び出し元(ページのuseEffect)がAbortControllerで能動的にキャンセルできるように、
+// 読み取り系メソッドは末尾に`options?: RequestOptions`を受け取る。書き込み系
+// (POST/PATCH/DELETE)は今回signal対応の対象外(#701 UI state/UXの後続増分で
+// 必要になれば追加する。ミューテーションの中断はロールバック考慮が要るため
+// 読み取り系より慎重な検討が必要)。
+export interface RequestOptions {
+  signal?: AbortSignal
+}
+
 export const adminApi = {
-  getOverview: () => request<OverviewData>('/overview'),
-  getOverviewLeaderboard: () => request<StreamerLeaderboardEntry[]>('/overview/leaderboard'),
-  getUsers: () => request<UserWithCardCount[]>('/users'),
-  getStreamers: () => request<StreamerWithStats[]>('/streamers'),
-  getStreamer: (id: string) => request<Streamer>(`/streamers/${id}`),
-  getGachaChart: (params: { range: TimeRange; streamerId?: string }) =>
-    request<GachaChartRow[]>(`/gacha/chart?${buildQueryString(params)}`),
-  getGachaSummary: (params: { range: TimeRange; streamerId?: string }) =>
-    request<GachaSummary>(`/gacha/summary?${buildQueryString(params)}`),
-  getGachaTable: (params: GachaTableParams) =>
-    request<Paginated<GachaTableRow>>(`/gacha/table?${buildQueryString(params)}`),
+  getOverview: (options?: RequestOptions) => request<OverviewData>('/overview', options),
+  getOverviewLeaderboard: (options?: RequestOptions) =>
+    request<StreamerLeaderboardEntry[]>('/overview/leaderboard', options),
+  getUsers: (options?: RequestOptions) => request<UserWithCardCount[]>('/users', options),
+  getStreamers: (options?: RequestOptions) => request<StreamerWithStats[]>('/streamers', options),
+  getStreamer: (id: string, options?: RequestOptions) =>
+    request<Streamer>(`/streamers/${id}`, options),
+  getGachaChart: (params: { range: TimeRange; streamerId?: string }, options?: RequestOptions) =>
+    request<GachaChartRow[]>(`/gacha/chart?${buildQueryString(params)}`, options),
+  getGachaSummary: (params: { range: TimeRange; streamerId?: string }, options?: RequestOptions) =>
+    request<GachaSummary>(`/gacha/summary?${buildQueryString(params)}`, options),
+  getGachaTable: (params: GachaTableParams, options?: RequestOptions) =>
+    request<Paginated<GachaTableRow>>(`/gacha/table?${buildQueryString(params)}`, options),
   // CSVを返すエンドポイントなのでrequest<T>()は使わず、URLだけ組み立てて返す。
   // 実際のダウンロード発火（location遷移などDOM副作用）は呼び出し側（ページ）の責務とする
   getGachaExportUrl: (params: GachaExportParams) =>
     `/__admin/gacha/export?${buildQueryString(params)}`,
-  getDropRateStats: (params: { streamerId: string; range: TimeRange }) =>
-    request<DropRateStatsResponse>(`/drop-rate-stats?${buildQueryString(params)}`),
-  getUserCardsSummary: (userId: string) =>
-    request<UserCardsSummary>(`/user-cards/summary?${buildQueryString({ userId })}`),
-  getUserCardsTable: (params: { userId: string; page: number; pageSize: number }) =>
-    request<Paginated<UserCardsTableRow>>(`/user-cards/table?${buildQueryString(params)}`),
-  getStreamerCards: (params: { streamerId: string; page: number; pageSize: number }) =>
-    request<Paginated<Card>>(`/streamer-cards?${buildQueryString(params)}`),
-  getSupportCodes: () => request<SupportCode[]>('/support-codes'),
+  getDropRateStats: (params: { streamerId: string; range: TimeRange }, options?: RequestOptions) =>
+    request<DropRateStatsResponse>(`/drop-rate-stats?${buildQueryString(params)}`, options),
+  getUserCardsSummary: (userId: string, options?: RequestOptions) =>
+    request<UserCardsSummary>(`/user-cards/summary?${buildQueryString({ userId })}`, options),
+  getUserCardsTable: (
+    params: { userId: string; page: number; pageSize: number },
+    options?: RequestOptions
+  ) => request<Paginated<UserCardsTableRow>>(`/user-cards/table?${buildQueryString(params)}`, options),
+  getStreamerCards: (
+    params: { streamerId: string; page: number; pageSize: number },
+    options?: RequestOptions
+  ) => request<Paginated<Card>>(`/streamer-cards?${buildQueryString(params)}`, options),
+  getSupportCodes: (options?: RequestOptions) => request<SupportCode[]>('/support-codes', options),
   createSupportCode: (input: { code_hash: string; plan_type: PlanType; memo: string | null }) =>
     request<SupportCode>('/support-codes', {
       method: 'POST',
@@ -311,12 +330,13 @@ export const adminApi = {
     request<{ ok: true }>(`/support-codes/${id}/revoke`, {
       method: 'POST',
     }),
-  getLicenses: () => request<LicenseWithUser[]>('/licenses'),
-  getTwitchSubs: () => request<{ rows: TwitchSubUser[]; count: number }>('/twitch-subs'),
-  getSupportInquiries: (status: string) =>
-    request<SupportInquiry[]>(`/support-inquiries?status=${encodeURIComponent(status)}`),
-  getSupportInquiryMessages: (inquiryId: string) =>
-    request<SupportInquiryMessage[]>(`/support-inquiries/${inquiryId}/messages`),
+  getLicenses: (options?: RequestOptions) => request<LicenseWithUser[]>('/licenses', options),
+  getTwitchSubs: (options?: RequestOptions) =>
+    request<{ rows: TwitchSubUser[]; count: number }>('/twitch-subs', options),
+  getSupportInquiries: (status: string, options?: RequestOptions) =>
+    request<SupportInquiry[]>(`/support-inquiries?status=${encodeURIComponent(status)}`, options),
+  getSupportInquiryMessages: (inquiryId: string, options?: RequestOptions) =>
+    request<SupportInquiryMessage[]>(`/support-inquiries/${inquiryId}/messages`, options),
   updateSupportInquiryStatus: (id: string, status: InquiryStatus) =>
     request<SupportInquiry>(`/support-inquiries/${id}`, {
       method: 'PATCH',
@@ -327,7 +347,8 @@ export const adminApi = {
       method: 'POST',
       body: JSON.stringify({ body }),
     }),
-  getAnnouncements: () => request<AnnouncementWithStats[]>('/announcements'),
+  getAnnouncements: (options?: RequestOptions) =>
+    request<AnnouncementWithStats[]>('/announcements', options),
   createAnnouncement: (input: AnnouncementInput) =>
     request<AnnouncementWithStats>('/announcements', {
       method: 'POST',

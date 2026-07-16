@@ -102,3 +102,63 @@ describe('adminApi: request()のタイムアウト/AbortSignal', () => {
     await expect(adminApi.getUsers()).rejects.toBe(abortError)
   })
 })
+
+// #701 UI state/UX: ページのuseEffectがAbortControllerでリクエストを能動的に
+// キャンセルできるように、読み取り系メソッドは末尾にoptions?: RequestOptionsを
+// 受け取り、渡されたsignalをrequest()へそのまま渡す(既定のタイムアウトsignalで
+// 上書きしない)。読み取り系20メソッド全てを網羅的にテストする意味は薄いため、
+// 引数の形が異なる代表2パターン(引数無し/paramsあり)のみ検証する
+describe('adminApi: RequestOptionsによるsignal透過(#701 UI state/UX)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // request()は呼び出し元のsignalをそのまま使わず、既定タイムアウト用signalと
+  // AbortSignal.anyで合成する(呼び出し元signalを渡してもタイムアウト保護を
+  // 失わないようにするため)。そのため合成後のsignalへの参照同一性ではなく、
+  // 呼び出し元のcontrollerをabortすると実際にfetchへ渡ったsignalも
+  // abortされるという振る舞いで検証する(実装の内部詳細に依存しない)
+  it('引数無しメソッド(getUsers)へ渡したsignalをabortするとfetchのsignalもabortされる', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeFetchResponse({ ok: true, json: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    await adminApi.getUsers({ signal: controller.signal })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(options.signal).toBeInstanceOf(AbortSignal)
+    expect(options.signal.aborted).toBe(false)
+    controller.abort()
+    expect(options.signal.aborted).toBe(true)
+  })
+
+  it('paramsを取るメソッド(getGachaSummary)も同様にsignalのabortが伝播する', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      fakeFetchResponse({ ok: true, json: { totalGacha: 0 } })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    await adminApi.getGachaSummary({ range: 'all' }, { signal: controller.signal })
+
+    const [, options] = fetchMock.mock.calls[0]
+    controller.abort()
+    expect(options.signal.aborted).toBe(true)
+  })
+
+  // #701 Fableレビュー High-1 の回帰確認: 呼び出し元がsignalを渡した場合に
+  // 既定のタイムアウト保護(AbortSignal.timeout)が消えてしまわないことを検証する。
+  // AbortSignal.anyの呼び出し引数を直接検証することで、「呼び出し元signalだけで
+  // 単純に上書きする」実装への先祖返りを防ぐ
+  it('呼び出し元がsignalを渡してもタイムアウト保護が失われない(AbortSignal.anyで合成)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeFetchResponse({ ok: true, json: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const anySpy = vi.spyOn(AbortSignal, 'any')
+    const controller = new AbortController()
+
+    await adminApi.getUsers({ signal: controller.signal })
+
+    expect(anySpy).toHaveBeenCalledWith([controller.signal, expect.any(AbortSignal)])
+    anySpy.mockRestore()
+  })
+})

@@ -88,15 +88,18 @@ export function Gacha() {
   // fetchStreamers: ストリーマーフィルタ用の一覧取得（マウント時に一度だけ）
   // ========================================
   useEffect(() => {
+    const controller = new AbortController()
     ;(async () => {
       try {
-        const data = await adminApi.getStreamers()
+        const data = await adminApi.getStreamers({ signal: controller.signal })
         setStreamers(data)
       } catch (err) {
+        if (controller.signal.aborted) return
         // ドロップダウンが空のままになるだけなので致命的ではない
         console.error('Failed to fetch streamers:', err)
       }
     })()
+    return () => controller.abort()
   }, [])
 
   // ========================================
@@ -104,68 +107,74 @@ export function Gacha() {
   // ========================================
   useEffect(() => {
     // フィルタ切替を素早く行うと後発リクエストより先発リクエストが遅れて返ることがあるため、
-    // このeffectのクリーンアップでcancelledを立てて古いレスポンスによる上書きを防ぐ
-    let cancelled = false
+    // AbortControllerで先発リクエスト自体を中断する(単に古いレスポンスの反映を防ぐ
+    // だけでなく、不要になったサーバー側の処理・帯域も実際に打ち切る)
+    const controller = new AbortController()
 
     const fetchSummary = async () => {
       setChartLoading(true)
       setChartError(null)
       try {
-        const data = await adminApi.getGachaSummary({
-          range: timeRange,
-          streamerId: selectedStreamerId || undefined,
-        })
-        if (cancelled) return
+        const data = await adminApi.getGachaSummary(
+          {
+            range: timeRange,
+            streamerId: selectedStreamerId || undefined,
+          },
+          { signal: controller.signal }
+        )
         setSummary(data)
       } catch (err) {
-        if (cancelled) return
+        // エラーの型ではなくsignal自体の状態で中断済みかどうかを判定する。
+        // abort後もresponse.json()のパース中に中断が割り込む等の経路では
+        // AbortError以外の形(AdminApiRequestError等)でrejectされうるため、
+        // エラーの「形」を見るとstaleなエラー表示が漏れて残るケースがある
+        if (controller.signal.aborted) return
         setChartError(`Chart data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
       } finally {
-        if (!cancelled) setChartLoading(false)
+        if (!controller.signal.aborted) setChartLoading(false)
       }
     }
 
     fetchSummary()
-    return () => {
-      cancelled = true
-    }
+    return () => controller.abort()
   }, [timeRange, selectedStreamerId])
 
   // ========================================
   // fetchTableData: テーブル用データ取得（ページ/フィルタ/timeRange/selectedStreamerId変更時）
   // ========================================
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
 
     const fetchTableData = async () => {
       setTableLoading(true)
       setTableError(null)
       try {
-        const { rows, count } = await adminApi.getGachaTable({
-          range: timeRange,
-          page: currentPage,
-          pageSize,
-          username: filters.username,
-          rarity: filters.rarity,
-          from: filters.from,
-          to: filters.to,
-          streamerId: selectedStreamerId || undefined,
-        })
-        if (cancelled) return
+        const { rows, count } = await adminApi.getGachaTable(
+          {
+            range: timeRange,
+            page: currentPage,
+            pageSize,
+            username: filters.username,
+            rarity: filters.rarity,
+            from: filters.from,
+            to: filters.to,
+            streamerId: selectedStreamerId || undefined,
+          },
+          { signal: controller.signal }
+        )
         setTableData(rows)
         setTotalCount(count)
       } catch (err) {
-        if (cancelled) return
+        // fetchSummaryのcatch節と同じ理由でsignal.abortedを見る(エラーの型では判定しない)
+        if (controller.signal.aborted) return
         setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
       } finally {
-        if (!cancelled) setTableLoading(false)
+        if (!controller.signal.aborted) setTableLoading(false)
       }
     }
 
     fetchTableData()
-    return () => {
-      cancelled = true
-    }
+    return () => controller.abort()
   }, [timeRange, currentPage, pageSize, filters, selectedStreamerId])
 
   const resetFilters = useCallback(() => {
