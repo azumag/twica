@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import type { SupportInquiry, SupportInquiryMessage, InquiryStatus } from '../types/database'
 
 // ステータスの色定義
@@ -25,6 +26,9 @@ const CATEGORY_OPTIONS = [
 export function SupportInquiries() {
   const [inquiries, setInquiries] = useState<SupportInquiry[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
+  const [retryToken, setRetryToken] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   // ステータスフィルタ
@@ -33,37 +37,66 @@ export function SupportInquiries() {
   const [selectedInquiry, setSelectedInquiry] = useState<SupportInquiry | null>(null)
   const [messages, setMessages] = useState<SupportInquiryMessage[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
+  const [messagesError, setMessagesError] = useState<string | null>(null)
   // 返信フォーム
   const [replyBody, setReplyBody] = useState('')
   const [sending, setSending] = useState(false)
 
-  // 問い合わせ一覧を取得
-  const fetchInquiries = async () => {
-    setLoading(true)
-    try {
-      setInquiries(await adminApi.getSupportInquiries(statusFilter))
-    } catch (error) {
-      console.error('Failed to fetch inquiries:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
+  // 問い合わせ一覧を取得。以前は取得完了後の反映を防ぐガードすら無く、
+  // statusFilterを素早く連続変更すると古いレスポンスが後から返って新しい表示を
+  // 上書きしうる問題があった。AbortControllerでリクエスト自体を中断し、
+  // 中断時はエラー表示もloading解除もしない(次の新しいリクエストが担当する)
   useEffect(() => {
-    fetchInquiries()
-  }, [statusFilter])
+    const controller = new AbortController()
+    const run = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        setInquiries(await adminApi.getSupportInquiries(statusFilter, { signal: controller.signal }))
+      } catch (err) {
+        // エラーの型ではなくsignal自体の状態で中断済みかどうかを判定する
+        // (理由はGacha.tsxの同種コメント参照)
+        if (controller.signal.aborted) return
+        console.error('Failed to fetch inquiries:', err)
+        setError((err instanceof Error && err.message) || '問い合わせ一覧の取得に失敗しました')
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    run()
+    return () => controller.abort()
+  }, [statusFilter, retryToken])
 
-  // メッセージ取得
+  // メッセージ取得。行Aをクリック(応答が遅い)→行Bをクリック、という操作をすると、
+  // 中断せずに放置した場合Aのレスポンスが後から届いてBの詳細表示中にAのメッセージが
+  // 表示されてしまい、管理者がAの内容をBの問い合わせだと誤認したまま返信する事故に
+  // つながる(返信はselectedInquiry.id宛のため実害が大きい)。前回のリクエストを
+  // messagesAbortRefで追跡し、新しいクリックのたびに確実に中断する
+  const messagesAbortRef = useRef<AbortController | null>(null)
+
   const fetchMessages = async (inquiryId: string) => {
+    messagesAbortRef.current?.abort()
+    const controller = new AbortController()
+    messagesAbortRef.current = controller
+
     setLoadingMessages(true)
+    setMessagesError(null)
     try {
-      setMessages(await adminApi.getSupportInquiryMessages(inquiryId))
+      const data = await adminApi.getSupportInquiryMessages(inquiryId, { signal: controller.signal })
+      setMessages(data)
     } catch (error) {
+      if (controller.signal.aborted) return
       console.error('Failed to fetch messages:', error)
+      setMessagesError((error instanceof Error && error.message) || 'メッセージの取得に失敗しました')
     } finally {
-      setLoadingMessages(false)
+      if (!controller.signal.aborted) setLoadingMessages(false)
     }
   }
+
+  // アンマウント時、進行中のメッセージ取得があれば中断する
+  useEffect(() => {
+    return () => messagesAbortRef.current?.abort()
+  }, [])
 
   // 行クリックで詳細表示
   const handleRowClick = (inquiry: SupportInquiry) => {
@@ -179,6 +212,10 @@ export function SupportInquiries() {
         <p className="text-sm text-gray-500 mt-1">Manage user inquiries and replies</p>
       </div>
 
+      <div className="mb-6">
+        <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
+      </div>
+
       {/* 統計サマリー */}
       <div className="mb-6 grid grid-cols-3 gap-4">
         <div className="rounded-lg bg-white p-4 shadow">
@@ -270,6 +307,10 @@ export function SupportInquiries() {
             </div>
 
             {/* メッセージスレッド */}
+            <ErrorBanner
+              messages={[messagesError]}
+              onRetry={() => fetchMessages(selectedInquiry.id)}
+            />
             {loadingMessages ? (
               <p className="text-center text-sm text-gray-400">Loading messages...</p>
             ) : (

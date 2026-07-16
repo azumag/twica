@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
 import {
   adminApi,
   DropRateStatsResponse,
@@ -10,6 +9,7 @@ import {
   GachaTableRow,
 } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { RarityBadge } from '../components/RarityBadge'
 import { DropRateStats } from '../components/DropRateStats'
 import { Streamer, Rarity } from '../types/database'
@@ -73,8 +73,16 @@ export function StreamerGachaHistory() {
   // --- 基本 state ---
   const [streamer, setStreamer] = useState<Streamer | null>(null)
   const [timeRange, setTimeRange] = useState<TimeRange>('all')
+  // streamer本体のエラーはchartErrorに相乗りさせず専用のstateで持つ。
+  // 相乗りさせるとtimeRange変更時のsetChartError(null)で「streamer取得は
+  // 再試行されていないのに」エラー表示だけが消え、ヘッダーが黙って空のまま残る
+  const [streamerError, setStreamerError] = useState<string | null>(null)
   const [chartError, setChartError] = useState<string | null>(null)
   const [tableError, setTableError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更すると対応するeffectを再実行させる）
+  const [streamerRetryToken, setStreamerRetryToken] = useState(0)
+  const [chartRetryToken, setChartRetryToken] = useState(0)
+  const [tableRetryToken, setTableRetryToken] = useState(0)
 
   // --- チャート用データ（bounded 10000件、timeRange で再取得。/__admin/gacha/chart 経由） ---
   const [chartData, setChartData] = useState<GachaChartRow[]>([])
@@ -86,6 +94,7 @@ export function StreamerGachaHistory() {
   const [dropRateStats, setDropRateStats] = useState<DropRateStatsResponse | null>(null)
   const [dropRateStatsLoading, setDropRateStatsLoading] = useState(true)
   const [dropRateStatsError, setDropRateStatsError] = useState<string | null>(null)
+  const [dropRateStatsRetryToken, setDropRateStatsRetryToken] = useState(0)
 
   // --- テーブル用データ（ページネーション + フィルタ） ---
   const [tableData, setTableData] = useState<GachaTableRow[]>([])
@@ -105,19 +114,21 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
+    const controller = new AbortController()
+    setStreamerError(null)
     ;(async () => {
-      const { data, error: err } = await supabase
-        .from('streamers')
-        .select('*')
-        .eq('id', streamerId)
-        .single()
-      if (err) {
-        setChartError(`Streamer not found: ${err.message}`)
-        return
+      try {
+        const data = await adminApi.getStreamer(streamerId, { signal: controller.signal })
+        setStreamer(data)
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setStreamerError(
+          (err instanceof Error && err.message) || 'ストリーマー情報の取得に失敗しました'
+        )
       }
-      setStreamer(data as Streamer)
     })()
-  }, [streamerId])
+    return () => controller.abort()
+  }, [streamerId, streamerRetryToken])
 
   // ========================================
   // fetchChartData: チャート用bounded(10000件)データ取得（streamerId/timeRange変更時）
@@ -125,30 +136,30 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
-    // timeRangeの素早い切替時に古いレスポンスが後から返って新しい表示を
-    // 上書きしないよう、クリーンアップでcancelledを立てる
-    let cancelled = false
+    // timeRangeの素早い切替時に後発リクエストと先発リクエストが競合しうるため、
+    // AbortControllerで先発リクエスト自体を中断する
+    const controller = new AbortController()
 
     const fetchChartData = async () => {
       setChartLoading(true)
       setChartError(null)
       try {
-        const data = await adminApi.getGachaChart({ range: timeRange, streamerId })
-        if (cancelled) return
+        const data = await adminApi.getGachaChart(
+          { range: timeRange, streamerId },
+          { signal: controller.signal }
+        )
         setChartData(data)
       } catch (err) {
-        if (cancelled) return
-        setChartError(`Chart data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        if (controller.signal.aborted) return
+        setChartError(`Chart data error: ${(err instanceof Error && err.message) || 'Unknown error'}`)
       } finally {
-        if (!cancelled) setChartLoading(false)
+        if (!controller.signal.aborted) setChartLoading(false)
       }
     }
 
     fetchChartData()
-    return () => {
-      cancelled = true
-    }
-  }, [streamerId, timeRange])
+    return () => controller.abort()
+  }, [streamerId, timeRange, chartRetryToken])
 
   // ========================================
   // fetchDropRateStats: サマリー統計用の正確な集計取得（streamerId/timeRange変更時）
@@ -157,28 +168,28 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
-    let cancelled = false
+    const controller = new AbortController()
 
     const fetchDropRateStats = async () => {
       setDropRateStatsLoading(true)
       setDropRateStatsError(null)
       try {
-        const data = await adminApi.getDropRateStats({ streamerId, range: timeRange })
-        if (!cancelled) setDropRateStats(data)
+        const data = await adminApi.getDropRateStats(
+          { streamerId, range: timeRange },
+          { signal: controller.signal }
+        )
+        setDropRateStats(data)
       } catch (err) {
-        if (!cancelled) {
-          setDropRateStatsError(err instanceof Error ? err.message : 'Unknown error')
-        }
+        if (controller.signal.aborted) return
+        setDropRateStatsError((err instanceof Error && err.message) || 'Unknown error')
       } finally {
-        if (!cancelled) setDropRateStatsLoading(false)
+        if (!controller.signal.aborted) setDropRateStatsLoading(false)
       }
     }
 
     fetchDropRateStats()
-    return () => {
-      cancelled = true
-    }
-  }, [streamerId, timeRange])
+    return () => controller.abort()
+  }, [streamerId, timeRange, dropRateStatsRetryToken])
 
   // ========================================
   // fetchTableData: テーブル用データ取得（ページ/フィルタ/timeRange変更時）
@@ -186,39 +197,39 @@ export function StreamerGachaHistory() {
   // ========================================
   useEffect(() => {
     if (!streamerId) return
-    let cancelled = false
+    const controller = new AbortController()
 
     const fetchTableData = async () => {
       setTableLoading(true)
       setTableError(null)
 
       try {
-        const { rows, count } = await adminApi.getGachaTable({
-          range: timeRange,
-          page: currentPage,
-          pageSize,
-          username: filters.username,
-          rarity: filters.rarity,
-          from: filters.from,
-          to: filters.to,
-          streamerId,
-        })
-        if (cancelled) return
+        const { rows, count } = await adminApi.getGachaTable(
+          {
+            range: timeRange,
+            page: currentPage,
+            pageSize,
+            username: filters.username,
+            rarity: filters.rarity,
+            from: filters.from,
+            to: filters.to,
+            streamerId,
+          },
+          { signal: controller.signal }
+        )
         setTableData(rows)
         setTotalCount(count)
       } catch (err) {
-        if (cancelled) return
-        setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        if (controller.signal.aborted) return
+        setTableError(`Table data error: ${(err instanceof Error && err.message) || 'Unknown error'}`)
       } finally {
-        if (!cancelled) setTableLoading(false)
+        if (!controller.signal.aborted) setTableLoading(false)
       }
     }
 
     fetchTableData()
-    return () => {
-      cancelled = true
-    }
-  }, [streamerId, timeRange, currentPage, pageSize, filters])
+    return () => controller.abort()
+  }, [streamerId, timeRange, currentPage, pageSize, filters, tableRetryToken])
 
   const resetFilters = useCallback(() => {
     // デバウンスタイマーが残存していると古い入力値が再適用されるためキャンセル
@@ -402,18 +413,20 @@ export function StreamerGachaHistory() {
         </div>
       </div>
 
-      {/* エラー表示 */}
-      {(chartError || tableError || dropRateStatsError) && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800 font-medium">データの読み込みエラー</p>
-          {chartError && <p className="text-red-600 text-sm mt-1">{chartError}</p>}
-          {tableError && <p className="text-red-600 text-sm mt-1">{tableError}</p>}
-          {dropRateStatsError && <p className="text-red-600 text-sm mt-1">Summary stats error: {dropRateStatsError}</p>}
-          <p className="text-red-500 text-xs mt-2">
-            詳細はブラウザコンソールを確認してください。
-          </p>
-        </div>
-      )}
+      <ErrorBanner
+        messages={[
+          streamerError,
+          chartError,
+          tableError,
+          dropRateStatsError && `Summary stats error: ${dropRateStatsError}`,
+        ]}
+        onRetry={() => {
+          setStreamerRetryToken((t) => t + 1)
+          setChartRetryToken((t) => t + 1)
+          setDropRateStatsRetryToken((t) => t + 1)
+          setTableRetryToken((t) => t + 1)
+        }}
+      />
 
       {/* サマリー統計カード */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

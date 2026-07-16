@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createHash } from 'node:crypto'
 import type { Plugin } from 'vite'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import type { Card, Database, Streamer } from '../src/types/database'
+import type { Card, Database, InquiryStatus, Rarity, Streamer } from '../src/types/database'
 import {
   buildStreamerChatAccessRows,
   type ChatAccessBotAccountRow,
@@ -10,6 +10,36 @@ import {
   type ChatAccessStreamerRow,
   type ChatAccessUserScopeRow,
 } from '../src/lib/chatAnnouncementAccess'
+import {
+  createAnnouncementPg,
+  createSupportCodePg,
+  createSupportInquiryMessagePg,
+  deleteAnnouncementPg,
+  getAnalysisDbDriver,
+  getDropRateStatsPg,
+  getGachaChartPg,
+  getGachaExportRowsPg,
+  getGachaSummaryPg,
+  getGachaTablePg,
+  getOverviewPg,
+  getStreamerByIdPg,
+  getStreamerCardsPagePg,
+  getStreamerLeaderboardPg,
+  getSupportInquiriesPg,
+  getUserCardsSummaryPg,
+  getUserCardsTablePg,
+  listAnnouncementsPg,
+  listLicensesPg,
+  listStreamersWithStatsPg,
+  listSupportCodesPg,
+  listSupportInquiryMessagesPg,
+  listTwitchSubsPg,
+  listUsersPg,
+  revokeSupportCodePg,
+  updateAnnouncementPg,
+  updateSupportCodeStatusPg,
+  updateSupportInquiryStatusPg,
+} from './adminApiPg'
 
 type Env = Record<string, string>
 
@@ -39,6 +69,7 @@ type RouteContext = {
   client: SupabaseClient<Database>
   url: URL
   body: unknown
+  env: Env
 }
 
 function stripKeyWhitespace(value: string | undefined): string | undefined {
@@ -264,7 +295,11 @@ async function listStreamerChatAccess(
   })
 }
 
-async function listLicenses(client: SupabaseClient<Database>) {
+export async function listLicenses(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listLicensesPg(env)
+  }
+
   const { data, error } = await client
     .from('user_licenses')
     .select('*')
@@ -291,7 +326,175 @@ async function listLicenses(client: SupabaseClient<Database>) {
   }))
 }
 
-async function listAnnouncements(client: SupabaseClient<Database>) {
+export async function listSupportCodes(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listSupportCodesPg(env)
+  }
+  const { data, error } = await client
+    .from('support_codes')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export async function createSupportCode(
+  client: SupabaseClient<Database>,
+  payload: Record<string, unknown>,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return createSupportCodePg(env, {
+      codeHash: String(payload.code_hash || ''),
+      planType: payload.plan_type,
+      memo: payload.memo || null,
+    })
+  }
+  const { data, error } = await client
+    .from('support_codes')
+    .insert({
+      code_hash: String(payload.code_hash || ''),
+      plan_type: payload.plan_type,
+      status: 'active',
+      memo: payload.memo || null,
+    } as never)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function updateSupportCodeStatus(
+  client: SupabaseClient<Database>,
+  id: string,
+  status: unknown,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return updateSupportCodeStatusPg(env, { id, status })
+  }
+  const { data, error } = await client
+    .from('support_codes')
+    .update({ status, updated_at: new Date().toISOString() } as never)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function revokeSupportCode(client: SupabaseClient<Database>, codeId: string, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return revokeSupportCodePg(env, codeId)
+  }
+  const { error } = await client.rpc('revoke_support_code' as never, {
+    p_code_id: codeId,
+  } as never)
+  if (error) throw error
+  return { ok: true }
+}
+
+export async function listTwitchSubs(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listTwitchSubsPg(env)
+  }
+  const { data, count, error } = await client
+    .from('users')
+    .select('twitch_user_id, twitch_display_name, twitch_sub_verified_at', { count: 'exact' })
+    .eq('twitch_has_sub', true)
+    .order('twitch_sub_verified_at', { ascending: false })
+  if (error) throw error
+  return { rows: data || [], count: count || 0 }
+}
+
+export async function getSupportInquiries(
+  client: SupabaseClient<Database>,
+  status: string,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getSupportInquiriesPg(env, status)
+  }
+  let query = client
+    .from('support_inquiries')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (status !== 'all') {
+    // statusはクエリパラメータ由来の任意文字列（バリデーションなしは既存挙動を維持）。
+    // 不正な値の場合はPostgREST側で単に0件ヒットになるだけで実害はないため、
+    // 実行時の挙動を変えない型アサーションで対応する
+    query = query.eq('status', status as InquiryStatus)
+  }
+
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}
+
+export async function updateSupportInquiryStatus(
+  client: SupabaseClient<Database>,
+  id: string,
+  status: unknown,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return updateSupportInquiryStatusPg(env, { id, status })
+  }
+  const { data, error } = await client
+    .from('support_inquiries')
+    .update({ status, updated_at: new Date().toISOString() } as never)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function listSupportInquiryMessages(
+  client: SupabaseClient<Database>,
+  inquiryId: string,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listSupportInquiryMessagesPg(env, inquiryId)
+  }
+  const { data, error } = await client
+    .from('support_inquiry_messages')
+    .select('*')
+    .eq('inquiry_id', inquiryId)
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+export async function createSupportInquiryMessage(
+  client: SupabaseClient<Database>,
+  inquiryId: string,
+  messageBody: string,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return createSupportInquiryMessagePg(env, { inquiryId, body: messageBody })
+  }
+  const { data, error } = await client
+    .from('support_inquiry_messages')
+    .insert({
+      inquiry_id: inquiryId,
+      sender_type: 'admin',
+      sender_id: 'admin',
+      body: messageBody,
+    } as never)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function listAnnouncements(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listAnnouncementsPg(env)
+  }
   // announcementごとに個別のcountクエリを発行するとN件でN+1ラウンドトリップになる。
   // announcement_reads.announcement_id → announcements.id は単一FK(曖昧さなし)なので、
   // 他のRPCフォールバック箇所(user_cards(count)など)と同じくPostgRESTのネスト埋め込み
@@ -355,7 +558,9 @@ async function getDailyGrowth(
 
 // 直近30日の gacha_history を streamer_id のみ取得し、Node側で集計してトップ10を返す。
 // 表示に必要な情報(表示名/アイコン)はトップ10のstreamer_idだけ後引きする
-async function getStreamerLeaderboard(client: SupabaseClient<Database>) {
+export async function getStreamerLeaderboard(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') return getStreamerLeaderboardPg(env)
+
   const rpcRows = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamer_leaderboard')
   if (rpcRows.found) return rpcRows.data
 
@@ -401,7 +606,9 @@ async function getStreamerLeaderboard(client: SupabaseClient<Database>) {
   })
 }
 
-async function getOverview(client: SupabaseClient<Database>) {
+export async function getOverview(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') return getOverviewPg(env)
+
   const rpcOverview = await tryJsonbRpc<unknown>(client, 'get_analysis_overview')
   if (rpcOverview.found) return rpcOverview.data
 
@@ -480,10 +687,14 @@ async function getOverview(client: SupabaseClient<Database>) {
 // select('*') は使わない: users テーブルには twitch_access_token / twitch_refresh_token
 // などのOAuth秘匿情報が実カラムとして存在する（analysis の Database 型には未反映）ため、
 // admin API のJSONレスポンスに含めないよう、フロントが使う列だけを明示的に指定する
-const USER_SAFE_COLUMNS =
+// exportはテストのため（adminApiPg.ts の getUserCardsSummaryPg が同じ列集合を
+// 独立に jsonb_build_object() として持つため、テストで両者の列集合一致を検証する）
+export const USER_SAFE_COLUMNS =
   'id, twitch_user_id, twitch_username, twitch_display_name, twitch_profile_image_url, tos_accepted_at, twitch_scopes, created_at, updated_at'
 
-async function listUsers(client: SupabaseClient<Database>) {
+export async function listUsers(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') return listUsersPg(env)
+
   const rpcUsers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_users')
   if (rpcUsers.found) return rpcUsers.data
 
@@ -498,7 +709,9 @@ async function listUsers(client: SupabaseClient<Database>) {
 // analysis/src/pages/Streamers.tsx の fetchStreamers() が現在ブラウザ側で行っている
 // 4つの並列クエリ + SHA-256計算(crypto.subtle, 1配信者ずつ非同期)を1本のサーバーサイド
 // 処理に統合する。SHA-256はNodeの同期API(createHash)で計算するため高速。
-async function listStreamersWithStats(client: SupabaseClient<Database>) {
+export async function listStreamersWithStats(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') return listStreamersWithStatsPg(env)
+
   const rpcStreamers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamers')
   if (rpcStreamers.found) return rpcStreamers.data
 
@@ -573,13 +786,47 @@ async function listStreamersWithStats(client: SupabaseClient<Database>) {
   })
 }
 
+// #701: StreamerCards.tsx/StreamerGachaHistory.tsxがブラウザから直接
+// supabase.from('streamers').select('*').eq('id', id).single() していた箇所を
+// /__admin API経由に置き換えるための単一ストリーマー取得エンドポイント。
+//
+// 意図的な挙動変化: 旧ブラウザ経路はanon/publishable key + RLSポリシー
+// 「Active streamers are viewable by everyone」(USING (is_active = true)、
+// 00001_initial_schema.sql)の制約下にあり、is_active=falseのstreamerは
+// 0件（エラー表示）だった。この新経路はservice-role/pg直結のためinactiveな
+// streamerも返す。管理ダッシュボードの`/streamers`一覧は元々is_activeを問わず
+// 全件表示しているため、この単体取得もそれに揃える形の意図的な改善である
+// （既存の一覧表示との一貫性が取れていなかった旧挙動の方が不整合だった）。
+export async function getStreamerById(client: SupabaseClient<Database>, id: string, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getStreamerByIdPg(env, id)
+  }
+  const { data, error } = await client.from('streamers').select('*').eq('id', id).single()
+  if (error) {
+    // PGRST116: .single()で0件/複数件だった場合のPostgRESTエラーコード
+    // (getUserCardsSummaryの404マッピングと同じパターン)
+    if ((error as { code?: string }).code === 'PGRST116') {
+      throw Object.assign(new Error('Streamer not found'), { statusCode: 404 })
+    }
+    throw error
+  }
+  return data
+}
+
 // analysis/src/pages/StreamerGachaHistory.tsx のチャート用クエリと同一ロジック。
 // streamerId未指定時は全ストリーマー横断(analysis/src/pages/Gacha.tsx相当)になるため
 // streamers(*) も併せて埋め込む
-async function getGachaChart(
+export async function getGachaChart(
   client: SupabaseClient<Database>,
-  params: { range: TimeRange; streamerId?: string }
+  params: { range: TimeRange; streamerId?: string },
+  env: Env
 ) {
+  const fromDate = getFromDateForRange(params.range)
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getGachaChartPg(env, { streamerId: params.streamerId, fromDate })
+  }
+
   let query = client
     .from('gacha_history')
     .select('id, redeemed_at, card_id, user_twitch_id, streamer_id, cards(id, name, rarity, image_url), streamers(*)')
@@ -590,7 +837,6 @@ async function getGachaChart(
     query = query.eq('streamer_id', params.streamerId)
   }
 
-  const fromDate = getFromDateForRange(params.range)
   if (fromDate) {
     query = query.gte('redeemed_at', fromDate)
   }
@@ -600,11 +846,17 @@ async function getGachaChart(
   return data || []
 }
 
-async function getGachaSummary(
+export async function getGachaSummary(
   client: SupabaseClient<Database>,
-  params: { range: TimeRange; streamerId?: string }
+  params: { range: TimeRange; streamerId?: string },
+  env: Env
 ) {
   const fromDate = getFromDateForRange(params.range)
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getGachaSummaryPg(env, { fromDate, streamerId: params.streamerId ?? null })
+  }
+
   const { data, error } = await client.rpc('get_analysis_gacha_summary' as never, {
     p_from_date: fromDate,
     p_streamer_id: params.streamerId ?? null,
@@ -615,7 +867,7 @@ async function getGachaSummary(
   // RPC未適用の開発環境だけ従来の10,000件bounded集計に戻す。
   // 通常経路はDB側GROUP BY済みの小さいJSONを返し、gacha画面初期表示で
   // 履歴行を大量転送しないことを性能改善の主目的としている。
-  const chartRows = await getGachaChart(client, params)
+  const chartRows = await getGachaChart(client, params, env)
   const dailyCounts = new Map<string, number>()
   const rarityCounts = new Map<string, number>()
   const cardCounts = new Map<string, { card: GachaChartCard; count: number }>()
@@ -638,7 +890,7 @@ async function getGachaSummary(
   }
 
   return {
-    totalGacha: chartRows.length,
+    totalGacha: (chartRows as GachaChartRow[]).length,
     uniqueUsers: new Set((chartRows as GachaChartRow[]).map((row) => row.user_twitch_id)).size,
     legendaryCount,
     dailyGachaData: Array.from(dailyCounts.entries())
@@ -655,9 +907,45 @@ async function getGachaSummary(
   }
 }
 
+// ILIKE 部分一致用のパターン文字エスケープ（%/_）。
+// getGachaTable/getGachaExportRows のSupabase経路・pg経路の両方で共有する
+// (exportはテストのため。呼び出し元はこのファイル内の2関数のみを想定)
+export function escapeIlikePattern(value: string): string {
+  return value.replace(/%/g, '\\%').replace(/_/g, '\\_')
+}
+
+// to（YYYY-MM-DD）を「翌日0時（exclusive上限）」のISO文字列に変換する。
+// getGachaTable/getGachaExportRows のSupabase経路・pg経路の両方で共有する
+// (exportはテストのため。呼び出し元はこのファイル内の2関数のみを想定)
+export function computeExclusiveToDateIso(to: string): string {
+  const nextDay = new Date(`${to}T00:00:00Z`)
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1)
+  return nextDay.toISOString()
+}
+
+// getGachaTable/getGachaExportRowsの日付フィルタ計算をpg経路向けに切り出したもの。
+// 「from/toが両方未指定ならrangeを使う。片方でも指定されていればrangeは無視し、
+// from/toをそれぞれ独立に適用する」という、両関数のSupabase経路と同一のロジック
+// (exportはテストのため。呼び出し元はこのファイル内の2関数のみを想定)
+export function resolveGachaDateFilters(params: {
+  range: TimeRange
+  from: string
+  to: string
+}): { fromDate?: string; toDateExclusive?: string } {
+  const { range, from, to } = params
+  const fromDate =
+    !from && !to
+      ? (getFromDateForRange(range) ?? undefined)
+      : from
+        ? `${from}T00:00:00Z`
+        : undefined
+  const toDateExclusive = to ? computeExclusiveToDateIso(to) : undefined
+  return { fromDate, toDateExclusive }
+}
+
 // analysis/src/pages/StreamerGachaHistory.tsx のテーブル用クエリと同一ロジック。
 // streamerIdが指定されている場合のみ絞り込む点だけが per-streamer 版との違い
-async function getGachaTable(
+export async function getGachaTable(
   client: SupabaseClient<Database>,
   params: {
     range: TimeRange
@@ -668,9 +956,25 @@ async function getGachaTable(
     from: string
     to: string
     streamerId?: string
-  }
+  },
+  env: Env
 ) {
   const { range, page, pageSize, username, rarity, from, to, streamerId } = params
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    const { fromDate, toDateExclusive } = resolveGachaDateFilters({ range, from, to })
+    return getGachaTablePg(
+      env,
+      {
+        streamerId,
+        fromDate,
+        toDateExclusive,
+        usernameIlike: username ? `%${escapeIlikePattern(username)}%` : undefined,
+        rarity: rarity || undefined,
+      },
+      { offset: (page - 1) * pageSize, pageSize }
+    )
+  }
 
   // レアリティフィルタ時は !inner JOIN で正確なcountを保証
   const joinType = rarity ? 'cards!inner(*)' : 'cards(*)'
@@ -692,12 +996,14 @@ async function getGachaTable(
 
   // ユーザー名フィルタ（ILIKE部分一致、パターン文字エスケープ）
   if (username) {
-    const escaped = username.replace(/%/g, '\\%').replace(/_/g, '\\_')
-    query = query.ilike('user_twitch_username', `%${escaped}%`)
+    query = query.ilike('user_twitch_username', `%${escapeIlikePattern(username)}%`)
   }
 
   if (rarity) {
-    query = query.eq('cards.rarity', rarity)
+    // rarityはクエリパラメータ由来の任意文字列（バリデーションなしは既存挙動を維持）。
+    // Rarity型に合致しない値の場合はPostgREST側で単に0件ヒットになるだけで実害はないため、
+    // 実行時の挙動を変えない型アサーションで対応する
+    query = query.eq('cards.rarity', rarity as Rarity)
   }
 
   if (from) {
@@ -705,9 +1011,7 @@ async function getGachaTable(
   }
 
   if (to) {
-    const nextDay = new Date(`${to}T00:00:00Z`)
-    nextDay.setUTCDate(nextDay.getUTCDate() + 1)
-    query = query.lt('redeemed_at', nextDay.toISOString())
+    query = query.lt('redeemed_at', computeExclusiveToDateIso(to))
   }
 
   const offset = (page - 1) * pageSize
@@ -726,6 +1030,9 @@ async function getGachaTable(
 // GET /__admin/gacha/export 用の行取得。getGachaTable()と同じフィルタロジックだが
 // ページネーションなし・全件取得（安全のため50,000件上限）。取得する列も
 // CSV出力に必要な最小限（redeemed_at / username / card名・レアリティ / streamer名）に絞る
+//
+// pg経路側にも同値の上限 GACHA_EXPORT_ROW_LIMIT_PG（adminApiPg.ts）が独立定義されている。
+// import循環を避けるため定数を共有していない。上限値を変更する場合は両方揃えること
 const GACHA_EXPORT_ROW_LIMIT = 50000
 
 type GachaExportRow = {
@@ -735,7 +1042,7 @@ type GachaExportRow = {
   streamers: { twitch_display_name: string } | { twitch_display_name: string }[] | null
 }
 
-async function getGachaExportRows(
+export async function getGachaExportRows(
   client: SupabaseClient<Database>,
   params: {
     range: TimeRange
@@ -744,9 +1051,21 @@ async function getGachaExportRows(
     from: string
     to: string
     streamerId?: string
-  }
+  },
+  env: Env
 ): Promise<GachaExportRow[]> {
   const { range, username, rarity, from, to, streamerId } = params
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    const { fromDate, toDateExclusive } = resolveGachaDateFilters({ range, from, to })
+    return getGachaExportRowsPg(env, {
+      streamerId,
+      fromDate,
+      toDateExclusive,
+      usernameIlike: username ? `%${escapeIlikePattern(username)}%` : undefined,
+      rarity: rarity || undefined,
+    }) as Promise<GachaExportRow[]>
+  }
 
   // レアリティフィルタ時は !inner JOIN で絞り込みが効くようにする（getGachaTableと同様）
   const joinType = rarity ? 'cards!inner(name, rarity)' : 'cards(name, rarity)'
@@ -773,12 +1092,12 @@ async function getGachaExportRows(
 
     // ユーザー名フィルタ（ILIKE部分一致、パターン文字エスケープ）
     if (username) {
-      const escaped = username.replace(/%/g, '\\%').replace(/_/g, '\\_')
-      query = query.ilike('user_twitch_username', `%${escaped}%`)
+      query = query.ilike('user_twitch_username', `%${escapeIlikePattern(username)}%`)
     }
 
     if (rarity) {
-      query = query.eq('cards.rarity', rarity)
+      // getGachaTable()と同じ理由: バリデーションなしの既存挙動を維持したまま型だけ合わせる
+      query = query.eq('cards.rarity', rarity as Rarity)
     }
 
     if (from) {
@@ -786,9 +1105,7 @@ async function getGachaExportRows(
     }
 
     if (to) {
-      const nextDay = new Date(`${to}T00:00:00Z`)
-      nextDay.setUTCDate(nextDay.getUTCDate() + 1)
-      query = query.lt('redeemed_at', nextDay.toISOString())
+      query = query.lt('redeemed_at', computeExclusiveToDateIso(to))
     }
 
     // getGachaTableと同じ理由でid をタイブレーカーに追加(range()を跨ぐ全件取得のため
@@ -828,7 +1145,8 @@ function buildGachaExportCsv(rows: GachaExportRow[]): string {
 async function handleGachaExport(
   client: SupabaseClient<Database>,
   url: URL,
-  res: ServerResponse
+  res: ServerResponse,
+  env: Env
 ): Promise<void> {
   try {
     const range = parseTimeRange(url.searchParams.get('range'))
@@ -838,7 +1156,11 @@ async function handleGachaExport(
     const to = url.searchParams.get('to') || ''
     const streamerId = url.searchParams.get('streamerId') || undefined
 
-    const rows = await getGachaExportRows(client, { range, username, rarity, from, to, streamerId })
+    const rows = await getGachaExportRows(
+      client,
+      { range, username, rarity, from, to, streamerId },
+      env
+    )
     const csv = buildGachaExportCsv(rows)
 
     res.statusCode = 200
@@ -859,14 +1181,24 @@ async function handleGachaExport(
 
 // analysis/src/components/DropRateStats.tsx が呼んでいるロジックのRPC版薄いラッパー。
 // get_gacha_drop_stats の戻り値(JSONB)をそのまま返す — サーバー側での再整形はしない
-async function getDropRateStats(
+export async function getDropRateStats(
   client: SupabaseClient<Database>,
-  params: { streamerId: string; range: TimeRange }
+  params: { streamerId: string; range: TimeRange },
+  env: Env
 ) {
-  const fromDate = getFromDateForRange(params.range)
+  const fromDate = getFromDateForRange(params.range) ?? '1970-01-01T00:00:00Z'
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getDropRateStatsPg(env, {
+      streamerId: params.streamerId,
+      fromDate,
+      limitPerCard: 20,
+    })
+  }
+
   const { data, error } = await client.rpc('get_gacha_drop_stats' as never, {
     p_streamer_id: params.streamerId,
-    p_from_date: fromDate ?? '1970-01-01T00:00:00Z',
+    p_from_date: fromDate,
     p_limit_per_card: 20,
   } as never)
   if (error) throw error
@@ -874,7 +1206,11 @@ async function getDropRateStats(
 }
 
 // analysis/src/pages/UserCards.tsx の :userId (内部users.id) からユーザーとカード所持サマリーを返す
-async function getUserCardsSummary(client: SupabaseClient<Database>, userId: string) {
+export async function getUserCardsSummary(client: SupabaseClient<Database>, userId: string, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getUserCardsSummaryPg(env, userId)
+  }
+
   // select('*') は使わない（USER_SAFE_COLUMNSの定義コメント参照: OAuthトークン漏洩防止）
   const { data: user, error } = await client
     .from('users')
@@ -899,12 +1235,17 @@ async function getUserCardsSummary(client: SupabaseClient<Database>, userId: str
 
 // analysis/src/pages/UserCards.tsx が現在.range(0, 9999)で単発取得しているuser_cardsの
 // サーバーサイドページネーション版。streamerは各カードのstreamer_idからまとめて引き当てて埋め込む
-async function getUserCardsTable(
+export async function getUserCardsTable(
   client: SupabaseClient<Database>,
-  params: { userId: string; page: number; pageSize: number }
+  params: { userId: string; page: number; pageSize: number },
+  env: Env
 ) {
   const { userId, page, pageSize } = params
   const offset = (page - 1) * pageSize
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getUserCardsTablePg(env, { userId, offset, pageSize })
+  }
 
   const { data, count, error } = await client
     .from('user_cards')
@@ -949,12 +1290,17 @@ async function getUserCardsTable(
 
 // analysis/src/pages/StreamerCards.tsx が現在.range(0, 9999)で単発取得しているcardsの
 // サーバーサイドページネーション版。並び順(レアリティ降順→作成日降順)は既存と同一
-async function getStreamerCardsPage(
+export async function getStreamerCardsPage(
   client: SupabaseClient<Database>,
-  params: { streamerId: string; page: number; pageSize: number }
+  params: { streamerId: string; page: number; pageSize: number },
+  env: Env
 ) {
   const { streamerId, page, pageSize } = params
   const offset = (page - 1) * pageSize
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getStreamerCardsPagePg(env, { streamerId, offset, pageSize })
+  }
 
   const { data, count, error } = await client
     .from('cards')
@@ -980,39 +1326,109 @@ function announcementPayload(body: unknown) {
   }
 }
 
+export async function createAnnouncement(client: SupabaseClient<Database>, body: unknown, env: Env) {
+  const payload = announcementPayload(body)
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return createAnnouncementPg(env, payload)
+  }
+  const { data, error } = await client
+    .from('announcements')
+    .insert(payload as never)
+    .select()
+    .single()
+  if (error) throw error
+  return {
+    ...data,
+    read_count: 0,
+  }
+}
+
+export async function updateAnnouncement(
+  client: SupabaseClient<Database>,
+  id: string,
+  body: unknown,
+  env: Env
+) {
+  const payload = requireObject(body)
+  const update =
+    'title' in payload || 'body' in payload || 'severity' in payload
+      ? announcementPayload(body)
+      : {
+          is_published: !!payload.is_published,
+          updated_at: new Date().toISOString(),
+        }
+
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return updateAnnouncementPg(env, id, update)
+  }
+
+  const { data, error } = await client
+    .from('announcements')
+    .update(update as never)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+
+  const { count, error: countError } = await client
+    .from('announcement_reads')
+    .select('id', { count: 'exact', head: true })
+    .eq('announcement_id', id)
+  if (countError) throw countError
+
+  return {
+    ...data,
+    read_count: count || 0,
+  }
+}
+
+export async function deleteAnnouncement(client: SupabaseClient<Database>, id: string, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return deleteAnnouncementPg(env, id)
+  }
+  const { error } = await client.from('announcements').delete().eq('id', id)
+  if (error) throw error
+  return { ok: true }
+}
+
 async function handleRoute(ctx: RouteContext): Promise<unknown> {
-  const { client, req, url, body } = ctx
+  const { client, req, url, body, env } = ctx
   const path = url.pathname.replace(/^\/__admin/, '')
 
   if (req.method === 'GET' && path === '/overview') {
-    return getOverview(client)
+    return getOverview(client, env)
   }
 
   // getStreamerLeaderboard()は直近30日のgacha_history全件(~65,000行超)をfetchAllPagedで
   // ページングして集計するため20秒前後かかる。getOverview()と分離し、Overviewページ側で
   // 独立ロードできるようにする(他の統計をブロックしないため)
   if (req.method === 'GET' && path === '/overview/leaderboard') {
-    return getStreamerLeaderboard(client)
+    return getStreamerLeaderboard(client, env)
   }
 
   if (req.method === 'GET' && path === '/users') {
-    return listUsers(client)
+    return listUsers(client, env)
   }
 
   if (req.method === 'GET' && path === '/streamers') {
-    return listStreamersWithStats(client)
+    return listStreamersWithStats(client, env)
+  }
+
+  const streamerByIdMatch = path.match(/^\/streamers\/([^/]+)$/)
+  if (req.method === 'GET' && streamerByIdMatch) {
+    return getStreamerById(client, streamerByIdMatch[1], env)
   }
 
   if (req.method === 'GET' && path === '/gacha/chart') {
     const range = parseTimeRange(url.searchParams.get('range'))
     const streamerId = url.searchParams.get('streamerId') || undefined
-    return getGachaChart(client, { range, streamerId })
+    return getGachaChart(client, { range, streamerId }, env)
   }
 
   if (req.method === 'GET' && path === '/gacha/summary') {
     const range = parseTimeRange(url.searchParams.get('range'))
     const streamerId = url.searchParams.get('streamerId') || undefined
-    return getGachaSummary(client, { range, streamerId })
+    return getGachaSummary(client, { range, streamerId }, env)
   }
 
   if (req.method === 'GET' && path === '/gacha/table') {
@@ -1023,7 +1439,11 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
     const from = url.searchParams.get('from') || ''
     const to = url.searchParams.get('to') || ''
     const streamerId = url.searchParams.get('streamerId') || undefined
-    return getGachaTable(client, { range, page, pageSize, username, rarity, from, to, streamerId })
+    return getGachaTable(
+      client,
+      { range, page, pageSize, username, rarity, from, to, streamerId },
+      env
+    )
   }
 
   if (req.method === 'GET' && path === '/drop-rate-stats') {
@@ -1032,7 +1452,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
       throw Object.assign(new Error('streamerId is required'), { statusCode: 400 })
     }
     const range = parseTimeRange(url.searchParams.get('range'))
-    return getDropRateStats(client, { streamerId, range })
+    return getDropRateStats(client, { streamerId, range }, env)
   }
 
   if (req.method === 'GET' && path === '/user-cards/summary') {
@@ -1040,7 +1460,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
     if (!userId) {
       throw Object.assign(new Error('userId is required'), { statusCode: 400 })
     }
-    return getUserCardsSummary(client, userId)
+    return getUserCardsSummary(client, userId, env)
   }
 
   if (req.method === 'GET' && path === '/user-cards/table') {
@@ -1049,7 +1469,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
       throw Object.assign(new Error('userId is required'), { statusCode: 400 })
     }
     const { page, pageSize } = parsePagination(url)
-    return getUserCardsTable(client, { userId, page, pageSize })
+    return getUserCardsTable(client, { userId, page, pageSize }, env)
   }
 
   if (req.method === 'GET' && path === '/streamer-cards') {
@@ -1058,181 +1478,73 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
       throw Object.assign(new Error('streamerId is required'), { statusCode: 400 })
     }
     const { page, pageSize } = parsePagination(url)
-    return getStreamerCardsPage(client, { streamerId, page, pageSize })
+    return getStreamerCardsPage(client, { streamerId, page, pageSize }, env)
   }
 
   if (req.method === 'GET' && path === '/support-codes') {
-    const { data, error } = await client
-      .from('support_codes')
-      .select('*')
-      .order('created_at', { ascending: false })
-    if (error) throw error
-    return data || []
+    return listSupportCodes(client, env)
   }
 
   if (req.method === 'POST' && path === '/support-codes') {
     const payload = requireObject(body)
-    const { data, error } = await client
-      .from('support_codes')
-      .insert({
-        code_hash: String(payload.code_hash || ''),
-        plan_type: payload.plan_type,
-        status: 'active',
-        memo: payload.memo || null,
-      } as never)
-      .select()
-      .single()
-    if (error) throw error
-    return data
+    return createSupportCode(client, payload, env)
   }
 
   const supportCodeMatch = path.match(/^\/support-codes\/([^/]+)$/)
   if (req.method === 'PATCH' && supportCodeMatch) {
     const payload = requireObject(body)
-    const { data, error } = await client
-      .from('support_codes')
-      .update({ status: payload.status, updated_at: new Date().toISOString() } as never)
-      .eq('id', supportCodeMatch[1])
-      .select()
-      .single()
-    if (error) throw error
-    return data
+    return updateSupportCodeStatus(client, supportCodeMatch[1], payload.status, env)
   }
 
   const revokeMatch = path.match(/^\/support-codes\/([^/]+)\/revoke$/)
   if (req.method === 'POST' && revokeMatch) {
-    const { error } = await client.rpc('revoke_support_code' as never, {
-      p_code_id: revokeMatch[1],
-    } as never)
-    if (error) throw error
-    return { ok: true }
+    return revokeSupportCode(client, revokeMatch[1], env)
   }
 
   if (req.method === 'GET' && path === '/licenses') {
-    return listLicenses(client)
+    return listLicenses(client, env)
   }
 
   if (req.method === 'GET' && path === '/twitch-subs') {
-    const { data, count, error } = await client
-      .from('users')
-      .select('twitch_user_id, twitch_display_name, twitch_sub_verified_at', { count: 'exact' })
-      .eq('twitch_has_sub', true)
-      .order('twitch_sub_verified_at', { ascending: false })
-    if (error) throw error
-    return { rows: data || [], count: count || 0 }
+    return listTwitchSubs(client, env)
   }
 
   if (req.method === 'GET' && path === '/support-inquiries') {
     const status = url.searchParams.get('status') || 'all'
-    let query = client
-      .from('support_inquiries')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    if (status !== 'all') {
-      query = query.eq('status', status)
-    }
-
-    const { data, error } = await query
-    if (error) throw error
-    return data || []
+    return getSupportInquiries(client, status, env)
   }
 
   if (req.method === 'GET' && path === '/announcements') {
-    return listAnnouncements(client)
+    return listAnnouncements(client, env)
   }
 
   if (req.method === 'POST' && path === '/announcements') {
-    const payload = announcementPayload(body)
-    const { data, error } = await client
-      .from('announcements')
-      .insert(payload as never)
-      .select()
-      .single()
-    if (error) throw error
-    return {
-      ...data,
-      read_count: 0,
-    }
+    return createAnnouncement(client, body, env)
   }
 
   const announcementMatch = path.match(/^\/announcements\/([^/]+)$/)
   if (announcementMatch && req.method === 'PATCH') {
-    const payload = requireObject(body)
-    const update = 'title' in payload || 'body' in payload || 'severity' in payload
-      ? announcementPayload(body)
-      : {
-          is_published: !!payload.is_published,
-          updated_at: new Date().toISOString(),
-        }
-
-    const { data, error } = await client
-      .from('announcements')
-      .update(update as never)
-      .eq('id', announcementMatch[1])
-      .select()
-      .single()
-    if (error) throw error
-
-    const { count, error: countError } = await client
-      .from('announcement_reads')
-      .select('id', { count: 'exact', head: true })
-      .eq('announcement_id', announcementMatch[1])
-    if (countError) throw countError
-
-    return {
-      ...data,
-      read_count: count || 0,
-    }
+    return updateAnnouncement(client, announcementMatch[1], body, env)
   }
 
   if (announcementMatch && req.method === 'DELETE') {
-    const { error } = await client
-      .from('announcements')
-      .delete()
-      .eq('id', announcementMatch[1])
-    if (error) throw error
-    return { ok: true }
+    return deleteAnnouncement(client, announcementMatch[1], env)
   }
 
   const inquiryMatch = path.match(/^\/support-inquiries\/([^/]+)$/)
   if (req.method === 'PATCH' && inquiryMatch) {
     const payload = requireObject(body)
-    const { data, error } = await client
-      .from('support_inquiries')
-      .update({ status: payload.status, updated_at: new Date().toISOString() } as never)
-      .eq('id', inquiryMatch[1])
-      .select()
-      .single()
-    if (error) throw error
-    return data
+    return updateSupportInquiryStatus(client, inquiryMatch[1], payload.status, env)
   }
 
   const messagesMatch = path.match(/^\/support-inquiries\/([^/]+)\/messages$/)
   if (messagesMatch && req.method === 'GET') {
-    const { data, error } = await client
-      .from('support_inquiry_messages')
-      .select('*')
-      .eq('inquiry_id', messagesMatch[1])
-      .order('created_at', { ascending: true })
-    if (error) throw error
-    return data || []
+    return listSupportInquiryMessages(client, messagesMatch[1], env)
   }
 
   if (messagesMatch && req.method === 'POST') {
     const payload = requireObject(body)
-    const { data, error } = await client
-      .from('support_inquiry_messages')
-      .insert({
-        inquiry_id: messagesMatch[1],
-        sender_type: 'admin',
-        sender_id: 'admin',
-        body: String(payload.body || '').trim(),
-      } as never)
-      .select()
-      .single()
-    if (error) throw error
-    return data
+    return createSupportInquiryMessage(client, messagesMatch[1], String(payload.body || '').trim(), env)
   }
 
   throw Object.assign(new Error('Admin API route not found'), { statusCode: 404 })
@@ -1261,12 +1573,12 @@ export function localAdminApiPlugin(env: Env): Plugin {
           // 既に/__adminプレフィックスが取り除かれている点に注意（handleRoute内のpath
           // 変換と同様）
           if (req.method === 'GET' && url.pathname === '/gacha/export') {
-            await handleGachaExport(client, url, res)
+            await handleGachaExport(client, url, res, env)
             return
           }
 
           const body = await readBody(req)
-          const result = await handleRoute({ req, res, client, body, url })
+          const result = await handleRoute({ req, res, client, body, url, env })
           sendJson(res, 200, result)
         } catch (error) {
           const status = typeof (error as { statusCode?: unknown }).statusCode === 'number'

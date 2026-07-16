@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { adminApi } from '../lib/adminApi'
 import type { UserCardCountEntry, UserCardsTableRow } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { RarityBadge } from '../components/RarityBadge'
 import { User } from '../types/database'
 
@@ -25,12 +26,15 @@ export function UserCards() {
   const [cardCounts, setCardCounts] = useState<UserCardCountEntry[]>([])
   const [summaryLoading, setSummaryLoading] = useState(true)
   const [summaryError, setSummaryError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更すると対応するeffectを再実行させる）
+  const [summaryRetryToken, setSummaryRetryToken] = useState(0)
 
   // --- テーブル用 state（カード所持詳細、ページネーション） ---
   const [tableRows, setTableRows] = useState<UserCardsTableRow[]>([])
   const [tableCount, setTableCount] = useState(0)
   const [tableLoading, setTableLoading] = useState(true)
   const [tableError, setTableError] = useState<string | null>(null)
+  const [tableRetryToken, setTableRetryToken] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
 
@@ -56,22 +60,21 @@ export function UserCards() {
   /**
    * ユーザー情報とカード所持サマリー（種別ごとの所持数）を取得
    */
-  async function fetchSummary(isCancelled: () => boolean) {
+  async function fetchSummary(signal: AbortSignal) {
     if (!userId) return
 
     setSummaryLoading(true)
     setSummaryError(null)
     try {
-      const data = await adminApi.getUserCardsSummary(userId)
-      if (isCancelled()) return
+      const data = await adminApi.getUserCardsSummary(userId, { signal })
       setUser(data.user)
       setCardCounts(data.cardCounts)
     } catch (err) {
-      if (isCancelled()) return
+      if (signal.aborted) return
       console.error('Failed to fetch user cards summary:', err)
-      setSummaryError(err instanceof Error ? err.message : 'ユーザー情報の取得に失敗しました')
+      setSummaryError((err instanceof Error && err.message) || 'ユーザー情報の取得に失敗しました')
     } finally {
-      if (!isCancelled()) setSummaryLoading(false)
+      if (!signal.aborted) setSummaryLoading(false)
     }
   }
 
@@ -81,22 +84,21 @@ export function UserCards() {
    * 「取得effect」が同一コミット内でcurrentPageのstate更新を共有できず、
    * 前ユーザーのページ番号のまま新ユーザーを取得してしまう競合を避けるため
    */
-  async function fetchTable(page: number, isCancelled: () => boolean) {
+  async function fetchTable(page: number, signal: AbortSignal) {
     if (!userId) return
 
     setTableLoading(true)
     setTableError(null)
     try {
-      const { rows, count } = await adminApi.getUserCardsTable({ userId, page, pageSize })
-      if (isCancelled()) return
+      const { rows, count } = await adminApi.getUserCardsTable({ userId, page, pageSize }, { signal })
       setTableRows(rows)
       setTableCount(count)
     } catch (err) {
-      if (isCancelled()) return
+      if (signal.aborted) return
       console.error('Failed to fetch user cards table:', err)
-      setTableError(err instanceof Error ? err.message : 'カード一覧の取得に失敗しました')
+      setTableError((err instanceof Error && err.message) || 'カード一覧の取得に失敗しました')
     } finally {
-      if (!isCancelled()) setTableLoading(false)
+      if (!signal.aborted) setTableLoading(false)
     }
   }
 
@@ -107,15 +109,13 @@ export function UserCards() {
       setTableLoading(false)
       return
     }
-    // userIdを素早く連続変更すると古いレスポンスが後から返って新しい表示を
-    // 上書きしうるため、クリーンアップでcancelledを立てて破棄する
-    let cancelled = false
-    fetchSummary(() => cancelled)
-    return () => {
-      cancelled = true
-    }
+    // userIdを素早く連続変更すると後発リクエストと先発リクエストが競合しうるため、
+    // AbortControllerで先発リクエスト自体を中断する
+    const controller = new AbortController()
+    fetchSummary(controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId])
+  }, [userId, summaryRetryToken])
 
   // userId変更時はページを1に戻して取得する。setCurrentPage(1)とfetchTable()を
   // 別々のeffectに分けると、同一コミット内では新しいcurrentPageがまだ反映されず
@@ -136,13 +136,11 @@ export function UserCards() {
       return
     }
 
-    let cancelled = false
-    fetchTable(currentPage, () => cancelled)
-    return () => {
-      cancelled = true
-    }
+    const controller = new AbortController()
+    fetchTable(currentPage, controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, currentPage, pageSize])
+  }, [userId, currentPage, pageSize, tableRetryToken])
 
   // テーブルのカラム定義
   // NOTE: cardsテーブルにはステータス・スキル情報が存在しないため、基本情報のみ表示
@@ -310,17 +308,13 @@ export function UserCards() {
         )}
       </div>
 
-      {/* エラー表示 */}
-      {(summaryError || tableError) && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800 font-medium">データの読み込みエラー</p>
-          {summaryError && <p className="text-red-600 text-sm mt-1">{summaryError}</p>}
-          {tableError && <p className="text-red-600 text-sm mt-1">{tableError}</p>}
-          <p className="text-red-500 text-xs mt-2">
-            詳細はブラウザコンソールを確認してください。
-          </p>
-        </div>
-      )}
+      <ErrorBanner
+        messages={[summaryError, tableError]}
+        onRetry={() => {
+          setSummaryRetryToken((t) => t + 1)
+          setTableRetryToken((t) => t + 1)
+        }}
+      />
 
       {/* サマリー統計 */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
