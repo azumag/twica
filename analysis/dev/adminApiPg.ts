@@ -58,11 +58,13 @@ export function getAnalysisDbDriver(env: Record<string, string>): AnalysisDbDriv
  * `grant service_role to <role>` 済みである必要がある（未付与だと接続自体は成功し、
  * 呼び出し時に "permission denied for function" で失敗する）。
  *
- * gacha chart/table/export・user-cards・streamer-cards（`getGachaChartPg` 以下）は
- * SQL 関数を経由せず `gacha_history`/`cards`/`streamers`/`users`/`user_cards` を
- * 直接 SELECT するため、上記の EXECUTE 権限に加えてこれらテーブルへの SELECT 権限も
- * 必要（`grant service_role to <role>` なら service_role が持つテーブル権限も
- * 継承されるため、通常は追加のGRANT操作は不要）。
+ * `getGachaChartPg` 以下の関数群は SQL 関数を経由せず対象テーブル（gacha_history/
+ * cards/streamers/users/user_cards/support_codes/user_licenses/support_inquiries/
+ * support_inquiry_messages 等、増分が進むごとに増える）を直接 SELECT/INSERT/UPDATE
+ * するため、上記の EXECUTE 権限に加えてこれらテーブルへの DML 権限も必要
+ * （`grant service_role to <role>` なら service_role が持つテーブル権限・RLS
+ * ポリシー（`TO service_role`）も継承されるため、通常は追加のGRANT操作は不要。
+ * 個別テーブルを都度列挙すると増分ごとに陳腐化するため、今後は一般論のみ記載する）。
  */
 function resolveDashboardDatabaseUrl(env: Record<string, string>): string {
   const url = env.DASHBOARD_DATABASE_URL?.trim()
@@ -683,4 +685,100 @@ export async function listTwitchSubsPg(
   ])
 
   return { rows, count: countRows[0]?.count ?? 0 }
+}
+
+/**
+ * 問い合わせ一覧を作成日降順で返す（`GET /support-inquiries` 相当）。
+ * `status` が `'all'` なら絞り込まない。PostgREST版と同じく
+ * `status` の値バリデーションは行わない（CHECK制約に合致しない値は
+ * 単に0件ヒットになるだけで実害がないため、既存挙動を維持）。
+ *
+ * 条件は `status !== 'all'`（Supabase経路と厳密に同一）で判定する。
+ * `status &&` のような truthy ガードは付けない: ルート側
+ * （`localAdminApi.ts`, `url.searchParams.get('status') || 'all'`）では
+ * 空文字が渡る経路は存在しないため実害はないが、`status=''` が渡った場合に
+ * Supabase経路は絞り込みを適用（0件）する一方 truthy ガードだと pg経路だけ
+ * 絞り込みを適用しない（全件を返す）fail-open な非対称になり得るため、
+ * 将来の呼び出し元追加に備えて条件式そのものを揃えておく。
+ */
+export async function getSupportInquiriesPg(
+  env: Record<string, string>,
+  status: string
+): Promise<unknown[]> {
+  return callAnalysisJsonFunction(env, (sql) => sql`
+    SELECT COALESCE(jsonb_agg(to_jsonb(si.*) ORDER BY si.created_at DESC), '[]'::jsonb) AS result
+    FROM support_inquiries si
+    WHERE TRUE
+    ${status !== 'all' ? sql`AND si.status = ${status}` : sql``}
+  `) as Promise<unknown[]>
+}
+
+/**
+ * 問い合わせのステータスを更新する（`PATCH /support-inquiries/:id` 相当）。
+ * `updateSupportCodeStatusPg` と同じ理由・同じ「意図的な404改善」（PostgREST版の
+ * PGRST116は`statusCode`を持たず実際には素の500として露出するため、pg直結側は
+ * 更新0件を明示的に検知しより正しい404を返す）。PATCH bodyに`status`キー自体が
+ * 無い場合の非対称（Supabase経路はupdated_atのみ更新して200、pg経路は
+ * postgres.jsのUNDEFINED_VALUEで500）も同様に踏襲する
+ * （`updateSupportCodeStatusPg`のdocコメント参照）。
+ */
+export async function updateSupportInquiryStatusPg(
+  env: Record<string, string>,
+  params: { id: string; status: unknown }
+): Promise<unknown> {
+  const result = await callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      WITH updated AS (
+        UPDATE support_inquiries
+        SET status = ${params.status as never}, updated_at = now()
+        WHERE id = ${params.id}
+        RETURNING *
+      )
+      SELECT to_jsonb(updated.*) AS result FROM updated
+    `
+  )
+  if (result === undefined) {
+    throw Object.assign(new Error('Support inquiry not found'), { statusCode: 404 })
+  }
+  return result
+}
+
+/** 問い合わせに紐づくメッセージ一覧を作成日昇順で返す（`GET .../messages` 相当）。 */
+export async function listSupportInquiryMessagesPg(
+  env: Record<string, string>,
+  inquiryId: string
+): Promise<unknown[]> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      SELECT COALESCE(
+        jsonb_agg(to_jsonb(sim.*) ORDER BY sim.created_at ASC), '[]'::jsonb
+      ) AS result
+      FROM support_inquiry_messages sim
+      WHERE sim.inquiry_id = ${inquiryId}
+    `
+  ) as Promise<unknown[]>
+}
+
+/**
+ * 管理者からの返信メッセージを作成する（`POST .../messages` 相当）。
+ * `sender_type`/`sender_id` はPostgREST版と同じく常に `'admin'` 固定
+ * （管理ダッシュボードからの投稿は常に管理者本人という前提）。
+ */
+export async function createSupportInquiryMessagePg(
+  env: Record<string, string>,
+  params: { inquiryId: string; body: string }
+): Promise<unknown> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      WITH inserted AS (
+        INSERT INTO support_inquiry_messages (inquiry_id, sender_type, sender_id, body)
+        VALUES (${params.inquiryId}, 'admin', 'admin', ${params.body})
+        RETURNING *
+      )
+      SELECT to_jsonb(inserted.*) AS result FROM inserted
+    `
+  )
 }

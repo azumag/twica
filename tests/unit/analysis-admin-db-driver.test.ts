@@ -629,6 +629,96 @@ describe('adminApiPg: listTwitchSubsPg', () => {
   })
 })
 
+describe('adminApiPg: getSupportInquiriesPg', () => {
+  it("status='all'なら絞り込まない", async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'inq1' }])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getSupportInquiriesPg({}, 'all')
+
+    expect(data).toEqual([{ id: 'inq1' }])
+    expect(calls[0].text).not.toContain('AND si.status')
+    expect(calls[0].values).toEqual([])
+  })
+
+  it('status指定時はWHERE条件が追加される', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'inq1' }])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await mod.getSupportInquiriesPg({}, 'open')
+
+    expect(calls[0].text).toContain('AND si.status = ')
+    expect(calls[0].values).toEqual(['open'])
+  })
+
+  it("status=''でもtruthyガードでスキップせずSupabase経路と同じくWHERE条件を適用する（fail-open防止の回帰確認）", async () => {
+    const { tag, calls } = fakeSqlTag([])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await mod.getSupportInquiriesPg({}, '')
+
+    expect(calls[0].text).toContain('AND si.status = ')
+    expect(calls[0].values).toEqual([''])
+  })
+})
+
+describe('adminApiPg: updateSupportInquiryStatusPg', () => {
+  it('UPDATE ... RETURNING で更新後の行を返す', async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'inq1', status: 'resolved' })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.updateSupportInquiryStatusPg({}, { id: 'inq1', status: 'resolved' })
+
+    expect(data).toEqual({ id: 'inq1', status: 'resolved' })
+    expect(calls[0].text).toContain('UPDATE support_inquiries')
+    expect(calls[0].values).toEqual(['resolved', 'inq1'])
+  })
+
+  it('対象idが存在せず更新0件の場合は404相当のエラーをthrowする', async () => {
+    const tag = vi.fn().mockResolvedValue([])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await expect(
+      mod.updateSupportInquiryStatusPg({}, { id: 'missing', status: 'resolved' })
+    ).rejects.toMatchObject({ message: 'Support inquiry not found', statusCode: 404 })
+  })
+})
+
+describe('adminApiPg: listSupportInquiryMessagesPg', () => {
+  it('inquiry_idで絞り込み、created_at昇順で返す', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'msg1' }])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.listSupportInquiryMessagesPg({}, 'inq1')
+
+    expect(data).toEqual([{ id: 'msg1' }])
+    expect(calls[0].text).toContain('WHERE sim.inquiry_id = ')
+    expect(calls[0].text).toContain('ORDER BY sim.created_at ASC')
+    expect(calls[0].values).toEqual(['inq1'])
+  })
+})
+
+describe('adminApiPg: createSupportInquiryMessagePg', () => {
+  it("sender_type/sender_idを'admin'固定でINSERTする", async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'msg1', sender_type: 'admin' })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.createSupportInquiryMessagePg({}, { inquiryId: 'inq1', body: '返信本文' })
+
+    expect(data).toEqual({ id: 'msg1', sender_type: 'admin' })
+    expect(calls[0].text).toContain('INSERT INTO support_inquiry_messages')
+    expect(calls[0].text).toContain("'admin', 'admin'")
+    expect(calls[0].values).toEqual(['inq1', '返信本文'])
+  })
+})
+
 // 移植済み4関数（getOverview/getStreamerLeaderboard/listUsers/listStreamersWithStats）
 // はいずれも同じ「先頭1行の分岐」パターンなので、4関数まとめて表形式で回帰確認する
 // （tests/unit/storage-db-driver-parity.test.ts と同じく全関数を漏れなく検証する）
@@ -1298,6 +1388,118 @@ describe('localAdminApi: listTwitchSubs の ANALYSIS_DB_DRIVER による経路�
     const data = await listTwitchSubs(client, { ANALYSIS_DB_DRIVER: 'pg' })
 
     expect(data).toEqual({ rows: [{ twitch_user_id: 'twitch-1' }], count: 1 })
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: getSupportInquiries の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const client = fakeQueryBuilderClient({ data: [{ id: 'inq1' }] })
+    const { getSupportInquiries } = await importLocalAdminApi()
+
+    const data = await getSupportInquiries(client, 'all', {})
+
+    expect(data).toEqual([{ id: 'inq1' }])
+    expect(client.from).toHaveBeenCalledWith('support_inquiries')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag([{ id: 'inq-pg' }])
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [] })
+    const { getSupportInquiries } = await importLocalAdminApi()
+
+    const data = await getSupportInquiries(client, 'open', { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual([{ id: 'inq-pg' }])
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: updateSupportInquiryStatus の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の update().eq().select().single() のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeWriteBuilderClient({ data: { id: 'inq1', status: 'resolved' } })
+    const { updateSupportInquiryStatus } = await importLocalAdminApi()
+
+    const data = await updateSupportInquiryStatus(client, 'inq1', 'resolved', {})
+
+    expect(data).toEqual({ id: 'inq1', status: 'resolved' })
+    expect(client.builder.eq).toHaveBeenCalledWith('id', 'inq1')
+    expect(client.builder.update).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'resolved' })
+    )
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag({ id: 'inq-pg', status: 'resolved' })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeWriteBuilderClient({ data: null })
+    const { updateSupportInquiryStatus } = await importLocalAdminApi()
+
+    const data = await updateSupportInquiryStatus(client, 'inq1', 'resolved', {
+      ANALYSIS_DB_DRIVER: 'pg',
+    })
+
+    expect(data).toEqual({ id: 'inq-pg', status: 'resolved' })
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: listSupportInquiryMessages の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const client = fakeQueryBuilderClient({ data: [{ id: 'msg1' }] })
+    const { listSupportInquiryMessages } = await importLocalAdminApi()
+
+    const data = await listSupportInquiryMessages(client, 'inq1', {})
+
+    expect(data).toEqual([{ id: 'msg1' }])
+    expect(client.from).toHaveBeenCalledWith('support_inquiry_messages')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag([{ id: 'msg-pg' }])
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [] })
+    const { listSupportInquiryMessages } = await importLocalAdminApi()
+
+    const data = await listSupportInquiryMessages(client, 'inq1', { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual([{ id: 'msg-pg' }])
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: createSupportInquiryMessage の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の insert().select().single() のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeWriteBuilderClient({ data: { id: 'msg1', sender_type: 'admin' } })
+    const { createSupportInquiryMessage } = await importLocalAdminApi()
+
+    const data = await createSupportInquiryMessage(client, 'inq1', '返信本文', {})
+
+    expect(data).toEqual({ id: 'msg1', sender_type: 'admin' })
+    expect(client.builder.insert).toHaveBeenCalledWith({
+      inquiry_id: 'inq1',
+      sender_type: 'admin',
+      sender_id: 'admin',
+      body: '返信本文',
+    })
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag({ id: 'msg-pg', sender_type: 'admin' })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeWriteBuilderClient({ data: null })
+    const { createSupportInquiryMessage } = await importLocalAdminApi()
+
+    const data = await createSupportInquiryMessage(client, 'inq1', '返信本文', {
+      ANALYSIS_DB_DRIVER: 'pg',
+    })
+
+    expect(data).toEqual({ id: 'msg-pg', sender_type: 'admin' })
     expect(client.from).not.toHaveBeenCalled()
   })
 })

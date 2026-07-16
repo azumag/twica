@@ -12,6 +12,7 @@ import {
 } from '../src/lib/chatAnnouncementAccess'
 import {
   createSupportCodePg,
+  createSupportInquiryMessagePg,
   getAnalysisDbDriver,
   getDropRateStatsPg,
   getGachaChartPg,
@@ -21,15 +22,18 @@ import {
   getOverviewPg,
   getStreamerCardsPagePg,
   getStreamerLeaderboardPg,
+  getSupportInquiriesPg,
   getUserCardsSummaryPg,
   getUserCardsTablePg,
   listLicensesPg,
   listStreamersWithStatsPg,
   listSupportCodesPg,
+  listSupportInquiryMessagesPg,
   listTwitchSubsPg,
   listUsersPg,
   revokeSupportCodePg,
   updateSupportCodeStatusPg,
+  updateSupportInquiryStatusPg,
 } from './adminApiPg'
 
 type Env = Record<string, string>
@@ -396,6 +400,90 @@ export async function listTwitchSubs(client: SupabaseClient<Database>, env: Env)
     .order('twitch_sub_verified_at', { ascending: false })
   if (error) throw error
   return { rows: data || [], count: count || 0 }
+}
+
+export async function getSupportInquiries(
+  client: SupabaseClient<Database>,
+  status: string,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return getSupportInquiriesPg(env, status)
+  }
+  let query = client
+    .from('support_inquiries')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (status !== 'all') {
+    // statusはクエリパラメータ由来の任意文字列（バリデーションなしは既存挙動を維持）。
+    // 不正な値の場合はPostgREST側で単に0件ヒットになるだけで実害はないため、
+    // 実行時の挙動を変えない型アサーションで対応する
+    query = query.eq('status', status as InquiryStatus)
+  }
+
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}
+
+export async function updateSupportInquiryStatus(
+  client: SupabaseClient<Database>,
+  id: string,
+  status: unknown,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return updateSupportInquiryStatusPg(env, { id, status })
+  }
+  const { data, error } = await client
+    .from('support_inquiries')
+    .update({ status, updated_at: new Date().toISOString() } as never)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function listSupportInquiryMessages(
+  client: SupabaseClient<Database>,
+  inquiryId: string,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listSupportInquiryMessagesPg(env, inquiryId)
+  }
+  const { data, error } = await client
+    .from('support_inquiry_messages')
+    .select('*')
+    .eq('inquiry_id', inquiryId)
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+export async function createSupportInquiryMessage(
+  client: SupabaseClient<Database>,
+  inquiryId: string,
+  messageBody: string,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return createSupportInquiryMessagePg(env, { inquiryId, body: messageBody })
+  }
+  const { data, error } = await client
+    .from('support_inquiry_messages')
+    .insert({
+      inquiry_id: inquiryId,
+      sender_type: 'admin',
+      sender_id: 'admin',
+      body: messageBody,
+    } as never)
+    .select()
+    .single()
+  if (error) throw error
+  return data
 }
 
 async function listAnnouncements(client: SupabaseClient<Database>) {
@@ -1318,21 +1406,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
 
   if (req.method === 'GET' && path === '/support-inquiries') {
     const status = url.searchParams.get('status') || 'all'
-    let query = client
-      .from('support_inquiries')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    if (status !== 'all') {
-      // statusはクエリパラメータ由来の任意文字列（バリデーションなしは既存挙動を維持）。
-      // 不正な値の場合はPostgREST側で単に0件ヒットになるだけで実害はないため、
-      // 実行時の挙動を変えない型アサーションで対応する
-      query = query.eq('status', status as InquiryStatus)
-    }
-
-    const { data, error } = await query
-    if (error) throw error
-    return data || []
+    return getSupportInquiries(client, status, env)
   }
 
   if (req.method === 'GET' && path === '/announcements') {
@@ -1395,41 +1469,17 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   const inquiryMatch = path.match(/^\/support-inquiries\/([^/]+)$/)
   if (req.method === 'PATCH' && inquiryMatch) {
     const payload = requireObject(body)
-    const { data, error } = await client
-      .from('support_inquiries')
-      .update({ status: payload.status, updated_at: new Date().toISOString() } as never)
-      .eq('id', inquiryMatch[1])
-      .select()
-      .single()
-    if (error) throw error
-    return data
+    return updateSupportInquiryStatus(client, inquiryMatch[1], payload.status, env)
   }
 
   const messagesMatch = path.match(/^\/support-inquiries\/([^/]+)\/messages$/)
   if (messagesMatch && req.method === 'GET') {
-    const { data, error } = await client
-      .from('support_inquiry_messages')
-      .select('*')
-      .eq('inquiry_id', messagesMatch[1])
-      .order('created_at', { ascending: true })
-    if (error) throw error
-    return data || []
+    return listSupportInquiryMessages(client, messagesMatch[1], env)
   }
 
   if (messagesMatch && req.method === 'POST') {
     const payload = requireObject(body)
-    const { data, error } = await client
-      .from('support_inquiry_messages')
-      .insert({
-        inquiry_id: messagesMatch[1],
-        sender_type: 'admin',
-        sender_id: 'admin',
-        body: String(payload.body || '').trim(),
-      } as never)
-      .select()
-      .single()
-    if (error) throw error
-    return data
+    return createSupportInquiryMessage(client, messagesMatch[1], String(payload.body || '').trim(), env)
   }
 
   throw Object.assign(new Error('Admin API route not found'), { statusCode: 404 })
