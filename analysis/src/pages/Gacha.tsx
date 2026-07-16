@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { RarityBadge } from '../components/RarityBadge'
 import { StreamerPopup } from '../components/StreamerPopup'
 import { Rarity } from '../types/database'
@@ -55,6 +56,9 @@ export function Gacha() {
   const [timeRange, setTimeRange] = useState<TimeRange>('all')
   const [chartError, setChartError] = useState<string | null>(null)
   const [tableError, setTableError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
+  const [chartRetryToken, setChartRetryToken] = useState(0)
+  const [tableRetryToken, setTableRetryToken] = useState(0)
 
   // --- 全ストリーマー一覧（ストリーマーフィルタのドロップダウン用、マウント時に一度だけ取得） ---
   const [streamers, setStreamers] = useState<StreamerWithStats[]>([])
@@ -129,7 +133,7 @@ export function Gacha() {
         // AbortError以外の形(AdminApiRequestError等)でrejectされうるため、
         // エラーの「形」を見るとstaleなエラー表示が漏れて残るケースがある
         if (controller.signal.aborted) return
-        setChartError(`Chart data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        setChartError(`Chart data error: ${(err instanceof Error && err.message) || 'Unknown error'}`)
       } finally {
         if (!controller.signal.aborted) setChartLoading(false)
       }
@@ -137,7 +141,7 @@ export function Gacha() {
 
     fetchSummary()
     return () => controller.abort()
-  }, [timeRange, selectedStreamerId])
+  }, [timeRange, selectedStreamerId, chartRetryToken])
 
   // ========================================
   // fetchTableData: テーブル用データ取得（ページ/フィルタ/timeRange/selectedStreamerId変更時）
@@ -167,7 +171,7 @@ export function Gacha() {
       } catch (err) {
         // fetchSummaryのcatch節と同じ理由でsignal.abortedを見る(エラーの型では判定しない)
         if (controller.signal.aborted) return
-        setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        setTableError(`Table data error: ${(err instanceof Error && err.message) || 'Unknown error'}`)
       } finally {
         if (!controller.signal.aborted) setTableLoading(false)
       }
@@ -175,7 +179,7 @@ export function Gacha() {
 
     fetchTableData()
     return () => controller.abort()
-  }, [timeRange, currentPage, pageSize, filters, selectedStreamerId])
+  }, [timeRange, currentPage, pageSize, filters, selectedStreamerId, tableRetryToken])
 
   const resetFilters = useCallback(() => {
     // デバウンスタイマーが残存していると古い入力値が再適用されるためキャンセル
@@ -248,7 +252,7 @@ export function Gacha() {
       link.remove()
       URL.revokeObjectURL(objectUrl)
     } catch (err) {
-      setTableError(`Export error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      setTableError(`Export error: ${(err instanceof Error && err.message) || 'Unknown error'}`)
     }
   }, [timeRange, filters, selectedStreamerId])
 
@@ -337,17 +341,13 @@ export function Gacha() {
         </div>
       </div>
 
-      {/* Error Display */}
-      {(chartError || tableError) && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800 font-medium">Error loading data</p>
-          {chartError && <p className="text-red-600 text-sm mt-1">{chartError}</p>}
-          {tableError && <p className="text-red-600 text-sm mt-1">{tableError}</p>}
-          <p className="text-red-500 text-xs mt-2">
-            Check browser console for details.
-          </p>
-        </div>
-      )}
+      <ErrorBanner
+        messages={[chartError, tableError]}
+        onRetry={() => {
+          setChartRetryToken((t) => t + 1)
+          setTableRetryToken((t) => t + 1)
+        }}
+      />
 
       {/* Summary Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

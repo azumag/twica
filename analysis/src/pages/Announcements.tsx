@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { Announcement } from '../types/database'
 
 // お知らせの重要度ラベルと色
@@ -34,6 +35,7 @@ const INITIAL_FORM = {
 export function Announcements() {
   const [announcements, setAnnouncements] = useState<AnnouncementWithStats[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   // フォーム表示制御
@@ -54,11 +56,13 @@ export function Announcements() {
     fetchAbortRef.current = controller
 
     setLoading(true)
+    setError(null)
     try {
       setAnnouncements(await adminApi.getAnnouncements({ signal: controller.signal }))
-    } catch (error) {
+    } catch (err) {
       if (controller.signal.aborted) return
-      console.error('Failed to fetch announcements:', error)
+      console.error('Failed to fetch announcements:', err)
+      setError((err instanceof Error && err.message) || 'お知らせ一覧の取得に失敗しました')
     } finally {
       if (!controller.signal.aborted) setLoading(false)
     }
@@ -242,6 +246,10 @@ export function Announcements() {
         >
           + New Announcement
         </button>
+      </div>
+
+      <div className="mb-6">
+        <ErrorBanner messages={[error]} onRetry={() => fetchAnnouncements()} />
       </div>
 
       {/* 統計サマリー */}

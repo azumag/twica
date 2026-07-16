@@ -9,6 +9,7 @@ import {
   GachaTableRow,
 } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { RarityBadge } from '../components/RarityBadge'
 import { DropRateStats } from '../components/DropRateStats'
 import { Streamer, Rarity } from '../types/database'
@@ -72,8 +73,16 @@ export function StreamerGachaHistory() {
   // --- 基本 state ---
   const [streamer, setStreamer] = useState<Streamer | null>(null)
   const [timeRange, setTimeRange] = useState<TimeRange>('all')
+  // streamer本体のエラーはchartErrorに相乗りさせず専用のstateで持つ。
+  // 相乗りさせるとtimeRange変更時のsetChartError(null)で「streamer取得は
+  // 再試行されていないのに」エラー表示だけが消え、ヘッダーが黙って空のまま残る
+  const [streamerError, setStreamerError] = useState<string | null>(null)
   const [chartError, setChartError] = useState<string | null>(null)
   const [tableError, setTableError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更すると対応するeffectを再実行させる）
+  const [streamerRetryToken, setStreamerRetryToken] = useState(0)
+  const [chartRetryToken, setChartRetryToken] = useState(0)
+  const [tableRetryToken, setTableRetryToken] = useState(0)
 
   // --- チャート用データ（bounded 10000件、timeRange で再取得。/__admin/gacha/chart 経由） ---
   const [chartData, setChartData] = useState<GachaChartRow[]>([])
@@ -85,6 +94,7 @@ export function StreamerGachaHistory() {
   const [dropRateStats, setDropRateStats] = useState<DropRateStatsResponse | null>(null)
   const [dropRateStatsLoading, setDropRateStatsLoading] = useState(true)
   const [dropRateStatsError, setDropRateStatsError] = useState<string | null>(null)
+  const [dropRateStatsRetryToken, setDropRateStatsRetryToken] = useState(0)
 
   // --- テーブル用データ（ページネーション + フィルタ） ---
   const [tableData, setTableData] = useState<GachaTableRow[]>([])
@@ -105,17 +115,20 @@ export function StreamerGachaHistory() {
   useEffect(() => {
     if (!streamerId) return
     const controller = new AbortController()
+    setStreamerError(null)
     ;(async () => {
       try {
         const data = await adminApi.getStreamer(streamerId, { signal: controller.signal })
         setStreamer(data)
-      } catch (error) {
+      } catch (err) {
         if (controller.signal.aborted) return
-        setChartError((error as Error).message)
+        setStreamerError(
+          (err instanceof Error && err.message) || 'ストリーマー情報の取得に失敗しました'
+        )
       }
     })()
     return () => controller.abort()
-  }, [streamerId])
+  }, [streamerId, streamerRetryToken])
 
   // ========================================
   // fetchChartData: チャート用bounded(10000件)データ取得（streamerId/timeRange変更時）
@@ -138,7 +151,7 @@ export function StreamerGachaHistory() {
         setChartData(data)
       } catch (err) {
         if (controller.signal.aborted) return
-        setChartError(`Chart data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        setChartError(`Chart data error: ${(err instanceof Error && err.message) || 'Unknown error'}`)
       } finally {
         if (!controller.signal.aborted) setChartLoading(false)
       }
@@ -146,7 +159,7 @@ export function StreamerGachaHistory() {
 
     fetchChartData()
     return () => controller.abort()
-  }, [streamerId, timeRange])
+  }, [streamerId, timeRange, chartRetryToken])
 
   // ========================================
   // fetchDropRateStats: サマリー統計用の正確な集計取得（streamerId/timeRange変更時）
@@ -168,7 +181,7 @@ export function StreamerGachaHistory() {
         setDropRateStats(data)
       } catch (err) {
         if (controller.signal.aborted) return
-        setDropRateStatsError(err instanceof Error ? err.message : 'Unknown error')
+        setDropRateStatsError((err instanceof Error && err.message) || 'Unknown error')
       } finally {
         if (!controller.signal.aborted) setDropRateStatsLoading(false)
       }
@@ -176,7 +189,7 @@ export function StreamerGachaHistory() {
 
     fetchDropRateStats()
     return () => controller.abort()
-  }, [streamerId, timeRange])
+  }, [streamerId, timeRange, dropRateStatsRetryToken])
 
   // ========================================
   // fetchTableData: テーブル用データ取得（ページ/フィルタ/timeRange変更時）
@@ -208,7 +221,7 @@ export function StreamerGachaHistory() {
         setTotalCount(count)
       } catch (err) {
         if (controller.signal.aborted) return
-        setTableError(`Table data error: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        setTableError(`Table data error: ${(err instanceof Error && err.message) || 'Unknown error'}`)
       } finally {
         if (!controller.signal.aborted) setTableLoading(false)
       }
@@ -216,7 +229,7 @@ export function StreamerGachaHistory() {
 
     fetchTableData()
     return () => controller.abort()
-  }, [streamerId, timeRange, currentPage, pageSize, filters])
+  }, [streamerId, timeRange, currentPage, pageSize, filters, tableRetryToken])
 
   const resetFilters = useCallback(() => {
     // デバウンスタイマーが残存していると古い入力値が再適用されるためキャンセル
@@ -400,18 +413,20 @@ export function StreamerGachaHistory() {
         </div>
       </div>
 
-      {/* エラー表示 */}
-      {(chartError || tableError || dropRateStatsError) && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800 font-medium">データの読み込みエラー</p>
-          {chartError && <p className="text-red-600 text-sm mt-1">{chartError}</p>}
-          {tableError && <p className="text-red-600 text-sm mt-1">{tableError}</p>}
-          {dropRateStatsError && <p className="text-red-600 text-sm mt-1">Summary stats error: {dropRateStatsError}</p>}
-          <p className="text-red-500 text-xs mt-2">
-            詳細はブラウザコンソールを確認してください。
-          </p>
-        </div>
-      )}
+      <ErrorBanner
+        messages={[
+          streamerError,
+          chartError,
+          tableError,
+          dropRateStatsError && `Summary stats error: ${dropRateStatsError}`,
+        ]}
+        onRetry={() => {
+          setStreamerRetryToken((t) => t + 1)
+          setChartRetryToken((t) => t + 1)
+          setDropRateStatsRetryToken((t) => t + 1)
+          setTableRetryToken((t) => t + 1)
+        }}
+      />
 
       {/* サマリー統計カード */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

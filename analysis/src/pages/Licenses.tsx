@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import type { SupportCode, UserLicense, SupportCodeStatus, PlanType } from '../types/database'
 
 // プランタイプ表示用の設定
@@ -34,7 +35,9 @@ export function Licenses() {
   const [codes, setCodes] = useState<SupportCode[]>([])
   const [licenses, setLicenses] = useState<LicenseWithUser[]>([])
   const [loading, setLoading] = useState(true)
+  const [codesError, setCodesError] = useState<string | null>(null)
   const [licensesLoading, setLicensesLoading] = useState(true)
+  const [licensesError, setLicensesError] = useState<string | null>(null)
 
   // コード生成フォーム
   const [showGenerateForm, setShowGenerateForm] = useState(false)
@@ -60,6 +63,7 @@ export function Licenses() {
   }
   const [twitchSubs, setTwitchSubs] = useState<TwitchSubUser[]>([])
   const [twitchSubsLoading, setTwitchSubsLoading] = useState(true)
+  const [twitchSubsError, setTwitchSubsError] = useState<string | null>(null)
   const [twitchSubsPage, setTwitchSubsPage] = useState(1)
   const [twitchSubsPageSize, setTwitchSubsPageSize] = useState(20)
 
@@ -84,11 +88,13 @@ export function Licenses() {
     codesAbortRef.current = controller
 
     setLoading(true)
+    setCodesError(null)
     try {
       setCodes(await adminApi.getSupportCodes({ signal: controller.signal }))
-    } catch (error) {
+    } catch (err) {
       if (controller.signal.aborted) return
-      console.error('Failed to fetch support codes:', error)
+      console.error('Failed to fetch support codes:', err)
+      setCodesError((err instanceof Error && err.message) || 'サポートコード一覧の取得に失敗しました')
     } finally {
       if (!controller.signal.aborted) setLoading(false)
     }
@@ -101,11 +107,13 @@ export function Licenses() {
     licensesAbortRef.current = controller
 
     setLicensesLoading(true)
+    setLicensesError(null)
     try {
       setLicenses(await adminApi.getLicenses({ signal: controller.signal }))
-    } catch (error) {
+    } catch (err) {
       if (controller.signal.aborted) return
-      console.error('Failed to fetch licenses:', error)
+      console.error('Failed to fetch licenses:', err)
+      setLicensesError((err instanceof Error && err.message) || 'ライセンス一覧の取得に失敗しました')
     } finally {
       if (!controller.signal.aborted) setLicensesLoading(false)
     }
@@ -117,13 +125,15 @@ export function Licenses() {
     twitchSubsAbortRef.current = controller
 
     setTwitchSubsLoading(true)
+    setTwitchSubsError(null)
     try {
       const { rows, count } = await adminApi.getTwitchSubs({ signal: controller.signal })
       setTwitchSubs(rows)
       setTwitchSubCount(count)
-    } catch (error) {
+    } catch (err) {
       if (controller.signal.aborted) return
-      console.error('Failed to fetch twitch subs:', error)
+      console.error('Failed to fetch twitch subs:', err)
+      setTwitchSubsError((err instanceof Error && err.message) || 'Twitchサブスク一覧の取得に失敗しました')
     } finally {
       if (!controller.signal.aborted) setTwitchSubsLoading(false)
     }
@@ -419,6 +429,8 @@ export function Licenses() {
       {/* コードタブ */}
       {activeTab === 'codes' && (
         <>
+          <ErrorBanner messages={[codesError]} onRetry={() => fetchCodes()} />
+
           {/* コード生成ボタン */}
           <div className="mb-4 flex justify-end">
             <button
@@ -524,64 +536,70 @@ export function Licenses() {
 
       {/* ライセンスタブ */}
       {activeTab === 'licenses' && (
-        <DataTable
-          columns={licenseColumns}
-          data={licenses}
-          keyExtractor={(item) => item.id}
-          loading={licensesLoading}
-          emptyMessage="No active licenses"
-          pagination={{
-            currentPage: licensesPage,
-            pageSize: licensesPageSize,
-            onPageChange: setLicensesPage,
-            onPageSizeChange: (size) => { setLicensesPageSize(size); setLicensesPage(1) },
-            pageSizeOptions: [10, 20, 50],
-          }}
-        />
+        <>
+          <ErrorBanner messages={[licensesError]} onRetry={() => fetchLicenses()} />
+          <DataTable
+            columns={licenseColumns}
+            data={licenses}
+            keyExtractor={(item) => item.id}
+            loading={licensesLoading}
+            emptyMessage="No active licenses"
+            pagination={{
+              currentPage: licensesPage,
+              pageSize: licensesPageSize,
+              onPageChange: setLicensesPage,
+              onPageSizeChange: (size) => { setLicensesPageSize(size); setLicensesPage(1) },
+              pageSizeOptions: [10, 20, 50],
+            }}
+          />
+        </>
       )}
 
       {/* Twitchサブスクタブ */}
       {activeTab === 'twitch_subs' && (
-        <DataTable
-          columns={[
-            {
-              key: 'twitch_display_name',
-              header: 'User',
-              render: (item: TwitchSubUser) => (
-                <span className="font-medium">{item.twitch_display_name || item.twitch_user_id}</span>
-              ),
-            },
-            {
-              key: 'twitch_user_id',
-              header: 'Twitch ID',
-              render: (item: TwitchSubUser) => (
-                <span className="font-mono text-xs text-gray-500">{item.twitch_user_id}</span>
-              ),
-            },
-            {
-              key: 'twitch_sub_verified_at',
-              header: 'Verified At',
-              render: (item: TwitchSubUser) => (
-                <span className="text-sm text-gray-500">
-                  {item.twitch_sub_verified_at
-                    ? new Date(item.twitch_sub_verified_at).toLocaleString()
-                    : '-'}
-                </span>
-              ),
-            },
-          ]}
-          data={twitchSubs}
-          keyExtractor={(item: TwitchSubUser) => item.twitch_user_id}
-          loading={twitchSubsLoading}
-          emptyMessage="No Twitch subscribers found"
-          pagination={{
-            currentPage: twitchSubsPage,
-            pageSize: twitchSubsPageSize,
-            onPageChange: setTwitchSubsPage,
-            onPageSizeChange: (size) => { setTwitchSubsPageSize(size); setTwitchSubsPage(1) },
-            pageSizeOptions: [10, 20, 50],
-          }}
-        />
+        <>
+          <ErrorBanner messages={[twitchSubsError]} onRetry={() => fetchTwitchSubs()} />
+          <DataTable
+            columns={[
+              {
+                key: 'twitch_display_name',
+                header: 'User',
+                render: (item: TwitchSubUser) => (
+                  <span className="font-medium">{item.twitch_display_name || item.twitch_user_id}</span>
+                ),
+              },
+              {
+                key: 'twitch_user_id',
+                header: 'Twitch ID',
+                render: (item: TwitchSubUser) => (
+                  <span className="font-mono text-xs text-gray-500">{item.twitch_user_id}</span>
+                ),
+              },
+              {
+                key: 'twitch_sub_verified_at',
+                header: 'Verified At',
+                render: (item: TwitchSubUser) => (
+                  <span className="text-sm text-gray-500">
+                    {item.twitch_sub_verified_at
+                      ? new Date(item.twitch_sub_verified_at).toLocaleString()
+                      : '-'}
+                  </span>
+                ),
+              },
+            ]}
+            data={twitchSubs}
+            keyExtractor={(item: TwitchSubUser) => item.twitch_user_id}
+            loading={twitchSubsLoading}
+            emptyMessage="No Twitch subscribers found"
+            pagination={{
+              currentPage: twitchSubsPage,
+              pageSize: twitchSubsPageSize,
+              onPageChange: setTwitchSubsPage,
+              onPageSizeChange: (size) => { setTwitchSubsPageSize(size); setTwitchSubsPage(1) },
+              pageSizeOptions: [10, 20, 50],
+            }}
+          />
+        </>
       )}
     </div>
   )

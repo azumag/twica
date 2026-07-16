@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { adminApi } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { StreamerPopup } from '../components/StreamerPopup'
 import { Streamer } from '../types/database'
 
@@ -66,6 +67,9 @@ export function Streamers() {
   // ページネーション状態
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [error, setError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
+  const [retryToken, setRetryToken] = useState(0)
 
   // Fetches all streamers with card counts and storage usage
   // カード数・ストレージ使用量・チャット送信可否・投票キャンペーン適用状況は
@@ -74,18 +78,20 @@ export function Streamers() {
     const controller = new AbortController()
     ;(async () => {
       setLoading(true)
+      setError(null)
       try {
         const streamers = await adminApi.getStreamers({ signal: controller.signal })
         setStreamers(streamers)
-      } catch (error) {
+      } catch (err) {
         if (controller.signal.aborted) return
-        console.error('Error fetching streamers:', error)
+        console.error('Error fetching streamers:', err)
+        setError((err instanceof Error && err.message) || 'ストリーマー一覧の取得に失敗しました')
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
     })()
     return () => controller.abort()
-  }, [])
+  }, [retryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
@@ -373,6 +379,8 @@ export function Streamers() {
         <h1 className="text-2xl font-bold text-gray-900">Streamers</h1>
         <p className="text-gray-500 mt-1">Manage and view all registered streamers</p>
       </div>
+
+      <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
 
       {/* Summary Stats - includes total storage usage across all streamers */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">

@@ -6,6 +6,7 @@ import {
   type StreamerLeaderboardEntry,
 } from '../lib/adminApi'
 import { StatCard } from '../components/StatCard'
+import { ErrorBanner } from '../components/ErrorBanner'
 import { StreamerPopup } from '../components/StreamerPopup'
 import { GachaHistory, Card, Streamer } from '../types/database'
 import { RarityBadge } from '../components/RarityBadge'
@@ -37,13 +38,20 @@ export function Overview() {
   const [userGrowth, setUserGrowth] = useState<OverviewData['userGrowth']>([])
   const [gachaGrowth, setGachaGrowth] = useState<OverviewData['gachaGrowth']>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
+  const [retryToken, setRetryToken] = useState(0)
 
   // Cross-streamer leaderboardは/__admin/overview/leaderboardが直近30日のgacha_history
   // 全件をNode側集計するため約20秒かかる。他の統計をブロックしないよう、独立したuseEffect/
   // loading stateで取得する(analysis/src/pages/StreamerGachaHistory.tsxの
-  // chart/table/drop-rate-statsの分離パターンと同様)
+  // chart/table/drop-rate-statsの分離パターンと同様)。エラーもこの分離に合わせて
+  // 独立したstateで持つ(leaderboardの失敗が主要統計の表示を妨げないようにするため。
+  // #701が例示する「endpoint別のpartial failure」の典型例)
   const [leaderboard, setLeaderboard] = useState<StreamerLeaderboardEntry[]>([])
   const [leaderboardLoading, setLeaderboardLoading] = useState(true)
+  const [leaderboardError, setLeaderboardError] = useState<string | null>(null)
+  const [leaderboardRetryToken, setLeaderboardRetryToken] = useState(0)
 
   // Fetches all dashboard statistics via the /__admin API
   // Performs multiple queries in parallel for efficiency
@@ -51,33 +59,37 @@ export function Overview() {
     const controller = new AbortController()
     ;(async () => {
       setLoading(true)
+      setError(null)
       try {
         const data = await adminApi.getOverview({ signal: controller.signal })
         setStats(data.stats)
         setRecentGacha(data.recentGacha as (GachaHistory & { cards: Card; streamers: Streamer })[])
         setUserGrowth(data.userGrowth)
         setGachaGrowth(data.gachaGrowth)
-      } catch (error) {
+      } catch (err) {
         if (controller.signal.aborted) return
-        console.error('Error fetching dashboard data:', error)
+        console.error('Error fetching dashboard data:', err)
+        setError((err instanceof Error && err.message) || 'ダッシュボード統計の取得に失敗しました')
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
     })()
     return () => controller.abort()
-  }, [])
+  }, [retryToken])
 
   useEffect(() => {
     const controller = new AbortController()
 
     const fetchLeaderboard = async () => {
       setLeaderboardLoading(true)
+      setLeaderboardError(null)
       try {
         const data = await adminApi.getOverviewLeaderboard({ signal: controller.signal })
         setLeaderboard(data)
-      } catch (error) {
+      } catch (err) {
         if (controller.signal.aborted) return
-        console.error('Error fetching streamer leaderboard:', error)
+        console.error('Error fetching streamer leaderboard:', err)
+        setLeaderboardError((err instanceof Error && err.message) || 'ランキングの取得に失敗しました')
       } finally {
         if (!controller.signal.aborted) setLeaderboardLoading(false)
       }
@@ -85,7 +97,7 @@ export function Overview() {
 
     fetchLeaderboard()
     return () => controller.abort()
-  }, [])
+  }, [leaderboardRetryToken])
 
   /**
    * Formats a timestamp into a relative time string (e.g., "2 hours ago")
@@ -111,6 +123,8 @@ export function Overview() {
         <h1 className="text-2xl font-bold text-gray-900">Overview</h1>
         <p className="text-gray-500 mt-1">Dashboard statistics and recent activity</p>
       </div>
+
+      <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
 
       {/* Main Statistics Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -288,6 +302,10 @@ export function Overview() {
       {/* Cross-Streamer Leaderboard Section */}
       <div>
         <h2 className="text-lg font-semibold text-gray-900 mb-4">Top Streamers (Last 30 Days)</h2>
+        <ErrorBanner
+          messages={[leaderboardError]}
+          onRetry={() => setLeaderboardRetryToken((t) => t + 1)}
+        />
         <div className="bg-white rounded-lg shadow p-6">
           {leaderboardLoading ? (
             <div className="space-y-3">
