@@ -505,6 +505,130 @@ describe('adminApiPg: getStreamerCardsPagePg', () => {
   })
 })
 
+describe('adminApiPg: listSupportCodesPg', () => {
+  it('support_codesを作成日降順で返す', async () => {
+    const { tag, calls } = fakeSqlTag([{ id: 'code1' }])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.listSupportCodesPg({})
+
+    expect(data).toEqual([{ id: 'code1' }])
+    expect(calls[0].text).toContain('FROM support_codes sc')
+    expect(calls[0].text).toContain('ORDER BY sc.created_at DESC')
+  })
+})
+
+describe('adminApiPg: createSupportCodePg', () => {
+  it('INSERT ... RETURNING でstatus=activeの新規行を返す', async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'new-code', status: 'active' })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.createSupportCodePg(
+      {},
+      { codeHash: 'hash-1', planType: 'support', memo: 'メモ' }
+    )
+
+    expect(data).toEqual({ id: 'new-code', status: 'active' })
+    expect(calls[0].text).toContain('INSERT INTO support_codes')
+    expect(calls[0].text).toContain("'active'")
+    expect(calls[0].values).toEqual(['hash-1', 'support', 'メモ'])
+  })
+})
+
+describe('adminApiPg: updateSupportCodeStatusPg', () => {
+  it('UPDATE ... RETURNING で更新後の行を返す', async () => {
+    const { tag, calls } = fakeSqlTag({ id: 'code-1', status: 'revoked' })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.updateSupportCodeStatusPg({}, { id: 'code-1', status: 'revoked' })
+
+    expect(data).toEqual({ id: 'code-1', status: 'revoked' })
+    expect(calls[0].text).toContain('UPDATE support_codes')
+    expect(calls[0].values).toEqual(['revoked', 'code-1'])
+  })
+
+  // 注意: Supabase経路のPGRST116（対象0件）は`statusCode`を持たないため実際には
+  // 素の500として露出する。pg経路のこの404は「同じ契約」の再現ではなく、
+  // より正しいステータスコードへの意図的な改善（adminApiPg.tsのdocコメント参照）
+  it('対象idが存在せず更新0件の場合は404相当のエラーをthrowする（Supabase経路の500より意味的に正しい応答への意図的な改善）', async () => {
+    // 更新0件 = jsonb_agg等の集約なしで結果0行のクエリを再現するため、
+    // resultをundefinedにしたfakeSqlTagで「0行」を模す
+    const tag = vi.fn().mockResolvedValue([])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await expect(
+      mod.updateSupportCodeStatusPg({}, { id: 'missing', status: 'revoked' })
+    ).rejects.toMatchObject({ message: 'Support code not found', statusCode: 404 })
+  })
+})
+
+describe('adminApiPg: revokeSupportCodePg', () => {
+  it('revoke_support_code()を呼び、戻り値のJSONBを検査せず{ok: true}を返す', async () => {
+    const { tag, calls } = fakeSqlTag({ error: 'CODE_NOT_FOUND' })
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    // RPCの戻り値がCODE_NOT_FOUNDでも、SQLエラーでない限りPostgREST版と同じく
+    // {ok: true}を返す（既存挙動、本移植で変更しない）
+    const data = await mod.revokeSupportCodePg({}, 'code-1')
+
+    expect(data).toEqual({ ok: true })
+    expect(calls[0].text).toContain('revoke_support_code(')
+    expect(calls[0].values).toEqual(['code-1'])
+  })
+
+  it('SQLエラーはそのまま伝播する', async () => {
+    const tag = vi.fn().mockRejectedValue(new Error('invalid input syntax for type uuid'))
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    await expect(mod.revokeSupportCodePg({}, 'not-a-uuid')).rejects.toThrow(
+      'invalid input syntax for type uuid'
+    )
+  })
+})
+
+describe('adminApiPg: listLicensesPg', () => {
+  it('user_licensesとusersをLEFT JOINし、未登録ユーザーはtwitch_user_idをそのまま表示名にする', async () => {
+    const { tag, calls } = fakeSqlTag([
+      { twitch_user_id: 'twitch-1', twitch_username: 'Alice' },
+      { twitch_user_id: 'twitch-unknown', twitch_username: 'twitch-unknown' },
+    ])
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.listLicensesPg({})
+
+    expect(data).toEqual([
+      { twitch_user_id: 'twitch-1', twitch_username: 'Alice' },
+      { twitch_user_id: 'twitch-unknown', twitch_username: 'twitch-unknown' },
+    ])
+    expect(calls[0].text).toContain('LEFT JOIN users u ON u.twitch_user_id = ul.twitch_user_id')
+    expect(calls[0].text).toContain('COALESCE(u.twitch_display_name, ul.twitch_user_id)')
+    expect(calls[0].text).toContain('ORDER BY sort_activated_at DESC')
+  })
+})
+
+describe('adminApiPg: listTwitchSubsPg', () => {
+  it('twitch_has_sub=trueのユーザーを{rows, count}で返す', async () => {
+    const { tag, calls } = fakeSqlTag([{ twitch_user_id: 'twitch-1' }], 5)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.listTwitchSubsPg({})
+
+    expect(data).toEqual({ rows: [{ twitch_user_id: 'twitch-1' }], count: 5 })
+    const countCall = calls.find((call) => call.text.includes('count(*)'))
+    const dataCall = calls.find((call) => call.text.includes('jsonb_agg'))
+    expect(countCall?.text).toContain('WHERE u.twitch_has_sub = true')
+    expect(dataCall?.text).toContain('WHERE u.twitch_has_sub = true')
+  })
+})
+
 // 移植済み4関数（getOverview/getStreamerLeaderboard/listUsers/listStreamersWithStats）
 // はいずれも同じ「先頭1行の分岐」パターンなので、4関数まとめて表形式で回帰確認する
 // （tests/unit/storage-db-driver-parity.test.ts と同じく全関数を漏れなく検証する）
@@ -986,6 +1110,194 @@ describe('localAdminApi: getStreamerCardsPage の ANALYSIS_DB_DRIVER による�
     )
 
     expect(data).toEqual({ rows: [{ id: 'card1' }], count: 1 })
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: listSupportCodes の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const client = fakeQueryBuilderClient({ data: [{ id: 'code1' }] })
+    const { listSupportCodes } = await importLocalAdminApi()
+
+    const data = await listSupportCodes(client, {})
+
+    expect(data).toEqual([{ id: 'code1' }])
+    expect(client.from).toHaveBeenCalledWith('support_codes')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag([{ id: 'code-pg' }])
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [] })
+    const { listSupportCodes } = await importLocalAdminApi()
+
+    const data = await listSupportCodes(client, { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual([{ id: 'code-pg' }])
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+// createSupportCode/updateSupportCodeStatus の default 経路は
+// .from().insert()/.update()...select().single() を使うため、insert/update
+// も含めたbuilderが必要（fakeQueryBuilderClientはselect系のみのため専用に用意する）
+function fakeWriteBuilderClient(resolved: { data: unknown; error?: unknown }): any {
+  const builder: any = {
+    insert: vi.fn(() => builder),
+    update: vi.fn(() => builder),
+    select: vi.fn(() => builder),
+    eq: vi.fn(() => builder),
+    single: vi.fn(() => builder),
+    then: (onFulfilled: any, onRejected: any) =>
+      Promise.resolve({ data: resolved.data, error: resolved.error ?? null }).then(
+        onFulfilled,
+        onRejected
+      ),
+  }
+  return { from: vi.fn(() => builder), rpc: vi.fn(), builder }
+}
+
+describe('localAdminApi: createSupportCode の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の insert().select().single() のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeWriteBuilderClient({ data: { id: 'code1', status: 'active' } })
+    const { createSupportCode } = await importLocalAdminApi()
+
+    const data = await createSupportCode(
+      client,
+      { code_hash: 'hash-1', plan_type: 'support', memo: 'メモ' },
+      {}
+    )
+
+    expect(data).toEqual({ id: 'code1', status: 'active' })
+    expect(client.builder.insert).toHaveBeenCalledWith({
+      code_hash: 'hash-1',
+      plan_type: 'support',
+      status: 'active',
+      memo: 'メモ',
+    })
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag({ id: 'code-pg', status: 'active' })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeWriteBuilderClient({ data: null })
+    const { createSupportCode } = await importLocalAdminApi()
+
+    const data = await createSupportCode(
+      client,
+      { code_hash: 'hash-1', plan_type: 'support', memo: 'メモ' },
+      { ANALYSIS_DB_DRIVER: 'pg' }
+    )
+
+    expect(data).toEqual({ id: 'code-pg', status: 'active' })
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: updateSupportCodeStatus の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の update().eq().select().single() のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeWriteBuilderClient({ data: { id: 'code1', status: 'revoked' } })
+    const { updateSupportCodeStatus } = await importLocalAdminApi()
+
+    const data = await updateSupportCodeStatus(client, 'code1', 'revoked', {})
+
+    expect(data).toEqual({ id: 'code1', status: 'revoked' })
+    expect(client.builder.eq).toHaveBeenCalledWith('id', 'code1')
+    // update()に渡るオブジェクト自体（status値の脱落等）も検証する
+    expect(client.builder.update).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'revoked' })
+    )
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag({ id: 'code-pg', status: 'revoked' })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeWriteBuilderClient({ data: null })
+    const { updateSupportCodeStatus } = await importLocalAdminApi()
+
+    const data = await updateSupportCodeStatus(client, 'code1', 'revoked', {
+      ANALYSIS_DB_DRIVER: 'pg',
+    })
+
+    expect(data).toEqual({ id: 'code-pg', status: 'revoked' })
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: revokeSupportCode の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase RPC 経路のみを呼び、pg 経路には触れない', async () => {
+    const client = fakeRpcClient(null)
+    const { revokeSupportCode } = await importLocalAdminApi()
+
+    const data = await revokeSupportCode(client, 'code-1', {})
+
+    expect(data).toEqual({ ok: true })
+    expect(client.rpc).toHaveBeenCalledWith('revoke_support_code', { p_code_id: 'code-1' })
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag(null)
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeRpcClient(null)
+    const { revokeSupportCode } = await importLocalAdminApi()
+
+    const data = await revokeSupportCode(client, 'code-1', { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual({ ok: true })
+    expect(client.rpc).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: listLicenses の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const client = fakeQueryBuilderClient({ data: [] })
+    const { listLicenses } = await importLocalAdminApi()
+
+    const data = await listLicenses(client, {})
+
+    expect(data).toEqual([])
+    expect(client.from).toHaveBeenCalledWith('user_licenses')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag([{ twitch_user_id: 'twitch-1' }])
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [] })
+    const { listLicenses } = await importLocalAdminApi()
+
+    const data = await listLicenses(client, { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual([{ twitch_user_id: 'twitch-1' }])
+    expect(client.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('localAdminApi: listTwitchSubs の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
+  it('未設定なら Supabase の from()...チェーンのみを呼び、pg 経路には触れない', async () => {
+    const client = fakeQueryBuilderClient({ data: [], count: 0 })
+    const { listTwitchSubs } = await importLocalAdminApi()
+
+    const data = await listTwitchSubs(client, {})
+
+    expect(data).toEqual({ rows: [], count: 0 })
+    expect(client.from).toHaveBeenCalledWith('users')
+  })
+
+  it('ANALYSIS_DB_DRIVER=pg なら pg 経路を呼び、Supabase client には触れない', async () => {
+    const { tag } = fakeSqlTag([{ twitch_user_id: 'twitch-1' }], 1)
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const client = fakeQueryBuilderClient({ data: [], count: 0 })
+    const { listTwitchSubs } = await importLocalAdminApi()
+
+    const data = await listTwitchSubs(client, { ANALYSIS_DB_DRIVER: 'pg' })
+
+    expect(data).toEqual({ rows: [{ twitch_user_id: 'twitch-1' }], count: 1 })
     expect(client.from).not.toHaveBeenCalled()
   })
 })

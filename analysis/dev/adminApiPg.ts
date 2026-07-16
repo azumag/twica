@@ -505,3 +505,182 @@ export async function getStreamerCardsPagePg(
 
   return { rows, count: countRows[0]?.count ?? 0 }
 }
+
+/**
+ * サポートコード一覧を作成日降順で返す（`GET /support-codes` 相当）。
+ *
+ * PostgREST版は `.range()` を指定しない単発 `select()` のため、Supabase の
+ * max-rows API 設定（既定1000件、`getGachaChartPg` のコメント参照）で
+ * 実際には最大1000件に打ち切られている可能性があるが、pg直結にはこの制約が
+ * 適用されないためLIMITなしで全件返す。support_codes/user_licenses/
+ * twitch_has_sub ユーザーはいずれも管理対象データとして現実的には
+ * 1000件を大きく超えない規模を想定しており（gacha_historyのような
+ * 高頻度書き込みテーブルとは性質が異なる）、`listLicensesPg`/
+ * `listTwitchSubsPg` も同様の判断。
+ */
+export async function listSupportCodesPg(env: Record<string, string>): Promise<unknown[]> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      SELECT COALESCE(jsonb_agg(to_jsonb(sc.*) ORDER BY sc.created_at DESC), '[]'::jsonb) AS result
+      FROM support_codes sc
+    `
+  ) as Promise<unknown[]>
+}
+
+/**
+ * サポートコードを新規作成する（`POST /support-codes` 相当）。PostgREST版と同じく
+ * `code_hash`/`plan_type`/`memo` は呼び出し元（route handler）でのバリデーションなしで
+ * そのまま渡す（不正な値は `support_codes` の CHECK 制約違反として SQL エラーになり、
+ * 両経路とも同じ挙動でエラーになる）。`status` は常に `'active'` 固定（PostgREST版と同じ）。
+ */
+export async function createSupportCodePg(
+  env: Record<string, string>,
+  payload: { codeHash: string; planType: unknown; memo: unknown }
+): Promise<unknown> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      WITH inserted AS (
+        INSERT INTO support_codes (code_hash, plan_type, status, memo)
+        VALUES (${payload.codeHash}, ${payload.planType as never}, 'active', ${payload.memo as never})
+        RETURNING *
+      )
+      SELECT to_jsonb(inserted.*) AS result FROM inserted
+    `
+  )
+}
+
+/**
+ * サポートコードのステータスを更新する（`PATCH /support-codes/:id` 相当）。
+ *
+ * 対象行0件時の挙動は意図的な改善であり、PostgREST版との厳密な parity ではない
+ * ことに注意: PostgREST版の `.update(...).eq('id', ...).select().single()` は
+ * 対象0件で PGRST116 エラーオブジェクトを返すが、そのエラーには `statusCode`
+ * プロパティが無いため、`handleRoute` 呼び出し元のcatch節（配信元:
+ * `localAdminApiPlugin` の `configureServer`）ではそのまま素の HTTP 500 として
+ * 露出する（404 にはならない）。pg直結側は `rows[0]?.result` が
+ * `undefined`（=更新0件）になるのを明示的に検知し、意味的により正しい 404 を
+ * 返すようにした。UI（analysis/src/pages/Licenses.tsx）はこのエラーを
+ * console出力するだけで両ステータスコードを区別していないため実害はないが、
+ * 「既存挙動を変えない」という本移植全体の原則からの意図的な逸脱として明記する。
+ *
+ * 【もう1つの既知の非対称性】PATCH body に `status` が無い場合（`params.status`
+ * が `undefined`）、Supabase経路は JSON.stringify で `status` キー自体が
+ * 消えるため実質 `updated_at` のみの更新として 200 成功する。pg直結側は
+ * postgres.js が `undefined` バインドを UNDEFINED_VALUE で即 throw するため
+ * 500 になる。UIは常に `status` を送るため実害はないが、`getGachaSummaryPg`
+ * の `?? null` 変換（streamerId向け）とは異なり、ここで `status` を
+ * `?? null` しても NOT NULL 制約違反の500になるだけで真の parity にはならない
+ * （そもそも「statusキー自体を省略してUPDATE文から除外する」動的SQLが必要になり
+ * 過剰実装のため見送った）。
+ */
+export async function updateSupportCodeStatusPg(
+  env: Record<string, string>,
+  params: { id: string; status: unknown }
+): Promise<unknown> {
+  const result = await callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      WITH updated AS (
+        UPDATE support_codes
+        SET status = ${params.status as never}, updated_at = now()
+        WHERE id = ${params.id}
+        RETURNING *
+      )
+      SELECT to_jsonb(updated.*) AS result FROM updated
+    `
+  )
+  if (result === undefined) {
+    throw Object.assign(new Error('Support code not found'), { statusCode: 404 })
+  }
+  return result
+}
+
+/**
+ * サポートコードを無効化する（`POST /support-codes/:id/revoke` 相当）。
+ *
+ * 【既知の挙動（本移植でも意図的に維持する）】
+ * `revoke_support_code()`（00017_add_support_plans.sql）は対象コードが
+ * 見つからない場合もSQLエラーにはせず `{error: 'CODE_NOT_FOUND'}` というJSONBを
+ * 返すだけで正常終了する。PostgREST版のこのルートはこの戻り値を一切検査せず
+ * SQLエラーの有無だけを見て常に `{ok: true}` を返しているため、実在しない
+ * code_id を渡しても「revokeに成功した」という応答になる（実害は限定的:
+ * `support_codes` 行は物理削除されないため対象取り違えは起きず、通常のUI操作
+ * （一覧に表示されているidのみrevokeし、成功後に一覧を再取得する）では
+ * この分岐に到達しない。手動でAPIを直接叩いた場合のみ顕在化する）。
+ *
+ * pg直結側は既存挙動を変えない方針のためこの「成功偽装」を意図的に踏襲するが、
+ * 有償アクセスの剥奪に関わる応答がRPCの戻り値本体を検査しないという契約自体は
+ * 本来望ましくない。この関数の変更を機に修正するのは本移植の増分スコープを
+ * 超えるため、別issueとして起票しRPC戻り値の`error`キーを検査する改修を
+ * 検討することを推奨する（本コメントはその検討のための記録）。
+ */
+export async function revokeSupportCodePg(
+  env: Record<string, string>,
+  codeId: string
+): Promise<{ ok: true }> {
+  const sql = getAnalysisSql(env)
+  await sql`select revoke_support_code(${codeId})`
+  return { ok: true }
+}
+
+/**
+ * ライセンス一覧をactivated_at降順で返す（`listLicenses()` 相当）。
+ * `user_licenses.twitch_user_id` は `users` への外部キーではない単なるTEXT列
+ * （ユーザーが未登録でもライセンスは存在しうる）ため、PostgREST版も
+ * `Map.get(...) || license.twitch_user_id` で「該当usersが無ければtwitch_user_id
+ * そのものを表示名として使う」フォールバックをしている。pg直結では
+ * LEFT JOIN + COALESCE で同じフォールバックを1クエリに統合する。
+ */
+export async function listLicensesPg(env: Record<string, string>): Promise<unknown[]> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) => sql`
+      SELECT COALESCE(jsonb_agg(row_json ORDER BY sort_activated_at DESC), '[]'::jsonb) AS result
+      FROM (
+        SELECT
+          to_jsonb(ul.*) || jsonb_build_object(
+            'twitch_username', COALESCE(u.twitch_display_name, ul.twitch_user_id)
+          ) AS row_json,
+          ul.activated_at AS sort_activated_at
+        FROM user_licenses ul
+        LEFT JOIN users u ON u.twitch_user_id = ul.twitch_user_id
+      ) page
+    `
+  ) as Promise<unknown[]>
+}
+
+/**
+ * Twitchサブスク保有ユーザー一覧を返す（`GET /twitch-subs` 相当）。
+ * count/dataは`getGachaTablePg`と同じく別クエリ2本（`Promise.all`）に分離しており、
+ * 同時書き込み（サブスク状態変化）が挟まるとcountとrowsがわずかにずれうる
+ * （PostgREST版の `{ count: 'exact' }` は単一クエリで一貫していた）。
+ * twitch_has_subの更新頻度は低くgacha_historyほどのトラフィックはないため
+ * 実害は小さいと判断し、`countGachaHistory` と同じトレードオフを踏襲する。
+ */
+export async function listTwitchSubsPg(
+  env: Record<string, string>
+): Promise<{ rows: unknown[]; count: number }> {
+  const sql = getAnalysisSql(env)
+
+  const [countRows, rows] = await Promise.all([
+    sql`SELECT count(*)::int AS count FROM users u WHERE u.twitch_has_sub = true`,
+    callAnalysisJsonFunction(env, () => sql`
+      SELECT COALESCE(jsonb_agg(row_json ORDER BY sort_verified_at DESC), '[]'::jsonb) AS result
+      FROM (
+        SELECT
+          jsonb_build_object(
+            'twitch_user_id', u.twitch_user_id,
+            'twitch_display_name', u.twitch_display_name,
+            'twitch_sub_verified_at', u.twitch_sub_verified_at
+          ) AS row_json,
+          u.twitch_sub_verified_at AS sort_verified_at
+        FROM users u
+        WHERE u.twitch_has_sub = true
+      ) page
+    `) as Promise<unknown[]>,
+  ])
+
+  return { rows, count: countRows[0]?.count ?? 0 }
+}

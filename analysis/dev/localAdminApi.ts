@@ -11,6 +11,7 @@ import {
   type ChatAccessUserScopeRow,
 } from '../src/lib/chatAnnouncementAccess'
 import {
+  createSupportCodePg,
   getAnalysisDbDriver,
   getDropRateStatsPg,
   getGachaChartPg,
@@ -22,8 +23,13 @@ import {
   getStreamerLeaderboardPg,
   getUserCardsSummaryPg,
   getUserCardsTablePg,
+  listLicensesPg,
   listStreamersWithStatsPg,
+  listSupportCodesPg,
+  listTwitchSubsPg,
   listUsersPg,
+  revokeSupportCodePg,
+  updateSupportCodeStatusPg,
 } from './adminApiPg'
 
 type Env = Record<string, string>
@@ -280,7 +286,11 @@ async function listStreamerChatAccess(
   })
 }
 
-async function listLicenses(client: SupabaseClient<Database>) {
+export async function listLicenses(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listLicensesPg(env)
+  }
+
   const { data, error } = await client
     .from('user_licenses')
     .select('*')
@@ -305,6 +315,87 @@ async function listLicenses(client: SupabaseClient<Database>) {
     ...license,
     twitch_username: userMap.get(license.twitch_user_id) || license.twitch_user_id,
   }))
+}
+
+export async function listSupportCodes(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listSupportCodesPg(env)
+  }
+  const { data, error } = await client
+    .from('support_codes')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export async function createSupportCode(
+  client: SupabaseClient<Database>,
+  payload: Record<string, unknown>,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return createSupportCodePg(env, {
+      codeHash: String(payload.code_hash || ''),
+      planType: payload.plan_type,
+      memo: payload.memo || null,
+    })
+  }
+  const { data, error } = await client
+    .from('support_codes')
+    .insert({
+      code_hash: String(payload.code_hash || ''),
+      plan_type: payload.plan_type,
+      status: 'active',
+      memo: payload.memo || null,
+    } as never)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function updateSupportCodeStatus(
+  client: SupabaseClient<Database>,
+  id: string,
+  status: unknown,
+  env: Env
+) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return updateSupportCodeStatusPg(env, { id, status })
+  }
+  const { data, error } = await client
+    .from('support_codes')
+    .update({ status, updated_at: new Date().toISOString() } as never)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function revokeSupportCode(client: SupabaseClient<Database>, codeId: string, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return revokeSupportCodePg(env, codeId)
+  }
+  const { error } = await client.rpc('revoke_support_code' as never, {
+    p_code_id: codeId,
+  } as never)
+  if (error) throw error
+  return { ok: true }
+}
+
+export async function listTwitchSubs(client: SupabaseClient<Database>, env: Env) {
+  if (getAnalysisDbDriver(env) === 'pg') {
+    return listTwitchSubsPg(env)
+  }
+  const { data, count, error } = await client
+    .from('users')
+    .select('twitch_user_id, twitch_display_name, twitch_sub_verified_at', { count: 'exact' })
+    .eq('twitch_has_sub', true)
+    .order('twitch_sub_verified_at', { ascending: false })
+  if (error) throw error
+  return { rows: data || [], count: count || 0 }
 }
 
 async function listAnnouncements(client: SupabaseClient<Database>) {
@@ -1198,64 +1289,31 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   }
 
   if (req.method === 'GET' && path === '/support-codes') {
-    const { data, error } = await client
-      .from('support_codes')
-      .select('*')
-      .order('created_at', { ascending: false })
-    if (error) throw error
-    return data || []
+    return listSupportCodes(client, env)
   }
 
   if (req.method === 'POST' && path === '/support-codes') {
     const payload = requireObject(body)
-    const { data, error } = await client
-      .from('support_codes')
-      .insert({
-        code_hash: String(payload.code_hash || ''),
-        plan_type: payload.plan_type,
-        status: 'active',
-        memo: payload.memo || null,
-      } as never)
-      .select()
-      .single()
-    if (error) throw error
-    return data
+    return createSupportCode(client, payload, env)
   }
 
   const supportCodeMatch = path.match(/^\/support-codes\/([^/]+)$/)
   if (req.method === 'PATCH' && supportCodeMatch) {
     const payload = requireObject(body)
-    const { data, error } = await client
-      .from('support_codes')
-      .update({ status: payload.status, updated_at: new Date().toISOString() } as never)
-      .eq('id', supportCodeMatch[1])
-      .select()
-      .single()
-    if (error) throw error
-    return data
+    return updateSupportCodeStatus(client, supportCodeMatch[1], payload.status, env)
   }
 
   const revokeMatch = path.match(/^\/support-codes\/([^/]+)\/revoke$/)
   if (req.method === 'POST' && revokeMatch) {
-    const { error } = await client.rpc('revoke_support_code' as never, {
-      p_code_id: revokeMatch[1],
-    } as never)
-    if (error) throw error
-    return { ok: true }
+    return revokeSupportCode(client, revokeMatch[1], env)
   }
 
   if (req.method === 'GET' && path === '/licenses') {
-    return listLicenses(client)
+    return listLicenses(client, env)
   }
 
   if (req.method === 'GET' && path === '/twitch-subs') {
-    const { data, count, error } = await client
-      .from('users')
-      .select('twitch_user_id, twitch_display_name, twitch_sub_verified_at', { count: 'exact' })
-      .eq('twitch_has_sub', true)
-      .order('twitch_sub_verified_at', { ascending: false })
-    if (error) throw error
-    return { rows: data || [], count: count || 0 }
+    return listTwitchSubs(client, env)
   }
 
   if (req.method === 'GET' && path === '/support-inquiries') {
