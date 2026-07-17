@@ -24,13 +24,8 @@
 // -----------------------------------------------------------------------------
 
 import { cards as cardsTable } from "@/lib/db/schema";
+import { collectErrorSignals } from "@/lib/db/error-signals";
 
-/**
- * 本番 Supabase の cards テーブルに実在しないことが確認済みの8列 (Issue #625,
- * scripts/verify-db-schema.js による実測)。card_number はカード番号採番用、
- * 残り7列は未着手のカードバトル機能用に schema.ts へ定義されているだけで、
- * 対応するマイグレーションが本番に適用されていない。
- */
 export const CARDS_MISSING_IN_PRODUCTION_COLUMNS = [
   "card_number",
   "hp",
@@ -42,14 +37,6 @@ export const CARDS_MISSING_IN_PRODUCTION_COLUMNS = [
   "skill_power",
 ] as const;
 
-/**
- * 上記8列を除いた cards テーブルの明示的な列オブジェクト。
- * Drizzle の `.select({ ... })` / `.returning({ ... })` にそのまま渡せる。
- *
- * rarity_order は GENERATED ALWAYS AS ... STORED の生成カラムで INSERT/UPDATE
- * 対象外だが、SELECT/RETURNING は可能かつ本番に実在するため含める
- * (postgrest 経路の select("*") も返す)。
- */
 export const CARDS_SAFE_COLUMNS = {
   id: cardsTable.id,
   streamer_id: cardsTable.streamer_id,
@@ -67,57 +54,6 @@ export const CARDS_SAFE_COLUMNS = {
   updated_at: cardsTable.updated_at,
 } as const;
 
-type ErrorLike = {
-  code?: unknown;
-  message?: unknown;
-  details?: unknown;
-  hint?: unknown;
-  query?: unknown;
-  cause?: unknown;
-};
-
-/**
- * DrizzleQueryError は PostgreSQL の code/message を `cause` に保持し、外側の
- * message には失敗したSQLだけを含めることがある。循環参照を避けながら cause
- * チェーンを辿り、判定に必要なコードとテキストをまとめる。
- */
-function collectErrorSignals(error: unknown): { codes: Set<string>; text: string } {
-  const codes = new Set<string>();
-  const textParts: string[] = [];
-  const visited = new Set<object>();
-  let current: unknown = error;
-
-  while (current && typeof current === "object" && !visited.has(current)) {
-    visited.add(current);
-    const err = current as ErrorLike;
-
-    if (typeof err.code === "string") codes.add(err.code);
-    for (const value of [err.message, err.details, err.hint, err.query]) {
-      if (value !== undefined && value !== null) textParts.push(String(value));
-    }
-
-    current = err.cause;
-  }
-
-  return { codes, text: textParts.join(" ") };
-}
-
-/**
- * 「cards テーブルの本番未デプロイ8列のいずれかが存在しない」ことによる
- * SELECT/RETURNING 失敗を検知する。card-number-errors.ts の
- * isMissingCardNumberColumnError と同じ判定ロジック（postgrest 由来の
- * "schema cache"/PGRST204、raw postgres 由来の "column ... does not exist"
- * (42703) の両方にマッチする汎用テキスト判定）を、8列全てに拡張したもの。
- *
- * pg (postgres.js) の RETURNING/SELECT は列リストをまとめて評価するため、
- * エラーメッセージには通常「最初に解決できなかった1列」のみが含まれる
- * (例: `column "card_number" of relation "cards" does not exist"`)。
- * DrizzleQueryError では 42703 が `cause.code` に入り、外側の message/query に
- * 対象列を含むSQLが入るため、cause チェーン全体を合わせて判定する (#779)。
- * 8列は本番で常にまとめて欠落している(Issue #625)ため、いずれか1列分の
- * エラーテキストを検知できれば、明示列リストへの再試行で残り7列も含めて
- * 解消される。
- */
 export function isMissingCardsBattleColumnError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
 
@@ -132,16 +68,6 @@ export function isMissingCardsBattleColumnError(error: unknown): boolean {
   return CARDS_MISSING_IN_PRODUCTION_COLUMNS.some((column) => text.includes(column));
 }
 
-/**
- * 「まず無指定/全列で試行 → 列欠落エラー検知 → CARDS_SAFE_COLUMNS で再試行」
- * パターンの共通化 (#685 self-review fix)。src/lib/dashboard-data.ts の7箇所
- * （getStreamerDataPg 等）で同一の try/catch/retry が反復していたため抽出した。
- *
- * attempt(useSafeColumns) は呼び出し側が useSafeColumns の値に応じてクエリの
- * 列指定（無指定 or CARDS_SAFE_COLUMNS 等への差し替え）を切り替える形で実装する。
- * isMissingCardsBattleColumnError に該当しないエラーはそのまま再送出し、
- * 呼び出し側の既存 catch（エラー時の外部挙動パリティ維持）に委ねる。
- */
 export async function withCardsBattleColumnFallback<T>(
   attempt: (useSafeColumns: boolean) => Promise<T>
 ): Promise<T> {
