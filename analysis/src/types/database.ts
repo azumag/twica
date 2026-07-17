@@ -10,6 +10,98 @@ export type ChatSenderMode = 'streamer' | 'custom_bot' | 'official_bot'
 export type TwitchBotOwnerType = 'streamer' | 'system'
 export type TwitchBotStatus = 'active' | 'revoked' | 'error'
 
+// UI向けDTO。Supabase生成スキーマ（SupabaseAdminSchema）の内部構造から独立した正本であり、
+// SupabaseAdminSchema側の該当テーブルRowフィールドはこれらの型を参照する（逆ではない）。
+// フィールドを追加/変更する場合はここを更新し、SupabaseAdminSchema側のInsert/Updateや
+// 実スキーマ（supabase/migrations/）との整合を確認すること。
+//
+// object type alias（`type X = {...}`）で定義していることに注意: `interface`にすると
+// @supabase/postgrest-jsのGenericTable制約（Row: Record<string, unknown>）を満たさなくなり、
+// SupabaseClient<SupabaseAdminSchema>のSchema型引数が丸ごとneverにフォールバックして
+// 全テーブル（このRowを参照しないテーブルも含む）でdev/localAdminApi.tsの型検査が壊れる
+// （TypeScriptはtype aliasのオブジェクト型には暗黙のindex signatureを認めるが、
+// interfaceには認めないため）。実測で確認済み。
+export type Streamer = {
+  id: string
+  twitch_user_id: string
+  twitch_username: string
+  twitch_display_name: string
+  twitch_profile_image_url: string | null
+  channel_point_reward_id: string | null
+  channel_point_reward_name: string | null
+  is_active: boolean
+  // ガチャ効果音URL - R2に保存された音声ファイルのURL
+  gacha_sound_url: string | null
+  // ガチャ効果音の有効/無効フラグ
+  gacha_sound_enabled: boolean
+  // チャット通知の有効/無効フラグ（デフォルトはfalse、オプトイン方式）
+  // Whether to post gacha results to Twitch chat (opt-in, default false)
+  chat_announcement_enabled: boolean
+  // チャット通知のカスタムテンプレート（nullの場合はデフォルトテンプレートを使用）
+  // Custom message template for chat announcements (null uses default)
+  chat_announcement_template: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type Card = {
+  id: string
+  streamer_id: string
+  name: string
+  description: string | null
+  image_url: string | null
+  rarity: Rarity
+  drop_rate: number
+  is_active: boolean
+  hp: number
+  atk: number
+  def: number
+  spd: number
+  skill_type: SkillType
+  skill_name: string
+  skill_power: number
+  created_at: string
+  updated_at: string
+}
+
+export type User = {
+  id: string
+  twitch_user_id: string
+  twitch_username: string
+  twitch_display_name: string
+  twitch_profile_image_url: string | null
+  // 利用規約同意日時 - NULLの場合は未同意
+  // Terms of Service acceptance timestamp - NULL means not yet accepted
+  tos_accepted_at: string | null
+  // Twitch OAuthで付与されたスコープ一覧（PostgreSQL TEXT配列）
+  // user:write:chat があればチャット通知の送信権限あり
+  twitch_scopes: string[]
+  created_at: string
+  updated_at: string
+}
+
+export type GachaHistory = {
+  id: string
+  user_twitch_id: string
+  user_twitch_username: string | null
+  card_id: string
+  streamer_id: string
+  redeemed_at: string
+}
+
+// お知らせのDTO
+export type Announcement = {
+  id: string
+  title: string
+  body: string
+  severity: 'info' | 'warning' | 'critical'
+  is_published: boolean
+  published_at: string | null
+  expires_at: string | null
+  created_at: string
+  updated_at: string
+}
+
 // ANALYSIS_DB_DRIVER未設定時（デフォルトのSupabase PostgREST経路）専用の生成スキーマ型。
 // SupabaseClient<>のジェネリクスとしてdev/localAdminApi.tsが使用する。
 // browser側UIコードから直接importしないこと（UIはadminApi.tsのDTOを正本とする）。
@@ -17,28 +109,7 @@ export interface SupabaseAdminSchema {
   public: {
     Tables: {
       streamers: {
-        Row: {
-          id: string
-          twitch_user_id: string
-          twitch_username: string
-          twitch_display_name: string
-          twitch_profile_image_url: string | null
-          channel_point_reward_id: string | null
-          channel_point_reward_name: string | null
-          is_active: boolean
-          // ガチャ効果音URL - R2に保存された音声ファイルのURL
-          gacha_sound_url: string | null
-          // ガチャ効果音の有効/無効フラグ
-          gacha_sound_enabled: boolean
-          // チャット通知の有効/無効フラグ（デフォルトはfalse、オプトイン方式）
-          // Whether to post gacha results to Twitch chat (opt-in, default false)
-          chat_announcement_enabled: boolean
-          // チャット通知のカスタムテンプレート（nullの場合はデフォルトテンプレートを使用）
-          // Custom message template for chat announcements (null uses default)
-          chat_announcement_template: string | null
-          created_at: string
-          updated_at: string
-        }
+        Row: Streamer
         Insert: {
           id?: string
           twitch_user_id: string
@@ -74,25 +145,7 @@ export interface SupabaseAdminSchema {
         Relationships: []
       }
       cards: {
-        Row: {
-          id: string
-          streamer_id: string
-          name: string
-          description: string | null
-          image_url: string | null
-          rarity: Rarity
-          drop_rate: number
-          is_active: boolean
-          hp: number
-          atk: number
-          def: number
-          spd: number
-          skill_type: SkillType
-          skill_name: string
-          skill_power: number
-          created_at: string
-          updated_at: string
-        }
+        Row: Card
         Insert: {
           id?: string
           streamer_id: string
@@ -134,21 +187,7 @@ export interface SupabaseAdminSchema {
         Relationships: []
       }
       users: {
-        Row: {
-          id: string
-          twitch_user_id: string
-          twitch_username: string
-          twitch_display_name: string
-          twitch_profile_image_url: string | null
-          // 利用規約同意日時 - NULLの場合は未同意
-          // Terms of Service acceptance timestamp - NULL means not yet accepted
-          tos_accepted_at: string | null
-          // Twitch OAuthで付与されたスコープ一覧（PostgreSQL TEXT配列）
-          // user:write:chat があればチャット通知の送信権限あり
-          twitch_scopes: string[]
-          created_at: string
-          updated_at: string
-        }
+        Row: User
         Insert: {
           id?: string
           twitch_user_id: string
@@ -299,14 +338,7 @@ export interface SupabaseAdminSchema {
         Relationships: []
       }
       gacha_history: {
-        Row: {
-          id: string
-          user_twitch_id: string
-          user_twitch_username: string | null
-          card_id: string
-          streamer_id: string
-          redeemed_at: string
-        }
+        Row: GachaHistory
         Insert: {
           id?: string
           user_twitch_id: string
@@ -393,17 +425,7 @@ export interface SupabaseAdminSchema {
       }
       // お知らせテーブル - 管理者がユーザー向けに投稿するお知らせ
       announcements: {
-        Row: {
-          id: string
-          title: string
-          body: string
-          severity: 'info' | 'warning' | 'critical'
-          is_published: boolean
-          published_at: string | null
-          expires_at: string | null
-          created_at: string
-          updated_at: string
-        }
+        Row: Announcement
         Insert: {
           id?: string
           title: string
@@ -601,14 +623,6 @@ export interface SupabaseAdminSchema {
     }
   }
 }
-
-// Helper types for easier usage
-export type Streamer = SupabaseAdminSchema['public']['Tables']['streamers']['Row']
-export type Card = SupabaseAdminSchema['public']['Tables']['cards']['Row']
-export type User = SupabaseAdminSchema['public']['Tables']['users']['Row']
-export type GachaHistory = SupabaseAdminSchema['public']['Tables']['gacha_history']['Row']
-// お知らせのヘルパー型
-export type Announcement = SupabaseAdminSchema['public']['Tables']['announcements']['Row']
 
 // 問い合わせカテゴリ
 export type InquiryCategory = 'bug' | 'feature' | 'other'
