@@ -67,6 +67,41 @@ export const CARDS_SAFE_COLUMNS = {
   updated_at: cardsTable.updated_at,
 } as const;
 
+type ErrorLike = {
+  code?: unknown;
+  message?: unknown;
+  details?: unknown;
+  hint?: unknown;
+  query?: unknown;
+  cause?: unknown;
+};
+
+/**
+ * DrizzleQueryError は PostgreSQL の code/message を `cause` に保持し、外側の
+ * message には失敗したSQLだけを含めることがある。循環参照を避けながら cause
+ * チェーンを辿り、判定に必要なコードとテキストをまとめる。
+ */
+function collectErrorSignals(error: unknown): { codes: Set<string>; text: string } {
+  const codes = new Set<string>();
+  const textParts: string[] = [];
+  const visited = new Set<object>();
+  let current: unknown = error;
+
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const err = current as ErrorLike;
+
+    if (typeof err.code === "string") codes.add(err.code);
+    for (const value of [err.message, err.details, err.hint, err.query]) {
+      if (value !== undefined && value !== null) textParts.push(String(value));
+    }
+
+    current = err.cause;
+  }
+
+  return { codes, text: textParts.join(" ") };
+}
+
 /**
  * 「cards テーブルの本番未デプロイ8列のいずれかが存在しない」ことによる
  * SELECT/RETURNING 失敗を検知する。card-number-errors.ts の
@@ -77,19 +112,21 @@ export const CARDS_SAFE_COLUMNS = {
  * pg (postgres.js) の RETURNING/SELECT は列リストをまとめて評価するため、
  * エラーメッセージには通常「最初に解決できなかった1列」のみが含まれる
  * (例: `column "card_number" of relation "cards" does not exist"`)。
+ * DrizzleQueryError では 42703 が `cause.code` に入り、外側の message/query に
+ * 対象列を含むSQLが入るため、cause チェーン全体を合わせて判定する (#779)。
  * 8列は本番で常にまとめて欠落している(Issue #625)ため、いずれか1列分の
  * エラーテキストを検知できれば、明示列リストへの再試行で残り7列も含めて
  * 解消される。
  */
 export function isMissingCardsBattleColumnError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const err = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
-  const text = [err.message, err.details, err.hint]
-    .map((value) => String(value || ""))
-    .join(" ");
 
+  const { codes, text } = collectErrorSignals(error);
   const looksLikeSchemaError =
-    text.includes("schema cache") || text.includes("column") || err.code === "PGRST204" || err.code === "42703";
+    text.includes("schema cache") ||
+    text.includes("column") ||
+    codes.has("PGRST204") ||
+    codes.has("42703");
   if (!looksLikeSchemaError) return false;
 
   return CARDS_MISSING_IN_PRODUCTION_COLUMNS.some((column) => text.includes(column));
