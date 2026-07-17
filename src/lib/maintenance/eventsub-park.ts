@@ -1,0 +1,174 @@
+/**
+ * EventSub notification の KV 退避 (#694 Stage 4)
+ *
+ * maintenance mode（'off' 以外）のとき、EventSub webhook の notification メッセージを
+ * DB へ書き込まず KV へ退避するための最小実装。呼び出し元（route.ts）は
+ * mode !== 'off' のときだけこの関数を呼ぶ。リプレイ（退避データの再処理）は
+ * このモジュールのスコープ外——退避データの形式だけリプレイ可能に設計し、
+ * リプレイ手順自体は Stage 7 の runbook 更新で記載する。
+ *
+ * リプレイ実装者への注記（冪等性の前提）:
+ * Twitch の EventSub は at-least-once 配送であり、加えて maintenance mode の
+ * 切替タイミングと同時にリクエストが来た場合のレース（切替直前は通常処理、
+ * 直後はこの退避処理、という揺れ）もありうる。そのため同一 messageId が
+ * 複数キー（受信時刻違い）で退避される可能性を前提にすること。リプレイ側で
+ * 独自に重複排除する必要はなく、DB 側の event_id UNIQUE 制約による冪等性
+ * （ON CONFLICT (event_id) DO NOTHING、gacha.ts 参照。重複時は
+ * 'Duplicate event' として静かにスキップされる）にそのまま乗ってよい。
+ *
+ * KV namespace の選定について:
+ * 新規の専用 KV namespace を作るには Cloudflare 側（`wrangler kv:namespace create`）
+ * の操作がオーナー権限で必要で、デプロイ前に済ませておく必要がある。maintenance
+ * mode は既定で 'off' であり、そのときはこのモジュールのコードパスに一切入らない
+ * （呼び出し側が mode !== 'off' のときだけ呼ぶ）。「フラグ未設定なら使われない
+ * コード」のためだけに新しいインフラ依存（専用 namespace 作成・wrangler.toml
+ * 更新・デプロイ）を先回りして増やすのは YAGNI に反する。そのため既存の
+ * RATE_LIMIT_KV バインディング（wrangler.toml）をキープレフィックス
+ * `maintenance:eventsub:` で分離して共用する。将来的に専用 namespace に
+ * 分けたくなった場合は KV_BINDING_NAME を差し替えるだけで済むよう、
+ * バインディング名をこの1箇所に集約している。
+ */
+import { logger } from '@/lib/logger'
+import type { MaintenanceState } from './state'
+
+/** 共用する KV バインディング名。専用 namespace に切り替える際はここだけ変更すればよい。 */
+const KV_BINDING_NAME = 'RATE_LIMIT_KV'
+
+/**
+ * 退避データのキープレフィックス。RATE_LIMIT_KV 内で既に使われている
+ * rate limit 用キー（`ratelimit:*`、src/lib/rate-limit.ts 参照）と
+ * 名前空間が衝突しないよう分離する。
+ */
+const KEY_PREFIX = 'maintenance:eventsub:'
+
+/**
+ * 退避データの TTL（秒）。7日間。
+ *
+ * 選定理由:
+ * - リプレイ前に消えると復旧不能（データロス）になるため、maintenance window の
+ *   想定継続時間（cutover作業は通常数時間〜長くて1日程度）に対して十分な余裕を持たせる。
+ * - 一方で TTL 無し（無期限）にすると、リプレイ手順の実行を運用者が失念した場合や
+ *   maintenance mode が想定より長期化した場合に KV ストレージが無制限に増え続ける
+ *   （課金・運用上のリスク）。また視聴者の Twitch ユーザーIDやチャンネルポイント
+ *   償還情報を含むデータを無期限に保持し続けることはデータ最小化の観点でも
+ *   望ましくない。
+ * - 7日は「通常の cutover 作業が長引いても発見・対応できる」実務的な余裕と、
+ *   「際限なく残り続けない」の両方を満たすラウンドナンバーとして選んだ
+ *   （issue #694 側に具体的な想定継続期間の指定はないため、この値は実際の
+ *   運用実績を見て Stage 7 の runbook 整備時に見直す前提とする）。
+ */
+const PARK_TTL_SECONDS = 7 * 24 * 60 * 60
+
+/**
+ * Cloudflare Workers KV namespace の最小インターフェース。
+ * r2-client.ts の R2BucketLike と同じ方針: @cloudflare/workers-types に
+ * 依存せず、実際に使うメソッドだけを最小定義する。
+ */
+interface KVNamespaceLike {
+  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
+}
+
+/** parkEventSubNotification に渡す入力。 */
+export interface ParkEventSubNotificationInput {
+  /** Twitch-Eventsub-Message-Id ヘッダーの値。KV キーとリプレイ時の相関に使う。 */
+  messageId: string
+  /**
+   * EventSub notification の生 payload（`{ subscription, event, ... }` 全体、
+   * JSON.parse 済み）。リプレイ時に handleRedemption / handleRaidNotification
+   * 相当の再実行に必要な情報をすべて含む。
+   */
+  payload: unknown
+  /** ログ・将来のリプレイ時フィルタリング用に個別保持する subscription type。 */
+  subscriptionType: string
+  /** 退避時点の maintenance state。operationId をリプレイ時の相関ログに残すため。 */
+  maintenanceState: MaintenanceState
+}
+
+/**
+ * Cloudflare Workers 環境から RATE_LIMIT_KV バインディングを取得する。
+ * next dev 等 Workers 外の環境、または binding 未設定時は null を返す
+ * （r2-client.ts の getR2Binding と同じフォールバックパターン）。
+ */
+async function getMaintenanceKvBinding(): Promise<KVNamespaceLike | null> {
+  try {
+    // ローカル開発時に @opennextjs/cloudflare をバンドルしないよう動的 import
+    // （db/client.ts, r2-client.ts と同じ理由）
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare')
+    const { env } = await getCloudflareContext({ async: true })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const binding = (env as any)[KV_BINDING_NAME] as KVNamespaceLike | undefined
+    return binding ?? null
+  } catch {
+    // Cloudflare Workers 環境ではない（next dev / Node / テスト）
+    return null
+  }
+}
+
+/**
+ * EventSub notification を KV へ退避する。
+ *
+ * 戻り値は「退避に成功したか」を示すが、呼び出し側（route.ts）は成功・失敗の
+ * どちらでも Twitch には 2xx を返し、DB 書き込みは行わない設計にしている。
+ * 理由: KV 書き込みに失敗する状況（KV障害等）で 500 を返すと Twitch の
+ * 自動リトライに賭けることになるが、そのリトライも同じ KV 障害下では
+ * 恐らく失敗し続ける一方で、5xx の連続はこの Stage 全体の前提である
+ * 「Twitch への 5xx は subscription revoke 判定材料になるため厳禁」という
+ * 制約に抵触するリスクがある。そのため「退避もできない = データロスを記録して
+ * 前進する」を選び、2xx を返す判断を route.ts 側で行っている
+ * （代替案・トレードオフは実装報告に記載）。
+ *
+ * @returns 退避に成功したら true。KV バインディング未取得・put 失敗のいずれも false。
+ */
+export async function parkEventSubNotification(
+  input: ParkEventSubNotificationInput
+): Promise<boolean> {
+  const receivedAt = new Date().toISOString()
+  // ISO8601 の受信時刻をキーに含めることで、KV list 時に受信時刻順でソートされる
+  // （リプレイ時の処理順の目安になる）。messageId も付与して同一ミリ秒内の
+  // 複数通知でもキーが衝突しないようにする。
+  const key = `${KEY_PREFIX}${receivedAt}:${input.messageId}`
+
+  const record = {
+    messageId: input.messageId,
+    subscriptionType: input.subscriptionType,
+    payload: input.payload,
+    receivedAt,
+    maintenanceMode: input.maintenanceState.mode,
+    maintenanceOperationId: input.maintenanceState.operationId,
+  }
+
+  try {
+    const kv = await getMaintenanceKvBinding()
+    if (!kv) {
+      // logger.error に格上げする理由: これは「ガチャ redemption を退避できず
+      // 消失した」というデータロスであり、警告ログの監視をオペレーターに
+      // 期待する warn では検知漏れのリスクがある。logger.error は
+      // errors テーブル記録 → Cron Worker (twica-error-reporter) による
+      // GitHub Issue 自動起票の経路に乗るため（logger.ts 参照）、オペレーターが
+      // 能動的にログを見ていなくても検知できる。検索可能なタグ
+      // （[maintenance:eventsub] ...）はそのままこのログの grep 起点として使える。
+      // Stage 7 でこの経路にもとづくアラート/runbook の追加検討を行う想定。
+      logger.error(
+        `[maintenance:eventsub] KV binding unavailable, dropping message id=${input.messageId} type=${input.subscriptionType} mode=${input.maintenanceState.mode}`
+      )
+      return false
+    }
+
+    await kv.put(key, JSON.stringify(record), { expirationTtl: PARK_TTL_SECONDS })
+
+    // 検索可能なタグ付きログ（[maintenance:eventsub] parked ...）。退避「成功」件数の
+    // 集計はこのログをベースに Stage 7 で行う想定（失敗側のアラート設定は下記参照）。
+    logger.info(
+      `[maintenance:eventsub] parked message id=${input.messageId} type=${input.subscriptionType} mode=${input.maintenanceState.mode}`
+    )
+    return true
+  } catch (error) {
+    // logger.error に格上げする理由は上の KV binding unavailable ケースと同じ:
+    // ガチャ収入相当のデータロスをオペレーターの手動ログ監視に頼らず検知するため。
+    logger.error(
+      `[maintenance:eventsub] failed to park message id=${input.messageId} type=${input.subscriptionType} mode=${input.maintenanceState.mode} - data lost`,
+      { error: error instanceof Error ? error.message : String(error) }
+    )
+    return false
+  }
+}

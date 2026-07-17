@@ -21,6 +21,8 @@ import { resolvePackDisplayName } from "@/lib/collection-packs";
 import { getDb } from "@/lib/db/client";
 import { getGachaDbDriver } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
+import { getMaintenanceState } from "@/lib/maintenance/state";
+import { parkEventSubNotification } from "@/lib/maintenance/eventsub-park";
 
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
@@ -306,6 +308,43 @@ export async function POST(request: NextRequest) {
       subscriptionType,
       broadcasterUserId: event?.broadcaster_user_id,
     });
+
+    // #694 Stage 4: maintenance mode（'off'以外）中は notification をDBへ書き込まず
+    // KVへ退避し、Twitchには通常どおり2xxを返す。
+    //
+    // - 挿入位置: 署名検証（POSTハンドラ冒頭）より後、かつ実際にDB書き込みを行う
+    //   handleRedemption/handleRaidNotificationより前。署名検証前に退避すると
+    //   偽payloadがKVに混入するため必ず検証後でなければならない。なお、この
+    //   route には「重複チェック」という独立した事前ステップは存在せず
+    //   （event_id の重複判定はDB書き込み関数内部のON CONFLICTに一本化されている、
+    //   gacha.ts 参照）、DB書き込み関数の直前がこのroute構造上の最も早い安全な
+    //   挿入点になる。
+    // - Twitchへの5xxはEventSub subscriptionのrevoke判定材料になりうるため、
+    //   maintenance中でも「受信失敗」を装う503/500は厳禁という制約が本Stage全体の
+    //   前提（guard.tsが一般writeに503を返すのとは非対称にEventSubだけ常に2xx）。
+    //   KV退避が失敗した場合も同じ理由で2xxを返す（parkEventSubNotification内の
+    //   コメント参照）。
+    // - challenge（webhook_callback_verification）とrevocationはこの分岐に入らず
+    //   従来どおり処理する。challengeはDB書き込みを一切行わない。revocationは
+    //   「予期しない」理由の場合のみreportError経由でerrorsテーブルへ書き込むが、
+    //   これは診断目的の運用ログでありガチャ結果等の業務データではないこと、また
+    //   インシデント対応中（incident-read-only）こそその可視性が必要であることから、
+    //   意図的に退避/抑制の対象外とした（実装報告に判断根拠を記載）。
+    // - subscriptionTypeで分岐せずnotification全件を退避する: 現状DB書き込みを
+    //   伴うのはCHANNEL_POINTS_REDEMPTION_ADDとCHANNEL_RAIDの2種のみだが、将来
+    //   subscriptionTypeが追加された際に「退避対象への追加を個別に忘れる」事故を
+    //   構造的に防ぐため、notification全体を退避対象にする（Stage 3の
+    //   allowlist default-denyと同じfail-safeの考え方）。
+    const maintenanceState = getMaintenanceState();
+    if (maintenanceState.mode !== 'off') {
+      await parkEventSubNotification({
+        messageId,
+        payload: data,
+        subscriptionType,
+        maintenanceState,
+      });
+      return NextResponse.json({ received: true });
+    }
 
     if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
       // ガチャ実行のみawaitし、通知処理はwaitUntil()で遅延実行してCPU時間を削減
