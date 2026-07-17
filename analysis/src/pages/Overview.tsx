@@ -8,7 +8,6 @@ import {
 import { StatCard } from '../components/StatCard'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { StreamerPopup } from '../components/StreamerPopup'
-import { GachaHistory, Card, Streamer } from '../types/database'
 import { RarityBadge } from '../components/RarityBadge'
 import {
   LineChart,
@@ -34,7 +33,7 @@ export function Overview() {
     weekGacha: 0,
     monthGacha: 0,
   })
-  const [recentGacha, setRecentGacha] = useState<(GachaHistory & { cards: Card; streamers: Streamer })[]>([])
+  const [recentGacha, setRecentGacha] = useState<OverviewData['recentGacha']>([])
   const [userGrowth, setUserGrowth] = useState<OverviewData['userGrowth']>([])
   const [gachaGrowth, setGachaGrowth] = useState<OverviewData['gachaGrowth']>([])
   const [loading, setLoading] = useState(true)
@@ -63,7 +62,7 @@ export function Overview() {
       try {
         const data = await adminApi.getOverview({ signal: controller.signal })
         setStats(data.stats)
-        setRecentGacha(data.recentGacha as (GachaHistory & { cards: Card; streamers: Streamer })[])
+        setRecentGacha(data.recentGacha)
         setUserGrowth(data.userGrowth)
         setGachaGrowth(data.gachaGrowth)
       } catch (err) {

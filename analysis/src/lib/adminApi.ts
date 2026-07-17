@@ -13,17 +13,17 @@ import type {
   User,
   Rarity,
 } from '../types/database'
-interface LicenseWithUser extends UserLicense {
+export interface LicenseWithUser extends UserLicense {
   twitch_username?: string
 }
 
-interface TwitchSubUser {
+export interface TwitchSubUser {
   twitch_user_id: string
   twitch_display_name: string
   twitch_sub_verified_at: string | null
 }
 
-interface AnnouncementWithStats extends Announcement {
+export interface AnnouncementWithStats extends Announcement {
   read_count: number
 }
 
@@ -100,14 +100,21 @@ export interface Paginated<T> {
 // analysis/src/pages/Users.tsx の fetchUsers() が読む形（user.user_cards?.[0]?.count）と一致
 export type UserWithCardCount = User & { user_cards: { count: number }[] }
 
-// analysis/src/pages/Streamers.tsx の StreamerWithStats と同じ形
+// ストリーマーのカード統計とストレージ使用量を含む拡張型。analysis/src/pages/Streamers.tsxが使う
 export interface StreamerWithStats extends Streamer {
   card_count: number
+  // ストレージ使用量（バイト単位）- blob_filesのuser_prefix集計による実使用量
   storage_bytes: number
+  // usersテーブルのtwitch_scopesにuser:write:chatが含まれているか
+  // チャット通知の送信にはこのスコープが必要
   has_chat_scope: boolean
+  // 現在の送信方式（配信者本人 / BOT）でチャット通知を送信できるか
   chat_send_available: boolean
+  // 有効なBOT送信設定があるか
   has_active_bot_sender: boolean
+  // 現在選択されているチャット通知の送信方式
   chat_sender_mode: 'streamer' | 'custom_bot' | 'official_bot'
+  // 投票キャンペーンボーナスを有効化しているか
   has_vote_campaign_bonus: boolean
 }
 

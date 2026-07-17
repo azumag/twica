@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { adminApi } from '../lib/adminApi'
+import { adminApi, type LicenseWithUser, type TwitchSubUser } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
-import type { SupportCode, UserLicense, SupportCodeStatus, PlanType } from '../types/database'
+import type { SupportCode, SupportCodeStatus, PlanType } from '../types/database'
 
 // プランタイプ表示用の設定
 const PLAN_OPTIONS: { value: PlanType; label: string; color: string }[] = [
@@ -16,11 +16,6 @@ const STATUS_OPTIONS: { value: SupportCodeStatus; label: string; color: string }
   { value: 'rotating', label: 'Rotating', color: 'bg-orange-100 text-orange-800' },
   { value: 'revoked', label: 'Revoked', color: 'bg-red-100 text-red-800' },
 ]
-
-// ライセンスにユーザー情報を付与した拡張型
-interface LicenseWithUser extends UserLicense {
-  twitch_username?: string
-}
 
 /**
  * ライセンス管理ページ（analysis管理ダッシュボード用）
@@ -59,11 +54,6 @@ export function Licenses() {
   const [licensesPageSize, setLicensesPageSize] = useState(20)
 
   // Twitchサブスクユーザー一覧
-  interface TwitchSubUser {
-    twitch_user_id: string
-    twitch_display_name: string
-    twitch_sub_verified_at: string | null
-  }
   const [twitchSubs, setTwitchSubs] = useState<TwitchSubUser[]>([])
   const [twitchSubsLoading, setTwitchSubsLoading] = useState(true)
   const [twitchSubsError, setTwitchSubsError] = useState<string | null>(null)

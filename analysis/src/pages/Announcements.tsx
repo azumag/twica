@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { adminApi } from '../lib/adminApi'
+import { adminApi, type AnnouncementWithStats } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { Announcement } from '../types/database'
@@ -10,11 +10,6 @@ const SEVERITY_OPTIONS = [
   { value: 'warning', label: 'Warning', color: 'bg-yellow-100 text-yellow-800' },
   { value: 'critical', label: 'Critical', color: 'bg-red-100 text-red-800' },
 ] as const
-
-// お知らせ + 既読数の拡張型
-interface AnnouncementWithStats extends Announcement {
-  read_count: number
-}
 
 // フォーム初期値
 const INITIAL_FORM = {

@@ -1,29 +1,9 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { adminApi } from '../lib/adminApi'
+import { adminApi, type StreamerWithStats } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { StreamerPopup } from '../components/StreamerPopup'
-import { Streamer } from '../types/database'
-
-// Extended streamer type with card statistics and storage usage
-// ストリーマーのカード統計とストレージ使用量を含む拡張型
-interface StreamerWithStats extends Streamer {
-  card_count: number
-  // ストレージ使用量（バイト単位）- blob_filesのuser_prefix集計による実使用量
-  storage_bytes: number
-  // usersテーブルのtwitch_scopesにuser:write:chatが含まれているか
-  // チャット通知の送信にはこのスコープが必要
-  has_chat_scope: boolean
-  // 現在の送信方式（配信者本人 / BOT）でチャット通知を送信できるか
-  chat_send_available: boolean
-  // 有効なBOT送信設定があるか
-  has_active_bot_sender: boolean
-  // 現在選択されているチャット通知の送信方式
-  chat_sender_mode: 'streamer' | 'custom_bot' | 'official_bot'
-  // 投票キャンペーンボーナスを有効化しているか
-  has_vote_campaign_bonus: boolean
-}
 
 /**
  * Formats byte count into human-readable string (KB, MB, GB)
