@@ -233,8 +233,13 @@ read-only 中は「DB に書かず KV に退避する」専用の分岐を通す
    - 接続文字列は `docs/db-driver-migration.md` の Direct connection
      手順で取得したもの（`sslmode` を必ず維持）。
 4. **ダンプ内容の事前確認**: `pg_restore -l twica_prod_*.dump` で
-   テーブル数（25）・関数（約28）・トリガー（11）が想定件数と
-   大きく乖離していないことを目視確認する。
+   テーブル数・関数・トリガーが想定件数と大きく乖離していないことを
+   目視確認する。**想定件数は migration ファイル由来の 25/約28/11 ではなく、
+   prod 実体由来の値**: テーブル **23**（battles/battle_stats が prod に
+   存在しないため）・トリガー **9**（11個のうち `update_battle_stats_trigger` /
+   `update_battle_stats_updated_at` の2個は battle 系テーブル上のため存在
+   しない）・関数 27〜28（`update_battle_stats` 関数の prod 実在は未確認、
+   リハーサル時に実測して確定させる）。
 5. **PlanetScale Postgres への restore**:
    ```bash
    pg_restore --no-owner --no-privileges --clean --if-exists \
@@ -244,8 +249,21 @@ read-only 中は「DB に書かず KV に退避する」専用の分岐を通す
    - `--clean --if-exists`: preview リハーサルでの再実行を安全にするため。
      本番の初回カットオーバーでは対象 DB が空である前提のため実質 no-op。
 6. **スキーマ照合**: `DATABASE_URL=<PlanetScale接続文字列> node scripts/verify-db-schema.js`
-   を実行し、`src/lib/db/schema.ts` との差分ゼロ・SELECT smoke 成功を確認する
+   を実行し、`src/lib/db/schema.ts` との差分・SELECT smoke を確認する
    （既存スクリプトをそのまま流用可能。CI では実行しない運用も踏襲）。
+   **注意: 「差分ゼロ・exit 0」は期待できない。** pg_dump/restore は prod の
+   実スキーマをそのまま移送するため、既知のスキーマドリフト（#625:
+   `battles`/`battle_stats` テーブルが prod に存在しない・`cards` の 8 列が
+   prod に欠落）は新 DB にもそのまま引き継がれる。スクリプトは schema.ts を
+   正として双方向で差分検出し、schema.ts 側の全テーブルへ SELECT smoke を
+   発行するため、**期待される出力は次の通り**（これ以外の差分が出た場合のみ
+   異常と判断する）:
+   - table missing in DB × 2（battles / battle_stats）
+   - column missing in DB × 8（cards: card_number/hp/atk/def/spd/
+     skill_type/skill_name/skill_power）
+   - SELECT smoke failure × 2（battles / battle_stats、テーブル不在のため）
+   - 終了コード **1**（差分ありのため非ゼロ終了が正常。exit 0 を成功条件に
+     した自動化スクリプトでラップしないこと）
 7. **シーケンス値の確認**（6章）。
 8. **Hyperdrive の接続先を PlanetScale に切り替える**（`wrangler hyperdrive
    update` または config 再作成。詳細は 7章ロールバック手順と対になる操作）。
@@ -289,13 +307,15 @@ Phase 2（プロバイダ切替）特有の項目を追加したもの。
 - [ ] `pg_dump`/`pg_restore` がエラーなく完了（`pg_restore` の終了コード・
       WARNING ログを確認）
 - [ ] `scripts/verify-db-schema.js` が PlanetScale の `DATABASE_URL` に対して
-      差分ゼロ・全25テーブルへの SELECT smoke 成功
-- [ ] 25テーブル全ての行数が dump 時点の Supabase 側件数と一致
+      **既知ドリフト（5.1 手順6の注意書き参照）以外の**差分ゼロ・
+      実在する全テーブルへの SELECT smoke 成功
+- [ ] 実在する全テーブルの行数が dump 時点の Supabase 側件数と一致
       （read-only 化後に dump しているため一致するはず。不一致は
       read-only が効いていなかった可能性を示す重大な兆候）
-- [ ] 11個のトリガー・約28個の plpgsql 関数が復元されている
-      （`pg_restore -l` の内容と一致するか、または `\df`/`\dg` 相当の
-      information_schema クエリで確認）
+- [ ] **9個**のトリガー・27〜28個の plpgsql 関数が復元されている
+      （期待件数の根拠は 5.1 手順4 の注意書き参照。battle 系 2 トリガーは
+      prod に存在しないため 11 個ではない。`pg_restore -l` の内容と一致するか、
+      または `\df`/`\dg` 相当の information_schema クエリで確認）
 - [ ] `uuid-ossp` 拡張が有効（`gen_random_uuid()` 系の呼び出しが失敗しないこと）
 - [ ] PlanetScale 側の接続ロールに `docs/db-driver-migration.md` 相当の
       権限構成（`service_role` 相当の GRANT・JWT クレーム述語 RLS を持つ
@@ -420,3 +440,27 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
 - [ ] **preview でのリハーサル実施**: #666 の受け入れ条件そのもの。
       本ランブックの手順どおりに完了できることを実際に確認し、
       5.2節のダウンタイム見積りを実測値で更新する
+- [ ] **既知スキーマドリフトの扱い**（#625/#628、2026-07-17 のオーナー確認で
+      battle 機能は「廃止」ではなく「将来実装のため温存」と確定）:
+      - `battles`/`battle_stats` テーブル: prod に存在しないため、pg_dump/restore
+        では新 DB にも作成されない。**現状のまま移行してよい**（battle 実装を
+        再開する時点で、新 DB 向けにテーブル作成 migration を新規に書く。
+        migration は追記専用・履歴改変をしない運用のため、既存の 00002 を
+        書き換えたり再適用したりはしない）。この方針で問題ないかオーナー最終確認
+      - `cards` の 8 列（card_number は採番用・残り 7 列が battle 系。列名一覧は
+        `src/lib/db/cards-safe-columns.ts`、経緯は #625）: prod に欠落したまま
+        移行すると、新 DB でも `CARDS_SAFE_COLUMNS` フォールバックが恒久的に
+        必要になる。**切替前に prod へ列追加 migration を適用してドリフトを
+        解消しておくか**、ドリフトごと移送するかをオーナー判断
+        （解消しておく方がコード側のフォールバックを将来削除できる）
+- [ ] **切替後の migration 適用手段と migration 履歴の移送**: 現行の
+      `supabase db push` は Supabase CLI 前提であり、PlanetScale 切替後に
+      新規 migration をどう適用するか（plain psql / 独自スクリプト等）は未決定。
+      また `supabase_migrations.schema_migrations`（履歴テーブル）が pg_dump で
+      新 DB へ移送されるか（スキーマ指定なしの dump に含まれるか・接続ロールの
+      読み取り権限）も未検証。リハーサル時に実測し、適用手段とセットで確定させる。
+      なお `.github/workflows/deploy-cloudflare.yml` の `Apply Supabase
+      migrations` ステップがデプロイ毎に旧 Supabase へ `supabase db push` を
+      自動実行しているため、カットオーバー時にこのステップの無効化または
+      向き先の扱いを決めておく必要がある（未決定のまま切替えると、以後の
+      新規 migration が新 DB に適用されないサイレントドリフトになる）
