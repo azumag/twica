@@ -114,8 +114,11 @@ env 変更はビルド不要で秒単位で反映される（Cloudflare では�
   DATABASE_URL="<Direct connection 文字列>" node scripts/verify-db-schema.js
   ```
 - 切替後: `wrangler tail` で `[db:pg]` タグのエラーと `CONNECTION_*` 系エラーを監視する。
-- 自動 smoke-check（15分毎）は pg 経路のエンドポイントを踏まない（`/` と `/plans` の
-  HTTP チェックと supabase-js 経由のスキーマチェックのみ）ため、切替直後は
+- 自動 smoke-check（`.github/workflows/smoke-check.yml`、本来は15分毎）は
+  pg 経路のエンドポイントを踏まない（`/` と `/plans` の HTTP チェックと
+  supabase-js 経由のスキーマチェックのみ）ため、そもそも切替直後の監視を
+  代替できない。加えて現在は lock file 不整合により定期実行自体を無効化中
+  （同ファイルの無効化理由コメント参照）なので、切替直後は
   `wrangler tail` での手動監視を最低30分継続すること。
 - ユニットテスト（parity テスト群）は実 DB・実ドライバを経由しないモック比較であり、
   両経路のモックに同じ誤った前提を書くと検出できない（`getDb()` 自体をモックする

@@ -114,7 +114,8 @@ before (or without) `supabase db push` having applied the matching migration.
 `scripts/check-migration-order.js`) catches the common authoring mistake (a
 new migration numbered lower than what's already merged), and
 `.github/workflows/smoke-check.yml` (#536) alerts after the fact if a deploy
-went out with schema the DB doesn't have yet. This section covers the manual
+went out with schema the DB doesn't have yet (currently disabled — see the
+file's header comment for why and how to re-enable it). This section covers the manual
 recovery tools for when the remote migration history has actually diverged
 from local files or from the live schema. This is a break-glass procedure,
 not a routine step.

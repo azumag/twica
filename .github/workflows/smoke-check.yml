@@ -23,13 +23,32 @@
 #     有効化前に追加が必要 (追加するまではDBスキーマチェックが失敗として
 #     報告され続ける — これはフェイルセーフとして意図した挙動であり、
 #     チェックを静かにスキップしない)。
-
+#
+# 定期実行 (schedule) は無効化済み (2026-07-17):
+#   2026-07-04 の運用開始からは正常に成功し続けていたが、2026-07-16 23:52 JST
+#   (14:52 UTC) のコミット d327554 (コミットメッセージは「update CLAUDE」だが、
+#   実際の変更内容は package-lock.json のみ・119行削除) により
+#   `@swc/helpers@0.5.23` 等の依存が lock file から欠落した。以降、
+#   `npm run smoke-check` に到達する前の `npm ci` の時点で全実行が失敗する
+#   ようになり (Install dependencies ステップの
+#   `npm error Missing: @swc/helpers@0.5.23 from lock file`)、本来の
+#   スモークテスト本体もインシデントIssue作成も一切動かないまま設定上15分
+#   ごと (実際の起動間隔はGitHub側のスケジューラ遅延で最大1時間強) に
+#   CI実行時間だけを消費し続けていた
+#   (2026-07-16 15:19 UTC 以降の全実行が失敗、それ以前は成功)。
+#   なお同じ lock file 不整合は `ci.yml` (push/PR) や
+#   `deploy-cloudflare.yml` の `npm ci` にも影響しており、
+#   package-lock.json の再同期はこのワークフロー固有ではなく別途対応が必要
+#   (このワークフローの schedule 停止とは別軸の問題として追跡すること)。
+#   package-lock.json の再同期が完了したら、下の schedule ブロックを
+#   アンコメントして再度有効化すること。
 name: Smoke Check
 
 on:
-  schedule:
-    # 15分ごとに実行 (UTC)。デプロイの反映漏れをできるだけ早く検知するための頻度。
-    - cron: "*/15 * * * *"
+  # 定期実行は上記の理由により無効化中 (2026-07-17)。再有効化する際は
+  # 以下2行をアンコメントするだけでよい (元の頻度: 15分ごと、UTC)。
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       base_url:
@@ -37,7 +56,9 @@ on:
         required: false
         default: ""
 
-# 前回実行が長引いていても15分ごとの新規実行が積み重ならないようにする
+# schedule 再有効化後は「前回実行が長引いていても15分ごとの新規実行が
+# 積み重ならないようにする」ための設定。手動実行 (workflow_dispatch) の
+# 多重起動防止も兼ねるため、無効化中も維持する。
 concurrency:
   group: smoke-check
   cancel-in-progress: false
