@@ -337,7 +337,14 @@ export default function GachaHistoryTable({
                         />
                       </div>
                     )}
-                    <p className="mt-1 text-xs text-gray-500">
+                    {/* toLocaleDateString は timeZone 未指定のため、SSR (Cloudflare
+                        Workers = UTC) とクライアント（ユーザーのローカルTZ）で整形結果が
+                        異なりうる。これは「ユーザーのローカルタイムゾーンで表示する」という
+                        意図した挙動であり、hydration mismatch ではない。timeZone を固定
+                        すると全ユーザーにその TZ を強制してしまうため不採用とし、React
+                        公式にタイムスタンプ用途で認められている suppressHydrationWarning
+                        で警告を抑制する（Issue #776, CollectionProgress.tsx と同じ方針）。 */}
+                    <p className="mt-1 text-xs text-gray-500" suppressHydrationWarning>
                       {t("users.lastDraw", { date: new Date(user.lastDrawAt).toLocaleDateString(locale) })}
                     </p>
                   </button>
@@ -393,7 +400,11 @@ export default function GachaHistoryTable({
                         {!showChannelFeatures && entry.streamers && (
                           <span>{entry.streamers.twitch_display_name}</span>
                         )}
-                        <span>
+                        {/* toLocaleString は timeZone 未指定のためSSR/クライアント間で
+                            整形結果が異なりうるが、ユーザーのローカルTZ表示は意図した
+                            挙動のため suppressHydrationWarning で警告を抑制する
+                            （Issue #776, CollectionProgress.tsx と同じ方針）。 */}
+                        <span suppressHydrationWarning>
                           {new Date(entry.redeemed_at).toLocaleString(locale)}
                         </span>
                       </div>
@@ -533,7 +544,11 @@ export default function GachaHistoryTable({
                         <p className="truncate text-sm font-medium text-white">
                           {entry.cards.name}
                         </p>
-                        <p className="text-xs text-gray-400">
+                        {/* toLocaleString は timeZone 未指定のためSSR/クライアント間で
+                            整形結果が異なりうるが、ユーザーのローカルTZ表示は意図した
+                            挙動のため suppressHydrationWarning で警告を抑制する
+                            （Issue #776, CollectionProgress.tsx と同じ方針）。 */}
+                        <p className="text-xs text-gray-400" suppressHydrationWarning>
                           {new Date(entry.redeemed_at).toLocaleString(locale)}
                         </p>
                       </div>
