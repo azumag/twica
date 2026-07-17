@@ -1,14 +1,8 @@
 // Database types for Twica Dashboard
-// Copied from the main application's src/types/database.ts for type safety
-// This ensures consistency between the main app and the dashboard
-
-export type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | { [key: string]: Json | undefined }
-  | Json[]
+// analysis 側で独立して保守されている型定義（root の src/types/database.ts の複製ではない）。
+// 両者はテーブル構成が既に乖離している（root には battles/battle_stats 等があるが analysis にはない、
+// analysis には blob_files/storage_usage/support_inquiries 等があるが root にはない、等）。
+// 変更する際は analysis 側の実スキーマ（supabase/migrations/）を基準にすること。
 
 export type Rarity = 'common' | 'rare' | 'epic' | 'legendary'
 export type SkillType = 'attack' | 'defense' | 'heal' | 'special'
@@ -177,7 +171,7 @@ export interface Database {
         Relationships: []
       }
       // ユーザーの支援プランライセンス（コードが有効な限りライセンスも有効、有効期限なし）
-      // メインアプリの src/types/database.ts と同一定義（analysis 側で欠落していたため追加）
+      // supabase/migrations/00017_add_support_plans.sql で定義されたスキーマに準拠
       user_licenses: {
         Row: {
           id: string
@@ -558,7 +552,7 @@ export interface Database {
         }]
       }
       // 支援コード（共有コードマスタ）。00017_add_support_plans.sqlで追加。
-      // 分析ダッシュボード側の型定義に欠落していたため、メインアプリのschemaに合わせて追加
+      // 分析ダッシュボード側の型定義に欠落していたため、実DBスキーマに合わせて追加
       support_codes: {
         Row: {
           id: string
@@ -609,27 +603,9 @@ export interface Database {
 export type Streamer = Database['public']['Tables']['streamers']['Row']
 export type Card = Database['public']['Tables']['cards']['Row']
 export type User = Database['public']['Tables']['users']['Row']
-export type UserCard = Database['public']['Tables']['user_cards']['Row']
 export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
-export type BlobFile = Database['public']['Tables']['blob_files']['Row']
-export type StreamerStorageBonus = Database['public']['Tables']['streamer_storage_bonus']['Row']
 // お知らせのヘルパー型
 export type Announcement = Database['public']['Tables']['announcements']['Row']
-export type AnnouncementRead = Database['public']['Tables']['announcement_reads']['Row']
-
-// Extended types with relations for dashboard views
-export type CardWithStreamer = Card & {
-  streamers: Streamer
-}
-
-export type UserWithStats = User & {
-  card_count?: number
-}
-
-export type GachaHistoryWithDetails = GachaHistory & {
-  cards: Card
-  streamers: Streamer
-}
 
 // 問い合わせカテゴリ
 export type InquiryCategory = 'bug' | 'feature' | 'other'
@@ -662,7 +638,9 @@ export interface SupportInquiryMessage {
 // 支援コードのステータス
 export type SupportCodeStatus = 'active' | 'rotating' | 'revoked'
 // 支援プランタイプ
-export type PlanType = 'basic' | 'support' | 'patron'
+// support_codes.plan_type / user_licenses.plan_type 列専用の値。
+// root の src/lib/plan-constants.ts の PlanType（ユーザー実効プラン階層、'basic'|'support'|'patron'|'twitch_sub'を含む別概念）とは異なる。
+export type PlanType = 'support' | 'patron'
 
 // 支援コード（共有コードマスタ）
 export interface SupportCode {
