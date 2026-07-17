@@ -9,8 +9,9 @@ import { Streamer, Card } from '../types/database'
 const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
 // レアリティ集計用サマリー取得の上限件数。
-// 従来の .range(0, 9999) と同じ上限を維持する（新規バックエンドエンドポイントは追加しない）。
-const SUMMARY_FETCH_SIZE = 10000
+// dev/localAdminApi.ts の parsePagination() が pageSize の上限を1000に制限しているため、
+// それを超える値を指定すると400エラーになる（#773で発覚）。サーバー側の実際の上限に合わせる。
+const SUMMARY_FETCH_SIZE = 1000
 
 /**
  * StreamerCards - ストリーマーが登録しているカード一覧ページ
@@ -411,7 +412,7 @@ export function StreamerCards() {
           </p>
         </div>
       </div>
-      {/* レアリティ集計は上限件数まで（従来のrange(0,9999)と同じ制約）のため、超過時は注記 */}
+      {/* レアリティ集計は上限件数まで（サーバー側parsePaginationのpageSize上限1000）のため、超過時は注記 */}
       {!summaryLoading && allCards.length >= SUMMARY_FETCH_SIZE && (
         <p className="text-xs text-amber-600">
           ※ レアリティ内訳は先頭{SUMMARY_FETCH_SIZE.toLocaleString()}件からの算出です（総カード数は正確な値です）。
