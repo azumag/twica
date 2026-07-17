@@ -26,6 +26,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
+import { getErrorChain, getSqlState } from "@/lib/db/errors";
 import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
@@ -33,9 +34,43 @@ import {
 
 type GenericDbError = { message?: string; code?: string; details?: string; hint?: string } | null | undefined;
 
+// PostgREST 専用の判定（下記コメント参照）: postgrest 経路の生の PostgrestError
+// にのみ使う。listAdditionalRewardsPostgrest / insertAdditionalReward の
+// postgrest 分岐（フラグ未設定時の既定経路）だけが呼ぶ。
 function isRaidOptionsSchemaError(error: GenericDbError) {
   const message = error?.message ?? "";
   return error?.code === "PGRST204" || message.includes("draw_count") || message.includes("is_raid_limited");
+}
+
+/**
+ * pg 直結経路（listAdditionalRewardsPg / insertAdditionalRewardPg）専用の
+ * raid-options（draw_count/is_raid_limited）列未デプロイ検知
+ * (Fable厳格レビュー指摘・中3、pg-read 再投入で活性)。
+ *
+ * 上の isRaidOptionsSchemaError（PostgREST 専用）をそのまま pg 直結の生エラーに
+ * 適用すると過剰マッチする: PostgREST 版は「PGRST204、または message に
+ * draw_count/is_raid_limited を含む」という広い一致だが、pg 直結で Drizzle に
+ * ラップされた DrizzleQueryError.message は「実行された SQL 文そのもの」であり、
+ * このテーブルへの SELECT/INSERT は常に draw_count 列を含む。そのため原因を
+ * 問わず（接続断・制約違反等でも）あらゆるエラーが schema-pending と誤判定され、
+ * draw_count=1/is_raid_limited=false へ静かに縮退してしまう
+ * (channel-point-bootstrap/route.ts の getAdditionalRewardsPg が
+ * isPgMissingColumnError で厳密化しているのと同じ理由)。
+ *
+ * ここでは SQLSTATE 42703 (undefined_column) **かつ** 対象列名を含む、という
+ * より厳密な条件にする。getErrorChain の各階層を独立に評価する（中4対応:
+ * 全階層を連結したテキストで判定すると、無関係な階層の SQL 文に列名が偶然
+ * 含まれているだけで誤検知するため。詳細は collection-existence.ts /
+ * cards-safe-columns.ts のコメント参照）。
+ */
+function isRaidOptionsSchemaErrorPg(error: unknown): boolean {
+  return getErrorChain(error).some((layer) => {
+    if (typeof layer !== "object" || layer === null) return false;
+    const err = layer as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
+    if (err.code !== "42703") return false;
+    const text = [err.message, err.details, err.hint].map((value) => String(value ?? "")).join(" ");
+    return text.includes("draw_count") || text.includes("is_raid_limited");
+  });
 }
 
 const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
@@ -172,14 +207,14 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
         const rows = await selectWithoutCollectionName();
         return rows.map((row) => ({ ...row, collection_name: null }));
       } catch (error2) {
-        if (isRaidOptionsSchemaError(error2 as GenericDbError)) {
+        if (isRaidOptionsSchemaErrorPg(error2)) {
           const rows = await selectMinimal();
           return rows.map((row) => ({ ...row, draw_count: 1, is_raid_limited: false, collection_name: null }));
         }
         throw error2;
       }
     }
-    if (isRaidOptionsSchemaError(error as GenericDbError)) {
+    if (isRaidOptionsSchemaErrorPg(error)) {
       const rows = await selectMinimal();
       return rows.map((row) => ({ ...row, draw_count: 1, is_raid_limited: false, collection_name: null }));
     }
@@ -425,11 +460,15 @@ async function insertAdditionalRewardPg(
     );
 
   const classifyError = (error: unknown): InsertAdditionalRewardOutcome => {
-    if (isRaidOptionsSchemaError(error as GenericDbError)) {
+    if (isRaidOptionsSchemaErrorPg(error)) {
       return { kind: "raid-options-unavailable", error };
     }
-    const code = (error as { code?: string } | null | undefined)?.code;
-    if (code === "23505") {
+    // getSqlState でチェーン（トップレベル→cause）全体から SQLSTATE を拾う
+    // (Fable厳格レビュー指摘・高2)。Drizzle にラップされたエラーはトップレベルに
+    // code を持たないため、旧実装のトップレベルのみの参照だと重複挿入
+    // (UNIQUE(streamer_id, reward_id) 違反)が常に { kind: "error" }（500）に
+    // 分類され、本来返すべき 409 conflict にならなかった。
+    if (getSqlState(error) === "23505") {
       return { kind: "conflict" };
     }
     return { kind: "error", error };

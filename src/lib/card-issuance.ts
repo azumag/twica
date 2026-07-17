@@ -1,3 +1,5 @@
+import { getErrorChain } from "@/lib/db/errors";
+
 export const CARD_ISSUANCE_MESSAGES = {
   invalid: "発行可能枚数は1以上の整数、または空欄で入力してください",
   soldOut: "このカードは発行可能枚数に達しています",
@@ -47,20 +49,31 @@ export function parseCardIssuanceLimit(value: unknown): number | null | "invalid
   return value;
 }
 
+// cause チェーン対応 (2026-07 本番障害の恒久対応): card-number-errors.ts と同じ
+// postgrest/pg 両経路の共用判定パターン。pg 直結の insert/returning catch から
+// Drizzle にラップされたエラーがそのまま渡されるため、getErrorChain で
+// トップレベル→cause の各階層に判定を適用する（詳細は card-number-errors.ts
+// のコメント参照）。
+//
+// 階層ごとに独立判定する理由 (Fable厳格レビュー指摘・中4、詳細は
+// card-number-errors.ts のコメント参照): 全階層のテキストを連結してから判定
+// すると、無関係な階層の文言（SQL 文そのもの等）に "max_issuance_count" が
+// 偶然含まれているだけで誤検知しうる。各階層の自分自身の情報だけで旧判定を
+// 適用し、どこか1階層でも満たせば true とする。
 export function isMissingCardIssuanceColumnError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const err = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
-  const text = [
-    err.message,
-    err.details,
-    err.hint,
-  ].map((value) => String(value || "")).join(" ");
 
-  return text.includes("max_issuance_count") && (
-    text.includes("schema cache") ||
-    text.includes("column") ||
-    err.code === "PGRST204"
-  );
+  return getErrorChain(error).some((layer) => {
+    if (typeof layer !== "object" || layer === null) return false;
+    const err = layer as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
+    const text = [err.message, err.details, err.hint].map((value) => String(value || "")).join(" ");
+
+    return text.includes("max_issuance_count") && (
+      text.includes("schema cache") ||
+      text.includes("column") ||
+      err.code === "PGRST204"
+    );
+  });
 }
 
 // Issue #542: 配信者がCardManagerで「あと何枚発行できるか」を一目で把握できる

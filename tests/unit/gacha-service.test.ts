@@ -93,6 +93,54 @@ describe('GachaService PG read paths (Issue #718)', () => {
     expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
   })
 
+  // 2026-07 Fable厳格レビュー指摘(高1)の回帰テスト: Drizzle は postgres.js の
+  // PostgresError を DrizzleQueryError で `{ query, params, cause }` に1段
+  // ラップする。normalizePgReadError が以前はトップレベルの code/message だけを
+  // コピーして cause を捨てていたため、上の生エラー版テストは通っても、実際に
+  // 本番で発生する「ラップされた」エラー形状では
+  // isMissingCardIssuanceColumnError がフォールバックを検知できず、
+  // カード0件で失敗していた（getActiveCardsForStreamer (pg) の障害と同型）。
+  it('max_issuance_count未デプロイ(Drizzleラップ形状)でもPG内で列なし再読取しnullを補う', async () => {
+    const wrappedMissingColumn = Object.assign(
+      new Error('Failed query: select "id", "max_issuance_count", ... from "cards" where ...\nparams: streamer-1,true'),
+      {
+        query: 'select "id", "max_issuance_count", ... from "cards" where ...',
+        params: ['streamer-1', true],
+        // 実際の SQLSTATE・メッセージは cause 側にのみ存在する（postgres.js の
+        // PostgresError そのもの）。
+        cause: Object.assign(new Error('column "max_issuance_count" does not exist'), { code: '42703' }),
+      }
+    )
+    const select = vi.fn()
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(wrappedMissingColumn) }),
+      })
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(testCards.map(card => {
+          const { max_issuance_count: _omitted, ...withoutLimit } = card
+          void _omitted
+          return withoutLimit
+        })) }),
+      })
+    const sql = vi.fn().mockResolvedValue([{
+      result: { is_duplicate: false, limit_reached: false, history_id: 'history-pg-fallback-wrapped' },
+    }])
+    mockGetDb.mockResolvedValue({ db: { select } as never, sql: sql as never })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-cards-pg-fallback-wrapped'
+    )
+
+    expect(result.success).toBe(true)
+    expect(select).toHaveBeenCalledTimes(2)
+    expect(Object.keys(select.mock.calls[0][0])).toContain('max_issuance_count')
+    expect(Object.keys(select.mock.calls[1][0])).not.toContain('max_issuance_count')
+    if (result.success) {
+      expect(result.data.card.max_issuance_count).toBeNull()
+    }
+    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
+  })
+
   it('streamer列欠落時はPostgRESTへ跨がずfail-closedする', async () => {
     const missingColumn = Object.assign(
       new Error('column rarity_weights_scope does not exist'),

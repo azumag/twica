@@ -12,7 +12,7 @@ import { withRetry } from '@/lib/supabase/retry'
 import { getDb } from '@/lib/db/client'
 import { getGachaDbDriver } from '@/lib/db/flags'
 import { withDbRetry } from '@/lib/db/retry'
-import { isPgFunctionNotFoundError } from '@/lib/db/errors'
+import { getSqlState, isPgFunctionNotFoundError } from '@/lib/db/errors'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import {
   cards as cardsTable,
@@ -123,14 +123,36 @@ interface GachaRpcDriverError {
 interface GachaReadDriverError {
   code?: string
   message: string
+  /**
+   * 元エラー(cause チェーン全体)への参照 (Fable厳格レビュー指摘・高1)。
+   * isMissingCardIssuanceColumnError / isMissingCollectionNameColumn 等の
+   * getErrorChain ベースの判定関数は、渡されたエラー自身の `.cause` を辿って
+   * 実際の SQLSTATE・メッセージ（Drizzle にラップされた場合は cause 側にしか
+   * 無い）を見つける。以前の normalizePgReadError はトップレベルの code/message
+   * だけをコピーして cause を捨てていたため、これらの判定関数に正規化後の
+   * エラーを渡すと常に false になり、GACHA_DB_DRIVER=pg かつ本番未デプロイ列
+   * 欠落で #685 のデプロイ窓フォールバックが発動しない事故が起こりうる
+   * （getActiveCardsForStreamer (pg) と同型のバグ）。cause を保持することで
+   * getErrorChain(normalizedError) が元のチェーン全体を辿れるようにする。
+   */
+  cause?: unknown
 }
 
+/**
+ * pg 直結経路のエラーを PostgREST .rpc() の error と同じ「code + message」形状へ
+ * 正規化する。code は getSqlState でチェーン全体（トップレベル→cause）から
+ * 最初に見つかった文字列 code を採用する（Drizzle にラップされたエラーは
+ * トップレベルに code を持たないため、トップレベルのみを見ると常に undefined
+ * になってしまう）。cause は元エラーそのものを保持し、呼び出し側の
+ * getErrorChain ベースの判定関数（isMissingCardIssuanceColumnError 等）が
+ * 実際の SQLSTATE・メッセージへ到達できるようにする（GachaReadDriverError の
+ * doc コメント参照）。
+ */
 function normalizePgReadError(error: unknown): GachaReadDriverError {
   return {
-    code: typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string'
-      ? (error as { code: string }).code
-      : undefined,
+    code: getSqlState(error) ?? undefined,
     message: error instanceof Error ? error.message : String(error),
+    cause: error,
   }
 }
 

@@ -50,6 +50,33 @@ describe('isMissingCardIssuanceColumnError', () => {
       message: "Could not find the 'card_number' column of 'cards' in the schema cache",
     })).toBe(false)
   })
+
+  // 2026-07 本番障害の回帰テスト: card-number-errors.ts と同じ pg 経路の
+  // Drizzle ラップ問題（詳細は card-number-errors.test.ts / errors.ts 参照）。
+  it('detects the error even when wrapped by Drizzle ({ query, params, cause })', () => {
+    const wrapped = {
+      query: 'insert into cards (...) returning *',
+      params: [],
+      cause: {
+        code: '42703',
+        message: 'column "max_issuance_count" of relation "cards" does not exist',
+      },
+    }
+    expect(isMissingCardIssuanceColumnError(wrapped)).toBe(true)
+  })
+
+  // 2026-07 Fable厳格レビュー指摘(中4)の回帰テスト（詳細は
+  // card-number-errors.test.ts の同種テスト参照）: ラッパー層の SQL 文に
+  // "max_issuance_count" が含まれていても、cause が無関係なエラーなら false。
+  it('ラッパーのINSERT文にmax_issuance_countが含まれても、causeが無関係なエラーならfalse', () => {
+    const wrapped = {
+      message: 'Failed query: insert into "cards" ("id", "max_issuance_count", "name") values (...)',
+      query: 'insert into "cards" ("id", "max_issuance_count", "name") values (...)',
+      params: [],
+      cause: { code: 'CONNECTION_CLOSED', message: 'connection closed' },
+    }
+    expect(isMissingCardIssuanceColumnError(wrapped)).toBe(false)
+  })
 })
 
 // Issue #542: CardManagerで発行済み枚数・残余枚数を表示する

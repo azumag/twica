@@ -20,6 +20,7 @@
  */
 
 import { logger } from '@/lib/logger'
+import { getErrorChain, getSqlState } from './errors'
 
 interface DbRetryOptions {
   /**
@@ -75,26 +76,37 @@ const CROSS_REQUEST_IO_MESSAGE = 'Cannot perform I/O on behalf of a different re
 /**
  * throw されたエラーがリトライに値する一時障害かを判定する。
  * 制約違反（23505 等）や構文エラーなどの恒久的エラーは false（リトライ無意味）。
+ *
+ * cause チェーン対応 (2026-07 本番障害の恒久対応): Drizzle は postgres.js の
+ * エラーを DrizzleQueryError で1段ラップする（SQLSTATE・接続断コードは
+ * cause 側にしか無い）。トップレベルの code/message だけを見ていると、pg
+ * 経路のリトライ機構全体が機能しなくなる（接続断からの回復リトライが
+ * 一度も発火しない）。getErrorChain でトップレベル→cause と辿り、各階層に
+ * 同じ判定を適用する。
  */
 export function isRetryableDbError(e: unknown): boolean {
   if (typeof e !== 'object' || e === null) {
     return false
   }
 
-  const code = (e as { code?: unknown }).code
-  if (typeof code === 'string') {
-    if (
-      RETRYABLE_DRIVER_CODES.has(code) ||
-      RETRYABLE_NODE_CODES.has(code) ||
-      RETRYABLE_SQLSTATES.has(code)
-    ) {
+  for (const layer of getErrorChain(e)) {
+    if (typeof layer !== 'object' || layer === null) continue
+
+    const code = (layer as { code?: unknown }).code
+    if (typeof code === 'string') {
+      if (
+        RETRYABLE_DRIVER_CODES.has(code) ||
+        RETRYABLE_NODE_CODES.has(code) ||
+        RETRYABLE_SQLSTATES.has(code)
+      ) {
+        return true
+      }
+    }
+
+    const message = (layer as { message?: unknown }).message
+    if (typeof message === 'string' && message.includes(CROSS_REQUEST_IO_MESSAGE)) {
       return true
     }
-  }
-
-  const message = (e as { message?: unknown }).message
-  if (typeof message === 'string' && message.includes(CROSS_REQUEST_IO_MESSAGE)) {
-    return true
   }
 
   return false
@@ -142,8 +154,12 @@ export async function withDbRetry<T>(
           : !isRetryableDbError(error)
             ? 'non-retryable'
             : 'max-retries-exhausted'
+        // ログの code は getSqlState でチェーン全体（トップレベル→cause）から
+        // 拾う（Fable厳格レビュー指摘・低6）。トップレベルの code のみだと
+        // Drizzle にラップされたエラーで常に undefined になり、[db:pg] タグの
+        // wrangler tail 監視で実際の SQLSTATE が見えなくなる（観測性の欠落）。
         logger.warn(`[DB Retry] [db:pg] ${context} failed (no retry: ${reason})`, {
-          code: (error as { code?: unknown })?.code,
+          code: getSqlState(error) ?? undefined,
           error: error instanceof Error ? error.message : String(error),
         })
         throw error
@@ -155,7 +171,7 @@ export async function withDbRetry<T>(
       logger.warn(
         `[DB Retry] [db:pg] ${context} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms`,
         {
-          code: (error as { code?: unknown })?.code,
+          code: getSqlState(error) ?? undefined,
           error: error instanceof Error ? error.message : String(error),
         },
       )

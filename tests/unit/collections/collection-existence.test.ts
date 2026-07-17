@@ -82,6 +82,51 @@ describe("isMissingCollectionNameColumn", () => {
     expect(isMissingCollectionNameColumn(undefined)).toBe(false);
     expect(isMissingCollectionNameColumn({})).toBe(false);
   });
+
+  // 2026-07 本番障害の回帰テスト: checkCollectionHasActiveCardsPg /
+  // getStreamerForSettingsUpdate (streamer/settings/route.ts) は pg 直結の
+  // Drizzle エラーをそのまま isMissingCollectionNameColumn 等に渡す。Drizzle は
+  // postgres.js のエラーを `{ query, params, cause }` で1段ラップするため、
+  // トップレベルの code/message だけを見ていると pg 経路でこのフォールバックが
+  // 機能しない（cards-safe-columns.ts / card-number-errors.ts と同じ原因）。
+  it("detects the READ shape (42703) even when wrapped by Drizzle ({ query, params, cause })", () => {
+    const wrapped = {
+      query: 'select "collection_name" from "cards" where ...',
+      params: [],
+      cause: { code: "42703", message: "column cards.collection_name does not exist" },
+    };
+    expect(isMissingCollectionNameColumn(wrapped)).toBe(true);
+  });
+
+  it("does NOT match raid-option errors even when wrapped (no false positive)", () => {
+    const wrapped = {
+      query: 'select "draw_count" from "streamer_additional_gacha_rewards" where ...',
+      params: [],
+      cause: { code: "PGRST204", message: "Could not find the 'draw_count' column" },
+    };
+    expect(isMissingCollectionNameColumn(wrapped)).toBe(false);
+  });
+
+  // 2026-07 Fable厳格レビュー指摘(中4)の回帰テスト。レビュアーが実測で確認した
+  // 過検知シナリオそのものの再現: 「全階層のテキストを連結してから判定する」
+  // 実装だと、cause は無関係な列（max_issuance_count）の 42703 なのに、
+  // ラッパー層の SELECT 文が (パフォーマンスのため) collection_name も一緒に
+  // 選択しているだけで isMissingCollectionNameColumn が true を返してしまい、
+  // 誤って「パック機能が使えません」というユーザー向けエラーになっていた。
+  // 各階層を独立に判定することで防ぐ。
+  it("cause=42703(max_issuance_count) でも、ラッパーSELECT文にcollection_nameが含まれるだけならfalse", () => {
+    const wrapped = {
+      message:
+        'Failed query: select "id", "collection_name", "max_issuance_count", "name" from "cards" where ...',
+      query: 'select "id", "collection_name", "max_issuance_count", "name" from "cards" where ...',
+      params: [],
+      cause: {
+        code: "42703",
+        message: 'column "max_issuance_count" of relation "cards" does not exist',
+      },
+    };
+    expect(isMissingCollectionNameColumn(wrapped)).toBe(false);
+  });
 });
 
 // Issue #554: `streamers.default_card_pack_name` deploy-window detection.
@@ -154,6 +199,16 @@ describe("isMissingRenameCardPackFunctionError", () => {
     expect(isMissingRenameCardPackFunctionError(null)).toBe(false);
     expect(isMissingRenameCardPackFunctionError(undefined)).toBe(false);
     expect(isMissingRenameCardPackFunctionError({})).toBe(false);
+  });
+
+  // 2026-07 本番障害の回帰テスト（詳細は isMissingCollectionNameColumn の同種テスト参照）
+  it("detects the error even when wrapped by Drizzle ({ query, params, cause })", () => {
+    const wrapped = {
+      query: "select rename_card_pack(...)",
+      params: [],
+      cause: { code: "42883", message: "function rename_card_pack(uuid, text, text) does not exist" },
+    };
+    expect(isMissingRenameCardPackFunctionError(wrapped)).toBe(true);
   });
 });
 

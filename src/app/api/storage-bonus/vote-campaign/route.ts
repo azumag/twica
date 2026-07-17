@@ -16,6 +16,7 @@ import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
 import { isPgReadEnabled, isPgWriteEnabled } from '@/lib/db/flags'
 import { withDbRetry } from '@/lib/db/retry'
+import { getSqlState } from '@/lib/db/errors'
 import { streamers as streamersTable, streamerStorageBonus as streamerStorageBonusTable } from '@/lib/db/schema'
 
 interface VoteCampaignDriverError {
@@ -83,11 +84,15 @@ async function insertStreamerPg(payload: {
     // 非冪等のため withDbRetry の第3引数（idempotent オプション）は渡さない
     return { data: rows[0] ?? null, error: null }
   } catch (error) {
-    const code = (error as { code?: unknown } | null)?.code
+    // getSqlState でチェーン（トップレベル→cause）全体から SQLSTATE を拾う
+    // (Fable厳格レビュー指摘・高2)。Drizzle にラップされたエラーはトップレベル
+    // に code を持たないため、旧実装のトップレベルのみの参照だと常に undefined
+    // になり、呼び出し元(POST)の 23505 レース判定(insertError?.code === '23505')
+    // が働かなかった。
     return {
       data: null,
       error: {
-        code: typeof code === 'string' ? code : undefined,
+        code: getSqlState(error) ?? undefined,
         message: error instanceof Error ? error.message : String(error),
       },
     }
@@ -120,10 +125,11 @@ async function insertStorageBonusPg(payload: {
     // 非冪等のため withDbRetry の第3引数（idempotent オプション）は渡さない
     return { error: null }
   } catch (error) {
-    const code = (error as { code?: unknown } | null)?.code
+    // getSqlState でチェーン全体から SQLSTATE を拾う（高2、insertStreamerPg と
+    // 同じ理由）。呼び出し元(POST)の 23505「既に適用済み」409 判定に必要。
     return {
       error: {
-        code: typeof code === 'string' ? code : undefined,
+        code: getSqlState(error) ?? undefined,
         message: error instanceof Error ? error.message : String(error),
       },
     }

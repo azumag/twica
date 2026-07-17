@@ -197,6 +197,52 @@ describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 
     expect(pg.insertCalls[pg.insertCalls.length - 1].values).toMatchObject({ streamer_id: 'race-streamer-uuid' })
   })
 
+  // 2026-07 Fable厳格レビュー指摘(高2)の回帰テスト: Drizzle は postgres.js の
+  // エラーを DrizzleQueryError で `{ query, params, cause }` に1段ラップする。
+  // insertStorageBonusPg / insertStreamerPg は以前トップレベルの code だけを
+  // 見ていたため、ラップされた 23505 は常に code: undefined へ落ち、
+  // 409（既に適用済み）判定が働かず 500 になっていた。
+  it('DB_DRIVER=pg: ボーナスINSERTが23505で失敗した場合（Drizzleラップ形状）でも409になる', async () => {
+    vi.stubEnv('DB_DRIVER', 'pg')
+    const wrapped23505 = Object.assign(new Error('Failed query: insert into streamer_storage_bonus ...'), {
+      query: 'insert into streamer_storage_bonus ...',
+      params: [],
+      cause: Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' }),
+    })
+    const pg = createDrizzleDbMock({
+      selects: [{ rows: [{ id: 'existing-streamer-uuid' }] }],
+      inserts: [{ error: wrapped23505 }],
+    })
+    primePgDb(pg)
+
+    const response = await POST(createRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(409)
+    expect(body.error).toBe('このキャンペーンは既に適用済みです')
+  })
+
+  it('DB_DRIVER=pg: streamer作成が23505で失敗した場合（Drizzleラップ形状）でもリトライして既存行を再取得する', async () => {
+    vi.stubEnv('DB_DRIVER', 'pg')
+    const wrapped23505 = Object.assign(new Error('Failed query: insert into streamers ...'), {
+      query: 'insert into streamers ...',
+      params: [],
+      cause: Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' }),
+    })
+    const pg = createDrizzleDbMock({
+      selects: [{ rows: [] }, { rows: [{ id: 'race-streamer-uuid' }] }],
+      inserts: [{ error: wrapped23505 }, { rows: [{ id: 'bonus-1' }] }],
+    })
+    primePgDb(pg)
+
+    const response = await POST(createRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.success).toBe(true)
+    expect(pg.insertCalls[pg.insertCalls.length - 1].values).toMatchObject({ streamer_id: 'race-streamer-uuid' })
+  })
+
   it('DB_DRIVER=pg: streamer_storage_bonus の INSERT は接続断でもリトライされない（非冪等・二重付与防止）', async () => {
     vi.stubEnv('DB_DRIVER', 'pg')
     const pg = createDrizzleDbMock({

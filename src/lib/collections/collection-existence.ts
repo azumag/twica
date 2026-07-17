@@ -11,6 +11,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import { getErrorChain } from "@/lib/db/errors";
 // -----------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。checkCollectionHasActiveCards は
 // 読み取り専用（COUNT のみ）のため isPgReadEnabled() で分岐する。既存 supabase-js
@@ -21,6 +22,58 @@ import { getDb } from "@/lib/db/client";
 import { isPgReadEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable } from "@/lib/db/schema";
+
+/**
+ * Shared per-layer matcher for the six "column/RPC not deployed yet" detectors
+ * below. cause チェーン対応 (2026-07 本番障害の恒久対応):
+ *
+ * These detectors are used on BOTH the PostgREST and pg (Drizzle) driver
+ * paths — e.g. `checkCollectionHasActiveCardsPg` below and
+ * `getStreamerForSettingsUpdate` (streamer/settings/route.ts) pass a raw
+ * pg-driver-thrown error straight into `isMissingCollectionNameColumn` /
+ * `isMissingCardPackNamesColumnError` etc. Drizzle wraps the postgres.js
+ * PostgresError in `DrizzleQueryError { query, params, cause }`, so the real
+ * SQLSTATE and "column ... does not exist" text live on `.cause`, not on the
+ * top-level error. Checking only the top level silently disabled every
+ * deploy-window fallback in this file on the pg path (root cause of the
+ * getActiveCardsForStreamer (pg) empty-collection incident, same class of bug
+ * fixed in cards-safe-columns.ts / card-number-errors.ts). getErrorChain walks
+ * top-level → cause → cause.cause (bounded depth) so both raw
+ * postgrest/postgres.js errors (1-element chain, unchanged behavior) and
+ * Drizzle-wrapped errors are detected.
+ *
+ * Per-layer isolation (Fable厳格レビュー指摘・中4): an earlier version of this
+ * helper concatenated every layer's message/details/hint into one string
+ * before matching. That over-matches: DrizzleQueryError.message is literally
+ * the executed SQL text, which lists every selected/inserted column, so a
+ * concatenated match can find e.g. "collection_name" in the wrapper's SQL
+ * text even when the real `cause` is an unrelated 42703 for a *different*
+ * column (or an unrelated error entirely). `matcher` therefore receives ONE
+ * layer's own signals at a time — text.includes(...) can only fire if that
+ * SAME layer's own message/details/hint contains the substring, not a
+ * different layer's. Returns true as soon as any single layer satisfies the
+ * full matcher on its own.
+ *
+ * Parameter is `unknown` (not a narrow `{ message?, code?, ... }` shape):
+ * callers pass both raw PostgrestError objects and raw pg/Drizzle-thrown
+ * errors, whose shapes only overlap on `.cause`/`.query` vs `.message`/
+ * `.code` — a shared structural type would reject one side or the other (and
+ * TypeScript flags object literals with an all-optional target type as an
+ * error when they share no properties, which real Drizzle-wrapped errors
+ * don't). getErrorChain + the per-layer cast are what actually keep this safe
+ * against arbitrary `unknown` input.
+ */
+function matchesAnyErrorLayer(
+  error: unknown,
+  matcher: (layer: { text: string; code: unknown }) => boolean
+): boolean {
+  return getErrorChain(error).some((layer) => {
+    if (typeof layer !== "object" || layer === null) return false;
+    const err = layer as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    const text = [err.message, err.details, err.hint].map((value) => String(value ?? "")).join(" ");
+    return matcher({ text, code: err.code });
+  });
+}
 
 /**
  * Detect the "collection_name column is not deployed yet" schema error.
@@ -43,13 +96,8 @@ import { cards as cardsTable } from "@/lib/db/schema";
  * 書き込み(payload列欠落)は PGRST204、読み取り(SELECT/ORDER/フィルタの列欠落)は
  * 42703 を返すため、両方を受ける。collection_name 名でゲートして誤検知を防ぐ。
  */
-export function isMissingCollectionNameColumn(
-  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
-): boolean {
+export function isMissingCollectionNameColumn(error: unknown): boolean {
   if (!error) return false;
-  const text = [error.message, error.details, error.hint]
-    .map((value) => String(value ?? ""))
-    .join(" ");
 
   // Intentionally NOT matching a bare "column" substring: a future NOT NULL
   // constraint violation (code 23502: "null value in column 'collection_name'
@@ -58,9 +106,9 @@ export function isMissingCollectionNameColumn(
   // 42703 always says "does not exist" and PostgREST's PGRST204 says
   // "schema cache", so these three signals cover both access paths without that
   // false positive.
-  return (
+  return matchesAnyErrorLayer(error, ({ text, code }) =>
     text.includes("collection_name") &&
-    (error.code === "PGRST204" ||
+    (code === "PGRST204" ||
       text.includes("does not exist") ||
       text.includes("schema cache"))
   );
@@ -81,17 +129,12 @@ export function isMissingCollectionNameColumn(
  * `collection_name` 文言でゲートする既存関数とは別に用意する(列ごとに専用
  * 関数を持つ既存の慣習(`isMissingCardNumberColumnError`)に合わせる)。
  */
-export function isMissingCardPackNamesColumnError(
-  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
-): boolean {
+export function isMissingCardPackNamesColumnError(error: unknown): boolean {
   if (!error) return false;
-  const text = [error.message, error.details, error.hint]
-    .map((value) => String(value ?? ""))
-    .join(" ");
 
-  return (
+  return matchesAnyErrorLayer(error, ({ text, code }) =>
     text.includes("card_pack_names") &&
-    (error.code === "PGRST204" ||
+    (code === "PGRST204" ||
       text.includes("does not exist") ||
       text.includes("schema cache"))
   );
@@ -110,17 +153,12 @@ export function isMissingCardPackNamesColumnError(
  * the migration has run — this lets the settings route skip persisting the
  * field during that window instead of 500ing.
  */
-export function isMissingDefaultCardPackNameColumnError(
-  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
-): boolean {
+export function isMissingDefaultCardPackNameColumnError(error: unknown): boolean {
   if (!error) return false;
-  const text = [error.message, error.details, error.hint]
-    .map((value) => String(value ?? ""))
-    .join(" ");
 
-  return (
+  return matchesAnyErrorLayer(error, ({ text, code }) =>
     text.includes("default_card_pack_name") &&
-    (error.code === "PGRST204" ||
+    (code === "PGRST204" ||
       text.includes("does not exist") ||
       text.includes("schema cache"))
   );
@@ -138,15 +176,13 @@ export function isMissingDefaultCardPackNameColumnError(
  * The route uses this to return a "feature not ready yet" response instead of
  * a raw 500.
  */
-export function isMissingRenameCardPackFunctionError(
-  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
-): boolean {
+export function isMissingRenameCardPackFunctionError(error: unknown): boolean {
   if (!error) return false;
-  const text = [error.message, error.details, error.hint]
-    .map((value) => String(value ?? ""))
-    .join(" ");
 
-  return text.includes("rename_card_pack") && error.code === "42883";
+  return matchesAnyErrorLayer(
+    error,
+    ({ text, code }) => text.includes("rename_card_pack") && code === "42883"
+  );
 }
 
 /**
@@ -163,17 +199,12 @@ export function isMissingRenameCardPackFunctionError(
  * run, so the route uses this to skip persisting the field during that
  * window instead of 500ing.
  */
-export function isMissingRarityWeightsScopeColumnError(
-  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
-): boolean {
+export function isMissingRarityWeightsScopeColumnError(error: unknown): boolean {
   if (!error) return false;
-  const text = [error.message, error.details, error.hint]
-    .map((value) => String(value ?? ""))
-    .join(" ");
 
-  return (
+  return matchesAnyErrorLayer(error, ({ text, code }) =>
     text.includes("rarity_weights_scope") &&
-    (error.code === "PGRST204" ||
+    (code === "PGRST204" ||
       text.includes("does not exist") ||
       text.includes("schema cache"))
   );
@@ -189,17 +220,12 @@ export function isMissingRarityWeightsScopeColumnError(
  * how `card_pack_names` and `default_card_pack_name` are detected separately
  * even though they shipped close together.
  */
-export function isMissingPackRarityWeightsColumnError(
-  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
-): boolean {
+export function isMissingPackRarityWeightsColumnError(error: unknown): boolean {
   if (!error) return false;
-  const text = [error.message, error.details, error.hint]
-    .map((value) => String(value ?? ""))
-    .join(" ");
 
-  return (
+  return matchesAnyErrorLayer(error, ({ text, code }) =>
     text.includes("pack_rarity_weights") &&
-    (error.code === "PGRST204" ||
+    (code === "PGRST204" ||
       text.includes("does not exist") ||
       text.includes("schema cache"))
   );

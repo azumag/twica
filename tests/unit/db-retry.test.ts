@@ -58,6 +58,53 @@ describe('isRetryableDbError', () => {
     expect(isRetryableDbError(undefined)).toBe(false)
     expect(isRetryableDbError('CONNECTION_CLOSED')).toBe(false)
   })
+
+  // 2026-07 本番障害の回帰テスト: Drizzle は postgres.js のエラーを
+  // DrizzleQueryError で `{ query, params, cause }` の形に1段ラップする。
+  // トップレベルの code/message しか見ていないと、pg 経路のリトライ機構
+  // 全体が機能しない（接続断から一度も回復しない）。
+  describe('Drizzle ラップされたエラー（cause チェーン）', () => {
+    /** DrizzleQueryError を模倣する（実際の drizzle-orm のクラス形状に合わせる） */
+    function wrappedPgError(cause: unknown): Error & { query: string; params: unknown[]; cause: unknown } {
+      const err = new Error('Failed query: select 1\nparams:') as Error & {
+        query: string
+        params: unknown[]
+        cause: unknown
+      }
+      err.query = 'select 1'
+      err.params = []
+      err.cause = cause
+      return err
+    }
+
+    it('ラップされた接続断コード（cause.code）はリトライ対象', () => {
+      expect(isRetryableDbError(wrappedPgError(pgError('CONNECTION_CLOSED')))).toBe(true)
+    })
+
+    it('ラップされた cross-request I/O メッセージ（cause.message）はリトライ対象', () => {
+      expect(
+        isRetryableDbError(
+          wrappedPgError(new Error('Cannot perform I/O on behalf of a different request'))
+        )
+      ).toBe(true)
+    })
+
+    it('ラップされた恒久的エラー（cause.code = 23505）は引き続きリトライ対象外', () => {
+      expect(isRetryableDbError(wrappedPgError(pgError('23505')))).toBe(false)
+    })
+
+    it('多重ラップ（cause.cause）でも検知できる', () => {
+      expect(
+        isRetryableDbError(wrappedPgError(wrappedPgError(pgError('CONNECTION_CLOSED'))))
+      ).toBe(true)
+    })
+
+    it('循環参照を含むエラーでも無限ループせず false を返す', () => {
+      const circular: Record<string, unknown> = { message: 'boom' }
+      circular.cause = circular
+      expect(isRetryableDbError(circular)).toBe(false)
+    })
+  })
 })
 
 describe('withDbRetry', () => {
@@ -86,6 +133,44 @@ describe('withDbRetry', () => {
     expect(logger.warn).toHaveBeenCalledTimes(1)
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('[db:pg] test failed (no retry: non-idempotent)'),
+      expect.objectContaining({ code: 'CONNECTION_CLOSED' })
+    )
+  })
+
+  // 2026-07 Fable厳格レビュー指摘(低6)の回帰テスト: ログの code はトップレベル
+  // のみだと Drizzle にラップされたエラーで常に undefined になり、[db:pg] タグの
+  // wrangler tail 監視で実際の SQLSTATE が見えなくなる。getSqlState でチェーンを
+  // 辿って本当の SQLSTATE をログに出すことを検証する。
+  it('ラップされたエラーでも即 throw のログに実際のSQLSTATE（cause.code）が出る', async () => {
+    const wrapped = Object.assign(new Error('Failed query: select 1'), {
+      query: 'select 1',
+      params: [],
+      cause: pgError('CONNECTION_CLOSED'),
+    })
+    const queryFn = vi.fn().mockRejectedValue(wrapped)
+    await expect(withDbRetry(queryFn, 'test')).rejects.toBe(wrapped)
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[db:pg] test failed (no retry: non-idempotent)'),
+      // トップレベルの wrapped.code は undefined だが、ログには cause.code
+      // ('CONNECTION_CLOSED') が出ること。
+      expect.objectContaining({ code: 'CONNECTION_CLOSED' })
+    )
+  })
+
+  it('ラップされたエラーでもリトライ中のログに実際のSQLSTATE（cause.code）が出る', async () => {
+    const wrapped = Object.assign(new Error('Failed query: select 1'), {
+      query: 'select 1',
+      params: [],
+      cause: pgError('CONNECTION_CLOSED'),
+    })
+    const queryFn = vi
+      .fn()
+      .mockRejectedValueOnce(wrapped)
+      .mockResolvedValueOnce([{ id: '1' }])
+    const result = await withDbRetry(queryFn, 'test', { idempotent: true, delays: [0, 0, 0] })
+    expect(result).toEqual([{ id: '1' }])
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[db:pg] test failed (attempt 1/4)'),
       expect.objectContaining({ code: 'CONNECTION_CLOSED' })
     )
   })
