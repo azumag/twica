@@ -9,6 +9,7 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { broadcastGachaResult, GachaBroadcastPayload } from "@/lib/realtime";
 import { logger } from "@/lib/logger";
+import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import type { GachaSuccessResponse, GachaErrorResponse, ApiRateLimitResponse } from "@/types/api";
 
 export async function POST(request: NextRequest) {
@@ -74,6 +75,35 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: ERROR_MESSAGES.STREAMER_ID_REQUIRED },
         { status: 400 }
+      );
+    }
+
+    // Issue #781: このエンドポイントはQA用の手動ガチャ実行API（フロントの唯一の
+    // 呼び出し元はOverlayPreview.tsxの「実際に引く」ボタン）で、チャンネルポイント
+    // 消費の検証を一切行わない。#777でボタン自体はpreview環境限定表示になったが、
+    // それはUI側のゲートに過ぎず、本番でもログイン済みユーザーが直接POSTすれば
+    // 任意のstreamerIdに対してポイント消費なしの実ドロー（DB記録・カード付与・
+    // オーバーレイbroadcast込み）が可能だった。
+    //
+    // 対策として「呼び出し元は自分のstreamerIdに対してのみ実行できる」制限を
+    // 追加する（issueの案2）。QAボタンの正規用途は「配信者が自分のオーバーレイ
+    // 演出を確認する」ことであり、この制限だけで正規用途は壊さずに以下の経済的な
+    // 穴を塞げる: (a) 他人のチャンネルに対する操作、(b) 他人のチャンネルの
+    // カードをポイント消費なしで取得すること。
+    //
+    // 環境ゲート（案1、NEXT_PUBLIC_APP_URLベースのpreview限定）は見送った:
+    // 「配信者が本番で自分のオーバーレイをテストしたい」という正当なユースケースを
+    // 塞いでしまうため。したがって「自分のチャンネルに対してならポイント消費なしで
+    // 何度でもドローできる」余地は意図して残している（配信者自身の持ち物に対する
+    // QA行為であり、他者への経済的影響がないため許容する設計判断）。
+    //
+    // DB_DRIVER/GACHA_DB_DRIVERどちらの経路でも動くよう、生クエリではなく
+    // pg/postgrest両対応の既存ヘルパー(getStreamerIdByTwitchUserId, #711)を再利用する。
+    const ownedStreamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
+    if (!ownedStreamer || ownedStreamer.id !== streamerId) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.FORBIDDEN },
+        { status: 403 }
       );
     }
 
