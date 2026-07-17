@@ -44,6 +44,9 @@ export function Announcements() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState(INITIAL_FORM)
   const [saving, setSaving] = useState(false)
+  // 保存/削除失敗時のエラー（#775: 従来はalert()で表示していたが
+  // モーダルダイアログでタブ操作をブロックするためErrorBannerのインライン表示に統一）
+  const [writeError, setWriteError] = useState<string | null>(null)
 
   // お知らせ一覧を取得。マウント時だけでなく作成/編集/削除/公開切替の成功後にも
   // 再取得のため呼ばれる。素早く連続して呼ばれた場合に備え、fetchAbortRefで
@@ -104,6 +107,7 @@ export function Announcements() {
     if (!form.title.trim() || !form.body.trim()) return
 
     setSaving(true)
+    setWriteError(null)
     try {
       const payload = {
         title: form.title.trim(),
@@ -125,7 +129,7 @@ export function Announcements() {
       fetchAnnouncements()
     } catch (error) {
       console.error('Failed to save announcement:', error)
-      alert('Failed to save announcement')
+      setWriteError((error instanceof Error && error.message) || 'お知らせの保存に失敗しました')
     } finally {
       setSaving(false)
     }
@@ -135,22 +139,25 @@ export function Announcements() {
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this announcement? This will also remove all read records.')) return
 
+    setWriteError(null)
     try {
       await adminApi.deleteAnnouncement(id)
       fetchAnnouncements()
     } catch (error) {
       console.error('Failed to delete announcement:', error)
-      alert('Failed to delete announcement')
+      setWriteError((error instanceof Error && error.message) || 'お知らせの削除に失敗しました')
     }
   }
 
   // 公開/非公開トグル
   const togglePublish = async (announcement: AnnouncementWithStats) => {
+    setWriteError(null)
     try {
       await adminApi.updateAnnouncementPublished(announcement.id, !announcement.is_published)
       fetchAnnouncements()
     } catch (error) {
       console.error('Failed to toggle publish:', error)
+      setWriteError((error instanceof Error && error.message) || '公開設定の変更に失敗しました')
     }
   }
 
@@ -248,8 +255,12 @@ export function Announcements() {
         </button>
       </div>
 
-      <div className="mb-6">
+      <div className="mb-6 space-y-2">
         <ErrorBanner messages={[error]} onRetry={() => fetchAnnouncements()} />
+        {/* 保存/削除/公開切替失敗の通知。見出しを「書き込みエラー」にして
+            読み取りエラーとの意味的な矛盾を避ける。書き込み操作は再送信ボタンではなく
+            ユーザーが再度フォーム操作すればよいのでonRetryは付けない */}
+        <ErrorBanner messages={[writeError]} title="書き込みエラー" />
       </div>
 
       {/* 統計サマリー */}

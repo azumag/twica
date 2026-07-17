@@ -46,6 +46,9 @@ export function Licenses() {
   const [generating, setGenerating] = useState(false)
   // 生成直後の平文コード（一度だけ表示）
   const [generatedPlainCode, setGeneratedPlainCode] = useState<string | null>(null)
+  // コード生成/revoke失敗時のエラー（#775: 従来はalert()で表示していたが
+  // モーダルダイアログでタブ操作をブロックするためErrorBannerのインライン表示に統一）
+  const [codesWriteError, setCodesWriteError] = useState<string | null>(null)
 
   // コード一覧ページネーション
   const [codesPage, setCodesPage] = useState(1)
@@ -170,6 +173,7 @@ export function Licenses() {
   // コード生成ハンドラ
   const handleGenerate = async () => {
     setGenerating(true)
+    setCodesWriteError(null)
     try {
       const plainCode = generateRandomCode()
       const codeHash = await sha256(plainCode)
@@ -186,7 +190,7 @@ export function Licenses() {
       fetchCodes()
     } catch (error) {
       console.error('Failed to generate code:', error)
-      alert('Failed to generate support code')
+      setCodesWriteError((error instanceof Error && error.message) || '支援コードの生成に失敗しました')
     } finally {
       setGenerating(false)
     }
@@ -194,6 +198,9 @@ export function Licenses() {
 
   // コードステータス変更
   const updateCodeStatus = async (codeId: string, newStatus: SupportCodeStatus) => {
+    // 新しい書き込み操作の試行なので、前回の書き込みエラー表示は一旦クリアする
+    setCodesWriteError(null)
+
     // revoke時はRPC経由で関連ライセンスも削除
     if (newStatus === 'revoked') {
       if (!confirm('Revoke this code? All associated licenses will be deleted.')) return
@@ -203,7 +210,7 @@ export function Licenses() {
         fetchLicenses()
       } catch (error) {
         console.error('Failed to revoke code:', error)
-        alert('Failed to revoke code')
+        setCodesWriteError((error instanceof Error && error.message) || 'コードのrevokeに失敗しました')
       }
       return
     }
@@ -213,6 +220,7 @@ export function Licenses() {
       fetchCodes()
     } catch (error) {
       console.error('Failed to update code status:', error)
+      setCodesWriteError((error instanceof Error && error.message) || 'コードステータスの更新に失敗しました')
     }
   }
 
@@ -429,7 +437,13 @@ export function Licenses() {
       {/* コードタブ */}
       {activeTab === 'codes' && (
         <>
-          <ErrorBanner messages={[codesError]} onRetry={() => fetchCodes()} />
+          <div className="space-y-2">
+            <ErrorBanner messages={[codesError]} onRetry={() => fetchCodes()} />
+            {/* 生成/revoke/ステータス変更失敗の通知。見出しを「書き込みエラー」にして
+                読み取りエラーとの意味的な矛盾を避ける。書き込み操作は再送信ボタンではなく
+                ユーザーが再度フォーム/ボタン操作すればよいのでonRetryは付けない */}
+            <ErrorBanner messages={[codesWriteError]} title="書き込みエラー" />
+          </div>
 
           {/* コード生成ボタン */}
           <div className="mb-4 flex justify-end">

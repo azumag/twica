@@ -29,6 +29,11 @@ export function SupportInquiries() {
   const [error, setError] = useState<string | null>(null)
   // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
   const [retryToken, setRetryToken] = useState(0)
+  // ステータス変更失敗時のエラー（#775: 従来はalert()で表示していたが
+  // モーダルダイアログでタブ操作をブロックするためErrorBannerのインライン表示に統一）。
+  // ステータス変更は一覧テーブルの行から行われ詳細モーダルが開いていなくても
+  // 発生しうるため、モーダル内ではなく一覧の上部に表示する
+  const [statusUpdateError, setStatusUpdateError] = useState<string | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   // ステータスフィルタ
@@ -41,6 +46,9 @@ export function SupportInquiries() {
   // 返信フォーム
   const [replyBody, setReplyBody] = useState('')
   const [sending, setSending] = useState(false)
+  // 返信送信失敗時のエラー。返信は詳細モーダル内の操作なので、
+  // messagesErrorと同じくモーダル内に表示する（モーダル背面は隠れて見えないため）
+  const [replyError, setReplyError] = useState<string | null>(null)
 
   // 問い合わせ一覧を取得。以前は取得完了後の反映を防ぐガードすら無く、
   // statusFilterを素早く連続変更すると古いレスポンスが後から返って新しい表示を
@@ -102,11 +110,13 @@ export function SupportInquiries() {
   const handleRowClick = (inquiry: SupportInquiry) => {
     setSelectedInquiry(inquiry)
     setReplyBody('')
+    setReplyError(null)
     fetchMessages(inquiry.id)
   }
 
   // ステータス変更
   const handleStatusChange = async (inquiryId: string, newStatus: InquiryStatus) => {
+    setStatusUpdateError(null)
     try {
       await adminApi.updateSupportInquiryStatus(inquiryId, newStatus)
 
@@ -119,7 +129,7 @@ export function SupportInquiries() {
       }
     } catch (error) {
       console.error('Failed to update status:', error)
-      alert('Failed to update status')
+      setStatusUpdateError((error instanceof Error && error.message) || 'ステータスの更新に失敗しました')
     }
   }
 
@@ -128,6 +138,7 @@ export function SupportInquiries() {
     if (!selectedInquiry || !replyBody.trim()) return
 
     setSending(true)
+    setReplyError(null)
     try {
       await adminApi.createSupportInquiryReply(selectedInquiry.id, replyBody.trim())
 
@@ -135,7 +146,7 @@ export function SupportInquiries() {
       fetchMessages(selectedInquiry.id)
     } catch (error) {
       console.error('Failed to send reply:', error)
-      alert('Failed to send reply')
+      setReplyError((error instanceof Error && error.message) || '返信の送信に失敗しました')
     } finally {
       setSending(false)
     }
@@ -212,8 +223,12 @@ export function SupportInquiries() {
         <p className="text-sm text-gray-500 mt-1">Manage user inquiries and replies</p>
       </div>
 
-      <div className="mb-6">
+      <div className="mb-6 space-y-2">
         <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
+        {/* ステータス変更失敗の通知。見出しを「書き込みエラー」にして読み取りエラーとの
+            意味的な矛盾を避ける。書き込み操作は再送信ボタンではなく
+            ユーザーが再度セレクトボックスを操作すればよいのでonRetryは付けない */}
+        <ErrorBanner messages={[statusUpdateError]} title="書き込みエラー" />
       </div>
 
       {/* 統計サマリー */}
@@ -275,7 +290,7 @@ export function SupportInquiries() {
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">{selectedInquiry.subject}</h2>
               <button
-                onClick={() => setSelectedInquiry(null)}
+                onClick={() => { setSelectedInquiry(null); setReplyError(null) }}
                 className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
               >
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -340,6 +355,14 @@ export function SupportInquiries() {
 
             {/* 返信フォーム */}
             <div className="border-t pt-4">
+              {/* 返信送信失敗の通知。見出しを「書き込みエラー」にして読み取りエラーとの
+                  意味的な矛盾を避ける。書き込み操作は再送信ボタンではなく
+                  ユーザーが再度フォームを操作すればよいのでonRetryは付けない */}
+              {replyError && (
+                <div className="mb-2">
+                  <ErrorBanner messages={[replyError]} title="書き込みエラー" />
+                </div>
+              )}
               <textarea
                 value={replyBody}
                 onChange={e => setReplyBody(e.target.value)}
