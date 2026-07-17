@@ -10,7 +10,10 @@ export type ChatSenderMode = 'streamer' | 'custom_bot' | 'official_bot'
 export type TwitchBotOwnerType = 'streamer' | 'system'
 export type TwitchBotStatus = 'active' | 'revoked' | 'error'
 
-export interface Database {
+// ANALYSIS_DB_DRIVER未設定時（デフォルトのSupabase PostgREST経路）専用の生成スキーマ型。
+// SupabaseClient<>のジェネリクスとしてdev/localAdminApi.tsが使用する。
+// browser側UIコードから直接importしないこと（UIはadminApi.tsのDTOを正本とする）。
+export interface SupabaseAdminSchema {
   public: {
     Tables: {
       streamers: {
@@ -600,12 +603,12 @@ export interface Database {
 }
 
 // Helper types for easier usage
-export type Streamer = Database['public']['Tables']['streamers']['Row']
-export type Card = Database['public']['Tables']['cards']['Row']
-export type User = Database['public']['Tables']['users']['Row']
-export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
+export type Streamer = SupabaseAdminSchema['public']['Tables']['streamers']['Row']
+export type Card = SupabaseAdminSchema['public']['Tables']['cards']['Row']
+export type User = SupabaseAdminSchema['public']['Tables']['users']['Row']
+export type GachaHistory = SupabaseAdminSchema['public']['Tables']['gacha_history']['Row']
 // お知らせのヘルパー型
-export type Announcement = Database['public']['Tables']['announcements']['Row']
+export type Announcement = SupabaseAdminSchema['public']['Tables']['announcements']['Row']
 
 // 問い合わせカテゴリ
 export type InquiryCategory = 'bug' | 'feature' | 'other'

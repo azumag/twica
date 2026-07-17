@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createHash } from 'node:crypto'
 import type { Plugin } from 'vite'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import type { Card, Database, InquiryStatus, Rarity, Streamer } from '../src/types/database'
+import type { Card, SupabaseAdminSchema, InquiryStatus, Rarity, Streamer } from '../src/types/database'
 import {
   buildStreamerChatAccessRows,
   type ChatAccessBotAccountRow,
@@ -66,7 +66,7 @@ const VOTE_CAMPAIGN_MEMO = '2026選挙応援' as const
 type RouteContext = {
   req: IncomingMessage
   res: ServerResponse
-  client: SupabaseClient<Database>
+  client: SupabaseClient<SupabaseAdminSchema>
   url: URL
   body: unknown
   env: Env
@@ -129,7 +129,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(raw)
 }
 
-function getSupabaseClient(env: Env): SupabaseClient<Database> {
+function getSupabaseClient(env: Env): SupabaseClient<SupabaseAdminSchema> {
   const url = env.VITE_DASHBOARD_SUPABASE_URL?.trim()
   const key = stripKeyWhitespace(
     env.DASHBOARD_SUPABASE_SECRET_KEY ||
@@ -143,7 +143,7 @@ function getSupabaseClient(env: Env): SupabaseClient<Database> {
     )
   }
 
-  return createClient<Database>(url, key, {
+  return createClient<SupabaseAdminSchema>(url, key, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -157,8 +157,8 @@ function getSupabaseClient(env: Env): SupabaseClient<Database> {
  * 触れた瞬間に自己説明的なエラーを投げるため、将来pg分岐より前にclientを参照する
  * バグが混入しても、原因不明のnull参照エラーではなくその場で気づける。
  */
-function createSupabaseClientAccessSentinel(): SupabaseClient<Database> {
-  return new Proxy({} as SupabaseClient<Database>, {
+function createSupabaseClientAccessSentinel(): SupabaseClient<SupabaseAdminSchema> {
+  return new Proxy({} as SupabaseClient<SupabaseAdminSchema>, {
     get() {
       throw new Error(
         'Supabase client accessed under ANALYSIS_DB_DRIVER=pg — pg経路のバグです。' +
@@ -187,7 +187,7 @@ function isMissingRpcError(error: unknown): boolean {
 type RpcResult<T> = { found: true; data: T } | { found: false }
 
 async function tryJsonbRpc<T>(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   functionName: string
 ): Promise<RpcResult<T>> {
   const { data, error } = await client.rpc(functionName as never)
@@ -251,7 +251,7 @@ function parsePagination(url: URL): { page: number; pageSize: number } {
 }
 
 async function fetchUsersForTwitchIds(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   twitchIds: string[]
 ): Promise<ChatAccessUserScopeRow[]> {
   const rows: ChatAccessUserScopeRow[] = []
@@ -274,7 +274,7 @@ async function fetchUsersForTwitchIds(
 // streamers を渡さない場合は自前で取得する（互換性のためオプション引数として残置）。
 // /streamers ルートは既に取得済みの streamers 配列を渡すことで二重取得を避ける。
 async function listStreamerChatAccess(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   streamers?: ChatAccessStreamerRow[]
 ) {
   const resolvedStreamers =
@@ -311,7 +311,7 @@ async function listStreamerChatAccess(
   })
 }
 
-export async function listLicenses(client: SupabaseClient<Database>, env: Env) {
+export async function listLicenses(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') {
     return listLicensesPg(env)
   }
@@ -342,7 +342,7 @@ export async function listLicenses(client: SupabaseClient<Database>, env: Env) {
   }))
 }
 
-export async function listSupportCodes(client: SupabaseClient<Database>, env: Env) {
+export async function listSupportCodes(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') {
     return listSupportCodesPg(env)
   }
@@ -355,7 +355,7 @@ export async function listSupportCodes(client: SupabaseClient<Database>, env: En
 }
 
 export async function createSupportCode(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   payload: Record<string, unknown>,
   env: Env
 ) {
@@ -381,7 +381,7 @@ export async function createSupportCode(
 }
 
 export async function updateSupportCodeStatus(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   id: string,
   status: unknown,
   env: Env
@@ -399,7 +399,7 @@ export async function updateSupportCodeStatus(
   return data
 }
 
-export async function revokeSupportCode(client: SupabaseClient<Database>, codeId: string, env: Env) {
+export async function revokeSupportCode(client: SupabaseClient<SupabaseAdminSchema>, codeId: string, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') {
     return revokeSupportCodePg(env, codeId)
   }
@@ -410,7 +410,7 @@ export async function revokeSupportCode(client: SupabaseClient<Database>, codeId
   return { ok: true }
 }
 
-export async function listTwitchSubs(client: SupabaseClient<Database>, env: Env) {
+export async function listTwitchSubs(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') {
     return listTwitchSubsPg(env)
   }
@@ -424,7 +424,7 @@ export async function listTwitchSubs(client: SupabaseClient<Database>, env: Env)
 }
 
 export async function getSupportInquiries(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   status: string,
   env: Env
 ) {
@@ -449,7 +449,7 @@ export async function getSupportInquiries(
 }
 
 export async function updateSupportInquiryStatus(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   id: string,
   status: unknown,
   env: Env
@@ -468,7 +468,7 @@ export async function updateSupportInquiryStatus(
 }
 
 export async function listSupportInquiryMessages(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   inquiryId: string,
   env: Env
 ) {
@@ -485,7 +485,7 @@ export async function listSupportInquiryMessages(
 }
 
 export async function createSupportInquiryMessage(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   inquiryId: string,
   messageBody: string,
   env: Env
@@ -507,7 +507,7 @@ export async function createSupportInquiryMessage(
   return data
 }
 
-export async function listAnnouncements(client: SupabaseClient<Database>, env: Env) {
+export async function listAnnouncements(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') {
     return listAnnouncementsPg(env)
   }
@@ -520,7 +520,7 @@ export async function listAnnouncements(client: SupabaseClient<Database>, env: E
       .from('announcements')
       .select('*, announcement_reads(count)')
       .order('created_at', { ascending: false })
-  )) as (Database['public']['Tables']['announcements']['Row'] & {
+  )) as (SupabaseAdminSchema['public']['Tables']['announcements']['Row'] & {
     announcement_reads: { count: number }[]
   })[]
 
@@ -538,7 +538,7 @@ export async function listAnnouncements(client: SupabaseClient<Database>, env: E
 // 1テーブルあたり30本のindex-onlyなCOUNTクエリをPromise.allで並列実行する
 // (RPC化していない理由: getOverview()冒頭のコメント/呼び出し元コメント参照)
 async function getDailyGrowth(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   table: 'users' | 'gacha_history',
   dateColumn: 'created_at' | 'redeemed_at'
 ): Promise<{ date: string; count: number }[]> {
@@ -574,7 +574,7 @@ async function getDailyGrowth(
 
 // 直近30日の gacha_history を streamer_id のみ取得し、Node側で集計してトップ10を返す。
 // 表示に必要な情報(表示名/アイコン)はトップ10のstreamer_idだけ後引きする
-export async function getStreamerLeaderboard(client: SupabaseClient<Database>, env: Env) {
+export async function getStreamerLeaderboard(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') return getStreamerLeaderboardPg(env)
 
   const rpcRows = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamer_leaderboard')
@@ -622,7 +622,7 @@ export async function getStreamerLeaderboard(client: SupabaseClient<Database>, e
   })
 }
 
-export async function getOverview(client: SupabaseClient<Database>, env: Env) {
+export async function getOverview(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') return getOverviewPg(env)
 
   const rpcOverview = await tryJsonbRpc<unknown>(client, 'get_analysis_overview')
@@ -701,14 +701,14 @@ export async function getOverview(client: SupabaseClient<Database>, env: Env) {
 // (user.user_cards?.[0]?.count ?? 0 で件数を取り出すマッピングがそのまま動く形)
 //
 // select('*') は使わない: users テーブルには twitch_access_token / twitch_refresh_token
-// などのOAuth秘匿情報が実カラムとして存在する（analysis の Database 型には未反映）ため、
+// などのOAuth秘匿情報が実カラムとして存在する（analysis の SupabaseAdminSchema 型には未反映）ため、
 // admin API のJSONレスポンスに含めないよう、フロントが使う列だけを明示的に指定する
 // exportはテストのため（adminApiPg.ts の getUserCardsSummaryPg が同じ列集合を
 // 独立に jsonb_build_object() として持つため、テストで両者の列集合一致を検証する）
 export const USER_SAFE_COLUMNS =
   'id, twitch_user_id, twitch_username, twitch_display_name, twitch_profile_image_url, tos_accepted_at, twitch_scopes, created_at, updated_at'
 
-export async function listUsers(client: SupabaseClient<Database>, env: Env) {
+export async function listUsers(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') return listUsersPg(env)
 
   const rpcUsers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_users')
@@ -725,7 +725,7 @@ export async function listUsers(client: SupabaseClient<Database>, env: Env) {
 // analysis/src/pages/Streamers.tsx の fetchStreamers() が現在ブラウザ側で行っている
 // 4つの並列クエリ + SHA-256計算(crypto.subtle, 1配信者ずつ非同期)を1本のサーバーサイド
 // 処理に統合する。SHA-256はNodeの同期API(createHash)で計算するため高速。
-export async function listStreamersWithStats(client: SupabaseClient<Database>, env: Env) {
+export async function listStreamersWithStats(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') return listStreamersWithStatsPg(env)
 
   const rpcStreamers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamers')
@@ -813,7 +813,7 @@ export async function listStreamersWithStats(client: SupabaseClient<Database>, e
 // streamerも返す。管理ダッシュボードの`/streamers`一覧は元々is_activeを問わず
 // 全件表示しているため、この単体取得もそれに揃える形の意図的な改善である
 // （既存の一覧表示との一貫性が取れていなかった旧挙動の方が不整合だった）。
-export async function getStreamerById(client: SupabaseClient<Database>, id: string, env: Env) {
+export async function getStreamerById(client: SupabaseClient<SupabaseAdminSchema>, id: string, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') {
     return getStreamerByIdPg(env, id)
   }
@@ -833,7 +833,7 @@ export async function getStreamerById(client: SupabaseClient<Database>, id: stri
 // streamerId未指定時は全ストリーマー横断(analysis/src/pages/Gacha.tsx相当)になるため
 // streamers(*) も併せて埋め込む
 export async function getGachaChart(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   params: { range: TimeRange; streamerId?: string },
   env: Env
 ) {
@@ -863,7 +863,7 @@ export async function getGachaChart(
 }
 
 export async function getGachaSummary(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   params: { range: TimeRange; streamerId?: string },
   env: Env
 ) {
@@ -962,7 +962,7 @@ export function resolveGachaDateFilters(params: {
 // analysis/src/pages/StreamerGachaHistory.tsx のテーブル用クエリと同一ロジック。
 // streamerIdが指定されている場合のみ絞り込む点だけが per-streamer 版との違い
 export async function getGachaTable(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   params: {
     range: TimeRange
     page: number
@@ -1059,7 +1059,7 @@ type GachaExportRow = {
 }
 
 export async function getGachaExportRows(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   params: {
     range: TimeRange
     username: string
@@ -1159,7 +1159,7 @@ function buildGachaExportCsv(rows: GachaExportRow[]): string {
 // GET /__admin/gacha/export のハンドラ。他ルートと違いJSONではなくtext/csvを返すため、
 // configureServer側でhandleRoute()+sendJson()の汎用ディスパッチより前段で特別扱いする
 async function handleGachaExport(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   url: URL,
   res: ServerResponse,
   env: Env
@@ -1198,7 +1198,7 @@ async function handleGachaExport(
 // analysis/src/components/DropRateStats.tsx が呼んでいるロジックのRPC版薄いラッパー。
 // get_gacha_drop_stats の戻り値(JSONB)をそのまま返す — サーバー側での再整形はしない
 export async function getDropRateStats(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   params: { streamerId: string; range: TimeRange },
   env: Env
 ) {
@@ -1222,7 +1222,7 @@ export async function getDropRateStats(
 }
 
 // analysis/src/pages/UserCards.tsx の :userId (内部users.id) からユーザーとカード所持サマリーを返す
-export async function getUserCardsSummary(client: SupabaseClient<Database>, userId: string, env: Env) {
+export async function getUserCardsSummary(client: SupabaseClient<SupabaseAdminSchema>, userId: string, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') {
     return getUserCardsSummaryPg(env, userId)
   }
@@ -1252,7 +1252,7 @@ export async function getUserCardsSummary(client: SupabaseClient<Database>, user
 // analysis/src/pages/UserCards.tsx が現在.range(0, 9999)で単発取得しているuser_cardsの
 // サーバーサイドページネーション版。streamerは各カードのstreamer_idからまとめて引き当てて埋め込む
 export async function getUserCardsTable(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   params: { userId: string; page: number; pageSize: number },
   env: Env
 ) {
@@ -1307,7 +1307,7 @@ export async function getUserCardsTable(
 // analysis/src/pages/StreamerCards.tsx が現在.range(0, 9999)で単発取得しているcardsの
 // サーバーサイドページネーション版。並び順(レアリティ降順→作成日降順)は既存と同一
 export async function getStreamerCardsPage(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   params: { streamerId: string; page: number; pageSize: number },
   env: Env
 ) {
@@ -1342,7 +1342,7 @@ function announcementPayload(body: unknown) {
   }
 }
 
-export async function createAnnouncement(client: SupabaseClient<Database>, body: unknown, env: Env) {
+export async function createAnnouncement(client: SupabaseClient<SupabaseAdminSchema>, body: unknown, env: Env) {
   const payload = announcementPayload(body)
   if (getAnalysisDbDriver(env) === 'pg') {
     return createAnnouncementPg(env, payload)
@@ -1360,7 +1360,7 @@ export async function createAnnouncement(client: SupabaseClient<Database>, body:
 }
 
 export async function updateAnnouncement(
-  client: SupabaseClient<Database>,
+  client: SupabaseClient<SupabaseAdminSchema>,
   id: string,
   body: unknown,
   env: Env
@@ -1398,7 +1398,7 @@ export async function updateAnnouncement(
   }
 }
 
-export async function deleteAnnouncement(client: SupabaseClient<Database>, id: string, env: Env) {
+export async function deleteAnnouncement(client: SupabaseClient<SupabaseAdminSchema>, id: string, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') {
     return deleteAnnouncementPg(env, id)
   }
@@ -1567,7 +1567,7 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
 }
 
 export function localAdminApiPlugin(env: Env): Plugin {
-  let client: SupabaseClient<Database> | null = null
+  let client: SupabaseClient<SupabaseAdminSchema> | null = null
 
   return {
     name: 'twica-local-admin-api',

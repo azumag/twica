@@ -24,7 +24,7 @@ async function importLocalAdminApi() {
   return await import('../../analysis/dev/localAdminApi')
 }
 
-// getOverview() 等が期待する SupabaseClient<Database> 型は analysis/ 自身の
+// getOverview() 等が期待する SupabaseClient<SupabaseAdminSchema> 型は analysis/ 自身の
 // @supabase/supabase-js（root とは別物理パッケージ、../../analysis/node_modules 配下）
 // から解決される。root の tests/unit/ から `SupabaseClient` 型を import すると
 // クラスの protected メンバー起因でクロスパッケージの型不一致エラーになるため
