@@ -172,12 +172,43 @@ interface OverlayPreviewProps {
 }
 
 /**
- * Vercelプレビュー環境かどうかを判定
- * NEXT_PUBLIC_VERCEL_ENVはVercelが自動的に設定する環境変数
- * "preview" = プレビューデプロイ、"production" = 本番、"development" = ローカル開発
- * Check if running in Vercel preview environment
+ * プレビュー環境かどうかを、ビルド時にインライン化されたアプリURLから判定する純関数。
+ * Pure function that decides "preview environment" from the build-time-inlined app URL.
+ *
+ * 元々は Vercel専用の `NEXT_PUBLIC_VERCEL_ENV`（Vercelプラットフォームが自動設定）を見ていたが、
+ * 現在の本番デプロイ経路は Cloudflare Workers Builds であり、この変数は設定されないため
+ * 常に false になり QA 用の「実際に引く」ボタンが Cloudflare 環境で常に非表示になっていた
+ * (issue #777)。
+ * Originally this checked the Vercel-only `NEXT_PUBLIC_VERCEL_ENV` (auto-set by the Vercel
+ * platform). The app now deploys via Cloudflare Workers Builds, which never sets that
+ * variable, so the check was permanently false and the QA "実際に引く" (real gacha) button
+ * stayed hidden on Cloudflare (issue #777).
+ *
+ * 代わりに `NEXT_PUBLIC_APP_URL` を再利用する。これは既存の必須 `NEXT_PUBLIC_*` 変数で、
+ * Vercel・Cloudflare Workers Builds のどちらでもビルド時にクライアントバンドルへ
+ * インライン化される（.github/workflows/deploy-cloudflare.yml, docs/cloudflare-workers-builds.md）。
+ * preview 環境の値は `https://twica-preview.<account>.workers.dev` で "preview" を含み、
+ * 本番の値（例: `https://twica.bluemoon.works`）は含まない。同じ判定パターンを
+ * src/lib/sentry/error-handler.ts の environment 判定でも使用しており、新しい変数を
+ * 追加せず既存の慣習に合わせている。
+ * Instead this reuses `NEXT_PUBLIC_APP_URL`, an existing required `NEXT_PUBLIC_*` variable
+ * that gets inlined into the client bundle at build time on both Vercel and Cloudflare
+ * Workers Builds (see .github/workflows/deploy-cloudflare.yml,
+ * docs/cloudflare-workers-builds.md). The preview value is
+ * `https://twica-preview.<account>.workers.dev` (contains "preview"); the production value
+ * (e.g. `https://twica.bluemoon.works`) does not. The same substring-match pattern is already
+ * used for environment detection in src/lib/sentry/error-handler.ts, so this follows an
+ * established convention instead of introducing a new variable.
+ *
+ * 純関数として切り出すことで、process.env に依存せず境界値（本番URL/プレビューURL/未設定）を
+ * 単体テストできる。Extracted as a pure function so the boundary cases (production URL,
+ * preview URL, unset) can be unit-tested without touching process.env.
  */
-const isPreviewEnvironment = process.env.NEXT_PUBLIC_VERCEL_ENV === "preview";
+export function isPreviewAppUrl(appUrl: string | undefined | null): boolean {
+  return Boolean(appUrl && appUrl.includes("preview"));
+}
+
+const isPreviewEnvironment = isPreviewAppUrl(process.env.NEXT_PUBLIC_APP_URL);
 
 /**
  * Overlay Preview Component
@@ -875,8 +906,8 @@ export default function OverlayPreview({
             </svg>
           </button>
 
-          {/* 実際に引くボタン（Vercelプレビュー環境でのみ表示） */}
-          {/* Real gacha button (only shown in Vercel preview environment) */}
+          {/* 実際に引くボタン（プレビュー環境でのみ表示。判定ロジックは isPreviewAppUrl 参照） */}
+          {/* Real gacha button (only shown in preview environments; see isPreviewAppUrl for the check) */}
           {isPreviewEnvironment && (
             <button
               onClick={triggerRealGacha}

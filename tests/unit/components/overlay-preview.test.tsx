@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
-import OverlayPreview from '@/components/OverlayPreview'
+import OverlayPreview, { isPreviewAppUrl } from '@/components/OverlayPreview'
 import type { Card } from '@/types/database'
 
 const STORAGE_KEY = 'twica:overlay-options:streamer-1'
@@ -566,5 +566,39 @@ describe('OverlayPreview', () => {
       // legendaryカードが存在しないため、カード選択はデフォルトの「ランダム」のまま
       expect(screen.getByDisplayValue('ランダム')).toBeInTheDocument()
     })
+  })
+})
+
+// Issue #777: NEXT_PUBLIC_VERCEL_ENV (Vercel専用) 依存だったプレビュー判定を
+// NEXT_PUBLIC_APP_URL ベースに置き換えた。本番環境で誤ってQA用ボタンが
+// 表示されないことが最重要の制約のため、本番URL/プレビューURL/未設定の
+// 境界値を明示的に検証する。
+// Issue #777: replaced the Vercel-only NEXT_PUBLIC_VERCEL_ENV check with one
+// based on NEXT_PUBLIC_APP_URL. The most important constraint is that the QA
+// button must never show up in production by mistake, so this explicitly
+// covers the production URL / preview URL / unset boundary cases.
+describe('isPreviewAppUrl (Issue #777)', () => {
+  it('Cloudflare preview Worker の URL (twica-preview) では true を返す', () => {
+    expect(isPreviewAppUrl('https://twica-preview.example.workers.dev')).toBe(true)
+  })
+
+  it('本番URLでは false を返す（誤表示防止が最重要の制約）', () => {
+    expect(isPreviewAppUrl('https://twica.bluemoon.works')).toBe(false)
+  })
+
+  it('未設定 (undefined) では false を返す', () => {
+    expect(isPreviewAppUrl(undefined)).toBe(false)
+  })
+
+  it('空文字では false を返す', () => {
+    expect(isPreviewAppUrl('')).toBe(false)
+  })
+
+  it('null では false を返す', () => {
+    expect(isPreviewAppUrl(null)).toBe(false)
+  })
+
+  it('ローカル開発URLでは false を返す', () => {
+    expect(isPreviewAppUrl('http://localhost:8787')).toBe(false)
   })
 })
