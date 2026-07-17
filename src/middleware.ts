@@ -5,6 +5,21 @@ import { setSecurityHeaders } from '@/lib/security-headers'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { hasInvalidOverlayEventsStreamerId } from '@/lib/overlay-route-validation'
 import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
+import { guardWrite } from '@/lib/maintenance/guard'
+import { isMaintenanceWriteExempt, type MaintenanceWriteSurface } from '@/lib/maintenance/allowlist'
+// #694 Stage 3: Edge Runtime では実行時の fs 読み込みができないため、write surface
+// の棚卸し(config/maintenance-write-surfaces.json)は静的 import でバンドルに含める。
+// JSON import は TS 上 maintenanceBehavior 等の文字列フィールドが（リテラル型では
+// なく）ただの string に推論されるため、MaintenanceWriteSurface[] へ as で断定する。
+// 実データが 'block' | 'allow' | 'redirect' | 'queue-during-maintenance' の4値・
+// パスが '/api/' 始まりであることは tests/unit/maintenance-write-surfaces-schema.test.ts
+// が実行時に検証しており、この cast は「型を偽っているだけ」にはならない。
+import maintenanceWriteSurfacesJson from '../config/maintenance-write-surfaces.json'
+
+const maintenanceWriteSurfaces = maintenanceWriteSurfacesJson as MaintenanceWriteSurface[]
+
+/** maintenance write block の対象となる HTTP メソッド（読み取り系は対象外）。 */
+const MAINTENANCE_GUARDED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 // Next.js 16 recommends proxy.ts, but Proxy always builds as Node.js runtime
 // with no opt-out: setting `export const config = { runtime: 'edge' }` in a
@@ -76,8 +91,57 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
   '/api/auth/twitch/login',
 ]
 
+/**
+ * #694 Stage 3: maintenance mode (off 以外) のとき、/api 配下の write メソッド
+ * (POST/PUT/PATCH/DELETE) を一律ブロックする。
+ *
+ * 案B（オーナー決定）: allowlist 方式。config/maintenance-write-surfaces.json
+ * で maintenanceBehavior が 'allow' または 'queue-during-maintenance' に
+ * 登録されているパス+メソッドの組だけが免除される。新しい書き込み route を
+ * 追加した際に allowlist への登録を忘れても、結果は「過剰ブロック」（安全側）
+ * にしかならない。
+ *
+ * mode=off 不変条件（絶対に壊してはならない）: pathname が '/api/' 始まりかつ
+ * method が MAINTENANCE_GUARDED_METHODS のいずれでもない場合（＝GET/HEAD等の
+ * 大多数のリクエスト、および /api 以外の全リクエスト）は、getMaintenanceState()
+ * を含む一切の追加処理をせず即座に null を返す。書き込み系メソッドであっても
+ * allowlist に一致すれば guardWrite() を呼ばない（＝maintenance state を一切
+ * 参照しない）ため、/api/auth/logout や /api/twitch/eventsub は mode に
+ * 関わらず常時 getMaintenanceState() を呼ばずに通過する。allowlist 非該当の
+ * 書き込みリクエストのみ guardWrite() を呼び、その内部でちょうど1回
+ * getMaintenanceState() を呼ぶ（mode=off ならそこで null が返る）。
+ *
+ * export する理由: tests/unit/middleware-maintenance.test.ts から直接呼ぶため。
+ * middleware() 全体は updateSession/checkRateLimit 等の外部 I/O 依存が重く
+ * 単体テストに不向きなので、この判定ロジックだけを個別に検証できるようにする
+ * （tests/unit/session-middleware.test.ts が updateSession を個別に import
+ * してテストしているのと同じ方針）。
+ */
+export function checkMaintenanceWriteBlock(request: NextRequest): NextResponse | null {
+  const { pathname } = request.nextUrl
+  const method = request.method
+
+  if (!pathname.startsWith('/api/') || !MAINTENANCE_GUARDED_METHODS.has(method)) {
+    return null
+  }
+
+  if (isMaintenanceWriteExempt(pathname, method, maintenanceWriteSurfaces)) {
+    return null
+  }
+
+  return guardWrite({ operation: `middleware:${method} ${pathname}` })
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
+
+  // #694 Stage 3: 他の全処理（ロケール検出・rate limit・security headers 設定）
+  // より先に評価する。rate limit の消費を避けるためと、ブロック対象なら
+  // updateSession 等の余分な I/O を一切発生させないため。
+  const maintenanceBlockResponse = checkMaintenanceWriteBlock(request)
+  if (maintenanceBlockResponse) {
+    return setSecurityHeaders(maintenanceBlockResponse, pathname)
+  }
 
   // Issue #657: 不正な streamerId をDBクエリへ渡す前に拒否する。
   // OBSブラウザソース等のURL末尾に文字列が混入しても、PostgreSQLの22P02を

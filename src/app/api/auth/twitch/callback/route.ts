@@ -11,6 +11,7 @@ import { logger } from '@/lib/logger'
 import { getBaseUrl } from '@/lib/url-utils'
 import { signSession } from '@/lib/session'
 import { handleLinkedAccountCallback } from '@/lib/twitch/linked-account-auth'
+import { guardWriteRedirect } from '@/lib/maintenance/guard'
 // ---------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
 // isPgReadEnabled() / isPgWriteEnabled() が false を返すため getDb() は一切
@@ -198,6 +199,19 @@ async function fetchTosAcceptedPg(twitchUserId: string): Promise<{ tos_accepted_
 }
 
 export async function GET(request: NextRequest) {
+  // #694 Stage 3: このrouteはGETだがuser upsert等の書き込み副作用を持つため
+  // middlewareの一律ブロック（POST/PUT/PATCH/DELETEのみ対象）ではカバーされない。
+  // オーナー決定「ログインもブロックする」に従い、他の全処理より前に個別で
+  // maintenance guardをかける。config/maintenance-write-surfaces.json の
+  // /api/auth/twitch/callback エントリ（maintenanceBehavior: "redirect"）に対応。
+  const maintenanceRedirect = guardWriteRedirect({
+    operation: 'auth.twitch.callback',
+    redirectTo: '/?maintenance=1',
+  })
+  if (maintenanceRedirect) {
+    return maintenanceRedirect
+  }
+
   // 開発環境ではリクエストのホストから動的にベースURLを取得
   const baseUrl = getBaseUrl(request)
 

@@ -11,6 +11,7 @@ import { getBaseUrl } from '@/lib/url-utils'
 import { getSession, parseSession, verifySession } from '@/lib/session'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
+import { guardWriteRedirect } from '@/lib/maintenance/guard'
 // ---------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
 // isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
@@ -63,6 +64,19 @@ async function fetchScopeRestorationUserPg(
 // Using Web Crypto API crypto.randomUUID() for Cloudflare Workers compatibility
 
 export async function GET(request: Request) {
+  // #694 Stage 3: GETだがOAuth state cookie発行という書き込み副作用を持つため、
+  // middlewareの一律ブロック対象外。Twitch認可後にcallbackでエラーを見せない
+  // よう、OAuth開始側であるこのrouteでも個別にmaintenance guardをかける。
+  // config/maintenance-write-surfaces.json の /api/auth/twitch/login エントリ
+  // （maintenanceBehavior: "redirect"）に対応。rate limit消費より前に評価する。
+  const maintenanceRedirect = guardWriteRedirect({
+    operation: 'auth.twitch.login',
+    redirectTo: '/?maintenance=1',
+  })
+  if (maintenanceRedirect) {
+    return maintenanceRedirect
+  }
+
   // Use Web Crypto API (Cloudflare Workers compatible)
   // Web Crypto APIを使用（Cloudflare Workers互換）
   const requestId = crypto.randomUUID()

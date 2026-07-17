@@ -1,0 +1,391 @@
+[
+  {
+    "path": "/api/announcements/read",
+    "methods": [
+      "POST"
+    ],
+    "category": "announcements",
+    "maintenanceBehavior": "block",
+    "reason": "お知らせの既読状態をDBへ書き込む。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/auth/bot/connect",
+    "methods": [
+      "POST"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "block",
+    "reason": "Bot連携用Twitch OAuth開始（state cookie発行）。オーナー決定によりログイン系操作もメンテ中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/auth/logout",
+    "methods": [
+      "POST"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "allow",
+    "reason": "メンテ中もログアウトは許可する（cookie削除まで止めるとログアウト不能になるため）。DBのトークン削除は既存のfail-soft設計がエラーを握るのでDBに書けなくてもcookieは消える。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/auth/reauth",
+    "methods": [
+      "POST"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "block",
+    "reason": "配信者スコープの再認可フロー開始（state cookie発行等の副作用）。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/auth/twitch/check-subscription",
+    "methods": [
+      "POST"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "block",
+    "reason": "Twitchサブスク状態を確認しDBへキャッシュ保存する。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/auth/twitch/disable-subscription",
+    "methods": [
+      "POST"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "block",
+    "reason": "サブスク連携の無効化フラグをDBへ書き込む。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/auth/twitch/callback",
+    "methods": [
+      "GET"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "redirect",
+    "reason": "OAuthコールバック（GETだがuser upsert等の書き込み副作用を持つためmiddlewareの一律ブロック対象外）。route先頭でguardWriteRedirectを個別に呼び、/?maintenance=1へ302する。オーナー決定「ログインもブロック」。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/auth/bot/callback",
+    "methods": [
+      "GET"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "redirect",
+    "reason": "Bot連携用OAuthコールバック（GETだが連携情報の書き込み副作用を持つ）。route先頭でguardWriteRedirectを個別に呼び、/?maintenance=1へ302する。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/auth/twitch/login",
+    "methods": [
+      "GET"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "redirect",
+    "reason": "Twitch OAuth開始（state cookie発行の副作用）。Twitch認可後にcallbackでエラーを見せないよう開始側でも止める。route先頭でguardWriteRedirectを個別に呼び、/?maintenance=1へ302する。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/battle/start",
+    "methods": [
+      "POST"
+    ],
+    "category": "battle",
+    "maintenanceBehavior": "block",
+    "reason": "カードバトルの開始・結果をDBへ書き込む。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/cards",
+    "methods": [
+      "POST"
+    ],
+    "category": "cards",
+    "maintenanceBehavior": "block",
+    "reason": "カードの新規作成。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/cards/[id]",
+    "methods": [
+      "PUT",
+      "DELETE"
+    ],
+    "category": "cards",
+    "maintenanceBehavior": "block",
+    "reason": "個別カードの更新・削除。動的セグメント[id]。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/cards/batch",
+    "methods": [
+      "POST"
+    ],
+    "category": "cards",
+    "maintenanceBehavior": "block",
+    "reason": "Twitchエモート等から複数カードを一括作成する。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/cards/batch-update",
+    "methods": [
+      "POST"
+    ],
+    "category": "cards",
+    "maintenanceBehavior": "block",
+    "reason": "ドロップ率等のカード情報を一括更新する。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/cards/collections",
+    "methods": [
+      "PATCH"
+    ],
+    "category": "cards",
+    "maintenanceBehavior": "block",
+    "reason": "既存カードパック名のリネーム（配信者が既に所有するパックへの管理操作）。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/gacha",
+    "methods": [
+      "POST"
+    ],
+    "category": "gacha",
+    "maintenanceBehavior": "block",
+    "reason": "ガチャ抽選の実行（DB書き込み+realtime broadcast）。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/gacha/demo",
+    "methods": [
+      "POST"
+    ],
+    "category": "gacha",
+    "maintenanceBehavior": "block",
+    "reason": "デモガチャの実行。DB書き込みは無いがrealtime broadcastを伴うため安全側でブロックする（オーナー決定）。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/gacha-history/[id]",
+    "methods": [
+      "DELETE"
+    ],
+    "category": "gacha",
+    "maintenanceBehavior": "block",
+    "reason": "ガチャ履歴の削除。動的セグメント[id]。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/storage-bonus/vote-campaign",
+    "methods": [
+      "POST"
+    ],
+    "category": "storage-bonus",
+    "maintenanceBehavior": "block",
+    "reason": "投票キャンペーン参加時のstreamersレコード作成/参照。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/streamer/additional-rewards",
+    "methods": [
+      "POST",
+      "DELETE"
+    ],
+    "category": "streamer",
+    "maintenanceBehavior": "block",
+    "reason": "追加報酬の登録・削除。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/streamer/raid-gacha",
+    "methods": [
+      "POST"
+    ],
+    "category": "streamer",
+    "maintenanceBehavior": "block",
+    "reason": "レイドガチャ抽選回数(raid_gacha_draw_count)の更新。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/streamer/settings",
+    "methods": [
+      "POST"
+    ],
+    "category": "streamer",
+    "maintenanceBehavior": "block",
+    "reason": "配信者設定の更新。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/support-inquiries",
+    "methods": [
+      "POST"
+    ],
+    "category": "support",
+    "maintenanceBehavior": "block",
+    "reason": "問い合わせの新規作成。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/support-inquiries/[id]",
+    "methods": [
+      "DELETE"
+    ],
+    "category": "support",
+    "maintenanceBehavior": "block",
+    "reason": "問い合わせの削除。動的セグメント[id]。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/support-inquiries/[id]/messages",
+    "methods": [
+      "POST"
+    ],
+    "category": "support",
+    "maintenanceBehavior": "block",
+    "reason": "問い合わせへの返信メッセージ追加。動的セグメント[id]。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/support/activate",
+    "methods": [
+      "POST"
+    ],
+    "category": "support",
+    "maintenanceBehavior": "block",
+    "reason": "支援コードの有効化（activate_support_code）。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/support/deactivate",
+    "methods": [
+      "POST"
+    ],
+    "category": "support",
+    "maintenanceBehavior": "block",
+    "reason": "支援ライセンスの一括無効化（deactivate_all_licenses）。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/tos/accept",
+    "methods": [
+      "POST"
+    ],
+    "category": "tos",
+    "maintenanceBehavior": "block",
+    "reason": "利用規約同意日時の書き込み。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/twitch/eventsub",
+    "methods": [
+      "POST"
+    ],
+    "category": "twitch",
+    "maintenanceBehavior": "queue-during-maintenance",
+    "reason": "Twitch EventSub Webhook本体。メンテ中でも503を返すとTwitch側からsubscriptionをrevokeされるリスクがあるため厳禁。middlewareでは素通しさせ、通常処理を継続する。KVへの退避（真のqueueing）はStage 4で実装予定（現段階ではqueueせず即時処理を継続する暫定措置）。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/twitch/eventsub/debug",
+    "methods": [
+      "DELETE"
+    ],
+    "category": "twitch",
+    "maintenanceBehavior": "block",
+    "reason": "EventSubサブスクリプションのデバッグ削除操作。オーナー決定によりread-only中のsubscription状態変更はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/twitch/eventsub/subscribe",
+    "methods": [
+      "POST",
+      "DELETE"
+    ],
+    "category": "twitch",
+    "maintenanceBehavior": "block",
+    "reason": "EventSubサブスクリプションの作成・削除。オーナー決定によりread-only中のsubscription状態変更はブロックする（Webhook本体である/api/twitch/eventsubとは別扱い）。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/twitch/rewards",
+    "methods": [
+      "POST"
+    ],
+    "category": "twitch",
+    "maintenanceBehavior": "block",
+    "reason": "チャンネルポイント報酬のTwitch側登録・DB保存。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/upload",
+    "methods": [
+      "POST"
+    ],
+    "category": "upload",
+    "maintenanceBehavior": "block",
+    "reason": "画像アップロード（ストレージ書き込み+DB参照更新）。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/upload/delete",
+    "methods": [
+      "POST"
+    ],
+    "category": "upload",
+    "maintenanceBehavior": "block",
+    "reason": "アップロード済み画像の削除。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/upload/sound",
+    "methods": [
+      "POST",
+      "DELETE"
+    ],
+    "category": "upload",
+    "maintenanceBehavior": "block",
+    "reason": "効果音ファイルのアップロード・削除。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  }
+]

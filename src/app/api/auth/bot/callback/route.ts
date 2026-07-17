@@ -5,6 +5,7 @@ import { COOKIE_NAMES, ERROR_MESSAGES } from '@/lib/constants'
 import { checkRateLimit, getClientIp, rateLimits } from '@/lib/rate-limit'
 import { getBaseUrl } from '@/lib/url-utils'
 import { handleLinkedAccountCallback } from '@/lib/twitch/linked-account-auth'
+import { guardWriteRedirect } from '@/lib/maintenance/guard'
 
 function redirectToSettings(baseUrl: string, params: Record<string, string>) {
   const searchParams = new URLSearchParams(params)
@@ -12,6 +13,18 @@ function redirectToSettings(baseUrl: string, params: Record<string, string>) {
 }
 
 export async function GET(request: NextRequest) {
+  // #694 Stage 3: GETだがBot連携情報の書き込み副作用を持つため、middlewareの
+  // 一律ブロック対象外。route先頭で個別にmaintenance guardをかける。
+  // config/maintenance-write-surfaces.json の /api/auth/bot/callback エントリ
+  // （maintenanceBehavior: "redirect"）に対応。
+  const maintenanceRedirect = guardWriteRedirect({
+    operation: 'auth.bot.callback',
+    redirectTo: '/?maintenance=1',
+  })
+  if (maintenanceRedirect) {
+    return maintenanceRedirect
+  }
+
   const baseUrl = getBaseUrl(request)
   const ip = getClientIp(request)
   const rateLimitResult = await checkRateLimit(rateLimits.authCallback, `ip:${ip}`)
