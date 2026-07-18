@@ -121,7 +121,13 @@ export default function InquiryThread({
           <span className="rounded-full bg-purple-600 px-2 py-0.5 text-xs font-medium text-white">
             {t("detail.yourMessage")}
           </span>
-          <span className="text-xs text-gray-500">
+          {/* toLocaleString は timeZone 未指定のためSSR (Cloudflare Workers = UTC)
+              とクライアント（ユーザーのローカルTZ）で整形結果が異なりうる。これは
+              「ユーザーのローカルタイムゾーンで表示する」という意図した挙動であり
+              hydration mismatch ではないため、React 公式にタイムスタンプ用途で
+              認められている suppressHydrationWarning で警告を抑制する
+              （Issue #776/#782, CollectionProgress.tsx と同じ方針）。 */}
+          <span className="text-xs text-gray-500" suppressHydrationWarning>
             {new Date(createdAt).toLocaleString()}
           </span>
         </div>
@@ -148,7 +154,9 @@ export default function InquiryThread({
                 ? t("detail.adminReply")
                 : t("detail.yourMessage")}
             </span>
-            <span className="text-xs text-gray-500">
+            {/* 上と同様、timeZone 未指定によるローカルTZ表示は意図した挙動のため
+                suppressHydrationWarning で警告を抑制する（Issue #776/#782 と同じ方針）。 */}
+            <span className="text-xs text-gray-500" suppressHydrationWarning>
               {new Date(msg.created_at).toLocaleString()}
             </span>
           </div>
