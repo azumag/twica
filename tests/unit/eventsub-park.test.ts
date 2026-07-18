@@ -32,6 +32,10 @@ describe('parkEventSubNotification (#694 Stage 4)', () => {
   beforeEach(() => {
     vi.resetModules()
     mocks.getCloudflareContext.mockReset()
+    // vi.resetModules() だけでは logger モックの呼び出し履歴（vi.fn().mock.calls）は
+    // クリアされない（モジュールキャッシュのリセットと呼び出し履歴は別物のため）。
+    // not.toHaveBeenCalled() で厳密に検証するテストがあるため、明示的にクリアする。
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
@@ -138,6 +142,192 @@ describe('parkEventSubNotification (#694 Stage 4)', () => {
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('[maintenance:eventsub] failed to park message id=msg-4'),
       expect.objectContaining({ error: 'KV unavailable' })
+    )
+  })
+})
+
+/**
+ * Issue #787 Stage 2: リプレイ機構向けに追加した list/get/delete のテスト。
+ * parkEventSubNotification と同じ getCloudflareContext モックパターンを使う。
+ */
+describe('listParkedEventSubNotifications (#787 Stage 2)', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    mocks.getCloudflareContext.mockReset()
+    // vi.resetModules() だけでは logger モックの呼び出し履歴（vi.fn().mock.calls）は
+    // クリアされない（モジュールキャッシュのリセットと呼び出し履歴は別物のため）。
+    // not.toHaveBeenCalled() で厳密に検証するテストがあるため、明示的にクリアする。
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('KVから取得したキーをJSON.parseしてrecordの一覧を返す', async () => {
+    const record1 = {
+      messageId: 'msg-1',
+      subscriptionType: 'channel.channel_points_custom_reward_redemption.add',
+      payload: { event: { foo: 'bar' } },
+      receivedAt: '2026-07-01T00:00:00.000Z',
+      maintenanceMode: 'read-only',
+      maintenanceOperationId: 'op-1',
+    }
+    const record2 = {
+      messageId: 'msg-2',
+      subscriptionType: 'channel.raid',
+      payload: { event: { baz: 'qux' } },
+      receivedAt: '2026-07-01T00:01:00.000Z',
+      maintenanceMode: 'read-only',
+      maintenanceOperationId: 'op-1',
+    }
+
+    const list = vi.fn().mockResolvedValue({
+      keys: [{ name: 'maintenance:eventsub:key-1' }, { name: 'maintenance:eventsub:key-2' }],
+      list_complete: true,
+      cursor: undefined,
+    })
+    const get = vi.fn((key: string) => {
+      if (key === 'maintenance:eventsub:key-1') return Promise.resolve(JSON.stringify(record1))
+      if (key === 'maintenance:eventsub:key-2') return Promise.resolve(JSON.stringify(record2))
+      return Promise.resolve(null)
+    })
+    mocks.getCloudflareContext.mockResolvedValue({ env: { RATE_LIMIT_KV: { list, get } } })
+
+    const { listParkedEventSubNotifications } = await importParkModule()
+
+    const result = await listParkedEventSubNotifications({})
+
+    expect(list).toHaveBeenCalledWith({ prefix: 'maintenance:eventsub:', cursor: undefined, limit: undefined })
+    expect(result.listComplete).toBe(true)
+    expect(result.cursor).toBeUndefined()
+    expect(result.entries).toEqual([
+      { key: 'maintenance:eventsub:key-1', record: record1 },
+      { key: 'maintenance:eventsub:key-2', record: record2 },
+    ])
+  })
+
+  it('cursor/limitをKVのlistへそのまま渡し、続きのcursorを返す', async () => {
+    const list = vi.fn().mockResolvedValue({
+      keys: [],
+      list_complete: false,
+      cursor: 'next-cursor',
+    })
+    mocks.getCloudflareContext.mockResolvedValue({ env: { RATE_LIMIT_KV: { list, get: vi.fn() } } })
+
+    const { listParkedEventSubNotifications } = await importParkModule()
+    const result = await listParkedEventSubNotifications({ cursor: 'incoming-cursor', limit: 10 })
+
+    expect(list).toHaveBeenCalledWith({ prefix: 'maintenance:eventsub:', cursor: 'incoming-cursor', limit: 10 })
+    expect(result.cursor).toBe('next-cursor')
+    expect(result.listComplete).toBe(false)
+    expect(result.entries).toEqual([])
+  })
+
+  it('1件の破損JSON（パース失敗）はlogger.errorでログしてスキップし、他のエントリは正常に返す', async () => {
+    const validRecord = {
+      messageId: 'msg-valid',
+      subscriptionType: 'channel.raid',
+      payload: { event: {} },
+      receivedAt: '2026-07-01T00:00:00.000Z',
+      maintenanceMode: 'read-only',
+      maintenanceOperationId: 'op-1',
+    }
+
+    const list = vi.fn().mockResolvedValue({
+      keys: [
+        { name: 'maintenance:eventsub:key-corrupted' },
+        { name: 'maintenance:eventsub:key-valid' },
+      ],
+      list_complete: true,
+      cursor: undefined,
+    })
+    const get = vi.fn((key: string) => {
+      if (key === 'maintenance:eventsub:key-corrupted') return Promise.resolve('{not valid json')
+      if (key === 'maintenance:eventsub:key-valid') return Promise.resolve(JSON.stringify(validRecord))
+      return Promise.resolve(null)
+    })
+    mocks.getCloudflareContext.mockResolvedValue({ env: { RATE_LIMIT_KV: { list, get } } })
+
+    const { listParkedEventSubNotifications } = await importParkModule()
+    const { logger } = await import('@/lib/logger')
+
+    const result = await listParkedEventSubNotifications({})
+
+    // 破損データは除外され、全体は継続して正常なエントリを返す
+    expect(result.entries).toEqual([{ key: 'maintenance:eventsub:key-valid', record: validRecord }])
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('failed to parse parked record - corrupted data, skipping key=maintenance:eventsub:key-corrupted'),
+      expect.anything()
+    )
+  })
+
+  it('getがnullを返す（list後にTTL失効等で消えた）キーはエラーにせず単純にスキップする', async () => {
+    const list = vi.fn().mockResolvedValue({
+      keys: [{ name: 'maintenance:eventsub:key-gone' }],
+      list_complete: true,
+      cursor: undefined,
+    })
+    const get = vi.fn().mockResolvedValue(null)
+    mocks.getCloudflareContext.mockResolvedValue({ env: { RATE_LIMIT_KV: { list, get } } })
+
+    const { listParkedEventSubNotifications } = await importParkModule()
+    const { logger } = await import('@/lib/logger')
+
+    const result = await listParkedEventSubNotifications({})
+
+    expect(result.entries).toEqual([])
+    expect(logger.error).not.toHaveBeenCalled()
+  })
+
+  it('KVバインディングが取得できない場合は空の結果を返しlogger.errorする', async () => {
+    mocks.getCloudflareContext.mockRejectedValue(new Error('not in workers'))
+
+    const { listParkedEventSubNotifications } = await importParkModule()
+    const { logger } = await import('@/lib/logger')
+
+    const result = await listParkedEventSubNotifications({})
+
+    expect(result).toEqual({ entries: [], cursor: undefined, listComplete: true })
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('[maintenance:eventsub] KV binding unavailable, cannot list parked notifications')
+    )
+  })
+})
+
+describe('deleteParkedEventSubNotification (#787 Stage 2)', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    mocks.getCloudflareContext.mockReset()
+    // vi.resetModules() だけでは logger モックの呼び出し履歴（vi.fn().mock.calls）は
+    // クリアされない（モジュールキャッシュのリセットと呼び出し履歴は別物のため）。
+    // not.toHaveBeenCalled() で厳密に検証するテストがあるため、明示的にクリアする。
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('KVバインディングが取得できればdeleteを呼ぶ', async () => {
+    const del = vi.fn().mockResolvedValue(undefined)
+    mocks.getCloudflareContext.mockResolvedValue({ env: { RATE_LIMIT_KV: { delete: del } } })
+
+    const { deleteParkedEventSubNotification } = await importParkModule()
+    await deleteParkedEventSubNotification('maintenance:eventsub:key-1')
+
+    expect(del).toHaveBeenCalledWith('maintenance:eventsub:key-1')
+  })
+
+  it('KVバインディングが取得できない場合はwarnログのみで例外を投げない（TTLでいずれ消えるため致命的ではない）', async () => {
+    mocks.getCloudflareContext.mockRejectedValue(new Error('not in workers'))
+
+    const { deleteParkedEventSubNotification } = await importParkModule()
+    const { logger } = await import('@/lib/logger')
+
+    await expect(deleteParkedEventSubNotification('maintenance:eventsub:key-1')).resolves.toBeUndefined()
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[maintenance:eventsub] KV binding unavailable, cannot delete parked notification key=maintenance:eventsub:key-1')
     )
   })
 })

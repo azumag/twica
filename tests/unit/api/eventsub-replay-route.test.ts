@@ -1,0 +1,551 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { NextRequest } from 'next/server'
+import { ERROR_MESSAGES, TWITCH_SUBSCRIPTION_TYPE } from '@/lib/constants'
+import type { ParkedEventSubRecord } from '@/lib/maintenance/eventsub-park'
+
+const mocks = vi.hoisted(() => ({
+  listParkedEventSubNotifications: vi.fn(),
+  deleteParkedEventSubNotification: vi.fn(),
+  handleRedemption: vi.fn(),
+  handleRaidNotification: vi.fn(),
+  postRedemptionNotify: vi.fn(),
+  checkRateLimit: vi.fn(),
+  getRateLimitIdentifier: vi.fn(),
+  reportError: vi.fn(),
+}))
+
+vi.mock('@/lib/maintenance/eventsub-park', () => ({
+  listParkedEventSubNotifications: mocks.listParkedEventSubNotifications,
+  deleteParkedEventSubNotification: mocks.deleteParkedEventSubNotification,
+}))
+
+vi.mock('@/lib/services/eventsub-redemption', () => ({
+  handleRedemption: mocks.handleRedemption,
+  handleRaidNotification: mocks.handleRaidNotification,
+  postRedemptionNotify: mocks.postRedemptionNotify,
+}))
+
+vi.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: mocks.checkRateLimit,
+  getRateLimitIdentifier: mocks.getRateLimitIdentifier,
+  rateLimits: { eventsubReplay: {} },
+}))
+
+vi.mock('@/lib/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}))
+
+vi.mock('@/lib/sentry/error-handler', () => ({
+  reportError: mocks.reportError,
+}))
+
+const TEST_SECRET = 'test-eventsub-replay-secret'
+
+function createReplayRequest(
+  body?: Record<string, unknown>,
+  headers?: Record<string, string>
+): NextRequest {
+  return new NextRequest('http://localhost:3000/api/admin/eventsub-replay', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-replay-secret': TEST_SECRET,
+      ...headers,
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+}
+
+/** テスト用: record.payload（unknown型）から event フィールドを取り出すヘルパー。 */
+function payloadEventOf(record: ParkedEventSubRecord): unknown {
+  return (record.payload as { event?: unknown } | null)?.event
+}
+
+function makeRecord(overrides: Partial<ParkedEventSubRecord> = {}): ParkedEventSubRecord {
+  return {
+    messageId: 'message-1',
+    subscriptionType: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD,
+    payload: {
+      subscription: { type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD },
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'reward-1', title: 'Gacha', cost: 100 },
+      },
+    },
+    receivedAt: '2026-07-01T00:00:00.000Z',
+    maintenanceMode: 'read-only',
+    maintenanceOperationId: 'op-1',
+    ...overrides,
+  }
+}
+
+/** counts の完全一致比較用ヘルパー。新設カテゴリ(unknownType/invalidPayload)は省略時0。 */
+function expectedCounts(overrides: Partial<{
+  succeeded: number
+  skipped: number
+  failed: number
+  unknownType: number
+  invalidPayload: number
+  total: number
+}>) {
+  return {
+    succeeded: 0,
+    skipped: 0,
+    failed: 0,
+    unknownType: 0,
+    invalidPayload: 0,
+    total: 0,
+    ...overrides,
+  }
+}
+
+describe('POST /api/admin/eventsub-replay', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    process.env.EVENTSUB_REPLAY_SECRET = TEST_SECRET
+    mocks.checkRateLimit.mockResolvedValue({ success: true, limit: 10, remaining: 9, reset: Date.now() + 60000 })
+    mocks.getRateLimitIdentifier.mockResolvedValue('ip:127.0.0.1')
+    mocks.listParkedEventSubNotifications.mockResolvedValue({
+      entries: [],
+      cursor: undefined,
+      listComplete: true,
+    })
+    mocks.deleteParkedEventSubNotification.mockResolvedValue(undefined)
+    mocks.reportError.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    delete process.env.EVENTSUB_REPLAY_SECRET
+  })
+
+  describe('認証', () => {
+    it('X-Replay-Secret ヘッダーが無い場合は403を返し、一覧取得を行わない', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const request = createReplayRequest({}, { 'x-replay-secret': '' })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(403)
+      await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.FORBIDDEN })
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+
+    it('X-Replay-Secret ヘッダーが一致しない場合は403を返す', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const request = createReplayRequest({}, { 'x-replay-secret': 'wrong-secret' })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(403)
+      await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.FORBIDDEN })
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+
+    it('EVENTSUB_REPLAY_SECRET が未設定の場合は500を返す（設定忘れによる不正アクセスを防ぐfail-closed）', async () => {
+      delete process.env.EVENTSUB_REPLAY_SECRET
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const request = createReplayRequest({})
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(500)
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('リクエストボディの型バリデーション（低-7）', () => {
+    it('limit が数値以外（文字列）の場合は400 INVALID_REQUEST を返し、一覧取得を行わない', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      // JSON.parse を通すと limit は文字列型になり、TypeScript の ReplayRequestBody 型は
+      // 実行時を保証しないため、意図的に不正な値をボディへ入れて実測する。
+      const response = await POST(createReplayRequest({ limit: '20' as unknown as number }))
+
+      expect(response.status).toBe(400)
+      await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.INVALID_REQUEST })
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+
+    it('limit が非整数（小数）の場合は400 INVALID_REQUEST を返す', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({ limit: 1.5 }))
+
+      expect(response.status).toBe(400)
+      await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.INVALID_REQUEST })
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+
+    it('cursor が文字列以外（数値）の場合は400 INVALID_REQUEST を返す', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({ cursor: 123 as unknown as string }))
+
+      expect(response.status).toBe(400)
+      await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.INVALID_REQUEST })
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+
+    it('ボディが JSON の null の場合は400 INVALID_REQUEST を返す（nullはtypeofが"object"のため別途ガードが必要）', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const request = new NextRequest('http://localhost:3000/api/admin/eventsub-replay', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-replay-secret': TEST_SECRET },
+        body: 'null',
+      })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(400)
+      await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.INVALID_REQUEST })
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('dry-run モード', () => {
+    it('実行せず、KV削除も行わない', async () => {
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-1', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({ dryRun: true }))
+      const json = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(json.dryRun).toBe(true)
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          key: 'maintenance:eventsub:key-1',
+          messageId: 'message-1',
+          subscriptionType: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD,
+          outcome: 'dry-run',
+        }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ total: 1 }))
+      expect(mocks.handleRedemption).not.toHaveBeenCalled()
+      expect(mocks.deleteParkedEventSubNotification).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('CHANNEL_POINTS_REDEMPTION_ADD の処理', () => {
+    it('成功時はpostRedemptionNotifyを呼び、KVエントリを削除する', async () => {
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-1', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      const gachaResult = { gachaResult: { type: 'gacha' }, broadcasterTwitchUserId: 'broadcaster-1', streamer: { id: 's1' }, userId: 'viewer-1' }
+      mocks.handleRedemption.mockResolvedValue({ notify: gachaResult, retryable: false })
+      mocks.postRedemptionNotify.mockResolvedValue(undefined)
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.handleRedemption).toHaveBeenCalledWith('message-1', payloadEventOf(record))
+      expect(mocks.postRedemptionNotify).toHaveBeenCalledWith(gachaResult)
+      expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledWith('maintenance:eventsub:key-1')
+      expect(json.results[0].outcome).toBe('succeeded')
+      expect(json.counts).toEqual(expectedCounts({ succeeded: 1, total: 1 }))
+    })
+
+    it('{notify: null, retryable: false}（重複/報酬不一致等の確定的な終端結果）の場合はskip扱いでKVエントリを削除する', async () => {
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-1', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      mocks.handleRedemption.mockResolvedValue({ notify: null, retryable: false })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.postRedemptionNotify).not.toHaveBeenCalled()
+      expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledWith('maintenance:eventsub:key-1')
+      expect(json.results[0].outcome).toBe('skipped')
+      expect(json.counts).toEqual(expectedCounts({ skipped: 1, total: 1 }))
+    })
+
+    it('{notify: null, retryable: true}（DB一時障害等、既知理由のいずれにも一致しない予期しない失敗）の場合はfailed扱いでKVエントリを削除しない（Issue #787 2巡目レビューの回帰テスト）', async () => {
+      // このテストは修正前のコード（`if (result) {...} else {...skipped}`）に対して
+      // 実行すると、モックオブジェクト { notify: null, retryable: true } が truthy と
+      // 判定されて誤って postRedemptionNotify(result) が呼ばれてしまうか、あるいは
+      // 修正の中間段階で `result` を null チェックする実装のままだと skipped 扱いに
+      // なり、いずれにせよ本テストが検証したい「retryableな失敗はKVに残す」という
+      // 期待に反する。修正後は3分岐で正しく failed 扱いになり、KVエントリは
+      // deleteParkedEventSubNotification が呼ばれず保持される。
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-retryable', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      mocks.handleRedemption.mockResolvedValue({ notify: null, retryable: true })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.postRedemptionNotify).not.toHaveBeenCalled()
+      expect(mocks.deleteParkedEventSubNotification).not.toHaveBeenCalled()
+      expect(json.results[0].outcome).toBe('failed')
+      expect(json.counts).toEqual(expectedCounts({ failed: 1, total: 1 }))
+    })
+
+    it('例外がthrowされた場合はKVエントリを削除せず、バッチ処理は次のエントリへ継続する', async () => {
+      const failingRecord = makeRecord({ messageId: 'message-fail' })
+      const succeedingRecord = makeRecord({ messageId: 'message-ok' })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [
+          { key: 'maintenance:eventsub:key-fail', record: failingRecord },
+          { key: 'maintenance:eventsub:key-ok', record: succeedingRecord },
+        ],
+        cursor: undefined,
+        listComplete: true,
+      })
+      mocks.handleRedemption
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValueOnce({
+          notify: { gachaResult: { type: 'gacha' }, broadcasterTwitchUserId: 'b1', streamer: { id: 's1' }, userId: 'v1' },
+          retryable: false,
+        })
+      mocks.postRedemptionNotify.mockResolvedValue(undefined)
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(json.results).toEqual([
+        expect.objectContaining({ key: 'maintenance:eventsub:key-fail', outcome: 'failed', error: 'boom' }),
+        expect.objectContaining({ key: 'maintenance:eventsub:key-ok', outcome: 'succeeded' }),
+      ])
+      expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledTimes(1)
+      expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledWith('maintenance:eventsub:key-ok')
+      expect(mocks.deleteParkedEventSubNotification).not.toHaveBeenCalledWith('maintenance:eventsub:key-fail')
+      expect(json.counts).toEqual(expectedCounts({ succeeded: 1, failed: 1, total: 2 }))
+    })
+
+    it('KV削除自体が例外をthrowしても、resultsは1エントリ1outcomeのままで二重計上されない（中-1の回帰テスト）', async () => {
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-1', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      const gachaResult = { gachaResult: { type: 'gacha' }, broadcasterTwitchUserId: 'broadcaster-1', streamer: { id: 's1' }, userId: 'viewer-1' }
+      mocks.handleRedemption.mockResolvedValue({ notify: gachaResult, retryable: false })
+      mocks.postRedemptionNotify.mockResolvedValue(undefined)
+      // deleteParkedEventSubNotification はKV binding未取得時はwarnのみで例外を投げないが、
+      // kv.delete() 自体が例外をthrowした場合は伝播しうる（eventsub-park.ts参照）。
+      // その状況を再現する。
+      mocks.deleteParkedEventSubNotification.mockRejectedValue(new Error('kv delete boom'))
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      // 修正前は catch 節に落ちて同一キーへ succeeded + failed の2エントリが
+      // pushされ、countsが矛盾していた。修正後は最初にpushされた succeeded の
+      // ままで、削除失敗はresultsに一切反映されないことを固定する。
+      expect(json.results).toHaveLength(1)
+      expect(json.results[0].outcome).toBe('succeeded')
+      expect(json.counts).toEqual(expectedCounts({ succeeded: 1, total: 1 }))
+    })
+
+    it('payload.event が欠落している場合はinvalid-payload扱いでKVエントリを削除し、reportErrorを呼ぶ（低-6）', async () => {
+      const record = makeRecord({ payload: { subscription: {} } })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-invalid', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.handleRedemption).not.toHaveBeenCalled()
+      expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledWith('maintenance:eventsub:key-invalid')
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(json.results[0].outcome).toBe('invalid-payload')
+      expect(json.counts).toEqual(expectedCounts({ invalidPayload: 1, total: 1 }))
+    })
+
+    it('payload.event が非object（文字列）の場合もinvalid-payload扱いになる（低-6）', async () => {
+      const record = makeRecord({ payload: { event: 'not-an-object' } })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-invalid2', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.handleRedemption).not.toHaveBeenCalled()
+      expect(json.results[0].outcome).toBe('invalid-payload')
+    })
+  })
+
+  describe('CHANNEL_RAID の処理', () => {
+    it('handleRaidNotification を呼び出し、成功時はKVエントリを削除する', async () => {
+      const record = makeRecord({
+        subscriptionType: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID,
+        payload: {
+          subscription: { type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID },
+          event: {
+            from_broadcaster_user_id: 'from-1',
+            to_broadcaster_user_id: 'to-1',
+            viewers: 5,
+          },
+        },
+      })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-raid', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      const raidResult = { gachaResult: { type: 'gacha' }, broadcasterTwitchUserId: 'to-1', streamer: { id: 's1' }, userId: 'from-1' }
+      mocks.handleRaidNotification.mockResolvedValue({ notify: raidResult, retryable: false })
+      mocks.postRedemptionNotify.mockResolvedValue(undefined)
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.handleRaidNotification).toHaveBeenCalledWith('message-1', payloadEventOf(record))
+      expect(mocks.handleRedemption).not.toHaveBeenCalled()
+      expect(mocks.postRedemptionNotify).toHaveBeenCalledWith(raidResult)
+      expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledWith('maintenance:eventsub:key-raid')
+      expect(json.results[0].outcome).toBe('succeeded')
+    })
+
+    it('{notify: null, retryable: true}の場合はfailed扱いでKVエントリを削除しない（RAID側、Issue #787 2巡目レビューの回帰テスト）', async () => {
+      const record = makeRecord({
+        subscriptionType: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID,
+        payload: {
+          subscription: { type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID },
+          event: { from_broadcaster_user_id: 'from-1', to_broadcaster_user_id: 'to-1', viewers: 5 },
+        },
+      })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-raid-retryable', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      mocks.handleRaidNotification.mockResolvedValue({ notify: null, retryable: true })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.postRedemptionNotify).not.toHaveBeenCalled()
+      expect(mocks.deleteParkedEventSubNotification).not.toHaveBeenCalled()
+      expect(json.results[0].outcome).toBe('failed')
+      expect(json.counts).toEqual(expectedCounts({ failed: 1, total: 1 }))
+    })
+
+    it('KV削除自体が例外をthrowしても、resultsは1エントリ1outcomeのままで二重計上されない（中-1の回帰テスト、RAID側）', async () => {
+      const record = makeRecord({
+        subscriptionType: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID,
+        payload: {
+          subscription: { type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID },
+          event: { from_broadcaster_user_id: 'from-1', to_broadcaster_user_id: 'to-1', viewers: 5 },
+        },
+      })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-raid', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      const raidResult = { gachaResult: { type: 'gacha' }, broadcasterTwitchUserId: 'to-1', streamer: { id: 's1' }, userId: 'from-1' }
+      mocks.handleRaidNotification.mockResolvedValue({ notify: raidResult, retryable: false })
+      mocks.postRedemptionNotify.mockResolvedValue(undefined)
+      mocks.deleteParkedEventSubNotification.mockRejectedValue(new Error('kv delete boom'))
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(json.results).toHaveLength(1)
+      expect(json.results[0].outcome).toBe('succeeded')
+      expect(json.counts).toEqual(expectedCounts({ succeeded: 1, total: 1 }))
+    })
+
+    it('payload.event が欠落している場合はinvalid-payload扱いになる（低-6、RAID側）', async () => {
+      const record = makeRecord({
+        subscriptionType: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID,
+        payload: { subscription: {} },
+      })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-raid-invalid', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.handleRaidNotification).not.toHaveBeenCalled()
+      expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledWith('maintenance:eventsub:key-raid-invalid')
+      expect(json.results[0].outcome).toBe('invalid-payload')
+    })
+  })
+
+  describe('未知の subscriptionType（中-2）', () => {
+    it('unknown-type扱いとし、KVエントリを削除せず、handleRedemption/handleRaidNotificationのいずれも呼ばない', async () => {
+      const record = makeRecord({ subscriptionType: 'channel.unknown.event' })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-unknown', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(mocks.handleRedemption).not.toHaveBeenCalled()
+      expect(mocks.handleRaidNotification).not.toHaveBeenCalled()
+      // fail-safe: park側と同じ「将来subscriptionTypeが増えても退避漏れを防ぐ」設計に
+      // 合わせ、replay側では即座にKV削除しない（TTL 7日に任せる）。
+      expect(mocks.deleteParkedEventSubNotification).not.toHaveBeenCalled()
+      expect(json.results[0].outcome).toBe('unknown-type')
+      expect(json.counts).toEqual(expectedCounts({ unknownType: 1, total: 1 }))
+    })
+  })
+
+  describe('cursor の pass-through', () => {
+    it('リクエストボディのcursor/limitをlistParkedEventSubNotificationsへそのまま渡し、レスポンスのcursor/listCompleteを反映する', async () => {
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [],
+        cursor: 'next-cursor-value',
+        listComplete: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({ cursor: 'incoming-cursor', limit: 5 }))
+      const json = await response.json()
+
+      expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledWith({
+        cursor: 'incoming-cursor',
+        limit: 5,
+      })
+      expect(json.cursor).toBe('next-cursor-value')
+      expect(json.listComplete).toBe(false)
+    })
+  })
+})

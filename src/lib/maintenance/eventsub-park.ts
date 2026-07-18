@@ -63,9 +63,40 @@ const PARK_TTL_SECONDS = 7 * 24 * 60 * 60
  * Cloudflare Workers KV namespace の最小インターフェース。
  * r2-client.ts の R2BucketLike と同じ方針: @cloudflare/workers-types に
  * 依存せず、実際に使うメソッドだけを最小定義する。
+ *
+ * Issue #787 Stage 2: リプレイ機構の実装に伴い、退避時の put に加えて
+ * 一覧取得・個別取得・削除の3メソッドを追加。型は実際の Cloudflare Workers KV
+ * API（list/get/delete）に合わせている。
  */
 interface KVNamespaceLike {
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
+  /**
+   * キー一覧を取得する。`list_complete: false` の場合は返却された `cursor` を
+   * 次回呼び出しに渡すことで続きを取得できる（Cloudflare Workers KV の
+   * ページネーション仕様どおり）。
+   */
+  list(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<{
+    keys: { name: string }[]
+    list_complete: boolean
+    cursor?: string
+  }>
+  get(key: string): Promise<string | null>
+  delete(key: string): Promise<void>
+}
+
+/**
+ * KV へ退避される1件のレコード形式（Issue #787 Stage 2）。
+ * parkEventSubNotification が保存する匿名オブジェクトの構造をそのまま型定義した
+ * だけで、フィールドの追加・変更は行っていない。リプレイ側（list/get）が
+ * 型安全にレコードを扱えるようにするための export。
+ */
+export interface ParkedEventSubRecord {
+  messageId: string
+  subscriptionType: string
+  payload: unknown
+  receivedAt: string
+  maintenanceMode: MaintenanceState['mode']
+  maintenanceOperationId: MaintenanceState['operationId']
 }
 
 /** parkEventSubNotification に渡す入力。 */
@@ -128,7 +159,7 @@ export async function parkEventSubNotification(
   // 複数通知でもキーが衝突しないようにする。
   const key = `${KEY_PREFIX}${receivedAt}:${input.messageId}`
 
-  const record = {
+  const record: ParkedEventSubRecord = {
     messageId: input.messageId,
     subscriptionType: input.subscriptionType,
     payload: input.payload,
@@ -171,4 +202,100 @@ export async function parkEventSubNotification(
     )
     return false
   }
+}
+
+/** listParkedEventSubNotifications に渡す入力。 */
+export interface ListParkedEventSubNotificationsInput {
+  /** 前回呼び出しで返却された cursor。続きから一覧取得する場合に指定する。 */
+  cursor?: string
+  /** 1回のKV list呼び出しで取得する最大件数。省略時はKV既定値に従う。 */
+  limit?: number
+}
+
+/** listParkedEventSubNotifications の戻り値。 */
+export interface ListParkedEventSubNotificationsResult {
+  /** 取得できたレコード一覧（壊れたJSONのエントリはスキップ済み）。 */
+  entries: Array<{ key: string; record: ParkedEventSubRecord }>
+  /** 続きがある場合に次回呼び出しへ渡す cursor。 */
+  cursor?: string
+  /** true の場合、これ以上のエントリは存在しない（KV list の list_complete をそのまま反映）。 */
+  listComplete: boolean
+}
+
+/**
+ * KV へ退避された EventSub notification を一覧取得する（Issue #787 Stage 2）。
+ *
+ * 個別エントリの壊れたJSON（理論上は起こり得ないはずだが、KV書き込み中断等の
+ * 万一のケースを防御的に想定）は logger.error でログしてスキップし、一覧取得
+ * 全体は継続する。1件の破損データで全体のリプレイ処理が止まってしまう方が
+ * 実害が大きいため（parkEventSubNotification と同様、データ操作不能を
+ * オペレーターに検知させる目的で warn ではなく error を使う）。
+ *
+ * KV バインディング自体が取得できない場合（Workers外環境やbinding未設定）は
+ * parkEventSubNotification の KV binding unavailable ケースと同じ理由で
+ * logger.error し、空の結果を返す（呼び出し元がクラッシュしないようfail-safe）。
+ */
+export async function listParkedEventSubNotifications(
+  input: ListParkedEventSubNotificationsInput
+): Promise<ListParkedEventSubNotificationsResult> {
+  const kv = await getMaintenanceKvBinding()
+  if (!kv) {
+    logger.error(
+      `[maintenance:eventsub] KV binding unavailable, cannot list parked notifications`
+    )
+    return { entries: [], cursor: undefined, listComplete: true }
+  }
+
+  const listResult = await kv.list({
+    prefix: KEY_PREFIX,
+    cursor: input.cursor,
+    limit: input.limit,
+  })
+
+  const entries: Array<{ key: string; record: ParkedEventSubRecord }> = []
+  for (const { name: key } of listResult.keys) {
+    const raw = await kv.get(key)
+    if (raw === null) {
+      // list と get の間でTTL失効等により消えた可能性がある。エラーではなく
+      // 単純にスキップする（データ破損ではないため logger.error は不要）。
+      continue
+    }
+
+    try {
+      const record = JSON.parse(raw) as ParkedEventSubRecord
+      entries.push({ key, record })
+    } catch (error) {
+      // 破損データとしてログし、このエントリだけスキップして一覧取得全体は継続する。
+      logger.error(
+        `[maintenance:eventsub] failed to parse parked record - corrupted data, skipping key=${key}`,
+        { error: error instanceof Error ? error.message : String(error) }
+      )
+    }
+  }
+
+  return {
+    entries,
+    cursor: listResult.cursor,
+    listComplete: listResult.list_complete,
+  }
+}
+
+/**
+ * KV へ退避された1件の EventSub notification を削除する（Issue #787 Stage 2）。
+ * リプレイ成功・skip確定後にリプレイ側から呼ばれる。
+ *
+ * KV バインディング取得に失敗した場合は logger.warn のみに留める（parkと違い
+ * データロスではなく「削除できなかった」だけであり、KEY_PREFIX の TTL（7日）で
+ * いずれ自動的に消えるため、parkEventSubNotification 相当の error 格上げは不要）。
+ */
+export async function deleteParkedEventSubNotification(key: string): Promise<void> {
+  const kv = await getMaintenanceKvBinding()
+  if (!kv) {
+    logger.warn(
+      `[maintenance:eventsub] KV binding unavailable, cannot delete parked notification key=${key}`
+    )
+    return
+  }
+
+  await kv.delete(key)
 }

@@ -1,5 +1,16 @@
 [
   {
+    "path": "/api/admin/eventsub-replay",
+    "methods": [
+      "POST"
+    ],
+    "category": "twitch",
+    "maintenanceBehavior": "block",
+    "reason": "退避されたEventSub通知の再処理（DB書き込み・カード付与を伴う）。メンテナンス解除後(mode=off)にのみ実行する運用のため、メンテ中は他の書き込みと同様にブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-19"
+  },
+  {
     "path": "/api/announcements/read",
     "methods": [
       "POST"

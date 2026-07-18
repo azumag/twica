@@ -93,6 +93,16 @@ describe('mode=read-only の一律ブロック', () => {
     expect(debugResponse).not.toBeNull()
     expect(debugResponse!.status).toBe(503)
   })
+
+  it('/api/admin/eventsub-replay（Issue #787）はallowlistで"block"登録されており、メンテ中は503でブロックされる（低-8）', () => {
+    // config/maintenance-write-surfaces.json で maintenanceBehavior: "block" 登録済み。
+    // メンテナンス解除後(mode=off)にのみ実行する運用のルートであり、
+    // /api/twitch/eventsub（Webhook本体、queue-during-maintenance）とは異なり
+    // 免除されないことをここで名指しして固定する。
+    const response = checkMaintenanceWriteBlock(makeRequest('POST', '/api/admin/eventsub-replay'))
+    expect(response).not.toBeNull()
+    expect(response!.status).toBe(503)
+  })
 })
 
 describe('mode=cutover-validating / incident-read-only でも一律ブロックが適用される', () => {

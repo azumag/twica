@@ -207,12 +207,68 @@ type MaintenanceMode =
   この「データロス」は `logger.error` で記録し、既存の errors テーブル
   記録 → Cron Worker (`twica-error-reporter`) 経由の GitHub Issue 自動起票
   に乗る。
-- **リプレイ（退避データの再処理）は未実装のまま残っている。**
-  `eventsub-park.ts` は退避データの形式だけリプレイ可能に設計しているが、
-  実際にリプレイするバッチ・手順は存在しない。カットオーバー作業で
-  maintenance mode を `off` に戻した後、KV に退避されたままの
-  notification（ガチャ抽選・チャンネルポイント消費を含みうる）を救済する
-  運用手順は、issue #785 のフォローアップとして別途必要（8章参照）。
+- **リプレイ（退避データの再処理）は issue #787 で実装済み。**
+  カットオーバー作業で maintenance mode を `off` に戻した後、KV に
+  退避されたままの notification（ガチャ抽選・チャンネルポイント消費を
+  含みうる）は以下の手順で救済する:
+
+  1. `src/app/api/admin/eventsub-replay/route.ts`（POST）が
+     `listParkedEventSubNotifications()` で KV から退避データを
+     バッチ取得し、`handleRedemption` / `handleRaidNotification`
+     （どちらも `src/lib/services/eventsub-redemption.ts` に切り出し済み。
+     Webhook本体と同一ロジックを再利用するため、実行結果は通常のライブ
+     処理と完全に同じ冪等性・DB書き込み挙動になる）を再実行する。
+     成功・skip（重複/報酬不一致等の正当な終端結果）は KV エントリを
+     削除し、例外発生時のみ KV エントリを残して次のエントリへ継続する
+     （再試行・調査のため）。
+  2. 認証は `X-Replay-Secret` ヘッダーと環境変数
+     `EVENTSUB_REPLAY_SECRET` の定数時間比較。**本番/preview環境ともに
+     このシークレットの事前設定（`wrangler secret put
+     EVENTSUB_REPLAY_SECRET`）が前提条件**であり、未設定の場合は
+     route が 500 を返す（fail-closed。設定忘れで誰でも叩ける事故を
+     防ぐため）。値は `openssl rand -hex 32` 等で生成した高エントロピーな
+     ランダム文字列を使うこと（推測されると誰でもDB書き込み系のリプレイを
+     実行できてしまうため）。
+  3. 実行は運用スクリプト `scripts/replay-maintenance-eventsub.js` を使う:
+     ```
+     EVENTSUB_REPLAY_SECRET=<secret> node scripts/replay-maintenance-eventsub.js --url=<対象URL>
+     # 事前確認したい場合（実行・削除を伴わない）
+     EVENTSUB_REPLAY_SECRET=<secret> node scripts/replay-maintenance-eventsub.js --url=<対象URL> --dry-run
+     ```
+     `cursor` を使って `listComplete: true` になるまで自動でページネーション
+     し、`succeeded`/`skipped`/`failed`/`unknownType`/`invalidPayload` の
+     合計件数を表示する。`failed` が1件でもあれば終了コード1で終わるため、
+     CI以外の運用実行後にこの終了コードで成否を判断できる。`failed` に
+     なったエントリは KV に残るため、原因調査後に同じコマンドを再実行すれば
+     再処理される（`execute_gacha_transaction` の `event_id` UNIQUE制約による
+     冪等性を前提にした設計）。`unknownType`（未対応のsubscriptionType）と
+     `invalidPayload`（破損したpayload、GitHub Issueに自動起票済み）は
+     終了コードには影響しないため、表示された件数を目視で確認すること。
+     KV は結果整合性（eventual consistency）のため、直前の write（park/削除）が
+     直後の list に反映されないことが稀にある。read-only 解除直後に実行して
+     `total` が想定より少ない場合は、1分程度待ってから再実行すること。
+
+     **正常完了の確認方法**: `--dry-run` は実行・削除を一切行わないため、
+     dry-run のレスポンスの `succeeded`/`skipped`/`failed`/`unknownType`
+     件数は常に 0 になる（全エントリが分類されず `outcome: "dry-run"` として
+     一律報告されるだけで、これらのカテゴリ自体が使われないため）。従って
+     「dry-run 実行時にこれらの件数が 0 であること」は正常完了の判定基準に
+     ならない。代わりに、**本実行**（`--dry-run` 無し）を `failed` 件数が
+     0 になるまで繰り返し、その後もう一度 `--dry-run` を実行して残った
+     `results` の `total` を確認すること。`total` が 0 でない場合は、
+     `results` 配列の各エントリの `subscriptionType` を目視で確認する
+     （dry-run では未分類のため件数集計からは判別できない）。残っているのが
+     `CHANNEL_POINTS_REDEMPTION_ADD`/`CHANNEL_RAID` 以外の subscriptionType
+     （本実行時に `unknownType` として KV 削除されずに残ったもの。park 側と
+     同じ fail-safe 設計であり、将来の subscriptionType 対応漏れを検知する
+     ためのものなので、残っていても即座の対応は不要）だけであれば正常完了と
+     みなせる。KV 削除に失敗したエントリ（`deleteParkedEntrySafely` が warn
+     ログのみで処理を継続する設計）が TTL 失効まで残ることもあり得るため、
+     **必ずしも残件数が 0 件になるわけではない**ことに注意すること。
+  4. 本routeは `maintenanceBehavior: "block"` として allowlist に登録
+     済み（`/api/twitch/eventsub` 本体とは異なり `queue-during-maintenance`
+     ではない）。**メンテナンス解除後（mode=off）にのみ実行する運用**の
+     ため、メンテ中に誤って叩いても他の書き込みと同様にブロックされる。
 
 ### 4.4 CI enforcement（`scripts/check-maintenance-surfaces.js`）
 
@@ -317,17 +373,14 @@ npm run probe:maintenance -- --url=https://twica-preview.tsubasa-azumagakito.wor
 
 ### 4.8 既知の残課題
 
-- **issue #785**: `src/app/battle/layout.tsx` は `MaintenanceStatusProvider`
-  をマウントしていないため、`battle/page.tsx` の `startBattle` ボタンの
-  事前disableが現状no-op（`useMaintenanceStatus()` はProvider外では常に
-  `mode: 'off'` を返す安全側フォールバックのため、実害＝メンテ中に
-  誤って書き込みが通ることはない。UXが「押してから503で気づく」に
-  留まるだけ）。同issueには `TwitchLoginButton.tsx` がマウント時1回しか
-  maintenance statusを取得しない（ポーリングなし）ため、ページを開いた
-  まま裏でメンテが始まった場合にログインボタン押下→302追従のsilent
-  failureが再現しうる残余レースも記録されている。
-- **EventSubリプレイ未実装**（4.3節）: KVへの退避は実装済みだが、
-  カットオーバー後に退避データを再処理する手順・バッチが無い。
+- ~~issue #785~~: `src/app/battle/layout.tsx` に `MaintenanceStatusProvider`
+  が無く `startBattle` ボタンの事前disableがno-opだった問題、および
+  `TwitchLoginButton.tsx` がマウント時1回しかmaintenance statusを
+  取得しない残余レースは、issue #785（commit `dafef83`）で解消済み。
+- ~~EventSubリプレイ未実装~~（4.3節）: issue #787 で
+  `src/app/api/admin/eventsub-replay/route.ts` と運用スクリプト
+  `scripts/replay-maintenance-eventsub.js` を実装し解消済み。詳細は
+  4.3節を参照。
 
 ## 5. pg_dump/restore の実行手順とダウンタイム見積り
 
@@ -398,7 +451,8 @@ npm run probe:maintenance -- --url=https://twica-preview.tsubasa-azumagakito.wor
 9. **最小限の書き込み系疎通確認**を1系統実施（例: ガチャ実引き1回）。
 10. **read-only 解除**（prod → preview の順、または一括）。
 11. **EventSub リプレイ**: メンテナンス中に KV へ退避された payload を
-    リプレイする（4.3節、実装は別スコープ）。
+    リプレイする（4.3節、**実装済み**。`scripts/replay-maintenance-eventsub.js`
+    を dry-run → 本実行の順で実行し、`failed` 件数が0になることを確認する）。
 12. 6章の検証チェックリストを実施。異常があれば7章のロールバック手順に切替。
 
 ### 5.2 ダウンタイム見積り
@@ -551,10 +605,15 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
       具体的な分数・配信者への配信チャネル）
 - [x] **read-only フラグの実装方式の採用可否**: issue #694 Stage 1-7で実装・
       オーナー承認済み。案B（middleware一律 + allowlist、4.2節）に確定
-- [ ] **EventSub のリプレイ実装**: 退避（KVへの一時保存、4.3節）は#694で
-      実装済みだが、**リプレイ（退避分の再処理）は未実装**。切替時に手動で
-      対応するか（KVを`list`して`handleRedemption`/`handleRaidNotification`
-      へ手動投入するスクリプトを用意する）、別issue化が必要か確認
+- [x] **EventSub のリプレイ実装**: 退避（KVへの一時保存、4.3節）は#694で
+      実装済み。**リプレイ（退避分の再処理）は issue #787 で実装済み**
+      （`src/app/api/admin/eventsub-replay/route.ts` +
+      `scripts/replay-maintenance-eventsub.js`、手順は4.3節参照）。
+      新たな前提条件: 実行には環境変数 `EVENTSUB_REPLAY_SECRET` の
+      事前設定が本番・preview両環境で必要（`wrangler secret put
+      EVENTSUB_REPLAY_SECRET`、未設定の場合routeは500でfail-closed）。
+      この値自体の生成・設定はオーナーによる運用作業であり、本ランブック
+      作成時点では未実施
 - [ ] **実際の DB サイズの再実測**: 1章の 0.334GB は 2026-07-07 時点の参考値。
       実施直前に再確認する
 - [ ] **PlanetScale 側のロール/RLS 機構が Supabase と同一のセマンティクスか**:

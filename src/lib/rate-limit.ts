@@ -339,6 +339,10 @@ export const rateLimits = {
   twitchCheckSubscription: createRatelimit("twitchCheckSubscription", 5, 60 * 1000),
   // Twitch サブスク手動無効化（分あたり5回）
   twitchDisableSubscription: createRatelimit("twitchDisableSubscription", 5, 60 * 1000),
+  // Issue #787: メンテナンス中に退避されたEventSub通知のリプレイ。共有シークレット
+  // 認証の運用エンドポイントであり、通常利用者は叩かないため他のadmin系操作と
+  // 同水準（分あたり10回）に絞る。
+  eventsubReplay: createRatelimit("eventsubReplay", 10, 60 * 1000),
 } as const;
 
 /**
