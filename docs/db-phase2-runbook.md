@@ -609,11 +609,11 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
       実装済み。**リプレイ（退避分の再処理）は issue #787 で実装済み**
       （`src/app/api/admin/eventsub-replay/route.ts` +
       `scripts/replay-maintenance-eventsub.js`、手順は4.3節参照）。
-      新たな前提条件: 実行には環境変数 `EVENTSUB_REPLAY_SECRET` の
-      事前設定が本番・preview両環境で必要（`wrangler secret put
-      EVENTSUB_REPLAY_SECRET`、未設定の場合routeは500でfail-closed）。
-      この値自体の生成・設定はオーナーによる運用作業であり、本ランブック
-      作成時点では未実施
+      実行には環境変数 `EVENTSUB_REPLAY_SECRET` の事前設定が本番・preview
+      両環境で必要（未設定の場合routeは500でfail-closed）。2026-07-19、
+      本番・preview両環境で `openssl rand -hex 32` により生成した値を
+      `wrangler versions secret put` で設定・デプロイ済み（値は非公開）。
+      本番で認証エラー(403)が正しく返ることを実機確認済み
 - [ ] **実際の DB サイズの再実測**: 1章の 0.334GB は 2026-07-07 時点の参考値。
       実施直前に再確認する
 - [ ] **PlanetScale 側のロール/RLS 機構が Supabase と同一のセマンティクスか**:
