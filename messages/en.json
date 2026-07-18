@@ -1098,6 +1098,18 @@
     "read": "Read",
     "empty": "No announcements."
   },
+  "maintenance": {
+    "announcementLabel": "Maintenance status",
+    "modes": {
+      "readOnly": "The service is currently under maintenance. Please try again later.",
+      "cutoverValidating": "The service is currently validating a system migration. Please try again later.",
+      "incidentReadOnly": "Write access is currently restricted while we respond to an incident. Please try again later."
+    },
+    "messageKeys": {
+      "planned": "Planned maintenance is in progress.",
+      "incident": "We are currently responding to an incident and working on a fix."
+    }
+  },
   "privacyPage": {
     "title": "Privacy Policy",
     "metaDescription": "TwiCa Privacy Policy. Information about data collection, usage, and protection.",

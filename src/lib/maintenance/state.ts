@@ -17,6 +17,47 @@ export type MaintenanceMode =
   | 'incident-read-only'
 
 /**
+ * mode ⇔ machine-readable エラーコードの1:1対応（Stage 3 guard.ts が 503 body
+ * の `error.code` として返し、Stage 6a client.ts が UI 側でその判定に使う）。
+ * 'off' は拒否されない（guardWrite が null を返す）ため対象外。
+ *
+ * 単一の実装元をここに置く理由: この対応は guard.ts（サーバー: エラー生成）と
+ * client.ts（クライアント: エラー判定）の両方から参照される「ワイヤーフォーマット
+ * の契約」そのもの。以前は両ファイルがそれぞれ独立してこの3値を書き写しており、
+ * 将来 mode を追加した際に片方だけ更新してもう片方が黙って古いままになる
+ * （＝新しい mode のエラーを client 側が判定できなくなる）ドリフトの実例的リスクが
+ * あったため、state.ts（両者が既に import している MaintenanceMode の定義元）に
+ * 集約した。
+ */
+/**
+ * `as const satisfies Record<...>` を組み合わせる理由（型レベルのドリフト防止）:
+ * 単に `: Record<Exclude<MaintenanceMode, 'off'>, string>` という型注釈だけを
+ * 付けると、値の型がその注釈でワイドニングされてしまい、各プロパティ値は
+ * リテラル型ではなく単なる `string` になる。その結果、下の
+ * `MaintenanceErrorCode`（indexed access で導出）も実質 `string` になり、
+ * 「maintenance系3値のいずれか」を強制するはずの型が何の文字列でも代入できて
+ * しまう（コメントで謳っているドリフト防止が型レベルでは機能しない）。
+ * `as const` で値をリテラル型のまま固定しつつ、`satisfies` でキーが
+ * `Exclude<MaintenanceMode, 'off'>` を過不足なく網羅していることを型チェック
+ * 時に強制する（`satisfies` は `as const` のリテラル型を保ったまま形状だけ
+ * 検証するため、`:` 注釈と違って値の型を犠牲にしない）。
+ */
+export const MAINTENANCE_ERROR_CODE_BY_MODE = {
+  'read-only': 'maintenance_read_only',
+  'cutover-validating': 'maintenance_cutover_validating',
+  'incident-read-only': 'maintenance_incident_read_only',
+} as const satisfies Record<Exclude<MaintenanceMode, 'off'>, string>
+
+/**
+ * MAINTENANCE_ERROR_CODE_BY_MODE の値から導出する、取りうるエラーコードの
+ * リテラル合併型（'maintenance_read_only' | 'maintenance_cutover_validating' |
+ * 'maintenance_incident_read_only'）。上記の `as const` により、ここは単なる
+ * `string` ではなく実際のリテラル合併型になる。
+ */
+export type MaintenanceErrorCode =
+  (typeof MAINTENANCE_ERROR_CODE_BY_MODE)[keyof typeof MAINTENANCE_ERROR_CODE_BY_MODE]
+
+/**
  * issue #694 で定義された state の shape。
  * startedAt / expectedEndAt は ISO 8601 文字列を想定するが、値の妥当性は
  * getMaintenanceState() 側で検証済み（不正なら undefined になっている）。
@@ -25,6 +66,16 @@ export interface MaintenanceState {
   mode: MaintenanceMode
   startedAt?: string
   expectedEndAt?: string
+  /**
+   * 告知文言の出し分けキー（自由形式の文字列。フォーマットは未規定）。
+   * Stage 6a で messages/ja.json・messages/en.json に追加した
+   * `maintenance.messageKeys.<key>`（例: 'planned' | 'incident'）と対応させる
+   * 運用を想定しているが、この型自体はその規約を強制しない（運用側が
+   * 未対応のキーを設定した場合の扱いは、UI側（Stage 6b）の解決ロジックが
+   * `maintenance.modes.*` の mode別デフォルト文言へフォールバックする形で
+   * 吸収する想定。src/lib/maintenance/client.ts の MaintenanceStatusResponse
+   * のドキュメントコメント参照）。
+   */
   publicMessageKey?: string
   operationId?: string
 }

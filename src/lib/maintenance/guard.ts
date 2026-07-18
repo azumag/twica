@@ -11,20 +11,15 @@
  */
 import { NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
-import { getMaintenanceState, type MaintenanceMode, type MaintenanceState } from './state'
+import {
+  getMaintenanceState,
+  MAINTENANCE_ERROR_CODE_BY_MODE,
+  type MaintenanceMode,
+  type MaintenanceState,
+} from './state'
 
 /** expectedEndAt が未設定・過去日時のときに使う Retry-After のフォールバック秒数。 */
 const RETRY_AFTER_FALLBACK_SECONDS = 300
-
-/**
- * mode 別の machine-readable エラーコード。
- * 'off' は拒否しない（呼び出し側で null を返して弾く）ためキーに含めない。
- */
-const MODE_ERROR_CODE: Record<Exclude<MaintenanceMode, 'off'>, string> = {
-  'read-only': 'maintenance_read_only',
-  'cutover-validating': 'maintenance_cutover_validating',
-  'incident-read-only': 'maintenance_incident_read_only',
-}
 
 /**
  * mode 別のデフォルト日本語メッセージ（サーバー側の静的文言）。
@@ -35,6 +30,13 @@ const MODE_ERROR_CODE: Record<Exclude<MaintenanceMode, 'off'>, string> = {
  * publicMessageKey が未設定な場合でも意味が通るデフォルト文言」であり、
  * 状態ごとに利用者が取るべき行動の含意が異なる（計画停止か障害かで再試行の
  * 心構えが変わる）ため、3種類の mode をまとめて1文にせず個別に持つ。
+ *
+ * Stage 6a 追記: messages/ja.json の `maintenance.modes.*` は意図的にこれと
+ * 同じ文言を持つ（UI バナー側のデフォルト表示用）。この JSON API の body と
+ * UI 表示は経路が異なる（前者は常に日本語固定、後者は next-intl でロケール
+ * 追従）ため文言の実装元は意図的に分離しているが、日本語ワーディング自体は
+ * 一致させておくこと（どちらか片方だけ文言を変えると、同じ状況で見た目の
+ * 案内文が食い違うユーザー体験になる）。
  */
 const DEFAULT_MESSAGES: Record<Exclude<MaintenanceMode, 'off'>, string> = {
   'read-only': 'ただいまメンテナンス中です。しばらくしてから再度お試しください。',
@@ -83,7 +85,7 @@ function evaluateGuard(allowDuring?: MaintenanceMode[]): GuardRejection | null {
 
   return {
     state,
-    code: MODE_ERROR_CODE[mode],
+    code: MAINTENANCE_ERROR_CODE_BY_MODE[mode],
     message: DEFAULT_MESSAGES[mode],
   }
 }
