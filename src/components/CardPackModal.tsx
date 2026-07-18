@@ -10,6 +10,8 @@ import {
 import { MAX_COLLECTION_NAME_LENGTH, isReservedCollectionName } from "@/lib/validation/collection-name";
 import { logger } from "@/lib/logger";
 import { isEnterKeySubmit } from "@/lib/keyboard-utils";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 // ここでの事前検証は UX 向上のためで、最終的な検証はサーバーが行う
 // (POST /api/streamer/settings, PATCH /api/cards/collections)。検証規則は
@@ -95,6 +97,11 @@ export default function CardPackModal({
 }: CardPackModalProps) {
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 保存/リネームのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [list, setList] = useState<string[]>(cardPackNames);
   const [input, setInput] = useState("");
@@ -186,6 +193,12 @@ export default function CardPackModal({
   };
 
   const handleSave = async () => {
+    // #694 Stage 6c: フッターのSaveボタン自体はdisableしているが、念のため
+    // 送信経路の先頭でも二重にガードする（CardManager.handleSubmitと同じ方針）。
+    if (isMaintenanceBlocked) {
+      setError(tMaintenance("writeDisabled"));
+      return;
+    }
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -198,7 +211,10 @@ export default function CardPackModal({
       });
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || t("cardPackModal.saveFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （事前disableをすり抜けたポーリング間隔中の切替等のフォールバック表示）。
+        const maintenanceError = parseMaintenanceError(response, data);
+        throw new Error(maintenanceError?.message || data.error || t("cardPackModal.saveFailed"));
       }
 
       // Issue #269再設計: サーバーが実際に永続化したリストで同期する
@@ -251,6 +267,13 @@ export default function CardPackModal({
    */
   const handleRenamePackSave = async () => {
     if (!editingPack) return;
+    // #694 Stage 6c: リネームのSaveボタンはdisableしているが、入力欄の
+    // Enterキーからも直接この関数が呼ばれる経路があるため、送信前にも
+    // ガードする（CardManager.handleSubmitと同じ「二重ガード」方針）。
+    if (isMaintenanceBlocked) {
+      setRenameError(tMaintenance("writeDisabled"));
+      return;
+    }
     const oldName = editingPack;
     const validation = validatePackNameLocal(renameInput, t);
     if (!validation.ok) {
@@ -288,7 +311,8 @@ export default function CardPackModal({
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setRenameError(data?.error || t("cardPackModal.renameFailed"));
+        const maintenanceError = parseMaintenanceError(response, data);
+        setRenameError(maintenanceError?.message || data?.error || t("cardPackModal.renameFailed"));
         return;
       }
 
@@ -317,6 +341,12 @@ export default function CardPackModal({
    * (汎用ラベル表示に戻す = null)として扱う。
    */
   const handleRenameDefaultSave = async () => {
+    // #694 Stage 6c: 入力欄のEnterキーから直接呼ばれる経路があるため、
+    // 送信前にもガードする（handleRenamePackSaveと同じ方針）。
+    if (isMaintenanceBlocked) {
+      setRenameError(tMaintenance("writeDisabled"));
+      return;
+    }
     const trimmed = renameInput.trim();
     let newValue: string | null;
     if (trimmed.length === 0) {
@@ -351,7 +381,8 @@ export default function CardPackModal({
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setRenameError(data?.error || t("cardPackModal.renameFailed"));
+        const maintenanceError = parseMaintenanceError(response, data);
+        setRenameError(maintenanceError?.message || data?.error || t("cardPackModal.renameFailed"));
         return;
       }
       if (data?.defaultCardPackNameSkippedDeployWindow) {
@@ -411,6 +442,9 @@ export default function CardPackModal({
           <p className="mt-2 text-sm text-gray-400">
             {t("cardPackModal.description")}
           </p>
+          {isMaintenanceBlocked && (
+            <p className="mt-2 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+          )}
         </div>
 
         {/* 本文 */}
@@ -491,7 +525,8 @@ export default function CardPackModal({
                       <button
                         type="button"
                         onClick={handleRenameDefaultSave}
-                        disabled={renameSaving}
+                        disabled={renameSaving || isMaintenanceBlocked}
+                        title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                         className="whitespace-nowrap rounded-lg bg-purple-600 px-3 py-1.5 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
                       >
                         {renameSaving ? tCommon("loading") : tCommon("save")}
@@ -570,7 +605,8 @@ export default function CardPackModal({
                         <button
                           type="button"
                           onClick={handleRenamePackSave}
-                          disabled={renameSaving}
+                          disabled={renameSaving || isMaintenanceBlocked}
+                          title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                           className="whitespace-nowrap rounded-lg bg-purple-600 px-3 py-1.5 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
                         >
                           {renameSaving ? tCommon("loading") : tCommon("save")}
@@ -641,7 +677,8 @@ export default function CardPackModal({
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving || !hasChanges || isRenaming}
+            disabled={saving || !hasChanges || isRenaming || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? t("cardPackModal.saving") : t("cardPackModal.save")}

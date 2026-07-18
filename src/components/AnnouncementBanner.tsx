@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import AutoLinkText from '@/components/AutoLinkText'
+import { parseMaintenanceError } from '@/lib/maintenance/client'
+import { useMaintenanceStatus } from './MaintenanceStatusProvider'
 
 interface AnnouncementItem {
   id: string
@@ -43,18 +45,24 @@ const severityButtonStyles = {
 export default function AnnouncementBanner({ announcements }: AnnouncementBannerProps) {
   const router = useRouter()
   const t = useTranslations('announcementBanner')
+  const tMaintenance = useTranslations('maintenance')
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 既読ボタンのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus()
+  const isMaintenanceBlocked = maintenanceMode !== 'off'
   // 既読処理中のお知らせID（ローディング表示用）
   const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set())
   // 既読済みとしてUI上非表示にするお知らせID
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set())
-  // エラーが発生したお知らせID
-  const [errorIds, setErrorIds] = useState<Set<string>>(new Set())
+  // エラーが発生したお知らせID → 表示するエラー文言（maintenance時はサーバーの
+  // 案内文言、それ以外は汎用エラー文言）
+  const [errorMessages, setErrorMessages] = useState<Map<string, string>>(new Map())
 
   const handleMarkAsRead = async (announcementId: string) => {
     setLoadingIds(prev => new Set(prev).add(announcementId))
     // 前回のエラー状態をクリア
-    setErrorIds(prev => {
-      const next = new Set(prev)
+    setErrorMessages(prev => {
+      const next = new Map(prev)
       next.delete(announcementId)
       return next
     })
@@ -71,10 +79,15 @@ export default function AnnouncementBanner({ announcements }: AnnouncementBanner
         setDismissedIds(prev => new Set(prev).add(announcementId))
         router.refresh()
       } else {
-        setErrorIds(prev => new Set(prev).add(announcementId))
+        // #694 Stage 6c: 事前disableをすり抜けて(ポーリング間隔中の切替等)
+        // maintenance mode による503拒否を受けた場合は、サーバーの案内文言を
+        // そのまま出す（CardVisibilitySettings等と同じパターン）。
+        const errorData = await response.json().catch(() => ({}))
+        const maintenanceError = parseMaintenanceError(response, errorData)
+        setErrorMessages(prev => new Map(prev).set(announcementId, maintenanceError?.message || t('error')))
       }
     } catch {
-      setErrorIds(prev => new Set(prev).add(announcementId))
+      setErrorMessages(prev => new Map(prev).set(announcementId, t('error')))
     } finally {
       setLoadingIds(prev => {
         const next = new Set(prev)
@@ -111,14 +124,15 @@ export default function AnnouncementBanner({ announcements }: AnnouncementBanner
             <div className="flex shrink-0 flex-col items-start gap-1 sm:items-end">
               <button
                 onClick={() => handleMarkAsRead(announcement.id)}
-                disabled={loadingIds.has(announcement.id)}
+                disabled={loadingIds.has(announcement.id) || isMaintenanceBlocked}
                 aria-label={`${announcement.title} - ${t('markAsRead')}`}
+                title={isMaintenanceBlocked ? tMaintenance('writeDisabled') : undefined}
                 className={`rounded-lg px-4 py-2 text-sm font-medium text-white transition disabled:opacity-50 disabled:cursor-not-allowed ${severityButtonStyles[announcement.severity]}`}
               >
                 {loadingIds.has(announcement.id) ? t('marking') : t('markAsRead')}
               </button>
-              {errorIds.has(announcement.id) && (
-                <span className="text-xs text-red-400">{t('error')}</span>
+              {errorMessages.has(announcement.id) && (
+                <span className="text-xs text-red-400">{errorMessages.get(announcement.id)}</span>
               )}
             </div>
           </div>

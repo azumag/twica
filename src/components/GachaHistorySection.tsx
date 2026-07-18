@@ -7,6 +7,8 @@ import type { GachaHistory, Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { getRarityColorClass } from "@/lib/rarity";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 
 interface GachaHistoryWithCard extends GachaHistory {
@@ -30,6 +32,11 @@ export default function GachaHistorySection({
   const t = useTranslations("gachaHistory");
   const tCard = useTranslations("cardManager");
   const tCommon = useTranslations("common");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 削除のたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
   const [history, setHistory] = useState<GachaHistoryWithCard[]>(recentGacha);
   // 削除処理中のアイテムIDを保持し、連続クリックを防止
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -38,6 +45,13 @@ export default function GachaHistorySection({
     // 別の削除処理が進行中の場合はスキップ
     if (deletingId) return;
     if (!confirm(tCard("confirmations.deleteCard"))) return;
+
+    // ボタン自体はdisableしているが、CardManager.handleSubmitと同じ方針で
+    // 送信経路の先頭でも二重にガードする。
+    if (isMaintenanceBlocked) {
+      alert(tMaintenance("writeDisabled"));
+      return;
+    }
 
     setDeletingId(historyId);
     try {
@@ -52,7 +66,11 @@ export default function GachaHistorySection({
         alert(tCard("messages.operationFailed", { msg: errorData.error || tCard("messages.rateLimit") }));
         logger.error("Rate limit exceeded:", errorData);
       } else {
-        alert(tCard("messages.operationFailed", { msg: `HTTP ${response.status}` }));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （事前disableをすり抜けた場合のフォールバック表示）。
+        const errorData = await response.json().catch(() => ({}));
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        alert(tCard("messages.operationFailed", { msg: maintenanceError?.message || `HTTP ${response.status}` }));
       }
     } catch (error) {
       logger.error("Failed to delete gacha history:", error);
@@ -104,7 +122,8 @@ export default function GachaHistorySection({
                  {isStreamer && (
                    <button
                      onClick={() => handleDelete(entry.id)}
-                     disabled={deletingId !== null}
+                     disabled={deletingId !== null || isMaintenanceBlocked}
+                     title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                      className="rounded bg-red-500 px-3 py-1 text-xs text-white hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                    >
                      {deletingId === entry.id ? "..." : tCommon("delete")}

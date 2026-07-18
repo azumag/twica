@@ -14,6 +14,8 @@ import {
   normalizeOverlayEffectStyle,
   serializeRarityEffectMap,
 } from "@/lib/overlay-effect";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 /** 設定 UI で個別にエフェクトを割り当てられるビルトインレアリティ */
 type BuiltinRarity = (typeof RARITIES)[number]["value"];
@@ -230,6 +232,11 @@ export default function OverlayPreview({
   const t = useTranslations("overlaySettings");
   const tDashboard = useTranslations("dashboard");
   const tRarity = useTranslations("rarity");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: OverlayPreviewはStreamerSettings経由でdashboard/settingsページ
+  // (dashboard/layout.tsxのMaintenanceStatusProvider配下)でのみ使われる。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
   const storageKey = `${OVERLAY_OPTIONS_STORAGE_KEY_PREFIX}${streamerId}`;
 
   // オーバーレイオプションの状態管理
@@ -470,10 +477,15 @@ export default function OverlayPreview({
   // Trigger OBS demo via Supabase Realtime broadcast
   const triggerObsDemo = useCallback(async () => {
     if (isObsDemoExecuting) return;
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    if (isMaintenanceBlocked) {
+      alert(tMaintenance("writeDisabled"));
+      return;
+    }
 
     setIsObsDemoExecuting(true);
     try {
-      await fetch("/api/gacha/demo", {
+      const response = await fetch("/api/gacha/demo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -482,12 +494,26 @@ export default function OverlayPreview({
           broadcast: true,
         }),
       });
+      // #694 Stage 6c: 元々このボタンはレスポンスの成否を一切確認していなかった
+      // （fire-and-forget）。maintenance mode による503拒否時にユーザーへ何の
+      // フィードバックも無いのは「事前disableをすり抜けた場合の明確な案内」という
+      // 要求を満たさないため、maintenanceエラーの場合のみ最小限のalertを追加する
+      // （このボタンの一般的なエラーハンドリング自体を拡張するのはスコープ外）。
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        if (maintenanceError) {
+          alert(maintenanceError.message);
+        } else {
+          console.error("Failed to trigger OBS demo:", errorData);
+        }
+      }
     } catch (error) {
       console.error("Failed to trigger OBS demo:", error);
     } finally {
       setIsObsDemoExecuting(false);
     }
-  }, [streamerId, selectedCardId, isObsDemoExecuting]);
+  }, [streamerId, selectedCardId, isObsDemoExecuting, isMaintenanceBlocked, tMaintenance]);
 
   // 実際にガチャを引く（DBに記録される本番のガチャAPI呼び出し）
   // Execute real gacha (calls production gacha API and records to DB)
@@ -495,6 +521,11 @@ export default function OverlayPreview({
   // CSRF token is automatically sent via httpOnly cookie pattern
   const triggerRealGacha = useCallback(async () => {
     if (isExecuting) return;
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    if (isMaintenanceBlocked) {
+      alert(tMaintenance("writeDisabled"));
+      return;
+    }
 
     setIsExecuting(true);
     try {
@@ -515,8 +546,10 @@ export default function OverlayPreview({
         // On success, result is displayed via real-time notification to overlay
       } else {
         const errorData = await response.json();
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, errorData);
         console.error("Gacha API error:", errorData);
-        alert(`ガチャ実行エラー: ${errorData.error || "Unknown error"}`);
+        alert(`ガチャ実行エラー: ${maintenanceError?.message || errorData.error || "Unknown error"}`);
       }
     } catch (error) {
       console.error("Failed to execute gacha:", error);
@@ -524,7 +557,7 @@ export default function OverlayPreview({
     } finally {
       setIsExecuting(false);
     }
-  }, [streamerId, isExecuting]);
+  }, [streamerId, isExecuting, isMaintenanceBlocked, tMaintenance]);
 
   // オプションの切り替え
   const toggleOption = (key: keyof OverlayOptions) => {
@@ -884,9 +917,10 @@ export default function OverlayPreview({
           {/* OBS demo button (broadcasts via Supabase Realtime to OBS) */}
           <button
             onClick={triggerObsDemo}
-            disabled={isObsDemoExecuting}
+            disabled={isObsDemoExecuting || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className={`rounded-lg px-4 py-2 text-sm text-white transition-colors whitespace-nowrap ${
-              isObsDemoExecuting
+              isObsDemoExecuting || isMaintenanceBlocked
                 ? "bg-gray-600 cursor-not-allowed"
                 : "bg-blue-600 hover:bg-blue-700"
             }`}
@@ -911,9 +945,10 @@ export default function OverlayPreview({
           {isPreviewEnvironment && (
             <button
               onClick={triggerRealGacha}
-              disabled={isExecuting}
+              disabled={isExecuting || isMaintenanceBlocked}
+              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
               className={`rounded-lg px-4 py-2 text-sm text-white transition-colors whitespace-nowrap ${
-                isExecuting
+                isExecuting || isMaintenanceBlocked
                   ? "bg-gray-600 cursor-not-allowed"
                   : "bg-green-600 hover:bg-green-700"
               }`}

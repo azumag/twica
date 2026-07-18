@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface DeleteInquiryButtonProps {
   inquiryId: string;
@@ -21,14 +23,26 @@ export default function DeleteInquiryButton({
   className = "",
 }: DeleteInquiryButtonProps) {
   const t = useTranslations("inquiriesPage");
+  const tMaintenance = useTranslations("maintenance");
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 削除のたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const handleDelete = async (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
 
     if (deleting || !confirm(t("messages.deleteConfirm"))) return;
+
+    // ボタン自体はdisableしているが、CardManager.handleSubmitと同じ方針で
+    // 送信経路の先頭でも二重にガードする。
+    if (isMaintenanceBlocked) {
+      alert(tMaintenance("writeDisabled"));
+      return;
+    }
 
     setDeleting(true);
     try {
@@ -51,7 +65,10 @@ export default function DeleteInquiryButton({
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || t("messages.deleteFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （事前disableをすり抜けた場合のフォールバック表示）。
+        const maintenanceError = parseMaintenanceError(res, data);
+        alert(maintenanceError?.message || data.error || t("messages.deleteFailed"));
         return;
       }
 
@@ -70,7 +87,8 @@ export default function DeleteInquiryButton({
     <button
       type="button"
       onClick={handleDelete}
-      disabled={deleting}
+      disabled={deleting || isMaintenanceBlocked}
+      title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
       className={`inline-flex items-center justify-center rounded-md border border-red-500/40 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:border-red-400 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
     >
       {deleting ? t("messages.deleting") : t("messages.delete")}

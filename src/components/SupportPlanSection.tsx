@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { PlanType } from "@/lib/plan-constants";
 import { PLAN_STORAGE_BONUS } from "@/lib/plan-constants";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface SupportPlanSectionProps {
   currentPlan: PlanType;
@@ -24,7 +26,12 @@ const PLAN_STYLES: Record<PlanType, { color: string; bgColor: string }> = {
  */
 export default function SupportPlanSection({ currentPlan }: SupportPlanSectionProps) {
   const t = useTranslations("supportPlan");
+  const tMaintenance = useTranslations("maintenance");
   const router = useRouter();
+  // #694 Stage 6c: /dashboard/account は dashboard/layout.tsx の
+  // MaintenanceStatusProvider配下（Context経由でmode取得、個別pollingしない）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [code, setCode] = useState("");
   const [fanboxId, setFanboxId] = useState("");
@@ -46,6 +53,12 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
   const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!code.trim()) return;
+
+    // 事前disable(送信ボタン)をすり抜けるEnterキー送信等の経路を塞ぐための二重ガード。
+    if (isMaintenanceBlocked) {
+      setMessage({ type: "error", text: tMaintenance("writeDisabled") });
+      return;
+    }
 
     setLoading(true);
     setMessage(null);
@@ -73,7 +86,11 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
         // サーバーコンポーネント（カード管理等）にプラン変更を反映
         router.refresh();
       } else {
-        setMessage({ type: "error", text: data.error || t("messages.activateFailed") });
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （事前disableをすり抜けた場合＝ポーリング間隔中に切り替わった等の
+        // フォールバック表示）。
+        const maintenanceError = parseMaintenanceError(response, data);
+        setMessage({ type: "error", text: maintenanceError?.message || data.error || t("messages.activateFailed") });
       }
     } catch {
       setMessage({ type: "error", text: t("messages.networkError") });
@@ -84,6 +101,12 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
 
   const handleDeactivate = async () => {
     if (!window.confirm(t("form.confirmDeactivate"))) return;
+
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    if (isMaintenanceBlocked) {
+      setMessage({ type: "error", text: tMaintenance("writeDisabled") });
+      return;
+    }
 
     setDeactivating(true);
     setMessage(null);
@@ -104,7 +127,8 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
         setActivePlan((data.planType as PlanType) ?? "basic");
         router.refresh();
       } else {
-        setMessage({ type: "error", text: data.error || t("messages.deactivateFailed") });
+        const maintenanceError = parseMaintenanceError(response, data);
+        setMessage({ type: "error", text: maintenanceError?.message || data.error || t("messages.deactivateFailed") });
       }
     } catch {
       setMessage({ type: "error", text: t("messages.networkError") });
@@ -187,9 +211,14 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
           </div>
         )}
 
+        {isMaintenanceBlocked && (
+          <p className="text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+        )}
+
         <button
           type="submit"
-          disabled={loading || deactivating || !code.trim()}
+          disabled={loading || deactivating || !code.trim() || isMaintenanceBlocked}
+          title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
           className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? t("form.activating") : t("form.activate")}
@@ -202,7 +231,8 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
         <div className="mt-4 border-t border-gray-700 pt-4">
           <button
             onClick={handleDeactivate}
-            disabled={loading || deactivating}
+            disabled={loading || deactivating || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className="rounded-lg bg-gray-600 px-6 py-2 text-sm text-gray-300 hover:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {deactivating ? t("form.deactivating") : t("form.deactivate")}

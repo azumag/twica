@@ -3,6 +3,8 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
+import { parseMaintenanceError } from '@/lib/maintenance/client'
+import { useMaintenanceStatus } from './MaintenanceStatusProvider'
 
 interface TosAcceptButtonProps {
   // ユーザーがログイン済みかどうか
@@ -24,6 +26,15 @@ export default function TosAcceptButton({ isLoggedIn, hasAccepted }: TosAcceptBu
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const t = useTranslations('tosPage.accept')
+  const tMaintenance = useTranslations('maintenance')
+  // #694 Stage 6c: このコンポーネントは /tos ページ（dashboard/layout.tsx の外）で
+  // 使われるため、MaintenanceStatusProviderは未設置。useMaintenanceStatus()は
+  // Provider外では安全なデフォルト値({mode:'off'})を返す設計（フック側のコメント
+  // 参照）なので事前disableは機能しないが、呼び出しても例外にはならず、実際の
+  // 防御はguardWriteのサーバー側503→下のparseMaintenanceErrorによるエラー表示で
+  // 担保される。
+  const { mode: maintenanceMode } = useMaintenanceStatus()
+  const isMaintenanceBlocked = maintenanceMode !== 'off'
 
   // 未ログインまたは同意済みの場合は何も表示しない
   // Don't show anything if not logged in or already accepted
@@ -32,6 +43,12 @@ export default function TosAcceptButton({ isLoggedIn, hasAccepted }: TosAcceptBu
   }
 
   const handleAccept = async () => {
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    if (isMaintenanceBlocked) {
+      setError(tMaintenance('writeDisabled'))
+      return
+    }
+
     setIsLoading(true)
     setError(null)
 
@@ -43,7 +60,8 @@ export default function TosAcceptButton({ isLoggedIn, hasAccepted }: TosAcceptBu
       const data = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || t('error'))
+        const maintenanceError = parseMaintenanceError(response, data)
+        throw new Error(maintenanceError?.message || data.error || t('error'))
       }
 
       // 同意成功後、ダッシュボードへリダイレクト
@@ -70,9 +88,14 @@ export default function TosAcceptButton({ isLoggedIn, hasAccepted }: TosAcceptBu
         </div>
       )}
 
+      {isMaintenanceBlocked && (
+        <p className="mb-4 text-sm text-yellow-400">{tMaintenance('writeDisabled')}</p>
+      )}
+
       <button
         onClick={handleAccept}
-        disabled={isLoading}
+        disabled={isLoading || isMaintenanceBlocked}
+        title={isMaintenanceBlocked ? tMaintenance('writeDisabled') : undefined}
         className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-6 py-3 font-medium text-white transition hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isLoading ? (

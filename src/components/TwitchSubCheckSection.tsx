@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface TwitchSubCheckSectionProps {
   initialHasSub: boolean;
@@ -17,7 +19,12 @@ export default function TwitchSubCheckSection({
   initialHasSub,
 }: TwitchSubCheckSectionProps) {
   const t = useTranslations("twitchSub");
+  const tMaintenance = useTranslations("maintenance");
   const router = useRouter();
+  // #694 Stage 6c: /dashboard/account は dashboard/layout.tsx の
+  // MaintenanceStatusProvider配下（Context経由でmode取得）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [hasScope, setHasScope] = useState<boolean | null>(null);
   const [checkingScope, setCheckingScope] = useState(true);
@@ -53,6 +60,15 @@ export default function TwitchSubCheckSection({
    * user:read:subscriptions スコープを取得するための再認証
    */
   const handleReauthorize = useCallback(async () => {
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    // #694 Stage 6cレビュー指摘: /api/auth/reauth もconfig/maintenance-write-surfaces.json
+    // で block 対象の書き込みroute（state cookie発行の副作用を持つ）のため、
+    // check-subscription/disable-subscriptionと同じガードを適用する。
+    if (isMaintenanceBlocked) {
+      setMessage({ type: "error", text: tMaintenance("writeDisabled") });
+      return;
+    }
+
     setReauthorizing(true);
     setMessage(null);
 
@@ -76,20 +92,27 @@ export default function TwitchSubCheckSection({
         window.location.href = data.loginUrl;
       } else {
         const errorData = await response.json();
-        setMessage({ type: "error", text: errorData.error || t("messages.reauthorizeFailed") });
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        setMessage({ type: "error", text: maintenanceError?.message || errorData.error || t("messages.reauthorizeFailed") });
         setReauthorizing(false);
       }
     } catch {
       setMessage({ type: "error", text: t("messages.networkError") });
       setReauthorizing(false);
     }
-  }, [t]);
+  }, [t, tMaintenance, isMaintenanceBlocked]);
 
   /**
    * サブスク状態を手動確認
    */
   const handleCheckSubscription = async () => {
     if (disabling) return;
+
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    if (isMaintenanceBlocked) {
+      setMessage({ type: "error", text: tMaintenance("writeDisabled") });
+      return;
+    }
 
     setChecking(true);
     setMessage(null);
@@ -122,7 +145,9 @@ export default function TwitchSubCheckSection({
         setHasScope(false);
         setMessage({ type: "error", text: t("messages.needsReauth") });
       } else {
-        setMessage({ type: "error", text: data.error || t("messages.checkFailed") });
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, data);
+        setMessage({ type: "error", text: maintenanceError?.message || data.error || t("messages.checkFailed") });
       }
     } catch {
       setMessage({ type: "error", text: t("messages.networkError") });
@@ -139,6 +164,12 @@ export default function TwitchSubCheckSection({
 
     const confirmed = window.confirm(t("messages.confirmDisable"));
     if (!confirmed) return;
+
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    if (isMaintenanceBlocked) {
+      setMessage({ type: "error", text: tMaintenance("writeDisabled") });
+      return;
+    }
 
     setDisabling(true);
     setMessage(null);
@@ -164,7 +195,9 @@ export default function TwitchSubCheckSection({
         setMessage({ type: "success", text: t("messages.disabled") });
         router.refresh();
       } else {
-        setMessage({ type: "error", text: data.error || t("messages.disableFailed") });
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, data);
+        setMessage({ type: "error", text: maintenanceError?.message || data.error || t("messages.disableFailed") });
       }
     } catch {
       setMessage({ type: "error", text: t("messages.networkError") });
@@ -194,7 +227,8 @@ export default function TwitchSubCheckSection({
           <p className="mb-3 text-sm text-yellow-300">{t("scopeWarning")}</p>
           <button
             onClick={handleReauthorize}
-            disabled={reauthorizing}
+            disabled={reauthorizing || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
@@ -213,11 +247,16 @@ export default function TwitchSubCheckSection({
         </div>
       )}
 
+      {isMaintenanceBlocked && (
+        <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+      )}
+
       <div className="flex flex-wrap gap-2">
         {/* サブスク確認ボタン（スコープ付与済みの場合のみ有効） */}
         <button
           onClick={handleCheckSubscription}
-          disabled={checking || disabling || checkingScope || hasScope === false}
+          disabled={checking || disabling || checkingScope || hasScope === false || isMaintenanceBlocked}
+          title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {checking ? t("buttons.checking") : t("buttons.checkSubscription")}
@@ -227,7 +266,8 @@ export default function TwitchSubCheckSection({
         {hasSub && (
           <button
             onClick={handleDisableSubscription}
-            disabled={disabling || checking}
+            disabled={disabling || checking || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className="rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {disabling ? t("buttons.disabling") : t("buttons.disable")}

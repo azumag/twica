@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 /**
  * 新規問い合わせ投稿フォーム
@@ -12,7 +14,13 @@ import { useTranslations } from "next-intl";
  */
 export default function InquiryForm() {
   const t = useTranslations("inquiriesPage");
+  const tMaintenance = useTranslations("maintenance");
   const router = useRouter();
+  // #694 Stage 6c: このページ(/dashboard/inquiries)はdashboard/layout.tsxの
+  // MaintenanceStatusProvider配下にあるため、CardManager等と同じくContext経由で
+  // 個別fetchせずに済む（MaintenanceStatusProvider.tsx参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
   const [category, setCategory] = useState<"bug" | "feature" | "other">("bug");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -23,6 +31,13 @@ export default function InquiryForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!subject.trim() || !body.trim()) return;
+
+    // 事前disable(submitボタン)をすり抜けるEnterキー送信等のフォーム送信経路を
+    // 塞ぐための二重ガード（CardManager.handleSubmitと同じパターン）。
+    if (isMaintenanceBlocked) {
+      setError(tMaintenance("writeDisabled"));
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -52,7 +67,11 @@ export default function InquiryForm() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.error || t("messages.submitFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （事前disableをすり抜けた場合＝ポーリング間隔中に切り替わった等の
+        // フォールバック表示）。
+        const maintenanceError = parseMaintenanceError(res, data);
+        setError(maintenanceError?.message || data.error || t("messages.submitFailed"));
         return;
       }
 
@@ -134,9 +153,14 @@ export default function InquiryForm() {
         <p className="mt-1 text-xs text-gray-500">{body.length}/2000</p>
       </div>
 
+      {isMaintenanceBlocked && (
+        <p className="text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+      )}
+
       <button
         type="submit"
-        disabled={submitting || !subject.trim() || !body.trim()}
+        disabled={submitting || !subject.trim() || !body.trim() || isMaintenanceBlocked}
+        title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
         className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
       >
         {submitting ? t("form.submitting") : t("form.submit")}

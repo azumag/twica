@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { VOTE_CAMPAIGN_DISMISS_KEY } from '@/lib/constants'
+import { parseMaintenanceError } from '@/lib/maintenance/client'
+import { useMaintenanceStatus } from './MaintenanceStatusProvider'
 
 interface VoteCampaignButtonProps {
   // サーバー側で判定された「キャンペーン期間内かつ未適用」フラグ
@@ -18,6 +21,11 @@ interface VoteCampaignButtonProps {
  */
 export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignButtonProps) {
   const router = useRouter()
+  const tMaintenance = useTranslations('maintenance')
+  // #694 Stage 6c: dashboard/page.tsxで使われるため dashboard/layout.tsx の
+  // MaintenanceStatusProvider配下（Context経由でmode取得）。
+  const { mode: maintenanceMode } = useMaintenanceStatus()
+  const isMaintenanceBlocked = maintenanceMode !== 'off'
   const [isLoading, setIsLoading] = useState(false)
   const [applied, setApplied] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -54,6 +62,12 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
   }
 
   const handleClick = async () => {
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    if (isMaintenanceBlocked) {
+      setError(tMaintenance('writeDisabled'))
+      return
+    }
+
     setIsLoading(true)
     setError(null)
 
@@ -74,7 +88,9 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
       } else {
         try {
           const data = await response.json()
-          setError(data.error || 'エラーが発生しました')
+          // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+          const maintenanceError = parseMaintenanceError(response, data)
+          setError(maintenanceError?.message || data.error || 'エラーが発生しました')
         } catch {
           setError('エラーが発生しました')
         }
@@ -119,9 +135,14 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
         </div>
       )}
 
+      {isMaintenanceBlocked && (
+        <p className="mb-3 text-sm text-yellow-400">{tMaintenance('writeDisabled')}</p>
+      )}
+
       <button
         onClick={handleClick}
-        disabled={isLoading}
+        disabled={isLoading || isMaintenanceBlocked}
+        title={isMaintenanceBlocked ? tMaintenance('writeDisabled') : undefined}
         className="inline-flex items-center gap-2 rounded-lg bg-pink-600 px-6 py-3 font-medium text-white transition hover:bg-pink-700 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isLoading ? (

@@ -11,6 +11,8 @@ import {
   type EventSubStatus,
   type EventSubSubscriptionForStatus,
 } from "@/lib/twitch/eventsub-status";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 export { deriveEventSubStatus } from "@/lib/twitch/eventsub-status";
 
@@ -90,6 +92,11 @@ export default function ChannelPointSettings({
 }: ChannelPointSettingsProps) {
   const t = useTranslations("channelPointSettings");
   const tCommon = useTranslations("common");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 各書き込みボタンのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
   const [rewards, setRewards] = useState<TwitchReward[]>([]);
   const [selectedRewardId, setSelectedRewardId] = useState(currentRewardId || "");
   const [selectedRewardName, setSelectedRewardName] = useState(currentRewardName || "");
@@ -273,7 +280,8 @@ export default function ChannelPointSettings({
       const data = await response.json();
 
       if (!response.ok) {
-        setMessage(data.error || t("additionalRewards.raidStatusFailed"));
+        const maintenanceError = parseMaintenanceError(response, data);
+        setMessage(maintenanceError?.message || data.error || t("additionalRewards.raidStatusFailed"));
         return;
       }
 
@@ -347,7 +355,11 @@ export default function ChannelPointSettings({
         const errorData = await response.json();
         setMessage(errorData.error || t("messages.rateLimit"));
       } else {
-        setMessage(t("messages.createRewardFailed"));
+        // #694 Stage 6c: maintenance mode による503拒否ならサーバーの案内文言を
+        // 優先する（事前disableをすり抜けた場合のフォールバック表示）。
+        const errorData = await response.json().catch(() => ({}));
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        setMessage(maintenanceError?.message || t("messages.createRewardFailed"));
       }
     } catch {
       setMessage(t("messages.errorOccurred"));
@@ -409,8 +421,10 @@ export default function ChannelPointSettings({
 
       if (!settingsResponse.ok) {
         // Surface the server's specific error (e.g. Issue #393 empty-pack rejection).
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
         const errorData = await settingsResponse.json().catch(() => null);
-        setMessage(errorData?.error || t("messages.saveFailed"));
+        const maintenanceError = parseMaintenanceError(settingsResponse, errorData);
+        setMessage(maintenanceError?.message || errorData?.error || t("messages.saveFailed"));
         return;
       }
 
@@ -460,8 +474,13 @@ export default function ChannelPointSettings({
       } else {
         // Registration failed - webhook unreachable or other error
         // 登録失敗 - Webhookに到達できないか、その他のエラー
+        // #694 Stage 6c: maintenance mode による503拒否時、body は
+        // `{error: {code, message, ...}}` 形状(eventSubData.errorはオブジェクト)
+        // のため、そのままsetMessageすると"[object Object]"表示になる
+        // （CardManagerの既知バグと同種）。parseMaintenanceErrorで先に判定する。
         logger.error("EventSub error:", eventSubData);
-        setMessage(eventSubData.error || t("messages.eventsubFailed"));
+        const maintenanceError = parseMaintenanceError(eventSubResponse, eventSubData);
+        setMessage(maintenanceError?.message || (typeof eventSubData.error === "string" ? eventSubData.error : t("messages.eventsubFailed")));
         setEventSubStatus("error");
         setRegistrationFailed(true);
       }
@@ -510,7 +529,11 @@ export default function ChannelPointSettings({
       const raidSubscriptionStatus = getRaidSubscriptionStatus(eventSubData);
 
       if (!eventSubData.success && !eventSubData.warning) {
-        setMessage(eventSubData.error || t("additionalRewards.addFailed"));
+        // #694 Stage 6c: maintenance mode による503拒否時はeventSubData.errorが
+        // オブジェクト形状のため、先にparseMaintenanceErrorで判定する
+        // （"[object Object]"表示の防止、ChannelPointSettings.handleSaveと同じ方針）。
+        const maintenanceError = parseMaintenanceError(eventSubResponse, eventSubData);
+        setMessage(maintenanceError?.message || (typeof eventSubData.error === "string" ? eventSubData.error : t("additionalRewards.addFailed")));
         setAddingAdditional(false);
         return;
       }
@@ -534,7 +557,8 @@ export default function ChannelPointSettings({
       const dbData = await dbResponse.json();
 
       if (!dbResponse.ok) {
-        setMessage(dbData.error || t("additionalRewards.addFailed"));
+        const maintenanceError = parseMaintenanceError(dbResponse, dbData);
+        setMessage(maintenanceError?.message || dbData.error || t("additionalRewards.addFailed"));
         setAddingAdditional(false);
         return;
       }
@@ -589,7 +613,8 @@ export default function ChannelPointSettings({
 
       if (!dbResponse.ok) {
         const dbData = await dbResponse.json();
-        setMessage(dbData.error || t("additionalRewards.removeFailed"));
+        const maintenanceError = parseMaintenanceError(dbResponse, dbData);
+        setMessage(maintenanceError?.message || dbData.error || t("additionalRewards.removeFailed"));
         return;
       }
 
@@ -655,7 +680,8 @@ export default function ChannelPointSettings({
 
       if (!settingsResponse.ok) {
         const errorData = await settingsResponse.json();
-        setMessage(errorData.error || t("messages2.disconnectFailed"));
+        const maintenanceError = parseMaintenanceError(settingsResponse, errorData);
+        setMessage(maintenanceError?.message || errorData.error || t("messages2.disconnectFailed"));
         return;
       }
 
@@ -743,7 +769,8 @@ export default function ChannelPointSettings({
       }
 
       const errorData = await response.json().catch(() => ({}));
-      setError(errorData.error || t("messages.reauthorizeFailed"));
+      const maintenanceError = parseMaintenanceError(response, errorData);
+      setError(maintenanceError?.message || errorData.error || t("messages.reauthorizeFailed"));
     } catch (err) {
       logger.error("Failed to reauthorize for channel points:", err);
       setError(t("messages.reauthorizeFailed"));
@@ -874,6 +901,10 @@ export default function ChannelPointSettings({
         {getEventSubStatusBadge()}
       </div>
 
+      {isMaintenanceBlocked && (
+        <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+      )}
+
        {needsReauth ? (
          // スコープ不足時のstep-up再認証導線。
          // 初回ログインではチャネルポイント系スコープを要求しないため、
@@ -887,7 +918,8 @@ export default function ChannelPointSettings({
            </p>
            <button
              onClick={handleReauthorize}
-             disabled={reauthorizing}
+             disabled={reauthorizing || isMaintenanceBlocked}
+             title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
              className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
            >
              {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
@@ -1110,7 +1142,8 @@ export default function ChannelPointSettings({
                  </p>
                  <button
                    onClick={handleCreateReward}
-                   disabled={creating}
+                   disabled={creating || isMaintenanceBlocked}
+                   title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                    className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
                  >
                    {creating ? t("buttons.creating") : t("buttons.createReward")}
@@ -1255,7 +1288,9 @@ export default function ChannelPointSettings({
                        </div>
                        <button
                          onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
-                         className="text-xs text-red-400 hover:text-red-300"
+                         disabled={isMaintenanceBlocked}
+                         title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+                         className="text-xs text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
                        >
                          {t("additionalRewards.remove")}
                        </button>
@@ -1341,7 +1376,8 @@ export default function ChannelPointSettings({
                  </label>
                  <button
                    onClick={handleAddAdditionalReward}
-                   disabled={addingAdditional || !selectedAdditionalRewardId}
+                   disabled={addingAdditional || !selectedAdditionalRewardId || isMaintenanceBlocked}
+                   title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                    className="inline-flex h-10 items-center justify-center rounded-md bg-purple-600 px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-700 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
                  >
                    {addingAdditional ? tCommon("loading") : tCommon("add")}
@@ -1388,7 +1424,8 @@ export default function ChannelPointSettings({
                  <button
                    type="button"
                    onClick={updateRaidGiftSettings}
-                   disabled={updatingRaidGift}
+                   disabled={updatingRaidGift || isMaintenanceBlocked}
+                   title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                    className="inline-flex h-9 items-center justify-center rounded-md bg-cyan-600 px-3 text-xs font-medium text-white shadow-sm transition-colors hover:bg-cyan-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
                  >
                    {updatingRaidGift ? tCommon("loading") : tCommon("save")}
@@ -1407,7 +1444,8 @@ export default function ChannelPointSettings({
              */}
              <button
                onClick={handleSave}
-               disabled={saving || !selectedRewardId}
+               disabled={saving || !selectedRewardId || isMaintenanceBlocked}
+               title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md bg-purple-600 px-5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
              >
                {saving ? tCommon("loading") : t("buttons.saveEventSub")}
@@ -1424,7 +1462,8 @@ export default function ChannelPointSettings({
              {!compact && (eventSubStatus === "active" || eventSubStatus === "pending" || subscriptions.length > 0) && (
                <button
                  onClick={handleDisconnect}
-                 disabled={disconnecting}
+                 disabled={disconnecting || isMaintenanceBlocked}
+                 title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                  className="inline-flex h-10 items-center justify-center rounded-md border border-red-500/70 bg-transparent px-4 text-sm font-medium text-red-300 transition-colors hover:border-red-400 hover:bg-red-500/15 hover:text-red-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                >
                  {disconnecting ? t("buttons.disconnecting") : t("buttons.disconnect")}

@@ -11,6 +11,8 @@ import {
 } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { isEnterKeySubmit } from "@/lib/keyboard-utils";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 // ここでの事前検証は UX 向上のためで、最終的な検証はサーバーが行う
 // (POST /api/streamer/settings)。検証規則は constants の共通定数を共有する。
@@ -44,6 +46,11 @@ export default function CustomRarityModal({
 }: CustomRarityModalProps) {
   const t = useTranslations("cardManager");
   const tRarity = useTranslations("rarity");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 保存のたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [list, setList] = useState<string[]>(customRarities);
   const [input, setInput] = useState("");
@@ -112,6 +119,12 @@ export default function CustomRarityModal({
   };
 
   const handleSave = async () => {
+    // #694 Stage 6c: フッターのSaveボタン自体はdisableしているが、
+    // CardManager.handleSubmitと同じ方針で送信経路の先頭でも二重にガードする。
+    if (isMaintenanceBlocked) {
+      setError(tMaintenance("writeDisabled"));
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -123,7 +136,9 @@ export default function CustomRarityModal({
       });
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || t("customRarity.saveFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, data);
+        throw new Error(maintenanceError?.message || data.error || t("customRarity.saveFailed"));
       }
       onSaved(list);
       onClose();
@@ -174,6 +189,9 @@ export default function CustomRarityModal({
           <p className="mt-2 text-sm text-gray-400">
             {t("customRarity.description")}
           </p>
+          {isMaintenanceBlocked && (
+            <p className="mt-2 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+          )}
         </div>
 
         {/* 本文 */}
@@ -280,7 +298,8 @@ export default function CustomRarityModal({
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving || !hasChanges}
+            disabled={saving || !hasChanges || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? t("customRarity.saving") : t("customRarity.save")}

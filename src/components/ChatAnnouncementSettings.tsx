@@ -6,6 +6,8 @@ import { logger } from "@/lib/logger";
 import { CARD_DESCRIPTION_MAX_CHARACTERS, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
 import { countCharacters } from "@/lib/text-utils";
 import { MAX_COLLECTION_NAME_LENGTH } from "@/lib/validation/collection-name";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface ChatAnnouncementSettingsProps {
   streamerId: string;
@@ -98,6 +100,11 @@ export default function ChatAnnouncementSettings({
   botAccount,
 }: ChatAnnouncementSettingsProps) {
   const t = useTranslations("chatAnnouncementSettings");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 各書き込みボタンのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   // State管理
   const [enabled, setEnabled] = useState(currentEnabled);
@@ -270,7 +277,8 @@ export default function ChatAnnouncementSettings({
         window.location.href = data.loginUrl;
       } else {
         const errorData = await response.json();
-        setMessage(errorData.error || t("errors.reauthorizeFailed"));
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        setMessage(maintenanceError?.message || errorData.error || t("errors.reauthorizeFailed"));
         setIsError(true);
         setReauthorizing(false);
       }
@@ -300,7 +308,8 @@ export default function ChatAnnouncementSettings({
       }
 
       const errorData = await response.json();
-      setMessage(errorData.error || t("errors.botConnectFailed"));
+      const maintenanceError = parseMaintenanceError(response, errorData);
+      setMessage(maintenanceError?.message || errorData.error || t("errors.botConnectFailed"));
       setIsError(true);
     } catch (error) {
       logger.error("Alternate account connect error:", error);
@@ -331,7 +340,8 @@ export default function ChatAnnouncementSettings({
 
       if (!response.ok) {
         const errorData = await response.json();
-        setMessage(errorData.error || t("errors.botDisconnectFailed"));
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        setMessage(maintenanceError?.message || errorData.error || t("errors.botDisconnectFailed"));
         setIsError(true);
         return;
       }
@@ -381,7 +391,8 @@ export default function ChatAnnouncementSettings({
 
       if (!response.ok) {
         const errorData = await response.json();
-        setMessage(errorData.error || t("errors.saveFailed"));
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        setMessage(maintenanceError?.message || errorData.error || t("errors.saveFailed"));
         setIsError(true);
         return false;
       }
@@ -482,12 +493,17 @@ export default function ChatAnnouncementSettings({
           </p>
           <button
             onClick={handleReauthorize}
-            disabled={reauthorizing}
+            disabled={reauthorizing || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
           >
             {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
           </button>
         </div>
+      )}
+
+      {isMaintenanceBlocked && (
+        <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
       )}
 
       <div className="mb-4 rounded-lg border border-gray-700 bg-gray-900/40 p-4">
@@ -505,7 +521,8 @@ export default function ChatAnnouncementSettings({
           {botConnected ? (
             <button
               onClick={handleDisconnectBot}
-              disabled={botDisconnecting}
+              disabled={botDisconnecting || isMaintenanceBlocked}
+              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
               className="shrink-0 whitespace-nowrap rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-500 disabled:opacity-50"
             >
               {botDisconnecting ? t("buttons.disconnectingBot") : t("buttons.disconnectBot")}
@@ -513,7 +530,8 @@ export default function ChatAnnouncementSettings({
           ) : (
             <button
               onClick={handleConnectBot}
-              disabled={botConnecting}
+              disabled={botConnecting || isMaintenanceBlocked}
+              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
               className="shrink-0 whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
             >
               {botConnecting ? t("buttons.connectingBot") : t("buttons.connectBot")}
@@ -530,7 +548,8 @@ export default function ChatAnnouncementSettings({
               type="checkbox"
               checked={enabled}
               onChange={handleToggleEnabled}
-              disabled={saving || !canSendChat}
+              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+              disabled={saving || !canSendChat || isMaintenanceBlocked}
               className="peer sr-only"
             />
             <div
@@ -615,7 +634,8 @@ export default function ChatAnnouncementSettings({
           {/* テンプレート保存ボタン */}
           <button
             onClick={handleSaveTemplate}
-            disabled={saving || !canSendChat}
+            disabled={saving || !canSendChat || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
           >
             {saving ? t("buttons.saving") : t("buttons.saveTemplate")}

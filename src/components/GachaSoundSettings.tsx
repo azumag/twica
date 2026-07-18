@@ -13,6 +13,8 @@ import {
 } from "@/lib/gacha-sound-rules";
 import type { Json } from "@/types/database";
 import type { PlanType } from "@/lib/plan-constants";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 // Issue #586: 報酬別ルールの対象選択に使うTwitchチャネルポイント報酬の最小形状。
 // 同じ形状の interface が src/components/ChannelPointSettings.tsx と
@@ -56,6 +58,11 @@ export default function GachaSoundSettings({
   const t = useTranslations("gachaSoundSettings");
   const isPremium = plan !== "basic";
   const tCommon = useTranslations("common");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 各書き込みのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const initialRules = useMemo(() => {
     const rules = normalizeGachaSoundRules(currentSoundRules);
@@ -114,6 +121,14 @@ export default function GachaSoundSettings({
   }, [isPremium]);
 
   const saveRules = useCallback(async (nextRules: GachaSoundRule[]) => {
+    // #694 Stage 6c: 各書き込みUI(ルール切替・削除・アップロード)自体はinertで
+    // disableしているが、CardManager.handleSubmitと同じ方針で送信経路の先頭
+    // でも二重にガードする。
+    if (isMaintenanceBlocked) {
+      setMessage(tMaintenance("writeDisabled"));
+      setIsError(true);
+      return false;
+    }
     setSaving(true);
     try {
       const response = await fetch("/api/streamer/settings", {
@@ -129,7 +144,10 @@ export default function GachaSoundSettings({
       const data = await response.json().catch(() => null);
 
       if (!response.ok) {
-        setMessage(data?.error || t("errors.saveFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （事前disableをすり抜けた場合のフォールバック表示）。
+        const maintenanceError = parseMaintenanceError(response, data);
+        setMessage(maintenanceError?.message || data?.error || t("errors.saveFailed"));
         setIsError(true);
         return false;
       }
@@ -164,7 +182,7 @@ export default function GachaSoundSettings({
     } finally {
       setSaving(false);
     }
-  }, [streamerId, t]);
+  }, [streamerId, t, tMaintenance, isMaintenanceBlocked]);
 
   const updateRule = useCallback(async (id: string, patch: Partial<GachaSoundRule>) => {
     const nextRules = rules.map((rule) => {
@@ -212,6 +230,17 @@ export default function GachaSoundSettings({
       return;
     }
 
+    // #694 Stage 6c: ファイル入力自体はinertでdisableしているが、送信経路の
+    // 先頭でも二重にガードする（saveRulesと同じ方針）。
+    if (isMaintenanceBlocked) {
+      setMessage(tMaintenance("writeDisabled"));
+      setIsError(true);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return;
+    }
+
     setUploading(true);
     setMessage("");
     setIsError(false);
@@ -228,7 +257,9 @@ export default function GachaSoundSettings({
 
       if (!response.ok) {
         const errorData = await response.json();
-        setMessage(errorData.error || (response.status === 429 ? t("errors.rateLimit") : t("errors.uploadFailed")));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        setMessage(maintenanceError?.message || errorData.error || (response.status === 429 ? t("errors.rateLimit") : t("errors.uploadFailed")));
         setIsError(true);
         return;
       }
@@ -263,10 +294,18 @@ export default function GachaSoundSettings({
         fileInputRef.current.value = "";
       }
     }
-  }, [rules, saveRules, t]);
+  }, [rules, saveRules, t, tMaintenance, isMaintenanceBlocked]);
 
   const handleDelete = useCallback(async (rule: GachaSoundRule) => {
     if (!confirm(t("confirmDelete"))) return;
+
+    // #694 Stage 6c: 削除ボタン自体はinertでdisableしているが、送信経路の
+    // 先頭でも二重にガードする（saveRulesと同じ方針）。
+    if (isMaintenanceBlocked) {
+      setMessage(tMaintenance("writeDisabled"));
+      setIsError(true);
+      return;
+    }
 
     setDeletingId(rule.id);
     setMessage("");
@@ -282,7 +321,9 @@ export default function GachaSoundSettings({
 
       if (!deleteResponse.ok) {
         const errorData = await deleteResponse.json();
-        setMessage(errorData.error || t("errors.deleteFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(deleteResponse, errorData);
+        setMessage(maintenanceError?.message || errorData.error || t("errors.deleteFailed"));
         setIsError(true);
         return;
       }
@@ -299,7 +340,7 @@ export default function GachaSoundSettings({
     } finally {
       setDeletingId(null);
     }
-  }, [rules, saveRules, t]);
+  }, [rules, saveRules, t, tMaintenance, isMaintenanceBlocked]);
 
   const handlePlayPreview = useCallback((id: string) => {
     const audio = audioRefs.current[id];
@@ -337,8 +378,15 @@ export default function GachaSoundSettings({
         </p>
       )}
 
-      {/* inert でキーボード・スクリーンリーダーも含めて完全に無効化 */}
-      <div className={`space-y-4 ${!isPremium ? "opacity-50" : ""}`} inert={!isPremium || undefined}>
+      {isPremium && isMaintenanceBlocked && (
+        <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+      )}
+
+      {/* #694 Stage 6c: maintenance中もisPremiumと同じinert機構で書き込みUI
+          （アップロード・ルール編集・削除）を丸ごと無効化する。既存の
+          !isPremium ゲートと同じ「まとめて無効化」方針を踏襲する
+          （個別要素ごとに disabled を積み上げるより単純で漏れにくい）。 */}
+      <div className={`space-y-4 ${!isPremium || isMaintenanceBlocked ? "opacity-50" : ""}`} inert={!isPremium || isMaintenanceBlocked || undefined}>
         <div>
           <label className="mb-1 block text-sm text-gray-300">{t("form.selectFile")}</label>
           <input
@@ -346,7 +394,8 @@ export default function GachaSoundSettings({
             type="file"
             accept={SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => `.${ext}`).join(",")}
             onChange={handleFileUpload}
-            disabled={uploading}
+            disabled={uploading || isMaintenanceBlocked}
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
             className="block w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-purple-700 file:disabled:opacity-50"
           />
           <p className="mt-1 text-xs text-gray-500">
@@ -487,7 +536,8 @@ export default function GachaSoundSettings({
               </button>
               <button
                 onClick={() => handleDelete(rule)}
-                disabled={deletingId === rule.id}
+                disabled={deletingId === rule.id || isMaintenanceBlocked}
+                title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                 className="rounded-lg bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >
                 {deletingId === rule.id ? tCommon("loading") : t("buttons.delete")}

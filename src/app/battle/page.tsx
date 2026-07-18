@@ -2,12 +2,15 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import type { Session } from '@/lib/session'
 import type { UserCardWithDetails } from '@/types/database'
 import AnimatedBattle from '@/components/AnimatedBattle'
 import Image from 'next/image'
 import { fetchSession } from '@/lib/api-client'
 import { getRarityColorClass } from '@/lib/rarity'
+import { parseMaintenanceError } from '@/lib/maintenance/client'
+import { useMaintenanceStatus } from '@/components/MaintenanceStatusProvider'
 
 interface BattleCard {
   id: string
@@ -48,6 +51,17 @@ const skillTypeIcons = {
 }
 
 export default function BattlePage() {
+  const tMaintenance = useTranslations('maintenance')
+  // #694 Stage 6c: /battle は battle/layout.tsx 配下で、dashboard/layout.tsx の
+  // MaintenanceStatusProviderは設置されていない（battle/layout.tsxはHeaderのみ）。
+  // useMaintenanceStatus()はProvider外では常にmode:'off'を返す安全設計
+  // （MaintenanceStatusProvider.tsx参照）ため、この事前disableは現状のルート構成
+  // では実質的に発火しない。実際の防御は下記parseMaintenanceErrorによる
+  // fetch失敗時のサーバー案内文言表示（guardWriteのサーバー側503）で担保される。
+  // battle/layout.tsxへのProvider追加は対象ファイル一覧に含まれないため本バッチの
+  // スコープ外（#694のフォローアップ候補として報告する）。
+  const { mode: maintenanceMode } = useMaintenanceStatus()
+  const isMaintenanceBlocked = maintenanceMode !== 'off'
   const [session, setSession] = useState<Session | null>(null)
   const [userCards, setUserCards] = useState<UserCardWithDetails[]>([])
   const [selectedCard, setSelectedCard] = useState<UserCardWithDetails | null>(null)
@@ -90,6 +104,12 @@ export default function BattlePage() {
   const startBattle = async () => {
     if (!selectedCard) return
 
+    // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
+    if (isMaintenanceBlocked) {
+      alert(tMaintenance('writeDisabled'))
+      return
+    }
+
     setBattleLoading(true)
     try {
       const response = await fetch('/api/battle/start', {
@@ -109,7 +129,9 @@ export default function BattlePage() {
           setShowAnimation(true)
         } else {
         const error = await response.json()
-        alert(error.error || '対戦の開始に失敗しました')
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, error)
+        alert(maintenanceError?.message || error.error || '対戦の開始に失敗しました')
       }
     } catch (error) {
       console.error('[BattlePage]', error)
@@ -238,9 +260,13 @@ export default function BattlePage() {
                         </div>
                       </div>
                     </div>
+                    {isMaintenanceBlocked && (
+                      <p className="mb-3 text-sm text-yellow-400">{tMaintenance('writeDisabled')}</p>
+                    )}
                     <button
                       onClick={startBattle}
-                      disabled={battleLoading}
+                      disabled={battleLoading || isMaintenanceBlocked}
+                      title={isMaintenanceBlocked ? tMaintenance('writeDisabled') : undefined}
                       className="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
                     >
                       {battleLoading ? '対戦中...' : 'CPU対戦を開始'}

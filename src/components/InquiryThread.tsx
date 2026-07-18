@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface Message {
   id: string;
@@ -33,7 +35,12 @@ export default function InquiryThread({
   messages,
 }: InquiryThreadProps) {
   const t = useTranslations("inquiriesPage");
+  const tMaintenance = useTranslations("maintenance");
   const router = useRouter();
+  // #694 Stage 6c: /dashboard/inquiries/[id] は dashboard/layout.tsx の
+  // MaintenanceStatusProvider配下（InquiryFormと同じ設計）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
   const [replyBody, setReplyBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +51,12 @@ export default function InquiryThread({
   const handleReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!replyBody.trim()) return;
+
+    // 事前disable(送信ボタン)をすり抜けるEnterキー送信等の経路を塞ぐための二重ガード。
+    if (isMaintenanceBlocked) {
+      setError(tMaintenance("writeDisabled"));
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -82,7 +95,9 @@ export default function InquiryThread({
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.error || t("messages.replyFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(res, data);
+        setError(maintenanceError?.message || data.error || t("messages.replyFailed"));
         return;
       }
 
@@ -168,11 +183,15 @@ export default function InquiryThread({
             className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white placeholder-gray-400"
             required
           />
+          {isMaintenanceBlocked && (
+            <p className="text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+          )}
           <div className="flex items-center justify-between">
             <p className="text-xs text-gray-500">{replyBody.length}/2000</p>
             <button
               type="submit"
-              disabled={submitting || !replyBody.trim()}
+              disabled={submitting || !replyBody.trim() || isMaintenanceBlocked}
+              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
               className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
             >
               {submitting ? t("detail.replying") : t("detail.reply")}

@@ -10,6 +10,8 @@ import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface DropRateAutoModeContentProps {
   cards: Card[];
@@ -190,6 +192,11 @@ export default function DropRateAutoModeContent({
   const tRarity = useTranslations("rarity");
   const tCommon = useTranslations("common");
   const tRarityProb = useTranslations("rarityProbability");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // 保存のたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   // Issue #580: パックが1件も登録されていない配信者にはスコープ切替UI自体を
   // 出さない(デフォルトパック=グローバルなので、切替が意味を持たない)。
@@ -462,6 +469,13 @@ export default function DropRateAutoModeContent({
       setRarityError(t("dropRateSettings.packTotalWarning"));
       return;
     }
+    // #694 Stage 6c: Saveボタン自体はdisableしているが、CardManager.handleSubmit
+    // と同じ方針で送信経路の先頭でも二重にガードする。
+    if (isMaintenanceBlocked) {
+      setRarityMessage(null);
+      setRarityError(tMaintenance("writeDisabled"));
+      return;
+    }
     setRaritySaving(true);
     setRarityMessage(null);
     setRarityError(null);
@@ -492,7 +506,9 @@ export default function DropRateAutoModeContent({
 
       const data = await response.json();
       if (!response.ok) {
-        setRarityError(data.error || tRarityProb("totalWarning"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, data);
+        setRarityError(maintenanceError?.message || data.error || tRarityProb("totalWarning"));
         return;
       }
 
@@ -559,6 +575,12 @@ export default function DropRateAutoModeContent({
   const handlePerCardSave = async () => {
     if (!perCardHasChanges) return;
     if ((rarityHasChanges || scopeOrPackHasChanges) && !confirm(t("batchDropRate.confirmClose"))) return;
+    // #694 Stage 6c: Saveボタン自体はdisableしているが、送信経路の先頭でも
+    // 二重にガードする（saveRarityWeightsと同じ方針）。
+    if (isMaintenanceBlocked) {
+      alert(tMaintenance("writeDisabled"));
+      return;
+    }
     setPerCardSaving(true);
     try {
       const updates: Array<{
@@ -597,7 +619,12 @@ export default function DropRateAutoModeContent({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || t("batchDropRate.saveFailed"));
+        // maintenance mode による503拒否時、error.error はオブジェクト形状
+        // (`{code, message, ...}`) のため、そのままthrowすると"[object Object]"
+        // 表示になる（CardManagerの既知バグと同種）。parseMaintenanceErrorで
+        // 先に判定する。
+        const maintenanceError = parseMaintenanceError(response, error);
+        throw new Error(maintenanceError?.message || (typeof error.error === "string" ? error.error : t("batchDropRate.saveFailed")));
       }
 
       const result = await response.json();
@@ -681,6 +708,10 @@ export default function DropRateAutoModeContent({
               </svg>
             </button>
           </div>
+
+          {isMaintenanceBlocked && (
+            <p className="mt-3 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+          )}
 
           {/* タブ */}
           <div className="mt-4 flex border-b border-gray-700">
@@ -1043,7 +1074,9 @@ export default function DropRateAutoModeContent({
                 if (hasAnyChanges && !confirm(t("batchDropRate.confirmClose"))) return;
                 onSwitchToManualMode();
               }}
-              className="text-sm text-gray-400 hover:text-white transition text-left"
+              disabled={isMaintenanceBlocked}
+              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+              className="text-sm text-gray-400 hover:text-white transition text-left disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("dropRateSettings.switchToManual")}
             </button>
@@ -1061,8 +1094,10 @@ export default function DropRateAutoModeContent({
                     !(rarityHasChanges || scopeOrPackHasChanges) ||
                     raritySaving ||
                     !isRarityTotalValid ||
-                    (hasPacks && !arePackWeightsValid)
+                    (hasPacks && !arePackWeightsValid) ||
+                    isMaintenanceBlocked
                   }
+                  title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                   className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {raritySaving
@@ -1072,7 +1107,8 @@ export default function DropRateAutoModeContent({
               ) : (
                 <button
                   onClick={handlePerCardSave}
-                  disabled={!perCardHasChanges || perCardSaving}
+                  disabled={!perCardHasChanges || perCardSaving || isMaintenanceBlocked}
+                  title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                   className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {perCardSaving

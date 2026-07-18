@@ -5,6 +5,8 @@ import { useTranslations } from "next-intl";
 import type { Card } from "@/types/database";
 import { DEFAULT_RARITY_WEIGHTS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import DropRateAutoModeContent from "./DropRateAutoModeContent";
 import BatchDropRateManualContent from "./BatchDropRateManualContent";
 
@@ -60,6 +62,11 @@ export default function DropRateSettingsModal({
   onPackWeightsApply,
 }: DropRateSettingsModalProps) {
   const t = useTranslations("cardManager");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
+  // モード切替のたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
   const [switching, setSwitching] = useState(false);
 
   if (!isOpen) return null;
@@ -70,6 +77,14 @@ export default function DropRateSettingsModal({
       ? t("dropRateSettings.confirmSwitchToAuto")
       : t("dropRateSettings.confirmSwitchToManual");
     if (!confirm(message)) return;
+
+    // #694 Stage 6c: 呼び出し元(DropRateAutoModeContent)のトリガーボタンは
+    // disableしているが、送信経路の先頭でも二重にガードする
+    // （CardManager.handleSubmitと同じ方針）。
+    if (isMaintenanceBlocked) {
+      alert(tMaintenance("writeDisabled"));
+      return;
+    }
 
     setSwitching(true);
     try {
@@ -88,7 +103,9 @@ export default function DropRateSettingsModal({
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || t("dropRateSettings.switchFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, data);
+        throw new Error(maintenanceError?.message || data.error || t("dropRateSettings.switchFailed"));
       }
 
       if (toAuto) {
