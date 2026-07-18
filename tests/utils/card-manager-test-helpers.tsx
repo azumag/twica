@@ -1,6 +1,8 @@
 import { render } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import CardManager from '@/components/CardManager'
+import { MaintenanceStatusContext } from '@/components/MaintenanceStatusProvider'
+import type { MaintenanceStatusResponse } from '@/lib/maintenance/client'
 import jaMessages from '../../messages/ja.json'
 import type { Card } from '@/types/database'
 
@@ -38,9 +40,14 @@ export const baseCard = (overrides: Partial<Card>): Card => ({
 
 export const renderCardManager = (
   cards: Card[],
-  props: Partial<React.ComponentProps<typeof CardManager>> = {}
+  props: Partial<React.ComponentProps<typeof CardManager>> = {},
+  // #694 Stage 6b: maintenance状態をテストへ注入するための省略可能パラメータ。
+  // 省略時はMaintenanceStatusContextのデフォルト値（mode: 'off'）が使われ、
+  // 既存のテストファイル（maintenance状態を意識しない大多数のテスト）の挙動は
+  // 一切変わらない。
+  maintenanceStatus?: MaintenanceStatusResponse
 ) => {
-  return render(
+  const tree = (
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <CardManager
         streamerId="streamer-1"
@@ -49,5 +56,14 @@ export const renderCardManager = (
         {...props}
       />
     </NextIntlClientProvider>
+  )
+  return render(
+    maintenanceStatus ? (
+      <MaintenanceStatusContext.Provider value={maintenanceStatus}>
+        {tree}
+      </MaintenanceStatusContext.Provider>
+    ) : (
+      tree
+    )
   )
 }

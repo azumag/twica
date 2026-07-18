@@ -15,6 +15,8 @@ import { cardMatchesPackKey } from "@/lib/collection-packs";
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from "@/lib/rarity-weight-calculator";
 import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
 import { MAX_ISSUANCE_COUNT_CAP, getIssuanceInfo } from "@/lib/card-issuance";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
@@ -174,6 +176,12 @@ export default function CardManager({
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
   const tRarity = useTranslations("rarity");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6b: ダッシュボード共有Context経由のmaintenance状態。
+  // カード追加・編集フォームの送信のたびに個別fetchしない設計
+  // （MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
   const getRarityLabel = useCallback(
     (rarity: string) => formatRarityLabel(rarity, tRarity),
     [tRarity]
@@ -734,7 +742,12 @@ export default function CardManager({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "カードの作成に失敗しました");
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （#694 Stage 6bレビュー指摘対応: 未対応のままだとerror.errorが
+        // {code, message, ...}オブジェクトのままError.messageへ文字列化され
+        // "[object Object]"表示になっていた）。
+        const maintenanceError = parseMaintenanceError(response, error);
+        throw new Error(maintenanceError?.message || error.error || "カードの作成に失敗しました");
       }
 
       const result = await response.json();
@@ -849,7 +862,14 @@ export default function CardManager({
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-          throw new Error(errorData.error || t("messages.errorOccurred", { status: response.status }));
+          // #694 Stage 6bレビュー指摘対応: maintenance mode による503拒否なら
+          // サーバーの案内文言を優先する（他の書き込み経路と同じパターン）。
+          const maintenanceError = parseMaintenanceError(response, errorData);
+          throw new Error(
+            maintenanceError?.message ||
+              errorData.error ||
+              t("messages.errorOccurred", { status: response.status })
+          );
         }
 
         const responseData = await response.json();
@@ -1321,6 +1341,13 @@ export default function CardManager({
       return;
     }
 
+    // #694 Stage 6b: submitボタン自体はdisableしているが、テキスト入力からの
+    // Enterキー送信等ボタンクリックを経由しない送信経路も塞ぐための二重ガード。
+    if (isMaintenanceBlocked) {
+      setUploadError(tMaintenance("writeDisabled"));
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -1441,7 +1468,13 @@ export default function CardManager({
       } else {
         // Handle other errors (403, 400, 401, etc.)
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-        setUploadError(errorData.error || `エラーが発生しました (${response.status})`);
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （事前disableをすり抜けた場合＝ポーリング間隔中に切り替わった等の
+        // フォールバック表示。#694 Stage 6bの要求「fetch失敗時のエラー表示」）。
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        setUploadError(
+          maintenanceError?.message || errorData.error || `エラーが発生しました (${response.status})`
+        );
         logger.error("Failed to save card:", errorData);
       }
     } catch (error) {
@@ -1471,7 +1504,10 @@ export default function CardManager({
         // Revert on error
         setCards(originalCards);
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-        alert(`操作に失敗しました: ${errorData.error}`);
+        // #694 Stage 6bレビュー指摘対応: maintenance mode による503拒否なら
+        // サーバーの案内文言を優先する（他の書き込み経路と同じパターン）。
+        const maintenanceError = parseMaintenanceError(response, errorData);
+        alert(`操作に失敗しました: ${maintenanceError?.message || errorData.error}`);
         logger.error("Toggle active failed:", errorData);
       } else {
         const responseData = await response.json();
@@ -1519,7 +1555,11 @@ export default function CardManager({
         } else {
           setCards(originalCards);
           const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-          const errorMessage = errorData.error || t("messages.deleteFailed");
+          // #694 Stage 6bレビュー指摘対応: maintenance mode による503拒否なら
+          // サーバーの案内文言を優先する（他の書き込み経路と同じパターン）。
+          const maintenanceError = parseMaintenanceError(response, errorData);
+          const errorMessage =
+            maintenanceError?.message || errorData.error || t("messages.deleteFailed");
           alert(`${t("messages.deleteFailedPrefix")} ${errorMessage}`);
           logger.error("Delete failed:", errorData);
         }
@@ -2105,10 +2145,14 @@ export default function CardManager({
               </div>
             </div>
           </div>
+              {isMaintenanceBlocked && (
+                <p className="mt-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+              )}
               <div className="mt-6 flex gap-4">
                 <button
                   type="submit"
-                  disabled={saving || isDescriptionTooLong}
+                  disabled={saving || isDescriptionTooLong || isMaintenanceBlocked}
+                  title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                   className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
                 >
                   {saving ? t("buttons.saving") : editingCard ? tCommon("update") : tCommon("add")}

@@ -8,6 +8,8 @@ import { RARITIES } from "@/lib/constants";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface BatchDropRateManualContentProps {
   onClose: () => void;
@@ -37,6 +39,11 @@ export default function BatchDropRateManualContent({
   const t = useTranslations("cardManager");
   const tRarity = useTranslations("rarity");
   const tCommon = useTranslations("common");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6b: ダッシュボード共有Context経由のmaintenance状態。
+  // 保存ボタンのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [activeTab, setActiveTab] = useState<TabType>("rarity");
   const [localDropRates, setLocalDropRates] = useState<Map<string, number>>(new Map());
@@ -237,7 +244,11 @@ export default function BatchDropRateManualContent({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || t("batchDropRate.saveFailed"));
+        // maintenance mode による503拒否ならサーバーの案内文言を優先する
+        // （事前disableをすり抜けた場合＝ポーリング間隔中に切り替わった等の
+        // フォールバック表示。#694 Stage 6bの要求「fetch失敗時のエラー表示」）。
+        const maintenanceError = parseMaintenanceError(response, error);
+        throw new Error(maintenanceError?.message || error.error || t("batchDropRate.saveFailed"));
       }
 
       const result = await response.json();
@@ -469,6 +480,9 @@ export default function BatchDropRateManualContent({
 
         {/* フッター */}
         <div className="p-6 border-t border-gray-700 bg-gray-800/50">
+          {isMaintenanceBlocked && (
+            <p className="mb-3 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+          )}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
             <button
               type="button"
@@ -490,7 +504,8 @@ export default function BatchDropRateManualContent({
               </button>
               <button
                 onClick={handleSave}
-                disabled={!hasChanges || saving}
+                disabled={!hasChanges || saving || isMaintenanceBlocked}
+                title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                 className="rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {saving ? t("batchDropRate.saving") : t("batchDropRate.save")}

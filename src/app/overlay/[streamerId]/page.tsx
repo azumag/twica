@@ -32,6 +32,8 @@ import {
   RELOAD_COOLDOWN_MS,
   POLLSTATE_TTL_MS,
 } from "@/lib/overlay-version";
+import { fetchMaintenanceStatus } from "@/lib/maintenance/client";
+import type { MaintenanceMode } from "@/lib/maintenance/state";
 
 // OBSブラウザソース（古いCEF）向けのqueueMicrotaskポリフィル
 // 一部のOBSバージョンではqueueMicrotaskがサポートされていないため
@@ -191,6 +193,10 @@ export default function OverlayPage() {
   // デバッグ用の詳細な接続ログ
   // OBSブラウザソースでの接続問題を調査するために使用
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  // #694 Stage 6b: 現在のmaintenance mode（debugパネル表示専用。通常の配信
+  // オーバーレイ表示には一切使わない）。debug=true のときだけポーリングする
+  // （下記useEffect参照）ため、初期値は安全側の'off'固定でよい。
+  const [maintenanceMode, setMaintenanceMode] = useState<MaintenanceMode>("off");
   // 画像のアスペクト比が縦長かどうかを判定するためのState
   const [isPortraitImage, setIsPortraitImage] = useState(false);
   // 画像が小さい（400x400未満）かどうかを判定するためのState
@@ -880,6 +886,58 @@ export default function OverlayPage() {
     addDebugLogRef.current = addDebugLog;
   }, [addDebugLog]);
 
+  // #694 Stage 6b: maintenance状態のポーリング（debugパネル表示専用）。
+  //
+  // options.debug のときだけポーリングする設計にした理由:
+  // overlayページはOBSブラウザソースとして配信中ずっと（時に何時間も、
+  // 配信者の数だけ同時に）開かれ続ける常設ページであり、通常の配信画面
+  // 表示自体はmaintenance状態を一切必要としない（issueの要求「通常表示は
+  // 継続」）。debug=trueは開発者が手動で接続調査するときにだけ付けるURL
+  // パラメータなので、ここでポーリングを条件付けることで「調査時以外は
+  // maintenance-status APIへのアクセスが一切発生しない」設計にできる。
+  // これによりオーバーレイ経由の追加サーバー負荷を実質ゼロに保てる
+  // （ダッシュボード側のMaintenanceStatusProviderが常時60秒間隔で叩くのとは
+  // 対照的に、overlay側は「開発者がdebug表示を開いている間だけ」に限定する）。
+  //
+  // ポーリング間隔は60秒（ダッシュボード側と同じ値）。デバッグ目的なので
+  // 秒単位の即時性は不要だが、調査セッション中に切替があった場合は
+  // 1分以内にdebugパネルへ反映される。
+  useEffect(() => {
+    if (!options.debug) {
+      return;
+    }
+
+    let cancelled = false;
+    // 直近取得したmodeをローカル変数で保持し、実際に変化した回だけdebugLogへ
+    // 追記する。前回値との比較をsetState更新関数の中で行うとReact Compilerが
+    // 要求するpurityルールに抵触する（このファイル冒頭の他のuseRefコメント
+    // 参照）ため、比較はここ＝effectコールバック側で行う。
+    let previousMode: MaintenanceMode = maintenanceMode;
+
+    const checkMaintenanceStatus = async () => {
+      const status = await fetchMaintenanceStatus();
+      if (cancelled) return;
+      if (status.mode !== previousMode) {
+        addDebugLogRef.current(`[maintenance] mode: ${previousMode} -> ${status.mode}`);
+        previousMode = status.mode;
+      }
+      setMaintenanceMode(status.mode);
+    };
+
+    checkMaintenanceStatus();
+    const intervalId = setInterval(checkMaintenanceStatus, 60_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+    // maintenanceModeは上のpreviousMode初期化にしか使わず、以後はローカル
+    // 変数previousModeで追跡する。依存配列に含めるとmode変化のたびにこの
+    // effect自体が再実行され、intervalが不要に張り直されてしまうため、
+    // 意図的に省略する。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options.debug]);
+
   // Connect to Supabase Realtime for real-time events
   // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
   // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
@@ -1024,6 +1082,11 @@ export default function OverlayPage() {
             <div className="mb-2 text-white font-bold">Debug Mode - Connection Log</div>
             <div className="mb-2 text-yellow-400">
               Status: {connectionStatus} | StreamerId: {streamerId}
+            </div>
+            {/* #694 Stage 6b: maintenance状態はdebugパネルのみに出す固定表示欄。
+                通常の配信オーバーレイ表示には一切影響しない。 */}
+            <div className="mb-2 text-cyan-400">
+              Maintenance: {maintenanceMode}
             </div>
             {errorMessage && (
               <div className="mb-2 text-yellow-300">

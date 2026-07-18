@@ -1097,6 +1097,8 @@
   },
   "maintenance": {
     "announcementLabel": "メンテナンス状況",
+    "resumeAt": "{time} 頃再開予定",
+    "writeDisabled": "メンテナンス中は操作できません",
     "modes": {
       "readOnly": "ただいまメンテナンス中です。しばらくしてから再度お試しください。",
       "cutoverValidating": "ただいまシステム移行の検証中です。しばらくしてから再度お試しください。",

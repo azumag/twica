@@ -3,6 +3,8 @@
 import { useCallback, useState } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
+import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface CardVisibilitySettingsProps {
   streamerId: string;
@@ -30,6 +32,11 @@ export default function CardVisibilitySettings({
   currentShowUnownedDetails,
 }: CardVisibilitySettingsProps) {
   const t = useTranslations("cardVisibilitySettings");
+  const tMaintenance = useTranslations("maintenance");
+  // #694 Stage 6b: ダッシュボード共有Context経由のmaintenance状態。
+  // トグルのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [showUnowned, setShowUnowned] = useState(currentShowUnowned);
   const [showDetails, setShowDetails] = useState(currentShowUnownedDetails);
@@ -55,7 +62,11 @@ export default function CardVisibilitySettings({
         });
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          setMessage(errorData.error || t("errors.saveFailed"));
+          // maintenance mode による503拒否ならサーバーの案内文言をそのまま出す
+          // （事前disableをすり抜けた場合＝ポーリング間隔中に切り替わった等の
+          // フォールバック表示。#694 Stage 6bの要求「fetch失敗時のエラー表示」）。
+          const maintenanceError = parseMaintenanceError(response, errorData);
+          setMessage(maintenanceError?.message || errorData.error || t("errors.saveFailed"));
           setIsError(true);
           return false;
         }
@@ -109,7 +120,9 @@ export default function CardVisibilitySettings({
 
   // showDetails は showUnowned=false の場合は事実上意味を持たないため UI を disable
   // The details toggle is gated by showUnowned to make the dependency explicit.
-  const detailsDisabled = !showUnowned || saving;
+  // #694 Stage 6b: maintenance中は両トグルとも書き込み不可のためdisableに含める。
+  const detailsDisabled = !showUnowned || saving || isMaintenanceBlocked;
+  const showUnownedDisabled = saving || isMaintenanceBlocked;
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
@@ -133,15 +146,22 @@ export default function CardVisibilitySettings({
 
       <p className="mb-4 text-sm text-gray-400">{t("description")}</p>
 
+      {isMaintenanceBlocked && (
+        <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
+      )}
+
       <div className="space-y-4">
         {/* 未所持カードを表示 */}
         <div className="flex items-center gap-3">
-          <label className="relative inline-flex cursor-pointer items-center">
+          <label
+            className="relative inline-flex cursor-pointer items-center"
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+          >
             <input
               type="checkbox"
               checked={showUnowned}
               onChange={handleToggleShowUnowned}
-              disabled={saving}
+              disabled={showUnownedDisabled}
               className="peer sr-only"
             />
             <div className="h-6 w-11 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-disabled:opacity-50" />
@@ -156,7 +176,10 @@ export default function CardVisibilitySettings({
 
         {/* 未所持カードの詳細を公開 */}
         <div className="flex items-center gap-3">
-          <label className="relative inline-flex cursor-pointer items-center">
+          <label
+            className="relative inline-flex cursor-pointer items-center"
+            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+          >
             <input
               type="checkbox"
               checked={showDetails}

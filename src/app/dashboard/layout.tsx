@@ -5,6 +5,8 @@ import { logPerf, perfStart } from "@/lib/perf";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
+import { MaintenanceStatusProvider } from "@/components/MaintenanceStatusProvider";
+import MaintenanceBanner from "@/components/MaintenanceBanner";
 
 /**
  * Dashboard layout component
@@ -48,20 +50,31 @@ export default async function DashboardLayout({
   logPerf("dashboard-layout", "load", startedAt, { isStreamer, isSupporter });
 
   return (
-    <div className="min-h-screen bg-gray-900">
-      <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
+    // MaintenanceStatusProvider を Header 含めダッシュボード全体で共有する。
+    // Header自体は書き込みを行わないが、Providerをこの階層に置くことで
+    // ダッシュボード配下のどのページ・どのコンポーネントからも
+    // useMaintenanceStatus() で同じ1系統のpolling結果を参照できる
+    // （書き込みボタンごとの個別fetchを避ける設計。詳細は
+    // MaintenanceStatusProvider.tsx のコメント参照）。
+    <MaintenanceStatusProvider>
+      <div className="min-h-screen bg-gray-900">
+        <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
 
-      <div className="container mx-auto px-4 py-6">
-        {/* Navigation bar */}
-        {/* ナビゲーションバー */}
-        <div className="mb-6">
-          <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
+        <div className="container mx-auto px-4 py-6">
+          {/* メンテナンスバナー: read-only中であることをダッシュボード全体で常時表示 */}
+          <MaintenanceBanner />
+
+          {/* Navigation bar */}
+          {/* ナビゲーションバー */}
+          <div className="mb-6">
+            <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
+          </div>
+
+          {/* Page content */}
+          {/* ページコンテンツ */}
+          <main>{children}</main>
         </div>
-
-        {/* Page content */}
-        {/* ページコンテンツ */}
-        <main>{children}</main>
       </div>
-    </div>
+    </MaintenanceStatusProvider>
   );
 }

@@ -1100,6 +1100,8 @@
   },
   "maintenance": {
     "announcementLabel": "Maintenance status",
+    "resumeAt": "Expected to resume around {time}",
+    "writeDisabled": "Unavailable during maintenance",
     "modes": {
       "readOnly": "The service is currently under maintenance. Please try again later.",
       "cutoverValidating": "The service is currently validating a system migration. Please try again later.",

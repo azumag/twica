@@ -70,6 +70,54 @@ describe('OverlayPage', () => {
     expect(screen.queryByText('接続エラー')).not.toBeInTheDocument()
   })
 
+  // #694 Stage 6b: overlayのdebugパネルにmaintenance状態を1行追加した。
+  // 通常表示（配信画面）自体には手を入れていないため、通常表示のテストは
+  // 既存の「通常のOBSオーバーレイでは接続エラーを画面に表示しない」がそのまま
+  // カバーする。ここではdebugパネル固有の追加表示を検証する。
+  it('debug=true の時、debugパネルにmaintenance modeを表示する', async () => {
+    window.history.replaceState({}, '', '/overlay/streamer-1?debug=true')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (String(url).includes('/api/maintenance-status')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ mode: 'read-only' }),
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ soundUrl: null, soundEnabled: false }),
+        })
+      })
+    )
+
+    render(<OverlayPage />)
+
+    expect(await screen.findByText('Debug Mode - Connection Log')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText('Maintenance: read-only')).toBeInTheDocument()
+    })
+  })
+
+  it('debug=false（デフォルト）のときはmaintenance-status APIを一切呼ばない（サーバー負荷ゼロの設計）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: null, soundEnabled: false }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<OverlayPage />)
+
+    await waitFor(() => {
+      expect(subscribeMock).toHaveBeenCalled()
+    })
+
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/api/maintenance-status'))
+    ).toBe(false)
+  })
+
   it('RealtimeのN連ガチャを全カード表示し、効果音は一度だけ再生する', async () => {
     vi.useFakeTimers()
 
