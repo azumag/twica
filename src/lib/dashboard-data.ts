@@ -1610,9 +1610,24 @@ async function fetchChannelPointUsageStatsFromHistory(
  * channelPointStats が fetchChannelPointUsageStatsFromHistory で
  * 同様に救済されているのと対称になるよう、ここでも履歴から直接集計する。
  *
- * ロジックは RPC（migration 00038）および analysis/DropRateStats.tsx と
- * 同一: 総数は count-only クエリで正確に取得し、カード別/レアリティ別の
- * 内訳は上限 10000 件の履歴サンプルから集計する（PostgREST の行上限対策）。
+ * ロジックは RPC（migration 00038、Issue #784 の除外条件は 20260718140000）
+ * および analysis/DropRateStats.tsx と同一: 総数は count-only クエリで正確に
+ * 取得し、カード別/レアリティ別の内訳は上限 10000 件の履歴サンプルから
+ * 集計する（PostgREST の行上限対策）。
+ *
+ * Issue #784: QA用手動ドロー（POST /api/gacha、event_id が `manual:<uuid>`
+ * 形式、src/app/api/gacha/route.ts の manualDrawEventId）は実カードを付与する
+ * ため gacha_history に記録されるが、視聴者向けの実際の排出結果ではないため
+ * drop-rate統計には含めない。RPC側(get_gacha_drop_stats, migration
+ * 20260718140000)と同じ条件をこのフォールバックにも適用する。cards テーブルの
+ * クエリは gacha_history を参照しないため対象外。
+ *
+ * NULL event_id も意図的に除外される: `.not("event_id", "like", "manual:%")`
+ * は PostgREST 経由で `NOT LIKE` に変換され、NULL行に対しては NULL(=偽)と
+ * 評価されるため除外される。gacha_history.event_id は nullable（migration
+ * 00001）で、NULLを書き込んでいた唯一の経路は Issue #661 修正前の旧・手動
+ * ドローAPI（migration 00076ヘッダー参照）。この旧式NULL行も手動ドローの
+ * 残骸であり、除外は Issue #784 の意図に合致する正しい挙動。
  */
 async function fetchGachaDropStatsFromHistory(
   supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
@@ -1631,7 +1646,8 @@ async function fetchGachaDropStatsFromHistory(
       .from("gacha_history")
       .select("id", { count: "exact", head: true })
       .eq("streamer_id", streamerId)
-      .gte("redeemed_at", fromDateIso),
+      .gte("redeemed_at", fromDateIso)
+      .not("event_id", "like", "manual:%"),
     supabaseAdmin
       .from("gacha_history")
       .select(
@@ -1639,6 +1655,7 @@ async function fetchGachaDropStatsFromHistory(
       )
       .eq("streamer_id", streamerId)
       .gte("redeemed_at", fromDateIso)
+      .not("event_id", "like", "manual:%")
       .limit(10000),
     supabaseAdmin
       .from("cards")

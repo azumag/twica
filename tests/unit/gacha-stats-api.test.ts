@@ -328,6 +328,21 @@ describe("GET /api/gacha-stats", () => {
     );
     expect(common.count).toBe(2);
     expect(legendary.count).toBe(1);
+
+    // Issue #784: QA用手動ドロー(event_id が `manual:<uuid>` 形式)は drop-rate
+    // 統計から除外する。RPC側(migration 20260718140000)と対称に、RPC未デプロイ時の
+    // フォールバック集計(fetchGachaDropStatsFromHistory)でも count / 履歴サンプルの
+    // 両クエリに同じ除外条件がかかることを固定する回帰テスト。
+    expect(countQuery.not).toHaveBeenCalledWith(
+      "event_id",
+      "like",
+      "manual:%"
+    );
+    expect(historySampleQuery.not).toHaveBeenCalledWith(
+      "event_id",
+      "like",
+      "manual:%"
+    );
   });
 
   it("returns per-card owner stats for period=byCard", async () => {
