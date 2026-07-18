@@ -28,6 +28,15 @@ jobs:
         # 追加の npm ci / セットアップコストを避ける。
         run: npm run typecheck
 
+      - name: Maintenance write surface check
+        # #694 Stage 5: config/maintenance-write-surfaces.json への登録漏れを
+        # 機械的に検出する (TypeScript Compiler APIでroute.tsのPOST/PUT/PATCH/DELETE
+        # exportを走査し、inventoryとの同期・stale entry・スキーマ違反を検証)。
+        # git履歴やベースブランチとの比較を必要とせず現在のツリー状態のみを見る
+        # 純粋なNodeスクリプトのため、Typecheck同様に依存インストール済みの
+        # test jobに同居させ、独立jobによる追加の npm ci コストを避ける。
+        run: npm run check:maintenance-surfaces
+
       - name: Unit tests
         # 失敗時に大量の成功ログで原因が埋もれないよう、最初の失敗で停止し、
         # 機械可読なJSONレポートを生成する。失敗時のみ次のstepでartifact化する。
