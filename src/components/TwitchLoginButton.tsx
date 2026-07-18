@@ -48,13 +48,34 @@ export function TwitchLoginButton({ className = '', showIcon = false }: TwitchLo
   }, [])
 
   const handleLogin = async () => {
+    // 連打防止のため、非同期処理に入る前に真っ先にボタンをdisable化する
+    // （Fableレビュー指摘）。以前はfetchMaintenanceStatus()のawaitより後に
+    // setIsLoading(true)していたため、クリックからボタンdisableまでの間に
+    // ネットワークRTT分の猶予ができ、その間の連打でhandleLoginが並行実行
+    // されうる問題があった。並行実行されると/api/auth/twitch/loginが発行
+    // するtwitch_auth_state cookieが後着レスポンスで上書きされ、Twitchから
+    // のcallbackでstate不一致となりログインに失敗しうる。またauthLoginの
+    // レート制限（5回/分）も無駄に消費してしまう。
+    setIsLoading(true)
+
     // 事前disable(ボタン)をすり抜けた場合（マウント直後のクリック等）でも、
     // 既知の不具合のあるfetchを発火させないための二重ガード。
     if (isMaintenanceBlocked) {
+      setIsLoading(false)
       return
     }
 
-    setIsLoading(true)
+    // マウント時に取得した状態はキャッシュであり、ページを開いたまま
+    // メンテナンスが開始された場合には古くなっている（#785）。
+    // クリック時点の最新状態を取り直してから判定することで、
+    // 既知の不具合のあるログインfetchが発火するレースウィンドウを閉じる。
+    const latestStatus = await fetchMaintenanceStatus()
+    setMaintenanceMode(latestStatus.mode)
+    if (latestStatus.mode !== 'off') {
+      setIsLoading(false)
+      return
+    }
+
     try {
       const response = await fetch('/api/auth/twitch/login')
 

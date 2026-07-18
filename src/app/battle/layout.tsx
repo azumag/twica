@@ -2,6 +2,7 @@ import { getSession } from "@/lib/session";
 import { getUnreadAnnouncements } from "@/lib/announcements";
 import Header from "@/components/Header";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
+import { MaintenanceStatusProvider } from "@/components/MaintenanceStatusProvider";
 
 /**
  * Battle layout component
@@ -26,9 +27,14 @@ export default async function BattleLayout({
   const unreadAnnouncementsCount = unreadAnnouncements.length;
 
   return (
-    <div className="min-h-screen bg-gray-900">
-      <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
-      {children}
-    </div>
+    // MaintenanceStatusProvider をバトルページ全体で共有する。
+    // これによりstartBattleボタン等がuseMaintenanceStatus()経由で
+    // 一元的なmaintenance状態（60秒ポーリング）を参照できる（#785）。
+    <MaintenanceStatusProvider>
+      <div className="min-h-screen bg-gray-900">
+        <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
+        {children}
+      </div>
+    </MaintenanceStatusProvider>
   );
 }

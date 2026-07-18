@@ -52,14 +52,10 @@ const skillTypeIcons = {
 
 export default function BattlePage() {
   const tMaintenance = useTranslations('maintenance')
-  // #694 Stage 6c: /battle は battle/layout.tsx 配下で、dashboard/layout.tsx の
-  // MaintenanceStatusProviderは設置されていない（battle/layout.tsxはHeaderのみ）。
-  // useMaintenanceStatus()はProvider外では常にmode:'off'を返す安全設計
-  // （MaintenanceStatusProvider.tsx参照）ため、この事前disableは現状のルート構成
-  // では実質的に発火しない。実際の防御は下記parseMaintenanceErrorによる
+  // #785: battle/layout.tsx に MaintenanceStatusProvider を設置したことで、
+  // この事前disableは実際に機能する（60秒ポーリングされたmaintenance状態を参照）。
+  // なお事前disableをすり抜けた場合の最終防御は、下記parseMaintenanceErrorによる
   // fetch失敗時のサーバー案内文言表示（guardWriteのサーバー側503）で担保される。
-  // battle/layout.tsxへのProvider追加は対象ファイル一覧に含まれないため本バッチの
-  // スコープ外（#694のフォローアップ候補として報告する）。
   const { mode: maintenanceMode } = useMaintenanceStatus()
   const isMaintenanceBlocked = maintenanceMode !== 'off'
   const [session, setSession] = useState<Session | null>(null)

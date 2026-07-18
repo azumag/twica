@@ -25,11 +25,11 @@ vi.mock('@/lib/api-client', () => ({
 // #694 Stage 6c: 「カード対戦」カテゴリの代表として /battle (BattlePage) の
 // POST /api/battle/start (CPU対戦開始) を検証する。
 //
-// 実運用上の注意: /battle は battle/layout.tsx 配下で、dashboard/layout.tsx の
-// MaintenanceStatusProviderは設置されていない。以下の「事前disable」系テストは
-// MaintenanceStatusContext.Provider を直接注入してコンポーネント自体のロジックを
-// 検証するものであり、本番の実配線を示すものではない（実際の防御は
-// parseMaintenanceErrorによるfetch失敗時のサーバー案内文言表示で担保される）。
+// #785で battle/layout.tsx に MaintenanceStatusProvider を設置したため、
+// 以下の MaintenanceStatusContext.Provider 直接注入は本番の実配線と同じ経路
+// （Context経由でのmaintenance状態取得）を模したものになっている
+// （事前disableをすり抜けた場合の最終防御は、parseMaintenanceErrorによる
+// fetch失敗時のサーバー案内文言表示で担保される）。
 
 const fakeSession = { twitchUserId: 'user-1' } as unknown as Session
 
