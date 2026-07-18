@@ -290,6 +290,11 @@ export const rateLimits = {
   cardsPatch: createRatelimit("cardsPatch", 10, 60 * 1000),
   streamerSettings: createRatelimit("streamerSettings", 10, 60 * 1000),
   gacha: createRatelimit("gacha", 30, 60 * 1000),
+  // Issue #783 fable review: /api/gacha/demo の broadcast&&streamerId 経路
+  // （#783で認可チェックのみ追加済み）は、認証済みユーザーであればグローバル
+  // 制限(1000回/分/IP)までSupabase Realtimeブロードキャストを叩けてしまう。
+  // /api/gacha (rateLimits.gacha) と同じ水準の専用制限を課す。
+  gachaDemoBroadcast: createRatelimit("gachaDemoBroadcast", 30, 60 * 1000),
   battleStart: createRatelimit("battleStart", 20, 60 * 1000),
   battleGet: createRatelimit("battleGet", 100, 60 * 1000),
   battleStats: createRatelimit("battleStats", 50, 60 * 1000),

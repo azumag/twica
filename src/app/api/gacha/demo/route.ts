@@ -4,6 +4,11 @@ import { logger } from "@/lib/logger";
 import { createClient } from "@supabase/supabase-js";
 import { broadcastGachaResult, GachaBroadcastPayload } from "@/lib/realtime";
 import { getSupabaseElevatedKey, getSupabasePublicKey } from "@/lib/supabase/keys";
+import { getSession } from "@/lib/session";
+import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
+import { ERROR_MESSAGES } from "@/lib/constants";
+import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import type { ApiRateLimitResponse } from "@/types/api";
 // ---------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
 // isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
@@ -213,6 +218,56 @@ export async function POST(request: NextRequest) {
       broadcast = body.broadcast === true;
     } catch {
       // JSONパースエラーは無視（パラメータなしとして処理）
+    }
+
+    // Issue #783: このエンドポイントは認証不要の公開デモAPI（/battle や
+    // /overlay/[streamerId] ページでログイン不要のオーバーレイ演出テストに使う、
+    // 意図した設計）だが、broadcast=true かつ streamerId 指定の場合のみは
+    // Supabase Realtime 経由で任意の配信者のオーバーレイに演出を送り込める
+    // 実害があった（DB書き込み・カード付与は発生しないため経済的実害はないが、
+    // 任意配信者への迷惑行為・Realtimeブロードキャストコストの無防備な消費が
+    // 可能だった）。#781と同じ「呼び出し元は自分のstreamerIdに対してのみ実行
+    // できる」制限をbroadcast経路にのみ追加する。broadcastなしの既存の公開
+    // デモ機能（カード取得のみ、OverlayPreview.tsxのbroadcastを伴わない用途や
+    // overlay/[streamerId]/page.tsxのtriggerDemo）には一切影響しない。
+    //
+    // fable review追加指摘: 未ログイン(401 UNAUTHORIZED)と所有者不一致(403
+    // FORBIDDEN)を/api/gacha routeと同じ基準で区別する。
+    if (broadcast && streamerId) {
+      const session = await getSession();
+      if (!session) {
+        return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
+      }
+      const ownedStreamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
+      if (!ownedStreamer || ownedStreamer.id !== streamerId) {
+        return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+      }
+
+      // fable review追加指摘: 認可チェック通過後（＝自チャンネルへのbroadcastが
+      // 確定した時点）で専用レート制限を課す。このrouteはmiddlewareのグローバル
+      // 制限(rateLimits.global, 1000回/分/IP)にしか守られておらず、認証済み
+      // ユーザーが自チャンネルへのbroadcastを高頻度に叩いてSupabase Realtime
+      // ブロードキャストコストを消費できてしまう問題への対策。/api/gacha route
+      // と同じ水準（30回/分）の専用制限(rateLimits.gachaDemoBroadcast)を適用する。
+      // broadcastなしの公開デモ経路（このif分岐に入らない）には一切影響しない。
+      const identifier = await getRateLimitIdentifier(request, session.twitchUserId);
+      const rateLimitResult = await checkRateLimit(rateLimits.gachaDemoBroadcast, identifier);
+      if (!rateLimitResult.success) {
+        return NextResponse.json<ApiRateLimitResponse>(
+          {
+            error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+            retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000),
+          },
+          {
+            status: 429,
+            headers: {
+              'X-RateLimit-Limit': String(rateLimitResult.limit),
+              'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+              'X-RateLimit-Reset': String(rateLimitResult.reset),
+            },
+          }
+        );
+      }
     }
 
     // Supabaseクライアントの初期化
