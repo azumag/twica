@@ -50,7 +50,7 @@ pg_dump/restore のデータ転送自体は短時間で完了すると見込ま�
 |---|---|
 | D-7 | 配信者向け事前告知（3章テンプレート） |
 | D-1 | リマインド告知 |
-| D-day, 直前 | `MAINTENANCE_READ_ONLY=true` 投入（preview → prod の順） |
+| D-day, 直前 | `MAINTENANCE_MODE=read-only` 投入（preview → prod の順、4.6節） |
 | D-day, 切替作業 | 5章の手順（pg_dump → restore → 検証 → Hyperdrive 向き先変更） |
 | D-day, 直後 | read-only 解除、EventSub リプレイ、6章チェックリスト |
 | D-day 〜 D+1 | `wrangler tail` による監視継続（最低30分、異常時は延長） |
@@ -110,98 +110,224 @@ pg_dump/restore のデータ転送自体は短時間で完了すると見込ま�
 ご協力ありがとうございました。
 ```
 
-## 4. read-only フラグの実装方式（提案）
+## 4. maintenance mode の実装方式（実装済み、issue #694）
 
+**本章は issue #694 Stage 1〜6c（マージ済み）で実装された最終仕様の記録である。
+以前のドラフト（`MAINTENANCE_READ_ONLY: boolean` フラグ・案A/B/Cの検討）は
+すべて置き換えられた。旧ドラフトが未決定としていた「全書き込みルートへの
+適用方式」は案B（middleware 一律 + allowlist）に確定済み。**
+
+### 4.0 状態モデル（4値）
+
+`src/lib/maintenance/state.ts` の `MaintenanceMode`:
+
+```ts
+type MaintenanceMode =
+  | 'off'                 // 通常運用
+  | 'read-only'           // 計画メンテナンス。一般writeを拒否しEventSubはqueueへ退避
+  | 'cutover-validating'  // DB target切替後、write解禁前の検証状態
+  | 'incident-read-only'  // 障害対応。告知文言・Retry-Afterを計画停止と分けられる
+```
+
+3値（'off' 以外）はそれぞれ機械可読なエラーコードと1:1対応する
+（`MAINTENANCE_ERROR_CODE_BY_MODE`、state.ts が単一の定義元）:
+`maintenance_read_only` / `maintenance_cutover_validating` /
+`maintenance_incident_read_only`。
+
+### 4.1 State provider（`src/lib/maintenance/state.ts`）
+
+`getMaintenanceState(): MaintenanceState` が現在の状態を返す。
 `docs/db-driver-migration.md` の `DB_DRIVER`/`GACHA_DB_DRIVER` と同じ
-「env を毎回読む・trim する・不正値は安全側に倒す」パターンに倣う。
+「env を呼び出しのたびに読む（モジュールトップでキャッシュしない）・trim
+する・不正値は安全側に倒す」パターンを踏襲している。
 
-### 4.1 フラグ本体
+環境変数（すべて任意。未設定時のデフォルトは各々に記載）:
 
-`src/lib/db/flags.ts` に既存の `getDbDriverMode` 等と並べて追加する:
+| 環境変数 | 用途 | 未設定・不正値時 |
+|---|---|---|
+| `MAINTENANCE_MODE` | 4値のいずれか | `'off'` にフォールバック（**タイポ等の誤設定でサービス全体を止めない**という #694 の決定。最も制限の強い `incident-read-only` 側には倒さない） |
+| `MAINTENANCE_STARTED_AT` | ISO 8601 の開始時刻（内部運用向け。公開APIには出さない） | `undefined`（`Date.parse` 不能な値は無視） |
+| `MAINTENANCE_EXPECTED_END_AT` | ISO 8601 の想定終了時刻（`Retry-After` 算出・UI表示に使用） | `undefined` |
+| `MAINTENANCE_MESSAGE_KEY` | 告知文言の出し分けキー（`messages/ja.json` 等の `maintenance.messageKeys.*` と対応） | `undefined`（mode別デフォルト文言にフォールバック） |
+| `MAINTENANCE_OPERATION_ID` | ログ相関用の内部ID（公開APIには出さない） | `undefined` |
 
-```ts
-/**
- * メンテナンス read-only モード判定 (#666, #568 Phase 2)。
- *
- * true の間、書き込み系 API ルートは実処理の前に 503 を返す
- * （maintenanceReadOnlyResponse() 参照）。DB_DRIVER 系フラグと同様、
- * process.env は呼び出しのたびに読む（モジュールトップでキャッシュしない）。
- * trim するのは Cloudflare 側の secret 設定に改行・空白が混入しうるため
- * （DB_DRIVER 等と同じ既知リスク）。
- */
-export function isMaintenanceReadOnly(): boolean {
-  return process.env.MAINTENANCE_READ_ONLY?.trim() === 'true'
-}
+### 4.2 write guard 方式（案B: middleware 一律 + allowlist）
+
+以前のドラフトが「案A/B/Cのいずれを採るか未決定」としていた論点は、
+**案B（middleware 一律ブロック + allowlist による個別免除）で確定済み**。
+
+- `src/middleware.ts` の `checkMaintenanceWriteBlock()` が、`/api/` 配下かつ
+  `POST`/`PUT`/`PATCH`/`DELETE`（`MAINTENANCE_GUARDED_METHODS`）のリクエストを
+  他の全処理（ロケール検出・レート制限・`updateSession` 等）より **先に**評価する。
+  ブロック時はレート制限バケットを消費しない（rejected request で不要な
+  I/O を発生させないという #694 の受け入れ条件に対応）。
+- 免除は `config/maintenance-write-surfaces.json`（書き込みsurfaceの棚卸し）で
+  管理する。各エントリは `path` / `methods` / `category` / `maintenanceBehavior`
+  / `reason` / `owner` / `reviewedAt` を持ち、`maintenanceBehavior` は4値:
+  - `block`（デフォルト相当。allowlist未登録＝一律ブロック）
+  - `allow`（mode に関わらず常時通す。現状 `/api/auth/logout` のみ）
+  - `redirect`（GET専用。下記参照）
+  - `queue-during-maintenance`（EventSub専用。4.3節参照）
+- 実際のマッチ判定は `src/lib/maintenance/allowlist.ts` の
+  `isMaintenanceWriteExempt()`（純粋関数、`matchesSurfacePath` で
+  path+method を照合）。**登録漏れは常に「過剰ブロック」という安全側にしか
+  倒れない**（免除されるには明示登録が必要なため）。
+- ブロック時のレスポンス生成は `src/lib/maintenance/guard.ts` の
+  `guardWrite()`: 503 + `{ error: { code, message, retryable: true,
+  expectedEndAt? } }`、`Retry-After` ヘッダー（`expectedEndAt` から算出、
+  未設定/過去日時は300秒フォールバック）、`Cache-Control: private, no-store`
+  を必ず付与する（CDNが maintenance 応答を長期キャッシュして解除後も古い
+  503 を配り続ける事故を防ぐため）。
+- **GETだが書き込み副作用を持つルート**（OAuth開始・コールバック等）は
+  middleware の一律ブロック（POST/PUT/PATCH/DELETEのみ対象）の対象外のため、
+  各ルートの先頭で個別に `guardWriteRedirect()` を呼び、`/?maintenance=1`
+  へ302する設計（`maintenanceBehavior: "redirect"`、対象は
+  `/api/auth/twitch/login` / `/api/auth/twitch/callback` /
+  `/api/auth/bot/callback` の3件。「ログインもメンテ中はブロックする」という
+  オーナー決定に基づく）。
+
+### 4.3 EventSub の扱い（`queue-during-maintenance`）
+
+`/api/twitch/eventsub`（Webhook本体）は `maintenanceBehavior:
+"queue-during-maintenance"` として allowlist に登録され、middleware の
+一律ブロックを通過する。理由は #568 決定事項どおり: **メンテ中でも Twitch
+へ5xxを返すと subscription が revoke されるリスクがあるため厳禁**。
+
+- ルートハンドラ（`src/app/api/twitch/eventsub/route.ts`）は署名検証の
+  **直後**・DB書き込み関数の**直前**で `getMaintenanceState()` を見て、
+  `mode !== 'off'` なら `src/lib/maintenance/eventsub-park.ts` の
+  `parkEventSubNotification()` で notification payload を KV
+  （`RATE_LIMIT_KV` バインディングを `maintenance:eventsub:` prefix で共用、
+  専用 namespace は新規に作らない方針。理由はファイル冒頭コメント参照）へ
+  退避し、Twitch には通常どおり2xxを返す。TTLは7日間。
+  `challenge`（webhook_callback_verification）と `revocation` はこの分岐に
+  入らず従来どおり処理する。
+- KV退避に失敗した場合（binding未取得・put失敗）も2xxを返す設計
+  （5xxがrevoke判定材料になるという制約が退避失敗時にも優先される）。
+  この「データロス」は `logger.error` で記録し、既存の errors テーブル
+  記録 → Cron Worker (`twica-error-reporter`) 経由の GitHub Issue 自動起票
+  に乗る。
+- **リプレイ（退避データの再処理）は未実装のまま残っている。**
+  `eventsub-park.ts` は退避データの形式だけリプレイ可能に設計しているが、
+  実際にリプレイするバッチ・手順は存在しない。カットオーバー作業で
+  maintenance mode を `off` に戻した後、KV に退避されたままの
+  notification（ガチャ抽選・チャンネルポイント消費を含みうる）を救済する
+  運用手順は、issue #785 のフォローアップとして別途必要（8章参照）。
+
+### 4.4 CI enforcement（`scripts/check-maintenance-surfaces.js`）
+
+新しい書き込みルートを追加した際に allowlist への登録漏れを機械的に
+検出する（push・PRごとにCI実行、`npm run check:maintenance-surfaces`）:
+
+- `src/app/api/**/route.ts` を TypeScript Compiler API で走査し、
+  `POST`/`PUT`/`PATCH`/`DELETE` を named export する全ルートを抽出する
+  （単純grepではなくAST解析。`export { X } from './other'` のような
+  静的に解決できない re-export は fail-closed でエラーにする）。
+- 実ルートと `config/maintenance-write-surfaces.json` を突き合わせ、
+  **登録漏れ**（route はあるが inventory に無い）と **stale entry**
+  （inventory にあるが route が無い）の両方をエラーにする。
+- inventory 自体のスキーマ検証（必須フィールド・`maintenanceBehavior` の
+  4値制約・`redirect` は methods が `['GET']` のみ・`block` は GET を
+  含まない・path+method の重複禁止 等）も同じスクリプトが担う。
+- `allow`/`queue-during-maintenance`（＝ブロックを免除される、最もリスクの
+  高いエントリ）の `reviewedAt` が180日超過した場合は、CIを落とさない
+  軽量な警告のみ出す（免除設定がまだ妥当か再確認を促す）。
+
+### 4.5 UI（利用者・管理者向け表示）
+
+- **Public status endpoint**: `GET /api/maintenance-status`
+  （`src/app/api/maintenance-status/route.ts`）。未認証で呼べる
+  （ログイン画面自体がメンテ中でも状態表示できる必要があるため）。
+  `getMaintenanceState()` のうち機密情報（`startedAt`・`operationId`）を
+  除いた `{ mode, expectedEndAt?, publicMessageKey? }` のみを返す。
+  `Cache-Control: private, no-store` 必須。
+- **状態共有Context**: `src/components/MaintenanceStatusProvider.tsx`
+  （`dashboard/layout.tsx` に1つだけマウント）。マウント時に即時fetch、
+  以降60秒間隔でポーリングし、`useMaintenanceStatus()` hookで配下の
+  コンポーネントに配る。1ページ = 1polling系列にすることで、書き込み
+  ボタンごとに個別fetchするコストを避けている。
+- **バナー**: `src/components/MaintenanceBanner.tsx`。可視表示
+  （`MaintenanceBanner`）とスクリーンリーダー向け通知
+  （`src/components/MaintenanceAnnouncer.tsx`、`aria-live`）を1コンポーネントに
+  統合し、片方だけ組み込み忘れる事故を防ぐ。
+- **書き込みボタンのdisable**: 各書き込みコンポーネント（`CardManager.tsx`
+  等、Stage 6b/6cで主要+20コンポーネントに適用済み）が
+  `useMaintenanceStatus()` で `mode !== 'off'` を判定し、ボタンを事前disable
+  する。503を実際に受けた場合のpost-failure表示（`src/lib/maintenance/client.ts`
+  の `parseMaintenanceError()` でcode based判定）と二段構え。
+- **overlay**: 通常表示を継続し、maintenance状態はdebug時のみ表示する
+  設計（配信画面に一般利用者向けの通知を出さない）。
+
+### 4.6 activation / deactivation 手順
+
+env 変更はビルド不要で秒単位で反映される（Cloudflare では新デプロイ扱い）。
+Cloudflare の secret は `wrangler versions secret put` → `wrangler versions
+deploy` の2段で反映する（`wrangler.toml` の変更・再デプロイは不要）。
+
+**重要な既知の落とし穴**: ローカル既定の wrangler（本リポジトリでは
+4.61.0系）は、本番/preview Worker に対して `versions secret put` を実行した
+際に**無言で exit 1 する**バグがある（診断メッセージが一切出ない）。
+必ず `npx wrangler@4.112.0` とバージョンを明示すること。
+
+有効化（preview の例、`read-only` へ切替）:
+
+```bash
+echo "read-only" | npx wrangler@4.112.0 versions secret put MAINTENANCE_MODE --env=preview
+# 出力された version-id を100%トラフィックへデプロイする
+npx wrangler@4.112.0 versions deploy <version-id>@100% --env=preview -y
 ```
 
-### 4.2 書き込みルート用ヘルパー
+本番の場合は `--env=preview` を `--env=""`（空文字。`wrangler.toml` の
+デフォルト環境が本番を指すため）に置き換える。
 
-新規ファイル `src/lib/api/maintenance-guard.ts`（DB ドライバの選択とは
-別関心事のため `db/flags.ts` からは分離する）:
+無効化（`off` へ戻す。secret を空文字にはできないため、明示的に `off` を
+設定する）:
 
-```ts
-import { NextResponse } from 'next/server'
-import { isMaintenanceReadOnly } from '@/lib/db/flags'
-
-/**
- * 書き込み系 API ルートの先頭で呼ぶ。read-only 中は 503 を返す
- * NextResponse を、そうでなければ null を返す。
- * Retry-After はメンテナンス想定所要時間の目安（運用者が調整）。
- */
-export function maintenanceReadOnlyResponse(): NextResponse | null {
-  if (!isMaintenanceReadOnly()) return null
-  return NextResponse.json(
-    {
-      error: 'maintenance',
-      message:
-        'ただいまメンテナンス中のため、書き込み操作を一時的に停止しています。しばらくしてから再度お試しください。',
-    },
-    { status: 503, headers: { 'Retry-After': '600' } }
-  )
-}
+```bash
+echo "off" | npx wrangler@4.112.0 versions secret put MAINTENANCE_MODE --env=preview
+npx wrangler@4.112.0 versions deploy <version-id>@100% --env=preview -y
 ```
 
-使用例（各書き込みルートの先頭、既存の rate limit チェック等と同じ並びで）:
+反映確認は `GET /api/maintenance-status`（4.5節）を叩くのが最速
+（未認証で呼べる）。ただし allowlist・EventSub queue経路まで含めた
+「全write surfaceが期待通り動くか」の確認には次節のスクリプトを使う。
 
-```ts
-export async function POST(request: NextRequest) {
-  const maintenanceResponse = maintenanceReadOnlyResponse()
-  if (maintenanceResponse) return maintenanceResponse
-  // ...既存処理
-}
+### 4.7 確認手順: `scripts/probe-maintenance-write-surfaces.js`
+
+issue #694 の受け入れ条件「previewでmode on/offと全主要write surfaceを
+検証している」に対応する運用スクリプト（#694 Stage 7 で追加）。
+`config/maintenance-write-surfaces.json` の全エントリに対し、実際に
+稼働中のWorkerへ未認証リクエストを送り、期待通りの応答が返るかを
+機械的に検証する。**CIでは実行しない**（外部Workerへの実リクエストを
+伴うため）。
+
+```bash
+# 4.6節で対象環境の MAINTENANCE_MODE を off 以外にしてから実行すること
+node scripts/probe-maintenance-write-surfaces.js --url=https://twica-preview.tsubasa-azumagakito.workers.dev
+# または
+npm run probe:maintenance -- --url=https://twica-preview.tsubasa-azumagakito.workers.dev
 ```
 
-### 4.3 EventSub webhook は明示的に対象外とする
+検証内容: `block` エントリは503+`error.code`が`maintenance_*`であること、
+`redirect` エントリ（GET）は302+`Location`が`/?maintenance=1`を含むこと、
+`allow`/`queue-during-maintenance` エントリは503でないこと。対象環境が
+`MAINTENANCE_MODE=off`のままだと`block`系エントリが1件も503を返さず、
+その場合はスクリプトが早期終了して分かりやすいエラーを出す（詳細は
+`node scripts/probe-maintenance-write-surfaces.js --help`）。
 
-`src/app/api/twitch/eventsub/route.ts` は **このガードを呼ばない**。
-#568 で確定済みのとおり、メンテナンス中も Twitch へは 2xx を返し、
-payload を KV に退避して切替後にリプレイする（`event_id` 冪等チェックが
-既にあるため二重付与は起きない）。そのため EventSub ルートは
-read-only 中は「DB に書かず KV に退避する」専用の分岐を通す設計とし、
-503 では応答しない（Twitch 側のリトライ・subscription revoke を避けるため）。
-この KV 退避＋リプレイの実装自体は本ランブックのスコープ外
-（#666 の作業項目としては「挙動の確認」のみで、実装は別途必要 — 7章参照）。
+### 4.8 既知の残課題
 
-### 4.4 「全書き込みルートに漏れなく適用されているか」の担保（未決定）
-
-書き込みルートごとに個別 import するオプトイン方式は、実装漏れのリスクがある。
-候補として以下のいずれか（または組み合わせ）を検討する:
-
-- **案A（本ランブックの主案）**: 各書き込みルートで明示的に呼ぶ。
-  既存の `DB_DRIVER` 系フラグと同じ「明示チェック」の流儀に揃えられ、
-  EventSub のような例外ルートも自然に除外できる。漏れは目視レビュー頼み。
-- **案B**: `middleware.ts`（`src/middleware.ts`）で `POST`/`PUT`/`PATCH`/`DELETE`
-  かつ `/api/*` のリクエストを一律ブロックし、EventSub 等の例外だけ
-  allowlist で通す。漏れにくいが、`middleware.ts` は現状ロケール検出・
-  レート制限用でルート単位のセマンティクス（どれが「書き込み」か）を
-  持っておらず、実装が複雑化する。
-- **案C**: `scripts/check-migration-order.js` に類する CI スクリプトを新設し、
-  `src/app/api/**/route.ts` の `export async function POST/PUT/PATCH/DELETE`
-  を機械的に検出して `maintenanceReadOnlyResponse` の import 有無を
-  チェックする（EventSub 等は allowlist）。
-
-**この4.4節の採否・どの案を採るかはオーナー確認が必要（7章）。**
-本ランブックは実装方式の提案までであり、実装自体は別 PR で行う。
+- **issue #785**: `src/app/battle/layout.tsx` は `MaintenanceStatusProvider`
+  をマウントしていないため、`battle/page.tsx` の `startBattle` ボタンの
+  事前disableが現状no-op（`useMaintenanceStatus()` はProvider外では常に
+  `mode: 'off'` を返す安全側フォールバックのため、実害＝メンテ中に
+  誤って書き込みが通ることはない。UXが「押してから503で気づく」に
+  留まるだけ）。同issueには `TwitchLoginButton.tsx` がマウント時1回しか
+  maintenance statusを取得しない（ポーリングなし）ため、ページを開いた
+  まま裏でメンテが始まった場合にログインボタン押下→302追従のsilent
+  failureが再現しうる残余レースも記録されている。
+- **EventSubリプレイ未実装**（4.3節）: KVへの退避は実装済みだが、
+  カットオーバー後に退避データを再処理する手順・バッチが無い。
 
 ## 5. pg_dump/restore の実行手順とダウンタイム見積り
 
@@ -212,8 +338,10 @@ read-only 中は「DB に書かず KV に退避する」専用の分岐を通す
 
 ### 5.1 手順
 
-1. **read-only 化**: preview → prod の順で `MAINTENANCE_READ_ONLY=true` を投入
-   （4章）。書き込み系エンドポイントが 503 を返すことを1件確認する。
+1. **read-only 化**: preview → prod の順で `MAINTENANCE_MODE=read-only` を投入
+   （4.6節の手順）。書き込み系エンドポイントが 503 を返すことを1件確認する
+   （`scripts/probe-maintenance-write-surfaces.js` で全書き込みsurfaceを
+   機械的に確認できる、4.7節参照）。
 2. **インフライト接続のドレイン待ち**: 数十秒程度のバッファを置く。
 3. **pg_dump（Supabase Direct connection から）**:
    ```bash
@@ -400,14 +528,15 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
      `wrangler.toml` の `[[hyperdrive]]`/`[[env.preview.hyperdrive]]` の `id` を
      書き換えて再デプロイする（`docs/db-driver-migration.md` のセットアップ
      手順3・4と同じ操作）。config 更新が使えない場合のフォールバック。
-2. `MAINTENANCE_READ_ONLY` は状況に応じて維持/解除を判断する
+2. `MAINTENANCE_MODE`（`read-only` のまま維持するか、原因判明後に
+   `incident-read-only` へ切り替えるか）は状況に応じて判断する
    （原因調査中は維持したまま Supabase への向き先だけ戻す方が安全）。
 3. Supabase 側は書き込み再開可能な状態のまま保持されているため、
    Hyperdrive の向き先を戻すだけで DB アクセスは復旧する。
 4. EventSub の KV 退避分がまだリプレイされていなければ、Supabase 復帰後に
    あらためてリプレイする（リプレイ先が PlanetScale から Supabase に
    変わるだけで、退避・リプレイの仕組み自体はどちらでも同じ）。
-5. `MAINTENANCE_READ_ONLY` を解除し、告知（ロールバックの旨、3.3/3.4に準じた
+5. `MAINTENANCE_MODE` を `off` に戻し、告知（ロールバックの旨、3.3/3.4に準じた
    簡潔な文面）を行う。
 6. ロールバック後、7.0節の「差分データ」が発生していないかを
    PlanetScale 側のログ・書き込み系エンドポイントのアクセスログで確認する。
@@ -420,11 +549,12 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
 - [ ] **実施日時**: 未定（本文中 `<YYYY-MM-DD HH:MM JST>` を確定させる）
 - [ ] **告知文面の最終確認**: 3章のテンプレート（トーン・想定所要時間の
       具体的な分数・配信者への配信チャネル）
-- [ ] **read-only フラグの実装方式の採用可否**: 4章の設計（特に4.4節、
-      オプトイン方式 vs middleware 方式 vs CI チェック併用のどれを採るか）
-- [ ] **EventSub の KV 退避・リプレイの実装**: 挙動方針は #568 で確定済みだが、
-      実装自体（KVへの退避処理・切替後のリプレイバッチ）はまだ存在しない。
-      本ランブックのスコープ外として、別 issue 化が必要か確認
+- [x] **read-only フラグの実装方式の採用可否**: issue #694 Stage 1-7で実装・
+      オーナー承認済み。案B（middleware一律 + allowlist、4.2節）に確定
+- [ ] **EventSub のリプレイ実装**: 退避（KVへの一時保存、4.3節）は#694で
+      実装済みだが、**リプレイ（退避分の再処理）は未実装**。切替時に手動で
+      対応するか（KVを`list`して`handleRedemption`/`handleRaidNotification`
+      へ手動投入するスクリプトを用意する）、別issue化が必要か確認
 - [ ] **実際の DB サイズの再実測**: 1章の 0.334GB は 2026-07-07 時点の参考値。
       実施直前に再確認する
 - [ ] **PlanetScale 側のロール/RLS 機構が Supabase と同一のセマンティクスか**:
