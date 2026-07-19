@@ -41,6 +41,7 @@
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import * as schema from './schema'
+import { getDbTarget, type DbTarget } from './target'
 
 /** getDb() が返すハンドル。db は Drizzle、sql は生 SQL 実行用の postgres.js クライアント */
 export interface DbHandle {
@@ -60,11 +61,24 @@ interface HyperdriveBindingLike {
 /**
  * Workers 環境: ExecutionContext（リクエストごとに一意）をキーにしたハンドルの
  * キャッシュ。WeakMap なのでリクエスト終了とともに ctx ごと GC され、リークしない。
+ *
+ * 値を DbTarget 別の Map にしているのは #693（Phase 2 dual binding）対応: 同一
+ * リクエスト内で source（supabase）/target（planetscale）を両方読む検証 path
+ * （getDb({ target: ... }) を targetを変えて複数回呼ぶ）でも、ハンドルが target
+ * ごとに独立してキャッシュされ混ざらないようにするため。DB_TARGET を一切使わない
+ * 既存呼び出し元（引数無し getDb()）は常に 'supabase' 1 エントリしか使わないため、
+ * 挙動は従来と変わらない。
  */
-const requestScopedHandles = new WeakMap<object, DbHandle>()
+const requestScopedHandles = new WeakMap<object, Map<DbTarget, DbHandle>>()
 
-/** Node 環境（next dev）用のシングルトン（supabase/admin.ts と同じパターン） */
-let nodeSingletonHandle: DbHandle | null = null
+/**
+ * Node 環境（next dev）用のシングルトン（supabase/admin.ts と同じパターン）。
+ * #693 で target 別に保持するよう拡張（理由は requestScopedHandles と同じ）。
+ */
+const nodeSingletonHandles: Record<DbTarget, DbHandle | null> = {
+  supabase: null,
+  planetscale: null,
+}
 
 /**
  * PG テキスト形式の timestamp/timestamptz 文字列にのみ一致する正規表現。
@@ -259,42 +273,99 @@ function createHandle(connectionString: string): DbHandle {
 }
 
 /**
+ * target ごとの Hyperdrive binding 名（wrangler.toml の [[hyperdrive]] /
+ * [[env.preview.hyperdrive]]）。#693 で 'HYPERDRIVE' 単一 binding から
+ * target 別 binding へ分割した（wrangler.toml 側のリネームと対になる変更）。
+ *
+ * 'planetscale' 側は本 issue (#693) の時点ではまだ wrangler.toml に
+ * binding を追加していない（#691 で実 PlanetScale DB・Hyperdrive config が
+ * 作成された後に追加）。binding 未定義のうちは cfEnv からこの名前を引いても
+ * 常に undefined になり、resolveConnectionString は自然に (2)(3) へフォール
+ * スルーする（存在しない binding 名を先に書いても、有効化されるまでは
+ * ただの unresolved lookup であり例外にはならない）。
+ */
+const HYPERDRIVE_BINDING_NAMES: Record<DbTarget, string> = {
+  supabase: 'HYPERDRIVE_SUPABASE',
+  planetscale: 'HYPERDRIVE_PLANETSCALE',
+}
+
+/** target ごとのローカル開発用 DATABASE_URL 環境変数名。 */
+const DATABASE_URL_ENV_NAMES: Record<DbTarget, string> = {
+  supabase: 'DATABASE_URL_SUPABASE',
+  planetscale: 'DATABASE_URL_PLANETSCALE',
+}
+
+/**
  * 接続文字列の解決。優先順:
- *   (1) Cloudflare env の HYPERDRIVE バインディング（wrangler.toml の [[hyperdrive]]）
- *   (2) process.env.DATABASE_URL（next dev などローカル開発用）
- *   (3) どちらも無ければ throw
- * (3) は新経路（DB_DRIVER=pg-read/pg）を呼んだときにのみ到達する。フラグ未設定の
+ *   (1) Cloudflare env の target 別 Hyperdrive バインディング
+ *       （HYPERDRIVE_SUPABASE / HYPERDRIVE_PLANETSCALE）
+ *   (2) process.env の target 別 DATABASE_URL（DATABASE_URL_SUPABASE /
+ *       DATABASE_URL_PLANETSCALE。next dev などローカル開発用）
+ *   (3) target === 'supabase' の場合のみ、既存の process.env.DATABASE_URL への
+ *       後方互換フォールバック（#693 以前からの唯一の接続先だったため）
+ *   (4) どれも無ければ throw
+ *
+ * (3) を 'planetscale' に適用しない理由（#693 の明示要件）: DATABASE_URL は
+ * 歴史的に Supabase 用として設定されてきた値であり、PlanetScale ターゲットが
+ * binding/専用 env 変数の設定漏れで DATABASE_URL に暗黙フォールバックすると、
+ * 「PlanetScale のつもりで実は Supabase に書き込んでいた」という事故になり得る。
+ * fail-closed（明示的な throw）の方が、誤った接続先への到達より安全。
+ *
+ * (4) は新経路（DB_DRIVER=pg-read/pg）を呼んだときにのみ到達する。フラグ未設定の
  * postgrest 経路はこのモジュールを呼ばないため、Hyperdrive 未設定のままデプロイ
  * しても既存機能には影響しない。
  */
-function resolveConnectionString(cfEnv: Record<string, unknown> | null): string {
-  const hyperdrive = cfEnv?.HYPERDRIVE as HyperdriveBindingLike | undefined
+function resolveConnectionString(
+  target: DbTarget,
+  cfEnv: Record<string, unknown> | null,
+): string {
+  const bindingName = HYPERDRIVE_BINDING_NAMES[target]
+  const hyperdrive = cfEnv?.[bindingName] as HyperdriveBindingLike | undefined
   if (hyperdrive?.connectionString) {
     return hyperdrive.connectionString
   }
 
-  const databaseUrl = process.env.DATABASE_URL?.trim()
-  if (databaseUrl) {
-    return databaseUrl
+  const targetDatabaseUrl = process.env[DATABASE_URL_ENV_NAMES[target]]?.trim()
+  if (targetDatabaseUrl) {
+    return targetDatabaseUrl
   }
 
+  if (target === 'supabase') {
+    const legacyDatabaseUrl = process.env.DATABASE_URL?.trim()
+    if (legacyDatabaseUrl) {
+      return legacyDatabaseUrl
+    }
+  }
+
+  const envVarName = DATABASE_URL_ENV_NAMES[target]
+  const legacyHint = target === 'supabase' ? ' or DATABASE_URL' : ''
   throw new Error(
-    '[db:pg] No database connection configured: bind HYPERDRIVE in wrangler.toml ' +
-      '(Workers) or set DATABASE_URL (local dev). This is only reached when ' +
-      'DB_DRIVER=pg-read/pg is set; unset DB_DRIVER to fall back to PostgREST.',
+    `[db:pg] No database connection configured for target=${target}: bind ${bindingName} ` +
+      `in wrangler.toml (Workers) or set ${envVarName}${legacyHint} (local dev). This is ` +
+      'only reached when DB_DRIVER=pg-read/pg is set; unset DB_DRIVER to fall back to PostgREST.',
   )
 }
 
 /**
  * Drizzle クライアントを取得する。
- * - Workers: リクエストごとに生成し、同一リクエスト内では WeakMap で再利用
- * - Node（next dev）: モジュールシングルトン
+ * - Workers: リクエストごとに生成し、同一リクエスト内では target 別に WeakMap
+ *   （経由の Map）で再利用
+ * - Node（next dev）: target 別のモジュールシングルトン
+ *
+ * @param options.target - 明示的に接続先を指定したい場合のみ渡す（migration/
+ *   検証用の内部 API 呼び出し等）。省略時は getDbTarget()（src/lib/db/target.ts）
+ *   で解決する。**既存の全呼び出し元は引数無しで getDb() を呼んでおり、
+ *   DB_TARGET 環境変数が未設定なら getDbTarget() は 'supabase' を返すため、
+ *   これらは #693 以前と全く同じ接続先（HYPERDRIVE_SUPABASE / DATABASE_URL）に
+ *   到達する（挙動不変）。**
  *
  * 使用側の規約: withDbRetry() でラップする場合は queryFn の中で getDb() を
  * 呼ぶこと（リクエストスコープ破棄からの回復にはクライアント再取得が必要。
  * src/lib/db/retry.ts 参照）。
  */
-export async function getDb(): Promise<DbHandle> {
+export async function getDb(options?: { target?: DbTarget }): Promise<DbHandle> {
+  const target = options?.target ?? getDbTarget()
+
   // Cloudflare コンテキストの取得を試みる。r2-client.ts と同じく動的 import に
   // して、Workers 外（テスト・素の Node 実行）でのバンドル/評価問題を避ける。
   // next dev では initOpenNextCloudflareForDev 未設定のため throw し、
@@ -313,28 +384,34 @@ export async function getDb(): Promise<DbHandle> {
   }
 
   if (cfCtx) {
-    // Workers: 同一リクエスト（= 同一 ExecutionContext）内はハンドルを再利用する。
-    // OpenNext は AsyncLocalStorage でリクエストごとに同一の ctx を返すため、
-    // ctx がそのままリクエスト識別子として機能する。
+    // Workers: 同一リクエスト（= 同一 ExecutionContext）内は target ごとに
+    // ハンドルを再利用する。OpenNext は AsyncLocalStorage でリクエストごとに
+    // 同一の ctx を返すため、ctx がそのままリクエスト識別子として機能する。
     //
     // 注意: 以下の get → create → set の間に await を挟まないこと。
     // createHandle() は同期（postgres() は遅延接続でコンストラクトは同期）なので
     // このブロックは原子的に実行され、同一リクエスト内で getDb() が並列に
     // 呼ばれても（Promise.all 等）ハンドルが二重生成されることはない。
-    // ここに await を追加すると、その保証が壊れる。
-    const existing = requestScopedHandles.get(cfCtx)
+    // ここに await を追加すると、その保証が壊れる（#693 で target 単位の
+    // Map を挟んだ後もこの原子性は変わらず維持している）。
+    let handlesByTarget = requestScopedHandles.get(cfCtx)
+    const existing = handlesByTarget?.get(target)
     if (existing) {
       return existing
     }
-    const handle = createHandle(resolveConnectionString(cfEnv))
-    requestScopedHandles.set(cfCtx, handle)
+    const handle = createHandle(resolveConnectionString(target, cfEnv))
+    if (!handlesByTarget) {
+      handlesByTarget = new Map<DbTarget, DbHandle>()
+      requestScopedHandles.set(cfCtx, handlesByTarget)
+    }
+    handlesByTarget.set(target, handle)
     return handle
   }
 
-  // Node（next dev）: シングルトンで TCP 接続を再利用
+  // Node（next dev）: target 別シングルトンで TCP 接続を再利用
   // （上と同じく判定〜代入は同期ブロックなので並列呼び出しでも二重生成されない）
-  if (!nodeSingletonHandle) {
-    nodeSingletonHandle = createHandle(resolveConnectionString(null))
+  if (!nodeSingletonHandles[target]) {
+    nodeSingletonHandles[target] = createHandle(resolveConnectionString(target, null))
   }
-  return nodeSingletonHandle
+  return nodeSingletonHandles[target]
 }

@@ -18,9 +18,9 @@ Issue #666（親: #664 / #568 Phase 2-2）のドラフト。
   オーナーの明示的な GO 判断が出るまで着手しない。**
 - 基本方式は「数分の書き込み停止ウィンドウ」（#568 決定事項）。#667の技術調査
   （2026-07-19完了、8章参照）により、logical replicationは技術的に採用可能と
-  判定されたが、コストベネフィット判定の結果**数分停止方式を正式採用として
-  推奨**している（オーナーの最終確認待ち）。以下の pg_dump/restore 方式が
-  本ランブックの正とする手順。
+  判定されたが、コストベネフィット判定の結果**数分停止方式を正式採用**と
+  し、2026-07-19にオーナー承認済み（#667/#696はこの判断によりクローズ）。
+  以下の pg_dump/restore 方式が本ランブックの正とする手順。
 - `docs/planetscale-migration-audit.md`（#665 migration移植監査 / #667 logical
   replication可否検証）は2026-07-10に作成・2026-07-19に追加調査を反映済み。
   Docker上でmigration 65ファイル全件の適用検証、シーケンス0件・PK無しテーブル
@@ -389,6 +389,36 @@ npm run probe:maintenance -- --url=https://twica-preview.tsubasa-azumagakito.wor
   `scripts/replay-maintenance-eventsub.js` を実装し解消済み。詳細は
   4.3節を参照。
 
+### 4.9 DB接続先切替（DB_TARGET）の実装（実装済み、issue #693）
+
+pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続するかを
+`DB_TARGET` 環境変数（`'supabase'`|`'planetscale'`、未設定・不正値は安全側
+`'supabase'` にフォールバック。`src/lib/db/target.ts` の `getDbTarget()`）で
+切り替えられるようにした。`MAINTENANCE_MODE`（4.0節）とは独立したフラグで、
+「メンテナンス中かどうか」と「どの DB に向くか」は別軸の関心事。
+
+- **Hyperdrive binding**: `wrangler.toml` に target 別の binding
+  `HYPERDRIVE_SUPABASE` / `HYPERDRIVE_PLANETSCALE` を用意した（旧単一
+  `HYPERDRIVE` binding から分割）。`HYPERDRIVE_PLANETSCALE` は本 issue
+  (#693) 時点ではまだ config 未作成（#691 で実 PlanetScale DB 作成後に
+  追加）。ローカル開発では代わりに `DATABASE_URL_SUPABASE` /
+  `DATABASE_URL_PLANETSCALE` を使える（優先順位は `src/lib/db/client.ts`
+  の `resolveConnectionString` を参照）。
+- **診断エンドポイント**: `GET /api/admin/db-health`
+  （`src/app/api/admin/db-health/route.ts`）。認証は `EVENTSUB_REPLAY_SECRET`
+  （4.3節）と同じ共有シークレットパターンで、新規シークレット
+  `DB_HEALTH_SECRET` の事前設定（`wrangler secret put DB_HEALTH_SECRET`、
+  本番・preview両環境）が前提条件（未設定なら route が 500 で
+  fail-closed）。`X-Health-Secret` ヘッダーで認証する。
+  `?target=supabase|planetscale` クエリで接続先を明示指定でき、実際に
+  到達した driver・DB メジャーバージョン・レイテンシを返す
+  （ホスト名・DB名等の機密情報はレスポンスに含めない設計）。
+- **カットオーバー時の確認**: `DB_TARGET` を切り替えた後は、必ず
+  `db-health` エンドポイントで実際に意図した target に到達していることを
+  確認すること（5.1節手順8参照）。`getDbTarget()` は不正値を黙って
+  `'supabase'` にフォールバックするため、タイポによる切替不発を検知する
+  手段としてこの確認が重要になる。
+
 ## 5. pg_dump/restore の実行手順とダウンタイム見積り
 
 リポジトリ内に pg_dump/pg_restore 関連の既存スクリプトは**見つからなかった**
@@ -485,7 +515,12 @@ npm run probe:maintenance -- --url=https://twica-preview.tsubasa-azumagakito.wor
      した自動化スクリプトでラップしないこと）
 7. **シーケンス値の確認**（6章）。
 8. **Hyperdrive の接続先を PlanetScale に切り替える**（`wrangler hyperdrive
-   update` または config 再作成。詳細は 7章ロールバック手順と対になる操作）。
+   update` または config 再作成。詳細は 7章ロールバック手順と対になる操作。
+   `DB_TARGET`（4.9節）で dual binding 切替を使う場合も含め、**切替後は
+   必ず `GET /api/admin/db-health?target=planetscale`（4.9節）で実際に
+   意図した target に到達していることを確認する**こと。`getDbTarget()` は
+   不正値を黙って `'supabase'` にフォールバックするため、タイポによる
+   切替不発をこの確認以外で検知する手段がない）。
 9. **最小限の書き込み系疎通確認**を1系統実施（例: ガチャ実引き1回）。
 10. **read-only 解除**（prod → preview の順、または一括）。
 11. **EventSub リプレイ**: メンテナンス中に KV へ退避された payload を
@@ -694,7 +729,8 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
       （理由: 現行方式は既に5〜10分程度の停止見積り+maintenance mode UXが
       作り込み済みでユーザー影響が小さい、Supabase側IPv4アドオンで月$29程度の
       新規経常コストが生じうる、運用複雑さの増加が個人開発の運用体制に見合わない）。
-      **この推奨のままクローズしてよいかオーナー確認をお願いします**
+      **2026-07-19、オーナー承認済み。数分停止方式（pg_dump/restore）で確定。
+      #667/#696はこの判断によりクローズしてよい**
 - [ ] **切替後の migration 適用手段と migration 履歴の移送**: 2026-07-19、
       設計調査完了（`docs/planetscale-migration-audit.md` 6.3節）。推奨方針:
       - `supabase_migrations.schema_migrations`（履歴テーブル）は**移送しない**

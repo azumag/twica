@@ -41,7 +41,11 @@ describe('getDb (#570 client.ts)', () => {
     vi.stubEnv('DATABASE_URL', 'postgres://user:pass@local-host:5432/localdb')
     const ctx = { waitUntil: vi.fn() }
     mocks.getCloudflareContext.mockResolvedValue({
-      env: { HYPERDRIVE: { connectionString: 'postgres://user:pass@hyperdrive-host:5432/hyperdb' } },
+      env: {
+        HYPERDRIVE_SUPABASE: {
+          connectionString: 'postgres://user:pass@hyperdrive-host:5432/hyperdb',
+        },
+      },
       ctx,
     })
 
@@ -98,5 +102,177 @@ describe('getDb (#570 client.ts)', () => {
 
     const { getDb } = await importClient()
     await expect(getDb()).rejects.toThrow(/DATABASE_URL/)
+  })
+})
+
+/**
+ * #693 (Phase 2 dual Hyperdrive binding / DB_TARGET 切替) 用のテスト。
+ *
+ * 最重要の回帰確認: DB_TARGET が一切設定されていない状態で、引数無し getDb() を
+ * 呼ぶ既存の全呼び出し元（src/lib/services/gacha.ts 等）が、#693 以前と全く同じ
+ * バインディング（HYPERDRIVE_SUPABASE）・接続先解決ロジックへ到達すること。
+ * これは上の describe ブロックの各テスト（DB_TARGET を一切 stub していない）が
+ * 既に検証している内容と同一の経路だが、「target 別キャッシュ導入後も同じ経路が
+ * 生きている」ことを本セクションでも明示的に再確認する。
+ */
+describe('getDb target resolution (#693 Phase 2)', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    mocks.getCloudflareContext.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('DB_TARGET 未設定・引数無し getDb() は HYPERDRIVE_SUPABASE バインディングを参照する（既存呼び出し元の回帰確認）', async () => {
+    // DB_TARGET が「テスト実行環境に元々存在しない」ことに暗黙依存しないよう、
+    // 明示的に未設定へ stub する（tests/unit/db-target.test.ts と同じ方針。
+    // CI環境が将来 DB_TARGET を export するようになっても、このテストの意味
+    // 「未設定時はsupabase」が変わらないようにするため）。
+    vi.stubEnv('DB_TARGET', undefined)
+    const ctx = { waitUntil: vi.fn() }
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: {
+        HYPERDRIVE_SUPABASE: {
+          connectionString: 'postgres://user:pass@supabase-host:5432/db',
+        },
+        // planetscale 側 binding が存在しても、target 未指定（=supabase）では
+        // 参照されないことも同時に確認する。
+        HYPERDRIVE_PLANETSCALE: {
+          connectionString: 'postgres://user:pass@planetscale-host:5432/db',
+        },
+      },
+      ctx,
+    })
+
+    const { getDb } = await importClient()
+    const handle = await getDb()
+
+    expect((handle.sql as any).options.host).toEqual(['supabase-host'])
+  })
+
+  it('DB_TARGET=planetscale なら HYPERDRIVE_PLANETSCALE バインディングを使う', async () => {
+    vi.stubEnv('DB_TARGET', 'planetscale')
+    const ctx = { waitUntil: vi.fn() }
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: {
+        HYPERDRIVE_SUPABASE: {
+          connectionString: 'postgres://user:pass@supabase-host:5432/db',
+        },
+        HYPERDRIVE_PLANETSCALE: {
+          connectionString: 'postgres://user:pass@planetscale-host:5432/db',
+        },
+      },
+      ctx,
+    })
+
+    const { getDb } = await importClient()
+    const handle = await getDb()
+
+    expect((handle.sql as any).options.host).toEqual(['planetscale-host'])
+  })
+
+  it('resolveConnectionString の優先順位: target別 binding > target別 DATABASE_URL', async () => {
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@ps-env-host:5432/db')
+    const ctx = { waitUntil: vi.fn() }
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: {
+        HYPERDRIVE_PLANETSCALE: {
+          connectionString: 'postgres://user:pass@ps-binding-host:5432/db',
+        },
+      },
+      ctx,
+    })
+
+    const { getDb } = await importClient()
+    const handle = await getDb({ target: 'planetscale' })
+
+    expect((handle.sql as any).options.host).toEqual(['ps-binding-host'])
+  })
+
+  it('resolveConnectionString の優先順位（supabase）: target別 DATABASE_URL_SUPABASE > レガシー DATABASE_URL', async () => {
+    // Hyperdrive binding が無い（Node フォールバック）状態で、(2) DATABASE_URL_SUPABASE と
+    // (3) レガシー DATABASE_URL の両方が設定されている場合に (2) が優先されることを確認する。
+    // supabase 以外の target（planetscale）で同種の優先順位は既存テスト（binding > target別
+    // DATABASE_URL）でカバー済みだが、(2) vs (3) の優先順位は supabase target 特有の分岐
+    // （resolveConnectionString の legacy DATABASE_URL フォールバックは target==='supabase'
+    // の場合のみ到達する）のため、このテストが無いと (2) の分岐が (3) より先に評価される
+    // ことを検証できていなかった。
+    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@legacy-supabase-host:5432/db')
+    vi.stubEnv('DATABASE_URL_SUPABASE', 'postgres://user:pass@supabase-env-host:5432/db')
+    mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
+
+    const { getDb } = await importClient()
+    const handle = await getDb({ target: 'supabase' })
+
+    expect((handle.sql as any).options.host).toEqual(['supabase-env-host'])
+  })
+
+  it('planetscale ターゲットは binding も DATABASE_URL_PLANETSCALE も無ければ、DATABASE_URL が設定されていても throw する（誤って旧接続先へ落ちない）', async () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@legacy-supabase-host:5432/db')
+    mocks.getCloudflareContext.mockResolvedValue({ env: {}, ctx: { waitUntil: vi.fn() } })
+
+    const { getDb } = await importClient()
+    let caught: unknown
+    try {
+      await getDb({ target: 'planetscale' })
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(Error)
+    const message = (caught as Error).message
+    expect(message).toContain('HYPERDRIVE_PLANETSCALE')
+    expect(message).toContain('DATABASE_URL_PLANETSCALE')
+    // DATABASE_URL（レガシー）にフォールバックしない: エラーメッセージに legacy
+    // DATABASE_URL への言及（supabase 向けの ' or DATABASE_URL (local dev)' 文言）が
+    // 含まれないことで、fail-closed（誤って旧接続先の存在を示唆しない）ことを確認する。
+    expect(message).not.toContain('or DATABASE_URL (local dev)')
+  })
+
+  it('planetscale ターゲットは DATABASE_URL_PLANETSCALE があれば接続できる（DATABASE_URL とは独立）', async () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@legacy-supabase-host:5432/db')
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@ps-dev-host:5432/db')
+    mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
+
+    const { getDb } = await importClient()
+    const handle = await getDb({ target: 'planetscale' })
+
+    expect((handle.sql as any).options.host).toEqual(['ps-dev-host'])
+  })
+
+  it('Workers: 同一リクエスト内で target ごとにハンドルが分かれ、混ざらない', async () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@supabase-host:5432/db')
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@ps-host:5432/db')
+    const ctx = { waitUntil: vi.fn() }
+    mocks.getCloudflareContext.mockResolvedValue({ env: {}, ctx })
+
+    const { getDb } = await importClient()
+    const supabaseHandle = await getDb({ target: 'supabase' })
+    const planetscaleHandle = await getDb({ target: 'planetscale' })
+    const supabaseHandleAgain = await getDb({ target: 'supabase' })
+
+    expect(supabaseHandle).not.toBe(planetscaleHandle)
+    expect((supabaseHandle.sql as any).options.host).toEqual(['supabase-host'])
+    expect((planetscaleHandle.sql as any).options.host).toEqual(['ps-host'])
+    // 同一 target・同一リクエストでは再利用される
+    expect(supabaseHandleAgain).toBe(supabaseHandle)
+  })
+
+  it('Node: target ごとに独立したシングルトンを保持する', async () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@supabase-host:5432/db')
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@ps-host:5432/db')
+    mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
+
+    const { getDb } = await importClient()
+    const supabaseHandle1 = await getDb({ target: 'supabase' })
+    const planetscaleHandle1 = await getDb({ target: 'planetscale' })
+    const supabaseHandle2 = await getDb({ target: 'supabase' })
+    const planetscaleHandle2 = await getDb({ target: 'planetscale' })
+
+    expect(supabaseHandle1).not.toBe(planetscaleHandle1)
+    expect(supabaseHandle2).toBe(supabaseHandle1)
+    expect(planetscaleHandle2).toBe(planetscaleHandle1)
   })
 })
