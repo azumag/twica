@@ -37,6 +37,18 @@ function fakeRpcClient(result: unknown): any {
   }
 }
 
+// client.rpc() がPostgrestError相当（{code, message}）を返すfake。
+// #700: tryJsonbRpc(→callJsonbRpc) のsilent fallback廃止を検証するテスト専用。
+// from もvi.fn()のまま（未実装）にしておくことで、フォールバックが復活して
+// .from()経由のSupabase query builderへ触れてしまった場合に即座に失敗させる
+// （fakeRpcClientと同じ意図）。
+function fakeRpcErrorClient(error: unknown): any {
+  return {
+    rpc: vi.fn().mockResolvedValue({ data: null, error }),
+    from: vi.fn(),
+  }
+}
+
 // getGachaChart/getGachaTable/getGachaExportRows の Supabase 経路（default モード）
 // が使う `.from().select().order()...` チェーンの最小限のスタブ。
 // storage-db-driver-parity.test.ts の builder パターンを踏襲する。
@@ -987,8 +999,53 @@ describe.each(ROUTED_ENDPOINTS)(
       expect(data).toEqual(pgResult)
       expect(client.rpc).not.toHaveBeenCalled()
     })
+
+    // #700: 以前はRPC未適用(42883)時にNode側の低速な全件集計へ無音でフォールバック
+    // していたが、この挙動はPlanetScale移行後のスキーマ不備を隠してしまうため廃止した。
+    // client.from が一度も呼ばれないことを合わせて検証し、フォールバック経路
+    // （Supabase query builder呼び出し）が復活していないことを確認する。
+    it('RPC未適用(42883)でもフォールバックせず、明示的なエラーとして伝播する(#700: silent fallback廃止)', async () => {
+      const client = fakeRpcErrorClient({ code: '42883', message: `function ${rpcName}() does not exist` })
+
+      await expect(call(client, {})).rejects.toThrow(new RegExp(rpcName))
+      expect(client.from).not.toHaveBeenCalled()
+    })
+
+    it('RPC関連の想定外エラー（タイムアウト等）はそのまま伝播する', async () => {
+      const originalError = { code: '57014', message: 'canceling statement due to statement timeout' }
+      const client = fakeRpcErrorClient(originalError)
+
+      await expect(call(client, {})).rejects.toBe(originalError)
+      expect(client.from).not.toHaveBeenCalled()
+    })
   }
 )
+
+// callJsonbRpc は4関数（ROUTED_ENDPOINTS）とも共有しているため、エラーメッセージの
+// 具体的な文言・PGRST202検知・元エラーのcause保持は代表として getOverview 1件で
+// 検証する（本ファイル内の「5関数とも callAnalysisJsonFunction() を共有しているため、
+// エラー伝播の検証は代表として getOverviewPg 1件で行う」というコメントと同じ
+// 「代表1件」方針）。
+describe('localAdminApi: callJsonbRpc のmissing RPC検知とエラー内容（#700, 代表としてgetOverviewで検証）', () => {
+  it('PGRST202（PostgRESTスキーマキャッシュ未検出）もmissing RPCとして検知し、フォールバックせず伝播する', async () => {
+    const client = fakeRpcErrorClient({ code: 'PGRST202', message: 'schema cache miss' })
+    const { getOverview } = await importLocalAdminApi()
+
+    await expect(getOverview(client, {})).rejects.toThrow(/get_analysis_overview/)
+    expect(client.from).not.toHaveBeenCalled()
+  })
+
+  it('missing RPCのエラーメッセージは対象migrationファイル名を含み、元エラーをcauseに保持する', async () => {
+    const originalError = { code: '42883', message: 'function get_analysis_overview() does not exist' }
+    const client = fakeRpcErrorClient(originalError)
+    const { getOverview } = await importLocalAdminApi()
+
+    await expect(getOverview(client, {})).rejects.toMatchObject({
+      message: expect.stringContaining('00073_add_analysis_dashboard_rpcs.sql'),
+      cause: originalError,
+    })
+  })
+})
 
 // getStreamerByIdはRPCではなくfrom().select().eq().single()を使うため、
 // 表形式のROUTED_ENDPOINTSには混ぜず個別に検証する（#701: StreamerCards.tsx/
@@ -1029,7 +1086,7 @@ describe('localAdminApi: getStreamerById の ANALYSIS_DB_DRIVER による経路�
   })
 })
 
-// getGachaSummary は他4関数と違い tryJsonbRpc() を経由せず client.rpc() を直接
+// getGachaSummary は他4関数と違い callJsonbRpc() を経由せず client.rpc() を直接
 // 2引数(関数名 + パラメータオブジェクト)で呼ぶため、表形式のROUTED_ENDPOINTSには
 // 混ぜず個別に検証する
 describe('localAdminApi: getGachaSummary の ANALYSIS_DB_DRIVER による経路切替（回帰確認）', () => {
