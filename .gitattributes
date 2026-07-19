@@ -1,0 +1,6 @@
+# migration ファイルの改行コードを LF に固定する（Issue #692 Fableレビュー Medium-2）。
+# scripts/db-migrate.js の checksum（SHA-256）は生ファイル内容そのものに基づくため、
+# autocrlf=true な環境（主にWindows）でチェックアウトすると CRLF に変換され、
+# 全migrationファイルが checksum 不一致（history と食い違う）扱いになってしまう。
+# それを防ぐため、リポジトリ内では常に LF で保存・チェックアウトされるようにする。
+*.sql text eol=lf
