@@ -31,6 +31,8 @@
     "db:migrate:plan": "node scripts/db-migrate.js plan",
     "db:migrate:apply": "node scripts/db-migrate.js apply",
     "db:migrate:verify": "node scripts/db-migrate.js verify",
+    "db:phase2:export": "node scripts/db-phase2/export-public-schema.mjs",
+    "db:phase2:normalize": "node scripts/db-phase2/normalize-schema.mjs",
     "check:analysis-browser-supabase": "node scripts/check-analysis-browser-supabase.js",
     "check:maintenance-surfaces": "node scripts/check-maintenance-surfaces.js",
     "probe:maintenance": "node scripts/probe-maintenance-write-surfaces.js",

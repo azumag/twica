@@ -210,6 +210,23 @@ function countEffectiveStatements(content) {
 }
 
 /**
+ * ファイル内容（コメント行・空行を除いた実効コード）に `SET LOCAL` が含まれるかを検査する
+ * 純粋関数。Issue #691（PlanetScale移行 Chunk 1）タスク3のガードで使う
+ * （buildMigrationDescriptor 内のコメント参照）。
+ * countEffectiveStatements と同様、行全体が `--` から始まる単純なコメント行のみを除外する
+ * 簡易実装（行末コメント・ブロックコメントは対象外）。
+ * @param {string} content
+ * @returns {boolean}
+ */
+function containsSetLocal(content) {
+  const codeLines = content.split('\n').filter((line) => {
+    const trimmed = line.trim()
+    return trimmed !== '' && !trimmed.startsWith('--')
+  })
+  return /\bSET\s+LOCAL\b/i.test(codeLines.join('\n'))
+}
+
+/**
  * 1ファイル分の migration descriptor を組み立てる純粋関数。
  * ファイル名が MIGRATION_FILENAME_RE にマッチしない場合、version/name は null になり、
  * errors にその旨が積まれる（呼び出し側で不正ファイルとして扱われる）。
@@ -244,6 +261,42 @@ function buildMigrationDescriptor(filename, content) {
           `検出された実質的なSQL文の数: ${statementCount}`
       )
     }
+
+    // Issue #691（PlanetScale移行 Chunk 1）タスク3: SET LOCAL はトランザクションブロック内
+    // でのみ有効というPostgreSQL仕様上のガード。
+    //
+    // 背景: supabase/migrations/00051_add_card_owner_stats.sql（160行目）は
+    // `SET LOCAL statement_timeout = 0;` を使っている。このファイルは
+    // migration-transaction ヘッダー宣言を持たないため DEFAULT_TRANSACTION_MODE
+    // （'required'）が適用され、db-migrate.js の apply は `sql.begin()` でこのファイル
+    // 全体をトランザクションに包んで実行する。この設計では SET LOCAL は正しく
+    // 効果を持つ（トランザクション内のみに限定される変更が、まさにそのトランザクション内で
+    // 完結するため）。
+    //
+    // 一方、`migration-transaction: forbidden` はSQLをトランザクション外
+    // （オートコミット、1文ずつ独立）で実行する宣言であり、この場合 SET LOCAL の効果は
+    // 直後の1文（SET LOCAL自身が暗黙的に作るトランザクション）で終わってしまい、
+    // 後続のSQL文には一切適用されない。実際に `psql -f`（オートコミットモード）で
+    // 00051を流すと `WARNING: SET LOCAL can only be used in transaction blocks` が
+    // 発生することをDocker実機検証で確認済み（docs/planetscale-migration-audit.md 3.1節、
+    // docs/planetscale-schema-baseline.md）。
+    //
+    // 現状の00051自体はforbiddenを宣言していないため、このガードは「将来この
+    // ファイル（または同様にSET LOCALを使う新規ファイル）へ誤ってforbiddenが
+    // 宣言された場合」を検知するための予防線であり、既存71ファイルのいずれにも
+    // 現時点では該当しない（`grep -rn "SET LOCAL" supabase/migrations/*.sql` で
+    // 00051以外に同種のパターンが無いことを確認済み。同ファイルはforbiddenを
+    // 宣言していないため本ガードには引っかからない）。
+    if (containsSetLocal(content)) {
+      errors.push(
+        'migration-transaction: forbidden と SET LOCAL は併用できません' +
+          '（SET LOCAL はトランザクションブロック内でのみ有効というPostgreSQLの仕様のため、' +
+          'forbidden 宣言（オートコミット実行）では SET LOCAL の効果が直後の1文に限定され、' +
+          '後続のSQL文には適用されません。SET LOCAL の効果を保ちたい場合は ' +
+          'migration-transaction: required（既定値）を使うか、SET LOCAL を' +
+          'セッションスコープの SET（LOCALなし）に書き換えてください。）'
+      )
+    }
   }
 
   return {
@@ -258,12 +311,17 @@ function buildMigrationDescriptor(filename, content) {
 }
 
 /**
- * `supabase/migrations/*.sql` を発見し、ファイル名昇順にソートした migration descriptor 配列を返す。
+ * 指定ディレクトリの `*.sql` を発見し、ファイル名昇順にソートした migration descriptor 配列を返す。
  * fs 同期I/Oを行うため厳密には「純粋」ではないが、DB接続を一切持たない（unit test では一時
  * ディレクトリを渡して検証できる）。
  *
+ * 各 descriptor には `sourceDir`（このディレクトリの絶対パス）を付与する。
+ * `loadMigrationFilesFromDirs` で複数ディレクトリの結果をマージした後も、
+ * どのディレクトリの実ファイルを読めばよいか（`readMigrationFile` の呼び出し）を
+ * descriptor 単体から判断できるようにするため（Issue #691 Chunk 1 C-1対応）。
+ *
  * @param {string} migrationsDir 絶対パス
- * @returns {ReturnType<typeof buildMigrationDescriptor>[]}
+ * @returns {(ReturnType<typeof buildMigrationDescriptor> & { sourceDir: string })[]}
  */
 function loadMigrationFiles(migrationsDir) {
   const filenames = fs
@@ -273,8 +331,29 @@ function loadMigrationFiles(migrationsDir) {
 
   return filenames.map((filename) => {
     const content = fs.readFileSync(path.join(migrationsDir, filename), 'utf8')
-    return buildMigrationDescriptor(filename, content)
+    return { ...buildMigrationDescriptor(filename, content), sourceDir: migrationsDir }
   })
+}
+
+/**
+ * 複数ディレクトリから migration ファイルを読み込み、ファイル名昇順で1本にマージする純粋関数
+ * （fs同期I/Oはあるがpure）。Issue #691 Chunk 1（C-1、Fableレビュー）対応:
+ * `--provider=planetscale` 実行時、`supabase/migrations/`（共通/Supabase向け）と
+ * `db/planetscale/migrations/`（PlanetScale専用、Supabase CLIの `supabase db push` が
+ * スキャンしない別ディレクトリ）の両方からmigrationを読み込み、1つの適用順序として扱う
+ * 必要があるために追加した。
+ *
+ * ディレクトリをまたいだファイル名（version）の重複は本関数では検知しない
+ * （既存の `findDuplicateVersions(descriptors)` がマージ後の配列に対してそのまま機能する
+ * ため、ここで重複ロジックを再実装しない）。
+ *
+ * @param {string[]} migrationsDirs 絶対パスの配列（1つでもよい）
+ * @returns {(ReturnType<typeof buildMigrationDescriptor> & { sourceDir: string })[]} ファイル名昇順
+ */
+function loadMigrationFilesFromDirs(migrationsDirs) {
+  const merged = migrationsDirs.flatMap((dir) => loadMigrationFiles(dir))
+  merged.sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0))
+  return merged
 }
 
 /**
@@ -283,6 +362,8 @@ function loadMigrationFiles(migrationsDir) {
  * （loadMigrationFiles は checksum 計算のためだけに内容を読むが、descriptor には保持しない。
  * 71ファイル程度なら保持してもコスト上問題ないが、descriptor はあくまで「メタデータ」に
  * 責務を絞り、実行対象のSQL本文取得は使う側が明示的に行う方が責務が分かりやすいため）。
+ * 呼び出し側は descriptor の `sourceDir`（`loadMigrationFiles`/`loadMigrationFilesFromDirs` が
+ * 付与）をそのまま `migrationsDir` に渡すことを想定している。
  *
  * @param {string} migrationsDir
  * @param {string} filename
@@ -485,8 +566,10 @@ module.exports = {
   parseDescriptorHeader,
   computeChecksum,
   countEffectiveStatements,
+  containsSetLocal,
   buildMigrationDescriptor,
   loadMigrationFiles,
+  loadMigrationFilesFromDirs,
   readMigrationFile,
   findDuplicateVersions,
   isProviderApplicable,

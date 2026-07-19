@@ -49,6 +49,35 @@ grepベースの推定値は`docs/planetscale-migration-audit.md`のDocker実測
 存在せず、10GB込み・超過分は東京$0.150/GB/月の従量課金**（`docs/planetscale-
 migration-audit.md` 6.1節、PlanetScale公式pricingページで確認済み）。
 
+### 1.1 prod/preview分離方式（2026-07-19確定・再検討済み）
+
+PlanetScale organization `bluemoon-works`、cluster `twica`（PS-5・単一ノード・
+ap-northeast-1東京・$5/月）を作成し、**1 clusterの`main` branch内に
+`CREATE DATABASE prod;`/`CREATE DATABASE preview;`で論理DBを分離する方式**を採用。
+PlanetScale branch機能（`main`とは別に`preview` branchを作る、$5/月〜のPS-DEV
+インスタンス）は使わない。
+
+**再検討の経緯**: 2026-07-19、オーナーからPlanetScale branchが「単なるスキーマ
+履歴ではなく独立したPostgres環境（別クラスタ・別ストレージ）」であるとの情報提供が
+あり、Fableレビューを実施。技術的には2 branch方式（`main`=本番+`preview` branch）
+の方が障害分離に優れる（特に、PostgreSQLのロールはクラスタ全体で共有されるため、
+現行の1 cluster方式では`service_role`/`anon`/`authenticated`ロールがprod/preview間
+で**同一実体**になる——これは理論ではなく、bootstrap.sql投入時に実際に
+`role "service_role" already exists`エラーとして実地で確認済み）。
+公式ドキュメント（`planetscale.com/docs/postgres/branching`）確認により、
+2 branch方式の追加コストは月$5程度（PS-DEV branch、"begins at $5/month"）と判明し、
+合計$10/mo程度に収まる見込みだったが、**オーナーの予算判断により月$5を超える
+追加コストは許容できないため、1 cluster方式を最終確定として維持**する。
+
+**受け入れているリスク**: prod/previewでロールが共有されるため、将来的に
+「previewだけロール権限を変えて検証する」といった用途には使えない
+（現状はNOLOGINロールでprod/preview間の権限差分を作る予定が無いため実害なし）。
+また、previewでの重いクエリやロック競合が同一クラスタのprodに影響しうる
+（性能分離が無い）。これらは月$5の予算制約とのトレードオフとして意図的に許容する。
+
+MCP操作時は`branch: "main"`固定、`postgres_database_name: "prod"|"preview"`で
+対象DBを指定する（詳細経緯は[[planetscale-migration-phase2-progress]]参照）。
+
 ## 2. 全体スケジュール（案）
 
 実施日時は未定のため、相対日付で記載する。
@@ -62,6 +91,51 @@ migration-audit.md` 6.1節、PlanetScale公式pricingページで確認済み）
 | D-day, 直後 | read-only 解除、EventSub リプレイ、6章チェックリスト |
 | D-day 〜 D+1 | `wrangler tail` による監視継続（最低30分、異常時は延長） |
 | D+1 | 完了報告・告知 |
+
+### 2.1 時間帯の実測分析（2026-07-19、`gacha_history.redeemed_at`直近90日集計・頑健版）
+
+直近30日の集計（各曜日×時間帯あたり平均4〜5サンプル）は火曜20時の29,619件のような
+単発の外れ値に平均が引っ張られるリスクがあったため、**90日（各枠12〜13サンプル）に
+拡張し、平均だけでなく中央値・最小・最大も併せて確認**した。
+
+中央値・最大値まで見ると、**土曜6:00〜7:00 JSTが最も安全**という結果になった
+（30日集計での当初推奨「金曜5時」より頑健）:
+
+| 曜日・時間帯 | 平均 | 中央値 | 最小 | 最大 |
+|---|---|---|---|---|
+| **土 6時台** | 15 | 11 | 1 | **49** |
+| **土 7時台** | 15 | 11 | 2 | **40** |
+| 土 5時台 | 19 | 8 | 1 | 92 |
+| 金 5時台（旧推奨） | 25 | 11.5 | 2 | 86 |
+| 水 5時台（参考・外れ値注意） | 48 | 6 | 2 | **403** |
+
+水曜5時台は中央値こそ低い（6）が、90日中の1日で403件まで跳ねており、平均・中央値
+だけでは見抜けない「特定の日に大きく外れるリスク」を持つ。これに対し**土曜6〜7時台は
+90日間で一度も最大49件を超えていない**——中央値・最大値ともに低く、最も予測可能で
+安全な時間帯と判断できる。土曜4〜8時台は全体的に低水準が続くため、
+**土曜5:00〜8:00 JSTの3時間枠**であれば余裕を持って作業できる。
+
+**推奨: 土曜6:00〜7:00 JSTを軸に実施日時を決める**（バッファが必要な場合は
+5:00〜8:00の枠内で調整）。5.2節の見積り（書き込み停止5〜10分、告知バッファ込み
+最大15〜30分）はこの枠内に十分収まる。
+
+参考: 火曜20時の突出した外れ値（30日集計で29,619件）は90日集計でも再確認された
+（最大29,237件・中央値180件）。中央値が平均より大幅に低いことから、毎週発生する
+パターンではなく単発の大型配信イベント等による1日限りの外れ値と判断できる。本
+メンテナンス計画への直接の影響はない。
+
+**2026-07-19 追記: 5時台は曜日を問わず低水準**。90日集計を7曜日×5時台で横断的に
+見ると、平均19〜48・中央値6〜20の範囲に収まっており（水曜のみ最大403という外れ値
+リスクを除く）、月曜5時台（平均20・中央値11.5・最小2・最大72）も土曜5時台と同等かそれ
+以上に安全（土曜5時台の最大92より低い）。夜間（例: 20時台は火曜平均2405 vs 土曜平均130
+のように曜日で大きく変動）と異なり、早朝5時台の低さは特定の曜日に依存するのではなく
+生活リズム（睡眠時間帯）由来と考えられ、**祝日でも大きく崩れない可能性が高い**
+（祝日単体での実測検証は未実施・推論ベース、オーナー確認済み）。したがって
+**実施日そのものは曜日に縛られず、準備状況（#691等のGate進捗）で決めてよい**。
+水曜5時台のみ外れ値リスクがあるため避ける。
+
+**実施日時そのもの（具体的にどの日か）はオーナー判断**（8章参照）。本節は
+「時間帯」の技術的根拠を提供するのみ。
 
 ## 3. 告知文面テンプレート（配信者向け・ドラフト）
 
@@ -475,19 +549,28 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    RLSポリシー/GRANT文が`service_role`/`anon`/`authenticated`ロールを参照し、
    5テーブル（storage_usage/blob_files/errors/support_codes/user_licenses）の
    ポリシーが`auth.jwt()`/`auth.role()`関数を参照する。これらがPlanetScale側に
-   存在しないとpg_restoreが失敗するため、restore実行前に以下を投入する:
-   ```sql
-   CREATE ROLE service_role NOLOGIN;
-   CREATE ROLE anon NOLOGIN;
-   CREATE ROLE authenticated NOLOGIN;
-   CREATE SCHEMA IF NOT EXISTS auth;
-   CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
-   CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT '{}'::jsonb $$;
-   CREATE OR REPLACE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$ SELECT 'anon'::text $$;
+   存在しないとpg_restoreが失敗するため、restore実行前に投入する必要がある。
+
+   **`db/planetscale/bootstrap.sql` を適用すること（N-8、Fableレビュー2回目で更新。
+   以前の版は本節に生SQLを直接掲載していたが、これは非冪等（`CREATE ROLE ... NOLOGIN;`が
+   `IF NOT EXISTS`ガード無しのため、既にロールが存在する環境へ再実行すると
+   `role "service_role" already exists`等でエラーになる）だった上、issue #691
+   Chunk 1で内容が同一の冪等版が別途実装されたことで二重管理になっていたため、
+   生SQLの掲載をやめてファイル参照に置き換えた**:
+   ```bash
+   psql "$PLANETSCALE_DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f db/planetscale/bootstrap.sql
    ```
-   （`docs/planetscale-migration-audit.md` 1章でDocker上で動作確認済みの構成と同一）。
-   **未検証**: 実際にPlanetScale上でこれらのCREATE ROLE/CREATE FUNCTIONが
-   同一構文で成功するか、pg_restoreがこれで実際に通るかは実機未確認（強い
+   `db/planetscale/bootstrap.sql`は本節が要求するロール（service_role/anon/authenticated）・
+   `auth`スキーマのスタブ関数（`auth.uid()`/`auth.jwt()`/`auth.role()`）に加え、
+   `uuid-ossp`/`pgcrypto`拡張機能のセットアップも含む（`docs/planetscale-schema-baseline.md`
+   3.3節参照）。`pg_roles`カタログを確認してから`CREATE ROLE`する`DO`ブロックで冪等化されて
+   おり、実PlanetScale prod/previewに既にロールが作成済みの状態（issue #691本文の前提）へ
+   再実行してもエラーにならないことをDocker実機検証で確認済み
+   （`docs/planetscale-schema-baseline.md` 4.1節手順8）。`-1`（`--single-transaction`）を
+   付ける理由は`docs/planetscale-schema-baseline.md` 1.1節参照。
+   **未検証**: 実際にPlanetScale上で本ファイルのCREATE ROLE/CREATE FUNCTIONが
+   同一構文で成功するか、pg_restoreがこれで実際に通るかは実機未確認（Docker検証は
+   実施済みだが、実PlanetScale環境そのものでの検証はまだ、という意味。強い
    推論に基づく事前対処）。preview リハーサル時に最優先で検証すること。
 5. **PlanetScale Postgres への restore**:
    ```bash

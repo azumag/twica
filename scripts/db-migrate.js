@@ -55,7 +55,36 @@ const crypto = require('crypto')
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const core = require('./lib/db-migrate-core')
 
-const MIGRATIONS_DIR = path.join(__dirname, '..', 'supabase', 'migrations')
+const SUPABASE_MIGRATIONS_DIR = path.join(__dirname, '..', 'supabase', 'migrations')
+
+// PlanetScale専用migration用ディレクトリ（Issue #691 Chunk 1 C-1対応、Fableレビュー）。
+// `supabase/migrations/` には置かない: `.github/workflows/deploy-cloudflare.yml` の
+// `supabase db push --db-url "$SUPABASE_DB_URL" --yes` は `supabase/migrations/` 配下の
+// 未適用ファイルをSupabase CLIの判断で全て適用してしまい、本プロジェクト独自の
+// `-- migration-providers: planetscale` ヘッダーコメントを解釈しない（ただのSQLコメントとして
+// 無視される）ため、PlanetScale専用ファイルが実Supabase preview/prodへ誤適用される
+// リスクがある。Supabase CLIが一切スキャンしないこのディレクトリに分離することで、
+// 誤適用経路そのものを構造的に無くす（`migration-providers` ヘッダーによるprovider絞り込みは
+// 引き続き維持し、多重防御とする）。
+const PLANETSCALE_MIGRATIONS_DIR = path.join(__dirname, '..', 'db', 'planetscale', 'migrations')
+
+/**
+ * provider に応じて読み込む migration ディレクトリの配列を解決する純粋関数
+ * （Issue #691 Chunk 1 C-1対応）。
+ * `planetscale` のみ、共通/Supabase向け migration（`supabase/migrations/`）に加えて
+ * PlanetScale専用ディレクトリ（`db/planetscale/migrations/`）も対象にする。
+ * `supabase`/`postgres` は従来通り `supabase/migrations/` のみを見る
+ * （`db/planetscale/migrations/` の存在自体を意識しない）。
+ *
+ * @param {string} provider
+ * @returns {string[]}
+ */
+function resolveMigrationsDirs(provider) {
+  if (provider === 'planetscale') {
+    return [SUPABASE_MIGRATIONS_DIR, PLANETSCALE_MIGRATIONS_DIR]
+  }
+  return [SUPABASE_MIGRATIONS_DIR]
+}
 
 const HELP_TEXT = `
 使い方:
@@ -76,6 +105,10 @@ const HELP_TEXT = `
             必ず "=" で値を指定すること（例: --provider=planetscale）。
             "--provider planetscale" のようにスペース区切りにすると不明な引数として
             エラーになる。
+            planetscale指定時のみ、supabase/migrations/ に加えて
+            db/planetscale/migrations/（PlanetScale専用、supabase db push が
+            スキャンしない別ディレクトリ）もファイル名昇順でマージして読み込む
+            （resolveMigrationsDirs参照）。
   --bootstrap
             apply コマンド専用。未登録の全migrationファイルを「SQLを実行せずに」
             history へ登録する（実DBが既にこの内容を反映済みという前提のbootstrapモード）。
@@ -312,8 +345,8 @@ async function fetchHistoryRows(sql) {
  * 「checksum不一致等の整合性エラーはどのコマンドでも即座にエラー終了する」という
  * Issue #692 の要件を、個々のコマンドで重複実装せずに満たす。
  */
-async function computeState(sql, migrationsDir, provider) {
-  const descriptors = core.loadMigrationFiles(migrationsDir)
+async function computeState(sql, migrationsDirs, provider) {
+  const descriptors = core.loadMigrationFilesFromDirs(migrationsDirs)
   const duplicateVersions = core.findDuplicateVersions(descriptors)
   const descriptorErrors = core.collectDescriptorErrors(descriptors)
   const { exists, rows: historyRows } = await fetchHistoryRows(sql)
@@ -380,8 +413,8 @@ function printBlockingErrors(state) {
   }
 }
 
-async function cmdStatus(sql, migrationsDir, provider) {
-  const state = await computeState(sql, migrationsDir, provider)
+async function cmdStatus(sql, migrationsDirs, provider) {
+  const state = await computeState(sql, migrationsDirs, provider)
   if (hasBlockingErrors(state)) {
     printBlockingErrors(state)
     return 1
@@ -408,8 +441,8 @@ async function cmdStatus(sql, migrationsDir, provider) {
   return 0
 }
 
-async function cmdPlan(sql, migrationsDir, provider) {
-  const state = await computeState(sql, migrationsDir, provider)
+async function cmdPlan(sql, migrationsDirs, provider) {
+  const state = await computeState(sql, migrationsDirs, provider)
   if (hasBlockingErrors(state)) {
     printBlockingErrors(state)
     return 1
@@ -453,7 +486,7 @@ function printApplySummary(results, warnings) {
  * apply コマンド本体。advisory lock を取得したセッション内で、
  * history テーブルの存在確認・整合性チェック・実際の適用（またはbootstrap登録）を行う。
  */
-async function cmdApply(sql, migrationsDir, provider, { bootstrap, confirmFreshApply, appliedBy, warningSink }) {
+async function cmdApply(sql, migrationsDirs, provider, { bootstrap, confirmFreshApply, appliedBy, warningSink }) {
   // 同時実行防止: 固定キーの advisory lock を取得する。既に別プロセスが保持している場合は
   // ここでブロックし、解放され次第このプロセスが取得する（Issue #692: 「待機またはエラー」の
   // うち「待機」を採用。取得後は他方が適用済みの内容を読むだけなので自然にno-opになる）。
@@ -475,7 +508,7 @@ async function cmdApply(sql, migrationsDir, provider, { bootstrap, confirmFreshA
     // 発動せず、全pending migrationが実行されてしまう事故があった（Docker実機で再現済み）。
     // ガードがブロックする経路では schema/table を一切作成しないことで、この「1回しか効かない」
     // 問題を防ぐ。
-    const state = await computeState(sql, migrationsDir, provider)
+    const state = await computeState(sql, migrationsDirs, provider)
     if (hasBlockingErrors(state)) {
       printBlockingErrors(state)
       return 1
@@ -557,7 +590,10 @@ async function cmdApply(sql, migrationsDir, provider, { bootstrap, confirmFreshA
     for (const d of state.pending) {
       warningSink.current = d.version
       try {
-        const content = core.readMigrationFile(migrationsDir, d.filename)
+        // d.sourceDir: loadMigrationFilesFromDirs がディレクトリごとに付与した出自
+        // （--provider=planetscale では supabase/migrations/ と db/planetscale/migrations/
+        // の両方をマージしているため、単一の migrationsDir では正しいファイルを読めない）。
+        const content = core.readMigrationFile(d.sourceDir, d.filename)
         if (d.transaction === 'forbidden') {
           // トランザクション外での実行が必須な文（CREATE INDEX CONCURRENTLY等）を含む。
           // SQL実行が成功した後、history insertは別途・非トランザクションで記録する
@@ -613,8 +649,8 @@ async function cmdApply(sql, migrationsDir, provider, { bootstrap, confirmFreshA
   }
 }
 
-async function cmdVerify(sql, migrationsDir, provider) {
-  const state = await computeState(sql, migrationsDir, provider)
+async function cmdVerify(sql, migrationsDirs, provider) {
+  const state = await computeState(sql, migrationsDirs, provider)
   if (hasBlockingErrors(state)) {
     printBlockingErrors(state)
     console.error('[db-migrate] verify: FAIL')
@@ -652,6 +688,7 @@ async function main() {
   const { command, bootstrap, confirmFreshApply, provider, databaseUrl } = resolved
   const warningSink = { current: null, list: [] }
   const sql = createSqlClient(databaseUrl, warningSink)
+  const migrationsDirs = resolveMigrationsDirs(provider)
 
   console.log(`[db-migrate] command=${command} provider=${provider} database=${core.redactConnectionString(databaseUrl)}`)
 
@@ -661,13 +698,13 @@ async function main() {
   let exitCode = 2
   try {
     if (command === 'status') {
-      exitCode = await cmdStatus(sql, MIGRATIONS_DIR, provider)
+      exitCode = await cmdStatus(sql, migrationsDirs, provider)
     } else if (command === 'plan') {
-      exitCode = await cmdPlan(sql, MIGRATIONS_DIR, provider)
+      exitCode = await cmdPlan(sql, migrationsDirs, provider)
     } else if (command === 'verify') {
-      exitCode = await cmdVerify(sql, MIGRATIONS_DIR, provider)
+      exitCode = await cmdVerify(sql, migrationsDirs, provider)
     } else if (command === 'apply') {
-      exitCode = await cmdApply(sql, MIGRATIONS_DIR, provider, {
+      exitCode = await cmdApply(sql, migrationsDirs, provider, {
         bootstrap,
         confirmFreshApply,
         appliedBy: resolveAppliedBy(process.env),
@@ -701,4 +738,7 @@ module.exports = {
   hasBlockingErrors,
   shouldBlockFreshApply,
   FRESH_APPLY_PENDING_THRESHOLD,
+  resolveMigrationsDirs,
+  SUPABASE_MIGRATIONS_DIR,
+  PLANETSCALE_MIGRATIONS_DIR,
 }

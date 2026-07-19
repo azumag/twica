@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -7,8 +7,10 @@ import {
   parseDescriptorHeader,
   computeChecksum,
   countEffectiveStatements,
+  containsSetLocal,
   buildMigrationDescriptor,
   loadMigrationFiles,
+  loadMigrationFilesFromDirs,
   readMigrationFile,
   findDuplicateVersions,
   isProviderApplicable,
@@ -147,6 +149,27 @@ describe('countEffectiveStatements', () => {
   })
 })
 
+describe('containsSetLocal', () => {
+  it('SET LOCAL を含むコードを検出する（大文字小文字を問わない）', () => {
+    expect(containsSetLocal('SET LOCAL statement_timeout = 0;')).toBe(true)
+    expect(containsSetLocal('set local statement_timeout = 0;')).toBe(true)
+  })
+
+  it('コメント行のみに SET LOCAL という文字列が含まれる場合は検出しない', () => {
+    // supabase/migrations/00051_add_card_owner_stats.sql と同じパターン:
+    // 日本語コメント中に "SET LOCAL" という語が出現するが、コメント行なので無視すべき。
+    const content = [
+      '-- マイグレーションはトランザクション内なので SET LOCAL はこのトランザクション内に限定される。',
+      'INSERT INTO foo VALUES (1);',
+    ].join('\n')
+    expect(containsSetLocal(content)).toBe(false)
+  })
+
+  it('SET LOCAL を含まないコードは false', () => {
+    expect(containsSetLocal('SET statement_timeout = 0;\nSELECT 1;')).toBe(false)
+  })
+})
+
 describe('buildMigrationDescriptor', () => {
   it('正常なファイルの descriptor を組み立てる', () => {
     const content = '-- migration-transaction: optional\nSELECT 1;'
@@ -201,6 +224,54 @@ describe('buildMigrationDescriptor', () => {
     expect(descriptor.transaction).toBe('required')
     expect(descriptor.errors).toEqual([])
   })
+
+  // Issue #691（PlanetScale移行 Chunk 1）タスク3: SET LOCAL はトランザクションブロック内でのみ
+  // 有効というPostgreSQL仕様上、migration-transaction: forbidden（オートコミット実行）と
+  // SET LOCAL の組み合わせは「SET LOCALの効果が直後の1文に限定され後続文に適用されない」
+  // という事故につながる。00051_add_card_owner_stats.sqlがSET LOCALを使いつつ
+  // ヘッダー宣言を持たない（＝安全側のrequiredになる）現状は問題ないが、将来同種のファイルへ
+  // 誤ってforbiddenを宣言してしまった場合に検知できることを確認する。
+  it('forbidden かつ SET LOCAL を含むファイルは errors に検出される', () => {
+    const content = ['-- migration-transaction: forbidden', '', 'SET LOCAL statement_timeout = 0;'].join('\n')
+    const descriptor = buildMigrationDescriptor('00001_bad_forbidden_set_local.sql', content)
+    expect(descriptor.transaction).toBe('forbidden')
+    expect(
+      descriptor.errors.some((e: string) => e.includes('forbidden') && e.includes('SET LOCAL'))
+    ).toBe(true)
+  })
+
+  it('forbidden だが SET LOCAL を含まないファイルは（このガードでは）エラーにならない', () => {
+    const content = ['-- migration-transaction: forbidden', '', 'CREATE INDEX CONCURRENTLY a_idx ON a (id);'].join(
+      '\n'
+    )
+    const descriptor = buildMigrationDescriptor('00001_ok_forbidden.sql', content)
+    expect(descriptor.transaction).toBe('forbidden')
+    expect(descriptor.errors).toEqual([])
+  })
+
+  it('required（forbiddenでない）は SET LOCAL を含んでもエラーにならない（トランザクション内で正しく機能するため）', () => {
+    const content = 'CREATE TABLE a (id uuid);\nSET LOCAL statement_timeout = 0;\nINSERT INTO a VALUES (gen_random_uuid());'
+    const descriptor = buildMigrationDescriptor('00001_ok_required_set_local.sql', content)
+    expect(descriptor.transaction).toBe('required')
+    expect(descriptor.errors).toEqual([])
+  })
+
+  // 実ファイルに対する回帰テスト: 00051は SET LOCAL を含むが migration-transaction
+  // ヘッダーを宣言していないため DEFAULT_TRANSACTION_MODE（'required'）で解決され、
+  // 上記の forbidden+SET LOCAL ガードには一切引っかからない（db-migrate.js の
+  // sql.begin() によるトランザクション内実行で SET LOCAL が正しく機能する設計）。
+  // 将来誰かがこのファイルへ migration-transaction: forbidden を追加してしまった場合、
+  // このテストではなく上のガード自体がその変更を検知する（このテストは「現状は
+  // 問題ない」ことの回帰確認）。
+  it('00051_add_card_owner_stats.sql は SET LOCAL を含みつつ required で正しく解決される', () => {
+    const filePath = join(__dirname, '../../supabase/migrations/00051_add_card_owner_stats.sql')
+    const content = readFileSync(filePath, 'utf8')
+    expect(containsSetLocal(content)).toBe(true)
+    const descriptor = buildMigrationDescriptor('00051_add_card_owner_stats.sql', content)
+    expect(descriptor.transaction).toBe('required')
+    expect(descriptor.providers).toBeNull()
+    expect(descriptor.errors).toEqual([])
+  })
 })
 
 describe('fs を伴う関数 (loadMigrationFiles / readMigrationFile)', () => {
@@ -227,6 +298,94 @@ describe('fs を伴う関数 (loadMigrationFiles / readMigrationFile)', () => {
     dir = mkdtempSync(join(tmpdir(), 'db-migrate-core-test-'))
     writeFileSync(join(dir, '00001_first.sql'), 'SELECT 1;')
     expect(readMigrationFile(dir, '00001_first.sql')).toBe('SELECT 1;')
+  })
+
+  // Issue #691 Chunk 1 C-1対応: descriptor に sourceDir が付与され、
+  // 複数ディレクトリマージ後も readMigrationFile で正しいファイルを引けるようにする。
+  it('descriptorにsourceDir（自分がどのディレクトリから読まれたか）が付与される', () => {
+    dir = mkdtempSync(join(tmpdir(), 'db-migrate-core-test-'))
+    writeFileSync(join(dir, '00001_first.sql'), 'SELECT 1;')
+    const [descriptor] = loadMigrationFiles(dir)
+    expect(descriptor.sourceDir).toBe(dir)
+    expect(readMigrationFile(descriptor.sourceDir, descriptor.filename)).toBe('SELECT 1;')
+  })
+})
+
+describe('loadMigrationFilesFromDirs (Issue #691 Chunk 1 C-1対応)', () => {
+  let dirA: string
+  let dirB: string
+
+  afterEach(() => {
+    if (dirA) rmSync(dirA, { recursive: true, force: true })
+    if (dirB) rmSync(dirB, { recursive: true, force: true })
+  })
+
+  it('複数ディレクトリのmigrationをファイル名昇順で1本にマージする', () => {
+    dirA = mkdtempSync(join(tmpdir(), 'db-migrate-core-test-a-'))
+    dirB = mkdtempSync(join(tmpdir(), 'db-migrate-core-test-b-'))
+    // dirA: supabase/migrations/ 相当。dirB: db/planetscale/migrations/ 相当
+    // （ファイル名の日時が間に挟まるよう意図的に配置し、単純な「Aを全部→Bを全部」
+    // ではなく本当にファイル名でマージソートされることを確認する）。
+    writeFileSync(join(dirA, '00001_a.sql'), 'SELECT 1;')
+    writeFileSync(join(dirA, '00003_c.sql'), 'SELECT 3;')
+    writeFileSync(join(dirB, '00002_planetscale_only.sql'), 'SELECT 2;')
+
+    const descriptors = loadMigrationFilesFromDirs([dirA, dirB])
+    expect(descriptors.map((d: { filename: string }) => d.filename)).toEqual([
+      '00001_a.sql',
+      '00002_planetscale_only.sql',
+      '00003_c.sql',
+    ])
+  })
+
+  it('各descriptorのsourceDirが実際の出自ディレクトリを指す（readMigrationFileで正しいファイルを引ける）', () => {
+    dirA = mkdtempSync(join(tmpdir(), 'db-migrate-core-test-a-'))
+    dirB = mkdtempSync(join(tmpdir(), 'db-migrate-core-test-b-'))
+    writeFileSync(join(dirA, '00001_a.sql'), 'FROM_A')
+    writeFileSync(join(dirB, '00002_b.sql'), 'FROM_B')
+
+    const descriptors = loadMigrationFilesFromDirs([dirA, dirB])
+    for (const d of descriptors) {
+      const content = readMigrationFile(d.sourceDir, d.filename)
+      expect(content).toBe(d.filename === '00001_a.sql' ? 'FROM_A' : 'FROM_B')
+    }
+  })
+
+  it('単一ディレクトリだけを渡した場合はloadMigrationFilesと同じ結果になる', () => {
+    dirA = mkdtempSync(join(tmpdir(), 'db-migrate-core-test-a-'))
+    writeFileSync(join(dirA, '00001_a.sql'), 'SELECT 1;')
+    writeFileSync(join(dirA, '00002_b.sql'), 'SELECT 2;')
+
+    const single = loadMigrationFiles(dirA)
+    const merged = loadMigrationFilesFromDirs([dirA])
+    expect(merged.map((d: { filename: string }) => d.filename)).toEqual(
+      single.map((d: { filename: string }) => d.filename)
+    )
+  })
+
+  it('空配列を渡すと空配列を返す', () => {
+    expect(loadMigrationFilesFromDirs([])).toEqual([])
+  })
+
+  // C-1の実運用シナリオそのもの: 実際に db/planetscale/migrations/ に配置した
+  // 2ファイル（bootstrap→baseline）が、supabase/migrations/ の既存ファイル群と
+  // 正しくマージされ、ファイル名の日時順で正しい位置（末尾側）に来ることを確認する。
+  it('実ディレクトリ: supabase/migrations/ と db/planetscale/migrations/ をマージするとplanetscale専用2ファイルが末尾に来る', () => {
+    const supabaseDir = join(__dirname, '../../supabase/migrations')
+    const planetscaleDir = join(__dirname, '../../db/planetscale/migrations')
+    const descriptors = loadMigrationFilesFromDirs([supabaseDir, planetscaleDir])
+    const filenames = descriptors.map((d: { filename: string }) => d.filename)
+    // ファイル名昇順にソートされていることを確認（マージが正しく機能している証拠）
+    const sorted = [...filenames].sort()
+    expect(filenames).toEqual(sorted)
+    expect(filenames).toContain('20260719180000_planetscale_bootstrap.sql')
+    expect(filenames).toContain('20260719180100_planetscale_public_schema_baseline.sql')
+    // supabase/migrations/ 側には(移動済みのため)もう存在しないことも確認する
+    const bootstrapDescriptor = descriptors.find(
+      (d: { filename: string }) => d.filename === '20260719180000_planetscale_bootstrap.sql'
+    )
+    expect(bootstrapDescriptor).toBeDefined()
+    expect(bootstrapDescriptor?.sourceDir).toBe(planetscaleDir)
   })
 })
 

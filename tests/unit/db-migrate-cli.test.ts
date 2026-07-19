@@ -6,6 +6,9 @@ import {
   hasBlockingErrors,
   shouldBlockFreshApply,
   FRESH_APPLY_PENDING_THRESHOLD,
+  resolveMigrationsDirs,
+  SUPABASE_MIGRATIONS_DIR,
+  PLANETSCALE_MIGRATIONS_DIR,
 } from '../../scripts/db-migrate.js'
 
 /**
@@ -268,5 +271,33 @@ describe('shouldBlockFreshApply', () => {
     expect(
       shouldBlockFreshApply({ ...freshDbManyPending, pendingCount: FRESH_APPLY_PENDING_THRESHOLD - 1 })
     ).toBe(false)
+  })
+})
+
+/**
+ * Issue #691 Chunk 1 C-1対応（Fableレビュー）: PlanetScale専用migration
+ * （db/planetscale/migrations/）を supabase/migrations/ から分離した後、
+ * `--provider=planetscale` の時だけ両ディレクトリを対象にし、`--provider=supabase`
+ * （既定）では従来通り supabase/migrations/ のみを対象にすることを確認する。
+ * 「新ディレクトリを認識する/しない」の切り分けがこの純粋関数の責務であり、
+ * 実際にファイルを読み込む統合的な確認は tests/unit/db-migrate-core.test.ts の
+ * `loadMigrationFilesFromDirs` 実ディレクトリテストで別途行っている。
+ */
+describe('resolveMigrationsDirs', () => {
+  it('provider=planetscale では supabase/migrations/ と db/planetscale/migrations/ の両方を返す', () => {
+    expect(resolveMigrationsDirs('planetscale')).toEqual([
+      SUPABASE_MIGRATIONS_DIR,
+      PLANETSCALE_MIGRATIONS_DIR,
+    ])
+  })
+
+  it('provider=supabase では supabase/migrations/ のみを返す（db/planetscale/migrations/ を含まない）', () => {
+    const dirs = resolveMigrationsDirs('supabase')
+    expect(dirs).toEqual([SUPABASE_MIGRATIONS_DIR])
+    expect(dirs).not.toContain(PLANETSCALE_MIGRATIONS_DIR)
+  })
+
+  it('provider=postgres でも supabase/migrations/ のみを返す', () => {
+    expect(resolveMigrationsDirs('postgres')).toEqual([SUPABASE_MIGRATIONS_DIR])
   })
 })
