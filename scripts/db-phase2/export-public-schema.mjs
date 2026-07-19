@@ -22,6 +22,13 @@
  * buildManifest を対象にした専用テストで担保する（DATABASE_URL 由来の文字列が
  * manifest の値のどこにも現れないことをアサートする）。
  *
+ * pg_dump 起動時のパスワードの扱いについて（N-3、Fableレビュー2回目対応）:
+ * DATABASE_URL をそのまま pg_dump の argv（コマンドライン引数）として渡すと、同一マシン上の
+ * 他ユーザーが `ps aux` 等でプロセス一覧を見た際にパスワードが平文で見えてしまう。
+ * `splitDatabaseUrlPassword()` でパスワードを分離し、argvにはパスワード除去済みのURIのみを
+ * 渡し、パスワードは `PGPASSWORD` 環境変数（子プロセスの環境変数のみに載り、argvには
+ * 現れない）経由で渡す設計にしている。
+ *
  * 使い方:
  *   DATABASE_URL="postgres://..." node scripts/db-phase2/export-public-schema.mjs
  *   DATABASE_URL="postgres://..." node scripts/db-phase2/export-public-schema.mjs --out-dir=db/planetscale/.artifacts
@@ -38,6 +45,7 @@ import { writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
 import { createRequire } from 'module'
+import postgres from 'postgres'
 import { normalizeDump, OBJECT_CATEGORY } from './normalize-schema.mjs'
 
 // scripts/lib/db-migrate-core.js は CommonJS（scripts/db-migrate.js と共用のため）。
@@ -79,6 +87,7 @@ export function extractPostgresMajorVersion(rawText) {
  *   artifactSha256: string,
  *   restrictRemovedCount: number,
  *   excludedCount: number,
+ *   maxAppliedMigrationVersion?: string | null,
  * }} args
  */
 export function buildManifest({
@@ -88,6 +97,7 @@ export function buildManifest({
   artifactSha256,
   restrictRemovedCount,
   excludedCount,
+  maxAppliedMigrationVersion,
 }) {
   return {
     capturedAt,
@@ -100,12 +110,80 @@ export function buildManifest({
     artifactSha256,
     restrictMetacommandsRemoved: restrictRemovedCount,
     excludedObjectCount: excludedCount,
+    // Fableレビュー M-7（Issue #691本文の要求項目）: Supabase CLI自体が管理する
+    // migration history テーブル（supabase_migrations.schema_migrations）の最大version。
+    // `public`スキーマの外にあるためpg_dumpの対象には含まれず、fetchMaxAppliedMigrationVersion()
+    // が別途1クエリだけ発行して取得する。テーブルが存在しない環境（Supabase CLIを
+    // 使っていないPostgreSQL、ローカルDocker検証等）やクエリ失敗時は null になる
+    // （「migrationが0件」ではなく「この情報を持たない/取得できなかった」ことを表す）。
+    maxAppliedMigrationVersion: maxAppliedMigrationVersion ?? null,
+  }
+}
+
+/**
+ * supabase_migrations.schema_migrations（Supabase CLI自体が管理するmigration historyテーブル）
+ * の最大 version を取得する（Issue #691本文 / Fableレビュー M-7対応）。
+ *
+ * pg_dump は child_process 経由の別プロセスであり、JS側でコネクションを保持しないため、
+ * 「pg_dump実行のために確立済みの接続を使い回す」ことはできない。ただし新たな接続管理の
+ * 抽象化レイヤーは作らず、同じ接続文字列に対して postgres パッケージ（本リポジトリが
+ * scripts/db-migrate.js 等で既に使っているクライアント）で軽量に1回だけ接続・クエリ・
+ * 切断するだけに留める（YAGNI、過剰な抽象化をしない）。
+ *
+ * テーブルが存在しない場合（Supabase CLIを使っていない素のPostgreSQL。ローカルDocker検証等）
+ * は null を返す。これはエラーではなく、「この情報を持たないDBに接続している」という
+ * 正常な状態として扱う。
+ *
+ * @param {string} databaseUrl
+ * @returns {Promise<string | null>}
+ */
+export async function fetchMaxAppliedMigrationVersion(databaseUrl) {
+  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 15 })
+  try {
+    const [{ reg }] = await sql`select to_regclass('supabase_migrations.schema_migrations') as reg`
+    if (!reg) return null
+    const [{ maxVersion }] =
+      await sql`select max(version) as "maxVersion" from supabase_migrations.schema_migrations`
+    return maxVersion ?? null
+  } finally {
+    await sql.end({ timeout: 5 })
   }
 }
 
 /** pg_dump バイナリのパスを解決する。PG_DUMP_BIN 環境変数があれば優先する。 */
 function resolvePgDumpBinary(env) {
   return env.PG_DUMP_BIN && env.PG_DUMP_BIN.trim() ? env.PG_DUMP_BIN.trim() : 'pg_dump'
+}
+
+/**
+ * 接続文字列（DATABASE_URL）からパスワードを分離する純粋関数（N-3、Fableレビュー2回目対応）。
+ *
+ * 背景: 以前の実装は `spawnSync(pgDumpBin, [databaseUrl, ...])` のようにパスワード込みの
+ * 接続文字列をそのまま子プロセスの argv として渡していた。Node の `child_process.spawnSync`
+ * は起動時にコマンドライン全体をOSのプロセステーブルへ登録するため、同一マシン上の他ユーザーが
+ * `ps aux` 等でプロセス一覧を見ると、そのargvにパスワードが平文でそのまま表示されてしまう
+ * （環境変数は通常 `ps` のデフォルト出力に含まれず、`/proc/<pid>/environ`
+ * を読める権限を要求するOSが多いのに対し、argvは`ps`のデフォルト出力で誰でも見えるため、
+ * 露出の敷居がargvの方が著しく低い）。
+ *
+ * 対処方針: libpq（pg_dumpが使う接続ライブラリ）は接続URIにパスワードが含まれない場合、
+ * `PGPASSWORD` 環境変数からパスワードを解決する仕様を持つ。これを利用し、argvには
+ * パスワードを除去した「サニタイズ済みURI」のみを渡し、パスワードは子プロセスの環境変数
+ * （`spawnSync` の `env` オプション経由。argvには一切現れない）として渡す設計に変更した。
+ *
+ * `url.password` はWHATWG URLの仕様上パーセントエンコード済みの形で保持されるため、
+ * `PGPASSWORD`（パーセントエンコードされていない生の文字列を期待する）に渡す前に
+ * `decodeURIComponent` でデコードする。
+ *
+ * @param {string} databaseUrl
+ * @returns {{ sanitizedUrl: string, password: string | null }}
+ * @throws {Error} databaseUrl がURIとしてパースできない場合
+ */
+export function splitDatabaseUrlPassword(databaseUrl) {
+  const url = new URL(databaseUrl)
+  const password = url.password ? decodeURIComponent(url.password) : null
+  url.password = ''
+  return { sanitizedUrl: url.toString(), password }
 }
 
 function parseCliArgs(argv) {
@@ -126,7 +204,8 @@ const HELP_TEXT = `
 説明:
   pg_dump --schema=public --schema-only --no-owner --no-privileges をラップし、
   生dump（public-schema.raw.sql）と非機密metadataのmanifest.json（capturedAt・
-  PostgreSQLメジャーバージョン・オブジェクト種別ごとの件数・SHA-256）を出力する。
+  PostgreSQLメジャーバージョン・オブジェクト種別ごとの件数・SHA-256・
+  supabase_migrations.schema_migrationsの最大version）を出力する。
   host名・接続文字列・パスワードはmanifest.jsonに一切含めない。
 
 オプション:
@@ -138,7 +217,7 @@ const HELP_TEXT = `
   PG_DUMP_BIN    pg_dump バイナリのパス（既定: "pg_dump"、PATH経由で解決）
 `.trim()
 
-function main() {
+async function main() {
   const parsed = parseCliArgs(process.argv)
   if (parsed.help) {
     console.log(HELP_TEXT)
@@ -165,14 +244,30 @@ function main() {
     `[export-public-schema] pg_dump 実行中... database=${core.redactConnectionString(databaseUrl)}`
   )
 
+  // N-3（Fableレビュー2回目）対応: パスワード込みの接続文字列をそのままargvへ渡さない。
+  // sanitizedUrl（パスワード除去済みURI）のみをargvへ、パスワードはPGPASSWORD環境変数
+  // （子プロセスの環境変数のみに載り、`ps`等のプロセス一覧には現れない）経由で渡す。
+  // 詳細は splitDatabaseUrlPassword のJSDoc参照。
+  let sanitizedUrl, dumpPassword
+  try {
+    ;({ sanitizedUrl, password: dumpPassword } = splitDatabaseUrlPassword(databaseUrl))
+  } catch (error) {
+    console.error(
+      `[export-public-schema] DATABASE_URL の形式が不正です（URIとしてパースできません）: ` +
+        core.redactSecretsFromText(String(error?.message ?? error), databaseUrl)
+    )
+    return 1
+  }
+  const pgDumpEnv = dumpPassword ? { ...process.env, PGPASSWORD: dumpPassword } : process.env
+
   // --schema=public --schema-only --no-owner --no-privileges:
   // Issue #691 本文の明示要件。auth/realtime/storage等のSupabase管理スキーマを
   // 巻き込まず、owner/ACLも持ち込まない（後段のnormalize-schema.mjsはこれらが
   // 万一混入した場合の防御的検知のみを担う設計であり、一次防御はここのフラグ指定）。
   const result = spawnSync(
     pgDumpBin,
-    [databaseUrl, '--schema=public', '--schema-only', '--no-owner', '--no-privileges'],
-    { encoding: 'utf8', maxBuffer: 1024 * 1024 * 256 }
+    [sanitizedUrl, '--schema=public', '--schema-only', '--no-owner', '--no-privileges'],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 * 256, env: pgDumpEnv }
   )
 
   if (result.error) {
@@ -220,6 +315,22 @@ function main() {
   const artifactSha256 = core.computeChecksum(rawDump)
   const postgresMajorVersion = extractPostgresMajorVersion(rawDump)
 
+  // Fableレビュー M-7: supabase_migrations.schema_migrations の最大versionを取得する。
+  // pg_dumpの対象外（publicスキーマの外）のため別クエリが必要。この情報はmanifestの
+  // 主目的（スキーマ定義のdrift検知）にとって副次的な項目のため、取得に失敗しても
+  // pg_dumpの成果（raw dump・主要なmanifestフィールド）自体は失わない設計にする
+  // （取得失敗時はnullを記録し、警告を出すのみでexport全体は継続する）。
+  let maxAppliedMigrationVersion = null
+  try {
+    maxAppliedMigrationVersion = await fetchMaxAppliedMigrationVersion(databaseUrl)
+  } catch (error) {
+    console.warn(
+      '[export-public-schema] supabase_migrations.schema_migrations の最大versionを' +
+        '取得できませんでした（manifest.jsonにはnullを記録します）: ' +
+        core.redactSecretsFromText(String(error?.message ?? error), databaseUrl)
+    )
+  }
+
   const manifest = buildManifest({
     capturedAt: new Date().toISOString(),
     postgresMajorVersion,
@@ -229,6 +340,7 @@ function main() {
     // マジック文字列 'exclude' 直書きを避け、normalize-schema.mjs が公開する定数を使う
     // （normalize-schema.mjs 側でカテゴリ名の内部表現が変わった場合にここも追随できるように）。
     excludedCount: normalized.countsByCategory[OBJECT_CATEGORY.EXCLUDE],
+    maxAppliedMigrationVersion,
   })
 
   const manifestPath = join(outDir, MANIFEST_FILENAME)
@@ -237,6 +349,9 @@ function main() {
   console.log(`[export-public-schema] raw dump: ${rawDumpPath} (${rawDump.length} bytes)`)
   console.log(`[export-public-schema] manifest: ${manifestPath}`)
   console.log(`[export-public-schema] PostgreSQL major version: ${postgresMajorVersion ?? '(不明)'}`)
+  console.log(
+    `[export-public-schema] supabase_migrations.schema_migrations 最大version: ${maxAppliedMigrationVersion ?? '(不明/未取得)'}`
+  )
   console.log(`[export-public-schema] artifact sha256: ${artifactSha256}`)
   console.log('[export-public-schema] オブジェクト種別ごとの件数:')
   for (const [type, count] of Object.entries(normalized.countsByType).sort()) {
@@ -253,5 +368,7 @@ function main() {
 }
 
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.exitCode = main()
+  main().then((code) => {
+    process.exitCode = code
+  })
 }

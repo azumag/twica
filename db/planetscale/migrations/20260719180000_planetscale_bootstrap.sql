@@ -89,23 +89,24 @@
 -- 1. 拡張機能
 -- ---------------------------------------------------------------------------
 
--- uuid-ossp: db/planetscale/public-schema.sql 中の各テーブルDEFAULT句には
--- `public.uuid_generate_v4()` とスキーマ修飾された形で現れる（pg_dumpがdump元DBでの
--- 実際のインストール先スキーマを解決して埋め込むため）。そのため本ファイルでも
--- `public` スキーマへ確実にインストールする必要がある。
--- WITH SCHEMA を省略すると「現在の search_path の先頭スキーマ」に依存し、
--- 接続ロール/データベース側で search_path が変更されている環境（PlanetScale側の
--- デフォルト設定が Supabase と異なる可能性がある）では public 以外へインストールされ、
--- baseline側の `public.uuid_generate_v4()` 修飾呼び出しが
--- `function public.uuid_generate_v4() does not exist` で失敗しうる。
--- 実機確認: Docker上で search_path を `extensions, public` に設定した状態で
--- `CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`（WITH SCHEMA無し）を実行すると
--- 拡張機能が `extensions` スキーマへインストールされ、直後の
--- `SELECT public.uuid_generate_v4();` が実際に上記エラーで失敗することを確認した。
--- `WITH SCHEMA public` を明示することで search_path に依存せず常に public へ
--- インストールされ、同条件で成功することも確認済み（Fableレビュー M-4対応）。
--- pgcrypto側が `extensions` を明示しているのと非対称にならないよう、こちらも明示する。
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
+-- extensions スキーマ: Supabaseプロジェクトの標準構成では、pg_dumpの対象外である
+-- `public`ではなく専用の`extensions`スキーマへuuid-ossp/pgcryptoを設置する
+-- （Supabase自体の既定の運用。issue #691 Chunk 2で実Supabase本番に接続して実測確認した）。
+CREATE SCHEMA IF NOT EXISTS extensions;
+
+-- uuid-ossp: 当初（Chunk 1、ローカルDocker検証時点）は
+-- 「db/planetscale/public-schema.sql中のDEFAULT句が`public.uuid_generate_v4()`と
+-- 修飾されている」という誤った前提で`WITH SCHEMA public`としていた。
+-- しかしissue #691 Chunk 2で実Supabase本番へ接続しpg_dumpした実データでは、
+-- `extname='uuid-ossp'`のextnamespaceが`extensions`であり、DEFAULT句も
+-- `extensions.uuid_generate_v4()`と修飾されていることを実測確認した
+-- （Supabaseプロジェクトの標準構成でuuid-ossp/pgcryptoが`extensions`に
+-- インストールされるため。ローカルDocker検証はSupabase固有のこの規約を
+-- 再現していなかったための誤り）。`public`へインストールした状態で
+-- 実baseline適用を試みると`function extensions.uuid_generate_v4() does not
+-- exist`で失敗することを実機（PlanetScale preview）で確認済み。
+-- pgcrypto側と同じ`extensions`へ統一する。
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
 
 -- pgcrypto: 00073_add_analysis_dashboard_rpcs.sql の関数本体が `extensions.digest(...)` と
 -- スキーマ修飾で呼び出している（#716でSupabase実運用の設置場所=`extensions`スキーマに
@@ -113,7 +114,6 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
 -- 必要がある。Docker実機検証で「public に無修飾でインストールすると
 -- `schema "extensions" does not exist` で00073相当の関数作成が失敗する」ことを実際に確認済み
 -- （docs/planetscale-schema-baseline.md 参照）。
-CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
 
 -- ---------------------------------------------------------------------------

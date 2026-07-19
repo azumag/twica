@@ -1,14 +1,19 @@
-# PlanetScale Postgres スキーマ baseline 生成ツールチェーン（Issue #691 Chunk 1）
+# PlanetScale Postgres スキーマ baseline 生成ツールチェーン（Issue #691 Chunk 1 / Chunk 2）
 
 親issue #664 / #568 Phase 2、子issue #665 の後続。`docs/planetscale-migration-audit.md`
 （#665 migration移植監査）の結果を踏まえ、Supabaseの `public` スキーマを手作業のSQL Editor
 貼り付けではなく再現可能なツールチェーンでPlanetScale向けbaselineへ変換する仕組みを実装した。
 
-**本ドキュメントのステータス: Chunk 1（実Supabase認証情報を必要としない範囲）完了時点の記録。**
-実Supabase DBへの接続はChunk 2で後日実施する。本ドキュメントの `db/planetscale/public-schema.sql`
-は**ローカルDocker上のPostgreSQL 17（`postgres:17`イメージ、`supabase/migrations/` 71ファイル適用済み）
-から採取したもの**であり、実Supabase prod/previewのデータではない。Chunk 2で実Supabaseに接続した
-時点で本ファイルは再生成が必要になる（本ドキュメント末尾「Chunk 2 で行うこと」参照）。
+**本ドキュメントのステータス: Chunk 1（ツールチェーン実装・ローカルDocker検証）に続き、
+Chunk 2（実Supabase本番への接続・実データでの再生成）の一部を実施した時点の記録。**
+本ドキュメントの `db/planetscale/public-schema.sql` は、Chunk 1時点では**ローカルDocker上の
+PostgreSQL 17（`postgres:17`イメージ、`supabase/migrations/` 71ファイル適用済み）から採取した
+もの**だったが、Chunk 2で実Supabase本番（`export-public-schema.mjs`経由のDirect connection）
+から再採取した実データに**置き換え済み**である（テーブル23・関数27・トリガー9等、既知の#625
+ドリフト＝battles/battle_stats欠落を含む。詳細は本ドキュメント「Chunk 2 での bootstrap.sql /
+public-schema.sql 直接更新について」節参照）。ただしChunk 2の全タスクが完了したわけではなく、
+実PlanetScale prod/previewへの適用・prod/preview間のartifact比較等、複数の項目が未実施のまま
+残っている（本ドキュメント末尾「Chunk 2 で行うこと」の各項目に実施状況を明記した）。
 
 ## 1. 全体ワークフロー
 
@@ -240,17 +245,15 @@ Dockerイメージのpg_dump 17.10で実際に出力されることを確認し�
 `CREATE SCHEMA IF NOT EXISTS extensions;` の上で
 `CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;`とすることでこれを回避する。
 `uuid-ossp`側もbaseline（`db/planetscale/public-schema.sql`）内のDEFAULT句に
-`public.uuid_generate_v4()`とスキーマ修飾された形で現れる（pg_dumpがdump元DBでの実際の
-インストール先を解決して埋め込むため）。**当初 `WITH SCHEMA` を省略していたが
-（＝現在のsearch_pathの先頭スキーマへ依存する）、Fableレビュー(M-4)で
-「PlanetScale側でsearch_pathがSupabaseと異なる場合、publicに入らず修飾呼び出しが失敗しうる」
-との指摘を受け、実機再現・修正確認した**: Docker上でsearch_pathを`extensions, public`に
-設定した状態で`WITH SCHEMA`無しの`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`を実行すると
-拡張機能が`extensions`スキーマへインストールされ、`SELECT public.uuid_generate_v4();`が
-`function public.uuid_generate_v4() does not exist`で実際に失敗することを確認した。
-`db/planetscale/bootstrap.sql`は`CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;`
-と明示する形に修正し、同条件で成功することも確認済み。pgcryptoと同様にスキーマを明示する
-非対称にならない扱いとした（詳細は`db/planetscale/bootstrap.sql`内のコメント参照）。
+`extensions.uuid_generate_v4()`とスキーマ修飾された形で現れる（pg_dumpがdump元DBでの実際の
+インストール先を解決して埋め込むため）。**Chunk 1（ローカルDocker検証）時点では
+`WITH SCHEMA public`が正しいという誤った前提でbootstrap.sqlを書いていたが、
+Chunk 2で実Supabase本番へ接続しpg_dumpした結果、実際には`uuid-ossp`も`pgcrypto`と同じ
+`extensions`スキーマにインストールされている（Supabaseプロジェクトの標準構成）ことが
+判明した**。`db/planetscale/bootstrap.sql`は現在
+`CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;`
+としており、pgcryptoと同じ`extensions`スキーマへ統一している（詳細な経緯・実機確認結果は
+`db/planetscale/bootstrap.sql`内のコメントおよび本ドキュメントのN-5節参照）。
 
 ### 3.4 TOCブロックのオブジェクト種別（実測、`postgres:17`・pg_dump 17.10）
 
@@ -416,48 +419,117 @@ db-migrate.js経由でSQLを実行し検証したかのように読めてしま�
 
 ## Chunk 2 で行うこと（本チャンクのスコープ外）
 
-- 実Supabase prod/preview DBの Direct connection を使い、`export-public-schema.mjs`で
-  実データのpublicスキーマを採取し、`db/planetscale/public-schema.sql`を実データベースで
-  再生成する（本ドキュメント時点のファイルはDocker検証用の暫定版）。
-- prod/previewそれぞれのmanifest.jsonを比較し、意図しない差分を一覧化する
-  （Issue #691元本文「本番とpreviewを別artifactとして比較」）。
-- 実PlanetScale prod/preview DBへ`bootstrap.sql`→`public-schema.sql`→`grants.sql`を適用し、
-  実機で動作確認する（Docker検証だけでは完了扱いにしない、Issue #691元本文の受け入れ条件）。
-- **拡張機能の設置スキーマの実測確認・是正（N-5、Fableレビュー2回目）**: 実PlanetScale
-  prod/preview（`bluemoon-works`/`twica`）には、本チャンクでの`bootstrap.sql`修正（3.3節、
-  `WITH SCHEMA public`の明示追加）**より前**の版（`WITH SCHEMA`無し）の手動SQLが
-  2026-07-19にWeb Console経由で既に適用されている。今回のbootstrap.sql修正は今後の新規適用
-  （まっさらなDBへの適用）には効くが、既に適用済みの実環境では`uuid-ossp`拡張が
-  `search_path`次第で`public`以外のスキーマにインストールされてしまっている可能性がある。
-  Chunk 2で実PlanetScale DBに接続した際、baseline適用前に必ず次のクエリで実測確認すること:
+各項目の実施状況（本ドキュメント更新時点、実PlanetScale/Supabaseへの実測確認込み）を明記する。
+
+- **[完了（Supabase本番のみ）]** 実Supabase prod/preview DBの Direct connection を使い、
+  `export-public-schema.mjs`で実データのpublicスキーマを採取し、
+  `db/planetscale/public-schema.sql`を実データベースで再生成する。Supabase**本番**からの
+  採取・再生成はChunk 2で実施済み（`db/planetscale/public-schema.sql`は既に実データ由来。
+  「Chunk 2 での bootstrap.sql / public-schema.sql 直接更新について」節参照）。Supabase
+  **preview**（TwiCa-DEV、`xggxituhkgfxzedtulzb`）からの採取は本セッションでは行っていない
+  （次項の比較タスクが未実施である直接の理由）。
+- **[未実施]** prod/previewそれぞれのmanifest.jsonを比較し、意図しない差分を一覧化する
+  （Issue #691元本文「本番とpreviewを別artifactとして比較」、必須タスク）。前項の通り本セッション
+  ではSupabase本番からのみ採取しており、preview側のmanifest.jsonが存在しないため比較そのものを
+  実施できていない。Chunk 2の残作業として引き続き追跡する。
+- **[未実施]** 実PlanetScale prod/preview DBへ`bootstrap.sql`→`public-schema.sql`→`grants.sql`を
+  適用し、実機で動作確認する（Docker検証だけでは完了扱いにしない、Issue #691元本文の受け入れ条件）。
+  本ドキュメント更新時点で実PlanetScale（`bluemoon-works`/`twica`データベース、`main`ブランチの
+  `prod`/`preview`論理DB、`postgres_database_name`で切替）に対して実測確認したところ、両論理DB
+  とも`public`スキーマのテーブル数は0件（baseline未適用）。previewは`uuid-ossp`/`pgcrypto`拡張
+  のみ`extensions`スキーマに設置済み（C-1、下記是正手順で個別に手動対応した状態であり
+  `bootstrap.sql`の一括適用はまだ行っていない）。prodは拡張機能も含め未インストール
+  （`bootstrap.sql`すら未適用）。
+- **[一部実施]** **拡張機能の設置スキーマの実測確認・是正（N-5、Fableレビュー2回目 → Chunk 2で
+  内容更新）**: 本節はFableレビュー2回目の時点では「`uuid-ossp`は`public`スキーマに設置するのが
+  正」という前提（3.3節、当時の`bootstrap.sql`が`WITH SCHEMA public`だった）で書かれていたが、
+  Chunk 2で実Supabase本番に接続した結果、`uuid-ossp`/`pgcrypto`とも実際には`extensions`スキーマ
+  に設置されていることが判明し、`bootstrap.sql`は`WITH SCHEMA extensions`に修正済みである
+  （「Chunk 2 での bootstrap.sql / public-schema.sql 直接更新について」節参照）。したがって
+  本節の是正方向も**`extensions`が正・是正コマンドは`SET SCHEMA extensions`**が正しい
+  （旧版が記載していた`SET SCHEMA public`は現在の設計と逆方向であり誤りだった。本節はこの
+  誤りを修正したものである）。
+
+  実PlanetScale prod/preview（`bluemoon-works`/`twica`データベースの`main`ブランチ、
+  `prod`/`preview`論理DB）に接続し、baseline適用前に必ず次のクエリで実測確認すること:
   ```sql
   SELECT extname, extnamespace::regnamespace
   FROM pg_extension
   WHERE extname IN ('uuid-ossp', 'pgcrypto');
   ```
-  `uuid-ossp`の`extnamespace`が`public`以外だった場合（`pgcrypto`は`extensions`が正のため
-  それ以外であれば同様に是正）、baseline側の`public.uuid_generate_v4()`修飾呼び出しが
-  `function public.uuid_generate_v4() does not exist`で失敗するため、baseline適用前に
-  以下で是正する:
+  `uuid-ossp`/`pgcrypto`の`extnamespace`が`extensions`以外だった場合、baseline側の
+  `extensions.uuid_generate_v4()`/`extensions.digest()`等の修飾呼び出しが失敗するため、
+  baseline適用前に以下で是正する:
   ```sql
-  ALTER EXTENSION "uuid-ossp" SET SCHEMA public;
+  ALTER EXTENSION "uuid-ossp" SET SCHEMA extensions;
   ```
-- `src/lib/db/schema.ts`・実Supabase・PlanetScale baselineの3者比較によるschema drift検証
-  （Issue #691元本文タスク5、既知ドリフト#625含む）。
-- **manifest.json に migration history の最大version（Fableレビュー M-7）を追加する**:
-  Issue #691本文が要求する項目だが、`export-public-schema.mjs`は`pg_dump`しか実行しないため
-  取得経路が無い（`twica_meta.schema_migrations`はDB接続が別途必要）。Chunk 2で実Supabase/
-  PlanetScaleへのDB接続経路を実装する際、`export-public-schema.mjs`（またはその呼び出し元）に
-  `select max(version) from twica_meta.schema_migrations`相当のクエリを追加し、
-  `buildManifest()`の引数・出力に`maxAppliedMigrationVersion`のようなフィールドを追加すること。
-  この対応が漏れたまま受け入れ完了としないこと。
-- **grants.sqlの`ALTER DEFAULT PRIVILEGES`にFOR ROLEを明示する（Fableレビュー M-3の後続）**:
-  `db/planetscale/grants.sql`のコメントに記載の通り、Chunk 1時点では実PlanetScaleでmigrationを
-  適用する管理ロール名が未確定のため`FOR ROLE`句を意図的に省略している。Chunk 2でPlanetScale
-  接続・実際の管理ロール運用が確定した時点で、`FOR ROLE <確定ロール名>`を明示すること
+  **注意（実機で遭遇した失敗ケース）**: `ALTER EXTENSION ... SET SCHEMA`は実行ロールが当該
+  拡張機能のオブジェクト所有者（owner）でない場合、権限エラーで失敗することがある。実際に
+  preview環境で`ALTER EXTENSION "uuid-ossp" SET SCHEMA extensions;`を試みたところ所有者不一致
+  で失敗したため、代わりに`DROP EXTENSION "uuid-ossp";` →
+  `CREATE EXTENSION "uuid-ossp" WITH SCHEMA extensions;`（実行ロール自身が新規オブジェクトの
+  所有者になる）で是正した。`DROP EXTENSION`は当該拡張機能が提供する関数・型等に依存する
+  オブジェクト（baseline適用前の空DBであれば通常存在しない）が無いことを確認してから実行すること。
+
+  **実施状況（本ドキュメント更新時点、実測確認済み）**: previewの`uuid-ossp`/`pgcrypto`は上記の
+  手順（DROP→CREATE WITH SCHEMA extensions）で是正済みであることを実測確認した
+  （`extnamespace`がいずれも`extensions`）。prodは本ドキュメント更新時点で`uuid-ossp`/
+  `pgcrypto`とも未インストール（`bootstrap.sql`自体が未適用）であることを実測確認した
+  （＝「誤ったスキーマへの設置」ではなく「そもそも未適用」の状態であり、今後
+  `bootstrap.sql`（`WITH SCHEMA extensions`修正済み）を新規適用すれば最初から正しいスキーマに
+  インストールされるため、本節の是正手順自体は不要になる見込み）。
+- **[未実施]** `src/lib/db/schema.ts`・実Supabase・PlanetScale baselineの3者比較によるschema
+  drift検証（Issue #691元本文タスク5、既知ドリフト#625含む）。Chunk 2のデータ採取時に#625
+  ドリフト（battles/battle_stats欠落）の存在は確認できたが、これは実データ採取の副産物として
+  気付いたものであり、3者比較を体系的なタスクとして実施したわけではない。
+- **[一部実施（コードのみ）]** manifest.json に migration history の最大version（Fableレビュー
+  M-7）を追加する: Issue #691本文が要求する項目。当初の本節の記述は対象テーブルを
+  `twica_meta.schema_migrations`（`scripts/db-migrate.js`がPlanetScale向けに独自運用する
+  履歴テーブル）としていたが、これは誤りだった。実際に必要なのは
+  `supabase_migrations.schema_migrations`（Supabase CLI自体が管理するmigration historyテーブル。
+  `supabase db push`等が使う）であり、実Supabase本番へ接続して
+  `SELECT max(version) FROM supabase_migrations.schema_migrations;`を実測して初めて判明した
+  （両テーブルは名前が似ているが別物なので混同注意）。`export-public-schema.mjs`に
+  `fetchMaxAppliedMigrationVersion()`（`postgres`パッケージで軽量に1クエリだけ発行、pg_dumpとは
+  別接続。テーブルが存在しない/権限が無い環境ではnullを返す）を追加し、`buildManifest()`の
+  出力に`maxAppliedMigrationVersion`フィールドとして含めるようにした。単体テストは
+  `tests/unit/db-phase2/export-public-schema.test.ts`に`buildManifest`のfixtureベースで追加
+  （`fetchMaxAppliedMigrationVersion`自体はDB接続を要するCLI統合部分のため、main()と同様に
+  単体テスト対象外とし、実機検証で確認する方針を踏襲）。
+
+  **未達成の実態（訂正、必読、M-2）**: 上記はコードの実装状況の記述であり、「実データで
+  `maxAppliedMigrationVersion`が実際に取得できた」ことを意味しない。Chunk 2で実Supabase本番へ
+  `export-public-schema.mjs`を実行した際に使用した接続ロールは`twica_app`（アプリ実行用の
+  制限付きロール）であり、`supabase_migrations`スキーマへの権限（`USAGE`/`SELECT`）を
+  持っていなかった。そのため実行結果は`fetchMaxAppliedMigrationVersion()`が権限エラーを
+  捕捉して`null`を返すフォールバック動作のみが確認された状態であり、実際の
+  `maxAppliedMigrationVersion`の値は**一度も取得できていない**。「コードが安全にフォールバック
+  する設計になっている」ことと「実データで値が取得できている」ことは別であり、後者は未達成の
+  まま残っている。
+
+  **今後の選択肢（オーナー判断が必要、本セッションではどちらも未実施）**: Issue #691本文は
+  「Supabaseの管理者/direct connectionを使用してschema-only dumpを取得する」と明記しており、
+  本来は管理者ロールでの取得が想定されている可能性が高い。ただし今回のセッションでは
+  オーナーがSupabaseの`postgres`ロール（管理者ロール）のパスワードを紛失しており
+  （シークレットに保存されているのみで本人も把握していない）、これを取得するには本番の
+  `postgres`パスワードをリセットする必要がある。パスワードリセットは他の接続経路にも影響し
+  得る大きな判断を要する操作のため、今回は意図的に避け、`twica_app`のみを使う方針とした。
+  今後この項目を完了させるには、以下いずれかをオーナーが選択して実施する必要がある:
+  1. `twica_app`ロールに`supabase_migrations`スキーマへの読み取り専用GRANTを追加する
+     （必要最小限の権限に絞る場合の例:
+     `GRANT USAGE ON SCHEMA supabase_migrations TO twica_app;`
+     `GRANT SELECT ON supabase_migrations.schema_migrations TO twica_app;`）。
+  2. Supabase `postgres`ロールのパスワードをリセットし、管理者接続を別途用意する。
+
+  いずれも本ドキュメント更新時点では**未実施**である。
+- **[未実施]** **grants.sqlの`ALTER DEFAULT PRIVILEGES`にFOR ROLEを明示する（Fableレビュー M-3の
+  後続）**: `db/planetscale/grants.sql`のコメントに記載の通り、Chunk 1時点では実PlanetScaleで
+  migrationを適用する管理ロール名が未確定のため`FOR ROLE`句を意図的に省略している。Chunk 2で
+  PlanetScale接続・実際の管理ロール運用が確定した時点で、`FOR ROLE <確定ロール名>`を明示すること
   （`twica_app`はCREATEROLE権限を持たずbootstrap.sql自体を適用できないロールのため対象外。
-  詳細はgrants.sql内コメント参照）。
-- **baseline再生成時のchecksum衝突運用手順（Fableレビュー M-8 → N-1で更新）**: `db-migrate.js`の
+  詳細はgrants.sql内コメント参照）。本ドキュメント更新時点で実PlanetScaleへの読み取り接続は
+  行ったが、migration適用の管理ロール運用自体はまだ確定していないため、本項目は引き続き未実施。
+- **[手順定義のみ・本チャンクでは未使用]** **baseline再生成時のchecksum衝突運用手順（Fableレビュー M-8 → N-1で更新）**: `db-migrate.js`の
   `twica_meta.schema_migrations`はversionごとにchecksumを1つだけ記録し、一度
   `apply`/`--bootstrap`で登録されたversionのchecksumは変更できない（ファイル内容を書き換えると
   checksum不一致として即エラー終了する。`scripts/lib/db-migrate-core.js`の
@@ -483,6 +555,14 @@ db-migrate.js経由でSQLを実行し検証したかのように読めてしま�
      `20260719180000`/`20260719180100`エントリは変更しない（変更すると、まさに上記2で
      禁止している「登録済みファイルへの変更」を検知できなくなってしまう）。**
 
+  **本チャンクでの利用状況**: Chunk 2で発生した2件の修正（uuid-osspスキーマ誤り・
+  public-schema.sqlの実データ置き換え）は、上記1〜5の手順（新バージョンファイルを追加する
+  通常運用）ではなく、後述「Chunk 2 での bootstrap.sql / public-schema.sql 直接更新について」
+  節に記載の**例外的な直接書き換え**で対応した（`--bootstrap`登録がまだ一度も行われていない
+  ことを実測確認できたため）。したがって本節の手順1〜5自体は、本チャンクではまだ一度も
+  使われていない。将来2回目以降の差分追加（実PlanetScale環境への登録後の再修正）が必要に
+  なった時点で、初めて本来の手順として使用される想定である。
+
   **N-1（Fableレビュー2回目・設計変更の経緯）**: 当初の`migration-sync.test.ts`は
   「正本（`db/planetscale/{bootstrap,public-schema}.sql`）とmigrationコピーのバイト一致」を
   検証していたが、これは上記手順4（正本は自由に再生成してよい）と正面から矛盾していた:
@@ -496,3 +576,80 @@ db-migrate.js経由でSQLを実行し検証したかのように読めてしま�
   理由はYAGNI: 目的は「意図しない書き換えの検知」であり、それにはハッシュの比較で十分で、
   実際に何が変わったかを知りたい場合は`git diff`でmigrationファイル自体の差分を見れば足りる
   （別ファイルでの全文フリーズはこの目的に対して過剰な実装と判断した）。
+
+### Chunk 2 での bootstrap.sql / public-schema.sql 直接更新について（凍結ルールの例外運用）
+
+Chunk 2（実Supabase本番への接続、本節）の作業中に2つの問題が見つかり、いずれも
+`db/planetscale/bootstrap.sql` と `db/planetscale/public-schema.sql`（正本2ファイル）を
+修正した:
+
+1. **`uuid-ossp` の設置スキーマの誤り**: Chunk 1時点のローカルDocker検証は
+   Supabase固有の「`uuid-ossp`/`pgcrypto`を`extensions`スキーマへ設置する」という
+   運用規約を再現していなかった。そのため`bootstrap.sql`は当初`uuid-ossp`を
+   `WITH SCHEMA public`としていたが、実Supabase本番へ接続し
+   `SELECT extname, extnamespace::regnamespace FROM pg_extension WHERE extname IN
+   ('uuid-ossp','pgcrypto')`を実行したところ、両方とも`extensions`スキーマに
+   インストールされていることを実測確認した。`WITH SCHEMA extensions`に修正した
+   （`CREATE SCHEMA IF NOT EXISTS extensions;`をpgcryptoセクションからuuid-osspセクションの
+   前に移動）。
+2. **`public-schema.sql`がDocker検証用の暫定データのままだった**: 本チャンクの目的どおり、
+   実Supabase本番から`export-public-schema.mjs`→`normalize-schema.mjs`で採取した実データ
+   （テーブル23・関数27・トリガー9等、既知の#625ドリフト＝battles/battle_stats欠落を含む）に
+   置き換えた。
+
+この2件の修正を、通常の運用ルール（本節冒頭「baseline再生成時のchecksum衝突運用手順」の
+手順1〜5、正本は自由に再生成してよいが`db/planetscale/migrations/`配下の凍結済みコピーは
+新しいタイムスタンプの別ファイルとして追加し、既存ファイルは書き換えない）ではなく、
+`db/planetscale/migrations/20260719180000_planetscale_bootstrap.sql` /
+`20260719180100_planetscale_public_schema_baseline.sql` を**直接書き換える**形で反映した。
+これは凍結ルールの原則からの逸脱に見えるため、なぜここに限り安全と判断したかを明記する:
+
+- 凍結ルール（本節・`tests/unit/db-phase2/migration-sync.test.ts`冒頭コメント）が守ろうと
+  しているのは「`db-migrate.js apply --bootstrap`で実PlanetScale環境（prod/preview）の
+  `twica_meta.schema_migrations`にchecksumとして登録済みのmigrationファイルを書き換えると、
+  以後のapply/verifyがchecksum不一致で即エラー終了する」という実害である。
+- Chunk 2でこの2件を修正した時点で、`db/planetscale/migrations/`配下のこの2ファイルは
+  実PlanetScale環境に対して`--bootstrap`で**一度も登録されていなかった**（このセッションで
+  実施したのはpsqlによるローカルDocker上の空DBへの直接apply検証のみ。実PlanetScale
+  prod/previewへの適用はFableレビュー後に別途実施する方針で、本タスクのスコープ外）。
+  つまり「登録済みchecksumとの不一致」が発生する余地が無く、凍結ルールが保護しようとしている
+  実害そのものが存在しない状態だった。
+- そのため今回に限り、新しいバージョンのmigrationファイルを追加するのではなく、
+  該当2ファイルを直接書き換え、`tests/unit/db-phase2/migration-sync.test.ts`の
+  `FROZEN_BODY_SHA256`エントリも新しい内容のsha256ハッシュへ更新した。
+
+**検証方法（N-1、Fableレビュー指摘を受けて追記）**: 上記の「一度も登録されていなかった」という
+前提は推測ではなく、実PlanetScale prod/preview双方（`bluemoon-works`/`twica`データベース、
+`main`ブランチの`prod`/`preview`論理DB、`postgres_database_name`で切替）に対して以下のクエリを
+実行し、`twica_meta`スキーマ自体が存在しないことを確認して裏付けた（2026-07-20実施）:
+
+```sql
+SELECT to_regclass('twica_meta.schema_migrations') AS twica_meta_schema_migrations,
+       to_regnamespace('twica_meta') AS twica_meta_schema;
+```
+
+結果（prod/preview共通）:
+
+| 論理DB | twica_meta_schema_migrations | twica_meta_schema |
+|---|---|---|
+| prod | NULL | NULL |
+| preview | NULL | NULL |
+
+両方ともNULL（`twica_meta`スキーマ自体が存在しない）であり、`--bootstrap`によるchecksum登録が
+一度も行われていないことを実測で確認した。
+
+**順序リスクの注記**: 本ドキュメント・`db/planetscale/migrations/`配下2ファイル・
+`tests/unit/db-phase2/migration-sync.test.ts`の`FROZEN_BODY_SHA256`は、いずれも今回のChunk 2
+変更（実データへの更新）を前提にセットで更新されている。もしこの変更が取り込まれる**前**に
+何らかの理由で`db-migrate.js apply --bootstrap --provider=planetscale`が実PlanetScale環境に
+対して実行されてしまうと（＝旧内容のchecksumが先に登録されてしまうと）、その後この変更を
+取り込んだ時点で`db/planetscale/migrations/`側のファイル内容（＝checksum）が変わっているため、
+以後の`apply`/`verify`がchecksum不一致で即エラー終了する。したがって**本変更のマージ・適用は
+`--bootstrap`の実行より必ず先に行うこと**（逆順で進めないよう運用上の注意点として明記する）。
+
+**重要（将来同じ状況を混同しないための注意）**: この判断が成り立つのは
+「`--bootstrap`登録がまだ一度も行われていない」という前提が成立している間だけである。
+将来、実PlanetScale環境へ`--bootstrap`で登録した**後**に同種の修正が必要になった場合は、
+この直接書き換えパターンを踏襲せず、必ず本来の凍結ルール（新しいタイムスタンプの
+migrationファイルを追加し、既存の`20260719180000`/`20260719180100`エントリおよび
+テストの`FROZEN_BODY_SHA256`は変更しない）に従うこと。

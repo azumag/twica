@@ -75,17 +75,43 @@ function sha256(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
-// Chunk 1（本テスト新設計への移行）時点で固定したハッシュ。正本ファイルが将来
-// 再生成されても、このマップの値は更新しない（更新してよいのは、対応する
+// 当初Chunk 1（本テスト新設計への移行）時点で固定したハッシュだったが、下記
+// 「Chunk 2 での例外的な直接更新について」に記載の通り2026-07-19〜20（Chunk 2作業時点）に
+// 実Supabase本番データ由来の内容へ直接書き換えたため、**現在の値はChunk 1時点のものではなく
+// Chunk 2時点のハッシュ**である（両エントリとも）。正本ファイルが将来再生成されても、
+// このマップの値は更新しない（更新してよいのは、対応する
 // migrationファイルが実際にはまだ一度も --bootstrap / apply でDBへ反映されて
-// おらず、かつ意図的にChunk 1相当のやり直しをする場合のみ。通常運用では
+// おらず、かつ意図的に同様のやり直しをする場合のみ。通常運用では
 // 「新しいバージョンのmigrationファイルを追加する」が正しい対応であり、
 // 既存エントリの書き換えではない）。
+// 【Chunk 2 での例外的な直接更新について、必読】
+// 2026-07-19（Chunk 2作業時点）、下記2エントリのハッシュを直接書き換えた。これは
+// 本ファイル冒頭コメントで説明した「凍結ルール」の原則（正本を再生成しても既存エントリは
+// 書き換えず、新しいバージョンのmigrationファイルを追加する）に対する**唯一の例外**である。
+//
+// 例外が許される理由: 凍結ルールは「`--bootstrap`で実際にtwica_meta.schema_migrationsへ
+// checksum登録された後」を保護するための安全策であり、この時点で
+// `db/planetscale/migrations/{20260719180000,20260719180100}_*.sql` は
+// 実PlanetScale環境（prod/preview）に対して`db-migrate.js apply --bootstrap`で
+// 一度も登録されていなかった（このセッションで行ったのはpsqlによるローカルDocker空DBへの
+// 直接apply検証のみ、実PlanetScaleへの適用は本Issueの後続タスクで別途実施する）。
+// つまり書き換えても「登録済みchecksumとの不一致」は発生し得ず、保護すべき実害が存在しない
+// 状態だった。この判断の根拠は docs/planetscale-schema-baseline.md の
+// 「Chunk 2 での bootstrap.sql / public-schema.sql 直接更新について」節にも明記している。
+//
+// 変更内容: bootstrap.sql は uuid-ossp のインストール先を実Supabase本番の実測結果
+// （`extensions`スキーマ）に合わせて修正（誤っていたローカルDocker検証前提の
+// `WITH SCHEMA public`を修正）。public-schema.sql は実Supabase本番からの実データ
+// （Docker検証用の暫定データから置き換え）に更新した。
+//
+// 今後、実環境へ`--bootstrap`登録された**後**に同様の再生成が必要になった場合は、
+// このパターンを踏襲せず、必ず本来の凍結ルール（新しいタイムスタンプのmigrationファイルを
+// 追加する、既存エントリは変更しない）に従うこと。
 const FROZEN_BODY_SHA256: Record<string, string> = {
   '20260719180000_planetscale_bootstrap.sql':
-    '5dd598ecf145edd0ecabe8091c51a1f4739379b9f663a50029584eb8d5c9924f',
+    '216a70ffd54204309c28993125ed21c7c0bc640d2e9cf0c3694fd0899cb11d3b',
   '20260719180100_planetscale_public_schema_baseline.sql':
-    'eada074d85444763e5b8162731e56ffa50ad91fcf6ffcbd37930c4abdcc3023d',
+    '64b6d80fcd0f1c05c833211a61e6540918a4fb3b7224110d4737a4450f789a9e',
 }
 
 describe('db/planetscale/migrations/ の内容凍結チェック (N-1、旧M-6から設計変更)', () => {

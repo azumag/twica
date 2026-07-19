@@ -3,8 +3,8 @@
 --
 
 
--- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
--- Dumped by pg_dump version 17.10 (Debian 17.10-1.pgdg13+1)
+-- Dumped from database version 17.6
+-- Dumped by pg_dump version 17.10 (Homebrew)
 
 SET LOCAL statement_timeout = 0;
 SET LOCAL lock_timeout = 0;
@@ -1634,48 +1634,6 @@ $$;
 
 
 --
--- Name: update_battle_stats(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.update_battle_stats() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    -- Update or insert battle stats for the user
-    INSERT INTO battle_stats (
-        user_id, 
-        total_battles, 
-        wins, 
-        losses, 
-        draws, 
-        win_rate,
-        updated_at
-    ) VALUES (
-        NEW.user_id,
-        1,
-        CASE WHEN NEW.result = 'win' THEN 1 ELSE 0 END,
-        CASE WHEN NEW.result = 'lose' THEN 1 ELSE 0 END,
-        CASE WHEN NEW.result = 'draw' THEN 1 ELSE 0 END,
-        CASE WHEN NEW.result = 'win' THEN 100.0 ELSE 0.0 END,
-        NOW()
-    )
-    ON CONFLICT (user_id) DO UPDATE SET
-        total_battles = battle_stats.total_battles + 1,
-        wins = battle_stats.wins + CASE WHEN NEW.result = 'win' THEN 1 ELSE 0 END,
-        losses = battle_stats.losses + CASE WHEN NEW.result = 'lose' THEN 1 ELSE 0 END,
-        draws = battle_stats.draws + CASE WHEN NEW.result = 'draw' THEN 1 ELSE 0 END,
-        win_rate = ROUND(
-            (battle_stats.wins + CASE WHEN NEW.result = 'win' THEN 1 ELSE 0 END) * 100.0 / 
-            (battle_stats.total_battles + 1)::DECIMAL, 2
-        ),
-        updated_at = NOW();
-    
-    RETURN NEW;
-END;
-$$;
-
-
---
 -- Name: update_storage_usage(character varying, bigint, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1731,7 +1689,7 @@ SET default_table_access_method = heap;
 --
 
 CREATE TABLE public.announcement_reads (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     announcement_id uuid NOT NULL,
     twitch_user_id text NOT NULL,
     read_at timestamp with time zone DEFAULT now()
@@ -1743,7 +1701,7 @@ CREATE TABLE public.announcement_reads (
 --
 
 CREATE TABLE public.announcements (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     title text NOT NULL,
     body text NOT NULL,
     severity text DEFAULT 'info'::text NOT NULL,
@@ -1754,54 +1712,6 @@ CREATE TABLE public.announcements (
     updated_at timestamp with time zone DEFAULT now(),
     CONSTRAINT announcements_severity_check CHECK ((severity = ANY (ARRAY['info'::text, 'warning'::text, 'critical'::text])))
 );
-
-
---
--- Name: battle_stats; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.battle_stats (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
-    user_id uuid NOT NULL,
-    total_battles integer DEFAULT 0,
-    wins integer DEFAULT 0,
-    losses integer DEFAULT 0,
-    draws integer DEFAULT 0,
-    win_rate numeric(5,2) DEFAULT 0,
-    updated_at timestamp with time zone DEFAULT now()
-);
-
-
---
--- Name: battles; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.battles (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
-    user_id uuid NOT NULL,
-    user_card_id uuid NOT NULL,
-    opponent_card_id uuid,
-    result text NOT NULL,
-    turn_count integer DEFAULT 0,
-    battle_log jsonb,
-    created_at timestamp with time zone DEFAULT now(),
-    opponent_card_data jsonb,
-    CONSTRAINT battles_result_check CHECK ((result = ANY (ARRAY['win'::text, 'lose'::text, 'draw'::text])))
-);
-
-
---
--- Name: COLUMN battles.opponent_card_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.battles.opponent_card_id IS 'Card ID for player vs player battles. NULL for CPU battles. References cards(id).';
-
-
---
--- Name: COLUMN battles.opponent_card_data; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.battles.opponent_card_data IS 'CPU opponent card data for CPU battles. Contains card details: id, name, hp, atk, def, spd, skill_type, skill_name, image_url, rarity.';
 
 
 --
@@ -1883,7 +1793,7 @@ CREATE TABLE public.card_owner_stats (
 --
 
 CREATE TABLE public.card_stone_balances (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     user_id uuid NOT NULL,
     streamer_id uuid NOT NULL,
     balance integer DEFAULT 0 NOT NULL,
@@ -1898,7 +1808,7 @@ CREATE TABLE public.card_stone_balances (
 --
 
 CREATE TABLE public.card_stone_transactions (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     user_id uuid NOT NULL,
     streamer_id uuid NOT NULL,
     card_id uuid,
@@ -1916,7 +1826,7 @@ CREATE TABLE public.card_stone_transactions (
 --
 
 CREATE TABLE public.cards (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     streamer_id uuid NOT NULL,
     name text NOT NULL,
     description text,
@@ -1926,13 +1836,6 @@ CREATE TABLE public.cards (
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
-    hp integer DEFAULT 100,
-    atk integer DEFAULT 30,
-    def integer DEFAULT 15,
-    spd integer DEFAULT 5,
-    skill_type text DEFAULT 'attack'::text,
-    skill_name text DEFAULT '通常攻撃'::text,
-    skill_power integer DEFAULT 10,
     rarity_order smallint GENERATED ALWAYS AS (
 CASE rarity
     WHEN 'legendary'::text THEN 1
@@ -1942,9 +1845,16 @@ CASE rarity
     ELSE 5
 END) STORED,
     intra_rarity_weight numeric DEFAULT 1.0 NOT NULL,
-    card_number integer,
     collection_name text,
     max_issuance_count integer,
+    hp integer DEFAULT 100,
+    atk integer DEFAULT 30,
+    def integer DEFAULT 15,
+    spd integer DEFAULT 5,
+    skill_type text DEFAULT 'attack'::text,
+    skill_name text DEFAULT '通常攻撃'::text,
+    skill_power integer DEFAULT 10,
+    card_number integer,
     CONSTRAINT cards_card_number_positive CHECK (((card_number IS NULL) OR (card_number > 0))),
     CONSTRAINT cards_collection_name_length CHECK (((collection_name IS NULL) OR ((char_length(btrim(collection_name)) >= 1) AND (char_length(btrim(collection_name)) <= 80)))),
     CONSTRAINT cards_collection_name_not_reserved CHECK (((collection_name IS NULL) OR (collection_name !~~ like_escape('\_\_%'::text, '\'::text)))),
@@ -1986,7 +1896,7 @@ CREATE TABLE public.channel_point_usage_stats (
 --
 
 CREATE TABLE public.collection_completions (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     twitch_user_id text NOT NULL,
     streamer_id uuid NOT NULL,
     total_cards integer NOT NULL,
@@ -2041,13 +1951,13 @@ COMMENT ON COLUMN public.errors.context IS 'エラーコンテキスト（JSON�
 --
 
 CREATE TABLE public.gacha_history (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
-    event_id text,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     user_twitch_id text NOT NULL,
     user_twitch_username text,
     card_id uuid NOT NULL,
     streamer_id uuid NOT NULL,
     redeemed_at timestamp with time zone DEFAULT now(),
+    event_id text,
     reward_cost integer,
     reward_id text
 );
@@ -2119,7 +2029,7 @@ COMMENT ON COLUMN public.storage_usage.updated_at IS '最終更新日時';
 --
 
 CREATE TABLE public.streamer_additional_gacha_rewards (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     streamer_id uuid NOT NULL,
     reward_id text NOT NULL,
     reward_name text,
@@ -2180,7 +2090,7 @@ COMMENT ON COLUMN public.streamer_chat_sender_settings.sender_mode IS 'streamer,
 --
 
 CREATE TABLE public.streamer_storage_bonus (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     streamer_id uuid NOT NULL,
     amount_mb integer NOT NULL,
     type text NOT NULL,
@@ -2195,7 +2105,7 @@ CREATE TABLE public.streamer_storage_bonus (
 --
 
 CREATE TABLE public.streamers (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     twitch_user_id text NOT NULL,
     twitch_username text NOT NULL,
     twitch_display_name text NOT NULL,
@@ -2362,7 +2272,7 @@ COMMENT ON COLUMN public.support_codes.status IS 'active=利用可, rotating=新
 --
 
 CREATE TABLE public.support_inquiries (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     twitch_user_id text NOT NULL,
     twitch_display_name text NOT NULL,
     category text NOT NULL,
@@ -2407,7 +2317,7 @@ COMMENT ON COLUMN public.support_inquiries.github_issue_url IS '発行された 
 --
 
 CREATE TABLE public.support_inquiry_messages (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     inquiry_id uuid NOT NULL,
     sender_type text NOT NULL,
     sender_id text NOT NULL,
@@ -2423,7 +2333,7 @@ CREATE TABLE public.support_inquiry_messages (
 --
 
 CREATE TABLE public.twitch_bot_accounts (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     owner_type text NOT NULL,
     streamer_id uuid,
     twitch_user_id text NOT NULL,
@@ -2462,7 +2372,7 @@ COMMENT ON COLUMN public.twitch_bot_accounts.owner_type IS 'streamer = streamer-
 --
 
 CREATE TABLE public.user_cards (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     user_id uuid NOT NULL,
     card_id uuid NOT NULL,
     obtained_at timestamp with time zone DEFAULT now()
@@ -2503,7 +2413,7 @@ COMMENT ON COLUMN public.user_licenses.fanbox_id IS 'FANBOX IDの参考情報（
 --
 
 CREATE TABLE public.users (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     twitch_user_id text NOT NULL,
     twitch_username text NOT NULL,
     twitch_display_name text NOT NULL,
@@ -2556,30 +2466,6 @@ ALTER TABLE ONLY public.announcement_reads
 
 ALTER TABLE ONLY public.announcements
     ADD CONSTRAINT announcements_pkey PRIMARY KEY (id);
-
-
---
--- Name: battle_stats battle_stats_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.battle_stats
-    ADD CONSTRAINT battle_stats_pkey PRIMARY KEY (id);
-
-
---
--- Name: battle_stats battle_stats_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.battle_stats
-    ADD CONSTRAINT battle_stats_user_id_key UNIQUE (user_id);
-
-
---
--- Name: battles battles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.battles
-    ADD CONSTRAINT battles_pkey PRIMARY KEY (id);
 
 
 --
@@ -2850,41 +2736,6 @@ CREATE INDEX idx_announcement_reads_twitch_user_id ON public.announcement_reads 
 
 
 --
--- Name: idx_battle_stats_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_battle_stats_user_id ON public.battle_stats USING btree (user_id);
-
-
---
--- Name: idx_battles_created_at; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_battles_created_at ON public.battles USING btree (created_at DESC);
-
-
---
--- Name: idx_battles_opponent_card_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_battles_opponent_card_id ON public.battles USING btree (opponent_card_id);
-
-
---
--- Name: idx_battles_result; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_battles_result ON public.battles USING btree (result);
-
-
---
--- Name: idx_battles_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_battles_user_id ON public.battles USING btree (user_id);
-
-
---
 -- Name: idx_blob_files_user_prefix; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2997,24 +2848,10 @@ CREATE INDEX idx_gacha_history_card_id ON public.gacha_history USING btree (card
 
 
 --
--- Name: idx_gacha_history_event_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_gacha_history_event_id ON public.gacha_history USING btree (event_id);
-
-
---
 -- Name: idx_gacha_history_streamer_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_gacha_history_streamer_id ON public.gacha_history USING btree (streamer_id);
-
-
---
--- Name: idx_gacha_history_streamer_redeemed_card; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_gacha_history_streamer_redeemed_card ON public.gacha_history USING btree (streamer_id, redeemed_at DESC, card_id);
 
 
 --
@@ -3207,20 +3044,6 @@ CREATE TRIGGER update_announcements_updated_at BEFORE UPDATE ON public.announcem
 
 
 --
--- Name: battles update_battle_stats_trigger; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER update_battle_stats_trigger AFTER INSERT ON public.battles FOR EACH ROW EXECUTE FUNCTION public.update_battle_stats();
-
-
---
--- Name: battle_stats update_battle_stats_updated_at; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER update_battle_stats_updated_at BEFORE UPDATE ON public.battle_stats FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
-
-
---
 -- Name: cards update_cards_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3268,38 +3091,6 @@ CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON public.users FOR EACH RO
 
 ALTER TABLE ONLY public.announcement_reads
     ADD CONSTRAINT announcement_reads_announcement_id_fkey FOREIGN KEY (announcement_id) REFERENCES public.announcements(id) ON DELETE CASCADE;
-
-
---
--- Name: battle_stats battle_stats_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.battle_stats
-    ADD CONSTRAINT battle_stats_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
-
-
---
--- Name: battles battles_opponent_card_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.battles
-    ADD CONSTRAINT battles_opponent_card_id_fkey FOREIGN KEY (opponent_card_id) REFERENCES public.cards(id) ON DELETE CASCADE;
-
-
---
--- Name: battles battles_user_card_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.battles
-    ADD CONSTRAINT battles_user_card_id_fkey FOREIGN KEY (user_card_id) REFERENCES public.user_cards(id) ON DELETE CASCADE;
-
-
---
--- Name: battles battles_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.battles
-    ADD CONSTRAINT battles_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
 --
@@ -3492,20 +3283,6 @@ CREATE POLICY "Service can insert gacha history" ON public.gacha_history FOR INS
 
 
 --
--- Name: battle_stats Service can manage battle_stats; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "Service can manage battle_stats" ON public.battle_stats TO service_role USING (true) WITH CHECK (true);
-
-
---
--- Name: battles Service can manage battles; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "Service can manage battles" ON public.battles TO service_role USING (true) WITH CHECK (true);
-
-
---
 -- Name: card_stone_balances Service can manage card stone balances; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -3632,12 +3409,51 @@ CREATE POLICY "Service role can manage support inquiry messages" ON public.suppo
 
 
 --
+-- Name: cards Streamers can manage own cards; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Streamers can manage own cards" ON public.cards USING ((streamer_id IN ( SELECT streamers.id
+   FROM public.streamers
+  WHERE (streamers.twitch_user_id = (auth.jwt() ->> 'twitch_user_id'::text)))));
+
+
+--
+-- Name: streamers Streamers can update own profile; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Streamers can update own profile" ON public.streamers FOR UPDATE USING ((twitch_user_id = (auth.jwt() ->> 'twitch_user_id'::text)));
+
+
+--
 -- Name: streamer_additional_gacha_rewards Users can read own additional rewards; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY "Users can read own additional rewards" ON public.streamer_additional_gacha_rewards FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.streamers
   WHERE ((streamers.id = streamer_additional_gacha_rewards.streamer_id) AND (streamers.twitch_user_id = (auth.uid())::text)))));
+
+
+--
+-- Name: user_cards Users can view own cards; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Users can view own cards" ON public.user_cards FOR SELECT USING ((user_id IN ( SELECT users.id
+   FROM public.users
+  WHERE (users.twitch_user_id = (auth.jwt() ->> 'twitch_user_id'::text)))));
+
+
+--
+-- Name: gacha_history Users can view own gacha history; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Users can view own gacha history" ON public.gacha_history FOR SELECT USING ((user_twitch_id = (auth.jwt() ->> 'twitch_user_id'::text)));
+
+
+--
+-- Name: users Users can view own profile; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Users can view own profile" ON public.users FOR SELECT USING ((twitch_user_id = (auth.jwt() ->> 'twitch_user_id'::text)));
 
 
 --
@@ -3651,18 +3467,6 @@ ALTER TABLE public.announcement_reads ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
-
---
--- Name: battle_stats; Type: ROW SECURITY; Schema: public; Owner: -
---
-
-ALTER TABLE public.battle_stats ENABLE ROW LEVEL SECURITY;
-
---
--- Name: battles; Type: ROW SECURITY; Schema: public; Owner: -
---
-
-ALTER TABLE public.battles ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: blob_files; Type: ROW SECURITY; Schema: public; Owner: -

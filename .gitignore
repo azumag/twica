@@ -34,6 +34,17 @@ yarn-error.log*
 .env*
 !.env.local.example
 
+# 認証情報ファイル全般（`.env*`は「.envで始まる」ファイルのみにマッチし、
+# 「~.envで終わる」ファイル名は保護されない抜け穴があったため`*.env`を追加。
+# issue #691 Chunk 2でリポジトリ直下に接続文字列入りファイルが誤って
+# 置かれるインシデントが発生したことを受けての対処）。
+# 以前は`*credentials*.env`も追加していたが、`*.env`（直上の行）の完全な部分集合で
+# 実質無意味な行だったため削除し、拡張子を問わず「credentials」を含むファイル名全般を
+# 保護する`*credentials*`に置き換えた（例: credentials.json, db-credentials.txt等、
+# .env以外の拡張子も保護対象に含める。N-2、Fableレビュー指摘）。
+*.env
+*credentials*
+
 # E2E Test Authentication State Files
 # These files contain sensitive session information
 .e2e-auth-state-*.json
