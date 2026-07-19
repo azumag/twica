@@ -268,6 +268,94 @@ twicaのスキーマ（本監査で確認した全テーブルPK保有・シー�
 - [ERROR: cannot delete from table because it does not have a replica identity and publishes deletes | PostgreSQL Error Reference](https://www.bytebase.com/reference/postgres/error/cannot-delete-from-table-no-replica-identity/) — 同上
 - 社内既存ドキュメント: `docs/db-phase2-runbook.md`（#666）、`docs/db-driver-migration.md`（Phase 1）— 既存の推定値（関数数・トリガー数・シーケンス数）との突き合わせに使用
 
+## 6. 追加調査（2026-07-19、#666ランブックのオーナー確認前の技術調査フェーズ）
+
+本章は2026-07-10の初回監査（1〜5章）を踏まえ、`docs/db-phase2-runbook.md` 8章の残る未決定事項のうち、
+技術調査で埋められる部分を追加で調べたもの。**実インフラの新規作成・実機でのCREATE ROLE/pg_restore
+実行はいずれも行っていない**（PlanetScale上にDBを作成する行為自体はオーナー承認が必要な課金操作の
+ため、本追加調査のスコープ外）。以下は全て公式ドキュメント調査・リポジトリ内grep調査に基づく。
+
+### 6.1 PlanetScale PostgresのRLS/ロール機構（#665の残論点）
+
+| 項目 | 判定 |
+|---|---|
+| RLS機能自体（`ENABLE ROW LEVEL SECURITY`/`CREATE POLICY`/`BYPASSRLS`） | Supabaseと完全に同一（標準PostgreSQLエンジンの機能そのもの。PlanetScale Postgresは同名の"Vitess"（MySQL互換）製品とは別実装で、PostgreSQL 17/18ベースのフル互換エンジン） |
+| ロール作成・GRANT/REVOKE・ロール属性付与のメカニズム | Supabaseと完全に同一（標準SQL経由。デフォルト`postgres`ロールが`BYPASSRLS`/`CREATEROLE`を保有） |
+| Supabase組み込みロール（`service_role`/`anon`/`authenticated`） | **非対応（PlanetScale側に存在しない）。移行時に手動で空ロールとして再現する必要あり** |
+| `auth.jwt()`/`auth.role()`（JWTクレーム述語関数） | **非対応（存在しない）**。ただしtwicaのpg直結経路は元々PostgRESTを経由せず`twica_app`がBYPASSRLSでこの5テーブル（`storage_usage`/`blob_files`/`errors`/`support_codes`/`user_licenses`）のポリシーを迂回済みのため、機能的な差異は生じない見込み |
+| `SECURITY DEFINER`関数 | Supabaseと完全に同一（PlanetScale公式ドキュメント自身が`pganalyze`セットアップ手順で使用） |
+| 東京リージョン(`ap-northeast-1`)でのPostgres提供 | 提供あり（`postgresql_supported: true`、組織`tsubasa-azumagakito`のAPIで直接確認） |
+| PS-5料金 | 単一ノード$5/月・HA(2レプリカ)$15/月（runbook1章の記載と一致） |
+| ストレージ課金 | **「上限」ではなく従量課金**: 各クラスタに最初の10GBが込み、超過分は東京$0.150/GB/月（固定ストレージ上限という枠組みは存在しない。runbook1章の「PS-5の具体的なストレージ上限」という表現は「10GB込み+従量課金」に読み替える必要がある） |
+
+**新規発見（実restore時の障害リスク、要runbook反映）**: `--no-privileges`はGRANT文（ACL）のみを
+除外し、`CREATE POLICY ... TO service_role`のようなRLSポリシー定義自体（`pg_policy`カタログ、ACLでは
+ない）は除外しない。grep実測で**34ファイル・78箇所**が`TO service_role`（一部`TO authenticated`/
+`TO anon`）を含むポリシー/GRANT文を持つことを確認済み。PlanetScale側に`service_role`/`anon`/
+`authenticated`ロールが事前に存在しないと、pg_restore実行時に`role "service_role" does not exist`
+で失敗すると推定される（PostgreSQL標準仕様に基づく強い推論、**実機未検証**）。同様に、JWTクレーム
+述語5テーブルの`CREATE POLICY ... USING (auth.jwt() ->> 'role' = ...)`は`auth.jwt()`関数が
+カタログに存在しないと構文検証（式内の関数解決）で失敗する。
+
+**対処案（5章手順への追加が必要）**: restore実行前に以下を投入する:
+```sql
+CREATE ROLE service_role NOLOGIN;
+CREATE ROLE anon NOLOGIN;
+CREATE ROLE authenticated NOLOGIN;
+CREATE SCHEMA IF NOT EXISTS auth;
+CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT '{}'::jsonb $$;
+CREATE OR REPLACE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$ SELECT 'anon'::text $$;
+```
+（1章の監査で実際にDocker上で動作確認済みの構成と同一）。`realtime.messages`/`realtime.topic()`
+（00034、`TO authenticated`/`TO anon`対象）はSupabase Realtimeのprivateチャンネル向けで、Phase 2は
+`public`スキーマのみをdump対象にする方針（6.3節参照）のためそもそも移送対象にならない見込み。
+
+### 6.2 #667 logical replicationの最終推奨（採用しない）
+
+2026-07-10時点の4章の結論（技術的に採用可能）に、コストベネフィット判定を追加した。
+
+- **Supabase側の追加コスト**: 外部レプリケーション先へのIPv4アドオンは**Freeプランでは利用不可**、
+  Proプラン以上（$25/月〜）+アドオン$4/月が前提。twica現行プランは未確認だが、下位プランの場合は
+  月$29程度の新規経常コストが移行のためだけに発生しうる。
+- **PlanetScale側の権限**: 組織フラグ`pg_role_replication: "full"`（`planetscale_get_organization`で
+  確認済み）は、2026-07-08付PlanetScale changelog「Postgresロールへの`REPLICATION`属性付与機能」の
+  ロールアウト制御フラグと推定され、この組織では制限なく利用可能な状態。
+- **削減できる停止時間に対してコスト不釣り合い**: 現行の数分停止方式は既に5〜10分程度の見積り
+  （DB 0.334GBの小規模ゆえ）で、maintenance mode UX（503+Retry-After・書き込みボタン事前disable・
+  EventSubのKV退避+自動リプレイ、#694/#787で実装済み）によりユーザー影響は既に十分小さい。
+  レプリケーションラグ監視・tablesync状態管理・DDL変更の非同期化制約など運用複雑さの増加が、
+  個人開発の運用体制（オンコール専任者なし）に見合わない。
+
+**結論: 数分停止方式（pg_dump/restore）を正式採用とし、#667/#696（実環境リハーサル）は
+このコスト構造の判断により実施しない、という提案。最終確定はオーナー判断（8章参照）。**
+
+### 6.3 切替後のmigration適用手段（8章「未決定事項」の技術設計）
+
+- **`supabase_migrations.schema_migrations`（Supabase CLIの適用履歴テーブル）は移送しない方針を推奨**。
+  理由: (1) `pg_dump`にスキーマ指定（`-n`）が無いと`public`以外の全非システムスキーマ
+  （`auth`/`storage`/`supabase_migrations`等）が対象になり、`twica_app`が権限を持たないテーブルに
+  遭遇した時点でpg_dump**全体が失敗する**（部分スキップではない、PostgreSQL標準仕様）。
+  (2) 移送できたとしても新ツールがそのテーブル形式を理解する保証がない。
+  → **5章のpg_dumpコマンドに`-n public`を追加し、スコープを明示すべき**（現状のコマンドはこの
+  リスクを内包している。5章への反映が必要）。
+- **推奨する新規適用手段**: Node.jsカスタムスクリプト（`scripts/verify-db-schema.js`/
+  `scripts/check-migration-order.js`と同じパターン、`postgres`パッケージ・`DATABASE_URL`環境変数
+  経由）。`sql.begin()`によるファイル単位トランザクションで、既知の`SET LOCAL statement_timeout`
+  問題（3.1節、`00051_add_card_owner_stats.sql`。`psql -f`はデフォルトでファイル全体を1トランザクション
+  にラップしないためこの問題が起こりうる）を自然に回避できる。Flyway等の確立ツールも検討したが、
+  既存71ファイルの命名規則変更が必須になり導入コストが見合わないため見送り。
+- **カットオーバー時の履歴初期化**: 新規履歴テーブルを、pg_restore完了直後に「その時点で存在する
+  全migrationファイルを適用済みとして一括登録するbootstrapモード」で初期化する（実SQLは実行しない、
+  Supabase CLIの`migration repair --status applied`と同じ発想）。
+- **CI（`.github/workflows/deploy-cloudflare.yml`）への組み込み**: 新規環境変数`MIGRATION_TARGET`
+  （`supabase`|`planetscale`、未設定時は安全側`supabase`にフォールバック）でステップ内分岐する
+  設計を推奨。ジョブの`if:`ではなくステップ内条件にするのは、environment-scoped変数がジョブの
+  `environment:`解決後でないと使えないため。preview環境だけ先に`planetscale`へ切り替えてリハーサル→
+  本番切替時にproduction環境も切り替える、という段階ロールアウトがコード変更なしで可能になる。
+
+未実装（別途スクリプト実装・レビュー・CI変更のPRが必要、本追加調査のスコープ外）。
+
 ## 付記: 検証手順の再現方法
 
 ```bash
