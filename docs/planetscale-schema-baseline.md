@@ -432,20 +432,20 @@ db-migrate.js経由でSQLを実行し検証したかのように読めてしま�
   （Issue #691元本文「本番とpreviewを別artifactとして比較」、必須タスク）。前項の通り本セッション
   ではSupabase本番からのみ採取しており、preview側のmanifest.jsonが存在しないため比較そのものを
   実施できていない。Chunk 2の残作業として引き続き追跡する。
-- **[preview: 完了 / prod: 未実施]** 実PlanetScale prod/preview DBへ`bootstrap.sql`→
+- **[完了（prod/preview両方）]** 実PlanetScale prod/preview DBへ`bootstrap.sql`→
   `public-schema.sql`→`grants.sql`を適用し、実機で動作確認する（Docker検証だけでは完了扱いに
-  しない、Issue #691元本文の受け入れ条件）。**preview**（`bluemoon-works`/`twica`、`main`branch、
-  `postgres_database_name=preview`）に対して3ファイルを`psql -1 -v ON_ERROR_STOP=1`で順に適用し、
-  全てexit 0で完走した。適用後の実オブジェクト数を実測し、`db/planetscale/public-schema.sql`
-  正本と完全一致することを確認した: テーブル23／関数27／トリガー9／ポリシー32
-  （`information_schema.tables`/`pg_proc`/`pg_trigger`/`pg_policies`で実カウント）。さらに
-  最小限の機能テスト（トランザクション内で実行し最後にROLLBACK、データは残していない）として
-  `streamers`テーブルへのINSERT時に`extensions.uuid_generate_v4()`のDEFAULTが実際にUUIDを
-  生成すること、`extensions.digest('smoke-test','sha256')`（pgcrypto RPC相当）が正常に値を返す
-  ことを実機確認した。**prod**は本ドキュメント更新時点で未実施（`bootstrap.sql`すら未適用、
-  `public`スキーマのテーブル数0件）。prodは現時点で実データ・実トラフィックが一切無い空DBのため、
-  previewと同じ手順を適用しても安全上のリスクは無いと判断されるが、実施の要否・タイミングは
-  オーナー判断とする。
+  しない、Issue #691元本文の受け入れ条件）。**preview**・**prod**（`bluemoon-works`/`twica`、
+  `main`branch、`postgres_database_name`で切替）双方に対して3ファイルを
+  `psql -1 -v ON_ERROR_STOP=1`で順に適用し、全てexit 0で完走した。適用後の実オブジェクト数を
+  実測し、`db/planetscale/public-schema.sql`正本と完全一致することを両DBで確認した:
+  テーブル23／関数27／トリガー9／ポリシー32（`information_schema.tables`/`pg_proc`/
+  `pg_trigger`/`pg_policies`で実カウント）。さらに最小限の機能テスト（トランザクション内で
+  実行し最後にROLLBACK、データは残していない）として`streamers`テーブルへのINSERT時に
+  `extensions.uuid_generate_v4()`のDEFAULTが実際にUUIDを生成すること、
+  `extensions.digest('smoke-test','sha256')`（pgcrypto RPC相当）が正常に値を返すことを
+  両DBで実機確認した。prodはbootstrap適用前は拡張機能も含め完全に空の状態であり、
+  修正済み`bootstrap.sql`（`WITH SCHEMA extensions`）を初回から適用したため、preview側で
+  発生した所有者不一致によるDROP/CREATE是正は不要だった（最初から正しいスキーマへ設置）。
 - **[一部実施]** **拡張機能の設置スキーマの実測確認・是正（N-5、Fableレビュー2回目 → Chunk 2で
   内容更新）**: 本節はFableレビュー2回目の時点では「`uuid-ossp`は`public`スキーマに設置するのが
   正」という前提（3.3節、当時の`bootstrap.sql`が`WITH SCHEMA public`だった）で書かれていたが、
@@ -479,11 +479,10 @@ db-migrate.js経由でSQLを実行し検証したかのように読めてしま�
 
   **実施状況（本ドキュメント更新時点、実測確認済み）**: previewの`uuid-ossp`/`pgcrypto`は上記の
   手順（DROP→CREATE WITH SCHEMA extensions）で是正済みであることを実測確認した
-  （`extnamespace`がいずれも`extensions`）。prodは本ドキュメント更新時点で`uuid-ossp`/
-  `pgcrypto`とも未インストール（`bootstrap.sql`自体が未適用）であることを実測確認した
-  （＝「誤ったスキーマへの設置」ではなく「そもそも未適用」の状態であり、今後
-  `bootstrap.sql`（`WITH SCHEMA extensions`修正済み）を新規適用すれば最初から正しいスキーマに
-  インストールされるため、本節の是正手順自体は不要になる見込み）。
+  （`extnamespace`がいずれも`extensions`）。prodは修正済み`bootstrap.sql`
+  （`WITH SCHEMA extensions`）を空の状態から新規適用したため、最初から正しいスキーマへ
+  設置され、preview側で発生した所有者不一致によるDROP/CREATE是正は不要だったことを実測確認した
+  （`extnamespace`がいずれも`extensions`）。prod/preview両方で本節の是正手順は完了している。
 - **[未実施]** `src/lib/db/schema.ts`・実Supabase・PlanetScale baselineの3者比較によるschema
   drift検証（Issue #691元本文タスク5、既知ドリフト#625含む）。Chunk 2のデータ採取時に#625
   ドリフト（battles/battle_stats欠落）の存在は確認できたが、これは実データ採取の副産物として
