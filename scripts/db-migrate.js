@@ -308,7 +308,10 @@ function resolveAppliedBy(env) {
 function createSqlClient(databaseUrl, warningSink) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const postgres = require('postgres')
-  return postgres(databaseUrl, {
+  // PlanetScale接続文字列が付与する sslrootcert パラメータは postgres.js が
+  // 未知の接続オプションとしてサーバーへ送りつけてしまい接続失敗する
+  // （core.stripPostgresJsIncompatibleSslParams のdocコメント参照。実機確認済み）。
+  return postgres(core.stripPostgresJsIncompatibleSslParams(databaseUrl), {
     max: 1,
     connect_timeout: 15,
     onnotice: (notice) => {

@@ -487,6 +487,94 @@ function diffMigrationState(descriptors, historyRows, provider) {
 }
 
 /**
+ * postgres.js が接続文字列内で認識しない `sslrootcert` クエリパラメータを取り除く純粋関数。
+ *
+ * ==== 正本 ====
+ * このファイルがこのロジックの正本（single source of truth）である。
+ * `src/lib/db/client.ts` はこの関数を直接 `import` する（root の tsconfig.json が
+ * `allowJs: true` のため、TypeScript から `.js` の CommonJS モジュールを問題なく
+ * import できる。実際に `tsc --noEmit` で検証済み）。`scripts/db-migrate.js` /
+ * `scripts/verify-db-schema.js` は `require('./lib/db-migrate-core')` で利用する。
+ * 唯一の例外は `analysis/dev/adminApiPg.ts`: `analysis/` は root とは別の npm
+ * パッケージ（独自の node_modules、npm workspaces 未使用）であり、root の
+ * ソースを import すると暗黙のディレクトリ遡り解決に頼ることになり壊れやすいため、
+ * 意図的に同ロジックの独立コピーを持つ（Fableレビューで妥当性を確認済み）。
+ * ロジックを変更する場合は analysis 側のコピーも同期させること。
+ *
+ * ==== 背景（実PlanetScale previewで実機確認済み） ====
+ * PlanetScale ダッシュボードが提供する接続文字列には
+ * `?sslmode=verify-full&sslrootcert=system` が付与される。
+ * `sslrootcert=system` は libpq（psql/pg_dump 等のC実装クライアント、libpq 14+）
+ * 固有の記法で「システムのCA証明書ストアを使う」ことを意味する。
+ *
+ * postgres.js（本プロジェクトが使う純JS実装のNode driver、v3.4.9）は
+ * `sslrootcert === 'system'` を特別扱いして `ssl` オプションを `'verify-full'` に
+ * 変換するコードを持つ（node_modules/postgres/cjs/src/index.js:445 実装確認済み）が、
+ * `sslrootcert` キー自体を query オブジェクトから削除し忘れているため、残った
+ * `sslrootcert` が「未知の接続オプション」として PostgreSQL への startup packet の
+ * セッションパラメータに混入し（同ファイル470-487行目、`ssl`/`sslmode`等の既知
+ * defaultsキーに含まれない query パラメータは全て `connection` オブジェクトへ
+ * 転写されそのままサーバーへ送信される）、
+ * `unrecognized configuration parameter "sslrootcert"` で接続自体が失敗する。
+ *
+ * ==== Major-1（Fableレビュー）: sslmode 明示補完について ====
+ * `sslrootcert` を単純に削除するだけでは、`sslmode` が付いていない接続文字列
+ * （`?sslrootcert=system` のみ）で平文接続へサイレントダウングレードする重大な
+ * リグレッションが起きる。理由（node_modules/postgres/cjs/src/index.js の
+ * parseOptions、442-445行目で実機確認済み）:
+ *   1. `query.sslmode && (query.ssl = query.sslmode, delete query.sslmode)`
+ *   2. `query.sslrootcert === 'system' && (query.ssl = 'verify-full')`
+ * の2行がこの順で実行される。postgres.js 自身は本来 (2) で `sslrootcert=system`
+ * を見て `ssl` を `'verify-full'` に昇格させる救済ロジックを持つが、この関数が
+ * postgres() を呼ぶ「前」に `sslrootcert` を URL から消してしまうため、postgres.js
+ * 側の `query.sslrootcert` は常に `undefined` になり (2) が発火しない。`sslmode`
+ * も無ければ `query.ssl` は一切設定されず、`ssl` は defaults の `false`（平文接続）
+ * のまま `postgres()` に渡ってしまう。修正前の「未知パラメータで接続失敗」という
+ * fail-loud な壊れ方より悪い「暗号化なしで無言接続」という壊れ方になる。
+ *
+ * 対策: `sslrootcert` を削除する際、その時点で `sslmode` が指定されていなければ
+ * `sslmode=verify-full` を明示的に補う。これにより `sslrootcert=system` が本来
+ * 意図していた「システムCAストアでの完全な証明書検証」が、postgres.js 側の
+ * 救済ロジックに頼らず独立して成立する。`sslmode` が既に指定されている場合は
+ * 呼び出し元の意図（PlanetScale以外の接続先を含む）を尊重し上書きしない。
+ *
+ * `sslmode=verify-full` は postgres.js 内で正しく `ssl='verify-full'` として
+ * 解釈され（node_modules/postgres/cjs/src/connection.js の `secure()`）、
+ * `require`/`allow`/`prefer` のような緩いモードとは異なり `rejectUnauthorized` を
+ * 明示 false にしない（Node tls のデフォルト rejectUnauthorized: true のまま）上に
+ * `servername` を設定してホスト名検証も行う。つまり証明書検証を弱める変更ではない
+ * （PlanetScaleの証明書がNode.js標準のCAトラストストアで検証可能なことも
+ * 実機確認済み）。
+ *
+ * パースに失敗した場合（URLとして不正な接続文字列）は変換をあきらめて元の文字列を
+ * そのまま返す（このユーティリティの責務は sslrootcert の除去・sslmode補完のみで
+ * あり、接続文字列自体の妥当性検証は呼び出し元の postgres() に委ねる）。
+ *
+ * @param {string} connectionString
+ * @returns {string}
+ */
+function stripPostgresJsIncompatibleSslParams(connectionString) {
+  if (!connectionString) return connectionString
+  try {
+    const url = new URL(connectionString)
+    const hadSslRootCert = url.searchParams.has('sslrootcert')
+    url.searchParams.delete('sslrootcert')
+    // Major-1: sslrootcert 除去だけだと、sslmode 未指定URLが平文接続へサイレント
+    // ダウングレードしうる（このJSDoc「Major-1」セクション参照）。sslrootcert が
+    // 実際に存在した場合のみ、かつ sslmode が空文字列も含めて未指定の場合のみ補う
+    // （既存の明示的な sslmode 指定は上書きしない）。`.has()`だけだと`sslmode=`
+    // （空文字列）を「指定済み」とみなしてしまい、postgres.js側でfalsy評価され
+    // 平文接続になる病的ケースが残るため`.get()`の真偽値も見る（Fableレビュー再検証Minor-1）。
+    if (hadSslRootCert && !url.searchParams.get('sslmode')) {
+      url.searchParams.set('sslmode', 'verify-full')
+    }
+    return url.toString()
+  } catch {
+    return connectionString
+  }
+}
+
+/**
  * 接続文字列（DATABASE_URL）からパスワードをマスクした文字列を返す純粋関数。
  * host名・ポート・DB名・クエリパラメータ（sslmode等）はそのまま残す
  * （運用者がログから接続先を判別できるようにするため）が、credential部分は必ず `***` に置換する。
@@ -578,4 +666,5 @@ module.exports = {
   redactConnectionString,
   extractPasswordCandidates,
   redactSecretsFromText,
+  stripPostgresJsIncompatibleSslParams,
 }

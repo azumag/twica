@@ -276,3 +276,112 @@ describe('getDb target resolution (#693 Phase 2)', () => {
     expect(planetscaleHandle2).toBe(planetscaleHandle1)
   })
 })
+
+/**
+ * stripPostgresJsIncompatibleSslParams（PlanetScale接続文字列との非互換性修正）のテスト。
+ *
+ * 実機で確認された事実（実PlanetScale preview接続、postgres.js 3.4.9）:
+ * PlanetScaleダッシュボードが提供する接続文字列は `?sslmode=verify-full&sslrootcert=system`
+ * を付与する。`sslrootcert` は postgres.js の parseOptions（node_modules/postgres/cjs/src/index.js）
+ * が `defaults` に含まれないURLクエリパラメータとして扱い、そのまま `options.connection`
+ * （PostgreSQLサーバーへのstartup packetセッションパラメータ）へ転写してしまうため、
+ * `unrecognized configuration parameter "sslrootcert"` で接続自体が失敗する。
+ */
+describe('stripPostgresJsIncompatibleSslParams (PlanetScale sslrootcert非互換修正)', () => {
+  beforeEach(() => {
+    // 他の describe ブロックと同じく resetModules が必須: これが無いと Node
+    // シングルトン（nodeSingletonHandles）が前のテストのハンドルを持ち越し、
+    // このブロックの getDb() が新しい接続文字列ではなく古いハンドルを返してしまう
+    // （実際にこの reset を入れ忘れて再現・特定した回帰）。
+    vi.resetModules()
+    mocks.getCloudflareContext.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('sslrootcert のみを取り除き、既存の sslmode はそのまま残す', async () => {
+    const { stripPostgresJsIncompatibleSslParams } = await importClient()
+    const input =
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full&sslrootcert=system'
+    const result = stripPostgresJsIncompatibleSslParams(input)
+    expect(result).toBe(
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full'
+    )
+  })
+
+  it('sslrootcert が無い接続文字列は完全に同一のまま返す', async () => {
+    const { stripPostgresJsIncompatibleSslParams } = await importClient()
+    const input = 'postgres://user:pass@db.example.com:5432/mydb?sslmode=require'
+    expect(stripPostgresJsIncompatibleSslParams(input)).toBe(input)
+  })
+
+  // Major-1（Fableレビュー・セキュリティ上重大、実機検証で確認された事実）:
+  // sslrootcert=system のみでsslmode未指定のURLは、sslrootcertを単純に削除しただけだと
+  // postgres.jsが ssl=false（平文接続）として扱ってしまう。sslmode=verify-full を
+  // 明示的に補うことで、sslrootcert=system が意図した完全な証明書検証を維持する。
+  it('Major-1: sslrootcert=system のみ（sslmode無し）の場合、sslmode=verify-full を明示的に補う', async () => {
+    const { stripPostgresJsIncompatibleSslParams } = await importClient()
+    const input = 'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslrootcert=system'
+    const result = stripPostgresJsIncompatibleSslParams(input)
+    expect(result).toBe(
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full'
+    )
+  })
+
+  it('Major-1: sslrootcert=system と sslmode の両方が指定されている場合、既存の sslmode を尊重し上書きしない', async () => {
+    const { stripPostgresJsIncompatibleSslParams } = await importClient()
+    const input =
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=require&sslrootcert=system'
+    const result = stripPostgresJsIncompatibleSslParams(input)
+    expect(result).toBe(
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=require'
+    )
+  })
+
+  it('パース不能な接続文字列は変換をあきらめて元の文字列をそのまま返す', async () => {
+    const { stripPostgresJsIncompatibleSslParams } = await importClient()
+    const input = 'not a valid url at all :::'
+    expect(stripPostgresJsIncompatibleSslParams(input)).toBe(input)
+  })
+
+  it('createHandle経由: sslrootcert付き接続文字列でも postgres.js の options.connection に sslrootcert が漏れず、sslmode(verify-full)は維持される', async () => {
+    // Node フォールバック経路（next dev）で DATABASE_URL に sslrootcert 付き接続文字列を
+    // 与え、getDb() が内部で createHandle() を呼ぶ実際の経路を通して検証する
+    // （fixture直呼びだけでなく、実際に postgres() へ渡る値まで確認する）。
+    vi.stubEnv(
+      'DATABASE_URL',
+      'postgres://user:pass@supabase-host:5432/db?sslmode=verify-full&sslrootcert=system'
+    )
+    mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
+
+    const { getDb } = await importClient()
+    const handle = await getDb()
+    const options = (handle.sql as any).options
+
+    // 修正前はここに 'system' が残り、startup packetへ転写されて接続失敗の原因になっていた。
+    expect(options.connection.sslrootcert).toBeUndefined()
+    // sslmode=verify-full は postgres.js 内部で options.ssl='verify-full' に変換される
+    // （証明書検証を弱めていないことの確認。'require'/'allow'/'prefer' とは異なり
+    // rejectUnauthorizedを明示falseにする分岐を通らない）。
+    expect(options.ssl).toBe('verify-full')
+  })
+
+  // Major-1 回帰テスト（createHandle経由、実際に postgres() へ渡る options.ssl まで確認）:
+  // sslmode が付いていない sslrootcert=system 単体のURLで、修正前は options.ssl が
+  // false（平文接続）になっていた（本テストがある行を参照してこの回帰を検知する）。
+  it('Major-1 createHandle経由: sslrootcert=system のみ（sslmode無し）でも options.ssl が verify-full になり、平文接続へ落ちない', async () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@supabase-host:5432/db?sslrootcert=system')
+    mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
+
+    const { getDb } = await importClient()
+    const handle = await getDb()
+    const options = (handle.sql as any).options
+
+    expect(options.connection.sslrootcert).toBeUndefined()
+    // 修正前はここが false（平文・非TLS接続）になっていた。sslmode を明示的に
+    // 補ったことで、postgres.js の options.ssl が verify-full になることを確認する。
+    expect(options.ssl).toBe('verify-full')
+  })
+})

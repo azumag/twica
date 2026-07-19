@@ -138,7 +138,10 @@ export function buildManifest({
  * @returns {Promise<string | null>}
  */
 export async function fetchMaxAppliedMigrationVersion(databaseUrl) {
-  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 15 })
+  const sql = postgres(core.stripPostgresJsIncompatibleSslParams(databaseUrl), {
+    max: 1,
+    connect_timeout: 15,
+  })
   try {
     const [{ reg }] = await sql`select to_regclass('supabase_migrations.schema_migrations') as reg`
     if (!reg) return null

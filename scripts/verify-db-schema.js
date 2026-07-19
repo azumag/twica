@@ -37,6 +37,8 @@
 const fs = require('fs')
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const path = require('path')
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const core = require('./lib/db-migrate-core')
 
 const SCHEMA_PATH = path.join(__dirname, '..', 'src', 'lib', 'db', 'schema.ts')
 
@@ -324,9 +326,14 @@ async function main() {
   // プロジェクトにインストール済みの postgres パッケージで接続する（新規依存なし）。
   // 検証用の単発接続なので max: 1。fetch_types は既定（true）のまま
   // （information_schema しか読まないが、配列パラメータの型解決を postgres.js に任せる）。
+  // PlanetScale接続文字列が付与する sslrootcert パラメータは postgres.js が未知の
+  // 接続オプションとしてサーバーへ送りつけてしまい接続失敗する
+  // （core.stripPostgresJsIncompatibleSslParams のdocコメント参照。実機確認済み。
+  // Major-2 Fableレビュー: このスクリプトが唯一この変換を通さず素の postgres() を
+  // 呼んでいたため、実PlanetScale previewに対して実際に同じ接続失敗が再現していた）。
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const postgres = require('postgres')
-  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 15 })
+  const sql = postgres(core.stripPostgresJsIncompatibleSslParams(databaseUrl), { max: 1, connect_timeout: 15 })
 
   // process.exit() は finally の await を待たずにプロセスを落とすため、
   // 終了コードを変数に持ち、接続クローズ後に一度だけ exit する

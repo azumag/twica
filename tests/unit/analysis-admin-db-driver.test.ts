@@ -270,6 +270,59 @@ describe('adminApiPg: getStreamerByIdPg', () => {
   })
 })
 
+describe('adminApiPg: stripPostgresJsIncompatibleSslParams（PlanetScale sslrootcert非互換修正）', () => {
+  // 実PlanetScale previewで実機確認済み: PlanetScaleダッシュボードが提供する接続文字列は
+  // `?sslmode=verify-full&sslrootcert=system` を付与するが、postgres.js は sslrootcert を
+  // 認識せず未知の接続オプションとしてサーバーへ送りつけてしまい
+  // `unrecognized configuration parameter "sslrootcert"` で接続失敗する
+  // （src/lib/db/client.ts / scripts/lib/db-migrate-core.js の同名関数と同じロジック。
+  // analysis/ は別npmパッケージのため独立実装している）。
+  it('sslrootcert のみを取り除き、既存の sslmode はそのまま残す', async () => {
+    const mod = await importAdminApiPg()
+    const input =
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full&sslrootcert=system'
+    const result = mod.stripPostgresJsIncompatibleSslParams(input)
+    expect(result).toBe(
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full'
+    )
+  })
+
+  it('sslrootcert が無い接続文字列は完全に同一のまま返す', async () => {
+    const mod = await importAdminApiPg()
+    const input = 'postgres://user:pass@db.example.com:5432/mydb?sslmode=require'
+    expect(mod.stripPostgresJsIncompatibleSslParams(input)).toBe(input)
+  })
+
+  // Major-1（Fableレビュー・セキュリティ上重大）: sslrootcert=system のみでsslmode未指定の
+  // URLは、sslrootcertを単純に削除しただけだとpostgres.jsがssl=false（平文接続）として
+  // 扱ってしまう。sslmode=verify-full を明示的に補うことで完全な証明書検証を維持する。
+  // analysis/ の独立コピーにも root と同じ修正が必要（Major-3のコメント参照）。
+  it('Major-1: sslrootcert=system のみ（sslmode無し）の場合、sslmode=verify-full を明示的に補う', async () => {
+    const mod = await importAdminApiPg()
+    const input = 'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslrootcert=system'
+    const result = mod.stripPostgresJsIncompatibleSslParams(input)
+    expect(result).toBe(
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full'
+    )
+  })
+
+  it('Major-1: sslrootcert=system と sslmode の両方が指定されている場合、既存の sslmode を尊重し上書きしない', async () => {
+    const mod = await importAdminApiPg()
+    const input =
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=require&sslrootcert=system'
+    const result = mod.stripPostgresJsIncompatibleSslParams(input)
+    expect(result).toBe(
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=require'
+    )
+  })
+
+  it('パース不能な接続文字列は変換をあきらめて元の文字列をそのまま返す', async () => {
+    const mod = await importAdminApiPg()
+    const input = 'not a valid url at all :::'
+    expect(mod.stripPostgresJsIncompatibleSslParams(input)).toBe(input)
+  })
+})
+
 describe('adminApiPg: gachaHistoryFromWhere（動的WHERE句の組み立て）', () => {
   it('フィルタなしなら WHERE TRUE のみ（絞り込み条件は付かない）', async () => {
     const { tag, calls } = fakeSqlTag(null)

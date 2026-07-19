@@ -42,6 +42,12 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import * as schema from './schema'
 import { getDbTarget, type DbTarget } from './target'
+// scripts/lib/db-migrate-core.js が正本（single source of truth）。root の
+// tsconfig.json は allowJs: true のため、この .js（CommonJS）を素の import で
+// 問題なく読める（tsc --noEmit で型解決込みに検証済み。JSDoc の @param/@returns から
+// string/string の型が推論される）。詳細な背景・Major-1 (sslmode 補完) の設計根拠は
+// stripPostgresJsIncompatibleSslParams 自身の JSDoc（db-migrate-core.js）を参照。
+import { stripPostgresJsIncompatibleSslParams } from '../../../scripts/lib/db-migrate-core'
 
 /** getDb() が返すハンドル。db は Drizzle、sql は生 SQL 実行用の postgres.js クライアント */
 export interface DbHandle {
@@ -215,6 +221,13 @@ export function installIsoTimestampParsers(client: PostgresParsersLike): void {
   client.options.parsers[1184] = normalizePgTimestampString
 }
 
+// stripPostgresJsIncompatibleSslParams はここでは定義せず、正本
+// scripts/lib/db-migrate-core.js からの import をそのまま re-export する
+// （このファイル冒頭の import 文のコメント参照）。テスト
+// （tests/unit/db-client.test.ts）が `@/lib/db/client` からこの関数を直接
+// import しているため、re-export してモジュール公開面を変えない。
+export { stripPostgresJsIncompatibleSslParams }
+
 /**
  * postgres.js クライアントと Drizzle インスタンスを生成する。
  *
@@ -258,7 +271,10 @@ export function installIsoTimestampParsers(client: PostgresParsersLike): void {
  *   ランタイムがソケットを破棄するため実質影響しない。
  */
 function createHandle(connectionString: string): DbHandle {
-  const sql = postgres(connectionString, {
+  // PlanetScale接続文字列が付与する sslrootcert パラメータは postgres.js が
+  // 未知の接続オプションとしてサーバーへ送りつけてしまい接続失敗する
+  // （stripPostgresJsIncompatibleSslParams のdocコメント参照。実機確認済み）。
+  const sql = postgres(stripPostgresJsIncompatibleSslParams(connectionString), {
     max: 5,
     fetch_types: false,
     connect_timeout: 10,

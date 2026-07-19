@@ -76,6 +76,43 @@ function resolveDashboardDatabaseUrl(env: Record<string, string>): string {
   return url
 }
 
+/**
+ * postgres.js が接続文字列内で認識しない `sslrootcert` クエリパラメータを取り除き、
+ * 必要なら `sslmode=verify-full` を補う純粋関数。
+ *
+ * 詳細な背景・postgres.js 内部の行番号根拠・Major-1（sslrootcert のみ除去すると
+ * sslmode未指定URLが平文接続へサイレントダウングレードする問題とその対策）の
+ * 設計根拠は、正本である `scripts/lib/db-migrate-core.js` の同名関数の JSDoc を
+ * 参照。ロジックは常にそちらと同期させること。
+ *
+ * `analysis/` は root とは別の npm パッケージ（独自の node_modules、npm
+ * workspaces 未使用）であり、root のソースを import すると暗黙のディレクトリ
+ * 遡り解決に頼ることになり壊れやすいため、意図的に同ロジックの独立コピーを
+ * ここへ置く（Fableレビューで妥当性を確認済み）。
+ *
+ * export しているのはテストのため（gachaHistoryFromWhere と同じ理由。本番コードからの
+ * 利用は同一ファイル内の getAnalysisSql() のみを想定）。
+ */
+export function stripPostgresJsIncompatibleSslParams(connectionString: string): string {
+  if (!connectionString) return connectionString
+  try {
+    const url = new URL(connectionString)
+    const hadSslRootCert = url.searchParams.has('sslrootcert')
+    url.searchParams.delete('sslrootcert')
+    // Major-1: sslrootcert が実際に存在し、かつ sslmode が空文字列も含めて
+    // 未指定の場合のみ verify-full を補う（既存の明示的な sslmode 指定は
+    // 上書きしない。`.has()`だけだと`sslmode=`という空文字列を「指定済み」と
+    // みなし平文接続になる病的ケースが残るため`.get()`の真偽値も見る。
+    // 正本は scripts/lib/db-migrate-core.js のJSDoc参照）。
+    if (hadSslRootCert && !url.searchParams.get('sslmode')) {
+      url.searchParams.set('sslmode', 'verify-full')
+    }
+    return url.toString()
+  } catch {
+    return connectionString
+  }
+}
+
 /** Node シングルトン。analysis dev server は単一 Node プロセスなので TCP 接続を使い回す。 */
 let sqlClient: postgres.Sql | null = null
 
@@ -110,7 +147,10 @@ function getAnalysisSql(env: Record<string, string>): postgres.Sql {
     return sqlClientFactoryOverride(env)
   }
   if (!sqlClient) {
-    sqlClient = postgres(resolveDashboardDatabaseUrl(env), {
+    // PlanetScale接続文字列が付与する sslrootcert パラメータは postgres.js が
+    // 未知の接続オプションとしてサーバーへ送りつけてしまい接続失敗する
+    // （stripPostgresJsIncompatibleSslParams のdocコメント参照。実機確認済み）。
+    sqlClient = postgres(stripPostgresJsIncompatibleSslParams(resolveDashboardDatabaseUrl(env)), {
       max: 5,
       fetch_types: false,
       connect_timeout: 10,

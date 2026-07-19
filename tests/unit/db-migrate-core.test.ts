@@ -19,6 +19,7 @@ import {
   redactConnectionString,
   extractPasswordCandidates,
   redactSecretsFromText,
+  stripPostgresJsIncompatibleSslParams,
   HISTORY_SCHEMA_SQL,
   HISTORY_TABLE_SQL,
 } from '../../scripts/lib/db-migrate-core.js'
@@ -565,6 +566,71 @@ describe('extractPasswordCandidates / redactSecretsFromText', () => {
     const errorText = 'password was my@pass which failed'
     const redacted = redactSecretsFromText(errorText, url)
     expect(redacted).not.toContain('my@pass')
+  })
+})
+
+describe('stripPostgresJsIncompatibleSslParams', () => {
+  it('PlanetScaleが付与する sslrootcert=system のみを取り除き、既存の sslmode はそのまま維持する（上書きしない）', () => {
+    const input = 'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full&sslrootcert=system'
+    const result = stripPostgresJsIncompatibleSslParams(input)
+    // URL全体の同一性を検証する（sslrootcert除去のみで他パラメータ・host・user等が
+    // 一切変化していないことを保証。toContainの部分一致だけでは不十分なため強化）。
+    expect(result).toBe(
+      'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full'
+    )
+  })
+
+  it('sslrootcert が無い接続文字列は完全に同一のまま返す（sslmodeを新たに補わない）', () => {
+    const input = 'postgres://user:pass@db.example.com:5432/mydb?sslmode=require'
+    const result = stripPostgresJsIncompatibleSslParams(input)
+    expect(result).toBe(input)
+  })
+
+  // Major-1（Fableレビュー・セキュリティ上重大）:
+  // 実機で確認された事実: `?sslrootcert=system` のみが付き `sslmode` が付いていない
+  // URLの場合、sslrootcert を単純に削除するだけだと postgres.js は `ssl=false`
+  // （平文・非TLS接続）として扱ってしまう（stripPostgresJsIncompatibleSslParams の
+  // JSDoc「Major-1」セクション参照）。sslrootcert=system が本来意図していた
+  // 「完全な証明書検証」を維持するため、sslmode 未指定時は verify-full を明示的に
+  // 補う必要がある。以下2パターン（sslrootcertのみ／sslrootcert+sslmode両方あり）
+  // をともにカバーする。
+  describe('Major-1: sslmode 明示補完（平文接続への意図しないダウングレード防止）', () => {
+    it('sslrootcert=system のみ（sslmode無し）の場合、sslmode=verify-full を明示的に補う', () => {
+      const input = 'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslrootcert=system'
+      const result = stripPostgresJsIncompatibleSslParams(input)
+      expect(result).toBe(
+        'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=verify-full'
+      )
+    })
+
+    it('sslrootcert=system と sslmode の両方が指定されている場合、既存の sslmode を尊重し上書きしない', () => {
+      // sslmode=require のような緩いモードが明示されているケース。sslrootcert=system
+      // が付いていても、呼び出し元が意図的に指定した sslmode を verify-full へ
+      // 勝手に強めてはならない（既存の明示的指定を尊重する、というMajor-1の要件）。
+      const input = 'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=require&sslrootcert=system'
+      const result = stripPostgresJsIncompatibleSslParams(input)
+      expect(result).toBe(
+        'postgresql://user:pass@ap-northeast-2.pg.psdb.cloud:5432/preview?sslmode=require'
+      )
+    })
+
+    it('sslrootcert が無ければ、sslmodeも無い接続文字列に対してsslmodeを補わない（無関係なURLへの副作用が無いことの確認）', () => {
+      const input = 'postgres://user:pass@db.example.com:5432/mydb'
+      const result = stripPostgresJsIncompatibleSslParams(input)
+      expect(result).toBe(input)
+      expect(result).not.toContain('sslmode')
+    })
+  })
+
+  it('パース不能な接続文字列は変換をあきらめて元の文字列をそのまま返す', () => {
+    const input = 'not a valid url at all :::'
+    expect(stripPostgresJsIncompatibleSslParams(input)).toBe(input)
+  })
+
+  it('空文字列/undefinedはそのまま返す', () => {
+    expect(stripPostgresJsIncompatibleSslParams('')).toBe('')
+    // @ts-expect-error 実引数はランタイムで undefined が来うる呼び出し元防御を確認する
+    expect(stripPostgresJsIncompatibleSslParams(undefined)).toBe(undefined)
   })
 })
 
