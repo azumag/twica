@@ -189,6 +189,79 @@ export function splitDatabaseUrlPassword(databaseUrl) {
   return { sanitizedUrl: url.toString(), password }
 }
 
+/**
+ * pg_dump を実行し、生dump（stdout）を返す再利用可能な中核ロジック（Issue #697 Chunk 1で抽出）。
+ *
+ * 背景: 元々このロジックは main() に直書きされていた。scripts/db-cutover/layer-schema.mjs
+ * （cutover検証ツール Layer 2: schema比較）が同じ「pg_dump --schema=public --schema-only
+ * --no-owner --no-privileges をパスワード安全に実行する」ロジックを source/target 双方に対して
+ * 必要とするため、ここに切り出して再利用する。パスワードのargv非露出対策
+ * （splitDatabaseUrlPassword、ファイル冒頭コメント N-3 参照）を2箇所に重複実装しないための
+ * リファクタリング（DRY・セキュリティ上重要なロジックの単一化）。
+ *
+ * main() との責務分担: この関数は「実行して結果を返す」ことだけを行い、console出力は一切しない
+ * （呼び出し側がCLI向けログ／構造化report向けメッセージのどちらを組み立てるかを選べるようにする
+ * ため）。redaction（core.redactSecretsFromText）も呼び出し側の責務とする
+ * （呼び出し側ごとにエラーメッセージの出し先・体裁が異なるため）。
+ *
+ * @param {string} databaseUrl
+ * @param {{ pgDumpBin?: string, env?: NodeJS.ProcessEnv }} [options]
+ * @returns {{
+ *   ok: true, rawDump: string, stderr: string
+ * } | {
+ *   ok: false, kind: 'invalid-url' | 'binary-missing' | 'spawn-error' | 'exit-nonzero', message: string
+ * }}
+ */
+export function runPgDumpPublicSchema(databaseUrl, options = {}) {
+  const env = options.env ?? process.env
+  const pgDumpBin = options.pgDumpBin ?? resolvePgDumpBinary(env)
+
+  let sanitizedUrl, dumpPassword
+  try {
+    ;({ sanitizedUrl, password: dumpPassword } = splitDatabaseUrlPassword(databaseUrl))
+  } catch (error) {
+    return {
+      ok: false,
+      kind: 'invalid-url',
+      message: `DATABASE_URL の形式が不正です（URIとしてパースできません）: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+  const pgDumpEnv = dumpPassword ? { ...env, PGPASSWORD: dumpPassword } : env
+
+  // --schema=public --schema-only --no-owner --no-privileges: ファイル冒頭コメント
+  // 「manifest.json に含めない情報」節および normalize-schema.mjs の分類ロジック前提と同じ
+  // （このオプション指定を変更する場合は両ファイルの前提コメントを合わせて見直すこと）。
+  const result = spawnSync(
+    pgDumpBin,
+    [sanitizedUrl, '--schema=public', '--schema-only', '--no-owner', '--no-privileges'],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 * 256, env: pgDumpEnv }
+  )
+
+  if (result.error) {
+    if (result.error.code === 'ENOENT') {
+      return {
+        ok: false,
+        kind: 'binary-missing',
+        message:
+          `pg_dump コマンドが見つかりません（${pgDumpBin}）。PostgreSQLクライアントツールを` +
+          'インストールしてください（例: brew install postgresql@17）。または PG_DUMP_BIN 環境変数で' +
+          'pg_dump の絶対パスを明示指定してください。',
+      }
+    }
+    return { ok: false, kind: 'spawn-error', message: `pg_dump の起動に失敗しました: ${String(result.error)}` }
+  }
+
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      kind: 'exit-nonzero',
+      message: `pg_dump がエラー終了しました (exit=${result.status}): ${result.stderr ?? ''}`,
+    }
+  }
+
+  return { ok: true, rawDump: result.stdout, stderr: result.stderr ?? '' }
+}
+
 function parseCliArgs(argv) {
   const args = argv.slice(2)
   let outDir = DEFAULT_OUT_DIR
@@ -247,65 +320,27 @@ async function main() {
     `[export-public-schema] pg_dump 実行中... database=${core.redactConnectionString(databaseUrl)}`
   )
 
-  // N-3（Fableレビュー2回目）対応: パスワード込みの接続文字列をそのままargvへ渡さない。
-  // sanitizedUrl（パスワード除去済みURI）のみをargvへ、パスワードはPGPASSWORD環境変数
-  // （子プロセスの環境変数のみに載り、`ps`等のプロセス一覧には現れない）経由で渡す。
-  // 詳細は splitDatabaseUrlPassword のJSDoc参照。
-  let sanitizedUrl, dumpPassword
-  try {
-    ;({ sanitizedUrl, password: dumpPassword } = splitDatabaseUrlPassword(databaseUrl))
-  } catch (error) {
+  // pg_dump の起動・パスワードのargv非露出対策込みの実行は runPgDumpPublicSchema に集約済み
+  // （scripts/db-cutover/layer-schema.mjs との共用ロジック。関数のJSDoc参照）。
+  const dumpResult = runPgDumpPublicSchema(databaseUrl, { pgDumpBin })
+  if (!dumpResult.ok) {
+    // invalid-url/binary-missing は運用エラー相当だが、既存の終了コード規約
+    // （spawn-error/binary-missingはexit 2、exit-nonzero/invalid-urlはexit 1）を維持する。
+    const exitCode = dumpResult.kind === 'spawn-error' || dumpResult.kind === 'binary-missing' ? 2 : 1
     console.error(
-      `[export-public-schema] DATABASE_URL の形式が不正です（URIとしてパースできません）: ` +
-        core.redactSecretsFromText(String(error?.message ?? error), databaseUrl)
+      `[export-public-schema] ${core.redactSecretsFromText(dumpResult.message, databaseUrl)}`
     )
-    return 1
-  }
-  const pgDumpEnv = dumpPassword ? { ...process.env, PGPASSWORD: dumpPassword } : process.env
-
-  // --schema=public --schema-only --no-owner --no-privileges:
-  // Issue #691 本文の明示要件。auth/realtime/storage等のSupabase管理スキーマを
-  // 巻き込まず、owner/ACLも持ち込まない（後段のnormalize-schema.mjsはこれらが
-  // 万一混入した場合の防御的検知のみを担う設計であり、一次防御はここのフラグ指定）。
-  const result = spawnSync(
-    pgDumpBin,
-    [sanitizedUrl, '--schema=public', '--schema-only', '--no-owner', '--no-privileges'],
-    { encoding: 'utf8', maxBuffer: 1024 * 1024 * 256, env: pgDumpEnv }
-  )
-
-  if (result.error) {
-    if (result.error.code === 'ENOENT') {
-      console.error(
-        `[export-public-schema] pg_dump コマンドが見つかりません（${pgDumpBin}）。` +
-          'PostgreSQLクライアントツールをインストールしてください' +
-          '（例: brew install postgresql@17）。' +
-          'または PG_DUMP_BIN 環境変数で pg_dump の絶対パスを明示指定してください。'
-      )
-    } else {
-      console.error(
-        `[export-public-schema] pg_dump の起動に失敗しました: ` +
-          core.redactSecretsFromText(String(result.error), databaseUrl)
-      )
-    }
-    return 2
+    return exitCode
   }
 
-  if (result.status !== 0) {
-    console.error(
-      `[export-public-schema] pg_dump がエラー終了しました (exit=${result.status}):`
-    )
-    console.error(core.redactSecretsFromText(result.stderr ?? '', databaseUrl))
-    return 1
-  }
-
-  if (result.stderr && result.stderr.trim()) {
+  if (dumpResult.stderr && dumpResult.stderr.trim()) {
     // pg_dump は成功時でも stderr に警告を出すことがある。黙って握りつぶさない
     // （db-migrate.js の PostgreSQL warning 方針と同じ思想）。
     console.warn('[export-public-schema] pg_dump stderr (exit=0、警告として記録):')
-    console.warn(core.redactSecretsFromText(result.stderr, databaseUrl))
+    console.warn(core.redactSecretsFromText(dumpResult.stderr, databaseUrl))
   }
 
-  const rawDump = result.stdout
+  const rawDump = dumpResult.rawDump
   const outDir = parsed.outDir
   mkdirSync(outDir, { recursive: true })
 

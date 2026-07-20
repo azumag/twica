@@ -417,6 +417,32 @@ db-migrate.js経由でSQLを実行し検証したかのように読めてしま�
   `migration-transaction: forbidden`+`SET LOCAL`併用検知ガード・
   `00051_add_card_owner_stats.sql`実ファイルに対する回帰テスト
 
+### 4.3 cutover検証ツールのDocker故障注入テスト（Issue #697、追記）
+
+Issue #697「cutover前後のschema・件数・checksum・業務invariant検証ツール」の実装に伴い、
+本章と同じ2コンテナ構成（source/target、`bootstrap.sql` → `public-schema.sql`の順で適用）を
+使った故障注入統合テストを `tests/unit/db-cutover/docker-fault-injection.test.ts` に追加した。
+`scripts/db-cutover/` 配下のLayer 1（identity検証）・Layer 2（schema比較）・CLI
+（`verify.mjs`/`init-identity.mjs`）が実DB接続で意図通りfailを検出することを検証する。
+
+**通常の `npm run test:unit`/`npx vitest run` では実行されない（自動スキップ）。**
+CI環境（GitHub Actions ubuntu-latest）はDocker自体は確実に持つが、psql/pg_dumpの有無や
+そのメジャーバージョンが本テストの起動する `postgres:17` イメージと一致するかは保証されて
+いないため、CI全体（`--bail=1`付きのUnit testsステップ）を巻き添えにするリスクがある。
+そのため明示的なopt-in環境変数を必須にしており、これが無い限りCIかローカルかを問わず
+常にスキップする。
+
+ローカルで実機検証する場合:
+
+```bash
+RUN_DB_CUTOVER_DOCKER_TESTS=1 npx vitest run tests/unit/db-cutover/docker-fault-injection.test.ts
+```
+
+前提条件（本章4.1節と同じ）: Docker Desktopが起動していること、`psql`/`pg_dump`が
+PATH上またはHomebrewの既定インストール先（`/opt/homebrew/opt/postgresql@17/bin` 等）から
+解決できること。opt-inした上で前提条件が揃っていない場合は、テスト実行時にその旨を示す
+警告が出てスキップされる（サイレントに何も起きないわけではない）。
+
 ## Chunk 2 で行うこと（本チャンクのスコープ外）
 
 各項目の実施状況（本ドキュメント更新時点、実PlanetScale/Supabaseへの実測確認込み）を明記する。

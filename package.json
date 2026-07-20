@@ -33,6 +33,8 @@
     "db:migrate:verify": "node scripts/db-migrate.js verify",
     "db:phase2:export": "node scripts/db-phase2/export-public-schema.mjs",
     "db:phase2:normalize": "node scripts/db-phase2/normalize-schema.mjs",
+    "db:cutover:init-identity": "node scripts/db-cutover/init-identity.mjs",
+    "db:cutover:verify": "node scripts/db-cutover/verify.mjs",
     "check:analysis-browser-supabase": "node scripts/check-analysis-browser-supabase.js",
     "check:maintenance-surfaces": "node scripts/check-maintenance-surfaces.js",
     "probe:maintenance": "node scripts/probe-maintenance-write-surfaces.js",

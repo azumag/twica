@@ -602,17 +602,42 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    （既存スクリプトをそのまま流用可能。CI では実行しない運用も踏襲）。
    **注意: 「差分ゼロ・exit 0」は期待できない。** pg_dump/restore は prod の
    実スキーマをそのまま移送するため、既知のスキーマドリフト（#625:
-   `battles`/`battle_stats` テーブルが prod に存在しない・`cards` の 8 列が
-   prod に欠落）は新 DB にもそのまま引き継がれる。スクリプトは schema.ts を
-   正として双方向で差分検出し、schema.ts 側の全テーブルへ SELECT smoke を
-   発行するため、**期待される出力は次の通り**（これ以外の差分が出た場合のみ
-   異常と判断する）:
+   `battles`/`battle_stats` テーブルが prod に存在しない）は新 DB にもそのまま
+   引き継がれる。スクリプトは schema.ts を正として双方向で差分検出し、
+   schema.ts 側の全テーブルへ SELECT smoke を発行するため、
+   **期待される出力は次の通り**（これ以外の差分が出た場合のみ異常と判断する）:
    - table missing in DB × 2（battles / battle_stats）
-   - column missing in DB × 8（cards: card_number/hp/atk/def/spd/
-     skill_type/skill_name/skill_power）
    - SELECT smoke failure × 2（battles / battle_stats、テーブル不在のため）
    - 終了コード **1**（差分ありのため非ゼロ終了が正常。exit 0 を成功条件に
      した自動化スクリプトでラップしないこと）
+
+   **2026-07-20 訂正（Issue #697 Chunk 1実装時に判明、旧記載は削除済み）**:
+   本節は以前「`cards` の 8 列（card_number/hp/atk/def/spd/skill_type/
+   skill_name/skill_power）が prod に欠落しており column missing in DB × 8 が
+   追加で出る」と記載していたが、この記載は古い。`supabase/migrations/
+   20260718000000_repair_cards_missing_columns.sql`（#625修復migration）で
+   prod の `cards` テーブルは既に修復済みであり、`db/planetscale/
+   public-schema.sql`（`db/planetscale/migrations/
+   20260719180100_planetscale_public_schema_baseline.sql` が適用するbaseline）
+   にも修復後の8列が実データ由来で反映済みであることを確認した
+   （`grep -A 40 'Name: cards; Type: TABLE' db/planetscale/public-schema.sql`
+   で hp/atk/def/spd/skill_type/skill_name/skill_power/card_number の
+   全列が存在することを実ファイルで確認済み）。よって cards列欠落による
+   差分はもはや発生しない想定。実施直前の再検証で万一この8列の差分が
+   再出現した場合は、prod側で修復migrationが未適用（ロールバックされた等）
+   の可能性を疑うこと。
+
+   **TODO（後続チャンク、Issue #697、オーケストレーターレビュー Minor-10対応）**:
+   `scripts/verify-db-schema.js`（単一DB⇔schema.ts比較）とは別に、`db:cutover:verify`
+   （`scripts/db-cutover/verify.mjs`、Issue #697 Chunk 1で実装済み。source/target
+   2DB間のidentity検証・schema比較を行う）が利用可能になった。本ランブックはまだ
+   このツールを手順に組み込んでいない（Chunk 1のスコープ外）。後続チャンクで
+   Layer 3〜6（件数・checksum・業務invariant・runtime canary）が揃った段階で、
+   本章の該当ステップを `db:cutover:verify` ベースの手順に置き換える、または
+   併用するかを判断すること。`db:cutover:init-identity`（`twica_meta.database_identity`
+   のseeding）は4つの実インスタンス（Supabase/PlanetScale × prod/preview）それぞれに
+   対して、`db:cutover:verify` を初めて使う前に1回ずつ手動実行しておく必要がある
+   （詳細は `scripts/db-cutover/init-identity.mjs` のヘルプ・コード冒頭コメント参照）。
 7. **シーケンス値の確認**（6章）。
 8. **Hyperdrive の接続先を PlanetScale に切り替える**（`wrangler hyperdrive
    update` または config 再作成。詳細は 7章ロールバック手順と対になる操作。
@@ -865,8 +890,10 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
         migration は追記専用・履歴改変をしない運用のため、既存の 00002 を
         書き換えたり再適用したりはしない）。この方針で問題ないかオーナー最終確認
       - `cards` の 8 列（card_number は採番用・残り 7 列が battle 系。列名一覧は
-        `src/lib/db/cards-safe-columns.ts`、経緯は #625）: prod に欠落したまま
-        移行すると、新 DB でも `CARDS_SAFE_COLUMNS` フォールバックが恒久的に
-        必要になる。**切替前に prod へ列追加 migration を適用してドリフトを
-        解消しておくか**、ドリフトごと移送するかをオーナー判断
-        （解消しておく方がコード側のフォールバックを将来削除できる）
+        `src/lib/db/cards-safe-columns.ts`、経緯は #625）: **解消済み（2026-07-20
+        追記）。** `supabase/migrations/20260718000000_repair_cards_missing_columns.sql`
+        により prod へ列追加済みで、`db/planetscale/public-schema.sql` にも
+        修復後の8列が反映済みであることを確認した（6章6項の訂正メモ参照）。
+        本項目のオーナー判断待ちは解消済み。`CARDS_SAFE_COLUMNS` フォールバック
+        自体（コード側）を削除するかどうかは本ランブックのスコープ外
+        （別issueで扱う）。
