@@ -1,9 +1,13 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import worker, {
   processErrors,
   processInquiries,
   processEventSubParkBacklog,
+  processEventSubParkAutoDrain,
   EVENTSUB_PARK_KEY_PREFIX,
+  EVENTSUB_AUTO_DRAIN_CRON,
   parseParkedEventSubKeyReceivedAt,
 } from '../../workers/error-reporter/src/index';
 // Major-3 契約テスト用: worker パッケージ自体は @opennextjs/cloudflare 依存のため
@@ -1037,6 +1041,337 @@ describe('reporter worker', () => {
         );
         expect(fetchMock).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  // ===========================================================================
+  // processEventSubParkAutoDrain（Issue #695 KVベース部分改善の2項目目:
+  // EventSub 退避 backlog 自動ドレイン）
+  //
+  // processEventSubParkBacklog と異なり RATE_LIMIT_KV を直接読まず、
+  // GET /api/maintenance-status と POST /api/admin/eventsub-replay を
+  // HTTP 経由で叩く（prod/preview 両ターゲット）。「最古エントリの経過時間」で
+  // fake timers を使う点は processEventSubParkBacklog のテストと同じ。
+  // ===========================================================================
+  describe('processEventSubParkAutoDrain', () => {
+    const FIXED_NOW = new Date('2026-01-01T12:00:00.000Z');
+
+    const drainEnv = {
+      ...mockEnv,
+      APP_BASE_URL_PROD: 'https://prod.example.com',
+      APP_BASE_URL_PREVIEW: 'https://preview.example.com',
+      EVENTSUB_REPLAY_SECRET_PROD: 'prod-secret',
+      EVENTSUB_REPLAY_SECRET_PREVIEW: 'preview-secret',
+    };
+
+    /** age分だけ FIXED_NOW より過去の ISO8601 文字列を返す。 */
+    const agoIso = (minutesAgo: number) =>
+      new Date(FIXED_NOW.getTime() - minutesAgo * 60_000).toISOString();
+
+    const emptyCounts = {
+      succeeded: 0,
+      skipped: 0,
+      failed: 0,
+      unknownType: 0,
+      invalidPayload: 0,
+      total: 0,
+    };
+
+    /** dry-run peek レスポンス（listParkedEventSubNotifications 相当）を組み立てる。 */
+    const peekResponse = (receivedAtList: string[]) => ({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          dryRun: true,
+          listComplete: true,
+          results: receivedAtList.map((receivedAt, i) => ({
+            key: `maintenance:eventsub:${receivedAt}:msg-${i}`,
+            messageId: `msg-${i}`,
+            subscriptionType: 'channel.channel_points_custom_reward_redemption.add',
+            receivedAt,
+            outcome: 'dry-run',
+          })),
+          counts: emptyCounts,
+        }),
+    });
+
+    /** maintenance-status レスポンスを組み立てる。 */
+    const statusResponse = (mode: string) => ({
+      ok: true,
+      json: () => Promise.resolve({ mode }),
+    });
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(FIXED_NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('baseUrl が未設定のターゲットは warn ログのみで fetch しない', async () => {
+      const env = { ...mockEnv }; // APP_BASE_URL_PROD/PREVIEW ともに無し
+
+      await processEventSubParkAutoDrain(env);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Missing base URL for production')
+      );
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Missing base URL for preview')
+      );
+    });
+
+    it('replay secret が未設定のターゲットは maintenance-status すら呼ばず warn ログのみ', async () => {
+      const env = {
+        ...mockEnv,
+        APP_BASE_URL_PROD: 'https://prod.example.com',
+        APP_BASE_URL_PREVIEW: 'https://preview.example.com',
+        // secret 両方未設定
+      };
+
+      await processEventSubParkAutoDrain(env);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Missing replay secret for production')
+      );
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Missing replay secret for preview')
+      );
+    });
+
+    it('maintenance mode が off 以外なら eventsub-replay を呼ばずスキップする', async () => {
+      fetchMock.mockResolvedValueOnce(statusResponse('read-only')); // prod status
+      fetchMock.mockResolvedValueOnce(statusResponse('read-only')); // preview status
+
+      await processEventSubParkAutoDrain(drainEnv);
+
+      // maintenance-status の GET のみ（POST /eventsub-replay は呼ばれない）
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][0]).toBe('https://prod.example.com/api/maintenance-status');
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining("production: maintenance mode is 'read-only' (not 'off'), skipping")
+      );
+    });
+
+    it('maintenance-status が非2xxを返した場合はエラーログを出しスキップする（off と決め打たない）', async () => {
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 503, text: () => Promise.resolve('unavailable') });
+      fetchMock.mockResolvedValueOnce(statusResponse('off')); // preview は正常
+      fetchMock.mockResolvedValueOnce(peekResponse([])); // preview peek: backlog無し
+
+      await processEventSubParkAutoDrain(drainEnv);
+
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('maintenance-status returned 503 for https://prod.example.com')
+      );
+      // production はここで打ち切り（eventsub-replay へは進まない）だが、
+      // preview は独立して処理が続く。
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('backlog が0件なら eventsub-replay 実行(dryRun:false)は呼ばれない', async () => {
+      fetchMock.mockResolvedValueOnce(statusResponse('off'));
+      fetchMock.mockResolvedValueOnce(peekResponse([])); // peek: 0件
+      fetchMock.mockResolvedValueOnce(statusResponse('off'));
+      fetchMock.mockResolvedValueOnce(peekResponse([]));
+
+      await processEventSubParkAutoDrain(drainEnv);
+
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('production: no parked notifications, nothing to drain')
+      );
+    });
+
+    it('最古エントリの経過時間が10分未満なら eventual consistency ガードによりスキップする', async () => {
+      fetchMock.mockResolvedValueOnce(statusResponse('off'));
+      fetchMock.mockResolvedValueOnce(peekResponse([agoIso(5)])); // 5分前（閾値10分未満）
+      fetchMock.mockResolvedValueOnce(statusResponse('off'));
+      fetchMock.mockResolvedValueOnce(peekResponse([agoIso(5)]));
+
+      await processEventSubParkAutoDrain(drainEnv);
+
+      // status + peek のみ（計4回）。実ドレイン(POST dryRun:false)は呼ばれない。
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('production: oldest entry age 5min is below threshold (10min)')
+      );
+    });
+
+    it('最古エントリの経過時間が10分以上なら1バッチのみ実ドレインし結果をログする', async () => {
+      fetchMock.mockResolvedValueOnce(statusResponse('off')); // prod status
+      fetchMock.mockResolvedValueOnce(peekResponse([agoIso(15)])); // prod peek: 15分前
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            dryRun: false,
+            listComplete: true,
+            results: [],
+            counts: { succeeded: 3, skipped: 1, failed: 0, unknownType: 0, invalidPayload: 0, total: 4 },
+          }),
+      }); // prod 実ドレイン
+      fetchMock.mockResolvedValueOnce(statusResponse('off')); // preview status
+      fetchMock.mockResolvedValueOnce(peekResponse([])); // preview peek: 0件
+
+      await processEventSubParkAutoDrain(drainEnv);
+
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+
+      // 実ドレイン呼び出しのリクエストボディを検証(limit=20固定、dryRun:false)
+      const drainCall = fetchMock.mock.calls[2];
+      expect(drainCall[0]).toBe('https://prod.example.com/api/admin/eventsub-replay');
+      const drainBody = JSON.parse(drainCall[1].body);
+      expect(drainBody).toEqual({ dryRun: false, limit: 20 });
+      expect(drainCall[1].headers['X-Replay-Secret']).toBe('prod-secret');
+
+      // peek 呼び出しは limit=1 の dry-run
+      const peekCall = fetchMock.mock.calls[1];
+      const peekBody = JSON.parse(peekCall[1].body);
+      expect(peekBody).toEqual({ dryRun: true, limit: 1 });
+
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'production: batch drained - succeeded=3 skipped=1 failed=0 unknownType=0 invalidPayload=0 total=4 listComplete=true'
+        )
+      );
+    });
+
+    it('実ドレインが非2xxを返してもエラーログのみで例外を投げず、他ターゲットの処理は続く', async () => {
+      fetchMock.mockResolvedValueOnce(statusResponse('off'));
+      fetchMock.mockResolvedValueOnce(peekResponse([agoIso(15)]));
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('boom') }); // prod 実ドレイン失敗
+      fetchMock.mockResolvedValueOnce(statusResponse('off'));
+      fetchMock.mockResolvedValueOnce(peekResponse([])); // preview は正常続行
+
+      await expect(processEventSubParkAutoDrain(drainEnv)).resolves.toBeUndefined();
+
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('eventsub-replay returned 500 for https://prod.example.com: boom')
+      );
+      // preview 側の呼び出しまで到達している(独立性の確認)
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('preview: no parked notifications, nothing to drain')
+      );
+    });
+
+    it('fetch がネットワークエラーで reject してもエラーログのみで他ターゲットは続行する', async () => {
+      fetchMock.mockRejectedValueOnce(new Error('network down')); // prod status で例外
+      fetchMock.mockResolvedValueOnce(statusResponse('off')); // preview status
+      fetchMock.mockResolvedValueOnce(peekResponse([]));
+
+      await expect(processEventSubParkAutoDrain(drainEnv)).resolves.toBeUndefined();
+
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('failed to fetch maintenance-status for https://prod.example.com'),
+        expect.any(Error)
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('末尾スラッシュ付きの baseUrl でも二重スラッシュにならない', async () => {
+      const env = {
+        ...mockEnv,
+        APP_BASE_URL_PROD: 'https://prod.example.com/',
+        APP_BASE_URL_PREVIEW: undefined,
+        EVENTSUB_REPLAY_SECRET_PROD: 'prod-secret',
+        EVENTSUB_REPLAY_SECRET_PREVIEW: undefined,
+      };
+      fetchMock.mockResolvedValueOnce(statusResponse('off'));
+      fetchMock.mockResolvedValueOnce(peekResponse([]));
+
+      await processEventSubParkAutoDrain(env);
+
+      expect(fetchMock.mock.calls[0][0]).toBe('https://prod.example.com/api/maintenance-status');
+    });
+  });
+
+  // ===========================================================================
+  // scheduled(): event.cron による分岐（自動ドレイン専用トリガー vs 既存3処理）
+  // ===========================================================================
+  describe('scheduled(): cron トリガーによる分岐', () => {
+    it('event.cron が EVENTSUB_AUTO_DRAIN_CRON の場合は自動ドレインのみ実行し、既存3処理は実行しない', async () => {
+      const drainEvent = { cron: EVENTSUB_AUTO_DRAIN_CRON } as ScheduledController;
+      const env = {
+        ...mockEnv,
+        APP_BASE_URL_PROD: 'https://prod.example.com',
+        APP_BASE_URL_PREVIEW: undefined,
+        EVENTSUB_REPLAY_SECRET_PROD: 'prod-secret',
+        EVENTSUB_REPLAY_SECRET_PREVIEW: undefined,
+      };
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ mode: 'off' }) });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            dryRun: true,
+            listComplete: true,
+            results: [],
+            counts: { succeeded: 0, skipped: 0, failed: 0, unknownType: 0, invalidPayload: 0, total: 0 },
+          }),
+      });
+
+      await worker.scheduled(drainEvent, env, mockCtx);
+
+      // maintenance-status + peek の2回のみ（errors/inquiries/backlog監視 の
+      // Supabase/GitHub 呼び出しは一切発生しない）
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][0]).toContain('/api/maintenance-status');
+      expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
+      expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('No pending inquiries'));
+    });
+
+    it('event.cron が既存トリガー(*/5 * * * *)の場合は従来どおり既存3処理のみ実行し、自動ドレインは実行しない', async () => {
+      const normalEvent = { cron: '*/5 * * * *' } as ScheduledController;
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // errors
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // inquiries
+      // mockEnv には RATE_LIMIT_KV も APP_BASE_URL_* も無いため
+      // backlog監視は早期return、自動ドレインは呼ばれていればwarnログが出るはず
+
+      await worker.scheduled(normalEvent, mockEnv, mockCtx);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
+      expect(console.log).not.toHaveBeenCalledWith(
+        expect.stringContaining('[EventSub Auto Drain] Started')
+      );
+    });
+
+    it('event.cron が未設定(テスト用の空イベント等)の場合も既存3処理が実行される(後方互換)', async () => {
+      // mockEvent = {} as ScheduledController は cron が undefined。
+      // EVENTSUB_AUTO_DRAIN_CRON と一致しないため、既存トリガーと同じ分岐に落ちる。
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+
+      await worker.scheduled(mockEvent, mockEnv, mockCtx);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
+    });
+
+    it('EVENTSUB_AUTO_DRAIN_CRON が wrangler.toml の [triggers] crons に実在する(ドリフト検知)', () => {
+      // index.ts の EVENTSUB_AUTO_DRAIN_CRON と wrangler.toml の crons 配列は
+      // コメントでの相互参照のみに頼っており、片方だけ変更されると自動ドレインが
+      // 黙って発火しなくなる（かつ変更後トリガーが既存3処理をその頻度で
+      // 再実行してしまう二重の害がある、Fableレビュー Minor指摘）。
+      // TOML全体をパースする専用パッケージは導入せず、crons行を正規表現で
+      // 抽出するだけの軽量な検証に留める（YAGNI）。
+      const wranglerToml = readFileSync(
+        resolve(__dirname, '../../workers/error-reporter/wrangler.toml'),
+        'utf-8'
+      );
+      const cronsLineMatch = wranglerToml.match(/^crons\s*=\s*\[(.+)\]/m);
+      expect(cronsLineMatch).not.toBeNull();
+      const crons = (cronsLineMatch?.[1] ?? '')
+        .split(',')
+        .map((s) => s.trim().replace(/^"(.*)"$/, '$1'))
+        .filter(Boolean);
+      expect(crons).toContain(EVENTSUB_AUTO_DRAIN_CRON);
     });
   });
 

@@ -48,6 +48,44 @@ interface Env {
    * チェック（他の secrets と違い早期 return せず個別に no-op する）と対応させる。
    */
   RATE_LIMIT_KV?: EventSubParkKVNamespace
+
+  /**
+   * Issue #695 の代替として承認された KV ベース部分改善の2項目目
+   * （EventSub 退避 backlog の自動ドレイン）で使う設定・secrets。
+   *
+   * prod/preview 両方を対象にする理由: errors/inquiries 監視（このワーカー自体）は
+   * 本番 Supabase のみを見る設計（`.github/workflows/deploy-cloudflare.yml` の
+   * `legacy-app-deploy`/`auxiliary-workers` job コメント「Error Reporter Cron
+   * Worker のデプロイ（本番のみ）」参照。このワーカー自体、preview 用の
+   * デプロイ・secrets を持たない）。しかし EventSub 退避（KV への park）は
+   * アプリ本体（Next.js Worker）の処理であり、`twica`（本番）と
+   * `twica-preview`（preview）は別々の Cloudflare Workers デプロイ・別ドメイン・
+   * 別 KV namespace（root wrangler.toml の [[kv_namespaces]] と
+   * [env.preview.kv_namespaces] で id が異なる）を使う。そのため preview 側で
+   * maintenance mode を使った検証作業（実績: deploy-architecture メモ参照）を
+   * 行った場合、preview 側にも退避データが溜まりうる。errors/inquiries 監視が
+   * 本番のみで足りるのは「監視対象データ（Supabase）がそもそも本番用の
+   * secrets しか設定されていない」という別の理由によるものであり、
+   * EventSub 退避には同じ理由が当てはまらないため、ここでは prod/preview
+   * 両方を明示的にドレイン対象にする。
+   */
+  /** 本番アプリ（`twica`）のベースURL。例: https://twica.bluemoon.works */
+  APP_BASE_URL_PROD?: string
+  /** preview アプリ（`twica-preview`）のベースURL。例: https://twica-preview.tsubasa-azumagakito.workers.dev */
+  APP_BASE_URL_PREVIEW?: string
+  /**
+   * 本番アプリの `EVENTSUB_REPLAY_SECRET`（`src/app/api/admin/eventsub-replay/
+   * route.ts` が検証する共有シークレット）と同じ値を、このワーカー用にも
+   * `wrangler secret put EVENTSUB_REPLAY_SECRET_PROD` で設定する想定。
+   * prod/preview で別々の secret 値を運用している前提のため（docs/
+   * db-phase2-runbook.md 4.3節: 両環境で `openssl rand -hex 32` により
+   * 個別に生成・設定済み）、_PROD/_PREVIEW を分けている。未設定の場合は
+   * 該当ターゲットへのドレインのみを安全にスキップする
+   * （processEventSubParkAutoDrain 参照）。
+   */
+  EVENTSUB_REPLAY_SECRET_PROD?: string
+  /** preview アプリの `EVENTSUB_REPLAY_SECRET` と同じ値。上記コメント参照。 */
+  EVENTSUB_REPLAY_SECRET_PREVIEW?: string
 }
 
 /**
@@ -1019,21 +1057,362 @@ export async function processEventSubParkBacklog(env: Env): Promise<void> {
 }
 
 // =============================================================================
+// EventSub 退避 backlog 自動ドレイン（RATE_LIMIT_KV → eventsub-replay API）
+//
+// Issue #695（EventSub の Cloudflare Queue 化）の代替として承認された、
+// KV ベース部分改善の2項目目。1項目目（上記 processEventSubParkBacklog）は
+// 滞留を「検知して人間に通知する」だけだったが、この2項目目は
+// maintenance mode 解除後の再処理（リプレイ）そのものを自動化し、運用者が
+// 手動で `scripts/replay-maintenance-eventsub.js` を実行し忘れるリスクを減らす。
+//
+// 手動 CLI（scripts/replay-maintenance-eventsub.js）との違い:
+//   - CLI は cursor を使って listComplete になるまで全件処理する「完走」設計。
+//     この自動ドレインは Cron Trigger 1回の実行につき1バッチ（最大
+//     EVENTSUB_AUTO_DRAIN_BATCH_LIMIT 件）だけ処理し、cursor は保持しない。
+//     処理しきれない残りは EVENTSUB_AUTO_DRAIN_CRON の次回実行（20分後）に
+//     委ねる。理由: Cron Worker の1回の実行時間を有界に保つ（KV 障害等で
+//     backlog が巨大化した場合に単発の実行が長時間化するのを防ぐ）ため、
+//     また通常運用では maintenance window 終了後の backlog は高々数十件
+//     程度と見込まれ、複数回の cron tick に分割されても実害が小さいため
+//     （手動 CLI による即時完全処理が必要な場合は運用者が引き続き使える）。
+//   - KV へは直接アクセスしない（processEventSubParkBacklog と異なり
+//     RATE_LIMIT_KV バインディングを使わない）。理由は下記 Env 型の
+//     APP_BASE_URL_PROD/PREVIEW コメント参照: prod/preview は別ドメイン・
+//     別 KV namespace を持つ別々の Cloudflare Workers デプロイであり、
+//     このワーカーからは prod 用の RATE_LIMIT_KV バインディングしか
+//     持てない（preview 用 KV namespace への直接バインディングを追加する
+//     こともできるが、それだと「アプリ本体の API を経由せず KV を直接
+//     操作する」経路が増え、eventsub-replay route.ts が持つ冪等性ロジック
+//     （event_id UNIQUE 制約前提の重複排除、invalid-payload 検知等）を
+//     この worker 側でも再実装する必要が生じてしまう。既存の
+//     POST /api/admin/eventsub-replay を HTTP 経由で呼ぶことで、そのロジックを
+//     一切複製せずに再利用できる）。
+// =============================================================================
+
+/** eventsub-replay route のパス（`src/app/api/admin/eventsub-replay/route.ts`）。 */
+const EVENTSUB_REPLAY_PATH = '/api/admin/eventsub-replay'
+
+/** maintenance-status route のパス（`src/app/api/maintenance-status/route.ts`）。未認証で呼べる。 */
+const MAINTENANCE_STATUS_PATH = '/api/maintenance-status'
+
+/**
+ * 自動ドレイン専用の Cron 式。wrangler.toml の `[triggers] crons` に
+ * 完全一致する文字列を追加すること（片方だけ変更するとこの分岐が機能しなくなる）。
+ * 既存の5分毎トリガー（errors/inquiries/backlog監視、wrangler.toml 1個目の
+ * crons エントリ）とは意図的に別トリガーにしている。理由: 既存トリガーは
+ * Supabase ポーリングが主目的で高頻度（5分毎）だが、自動ドレインは HTTP 経由で
+ * アプリ本体の書き込み系 API（eventsub-replay）を叩く処理であり、同じ頻度で
+ * 回す必要性が薄い（maintenance window は頻繁に発生しない）。Free プランは
+ * 3トリガー/worker まで無料なので、2個目のトリガーを追加しても追加コストは無い。
+ *
+ * 値そのもの（20分間隔）については wrangler.toml 側のコメントを参照。
+ * ここではJSDocコメント終端記号（アスタリスク+スラッシュ）とcron式の
+ * 区切り文字が衝突するため、コメント内でのcron式の直接引用を避けている。
+ */
+export const EVENTSUB_AUTO_DRAIN_CRON = '*/20 * * * *'
+
+/**
+ * backlog が実在しても、最古エントリの滞留がこの閾値（分）未満なら今回は
+ * ドレインを見送る。
+ *
+ * 注意（Fableレビューで指摘、重要な訂正）: この閾値は「park された時刻からの
+ * 経過」であり、「maintenance mode が off になってからの経過」ではない。
+ * 典型的なmaintenance window（数時間〜1日）では、mode解除の瞬間に既に
+ * 最古エントリは10分を超えているため、**このガードは実質ゼロ遅延で
+ * 通過し、次回tickで即座に発火する**。「mode解除直後の割り込みを防ぐ」
+ * という効果はこのガードにはほぼ無い。
+ *
+ * 実際にmode解除直後の競合（KVのeventual consistencyによる一覧の
+ * 反映遅延、手動リプレイとの同時実行等）から守っているのは、
+ * `execute_gacha_transaction` の `event_id` UNIQUE制約 + ON CONFLICT
+ * DO NOTHINGによる冪等性（1項目目・自動ドレイン・手動リプレイのいずれが
+ * 同じエントリを処理しても、DB書き込みは1回しか成功しない）であり、
+ * 本ガードは主防御ではない。
+ *
+ * ではこのガードは何のためか: 「park直後（KVへの書き込み自体が
+ * まだlist()に反映されていない可能性がある短い窓）」に自動ドレインが
+ * 割り込むのを避けるための、軽い安全マージンとして残している
+ * （1項目目のgetEventSubParkBacklogStatsと同じ「最古エントリを見る」
+ * という考え方の踏襲。値が1項目目の30分より短い10分なのは、こちらは
+ * 20分毎に繰り返し判定されるため、1回見送っても次回tickで再評価
+ * されるだけで実害が無いため）。
+ */
+const EVENTSUB_AUTO_DRAIN_OLDEST_AGE_MINUTES_THRESHOLD = 10
+
+/**
+ * 「最古エントリの経過時間」だけを安価に確認するための dry-run peek 呼び出しの
+ * limit。1件だけ取得すれば十分（eventsub-park.ts の KV list は受信時刻の
+ * 辞書順＝時系列順を返すため、limit=1 の1件目が常に全体の最古エントリになる。
+ * getEventSubParkBacklogStats の「keys配列の先頭がそのまま最古」という
+ * ロジックと同じ前提に立つ、HTTP 経由版）。dry-run なので KV の書き込み・
+ * 削除は発生しない。
+ */
+const EVENTSUB_AUTO_DRAIN_PEEK_LIMIT = 1
+
+/**
+ * 実際にドレイン（リプレイ実行）する際の1バッチあたりの limit。
+ * サーバー側 `DEFAULT_LIMIT`（route.ts）と同じ控えめな値を明示的に指定し、
+ * 1回の HTTP リクエストが長時間化しないようにする（route.ts は各エントリを
+ * 直列 await するため、件数が多いほどレスポンスが遅くなる。詳細は
+ * scripts/replay-maintenance-eventsub.js の FETCH_TIMEOUT_MS コメント参照）。
+ */
+const EVENTSUB_AUTO_DRAIN_BATCH_LIMIT = 20
+
+/**
+ * fetch のタイムアウト（ミリ秒）。対象アプリが無応答の場合に Cron Worker の
+ * 実行がハングし続けるのを防ぐ。peek（limit=1、dry-run で KV 書き込みなし）は
+ * 軽量なので短め、実ドレイン（limit=20、各エントリ直列処理）は
+ * scripts/replay-maintenance-eventsub.js と同じ 120秒（同スクリプトの
+ * FETCH_TIMEOUT_MS コメント参照: 1エントリ最大3秒 × 20件を安全側に見た値）を
+ * そのまま踏襲する。
+ */
+const EVENTSUB_AUTO_DRAIN_PEEK_TIMEOUT_MS = 30_000
+const EVENTSUB_AUTO_DRAIN_REPLAY_TIMEOUT_MS = 120_000
+
+/** eventsub-replay route のレスポンス形状（route.ts の戻り値と一致させる）。 */
+interface EventSubReplayResponse {
+  dryRun: boolean
+  cursor?: string
+  listComplete: boolean
+  results: Array<{
+    key: string
+    messageId: string
+    subscriptionType: string
+    receivedAt: string
+    outcome: string
+    error?: string
+  }>
+  counts: {
+    succeeded: number
+    skipped: number
+    failed: number
+    unknownType: number
+    invalidPayload: number
+    total: number
+  }
+}
+
+/** 末尾のスラッシュを取り除く（wrangler.toml の設定ミスで付いていても安全に動くようにする）。 */
+function stripTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, '')
+}
+
+/**
+ * 対象アプリの maintenance mode を取得する。`GET /api/maintenance-status` は
+ * 未認証で呼べる公開エンドポイント（4.5節参照）。
+ *
+ * fail-safe 設計: ネットワークエラー・非2xx・レスポンス形状不正のいずれでも
+ * null を返し、呼び出し元でこのターゲットへのドレインをスキップさせる。
+ * 「状態が確認できない = off だと決め打たない」ことで、実際には
+ * maintenance 中かもしれない状態で書き込み系のリプレイを誤って実行する事故を防ぐ。
+ */
+async function fetchMaintenanceMode(baseUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${baseUrl}${MAINTENANCE_STATUS_PATH}`, {
+      signal: AbortSignal.timeout(EVENTSUB_AUTO_DRAIN_PEEK_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      console.error(`[EventSub Auto Drain] maintenance-status returned ${res.status} for ${baseUrl}`)
+      return null
+    }
+    const body = (await res.json()) as { mode?: unknown }
+    if (typeof body.mode !== 'string') {
+      console.error(`[EventSub Auto Drain] maintenance-status response missing mode field for ${baseUrl}`)
+      return null
+    }
+    return body.mode
+  } catch (err) {
+    console.error(`[EventSub Auto Drain] failed to fetch maintenance-status for ${baseUrl}:`, err)
+    return null
+  }
+}
+
+/**
+ * POST /api/admin/eventsub-replay を呼ぶ。dry-run（peek）・実ドレイン共通。
+ * ネットワークエラー・非2xx・JSON パース失敗のいずれでも null を返し、
+ * 呼び出し元で例外を投げずにこのターゲットの処理を打ち切らせる
+ * （scheduled() 側の try/catch に頼らず、この関数内で完結させることで
+ * 「prod 失敗時に preview の処理が止まらない」ことをより明示的に保証する）。
+ */
+async function postEventSubReplay(
+  baseUrl: string,
+  secret: string,
+  body: { dryRun?: boolean; limit?: number },
+  timeoutMs: number
+): Promise<EventSubReplayResponse | null> {
+  try {
+    const res = await fetch(`${baseUrl}${EVENTSUB_REPLAY_PATH}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Replay-Secret': secret,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      console.error(`[EventSub Auto Drain] eventsub-replay returned ${res.status} for ${baseUrl}: ${text}`)
+      return null
+    }
+    return (await res.json()) as EventSubReplayResponse
+  } catch (err) {
+    console.error(`[EventSub Auto Drain] failed to call eventsub-replay for ${baseUrl}:`, err)
+    return null
+  }
+}
+
+/** 1ターゲット（prod または preview）分の設定。 */
+interface EventSubAutoDrainTarget {
+  /** ログに出す環境名。 */
+  name: string
+  baseUrl: string | undefined
+  replaySecret: string | undefined
+}
+
+/**
+ * 1ターゲットに対する自動ドレインを実行する。
+ * 1. baseUrl / secret の両方が設定されていることを確認（無ければ warn して no-op）
+ * 2. maintenance mode が 'off' であることを確認（off 以外・確認不能ならスキップ）
+ * 3. dry-run peek（limit=1）で最古エントリの経過時間を確認
+ *    （backlog が無ければ、または閾値未満ならここで終了）
+ * 4. 実ドレイン（limit=EVENTSUB_AUTO_DRAIN_BATCH_LIMIT、1バッチのみ）を実行し、結果をログ出力
+ *
+ * 例外を投げない設計: 呼び出し元 processEventSubParkAutoDrain が各ターゲットを
+ * 独立した try/catch で回すため二重の保険ではあるが、上記の fetch ヘルパが
+ * いずれも例外を投げず null を返す設計にしているため、実質的にこの関数も
+ * 例外を投げることはない（防御的に呼び出し元の try/catch は残す）。
+ */
+async function drainEventSubParkBacklogForTarget(target: EventSubAutoDrainTarget): Promise<void> {
+  const { name, replaySecret } = target
+  const baseUrl = target.baseUrl ? stripTrailingSlash(target.baseUrl) : undefined
+
+  if (!baseUrl) {
+    console.warn(`[EventSub Auto Drain] Missing base URL for ${name}, skipping`)
+    return
+  }
+  if (!replaySecret) {
+    console.warn(`[EventSub Auto Drain] Missing replay secret for ${name}, skipping (set it via wrangler secret put)`)
+    return
+  }
+
+  const mode = await fetchMaintenanceMode(baseUrl)
+  if (mode === null) {
+    // fetchMaintenanceMode 内で既にエラーログ済み。
+    return
+  }
+  if (mode !== 'off') {
+    console.log(`[EventSub Auto Drain] ${name}: maintenance mode is '${mode}' (not 'off'), skipping`)
+    return
+  }
+
+  const peek = await postEventSubReplay(
+    baseUrl,
+    replaySecret,
+    { dryRun: true, limit: EVENTSUB_AUTO_DRAIN_PEEK_LIMIT },
+    EVENTSUB_AUTO_DRAIN_PEEK_TIMEOUT_MS
+  )
+  if (peek === null) {
+    // postEventSubReplay 内で既にエラーログ済み。
+    return
+  }
+  if (peek.results.length === 0) {
+    console.log(`[EventSub Auto Drain] ${name}: no parked notifications, nothing to drain`)
+    return
+  }
+
+  const oldestReceivedAt = peek.results[0].receivedAt
+  const oldestAgeMinutes = Math.floor((Date.now() - new Date(oldestReceivedAt).getTime()) / 60000)
+  if (oldestAgeMinutes < EVENTSUB_AUTO_DRAIN_OLDEST_AGE_MINUTES_THRESHOLD) {
+    console.log(
+      `[EventSub Auto Drain] ${name}: oldest entry age ${oldestAgeMinutes}min is below threshold ` +
+      `(${EVENTSUB_AUTO_DRAIN_OLDEST_AGE_MINUTES_THRESHOLD}min), skipping this tick (KV eventual consistency guard)`
+    )
+    return
+  }
+
+  console.log(
+    `[EventSub Auto Drain] ${name}: oldest entry age ${oldestAgeMinutes}min exceeds threshold, draining one batch (limit=${EVENTSUB_AUTO_DRAIN_BATCH_LIMIT})`
+  )
+
+  const result = await postEventSubReplay(
+    baseUrl,
+    replaySecret,
+    { dryRun: false, limit: EVENTSUB_AUTO_DRAIN_BATCH_LIMIT },
+    EVENTSUB_AUTO_DRAIN_REPLAY_TIMEOUT_MS
+  )
+  if (result === null) {
+    // postEventSubReplay 内で既にエラーログ済み。
+    return
+  }
+
+  console.log(
+    `[EventSub Auto Drain] ${name}: batch drained - succeeded=${result.counts.succeeded} ` +
+    `skipped=${result.counts.skipped} failed=${result.counts.failed} ` +
+    `unknownType=${result.counts.unknownType} invalidPayload=${result.counts.invalidPayload} ` +
+    `total=${result.counts.total} listComplete=${result.listComplete}` +
+    (result.listComplete
+      ? ''
+      : ' (backlog remains, will continue on next auto-drain tick)')
+  )
+}
+
+/**
+ * EventSub 退避 backlog 自動ドレイン本体。prod/preview 両ターゲットを
+ * 独立した try/catch で処理する（片方の失敗が他方に波及しないため。
+ * 既存の processErrors/processInquiries/processEventSubParkBacklog 間の
+ * 独立性と同じパターン）。
+ */
+export async function processEventSubParkAutoDrain(env: Env): Promise<void> {
+  console.log('[EventSub Auto Drain] Started')
+
+  const targets: EventSubAutoDrainTarget[] = [
+    { name: 'production', baseUrl: env.APP_BASE_URL_PROD, replaySecret: env.EVENTSUB_REPLAY_SECRET_PROD },
+    { name: 'preview', baseUrl: env.APP_BASE_URL_PREVIEW, replaySecret: env.EVENTSUB_REPLAY_SECRET_PREVIEW },
+  ]
+
+  for (const target of targets) {
+    try {
+      await drainEventSubParkBacklogForTarget(target)
+    } catch (err) {
+      console.error(`[EventSub Auto Drain] ${target.name} failed:`, err)
+    }
+  }
+
+  console.log('[EventSub Auto Drain] Completed')
+}
+
+// =============================================================================
 // Cron Trigger エントリポイント
 // =============================================================================
 
 export default {
   /**
-   * Cron Trigger ハンドラ: 5分ごとに実行される。
-   * 環境変数を検証したうえで、エラー処理と問い合わせ処理を順に実行する。
-   * 2つの処理は独立しており、片方が失敗しても他方は実行される。
+   * Cron Trigger ハンドラ。wrangler.toml の `[triggers] crons` に登録された
+   * 2つのトリガーを `event.cron` で判別し、完全に独立した処理へ分岐する:
+   *   - EVENTSUB_AUTO_DRAIN_CRON（20分毎）: EventSub 退避 backlog 自動ドレインのみ
+   *   - それ以外（既定の5分毎トリガー、テスト等で cron 未設定の場合を含む）:
+   *     従来どおり errors/inquiries/backlog監視の3処理
+   * 自動ドレインを既存3処理と混在させない理由は
+   * processEventSubParkAutoDrain セクション冒頭のコメント参照。
    */
   async scheduled(
-    _event: ScheduledController,
+    event: ScheduledController,
     env: Env,
     _ctx: ExecutionContext
   ): Promise<void> {
-    // 環境変数バリデーション（両処理共通）: 未設定の場合は早期リターン。
+    if (event.cron === EVENTSUB_AUTO_DRAIN_CRON) {
+      // 自動ドレインは SUPABASE_URL/GITHUB_TOKEN 等、既存3処理専用の secrets に
+      // 依存しないため、下の環境変数バリデーションより前で分岐・完結させる。
+      try {
+        await processEventSubParkAutoDrain(env)
+      } catch (err) {
+        console.error('[EventSub Auto Drain] Cron job failed:', err)
+      }
+      return
+    }
+
+    // 環境変数バリデーション（既存3処理共通）: 未設定の場合は早期リターン。
     // secret 未設定でも無害に空振りする。
     if (!env.SUPABASE_URL || !getSupabaseApiKey(env) || !env.GITHUB_TOKEN) {
       console.error('[Reporter] Missing required secrets. Set SUPABASE_URL, SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY), GITHUB_TOKEN via wrangler secret put')

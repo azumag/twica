@@ -14,20 +14,38 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-# 5分ごとに実行（Free プランで最大3トリガー/worker まで無料）
+# 2種類の独立した Cron トリガー（Free プランで最大3トリガー/worker まで無料、
+# 2個使ってもまだ1個分の余裕がある）:
+#   - */5 * * * *  : 既存トリガー。errors/inquiries/backlog監視の3処理
+#   - */20 * * * * : EventSub 退避 backlog 自動ドレイン（Issue #695 の代替、
+#     KVベース部分改善の2項目目）専用トリガー。5分毎ほどの高頻度は不要
+#     （HTTP経由でアプリ本体の書き込み系APIを叩く処理のため）。
+#     src/index.ts の EVENTSUB_AUTO_DRAIN_CRON 定数と完全に一致させること
+#     （scheduled() がこの文字列で分岐する）。
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "*/20 * * * *"]
 
 # 公開可能な変数（wrangler.toml に直接記載）
 [vars]
 GITHUB_REPO_OWNER = "azumag"
 GITHUB_REPO_NAME = "twica"
 
+# EventSub 退避 backlog 自動ドレイン（KVベース部分改善の2項目目）が
+# GET /api/maintenance-status・POST /api/admin/eventsub-replay を叩く対象
+# アプリのベースURL。機密ではないため公開変数でよい。
+# prod/preview 両方を対象にする理由は src/index.ts の Env 型
+# （APP_BASE_URL_PROD/PREVIEW フィールド）のコメントを参照。
+APP_BASE_URL_PROD = "https://twica.bluemoon.works"
+APP_BASE_URL_PREVIEW = "https://twica-preview.tsubasa-azumagakito.workers.dev"
+
 # EventSub 退避 backlog 監視（Issue #695 の代替、KVベース部分改善の1項目目）用。
 # root wrangler.toml の RATE_LIMIT_KV と同じ namespace を binding 名を揃えて共用する
 # （src/lib/maintenance/eventsub-park.ts が退避先として使っているのと同じ namespace）。
 # id / preview_id を変更する場合は root wrangler.toml 側も必ず揃えること。
 # このワーカーは list() のみ使用し、値の読み書き（get/put/delete）は行わない。
+# 2項目目（自動ドレイン）はこのバインディングを使わない（HTTP経由でアプリ本体の
+# API を叩く設計のため。理由は src/index.ts の processEventSubParkAutoDrain
+# セクション冒頭コメント参照）。
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
 id = "2dadcd9aa89b466d9c860a8930d458fa"
@@ -39,3 +57,17 @@ preview_id = "6604c73cdb474d6a8a50b8afd4076d5f"
 # - SUPABASE_SECRET_KEY: Supabase secret キー
 # - SUPABASE_SERVICE_ROLE_KEY: legacy Supabase service role キー
 # - GITHUB_TOKEN: GitHub Fine-grained PAT (scopes: Issues read/write)
+#
+# EventSub 退避 backlog 自動ドレイン（2項目目）用の追加 secrets:
+# - EVENTSUB_REPLAY_SECRET_PROD: 本番アプリ（twica）の EVENTSUB_REPLAY_SECRET と
+#   同じ値。本番アプリ側は docs/db-phase2-runbook.md 4.3節のとおり
+#   `wrangler versions secret put EVENTSUB_REPLAY_SECRET` で設定済みなので、
+#   その値をそのままこのワーカーの EVENTSUB_REPLAY_SECRET_PROD にも
+#   `wrangler secret put EVENTSUB_REPLAY_SECRET_PROD` で設定すること
+#   （新しい値を生成しない。値を変えると本番アプリ側との認証が一致しなくなる）。
+# - EVENTSUB_REPLAY_SECRET_PREVIEW: preview アプリ（twica-preview）の
+#   EVENTSUB_REPLAY_SECRET と同じ値。上記と同様に既存の preview 側の値を
+#   `wrangler secret put EVENTSUB_REPLAY_SECRET_PREVIEW` で設定すること。
+# どちらも未設定の場合、該当ターゲットへの自動ドレインのみを安全にスキップし
+# 警告ログを出す（他方のターゲットや既存の errors/inquiries/backlog監視には
+# 影響しない）。デプロイ後にオーナーが設定する想定。

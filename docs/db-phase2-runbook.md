@@ -350,6 +350,23 @@ type MaintenanceMode =
      済み（`/api/twitch/eventsub` 本体とは異なり `queue-during-maintenance`
      ではない）。**メンテナンス解除後（mode=off）にのみ実行する運用**の
      ため、メンテ中に誤って叩いても他の書き込みと同様にブロックされる。
+  5. **自動ドレイン（Issue #695 の代替、KVベース部分改善の2項目目、
+     `workers/error-reporter/src/index.ts` の `processEventSubParkAutoDrain`）
+     が上記手動手順のバックストップとして20分毎に自動実行される。**
+     Cron Worker（`twica-error-reporter`）が `*/20 * * * *` の専用トリガーで
+     prod/preview 両方の `GET /api/maintenance-status`（off確認）→
+     `POST /api/admin/eventsub-replay`（dry-run で最古エントリの経過時間を
+     peek → 10分以上滞留していれば limit=20 の1バッチのみ本実行）を行う。
+     手動CLI（`scripts/replay-maintenance-eventsub.js`）と異なり cursor
+     ページネーションで完走はしない（1回のtickにつき1バッチのみ、残りは
+     次回tickに委ねる）ため、**カットオーバー直後に即座に全件救済したい
+     場合は引き続き手動CLIの実行を推奨**する。自動ドレインは「手動実行を
+     忘れた場合の保険」という位置づけ。認証には
+     `EVENTSUB_REPLAY_SECRET_PROD`/`EVENTSUB_REPLAY_SECRET_PREVIEW`
+     という Cron Worker 専用の secrets が必要（値は本項目2の
+     `EVENTSUB_REPLAY_SECRET` と同じものを `wrangler secret put` で
+     このワーカーにも設定する。未設定の場合は該当環境への自動ドレインのみ
+     安全にスキップされ、警告ログが出る）。
 
 ### 4.4 CI enforcement（`scripts/check-maintenance-surfaces.js`）
 
