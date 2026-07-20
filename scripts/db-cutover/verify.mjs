@@ -139,7 +139,12 @@ async function main() {
           executedLayerResults.push(result)
           console.error(`[cutover-verify] layer=schema pass=${result.pass}`)
         } else if (layerName === 'data') {
-          const result = await runDataLayer({ sourceSql, targetSql, chunkSize })
+          // 進捗ログ（テーブル単位）: 全table走査は長時間かかりうるため、運用者が
+          // 実行中のプロセスがハングしていないことを確認できるよう、テーブルごとに
+          // 完了をstderrへ逐次出力する（Fableレビュー Minor対応）。
+          const onTableScanned = ({ side, table, rowCount, scanDurationMs }) =>
+            console.error(`[cutover-verify] data: ${side} ${table} rowCount=${rowCount} (${scanDurationMs}ms)`)
+          const result = await runDataLayer({ sourceSql, targetSql, chunkSize, onTableScanned })
           executedLayerResults.push(result)
           console.error(`[cutover-verify] layer=data pass=${result.pass} (chunkSize=${chunkSize}, tables=${result.tables.length})`)
         }

@@ -7,7 +7,7 @@ import {
   IMPLEMENTED_LAYERS,
   KNOWN_FUTURE_LAYERS,
 } from '../../../scripts/db-cutover/cli-args.mjs'
-import { DEFAULT_CHUNK_SIZE } from '../../../scripts/db-cutover/layer-data.mjs'
+import { DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE } from '../../../scripts/db-cutover/layer-data.mjs'
 
 const FULL_ARGV = [
   'node',
@@ -123,6 +123,16 @@ describe('parseChunkSize', () => {
   it.each(['0', '-1', '1.5', '1e3', 'abc', '', '  '])('不正な値 "%s" はエラーになる', (raw) => {
     const result = parseChunkSize(raw)
     expect(result.error).toMatch(/正の整数/)
+    expect(result.chunkSize).toBeUndefined()
+  })
+
+  it('MAX_CHUNK_SIZEちょうどは有効（Fableレビュー Minor対応: 上限バリデーション追加）', () => {
+    expect(parseChunkSize(String(MAX_CHUNK_SIZE))).toEqual({ chunkSize: MAX_CHUNK_SIZE })
+  })
+
+  it('MAX_CHUNK_SIZEを超える値はエラーになる（メモリ枯渇防止）', () => {
+    const result = parseChunkSize(String(MAX_CHUNK_SIZE + 1))
+    expect(result.error).toMatch(/以下/)
     expect(result.chunkSize).toBeUndefined()
   })
 })

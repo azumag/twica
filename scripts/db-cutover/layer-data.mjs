@@ -14,7 +14,10 @@
  * `count(*)`・`min/max`・`count(*) filter (...)` 等の集計クエリでテーブルを1回読み、
  * Layer 4（checksum）でchunkごとに全行を取得してさらにもう1回読む、という二重読み込みになる。
  * 本実装はchunkを取得するSELECTの結果からrow count・key range・timestamp最大値・null数の
- * 全てを同時に積算するため、テーブルあたりの読み込みは1回で済む。
+ * 全てを同時に積算するため、テーブルあたりの読み込みは1回で済む（列ごとのcanonical化も
+ * `canonicalizeCell` を1回呼ぶだけで、checksum用の値とtimestamp最大値追跡の両方に使い回す。
+ * Fableレビュー Major-3対応: 以前はtimestamp最大値追跡のために`canonicalizeTimestamp`を
+ * 二重に呼んでいた）。
  *
  * 一貫性のスコープについて（Issue #697本文の前提を踏襲）:
  * source側・target側それぞれ、全テーブルを「1つの」`withReadOnlySnapshot`
@@ -22,7 +25,22 @@
  * source側の25テーブル全てが同一スナップショットを見る（source内では強い一貫性）。
  * source/target間（2つの別接続・別トランザクション）では厳密な同時刻性は無いが、これは
  * Layer 2のコメントで説明した前提と同じ: 本layerはcutoverのwrite freeze期間中の実行を
- * 前提とする。
+ * 前提とする。source/target2つのトランザクションは互いに独立（別サーバーへの別接続）のため
+ * `Promise.all`で並行実行する（Fableレビュー Minor対応: 以前は逐次実行しており、
+ * write freeze時間を不必要に倍化させていた）。
+ *
+ * text系PK列のcollationについて（Fableレビュー Critical-1対応、重要）:
+ * `ORDER BY`・keyset paginationの`WHERE`句がPK列のデフォルトcollationに依存すると、
+ * source（Supabase）とtarget（PlanetScale）でサーバーのlocale設定
+ * （`lc_collate`／glibc版・ICU差等）が異なる場合、**内容が完全に同一のデータでも
+ * text型PK列（`blob_files.url`・`storage_usage.user_prefix`・
+ * `channel_point_usage_stats`/`card_owner_stats`の`user_twitch_id`）の行順序が
+ * source/targetで変わり、chunk境界がずれてchecksumが不一致になる**（偽陽性）。
+ * これはPostgreSQL移行ツールの業界標準的な既知の落とし穴であり
+ * （logical replication・pg_dump/restore後の差分検証ツールでも同種の問題が報告されている）、
+ * 対策としてtext/varchar型のPK列には明示的に `COLLATE "C"`（バイト順比較、
+ * ロケール非依存）を強制する。uuid等の非collatable型にCOLLATEを付けると構文エラーに
+ * なるため、`dataType`がtext系の列にのみ適用する（`pkColumnExpr`参照）。
  *
  * chunk単位の差分特定について（既知の限界、意図的な単純化）:
  * chunkはoffsetではなくkeyset（PK昇順の「次のchunkSize件」）で区切るため、境界は常に
@@ -41,12 +59,22 @@
 
 import { withReadOnlySnapshot } from './snapshot.mjs'
 import { loadTableCatalog } from './table-catalog.mjs'
-import { canonicalizeRow, canonicalizeTimestamp, hashChunk, hashChunkList } from './canonicalize.mjs'
+import { canonicalizeCell, hashChunk, hashChunkList } from './canonicalize.mjs'
 
 /** `--chunk-size` 未指定時のデフォルト値（Issue #697本文「chunk sizeを指定可能」）。 */
 export const DEFAULT_CHUNK_SIZE = 1000
 
+/**
+ * `--chunk-size` に指定可能な上限（Fableレビュー Minor対応）。上限を設けない場合、
+ * 誤って巨大な値を指定するとテーブルの全行を1chunkとして一括保持してしまい、
+ * メモリ枯渇のリスクがある。cli-args.mjsのparseChunkSizeがこの定数でバリデートする。
+ */
+export const MAX_CHUNK_SIZE = 100_000
+
 const TIMESTAMP_DATA_TYPES = new Set(['timestamp with time zone', 'timestamp without time zone'])
+
+/** COLLATE "C" を強制する対象のdataType（text系。collatableな型のみ）。 */
+const TEXT_LIKE_DATA_TYPES = new Set(['text', 'character varying'])
 
 /**
  * SQL識別子（テーブル名・列名）を安全にダブルクォートで囲む。テーブル名・列名は
@@ -66,56 +94,86 @@ export function quoteIdentifier(name) {
 }
 
 /**
+ * PK列1つ分のSQL式（識別子 + text系なら`COLLATE "C"`）を組み立てる純粋関数。
+ * ファイル冒頭コメント「text系PK列のcollationについて」参照。
+ * @param {{ name: string, dataType: string }} columnMeta
+ * @returns {string}
+ */
+export function pkColumnExpr(columnMeta) {
+  const quoted = quoteIdentifier(columnMeta.name)
+  return TEXT_LIKE_DATA_TYPES.has(columnMeta.dataType) ? `${quoted} COLLATE "C"` : quoted
+}
+
+/**
  * テーブルが（接続先DBに）存在するかを確認する。
  * @param {import('postgres').Sql} tx
  * @param {string} tableName
  * @returns {Promise<boolean>}
  */
-async function tableExists(tx, tableName) {
+export async function tableExists(tx, tableName) {
   const [{ reg }] = await tx`select to_regclass(${'public.' + tableName}) as reg`
   return reg !== null
 }
 
 /**
- * 1chunk分の行を、keyset pagination（PK昇順、直前chunkの最終行のPK値より後ろ）で取得する。
+ * 1chunk分の行を、keyset pagination（PK昇順COLLATE "C"固定、直前chunkの最終行のPK値より後ろ）
+ * で取得する。
  * @param {import('postgres').Sql} tx
  * @param {string} quotedTable
- * @param {string} orderByClause
- * @param {string[]} primaryKeyColumns
+ * @param {string[]} pkColumnExprs pkColumnExprで組み立て済みのSQL式（identifier + 必要ならCOLLATE）
  * @param {number} chunkSize
  * @param {unknown[] | null} lastPkValues 初回チャンクは null
  * @returns {Promise<Array<Record<string, unknown>>>}
  */
-async function fetchChunk(tx, quotedTable, orderByClause, primaryKeyColumns, chunkSize, lastPkValues) {
+async function fetchChunk(tx, quotedTable, pkColumnExprs, chunkSize, lastPkValues) {
+  const orderBy = pkColumnExprs.join(', ')
   const params = lastPkValues ? [...lastPkValues, chunkSize] : [chunkSize]
   const whereClause = lastPkValues
-    ? `WHERE (${primaryKeyColumns.map(quoteIdentifier).join(', ')}) > (${primaryKeyColumns.map((_, i) => `$${i + 1}`).join(', ')})`
+    ? `WHERE (${orderBy}) > (${pkColumnExprs.map((_, i) => `$${i + 1}`).join(', ')})`
     : ''
   const limitParamIndex = params.length
-  const queryText = `SELECT * FROM ${quotedTable} ${whereClause} ORDER BY ${orderByClause} LIMIT $${limitParamIndex}`
+  const queryText = `SELECT * FROM ${quotedTable} ${whereClause} ORDER BY ${orderBy} LIMIT $${limitParamIndex}`
   return tx.unsafe(queryText, params)
 }
 
 /**
  * 1テーブルを1回スキャンし、Layer 3（件数・key range・timestamp最大値・nullカウント）と
  * Layer 4（chunkごとのcanonical checksum・table root hash）を同時に計算する。
+ *
+ * 列ごとの処理は1行につき1回のループ（`columns`を1回だけ走査）にまとめている
+ * （Fableレビュー Major-3対応: 以前はcanonicalizeRow・timestamp最大値追跡・nullカウントの
+ * 3つの独立したループがあり、timestamp列の値を2回canonicalizeしていた）。
+ *
+ * secret列をtimestamp最大値追跡から除外する理由（Fableレビュー Major-1対応、重要）:
+ * `twitch_token_expires_at`のようなsecret指定のtimestamp列は、checksum計算では
+ * `canonicalizeCell`がhash化して生値を出さないが、以前の実装は`maxTimestamps`の
+ * 集計だけ別ループでsecret判定を見ずに生のtimestamp値を報告に含めてしまっていた
+ * （「secret列の値をreportに出さない」という設計不変条件違反）。本実装は
+ * `!col.isSecret`を1箇所でチェックし、secret列はtimestamp最大値追跡からも除外する。
+ *
  * @param {import('postgres').Sql} tx
  * @param {{ tableName: string, primaryKeyColumns: string[], columns: Array<{name:string,dataType:string,isSecret:boolean}> }} tableSpec
  * @param {number} chunkSize
  */
-async function scanTable(tx, tableSpec, chunkSize) {
+export async function scanTable(tx, tableSpec, chunkSize) {
   const { tableName, primaryKeyColumns, columns } = tableSpec
   const quotedTable = quoteIdentifier(tableName)
-  const orderByClause = primaryKeyColumns.map(quoteIdentifier).join(', ')
-  const timestampColumns = columns.filter((c) => TIMESTAMP_DATA_TYPES.has(c.dataType))
+  const columnsByName = new Map(columns.map((c) => [c.name, c]))
+  const pkColumnMetas = primaryKeyColumns.map((name) => {
+    const meta = columnsByName.get(name)
+    if (!meta) throw new Error(`scanTable: primary key column '${name}' not found in table '${tableName}' catalog columns`)
+    return meta
+  })
+  const pkColumnExprs = pkColumnMetas.map(pkColumnExpr)
+
   // Issue #697本文「null count等の重要列統計」: FK相当（`_id`で終わる）列を「重要列」として
   // 扱う。全列のnullカウントを取ると列数の多いテーブル（例: streamers 28列）でreportが
   // 肥大するため、Layer 5（業務invariant、次チャンク）が検証するorphan FK参照の事前観測として
   // 意味のある列に絞る。
-  const idColumns = columns.filter((c) => c.name.endsWith('_id'))
-
-  const maxTimestamps = Object.fromEntries(timestampColumns.map((c) => [c.name, null]))
-  const nullCounts = Object.fromEntries(idColumns.map((c) => [c.name, 0]))
+  const maxTimestamps = Object.fromEntries(
+    columns.filter((c) => TIMESTAMP_DATA_TYPES.has(c.dataType) && !c.isSecret).map((c) => [c.name, null])
+  )
+  const nullCounts = Object.fromEntries(columns.filter((c) => c.name.endsWith('_id')).map((c) => [c.name, 0]))
 
   const chunks = []
   let rowCount = 0
@@ -123,10 +181,29 @@ async function scanTable(tx, tableSpec, chunkSize) {
   const startedAt = Date.now()
 
   for (;;) {
-    const rows = await fetchChunk(tx, quotedTable, orderByClause, primaryKeyColumns, chunkSize, lastPkValues)
+    const rows = await fetchChunk(tx, quotedTable, pkColumnExprs, chunkSize, lastPkValues)
     if (rows.length === 0) break
 
-    const canonicalRows = rows.map((row) => canonicalizeRow(row, columns))
+    const canonicalRows = []
+    for (const row of rows) {
+      const canonicalRow = []
+      for (const col of columns) {
+        const rawValue = row[col.name]
+        const value = canonicalizeCell(rawValue, col)
+        canonicalRow.push([col.name, value])
+        // timestamp最大値追跡: canonicalizeCellが既にISO 8601 UTC文字列へ正規化済みのため、
+        // 文字列比較のままchronological orderの比較として成立する（ISO 8601 UTCは
+        // レキシコグラフィック順=時系列順になる性質を利用）。
+        if (!col.isSecret && TIMESTAMP_DATA_TYPES.has(col.dataType) && value !== null) {
+          if (maxTimestamps[col.name] === null || value > maxTimestamps[col.name]) maxTimestamps[col.name] = value
+        }
+        if (col.name.endsWith('_id') && rawValue === null) {
+          nullCounts[col.name] += 1
+        }
+      }
+      canonicalRows.push(canonicalRow)
+    }
+
     chunks.push({
       index: chunks.length,
       startKey: primaryKeyColumns.map((col) => rows[0][col]),
@@ -134,20 +211,6 @@ async function scanTable(tx, tableSpec, chunkSize) {
       hash: hashChunk(canonicalRows),
     })
     rowCount += rows.length
-
-    for (const col of timestampColumns) {
-      for (const row of rows) {
-        const value = canonicalizeTimestamp(row[col.name])
-        if (value !== null && (maxTimestamps[col.name] === null || value > maxTimestamps[col.name])) {
-          maxTimestamps[col.name] = value
-        }
-      }
-    }
-    for (const col of idColumns) {
-      for (const row of rows) {
-        if (row[col.name] === null) nullCounts[col.name] += 1
-      }
-    }
 
     const lastRow = rows[rows.length - 1]
     lastPkValues = primaryKeyColumns.map((col) => lastRow[col])
@@ -171,9 +234,11 @@ async function scanTable(tx, tableSpec, chunkSize) {
  * @param {import('postgres').Sql} tx
  * @param {ReturnType<typeof loadTableCatalog>} tableCatalog
  * @param {number} chunkSize
+ * @param {'source' | 'target'} side ログ用のラベル（onTableScannedへ渡すのみ）
+ * @param {((info: { side: string, table: string, rowCount: number, scanDurationMs: number }) => void) | undefined} onTableScanned
  * @returns {Promise<Map<string, { exists: boolean } & Partial<Awaited<ReturnType<typeof scanTable>>>>>}
  */
-async function readSideTableData(tx, tableCatalog, chunkSize) {
+async function readSideTableData(tx, tableCatalog, chunkSize, side, onTableScanned) {
   const results = new Map()
   for (const tableSpec of tableCatalog) {
     const exists = await tableExists(tx, tableSpec.tableName)
@@ -183,6 +248,9 @@ async function readSideTableData(tx, tableCatalog, chunkSize) {
     }
     const scan = await scanTable(tx, tableSpec, chunkSize)
     results.set(tableSpec.tableName, { exists: true, ...scan })
+    if (onTableScanned) {
+      onTableScanned({ side, table: tableSpec.tableName, rowCount: scan.rowCount, scanDurationMs: scan.scanDurationMs })
+    }
   }
   return results
 }
@@ -321,16 +389,21 @@ export function evaluateDataLayer({ tableCatalog, sourceResults, targetResults, 
 /**
  * Layer 3+4 本体（DB接続あり）。source/targetそれぞれのtable catalog全体を
  * withReadOnlySnapshot経由で走査し、evaluateDataLayer（純粋関数）へ委譲する。
+ * source/targetの走査は互いに独立した別接続・別トランザクションのため`Promise.all`で
+ * 並行実行する（ファイル冒頭コメント参照。write freeze時間の短縮）。
  * @param {{
  *   sourceSql: import('postgres').Sql,
  *   targetSql: import('postgres').Sql,
  *   chunkSize?: number,
  *   tableCatalog?: ReturnType<typeof loadTableCatalog>,
+ *   onTableScanned?: (info: { side: string, table: string, rowCount: number, scanDurationMs: number }) => void,
  * }} args
  */
-export async function runDataLayer({ sourceSql, targetSql, chunkSize = DEFAULT_CHUNK_SIZE, tableCatalog }) {
+export async function runDataLayer({ sourceSql, targetSql, chunkSize = DEFAULT_CHUNK_SIZE, tableCatalog, onTableScanned }) {
   const catalog = tableCatalog ?? loadTableCatalog()
-  const sourceResults = await withReadOnlySnapshot(sourceSql, (tx) => readSideTableData(tx, catalog, chunkSize))
-  const targetResults = await withReadOnlySnapshot(targetSql, (tx) => readSideTableData(tx, catalog, chunkSize))
+  const [sourceResults, targetResults] = await Promise.all([
+    withReadOnlySnapshot(sourceSql, (tx) => readSideTableData(tx, catalog, chunkSize, 'source', onTableScanned)),
+    withReadOnlySnapshot(targetSql, (tx) => readSideTableData(tx, catalog, chunkSize, 'target', onTableScanned)),
+  ])
   return evaluateDataLayer({ tableCatalog: catalog, sourceResults, targetResults, chunkSize })
 }

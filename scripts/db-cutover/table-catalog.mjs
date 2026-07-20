@@ -137,6 +137,20 @@ function findCompositePrimaryKeyColumns(callText) {
 }
 
 /**
+ * pgTable呼び出し全文の中から「列定義らしき行」（`プロパティ名: 何らかの関数呼び出し(`）の
+ * 総数を数える。`verify-db-schema.js`の`parseSchemaFile`が認識する型関数名
+ * （uuid/text/boolean/jsonb/timestamp/integer/numeric/bigint/smallint/varchar）に
+ * 限定せず、任意の識別子を型関数として受け入れる緩い正規表現を使う
+ * （Fableレビュー Major対応、buildTableCatalogでの乖離検知に使う。詳細は呼び出し側参照）。
+ * @param {string} callText
+ * @returns {number}
+ */
+function countColumnLikeDeclarations(callText) {
+  const re = /(?:^|\n)\s*\w+:\s*\w+\(/g
+  return [...callText.matchAll(re)].length
+}
+
+/**
  * schema.ts 全体から、テーブル名 → PK列名配列（宣言順）のMapを抽出する純粋関数。
  * @param {string} schemaSource src/lib/db/schema.ts の内容全体
  * @returns {Map<string, string[]>}
@@ -158,6 +172,16 @@ export function extractPrimaryKeys(schemaSource) {
 
 /**
  * schema.ts のソーステキストから、layer-data.mjs が必要とするtable catalogを組み立てる純粋関数。
+ *
+ * 列の取りこぼし検知について（Fableレビュー Major対応）:
+ * `parseSchemaFile`（verify-db-schema.js）は固定の型関数名リストでしか列を認識しないため、
+ * schema.tsに将来 `date(...)`/`doublePrecision(...)` 等の未対応型関数を使う列が追加されると、
+ * その列は`parseSchemaFile`の戻り値・ひいてはこのcatalogから**無言で脱落**する。
+ * checksum対象が静かに縮小する（=検証漏れ）のはこのツールの目的そのものに反するため、
+ * `countColumnLikeDeclarations`（型関数名を問わない緩いカウント）と`parseSchemaFile`が
+ * 認識した列数を突き合わせ、一致しなければ即座にエラーとする（fail-loud。新しい型関数が
+ * 追加されたら、`parseSchemaFile`のTYPE_FN_TO_DATA_TYPE・列開始正規表現の両方の更新を強制する）。
+ *
  * @param {string} schemaSource
  * @returns {Array<{ tableName: string, primaryKeyColumns: string[], columns: Array<{ name: string, dataType: string, isSecret: boolean }> }>}
  */
@@ -165,12 +189,23 @@ export function buildTableCatalog(schemaSource) {
   const tablesColumns = parseSchemaFile(schemaSource)
   const primaryKeys = extractPrimaryKeys(schemaSource)
   const secretColumns = new Set(extractSecretColumnNames(schemaSource))
+  const rawCalls = extractPgTableCalls(stripNoise(schemaSource))
 
   const catalog = []
   for (const [tableName, columnsMap] of tablesColumns) {
     const primaryKeyColumns = primaryKeys.get(tableName)
     if (!primaryKeyColumns || primaryKeyColumns.length === 0) {
       throw new Error(`buildTableCatalog: no primary key found for table '${tableName}'`)
+    }
+    const callText = rawCalls.get(tableName)
+    const declaredCount = callText ? countColumnLikeDeclarations(callText) : -1
+    if (declaredCount !== columnsMap.size) {
+      throw new Error(
+        `buildTableCatalog: table '${tableName}' appears to have ${declaredCount} column-like declarations ` +
+          `in schema.ts, but parseSchemaFile only recognized ${columnsMap.size}. A column using an unsupported ` +
+          `type function was likely added — update verify-db-schema.js's type function list before this table's ` +
+          `checksum coverage silently loses that column.`
+      )
     }
     const columns = [...columnsMap.entries()]
       .map(([columnName, meta]) => ({

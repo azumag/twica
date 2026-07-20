@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateDataLayer, quoteIdentifier, DEFAULT_CHUNK_SIZE } from '../../../scripts/db-cutover/layer-data.mjs'
+import type { Sql } from 'postgres'
+import {
+  evaluateDataLayer,
+  quoteIdentifier,
+  pkColumnExpr,
+  scanTable,
+  tableExists,
+  DEFAULT_CHUNK_SIZE,
+  MAX_CHUNK_SIZE,
+} from '../../../scripts/db-cutover/layer-data.mjs'
+import { hashChunkList } from '../../../scripts/db-cutover/canonicalize.mjs'
 
 /**
  * Issue #697 Chunk 2: layer-data.mjs（Layer 3件数/key range統計 + Layer 4 checksum）のテスト。
@@ -7,7 +17,40 @@ import { evaluateDataLayer, quoteIdentifier, DEFAULT_CHUNK_SIZE } from '../../..
  * evaluateDataLayer はDB接続を持たない純粋関数（layer-identity.mjsのevaluateIdentityLayerと
  * 同じ「pure decision + thin DB wrapper」流儀）のため、scanTableの戻り値を模したfixtureの
  * Mapを直接組み立ててテストできる（実DBでの検証はdocker-fault-injection.test.tsが担う）。
+ *
+ * scanTable/fetchChunk（DB接続を要する関数）は、`tx.unsafe(queryText, params)`のみを呼ぶ
+ * という薄いインターフェースに依存しているため、それだけを模したfake txでCI上でも
+ * pagination境界条件を検証できる（Fableレビュー Major対応: 以前はDocker実機テスト
+ * （opt-in、このサンドボックスでは実行不可）でしか検証されていなかった）。
+ * fakeは実際の`Sql`型が持つ全プロパティを実装しないため、呼び出し箇所で`as unknown as Sql`
+ * にキャストする（実装ではなく型の便宜上のキャストであることを明示するため`unknown`経由）。
  */
+type MockCall = { queryText: string; params: unknown[] }
+
+function makeMockTx(pages: Array<Array<Record<string, unknown>>>): Sql & { calls: MockCall[] } {
+  const calls: MockCall[] = []
+  let callIndex = 0
+  const fake = {
+    calls,
+    unsafe: async (queryText: string, params: unknown[]) => {
+      calls.push({ queryText, params })
+      const page = callIndex < pages.length ? pages[callIndex] : []
+      callIndex += 1
+      return page
+    },
+  }
+  return fake as unknown as Sql & { calls: MockCall[] }
+}
+
+/**
+ * `` tx`select ...` `` というタグ付きテンプレート呼び出しを模したfake tx（tableExists用）。
+ * `tableExists`は`.unsafe()`ではなくタグ付きテンプレート形式でtxを呼ぶため、
+ * `makeMockTx`とは別の形のfakeが必要。
+ */
+function makeMockTaggedTemplateTx(rows: Array<Record<string, unknown>>): Sql {
+  const fake = async () => rows
+  return fake as unknown as Sql
+}
 
 const catalog = [
   { tableName: 'widgets', primaryKeyColumns: ['id'], columns: [{ name: 'id', dataType: 'uuid', isSecret: false }] },
@@ -54,6 +97,17 @@ describe('evaluateDataLayer', () => {
     })
     expect(result.pass).toBe(false)
     expect(result.findings).toEqual([expect.objectContaining({ code: 'DATA_TABLE_MISSING', side: 'source' })])
+  })
+
+  it('テーブルがtarget側に存在しない場合 DATA_TABLE_MISSING でfail（side=target、Fableレビュー Minor対応: source側のみのテストしか無かった）', () => {
+    const result = evaluateDataLayer({
+      tableCatalog: catalog,
+      sourceResults: new Map([['widgets', makeScan()]]),
+      targetResults: new Map([['widgets', { exists: false }]]),
+      chunkSize: 100,
+    })
+    expect(result.pass).toBe(false)
+    expect(result.findings).toEqual([expect.objectContaining({ code: 'DATA_TABLE_MISSING', side: 'target' })])
   })
 
   it('テーブルが双方に存在しない場合はside=both', () => {
@@ -191,9 +245,162 @@ describe('quoteIdentifier', () => {
   })
 })
 
-describe('DEFAULT_CHUNK_SIZE', () => {
-  it('正の整数である', () => {
+describe('DEFAULT_CHUNK_SIZE / MAX_CHUNK_SIZE', () => {
+  it('DEFAULT_CHUNK_SIZEは正の整数である', () => {
     expect(Number.isInteger(DEFAULT_CHUNK_SIZE)).toBe(true)
     expect(DEFAULT_CHUNK_SIZE).toBeGreaterThan(0)
+  })
+
+  it('MAX_CHUNK_SIZEはDEFAULT_CHUNK_SIZEより大きい正の整数である', () => {
+    expect(Number.isInteger(MAX_CHUNK_SIZE)).toBe(true)
+    expect(MAX_CHUNK_SIZE).toBeGreaterThan(DEFAULT_CHUNK_SIZE)
+  })
+})
+
+describe('pkColumnExpr（Fableレビュー Critical-1対応: text系PK列のCOLLATE "C"強制）', () => {
+  it('text型にはCOLLATE "C"を付与する', () => {
+    expect(pkColumnExpr({ name: 'url', dataType: 'text' })).toBe('"url" COLLATE "C"')
+  })
+
+  it('character varying型（varchar）にもCOLLATE "C"を付与する', () => {
+    expect(pkColumnExpr({ name: 'user_prefix', dataType: 'character varying' })).toBe('"user_prefix" COLLATE "C"')
+  })
+
+  it('uuid等のcollatableでない型にはCOLLATEを付与しない（付与すると構文エラーになるため）', () => {
+    expect(pkColumnExpr({ name: 'id', dataType: 'uuid' })).toBe('"id"')
+    expect(pkColumnExpr({ name: 'count', dataType: 'integer' })).toBe('"count"')
+  })
+})
+
+describe('tableExists', () => {
+  it('to_regclassがnullを返せばfalse（テーブル不存在）', async () => {
+    const fakeTx = makeMockTaggedTemplateTx([{ reg: null }])
+    expect(await tableExists(fakeTx, 'nonexistent_table')).toBe(false)
+  })
+
+  it('to_regclassが値を返せばtrue（テーブル存在）', async () => {
+    const fakeTx = makeMockTaggedTemplateTx([{ reg: '16388' }])
+    expect(await tableExists(fakeTx, 'cards')).toBe(true)
+  })
+})
+
+describe('scanTable（fake txによるpagination境界条件のテスト、Fableレビュー Major-5対応）', () => {
+  const simpleSpec = {
+    tableName: 'widgets',
+    primaryKeyColumns: ['id'],
+    columns: [
+      { name: 'id', dataType: 'uuid', isSecret: false },
+      { name: 'name', dataType: 'text', isSecret: false },
+    ],
+  }
+
+  it('空テーブルは1回のfetchだけで終わり、chunks=0件・決定的なrootHashになる', async () => {
+    const tx = makeMockTx([[]])
+    const result = await scanTable(tx, simpleSpec, 2)
+    expect(result.rowCount).toBe(0)
+    expect(result.chunks).toEqual([])
+    expect(result.minKey).toBeNull()
+    expect(result.maxKey).toBeNull()
+    expect(result.rootHash).toBe(hashChunkList([]))
+    expect(tx.calls).toHaveLength(1)
+    expect(tx.calls[0].params).toEqual([2])
+  })
+
+  it('単一行のテーブルは1chunkになる', async () => {
+    const tx = makeMockTx([[{ id: 'a', name: 'A' }]])
+    const result = await scanTable(tx, simpleSpec, 10)
+    expect(result.rowCount).toBe(1)
+    expect(result.chunks).toHaveLength(1)
+    expect(result.minKey).toEqual(['a'])
+    expect(result.maxKey).toEqual(['a'])
+  })
+
+  it('行数がchunkSizeの整数倍のとき、最後に空ページを1回追加取得してから終了する（余分なchunkは作らない）', async () => {
+    const rows = [
+      { id: 'a', name: 'A' },
+      { id: 'b', name: 'B' },
+    ]
+    const tx = makeMockTx([rows, []])
+    const result = await scanTable(tx, simpleSpec, 2)
+    expect(result.rowCount).toBe(2)
+    expect(result.chunks).toHaveLength(1)
+    expect(tx.calls).toHaveLength(2)
+  })
+
+  it('chunkSize=1で3行なら3chunkになり、keyset paginationのWHERE paramsが前chunkの最終行を引き継ぐ', async () => {
+    const rows = [
+      { id: 'a', name: 'A' },
+      { id: 'b', name: 'B' },
+      { id: 'c', name: 'C' },
+    ]
+    const tx = makeMockTx([[rows[0]], [rows[1]], [rows[2]], []])
+    const result = await scanTable(tx, simpleSpec, 1)
+    expect(result.chunks).toHaveLength(3)
+    expect(result.rowCount).toBe(3)
+    expect(tx.calls[0].params).toEqual([1])
+    expect(tx.calls[1].params).toEqual(['a', 1])
+    expect(tx.calls[2].params).toEqual(['b', 1])
+    expect(tx.calls[3].params).toEqual(['c', 1])
+  })
+
+  it('複合PKのkeyset paginationで正しいtuple paramsとCOLLATE付きSQLが生成される', async () => {
+    const compositeSpec = {
+      tableName: 'links',
+      primaryKeyColumns: ['a_id', 'b_id'],
+      columns: [
+        { name: 'a_id', dataType: 'uuid', isSecret: false },
+        { name: 'b_id', dataType: 'text', isSecret: false },
+      ],
+    }
+    const tx = makeMockTx([[{ a_id: 'u1', b_id: 'x' }], []])
+    await scanTable(tx, compositeSpec, 1)
+    expect(tx.calls[0].queryText).toContain('ORDER BY "a_id", "b_id" COLLATE "C"')
+    expect(tx.calls[0].queryText).not.toContain('WHERE')
+    expect(tx.calls[1].queryText).toContain('WHERE ("a_id", "b_id" COLLATE "C") > ($1, $2)')
+    expect(tx.calls[1].params).toEqual(['u1', 'x', 1])
+  })
+
+  it('secret指定のtimestamp列はmaxTimestampsから除外される（Fableレビュー Major-1対応、生値をreportへ出さない）', async () => {
+    const spec = {
+      tableName: 'users',
+      primaryKeyColumns: ['id'],
+      columns: [
+        { name: 'id', dataType: 'uuid', isSecret: false },
+        { name: 'created_at', dataType: 'timestamp with time zone', isSecret: false },
+        { name: 'twitch_token_expires_at', dataType: 'timestamp with time zone', isSecret: true },
+      ],
+    }
+    const rows = [
+      {
+        id: 'u1',
+        created_at: new Date('2026-01-01T00:00:00Z'),
+        twitch_token_expires_at: new Date('2099-01-01T00:00:00Z'),
+      },
+    ]
+    const tx = makeMockTx([rows, []])
+    const result = await scanTable(tx, spec, 10)
+    expect(result.maxTimestamps).toEqual({ created_at: '2026-01-01T00:00:00.000Z' })
+    expect(result.maxTimestamps).not.toHaveProperty('twitch_token_expires_at')
+    // 生値がreport（scanTableの戻り値全体）のどこにも文字列として出現しないこと。
+    expect(JSON.stringify(result)).not.toContain('2099-01-01')
+  })
+
+  it('_id列のnullカウントを行ごとに積算する', async () => {
+    const spec = {
+      tableName: 'user_cards',
+      primaryKeyColumns: ['id'],
+      columns: [
+        { name: 'id', dataType: 'uuid', isSecret: false },
+        { name: 'card_id', dataType: 'uuid', isSecret: false },
+      ],
+    }
+    const rows = [
+      { id: '1', card_id: 'c1' },
+      { id: '2', card_id: null },
+      { id: '3', card_id: null },
+    ]
+    const tx = makeMockTx([rows, []])
+    const result = await scanTable(tx, spec, 10)
+    expect(result.nullCounts).toEqual({ card_id: 2 })
   })
 })

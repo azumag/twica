@@ -37,6 +37,14 @@ describe('canonicalizeTimestamp', () => {
   it('不正な値は例外を投げる（fail-loud、値を握りつぶさない）', () => {
     expect(() => canonicalizeTimestamp('not-a-date')).toThrow(/invalid timestamp/)
   })
+
+  it('既知の限界: マイクロ秒未満の差異はJS Date（ミリ秒精度）経由の正規化で失われる（Fableレビュー Major対応、意図的な仕様として固定）', () => {
+    // PostgreSQLのtimestamp(tz)はマイクロ秒精度を持つが、Dateはミリ秒精度までしか
+    // 表現できない。同一ミリ秒内でマイクロ秒だけ異なる2値は区別できない
+    // （canonicalize.mjs冒頭コメント「timestampのマイクロ秒精度について」参照）。
+    expect(canonicalizeTimestamp('2026-01-01T00:00:00.123456Z')).toBe(canonicalizeTimestamp('2026-01-01T00:00:00.123999Z'))
+    expect(canonicalizeTimestamp('2026-01-01T00:00:00.123456Z')).toBe('2026-01-01T00:00:00.123Z')
+  })
 })
 
 describe('canonicalizeJsonValue', () => {
@@ -91,6 +99,24 @@ describe('hashSecretValue', () => {
   it('nullはnullのまま（値の有無自体は機微情報ではない）', () => {
     expect(hashSecretValue(null)).toBeNull()
     expect(hashSecretValue(undefined)).toBeNull()
+  })
+
+  it('Date入力はtoISOString()経由でハッシュ化される（Fableレビュー Major対応: String(Date)のタイムゾーン依存を排除）', () => {
+    // secret列にはtwitch_token_expires_at（timestamp with time zone）のような
+    // Date型の値も来うる。`String(date)`はDate#toString()（実行マシンのタイムゾーン・
+    // 曜日名を含む可読形式・ミリ秒未満切り捨て）に依存してしまうため、同じ瞬間の値でも
+    // 実行環境によって異なるハッシュになる欠陥があった。toISOString()経由なら
+    // タイムゾーン非依存・ミリ秒精度で決定的になる。
+    const date = new Date('2026-01-01T00:00:00.123Z')
+    expect(hashSecretValue(date)).toBe(createHash('sha256').update('2026-01-01T00:00:00.123Z', 'utf8').digest('hex'))
+    expect(hashSecretValue(date)).not.toBe(createHash('sha256').update(String(date), 'utf8').digest('hex'))
+  })
+
+  it('同じ瞬間を表す別々のDateインスタンス（生成経路が違っても）は同じハッシュになる', () => {
+    const a = new Date('2026-01-01T00:00:00.123Z')
+    const b = new Date(a.getTime())
+    expect(a).not.toBe(b) // 別インスタンスであることの確認
+    expect(hashSecretValue(a)).toBe(hashSecretValue(b))
   })
 })
 

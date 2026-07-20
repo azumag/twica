@@ -189,6 +189,36 @@ describe('buildTableCatalog（実際のschema.ts）', () => {
   })
 })
 
+describe('buildTableCatalog（未対応の型関数が追加された場合の乖離検知、Fableレビュー Major対応）', () => {
+  it('parseSchemaFileが認識しない型関数（例: date()）を使う列が追加されると例外を投げる（無言でchecksum対象から脱落させない）', () => {
+    // `date(...)` は verify-db-schema.js の TYPE_FN_TO_DATA_TYPE / 列開始正規表現に
+    // 含まれていないため、parseSchemaFile はこの列を認識しない。放置すると
+    // buildTableCatalog は何のエラーも出さずにこの列をcatalogから除外してしまい、
+    // checksum検証の対象が静かに縮小する（このテストが検知したい欠陥そのもの）。
+    const source = `
+      import { pgTable, text, uuid, date } from 'drizzle-orm/pg-core'
+      export const widgets = pgTable('widgets', {
+        id: uuid('id').primaryKey(),
+        name: text('name').notNull(),
+        release_date: date('release_date'),
+      })
+    `
+    expect(() => buildTableCatalog(source)).toThrow(/column-like declarations/)
+  })
+
+  it('全列が認識済みの型関数のみで構成されるテーブルは例外を投げない（偽陽性が無いことの確認）', () => {
+    const source = `
+      import { pgTable, text, uuid, integer } from 'drizzle-orm/pg-core'
+      export const widgets = pgTable('widgets', {
+        id: uuid('id').primaryKey(),
+        name: text('name').notNull(),
+        count: integer('count').notNull().default(0),
+      })
+    `
+    expect(() => buildTableCatalog(source)).not.toThrow()
+  })
+})
+
 describe('loadTableCatalog', () => {
   it('実ファイルを読み込んでbuildTableCatalogと同じ結果を返す', () => {
     expect(loadTableCatalog()).toEqual(buildTableCatalog(realSchemaSource))

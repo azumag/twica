@@ -20,7 +20,7 @@
 'use strict'
 
 import { VALID_IDENTITY_ENVIRONMENTS, VALID_IDENTITY_PROVIDERS } from './identity-store.mjs'
-import { DEFAULT_CHUNK_SIZE } from './layer-data.mjs'
+import { DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE } from './layer-data.mjs'
 
 /**
  * 本チャンクで実装済みのlayer名（--layersで指定可能な値）。
@@ -33,7 +33,7 @@ import { DEFAULT_CHUNK_SIZE } from './layer-data.mjs'
  *
  * `data`（Layer 3件数/key range統計 + Layer 4 checksum、Issue #697 Chunk 2で実装）を追加。
  * schema.tsに定義された全テーブルを対象にするため、identity/schemaより実行時間が長くなりうる
- * （`--chunk-size`で調整可能。下記CHUNK_SIZE_FLAG参照）。
+ * （`--chunk-size`で調整可能。下記parseChunkSize参照）。
  */
 export const IMPLEMENTED_LAYERS = ['identity', 'schema', 'data']
 
@@ -72,8 +72,8 @@ const HELP_TEXT = `
                                     現時点で指定すると「未実装」エラーになる）
   --operation-id=<文字列>          production実行時のみ必須
   --allow-skip-identity            --layers に identity を含めない場合に必須（下記参照）
-  --chunk-size=<正の整数>          dataレイヤーのchunkサイズ（既定: ${DEFAULT_CHUNK_SIZE}行）。
-                                    dataレイヤーを実行しない場合は無視される
+  --chunk-size=<正の整数>          dataレイヤーのchunkサイズ（既定: ${DEFAULT_CHUNK_SIZE}行、
+                                    上限: ${MAX_CHUNK_SIZE}行）。dataレイヤーを実行しない場合は無視される
   --help, -h                       このヘルプを表示する
 
 --layers に identity を含めない場合について:
@@ -152,8 +152,12 @@ export function parseVerifyArgs(argv) {
 }
 
 /**
- * `--chunk-size` の値を検証する純粋関数。正の整数（1以上）のみを許容する。
+ * `--chunk-size` の値を検証する純粋関数。`1`〜`MAX_CHUNK_SIZE`の整数のみを許容する。
  * 未指定時は呼び出し側（resolveVerifyConfig）がDEFAULT_CHUNK_SIZEを補う。
+ *
+ * 上限を設ける理由（Fableレビュー Minor対応）: 上限が無いと、誤って巨大な値
+ * （例: テーブルの全行数を上回る値）を指定した場合、1chunkとして全行を一括で
+ * メモリ上に保持してしまい、メモリ枯渇のリスクがある。
  * @param {string | undefined} chunkSizeRaw
  * @returns {{ error?: string, chunkSize?: number }}
  */
@@ -168,6 +172,9 @@ export function parseChunkSize(chunkSizeRaw) {
   const chunkSize = Number(chunkSizeRaw.trim())
   if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) {
     return { error: `--chunk-size には正の整数を指定してください: ${chunkSizeRaw}` }
+  }
+  if (chunkSize > MAX_CHUNK_SIZE) {
+    return { error: `--chunk-size は ${MAX_CHUNK_SIZE} 以下を指定してください: ${chunkSizeRaw}` }
   }
   return { chunkSize }
 }

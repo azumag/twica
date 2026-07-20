@@ -19,9 +19,27 @@
  *     （Issue #697本文「access token等のsecret columnは値を出力しない」。chunk hashは
  *     reportに残るため、生値がreportへ混入する経路を断つ）。
  *   - 上記以外（uuid/text/boolean/integer/numeric/bigint等）はpostgres.jsが返す値を
- *     そのまま使う。numeric/bigintの文字列表現はPostgreSQLのtypmod（precision/scale）に
- *     依存して決まり、provider非依存で決定的なため追加正規化は行わない
- *     （Layer 2のschema比較でtypmod自体の一致は別途担保される）。
+ *     そのまま使う。numeric/bigintの文字列表現は、precision/scaleを明示宣言したnumeric列
+ *     （`drop_rate numeric(5,4)`・`win_rate numeric(5,2)`等）ではtypmodに依存して決まり、
+ *     provider非依存で決定的なため追加正規化は行わない（Layer 2のschema比較でtypmod自体の
+ *     一致は別途担保される）。
+ *     **既知の例外（Fableレビュー Minor対応、コメント訂正）**: `cards.intra_rarity_weight`
+ *     はprecision/scale宣言の無いnumeric列であり、この場合PostgreSQLは実際に格納された
+ *     有効桁数をそのまま表示する（`1` と `1.0` と `1.00` はtypmod固定が無ければ異なる
+ *     テキスト表現になりうる）。この列に限っては「typmodで決定的」という上記の説明が
+ *     厳密には成立しない。実運用ではdump/restore・logical replicationいずれも値の
+ *     内部表現をそのまま転写するため実害は無い想定だが、将来この列にアプリ層から
+ *     異なる有効桁数で値を書き込む経路が増えた場合、cosmetic差によるchecksum不一致
+ *     （偽陽性）が起こりうることを明記しておく。
+ *
+ * timestampのマイクロ秒精度について（Fableレビュー Major対応、既知の限界）:
+ * PostgreSQLのtimestamp(tz)はマイクロ秒精度を持つが、`canonicalizeTimestamp`はJS `Date`
+ * （ミリ秒精度）を経由するため、マイクロ秒の差異は正規化の時点で失われる（postgres.jsの
+ * デフォルト型パーサが値をDateへ変換する時点で既に失われており、本モジュールより前段の
+ * 問題でもある）。よって「マイクロ秒だけ異なる2つの値」はchecksum上区別できない
+ * （false negativeになりうる、既知の限界）。本プロジェクトのtimestamp列は全て
+ * created_at/updated_at等の人間駆動イベントであり、マイクロ秒精度が業務上意味を持つ
+ * ケースが無いため許容する（YAGNI判断）。
  */
 
 'use strict'
@@ -80,12 +98,22 @@ export function canonicalizeJsonValue(value) {
 /**
  * secret列の値をSHA-256ハッシュへ置き換える純粋関数。NULLはNULLのまま
  * （「値が無いこと」自体は機微情報ではなく、NULL率の比較に必要なため）。
+ *
+ * Dateインスタンスの扱いについて（Fableレビュー Major対応）: secret列は基本text型だが、
+ * `twitch_token_expires_at`のようにsecret列判定（token/secret/password/hashパターン）に
+ * マッチするtimestamp列も存在する（secret-columns.mjsのKNOWN_SECRET_COLUMNS参照）。
+ * 素朴に `String(date)` すると `Date#toString()` の結果（実行マシンのタイムゾーン・
+ * ミリ秒未満切り捨て・曜日名を含む可読形式）に依存してしまい、同じ瞬間を表す値でも
+ * 実行環境によって異なるハッシュになりうる（意図しない偽陽性の原因）。Dateインスタンスは
+ * 必ず`toISOString()`（UTC・ミリ秒精度固定）を経由してからハッシュ化することで、
+ * timestamp列と同じ決定的な文字列表現を使う。
  * @param {unknown} value
  * @returns {string | null}
  */
 export function hashSecretValue(value) {
   if (value === null || value === undefined) return null
-  return core.computeChecksum(String(value))
+  const normalized = value instanceof Date ? value.toISOString() : String(value)
+  return core.computeChecksum(normalized)
 }
 
 /**
