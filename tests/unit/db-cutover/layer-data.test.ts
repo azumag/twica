@@ -18,24 +18,31 @@ import { hashChunkList } from '../../../scripts/db-cutover/canonicalize.mjs'
  * 同じ「pure decision + thin DB wrapper」流儀）のため、scanTableの戻り値を模したfixtureの
  * Mapを直接組み立ててテストできる（実DBでの検証はdocker-fault-injection.test.tsが担う）。
  *
- * scanTable/fetchChunk（DB接続を要する関数）は、`tx.unsafe(queryText, params)`のみを呼ぶ
- * という薄いインターフェースに依存しているため、それだけを模したfake txでCI上でも
+ * scanTable（DB接続を要する関数）は、`tx.unsafe(queryText, params)`のみを呼ぶという
+ * 薄いインターフェースに依存しているため、それだけを模したfake txでCI上でも
  * pagination境界条件を検証できる（Fableレビュー Major対応: 以前はDocker実機テスト
  * （opt-in、このサンドボックスでは実行不可）でしか検証されていなかった）。
  * fakeは実際の`Sql`型が持つ全プロパティを実装しないため、呼び出し箇所で`as unknown as Sql`
  * にキャストする（実装ではなく型の便宜上のキャストであることを明示するため`unknown`経由）。
+ *
+ * scanTableはカーソルベース（`DECLARE ... CURSOR` → `FETCH FORWARD N FROM ...` を
+ * chunk数だけ繰り返す → `CLOSE ...`）でpaginationする（2回目のFableレビュー
+ * Major-N1対応: COLLATE "C"強制によりPK indexが使えない場合でも全表スキャン+ソートを
+ * 1回で済ませるため）。fake txはqueryTextの先頭が`FETCH`かどうかで応答を振り分ける
+ * （`FETCH`以外＝DECLARE/CLOSEは行を返さない実際のPostgreSQL挙動を模す）。
  */
 type MockCall = { queryText: string; params: unknown[] }
 
 function makeMockTx(pages: Array<Array<Record<string, unknown>>>): Sql & { calls: MockCall[] } {
   const calls: MockCall[] = []
-  let callIndex = 0
+  let fetchIndex = 0
   const fake = {
     calls,
     unsafe: async (queryText: string, params: unknown[]) => {
       calls.push({ queryText, params })
-      const page = callIndex < pages.length ? pages[callIndex] : []
-      callIndex += 1
+      if (!queryText.trim().startsWith('FETCH')) return [] // DECLARE CURSOR / CLOSE
+      const page = fetchIndex < pages.length ? pages[fetchIndex] : []
+      fetchIndex += 1
       return page
     },
   }
@@ -294,7 +301,7 @@ describe('scanTable（fake txによるpagination境界条件のテスト、Fable
     ],
   }
 
-  it('空テーブルは1回のfetchだけで終わり、chunks=0件・決定的なrootHashになる', async () => {
+  it('空テーブルはDECLARE→FETCH(空)→CLOSEの3呼び出しだけで終わり、chunks=0件・決定的なrootHashになる', async () => {
     const tx = makeMockTx([[]])
     const result = await scanTable(tx, simpleSpec, 2)
     expect(result.rowCount).toBe(0)
@@ -302,20 +309,23 @@ describe('scanTable（fake txによるpagination境界条件のテスト、Fable
     expect(result.minKey).toBeNull()
     expect(result.maxKey).toBeNull()
     expect(result.rootHash).toBe(hashChunkList([]))
-    expect(tx.calls).toHaveLength(1)
-    expect(tx.calls[0].params).toEqual([2])
+    expect(tx.calls).toHaveLength(3)
+    expect(tx.calls[0].queryText).toMatch(/^DECLARE cutover_scan_cursor CURSOR FOR SELECT \* FROM "widgets" ORDER BY "id"$/)
+    expect(tx.calls[1].queryText).toBe('FETCH FORWARD 2 FROM cutover_scan_cursor')
+    expect(tx.calls[2].queryText).toBe('CLOSE cutover_scan_cursor')
   })
 
-  it('単一行のテーブルは1chunkになる', async () => {
+  it('単一行のテーブルは1chunkになる（DECLARE→FETCH(1行)→CLOSE、chunkSize未満なので追加fetchは発生しない）', async () => {
     const tx = makeMockTx([[{ id: 'a', name: 'A' }]])
     const result = await scanTable(tx, simpleSpec, 10)
     expect(result.rowCount).toBe(1)
     expect(result.chunks).toHaveLength(1)
     expect(result.minKey).toEqual(['a'])
     expect(result.maxKey).toEqual(['a'])
+    expect(tx.calls).toHaveLength(3)
   })
 
-  it('行数がchunkSizeの整数倍のとき、最後に空ページを1回追加取得してから終了する（余分なchunkは作らない）', async () => {
+  it('行数がchunkSizeの整数倍のとき、最後に空ページを1回追加fetchしてから終了する（余分なchunkは作らない）', async () => {
     const rows = [
       { id: 'a', name: 'A' },
       { id: 'b', name: 'B' },
@@ -324,10 +334,12 @@ describe('scanTable（fake txによるpagination境界条件のテスト、Fable
     const result = await scanTable(tx, simpleSpec, 2)
     expect(result.rowCount).toBe(2)
     expect(result.chunks).toHaveLength(1)
-    expect(tx.calls).toHaveLength(2)
+    // DECLARE + FETCH(2行) + FETCH(空) + CLOSE
+    expect(tx.calls).toHaveLength(4)
+    expect(tx.calls[3].queryText).toBe('CLOSE cutover_scan_cursor')
   })
 
-  it('chunkSize=1で3行なら3chunkになり、keyset paginationのWHERE paramsが前chunkの最終行を引き継ぐ', async () => {
+  it('chunkSize=1で3行なら3chunkになり、FETCHをカーソル経由で3回+空判定1回繰り返す', async () => {
     const rows = [
       { id: 'a', name: 'A' },
       { id: 'b', name: 'B' },
@@ -337,13 +349,15 @@ describe('scanTable（fake txによるpagination境界条件のテスト、Fable
     const result = await scanTable(tx, simpleSpec, 1)
     expect(result.chunks).toHaveLength(3)
     expect(result.rowCount).toBe(3)
-    expect(tx.calls[0].params).toEqual([1])
-    expect(tx.calls[1].params).toEqual(['a', 1])
-    expect(tx.calls[2].params).toEqual(['b', 1])
-    expect(tx.calls[3].params).toEqual(['c', 1])
+    // DECLARE + FETCH*4（3回分の行 + 最後の空判定） + CLOSE
+    expect(tx.calls).toHaveLength(6)
+    expect(tx.calls.filter((c) => c.queryText.startsWith('FETCH'))).toHaveLength(4)
+    for (const call of tx.calls.filter((c) => c.queryText.startsWith('FETCH'))) {
+      expect(call.queryText).toBe('FETCH FORWARD 1 FROM cutover_scan_cursor')
+    }
   })
 
-  it('複合PKのkeyset paginationで正しいtuple paramsとCOLLATE付きSQLが生成される', async () => {
+  it('複合PKでCOLLATE付きのDECLARE文が1回だけ生成される（keysetのWHERE句は不要になった）', async () => {
     const compositeSpec = {
       tableName: 'links',
       primaryKeyColumns: ['a_id', 'b_id'],
@@ -354,10 +368,15 @@ describe('scanTable（fake txによるpagination境界条件のテスト、Fable
     }
     const tx = makeMockTx([[{ a_id: 'u1', b_id: 'x' }], []])
     await scanTable(tx, compositeSpec, 1)
-    expect(tx.calls[0].queryText).toContain('ORDER BY "a_id", "b_id" COLLATE "C"')
-    expect(tx.calls[0].queryText).not.toContain('WHERE')
-    expect(tx.calls[1].queryText).toContain('WHERE ("a_id", "b_id" COLLATE "C") > ($1, $2)')
-    expect(tx.calls[1].params).toEqual(['u1', 'x', 1])
+    expect(tx.calls[0].queryText).toBe('DECLARE cutover_scan_cursor CURSOR FOR SELECT * FROM "links" ORDER BY "a_id", "b_id" COLLATE "C"')
+    expect(tx.calls.filter((c) => c.queryText.includes('WHERE'))).toHaveLength(0)
+  })
+
+  it('chunkSizeが正の整数でなければfail-loudに例外を投げる（SQL文字列へ直接埋め込むため、Fableレビュー Major-N1対応）', async () => {
+    const tx = makeMockTx([[]])
+    await expect(scanTable(tx, simpleSpec, 0)).rejects.toThrow(/positive integer/)
+    await expect(scanTable(tx, simpleSpec, 1.5)).rejects.toThrow(/positive integer/)
+    await expect(scanTable(tx, simpleSpec, Number.NaN)).rejects.toThrow(/positive integer/)
   })
 
   it('secret指定のtimestamp列はmaxTimestampsから除外される（Fableレビュー Major-1対応、生値をreportへ出さない）', async () => {

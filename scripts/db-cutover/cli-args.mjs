@@ -163,9 +163,12 @@ export function parseVerifyArgs(argv) {
  */
 export function parseChunkSize(chunkSizeRaw) {
   if (chunkSizeRaw === undefined) return { chunkSize: DEFAULT_CHUNK_SIZE }
-  // Number()は空文字列を0に、前後空白を無視して数値化する等の緩さがあるため、
-  // 「見た目が10進整数のみで構成されているか」を先にregexで確認してから変換する
-  // （`--chunk-size=1e3` や `--chunk-size= 10` のような曖昧な入力を弾くため）。
+  // Number()は空文字列を0にする等の緩さがあるため、trim()適用後に「10進整数のみで
+  // 構成されているか」を先にregexで確認してから変換する。前後の空白はtrim()により
+  // 意図的に許容する（2回目のFableレビュー Minor-N4対応、コメント訂正:
+  // 以前は「`--chunk-size= 10`のような入力も弾く」と誤って記載していたが、実装は
+  // trim()後に判定するため空白付きの入力は許容される。指数表記（`1e3`）はtrim後も
+  // 数字以外の文字を含むため、下記regexで正しく弾かれる）。
   if (!/^[0-9]+$/.test(chunkSizeRaw.trim())) {
     return { error: `--chunk-size には正の整数を指定してください: ${chunkSizeRaw}` }
   }

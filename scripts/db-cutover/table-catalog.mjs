@@ -198,7 +198,17 @@ export function buildTableCatalog(schemaSource) {
       throw new Error(`buildTableCatalog: no primary key found for table '${tableName}'`)
     }
     const callText = rawCalls.get(tableName)
-    const declaredCount = callText ? countColumnLikeDeclarations(callText) : -1
+    // 2回目のFableレビュー Minor-N3対応: callTextが見つからないのは「parseSchemaFileが
+    // 見つけたテーブルをextractPgTableCallsが見つけられなかった」という、型関数の
+    // 認識漏れとは別種の内部矛盾（両パーサとも同じ`pgTable(`起点から走査するため、
+    // 通常は起こらないはずの状態）。原因が異なるため、メッセージも別に分けて明示する。
+    if (!callText) {
+      throw new Error(
+        `buildTableCatalog: internal inconsistency — table '${tableName}' was found by parseSchemaFile but ` +
+          `extractPgTableCalls could not locate its pgTable(...) call text for cross-checking column counts.`
+      )
+    }
+    const declaredCount = countColumnLikeDeclarations(callText)
     if (declaredCount !== columnsMap.size) {
       throw new Error(
         `buildTableCatalog: table '${tableName}' appears to have ${declaredCount} column-like declarations ` +

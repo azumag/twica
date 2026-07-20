@@ -30,10 +30,9 @@
  * write freeze時間を不必要に倍化させていた）。
  *
  * text系PK列のcollationについて（Fableレビュー Critical-1対応、重要）:
- * `ORDER BY`・keyset paginationの`WHERE`句がPK列のデフォルトcollationに依存すると、
- * source（Supabase）とtarget（PlanetScale）でサーバーのlocale設定
- * （`lc_collate`／glibc版・ICU差等）が異なる場合、**内容が完全に同一のデータでも
- * text型PK列（`blob_files.url`・`storage_usage.user_prefix`・
+ * `ORDER BY`がPK列のデフォルトcollationに依存すると、source（Supabase）とtarget
+ * （PlanetScale）でサーバーのlocale設定（`lc_collate`／glibc版・ICU差等）が異なる場合、
+ * **内容が完全に同一のデータでもtext型PK列（`blob_files.url`・`storage_usage.user_prefix`・
  * `channel_point_usage_stats`/`card_owner_stats`の`user_twitch_id`）の行順序が
  * source/targetで変わり、chunk境界がずれてchecksumが不一致になる**（偽陽性）。
  * これはPostgreSQL移行ツールの業界標準的な既知の落とし穴であり
@@ -42,13 +41,36 @@
  * ロケール非依存）を強制する。uuid等の非collatable型にCOLLATEを付けると構文エラーに
  * なるため、`dataType`がtext系の列にのみ適用する（`pkColumnExpr`参照）。
  *
+ * カーソルベースのpaginationを採用する理由（2回目のFableレビュー Major-N1対応、重要）:
+ * 当初はkeyset pagination（`WHERE (pk...) > ($1...) ORDER BY pk... LIMIT $N`）を
+ * chunkごとに再実行していたが、上記の`COLLATE "C"`強制と組み合わせると重大な性能問題が
+ * 露見した。PK制約が作る一意indexは列のデフォルトcollationで構築されているため、
+ * クエリ側で`COLLATE "C"`を指定するとPlannerはそのindexを使えず、
+ * 毎回「全表シーケンシャルスキャン + ソート」を行うことをEXPLAINで実機確認した
+ * （`text`型PKを持つtableでは、chunk数だけ全表走査が繰り返されるO(N²/chunkSize)の
+ * 性能劣化になり、cutoverのwrite freeze時間を不必要に延伸させるリスクがあった）。
+ * 対策として、1テーブルにつき`DECLARE ... CURSOR FOR SELECT * FROM ... ORDER BY ...`で
+ * ソートを1回だけ実行し、`FETCH FORWARD chunkSize FROM ...`でchunkを取り出す方式へ変更した。
+ * カーソルは最初の`DECLARE`時点で実行計画（Sort等）を確定させ、以降の`FETCH`はその結果を
+ * 順番に読み進めるだけなので、`COLLATE "C"`でindexが使えない場合でも全表スキャン+ソートは
+ * 1回で済む（実機のEXPLAINで`Seq Scan` + `Sort`が1回だけ現れることを確認済み）。
+ * カーソルはトランザクションスコープ（`WITHOUT HOLD`が既定）のため、`withReadOnlySnapshot`の
+ * トランザクション内で開いて使い切り、最後に`CLOSE`する（例外時もfinallyで確実にCLOSEする。
+ * 万一CLOSEし忘れても`withReadOnlySnapshot`は必ずROLLBACKするため、カーソル自体はロールバックで
+ * 破棄される）。`FETCH FORWARD`の件数はPostgreSQLの文法上バインドパラメータを取れない
+ * （リテラル整数のみ、実機で`syntax error at or near "$1"`を確認済み）ため、
+ * 事前にCLI側（cli-args.mjsのparseChunkSize、1〜MAX_CHUNK_SIZE）でバリデート済みの
+ * `chunkSize`をSQL文字列へ直接埋め込む（追加の防御として`scanTable`自身も整数であることを
+ * 再検証する。詳細は`scanTable`のコメント参照）。
+ * このカーソル方式への変更により、keyset用の`WHERE`句・前chunk最終行のPK値追跡が丸ごと
+ * 不要になり、pagination自体のロジックも単純化された。
+ *
  * chunk単位の差分特定について（既知の限界、意図的な単純化）:
- * chunkはoffsetではなくkeyset（PK昇順の「次のchunkSize件」）で区切るため、境界は常に
- * 「ソート順でi番目のブロック」という位置ベースになる。行数が一致していれば、ある1行が
- * 同じ位置で値だけ変わった（＝Issue #697本文の代表的な検知対象「同件数だが異なるrow」）場合、
- * その行を含むchunkだけが不一致になり正しく局所化できる。一方、行数は変わらないが
- * 「途中の1行が削除され、末尾に別の1行が挿入された」ような構成変化が起きた場合、
- * 削除位置以降の全chunkが玉突き的に不一致となり、実際に異なる内容は僅かでも
+ * chunkは「ソート順でi番目のブロック」という位置ベースになる。行数が一致していれば、
+ * ある1行が同じ位置で値だけ変わった（＝Issue #697本文の代表的な検知対象「同件数だが
+ * 異なるrow」）場合、その行を含むchunkだけが不一致になり正しく局所化できる。一方、
+ * 行数は変わらないが「途中の1行が削除され、末尾に別の1行が挿入された」ような構成変化が
+ * 起きた場合、削除位置以降の全chunkが玉突き的に不一致となり、実際に異なる内容は僅かでも
  * 「以降の全chunkが差分」と報告されうる。これはposition-basedなchunk分割の既知の限界であり、
  * Issue #697本文が要求するのは「差分chunkを特定できる」ことであって「差分1行そのものを
  * 一意特定する」ことではないため、許容している（真の行単位diffが必要な場合は、報告された
@@ -59,7 +81,7 @@
 
 import { withReadOnlySnapshot } from './snapshot.mjs'
 import { loadTableCatalog } from './table-catalog.mjs'
-import { canonicalizeCell, hashChunk, hashChunkList } from './canonicalize.mjs'
+import { canonicalizeRow, hashChunk, hashChunkList } from './canonicalize.mjs'
 
 /** `--chunk-size` 未指定時のデフォルト値（Issue #697本文「chunk sizeを指定可能」）。 */
 export const DEFAULT_CHUNK_SIZE = 1000
@@ -116,46 +138,43 @@ export async function tableExists(tx, tableName) {
 }
 
 /**
- * 1chunk分の行を、keyset pagination（PK昇順COLLATE "C"固定、直前chunkの最終行のPK値より後ろ）
- * で取得する。
- * @param {import('postgres').Sql} tx
- * @param {string} quotedTable
- * @param {string[]} pkColumnExprs pkColumnExprで組み立て済みのSQL式（identifier + 必要ならCOLLATE）
- * @param {number} chunkSize
- * @param {unknown[] | null} lastPkValues 初回チャンクは null
- * @returns {Promise<Array<Record<string, unknown>>>}
+ * 全テーブル共通で使うカーソル名。`scanTable`は1テーブルごとにDECLARE→FETCH*→CLOSEを
+ * 完結させてから次のテーブルへ進む（`readSideTableData`の逐次forループ）ため、
+ * 同一接続内で複数カーソルが同時に存在することは無く、固定名で問題ない。
  */
-async function fetchChunk(tx, quotedTable, pkColumnExprs, chunkSize, lastPkValues) {
-  const orderBy = pkColumnExprs.join(', ')
-  const params = lastPkValues ? [...lastPkValues, chunkSize] : [chunkSize]
-  const whereClause = lastPkValues
-    ? `WHERE (${orderBy}) > (${pkColumnExprs.map((_, i) => `$${i + 1}`).join(', ')})`
-    : ''
-  const limitParamIndex = params.length
-  const queryText = `SELECT * FROM ${quotedTable} ${whereClause} ORDER BY ${orderBy} LIMIT $${limitParamIndex}`
-  return tx.unsafe(queryText, params)
-}
+const SCAN_CURSOR_NAME = 'cutover_scan_cursor'
 
 /**
  * 1テーブルを1回スキャンし、Layer 3（件数・key range・timestamp最大値・nullカウント）と
  * Layer 4（chunkごとのcanonical checksum・table root hash）を同時に計算する。
  *
- * 列ごとの処理は1行につき1回のループ（`columns`を1回だけ走査）にまとめている
- * （Fableレビュー Major-3対応: 以前はcanonicalizeRow・timestamp最大値追跡・nullカウントの
- * 3つの独立したループがあり、timestamp列の値を2回canonicalizeしていた）。
+ * カーソルベースのpaginationについて: `DECLARE ... CURSOR FOR SELECT * FROM ... ORDER BY ...`で
+ * ソート済み結果集合を1回だけ確定させ、`FETCH FORWARD chunkSize FROM ...`でchunkを
+ * 順に取り出す（ファイル冒頭コメント「カーソルベースのpaginationを採用する理由」参照。
+ * `COLLATE "C"`強制によりPK indexが使えない場合でも、全表スキャン+ソートが1回で済む）。
  *
- * secret列をtimestamp最大値追跡から除外する理由（Fableレビュー Major-1対応、重要）:
- * `twitch_token_expires_at`のようなsecret指定のtimestamp列は、checksum計算では
- * `canonicalizeCell`がhash化して生値を出さないが、以前の実装は`maxTimestamps`の
- * 集計だけ別ループでsecret判定を見ずに生のtimestamp値を報告に含めてしまっていた
- * （「secret列の値をreportに出さない」という設計不変条件違反）。本実装は
- * `!col.isSecret`を1箇所でチェックし、secret列はtimestamp最大値追跡からも除外する。
+ * `canonicalizeRow`（canonicalize.mjs、単体テスト対象）をそのまま呼び出し、そこから
+ * timestamp最大値・nullカウントを導出する（2回目のFableレビュー Minor-N2対応:
+ * 以前はscanTable内で同じロジックを独自にインライン実装しており、単体テストが検証する
+ * canonicalizeRowと実際にscanTableが使う経路が別物になっていた）。列の並び順は
+ * `columns`と`canonicalizeRow`の戻り値で1対1対応するため、timestamp/id列のインデックスを
+ * 事前計算して使い回す。
  *
  * @param {import('postgres').Sql} tx
  * @param {{ tableName: string, primaryKeyColumns: string[], columns: Array<{name:string,dataType:string,isSecret:boolean}> }} tableSpec
- * @param {number} chunkSize
+ * @param {number} chunkSize 1〜MAX_CHUNK_SIZEの整数であること（呼び出し側でバリデート済みの
+ *   前提だが、SQL文字列へ直接埋め込む値のため本関数でも再検証する。下記参照）
  */
 export async function scanTable(tx, tableSpec, chunkSize) {
+  // `FETCH FORWARD <count> FROM cursor` はPostgreSQLの文法上バインドパラメータを取れず
+  // （実機で`syntax error at or near "$1"`を確認済み）、chunkSizeをSQL文字列へ直接埋め込む
+  // 必要がある。呼び出し元（cli-args.mjsのparseChunkSize）は既に検証済みだが、
+  // scanTableを直接呼ぶ経路（テスト・将来の呼び出し元）でも安全側に倒すため、
+  // ここでも整数であることをfail-loudに再検証する。
+  if (!Number.isInteger(chunkSize) || chunkSize < 1) {
+    throw new Error(`scanTable: chunkSize must be a positive integer, got ${JSON.stringify(chunkSize)}`)
+  }
+
   const { tableName, primaryKeyColumns, columns } = tableSpec
   const quotedTable = quoteIdentifier(tableName)
   const columnsByName = new Map(columns.map((c) => [c.name, c]))
@@ -164,57 +183,61 @@ export async function scanTable(tx, tableSpec, chunkSize) {
     if (!meta) throw new Error(`scanTable: primary key column '${name}' not found in table '${tableName}' catalog columns`)
     return meta
   })
-  const pkColumnExprs = pkColumnMetas.map(pkColumnExpr)
+  const orderBy = pkColumnMetas.map(pkColumnExpr).join(', ')
 
   // Issue #697本文「null count等の重要列統計」: FK相当（`_id`で終わる）列を「重要列」として
   // 扱う。全列のnullカウントを取ると列数の多いテーブル（例: streamers 28列）でreportが
   // 肥大するため、Layer 5（業務invariant、次チャンク）が検証するorphan FK参照の事前観測として
-  // 意味のある列に絞る。
-  const maxTimestamps = Object.fromEntries(
-    columns.filter((c) => TIMESTAMP_DATA_TYPES.has(c.dataType) && !c.isSecret).map((c) => [c.name, null])
-  )
-  const nullCounts = Object.fromEntries(columns.filter((c) => c.name.endsWith('_id')).map((c) => [c.name, 0]))
+  // 意味のある列に絞る。secret列のtimestamp最大値追跡除外（Fableレビュー Major-1対応）は
+  // ここでの`!c.isSecret`フィルタで行う。
+  const timestampIndices = []
+  const idIndices = []
+  columns.forEach((c, index) => {
+    if (!c.isSecret && TIMESTAMP_DATA_TYPES.has(c.dataType)) timestampIndices.push({ index, name: c.name })
+    if (c.name.endsWith('_id')) idIndices.push({ index, name: c.name })
+  })
+  const maxTimestamps = Object.fromEntries(timestampIndices.map(({ name }) => [name, null]))
+  const nullCounts = Object.fromEntries(idIndices.map(({ name }) => [name, 0]))
 
   const chunks = []
   let rowCount = 0
-  let lastPkValues = null
   const startedAt = Date.now()
 
-  for (;;) {
-    const rows = await fetchChunk(tx, quotedTable, pkColumnExprs, chunkSize, lastPkValues)
-    if (rows.length === 0) break
+  await tx.unsafe(`DECLARE ${SCAN_CURSOR_NAME} CURSOR FOR SELECT * FROM ${quotedTable} ORDER BY ${orderBy}`)
+  try {
+    for (;;) {
+      const rows = await tx.unsafe(`FETCH FORWARD ${chunkSize} FROM ${SCAN_CURSOR_NAME}`)
+      if (rows.length === 0) break
 
-    const canonicalRows = []
-    for (const row of rows) {
-      const canonicalRow = []
-      for (const col of columns) {
-        const rawValue = row[col.name]
-        const value = canonicalizeCell(rawValue, col)
-        canonicalRow.push([col.name, value])
-        // timestamp最大値追跡: canonicalizeCellが既にISO 8601 UTC文字列へ正規化済みのため、
+      const canonicalRows = rows.map((row) => canonicalizeRow(row, columns))
+      for (const canonicalRow of canonicalRows) {
+        // timestamp最大値追跡: canonicalizeRowが既にISO 8601 UTC文字列へ正規化済みのため、
         // 文字列比較のままchronological orderの比較として成立する（ISO 8601 UTCは
         // レキシコグラフィック順=時系列順になる性質を利用）。
-        if (!col.isSecret && TIMESTAMP_DATA_TYPES.has(col.dataType) && value !== null) {
-          if (maxTimestamps[col.name] === null || value > maxTimestamps[col.name]) maxTimestamps[col.name] = value
+        for (const { index, name } of timestampIndices) {
+          const value = canonicalRow[index][1]
+          if (value !== null && (maxTimestamps[name] === null || value > maxTimestamps[name])) maxTimestamps[name] = value
         }
-        if (col.name.endsWith('_id') && rawValue === null) {
-          nullCounts[col.name] += 1
+        // canonicalizeCellは全ての分岐でnull/undefinedを一貫してnullへ写像するため
+        // （secret列のhash化・timestamp正規化いずれも非null値をnullにはしない）、
+        // canonical化後の値でnull判定してもraw値でのnull判定と同じ結果になる。
+        for (const { index, name } of idIndices) {
+          if (canonicalRow[index][1] === null) nullCounts[name] += 1
         }
       }
-      canonicalRows.push(canonicalRow)
+
+      chunks.push({
+        index: chunks.length,
+        startKey: primaryKeyColumns.map((col) => rows[0][col]),
+        endKey: primaryKeyColumns.map((col) => rows[rows.length - 1][col]),
+        hash: hashChunk(canonicalRows),
+      })
+      rowCount += rows.length
+
+      if (rows.length < chunkSize) break
     }
-
-    chunks.push({
-      index: chunks.length,
-      startKey: primaryKeyColumns.map((col) => rows[0][col]),
-      endKey: primaryKeyColumns.map((col) => rows[rows.length - 1][col]),
-      hash: hashChunk(canonicalRows),
-    })
-    rowCount += rows.length
-
-    const lastRow = rows[rows.length - 1]
-    lastPkValues = primaryKeyColumns.map((col) => lastRow[col])
-    if (rows.length < chunkSize) break
+  } finally {
+    await tx.unsafe(`CLOSE ${SCAN_CURSOR_NAME}`)
   }
 
   return {
