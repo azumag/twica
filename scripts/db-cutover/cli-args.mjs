@@ -20,6 +20,7 @@
 'use strict'
 
 import { VALID_IDENTITY_ENVIRONMENTS, VALID_IDENTITY_PROVIDERS } from './identity-store.mjs'
+import { DEFAULT_CHUNK_SIZE } from './layer-data.mjs'
 
 /**
  * 本チャンクで実装済みのlayer名（--layersで指定可能な値）。
@@ -29,14 +30,18 @@ import { VALID_IDENTITY_ENVIRONMENTS, VALID_IDENTITY_PROVIDERS } from './identit
  * 「report.mjsがcli-args.mjsに依存される」という向きのねじれを解消するため、CLI引数の関心事は
  * cli-args.mjs側に置く（buildReportへは`requestedLayers`として実行時に渡すだけで十分であり、
  * report.mjs自身がこのリストを知る必要はない）。
+ *
+ * `data`（Layer 3件数/key range統計 + Layer 4 checksum、Issue #697 Chunk 2で実装）を追加。
+ * schema.tsに定義された全テーブルを対象にするため、identity/schemaより実行時間が長くなりうる
+ * （`--chunk-size`で調整可能。下記CHUNK_SIZE_FLAG参照）。
  */
-export const IMPLEMENTED_LAYERS = ['identity', 'schema']
+export const IMPLEMENTED_LAYERS = ['identity', 'schema', 'data']
 
 /**
- * Issue #697原文が定義する6層のうち、Chunk 1未実装のlayer名。CLIが「不明な引数」ではなく
+ * Issue #697原文が定義する6層のうち、まだ未実装のlayer名。CLIが「不明な引数」ではなく
  * 「未実装」という区別可能なエラーメッセージを出すために使う。
  */
-export const KNOWN_FUTURE_LAYERS = ['data', 'invariants', 'canary']
+export const KNOWN_FUTURE_LAYERS = ['invariants', 'canary']
 
 const KNOWN_BOOLEAN_FLAGS = ['--help', '-h', '--allow-skip-identity']
 
@@ -67,6 +72,8 @@ const HELP_TEXT = `
                                     現時点で指定すると「未実装」エラーになる）
   --operation-id=<文字列>          production実行時のみ必須
   --allow-skip-identity            --layers に identity を含めない場合に必須（下記参照）
+  --chunk-size=<正の整数>          dataレイヤーのchunkサイズ（既定: ${DEFAULT_CHUNK_SIZE}行）。
+                                    dataレイヤーを実行しない場合は無視される
   --help, -h                       このヘルプを表示する
 
 --layers に identity を含めない場合について:
@@ -95,7 +102,7 @@ export function parseVerifyArgs(argv) {
   const help = args.includes('--help') || args.includes('-h')
   const allowSkipIdentity = args.includes('--allow-skip-identity')
 
-  let sourceEnvironment, targetEnvironment, sourceProvider, targetProvider, layersRaw, operationId
+  let sourceEnvironment, targetEnvironment, sourceProvider, targetProvider, layersRaw, operationId, chunkSizeRaw
   const unknownArgs = []
   // オーケストレーターレビュー Minor-7対応: 同一フラグを複数回指定すると、以前はFLAG_SETTERSが
   // 単に上書きし「黙って後勝ち」になっていた（例: `--layers=identity --layers=schema` で
@@ -111,6 +118,7 @@ export function parseVerifyArgs(argv) {
     '--target-provider=': (v) => (targetProvider = v),
     '--layers=': (v) => (layersRaw = v),
     '--operation-id=': (v) => (operationId = v),
+    '--chunk-size=': (v) => (chunkSizeRaw = v),
   }
 
   for (const arg of args) {
@@ -137,9 +145,31 @@ export function parseVerifyArgs(argv) {
     targetProvider,
     layersRaw,
     operationId,
+    chunkSizeRaw,
     unknownArgs,
     duplicateArgs,
   }
+}
+
+/**
+ * `--chunk-size` の値を検証する純粋関数。正の整数（1以上）のみを許容する。
+ * 未指定時は呼び出し側（resolveVerifyConfig）がDEFAULT_CHUNK_SIZEを補う。
+ * @param {string | undefined} chunkSizeRaw
+ * @returns {{ error?: string, chunkSize?: number }}
+ */
+export function parseChunkSize(chunkSizeRaw) {
+  if (chunkSizeRaw === undefined) return { chunkSize: DEFAULT_CHUNK_SIZE }
+  // Number()は空文字列を0に、前後空白を無視して数値化する等の緩さがあるため、
+  // 「見た目が10進整数のみで構成されているか」を先にregexで確認してから変換する
+  // （`--chunk-size=1e3` や `--chunk-size= 10` のような曖昧な入力を弾くため）。
+  if (!/^[0-9]+$/.test(chunkSizeRaw.trim())) {
+    return { error: `--chunk-size には正の整数を指定してください: ${chunkSizeRaw}` }
+  }
+  const chunkSize = Number(chunkSizeRaw.trim())
+  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) {
+    return { error: `--chunk-size には正の整数を指定してください: ${chunkSizeRaw}` }
+  }
+  return { chunkSize }
 }
 
 /**
@@ -250,6 +280,9 @@ export function resolveVerifyConfig(argv, env) {
   // 明示的にnull扱いにする。
   const trimmedOperationId = parsed.operationId && parsed.operationId.trim() ? parsed.operationId.trim() : null
 
+  const chunkSizeResult = parseChunkSize(parsed.chunkSizeRaw)
+  if (chunkSizeResult.error) return { error: chunkSizeResult.error }
+
   return {
     sourceEnvironment: parsed.sourceEnvironment,
     targetEnvironment: parsed.targetEnvironment,
@@ -257,6 +290,7 @@ export function resolveVerifyConfig(argv, env) {
     targetProvider: parsed.targetProvider,
     layers: layersResult.layers,
     operationId: trimmedOperationId,
+    chunkSize: chunkSizeResult.chunkSize,
     sourceUrl,
     targetUrl,
   }

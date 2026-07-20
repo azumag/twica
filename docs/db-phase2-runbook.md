@@ -630,11 +630,14 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    **TODO（後続チャンク、Issue #697、オーケストレーターレビュー Minor-10対応）**:
    `scripts/verify-db-schema.js`（単一DB⇔schema.ts比較）とは別に、`db:cutover:verify`
    （`scripts/db-cutover/verify.mjs`、Issue #697 Chunk 1で実装済み。source/target
-   2DB間のidentity検証・schema比較を行う）が利用可能になった。本ランブックはまだ
-   このツールを手順に組み込んでいない（Chunk 1のスコープ外）。後続チャンクで
-   Layer 3〜6（件数・checksum・業務invariant・runtime canary）が揃った段階で、
-   本章の該当ステップを `db:cutover:verify` ベースの手順に置き換える、または
-   併用するかを判断すること。`db:cutover:init-identity`（`twica_meta.database_identity`
+   2DB間のidentity検証・schema比較を行う）が利用可能になった。2026-07-20の
+   Chunk 2で `data` layer（Layer 3: 全table件数/key range/timestamp最大値/nullカウント統計
+   + Layer 4: deterministic data checksum）も `--layers=identity,schema,data` として
+   実行可能になった（`--chunk-size` でchunk行数を調整可能、既定1000）。本ランブックは
+   まだこのツールを手順に組み込んでいない（Chunk 1/2のスコープ外）。後続チャンクで
+   Layer 5〜6（業務invariant・runtime canary）が揃った段階で、本章の該当ステップを
+   `db:cutover:verify` ベースの手順に置き換える、または併用するかを判断すること。
+   `db:cutover:init-identity`（`twica_meta.database_identity`
    のseeding）は4つの実インスタンス（Supabase/PlanetScale × prod/preview）それぞれに
    対して、`db:cutover:verify` を初めて使う前に1回ずつ手動実行しておく必要がある
    （詳細は `scripts/db-cutover/init-identity.mjs` のヘルプ・コード冒頭コメント参照）。

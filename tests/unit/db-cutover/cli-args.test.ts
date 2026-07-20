@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   parseVerifyArgs,
   parseLayers,
+  parseChunkSize,
   resolveVerifyConfig,
   IMPLEMENTED_LAYERS,
   KNOWN_FUTURE_LAYERS,
 } from '../../../scripts/db-cutover/cli-args.mjs'
+import { DEFAULT_CHUNK_SIZE } from '../../../scripts/db-cutover/layer-data.mjs'
 
 const FULL_ARGV = [
   'node',
@@ -20,11 +22,11 @@ const FULL_ARGV = [
 const ENV = { SOURCE_DATABASE_URL: 'postgres://u:p@source-host:5432/db', TARGET_DATABASE_URL: 'postgres://u:p@target-host:5432/db' }
 
 describe('IMPLEMENTED_LAYERS / KNOWN_FUTURE_LAYERS', () => {
-  it('Chunk 1 で実装済みなのは identity/schema のみ', () => {
-    expect(IMPLEMENTED_LAYERS).toEqual(['identity', 'schema'])
+  it('Chunk 2 時点で実装済みなのは identity/schema/data', () => {
+    expect(IMPLEMENTED_LAYERS).toEqual(['identity', 'schema', 'data'])
   })
-  it('後続チャンクで実装予定のlayerが定義されている（data/invariants/canary）', () => {
-    expect(KNOWN_FUTURE_LAYERS).toEqual(['data', 'invariants', 'canary'])
+  it('後続チャンクで実装予定のlayerが定義されている（invariants/canary）', () => {
+    expect(KNOWN_FUTURE_LAYERS).toEqual(['invariants', 'canary'])
   })
   it('IMPLEMENTED_LAYERS と KNOWN_FUTURE_LAYERS は重複しない', () => {
     const overlap = IMPLEMENTED_LAYERS.filter((l) => KNOWN_FUTURE_LAYERS.includes(l))
@@ -85,8 +87,12 @@ describe('parseLayers', () => {
     expect(parseLayers('  ')).toEqual({ error: expect.stringContaining('必須') })
   })
 
-  it('data/invariants/canaryは「未実装」エラーメッセージになる（不明な引数エラーとは区別する）', () => {
-    const result = parseLayers('identity,data')
+  it('dataはChunk 2で実装済みのため有効', () => {
+    expect(parseLayers('identity,data')).toEqual({ layers: ['identity', 'data'] })
+  })
+
+  it('invariants/canaryは「未実装」エラーメッセージになる（不明な引数エラーとは区別する）', () => {
+    const result = parseLayers('identity,invariants')
     expect(result.error).toMatch(/未実装/)
   })
 
@@ -94,10 +100,35 @@ describe('parseLayers', () => {
     const result = parseLayers('identity,bogus')
     expect(result.error).toMatch(/不明なlayer/)
   })
+
+  it('identity,schema,dataの3つ指定時もidentity→schema→dataの固定順に正規化する', () => {
+    expect(parseLayers('data,identity,schema')).toEqual({ layers: ['identity', 'schema', 'data'] })
+  })
+})
+
+describe('parseChunkSize', () => {
+  it('未指定ならDEFAULT_CHUNK_SIZEを返す', () => {
+    expect(parseChunkSize(undefined)).toEqual({ chunkSize: DEFAULT_CHUNK_SIZE })
+  })
+
+  it('正の整数文字列は数値へ変換される', () => {
+    expect(parseChunkSize('500')).toEqual({ chunkSize: 500 })
+    expect(parseChunkSize('1')).toEqual({ chunkSize: 1 })
+  })
+
+  it('前後の空白は許容する', () => {
+    expect(parseChunkSize(' 250 ')).toEqual({ chunkSize: 250 })
+  })
+
+  it.each(['0', '-1', '1.5', '1e3', 'abc', '', '  '])('不正な値 "%s" はエラーになる', (raw) => {
+    const result = parseChunkSize(raw)
+    expect(result.error).toMatch(/正の整数/)
+    expect(result.chunkSize).toBeUndefined()
+  })
 })
 
 describe('resolveVerifyConfig', () => {
-  it('全て正しく指定されていれば設定オブジェクトを返す', () => {
+  it('全て正しく指定されていれば設定オブジェクトを返す（chunk-size省略時はDEFAULT_CHUNK_SIZE）', () => {
     const resolved = resolveVerifyConfig(FULL_ARGV, ENV)
     expect(resolved).toEqual({
       sourceEnvironment: 'preview',
@@ -106,9 +137,21 @@ describe('resolveVerifyConfig', () => {
       targetProvider: 'planetscale',
       layers: ['identity', 'schema'],
       operationId: null,
+      chunkSize: DEFAULT_CHUNK_SIZE,
       sourceUrl: ENV.SOURCE_DATABASE_URL,
       targetUrl: ENV.TARGET_DATABASE_URL,
     })
+  })
+
+  it('--chunk-sizeを指定すればその値が反映される', () => {
+    const resolved = resolveVerifyConfig([...FULL_ARGV, '--chunk-size=250'], ENV)
+    expect(resolved.error).toBeUndefined()
+    expect(resolved.chunkSize).toBe(250)
+  })
+
+  it('--chunk-sizeに不正な値を指定するとエラー', () => {
+    const resolved = resolveVerifyConfig([...FULL_ARGV, '--chunk-size=0'], ENV)
+    expect(resolved.error).toMatch(/正の整数/)
   })
 
   it('--helpならhelp:trueのみを返す', () => {

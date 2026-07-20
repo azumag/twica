@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * db:cutover:verify CLI 本体 / Issue #697 Chunk 1
+ * db:cutover:verify CLI 本体 / Issue #697 Chunk 1 + Chunk 2
  *
  * source（例: Supabase）と target（例: PlanetScale）を比較し、cutoverのGO/NO-GO判定材料となる
  * JSON report（CutoverVerificationReport、Issue #697本文の型に準拠）を生成する。
- * Chunk 1では identity（Layer 1）・schema（Layer 2）の2 layer のみ実装する。
+ * Chunk 1で identity（Layer 1）・schema（Layer 2）、Chunk 2で data（Layer 3件数/key range統計 +
+ * Layer 4 deterministic checksum、単一layerとして統合実装）を実装済み。invariants（Layer 5）・
+ * canary（Layer 6）は後続チャンクで追加する。
  *
  * 実行順序について: --layers に identity を含む場合、必ず最初に実行し、failした場合は
  * 後続のlayerを一切実行せず即座に停止する（Issue #697本文「source/target identity
@@ -27,6 +29,7 @@ import postgres from 'postgres'
 import { resolveVerifyConfig, HELP_TEXT } from './cli-args.mjs'
 import { runIdentityLayer } from './layer-identity.mjs'
 import { runSchemaLayer } from './layer-schema.mjs'
+import { runDataLayer } from './layer-data.mjs'
 import { buildReport } from './report.mjs'
 
 const require = createRequire(import.meta.url)
@@ -77,6 +80,7 @@ async function main() {
     targetProvider,
     layers,
     operationId,
+    chunkSize,
     sourceUrl,
     targetUrl,
   } = resolved
@@ -134,6 +138,10 @@ async function main() {
           })
           executedLayerResults.push(result)
           console.error(`[cutover-verify] layer=schema pass=${result.pass}`)
+        } else if (layerName === 'data') {
+          const result = await runDataLayer({ sourceSql, targetSql, chunkSize })
+          executedLayerResults.push(result)
+          console.error(`[cutover-verify] layer=data pass=${result.pass} (chunkSize=${chunkSize}, tables=${result.tables.length})`)
         }
       }
     } catch (layerError) {

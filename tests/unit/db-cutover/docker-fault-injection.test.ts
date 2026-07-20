@@ -6,6 +6,7 @@ import { createServer } from 'net'
 import postgres, { type Sql } from 'postgres'
 import { runIdentityLayer } from '../../../scripts/db-cutover/layer-identity.mjs'
 import { runSchemaLayer } from '../../../scripts/db-cutover/layer-schema.mjs'
+import { runDataLayer } from '../../../scripts/db-cutover/layer-data.mjs'
 import { ensureIdentitySchema, seedIdentity } from '../../../scripts/db-cutover/identity-store.mjs'
 import { withReadOnlySnapshot } from '../../../scripts/db-cutover/snapshot.mjs'
 
@@ -215,7 +216,7 @@ function runNodeScript(scriptRelPath: string, args: string[], env: Record<string
   })
 }
 
-describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1)', () => {
+describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 + Chunk 2)', () => {
   let sourceSql: Sql
   let targetSql: Sql
   // Minor-10（Fableレビュー）対応: 固定ポート（旧: 55461/55462）は同一マシンでの並行実行や
@@ -466,5 +467,130 @@ describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1)
     // secret redaction: パスワードが生値で出力されていないこと。
     expect(rejected.stdout + rejected.stderr).not.toContain(POSTGRES_PASSWORD)
     expect(forced.stdout + forced.stderr).not.toContain(POSTGRES_PASSWORD)
+  })
+
+  describe('data layer（Issue #697 Chunk 2、Layer 3 件数/key range統計 + Layer 4 checksum）', () => {
+    // 固定UUID・固定timestampでsource/targetへ同一のfixtureをseedする。ランダム生成
+    // （uuid_generate_v4()等のDB側デフォルト）に頼ると、source/target別々の接続で
+    // 生成した値が一致せず「同一データのはずがchecksum不一致になる」という、この
+    // テストの目的とは無関係な偽陽性を生む（実装時に手元検証で実際に踏んだ問題）。
+    const FIXTURE_STREAMER_ID = '99999999-9999-9999-9999-999999999991'
+    const FIXTURE_USER_ID = '99999999-9999-9999-9999-999999999992'
+    const FIXTURE_CARD_IDS = [0, 1, 2, 3, 4].map((i) => `99999999-9999-9999-9999-99999999a00${i}`)
+    const FIXTURE_TS = '2026-01-01T00:00:00.000Z'
+    const FIXTURE_SECRET_TOKEN = 'cutover-test-fixture-secret-token-value'
+
+    async function seedFixture(sql: Sql) {
+      await sql`delete from cards where streamer_id = ${FIXTURE_STREAMER_ID}`
+      await sql`delete from users where id = ${FIXTURE_USER_ID}`
+      await sql`delete from streamers where id = ${FIXTURE_STREAMER_ID}`
+      await sql`insert into streamers (id, twitch_user_id, twitch_username, twitch_display_name, created_at, updated_at)
+        values (${FIXTURE_STREAMER_ID}, 'fixture-streamer', 'fixture', 'Fixture', ${FIXTURE_TS}, ${FIXTURE_TS})`
+      await sql`insert into users (id, twitch_user_id, twitch_username, twitch_display_name, twitch_access_token, created_at, updated_at)
+        values (${FIXTURE_USER_ID}, 'fixture-user', 'fixtureuser', 'FixtureUser', ${FIXTURE_SECRET_TOKEN}, ${FIXTURE_TS}, ${FIXTURE_TS})`
+      for (const cardId of FIXTURE_CARD_IDS) {
+        await sql`insert into cards (id, streamer_id, name, created_at, updated_at)
+          values (${cardId}, ${FIXTURE_STREAMER_ID}, ${'fixture-card-' + cardId}, ${FIXTURE_TS}, ${FIXTURE_TS})`
+      }
+    }
+
+    async function clearFixture(sql: Sql) {
+      await sql`delete from cards where streamer_id = ${FIXTURE_STREAMER_ID}`
+      await sql`delete from users where id = ${FIXTURE_USER_ID}`
+      await sql`delete from streamers where id = ${FIXTURE_STREAMER_ID}`
+    }
+
+    beforeAll(async () => {
+      await seedFixture(sourceSql)
+      await seedFixture(targetSql)
+    }, 30000)
+
+    afterAll(async () => {
+      await clearFixture(sourceSql)
+      await clearFixture(targetSql)
+    }, 30000)
+
+    it('sanity: 同一にseedしたstreamers/users/cardsはchecksumが一致する（5行・chunkSize=2で3chunk）', async () => {
+      const result = await runDataLayer({ sourceSql, targetSql, chunkSize: 2 })
+      const byName = Object.fromEntries(result.tables.map((t) => [t.table, t]))
+      expect(byName.streamers.checksumMatch).toBe(true)
+      expect(byName.users.checksumMatch).toBe(true)
+      expect(byName.cards.rowCountMatch).toBe(true)
+      expect(byName.cards.checksumMatch).toBe(true)
+      expect(byName.cards.source).toBeDefined()
+      expect(byName.cards.source?.chunkCount).toBe(3)
+      expect(byName.cards.source?.rowCount).toBe(5)
+    })
+
+    it('secret列（twitch_access_token）の生値がreportに出ない', async () => {
+      const result = await runDataLayer({ sourceSql, targetSql, chunkSize: 2 })
+      expect(JSON.stringify(result)).not.toContain(FIXTURE_SECRET_TOKEN)
+    })
+
+    it('故障注入5: target側の1行を書き換えると DATA_CHECKSUM_MISMATCH で該当chunkのみ検出する（同件数だが異なるrow）', async () => {
+      const mutatedCardId = FIXTURE_CARD_IDS[2]
+      await targetSql`update cards set name = 'MUTATED' where id = ${mutatedCardId}`
+      try {
+        const result = await runDataLayer({ sourceSql, targetSql, chunkSize: 2 })
+        const cardsResult = result.tables.find((t) => t.table === 'cards')
+        expect(cardsResult).toBeDefined()
+        expect(cardsResult?.rowCountMatch).toBe(true)
+        expect(cardsResult?.checksumMatch).toBe(false)
+        // FIXTURE_CARD_IDS[2]（PK昇順で3番目、0-indexed position 2）はchunkSize=2の下で
+        // chunk index 1（0-indexedで2,3番目の行）に属する。
+        expect(cardsResult?.mismatchedChunks).toEqual([expect.objectContaining({ chunkIndex: 1 })])
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'DATA_CHECKSUM_MISMATCH', message: expect.stringContaining('cards') })])
+        )
+      } finally {
+        await targetSql`update cards set name = ${'fixture-card-' + mutatedCardId} where id = ${mutatedCardId}`
+      }
+    })
+
+    it('故障注入6: target側の1行を削除すると DATA_ROW_COUNT_MISMATCH になる', async () => {
+      const deletedCardId = FIXTURE_CARD_IDS[4]
+      await targetSql`delete from cards where id = ${deletedCardId}`
+      try {
+        const result = await runDataLayer({ sourceSql, targetSql, chunkSize: 2 })
+        const cardsResult = result.tables.find((t) => t.table === 'cards')
+        expect(cardsResult).toBeDefined()
+        expect(cardsResult?.rowCountMatch).toBe(false)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'DATA_ROW_COUNT_MISMATCH', message: expect.stringContaining('cards') })])
+        )
+      } finally {
+        await targetSql`insert into cards (id, streamer_id, name, created_at, updated_at)
+          values (${deletedCardId}, ${FIXTURE_STREAMER_ID}, ${'fixture-card-' + deletedCardId}, ${FIXTURE_TS}, ${FIXTURE_TS})`
+      }
+    })
+
+    it('E2E: verify.mjs CLIで --layers=identity,schema,data --chunk-size=2 を指定すると data layer もJSON reportへ反映される', async () => {
+      const result = runNodeScript(
+        'scripts/db-cutover/verify.mjs',
+        [
+          '--source-environment=preview',
+          '--source-provider=supabase',
+          '--target-environment=preview',
+          '--target-provider=planetscale',
+          '--layers=identity,schema,data',
+          '--chunk-size=2',
+        ],
+        {
+          SOURCE_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`,
+          TARGET_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${TARGET_PORT}/postgres`,
+          PG_DUMP_BIN: pgDumpBin as string,
+        }
+      )
+      const report = JSON.parse(result.stdout)
+      expect(report.layers.data).toBeDefined()
+      expect(report.layers.data.chunkSize).toBe(2)
+      const cardsResult = report.layers.data.tables.find((t: { table: string }) => t.table === 'cards')
+      expect(cardsResult.rowCountMatch).toBe(true)
+      expect(cardsResult.checksumMatch).toBe(true)
+      // secret redaction: パスワード・secret列の生値がいずれも出力されていないこと。
+      expect(result.stdout).not.toContain(POSTGRES_PASSWORD)
+      expect(result.stdout).not.toContain(FIXTURE_SECRET_TOKEN)
+      expect(result.stderr).not.toContain(POSTGRES_PASSWORD)
+    }, 30000)
   })
 })
