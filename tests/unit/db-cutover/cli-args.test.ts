@@ -22,11 +22,11 @@ const FULL_ARGV = [
 const ENV = { SOURCE_DATABASE_URL: 'postgres://u:p@source-host:5432/db', TARGET_DATABASE_URL: 'postgres://u:p@target-host:5432/db' }
 
 describe('IMPLEMENTED_LAYERS / KNOWN_FUTURE_LAYERS', () => {
-  it('Chunk 2 時点で実装済みなのは identity/schema/data', () => {
-    expect(IMPLEMENTED_LAYERS).toEqual(['identity', 'schema', 'data'])
+  it('Chunk 3 時点で実装済みなのは identity/schema/data/invariants', () => {
+    expect(IMPLEMENTED_LAYERS).toEqual(['identity', 'schema', 'data', 'invariants'])
   })
-  it('後続チャンクで実装予定のlayerが定義されている（invariants/canary）', () => {
-    expect(KNOWN_FUTURE_LAYERS).toEqual(['invariants', 'canary'])
+  it('後続チャンクで実装予定のlayerが定義されている（canary）', () => {
+    expect(KNOWN_FUTURE_LAYERS).toEqual(['canary'])
   })
   it('IMPLEMENTED_LAYERS と KNOWN_FUTURE_LAYERS は重複しない', () => {
     const overlap = IMPLEMENTED_LAYERS.filter((l) => KNOWN_FUTURE_LAYERS.includes(l))
@@ -91,8 +91,12 @@ describe('parseLayers', () => {
     expect(parseLayers('identity,data')).toEqual({ layers: ['identity', 'data'] })
   })
 
-  it('invariants/canaryは「未実装」エラーメッセージになる（不明な引数エラーとは区別する）', () => {
-    const result = parseLayers('identity,invariants')
+  it('invariantsはChunk 3で実装済みのため有効', () => {
+    expect(parseLayers('identity,invariants')).toEqual({ layers: ['identity', 'invariants'] })
+  })
+
+  it('canaryは「未実装」エラーメッセージになる（不明な引数エラーとは区別する）', () => {
+    const result = parseLayers('identity,canary')
     expect(result.error).toMatch(/未実装/)
   })
 
@@ -103,6 +107,10 @@ describe('parseLayers', () => {
 
   it('identity,schema,dataの3つ指定時もidentity→schema→dataの固定順に正規化する', () => {
     expect(parseLayers('data,identity,schema')).toEqual({ layers: ['identity', 'schema', 'data'] })
+  })
+
+  it('identity,schema,data,invariantsの4つ指定時もidentity→schema→data→invariantsの固定順に正規化する', () => {
+    expect(parseLayers('invariants,data,identity,schema')).toEqual({ layers: ['identity', 'schema', 'data', 'invariants'] })
   })
 })
 

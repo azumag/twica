@@ -7,6 +7,7 @@ import postgres, { type Sql } from 'postgres'
 import { runIdentityLayer } from '../../../scripts/db-cutover/layer-identity.mjs'
 import { runSchemaLayer } from '../../../scripts/db-cutover/layer-schema.mjs'
 import { runDataLayer } from '../../../scripts/db-cutover/layer-data.mjs'
+import { runInvariantsLayer } from '../../../scripts/db-cutover/layer-invariants.mjs'
 import { ensureIdentitySchema, seedIdentity } from '../../../scripts/db-cutover/identity-store.mjs'
 import { withReadOnlySnapshot } from '../../../scripts/db-cutover/snapshot.mjs'
 
@@ -543,7 +544,21 @@ describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 
           expect.arrayContaining([expect.objectContaining({ code: 'DATA_CHECKSUM_MISMATCH', message: expect.stringContaining('cards') })])
         )
       } finally {
-        await targetSql`update cards set name = ${'fixture-card-' + mutatedCardId} where id = ${mutatedCardId}`
+        // Issue #697 Chunk 3実装時に発見・修正した既存バグ: `cards`には
+        // `update_cards_updated_at`トリガー（00001、BEFORE UPDATE）があり、
+        // UPDATE文で指定した値に関わらず`updated_at`を常にNOW()へ強制的に上書きする。
+        // 単純に`name`だけを元に戻すUPDATEでは、このtrigger発火により`updated_at`が
+        // テスト実行時刻へ書き換わったまま残ってしまい（`name`は復元されるがtimestampは
+        // 復元されない）、後続の他テスト（同一fixtureのchecksum比較を前提とするテスト）が
+        // 「target側のcardsだけupdated_atが変わっている」という偽の差分を検出してしまう
+        // （本ファイルを跨いだ実行順序依存のバグで、単体では気づきにくい）。
+        // `session_replication_role = replica`（このファイル内の故障注入7と同じ技法、
+        // Issue #697 Chunk 3 invariants layerテストで導入）でBEFORE UPDATEトリガーを
+        // 一時的に無効化し、name/updated_at双方を元のfixture値へ厳密に復元する。
+        await targetSql.begin(async (tx) => {
+          await tx.unsafe('SET LOCAL session_replication_role = replica')
+          await tx`update cards set name = ${'fixture-card-' + mutatedCardId}, updated_at = ${FIXTURE_TS} where id = ${mutatedCardId}`
+        })
       }
     })
 
@@ -590,6 +605,346 @@ describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 
       // secret redaction: パスワード・secret列の生値がいずれも出力されていないこと。
       expect(result.stdout).not.toContain(POSTGRES_PASSWORD)
       expect(result.stdout).not.toContain(FIXTURE_SECRET_TOKEN)
+      expect(result.stderr).not.toContain(POSTGRES_PASSWORD)
+    }, 30000)
+  })
+
+  describe('invariants layer（Issue #697 Chunk 3、Layer 5 業務invariant）', () => {
+    // このdescribeブロックは「data layer」ブロックの後に実行される（vitestはファイル内の
+    // describe/itを宣言順に実行する）。data layerブロックのafterAllが自身のfixtureを
+    // 掃除済みのため、ここに到達した時点でstreamers/users/cards/gacha_history等は
+    // 空の状態（bootstrap.sql・public-schema.sqlはスキーマのみでデータをCOPYしない）。
+    // 各itは自分のfixtureを自分でseed/後始末する（他のテストへ影響を持ち越さない）。
+    const sourceUrl = () => `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`
+    const targetUrl = () => `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${TARGET_PORT}/postgres`
+    const runInvariants = () => runInvariantsLayer({ sourceSql, targetSql, sourceUrl: sourceUrl(), targetUrl: targetUrl() })
+
+    // 00002_add_battle_features.sql のDDLを模した最小限のテーブル（各テストが自分で
+    // CREATE/DROPする）。#625により本番相当のbootstrap/public-schema.sqlにはbattles/
+    // battle_statsが含まれないため、「テーブルが存在する場合」を検証するにはここで
+    // 明示的に作る必要がある（故障注入14/15で共有するため定数化）。
+    const BATTLES_DDL = `CREATE TABLE battles (
+      id UUID PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      user_card_id UUID NOT NULL REFERENCES user_cards(id) ON DELETE CASCADE,
+      opponent_card_id UUID REFERENCES cards(id) ON DELETE CASCADE,
+      opponent_card_data JSONB,
+      result TEXT NOT NULL CHECK (result IN ('win', 'lose', 'draw')),
+      turn_count INTEGER DEFAULT 0,
+      battle_log JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`
+    const BATTLE_STATS_DDL = `CREATE TABLE battle_stats (
+      id UUID PRIMARY KEY,
+      user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      total_battles INTEGER DEFAULT 0,
+      wins INTEGER DEFAULT 0,
+      losses INTEGER DEFAULT 0,
+      draws INTEGER DEFAULT 0,
+      win_rate DECIMAL(5, 2) DEFAULT 0,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`
+
+    it('sanity: 空のsource/targetではinvariants layer全体がpassし、battle-stats-consistencyはallowlistによりinfo+skipされる（#625、故障注入なしでも常に成立する既定状態）', async () => {
+      const result = await runInvariants()
+      expect(result.pass).toBe(true)
+      const battleInv = result.invariants.find((i: { id: string }) => i.id === 'battle-stats-consistency')
+      expect(battleInv).toEqual(expect.objectContaining({ allowlisted: true, pass: true, checks: [] }))
+      expect(result.findings).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'INVARIANT_REQUIRED_TABLE_MISSING', severity: 'info', allowlisted: true })])
+      )
+    }, 30000)
+
+    it('故障注入7: user_cards.user_idのFK orphan行（session_replication_role=replicaで意図的に生成）はORPHAN_USER_CARDS_USER_IDをTier Aでfailさせる（source側のみ）', async () => {
+      const streamerId = '88888888-8888-8888-8888-888888880001'
+      const userId = '88888888-8888-8888-8888-888888880002'
+      const cardId = '88888888-8888-8888-8888-888888880003'
+      const userCardId = '88888888-8888-8888-8888-888888880004'
+      await sourceSql`insert into streamers (id, twitch_user_id, twitch_username, twitch_display_name) values (${streamerId}, 'inv-orphan-streamer', 'invorphan', 'InvOrphan')`
+      await sourceSql`insert into cards (id, streamer_id, name) values (${cardId}, ${streamerId}, 'orphan-test-card')`
+      await sourceSql`insert into users (id, twitch_user_id, twitch_username, twitch_display_name) values (${userId}, 'inv-orphan-user', 'orphanuser', 'OrphanUser')`
+      await sourceSql`insert into user_cards (id, user_id, card_id) values (${userCardId}, ${userId}, ${cardId})`
+      try {
+        // 実運用ではON DELETE CASCADEのFK制約が常にorphanの発生を防ぐため、この検証は
+        // 「制約が万一機能しなかった場合（restore破損等）」を模擬する必要がある。
+        // session_replication_role=replica はFK制約を実装する内部トリガー（CASCADE含む）を
+        // 一時的に無効化する標準的な手法（pg_restoreのデータロード等でも使われる）。
+        // SET LOCALのためトランザクション終了時に自動的に既定値へ戻る。
+        await sourceSql.begin(async (tx) => {
+          await tx.unsafe('SET LOCAL session_replication_role = replica')
+          await tx`delete from users where id = ${userId}`
+        })
+
+        const result = await runInvariants()
+        expect(result.pass).toBe(false)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ severity: 'fail', code: 'ORPHAN_USER_CARDS_USER_ID', side: 'source' })])
+        )
+        const inv = result.invariants.find((i: { id: string }) => i.id === 'orphan-foreign-keys')
+        const check = inv?.checks.find((c: { code: string }) => c.code === 'ORPHAN_USER_CARDS_USER_ID')
+        expect(check?.sideResults.source.violationCount).toBe(1)
+        expect(check?.sideResults.source.samples).toEqual([userCardId])
+        expect(check?.sideResults.target.violationCount).toBe(0)
+      } finally {
+        await sourceSql`delete from user_cards where id = ${userCardId}`
+        await sourceSql`delete from cards where id = ${cardId}`
+        await sourceSql`delete from streamers where id = ${streamerId}`
+      }
+    }, 30000)
+
+    it('故障注入8: 通常のuser削除（CASCADE経由）でcard_owner_statsに孤児行が残る既知の挙動が両側で一致すればCARD_OWNER_STATS_ORPHAN_USERはseverity=infoでpassする', async () => {
+      const streamerId = '88888888-8888-8888-8888-888888880011'
+      const cardId = '88888888-8888-8888-8888-888888880012'
+      const userId = '88888888-8888-8888-8888-888888880013'
+      for (const sql of [sourceSql, targetSql]) {
+        await sql`insert into streamers (id, twitch_user_id, twitch_username, twitch_display_name) values (${streamerId}, 'inv-cos-streamer', 'invcos', 'InvCos')`
+        await sql`insert into cards (id, streamer_id, name) values (${cardId}, ${streamerId}, 'cos-test-card')`
+        await sql`insert into users (id, twitch_user_id, twitch_username, twitch_display_name) values (${userId}, 'inv-cos-user', 'cosuser', 'CosUser')`
+        // sync_card_owner_stat トリガー（AFTER INSERT）がcard_owner_statsへ1行作る。
+        await sql`insert into user_cards (user_id, card_id) values (${userId}, ${cardId})`
+        // 正規のCASCADE削除（00051マイグレーションのコメントに明記された既知の制約）:
+        // user_cardsはON DELETE CASCADEで消えるが、その時点でusers行も消えているため
+        // sync_card_owner_statトリガーがtwitch_user_idを解決できず、card_owner_statsに
+        // 孤児行が残る。バイパス無しの通常のDELETEで再現できる。
+        await sql`delete from users where id = ${userId}`
+      }
+      try {
+        const result = await runInvariants()
+        const inv = result.invariants.find((i: { id: string }) => i.id === 'card-owner-stats-recalc')
+        const check = inv?.checks.find((c: { code: string }) => c.code === 'CARD_OWNER_STATS_ORPHAN_USER')
+        expect(check?.sideResults.source.violationCount).toBe(1)
+        expect(check?.sideResults.target.violationCount).toBe(1)
+        expect(check?.crossCheck?.equal).toBe(true)
+        expect(check?.pass).toBe(true)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'CARD_OWNER_STATS_ORPHAN_USER', severity: 'info' })])
+        )
+      } finally {
+        for (const sql of [sourceSql, targetSql]) {
+          await sql`delete from card_owner_stats where streamer_id = ${streamerId}`
+          await sql`delete from cards where id = ${cardId}`
+          await sql`delete from streamers where id = ${streamerId}`
+        }
+      }
+    }, 30000)
+
+    it('故障注入9: 管理UIの汎用PATCH相当（status直接UPDATE）でrevoked済みsupport_codeにuser_licensesが残ると SUPPORT_CODE_REVOKED_LICENSE_RESIDUAL がfailする', async () => {
+      const codeId = '88888888-8888-8888-8888-888888880021'
+      const licenseId = '88888888-8888-8888-8888-888888880022'
+      await sourceSql`insert into support_codes (id, code_hash, plan_type, status) values (${codeId}, 'inv-test-code-hash-1', 'support', 'active')`
+      await sourceSql`insert into user_licenses (id, twitch_user_id, code_id, plan_type) values (${licenseId}, 'inv-license-user', ${codeId}, 'support')`
+      // revoke_support_code RPC を経由せず、statusのみ直接UPDATEする
+      // （analysis/dev/localAdminApi.tsの汎用PATCHが行う操作を模す。ライセンスは削除されない）。
+      await sourceSql`update support_codes set status = 'revoked' where id = ${codeId}`
+      try {
+        const result = await runInvariants()
+        expect(result.pass).toBe(false)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ severity: 'fail', code: 'SUPPORT_CODE_REVOKED_LICENSE_RESIDUAL', side: 'source' })])
+        )
+      } finally {
+        await sourceSql`delete from user_licenses where id = ${licenseId}`
+        await sourceSql`delete from support_codes where id = ${codeId}`
+      }
+    }, 30000)
+
+    it('故障注入10: storage_usageの値driftが両側一致すればSTORAGE_USAGE_PER_USER_MISMATCHはseverity=infoでpassする', async () => {
+      const userPrefix = 'invtst01'
+      for (const sql of [sourceSql, targetSql]) {
+        // blob_filesに対応行が無いまま正の値が残っている状態（RPC失敗の黙殺等を模す）。
+        await sql`insert into storage_usage (user_prefix, bytes_used, blob_count) values (${userPrefix}, 500, 2)`
+      }
+      try {
+        const result = await runInvariants()
+        const inv = result.invariants.find((i: { id: string }) => i.id === 'storage-usage-integrity')
+        const check = inv?.checks.find((c: { code: string }) => c.code === 'STORAGE_USAGE_PER_USER_MISMATCH')
+        expect(check?.sideResults.source.violationCount).toBe(1)
+        expect(check?.crossCheck?.equal).toBe(true)
+        expect(check?.pass).toBe(true)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'STORAGE_USAGE_PER_USER_MISMATCH', severity: 'info' })])
+        )
+      } finally {
+        for (const sql of [sourceSql, targetSql]) await sql`delete from storage_usage where user_prefix = ${userPrefix}`
+      }
+    }, 30000)
+
+    it('故障注入11: driftを持つuser_prefixの集合自体がtarget側だけ異なるとSTORAGE_USAGE_PER_USER_MISMATCHがfailする', async () => {
+      // Tier Bのdigestは「違反識別子（user_prefix）の集合」に対して計算する（設計書どおり、
+      // 値そのものは含めない）。そのため同じuser_prefixに対して両側とも違反しているが
+      // 値の大小だけが違う、というケースは「識別子集合としては一致」＝infoになる
+      // （故障注入10のシナリオ）。片側failを正しく再現するには、違反する識別子の集合自体を
+      // 非対称にする必要がある: target側にのみdriftを持つ行を追加する（source側は
+      // このuser_prefixについて無違反のまま）。
+      const userPrefix = 'invtst02'
+      await targetSql`insert into storage_usage (user_prefix, bytes_used, blob_count) values (${userPrefix}, 999, 3)`
+      try {
+        const result = await runInvariants()
+        expect(result.pass).toBe(false)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ severity: 'fail', code: 'STORAGE_USAGE_PER_USER_MISMATCH', side: 'both' })])
+        )
+        const inv = result.invariants.find((i: { id: string }) => i.id === 'storage-usage-integrity')
+        const check = inv?.checks.find((c: { code: string }) => c.code === 'STORAGE_USAGE_PER_USER_MISMATCH')
+        expect(check?.sideResults.source.violationCount).toBe(0)
+        expect(check?.sideResults.target.violationCount).toBe(1)
+      } finally {
+        await targetSql`delete from storage_usage where user_prefix = ${userPrefix}`
+      }
+    }, 30000)
+
+    it('故障注入12: N連event_idのサフィックス歯抜け（DELETE /api/gacha-history/[id]相当の単一行削除で発生）が両側一致すればNREN_EVENT_ID_PREFIX_GAPはseverity=infoでpassする', async () => {
+      const streamerId = '88888888-8888-8888-8888-888888880031'
+      const cardId = '88888888-8888-8888-8888-888888880032'
+      const messageId = '77777777-7777-7777-7777-777777770001'
+      for (const sql of [sourceSql, targetSql]) {
+        await sql`insert into streamers (id, twitch_user_id, twitch_username, twitch_display_name) values (${streamerId}, 'inv-nren-streamer', 'invnren', 'InvNren')`
+        await sql`insert into cards (id, streamer_id, name) values (${cardId}, ${streamerId}, 'nren-test-card')`
+        // base(1枚目) + :2 + :4（:3が歯抜け）。「途中打ち切り」ではなく明確な中抜けにする。
+        await sql`insert into gacha_history (event_id, user_twitch_id, card_id, streamer_id) values (${messageId}, 'inv-nren-user', ${cardId}, ${streamerId})`
+        await sql`insert into gacha_history (event_id, user_twitch_id, card_id, streamer_id) values (${messageId + ':2'}, 'inv-nren-user', ${cardId}, ${streamerId})`
+        await sql`insert into gacha_history (event_id, user_twitch_id, card_id, streamer_id) values (${messageId + ':4'}, 'inv-nren-user', ${cardId}, ${streamerId})`
+      }
+      try {
+        const result = await runInvariants()
+        const inv = result.invariants.find((i: { id: string }) => i.id === 'nren-event-id-prefix')
+        const check = inv?.checks.find((c: { code: string }) => c.code === 'NREN_EVENT_ID_PREFIX_GAP')
+        expect(check?.sideResults.source.violationCount).toBe(1)
+        expect(check?.sideResults.source.samples).toEqual([messageId])
+        expect(check?.crossCheck?.equal).toBe(true)
+        expect(check?.pass).toBe(true)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'NREN_EVENT_ID_PREFIX_GAP', severity: 'info' })])
+        )
+      } finally {
+        for (const sql of [sourceSql, targetSql]) {
+          await sql`delete from gacha_history where streamer_id = ${streamerId}`
+          await sql`delete from cards where id = ${cardId}`
+          await sql`delete from streamers where id = ${streamerId}`
+        }
+      }
+    }, 30000)
+
+    it('故障注入13: N連歯抜けがtarget側にのみ存在するとNREN_EVENT_ID_PREFIX_GAPがfailする（片側のみの違反は正規操作起因でも許容しない）', async () => {
+      const streamerId = '88888888-8888-8888-8888-888888880041'
+      const cardId = '88888888-8888-8888-8888-888888880042'
+      const messageId = '77777777-7777-7777-7777-777777770002'
+      for (const sql of [sourceSql, targetSql]) {
+        await sql`insert into streamers (id, twitch_user_id, twitch_username, twitch_display_name) values (${streamerId}, 'inv-nren2-streamer', 'invnren2', 'InvNren2')`
+        await sql`insert into cards (id, streamer_id, name) values (${cardId}, ${streamerId}, 'nren2-test-card')`
+        await sql`insert into gacha_history (event_id, user_twitch_id, card_id, streamer_id) values (${messageId}, 'inv-nren2-user', ${cardId}, ${streamerId})`
+        await sql`insert into gacha_history (event_id, user_twitch_id, card_id, streamer_id) values (${messageId + ':2'}, 'inv-nren2-user', ${cardId}, ${streamerId})`
+      }
+      // target側のみ :4 を追加（歯抜け発生）。sourceはbase+:2のみで途中打ち切り＝正常。
+      await targetSql`insert into gacha_history (event_id, user_twitch_id, card_id, streamer_id) values (${messageId + ':4'}, 'inv-nren2-user', ${cardId}, ${streamerId})`
+      try {
+        const result = await runInvariants()
+        expect(result.pass).toBe(false)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ severity: 'fail', code: 'NREN_EVENT_ID_PREFIX_GAP', side: 'both' })])
+        )
+        const inv = result.invariants.find((i: { id: string }) => i.id === 'nren-event-id-prefix')
+        const check = inv?.checks.find((c: { code: string }) => c.code === 'NREN_EVENT_ID_PREFIX_GAP')
+        expect(check?.sideResults.source.violationCount).toBe(0)
+        expect(check?.sideResults.target.violationCount).toBe(1)
+      } finally {
+        for (const sql of [sourceSql, targetSql]) {
+          await sql`delete from gacha_history where streamer_id = ${streamerId}`
+          await sql`delete from cards where id = ${cardId}`
+          await sql`delete from streamers where id = ${streamerId}`
+        }
+      }
+    }, 30000)
+
+    it('故障注入14: battles/battle_statsが存在する環境（プレビュー想定）ではallowlistが適用されず、battle_statsの行内不整合をBATTLE_STATS_ROW_INCONSISTENTがTier Aでfailする', async () => {
+      const userId = '88888888-8888-8888-8888-888888880051'
+      const battleStatsId = '88888888-8888-8888-8888-888888880052'
+      for (const sql of [sourceSql, targetSql]) {
+        await sql.unsafe(BATTLES_DDL)
+        await sql.unsafe(BATTLE_STATS_DDL)
+        await sql`insert into users (id, twitch_user_id, twitch_username, twitch_display_name) values (${userId}, 'inv-battle-user', 'battleuser', 'BattleUser')`
+        // wins(1) + losses(1) + draws(1) = 3 だが total_battles=5 で不整合。
+        await sql`insert into battle_stats (id, user_id, total_battles, wins, losses, draws, win_rate) values (${battleStatsId}, ${userId}, 5, 1, 1, 1, 20.00)`
+      }
+      try {
+        const result = await runInvariants()
+        expect(result.pass).toBe(false)
+        const inv = result.invariants.find((i: { id: string }) => i.id === 'battle-stats-consistency')
+        expect(inv?.allowlisted).toBe(false)
+        const check = inv?.checks.find((c: { code: string }) => c.code === 'BATTLE_STATS_ROW_INCONSISTENT')
+        expect(check?.pass).toBe(false)
+        expect(check?.sideResults.source.violationCount).toBe(1)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ severity: 'fail', code: 'BATTLE_STATS_ROW_INCONSISTENT', side: 'source' })])
+        )
+      } finally {
+        for (const sql of [sourceSql, targetSql]) {
+          await sql.unsafe('DROP TABLE IF EXISTS battles')
+          await sql.unsafe('DROP TABLE IF EXISTS battle_stats')
+          await sql`delete from users where id = ${userId}`
+        }
+      }
+    }, 30000)
+
+    it('故障注入15: total_battlesとcountersが両方NULLのbattle_stats行はBATTLE_STATS_ROW_INCONSISTENTでfailする（オーケストレーターレビュー Minor-1対応、PG17実測で再現確認済みの偽陰性の回帰防止）', async () => {
+      const userId = '88888888-8888-8888-8888-888888880061'
+      const battleStatsId = '88888888-8888-8888-8888-888888880062'
+      for (const sql of [sourceSql, targetSql]) {
+        await sql.unsafe(BATTLES_DDL)
+        await sql.unsafe(BATTLE_STATS_DDL)
+        await sql`insert into users (id, twitch_user_id, twitch_username, twitch_display_name) values (${userId}, 'inv-battle-null-user', 'battlenulluser', 'BattleNullUser')`
+        // total_battles=NULL かつ wins=NULLだがlosses/draws=0という、修正前は
+        // 3条件（sum IS DISTINCT FROM/0除算ガード付きwin_rate/total=0別条件）の
+        // いずれもすり抜けていた組み合わせ。修正後は`total_battles IS NULL`の
+        // 独立条件で必ず検出される。
+        await sql`insert into battle_stats (id, user_id, total_battles, wins, losses, draws, win_rate) values (${battleStatsId}, ${userId}, null, null, 0, 0, 0)`
+      }
+      try {
+        const result = await runInvariants()
+        expect(result.pass).toBe(false)
+        const inv = result.invariants.find((i: { id: string }) => i.id === 'battle-stats-consistency')
+        const check = inv?.checks.find((c: { code: string }) => c.code === 'BATTLE_STATS_ROW_INCONSISTENT')
+        expect(check?.pass).toBe(false)
+        expect(check?.sideResults.source.violationCount).toBe(1)
+        expect(check?.sideResults.target.violationCount).toBe(1)
+        expect(result.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ severity: 'fail', code: 'BATTLE_STATS_ROW_INCONSISTENT' })])
+        )
+      } finally {
+        for (const sql of [sourceSql, targetSql]) {
+          await sql.unsafe('DROP TABLE IF EXISTS battles')
+          await sql.unsafe('DROP TABLE IF EXISTS battle_stats')
+          await sql`delete from users where id = ${userId}`
+        }
+      }
+    }, 30000)
+
+    it('E2E: verify.mjs CLIで --layers=identity,schema,data,invariants を指定すると invariants layer もJSON reportへ反映され、クリーンな状態ではdecision=passになる', async () => {
+      const result = runNodeScript(
+        'scripts/db-cutover/verify.mjs',
+        [
+          '--source-environment=preview',
+          '--source-provider=supabase',
+          '--target-environment=preview',
+          '--target-provider=planetscale',
+          '--layers=identity,schema,data,invariants',
+        ],
+        {
+          SOURCE_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`,
+          TARGET_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${TARGET_PORT}/postgres`,
+          PG_DUMP_BIN: pgDumpBin as string,
+        }
+      )
+      const report = JSON.parse(result.stdout)
+      expect(report.layers.invariants).toBeDefined()
+      expect(report.layers.invariants.pass).toBe(true)
+      expect(report.layers.invariants.invariants.length).toBeGreaterThan(0)
+      const battleInv = report.layers.invariants.invariants.find((i: { id: string }) => i.id === 'battle-stats-consistency')
+      expect(battleInv.allowlisted).toBe(true)
+      expect(report.decision).toBe('pass')
+      expect(result.status).toBe(0)
+      // secret redaction: パスワードが生値で出力されていないこと。
+      expect(result.stdout).not.toContain(POSTGRES_PASSWORD)
       expect(result.stderr).not.toContain(POSTGRES_PASSWORD)
     }, 30000)
   })

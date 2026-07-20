@@ -85,6 +85,7 @@
 import { withReadOnlySnapshot } from './snapshot.mjs'
 import { loadTableCatalog } from './table-catalog.mjs'
 import { canonicalizeRow, hashChunk, hashChunkList } from './canonicalize.mjs'
+import { findAllowlistEntry } from './cutover-allowlist.mjs'
 
 /** `--chunk-size` 未指定時のデフォルト値（Issue #697本文「chunk sizeを指定可能」）。 */
 export const DEFAULT_CHUNK_SIZE = 1000
@@ -371,12 +372,33 @@ export function evaluateDataLayer({ tableCatalog, sourceResults, targetResults, 
 
     if (!s.exists || !t.exists) {
       const side = !s.exists && !t.exists ? 'both' : !s.exists ? 'source' : 'target'
-      findings.push({
-        severity: 'fail',
-        code: 'DATA_TABLE_MISSING',
-        message: `${name}: テーブルが${side === 'both' ? 'source/target双方' : side === 'source' ? 'source' : 'target'}に存在しません。`,
-        side,
-      })
+
+      // Issue #697 Chunk 3対応（設計書「allowlist」節）: source/target双方に同名テーブルが
+      // 存在しない場合のみ、レイヤー横断allowlist（cutover-allowlist.mjs）を確認する。
+      // 現状の唯一のエントリは #625（battles/battle_stats が本番Supabaseに実体として
+      // 存在しない既知のスキーマドリフト）で、これは移行が引き起こした問題ではなく
+      // 本番に元から存在する状態のため、allowlist該当時はseverity='info'に降格する。
+      // 片側のみ不在（=移行漏れの疑い）はallowlistの対象外とし、従来どおり必ずfailにする
+      // （設計書「片側のみ不在は従来どおりfail（移行漏れ）」）。
+      const allowlistEntry = side === 'both' ? findAllowlistEntry({ layer: 'data', table: name }) : null
+
+      if (allowlistEntry) {
+        findings.push({
+          severity: 'info',
+          code: 'DATA_TABLE_MISSING',
+          message: `${name}: テーブルがsource/target双方に存在しませんが、allowlistに該当するため許容します（${allowlistEntry.reason}）`,
+          side,
+          allowlisted: true,
+          reason: allowlistEntry.reason,
+        })
+      } else {
+        findings.push({
+          severity: 'fail',
+          code: 'DATA_TABLE_MISSING',
+          message: `${name}: テーブルが${side === 'both' ? 'source/target双方' : side === 'source' ? 'source' : 'target'}に存在しません。`,
+          side,
+        })
+      }
       tables.push({ table: name, sourceExists: s.exists, targetExists: t.exists })
       continue
     }
@@ -427,7 +449,12 @@ export function evaluateDataLayer({ tableCatalog, sourceResults, targetResults, 
     })
   }
 
-  return { layer: 'data', pass: findings.length === 0, findings, chunkSize, tables }
+  // Issue #697 Chunk 3対応（設計書rev2レビューMinor-2）: allowlist該当によりseverity='info'に
+  // 降格したfindingが存在しても、それだけでdata layerのpassが壊れないようにする。
+  // 以前は`findings.length === 0`だったため、info降格したfindingが1件でもあると
+  // 無条件にpass=falseになっていた（allowlistの意味が無くなる）。
+  const pass = !findings.some((f) => f.severity === 'fail')
+  return { layer: 'data', pass, findings, chunkSize, tables }
 }
 
 /**

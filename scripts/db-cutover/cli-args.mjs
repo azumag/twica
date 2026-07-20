@@ -34,14 +34,18 @@ import { DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE } from './layer-data.mjs'
  * `data`（Layer 3件数/key range統計 + Layer 4 checksum、Issue #697 Chunk 2で実装）を追加。
  * schema.tsに定義された全テーブルを対象にするため、identity/schemaより実行時間が長くなりうる
  * （`--chunk-size`で調整可能。下記parseChunkSize参照）。
+ *
+ * `invariants`（Layer 5業務invariant、Issue #697 Chunk 3で実装）を追加。source/target双方に
+ * 対しTier A（絶対値fail）/Tier B（source/target両側一致型）の判定を行う
+ * （詳細はlayer-invariants.mjs / invariant-checks.mjs参照）。
  */
-export const IMPLEMENTED_LAYERS = ['identity', 'schema', 'data']
+export const IMPLEMENTED_LAYERS = ['identity', 'schema', 'data', 'invariants']
 
 /**
  * Issue #697原文が定義する6層のうち、まだ未実装のlayer名。CLIが「不明な引数」ではなく
  * 「未実装」という区別可能なエラーメッセージを出すために使う。
  */
-export const KNOWN_FUTURE_LAYERS = ['invariants', 'canary']
+export const KNOWN_FUTURE_LAYERS = ['canary']
 
 const KNOWN_BOOLEAN_FLAGS = ['--help', '-h', '--allow-skip-identity']
 
@@ -202,7 +206,9 @@ export function parseLayers(layersRaw) {
   const futureRequested = requested.filter((l) => KNOWN_FUTURE_LAYERS.includes(l))
   if (futureRequested.length > 0) {
     return {
-      error: `layer "${futureRequested.join(', ')}" はまだ未実装です（Chunk 1で実装済みなのは ${IMPLEMENTED_LAYERS.join('/')} のみ）。`,
+      // Chunk 3時点でinvariantsも実装済みになったため、文言を「Chunk 1で実装済みなのは」から
+      // 汎用的な表現へ更新した（今後のチャンクでこの文言を再度直す必要が無いように）。
+      error: `layer "${futureRequested.join(', ')}" はまだ未実装です（現時点で実装済みなのは ${IMPLEMENTED_LAYERS.join('/')} のみ）。`,
     }
   }
   const unknown = requested.filter((l) => !IMPLEMENTED_LAYERS.includes(l))

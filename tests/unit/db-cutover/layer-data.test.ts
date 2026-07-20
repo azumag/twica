@@ -235,6 +235,65 @@ describe('evaluateDataLayer', () => {
   })
 })
 
+describe('evaluateDataLayer: DATA_TABLE_MISSING + allowlist（Issue #697 Chunk 3）', () => {
+  const battlesCatalog = [{ tableName: 'battles', primaryKeyColumns: ['id'], columns: [{ name: 'id', dataType: 'uuid', isSecret: false }] }]
+
+  it('allowlist該当テーブル（battles）が両側とも不存在ならseverity=infoに降格し、allowlisted:true・reasonを持つ', () => {
+    const result = evaluateDataLayer({
+      tableCatalog: battlesCatalog,
+      sourceResults: new Map([['battles', { exists: false }]]),
+      targetResults: new Map([['battles', { exists: false }]]),
+      chunkSize: 100,
+    })
+    expect(result.findings).toEqual([
+      expect.objectContaining({ severity: 'info', code: 'DATA_TABLE_MISSING', side: 'both', allowlisted: true, reason: expect.stringContaining('#625') }),
+    ])
+    // info findingのみのため、data layer自体はpassする（設計書rev2レビューMinor-2対応）。
+    expect(result.pass).toBe(true)
+  })
+
+  it('allowlist該当テーブルでも片側のみ不存在なら従来どおりfail（移行漏れの疑いのため許容しない）', () => {
+    const result = evaluateDataLayer({
+      tableCatalog: battlesCatalog,
+      sourceResults: new Map([['battles', { exists: false }]]),
+      targetResults: new Map([['battles', makeScan()]]),
+      chunkSize: 100,
+    })
+    expect(result.findings).toEqual([expect.objectContaining({ severity: 'fail', code: 'DATA_TABLE_MISSING', side: 'source' })])
+    expect(result.findings[0]).not.toHaveProperty('allowlisted')
+    expect(result.pass).toBe(false)
+  })
+
+  it('allowlist非該当テーブル（widgets）は両側不存在でも従来どおりfail', () => {
+    const result = evaluateDataLayer({
+      tableCatalog: catalog,
+      sourceResults: new Map([['widgets', { exists: false }]]),
+      targetResults: new Map([['widgets', { exists: false }]]),
+      chunkSize: 100,
+    })
+    expect(result.findings).toEqual([expect.objectContaining({ severity: 'fail', code: 'DATA_TABLE_MISSING', side: 'both' })])
+    expect(result.pass).toBe(false)
+  })
+
+  it('info findingとfail findingが混在する場合、pass判定はfail findingの有無のみで決まる', () => {
+    const result = evaluateDataLayer({
+      tableCatalog: [...battlesCatalog, ...catalog],
+      sourceResults: new Map([
+        ['battles', { exists: false }],
+        ['widgets', { exists: false }],
+      ]),
+      targetResults: new Map([
+        ['battles', { exists: false }],
+        ['widgets', { exists: false }],
+      ]),
+      chunkSize: 100,
+    })
+    const severities = result.findings.map((f) => f.severity)
+    expect(severities).toEqual(expect.arrayContaining(['info', 'fail']))
+    expect(result.pass).toBe(false)
+  })
+})
+
 describe('quoteIdentifier', () => {
   it('英小文字・数字・アンダースコアのみの識別子はダブルクォートで囲む', () => {
     expect(quoteIdentifier('gacha_history')).toBe('"gacha_history"')
