@@ -23,6 +23,16 @@ crons = ["*/5 * * * *"]
 GITHUB_REPO_OWNER = "azumag"
 GITHUB_REPO_NAME = "twica"
 
+# EventSub 退避 backlog 監視（Issue #695 の代替、KVベース部分改善の1項目目）用。
+# root wrangler.toml の RATE_LIMIT_KV と同じ namespace を binding 名を揃えて共用する
+# （src/lib/maintenance/eventsub-park.ts が退避先として使っているのと同じ namespace）。
+# id / preview_id を変更する場合は root wrangler.toml 側も必ず揃えること。
+# このワーカーは list() のみ使用し、値の読み書き（get/put/delete）は行わない。
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "2dadcd9aa89b466d9c860a8930d458fa"
+preview_id = "6604c73cdb474d6a8a50b8afd4076d5f"
+
 # 機密変数（Cloudflare Dashboard または wrangler secret put で設定）
 # Required secrets:
 # - SUPABASE_URL: Supabase プロジェクト URL (e.g. https://xxx.supabase.co)

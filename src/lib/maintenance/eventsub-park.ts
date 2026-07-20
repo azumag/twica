@@ -38,8 +38,34 @@ const KV_BINDING_NAME = 'RATE_LIMIT_KV'
  * 退避データのキープレフィックス。RATE_LIMIT_KV 内で既に使われている
  * rate limit 用キー（`ratelimit:*`、src/lib/rate-limit.ts 参照）と
  * 名前空間が衝突しないよう分離する。
+ *
+ * 相互参照（ドリフト防止）: workers/error-reporter/src/index.ts の
+ * backlog 監視（EVENTSUB_PARK_KEY_PREFIX / EVENTSUB_PARK_RECEIVED_AT_PATTERN）が
+ * このプレフィックスと下の buildParkedEventSubKey のキー組み立てを、KV値を
+ * 読まずキー名だけでパースできる前提で独立に再実装している（当該ワーカーは
+ * @opennextjs/cloudflare 等 Next.js 専用の依存を持つこのモジュールを直接
+ * import できないため）。このプレフィックスやキー形式（区切り文字・時刻
+ * フォーマット）を変更したら、必ずワーカー側の実装も追従して変更すること。
+ *
+ * ドリフトの機械的検知（Fable レビュー Major-3 対応）: このコメントでの相互参照
+ * だけでは実装がドリフトしてもテストは気づけない。そのため KEY_PREFIX と
+ * buildParkedEventSubKey を export し、tests/unit/error-reporter-worker.test.ts
+ * の契約テストで「worker 側のプレフィックス定数・パーサが、この export された
+ * 本家の値・関数が生成するキーと実際に一致するか」を検証する
+ * （worker パッケージ自体は import できなくても、テストファイルは両方を
+ * import できる）。
  */
-const KEY_PREFIX = 'maintenance:eventsub:'
+export const KEY_PREFIX = 'maintenance:eventsub:'
+
+/**
+ * 退避キー名を組み立てる。プレフィックス・区切り文字・フィールド順序の
+ * 唯一のソース（parkEventSubNotification もこれを使う。以前は同じ式を
+ * 関数内にインライン展開しており、export された定数と実際に使われる組み立て
+ * ロジックが分離しうる余地があったため、Major-3 対応の一環として関数化した）。
+ */
+export function buildParkedEventSubKey(receivedAt: string, messageId: string): string {
+  return `${KEY_PREFIX}${receivedAt}:${messageId}`
+}
 
 /**
  * 退避データの TTL（秒）。7日間。
@@ -157,7 +183,7 @@ export async function parkEventSubNotification(
   // ISO8601 の受信時刻をキーに含めることで、KV list 時に受信時刻順でソートされる
   // （リプレイ時の処理順の目安になる）。messageId も付与して同一ミリ秒内の
   // 複数通知でもキーが衝突しないようにする。
-  const key = `${KEY_PREFIX}${receivedAt}:${input.messageId}`
+  const key = buildParkedEventSubKey(receivedAt, input.messageId)
 
   const record: ParkedEventSubRecord = {
     messageId: input.messageId,

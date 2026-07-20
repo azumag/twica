@@ -1,5 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import worker, { processErrors, processInquiries } from '../../workers/error-reporter/src/index';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import worker, {
+  processErrors,
+  processInquiries,
+  processEventSubParkBacklog,
+  EVENTSUB_PARK_KEY_PREFIX,
+  parseParkedEventSubKeyReceivedAt,
+} from '../../workers/error-reporter/src/index';
+// Major-3 契約テスト用: worker パッケージ自体は @opennextjs/cloudflare 依存のため
+// import できないが、このテストファイルは両方を import できる（Fable レビューで確認済み）。
+import { KEY_PREFIX as EVENTSUB_PARK_SOURCE_KEY_PREFIX, buildParkedEventSubKey } from '../../src/lib/maintenance/eventsub-park';
 
 // Reporter Worker（twica-error-reporter）は errors と support_inquiries の両方を
 // GitHub Issue 化する。内部関数は export されていないため、
@@ -659,6 +668,399 @@ describe('reporter worker', () => {
       expect(console.warn).toHaveBeenCalledWith(
         expect.stringContaining('GitHub search API failed')
       );
+    });
+  });
+
+  // ===========================================================================
+  // processEventSubParkBacklog（RATE_LIMIT_KV の maintenance:eventsub:* backlog 監視）
+  // errors/inquiries と異なり Supabase を叩かず、KV の list() だけを見る。
+  // 「いつが最古か」の判定に現在時刻を使うため、fake timers で固定する。
+  // ===========================================================================
+  describe('processEventSubParkBacklog', () => {
+    const FIXED_NOW = new Date('2026-01-01T12:00:00.000Z');
+
+    /** KV list() のレスポンスをキー名の配列から組み立てる。 */
+    const makeKvEnv = (keyNames: string[], listComplete = true) => ({
+      ...mockEnv,
+      RATE_LIMIT_KV: {
+        list: vi.fn().mockResolvedValue({
+          keys: keyNames.map((name) => ({ name })),
+          list_complete: listComplete,
+        }),
+      },
+    });
+
+    /**
+     * 基準時刻から指定分だけ過去の受信時刻を持つ退避キー名を組み立てる。
+     * Major-3 対応: 以前はここでキー形式（プレフィックス・区切り文字）を独自に
+     * 複製していた（実装2箇所 + このテストヘルパで計3箇所目の複製）。
+     * src/lib/maintenance/eventsub-park.ts の本家 buildParkedEventSubKey を
+     * そのまま使うことで、この複製を解消する。
+     */
+    const parkedKey = (minutesAgo: number, messageId = 'msg-1') => {
+      const receivedAt = new Date(FIXED_NOW.getTime() - minutesAgo * 60_000).toISOString();
+      return buildParkedEventSubKey(receivedAt, messageId);
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(FIXED_NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('RATE_LIMIT_KV バインディングが無い場合はエラーログのみで GitHub API を呼ばない', async () => {
+      // mockEnv には元々 RATE_LIMIT_KV が無い（Env 型でも optional）ため、
+      // そのまま渡すだけで binding 未設定を再現できる。
+      await processEventSubParkBacklog(mockEnv);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('Missing RATE_LIMIT_KV binding')
+      );
+    });
+
+    it('退避データが0件なら GitHub API を呼ばない', async () => {
+      const env = makeKvEnv([]);
+
+      await processEventSubParkBacklog(env);
+
+      expect(env.RATE_LIMIT_KV.list).toHaveBeenCalledWith({
+        prefix: 'maintenance:eventsub:',
+        limit: 1000,
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('No parked notifications')
+      );
+    });
+
+    it('件数・経過時間ともに閾値未満なら GitHub API を呼ばない', async () => {
+      // 3件、最古でも5分前（件数閾値10・経過時間閾値30分のどちらも未満）
+      const env = makeKvEnv([parkedKey(5, 'a'), parkedKey(3, 'b'), parkedKey(1, 'c')]);
+
+      await processEventSubParkBacklog(env);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('Below threshold')
+      );
+    });
+
+    it('件数が閾値(10件)以上なら Issue を新規作成する', async () => {
+      const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
+      const env = makeKvEnv(keys);
+
+      // Major-2 対応後: 重複検索は GitHub Search API ではなく Issues List API
+      // （labels=...&state=open）を使う。レスポンスは Issue オブジェクトの配列。
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([]),
+      }); // list: 既存なし
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 123, html_url: 'https://github.com/test/123' }),
+      }); // create
+
+      await processEventSubParkBacklog(env);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      const listCall = fetchMock.mock.calls[0];
+      expect(listCall[0]).toContain('/repos/testowner/testrepo/issues?labels=');
+      expect(listCall[0]).toContain(encodeURIComponent('eventsub-park-backlog'));
+      expect(listCall[0]).toContain('state=open');
+
+      const createCall = fetchMock.mock.calls[1];
+      expect(createCall[0]).toContain('/repos/testowner/testrepo/issues');
+      const createBody = JSON.parse(createCall[1].body);
+      expect(createBody.title).toContain('10');
+      expect(createBody.body).toContain('件数**: 10 件');
+      expect(createBody.body).toContain('Monitor: eventsub-park-backlog');
+      expect(createBody.labels).toEqual(['bug', 'auto-generated', 'maintenance', 'eventsub-park-backlog']);
+
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('Created issue #123')
+      );
+    });
+
+    it('件数は閾値未満でも最古エントリが30分以上経過していれば Issue を新規作成する', async () => {
+      const env = makeKvEnv([parkedKey(40, 'stale')]);
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 5, html_url: 'https://github.com/test/5' }),
+      });
+
+      await processEventSubParkBacklog(env);
+
+      const createBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(createBody.body).toContain('40 分');
+    });
+
+    it('既に専用ラベルの Open Issue がある場合は新規作成せずスキップする', async () => {
+      const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
+      const env = makeKvEnv(keys);
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([{ number: 77, html_url: 'https://github.com/test/77' }]),
+      });
+
+      await processEventSubParkBacklog(env);
+
+      // list のみ（create は呼ばれない）
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('Open issue #77 already exists, skipping')
+      );
+    });
+
+    it('list_complete=false（1000件上限到達）の場合は件数表示に + が付く', async () => {
+      const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
+      const env = makeKvEnv(keys, false);
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
+      });
+
+      await processEventSubParkBacklog(env);
+
+      const createBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(createBody.title).toContain('10+');
+      expect(createBody.body).toContain('10+ 件');
+    });
+
+    it('プレフィックスやフォーマットに一致しない不正なキーは最古エントリの判定から除外される', async () => {
+      // 想定外の壊れたキーが先頭に混ざっていても、パース可能な最初のキー
+      // （2番目、40分前）が最古として扱われる。件数（3件）には両方カウントされる。
+      const env = makeKvEnv([
+        'maintenance:eventsub:not-a-valid-timestamp:msg-broken',
+        parkedKey(40, 'valid-oldest'),
+        parkedKey(1, 'valid-newest'),
+      ]);
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
+      });
+
+      await processEventSubParkBacklog(env);
+
+      const createBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      // 件数は3件のまま、経過時間は壊れたキーを無視して40分と判定される
+      expect(createBody.body).toContain('件数**: 3 件');
+      expect(createBody.body).toContain('40 分');
+    });
+
+    it('Issue 作成が失敗した場合は例外を投げる（scheduled 側で捕捉される）', async () => {
+      const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
+      const env = makeKvEnv(keys);
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('server error'),
+      });
+
+      await expect(processEventSubParkBacklog(env)).rejects.toThrow(/GitHub API error/);
+    });
+
+    // Major-2 対応: 重複防止の唯一のガードである Issues List API 自体が失敗した
+    // 場合、fail-open（既存なし扱いで新規作成に進む）だと処理済みフラグという
+    // 保険が無いこの監視では無制限に重複 Issue が作られうる。fail-closed
+    // （例外を投げて Issue 作成をスキップさせる）になっていることを検証する。
+    it('Major-2: 重複チェック(Issues List API)自体が失敗した場合は fail-closed で新規作成をスキップする', async () => {
+      const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
+      const env = makeKvEnv(keys);
+
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 502,
+        text: () => Promise.resolve('bad gateway'),
+      });
+
+      await expect(processEventSubParkBacklog(env)).rejects.toThrow(/GitHub Issues List API error/);
+
+      // list 呼び出しのみで、Issue 作成（POST /issues）には進んでいないこと。
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const postedToIssues = fetchMock.mock.calls.some(
+        (c) => typeof c[0] === 'string' && c[0].endsWith('/repos/testowner/testrepo/issues') && c[1]?.method === 'POST'
+      );
+      expect(postedToIssues).toBe(false);
+    });
+
+    it('scheduled() の一部として実行され、閾値超過時は他の処理と独立して Issue を作成する', async () => {
+      const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
+      const env = makeKvEnv(keys);
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // errors
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // inquiries
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([]),
+      }); // list
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ number: 200, html_url: 'https://github.com/test/200' }),
+      }); // create
+
+      await worker.scheduled(mockEvent, env, mockCtx);
+
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('Created issue #200')
+      );
+    });
+
+    it('scheduled() 経由で processEventSubParkBacklog が失敗しても他の処理は影響を受けない', async () => {
+      const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
+      const env = makeKvEnv(keys);
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // errors
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // inquiries
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([]),
+      }); // list
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('boom') }); // create fails
+
+      await expect(worker.scheduled(mockEvent, env, mockCtx)).resolves.toBeUndefined();
+
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('[EventSub Park Monitor] Cron job failed:'),
+        expect.any(Error)
+      );
+      // errors/inquiries 側は正常完了している
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending inquiries'));
+    });
+
+    // =========================================================================
+    // Major-1: tombstone による count===0 偽陰性の回帰テスト
+    // =========================================================================
+    describe('tombstone 追従（count===0 かつ list_complete=false の扱い）', () => {
+      it('全ての追加ページでも生キーが見つからない場合は unknown 扱いとなり、0件と断定せず警告ログを出す', async () => {
+        // 初回 + followup 上限（3回）分、常に keys=[] かつ list_complete=false を
+        // 返し続ける = tombstone だけのページが延々と続く最悪ケースを再現する。
+        const list = vi.fn().mockResolvedValue({ keys: [], list_complete: false, cursor: 'next' });
+        const env = { ...mockEnv, RATE_LIMIT_KV: { list } };
+
+        await processEventSubParkBacklog(env);
+
+        // 初回1回 + followup上限3回 = 計4回 list が呼ばれる。
+        expect(list).toHaveBeenCalledTimes(4);
+        // 0件と断定して沈黙する「No parked notifications」ログは出ない。
+        expect(console.log).not.toHaveBeenCalledWith(
+          expect.stringContaining('No parked notifications')
+        );
+        // 代わりに unknown 状態を示す警告ログが出る。
+        expect(console.warn).toHaveBeenCalledWith(
+          expect.stringContaining('Unable to determine backlog state')
+        );
+        // 数値を信頼できないため、この回は Issue を起票しない。
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it('1ページ目が tombstone のみでも、followup ページで生キーが見つかれば正しく backlog として扱う', async () => {
+        const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
+        const list = vi
+          .fn()
+          // 1ページ目: tombstone のみ（生キー0件、未完了）
+          .mockResolvedValueOnce({ keys: [], list_complete: false, cursor: 'cursor-1' })
+          // followup 1回目で生キーが見つかる
+          .mockResolvedValueOnce({
+            keys: keys.map((name) => ({ name })),
+            list_complete: true,
+          });
+        const env = { ...mockEnv, RATE_LIMIT_KV: { list } };
+
+        fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // list issues
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ number: 300, html_url: 'https://github.com/test/300' }),
+        }); // create
+
+        await processEventSubParkBacklog(env);
+
+        // 2回目の kv.list 呼び出しには1回目の cursor が渡っている。
+        expect(list).toHaveBeenNthCalledWith(2, {
+          prefix: 'maintenance:eventsub:',
+          limit: 1000,
+          cursor: 'cursor-1',
+        });
+        // unknown 扱いにはならず、通常どおり閾値超過として Issue が作成される。
+        expect(console.warn).not.toHaveBeenCalledWith(
+          expect.stringContaining('Unable to determine backlog state')
+        );
+        expect(console.log).toHaveBeenCalledWith(
+          expect.stringContaining('Created issue #300')
+        );
+      });
+
+      it('followup ページの途中で list_complete=true になれば、生キー0件のまま「0件」と正しく判定する', async () => {
+        // tombstone ページが1回続いた後、2ページ目で list_complete=true かつ生キー0件
+        // （＝本当に backlog が無かった）ケース。unknown にはならない。
+        const list = vi
+          .fn()
+          .mockResolvedValueOnce({ keys: [], list_complete: false, cursor: 'cursor-1' })
+          .mockResolvedValueOnce({ keys: [], list_complete: true });
+        const env = { ...mockEnv, RATE_LIMIT_KV: { list } };
+
+        await processEventSubParkBacklog(env);
+
+        expect(list).toHaveBeenCalledTimes(2);
+        expect(console.warn).not.toHaveBeenCalledWith(
+          expect.stringContaining('Unable to determine backlog state')
+        );
+        expect(console.log).toHaveBeenCalledWith(
+          expect.stringContaining('No parked notifications')
+        );
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ===========================================================================
+  // Major-3 契約テスト: eventsub-park.ts のキー形式と、worker 側の独立実装
+  // （EVENTSUB_PARK_KEY_PREFIX / parseParkedEventSubKeyReceivedAt）が実際に
+  // 一致することを検証する。コメントでの相互参照だけに頼らず、どちらかが
+  // ドリフトしたらこのテストが機械的に赤くなるようにするための1本。
+  // ===========================================================================
+  describe('EventSub 退避キー形式の契約テスト（eventsub-park.ts と worker 実装のドリフト検知）', () => {
+    it('プレフィックス定数が完全に一致する', () => {
+      expect(EVENTSUB_PARK_KEY_PREFIX).toBe(EVENTSUB_PARK_SOURCE_KEY_PREFIX);
+    });
+
+    it('本家 buildParkedEventSubKey が生成したキーを worker 側のパーサが正しく解釈できる', () => {
+      const receivedAt = '2026-03-15T09:30:00.123Z';
+      const key = buildParkedEventSubKey(receivedAt, 'contract-test-message-id');
+
+      expect(parseParkedEventSubKeyReceivedAt(key)).toBe(receivedAt);
+    });
+
+    it('worker 側のパーサは、本家プレフィックスと異なるキーを拒否する（誤って別名前空間のキーを拾わない）', () => {
+      const foreignKey = `not-${EVENTSUB_PARK_SOURCE_KEY_PREFIX}2026-03-15T09:30:00.123Z:msg-1`;
+      expect(parseParkedEventSubKeyReceivedAt(foreignKey)).toBeNull();
     });
   });
 });
