@@ -379,6 +379,39 @@ describe('scanTable（fake txによるpagination境界条件のテスト、Fable
     await expect(scanTable(tx, simpleSpec, Number.NaN)).rejects.toThrow(/positive integer/)
   })
 
+  it('スキャン中に例外が起きた場合はCLOSEを試みず、根本原因の例外をそのまま伝播する（3回目のFableレビュー Minor-P1対応: 実DBではabortedトランザクション中のCLOSE自体が失敗し例外を上書きしうるため）', async () => {
+    // 実DBでは、走査中の例外でトランザクションがaborted状態になった後にCLOSEを試みると
+    // `25P02: current transaction is aborted`で失敗する。このfake txはその状況を模し、
+    // CLOSEが呼ばれたら（呼ばれること自体がP-1の回帰）別のエラーを投げるようにしてある。
+    const badTimestampSpec = {
+      tableName: 'widgets',
+      primaryKeyColumns: ['id'],
+      columns: [
+        { name: 'id', dataType: 'uuid', isSecret: false },
+        { name: 'created_at', dataType: 'timestamp with time zone', isSecret: false },
+      ],
+    }
+    const calls: MockCall[] = []
+    const tx = {
+      unsafe: async (queryText: string, params: unknown[]) => {
+        calls.push({ queryText, params })
+        if (queryText.trim().startsWith('CLOSE')) {
+          throw new Error('25P02: current transaction is aborted (simulated)')
+        }
+        if (queryText.trim().startsWith('FETCH')) {
+          return [{ id: 'a', created_at: 'not-a-valid-timestamp' }]
+        }
+        return []
+      },
+    } as unknown as Sql
+
+    await expect(scanTable(tx, badTimestampSpec, 10)).rejects.toThrow(/invalid timestamp/)
+    // CLOSEが実際に呼ばれていないこと（呼ばれていたら、上のrejects.toThrowは
+    // simulated CLOSE失敗の方のメッセージにすり替わってテストが失敗するはずだが、
+    // 呼び出し自体が発生していないことも明示的に確認する）。
+    expect(calls.some((c) => c.queryText.startsWith('CLOSE'))).toBe(false)
+  })
+
   it('secret指定のtimestamp列はmaxTimestampsから除外される（Fableレビュー Major-1対応、生値をreportへ出さない）', async () => {
     const spec = {
       tableName: 'users',

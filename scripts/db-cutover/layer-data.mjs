@@ -55,9 +55,12 @@
  * 順番に読み進めるだけなので、`COLLATE "C"`でindexが使えない場合でも全表スキャン+ソートは
  * 1回で済む（実機のEXPLAINで`Seq Scan` + `Sort`が1回だけ現れることを確認済み）。
  * カーソルはトランザクションスコープ（`WITHOUT HOLD`が既定）のため、`withReadOnlySnapshot`の
- * トランザクション内で開いて使い切り、最後に`CLOSE`する（例外時もfinallyで確実にCLOSEする。
- * 万一CLOSEし忘れても`withReadOnlySnapshot`は必ずROLLBACKするため、カーソル自体はロールバックで
- * 破棄される）。`FETCH FORWARD`の件数はPostgreSQLの文法上バインドパラメータを取れない
+ * トランザクション内で開いて使い切り、正常終了時は最後に明示`CLOSE`する。走査中に例外
+ * （不正なtimestamp値等）が発生した場合はCLOSEを試みない（3回目のFableレビュー Minor-P1対応:
+ * その時点でトランザクションは既にaborted状態であり、CLOSE自体が`25P02`で失敗し、finally内の
+ * throwが根本原因の例外を上書きしてしまうため）。`withReadOnlySnapshot`は結果によらず必ず
+ * ROLLBACKするため、CLOSEを省略してもカーソル自体はロールバックで破棄され安全側に倒れる。
+ * `FETCH FORWARD`の件数はPostgreSQLの文法上バインドパラメータを取れない
  * （リテラル整数のみ、実機で`syntax error at or near "$1"`を確認済み）ため、
  * 事前にCLI側（cli-args.mjsのparseChunkSize、1〜MAX_CHUNK_SIZE）でバリデート済みの
  * `chunkSize`をSQL文字列へ直接埋め込む（追加の防御として`scanTable`自身も整数であることを
@@ -204,6 +207,14 @@ export async function scanTable(tx, tableSpec, chunkSize) {
   const startedAt = Date.now()
 
   await tx.unsafe(`DECLARE ${SCAN_CURSOR_NAME} CURSOR FOR SELECT * FROM ${quotedTable} ORDER BY ${orderBy}`)
+  // 3回目のFableレビュー Minor-P1対応: スキャン中に例外（不正なtimestamp値等）が
+  // 発生した場合、トランザクションは既にaborted状態になっており、finallyでの
+  // `CLOSE`自体が`25P02: current transaction is aborted`で失敗し、finallyからの
+  // throwが元の根本原因例外を上書きしてしまう（JSの仕様上、finally内のthrowは
+  // tryブロックの例外を握りつぶす）。scan中に例外が発生した場合はCLOSEを試みない
+  // （`withReadOnlySnapshot`が必ずROLLBACKするため、カーソルはそれで破棄され、
+  // 明示的なCLOSE省略に実害は無い）ことで、根本原因のエラーメッセージを保つ。
+  let scanFailed = false
   try {
     for (;;) {
       const rows = await tx.unsafe(`FETCH FORWARD ${chunkSize} FROM ${SCAN_CURSOR_NAME}`)
@@ -220,7 +231,12 @@ export async function scanTable(tx, tableSpec, chunkSize) {
         }
         // canonicalizeCellは全ての分岐でnull/undefinedを一貫してnullへ写像するため
         // （secret列のhash化・timestamp正規化いずれも非null値をnullにはしない）、
-        // canonical化後の値でnull判定してもraw値でのnull判定と同じ結果になる。
+        // canonical化後の値でnull判定すれば`row[col.name] === null`の場合と同じ結果になる。
+        // 3回目のFableレビュー Minor-P2対応（コメント精緻化）: 唯一の相違点は
+        // `row[col.name] === undefined`（catalogには存在するがDBの実列には無い＝
+        // schema drift）のケースで、raw値ベースの厳密比較なら数えないがcanonical化
+        // 経由だとnullとして数える。この差はLayer 2（schema比較）が既にschema drift
+        // 自体をfailとして検出するため、Layer 3のnullカウント統計としては実害が無い。
         for (const { index, name } of idIndices) {
           if (canonicalRow[index][1] === null) nullCounts[name] += 1
         }
@@ -236,8 +252,13 @@ export async function scanTable(tx, tableSpec, chunkSize) {
 
       if (rows.length < chunkSize) break
     }
+  } catch (error) {
+    scanFailed = true
+    throw error
   } finally {
-    await tx.unsafe(`CLOSE ${SCAN_CURSOR_NAME}`)
+    if (!scanFailed) {
+      await tx.unsafe(`CLOSE ${SCAN_CURSOR_NAME}`)
+    }
   }
 
   return {
