@@ -8,6 +8,7 @@ import { runIdentityLayer } from '../../../scripts/db-cutover/layer-identity.mjs
 import { runSchemaLayer } from '../../../scripts/db-cutover/layer-schema.mjs'
 import { runDataLayer } from '../../../scripts/db-cutover/layer-data.mjs'
 import { runInvariantsLayer } from '../../../scripts/db-cutover/layer-invariants.mjs'
+import { runCanaryLayer, buildFixtureIdentifiers } from '../../../scripts/db-cutover/layer-canary.mjs'
 import { ensureIdentitySchema, seedIdentity } from '../../../scripts/db-cutover/identity-store.mjs'
 import { withReadOnlySnapshot } from '../../../scripts/db-cutover/snapshot.mjs'
 
@@ -217,7 +218,7 @@ function runNodeScript(scriptRelPath: string, args: string[], env: Record<string
   })
 }
 
-describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 + Chunk 2)', () => {
+describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 + Chunk 2 + Chunk 3 + Chunk 4)', () => {
   let sourceSql: Sql
   let targetSql: Sql
   // Minor-10（Fableレビュー）対応: 固定ポート（旧: 55461/55462）は同一マシンでの並行実行や
@@ -947,5 +948,220 @@ describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 
       expect(result.stdout).not.toContain(POSTGRES_PASSWORD)
       expect(result.stderr).not.toContain(POSTGRES_PASSWORD)
     }, 30000)
+  })
+
+  describe('canary layer（Issue #697 Chunk 4、Layer 6 runtime canary）', () => {
+    // このdescribeブロックは invariants layer ブロックの後に実行される。canaryはtarget側
+    // のみを対象とするため（ファイル冒頭のlayer-canary.mjs設計コメント参照）、各itは
+    // targetSqlのみを使う。fixtureはrunCanaryLayer自身が生成・後始末する（常にROLLBACKする
+    // 設計、withRollbackOnlyTransaction参照）ため、通常は明示的なfixture後始末が不要だが、
+    // 「事前に衝突行を置く」「トリガーを無効化する」等の故障注入部分は各itが自分で後始末する。
+    const targetUrl = () => `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${TARGET_PORT}/postgres`
+
+    it('故障注入(canary)16: 成功パスE2E（fixture→RPC→トリガー発火→rollback→痕跡ゼロ）。6チェック全passかつrollback後に一切の痕跡が残らないことは、withRollbackOnlyTransactionが一度もCOMMITしていないことの動作証跡（commit禁止guardの構造検証を兼ねる）', async () => {
+      const runId = 'canary-e2e-success-test'
+      const identifiers = buildFixtureIdentifiers(runId)
+      const result = await runCanaryLayer({ targetSql, targetUrl: targetUrl(), runId })
+
+      expect(result.pass).toBe(true)
+      expect(result.checks).toHaveLength(6)
+      for (const check of result.checks) {
+        expect(check.pass).toBe(true)
+        expect(check.skipped).toBe(false)
+        expect(check.findings).toEqual([])
+      }
+
+      // rollback後、トランザクション外から見て一切の痕跡が無いこと。canary-rollback-verification
+      // 自身の自己検証結果（上記check.pass===true）に加え、テスト側からも独立に再確認する
+      // （ツール自身の自己申告だけに頼らない）。集計トリガーが作ったchannel_point_usage_stats/
+      // card_owner_statsも合わせて確認する（設計書の必須確認対象4テーブルには無いが、
+      // ON DELETE CASCADEの範囲外でもrollback自体で当然消えているはずのため、より広い網で確認）。
+      const streamerRows = await targetSql`select id from streamers where twitch_user_id = ${identifiers.streamerTwitchUserId}`
+      const userRows = await targetSql`select id from users where twitch_user_id = ${identifiers.userTwitchUserId}`
+      const historyRows = await targetSql`select id from gacha_history where event_id = ${identifiers.eventId}`
+      const cpuRows = await targetSql`select 1 as x from channel_point_usage_stats where user_twitch_id = ${identifiers.userTwitchUserId}`
+      const cosRows = await targetSql`select 1 as x from card_owner_stats where user_twitch_id = ${identifiers.userTwitchUserId}`
+      expect(streamerRows).toHaveLength(0)
+      expect(userRows).toHaveLength(0)
+      expect(historyRows).toHaveLength(0)
+      expect(cpuRows).toHaveLength(0)
+      expect(cosRows).toHaveLength(0)
+    }, 30000)
+
+    it('故障注入(canary)17: fixture衝突（既存行と同一twitch_user_idを事前に置いた場合）。fixtureセットアップがUNIQUE制約違反でfailし、依存する3チェックがskipされ、canary-gacha-rpcにCANARY_FIXTURE_SETUP_ERRORが1件だけ計上される', async () => {
+      const runId = 'canary-collision-test'
+      const identifiers = buildFixtureIdentifiers(runId)
+      // 過去のcanary実行の残骸、または偶発的な衝突を模して、事前に同一twitch_user_idの
+      // streamers行を置いておく。
+      await targetSql`insert into streamers (twitch_user_id, twitch_username, twitch_display_name) values (${identifiers.streamerTwitchUserId}, 'collision', 'Collision')`
+      try {
+        const result = await runCanaryLayer({ targetSql, targetUrl: targetUrl(), runId })
+        expect(result.pass).toBe(false)
+
+        const gachaRpcCheck = result.checks.find((c: { id: string }) => c.id === 'canary-gacha-rpc')
+        expect(gachaRpcCheck?.skipped).toBe(true)
+        expect(gachaRpcCheck?.findings).toEqual([expect.objectContaining({ severity: 'fail', code: 'CANARY_FIXTURE_SETUP_ERROR' })])
+
+        for (const id of ['canary-updated-at-trigger', 'canary-timestamp-shape', 'canary-jsonb-array-parse']) {
+          const check = result.checks.find((c: { id: string }) => c.id === id)
+          expect(check?.skipped).toBe(true)
+          expect(check?.findings).toEqual([])
+        }
+
+        // dashboard-readsとrollback-verificationはfixtureセットアップに依存しないため
+        // 通常どおり実行される（skipped:false）。
+        expect(result.checks.find((c: { id: string }) => c.id === 'canary-dashboard-reads')?.skipped).toBe(false)
+        expect(result.checks.find((c: { id: string }) => c.id === 'canary-rollback-verification')?.skipped).toBe(false)
+      } finally {
+        await targetSql`delete from streamers where twitch_user_id = ${identifiers.streamerTwitchUserId}`
+      }
+    }, 30000)
+
+    it('故障注入(canary)18: トリガー無効化fail検出。trg_sync_channel_point_usage_statを無効化するとcanary-gacha-rpcがCANARY_GACHA_RPC_TRIGGER_CHANNEL_POINT_USAGE_MISSINGでfailする', async () => {
+      await targetSql.unsafe('ALTER TABLE gacha_history DISABLE TRIGGER trg_sync_channel_point_usage_stat')
+      try {
+        const runId = 'canary-trigger-disabled-test'
+        const result = await runCanaryLayer({ targetSql, targetUrl: targetUrl(), runId })
+        expect(result.pass).toBe(false)
+        const gachaRpcCheck = result.checks.find((c: { id: string }) => c.id === 'canary-gacha-rpc')
+        expect(gachaRpcCheck?.pass).toBe(false)
+        expect(gachaRpcCheck?.findings).toEqual(
+          expect.arrayContaining([expect.objectContaining({ severity: 'fail', code: 'CANARY_GACHA_RPC_TRIGGER_CHANNEL_POINT_USAGE_MISSING' })])
+        )
+        // このトランザクションも最終的にROLLBACKされるため、無効化の影響は他のitへ持ち越されない
+        // （withRollbackOnlyTransactionはtrigger無効化自体をrollbackしない。DISABLE TRIGGERは
+        // DDLでトランザクショナルだが、本testはトランザクション**外**でALTER TABLEしているため、
+        // 明示的なfinally句での復旧が必須）。
+      } finally {
+        await targetSql.unsafe('ALTER TABLE gacha_history ENABLE TRIGGER trg_sync_channel_point_usage_stat')
+      }
+    }, 30000)
+
+    it('故障注入(canary)19: is_active=falseのcardに execute_gacha_transaction を直接呼ぶと limit_reached:true を返す（canaryのfixtureがis_active=true固定にしている設計判断の裏取り。checkGachaRpcはis_active=true前提でlimit_reached:falseを期待するため、この分岐に入ると正しくfailを報告できることの根拠）', async () => {
+      const streamerId = '66666666-6666-6666-6666-666666660001'
+      const cardId = '66666666-6666-6666-6666-666666660002'
+      const eventId = 'canary-test-inactive-card-event'
+      const userTwitchId = 'canary-inactive-test-user'
+      await targetSql`insert into streamers (id, twitch_user_id, twitch_username, twitch_display_name) values (${streamerId}, 'canary-inactive-streamer', 'canaryinactive', 'CanaryInactive')`
+      await targetSql`insert into cards (id, streamer_id, name, is_active) values (${cardId}, ${streamerId}, 'inactive-card', false)`
+      try {
+        const rows = await targetSql`
+          select execute_gacha_transaction(
+            p_event_id => ${eventId},
+            p_user_twitch_id => ${userTwitchId},
+            p_user_twitch_username => ${'CanaryInactiveTestUser'},
+            p_card_id => ${cardId}::uuid,
+            p_streamer_id => ${streamerId}::uuid,
+            p_reward_cost => ${100}::integer,
+            p_reward_id => ${null}
+          ) as result
+        `
+        expect(rows[0].result).toEqual({ is_duplicate: false, limit_reached: true })
+      } finally {
+        await targetSql`delete from gacha_history where event_id = ${eventId}`
+        await targetSql`delete from cards where id = ${cardId}`
+        await targetSql`delete from streamers where id = ${streamerId}`
+        await targetSql`delete from users where twitch_user_id = ${userTwitchId}`
+      }
+    }, 30000)
+
+    it('故障注入(canary)20: SAVEPOINT隔離の実機検証。canary-updated-at-triggerのUPDATEのみをCHECK制約で意図的にabort(25P02)させ、当該チェックのみfail・他5チェックは正常継続・最終rollbackで痕跡ゼロを同時に確認する', async () => {
+      // streamers.twitch_display_nameに対するCHECK制約: checkUpdatedAtTriggerが使う
+      // UPDATE文の新しい値（'Cutover Canary (updated)'）だけを拒否する。fixtureセットアップの
+      // INSERT時点の値（'Cutover Canary'）や他チェックの操作（gacha-rpcのINSERT・
+      // jsonb-array-parseのusers UPDATE・dashboard-readsのSELECT）とは無関係のため、
+      // canary-updated-at-trigger以外への副作用が無い、意図的に狙い撃ちした故障注入。
+      await targetSql.unsafe(
+        `ALTER TABLE streamers ADD CONSTRAINT test_block_canary_update CHECK (twitch_display_name <> 'Cutover Canary (updated)')`
+      )
+      try {
+        const runId = 'canary-savepoint-isolation-test'
+        const identifiers = buildFixtureIdentifiers(runId)
+        const result = await runCanaryLayer({ targetSql, targetUrl: targetUrl(), runId })
+
+        expect(result.pass).toBe(false)
+
+        const updatedAtCheck = result.checks.find((c: { id: string }) => c.id === 'canary-updated-at-trigger')
+        expect(updatedAtCheck?.pass).toBe(false)
+        expect(updatedAtCheck?.skipped).toBe(false)
+        expect(updatedAtCheck?.findings).toEqual([expect.objectContaining({ severity: 'fail', code: 'CANARY_RUNTIME_ERROR' })])
+
+        // SAVEPOINT隔離の核心確認: 他の5チェックはCHECK制約違反によるabort(25P02)の影響を
+        // 受けず、正常にpassし続けている。
+        const otherChecks = result.checks.filter((c: { id: string }) => c.id !== 'canary-updated-at-trigger')
+        expect(otherChecks).toHaveLength(5)
+        for (const check of otherChecks) {
+          expect(check.pass).toBe(true)
+          expect(check.findings).toEqual([])
+        }
+
+        // 1チェックのabortがあっても最終的なROLLBACKは正常に完了し、痕跡ゼロであること
+        // （updated-at-triggerのエラーでトランザクション全体がabortされたままROLLBACKされずに
+        // 残っている、という事態が起きていないことの確認）。
+        const streamerRows = await targetSql`select id from streamers where twitch_user_id = ${identifiers.streamerTwitchUserId}`
+        expect(streamerRows).toHaveLength(0)
+      } finally {
+        await targetSql.unsafe('ALTER TABLE streamers DROP CONSTRAINT IF EXISTS test_block_canary_update')
+      }
+    }, 30000)
+
+    it('E2E(canary)21: identity layerがfailすると後続のcanaryは実行されない（notEvaluated、identityの無条件breakがcanaryも保護することの確認）', async () => {
+      const result = runNodeScript(
+        'scripts/db-cutover/verify.mjs',
+        [
+          '--source-environment=preview',
+          '--source-provider=supabase',
+          // 実際にseedした値（beforeAll参照）は'preview'のため、意図的に'production'を宣言して
+          // ENVIRONMENT_MISMATCHでidentity layerをfailさせる。
+          '--target-environment=production',
+          '--target-provider=planetscale',
+          '--operation-id=cutover-identity-fail-canary-test',
+          '--layers=identity,canary',
+        ],
+        {
+          SOURCE_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`,
+          TARGET_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${TARGET_PORT}/postgres`,
+        }
+      )
+      const report = JSON.parse(result.stdout)
+      expect(report.layers.identity.pass).toBe(false)
+      expect(report.layers.canary).toEqual({ layer: 'canary', pass: null, findings: [], notEvaluated: true })
+      expect(report.decision).toBe('fail')
+      expect(result.status).toBe(1)
+    }, 30000)
+
+    it('E2E(canary)22: --fail-fast指定時、schema layerがfailすると後続のcanaryは実行されない。--fail-fast無し（既定のfull-report mode）なら同じ状況でもcanaryは実行される', async () => {
+      // 故障注入3と同じ手法（target側cardsテーブルへの列追加）でschema layerを確実にfailさせる。
+      await targetSql.unsafe('ALTER TABLE public.cards ADD COLUMN cutover_test_failfast_column text')
+      try {
+        const envVars = {
+          SOURCE_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`,
+          TARGET_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${TARGET_PORT}/postgres`,
+          PG_DUMP_BIN: pgDumpBin as string,
+        }
+        const baseArgs = [
+          '--source-environment=preview',
+          '--source-provider=supabase',
+          '--target-environment=preview',
+          '--target-provider=planetscale',
+          '--layers=identity,schema,canary',
+        ]
+
+        const withFailFast = runNodeScript('scripts/db-cutover/verify.mjs', [...baseArgs, '--fail-fast'], envVars)
+        const failFastReport = JSON.parse(withFailFast.stdout)
+        expect(failFastReport.layers.schema.pass).toBe(false)
+        expect(failFastReport.layers.canary).toEqual({ layer: 'canary', pass: null, findings: [], notEvaluated: true })
+
+        const withoutFailFast = runNodeScript('scripts/db-cutover/verify.mjs', baseArgs, envVars)
+        const fullReport = JSON.parse(withoutFailFast.stdout)
+        expect(fullReport.layers.schema.pass).toBe(false)
+        // full-report modeではschemaがfailしてもcanaryは実行され、実際の判定結果
+        // （notEvaluatedではない、pass: true/falseのいずれか）を持つ。
+        expect(fullReport.layers.canary.notEvaluated).toBeUndefined()
+        expect(typeof fullReport.layers.canary.pass).toBe('boolean')
+      } finally {
+        await targetSql.unsafe('ALTER TABLE public.cards DROP COLUMN cutover_test_failfast_column')
+      }
+    }, 60000)
   })
 })

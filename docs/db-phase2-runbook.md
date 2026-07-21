@@ -597,52 +597,94 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    ```
    - `--clean --if-exists`: preview リハーサルでの再実行を安全にするため。
      本番の初回カットオーバーでは対象 DB が空である前提のため実質 no-op。
-6. **スキーマ照合**: `DATABASE_URL=<PlanetScale接続文字列> node scripts/verify-db-schema.js`
-   を実行し、`src/lib/db/schema.ts` との差分・SELECT smoke を確認する
-   （既存スクリプトをそのまま流用可能。CI では実行しない運用も踏襲）。
+6. **db:cutover:verify によるフル検証（GO/NO-GOゲート、2026-07-21 Issue #697 Chunk 4で
+   本統合。旧記載のTODOは解消済み）**:
+   ```bash
+   SOURCE_DATABASE_URL="<Supabase Direct connection>" \
+   TARGET_DATABASE_URL="<PlanetScale接続文字列>" \
+     npm run db:cutover:verify -- \
+     --source-environment=production --source-provider=supabase \
+     --target-environment=production --target-provider=planetscale \
+     --layers=identity,schema,data,invariants,canary \
+     --operation-id=cutover-<YYYY-MM-DD>
+   ```
+   Issue #697本文が定義する6層（Layer 1: identity、Layer 2: schema、Layer 3+4:
+   data〔件数/key range統計 + deterministic checksum〕、Layer 5: invariants
+   〔業務不変条件〕、Layer 6: canary〔targetへの実runtimeトランザクション検証〕）を
+   `--layers=identity,schema,data,invariants,canary` でフル実行する。
+
+   **前提条件（Chunk 1から変更なし）**: `db:cutover:init-identity`
+   （`twica_meta.database_identity`のseeding）を4つの実インスタンス
+   （Supabase/PlanetScale × prod/preview）それぞれに対して、`db:cutover:verify`
+   を初めて使う前に1回ずつ手動実行しておく必要がある（詳細は
+   `scripts/db-cutover/init-identity.mjs` のヘルプ・コード冒頭コメント参照）。
+
+   **`scripts/verify-db-schema.js` との併用**: `db:cutover:verify` のschema layer
+   （source/target 2DBの生DDL比較）とは検証対象が異なる独立した安全網として、
+   従来どおり `DATABASE_URL=<PlanetScale接続文字列> node scripts/verify-db-schema.js`
+   （target単体とアプリの`src/lib/db/schema.ts`定義との比較・SELECT smoke）も併用する。
    **注意: 「差分ゼロ・exit 0」は期待できない。** pg_dump/restore は prod の
    実スキーマをそのまま移送するため、既知のスキーマドリフト（#625:
    `battles`/`battle_stats` テーブルが prod に存在しない）は新 DB にもそのまま
-   引き継がれる。スクリプトは schema.ts を正として双方向で差分検出し、
-   schema.ts 側の全テーブルへ SELECT smoke を発行するため、
-   **期待される出力は次の通り**（これ以外の差分が出た場合のみ異常と判断する）:
+   引き継がれる。**期待される出力は次の通り**（これ以外の差分が出た場合のみ異常と判断する）:
    - table missing in DB × 2（battles / battle_stats）
    - SELECT smoke failure × 2（battles / battle_stats、テーブル不在のため）
    - 終了コード **1**（差分ありのため非ゼロ終了が正常。exit 0 を成功条件に
      した自動化スクリプトでラップしないこと）
+   同じ既知ドリフト（#625）は `db:cutover:verify` 側では
+   `scripts/db-cutover/cutover-allowlist.mjs` の `BATTLE_FEATURE_TABLES_ABSENT_IN_PROD`
+   エントリにより `severity:"info"` へ自動的に降格され、GO/NO-GO判断を妨げない
+   （8章「既知スキーマドリフトの扱い」の対応関係も参照）。
 
-   **2026-07-20 訂正（Issue #697 Chunk 1実装時に判明、旧記載は削除済み）**:
-   本節は以前「`cards` の 8 列（card_number/hp/atk/def/spd/skill_type/
-   skill_name/skill_power）が prod に欠落しており column missing in DB × 8 が
-   追加で出る」と記載していたが、この記載は古い。`supabase/migrations/
-   20260718000000_repair_cards_missing_columns.sql`（#625修復migration）で
-   prod の `cards` テーブルは既に修復済みであり、`db/planetscale/
-   public-schema.sql`（`db/planetscale/migrations/
-   20260719180100_planetscale_public_schema_baseline.sql` が適用するbaseline）
-   にも修復後の8列が実データ由来で反映済みであることを確認した
-   （`grep -A 40 'Name: cards; Type: TABLE' db/planetscale/public-schema.sql`
-   で hp/atk/def/spd/skill_type/skill_name/skill_power/card_number の
-   全列が存在することを実ファイルで確認済み）。よって cards列欠落による
-   差分はもはや発生しない想定。実施直前の再検証で万一この8列の差分が
-   再出現した場合は、prod側で修復migrationが未適用（ロールバックされた等）
-   の可能性を疑うこと。
+   **2026-07-20 訂正（`cards` 列欠落は解消済み）**: 本節は以前「`cards` の 8 列
+   （card_number/hp/atk/def/spd/skill_type/skill_name/skill_power）が prod に
+   欠落しており column missing in DB × 8 が追加で出る」と記載していたが、この記載は
+   古い。`supabase/migrations/20260718000000_repair_cards_missing_columns.sql`
+   （#625修復migration）で prod の `cards` テーブルは既に修復済みであり、
+   `db/planetscale/public-schema.sql` にも修復後の8列が実データ由来で反映済み
+   であることを確認した。よって cards列欠落による差分はもはや発生しない想定。
+   実施直前の再検証で万一この8列の差分が再出現した場合は、prod側で修復migrationが
+   未適用（ロールバックされた等）の可能性を疑うこと。
 
-   **TODO（後続チャンク、Issue #697、オーケストレーターレビュー Minor-10対応）**:
-   `scripts/verify-db-schema.js`（単一DB⇔schema.ts比較）とは別に、`db:cutover:verify`
-   （`scripts/db-cutover/verify.mjs`、Issue #697 Chunk 1で実装済み。source/target
-   2DB間のidentity検証・schema比較を行う）が利用可能になった。2026-07-20の
-   Chunk 2で `data` layer（Layer 3: 全table件数/key range/timestamp最大値/nullカウント統計
-   + Layer 4: deterministic data checksum）も `--layers=identity,schema,data` として
-   実行可能になった（`--chunk-size` でchunk行数を調整可能、既定1000）。本ランブックは
-   まだこのツールを手順に組み込んでいない（Chunk 1/2のスコープ外）。後続チャンクで
-   Layer 5〜6（業務invariant・runtime canary）が揃った段階で、本章の該当ステップを
-   `db:cutover:verify` ベースの手順に置き換える、または併用するかを判断すること。
-   `db:cutover:init-identity`（`twica_meta.database_identity`
-   のseeding）は4つの実インスタンス（Supabase/PlanetScale × prod/preview）それぞれに
-   対して、`db:cutover:verify` を初めて使う前に1回ずつ手動実行しておく必要がある
-   （詳細は `scripts/db-cutover/init-identity.mjs` のヘルプ・コード冒頭コメント参照）。
+   **GO/NO-GOゲート（Issue #697本文の受け入れ条件、必須・以下を満たさない限り
+   手順8・手順10へ進んではならない）**: `db:cutover:verify` が出力するJSON report
+   （標準出力、および `db/planetscale/.artifacts/` 配下に保存されるJSON/Markdown
+   両ファイル、5.3節参照）の **`decision` フィールドが `"pass"` であること** を
+   目視確認する。終了コードの意味（`scripts/db-cutover/verify.mjs`の規約）:
+   report（`decision`フィールド）が出力された上で `"fail"` または
+   `"not-evaluated"` なら **exit 1**（検証NG、GOではないという判定結果そのもの）。
+   **exit 2** はreport自体を生成できなかった運用エラー（接続不可・予期しない例外等で
+   `decision`が一切出力されない場合）を意味し、`"fail"`判定とは区別すること
+   （exit 2の場合はfindingを精査する対象がそもそも無いため、エラーメッセージ
+   〔stderr〕を確認し接続設定等の運用面の問題を先に解消する）。いずれの終了コードも
+   非ゼロであり、手順8・手順10へ進んではならない点は共通。report内の `findings`
+   （`severity:"fail"` の項目）を精査し原因を解消してから再実行すること
+   （`severity:"info"` のfinding、特にallowlist該当〔`allowlisted:true`〕のものは
+   GO判断を妨げない）。**canary layer（Layer 6）がfailした場合**は下記
+   「canary fail時のfixture復旧手順」を実施すること。
+   `--fail-fast` を付けると最初にfailしたlayerで実行を打ち切れる（デバッグ用途、
+   通常のcutover実施時はfull-report modeのまま原因を1回で洗い出すことを推奨）。
+
+   **canary fail時のfixture復旧手順**（`canary-rollback-verification` finding
+   がfailした場合。canaryはtargetへ実際に書き込みトランザクションを開き必ず
+   ROLLBACKする設計〔`withRollbackOnlyTransaction`〕のため通常は発生しないはずの
+   異常系だが、万一の場合の復旧手順）:
+   1. report findings内の `CANARY_ROLLBACK_TRACE_*` コードのfinding message
+      から、残存しているfixture識別子（`cutover-canary-<uuid>` 形式の
+      `twitch_user_id`、`cutover-canary:<uuid>` 形式の `event_id`）を確認する。
+   2. target側で該当識別子のfixture streamers行を削除する（`cards`/`gacha_history`
+      はON DELETE CASCADEで連鎖的に除去される）:
+      `DELETE FROM streamers WHERE twitch_user_id = '<cutover-canary-<uuid>形式の値>';`
+   3. fixture users行は`user_cards`経由でのみcascadeするため、別途削除する:
+      `DELETE FROM users WHERE twitch_user_id = '<同上>';`
+   4. 削除後、再度同じ識別子でSELECTし0件になったことを確認する。
+   5. **この異常が実際に発生した場合、`withRollbackOnlyTransaction`のROLLBACK保証が
+      何らかの理由で機能しなかった可能性がある。単にfixtureを消して手順を続行せず、
+      cutoverを中断してオーナーへ即座にエスカレーションすること**（データ整合性に
+      関わる重大な異常のシグナルであり、根本原因の特定が優先）。
 7. **シーケンス値の確認**（6章）。
-8. **Hyperdrive の接続先を PlanetScale に切り替える**（`wrangler hyperdrive
+8. **Hyperdrive の接続先を PlanetScale に切り替える**（**手順6のGO/NO-GOゲートを
+   満たしている〔`decision:"pass"`〕ことを確認してから実施する。**`wrangler hyperdrive
    update` または config 再作成。詳細は 7章ロールバック手順と対になる操作。
    `DB_TARGET`（4.9節）で dual binding 切替を使う場合も含め、**切替後は
    必ず `GET /api/admin/db-health?target=planetscale`（4.9節）で実際に
@@ -650,7 +692,8 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    不正値を黙って `'supabase'` にフォールバックするため、タイポによる
    切替不発をこの確認以外で検知する手段がない）。
 9. **最小限の書き込み系疎通確認**を1系統実施（例: ガチャ実引き1回）。
-10. **read-only 解除**（prod → preview の順、または一括）。
+10. **read-only 解除**（**手順6のGO/NO-GOゲートを満たしていることを確認してから
+    実施する。**prod → preview の順、または一括）。
 11. **EventSub リプレイ**: メンテナンス中に KV へ退避された payload を
     リプレイする（4.3節、**実装済み**。`scripts/replay-maintenance-eventsub.js`
     を dry-run → 本実行の順で実行し、`failed` 件数が0になることを確認する）。
@@ -665,8 +708,8 @@ DB サイズ 0.334GB（1章）・テーブル25・インデックス/制約付�
 |---|---|---|
 | pg_dump | 数十秒〜1分程度 | 0.334GB は custom format 圧縮ダンプとして小規模。ネットワーク帯域より DB 側のスキャン/圧縮がボトルネックになりにくい規模 |
 | pg_restore（インデックス再構築含む） | 1〜3分程度 | テーブル数25・インデックス数十本程度の規模であれば、単一ノード PS-5 でも数分以内が妥当な見積り |
-| スキーマ照合 + 最小疎通確認 | 数分 | `verify-db-schema.js` 実行 + 手動でのガチャ実引き確認 |
-| **書き込み停止が必須な区間の合計目安** | **5〜10分程度** | 上記の合計。#568 の「数分の書き込み停止ウィンドウ」方針と整合 |
+| `db:cutover:verify`（5層フル実行）+ `verify-db-schema.js` + 最小疎通確認 | 数分〜要実測 | `identity`/`schema`は数秒〜数十秒程度と見込まれるが、**`data`層（全table件数/key range/checksum、全行スキャン）と`invariants`層（業務不変条件、複数SQL）はテーブル数・行数に比例して伸びうるため、現時点では根拠のある見積りができていない**（下記の重要な注記参照）。手動でのガチャ実引き確認を含む |
+| **書き込み停止が必須な区間の合計目安** | **5〜10分程度（暫定・要実測更新）** | 上記の合計。#568 の「数分の書き込み停止ウィンドウ」方針と整合する前提だが、`data`/`invariants`層の実測時間次第でこの前提が崩れる可能性がある（下記注記） |
 | 告知上の想定所要時間（バッファ込み） | 最大15〜30分程度 | 異常時の判断・ロールバック検討の時間を見込んだ告知用の幅。3章テンプレートの `<N>` に反映する |
 
 **重要**: `docs/db-driver-migration.md` にある「切替後 `wrangler tail` を
@@ -676,9 +719,50 @@ DB サイズ 0.334GB（1章）・テーブル25・インデックス/制約付�
 6章の残りのチェック項目は書き込み再開後も並行して継続してよい
 （異常が見つかった場合のみ、その時点で7章のロールバック判断を行う）。
 
+**重要（Issue #697 Chunk 4追記、preview リハーサル時に最優先で実測すること）**:
+上表の「書き込み停止が必須な区間の合計目安（5〜10分程度）」は元々
+「スキーマ照合 + 最小疎通確認 数分」という軽量な処理を前提にしていた。
+5.1節手順6が`db:cutover:verify`の5層フル実行（`identity,schema,data,
+invariants,canary`）へ置き換わったことで、特に`data`層（schema.ts定義の
+全テーブルを`--chunk-size`単位で全行スキャンしchecksumを計算する）と
+`invariants`層（複数の業務不変条件SQLをsource/target双方に発行する）の
+実行時間が、本番相当のデータ量に対してどの程度になるかは**未実測**であり、
+現行の見積り前提を変えうる。preview環境でのリハーサル実施時に
+`db:cutover:verify`のstderr進捗ログ（テーブル単位・invariant単位・
+canaryチェック単位で逐次出力される）から実測時間を記録し、本節の見積り
+（表・書き込み停止区間の合計目安・3章告知テンプレートの`<N>`）を実測値で
+確定させること（freeze時間の圧迫に直結するため、この実測を経ずに本番へ
+臨まないこと）。canary層（fixture INSERT・RPC実行・トリガー発火・
+SAVEPOINT×6を伴う）自体の所要時間も同様に未実測であり、合わせて記録する。
+
 実測に基づく再見積りは、preview 環境でのリハーサル実施後に本節を
 更新すること（#666 の受け入れ条件「preview でのリハーサルで手順どおりに
 完了できることを確認」に対応）。
+
+### 5.3 report artifact（`db/planetscale/.artifacts/`）の保存期間・アクセス権
+
+（Issue #697 Chunk 4追記）`db:cutover:verify` はJSON reportを標準出力へ出すのに加え、
+`db/planetscale/.artifacts/` 配下（`.gitignore` 済み、リポジトリにコミットされない
+ローカル保存）へ同一内容のJSONファイルと、人間向けに整形したMarkdownファイル
+（`report-markdown.mjs`が生成、同一basename・拡張子違いのペア）を保存する。
+
+- **内容とredaction**: report自体は接続文字列・パスワード等の秘密情報を含まない
+  （`core.redactSecretsFromText`による多重redaction、各layerのfindingメッセージも
+  同様の規律に従う。canary layerのfindingは列名・型名・件数・fixture識別子のみで
+  非fixture行の実データ値を含まない、layer-canary.mjs冒頭コメント参照）。ただし
+  **uuid（instanceId・fixture識別子）やTwitch数値ID（identity層のsource/target
+  識別情報、invariants層のサンプル識別子）等の識別子は含まれる**ため、完全に
+  無害な情報ではない。
+- **共有時の扱い**: 上記の理由により、report artifact（JSON/Markdownとも）の
+  **全文をリポジトリ・GitHub issue・チャット等へそのまま貼り付けないこと**。
+  チームで状況を共有する場合は `decision` の値・failしたfinding件数・該当layer名
+  程度の要約に留める（詳細な調査が必要な場合は、report自体を直接見られる人が
+  ローカルファイルを参照する）。
+- **保存期間**: cutover完了後、本番運用が安定していることを確認する期間
+  （目安2週間）は削除せず保持する（異常が事後に発覚した場合の調査材料として）。
+  安定確認期間を過ぎれば削除して構わない。監査目的で長期保存が必要な場合は、
+  この期間の終了前にローカルバックアップ（暗号化した外部ストレージ等、
+  本ランブックのスコープ外）に含めること。
 
 ## 6. 検証チェックリスト
 
@@ -900,3 +984,9 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
         本項目のオーナー判断待ちは解消済み。`CARDS_SAFE_COLUMNS` フォールバック
         自体（コード側）を削除するかどうかは本ランブックのスコープ外
         （別issueで扱う）。
+      - **`db:cutover:verify`（5.1節手順6）での扱い**: 上記の`battles`/
+        `battle_stats`欠落は`scripts/db-cutover/cutover-allowlist.mjs`の
+        `BATTLE_FEATURE_TABLES_ABSENT_IN_PROD`エントリに対応しており、
+        `data`層・`invariants`層双方で自動的に`severity:"info"`へ降格される
+        （5.1節手順6参照。新しい既知ドリフトが発生した場合はこのファイルへ
+        エントリを追加すること）。

@@ -38,16 +38,50 @@ import { DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE } from './layer-data.mjs'
  * `invariants`（Layer 5業務invariant、Issue #697 Chunk 3で実装）を追加。source/target双方に
  * 対しTier A（絶対値fail）/Tier B（source/target両側一致型）の判定を行う
  * （詳細はlayer-invariants.mjs / invariant-checks.mjs参照）。
+ *
+ * `canary`（Layer 6 runtime canary、Issue #697 Chunk 4で実装）を追加。target側に対してのみ
+ * 実際に書き込みトランザクション（fixture INSERT・RPC実行・トリガー発火）を開き、必ず
+ * ROLLBACKする（詳細はlayer-canary.mjs参照）。これでIssue #697本文が定義する6層すべてが
+ * IMPLEMENTED_LAYERSに揃った。
  */
-export const IMPLEMENTED_LAYERS = ['identity', 'schema', 'data', 'invariants']
+export const IMPLEMENTED_LAYERS = ['identity', 'schema', 'data', 'invariants', 'canary']
 
 /**
  * Issue #697原文が定義する6層のうち、まだ未実装のlayer名。CLIが「不明な引数」ではなく
  * 「未実装」という区別可能なエラーメッセージを出すために使う。
+ *
+ * Chunk 4でcanaryが実装され6層すべてがIMPLEMENTED_LAYERSへ移ったため、本チャンク時点では
+ * 空配列になる。空にせず定数自体は残す理由: Issue #697本文の6層以外に将来layerが追加される
+ * 可能性（例: 追加のRPCカバレッジ）に備え、「未実装」エラーメッセージを出す仕組み自体は
+ * 汎用的に温存する（`parseLayers`のfutureRequestedチェックを参照。中身が空でもロジックは
+ * 生きたまま維持されるため、将来layerを1つ追加するだけでこの仕組みがそのまま使える）。
  */
-export const KNOWN_FUTURE_LAYERS = ['canary']
+export const KNOWN_FUTURE_LAYERS = []
 
-const KNOWN_BOOLEAN_FLAGS = ['--help', '-h', '--allow-skip-identity']
+const KNOWN_BOOLEAN_FLAGS = ['--help', '-h', '--allow-skip-identity', '--fail-fast']
+
+/** `--connect-timeout` 未指定時のデフォルト値（既存verify.mjsのハードコード値15秒を踏襲）。 */
+export const DEFAULT_CONNECT_TIMEOUT_SECONDS = 15
+
+/**
+ * `--connect-timeout` に指定可能な上限（秒）。chunk-sizeと同じ思想の安全弁: 上限が無いと
+ * 誤って巨大な値を指定した場合、接続不能なsource/targetに対してプロセスが長時間ハングし、
+ * cutover当日のfreeze時間を圧迫するリスクがある。HELP_TEXT（このすぐ下）が参照するため、
+ * parseConnectTimeout本体より前（ファイル冒頭側）で宣言する必要がある。
+ */
+export const MAX_CONNECT_TIMEOUT_SECONDS = 300
+
+/**
+ * Issue #697 Chunk 4対応（設計書ファイル構成4節・rev1レビューMinor-6）: KNOWN_FUTURE_LAYERSが
+ * 空になったため、「（X は後続チャンクで追加予定...）」という文言をそのまま埋め込むと
+ * `（ は後続チャンクで追加予定、...）`のような空の括弧書きがヘルプに出力されてしまう。
+ * KNOWN_FUTURE_LAYERSが1件以上ある場合のみこの説明行を出す条件分岐にすることで、
+ * 将来再びKNOWN_FUTURE_LAYERSに要素が入った場合も含め、崩れない形にする。
+ */
+const FUTURE_LAYERS_HELP_LINE =
+  KNOWN_FUTURE_LAYERS.length > 0
+    ? `\n                                    （${KNOWN_FUTURE_LAYERS.join('/')} は後続チャンクで追加予定、\n                                    現時点で指定すると「未実装」エラーになる）`
+    : ''
 
 const HELP_TEXT = `
 使い方:
@@ -55,30 +89,35 @@ const HELP_TEXT = `
     node scripts/db-cutover/verify.mjs \\
     --source-environment=<production|preview> --source-provider=<supabase|planetscale> \\
     --target-environment=<production|preview> --target-provider=<supabase|planetscale> \\
-    --layers=identity,schema [--operation-id=<任意文字列>]
+    --layers=identity,schema,data,invariants,canary [--operation-id=<任意文字列>]
 
   npm run db:cutover:verify -- --source-environment=production --source-provider=supabase \\
-    --target-environment=production --target-provider=planetscale --layers=identity,schema \\
-    --operation-id=cutover-2026-08-01
+    --target-environment=production --target-provider=planetscale \\
+    --layers=identity,schema,data,invariants,canary --operation-id=cutover-2026-08-01
 
 説明:
   source（例: Supabase）と target（例: PlanetScale）を比較し、cutoverのGO/NO-GO判定材料となる
   JSON report を出力する。source/targetのどちらか一方でも --*-environment=production が
   指定された場合、追加で --operation-id の指定が必須になる（本番実行時の誤操作防止）。
 
-オプション（全て必須。省略時のデフォルト推測は行わない）:
-  --source-environment=<production|preview>
-  --target-environment=<production|preview>
-  --source-provider=<supabase|planetscale>
-  --target-provider=<supabase|planetscale>
-  --layers=<カンマ区切り>          現在有効な値: ${IMPLEMENTED_LAYERS.join(', ')}
-                                    （${KNOWN_FUTURE_LAYERS.join('/')} は後続チャンクで追加予定、
-                                    現時点で指定すると「未実装」エラーになる）
-  --operation-id=<文字列>          production実行時のみ必須
-  --allow-skip-identity            --layers に identity を含めない場合に必須（下記参照）
-  --chunk-size=<正の整数>          dataレイヤーのchunkサイズ（既定: ${DEFAULT_CHUNK_SIZE}行、
+主要オプション（*は必須。省略時のデフォルト推測は行わない。無印は任意）:
+  --source-environment=<production|preview>  *
+  --target-environment=<production|preview>  *
+  --source-provider=<supabase|planetscale>   *
+  --target-provider=<supabase|planetscale>   *
+  --layers=<カンマ区切り>  *       現在有効な値: ${IMPLEMENTED_LAYERS.join(', ')}${FUTURE_LAYERS_HELP_LINE}
+  --operation-id=<文字列>          production関与時のみ必須（それ以外は任意）
+  --allow-skip-identity            任意。--layers に identity を含めない場合に必須（下記参照。
+                                    canaryを含む場合はこのフラグ自体を指定できない）
+  --chunk-size=<正の整数>          任意。dataレイヤーのchunkサイズ（既定: ${DEFAULT_CHUNK_SIZE}行、
                                     上限: ${MAX_CHUNK_SIZE}行）。dataレイヤーを実行しない場合は無視される
-  --help, -h                       このヘルプを表示する
+  --fail-fast                      任意。いずれかのlayerがfailしたら後続layerを実行せず打ち切る
+                                    （既定はfull-report modeで、fail後も全layerを実行する。
+                                    identity layerは既定でも常にfail-fast相当の挙動を持つ
+                                    ため本フラグの影響を受けない）
+  --connect-timeout=<正の整数>     任意。source/target接続確立のタイムアウト秒数（既定:
+                                    ${DEFAULT_CONNECT_TIMEOUT_SECONDS}秒、上限: ${MAX_CONNECT_TIMEOUT_SECONDS}秒）
+  --help, -h                       任意。このヘルプを表示する
 
 --layers に identity を含めない場合について:
   identity layerはsource/targetの取り違え・環境取り違えを検知する、このツールの安全性の
@@ -86,6 +125,14 @@ const HELP_TEXT = `
   --layers に identity を含めない場合は --allow-skip-identity の明示指定を必須にしている
   （schema layer単体でのデバッグ・開発時など、意図的にidentity検証をスキップしたい
   場合にのみ使うこと）。
+
+--layers に canary を含める場合について（Issue #697 Chunk 4、安全ガード）:
+  canaryはtargetへ実際に書き込みトランザクション（fixture INSERT・RPC実行によるトリガー
+  発火、最後に必ずROLLBACK）を開く。取り違え時のリスクが読み取り専用layerより本質的に
+  高いため、canaryを指定する場合は --layers に identity を必ず含める必要があり、
+  --allow-skip-identity は指定できない（指定するとエラー終了する。読み取り専用layerと
+  異なり、canaryにはidentity検証をスキップする正当なユースケースが無いための意図的な
+  非対称設計）。
 
 環境変数（必須）:
   SOURCE_DATABASE_URL   source接続文字列
@@ -105,8 +152,11 @@ export function parseVerifyArgs(argv) {
   const args = argv.slice(2)
   const help = args.includes('--help') || args.includes('-h')
   const allowSkipIdentity = args.includes('--allow-skip-identity')
+  // Issue #697 Chunk 4: --fail-fast はブール引数（値を取らない）のため、他のKNOWN_BOOLEAN_FLAGSと
+  // 同じ`args.includes()`方式で検出する（--allow-skip-identityと同じ流儀）。
+  const failFast = args.includes('--fail-fast')
 
-  let sourceEnvironment, targetEnvironment, sourceProvider, targetProvider, layersRaw, operationId, chunkSizeRaw
+  let sourceEnvironment, targetEnvironment, sourceProvider, targetProvider, layersRaw, operationId, chunkSizeRaw, connectTimeoutRaw
   const unknownArgs = []
   // オーケストレーターレビュー Minor-7対応: 同一フラグを複数回指定すると、以前はFLAG_SETTERSが
   // 単に上書きし「黙って後勝ち」になっていた（例: `--layers=identity --layers=schema` で
@@ -123,6 +173,7 @@ export function parseVerifyArgs(argv) {
     '--layers=': (v) => (layersRaw = v),
     '--operation-id=': (v) => (operationId = v),
     '--chunk-size=': (v) => (chunkSizeRaw = v),
+    '--connect-timeout=': (v) => (connectTimeoutRaw = v),
   }
 
   for (const arg of args) {
@@ -143,6 +194,7 @@ export function parseVerifyArgs(argv) {
   return {
     help,
     allowSkipIdentity,
+    failFast,
     sourceEnvironment,
     targetEnvironment,
     sourceProvider,
@@ -150,6 +202,7 @@ export function parseVerifyArgs(argv) {
     layersRaw,
     operationId,
     chunkSizeRaw,
+    connectTimeoutRaw,
     unknownArgs,
     duplicateArgs,
   }
@@ -184,6 +237,29 @@ export function parseChunkSize(chunkSizeRaw) {
     return { error: `--chunk-size は ${MAX_CHUNK_SIZE} 以下を指定してください: ${chunkSizeRaw}` }
   }
   return { chunkSize }
+}
+
+/**
+ * `--connect-timeout` の値を検証する純粋関数。postgres.jsの`connect_timeout`オプション
+ * （秒単位）へそのまま渡す値になる。Issue #697本文「timeout指定可能」への対応
+ * （設計書「CLI統合の残ギャップ」節）。parseChunkSizeと同じ検証方式・エラーメッセージ形式を
+ * 踏襲する（複数の似た数値系フラグ間でユーザー体験を揃えるため）。
+ * @param {string | undefined} connectTimeoutRaw
+ * @returns {{ error?: string, connectTimeoutSeconds?: number }}
+ */
+export function parseConnectTimeout(connectTimeoutRaw) {
+  if (connectTimeoutRaw === undefined) return { connectTimeoutSeconds: DEFAULT_CONNECT_TIMEOUT_SECONDS }
+  if (!/^[0-9]+$/.test(connectTimeoutRaw.trim())) {
+    return { error: `--connect-timeout には正の整数(秒)を指定してください: ${connectTimeoutRaw}` }
+  }
+  const connectTimeoutSeconds = Number(connectTimeoutRaw.trim())
+  if (!Number.isSafeInteger(connectTimeoutSeconds) || connectTimeoutSeconds < 1) {
+    return { error: `--connect-timeout には正の整数(秒)を指定してください: ${connectTimeoutRaw}` }
+  }
+  if (connectTimeoutSeconds > MAX_CONNECT_TIMEOUT_SECONDS) {
+    return { error: `--connect-timeout は ${MAX_CONNECT_TIMEOUT_SECONDS} 以下を指定してください: ${connectTimeoutRaw}` }
+  }
+  return { connectTimeoutSeconds }
 }
 
 /**
@@ -258,6 +334,30 @@ export function resolveVerifyConfig(argv, env) {
   const layersResult = parseLayers(parsed.layersRaw)
   if (layersResult.error) return { error: layersResult.error }
 
+  // Issue #697 Chunk 4設計書「安全ガード（CLI配線）」節: canaryは実際に書き込み系
+  // トランザクション（FOR UPDATEロック・トリガー発火）をtargetへ開くため、取り違え時の
+  // リスクが読み取り専用layerより本質的に高い。既存の「--allow-skip-identityがあれば
+  // identity無しでも実行できる」という一般ルール（このすぐ下のブロック）は、canaryに対しては
+  // 一切の逃げ道を作らない（--allow-skip-identityを指定していても拒否する）。この判定は
+  // 汎用ルールより先に行い、canary固有のより具体的なエラーメッセージを優先させる。
+  if (layersResult.layers.includes('canary')) {
+    if (!layersResult.layers.includes('identity')) {
+      return {
+        error:
+          '--layers に canary が含まれる場合、identity layerの同時実行が必須です' +
+          '（--allow-skip-identityでは回避できません。書き込みトランザクションを伴うcanaryは' +
+          '取り違えリスクが読み取り専用layerより高いため、逃げ道を用意していません）。',
+      }
+    }
+    if (parsed.allowSkipIdentity) {
+      return {
+        error:
+          '--layers に canary が含まれる場合、--allow-skip-identity は指定できません' +
+          '（canaryは常にidentity検証を必須とします）。',
+      }
+    }
+  }
+
   // Minor-6（Fableレビュー）: identity layerはsource/target取り違え検知の要であり、
   // これを含めない実行は「安全装置を意図的に外す」操作に等しい。以前はstderrへの警告のみで
   // 通していたが、明示フラグを要求することで「うっかり」を防ぐ（デバッグ・開発時に
@@ -299,6 +399,9 @@ export function resolveVerifyConfig(argv, env) {
   const chunkSizeResult = parseChunkSize(parsed.chunkSizeRaw)
   if (chunkSizeResult.error) return { error: chunkSizeResult.error }
 
+  const connectTimeoutResult = parseConnectTimeout(parsed.connectTimeoutRaw)
+  if (connectTimeoutResult.error) return { error: connectTimeoutResult.error }
+
   return {
     sourceEnvironment: parsed.sourceEnvironment,
     targetEnvironment: parsed.targetEnvironment,
@@ -307,6 +410,10 @@ export function resolveVerifyConfig(argv, env) {
     layers: layersResult.layers,
     operationId: trimmedOperationId,
     chunkSize: chunkSizeResult.chunkSize,
+    // Issue #697 Chunk 4: --fail-fast（真偽値、既定false=full-report mode）と
+    // --connect-timeout（秒、既定DEFAULT_CONNECT_TIMEOUT_SECONDS）をverify.mjsへ伝える。
+    failFast: parsed.failFast,
+    connectTimeoutSeconds: connectTimeoutResult.connectTimeoutSeconds,
     sourceUrl,
     targetUrl,
   }

@@ -3,9 +3,12 @@ import {
   parseVerifyArgs,
   parseLayers,
   parseChunkSize,
+  parseConnectTimeout,
   resolveVerifyConfig,
   IMPLEMENTED_LAYERS,
   KNOWN_FUTURE_LAYERS,
+  DEFAULT_CONNECT_TIMEOUT_SECONDS,
+  MAX_CONNECT_TIMEOUT_SECONDS,
 } from '../../../scripts/db-cutover/cli-args.mjs'
 import { DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE } from '../../../scripts/db-cutover/layer-data.mjs'
 
@@ -22,11 +25,11 @@ const FULL_ARGV = [
 const ENV = { SOURCE_DATABASE_URL: 'postgres://u:p@source-host:5432/db', TARGET_DATABASE_URL: 'postgres://u:p@target-host:5432/db' }
 
 describe('IMPLEMENTED_LAYERS / KNOWN_FUTURE_LAYERS', () => {
-  it('Chunk 3 時点で実装済みなのは identity/schema/data/invariants', () => {
-    expect(IMPLEMENTED_LAYERS).toEqual(['identity', 'schema', 'data', 'invariants'])
+  it('Chunk 4 時点で実装済みなのは identity/schema/data/invariants/canary（issue #697本文の6層すべて）', () => {
+    expect(IMPLEMENTED_LAYERS).toEqual(['identity', 'schema', 'data', 'invariants', 'canary'])
   })
-  it('後続チャンクで実装予定のlayerが定義されている（canary）', () => {
-    expect(KNOWN_FUTURE_LAYERS).toEqual(['canary'])
+  it('未実装のlayerはもう無い（KNOWN_FUTURE_LAYERSは空、ただし将来の拡張に備え仕組み自体は残す）', () => {
+    expect(KNOWN_FUTURE_LAYERS).toEqual([])
   })
   it('IMPLEMENTED_LAYERS と KNOWN_FUTURE_LAYERS は重複しない', () => {
     const overlap = IMPLEMENTED_LAYERS.filter((l) => KNOWN_FUTURE_LAYERS.includes(l))
@@ -95,9 +98,8 @@ describe('parseLayers', () => {
     expect(parseLayers('identity,invariants')).toEqual({ layers: ['identity', 'invariants'] })
   })
 
-  it('canaryは「未実装」エラーメッセージになる（不明な引数エラーとは区別する）', () => {
-    const result = parseLayers('identity,canary')
-    expect(result.error).toMatch(/未実装/)
+  it('canaryはChunk 4で実装済みのため有効', () => {
+    expect(parseLayers('identity,canary')).toEqual({ layers: ['identity', 'canary'] })
   })
 
   it('完全に不明なlayer名は「不明なlayer」エラーになる', () => {
@@ -111,6 +113,12 @@ describe('parseLayers', () => {
 
   it('identity,schema,data,invariantsの4つ指定時もidentity→schema→data→invariantsの固定順に正規化する', () => {
     expect(parseLayers('invariants,data,identity,schema')).toEqual({ layers: ['identity', 'schema', 'data', 'invariants'] })
+  })
+
+  it('全5layer指定時もidentity→schema→data→invariants→canaryの固定順に正規化する', () => {
+    expect(parseLayers('canary,invariants,data,identity,schema')).toEqual({
+      layers: ['identity', 'schema', 'data', 'invariants', 'canary'],
+    })
   })
 })
 
@@ -145,8 +153,39 @@ describe('parseChunkSize', () => {
   })
 })
 
+describe('parseConnectTimeout（Issue #697 Chunk 4）', () => {
+  it('未指定ならDEFAULT_CONNECT_TIMEOUT_SECONDSを返す', () => {
+    expect(parseConnectTimeout(undefined)).toEqual({ connectTimeoutSeconds: DEFAULT_CONNECT_TIMEOUT_SECONDS })
+  })
+
+  it('正の整数文字列は数値へ変換される', () => {
+    expect(parseConnectTimeout('30')).toEqual({ connectTimeoutSeconds: 30 })
+    expect(parseConnectTimeout('1')).toEqual({ connectTimeoutSeconds: 1 })
+  })
+
+  it('前後の空白は許容する', () => {
+    expect(parseConnectTimeout(' 20 ')).toEqual({ connectTimeoutSeconds: 20 })
+  })
+
+  it.each(['0', '-1', '1.5', '1e3', 'abc', '', '  '])('不正な値 "%s" はエラーになる', (raw) => {
+    const result = parseConnectTimeout(raw)
+    expect(result.error).toMatch(/正の整数/)
+    expect(result.connectTimeoutSeconds).toBeUndefined()
+  })
+
+  it('MAX_CONNECT_TIMEOUT_SECONDSちょうどは有効', () => {
+    expect(parseConnectTimeout(String(MAX_CONNECT_TIMEOUT_SECONDS))).toEqual({ connectTimeoutSeconds: MAX_CONNECT_TIMEOUT_SECONDS })
+  })
+
+  it('MAX_CONNECT_TIMEOUT_SECONDSを超える値はエラーになる（freeze時間圧迫の防止）', () => {
+    const result = parseConnectTimeout(String(MAX_CONNECT_TIMEOUT_SECONDS + 1))
+    expect(result.error).toMatch(/以下/)
+    expect(result.connectTimeoutSeconds).toBeUndefined()
+  })
+})
+
 describe('resolveVerifyConfig', () => {
-  it('全て正しく指定されていれば設定オブジェクトを返す（chunk-size省略時はDEFAULT_CHUNK_SIZE）', () => {
+  it('全て正しく指定されていれば設定オブジェクトを返す（chunk-size/connect-timeout省略時はデフォルト値、fail-fast省略時はfalse）', () => {
     const resolved = resolveVerifyConfig(FULL_ARGV, ENV)
     expect(resolved).toEqual({
       sourceEnvironment: 'preview',
@@ -156,9 +195,28 @@ describe('resolveVerifyConfig', () => {
       layers: ['identity', 'schema'],
       operationId: null,
       chunkSize: DEFAULT_CHUNK_SIZE,
+      failFast: false,
+      connectTimeoutSeconds: DEFAULT_CONNECT_TIMEOUT_SECONDS,
       sourceUrl: ENV.SOURCE_DATABASE_URL,
       targetUrl: ENV.TARGET_DATABASE_URL,
     })
+  })
+
+  it('--fail-fastを指定するとfailFast:trueが反映される', () => {
+    const resolved = resolveVerifyConfig([...FULL_ARGV, '--fail-fast'], ENV)
+    expect(resolved.error).toBeUndefined()
+    expect(resolved.failFast).toBe(true)
+  })
+
+  it('--connect-timeoutを指定するとその値が反映される', () => {
+    const resolved = resolveVerifyConfig([...FULL_ARGV, '--connect-timeout=45'], ENV)
+    expect(resolved.error).toBeUndefined()
+    expect(resolved.connectTimeoutSeconds).toBe(45)
+  })
+
+  it('--connect-timeoutに不正な値を指定するとエラー', () => {
+    const resolved = resolveVerifyConfig([...FULL_ARGV, '--connect-timeout=0'], ENV)
+    expect(resolved.error).toMatch(/正の整数/)
   })
 
   it('--chunk-sizeを指定すればその値が反映される', () => {
@@ -250,6 +308,33 @@ describe('resolveVerifyConfig', () => {
   it('--layers=identity,schema なら --allow-skip-identity は不要', () => {
     const resolved = resolveVerifyConfig(FULL_ARGV, ENV)
     expect(resolved.error).toBeUndefined()
+  })
+
+  it('Issue #697 Chunk 4: --layers=canary単独（identityを含まない）は --allow-skip-identity を指定してもエラー（canaryに逃げ道は無い）', () => {
+    const argv = [...FULL_ARGV.map((a) => (a.startsWith('--layers=') ? '--layers=canary' : a)), '--allow-skip-identity']
+    const resolved = resolveVerifyConfig(argv, ENV)
+    expect(resolved.error).toMatch(/canary/)
+    expect(resolved.error).toMatch(/identity/)
+  })
+
+  it('Issue #697 Chunk 4: --layers=canary単独（identityを含まない）は --allow-skip-identity 無しでもcanary専用のエラーになる', () => {
+    const argv = FULL_ARGV.map((a) => (a.startsWith('--layers=') ? '--layers=canary' : a))
+    const resolved = resolveVerifyConfig(argv, ENV)
+    expect(resolved.error).toMatch(/canary/)
+    expect(resolved.error).toMatch(/identity layerの同時実行が必須/)
+  })
+
+  it('Issue #697 Chunk 4: --layers=identity,canary に --allow-skip-identity を追加指定するとエラー（identityが含まれていても拒否）', () => {
+    const argv = [...FULL_ARGV.map((a) => (a.startsWith('--layers=') ? '--layers=identity,canary' : a)), '--allow-skip-identity']
+    const resolved = resolveVerifyConfig(argv, ENV)
+    expect(resolved.error).toMatch(/--allow-skip-identity は指定できません/)
+  })
+
+  it('Issue #697 Chunk 4: --layers=identity,canary は --allow-skip-identity 無しなら通る', () => {
+    const argv = FULL_ARGV.map((a) => (a.startsWith('--layers=') ? '--layers=identity,canary' : a))
+    const resolved = resolveVerifyConfig(argv, ENV)
+    expect(resolved.error).toBeUndefined()
+    expect(resolved.layers).toEqual(['identity', 'canary'])
   })
 
   it('SOURCE_DATABASE_URL 未設定はエラー', () => {
