@@ -76,6 +76,7 @@ import { createRequire } from 'module'
 import { runPgDumpPublicSchema, extractPostgresMajorVersion } from '../db-phase2/export-public-schema.mjs'
 import { normalizeDump, findUnexpectedExclusions } from '../db-phase2/normalize-schema.mjs'
 import { withReadOnlySnapshot } from './snapshot.mjs'
+import { findAllowlistEntry } from './cutover-allowlist.mjs'
 
 const require = createRequire(import.meta.url)
 const core = require('../lib/db-migrate-core.js')
@@ -166,6 +167,41 @@ export function diffNormalizedBlocks(sourceBlocks, targetBlocks) {
 }
 
 /**
+ * `diffNormalizedBlocks` が返す `differing`（定義が一致しないオブジェクトのキー配列、
+ * `type::schema::name` 形式）を、cutover-allowlist.mjs（レイヤー横断allowlist）へ
+ * オブジェクト識別子単位で照会し、allowlist該当/非該当に分割する純粋関数
+ * （Issue #697 preview rehearsal followup、2026-07-22）。
+ *
+ * 背景: 2026-07-22のpreview rehearsal（実Supabase PG 17.6 ↔ 実PlanetScale PG 17.10）で、
+ * `TABLE::public::cards`・`TABLE::public::blob_files` の2件がCHECK制約のdeparse表記差
+ * （意味的には同一）のみでdifferingとして検出された。SupabaseはPG 17.10相当を提供して
+ * いないためバージョンparityでは解決できず、cutover-allowlist.mjsの
+ * `CHECK_CONSTRAINT_DEPARSE_VERSION_DIFF`エントリで個別に許容する。
+ *
+ * **1オブジェクト単位で判定する**（`differing`全体を一括で降格するのではない）ことが
+ * 重要な設計判断: 将来同じ実行で「allowlist未登録の別テーブルの定義差分」が同時に
+ * 検出された場合、そのテーブルはallowlistに無いため引き続きfailとして検出されなければ
+ * ならない。`differing`配列を丸ごとinfoへ降格すると、この種の見逃しが発生する
+ * （オーケストレーターからの実装要求「全体一括の降格はしない」）。
+ *
+ * @param {string[]} differing `diffNormalizedBlocks` の `differing`（ソート済み）
+ * @returns {{ allowlisted: Array<{ key: string, reason: string }>, nonAllowlisted: string[] }}
+ */
+export function partitionAllowlistedDifferingObjects(differing) {
+  const allowlisted = []
+  const nonAllowlisted = []
+  for (const key of differing) {
+    const entry = findAllowlistEntry({ layer: 'schema', kind: 'object', key })
+    if (entry) {
+      allowlisted.push({ key, reason: entry.reason })
+    } else {
+      nonAllowlisted.push(key)
+    }
+  }
+  return { allowlisted, nonAllowlisted }
+}
+
+/**
  * pg_extension を比較する純粋関数。
  *
  * 設計変更（Fableレビュー M-2対応、Critical寄りの実害があったため修正）: 当初は
@@ -213,6 +249,51 @@ export function compareExtensions(sourceRows, targetRows) {
   const missingRequired = REQUIRED_EXTENSIONS.filter((name) => !sourceNames.has(name) || !targetNames.has(name)).sort()
 
   return { onlyInSource, onlyInTarget, onlyInSourceInformational, missingRequired }
+}
+
+/**
+ * `compareExtensions` が返す `onlyInTarget`（target限定拡張機能のキー配列、
+ * `extname::schema` 形式）を、cutover-allowlist.mjs（レイヤー横断allowlist）へ
+ * `extname::schema` の完全一致キー単位で照会し、allowlist該当/非該当に分割する
+ * 純粋関数（Issue #697 preview rehearsal followup、2026-07-22。Fable独立レビュー
+ * m-1対応で `extname` 単独マッチから完全一致キーへ厳格化、2026-07-22）。
+ *
+ * **キーをextname部分だけに分解せず、`extname::schema`のまま照会する**（Fable独立レビュー
+ * m-1対応、重要）: 当初は`key.split('::')[0]`でschema部分を捨ててextname単独でallowlistへ
+ * 照会していたが、これだと`hypopg::public`のようにPlanetScale管理外の経路（ユーザーが
+ * 誤って別スキーマへインストールした等）で同名拡張が入った場合まで許容してしまう。
+ * `hypopg`が実際に許容されるべきなのは「PlanetScaleが`pscale_extensions`スキーマへ
+ * 標準搭載する場合」のみであり、schemaを無視した名前一致では許容範囲が意図より広くなる。
+ * そのため`compareExtensions`が返す完全なキー（`extname::schema`）をそのまま
+ * `findAllowlistEntry`へ渡す（cutover-allowlist.mjsの`HYPOPG_EXTENSION_PLANETSCALE_MANAGED`
+ * エントリも`hypopg::pscale_extensions`という完全一致キーで定義されている）。
+ *
+ * **`onlyInTarget` のみを対象にする**（`missingRequired` は対象外）ことが重要な設計判断:
+ * `missingRequired`は「source/targetいずれかでREQUIRED_EXTENSIONS〔uuid-ossp/pgcrypto、
+ * アプリが実際に必要とする拡張〕が欠落している」ことを意味し、これはtarget限定の
+ * 環境差（hypopg等、PlanetScaleが独自に追加インストールしたもの）とは性質が全く異なる
+ * （アプリの必須要件が満たされていない＝移行の実害）。この2つを混同して
+ * `missingRequired`側までallowlistで降格できるようにしてしまうと、必須拡張の欠落という
+ * 重大な問題を誤って許容してしまうリスクが生じるため、本関数のシグネチャ自体が
+ * `onlyInTarget`のみを受け取る形にして、呼び出し側が誤って`missingRequired`を
+ * 渡す余地を型的に無くしている（オーケストレーターからの実装要求
+ * 「source側に必要な拡張の欠落は絶対に降格しない」）。
+ *
+ * @param {string[]} onlyInTarget `compareExtensions` の `onlyInTarget`（ソート済み）
+ * @returns {{ allowlisted: Array<{ key: string, reason: string }>, nonAllowlisted: string[] }}
+ */
+export function partitionAllowlistedTargetExtensions(onlyInTarget) {
+  const allowlisted = []
+  const nonAllowlisted = []
+  for (const key of onlyInTarget) {
+    const entry = findAllowlistEntry({ layer: 'schema', kind: 'extension', key })
+    if (entry) {
+      allowlisted.push({ key, reason: entry.reason })
+    } else {
+      nonAllowlisted.push(key)
+    }
+  }
+  return { allowlisted, nonAllowlisted }
 }
 
 /**
@@ -387,12 +468,34 @@ export async function runSchemaLayer({ sourceUrl, targetUrl, sourceSql, targetSq
       side: 'source',
     })
   }
-  if (objectDiff.differing.length > 0) {
+  // Issue #697 preview rehearsal followup（2026-07-22）: `differing`をallowlist該当/非該当で
+  // オブジェクト単位に分割する（partitionAllowlistedDifferingObjectsのJSDoc参照。全体一括の
+  // 降格はしない）。非該当分が1件でも残れば従来どおりfail（メッセージには非該当分のみ列挙）、
+  // 該当分は件数に関わらず別チャンネルのinfo findingとして識別子とreasonを明記して併記する
+  // （両方が同時に成立してもよい: 一部はfailで一部はinfo、というのが本followupの主眼）。
+  const { allowlisted: allowlistedDiffObjects, nonAllowlisted: nonAllowlistedDiffObjects } = partitionAllowlistedDifferingObjects(
+    objectDiff.differing
+  )
+  if (nonAllowlistedDiffObjects.length > 0) {
     findings.push({
       severity: 'fail',
       code: 'SCHEMA_OBJECT_DEFINITION_MISMATCH',
-      message: `定義が一致しないオブジェクトが ${objectDiff.differing.length} 件あります（列/型/制約等の詳細はDDL本文を直接diffしてください）: ${objectDiff.differing.join(', ')}`,
+      message:
+        `定義が一致しないオブジェクトが ${nonAllowlistedDiffObjects.length} 件あります` +
+        `（列/型/制約等の詳細はDDL本文を直接diffしてください）: ${nonAllowlistedDiffObjects.join(', ')}`,
       side: 'both',
+    })
+  }
+  if (allowlistedDiffObjects.length > 0) {
+    findings.push({
+      severity: 'info',
+      code: 'SCHEMA_OBJECT_DEFINITION_MISMATCH',
+      message:
+        `定義差分が ${allowlistedDiffObjects.length} 件ありますが、allowlistに該当するため許容します: ` +
+        allowlistedDiffObjects.map((o) => `${o.key}（${o.reason}）`).join(' / '),
+      side: 'both',
+      allowlisted: true,
+      reason: [...new Set(allowlistedDiffObjects.map((o) => o.reason))].join(' / '),
     })
   }
 
@@ -401,23 +504,48 @@ export async function runSchemaLayer({ sourceUrl, targetUrl, sourceSql, targetSq
   const sourceExtensions = await withReadOnlySnapshot(sourceSql, fetchExtensions)
   const targetExtensions = await withReadOnlySnapshot(targetSql, fetchExtensions)
   const extensionDiff = compareExtensions(sourceExtensions, targetExtensions)
-  // fail対象は「必須拡張機能の欠落」と「targetにしか無い拡張機能」のみ（compareExtensionsの
-  // JSDoc参照）。source限定でもREQUIRED_EXTENSIONSに含まれないものはinformational
-  // （onlyInSourceInformationalとしてextensionDiffにそのまま残り、reportには載るがfailにはしない）。
-  if (extensionDiff.missingRequired.length > 0 || extensionDiff.onlyInTarget.length > 0) {
+  // fail対象は「必須拡張機能の欠落」と「targetにしか無い拡張機能（allowlist非該当分のみ）」
+  // （compareExtensionsのJSDoc参照）。source限定でもREQUIRED_EXTENSIONSに含まれないものは
+  // informational（onlyInSourceInformationalとしてextensionDiffにそのまま残り、reportには
+  // 載るがfailにはしない）。
+  //
+  // Issue #697 preview rehearsal followup（2026-07-22）: `onlyInTarget`のみをallowlistへ
+  // 照会する（partitionAllowlistedTargetExtensionsのJSDoc参照）。`missingRequired`は
+  // 意図的にこの照会を一切通さない（source側の必須拡張欠落は絶対に降格しない）。
+  const { allowlisted: allowlistedExtensions, nonAllowlisted: nonAllowlistedExtensions } = partitionAllowlistedTargetExtensions(
+    extensionDiff.onlyInTarget
+  )
+  if (extensionDiff.missingRequired.length > 0 || nonAllowlistedExtensions.length > 0) {
     findings.push({
       severity: 'fail',
       code: 'EXTENSION_MISMATCH',
       message:
         `extension構成が一致しません（必須拡張の欠落: ${extensionDiff.missingRequired.join(', ') || 'なし'} / ` +
-        `target限定: ${extensionDiff.onlyInTarget.join(', ') || 'なし'}）`,
+        `target限定(allowlist非該当): ${nonAllowlistedExtensions.join(', ') || 'なし'}）`,
       side: 'both',
+    })
+  }
+  if (allowlistedExtensions.length > 0) {
+    findings.push({
+      severity: 'info',
+      code: 'EXTENSION_MISMATCH',
+      message:
+        `target限定の拡張機能が ${allowlistedExtensions.length} 件ありますが、allowlistに該当するため許容します: ` +
+        allowlistedExtensions.map((e) => `${e.key}（${e.reason}）`).join(' / '),
+      side: 'target',
+      allowlisted: true,
+      reason: [...new Set(allowlistedExtensions.map((e) => e.reason))].join(' / '),
     })
   }
 
   return {
     layer: 'schema',
-    pass: findings.length === 0,
+    // 設計書「severityは fail / info の2値のみ」「layer pass = severity='fail' の
+    // findingが0件」という他layer（layer-data.mjs/layer-invariants.mjs）と同じ規約に揃える
+    // （Issue #697 preview rehearsal followup対応。修正前は`findings.length === 0`だったため、
+    // allowlist該当によりinfoへ降格したfindingが1件でもあると無条件にpass=falseになり、
+    // allowlistの意味が無くなっていた）。
+    pass: !findings.some((f) => f.severity === 'fail'),
     findings,
     sourceSchemaDigest,
     targetSchemaDigest,

@@ -375,9 +375,15 @@ export function evaluateDataLayer({ tableCatalog, sourceResults, targetResults, 
 
       // Issue #697 Chunk 3対応（設計書「allowlist」節）: source/target双方に同名テーブルが
       // 存在しない場合のみ、レイヤー横断allowlist（cutover-allowlist.mjs）を確認する。
-      // 現状の唯一のエントリは #625（battles/battle_stats が本番Supabaseに実体として
-      // 存在しない既知のスキーマドリフト）で、これは移行が引き起こした問題ではなく
-      // 本番に元から存在する状態のため、allowlist該当時はseverity='info'に降格する。
+      // data layer（`{ layer: 'data', table }`）に適用されるエントリは現状#625
+      // （battles/battle_stats が本番Supabaseに実体として存在しない既知のスキーマドリフト）
+      // の1件のみで、これは移行が引き起こした問題ではなく本番に元から存在する状態のため、
+      // allowlist該当時はseverity='info'に降格する（Fable独立レビュー m-3対応、2026-07-22:
+      // 以前は「現状の唯一のエントリは#625」と書いていたが、preview rehearsal followupで
+      // schema layer向けの2エントリ〔hypopg拡張・CHECK制約deparse差〕が追加され
+      // `cutover-allowlist.mjs`のALLOWLIST全体は計3件になった。本コメントの「唯一」は
+      // 常に「data layerスコープでの話」であり全体件数の話ではない点を明示するため
+      // 文言を修正した）。
       // 片側のみ不在（=移行漏れの疑い）はallowlistの対象外とし、従来どおり必ずfailにする
       // （設計書「片側のみ不在は従来どおりfail（移行漏れ）」）。
       const allowlistEntry = side === 'both' ? findAllowlistEntry({ layer: 'data', table: name }) : null

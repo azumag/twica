@@ -22,7 +22,12 @@ import { withReadOnlySnapshot } from '../../../scripts/db-cutover/snapshot.mjs'
  * 以下がfailとして検出されることを確認する:
  *   1. 同一DBをsource/targetに指定した場合（instance_id一致で即fail）
  *   2. --source-environment/--target-environment 相当の期待値とDB上の実際の値が食い違う場合
- *   3. target側の1テーブルに列追加を行った場合、schema比較がfailを報告する
+ *   3. target側の1テーブル（allowlist非対象、`users`）に列追加を行った場合、schema比較が
+ *      failを報告する（2026-07-22注記: 以前は`cards`テーブルで検証していたが、cardsは
+ *      preview rehearsalで判明したPG 17.6/17.10のCHECK制約deparse差を許容するため
+ *      allowlist化され、cardsへの列追加はもはやfailを誘発しない。その正例〔allowlist該当分は
+ *      info降格されつつ、他の非対象テーブルの差分はfailが維持されること〕は
+ *      「故障注入3-allowlist」で別途検証する）
  *   4. BYPASSRLSを持たないロールで接続した場合、Layer 1がfailを報告する
  *
  * 既存のDocker検証手順（docs/planetscale-schema-baseline.md 4章）を踏襲し、
@@ -333,8 +338,18 @@ describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 
     )
   })
 
-  it('故障注入3: target側のcardsテーブルに列追加すると schema layer がfailを報告する', async () => {
-    await targetSql.unsafe('ALTER TABLE public.cards ADD COLUMN cutover_test_extra_column text')
+  it('故障注入3: target側のusersテーブルに列追加すると schema layer がfailを報告する', async () => {
+    // 2026-07-22注記（オーケストレーター実測レビュー対応）: 本テストは元々
+    // `public.cards`への列追加でfailを誘発していたが、cardsは同日にpreview rehearsalで
+    // 判明したPG 17.6(Supabase)/17.10(PlanetScale)のCHECK制約deparse差を許容するため
+    // `cutover-allowlist.mjs`の`CHECK_CONSTRAINT_DEPARSE_VERSION_DIFF`エントリで
+    // allowlist化された（対象はTABLEオブジェクト単位のため、deparse差に限らずcardsの
+    // 定義差分全般がinfoへ降格される）。そのためcardsへの列追加はもはやfailを誘発せず
+    // schema layerがpassしてしまう（＝allowlistが意図どおり機能している証拠でもある。
+    // その正例は下記の別テストで検証する）。本テストの目的（schema layerが定義差分を
+    // failで検出すること）を維持するため、故障注入先をallowlist非対象の`users`テーブルへ
+    // 変更した。
+    await targetSql.unsafe('ALTER TABLE public.users ADD COLUMN cutover_test_extra_column text')
     try {
       const result = await runSchemaLayer({
         sourceUrl: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`,
@@ -346,13 +361,86 @@ describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 
       expect(result.pass).toBe(false)
       expect(result.findings).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ code: 'SCHEMA_OBJECT_DEFINITION_MISMATCH', message: expect.stringContaining('TABLE::public::cards') }),
+          expect.objectContaining({ code: 'SCHEMA_OBJECT_DEFINITION_MISMATCH', message: expect.stringContaining('TABLE::public::users') }),
         ])
       )
     } finally {
-      await targetSql.unsafe('ALTER TABLE public.cards DROP COLUMN cutover_test_extra_column')
+      await targetSql.unsafe('ALTER TABLE public.users DROP COLUMN cutover_test_extra_column')
     }
   }, 30000)
+
+  it('故障注入3-allowlist（2026-07-22追加）: target側のcardsテーブルへの列追加はCHECK_CONSTRAINT_DEPARSE_VERSION_DIFFエントリによりinfo（allowlisted:true）へ降格されschema layerはpassする。ただし非対象テーブル（users）への変更が同時にあればfailは維持される', async () => {
+    // cards/blob_filesはPG 17.6(Supabase)/17.10(PlanetScale)のCHECK制約deparse差を
+    // 許容するため2026-07-22にallowlist化された（cutover-allowlist.mjsの
+    // CHECK_CONSTRAINT_DEPARSE_VERSION_DIFFエントリ）。マッチングはオブジェクト単位
+    // （`TABLE::public::cards`というキー全体）で行われるため、deparse差に限らず
+    // cardsテーブルの定義差分全般がinfoへ降格される（この縮退自体はallowlistエントリの
+    // reasonに明記済みの既知の緩和策/残余ギャップ）。まずcardsのみへ列追加し、
+    // schema layerがpass=trueになる（allowlistの正例）ことを確認する。
+    await targetSql.unsafe('ALTER TABLE public.cards ADD COLUMN cutover_test_allowlisted_column text')
+    try {
+      const cardsOnlyResult = await runSchemaLayer({
+        sourceUrl: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`,
+        targetUrl: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${TARGET_PORT}/postgres`,
+        sourceSql,
+        targetSql,
+        pgDumpBin: pgDumpBin as string,
+      })
+      expect(cardsOnlyResult.pass).toBe(true)
+      expect(cardsOnlyResult.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            severity: 'info',
+            code: 'SCHEMA_OBJECT_DEFINITION_MISMATCH',
+            allowlisted: true,
+            message: expect.stringContaining('TABLE::public::cards'),
+          }),
+        ])
+      )
+      expect(cardsOnlyResult.findings).not.toEqual(expect.arrayContaining([expect.objectContaining({ severity: 'fail' })]))
+
+      // 続けてusers（allowlist非対象）にも列追加し、混在ケースを検証する。cardsのinfo降格は
+      // 維持されたまま、usersの差分のみでfailすることを確認する（1オブジェクト単位の
+      // 判定であり、allowlist該当が他の非該当差分まで一括で握りつぶさないことの実機確認）。
+      await targetSql.unsafe('ALTER TABLE public.users ADD COLUMN cutover_test_mixed_column text')
+      try {
+        const mixedResult = await runSchemaLayer({
+          sourceUrl: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`,
+          targetUrl: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${TARGET_PORT}/postgres`,
+          sourceSql,
+          targetSql,
+          pgDumpBin: pgDumpBin as string,
+        })
+        expect(mixedResult.pass).toBe(false)
+        expect(mixedResult.findings).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              severity: 'fail',
+              code: 'SCHEMA_OBJECT_DEFINITION_MISMATCH',
+              message: expect.stringContaining('TABLE::public::users'),
+            }),
+            expect.objectContaining({
+              severity: 'info',
+              code: 'SCHEMA_OBJECT_DEFINITION_MISMATCH',
+              allowlisted: true,
+              message: expect.stringContaining('TABLE::public::cards'),
+            }),
+          ])
+        )
+        // failのmessageにはusers（非該当分）のみが列挙され、allowlist該当のcardsは
+        // 混入しない（layer-schema.mjsのpartitionAllowlistedDifferingObjects: 非該当分のみを
+        // fail findingへ列挙し、該当分は別チャンネルのinfo findingへ回す設計の実機確認）。
+        const failFinding = mixedResult.findings.find(
+          (f: { severity: string; code: string }) => f.severity === 'fail' && f.code === 'SCHEMA_OBJECT_DEFINITION_MISMATCH'
+        )
+        expect((failFinding as { message: string }).message).not.toContain('TABLE::public::cards')
+      } finally {
+        await targetSql.unsafe('ALTER TABLE public.users DROP COLUMN cutover_test_mixed_column')
+      }
+    } finally {
+      await targetSql.unsafe('ALTER TABLE public.cards DROP COLUMN cutover_test_allowlisted_column')
+    }
+  }, 60000)
 
   it('故障注入4: BYPASSRLSを持たないロールで接続するとLayer 1がfailを報告する', async () => {
     const nobypassSql = postgres({
@@ -1131,8 +1219,13 @@ describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 
     }, 30000)
 
     it('E2E(canary)22: --fail-fast指定時、schema layerがfailすると後続のcanaryは実行されない。--fail-fast無し（既定のfull-report mode）なら同じ状況でもcanaryは実行される', async () => {
-      // 故障注入3と同じ手法（target側cardsテーブルへの列追加）でschema layerを確実にfailさせる。
-      await targetSql.unsafe('ALTER TABLE public.cards ADD COLUMN cutover_test_failfast_column text')
+      // 故障注入3と同じ手法（target側usersテーブルへの列追加）でschema layerを確実にfailさせる。
+      // 2026-07-22注記: 以前はcardsテーブルを使っていたが、cardsは
+      // `cutover-allowlist.mjs`のCHECK_CONSTRAINT_DEPARSE_VERSION_DIFFエントリで
+      // allowlist化されたため、cardsへの列追加はもはやschema layerをfailさせない
+      // （故障注入3の注記・故障注入3-allowlistテスト参照）。本テストはfail-fastの
+      // 挙動そのものを検証したいので、allowlist非対象の`users`テーブルへ変更した。
+      await targetSql.unsafe('ALTER TABLE public.users ADD COLUMN cutover_test_failfast_column text')
       try {
         const envVars = {
           SOURCE_DATABASE_URL: `postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${SOURCE_PORT}/postgres`,
@@ -1160,7 +1253,7 @@ describe.skipIf(!canRun)('db-cutover Docker fault injection (Issue #697 Chunk 1 
         expect(fullReport.layers.canary.notEvaluated).toBeUndefined()
         expect(typeof fullReport.layers.canary.pass).toBe('boolean')
       } finally {
-        await targetSql.unsafe('ALTER TABLE public.cards DROP COLUMN cutover_test_failfast_column')
+        await targetSql.unsafe('ALTER TABLE public.users DROP COLUMN cutover_test_failfast_column')
       }
     }, 60000)
   })

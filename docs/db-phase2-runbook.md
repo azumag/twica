@@ -597,6 +597,69 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    ```
    - `--clean --if-exists`: preview リハーサルでの再実行を安全にするため。
      本番の初回カットオーバーでは対象 DB が空である前提のため実質 no-op。
+   - **所有権問題への対処（2026-07-22 preview rehearsalで実測、重要）**:
+     baseline（`db/planetscale/bootstrap.sql`/`public-schema.sql`/`grants.sql`、
+     `docs/planetscale-schema-baseline.md`）を適用したロールと、本手順の restore を
+     実行するロールが異なると、`--clean` が発行する既存オブジェクトの `DROP` 文が
+     「must be owner of ...」エラーで大量に失敗する（preview rehearsalで実測789件）。
+     `--no-owner` は restore されるオブジェクトへの所有者付与をスキップするだけで、
+     `--clean` 自身が行う「restore前に既存オブジェクトを消す」処理には効果が無いため
+     （PostgreSQL の `DROP` はオブジェクト所有者〔またはそのロールのメンバー〕しか
+     実行できない仕様）。
+     **対処**: restore 前に一度、対象DBの `public` スキーマを所有者ごと作り直してから
+     （`--clean` を使わずに）restore する。
+     ```sql
+     -- restore実行ロールで対象DBに接続して実行
+     SET ROLE postgres;
+     DROP SCHEMA public CASCADE;
+     CREATE SCHEMA public AUTHORIZATION pg_database_owner;
+     GRANT USAGE ON SCHEMA public TO PUBLIC;
+     ```
+     ```bash
+     pg_restore --no-owner --no-privileges \
+       -d "postgresql://<planetscale-role>:<password>@<planetscale-host>:5432/<db>?sslmode=require" \
+       twica_prod_*.dump
+     ```
+     （**`--if-exists` は付けない**こと。2026-07-22 preview rehearsalで実際に
+     `pg_restore --no-owner --no-privileges --if-exists ...`〔`--clean`無し〕を
+     実行したところ、実PostgreSQL 17.10バイナリで `pg_restore: error: option
+     --if-exists requires option -c/--clean` エラーとなり実行不能だった
+     〔`--if-exists`は`--clean`前提のオプション、PostgreSQL仕様〕。上記スキーマ再作成に
+     より対象は既に空のため、`--clean`（＝`--if-exists`）自体が不要）。
+     - `SET ROLE postgres` が成功する条件: 接続ロールが DB 所有者ロール（`postgres`）の
+       メンバーであること（PostgreSQL仕様）。PlanetScale の管理ロールは通常この条件を
+       満たす。
+     - `DROP SCHEMA public CASCADE` がロール横断で成功する理由: PostgreSQL の仕様上、
+       スキーマの削除可否は**スキーマ自体の所有権のみ**で判定され、スキーマに内包される
+       個々のオブジェクト（テーブル・関数等）の所有者が誰であるかは問われない
+       （`CASCADE` はスキーマ所有者の権限でオブジェクトごと連鎖削除する）。
+     - restore後、`public` スキーマは空の状態から作られるため、dump に含まれる
+       `CREATE SCHEMA public` 文は「already exists」エラーになるが、これは**無害・想定内**
+       （直前に作成済みの空スキーマへ以降のテーブル/関数等が復元されるだけで、
+       restore の他の部分には影響しない）。
+     - restore完了後、`public` スキーマは作り直されているため、以前 baseline 適用時に
+       与えた `service_role` 等への権限（`GRANT`・`ALTER DEFAULT PRIVILEGES`）も
+       スキーマごと失われている。**`db/planetscale/grants.sql` を再適用すること**:
+       ```bash
+       psql "$PLANETSCALE_DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f db/planetscale/grants.sql
+       ```
+       （`bootstrap.sql`のロール・スタブ関数・拡張機能はスキーマ外に作られるため
+       再適用不要。`public-schema.sql`は本手順の pg_restore が実体のDDLを持ち込むため
+       同様に不要）。**再適用は必ず restore を実行したのと同じロールで行うこと**
+       （重要）: `grants.sql` の `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
+       IN SCHEMA public` はテーブル所有者（またはGRANT OPTION保有者）でなければ
+       実行できない（PostgreSQL仕様）。restoreされたテーブルは`--no-owner`にも
+       関わらず実際には restore 接続ロールの所有物になるため、別ロールで
+       `grants.sql` を実行すると一部/全部のGRANTが権限エラーで失敗しうる。
+       同様に `ALTER DEFAULT PRIVILEGES IN SCHEMA public`（`FOR ROLE`句なし）は
+       「この文を実行したロール（current_user）が将来作成するオブジェクト」にしか
+       効かない（`grants.sql`冒頭コメントのFableレビューM-3注記を参照）ため、
+       これも実行ロールを揃えないと意味を失う。
+       なお `grants.sql` は `GRANT USAGE ON SCHEMA public` だけでなく
+       `GRANT USAGE ON SCHEMA extensions`（`grants.sql`内）も含み、`public`
+       スキーマ内オブジェクトへのGRANTに限定されない。全文が単純な`GRANT`/
+       `ALTER DEFAULT PRIVILEGES`（`CREATE ROLE`のような非冪等文は含まない）のため、
+       再適用そのものは冪等・無害。
 6. **db:cutover:verify によるフル検証（GO/NO-GOゲート、2026-07-21 Issue #697 Chunk 4で
    本統合。旧記載のTODOは解消済み）**:
    ```bash
@@ -635,6 +698,35 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    `scripts/db-cutover/cutover-allowlist.mjs` の `BATTLE_FEATURE_TABLES_ABSENT_IN_PROD`
    エントリにより `severity:"info"` へ自動的に降格され、GO/NO-GO判断を妨げない
    （8章「既知スキーマドリフトの扱い」の対応関係も参照）。
+
+   **schema layer（Layer 2）の期待される出力（2026-07-22 preview rehearsalで実測、
+   preview/prod共通の想定内差分）**: 実Supabase（PG 17.6）↔ 実PlanetScale（PG 17.10）で
+   5層フル実行した結果、schema layer は次の2件を検出するが、いずれも
+   `cutover-allowlist.mjs` により `severity:"info"`（`allowlisted:true`）へ自動的に
+   降格され、GO/NO-GO判断を妨げない:
+   - `EXTENSION_MISMATCH`（target限定: `hypopg::pscale_extensions`）: hypopgは
+     PlanetScaleがインフラ管理用に標準搭載する拡張であり、ユーザー側の操作では
+     削除できない恒久的な環境差（`HYPOPG_EXTENSION_PLANETSCALE_MANAGED`エントリ）。
+   - `SCHEMA_OBJECT_DEFINITION_MISMATCH`（`TABLE::public::cards` /
+     `TABLE::public::blob_files` の2件）: PG 17.6（Supabase）と17.10（PlanetScale）の
+     CHECK制約deparse表記差（`ARRAY`キャストの書式・`AND`式の括弧の付き方のみで、
+     意味的な制約内容は同一。手動diffで確認済み）。SupabaseはPG 17.10相当を
+     提供していないためバージョンparityでは解消できず、
+     `CHECK_CONSTRAINT_DEPARSE_VERSION_DIFF`エントリで許容する。**Supabaseが
+     PG 17.10相当を提供するようになった時点でこのallowlistエントリを削除し、
+     以降は完全一致を要求すること**（`scripts/db-cutover/cutover-allowlist.mjs`
+     の当該エントリのreasonに同旨を明記済み）。緩和策: このallowlist存続中でも、
+     `scripts/verify-db-schema.js`がtarget単体を`src/lib/db/schema.ts`と独立照合し、
+     Layer 4（deterministic data checksum）が実データの内容一致を別途保証する。
+     **ただし残余ギャップとして、`verify-db-schema.js`は列名・型・NOT NULLのみを
+     照合しCHECK制約は一切照合せず、Layer 4 checksumも行データの内容のみが対象
+     （DDL/制約定義は対象外）である。したがってこのallowlist存続中、cards/blob_files
+     のCHECK制約自体が意味的に変化・削除された場合（deparse表記差ではなく実際の
+     制約内容の変更）は、上記どの緩和策によっても検出されない**（詳細は
+     `scripts/db-cutover/cutover-allowlist.mjs`の当該エントリのreason参照）。
+   これ以外の`EXTENSION_MISMATCH`・`SCHEMA_OBJECT_DEFINITION_MISMATCH`（allowlist
+   非該当の対象）が出た場合は、`severity:"fail"`のまま従来どおり検出される
+   （allowlistは登録済みの識別子単位でのみ働き、一括の降格ではない）。
 
    **2026-07-20 訂正（`cards` 列欠落は解消済み）**: 本節は以前「`cards` の 8 列
    （card_number/hp/atk/def/spd/skill_type/skill_name/skill_power）が prod に
@@ -738,6 +830,24 @@ SAVEPOINT×6を伴う）自体の所要時間も同様に未実測であり、�
 実測に基づく再見積りは、preview 環境でのリハーサル実施後に本節を
 更新すること（#666 の受け入れ条件「preview でのリハーサルで手順どおりに
 完了できることを確認」に対応）。
+
+**2026-07-22 preview rehearsal 実測値（フロー検証、本番見積りには使わないこと）**:
+実Supabase preview ↔ 実PlanetScale preview で5.1節手順3〜6を実施した際の実測時間。
+
+| 区間 | 実測値 |
+|---|---|
+| pg_dump | 約19秒 |
+| pg_restore | 約3.5秒 |
+| `db:cutover:verify`（5層フル実行: identity/schema/data/invariants/canary） | 約42秒 |
+
+**注意（重要）**: 上記はあくまで preview 環境の規模（テーブル25・データ極小）での
+実測であり、**本番相当のデータ量に対する見積りとしてはそのまま使わないこと**。
+`data`層（全table全行スキャン+checksum）・`invariants`層（複数SQLをsource/target
+双方に発行）は行数に比例して伸びる設計（5.1節手順6・本節冒頭の表の根拠列を参照）
+のため、prodのデータ量が増えるほど実測値は本表より伸びる。本rehearsalの主目的は
+「手順どおりに一連のフロー（dump→restore→verify）が完了できること」の確認であり、
+上表はダウンタイム見積り自体の確定値ではない（本節冒頭の表・書き込み停止区間の
+合計目安の更新は、本番相当のデータ量での再実測を経てから行うこと）。
 
 ### 5.3 report artifact（`db/planetscale/.artifacts/`）の保存期間・アクセス権
 
