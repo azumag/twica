@@ -417,17 +417,6 @@
       "manageCards": "Manage Cards"
     }
   },
-  "battle": {
-    "title": "Card Battle",
-    "versus": "VS",
-    "userCard": "Your Card",
-    "cpuCard": "CPU Card",
-    "battleProgress": "Battle Progress",
-    "battleLog": "Battle Log",
-    "turn": "Turn",
-    "you": "You",
-    "cpu": "CPU"
-  },
   "gachaSoundSettings": {
     "title": "Gacha Sound Effect Settings",
     "description": "Upload multiple gacha sounds and choose whether each plays for all draws, a rarity, or a specific channel point redemption.",

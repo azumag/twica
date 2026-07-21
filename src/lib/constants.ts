@@ -352,80 +352,6 @@ export const ERROR_MESSAGES = {
   DEBUG_ENDPOINT_NOT_AUTHORIZED: 'Debug endpoint only accessible from localhost',
 } as const
 
-export const CPU_CARD_STRINGS = {
-  NAME_PREFIX: 'CPUの',
-  DEFAULT_NAME: 'CPUカード',
-  DEFAULT_SKILL_NAME: 'CPU攻撃',
-} as const
-
-export const BATTLE_SKILL_NAMES = {
-  ATTACK: ['強撃', '猛攻', '破壊光線', '必殺拳'],
-  DEFENSE: ['鉄壁', '硬化', '防御態勢', '守りの陣'],
-  HEAL: ['回復', '治癒', '生命の雨', '再生光'],
-  SPECIAL: ['混乱攻撃', '急速', '幸運', '奇襲'],
-} as const
-
-export const BATTLE_LOG_MESSAGES = {
-  SKILL_ATTACK: (attackerName: string, skillName: string, damage: number) =>
-    `${attackerName}が${skillName}！${damage}ダメージを与えた！`,
-  SKILL_DEFENSE: (attackerName: string, skillName: string, defenseUp: number) =>
-    `${attackerName}が${skillName}！防御力が${defenseUp}上がった！`,
-  SKILL_HEAL: (attackerName: string, skillName: string, healAmount: number) =>
-    `${attackerName}が${skillName}！${healAmount}回復した！`,
-  SKILL_SPECIAL: (attackerName: string, skillName: string, specialDamage: number) =>
-    `${attackerName}が${skillName}！特殊効果で${specialDamage}ダメージ！`,
-  NORMAL_ATTACK: (attackerName: string, damage: number) =>
-    `${attackerName}が攻撃！${damage}ダメージを与えた！`,
-  SKILL_FAILED: 'スキル発動失敗',
-} as const
-
-export const CARD_STAT_RANGES = {
-  common: {
-    hp: { min: 100, max: 120 },
-    atk: { min: 20, max: 30 },
-    def: { min: 10, max: 15 },
-    spd: { min: 1, max: 3 },
-    skill_power: { min: 5, max: 10 },
-  },
-  rare: {
-    hp: { min: 120, max: 140 },
-    atk: { min: 30, max: 40 },
-    def: { min: 15, max: 20 },
-    spd: { min: 3, max: 5 },
-    skill_power: { min: 10, max: 15 },
-  },
-  epic: {
-    hp: { min: 140, max: 160 },
-    atk: { min: 40, max: 45 },
-    def: { min: 20, max: 25 },
-    spd: { min: 5, max: 7 },
-    skill_power: { min: 15, max: 20 },
-  },
-  legendary: {
-    hp: { min: 160, max: 200 },
-    atk: { min: 45, max: 50 },
-    def: { min: 25, max: 30 },
-    spd: { min: 7, max: 10 },
-    skill_power: { min: 20, max: 25 },
-  },
-} as const
-
-export const CARD_STAT_DEFAULTS = {
-  hp: 100,
-  atk: 30,
-  def: 15,
-  spd: 5,
-  skill_power: 10,
-} as const
-
-export const BATTLE_CONFIG = {
-  MAX_TURNS: 20,
-  SKILL_SPEED_MULTIPLIER: 10,
-  SKILL_TRIGGER_MAX_PERCENT: 70,
-  RANDOM_RANGE: 100,
-  SPECIAL_SKILL_DAMAGE_MULTIPLIER: 1.5,
-} as const
-
 export const SECURITY_HEADERS = {
   X_CONTENT_TYPE_OPTIONS: 'nosniff',
   X_FRAME_OPTIONS: 'DENY',
@@ -589,19 +515,6 @@ export const UI_STRINGS = {
     STREAMER_SETTINGS: '配信者設定',
     OBS_OVERLAY_URL: 'OBSブラウザソースURL',
     OBS_OVERLAY_DESCRIPTION: 'OBSのブラウザソースにこのURLを設定してください（推奨サイズ: 800x600）',
-  },
-
-  BATTLE: {
-    TITLE: 'カード対戦',
-    VERSUS: 'VS',
-    USER_CARD: 'あなたのカード',
-    CPU_CARD: 'CPUカード',
-    BATTLE_PROGRESS: 'バトル進行',
-    BATTLE_LOG: 'バトルログ',
-    TURN: 'ターン',
-    YOU: 'あなた',
-    CPU: 'CPU',
-    NO_IMAGE: 'No Image',
   },
 
   CHANNEL_POINT_SETTINGS: {

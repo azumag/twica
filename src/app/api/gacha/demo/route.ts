@@ -220,8 +220,8 @@ export async function POST(request: NextRequest) {
       // JSONパースエラーは無視（パラメータなしとして処理）
     }
 
-    // Issue #783: このエンドポイントは認証不要の公開デモAPI（/battle や
-    // /overlay/[streamerId] ページでログイン不要のオーバーレイ演出テストに使う、
+    // Issue #783: このエンドポイントは認証不要の公開デモAPI（/overlay/[streamerId]
+    // ページでログイン不要のオーバーレイ演出テストに使う、
     // 意図した設計）だが、broadcast=true かつ streamerId 指定の場合のみは
     // Supabase Realtime 経由で任意の配信者のオーバーレイに演出を送り込める
     // 実害があった（DB書き込み・カード付与は発生しないため経済的実害はないが、

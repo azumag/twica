@@ -123,17 +123,14 @@ graph LR
     AuthFlow[Auth: JWT-based]
     UploadFlow[Upload: Client-side to Blob]
     GachaFlow[Gacha: EventSub triggers]
-    BattleFlow[Battle: Card battles with abilities]
     ErrorTracking[Error: Sentry + GitHub Issues]
     End
 
     User --> AuthFlow
     User --> UploadFlow
     User --> GachaFlow
-    User --> BattleFlow
     AuthFlow --> ErrorTracking
     GachaFlow --> ErrorTracking
-    BattleFlow --> ErrorTracking
 ```
 
 ## Project Structure
@@ -229,7 +226,6 @@ Priority order for adding test coverage:
 
 3. **Business logic** (target: 70% coverage)
    - Gacha algorithm (`src/lib/gacha.ts`)
-   - Battle logic (`src/lib/battle.ts`)
    - Card operations
 
 4. **Integration tests**
@@ -245,7 +241,6 @@ The following components currently have limited or no test coverage:
 - `src/app/api/cards/[id]/route.ts` - Limited coverage
 - `src/app/api/streamer/settings/route.ts` - Limited coverage
 - `src/lib/gacha.ts` - Needs comprehensive testing
-- `src/lib/battle.ts` - Needs comprehensive testing
 - Components in `src/components/` - No component tests
 
 ### Before Committing

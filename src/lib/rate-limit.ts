@@ -295,9 +295,6 @@ export const rateLimits = {
   // 制限(1000回/分/IP)までSupabase Realtimeブロードキャストを叩けてしまう。
   // /api/gacha (rateLimits.gacha) と同じ水準の専用制限を課す。
   gachaDemoBroadcast: createRatelimit("gachaDemoBroadcast", 30, 60 * 1000),
-  battleStart: createRatelimit("battleStart", 20, 60 * 1000),
-  battleGet: createRatelimit("battleGet", 100, 60 * 1000),
-  battleStats: createRatelimit("battleStats", 50, 60 * 1000),
   authLogin: createRatelimit("authLogin", 5, 60 * 1000),
   authCallback: createRatelimit("authCallback", 10, 60 * 1000),
   authLogout: createRatelimit("authLogout", 10, 60 * 1000),

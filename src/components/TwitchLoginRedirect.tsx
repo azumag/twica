@@ -9,7 +9,7 @@ import { fetchMaintenanceStatus } from '@/lib/maintenance/client'
  * Component that redirects to Twitch login page
  * Twitchログインページにリダイレクトするコンポーネント
  *
- * 未認証ユーザーがdashboard/battle/collectionの各layoutからサーバーコンポーネント
+ * 未認証ユーザーがdashboard/collectionの各layoutからサーバーコンポーネント
  * 経由でレンダーされる（session===null時のフォールバック）ため、常にセッションが
  * 無い状態＝常にMaintenanceStatusProviderの外で使われる（TwitchLoginButton.tsxの
  * コメント参照）。

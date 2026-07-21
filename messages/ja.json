@@ -417,17 +417,6 @@
       "manageCards": "カード管理へ"
     }
   },
-  "battle": {
-    "title": "カード対戦",
-    "versus": "VS",
-    "userCard": "あなたのカード",
-    "cpuCard": "CPUカード",
-    "battleProgress": "バトル進行",
-    "battleLog": "バトルログ",
-    "turn": "ターン",
-    "you": "あなた",
-    "cpu": "CPU"
-  },
   "gachaSoundSettings": {
     "title": "ガチャ効果音設定",
     "description": "ガチャ演出時に再生される効果音を複数登録し、全体・レアリティ別・チャネルポイント引き換え別に出し分けできます。",

@@ -11,7 +11,7 @@ import jaMessages from '../../../messages/ja.json'
 // (/?maintenance=1) のパースに失敗して例外になり、「リダイレクト中...」の表示の
 // まま停止して見えていた（実際には裏でcatchされた例外がconsole.errorに
 // 記録されるだけで、ユーザーには何の説明もない）。
-// dashboard/battle/collection の各layoutが session===null のフォールバックと
+// dashboard/collection の各layoutが session===null のフォールバックと
 // してレンダーするため、このコンポーネントは常にMaintenanceStatusProviderの
 // 外で使われる。そのため自身でマウント時にfetchMaintenanceStatus()を呼ぶ。
 function mockFetch(mode: string) {

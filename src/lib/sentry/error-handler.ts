@@ -168,12 +168,6 @@ export async function reportGachaError(error: Error | unknown, context: { stream
   await logErrorToDatabase('[Gacha Error]', message, stack, context)
 }
 
-export async function reportBattleError(error: Error | unknown, context: { battleId?: string; userId?: string; round?: number }) {
-  const { message, stack } = resolveErrorInfo(error)
-  console.error('[Battle Error]', message, sanitizeContext(context as Record<string, unknown>))
-  await logErrorToDatabase('[Battle Error]', message, stack, context)
-}
-
 export async function reportRealtimeError(error: unknown, context: { action?: string; streamerId?: string; status?: string; retryCount?: number; isExpected?: boolean }) {
   // Suppress expected connection events (CLOSED, TIMED_OUT, CHANNEL_ERROR)
   // to avoid noise in logs, matching previous Sentry behavior

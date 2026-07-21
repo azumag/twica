@@ -110,17 +110,6 @@
     "reviewedAt": "2026-07-18"
   },
   {
-    "path": "/api/battle/start",
-    "methods": [
-      "POST"
-    ],
-    "category": "battle",
-    "maintenanceBehavior": "block",
-    "reason": "カードバトルの開始・結果をDBへ書き込む。allowlist未登録のため一律ブロックに従う。",
-    "owner": "azumag",
-    "reviewedAt": "2026-07-18"
-  },
-  {
     "path": "/api/cards",
     "methods": [
       "POST"

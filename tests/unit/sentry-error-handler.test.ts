@@ -4,7 +4,6 @@ import {
   reportApiError,
   reportAuthError,
   reportGachaError,
-  reportBattleError,
   reportRealtimeError,
   reportSecurityError,
   logErrorFromLogger,
@@ -77,12 +76,6 @@ describe('sentry/error-handler', () => {
 
     it('reportGachaError は Promise を返す', async () => {
       const result = reportGachaError(new Error('test'), { streamerId: '123' });
-      expect(result).toBeInstanceOf(Promise);
-      await result;
-    });
-
-    it('reportBattleError は Promise を返す', async () => {
-      const result = reportBattleError(new Error('test'), { battleId: '1' });
       expect(result).toBeInstanceOf(Promise);
       await result;
     });
