@@ -2,29 +2,50 @@
  * Reporter Cron Worker (twica-error-reporter)
  * レポーター定期実行Worker
  *
- * 5分ごとに Supabase をポーリングし、2種類の未処理レコードを GitHub Issue 化する:
+ * 5分ごとに errors/support_inquiries をポーリングし、2種類の未処理レコードを
+ * GitHub Issue 化する:
  *   1. errors           … アプリで捕捉した未処理エラー（シグネチャで重複排除）
  *   2. support_inquiries … 支援者からの新規問い合わせ（メンテナへの通知）
  *
- * いずれも同じ Transactional Outbox パターン（Supabase をアウトボックスとして
- * 使い、処理済みフラグでリトライ・重複を制御）。GitHub / Supabase REST の薄い
- * ラッパを共通ヘルパとして両処理で共有する。単一 Worker に集約することで、
- * secrets・cron・デプロイを1組で済ませ運用を単純化する。
+ * いずれも同じ Transactional Outbox パターン（DB をアウトボックスとして使い、
+ * 処理済みフラグでリトライ・重複を制御）。GitHub API の薄いラッパを共通ヘルパ
+ * として両処理で共有する。単一 Worker に集約することで、secrets・cron・
+ * デプロイを1組で済ませ運用を単純化する。
+ *
+ * DB アクセス方式 (#711 C, 2026-07): Supabase PostgREST（fetch 直叩き）から
+ * Hyperdrive 経由の postgres.js 直結へ移行した。Phase2（Supabase→PlanetScale）で
+ * PostgREST が権威でなくなるため、fetch ベースの経路のままだと cutover 後に
+ * 例外も出さず無音停止するリスクがあった（issue #711 比較コメント参照）。
+ * 詳細な設計根拠は createReporterDbClient のコメントを参照。GitHub Issues API
+ * 呼び出し（search/create/comment）は引き続き fetch を直接使う（変更なし）。
  *
  * Tail Workers (有料プラン必須) の無料代替として実装。
  * Cloudflare Workers Free プランの Cron Triggers を使用。
  *
  * See: https://github.com/azumag/twica/issues/239 (errors)
  *      https://github.com/azumag/twica/issues/633 (inquiries)
+ *      https://github.com/azumag/twica/issues/711 (Phase2 DB移行, C項)
  */
+
+import postgres from 'postgres'
 
 /** GitHub API 呼び出し時の User-Agent（GitHub は User-Agent 必須） */
 const USER_AGENT = 'twica-error-reporter'
 
 interface Env {
-  SUPABASE_URL: string
-  SUPABASE_SECRET_KEY?: string
-  SUPABASE_SERVICE_ROLE_KEY?: string
+  /**
+   * #711 C: errors/support_inquiries への直接クエリ用 Hyperdrive バインディング。
+   * ルート wrangler.toml（メインアプリ）の [[hyperdrive]] binding = "HYPERDRIVE_SUPABASE"
+   * と同じ Hyperdrive config ID を指す（このワーカーの wrangler.toml 参照）。
+   * 同じ config を共有するため、Phase2 cutover 時に config の向き先が
+   * Supabase → PlanetScale へ切り替わっても、このワーカーのコードは一切
+   * 変更不要（接続文字列の差し替えだけで追従する）。
+   *
+   * optional にしている理由: RATE_LIMIT_KV と同じく、wrangler.toml の設定漏れを
+   * 型レベルでも許容し、scheduled() の起動時バリデーションと
+   * createReporterDbClient 内の defensive throw の二段構えで安全に倒すため。
+   */
+  HYPERDRIVE_SUPABASE?: HyperdriveBindingLike
   GITHUB_TOKEN: string
   GITHUB_REPO_OWNER: string
   GITHUB_REPO_NAME: string
@@ -112,65 +133,149 @@ interface EventSubParkKVNamespace {
   }>
 }
 
+/**
+ * Hyperdrive バインディングの最小インターフェース。
+ * src/lib/db/client.ts の HyperdriveBindingLike と同じ最小定義（理由も同じ）:
+ * @cloudflare/workers-types のグローバル型に依存すると、このファイルを import する
+ * tests/unit/error-reporter-worker.test.ts 経由でルートの `tsc --noEmit` が
+ * 壊れる（ルート側に @cloudflare/workers-types が入っていないため。
+ * EventSubParkKVNamespace のコメント参照）。
+ */
+interface HyperdriveBindingLike {
+  connectionString: string
+}
+
 // =============================================================================
-// 共通ヘルパ: Supabase REST (PostgREST)
-// Supabase JS クライアントは使わず fetch で直接叩く（バンドルサイズ最小化）。
-// service_role 相当のキーで RLS を越えてサーバーサイド専用アクセスする。
+// 共通ヘルパ: errors/support_inquiries への DB アクセス (#711 C)
+//
+// Hyperdrive バインディング経由で PostgreSQL に postgres.js で直結する。
+// メインアプリ（src/lib/db/client.ts）と同じ Hyperdrive config を指すため、
+// Phase2 cutover でその config の接続先が Supabase → PlanetScale に切り替わっても
+// このファイルは無修正で追従する。
+//
+// メインアプリの getDb() との違い（意図的な簡略化。YAGNI）:
+//   - Drizzle は使わず raw SQL（postgres.js のタグ付きテンプレート）のみ。
+//     この Worker は別パッケージであり src/lib/db/schema.ts を安全に import
+//     できない（tsconfig・ビルド設定が別。EventSubParkKVNamespace 節と同じ理由）。
+//     クエリも SELECT 2種 + UPDATE 2種と単純なため、スキーマ共有の恩恵が薄い。
+//   - リクエストスコープの WeakMap キャッシュは持たない。この Worker は
+//     Cron Trigger の呼び出し1回につき processErrors()/processInquiries() が
+//     それぞれ独立してクライアントを1つ生成するだけで、呼び出しを跨いで
+//     再利用するモジュールレベルのシングルトンを一切持たない。そのため
+//     src/lib/db/client.ts が対策しているリクエストスコープ跨ぎの
+//     'Cannot perform I/O on behalf of a different request' は構造的に発生しない。
+//   - 明示的な sql.end() は呼ばない（メインアプリと同じ判断）。Workers ランタイムは
+//     呼び出し終了時にその呼び出しが開いた TCP ソケットを破棄し、Hyperdrive 側は
+//     実接続をプールしたまま維持するためリークしない。
 // =============================================================================
 
-/** secret キーを解決する（新キー優先、無ければ旧 service role キー） */
-function getSupabaseApiKey(env: Env): string | undefined {
-  return env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY
+/**
+ * postgres.js が接続文字列内で認識しない `sslrootcert` クエリパラメータを取り除き、
+ * 必要なら `sslmode=verify-full` を補う純粋関数。
+ *
+ * 詳細な背景・postgres.js 内部の行番号根拠・sslmode 未指定時に平文接続へ
+ * サイレントダウングレードする問題とその対策の設計根拠は、正本である
+ * `scripts/lib/db-migrate-core.js` の同名関数の JSDoc を参照。ロジックは常に
+ * そちらと同期させること（analysis/dev/adminApiPg.ts が同じ理由で持つ独立
+ * コピーと同じ位置付け）。
+ *
+ * このファイルへ複製する理由: このワーカーは root とは別のデプロイ単位
+ * （wrangler がこのディレクトリを直接バンドルする。EventSubParkKVNamespace
+ * 節と同じ理由）であり、root の scripts/lib を import すると依存関係が
+ * この Worker のバンドルへ暗黙に広がる。今日時点（Hyperdrive が Supabase を
+ * 直接指す間）は sslrootcert が付与されないため実質 no-op だが、Phase2
+ * cutover で config が PlanetScale へ向いた際に何もしなくても正しく動く
+ * ようにするための先取り対応（cutover 時にこのファイルへ手を入れない、
+ * というファイル冒頭コメントの約束を成立させるため）。
+ *
+ * export する理由: tests/unit/error-reporter-worker.test.ts の契約テストが、
+ * 正本 scripts/lib/db-migrate-core.js の同名関数と代表的な入力で出力が
+ * 一致することを検証し、複製のドリフトを機械的に検知するため
+ * （EVENTSUB_PARK_KEY_PREFIX の契約テストと同じ方針）。
+ */
+export function stripPostgresJsIncompatibleSslParams(connectionString: string): string {
+  if (!connectionString) return connectionString
+  try {
+    const url = new URL(connectionString)
+    const hadSslRootCert = url.searchParams.has('sslrootcert')
+    url.searchParams.delete('sslrootcert')
+    if (hadSslRootCert && !url.searchParams.get('sslmode')) {
+      url.searchParams.set('sslmode', 'verify-full')
+    }
+    return url.toString()
+  } catch {
+    return connectionString
+  }
 }
 
 /**
- * PostgREST の GET でレコードを取得する。
- * @param pathAndQuery /rest/v1/ 以降のパス + クエリ
+ * timestamptz(OID 1184) を postgres.js の既定動作（JS Date への自動変換）から
+ * 除外し、PostgreSQL のワイヤ形式テキスト（例 '2026-07-21 12:34:56.789+00'）の
+ * まま返す。
+ *
+ * このパーサが防ぐのは「Date への変換とその後の暗黙の toString()」であり、
+ * 日時の表記形式そのものは変わる点に注意（m-1, Fableレビュー指摘で明確化）:
+ * 旧 PostgREST 応答は ISO 8601（例 '2026-01-01T00:00:00.000Z'、'T'区切り・
+ * ミリ秒3桁・末尾Z）だったが、このパーサを入れても PostgreSQL のワイヤ形式
+ * （空白区切り・オフセットは '+00' 等）のまま返る。identity 関数はあくまで
+ * 「Date オブジェクト化を止める」だけで、ISO 8601 への正規化までは行わない。
+ *
+ * それでも問題にならない理由: この Worker は created_at を GitHub Issue 本文へ
+ * 文字列として埋め込んで表示するだけで、Date として再パースすることは無い
+ * （generateSignature/buildInquiryIssue 等はいずれも文字列補間のみ）。
+ * 表記形式の違いは人間が Issue 本文を読む上での見た目の差でしかなく、
+ * 下流のパース処理には一切影響しない。一方 identity 関数を入れずに
+ * postgres.js の既定動作（Date への自動変換）に任せた場合は、Date オブジェクトが
+ * テンプレートリテラルへ渡された際に暗黙の toString() が発火し、実行環境依存の
+ * ローカルタイムゾーン・曜日名付きの読みにくい形式（例
+ * 'Mon Jul 21 2026 12:34:56 GMT+0000 (Coordinated Universal Time)'）に変換
+ * されてしまう（実機の Postgres で確認済み）。このパーサはその劣化だけを防ぐ。
+ *
+ * メインアプリ（src/lib/db/client.ts の installIsoTimestampParsers）は
+ * フロントエンドでの new Date() 再パース（Safari 対応）のため ISO 8601 へ
+ * 正規化する複雑なパーサを使うが、この Worker は再パースを一切行わないため
+ * identity 関数で十分（YAGNI）。
+ *
+ * sql.options.parsers[oid] への「プロパティ単位」の代入である必要がある理由
+ * （オブジェクト自体の差し替え禁止）・クライアント生成直後かつ最初のクエリ
+ * 発行前に完了させる必要がある理由は、src/lib/db/client.ts の
+ * installIsoTimestampParsers 冒頭コメントと同じ（postgres.js の内部実装に
+ * 依拠する制約のため、呼び出し元 createReporterDbClient で同じ順序を守る）。
  */
-async function supabaseSelect<T>(env: Env, pathAndQuery: string): Promise<T> {
-  const key = getSupabaseApiKey(env)
-  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${pathAndQuery}`, {
-    headers: {
-      'apikey': key!,
-      'Authorization': `Bearer ${key}`,
-      'Accept': 'application/json',
-    },
-  })
-
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`Supabase fetch error: ${res.status} ${text}`)
-  }
-
-  return (await res.json()) as T
+function installRawTimestampParser(client: postgres.Sql): void {
+  client.options.parsers[1184] = (value: string) => value
 }
 
 /**
- * PostgREST の PATCH でレコードを更新する（Prefer: return=minimal）。
- * @param pathAndQuery /rest/v1/ 以降のパス + フィルタ
- * @param body 更新する列の値
+ * errors/support_inquiries 用の postgres.js クライアントを生成する。
+ *
+ * オプションの根拠（メインアプリの createHandle との違いのみ記載。共通する
+ * 理由は src/lib/db/client.ts 参照）:
+ * - max: 1
+ *   メインアプリ（Web リクエスト、複数クエリが同時に飛びうる）の max: 5 と異なり、
+ *   この Worker は1回の呼び出し内で常に直列に（SELECT → UPDATE の順で、同時に
+ *   複数クエリを投げることなく）実行するため1接続で足りる。上流の Hyperdrive
+ *   接続プール（メインアプリと共有の枠）の消費を抑える。
+ * - fetch_types は明示的に false にしない（メインアプリと異なる判断、実機確認済み）:
+ *   markErrorsAsProcessed の `WHERE id = ANY($1::uuid[])` は、postgres.js が
+ *   接続時に型カタログを取得する（既定 fetch_types: true）前提でのみ正しい
+ *   PostgreSQL 配列リテラルを送出する。fetch_types: false にすると配列引数が
+ *   カンマ区切りの生文字列として送られ `malformed array literal` で失敗する
+ *   （ローカル Docker Postgres で実機確認済み）。この Worker は5分に1回・
+ *   高々数クエリしか投げないため、型カタログ取得の往復コストより配列引数の
+ *   正しさを優先する。
  */
-async function supabasePatch(
-  env: Env,
-  pathAndQuery: string,
-  body: Record<string, unknown>
-): Promise<void> {
-  const key = getSupabaseApiKey(env)
-  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${pathAndQuery}`, {
-    method: 'PATCH',
-    headers: {
-      'apikey': key!,
-      'Authorization': `Bearer ${key}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=minimal',
-    },
-    body: JSON.stringify(body),
-  })
-
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`Supabase PATCH error: ${res.status} ${text}`)
+function createReporterDbClient(env: Env): postgres.Sql {
+  if (!env.HYPERDRIVE_SUPABASE) {
+    throw new Error('[Reporter] Missing HYPERDRIVE_SUPABASE binding in wrangler.toml')
   }
+  const sql = postgres(stripPostgresJsIncompatibleSslParams(env.HYPERDRIVE_SUPABASE.connectionString), {
+    max: 1,
+    connect_timeout: 10,
+    idle_timeout: 20,
+  })
+  installRawTimestampParser(sql)
+  return sql
 }
 
 // =============================================================================
@@ -407,30 +512,45 @@ This error has reoccurred. Please investigate if still unresolved.`
   await postIssueComment(env, issueNumber, body)
 }
 
-/** errors テーブルのレコードを処理済みに更新する。 */
+/**
+ * errors テーブルのレコードを処理済みに更新する。
+ *
+ * PostgREST の `id=in.(...)` フィルタ意味論を `WHERE id = ANY($1::uuid[])` で
+ * 忠実に再現する（#711 比較コメント§3 の必須付帯作業）。`::uuid[]` の明示
+ * キャストを付ける理由: postgres.js は拡張プロトコルで配列パラメータの要素型を
+ * 実行時に推論するため理論上キャスト無しでも解決されうるが、その推論に
+ * 依存せず SQL 側で型を確定させることで意図を自己文書化し、将来 postgres.js の
+ * 挙動が変わっても壊れない防御的な実装にする（SQL インジェクション面での
+ * パラメータバインドは `${errorIds}` 自体で既に確保されている）。
+ */
 async function markErrorsAsProcessed(
+  sql: postgres.Sql,
   errorIds: string[],
   issueNumber: number,
-  issueUrl: string,
-  env: Env
+  issueUrl: string
 ): Promise<void> {
-  await supabasePatch(env, `errors?id=in.(${errorIds.join(',')})`, {
-    github_issue_created: true,
-    github_issue_number: issueNumber,
-    github_issue_url: issueUrl,
-  })
+  await sql`
+    UPDATE errors
+    SET github_issue_created = true, github_issue_number = ${issueNumber}, github_issue_url = ${issueUrl}
+    WHERE id = ANY(${errorIds}::uuid[])
+  `
 }
 
 /**
  * 未処理エラーを取得する。
  * github_issue_created = false を古い順（FIFO）で最大100件。
  * 古い順にすることで、上限到達時も古いエラーが飢餓状態にならない。
+ * PostgREST の `github_issue_created=eq.false&order=created_at.asc&limit=100`
+ * フィルタ意味論を SQL で忠実に再現する（#711 比較コメント§3）。
  */
-async function fetchPendingErrors(env: Env): Promise<ErrorRecord[]> {
-  return supabaseSelect<ErrorRecord[]>(
-    env,
-    'errors?github_issue_created=eq.false&order=created_at.asc&limit=100'
-  )
+async function fetchPendingErrors(sql: postgres.Sql): Promise<ErrorRecord[]> {
+  return sql<ErrorRecord[]>`
+    SELECT id, error_type, message, stack_trace, context, environment, created_at
+    FROM errors
+    WHERE github_issue_created = false
+    ORDER BY created_at ASC
+    LIMIT 100
+  `
 }
 
 /**
@@ -441,7 +561,8 @@ async function fetchPendingErrors(env: Env): Promise<ErrorRecord[]> {
 export async function processErrors(env: Env): Promise<void> {
   console.log('[Error Reporter] Started')
 
-  const errors = await fetchPendingErrors(env)
+  const sql = createReporterDbClient(env)
+  const errors = await fetchPendingErrors(sql)
   if (errors.length === 0) {
     console.log('[Error Reporter] No pending errors')
     return
@@ -481,7 +602,7 @@ export async function processErrors(env: Env): Promise<void> {
       }
 
       const errorIds = group.errors.map(e => e.id)
-      await markErrorsAsProcessed(errorIds, issueNumber, issueUrl, env)
+      await markErrorsAsProcessed(sql, errorIds, issueNumber, issueUrl)
     } catch (err) {
       // 個別グループのエラーは他のグループの処理を阻害しない
       console.error(`[Error Reporter] Failed to process group ${group.signature}:`, err)
@@ -508,13 +629,10 @@ interface InquiryRecord {
   created_at: string
 }
 
-/** fetchPendingInquiries で取得する列（InquiryRecord に対応。body 以外の余計な列は引かない） */
-const INQUIRY_SELECT_COLUMNS = 'id,twitch_user_id,twitch_display_name,category,subject,body,created_at'
-
 /**
  * 1回の実行で処理する問い合わせの最大件数。
- * Supabase fetch の limit にも使い、1件ごとに走る GitHub Search の回数を抑える。
- * 問い合わせは低頻度なので通常はほぼ 0 件。
+ * fetchPendingInquiries の SQL LIMIT にも使い、1件ごとに走る GitHub Search の
+ * 回数を抑える。問い合わせは低頻度なので通常はほぼ 0 件。
  */
 const MAX_INQUIRIES_PER_RUN = 10
 
@@ -560,12 +678,22 @@ function inlineCode(value: string): string {
   return `${ticks}${inner}${ticks}`
 }
 
-/** 未処理問い合わせを取得する（FIFO・上限つき・必要列のみ）。 */
-async function fetchPendingInquiries(env: Env): Promise<InquiryRecord[]> {
-  return supabaseSelect<InquiryRecord[]>(
-    env,
-    `support_inquiries?select=${INQUIRY_SELECT_COLUMNS}&github_issue_created=eq.false&order=created_at.asc&limit=${MAX_INQUIRIES_PER_RUN}`
-  )
+/**
+ * 未処理問い合わせを取得する（FIFO・上限つき・必要列のみ）。
+ * PostgREST の `select=${INQUIRY_SELECT_COLUMNS}&github_issue_created=eq.false&
+ * order=created_at.asc&limit=${MAX_INQUIRIES_PER_RUN}` フィルタ意味論を SQL で
+ * 忠実に再現する（#711 比較コメント§3）。列名は識別子でありプレースホルダ
+ * バインドの対象外のため、InquiryRecord に対応する列（body 以外の余計な列は
+ * 引かない）をそのまま SQL に書き下す。LIMIT は値なので通常どおりバインドする。
+ */
+async function fetchPendingInquiries(sql: postgres.Sql): Promise<InquiryRecord[]> {
+  return sql<InquiryRecord[]>`
+    SELECT id, twitch_user_id, twitch_display_name, category, subject, body, created_at
+    FROM support_inquiries
+    WHERE github_issue_created = false
+    ORDER BY created_at ASC
+    LIMIT ${MAX_INQUIRIES_PER_RUN}
+  `
 }
 
 /**
@@ -608,17 +736,19 @@ Inquiry-ID: ${inquiry.id}
  * 無いが、将来 updated_at を「最終更新」として表示する場合は考慮すること。
  */
 async function markInquiryProcessed(
+  sql: postgres.Sql,
   id: string,
   issueNumber: number,
-  issueUrl: string,
-  env: Env
+  issueUrl: string
 ): Promise<void> {
-  // id はサーバ生成 UUID だが、将来の型変更に対する防御として encode しておく
-  await supabasePatch(env, `support_inquiries?id=eq.${encodeURIComponent(id)}`, {
-    github_issue_created: true,
-    github_issue_number: issueNumber,
-    github_issue_url: issueUrl,
-  })
+  // PostgREST の `id=eq.${id}` フィルタ意味論を再現する。id はパラメータバインド
+  // されるため、旧実装の encodeURIComponent（URL クエリ文字列エスケープ用）は
+  // 不要（SQL パラメータバインドはそもそも URL エンコーディングの対象ではない）。
+  await sql`
+    UPDATE support_inquiries
+    SET github_issue_created = true, github_issue_number = ${issueNumber}, github_issue_url = ${issueUrl}
+    WHERE id = ${id}
+  `
 }
 
 /**
@@ -629,7 +759,8 @@ async function markInquiryProcessed(
 export async function processInquiries(env: Env): Promise<void> {
   console.log('[Inquiry Reporter] Started')
 
-  const inquiries = await fetchPendingInquiries(env)
+  const sql = createReporterDbClient(env)
+  const inquiries = await fetchPendingInquiries(sql)
   if (inquiries.length === 0) {
     console.log('[Inquiry Reporter] No pending inquiries')
     return
@@ -667,7 +798,7 @@ export async function processInquiries(env: Env): Promise<void> {
       // 既存・新規いずれの場合でも必ず処理済みマークする。
       // これを怠ると、既存 Issue があるのに github_issue_created=false のまま残り、
       // 毎回 GitHub Search を無駄に叩き続ける「飢餓 + 無限 search」状態に陥る。
-      await markInquiryProcessed(inquiry.id, issueNumber, issueUrl, env)
+      await markInquiryProcessed(sql, inquiry.id, issueNumber, issueUrl)
     } catch (err) {
       // 個別問い合わせのエラーは他の問い合わせの処理を阻害しない
       console.error(`[Inquiry Reporter] Failed to process inquiry ${inquiry.id}:`, err)
@@ -1402,8 +1533,9 @@ export default {
     _ctx: ExecutionContext
   ): Promise<void> {
     if (event.cron === EVENTSUB_AUTO_DRAIN_CRON) {
-      // 自動ドレインは SUPABASE_URL/GITHUB_TOKEN 等、既存3処理専用の secrets に
-      // 依存しないため、下の環境変数バリデーションより前で分岐・完結させる。
+      // 自動ドレインは HYPERDRIVE_SUPABASE/GITHUB_TOKEN 等、既存3処理専用の
+      // binding/secrets に依存しないため、下の環境変数バリデーションより前で
+      // 分岐・完結させる。
       try {
         await processEventSubParkAutoDrain(env)
       } catch (err) {
@@ -1413,9 +1545,11 @@ export default {
     }
 
     // 環境変数バリデーション（既存3処理共通）: 未設定の場合は早期リターン。
-    // secret 未設定でも無害に空振りする。
-    if (!env.SUPABASE_URL || !getSupabaseApiKey(env) || !env.GITHUB_TOKEN) {
-      console.error('[Reporter] Missing required secrets. Set SUPABASE_URL, SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY), GITHUB_TOKEN via wrangler secret put')
+    // binding/secret 未設定でも無害に空振りする（#711 C: PostgREST 用の
+    // SUPABASE_URL/SUPABASE_SECRET_KEY/SUPABASE_SERVICE_ROLE_KEY はもう使わない
+    // ため、Hyperdrive バインディングの有無を見る）。
+    if (!env.HYPERDRIVE_SUPABASE || !env.GITHUB_TOKEN) {
+      console.error('[Reporter] Missing required binding/secrets. Bind HYPERDRIVE_SUPABASE in wrangler.toml and set GITHUB_TOKEN via wrangler secret put')
       return
     }
     if (!env.GITHUB_REPO_OWNER || !env.GITHUB_REPO_NAME) {

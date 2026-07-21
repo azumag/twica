@@ -212,6 +212,60 @@ describe('sentry/error-handler', () => {
       releaseInsert();
       await Promise.all([first, concurrent]);
     });
+
+    // #711 C 必須付帯作業: 再入ガード（保険）の回帰テスト。
+    // insert 経路の実行中に何らかの理由で自分自身が再度呼ばれても
+    // (将来 logger.error 等が混入するケースを想定)、内側の呼び出しは
+    // AsyncLocalStorage ガードで弾かれ、無限再帰・二重insertを起こさない。
+    it('insert経路の実行中に自分自身が再度呼ばれても再帰せずconsole警告のみ記録する', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg');
+      let reentered = false;
+      mockPgValues.mockImplementationOnce(async () => {
+        if (!reentered) {
+          reentered = true;
+          // insert 経路の内部から（不変条件違反を模した）再度のエラー記録を発生させる
+          await reportError(new Error('nested from insert path'));
+        }
+        return undefined;
+      });
+
+      await reportError(new Error('outer'));
+
+      // 外側の insert は1回のみ（内側の再入呼び出しはガードで弾かれ insert に到達しない）
+      expect(mockPgValues).toHaveBeenCalledTimes(1);
+      expect(console.warn).toHaveBeenCalledWith(
+        '[Error Tracking] Reentrant error logging suppressed:',
+        'nested from insert path',
+      );
+    });
+
+    // #711 owner決定: エラー行の重複はエラーログとして無害、欠落より良い
+    // という判断のもと、接続断系エラーは idempotent なリトライで自動回復する。
+    it('接続断系エラーはidempotentなリトライで自動回復する（重複許容の承認済み判断）', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg');
+      vi.useFakeTimers();
+      try {
+        mockPgValues
+          .mockRejectedValueOnce(Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }))
+          .mockResolvedValueOnce(undefined);
+
+        const pending = reportError(new Error('transient'));
+        // withDbRetry の初回バックオフ（100ms）を進めてリトライさせる
+        await vi.advanceTimersByTimeAsync(100);
+        await pending;
+
+        // 1回目は失敗、2回目（リトライ）で成功。1回目の失敗はDB書き込みが
+        // 発生したかどうか不明（idempotentゆえのリトライ判断）だが、
+        // 呼び出し元へは伝播せず正常終了する。
+        expect(mockPgValues).toHaveBeenCalledTimes(2);
+        expect(console.warn).not.toHaveBeenCalledWith(
+          '[Error Tracking] Failed to persist error:',
+          expect.anything(),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('reportRealtimeError の期待されるステータス抑制', () => {

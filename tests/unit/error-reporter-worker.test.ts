@@ -9,20 +9,70 @@ import worker, {
   EVENTSUB_PARK_KEY_PREFIX,
   EVENTSUB_AUTO_DRAIN_CRON,
   parseParkedEventSubKeyReceivedAt,
+  stripPostgresJsIncompatibleSslParams,
 } from '../../workers/error-reporter/src/index';
 // Major-3 契約テスト用: worker パッケージ自体は @opennextjs/cloudflare 依存のため
 // import できないが、このテストファイルは両方を import できる（Fable レビューで確認済み）。
 import { KEY_PREFIX as EVENTSUB_PARK_SOURCE_KEY_PREFIX, buildParkedEventSubKey } from '../../src/lib/maintenance/eventsub-park';
+// #711 C 契約テスト用: worker 内の stripPostgresJsIncompatibleSslParams は
+// scripts/lib/db-migrate-core.js の同名関数の独立コピー（分析パッケージと同じ
+// 理由でクロスパッケージ import を避けている）。正本の実装も import して
+// 代表的な入力で出力一致を検証し、複製のドリフトを機械的に検知する。
+import { stripPostgresJsIncompatibleSslParams as stripPostgresJsIncompatibleSslParamsSource } from '../../scripts/lib/db-migrate-core.js';
 
 // Reporter Worker（twica-error-reporter）は errors と support_inquiries の両方を
 // GitHub Issue 化する。内部関数は export されていないため、
 //   - scheduled: env 検証と「エラー/問い合わせの独立実行」を統合的にテスト
 //   - processErrors / processInquiries: 各処理フローを個別にテスト
 // global.fetch をモックして「どの外部 API を何回・どんな内容で叩いたか」を検証する。
+//
+// #711 C: errors/support_inquiries への DB アクセスは PostgREST（fetch 直叩き）から
+// postgres.js 直結（Hyperdrive 経由）へ移行した。GitHub Issues API（search/create/
+// comment）は引き続き fetch のモックで検証するが、DB 側（SELECT/UPDATE）は
+// 下記 mockSql（'postgres' パッケージ全体のモック）で検証する。
+
+// postgres.js の `sql` はタグ付きテンプレート呼び出し（`sql\`SELECT ...\``）で
+// 使われる「ただの関数」なので、vi.fn() でそのまま模倣できる。
+// `sql.options.parsers` は createReporterDbClient 内の installRawTimestampParser が
+// 代入するため、モックにも同じ形の入れ物（options.parsers オブジェクト）を
+// 用意しておく（実際のパース処理はテスト対象外。created_at はテストデータとして
+// あらかじめ文字列で用意するため、登録されたパーサ自体は呼ばれない）。
+//
+// vi.hoisted を使う理由: vi.mock ファクトリは巻き上げ（hoisting）されるため、
+// 外側スコープの変数をクロージャ経由で直接参照できない。vi.hoisted で先に
+// 生成した参照（postgresFactoryMock）をファクトリ内から参照し、実際に返す
+// sql モックは beforeEach ごとに setMockSql で差し替える（fetchMock を
+// beforeEach で毎回 vi.fn() し直すのと同じく、テスト間で queue が漏れないようにする）。
+const { postgresFactoryMock, setMockSql } = vi.hoisted(() => {
+  let currentSql: unknown = null;
+  // postgres() のシグネチャは (connectionString, options) だが、この mock 実装
+  // 自体は引数を使わない（呼び出し引数は postgresFactoryMock.mock.calls 側で
+  // 別途検証する）ため未使用パラメータは宣言しない。一方 vi.fn() の型引数だけ
+  // `(...args: unknown[]) => unknown` を明示することで、mock.calls[i] が
+  // 空タプル `[]` ではなく `unknown[]` に推論され、`postgresFactoryMock.mock.calls[0]`
+  // を index アクセスしてもコンパイルエラーにならない（呼び出し時の実引数は
+  // JS の性質上そのまま渡っても実装側で単に無視されるため実害は無い）。
+  const factory = vi.fn<(...args: unknown[]) => unknown>(() => currentSql);
+  return {
+    postgresFactoryMock: factory,
+    setMockSql: (sql: unknown) => {
+      currentSql = sql;
+    },
+  };
+});
+
+vi.mock('postgres', () => ({
+  default: postgresFactoryMock,
+}));
+
+/** mockSql.mock.calls[i] からクエリ本文を復元する（プレースホルダは '?' に潰す）。 */
+function sqlText(call: readonly unknown[]): string {
+  const strings = call[0] as readonly string[];
+  return strings.join('?');
+}
 
 const mockEnv = {
-  SUPABASE_URL: 'https://test.supabase.co',
-  SUPABASE_SERVICE_ROLE_KEY: 'test-key',
+  HYPERDRIVE_SUPABASE: { connectionString: 'postgres://mock:mock@localhost:5432/mock' },
   GITHUB_TOKEN: 'gh-token',
   GITHUB_REPO_OWNER: 'testowner',
   GITHUB_REPO_NAME: 'testrepo',
@@ -56,22 +106,45 @@ const mockCtx = { waitUntil: vi.fn() } as unknown as ExecutionContext;
 
 describe('reporter worker', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
+  let mockSql: ReturnType<typeof vi.fn> & { options: { parsers: Record<number, unknown> } };
 
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock = vi.fn();
     global.fetch = fetchMock;
+
+    // DB モック: 呼び出しごとに新しい sql モックを用意し（fetchMock と同じ方針）、
+    // postgres() ファクトリが常にこのテストのモックを返すよう差し替える。
+    mockSql = vi.fn() as unknown as typeof mockSql;
+    mockSql.options = { parsers: {} };
+    setMockSql(mockSql);
+    postgresFactoryMock.mockClear();
+
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   describe('環境変数バリデーション', () => {
-    it('SUPABASE_URL が未設定の場合は早期リターンする', async () => {
-      await worker.scheduled(mockEvent, { ...mockEnv, SUPABASE_URL: '' }, mockCtx);
+    it('HYPERDRIVE_SUPABASE バインディングが未設定の場合は早期リターンする', async () => {
+      // HYPERDRIVE_SUPABASE は Env 型で optional なため、undefined を明示する
+      // だけで「未設定」を再現できる（rest 分割代入による省略パターンは
+      // 使わない未使用変数を生む＝eslint no-unused-vars 警告の元になるため避ける）。
+      const envWithoutHyperdrive = { ...mockEnv, HYPERDRIVE_SUPABASE: undefined };
+      await worker.scheduled(mockEvent, envWithoutHyperdrive, mockCtx);
       expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockSql).not.toHaveBeenCalled();
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Missing required secrets')
+        expect.stringContaining('Missing required binding/secrets')
+      );
+    });
+
+    it('GITHUB_TOKEN が未設定の場合は早期リターンする', async () => {
+      await worker.scheduled(mockEvent, { ...mockEnv, GITHUB_TOKEN: '' }, mockCtx);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockSql).not.toHaveBeenCalled();
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('Missing required binding/secrets')
       );
     });
 
@@ -92,25 +165,81 @@ describe('reporter worker', () => {
     });
   });
 
+  describe('createReporterDbClient (#711 C)', () => {
+    it('HYPERDRIVE_SUPABASE 未設定で processErrors を直接呼ぶと例外を投げる', async () => {
+      // HYPERDRIVE_SUPABASE は Env 型で optional なため、undefined を明示する
+      // だけで「未設定」を再現できる（rest 分割代入による省略パターンは
+      // 使わない未使用変数を生む＝eslint no-unused-vars 警告の元になるため避ける）。
+      const envWithoutHyperdrive = { ...mockEnv, HYPERDRIVE_SUPABASE: undefined };
+      await expect(processErrors(envWithoutHyperdrive)).rejects.toThrow(
+        /Missing HYPERDRIVE_SUPABASE binding/
+      );
+      expect(mockSql).not.toHaveBeenCalled();
+    });
+
+    it('postgres() を max:1 で呼び、fetch_types:false は指定しない（配列パラメータ ANY() が壊れるため）', async () => {
+      // 実機の Postgres で fetch_types:false + `ANY($1::uuid[])` が
+      // "malformed array literal" で失敗することを確認済み（ローカル Docker 検証）。
+      // 一度直っても再度 fetch_types:false が混入すると markErrorsAsProcessed が
+      // 本番で壊れるため、オプションの回帰を検知する。
+      mockSql.mockResolvedValueOnce([]);
+      await processErrors(mockEnv);
+
+      expect(postgresFactoryMock).toHaveBeenCalledTimes(1);
+      const [connectionString, options] = postgresFactoryMock.mock.calls[0];
+      expect(connectionString).toBe(mockEnv.HYPERDRIVE_SUPABASE.connectionString);
+      expect(options).toMatchObject({ max: 1 });
+      expect(options).not.toHaveProperty('fetch_types');
+    });
+
+    it('timestamptz(OID 1184) 用の raw パーサを最初のクエリ発行前に登録する', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await processErrors(mockEnv);
+
+      const parser = mockSql.options.parsers[1184] as ((v: string) => string) | undefined;
+      expect(typeof parser).toBe('function');
+      // identity 関数であること（Date へ変換せず生のワイヤ形式文字列を素通しする）
+      expect(parser?.('2026-07-21 12:34:56.789+00')).toBe('2026-07-21 12:34:56.789+00');
+    });
+  });
+
+  describe('stripPostgresJsIncompatibleSslParams の複製ドリフト検知契約テスト', () => {
+    // scripts/lib/db-migrate-core.js が正本。worker 側は別デプロイ単位のため
+    // 独立コピーを持つ（analysis/dev/adminApiPg.ts と同じ理由、ファイル内コメント参照）。
+    it.each([
+      'postgres://user:pass@host/db?sslmode=verify-full&sslrootcert=system',
+      'postgres://user:pass@host/db?sslrootcert=system',
+      'postgres://user:pass@host/db?sslmode=require',
+      'postgres://user:pass@host/db',
+      'not a valid url',
+      '',
+    ])('入力 %s で正本と同じ出力になる', (input) => {
+      expect(stripPostgresJsIncompatibleSslParams(input)).toBe(
+        stripPostgresJsIncompatibleSslParamsSource(input)
+      );
+    });
+  });
+
   describe('scheduled: エラー処理と問い合わせ処理の独立実行', () => {
-    it('両処理とも未処理なしなら fetch は2回（errors + support_inquiries のポーリング）', async () => {
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // errors
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // inquiries
+    it('両処理とも未処理なしなら DB SELECT は2回（errors + support_inquiries のポーリング）、GitHub API は呼ばない', async () => {
+      mockSql.mockResolvedValueOnce([]); // errors select
+      mockSql.mockResolvedValueOnce([]); // inquiries select
 
       await worker.scheduled(mockEvent, mockEnv, mockCtx);
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(fetchMock.mock.calls[0][0]).toContain('/rest/v1/errors');
-      expect(fetchMock.mock.calls[1][0]).toContain('/rest/v1/support_inquiries');
+      expect(mockSql).toHaveBeenCalledTimes(2);
+      expect(sqlText(mockSql.mock.calls[0])).toContain('FROM errors');
+      expect(sqlText(mockSql.mock.calls[1])).toContain('FROM support_inquiries');
+      expect(fetchMock).not.toHaveBeenCalled();
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending inquiries'));
     });
 
     it('エラー処理が失敗しても問い合わせ処理は実行される', async () => {
-      // processErrors: fetchPendingErrors が 500 で失敗
-      fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('err') });
+      // processErrors: fetchPendingErrors (SELECT) が失敗
+      mockSql.mockRejectedValueOnce(new Error('connection refused'));
       // processInquiries: 未処理なし
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+      mockSql.mockResolvedValueOnce([]);
 
       await expect(worker.scheduled(mockEvent, mockEnv, mockCtx)).resolves.toBeUndefined();
 
@@ -119,7 +248,7 @@ describe('reporter worker', () => {
         expect.stringContaining('[Error Reporter] Cron job failed'),
         expect.any(Error)
       );
-      expect(fetchMock.mock.calls[1][0]).toContain('/rest/v1/support_inquiries');
+      expect(sqlText(mockSql.mock.calls[1])).toContain('FROM support_inquiries');
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending inquiries'));
     });
   });
@@ -128,12 +257,14 @@ describe('reporter worker', () => {
   // processErrors（errors テーブル → GitHub Issue）
   // ===========================================================================
   describe('processErrors: 未処理エラーがない場合', () => {
-    it('Supabase から空配列が返った場合は GitHub API を呼ばない', async () => {
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+    it('DB から空配列が返った場合は GitHub API を呼ばない', async () => {
+      mockSql.mockResolvedValueOnce([]);
 
       await processErrors(mockEnv);
 
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      expect(sqlText(mockSql.mock.calls[0])).toContain('github_issue_created = false');
+      expect(fetchMock).not.toHaveBeenCalled();
       expect(console.log).toHaveBeenCalledWith(
         expect.stringContaining('No pending errors')
       );
@@ -144,22 +275,23 @@ describe('reporter worker', () => {
     it('未処理エラーがあり既存 Issue がない場合、新規 Issue を作成して処理済みマークする', async () => {
       const errorRecord = makeErrorRecord();
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([errorRecord]) });
+      mockSql.mockResolvedValueOnce([errorRecord]); // SELECT
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
-      });
+      }); // GitHub search
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ number: 42, html_url: 'https://github.com/test/42' }),
-      });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      }); // GitHub create issue
+      mockSql.mockResolvedValueOnce(undefined); // UPDATE (markErrorsAsProcessed)
 
       await processErrors(mockEnv);
 
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(mockSql).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
 
-      const createIssueCall = fetchMock.mock.calls[2];
+      const createIssueCall = fetchMock.mock.calls[1];
       expect(createIssueCall[0]).toContain('/repos/testowner/testrepo/issues');
       const createBody = JSON.parse(createIssueCall[1].body);
       expect(createBody.title).toContain('[preview]');
@@ -168,11 +300,14 @@ describe('reporter worker', () => {
       expect(createBody.labels).toContain('auto-generated');
       expect(createBody.labels).toContain('preview');
 
-      const patchCall = fetchMock.mock.calls[3];
-      expect(patchCall[0]).toContain('/rest/v1/errors');
-      const patchBody = JSON.parse(patchCall[1].body);
-      expect(patchBody.github_issue_created).toBe(true);
-      expect(patchBody.github_issue_number).toBe(42);
+      const updateCall = mockSql.mock.calls[1];
+      expect(sqlText(updateCall)).toContain('UPDATE errors');
+      expect(sqlText(updateCall)).toContain('WHERE id = ANY(');
+      expect(sqlText(updateCall)).toContain('::uuid[]');
+      // 補間順序: issueNumber, issueUrl, errorIds（markErrorsAsProcessed のSQL参照）
+      expect(updateCall[1]).toBe(42);
+      expect(updateCall[2]).toBe('https://github.com/test/42');
+      expect(updateCall[3]).toEqual([errorRecord.id]);
     });
   });
 
@@ -180,7 +315,7 @@ describe('reporter worker', () => {
     it('既存 Issue がある場合はコメントを追加する', async () => {
       const errorRecord = makeErrorRecord();
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([errorRecord]) });
+      mockSql.mockResolvedValueOnce([errorRecord]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({
@@ -189,11 +324,11 @@ describe('reporter worker', () => {
         }),
       });
       fetchMock.mockResolvedValueOnce({ ok: true });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processErrors(mockEnv);
 
-      const commentCall = fetchMock.mock.calls[2];
+      const commentCall = fetchMock.mock.calls[1];
       expect(commentCall[0]).toContain('/issues/10/comments');
       expect(commentCall[1].method).toBe('POST');
     });
@@ -203,7 +338,7 @@ describe('reporter worker', () => {
     it('コメント追加失敗時は markErrorsAsProcessed がスキップされる', async () => {
       const errorRecord = makeErrorRecord();
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([errorRecord]) });
+      mockSql.mockResolvedValueOnce([errorRecord]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({
@@ -215,8 +350,8 @@ describe('reporter worker', () => {
 
       await processErrors(mockEnv);
 
-      // markErrorsAsProcessed (PATCH) は呼ばれない（fetch は3回のみ）
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // markErrorsAsProcessed (UPDATE) は呼ばれない（SELECT の1回のみ）
+      expect(mockSql).toHaveBeenCalledTimes(1);
       expect(console.error).toHaveBeenCalledWith(
         expect.stringContaining('Failed to process group'),
         expect.any(Error)
@@ -229,7 +364,7 @@ describe('reporter worker', () => {
       const error1 = makeErrorRecord({ id: 'uuid-1', created_at: '2026-01-01T00:00:00Z' });
       const error2 = makeErrorRecord({ id: 'uuid-2', created_at: '2026-01-01T01:00:00Z' });
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([error1, error2]) });
+      mockSql.mockResolvedValueOnce([error1, error2]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -238,23 +373,23 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 50, html_url: 'https://github.com/test/50' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processErrors(mockEnv);
 
-      // Issue は1つだけ作成される（search 1回 + create 1回 + patch 1回）
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      // Issue は1つだけ作成される（search 1回 + create 1回、DB は select 1回 + update 1回）
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockSql).toHaveBeenCalledTimes(2);
 
-      const patchCall = fetchMock.mock.calls[3];
-      expect(patchCall[0]).toContain('uuid-1');
-      expect(patchCall[0]).toContain('uuid-2');
+      const updateCall = mockSql.mock.calls[1];
+      expect(updateCall[3]).toEqual(['uuid-1', 'uuid-2']);
     });
 
     it('異なるメッセージのエラーは別々の Issue になる', async () => {
       const error1 = makeErrorRecord({ id: 'uuid-1', message: 'Error A' });
       const error2 = makeErrorRecord({ id: 'uuid-2', message: 'Error B' });
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([error1, error2]) });
+      mockSql.mockResolvedValueOnce([error1, error2]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -263,7 +398,7 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 51, html_url: 'https://github.com/test/51' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -272,11 +407,13 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 52, html_url: 'https://github.com/test/52' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processErrors(mockEnv);
 
-      expect(fetchMock).toHaveBeenCalledTimes(7);
+      // GitHub: search+create ×2 = 4回。DB: select(1) + update ×2 = 3回。
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(mockSql).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -286,7 +423,7 @@ describe('reporter worker', () => {
         makeErrorRecord({ id: `uuid-${i}`, message: `Error ${i}` })
       );
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(errors) });
+      mockSql.mockResolvedValueOnce(errors);
 
       for (let i = 0; i < 6; i++) {
         fetchMock.mockResolvedValueOnce({
@@ -298,7 +435,7 @@ describe('reporter worker', () => {
             ok: true,
             json: () => Promise.resolve({ number: 100 + i, html_url: `https://github.com/test/${100 + i}` }),
           });
-          fetchMock.mockResolvedValueOnce({ ok: true });
+          mockSql.mockResolvedValueOnce(undefined);
         }
       }
 
@@ -310,15 +447,11 @@ describe('reporter worker', () => {
     });
   });
 
-  describe('processErrors: Supabase API エラー', () => {
+  describe('processErrors: DB エラー', () => {
     it('fetchPendingErrors が失敗した場合は例外を投げる（scheduled 側で捕捉される）', async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve('Internal Server Error'),
-      });
+      mockSql.mockRejectedValueOnce(new Error('connection refused'));
 
-      await expect(processErrors(mockEnv)).rejects.toThrow(/Supabase fetch error/);
+      await expect(processErrors(mockEnv)).rejects.toThrow(/connection refused/);
     });
   });
 
@@ -326,7 +459,7 @@ describe('reporter worker', () => {
     it('production 環境のエラーには環境ラベルが付かない', async () => {
       const errorRecord = makeErrorRecord({ environment: 'production' });
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([errorRecord]) });
+      mockSql.mockResolvedValueOnce([errorRecord]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -335,11 +468,11 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 99, html_url: 'https://github.com/test/99' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processErrors(mockEnv);
 
-      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      const createBody = JSON.parse(fetchMock.mock.calls[1][1].body);
       expect(createBody.labels).toEqual(['bug', 'auto-generated']);
       expect(createBody.labels).not.toContain('production');
     });
@@ -350,16 +483,17 @@ describe('reporter worker', () => {
   // ===========================================================================
   describe('processInquiries: 未処理問い合わせがない場合', () => {
     it('空配列なら GitHub API を呼ばず、FIFO・limit=10 でポーリングする', async () => {
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+      mockSql.mockResolvedValueOnce([]);
 
       await processInquiries(mockEnv);
 
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const fetchUrl = fetchMock.mock.calls[0][0];
-      expect(fetchUrl).toContain('/rest/v1/support_inquiries');
-      expect(fetchUrl).toContain('github_issue_created=eq.false');
-      expect(fetchUrl).toContain('order=created_at.asc');
-      expect(fetchUrl).toContain('limit=10');
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      const query = sqlText(mockSql.mock.calls[0]);
+      expect(query).toContain('FROM support_inquiries');
+      expect(query).toContain('github_issue_created = false');
+      expect(query).toContain('ORDER BY created_at ASC');
+      expect(query).toContain('LIMIT');
+      expect(mockSql.mock.calls[0][1]).toBe(10); // MAX_INQUIRIES_PER_RUN のバインド値
       expect(console.log).toHaveBeenCalledWith(
         expect.stringContaining('No pending inquiries')
       );
@@ -370,7 +504,7 @@ describe('reporter worker', () => {
     it('既存 Issue がない場合、新規 Issue を作成して処理済みマークする', async () => {
       const inquiry = makeInquiry();
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -379,13 +513,14 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 42, html_url: 'https://github.com/test/42' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockSql).toHaveBeenCalledTimes(2);
 
-      const createCall = fetchMock.mock.calls[2];
+      const createCall = fetchMock.mock.calls[1];
       expect(createCall[0]).toContain('/repos/testowner/testrepo/issues');
       expect(createCall[1].method).toBe('POST');
       const createBody = JSON.parse(createCall[1].body);
@@ -396,20 +531,19 @@ describe('reporter worker', () => {
       expect(createBody.labels).toContain('support-inquiry');
       expect(createBody.labels).toContain('auto-generated');
 
-      const patchCall = fetchMock.mock.calls[3];
-      expect(patchCall[0]).toContain('/rest/v1/support_inquiries');
-      expect(patchCall[0]).toContain('id=eq.inq-1');
-      expect(patchCall[1].method).toBe('PATCH');
-      const patchBody = JSON.parse(patchCall[1].body);
-      expect(patchBody.github_issue_created).toBe(true);
-      expect(patchBody.github_issue_number).toBe(42);
-      expect(patchBody.github_issue_url).toBe('https://github.com/test/42');
+      const updateCall = mockSql.mock.calls[1];
+      expect(sqlText(updateCall)).toContain('UPDATE support_inquiries');
+      expect(sqlText(updateCall)).toContain('WHERE id =');
+      // 補間順序: issueNumber, issueUrl, id（markInquiryProcessed のSQL参照）
+      expect(updateCall[1]).toBe(42);
+      expect(updateCall[2]).toBe('https://github.com/test/42');
+      expect(updateCall[3]).toBe('inq-1');
     });
 
     it('本文中のバッククォート連より長いフェンスで囲む（フェンス脱出防止）', async () => {
       const inquiry = makeInquiry({ body: 'contains ``` triple backticks' });
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -418,11 +552,11 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      const createBody = JSON.parse(fetchMock.mock.calls[1][1].body);
       // 本文の最長 ``` (3連) より長い ```` (4連) フェンスで囲まれる
       expect(createBody.body).toContain('````\ncontains ``` triple backticks\n````');
     });
@@ -432,7 +566,7 @@ describe('reporter worker', () => {
     it('既存 Issue があれば新規作成せず、それでも処理済みマークする', async () => {
       const inquiry = makeInquiry();
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({
@@ -440,19 +574,17 @@ describe('reporter worker', () => {
           items: [{ number: 10, html_url: 'https://github.com/test/10' }],
         }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      // create を挟まないので fetch は3回（GET + search + PATCH）
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // create を挟まないので fetch は search の1回のみ
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(mockSql).toHaveBeenCalledTimes(2);
 
-      const patchCall = fetchMock.mock.calls[2];
-      expect(patchCall[0]).toContain('/rest/v1/support_inquiries');
-      expect(patchCall[1].method).toBe('PATCH');
-      const patchBody = JSON.parse(patchCall[1].body);
-      expect(patchBody.github_issue_created).toBe(true);
-      expect(patchBody.github_issue_number).toBe(10);
+      const updateCall = mockSql.mock.calls[1];
+      expect(sqlText(updateCall)).toContain('UPDATE support_inquiries');
+      expect(updateCall[1]).toBe(10);
 
       const postedToIssues = fetchMock.mock.calls.some(
         (c) => typeof c[0] === 'string' && c[0].endsWith('/issues') && c[1]?.method === 'POST'
@@ -466,10 +598,7 @@ describe('reporter worker', () => {
       const inquiry1 = makeInquiry({ id: 'inq-1' });
       const inquiry2 = makeInquiry({ id: 'inq-2' });
 
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([inquiry1, inquiry2]),
-      });
+      mockSql.mockResolvedValueOnce([inquiry1, inquiry2]);
       // inq-1: search なし → create 失敗（500）
       fetchMock.mockResolvedValueOnce({
         ok: true,
@@ -480,7 +609,7 @@ describe('reporter worker', () => {
         status: 500,
         text: () => Promise.resolve('server error'),
       });
-      // inq-2: search なし → create 成功 → PATCH 成功
+      // inq-2: search なし → create 成功 → UPDATE 成功
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -489,28 +618,30 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 99, html_url: 'https://github.com/test/99' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      // GET(1) + inq-1[search, create-fail](2) + inq-2[search, create, patch](3) = 6
-      expect(fetchMock).toHaveBeenCalledTimes(6);
+      // SELECT(1) + inq-1[search, create-fail(fetchのみ)] + inq-2[search, create, UPDATE]
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(mockSql).toHaveBeenCalledTimes(2); // SELECT + inq-2 の UPDATE のみ（inq-1 は失敗しUPDATEに到達しない）
       expect(console.error).toHaveBeenCalledWith(
         expect.stringContaining('Failed to process inquiry inq-1'),
         expect.any(Error)
       );
 
-      const lastCall = fetchMock.mock.calls[5];
-      expect(lastCall[0]).toContain('id=eq.inq-2');
-      expect(lastCall[1].method).toBe('PATCH');
+      const lastUpdateCall = mockSql.mock.calls[1];
+      expect(lastUpdateCall[3]).toBe('inq-2');
     });
   });
 
-  // 共通ヘルパへ集約したヘッダの契約を固定する（githubHeaders / supabase 認証ヘッダ改変時の回帰検知）
+  // GitHub API 呼び出しヘッダの契約を固定する（githubHeaders 改変時の回帰検知）。
+  // #711 C: DB アクセスは fetch を使わなくなったため、Supabase PATCH ヘッダの
+  // 契約テスト（apikey/Prefer 等）は対象機能ごと削除した。
   describe('リクエストヘッダ契約', () => {
-    it('GitHub POST と Supabase PATCH が期待するヘッダを送る', async () => {
+    it('GitHub POST が期待するヘッダを送る', async () => {
       const inquiry = makeInquiry();
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -519,38 +650,23 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 7, html_url: 'https://github.com/test/7' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      const createHeaders = fetchMock.mock.calls[2][1].headers;
+      const createHeaders = fetchMock.mock.calls[1][1].headers;
       expect(createHeaders['Authorization']).toBe('Bearer gh-token');
       expect(createHeaders['Accept']).toBe('application/vnd.github+json');
       expect(createHeaders['X-GitHub-Api-Version']).toBe('2022-11-28');
       expect(createHeaders['User-Agent']).toBe('twica-error-reporter');
       expect(createHeaders['Content-Type']).toBe('application/json');
-
-      const patchHeaders = fetchMock.mock.calls[3][1].headers;
-      expect(patchHeaders['apikey']).toBe('test-key');
-      expect(patchHeaders['Authorization']).toBe('Bearer test-key');
-      expect(patchHeaders['Content-Type']).toBe('application/json');
-      expect(patchHeaders['Prefer']).toBe('return=minimal');
-    });
-
-    it('SUPABASE_SECRET_KEY が SERVICE_ROLE_KEY より優先される', async () => {
-      const env = { ...mockEnv, SUPABASE_SECRET_KEY: 'secret-key' };
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
-
-      await processInquiries(env);
-
-      expect(fetchMock.mock.calls[0][1].headers['apikey']).toBe('secret-key');
     });
   });
 
   describe('processInquiries: 入力の無害化とカテゴリ', () => {
     it('未知のカテゴリはそのまま表示される', async () => {
       const inquiry = makeInquiry({ category: 'weird' });
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -559,11 +675,11 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      const createBody = JSON.parse(fetchMock.mock.calls[1][1].body);
       expect(createBody.title).toContain('[問い合わせ/weird]');
     });
 
@@ -572,7 +688,7 @@ describe('reporter worker', () => {
         twitch_display_name: '@everyone',
         subject: 'line1\n# fake heading',
       });
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -581,11 +697,11 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      const createBody = JSON.parse(fetchMock.mock.calls[1][1].body);
       // 表示名はインラインコード化され、@everyone は生メンションとして展開されない
       expect(createBody.body).toContain('`@everyone`');
       // 件名の改行は空白へ畳まれ、行頭 '# ' の見出し注入は無効化される
@@ -599,7 +715,7 @@ describe('reporter worker', () => {
       // label（フォールバック時は category そのもの）が本文にそのまま展開されず、
       // inlineCode を通ることを検証する。
       const inquiry = makeInquiry({ category: 'weird\n# injected heading' });
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -608,23 +724,23 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 1, html_url: 'https://github.com/test/1' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      const createBody = JSON.parse(fetchMock.mock.calls[2][1].body);
+      const createBody = JSON.parse(fetchMock.mock.calls[1][1].body);
       expect(createBody.body).toContain('`weird # injected heading`');
       expect(createBody.body).not.toContain('\nweird\n# injected heading');
     });
   });
 
   describe('processInquiries: 冪等性の保険', () => {
-    it('新規作成に成功しても処理済みマーク(PATCH)が失敗した場合は例外が伝播する', async () => {
+    it('新規作成に成功しても処理済みマーク(UPDATE)が失敗した場合は例外が伝播する', async () => {
       // フラグが false のまま残るため、次回実行時に search で拾われて重複作成が
-      // 防がれる想定（本命の冪等性）。ここでは PATCH 失敗時に例外が正しく
+      // 防がれる想定（本命の冪等性）。ここでは UPDATE 失敗時に例外が正しく
       // 伝播し、個別 try/catch で処理が打ち切られることのみ検証する。
       const inquiry = makeInquiry();
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ total_count: 0, items: [] }),
@@ -633,16 +749,12 @@ describe('reporter worker', () => {
         ok: true,
         json: () => Promise.resolve({ number: 5, html_url: 'https://github.com/test/5' }),
       });
-      // PATCH 失敗
-      fetchMock.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve('db error'),
-      });
+      // UPDATE 失敗
+      mockSql.mockRejectedValueOnce(new Error('db error'));
 
       await processInquiries(mockEnv);
 
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(mockSql).toHaveBeenCalledTimes(2);
       expect(console.error).toHaveBeenCalledWith(
         expect.stringContaining('Failed to process inquiry inq-1'),
         expect.any(Error)
@@ -653,20 +765,20 @@ describe('reporter worker', () => {
       // searchIssue は API 失敗時に例外を投げず null を返す設計（本命の冪等性は
       // github_issue_created フラグであり、search はあくまで補助のため）。
       const inquiry = makeInquiry();
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([inquiry]) });
+      mockSql.mockResolvedValueOnce([inquiry]);
       // search 失敗（403 = レート制限等）
       fetchMock.mockResolvedValueOnce({ ok: false, status: 403 });
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ number: 8, html_url: 'https://github.com/test/8' }),
       });
-      fetchMock.mockResolvedValueOnce({ ok: true });
+      mockSql.mockResolvedValueOnce(undefined);
 
       await processInquiries(mockEnv);
 
-      // search 失敗後も create → patch まで進む
-      expect(fetchMock).toHaveBeenCalledTimes(4);
-      const createCall = fetchMock.mock.calls[2];
+      // search 失敗後も create → update まで進む
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const createCall = fetchMock.mock.calls[1];
       expect(createCall[0]).toContain('/repos/testowner/testrepo/issues');
       expect(createCall[1].method).toBe('POST');
       expect(console.warn).toHaveBeenCalledWith(
@@ -917,8 +1029,8 @@ describe('reporter worker', () => {
       const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
       const env = makeKvEnv(keys);
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // errors
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // inquiries
+      mockSql.mockResolvedValueOnce([]); // errors
+      mockSql.mockResolvedValueOnce([]); // inquiries
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve([]),
@@ -930,7 +1042,8 @@ describe('reporter worker', () => {
 
       await worker.scheduled(mockEvent, env, mockCtx);
 
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockSql).toHaveBeenCalledTimes(2);
       expect(console.log).toHaveBeenCalledWith(
         expect.stringContaining('Created issue #200')
       );
@@ -940,8 +1053,8 @@ describe('reporter worker', () => {
       const keys = Array.from({ length: 10 }, (_, i) => parkedKey(1, `msg-${i}`));
       const env = makeKvEnv(keys);
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // errors
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // inquiries
+      mockSql.mockResolvedValueOnce([]); // errors
+      mockSql.mockResolvedValueOnce([]); // inquiries
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve([]),
@@ -1318,8 +1431,9 @@ describe('reporter worker', () => {
       await worker.scheduled(drainEvent, env, mockCtx);
 
       // maintenance-status + peek の2回のみ（errors/inquiries/backlog監視 の
-      // Supabase/GitHub 呼び出しは一切発生しない）
+      // DB/GitHub 呼び出しは一切発生しない）
       expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockSql).not.toHaveBeenCalled();
       expect(fetchMock.mock.calls[0][0]).toContain('/api/maintenance-status');
       expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
       expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('No pending inquiries'));
@@ -1328,14 +1442,14 @@ describe('reporter worker', () => {
     it('event.cron が既存トリガー(*/5 * * * *)の場合は従来どおり既存3処理のみ実行し、自動ドレインは実行しない', async () => {
       const normalEvent = { cron: '*/5 * * * *' } as ScheduledController;
 
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // errors
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // inquiries
+      mockSql.mockResolvedValueOnce([]); // errors
+      mockSql.mockResolvedValueOnce([]); // inquiries
       // mockEnv には RATE_LIMIT_KV も APP_BASE_URL_* も無いため
       // backlog監視は早期return、自動ドレインは呼ばれていればwarnログが出るはず
 
       await worker.scheduled(normalEvent, mockEnv, mockCtx);
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockSql).toHaveBeenCalledTimes(2);
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
       expect(console.log).not.toHaveBeenCalledWith(
         expect.stringContaining('[EventSub Auto Drain] Started')
@@ -1345,12 +1459,12 @@ describe('reporter worker', () => {
     it('event.cron が未設定(テスト用の空イベント等)の場合も既存3処理が実行される(後方互換)', async () => {
       // mockEvent = {} as ScheduledController は cron が undefined。
       // EVENTSUB_AUTO_DRAIN_CRON と一致しないため、既存トリガーと同じ分岐に落ちる。
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
-      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+      mockSql.mockResolvedValueOnce([]);
+      mockSql.mockResolvedValueOnce([]);
 
       await worker.scheduled(mockEvent, mockEnv, mockCtx);
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockSql).toHaveBeenCalledTimes(2);
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No pending errors'));
     });
 

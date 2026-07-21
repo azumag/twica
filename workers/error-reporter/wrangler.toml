@@ -1,13 +1,18 @@
 # Reporter Cron Worker
 # レポーター定期実行Worker
 #
-# Supabase から未処理レコードを取得し GitHub Issue を自動作成する。
+# errors/support_inquiries テーブルから未処理レコードを取得し GitHub Issue を
+# 自動作成する。
 #   - errors テーブル: 未処理エラー（Tail Workers 有料の無料代替）
 #   - support_inquiries テーブル: 新規問い合わせの通知（Issue #633）
 # 同一の secrets・cron・デプロイを共有するため単一 Worker に集約している。
 #
+# DB アクセス (#711 C, 2026-07): PostgREST（Supabase REST API）の fetch 直叩きから
+# Hyperdrive 経由の postgres.js 直結へ移行済み。下記 [[hyperdrive]] 参照。
+#
 # See: https://github.com/azumag/twica/issues/239 (errors)
 #      https://github.com/azumag/twica/issues/633 (inquiries)
+#      https://github.com/azumag/twica/issues/711 (Phase2 DB移行, C項)
 
 name = "twica-error-reporter"
 main = "src/index.ts"
@@ -51,12 +56,78 @@ binding = "RATE_LIMIT_KV"
 id = "2dadcd9aa89b466d9c860a8930d458fa"
 preview_id = "6604c73cdb474d6a8a50b8afd4076d5f"
 
+# ============================================================
+# Hyperdrive binding for direct Postgres access (#711 C)
+# Postgres 直結アクセス用 Hyperdrive バインディング (#711 C)
+# ============================================================
+#
+# errors/support_inquiries への DB アクセスを PostgREST（fetch 直叩き）から
+# postgres.js 直結へ移行した際に追加。src/index.ts の createReporterDbClient が
+# 使用する。
+#
+# ルート（メインアプリ）の wrangler.toml と**同じ Hyperdrive config ID** を
+# 再利用している（新規 config は作成していない）。理由: メインアプリと
+# この Worker は同じ Supabase DB を見ており、config を分けると cutover
+# （Supabase → PlanetScale への接続先切り替え）作業を2箇所で行う必要が
+# 生じ、片方だけ切り替え忘れる事故のリスクがある。同じ config を共有する
+# ことで、config 側の接続文字列を1箇所差し替えるだけでメインアプリ・この
+# Worker の両方が新しい接続先に自動追従し、この Worker のコード・
+# wrangler.toml をその時点で一切変更する必要がない（ファイル冒頭コメントの
+# 「cutover 時に無修正で追従する」という約束の実体）。
+#
+# --caching-disabled 等の作成手順・localConnectionString の用途は
+# ルート wrangler.toml の [[hyperdrive]] コメント（本ファイルと同じ根拠）を参照。
+[[hyperdrive]]
+binding = "HYPERDRIVE_SUPABASE"
+id = "38f11f06161c4c538694522e4ede74f5"
+localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
+# preview 環境用 Hyperdrive バインディング。
+# このワーカー自体は本番のみデプロイする運用（.github/workflows/
+# deploy-cloudflare.yml の「Error Reporter Cron Worker のデプロイ（本番のみ）」
+# コメント参照）だが、オーナー判断により preview 用 binding もあわせて用意する
+# （issue #711 比較コメント §4-4 の未決事項への回答）。`wrangler dev`
+# （`--env preview` 指定時）や、将来 preview 環境へのデプロイが必要になった
+# 場合に備える。id はルート wrangler.toml の [env.preview.hyperdrive] と同じ
+# preview 用 config（twica-hyperdrive-preview）を指す。
+#
+# m-2 (Fableレビュー指摘) 影響範囲の明記:
+# 1. この [env.preview] を追加したことで、CI（.github/workflows/
+#    deploy-cloudflare.yml、`working-directory: workers/error-reporter` で
+#    `npx wrangler deploy` を --env 無指定で実行）は「Multiple environments are
+#    defined... but no target environment was specified」という警告を出す
+#    ようになる（`npx wrangler@4.112.0 deploy --dry-run` で実測確認済み）。
+#    これは単なる警告であり、--env 無指定時は明示的にトップレベル環境へ
+#    デプロイされる（Cloudflare の既定挙動）ため、実際のデプロイ先
+#    （本番 twica-error-reporter）は従来どおりで実害は無い。
+# 2. `--env preview` を明示的に指定した場合（今日時点で誰も使っていないが将来
+#    使う可能性に備え明記）: TOML の environment は「トップレベル設定を
+#    継承」ではなく「キーごとに上書き」のため、[vars]（GITHUB_REPO_OWNER 等・
+#    APP_BASE_URL_PROD/PREVIEW）と [[kv_namespaces]]（RATE_LIMIT_KV）は
+#    [env.preview] 側に再宣言していない分だけ preview 実行時には存在しない
+#    （`npx wrangler deploy --dry-run --env preview` で実測確認済み: bindings
+#    一覧に HYPERDRIVE_SUPABASE のみが出力され、RATE_LIMIT_KV/vars は出ない）。
+#    つまり --env preview は「Hyperdrive バインディングだけを検証できる縮退
+#    モード」であり、errors/inquiries 以外の処理（backlog監視・自動ドレイン）を
+#    preview で試すには [env.preview.vars] / [env.preview.kv_namespaces] の
+#    再宣言が別途必要（本ワーカーは preview デプロイの予定が無いため未対応）。
+[env.preview]
+
+[[env.preview.hyperdrive]]
+binding = "HYPERDRIVE_SUPABASE"
+id = "1e3f6c4569bf4202a41c42711c878b86"
+localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
 # 機密変数（Cloudflare Dashboard または wrangler secret put で設定）
 # Required secrets:
-# - SUPABASE_URL: Supabase プロジェクト URL (e.g. https://xxx.supabase.co)
-# - SUPABASE_SECRET_KEY: Supabase secret キー
-# - SUPABASE_SERVICE_ROLE_KEY: legacy Supabase service role キー
 # - GITHUB_TOKEN: GitHub Fine-grained PAT (scopes: Issues read/write)
+#
+# #711 C 移行後は SUPABASE_URL/SUPABASE_SECRET_KEY/SUPABASE_SERVICE_ROLE_KEY
+# はこのワーカーではもう使わない（DB アクセスは上記 [[hyperdrive]] 経由の
+# postgres.js 直結に置き換わったため）。既存デプロイに残っている場合、
+# 削除は必須ではないが（未使用になるだけで実害はない）、
+# `wrangler secret delete SUPABASE_URL` 等でオーナーが任意のタイミングで
+# 整理してよい。
 #
 # EventSub 退避 backlog 自動ドレイン（2項目目）用の追加 secrets:
 # - EVENTSUB_REPLAY_SECRET_PROD: 本番アプリ（twica）の EVENTSUB_REPLAY_SECRET と
