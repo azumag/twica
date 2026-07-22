@@ -100,18 +100,23 @@ preview_bucket_name = "twica-sound-dev"
 #   で切り替える設計のため、接続先が分かる名前にする。id は変更していない
 #   （既存の同一 Hyperdrive config を指し続けるため、接続先自体は不変）。
 #
-#   HYPERDRIVE_PLANETSCALE は本ブロック（本番トップレベル）には追加しない:
-#   preview 側（[env.preview.hyperdrive]）は #698 Stage 0 で実 PlanetScale
-#   preview DB・Hyperdrive config（twica-hyperdrive-planetscale-preview）が
-#   用意できたため追加済み。本番用の PlanetScale Hyperdrive config はまだ
-#   作成しておらず、#699（本番 cutover）の直前に作成してこのブロックへ追加する
-#   方針（本番切替の直前まで本番 binding を存在させないことで、誤って本番
-#   トラフィックが PlanetScale へ向かう窓を作らないため）。存在しないリソース
-#   ID を書くと `wrangler deploy` が壊れる点も #691 当時と変わらない。
+#   HYPERDRIVE_PLANETSCALE（本番トップレベル）は #699（本番 cutover）に向けて
+#   2026-07-22 に作成・配線済み: twica-hyperdrive-planetscale-prod
+#   （origin=PlanetScale prod、caching-disabled）。DB_TARGET 環境変数が本番で
+#   未設定の間は resolveConnectionString（src/lib/db/client.ts）が DB_TARGET
+#   解決後にしか本バインディングを参照しないため、配線済みでも完全に不活性
+#   （preview 側 #698 Stage 0 で実証済みの挙動と同じ）。
 
 [[hyperdrive]]
 binding = "HYPERDRIVE_SUPABASE"
 id = "38f11f06161c4c538694522e4ede74f5"
+localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
+# HYPERDRIVE_PLANETSCALE binding for production (#699 本番 cutover)
+# 本番用 PlanetScale 向け Hyperdrive バインディング (#699 本番 cutover)
+[[hyperdrive]]
+binding = "HYPERDRIVE_PLANETSCALE"
+id = "1dc2ec4d087e41a6931e8e18944c1fd2"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
 
 # Environment variables that must survive deploys (Dashboard-only vars get overwritten)
@@ -234,10 +239,10 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 #   twica-hyperdrive-planetscale-preview
 #   （origin=PlanetScale preview DB、cutover-rehearsal ロール、caching-disabled）
 #
-# 本番用（トップレベル [[hyperdrive]] への追加）はまだ行わない。本番側の
-# PlanetScale Hyperdrive config は #699 の直前に作成する方針（本番切替の
-# 直前まで本番 binding を存在させないことで、誤って本番トラフィックが
-# PlanetScale へ向かう窓を作らないため）。
+# 本番用（トップレベル [[hyperdrive]] への追加）も #699（本番 cutover）に向けて
+# 2026-07-22 に作成・配線済み: twica-hyperdrive-planetscale-prod
+# （origin=PlanetScale prod、caching-disabled）。詳細・不活性である根拠は
+# トップレベル [[hyperdrive]] コメント参照。
 
 [[env.preview.hyperdrive]]
 binding = "HYPERDRIVE_PLANETSCALE"
