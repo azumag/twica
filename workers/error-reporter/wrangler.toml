@@ -79,7 +79,7 @@ preview_id = "6604c73cdb474d6a8a50b8afd4076d5f"
 # ルート wrangler.toml の [[hyperdrive]] コメント（本ファイルと同じ根拠）を参照。
 [[hyperdrive]]
 binding = "HYPERDRIVE_SUPABASE"
-id = "38f11f06161c4c538694522e4ede74f5"
+id = "1dc2ec4d087e41a6931e8e18944c1fd2"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
 
 # preview 環境用 Hyperdrive バインディング。

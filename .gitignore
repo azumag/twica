@@ -75,6 +75,11 @@ supabase/.temp/
 # （docs/planetscale-schema-baseline.md 参照）。
 db/planetscale/.artifacts/
 
+# 本番cutover時のpg_dumpファイル（未redactの生PIIを含む）。#699実施時、
+# オーナー判断により削除せず一時保管する運用（本来のrunbook推奨は完了後削除）。
+# 長期保管が必要な場合は暗号化した外部ストレージへ移すこと。
+db/planetscale/.local-backups/
+
 # Claude
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
