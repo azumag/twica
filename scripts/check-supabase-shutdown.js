@@ -74,7 +74,8 @@ assertAbsent('.github/workflows/deploy-cloudflare.yml', [
 ])
 
 assertPresent('.github/workflows/deploy-cloudflare.yml', [
-  ['provider-neutral migration runner', /db:migrate:apply\s+--\s+--provider=planetscale/],
+  ['provider-neutral migration apply', /npm\s+run\s+db:migrate:apply/],
+  ['provider-neutral migration verify', /npm\s+run\s+db:migrate:verify/],
   ['PlanetScale migration secret', /PLANETSCALE_DATABASE_URL/],
 ])
 
@@ -105,7 +106,15 @@ for (const [name, command] of Object.entries(packageJson.scripts || {})) {
     fail(`package.json scripts.${name}: invokes the retired Supabase CLI path`)
   }
 }
-for (const scriptName of ['db:status', 'db:push', 'db:push:dry']) {
+for (const scriptName of [
+  'db:status',
+  'db:push',
+  'db:push:dry',
+  'db:migrate:status',
+  'db:migrate:plan',
+  'db:migrate:apply',
+  'db:migrate:verify',
+]) {
   if (!String(packageJson.scripts?.[scriptName] || '').includes('--provider=planetscale')) {
     fail(`package.json scripts.${scriptName}: must target PlanetScale`)
   }
