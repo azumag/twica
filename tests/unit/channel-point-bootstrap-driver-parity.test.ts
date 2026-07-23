@@ -70,6 +70,7 @@ vi.mock('@/lib/twitch/channel-points-access', () => ({
     enabled: false,
   }),
   recordChannelPointsApiFailure: vi.fn().mockResolvedValue(undefined),
+  persistChannelPointsCapability: vi.fn().mockResolvedValue(undefined),
 }))
 // handleApiError/handleDatabaseError → logAndRecordError → logErrorFromLogger は
 // 既定で getSupabaseAdmin() 経由の "errors" テーブル書き込みを行う（DB_DRIVER 移行

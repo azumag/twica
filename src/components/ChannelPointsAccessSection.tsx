@@ -128,15 +128,18 @@ export default function ChannelPointsAccessSection({
   }, [fetchState, isMaintenanceBlocked, t, tMaintenance]);
 
   // stale時の自動再判定。非Affiliate・スコープ有り・stale・現在probe中でない場合のみ、
-  // mount中に最大1回だけ実行する（無限/重複POST防止）。
+  // mount中に最大1回だけ実行する（無限/重複POST防止）。maintenance中はrunProbe自体が
+  // 拒否してエラーメッセージを出すだけになる（ユーザー操作無しで赤いエラーが出るのは
+  // 体験として不適切）ため、ここで事前にスキップする。guardをautoProbeStarted設定より
+  // 前に置くことで、maintenance解除後の再renderで自動的に再判定を試みられるようにする。
   useEffect(() => {
-    if (loading || autoProbeStarted.current || checking) return;
+    if (loading || autoProbeStarted.current || checking || isMaintenanceBlocked) return;
     const isNonAffiliate = state.broadcasterType === "";
     if (isNonAffiliate && state.hasRequiredScope && state.stale) {
       autoProbeStarted.current = true;
       void runProbe();
     }
-  }, [loading, state, checking, runProbe]);
+  }, [loading, state, checking, runProbe, isMaintenanceBlocked]);
 
   const handleReauthorize = useCallback(async () => {
     if (isMaintenanceBlocked) {

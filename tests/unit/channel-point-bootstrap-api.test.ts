@@ -33,6 +33,7 @@ vi.mock('@/lib/twitch/channel-points-access', () => ({
     enabled: false,
   }),
   recordChannelPointsApiFailure: vi.fn().mockResolvedValue(undefined),
+  persistChannelPointsCapability: vi.fn().mockResolvedValue(undefined),
 }))
 
 const session = {
@@ -223,5 +224,52 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
 
     expect(body.temporarilyUnavailable).toBe(true)
     expect(recordChannelPointsApiFailure).not.toHaveBeenCalled()
+  })
+
+  // #788 子E #793 Fableレビュー Major-2: Twitchが実際に200で成功したら、staleな
+  // 旧確定状態(unavailable/reauth_required/unknown)をavailableへ自己回復させる。
+  it('Twitch 200成功時、保存済みcapabilityがunavailableならavailableへ自己回復させる', async () => {
+    const { hasScope, getTwitchAccessToken } = await import('@/lib/twitch/token-manager')
+    const { getChannelPointsAccessState, persistChannelPointsCapability } =
+      await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockResolvedValue('token-1')
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }) as any
+    )
+    vi.mocked(getChannelPointsAccessState)
+      .mockResolvedValueOnce({ capability: 'unavailable', checkedAt: '2026-07-01T00:00:00.000Z', enabled: false })
+      .mockResolvedValueOnce({ capability: 'available', checkedAt: '2026-07-23T00:00:00.000Z', enabled: false })
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+    const body = await response.json()
+
+    expect(persistChannelPointsCapability).toHaveBeenCalledWith(
+      'streamer-1',
+      expect.objectContaining({ capability: 'available', definitive: true })
+    )
+    expect(body.capability).toBe('available')
+  })
+
+  it('Twitch 200成功時、保存済みcapabilityが既にavailableなら無駄な書き込みをしない', async () => {
+    const { hasScope, getTwitchAccessToken } = await import('@/lib/twitch/token-manager')
+    const { getChannelPointsAccessState, persistChannelPointsCapability } =
+      await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockResolvedValue('token-1')
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }) as any
+    )
+    vi.mocked(getChannelPointsAccessState).mockResolvedValue({
+      capability: 'available',
+      checkedAt: '2026-07-23T00:00:00.000Z',
+      enabled: false,
+    })
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    await GET(request())
+
+    expect(persistChannelPointsCapability).not.toHaveBeenCalled()
   })
 })

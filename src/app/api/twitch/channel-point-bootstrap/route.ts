@@ -23,7 +23,11 @@ import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
 } from "@/lib/db/schema";
-import { getChannelPointsAccessState, recordChannelPointsApiFailure } from "@/lib/twitch/channel-points-access";
+import {
+  getChannelPointsAccessState,
+  persistChannelPointsCapability,
+  recordChannelPointsApiFailure,
+} from "@/lib/twitch/channel-points-access";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -433,7 +437,22 @@ export async function GET(request: NextRequest) {
     if (capabilitySyncStatus) {
       await recordChannelPointsApiFailure(session.twitchUserId, capabilitySyncStatus);
     }
-    const accessState = await getChannelPointsAccessState(session.twitchUserId);
+    let accessState = await getChannelPointsAccessState(session.twitchUserId);
+
+    // #788 子E #793 Fableレビュー Major-2: Twitch APIが実際に200で成功したにもかかわらず、
+    // 保存済みcapabilityが古いunavailable/reauth_required/unknownのままだと、報酬一覧は
+    // 正常に返るのにUIが「利用不可」エラーを表示し続けてしまう（オンボーディング完了後の
+    // 自己回復手段が手動再判定しかない状態）。実際の200成功を根拠にavailableへ回復させる。
+    // 既にavailableなら無駄な書き込みをしない。
+    if (!capabilitySyncStatus && !requiresReauth && !temporarilyUnavailable && accessState?.capability !== "available") {
+      await persistChannelPointsCapability(session.twitchUserId, {
+        capability: "available",
+        reason: "ok",
+        httpStatus: 200,
+        definitive: true,
+      });
+      accessState = await getChannelPointsAccessState(session.twitchUserId);
+    }
 
     const responsePayload: Record<string, unknown> = {
       hasRequiredScope: true,

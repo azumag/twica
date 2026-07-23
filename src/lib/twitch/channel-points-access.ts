@@ -3,9 +3,19 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
 import { isPgReadEnabled, isPgWriteEnabled } from '@/lib/db/flags'
 import { withDbRetry } from '@/lib/db/retry'
+import { isPgMissingColumnError } from '@/lib/db/errors'
 import { users as usersTable } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import type { ChannelPointsCapability, DefinitiveCapabilityResult } from './channel-points'
+
+// migration未適用のデプロイ窓（列が存在しない）で読み取りが失敗した場合の安全な既定値。
+// 「行が存在しない」場合のnullとは意図的に区別する: ユーザー行自体は存在しうるが
+// 新3列だけ読めない状態なので、DBのDEFAULT値（'unknown'/null/false）と同じ値を返す。
+const DEPLOY_WINDOW_FALLBACK_STATE: ChannelPointsAccessState = {
+  capability: 'unknown',
+  checkedAt: null,
+  enabled: false,
+}
 
 /**
  * users テーブルに永続化されたChannel Points Capability状態のdata layer (#788 子B #790)。
@@ -24,29 +34,45 @@ export interface ChannelPointsAccessState {
 /**
  * 保存済みのCapability/確認日時/オプトイン状態を読み取る。
  * ユーザー行が存在しない場合は null を返す。
+ *
+ * migration未適用のデプロイ窓（新3列が存在しない）では例外を投げず
+ * DEPLOY_WINDOW_FALLBACK_STATE を返す (#788 子E #793 Fableレビュー Major-3)。
+ * これはこの関数のあらゆる呼び出し元（callback、bootstrap、account API）を
+ * 個別に保護する代わりに、data layer側で一元的にデプロイ窓耐性を持たせるための設計判断。
  */
 export async function getChannelPointsAccessState(
   twitchUserId: string
 ): Promise<ChannelPointsAccessState | null> {
   if (isPgReadEnabled()) {
-    const rows = await withDbRetry(
-      async () => {
-        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
-        const { db } = await getDb()
-        return db
-          .select({
-            capability: usersTable.channel_points_capability,
-            checkedAt: usersTable.channel_points_capability_checked_at,
-            enabled: usersTable.channel_points_enabled,
-          })
-          .from(usersTable)
-          .where(eq(usersTable.twitch_user_id, twitchUserId))
-          .limit(1)
-      },
-      'channel-points-access(get state, pg)',
-      // 読み取り専用クエリのため冪等（リトライ可）
-      { idempotent: true }
-    )
+    let rows: { capability: string | null; checkedAt: string | null; enabled: boolean | null }[]
+    try {
+      rows = await withDbRetry(
+        async () => {
+          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+          const { db } = await getDb()
+          return db
+            .select({
+              capability: usersTable.channel_points_capability,
+              checkedAt: usersTable.channel_points_capability_checked_at,
+              enabled: usersTable.channel_points_enabled,
+            })
+            .from(usersTable)
+            .where(eq(usersTable.twitch_user_id, twitchUserId))
+            .limit(1)
+        },
+        'channel-points-access(get state, pg)',
+        // 読み取り専用クエリのため冪等（リトライ可）
+        { idempotent: true }
+      )
+    } catch (error) {
+      if (isPgMissingColumnError(error)) {
+        logger.warn('[channel-points-access] channel_points_* columns not yet deployed (pg), falling back', {
+          twitchUserId,
+        })
+        return DEPLOY_WINDOW_FALLBACK_STATE
+      }
+      throw error
+    }
     const row = rows[0]
     if (!row) return null
     return {
@@ -63,6 +89,14 @@ export async function getChannelPointsAccessState(
     .maybeSingle()
 
   if (error) {
+    // PGRST204: 列未デプロイ（PostgRESTのスキーマキャッシュ固有のエラーコード）。
+    // pg経路の42703（isPgMissingColumnError）と同じ意味のデプロイ窓フォールバック。
+    if (error.code === 'PGRST204') {
+      logger.warn('[channel-points-access] channel_points_* columns not yet deployed (postgrest), falling back', {
+        twitchUserId,
+      })
+      return DEPLOY_WINDOW_FALLBACK_STATE
+    }
     logger.error('[channel-points-access] getChannelPointsAccessState failed', {
       twitchUserId,
       error: error.message,

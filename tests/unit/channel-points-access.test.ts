@@ -221,6 +221,21 @@ describe('getChannelPointsAccessState', () => {
 
       expect(result?.capability).toBe('unknown')
     })
+
+    // #788 子E #793 Fableレビュー Major-3: migration未適用のデプロイ窓(PGRST204)では
+    // throwせず、unknown/null/falseの安全な既定値を返す(呼び出し元を個別に保護しない)。
+    it('PGRST204(列未デプロイ)ではthrowせずデプロイ窓の既定値を返す', async () => {
+      const queryBuilder = createMockQueryBuilder()
+      ;(queryBuilder.maybeSingle as any).mockResolvedValue({
+        data: null,
+        error: { code: 'PGRST204', message: 'column not found' },
+      })
+      mockGetSupabaseAdmin.mockReturnValue({ from: vi.fn(() => queryBuilder) } as any)
+
+      const result = await getChannelPointsAccessState(TWITCH_USER_ID)
+
+      expect(result).toEqual({ capability: 'unknown', checkedAt: null, enabled: false })
+    })
   })
 
   describe('pg 経路(DB_DRIVER=pg-read)', () => {
@@ -268,6 +283,17 @@ describe('getChannelPointsAccessState', () => {
       const result = await getChannelPointsAccessState(TWITCH_USER_ID)
 
       expect(result?.capability).toBe('unknown')
+    })
+
+    // #788 子E #793 Fableレビュー Major-3: migration未適用のデプロイ窓(42703)では
+    // throwせず、unknown/null/falseの安全な既定値を返す。
+    it('42703(列未デプロイ)ではthrowせずデプロイ窓の既定値を返す', async () => {
+      const { db } = createSelectDbMock([{ reject: pgError('column "channel_points_capability" does not exist', '42703') }])
+      mockGetDb.mockResolvedValue({ db, sql: {} as any })
+
+      const result = await getChannelPointsAccessState(TWITCH_USER_ID)
+
+      expect(result).toEqual({ capability: 'unknown', checkedAt: null, enabled: false })
     })
   })
 })

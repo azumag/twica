@@ -11,7 +11,6 @@ import { validateCSRFToken } from "@/lib/csrf";
 // 解消）。このファイルは DB_DRIVER フラグや getDb 等の pg 直結モジュールを直接
 // 参照しない（ヘルパー内部に閉じる）。
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
-import { recordChannelPointsApiFailure } from "@/lib/twitch/channel-points-access";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -401,10 +400,15 @@ export async function POST(request: NextRequest) {
     if (!subscribeResponse.ok) {
       const error = await subscribeResponse.json();
 
-      // #788 子E #793: 401/403はDBのcapability確定状態を同期する。
-      if (subscribeResponse.status === 401 || subscribeResponse.status === 403) {
-        await recordChannelPointsApiFailure(session.twitchUserId, subscribeResponse.status);
-      }
+      // #788 子E #793 Fableレビュー Major-1: このEventSub作成呼び出しはapp access
+      // token（getAppAccessToken()、L333）で認証しており、配信者本人のUser Access
+      // Tokenではない。401はアプリ側credentialの問題であって配信者本人のCapabilityとは
+      // 無関係のため、ここでrecordChannelPointsApiFailure()を呼ぶとアプリ障害の瞬間に
+      // subscribeを叩いた全ユーザーの確定'available'状態を誤って破壊してしまう
+      // （親issue #788の中核要件「トークン不整合を恒久的な利用不可と誤判定しない」に反する）。
+      // 403についても「このユーザーがアプリへスコープ許可済みか」という別の意味論であり、
+      // rewards/bootstrap（ユーザートークン直接使用）と単純に同一視できないため、
+      // このrouteではCapability同期を行わない。
 
       // 409 Conflict: サブスクリプションが既に存在する場合
       // 既存のサブスクリプションを取得して返す

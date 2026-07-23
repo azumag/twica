@@ -344,6 +344,10 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if user can be a streamer (affiliate or partner)
+    // #788 子E #793: これはAffiliate/Partnerの既存自動プロビジョニング専用の判定であり、
+    // 意図的にbroadcaster_typeのみを見ている。非Affiliateユーザーの明示的オプトインによる
+    // streamers行作成は/api/account/channel-points PUT (enableChannelPointsStreamerAccess)
+    // という別経路で行われ、ここでは変更しない。
     const canBeStreamer = twitchUser.broadcaster_type === 'affiliate' || twitchUser.broadcaster_type === 'partner'
 
     // スコープ復元ガードCookieを確認（login側でDB障害等によりスコープ復元に失敗した場合に設定される）
