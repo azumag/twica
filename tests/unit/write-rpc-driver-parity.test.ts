@@ -106,6 +106,35 @@ function primePgDb(sqlMock: ReturnType<typeof createSqlMock>) {
   vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
 }
 
+/**
+ * Issue #794: pg経路でSELECTを含む処理向けの最小Drizzleモック。
+ * responsesをSELECT呼び出し順に返し、from/where/limitのチェインを再現する。
+ */
+function primePgDbWithSelectResponses(
+  sqlMock: ReturnType<typeof createSqlMock>,
+  responses: unknown[][]
+) {
+  let callIndex = 0
+  const select = vi.fn(() => {
+    const rows = responses[Math.min(callIndex, responses.length - 1)] ?? []
+    callIndex += 1
+    const builder: Record<string, unknown> = {}
+    builder.from = vi.fn(() => builder)
+    builder.where = vi.fn(() => builder)
+    builder.limit = vi.fn(() => builder)
+    builder.then = (
+      resolve: (value: unknown[]) => unknown,
+      reject: (reason: unknown) => unknown
+    ) => Promise.resolve(rows).then(resolve, reject)
+    return builder
+  })
+  vi.mocked(getDb).mockResolvedValue({
+    db: { select } as never,
+    sql: sqlMock as never,
+  })
+  return select
+}
+
 function setDefaultAuthMocks() {
   mockGetSession.mockResolvedValue(SESSION as any)
   mockCanUseStreamerFeatures.mockReturnValue(true)
@@ -218,14 +247,16 @@ describe('batch_update_card_drop_rates (#573)', () => {
       const rpc = vi.fn()
       const supabaseAdmin = createSupabaseAdminMock(rpc)
       const sqlMock = createSqlMock([{ rows: [{ result: { updated_count: 1 } }] }])
-      primePgDb(sqlMock)
+      const selectMock = primePgDbWithSelectResponses(sqlMock, [ACTIVE_CARDS, RECALCULATED_CARDS])
 
       const result = await recalculateIfAutoMode(supabaseAdmin as any, 'streamer-1', RARITY_WEIGHTS)
 
       expect(result).toEqual(RECALCULATED_CARDS)
+      expect(selectMock).toHaveBeenCalledTimes(2)
       expect(sqlMock).toHaveBeenCalledTimes(1)
       const { values } = renderSqlCall(sqlMock, 0)
       expect(values).toEqual(['streamer-1', JSON.stringify([{ id: 'card-1', drop_rate: 1 }])])
+      expect(supabaseAdmin.from).not.toHaveBeenCalled()
       expect(rpc).not.toHaveBeenCalled()
     })
   })
@@ -289,9 +320,13 @@ describe('batch_update_card_drop_rates (#573)', () => {
     it('pg 経路(DB_DRIVER=pg): 名前付き引数の SQL が実行され、レスポンス形状が postgrest 経路と一致する', async () => {
       vi.stubEnv('DB_DRIVER', 'pg')
       const rpc = vi.fn()
-      createBatchUpdateSupabaseMock({ rpc, updatedCards: [{ id: 'card-1', drop_rate: 0.5 }] })
+      const { from } = createBatchUpdateSupabaseMock({ rpc, updatedCards: [{ id: 'card-1', drop_rate: 0.5 }] })
       const sqlMock = createSqlMock([{ rows: [{ result: { updated_count: 1 } }] }])
-      primePgDb(sqlMock)
+      const selectMock = primePgDbWithSelectResponses(sqlMock, [
+        [{ id: 'streamer-1', rarity_weights: null }],
+        [{ id: 'card-1' }],
+        [{ id: 'card-1', drop_rate: 0.5 }],
+      ])
 
       const response = await batchUpdatePost(
         createRequest({ streamerId: 'streamer-1', updates: [{ id: 'card-1', dropRate: 0.5 }] })
@@ -300,24 +335,31 @@ describe('batch_update_card_drop_rates (#573)', () => {
       expect(response.status).toBe(200)
       const body = await response.json()
       expect(body).toMatchObject({ success: true, updated: 1 })
+      expect(selectMock).toHaveBeenCalledTimes(3)
       expect(sqlMock).toHaveBeenCalledTimes(1)
       const { text } = renderSqlCall(sqlMock, 0)
       expect(text).toContain('batch_update_card_drop_rates')
-      // 書き込み RPC が postgrest 経路(rpc)へ流れていないこと
+      // 読み取り・書き込みのいずれも postgrest 経路へ流れていないこと
+      expect(from).not.toHaveBeenCalled()
       expect(rpc).not.toHaveBeenCalled()
     })
 
     it('pg 経路で RPC エラー: 既存と同じ 500 (handleDatabaseError) を返す', async () => {
       vi.stubEnv('DB_DRIVER', 'pg')
-      createBatchUpdateSupabaseMock({})
+      const { from } = createBatchUpdateSupabaseMock({})
       const sqlMock = createSqlMock([{ reject: pgError('XX000', 'unexpected database error') }])
-      primePgDb(sqlMock)
+      const selectMock = primePgDbWithSelectResponses(sqlMock, [
+        [{ id: 'streamer-1', rarity_weights: null }],
+        [{ id: 'card-1' }],
+      ])
 
       const response = await batchUpdatePost(
         createRequest({ streamerId: 'streamer-1', updates: [{ id: 'card-1', dropRate: 0.5 }] })
       )
 
       expect(response.status).toBe(500)
+      expect(selectMock).toHaveBeenCalledTimes(2)
+      expect(from).not.toHaveBeenCalled()
     })
   })
 })
