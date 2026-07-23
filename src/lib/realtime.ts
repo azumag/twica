@@ -77,12 +77,71 @@ function eventUrl(streamerId: string, since: string, demo: boolean): string {
   return url.toString()
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { cache: 'no-store' })
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+/** OBS browser sources can run an older Chromium where fetch is less reliable. */
+function fetchJson<T>(url: string): Promise<T> {
+  return fetch(url, { cache: 'no-store' })
+    .then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      return response.json() as Promise<T>
+    })
+    .catch((fetchError) => {
+      return new Promise<T>((resolve, reject) => {
+        if (typeof XMLHttpRequest === 'undefined') {
+          reject(fetchError)
+          return
+        }
+        const xhr = new XMLHttpRequest()
+        xhr.open('GET', url, true)
+        xhr.responseType = 'json'
+        xhr.timeout = 10000
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve((xhr.response ?? JSON.parse(xhr.responseText)) as T)
+            } catch (parseError) {
+              reject(parseError)
+            }
+          } else {
+            reject(new Error(`HTTP ${xhr.status}`))
+          }
+        }
+        xhr.onerror = () => reject(fetchError)
+        xhr.ontimeout = () => reject(new Error('XHR timeout'))
+        xhr.send()
+      })
+    })
+}
+
+function eventGroupId(event: PollingEvent): string {
+  return event.eventId?.replace(/:\d+$/, '') ?? event.id
+}
+
+/**
+ * Emit history rows as the same multi-draw batch shape formerly broadcast by
+ * Realtime. This preserves the overlay's “one sound per N-draw” behaviour.
+ */
+function emitHistoryBatches(
+  events: PollingEvent[],
+  callback: (payload: GachaBroadcastPayload) => void
+): void {
+  const groups = new Map<string, PollingEvent[]>()
+  for (const event of events) {
+    const id = eventGroupId(event)
+    const group = groups.get(id)
+    if (group) group.push(event)
+    else groups.set(id, [event])
   }
-  return response.json() as Promise<T>
+
+  for (const group of groups.values()) {
+    const first = group[0]
+    callback({
+      type: 'gacha',
+      card: first.card,
+      ...(group.length > 1 ? { cards: group.map((event) => event.card) } : {}),
+      userTwitchUsername: first.userTwitchUsername,
+      rewardId: first.rewardId ?? null,
+    })
+  }
 }
 
 /**
@@ -118,15 +177,6 @@ export function subscribeToGachaResults(
     }, delay)
   }
 
-  const emit = (event: PollingEvent) => {
-    callback({
-      type: 'gacha',
-      card: event.card,
-      userTwitchUsername: event.userTwitchUsername,
-      rewardId: event.rewardId ?? null,
-    })
-  }
-
   const poll = async () => {
     if (disposed) return
     options.onStatusChange?.('POLLING')
@@ -140,6 +190,7 @@ export function subscribeToGachaResults(
           .catch(() => ({ event: null })),
       ])
 
+      const newHistoryEvents: PollingEvent[] = []
       for (const event of historyResponse.events ?? []) {
         const eventMs = Date.parse(event.redeemedAt)
         cursor = Number.isFinite(eventMs)
@@ -147,8 +198,9 @@ export function subscribeToGachaResults(
           : event.redeemedAt
         if (seenHistoryIds.has(event.id)) continue
         seenHistoryIds.add(event.id)
-        emit(event)
+        newHistoryEvents.push(event)
       }
+      emitHistoryBatches(newHistoryEvents, callback)
 
       const demoEvent = demoResponse.event ?? null
       if (demoEvent) {
@@ -158,7 +210,12 @@ export function subscribeToGachaResults(
           : demoEvent.redeemedAt
         if (!seenDemoIds.has(demoEvent.id)) {
           seenDemoIds.add(demoEvent.id)
-          emit(demoEvent)
+          callback({
+            type: 'gacha',
+            card: demoEvent.card,
+            userTwitchUsername: demoEvent.userTwitchUsername,
+            rewardId: demoEvent.rewardId ?? null,
+          })
         }
       }
 
