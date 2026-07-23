@@ -23,7 +23,18 @@ jobs:
         run: npm ci
 
       - name: Typecheck
-        run: npm run typecheck
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee typecheck-output.log
+
+      - name: Upload failed typecheck output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-output
+          path: typecheck-output.log
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Supabase shutdown independence check
         # Static boundary check: runtime/browser/deploy paths must remain usable
