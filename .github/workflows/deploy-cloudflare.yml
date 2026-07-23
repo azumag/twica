@@ -18,6 +18,26 @@
 # Supabase マイグレーションは `supabase db push --db-url` でビルド前に自動適用される。
 # 各 GitHub Environment に SUPABASE_DB_URL を設定すること。
 #
+# Production の実DBは issue #699 で PlanetScale (Postgres互換) へ cutover 済みのため、
+# `supabase db push` は rollback用に温存している旧Supabase本番へのみ適用される。実際に
+# アプリが読み書きする本番PlanetScaleへは、別ファイル
+# `.github/workflows/planetscale-migrate.yml` が
+# `scripts/db-migrate.js apply --provider=planetscale` を自動実行する
+# （production・main ブランチのみ。preview はまだ PlanetScale 未cutoverのため対象外）。
+# このworkflowとは別ファイルに分離している（なぜ別ファイルかの理由も含め）詳細は
+# `planetscale-migrate.yml` 冒頭のコメントを参照。初回有効化前に一度だけ手動での
+# bootstrap 登録が必要。詳細・手順は `docs/planetscale-schema-baseline.md` の
+# 「issue #788・CI自動化に伴う追記」節を参照。
+#
+# Production's live DB was cut over from Supabase to PlanetScale (Postgres-compatible)
+# in issue #699, so `supabase db push` now only reaches the retained (rollback-only)
+# legacy Supabase production DB. A separate workflow file,
+# `.github/workflows/planetscale-migrate.yml`, applies
+# `scripts/db-migrate.js apply --provider=planetscale` against the actual production
+# DB on every push to main (preview is not yet cut over, so it's excluded). See that
+# file's header comment for why it's kept separate. A one-time manual bootstrap
+# registration is required before first use — see `docs/planetscale-schema-baseline.md`.
+#
 # - preview branch → twica-preview Worker (preview environment)
 # - main branch    → twica Worker (production environment)
 #
@@ -37,6 +57,12 @@
 #    - NEXT_PUBLIC_SUPABASE_URL
 #    - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 #    - NEXT_PUBLIC_TWITCH_CLIENT_ID
+#
+# 3. "production" environment only, additionally:
+#    "production" environment のみ、追加で以下の Secret を設定:
+#    - PLANETSCALE_DATABASE_URL: PlanetScale本番Postgresへの直接接続文字列
+#      (migration専用。Hyperdrive経由のアプリ実行時接続とは別物。
+#      db/planetscale/bootstrap.sql 等の手動適用と同じ接続文字列を使うこと)
 
 name: Cloudflare Deploy Support
 

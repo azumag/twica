@@ -155,6 +155,85 @@ migrationがある状態でも確認なしに通常applyを実行してよい」
 以降、PlanetScale向けの新規migrationは通常の `apply --provider=planetscale`
 （`--bootstrap` 無し）で追加していける。
 
+**注意**: 上記「未適用0件」はChunk 1〜2検証当時、対象ツリーに73件しか存在しなかった
+（＝#788のmigrationファイルがまだ無かった）ために到達した状態である。下記の追記時点では
+ツリーに74件目（#788分）が存在するため、「未適用0件」の意味が逆転する
+（もはや「全件bootstrap完了」ではなく「#788まで誤ってbootstrapに巻き込んでしまった」
+ことを意味する）。両者は矛盾ではなく、対象ツリーのファイル数が異なることによる違いである。
+
+**重要（issue #788・CI自動化に伴う追記、本番未実施の場合は必ず読むこと）**:
+本節の「73件」は本ドキュメント執筆時点（Chunk 1〜2）の`supabase/migrations/`ファイル数
+（71件）+ bootstrap + baseline の合計である。その後 issue #788 で
+`supabase/migrations/20260723150000_add_channel_points_capability.sql` が追加されたため、
+現在の `--provider=planetscale` pending件数は **74件**（既存73 + 新規1件）になっている。
+
+**`--bootstrap` は「実DBが既にその内容を反映済み」のmigrationにのみ使ってよい
+（SQLを実行せず履歴にのみ登録するため）。`20260723150000_add_channel_points_capability.sql`
+は本番PlanetScaleにまだ一度も適用されていない、実行が必要な真に新規のmigrationのため、
+このファイルを`--bootstrap`で登録してはならない**。誤って含めてしまうと、
+「履歴上は適用済み」なのに実際にはALTER TABLE/CREATE FUNCTIONが未実行という状態になり、
+`src/lib/twitch/channel-points-access.ts`のdeploy-windowフォールバック
+（列欠落を`capability: 'unknown'`へ静かに縮退させる設計）と組み合わさって、
+**CIも赤くならず気付かれないまま該当機能が本番で恒久的に無効化される**事故につながる
+（設計レビューで指摘されたCritical項目）。
+
+本番でまだ一度も`--bootstrap`を実行していない場合、以下の手順で行う。
+
+**重要（2回目のレビューで判明した罠の回避）**: bootstrap実行と検証を同じツリー
+（同じ`git checkout`）で行ってはならない。`status`はその時点で**作業ツリーに存在する
+ファイルしか見ない**ため、bootstrapを「`20260723150000`が存在しないツリー」で実行した後、
+**同じツリーのまま**`status`を見ても「未適用0件」にしかならず、これは
+`--bootstrap`が正しく73件だけを登録できた場合と、誤って#788を含むツリーで実行してしまい
+74件登録してしまった場合の**両方で同じ表示になり、区別できない**。検証は必ず
+`20260723150000`を含む別のツリーへ切り替えてから行うこと。
+
+```bash
+# 1. bootstrap対象のツリーを、ブランチ名（例: origin/main）ではなく固定コミットSHAで
+#    明示的に指定する。ブランチ名は本PRのマージ後さらに main が進むと指す内容が
+#    変わってしまうため、「今」#788を含まないことが確認済みの固定点を使う
+#    （claude-reviewで指摘: ブランチ名指定は将来のmain進行に対して脆弱）。
+#    2026-07-23時点でorigin/mainの最新コミットは 9066070dc7405e7b7b44eb153fa3558b4c3e1083
+#    であり、これは#788を含まないことを確認済み（このコミット以前のどのmainコミットでもよい）。
+git fetch origin main
+git checkout 9066070dc7405e7b7b44eb153fa3558b4c3e1083
+# 上記SHAが古くなっていた場合、または別のコミットを使う場合に備え、
+# 実ファイルの有無による機械的な確認も必ず行う（ブランチ名同様、SHA直指定であっても
+# 「この手順を書いた時点の情報が古いまま放置される」リスクは残るため、
+# 最終防御としてコマンドで検証する）。
+test -f supabase/migrations/20260723150000_add_channel_points_capability.sql && \
+  { echo "NG: このツリーには#788のmigrationが既に含まれている。bootstrapしないこと"; exit 1; }
+DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --bootstrap --provider=planetscale
+
+# 2. 【必須】検証は #788 のmigrationファイルを含む別ツリー
+#    （本CI自動化ブランチ、または#788昇格PRマージ後のmain）へ checkout し直してから行う。
+git checkout <#788のmigrationファイルを含むコミット>  # 例: このブランチ、または昇格後のmain
+DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js status --provider=planetscale
+#  -> 「未適用: 1件（20260723150000_add_channel_points_capability）」なら成功
+#     （bootstrapが正しく73件のみを登録し、#788は真に未適用のまま残っている）。
+#  -> 「未適用: 0件」なら失敗（#788が誤ってbootstrap時に巻き込まれている）。
+#     続行せず、下記の復旧手順（DELETE）へ進むこと。
+```
+
+検証を通過すれば、以降は`20260723150000_add_channel_points_capability.sql`のみが
+未適用として残る。この1件は、#788昇格PRをmainへマージした後の最初の本番デプロイで
+`.github/workflows/planetscale-migrate.yml`が自動的に適用する（下記「CI自動化について」参照）。
+今すぐ手動で適用したい場合は、#788を含むツリーのまま
+`DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --provider=planetscale`
+を追加実行してもよいが、CIジョブと同じ処理を先取りするだけなので必須ではない。
+
+もし既にマージ後の`main`（#788を含む状態）に対して誤って`--bootstrap`を実行してしまい、
+上記step 2の検証で「未適用: 0件」（失敗）と判明した場合は、`twica_meta.schema_migrations`
+から`20260723150000`のversion行を手動DELETEしてから`apply --provider=planetscale`を
+再実行することで復旧できる（`--bootstrap`は履歴登録のみでSQL実行を伴わないため、
+この復旧操作自体に副作用は無い）。
+
+**CI自動化について**: `.github/workflows/planetscale-migrate.yml`（production環境・
+mainブランチのみが対象の独立workflow）が、`main`へのpush毎に`apply --provider=planetscale`
+（`--bootstrap`無し）を自動実行する。上記のワンタイムbootstrapが完了していれば、以降の
+新規migrationはこのworkflowが自動適用する。`--bootstrap`はワンタイム作業のためCIには
+含めない。`deploy-cloudflare.yml`とは意図的に別ファイルに分離している
+（理由は`planetscale-migrate.yml`冒頭コメント参照）。
+
 **「pending 73件」の成立条件について（N-7、Fableレビュー2回目で明記）**: 上記の「73件」は
 既存71ファイル（`00001`〜`20260718140000`）+ bootstrap + baseline の合計だが、この73件を
 **まっさらなDBへ`--bootstrap`無しの素の`apply --provider=planetscale`で実行することはできない**。

@@ -814,7 +814,7 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
       新規経常コストが生じうる、運用複雑さの増加が個人開発の運用体制に見合わない）。
       **2026-07-19、オーナー承認済み。数分停止方式（pg_dump/restore）で確定。
       #667/#696はこの判断によりクローズしてよい**
-- [ ] **切替後の migration 適用手段と migration 履歴の移送**: 2026-07-19、
+- [x] **切替後の migration 適用手段と migration 履歴の移送**: 2026-07-19、
       設計調査完了（`docs/planetscale-migration-audit.md` 6.3節）。推奨方針:
       - `supabase_migrations.schema_migrations`（履歴テーブル）は**移送しない**
         （スキーマ指定なしのpg_dumpだと`twica_app`が権限を持たないスキーマに
@@ -826,11 +826,29 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
         `00051_add_card_owner_stats.sql`の`SET LOCAL statement_timeout`問題を
         自然に回避）を推奨。Flyway等の確立ツールは既存71ファイルの命名規則変更が
         必須になり導入コストが見合わないため見送り
-      - `.github/workflows/deploy-cloudflare.yml`は新規環境変数`MIGRATION_TARGET`
+      - ~~`.github/workflows/deploy-cloudflare.yml`は新規環境変数`MIGRATION_TARGET`
         （`supabase`|`planetscale`、未設定時は安全側`supabase`）でステップ内
-        分岐する設計を推奨。preview→productionの順で段階的に切替可能
-      - **未実装**（別途スクリプト実装・CI変更のPRが必要）。**この設計方針で
-        実装を進めてよいかオーナー確認をお願いします**
+        分岐する設計を推奨。preview→productionの順で段階的に切替可能~~
+        （**実装時に更新**: 実際には`MIGRATION_TARGET`ではなく、Issue #692で
+        実装済みの provider-neutral runner `scripts/db-migrate.js`の
+        `--provider=planetscale`フラグをそのまま使う設計に変更した。DBごとに
+        provider指定が固定される用途では専用の環境変数より既存フラグの再利用が
+        シンプルなため）
+      - **実装済み（2026-07-23）**: `scripts/db-migrate.js apply --provider=planetscale`
+        を実行する新規workflow `.github/workflows/planetscale-migrate.yml`を追加した。
+        production・mainブランチのみが対象（preview はまだ PlanetScale 未cutoverのため
+        対象外。cutover後にpreview向けの同種workflowを追加する）。既存の
+        `legacy-app-deploy`/`auxiliary-workers`（`deploy-cloudflare.yml`側）はブロック
+        しない独立workflowとした（Cloudflare Workers Builds有効時、実アプリデプロイは
+        この一連のworkflowと無関係に進むため、ここでブロックしても実効性が薄い。かつ
+        アプリ側は既にmigration遅延への耐性＝deploy-window fallbackを実装済みのため）。
+        `deploy-cloudflare.yml`に同居させず別ファイルにした理由は
+        `planetscale-migrate.yml`冒頭のコメント参照（claude-reviewの指摘を受けて
+        ファイル分離に変更した）。
+        初回有効化前に一度だけ、既存migrationの手動bootstrap登録が必要
+        （`docs/planetscale-schema-baseline.md`「issue #788・CI自動化に伴う追記」節参照）。
+        新規secret `PLANETSCALE_DATABASE_URL`をGitHub Environment "production"に
+        追加するオーナー作業が別途必要（このセッションからは追加不可）。
 - [ ] **ロールバック時の差分データの扱い方針**: 7章で指摘した「切替後に
       PlanetScale側にのみ書き込まれたデータ」の扱いは未確定。数分停止方式
       採用（上記）により発生確率は低い想定だが、方針自体はオーナー判断が必要
