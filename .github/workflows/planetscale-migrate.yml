@@ -54,6 +54,21 @@
 # デフォルトのGitHub通知）に委ねる。required check化やSlack通知等の追加アラートは
 # 現時点ではYAGNIと判断し導入していない（必要になれば別途追加する）。
 #
+# 【運用制約: このパイプラインで自動適用してよいのは additive なmigrationのみ
+# （claude-reviewで指摘、必ず読むこと）】
+# 上記のdeploy-window fallback前提（列欠落時に機能を無効化して縮退する設計）は、
+# 「列追加」のような加法的(additive)な変更にしか成り立たない。`DROP COLUMN`・
+# `RENAME COLUMN`・型変更のような非加法的(non-additive)な変更を含むmigrationを
+# このパイプラインでそのまま自動適用すると、Cloudflare Workers Builds経由の
+# アプリデプロイ（本workflowとは非同期・順序保証なしで進行する）との兼ね合いで、
+# 新アプリコードが未適用スキーマを読む、または旧アプリコードが削除済みカラムを
+# 読むといった本番障害に直結しうる（industry-standardなexpand/contractパターンで
+# いう「contract」フェーズを無条件に自動化してしまうことに相当）。
+# `scripts/db-migrate.js`にはmigrationの加法性を判定する仕組みが無いため、
+# 非加法的な変更を含むmigrationについては、このworkflowでの自動適用に任せず、
+# デプロイ順序を人間が管理した上で手動適用すること（例: 新コードのデプロイ完了を
+# 確認してから該当migrationを個別に`apply`する）。
+#
 # Prerequisites / 前提条件:
 # - GitHub Environment "production" に Secret `PLANETSCALE_DATABASE_URL`
 #   （PlanetScale本番Postgresへの直接接続文字列。migration専用、Hyperdrive経由の
