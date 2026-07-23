@@ -89,9 +89,14 @@ export async function getChannelPointsAccessState(
     .maybeSingle()
 
   if (error) {
-    // PGRST204: 列未デプロイ（PostgRESTのスキーマキャッシュ固有のエラーコード）。
-    // pg経路の42703（isPgMissingColumnError）と同じ意味のデプロイ窓フォールバック。
-    if (error.code === 'PGRST204') {
+    // 列未デプロイのデプロイ窓フォールバック（Fableレビュー Major-A修正）。
+    // SELECT/order/filterでの列欠落はPostgreSQLが42703を返し、PGRST204は
+    // insert/update payloadの列欠落専用（PGRST204のみの判定はSELECT系読み取りでは
+    // 実際には作動しない）。本リポジトリの既存前例（collection-existence.ts の
+    // isReadColumnMissingError、token-manager.ts の hasScope コメント、
+    // reauth/route.ts・check-subscription/route.ts の両コード判定）と同じ規約で
+    // 両方を許容する。pg経路の42703（isPgMissingColumnError）と同じ意味。
+    if (error.code === 'PGRST204' || error.code === '42703') {
       logger.warn('[channel-points-access] channel_points_* columns not yet deployed (postgrest), falling back', {
         twitchUserId,
       })

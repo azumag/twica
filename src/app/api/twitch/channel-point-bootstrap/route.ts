@@ -11,6 +11,7 @@ import {
   type EventSubSubscriptionForStatus,
 } from "@/lib/twitch/eventsub-status";
 import { logPerf, perfStart } from "@/lib/perf";
+import { logger } from "@/lib/logger";
 // Issue #690 (#570 パイロット踏襲): pg 直結の読み取り経路。DB_DRIVER=pg-read/pg の
 // ときのみ使われる。getDb() は withDbRetry の queryFn 内で呼ぶ規約
 // (src/lib/db/retry.ts 参照)。フラグ未設定時はこれらのモジュールは一切呼ばれない。
@@ -445,13 +446,24 @@ export async function GET(request: NextRequest) {
     // 自己回復手段が手動再判定しかない状態）。実際の200成功を根拠にavailableへ回復させる。
     // 既にavailableなら無駄な書き込みをしない。
     if (!capabilitySyncStatus && !requiresReauth && !temporarilyUnavailable && accessState?.capability !== "available") {
-      await persistChannelPointsCapability(session.twitchUserId, {
-        capability: "available",
-        reason: "ok",
-        httpStatus: 200,
-        definitive: true,
-      });
-      accessState = await getChannelPointsAccessState(session.twitchUserId);
+      // Fableレビュー Major-B: この自己回復はあくまで補助的な同期であり、
+      // 失敗（デプロイ窓・maintenance中の書き込み不可等）してもTwitchから実際に
+      // 取得できた報酬一覧を返すレスポンス自体を巻き込んではならない
+      // （401/403同期のrecordChannelPointsApiFailureと同じ「握りつぶす」方針に揃える）。
+      try {
+        await persistChannelPointsCapability(session.twitchUserId, {
+          capability: "available",
+          reason: "ok",
+          httpStatus: 200,
+          definitive: true,
+        });
+        accessState = await getChannelPointsAccessState(session.twitchUserId);
+      } catch (error) {
+        logger.warn("Channel Point Bootstrap API: failed to self-heal capability to available (ignored)", {
+          twitchUserId: session.twitchUserId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     const responsePayload: Record<string, unknown> = {

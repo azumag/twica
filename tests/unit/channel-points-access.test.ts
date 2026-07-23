@@ -222,9 +222,28 @@ describe('getChannelPointsAccessState', () => {
       expect(result?.capability).toBe('unknown')
     })
 
-    // #788 子E #793 Fableレビュー Major-3: migration未適用のデプロイ窓(PGRST204)では
+    // #788 子E #793 Fableレビュー Major-3: migration未適用のデプロイ窓では
     // throwせず、unknown/null/falseの安全な既定値を返す(呼び出し元を個別に保護しない)。
-    it('PGRST204(列未デプロイ)ではthrowせずデプロイ窓の既定値を返す', async () => {
+    //
+    // 最終レビュー Major-A: SELECT/order/filterでの列欠落はPostgreSQLが42703を返し、
+    // PGRST204はinsert/update payloadの列欠落専用（このgetXxxはSELECTのみを行う
+    // 読み取り関数のため、本番で実際に発生するのは42703）。PGRST204のみを見ていると
+    // 実際のデプロイ窓で保護されない（src/lib/collections/collection-existence.ts の
+    // 既存コメント参照）。両方をテストする。
+    it('42703(列未デプロイ、SELECT経路で実際に発生するコード)ではthrowせずデプロイ窓の既定値を返す', async () => {
+      const queryBuilder = createMockQueryBuilder()
+      ;(queryBuilder.maybeSingle as any).mockResolvedValue({
+        data: null,
+        error: { code: '42703', message: 'column "channel_points_capability" does not exist' },
+      })
+      mockGetSupabaseAdmin.mockReturnValue({ from: vi.fn(() => queryBuilder) } as any)
+
+      const result = await getChannelPointsAccessState(TWITCH_USER_ID)
+
+      expect(result).toEqual({ capability: 'unknown', checkedAt: null, enabled: false })
+    })
+
+    it('PGRST204(念のための多重防御)でもthrowせずデプロイ窓の既定値を返す', async () => {
       const queryBuilder = createMockQueryBuilder()
       ;(queryBuilder.maybeSingle as any).mockResolvedValue({
         data: null,

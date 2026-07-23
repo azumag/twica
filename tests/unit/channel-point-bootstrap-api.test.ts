@@ -272,4 +272,34 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
 
     expect(persistChannelPointsCapability).not.toHaveBeenCalled()
   })
+
+  // 最終レビュー Major-B: 自己回復の書き込み自体が失敗（デプロイ窓・maintenance中の
+  // 書き込み不可等）しても、Twitchから実際に取得できた報酬一覧のレスポンスを
+  // 500に巻き込んではならない（401/403同期のrecordChannelPointsApiFailureと同じ
+  // 「握りつぶす」方針）。
+  it('自己回復の書き込みが失敗しても、報酬一覧のレスポンス自体は200のまま返す', async () => {
+    const { hasScope, getTwitchAccessToken } = await import('@/lib/twitch/token-manager')
+    const { getChannelPointsAccessState, persistChannelPointsCapability } =
+      await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockResolvedValue('token-1')
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: 'reward-1', title: 'Reward', cost: 100, is_enabled: true }] }), { status: 200 }) as any
+    )
+    vi.mocked(getChannelPointsAccessState).mockResolvedValue({
+      capability: 'unavailable',
+      checkedAt: '2026-07-01T00:00:00.000Z',
+      enabled: false,
+    })
+    vi.mocked(persistChannelPointsCapability).mockRejectedValueOnce(
+      new Error('column "channel_points_capability" does not exist')
+    )
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.rewards).toHaveLength(1)
+  })
 })
