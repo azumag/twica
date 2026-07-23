@@ -5,6 +5,17 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { getTwitchAccessToken } from "@/lib/twitch/token-manager";
 import { validateCSRFToken } from "@/lib/csrf";
+import { recordChannelPointsApiFailure } from "@/lib/twitch/channel-points-access";
+
+/**
+ * TwitchのChannel Points APIが401/403を返した場合、DBのcapability確定状態を
+ * 同期する (#788 子E #793)。同期自体の失敗は主処理を止めない（helper内でcatch済み）。
+ */
+async function syncCapabilityOnTwitchFailure(twitchUserId: string, status: number): Promise<void> {
+  if (status === 401 || status === 403) {
+    await recordChannelPointsApiFailure(twitchUserId, status);
+  }
+}
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -54,6 +65,7 @@ export async function GET(request: Request) {
     );
 
     if (!response.ok) {
+      await syncCapabilityOnTwitchFailure(session.twitchUserId, response.status);
       const error = await response.json();
       return handleApiError(error, "Twitch API rewards fetch");
     }
@@ -126,6 +138,7 @@ export async function POST(request: Request) {
     );
 
     if (!response.ok) {
+      await syncCapabilityOnTwitchFailure(session.twitchUserId, response.status);
       const error = await response.json();
       return handleApiError(error, "Twitch API reward creation");
     }

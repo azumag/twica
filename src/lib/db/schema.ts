@@ -165,6 +165,10 @@ export const users = pgTable('users', {
   twitch_sub_verified_at: timestamp('twitch_sub_verified_at', { withTimezone: true, mode: 'string' }),
   // 00023: DDL に NOT NULL は無い（DEFAULT FALSE のみ）
   twitch_has_sub: boolean('twitch_has_sub').default(false),
+  // 20260723150000 (#788): 非Affiliate配信者向けChannel Points Capability判定・オプトイン
+  channel_points_capability: text('channel_points_capability').notNull().default('unknown'),
+  channel_points_capability_checked_at: timestamp('channel_points_capability_checked_at', { withTimezone: true, mode: 'string' }),
+  channel_points_enabled: boolean('channel_points_enabled').notNull().default(false),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
 })

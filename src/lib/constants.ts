@@ -526,7 +526,6 @@ export const UI_STRINGS = {
       NONE: '未設定',
     },
     MESSAGES: {
-      AFFILIATE_REQUIRED: 'チャネルポイントを使用するには、Twitchアフィリエイトまたはパートナーである必要があります。',
       RATE_LIMIT: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
       FETCH_FAILED: '報酬の取得に失敗しました。再度ログインしてください。',
       REWARD_CREATED: '報酬を作成しました',

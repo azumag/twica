@@ -1,5 +1,17 @@
 [
   {
+    "path": "/api/account/channel-points",
+    "methods": [
+      "POST",
+      "PUT"
+    ],
+    "category": "account",
+    "maintenanceBehavior": "block",
+    "reason": "非Affiliate配信者のChannel Points Capability再判定(POST)・明示的有効化(PUT)。DB書き込み(capability確定状態・channel_points_enabled・streamers UPSERT)を伴う。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-23"
+  },
+  {
     "path": "/api/admin/eventsub-replay",
     "methods": [
       "POST"

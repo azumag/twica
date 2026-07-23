@@ -340,6 +340,10 @@ export const rateLimits = {
   // 認証の運用エンドポイントであり、通常利用者は叩かないため他のadmin系操作と
   // 同水準（分あたり10回）に絞る。
   eventsubReplay: createRatelimit("eventsubReplay", 10, 60 * 1000),
+  // Issue #788: アカウント設定のChannel Points状態確認・再判定・有効化。
+  // 再判定/有効化はTwitch APIへの実疎通(probeChannelPointsCapability)を伴うため、
+  // 過剰な呼び出しを防ぐ専用の低めの制限をPOST/PUT共通で使う。
+  accountChannelPointsProbe: createRatelimit("accountChannelPointsProbe", 10, 60 * 1000),
   // Issue #693: DB接続先（Supabase/PlanetScale）health/diagnosticsエンドポイント。
   // 共有シークレット認証の運用エンドポイントだが、eventsubReplay（書き込みを伴う
   // リプレイ実行）より低リスクな読み取り専用のため、監視ツールからの定期ポーリング

@@ -313,6 +313,10 @@ export interface Database {
           // Twitch API によるサブスク確認のキャッシュ
           twitch_sub_verified_at: string | null
           twitch_has_sub: boolean
+          // 20260723150000 (#788): 非Affiliate配信者向けChannel Points Capability判定・オプトイン
+          channel_points_capability: string
+          channel_points_capability_checked_at: string | null
+          channel_points_enabled: boolean
           created_at: string
           updated_at: string
         }
@@ -326,6 +330,9 @@ export interface Database {
           twitch_scopes?: string[]
           twitch_sub_verified_at?: string | null
           twitch_has_sub?: boolean
+          channel_points_capability?: string
+          channel_points_capability_checked_at?: string | null
+          channel_points_enabled?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -339,6 +346,9 @@ export interface Database {
           twitch_scopes?: string[]
           twitch_sub_verified_at?: string | null
           twitch_has_sub?: boolean
+          channel_points_capability?: string
+          channel_points_capability_checked_at?: string | null
+          channel_points_enabled?: boolean
           created_at?: string
           updated_at?: string
         }
