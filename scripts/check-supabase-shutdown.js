@@ -79,6 +79,23 @@ assertAbsent('.github/workflows/deploy-cloudflare.yml', [
   ['Supabase browser build variable', /NEXT_PUBLIC_SUPABASE_/],
 ])
 
+assertAbsent('wrangler.toml', [
+  ['retired application Hyperdrive binding', /HYPERDRIVE_SUPABASE/],
+])
+assertPresent('wrangler.toml', [
+  ['production PlanetScale binding', /binding\s*=\s*['"]HYPERDRIVE_PLANETSCALE['"]/],
+  ['preview PlanetScale binding', /env\.preview\.hyperdrive/],
+])
+
+assertAbsent('.env.local.example', [
+  ['Supabase public URL', /NEXT_PUBLIC_SUPABASE_URL/],
+  ['Supabase elevated key', /SUPABASE_(?:SECRET|SERVICE_ROLE)_KEY/],
+  ['Supabase database URL', /SUPABASE_DB_URL/],
+])
+assertPresent('.env.local.example', [
+  ['PlanetScale local URL', /DATABASE_URL_PLANETSCALE/],
+])
+
 assertPresent('.github/workflows/deploy-cloudflare.yml', [
   ['provider-neutral migration apply', /npm\s+run\s+db:migrate:apply/],
   ['provider-neutral migration verify', /npm\s+run\s+db:migrate:verify/],
@@ -132,4 +149,4 @@ if (failures.length > 0) {
   process.exit(1)
 }
 
-console.log('OK: runtime, overlay, startup validation, and deploy paths are independent of Supabase')
+console.log('OK: runtime, overlay, startup validation, bindings, and deploy paths are independent of Supabase')
