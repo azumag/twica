@@ -39,6 +39,7 @@ function buildCheckUrls(baseUrl, paths) {
   return paths.map((entry) => `${trimmedBase}${entry.startsWith('/') ? entry : `/${entry}`}`)
 }
 
+/** @param {{ status?: number, error?: unknown }} input */
 function formatUrlCheckFailure({ status, error }) {
   if (error) {
     const message = error instanceof Error ? error.message : String(error)
