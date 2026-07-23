@@ -842,11 +842,9 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
         しない独立workflowとした（Cloudflare Workers Builds有効時、実アプリデプロイは
         この一連のworkflowと無関係に進むため、ここでブロックしても実効性が薄い。かつ
         アプリ側は既にmigration遅延への耐性＝deploy-window fallbackを実装済みのため）。
-        `deploy-cloudflare.yml`に同居させず別ファイルにしたのは、GitHub Actionsの
-        concurrencyがrun単位で効くため（job単位で別groupを指定しても、そのjobが属する
-        run自体がworkflowレベルのconcurrency＝`deploy-cloudflare.yml`の
-        `cancel-in-progress: true`でキャンセルされる動作からは守れない。claude-reviewの
-        指摘を受けてファイル分離に変更）。
+        `deploy-cloudflare.yml`に同居させず別ファイルにした理由は
+        `planetscale-migrate.yml`冒頭のコメント参照（claude-reviewの指摘を受けて
+        ファイル分離に変更した）。
         初回有効化前に一度だけ、既存migrationの手動bootstrap登録が必要
         （`docs/planetscale-schema-baseline.md`「issue #788・CI自動化に伴う追記」節参照）。
         新規secret `PLANETSCALE_DATABASE_URL`をGitHub Environment "production"に

@@ -24,22 +24,19 @@
 # `.github/workflows/planetscale-migrate.yml` が
 # `scripts/db-migrate.js apply --provider=planetscale` を自動実行する
 # （production・main ブランチのみ。preview はまだ PlanetScale 未cutoverのため対象外）。
-# このworkflowとは別ファイルに分離している理由は同ファイルのコメント参照
-# （このworkflow全体の`concurrency: cancel-in-progress: true`に本番migration実行中の
-# ジョブが巻き込まれてキャンセルされる事故を、ファイル分離によって構造的に防ぐため）。
-# 初回有効化前に一度だけ手動での bootstrap 登録が必要。詳細・手順は
-# `docs/planetscale-schema-baseline.md` の「issue #788・CI自動化に伴う追記」節を参照。
+# このworkflowとは別ファイルに分離している（なぜ別ファイルかの理由も含め）詳細は
+# `planetscale-migrate.yml` 冒頭のコメントを参照。初回有効化前に一度だけ手動での
+# bootstrap 登録が必要。詳細・手順は `docs/planetscale-schema-baseline.md` の
+# 「issue #788・CI自動化に伴う追記」節を参照。
 #
 # Production's live DB was cut over from Supabase to PlanetScale (Postgres-compatible)
 # in issue #699, so `supabase db push` now only reaches the retained (rollback-only)
 # legacy Supabase production DB. A separate workflow file,
 # `.github/workflows/planetscale-migrate.yml`, applies
 # `scripts/db-migrate.js apply --provider=planetscale` against the actual production
-# DB on every push to main (preview is not yet cut over, so it's excluded). It lives in
-# its own file (see that file's comments) specifically so this workflow's
-# `concurrency: cancel-in-progress: true` can never cancel an in-progress production
-# migration. A one-time manual bootstrap registration is required before first use —
-# see `docs/planetscale-schema-baseline.md`.
+# DB on every push to main (preview is not yet cut over, so it's excluded). See that
+# file's header comment for why it's kept separate. A one-time manual bootstrap
+# registration is required before first use — see `docs/planetscale-schema-baseline.md`.
 #
 # - preview branch → twica-preview Worker (preview environment)
 # - main branch    → twica Worker (production environment)

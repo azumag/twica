@@ -226,9 +226,7 @@ mainブランチのみが対象の独立workflow）が、`main`へのpush毎に`
 （`--bootstrap`無し）を自動実行する。上記のワンタイムbootstrapが完了していれば、以降の
 新規migrationはこのworkflowが自動適用する。`--bootstrap`はワンタイム作業のためCIには
 含めない。`deploy-cloudflare.yml`とは意図的に別ファイルに分離している
-（理由は`planetscale-migrate.yml`冒頭コメント参照。要約: `deploy-cloudflare.yml`の
-`concurrency: cancel-in-progress: true`に本番migration実行中のジョブが巻き込まれて
-キャンセルされる事故を、ファイル分離により構造的に防ぐため）。
+（理由は`planetscale-migrate.yml`冒頭コメント参照）。
 
 **「pending 73件」の成立条件について（N-7、Fableレビュー2回目で明記）**: 上記の「73件」は
 既存71ファイル（`00001`〜`20260718140000`）+ bootstrap + baseline の合計だが、この73件を
