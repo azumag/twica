@@ -7,37 +7,30 @@
  * part of a request to the retired database. Runtime traffic therefore fails
  * safe to the pg driver.
  *
- * The legacy path remains available only behind TWICA_ENABLE_LEGACY_SUPABASE.
- * It exists for the existing PostgREST parity tests and for an explicitly
- * controlled local investigation. Production/preview must not set it.
+ * The compatibility path exists only for old driver-parity fixtures. Both
+ * NODE_ENV=test and TWICA_ENABLE_LEGACY_SUPABASE=true are required, so an
+ * accidentally retained production/preview variable cannot reactivate it.
  */
 
 export type DbDriverMode = 'postgrest' | 'pg-read' | 'pg'
 
 const LEGACY_SUPABASE_ENV = 'TWICA_ENABLE_LEGACY_SUPABASE'
 
-/**
- * Whether the retired Supabase/PostgREST compatibility path may be used.
- *
- * This flag is intentionally independent from DB_DRIVER. A stale
- * DB_DRIVER=postgrest or DB_DRIVER=pg-read must not reactivate Supabase after
- * the project has been shut down. Tests opt in from tests/setup.ts so the old
- * driver-parity fixtures can remain useful while the dead code is removed in
- * a later cleanup.
- */
+/** Whether test-only Supabase/PostgREST compatibility fixtures may run. */
 export function isLegacySupabaseEnabled(): boolean {
-  return process.env[LEGACY_SUPABASE_ENV]?.trim().toLowerCase() === 'true'
+  return process.env.NODE_ENV === 'test'
+    && process.env[LEGACY_SUPABASE_ENV]?.trim().toLowerCase() === 'true'
 }
 
 /**
  * Resolve the database driver for ordinary application reads/writes.
  *
- * Production behaviour (legacy flag absent): always `pg`, including when
- * DB_DRIVER is unset, invalid, `postgrest`, or `pg-read`. `pg-read` is not safe
- * without Supabase because its writes intentionally use PostgREST.
+ * Production/preview: always `pg`, including when DB_DRIVER is unset, invalid,
+ * `postgrest`, or `pg-read`. `pg-read` is unsafe without Supabase because its
+ * writes intentionally used PostgREST.
  *
- * Compatibility behaviour (legacy flag explicitly true): preserve the former
- * staged-migration semantics so parity tests can exercise PostgREST/pg-read.
+ * Tests may explicitly opt into the former staged-migration semantics so the
+ * existing parity fixtures remain useful until their mechanical deletion.
  */
 export function getDbDriverMode(): DbDriverMode {
   const raw = process.env.DB_DRIVER?.trim()
@@ -49,8 +42,6 @@ export function getDbDriverMode(): DbDriverMode {
   if (isLegacySupabaseEnabled()) {
     if (raw === 'pg-read') return 'pg-read'
     if (raw === 'postgrest') return 'postgrest'
-    // Preserve the pre-cutover default only inside the explicit compatibility
-    // sandbox. Invalid/missing values cannot reach this branch in production.
     return 'postgrest'
   }
 
@@ -69,11 +60,8 @@ export function isPgWriteEnabled(): boolean {
 }
 
 /**
- * Driver for the gacha critical path.
- *
- * GACHA_DB_DRIVER=postgrest is honoured only while the explicit legacy flag is
- * enabled. This prevents a forgotten emergency rollback variable from routing
- * paid redemptions to a shut-down Supabase project.
+ * Driver for the gacha critical path. The former postgrest override is honoured
+ * only inside the explicit test compatibility sandbox.
  */
 export function getGachaDbDriver(): 'postgrest' | 'pg' {
   const raw = process.env.GACHA_DB_DRIVER?.trim()
@@ -89,7 +77,5 @@ export function getGachaDbDriver(): 'postgrest' | 'pg' {
     return 'pg'
   }
 
-  // Only reachable in the explicitly enabled compatibility sandbox
-  // (DB_DRIVER=postgrest/pg-read).
   return isLegacySupabaseEnabled() ? 'postgrest' : 'pg'
 }
