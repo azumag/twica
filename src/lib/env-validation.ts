@@ -4,6 +4,11 @@ export interface EnvConfig {
   optional?: boolean
 }
 
+interface RequiredEnvVarGroup {
+  names: readonly string[]
+  label: string
+}
+
 export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_APP_URL', required: true },
   { name: 'NEXT_PUBLIC_TWITCH_CLIENT_ID', required: true },
@@ -22,7 +27,7 @@ export const requiredEnvVars: EnvConfig[] = [
  * PlanetScale cutover. Keeping them here would make module initialization fail
  * before any pg query whenever the retired Supabase project is shut down.
  */
-export const requiredEnvVarGroups = [] as const
+export const requiredEnvVarGroups: ReadonlyArray<RequiredEnvVarGroup> = []
 
 export function validateEnvVars(): { valid: boolean; missing: string[] } {
   const missing: string[] = []
