@@ -151,6 +151,24 @@ jobs:
     permissions:
       contents: read
     environment: production
+    # workflow全体のconcurrencyグループ（cancel-in-progress: true）に巻き込まれると、
+    # main連続pushで実行中の本番migrationジョブごとキャンセルされうる（claude-reviewの
+    # 指摘）。job単位のconcurrencyを別グループで指定するとworkflowレベルの設定を
+    # このジョブに限り上書きできる。cancel-in-progress: false により、後続runは
+    # 先行のmigrationジョブが完走するまでキューで待つ（キャンセルしない）。
+    # required(トランザクション内)なmigrationはキャンセルされてもコネクション切断で
+    # 自動rollbackされ安全だが、将来 forbidden(CREATE INDEX CONCURRENTLY等、
+    # トランザクション外実行が必須)なmigrationが追加された場合、中断は
+    # INVALIDなオブジェクトの残留・手動復旧を要する半端な状態を招きうるため。
+    concurrency:
+      group: planetscale-migrate-${{ github.ref }}
+      cancel-in-progress: false
+    # pg_advisory_lock（scripts/db-migrate.js）はロック取得までブロックする。
+    # 手動bootstrap作業との時間的重複等でロックが解放されない場合に備え、
+    # GitHub Actionsのデフォルトタイムアウト(6時間)に張り付き続けないよう上限を設ける
+    # （claude-reviewの指摘）。通常のDDL適用は数秒〜数分で完了する想定のため、
+    # 10分は十分に余裕を持たせた値。
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
