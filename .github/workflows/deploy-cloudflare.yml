@@ -144,7 +144,7 @@ jobs:
   # 初回有効化前に一度だけ、既存migrationを「実行せず履歴登録のみ」する手動bootstrapが
   # 必要（docs/planetscale-schema-baseline.md 参照）。未実施のままだと、history table
   # 不在 + pending件数過多で db-migrate.js 自身の安全ガード（shouldBlockFreshApply）が
-  # 働き、データ破壊なく exit 1 する（＝赤くなり続けるだけで、73件が誤実行されることはない）。
+  # 働き、データ破壊なく exit 1 する（＝赤くなり続けるだけで、74件が誤実行されることはない）。
   planetscale-migrations:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
     runs-on: ubuntu-latest

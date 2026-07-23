@@ -171,22 +171,35 @@ migrationがある状態でも確認なしに通常applyを実行してよい」
 **CIも赤くならず気付かれないまま該当機能が本番で恒久的に無効化される**事故につながる
 （設計レビューで指摘されたCritical項目）。
 
-本番でまだ一度も`--bootstrap`を実行していない場合、正しい手順は以下の2段階:
+本番でまだ一度も`--bootstrap`を実行していない場合、**推奨手順は「#788昇格PRをmainへ
+マージする前に」以下を実行することである**（`git checkout main`と書くだけでは、実行の
+タイミングによって「main」が指す内容が変わってしまい危険なため、日付ではなく
+「マージ前」というタイミングそのものを基準にする）:
 
 ```bash
-# 1. 20260723150000_add_channel_points_capability.sql を含まないコミット
-#    （#788昇格前のmainブランチ等）を checkout し、既存73件のみをbootstrap登録する。
-git checkout main   # #788がまだ昇格されていないコミット
+# 1. #788昇格PR（issue #788のmigrationファイル + 本CI自動化を含むPR）をまだ
+#    mainへマージしていない時点の origin/main を checkout し、
+#    既存73件のみをbootstrap登録する。
+git fetch origin main && git checkout origin/main
 DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --bootstrap --provider=planetscale
 
-# 2. 上記の後、20260723150000_add_channel_points_capability.sql を含むコミットで、
-#    この1件だけを実際に適用する（--bootstrap を付けない通常の apply）。
-git checkout <#788を含むコミット>
-DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --provider=planetscale
+# 2. 【必須】bootstrap直後に必ず status で検証する。
+#    「未適用: 0件」ならこの時点のmainに20260723150000が含まれてしまっている
+#    （＝#788昇格PRが既にマージ済みの状態でこの手順を実行してしまった）ということなので、
+#    続行せず本節末尾の復旧手順（DELETE）に進むこと。
+#    「未適用: 1件（20260723150000_add_channel_points_capability）」であることを
+#    確認できて初めて成功。
+DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js status --provider=planetscale
 ```
 
-既に（誤って）#788を含む状態で`--bootstrap`を実行してしまった場合は、
-`twica_meta.schema_migrations`から該当versionの行を手動DELETEしてから
+上記のstep 2の検証を通過すれば、以降は`20260723150000_add_channel_points_capability.sql`
+のみが未適用として残る。この1件は、#788昇格PRをmainへマージした後の最初の本番デプロイで
+`planetscale-migrations`ジョブが自動的に適用する（下記「CI自動化について」参照）。
+今すぐ手動で適用したい場合は`DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --provider=planetscale`
+を追加実行してもよいが、CIジョブと同じ処理を先取りするだけなので必須ではない。
+
+もし既にマージ後の`main`（#788を含む状態）に対して誤って`--bootstrap`を実行してしまった
+場合は、`twica_meta.schema_migrations`から`20260723150000`のversion行を手動DELETEしてから
 `apply --provider=planetscale`を再実行することで復旧できる
 （`--bootstrap`は履歴登録のみでSQL実行を伴わないため、この復旧操作自体に副作用は無い）。
 
