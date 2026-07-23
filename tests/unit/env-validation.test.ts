@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 
 const originalEnv = { ...process.env }
 
@@ -11,177 +11,111 @@ function restoreEnv() {
   Object.assign(process.env, originalEnv)
 }
 
+function removeSupabaseEnv() {
+  delete process.env.NEXT_PUBLIC_SUPABASE_URL
+  delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY
+  delete process.env.SUPABASE_SECRET_KEY
+  delete process.env.SUPABASE_DB_URL
+}
+
 beforeEach(() => {
   restoreEnv()
 })
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 describe('requiredEnvVars', () => {
-  it('contains NEXT_PUBLIC_APP_URL', async () => {
+  it('keeps the non-database runtime requirements', async () => {
     const { requiredEnvVars } = await import('@/lib/env-validation')
-    const found = requiredEnvVars.find(v => v.name === 'NEXT_PUBLIC_APP_URL')
-    expect(found).toBeDefined()
-    expect(found?.required).toBe(true)
+    const names = requiredEnvVars.map((entry) => entry.name)
+
+    expect(names).toContain('NEXT_PUBLIC_APP_URL')
+    expect(names).toContain('NEXT_PUBLIC_TWITCH_CLIENT_ID')
+    expect(names).toContain('TWITCH_CLIENT_SECRET')
+    expect(names).toContain('TWITCH_EVENTSUB_SECRET')
+    expect(names).toContain('CSRF_TOKEN_SALT')
   })
 
-  it('contains TWITCH_EVENTSUB_SECRET', async () => {
-    const { requiredEnvVars } = await import('@/lib/env-validation')
-    const found = requiredEnvVars.find(v => v.name === 'TWITCH_EVENTSUB_SECRET')
-    expect(found).toBeDefined()
-    expect(found?.required).toBe(true)
-  })
-
-  it('contains CSRF_TOKEN_SALT', async () => {
-    const { requiredEnvVars } = await import('@/lib/env-validation')
-    const found = requiredEnvVars.find(v => v.name === 'CSRF_TOKEN_SALT')
-    expect(found).toBeDefined()
-    expect(found?.required).toBe(true)
-  })
-
-  it('contains all required Supabase variables', async () => {
+  it('does not require a Supabase URL or key after the PlanetScale cutover', async () => {
     const { requiredEnvVars, requiredEnvVarGroups } = await import('@/lib/env-validation')
-    const supabaseVars = requiredEnvVars.filter(v =>
-      v.name.includes('SUPABASE') || v.name.includes('NEXT_PUBLIC_SUPABASE')
-    )
-    const supabaseGroups = requiredEnvVarGroups.filter(v =>
-      v.names.some(name => name.includes('SUPABASE') || name.includes('NEXT_PUBLIC_SUPABASE'))
-    )
-    expect(supabaseVars.length + supabaseGroups.length).toBeGreaterThanOrEqual(3)
-  })
+    const serialized = JSON.stringify({ requiredEnvVars, requiredEnvVarGroups })
 
-  it('contains all required Twitch variables', async () => {
-    const { requiredEnvVars } = await import('@/lib/env-validation')
-    const twitchVars = requiredEnvVars.filter(v =>
-      v.name.includes('TWITCH') || v.name.includes('NEXT_PUBLIC_TWITCH')
-    )
-    // Changed from 4 to 3: TWITCH_CLIENT_ID was consolidated into NEXT_PUBLIC_TWITCH_CLIENT_ID
-    expect(twitchVars.length).toBeGreaterThanOrEqual(3)
+    expect(serialized).not.toContain('SUPABASE')
   })
 })
 
 describe('validateEnvVars', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  beforeAll(() => {
-    process.env.BLOB_READ_WRITE_TOKEN = 'test-token'
-  })
-
-  it('returns valid: true when all required vars are set', async () => {
+  it('returns valid when all current required vars are set', async () => {
     const { validateEnvVars } = await import('@/lib/env-validation')
-    const result = validateEnvVars()
-    expect(result.valid).toBe(true)
-    expect(result.missing).toHaveLength(0)
+    expect(validateEnvVars()).toEqual({ valid: true, missing: [] })
   })
 
-  it('returns valid: false when required var is missing', async () => {
+  it('continues to reject a missing current requirement', async () => {
     const { validateEnvVars } = await import('@/lib/env-validation')
     delete process.env.NEXT_PUBLIC_APP_URL
+
     const result = validateEnvVars()
     expect(result.valid).toBe(false)
     expect(result.missing).toContain('NEXT_PUBLIC_APP_URL')
   })
 
-  it('accepts new Supabase API key names without legacy keys', async () => {
+  it('is valid with every Supabase variable deleted', async () => {
     const { validateEnvVars } = await import('@/lib/env-validation')
-    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_test'
-    process.env.SUPABASE_SECRET_KEY = 'sb_secret_test'
+    removeSupabaseEnv()
 
     const result = validateEnvVars()
-
-    expect(result.valid).toBe(true)
-  })
-
-  it('reports Supabase key groups when neither new nor legacy keys are set', async () => {
-    const { validateEnvVars } = await import('@/lib/env-validation')
-    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY
-    delete process.env.SUPABASE_SECRET_KEY
-
-    const result = validateEnvVars()
-
-    expect(result.valid).toBe(false)
-    expect(result.missing).toContain('NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY')
-    expect(result.missing).toContain('SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY')
+    expect(result).toEqual({ valid: true, missing: [] })
   })
 })
 
 describe('getEnvVar', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  it('returns value when env var is set', async () => {
+  it('returns a trimmed value when set', async () => {
     const { getEnvVar } = await import('@/lib/env-validation')
-    process.env.TEST_VAR = 'test-value'
-    const result = getEnvVar('TEST_VAR', false)
-    expect(result).toBe('test-value')
+    process.env.TEST_VAR = '  test-value\n'
+    expect(getEnvVar('TEST_VAR')).toBe('test-value')
   })
 
-  it('returns undefined when env var is not set and required is false', async () => {
+  it('returns undefined for an optional missing variable', async () => {
     const { getEnvVar } = await import('@/lib/env-validation')
     delete process.env.TEST_VAR
-    const result = getEnvVar('TEST_VAR', false)
-    expect(result).toBeUndefined()
+    expect(getEnvVar('TEST_VAR')).toBeUndefined()
   })
 
-  it('throws when env var is not set and required is true', async () => {
+  it('throws for a required missing variable', async () => {
     const { getEnvVar } = await import('@/lib/env-validation')
     delete process.env.TEST_VAR
-    expect(() => getEnvVar('TEST_VAR', true)).toThrow()
-  })
-
-  it('returns value when required is true and var is set', async () => {
-    const { getEnvVar } = await import('@/lib/env-validation')
-    process.env.TEST_VAR = 'required-value'
-    const result = getEnvVar('TEST_VAR', true)
-    expect(result).toBe('required-value')
+    expect(() => getEnvVar('TEST_VAR', true)).toThrow(
+      'Required environment variable TEST_VAR is not set'
+    )
   })
 })
 
 describe('validateCSRFTokenSalt', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  it('returns valid: true when CSRF_TOKEN_SALT is set and at least 32 characters', async () => {
+  it('accepts at least 32 characters', async () => {
     const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
     process.env.CSRF_TOKEN_SALT = 'a'.repeat(32)
-    const result = validateCSRFTokenSalt()
-    expect(result.valid).toBe(true)
-    expect(result.error).toBeUndefined()
+    expect(validateCSRFTokenSalt()).toEqual({ valid: true })
   })
 
-  it('returns valid: false when CSRF_TOKEN_SALT is not set', async () => {
+  it('rejects a missing salt', async () => {
     const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
     delete process.env.CSRF_TOKEN_SALT
-    const result = validateCSRFTokenSalt()
-    expect(result.valid).toBe(false)
-    expect(result.error).toBe('CSRF_TOKEN_SALT is not set')
+    expect(validateCSRFTokenSalt()).toEqual({
+      valid: false,
+      error: 'CSRF_TOKEN_SALT is not set',
+    })
   })
 
-  it('returns valid: false when CSRF_TOKEN_SALT is less than 32 characters', async () => {
+  it('rejects a short salt', async () => {
     const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
     process.env.CSRF_TOKEN_SALT = 'a'.repeat(31)
-    const result = validateCSRFTokenSalt()
-    expect(result.valid).toBe(false)
-    expect(result.error).toBe('CSRF_TOKEN_SALT must be at least 32 characters for cryptographic security')
-  })
-
-  it('returns valid: true when CSRF_TOKEN_SALT is exactly 32 characters', async () => {
-    const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
-    process.env.CSRF_TOKEN_SALT = 'a'.repeat(32)
-    const result = validateCSRFTokenSalt()
-    expect(result.valid).toBe(true)
-  })
-
-  it('returns valid: true when CSRF_TOKEN_SALT is more than 32 characters', async () => {
-    const { validateCSRFTokenSalt } = await import('@/lib/env-validation')
-    process.env.CSRF_TOKEN_SALT = 'a'.repeat(64)
-    const result = validateCSRFTokenSalt()
-    expect(result.valid).toBe(true)
+    expect(validateCSRFTokenSalt()).toEqual({
+      valid: false,
+      error: 'CSRF_TOKEN_SALT must be at least 32 characters for cryptographic security',
+    })
   })
 })
