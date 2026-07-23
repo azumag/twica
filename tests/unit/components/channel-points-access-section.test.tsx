@@ -48,6 +48,9 @@ const JA = {
   unknownRetryButton: "再試行",
   capabilityLostWarning: "Channel Points操作には再認証・再判定が必要です。配信設定自体は引き続き利用できます。",
   enableSuccess: "配信者機能を有効化しました。",
+  enableSuccessSessionPending:
+    "配信者機能を有効化しました。ただしセッションの更新に失敗したため、反映には再ログインが必要な場合があります。",
+  enableFailed: "有効化に失敗しました。時間をおいて再試行してください。",
   genericError: "エラーが発生しました。時間をおいて再試行してください。",
   maintenanceWriteDisabled: "メンテナンス中は操作できません",
 } as const;
@@ -340,6 +343,39 @@ describe("ChannelPointsAccessSection", () => {
     await waitFor(() => expect(routerMocks.refresh).toHaveBeenCalledTimes(1));
   });
 
+  // 自動レビュー(claude[bot])指摘 Major-2: PUTがDB更新成功だがsession cookie再署名に
+  // 失敗した場合、サーバーはstatus 500 + { code: 'session_resync_failed', enabled: true }
+  // を返す。response.okだけで成功判定すると「失敗」と誤表示され、直後のGETで
+  // enabled:trueが表示されて矛盾する。data.enabled===trueを見て成功扱いすることを確認する。
+  it("PUTがsession_resync_failed(500だがenabled:true)を返した場合も成功として表示し、GET再取得・router.refreshを行う", async () => {
+    let getCallCount = 0;
+    const getHandler = vi.fn(() => {
+      getCallCount += 1;
+      if (getCallCount === 1) {
+        return jsonResponse(
+          makeState({ capability: "available", enabled: false, hasRequiredScope: true, canEnable: true })
+        );
+      }
+      return jsonResponse(makeState({ capability: "available", enabled: true, hasRequiredScope: true }));
+    });
+    const putHandler = vi.fn(() =>
+      jsonResponse({ code: "session_resync_failed", enabled: true, error: "..." }, 500)
+    );
+    vi.stubGlobal("fetch", buildFetchMock({ get: getHandler, put: putHandler }));
+
+    renderSection({ mode: "off" });
+
+    const enableButton = await screen.findByRole("button", { name: JA.availableEnableButton });
+    fireEvent.click(enableButton);
+
+    await waitFor(() => expect(putHandler).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText(JA.enableSuccessSessionPending)).toBeInTheDocument());
+    // 「有効化に失敗しました」という矛盾したエラー文言は表示されない
+    expect(screen.queryByText(JA.enableFailed)).not.toBeInTheDocument();
+    await waitFor(() => expect(getHandler).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(routerMocks.refresh).toHaveBeenCalledTimes(1));
+  });
+
   it("unavailable状態では案内メッセージ(Twitch Creator Dashboard誘導)と再判定ボタンを表示し、クリックでPOSTが呼ばれる", async () => {
     const postHandler = vi.fn(() => jsonResponse({}));
     vi.stubGlobal(
@@ -506,6 +542,7 @@ describe("ChannelPointsAccessSection", () => {
       "unknown.retryButton",
       "capabilityLostWarning",
       "messages.enableSuccess",
+      "messages.enableSuccessSessionPending",
       "messages.enableFailed",
       "messages.genericError",
     ];

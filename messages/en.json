@@ -1356,6 +1356,7 @@
     "capabilityLostWarning": "Channel Points actions require re-authorization or a recheck. Your streaming settings remain accessible.",
     "messages": {
       "enableSuccess": "Streamer features have been enabled.",
+      "enableSuccessSessionPending": "Streamer features have been enabled, but your session could not be refreshed. You may need to log in again for it to fully take effect.",
       "enableFailed": "Failed to enable. Please try again later.",
       "genericError": "An error occurred. Please try again later."
     }

@@ -574,6 +574,55 @@ describe('/api/account/channel-points', () => {
       expect(enableChannelPointsStreamerAccess).not.toHaveBeenCalled()
     })
 
+    // 自動レビュー(claude[bot])指摘: #21のunavailableに加え、reauth_required /
+    // probe_temporarily_failed へのcodeマッピングも回帰検知対象にする。
+    it('#21b returns reauth_required (409) and does not enable when a fresh probe says reauth_required', async () => {
+      const { hasScope } = await import('@/lib/twitch/token-manager')
+      const { probeChannelPointsCapability } = await import('@/lib/twitch/channel-points')
+      const { enableChannelPointsStreamerAccess } = await import('@/lib/twitch/channel-points-access')
+      vi.mocked(hasScope).mockResolvedValue(true)
+      vi.mocked(probeChannelPointsCapability).mockResolvedValue({
+        capability: 'reauth_required',
+        reason: 'unauthorized',
+        httpStatus: 401,
+        definitive: true,
+      } as any)
+
+      const { PUT } = await import('@/app/api/account/channel-points/route')
+      const response = await PUT(putRequest())
+      const body = await response.json()
+
+      expect(response.status).toBe(409)
+      expect(body.code).toBe('reauth_required')
+      expect(body.enabled).toBe(false)
+      expect(enableChannelPointsStreamerAccess).not.toHaveBeenCalled()
+    })
+
+    it('#21c returns probe_temporarily_failed (409) and does not enable when a fresh probe is non-definitive (e.g. 429)', async () => {
+      const { hasScope } = await import('@/lib/twitch/token-manager')
+      const { probeChannelPointsCapability } = await import('@/lib/twitch/channel-points')
+      const { enableChannelPointsStreamerAccess, persistChannelPointsCapability } =
+        await import('@/lib/twitch/channel-points-access')
+      vi.mocked(hasScope).mockResolvedValue(true)
+      vi.mocked(probeChannelPointsCapability).mockResolvedValue({
+        capability: 'unknown',
+        reason: 'rate_limited',
+        httpStatus: 429,
+        definitive: false,
+      } as any)
+
+      const { PUT } = await import('@/app/api/account/channel-points/route')
+      const response = await PUT(putRequest())
+      const body = await response.json()
+
+      expect(response.status).toBe(409)
+      expect(body.code).toBe('probe_temporarily_failed')
+      expect(body.enabled).toBe(false)
+      expect(enableChannelPointsStreamerAccess).not.toHaveBeenCalled()
+      // definitive=falseの結果を確定状態として保存してはならない
+      expect(persistChannelPointsCapability).not.toHaveBeenCalled()
+    })
+
     it('#22 always re-probes rather than trusting a stale DB state: a live "available" probe triggers enable', async () => {
       // Deliberately do NOT configure getChannelPointsAccessState to say
       // 'available' here (it defaults to 'unknown' via the shared beforeEach,

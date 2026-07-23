@@ -197,10 +197,22 @@ export default function ChannelPointsAccessSection({
         credentials: "include",
       });
       const data = await response.json().catch(() => ({}));
-      if (response.ok && data.enabled) {
-        setMessage({ type: "success", text: t("messages.enableSuccess") });
+      // 自動レビュー指摘: response.okだけで成功判定すると、DB更新は成功したが
+      // session cookie再署名だけ失敗したケース（PUT成功時はcode: 'session_resync_failed'
+      // + status 500 + enabled: true を返す設計）を「失敗」と誤表示し、直後のfetchState()で
+      // enabled:trueが表示されて矛盾する。data.enabled===trueを主基準にする。
+      if (data.enabled === true) {
+        setMessage({
+          type: "success",
+          text:
+            data.code === "session_resync_failed"
+              ? t("messages.enableSuccessSessionPending")
+              : t("messages.enableSuccess"),
+        });
         await fetchState();
-        // server component（dashboard layout等のisStreamer判定）へ反映
+        // server component（dashboard layout等のisStreamer判定）へ反映。
+        // session_resync_failed時はCookie未更新のため次回ログインまで完全には
+        // 反映されないが、呼び出し自体は無害なため常に実行する。
         router.refresh();
       } else {
         const maintenanceError = parseMaintenanceError(response, data);

@@ -1353,6 +1353,7 @@
     "capabilityLostWarning": "Channel Points操作には再認証・再判定が必要です。配信設定自体は引き続き利用できます。",
     "messages": {
       "enableSuccess": "配信者機能を有効化しました。",
+      "enableSuccessSessionPending": "配信者機能を有効化しました。ただしセッションの更新に失敗したため、反映には再ログインが必要な場合があります。",
       "enableFailed": "有効化に失敗しました。時間をおいて再試行してください。",
       "genericError": "エラーが発生しました。時間をおいて再試行してください。"
     }

@@ -350,6 +350,23 @@ describe('persistChannelPointsCapability', () => {
 
       await expect(persistChannelPointsCapability(TWITCH_USER_ID, AVAILABLE_RESULT)).rejects.toBe(updateError)
     })
+
+    // 自動レビュー(claude[bot])指摘 Major-1: 読み取り側(getChannelPointsAccessState)
+    // と対になるデプロイ窓フォールバックが書き込み側に無く、POST/PUT
+    // /api/account/channel-points が列未デプロイの窓で500になっていた。
+    it.each(['PGRST204', '42703'])(
+      '%sではthrowせず、保存をスキップして正常終了する(デプロイ窓フォールバック)',
+      async (code) => {
+        const queryBuilder = createMockQueryBuilder()
+        ;(queryBuilder as any).then = (resolve: (v: unknown) => void) => {
+          resolve({ error: { code, message: 'column not found' } })
+          return queryBuilder
+        }
+        mockGetSupabaseAdmin.mockReturnValue({ from: vi.fn(() => queryBuilder) } as any)
+
+        await expect(persistChannelPointsCapability(TWITCH_USER_ID, AVAILABLE_RESULT)).resolves.toBeUndefined()
+      }
+    )
   })
 
   describe('pg 経路(DB_DRIVER=pg)', () => {
@@ -384,6 +401,14 @@ describe('persistChannelPointsCapability', () => {
 
       await expect(persistChannelPointsCapability(TWITCH_USER_ID, AVAILABLE_RESULT)).resolves.toBeUndefined()
       expect(calls).toHaveLength(2)
+    })
+
+    // 自動レビュー(claude[bot])指摘 Major-1: pg経路でも同様にデプロイ窓を吸収する。
+    it('42703ではthrowせず、保存をスキップして正常終了する(デプロイ窓フォールバック)', async () => {
+      const { db } = createUpdateDbMock([{ reject: pgError('column "channel_points_capability" does not exist', '42703') }])
+      mockGetDb.mockResolvedValue({ db, sql: {} as any })
+
+      await expect(persistChannelPointsCapability(TWITCH_USER_ID, AVAILABLE_RESULT)).resolves.toBeUndefined()
     })
   })
 })

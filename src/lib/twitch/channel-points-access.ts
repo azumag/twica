@@ -129,22 +129,36 @@ export async function persistChannelPointsCapability(
   const checkedAt = new Date().toISOString()
 
   if (isPgWriteEnabled()) {
-    await withDbRetry(
-      async () => {
-        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
-        const { db } = await getDb()
-        return db
-          .update(usersTable)
-          .set({
-            channel_points_capability: result.capability,
-            channel_points_capability_checked_at: checkedAt,
-          })
-          .where(eq(usersTable.twitch_user_id, twitchUserId))
-      },
-      'channel-points-access(persist capability, pg)',
-      // 同じcapability/checkedAtを書くUPDATEのため冪等（リトライ可）
-      { idempotent: true }
-    )
+    try {
+      await withDbRetry(
+        async () => {
+          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+          const { db } = await getDb()
+          return db
+            .update(usersTable)
+            .set({
+              channel_points_capability: result.capability,
+              channel_points_capability_checked_at: checkedAt,
+            })
+            .where(eq(usersTable.twitch_user_id, twitchUserId))
+        },
+        'channel-points-access(persist capability, pg)',
+        // 同じcapability/checkedAtを書くUPDATEのため冪等（リトライ可）
+        { idempotent: true }
+      )
+    } catch (error) {
+      // 自動レビュー指摘: 読み取り側(getChannelPointsAccessState)と対になる
+      // デプロイ窓フォールバック。列未デプロイ(42703)ではthrowせず、呼び出し元
+      // （account API POST/PUT）を500に巻き込まない。保存は単に「今回はできな
+      // かった」だけで、次回probe時に再試行される。
+      if (isPgMissingColumnError(error)) {
+        logger.warn('[channel-points-access] channel_points_* columns not yet deployed (pg), skipping persist', {
+          twitchUserId,
+        })
+        return
+      }
+      throw error
+    }
     return
   }
 
@@ -157,6 +171,12 @@ export async function persistChannelPointsCapability(
     .eq('twitch_user_id', twitchUserId)
 
   if (error) {
+    if (error.code === 'PGRST204' || error.code === '42703') {
+      logger.warn('[channel-points-access] channel_points_* columns not yet deployed (postgrest), skipping persist', {
+        twitchUserId,
+      })
+      return
+    }
     logger.error('[channel-points-access] persistChannelPointsCapability failed', {
       twitchUserId,
       error: error.message,
