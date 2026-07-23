@@ -45,6 +45,8 @@ function walk(relativeDirectory) {
   return files
 }
 
+const srcFiles = walk('src')
+
 // Browser and route code must never import a Supabase runtime SDK again. The
 // compatibility type/adapters are deliberately isolated under src/lib/supabase/.
 for (const file of [...walk('src/app'), ...walk('src/components')]) {
@@ -52,6 +54,21 @@ for (const file of [...walk('src/app'), ...walk('src/components')]) {
     ['Supabase SDK import', /from\s+['"]@supabase\//],
     ['Supabase SDK require', /require\(\s*['"]@supabase\//],
   ])
+}
+
+// Full call-site inventory for issue #687. A dormant getSupabaseAdmin() handle
+// is harmless, but every file that can actually obtain one must also contain a
+// pg/gacha driver branch. This rejects newly added Supabase-only functions
+// before they reach production. The facade definition itself is the only
+// exception.
+for (const file of srcFiles) {
+  if (file === 'src/lib/supabase/admin.ts') continue
+  const source = read(file)
+  if (!/\bgetSupabaseAdmin(?:NoCache)?\s*\(/.test(source)) continue
+
+  if (!/\b(?:isPgReadEnabled|isPgWriteEnabled|getGachaDbDriver)\b/.test(source)) {
+    fail(`${file}: getSupabaseAdmin call has no pg/gacha driver branch`)
+  }
 }
 
 assertAbsent('src/lib/realtime.ts', [
@@ -104,6 +121,7 @@ assertPresent('.github/workflows/deploy-cloudflare.yml', [
 
 assertPresent('src/lib/db/flags.ts', [
   ['explicit legacy gate', /TWICA_ENABLE_LEGACY_SUPABASE/],
+  ['test-only legacy gate', /NODE_ENV\s*===\s*['"]test['"]/],
   ['pg fail-safe default', /return\s+['"]pg['"]/],
 ])
 assertPresent('src/lib/db/target.ts', [
@@ -149,4 +167,4 @@ if (failures.length > 0) {
   process.exit(1)
 }
 
-console.log('OK: runtime, overlay, startup validation, bindings, and deploy paths are independent of Supabase')
+console.log('OK: all admin call sites, runtime, overlay, startup validation, bindings, and deploy paths are independent of Supabase')
