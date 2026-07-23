@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 'use strict'
 
+// This guard is executed directly by Node as a CommonJS package script. Keep
+// the built-in imports in require form so the shutdown check has no transpiler
+// or module-loader dependency in CI.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const fs = require('fs')
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const path = require('path')
 
 const ROOT = path.resolve(__dirname, '..')
@@ -63,6 +68,10 @@ for (const file of [...walk('src/app'), ...walk('src/components')]) {
   assertAbsent(file, [
     ['Supabase SDK import', /from\s+['"]@supabase\//],
     ['Supabase SDK require', /require\(\s*['"]@supabase\//],
+    // 「SDK を import していないが、診断ログや条件分岐だけが廃止済み URL/鍵を
+    // 読む」退行も、Supabase secret を削除した preview で初めて露見する。
+    // アプリ境界では値の用途にかかわらず禁止し、互換 facade は lib 内に隔離する。
+    ['Supabase URL/key lookup', /(?:NEXT_PUBLIC_)?SUPABASE_(?:URL|KEY|SECRET|SERVICE|ANON)/],
   ])
 }
 
@@ -150,10 +159,17 @@ assertPresent('.env.local.example', [
   ['PlanetScale local URL', /DATABASE_URL_PLANETSCALE/],
 ])
 
-assertPresent('.github/workflows/deploy-cloudflare.yml', [
-  ['provider-neutral migration apply', /npm\s+run\s+db:migrate:apply/],
-  ['provider-neutral migration verify', /npm\s+run\s+db:migrate:verify/],
+// Migration execution must stay in its own non-cancelling workflow. If it is
+// moved back into deploy-cloudflare.yml, that workflow's cancel-in-progress
+// policy can terminate transaction-forbidden DDL and leave manual cleanup.
+assertPresent('.github/workflows/planetscale-migrate.yml', [
+  ['provider-neutral migration apply', /db-migrate\.js\s+apply\s+--provider=planetscale/],
+  ['provider-neutral migration verify', /db-migrate\.js\s+verify\s+--provider=planetscale/],
   ['PlanetScale migration secret', /PLANETSCALE_DATABASE_URL/],
+])
+assertAbsent('.github/workflows/deploy-cloudflare.yml', [
+  ['duplicate migration runner', /(?:db-migrate\.js|db:migrate:(?:apply|verify))/],
+  ['migration-capable database secret', /PLANETSCALE_DATABASE_URL/],
 ])
 
 assertPresent('src/lib/db/flags.ts', [

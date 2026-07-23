@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main, preview ]
   pull_request:
-    branches: [ main, preview, fix/794-probability-recalculation-db-driver ]
+    branches: [ main, preview ]
 
 jobs:
   test:
@@ -23,12 +23,13 @@ jobs:
         run: npm ci
 
       - name: Typecheck
+        id: typecheck
         run: |
           set -o pipefail
           npm run typecheck 2>&1 | tee typecheck-output.log
 
       - name: Upload failed typecheck output
-        if: failure()
+        if: steps.typecheck.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: typecheck-output

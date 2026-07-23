@@ -92,15 +92,43 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       cards: [CARD_A, CARD_B],
       userTwitchUsername: 'viewer',
       rewardId: 'reward-1',
+      historyCursor: redeemedAt,
     })
     expect(callback.mock.calls[1][0]).toMatchObject({
       type: 'gacha',
       card: CARD_A,
       userTwitchUsername: 'DemoUser',
     })
+    expect(callback.mock.calls[1][0]).not.toHaveProperty('historyCursor')
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/events?'))).toBe(true)
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/demo-events?'))).toBe(true)
 
+    cleanup()
+  })
+
+  it('keeps the supported 15-draw maximum in one callback and one sound batch', async () => {
+    const redeemedAt = '2026-07-24T00:00:01.000Z'
+    const events = Array.from({ length: 15 }, (_, index) => ({
+      id: `history-${index + 1}`,
+      eventId: index === 0 ? 'event-15' : `event-15:${index + 1}`,
+      redeemedAt,
+      userTwitchUsername: 'viewer',
+      rewardId: 'reward-1',
+      card: { ...CARD_A, id: `card-${index + 1}` },
+    }))
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes('/demo-events')
+        ? jsonResponse({ event: null })
+        : jsonResponse({ events })
+    ))
+
+    const callback = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', callback)
+    await flushPromises()
+
+    expect(callback).toHaveBeenCalledTimes(1)
+    expect(callback.mock.calls[0][0].cards).toHaveLength(15)
+    expect(callback.mock.calls[0][0].historyCursor).toBe(redeemedAt)
     cleanup()
   })
 
@@ -159,6 +187,22 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     await flushPromises()
     expect(onSuccess).toHaveBeenCalledTimes(1)
 
+    cleanup()
+  })
+
+  it('does not duplicate an HTTP error through the XHR compatibility path', async () => {
+    const xhrConstructor = vi.fn()
+    vi.stubGlobal('XMLHttpRequest', xhrConstructor)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: vi.fn(),
+    } as unknown as Response))
+
+    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), { retryDelay: 10 })
+    await flushPromises()
+
+    expect(xhrConstructor).not.toHaveBeenCalled()
     cleanup()
   })
 

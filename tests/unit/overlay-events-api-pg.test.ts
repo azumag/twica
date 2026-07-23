@@ -300,11 +300,11 @@ describe("GET /api/overlay/[streamerId]/events: pg 経路の応答形状互換 (
   });
 
   // 先行レビュー指摘への対応: フィールド射影の一致だけでは、leftJoin の結合先
-  // テーブル取り違えや where/orderBy/limit に渡す実引数の回帰(例: limit(10)→
-  // limit(5)、streamer_id と別列の取り違え)を検知できない。実装
+  // テーブル取り違えや where/orderBy/limit に渡す実引数の回帰(例: 15連を
+  // 分断する小さなlimit、streamer_id と別列の取り違え)を検知できない。実装
   // (fetchOverlayHistoryWithRewardIdPg)と同じ式を drizzle-orm の and/eq/gt/asc で
   // 組み立てて toEqual で構造比較することで、これらの回帰を検知できるようにする。
-  it("pgクエリが cards への leftJoin・where 条件式・orderBy・limit(10) を正しい実引数で呼び出す", async () => {
+  it("pgクエリが cards への leftJoin・where 条件式・orderBy・15連を分断しないlimitを使う", async () => {
     const { db } = await runPgPath();
 
     expect(db.calls).toHaveLength(1);
@@ -322,8 +322,8 @@ describe("GET /api/overlay/[streamerId]/events: pg 経路の応答形状互換 (
       )
     );
     expect(call.orderByCondition).toEqual(asc(gachaHistoryTable.redeemed_at));
-    // limit(10)→limit(5) のような回帰を検知する
-    expect(call.limitValue).toBe(10);
+    // 現行最大15連を単一responseに保ち、同一timestamp行を取りこぼさない。
+    expect(call.limitValue).toBe(100);
   });
 });
 

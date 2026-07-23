@@ -32,6 +32,14 @@ function buildKey(streamerId: string): string {
   return `${KEY_PREFIX}${streamerId}`
 }
 
+function requireLocalFallback(): void {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      '[overlay-demo] RATE_LIMIT_KV is required in production; refusing process-local delivery'
+    )
+  }
+}
+
 async function getKvBinding(): Promise<KVNamespaceLike | null> {
   try {
     const { getCloudflareContext } = await import('@opennextjs/cloudflare')
@@ -112,6 +120,10 @@ export async function publishOverlayDemoEvent(
       expirationTtl: DEMO_EVENT_TTL_SECONDS,
     })
   } else {
+    // A process-local write is valid for next dev/tests only. In Workers it
+    // would often be read by another isolate and make a successful demo request
+    // disappear silently, so production fails visibly when the binding is lost.
+    requireLocalFallback()
     memoryEvents.set(buildKey(streamerId), {
       event,
       expiresAt: Date.now() + DEMO_EVENT_TTL_SECONDS * 1000,
@@ -136,6 +148,7 @@ export async function getOverlayDemoEvent(
   if (kv) {
     event = parseEvent(await kv.get(key))
   } else {
+    requireLocalFallback()
     const record = memoryEvents.get(key)
     if (!record) return null
     if (record.expiresAt <= Date.now()) {

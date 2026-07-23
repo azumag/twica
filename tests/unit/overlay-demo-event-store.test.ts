@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import {
   __clearOverlayDemoEventsForTests,
@@ -18,6 +18,10 @@ const CARD = {
 beforeEach(() => {
   __clearOverlayDemoEventsForTests()
   vi.useRealTimers()
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
 })
 
 describe('overlay demo event store', () => {
@@ -67,5 +71,13 @@ describe('overlay demo event store', () => {
 
     expect(response.status).toBe(400)
     expect(await response.json()).toEqual({ error: 'Invalid since parameter' })
+  })
+
+  it('refuses unreliable process-local delivery when production loses its KV binding', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+
+    await expect(publishOverlayDemoEvent('streamer-1', CARD)).rejects.toThrow(
+      'RATE_LIMIT_KV is required in production'
+    )
   })
 })

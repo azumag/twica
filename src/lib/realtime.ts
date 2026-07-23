@@ -26,6 +26,15 @@ export interface GachaBroadcastPayload {
   }>
   userTwitchUsername: string
   rewardId?: string | null
+  /**
+   * Last authoritative history timestamp included in this payload.
+   *
+   * The overlay page copies only this value into its emergency fallback
+   * cursor. Using callback wall-clock time can skip a redemption committed
+   * between the primary query and callback execution. Demo events omit the
+   * field because they must never advance the business-history cursor.
+   */
+  historyCursor?: string
 }
 
 export interface RealtimeError {
@@ -77,39 +86,51 @@ function eventUrl(streamerId: string, since: string, demo: boolean): string {
   return url.toString()
 }
 
-/** OBS browser sources can run an older Chromium where fetch is less reliable. */
-function fetchJson<T>(url: string): Promise<T> {
-  return fetch(url, { cache: 'no-store' })
-    .then((response) => {
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      return response.json() as Promise<T>
-    })
-    .catch((fetchError) => {
-      return new Promise<T>((resolve, reject) => {
-        if (typeof XMLHttpRequest === 'undefined') {
-          reject(fetchError)
-          return
+function fetchJsonWithXhr<T>(url: string, fetchError: unknown): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (typeof XMLHttpRequest === 'undefined') {
+      reject(fetchError)
+      return
+    }
+    const xhr = new XMLHttpRequest()
+    xhr.open('GET', url, true)
+    xhr.responseType = 'json'
+    xhr.timeout = 10000
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve((xhr.response ?? JSON.parse(xhr.responseText)) as T)
+        } catch (parseError) {
+          reject(parseError)
         }
-        const xhr = new XMLHttpRequest()
-        xhr.open('GET', url, true)
-        xhr.responseType = 'json'
-        xhr.timeout = 10000
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve((xhr.response ?? JSON.parse(xhr.responseText)) as T)
-            } catch (parseError) {
-              reject(parseError)
-            }
-          } else {
-            reject(new Error(`HTTP ${xhr.status}`))
-          }
-        }
-        xhr.onerror = () => reject(fetchError)
-        xhr.ontimeout = () => reject(new Error('XHR timeout'))
-        xhr.send()
-      })
-    })
+      } else {
+        reject(new Error(`HTTP ${xhr.status}`))
+      }
+    }
+    xhr.onerror = () => reject(fetchError)
+    xhr.ontimeout = () => reject(new Error('XHR timeout'))
+    xhr.send()
+  })
+}
+
+/**
+ * OBS browser sources can run an older Chromium where fetch is less reliable.
+ *
+ * XHR is attempted only when fetch itself rejects (a network/runtime failure).
+ * Retrying an HTTP 4xx/5xx or malformed JSON through XHR would duplicate the
+ * request, consume the public rate-limit twice, and hide the original server
+ * response without improving compatibility.
+ */
+async function fetchJson<T>(url: string): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(url, { cache: 'no-store' })
+  } catch (fetchError) {
+    return fetchJsonWithXhr<T>(url, fetchError)
+  }
+
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json() as Promise<T>
 }
 
 function eventGroupId(event: PollingEvent): string {
@@ -134,14 +155,34 @@ function emitHistoryBatches(
 
   for (const group of groups.values()) {
     const first = group[0]
+    const last = group[group.length - 1]
     callback({
       type: 'gacha',
       card: first.card,
       ...(group.length > 1 ? { cards: group.map((event) => event.card) } : {}),
       userTwitchUsername: first.userTwitchUsername,
       rewardId: first.rewardId ?? null,
+      historyCursor: last.redeemedAt,
     })
   }
+}
+
+const MAX_SEEN_EVENT_IDS = 512
+
+/**
+ * Keep duplicate protection bounded for multi-hour OBS sessions. The cursor
+ * excludes old events from future responses, so retaining the newest IDs is
+ * enough to cover retries and eventual-consistency overlap without an
+ * ever-growing Set.
+ */
+function rememberSeenId(seen: Set<string>, id: string): boolean {
+  if (seen.has(id)) return false
+  seen.add(id)
+  if (seen.size > MAX_SEEN_EVENT_IDS) {
+    const oldest = seen.values().next().value as string | undefined
+    if (oldest) seen.delete(oldest)
+  }
+  return true
 }
 
 /**
@@ -193,8 +234,7 @@ export function subscribeToGachaResults(
         cursor = Number.isFinite(eventMs)
           ? new Date(eventMs).toISOString()
           : event.redeemedAt
-        if (seenHistoryIds.has(event.id)) continue
-        seenHistoryIds.add(event.id)
+        if (!rememberSeenId(seenHistoryIds, event.id)) continue
         newHistoryEvents.push(event)
       }
       emitHistoryBatches(newHistoryEvents, callback)
@@ -205,8 +245,7 @@ export function subscribeToGachaResults(
         demoCursor = Number.isFinite(eventMs)
           ? new Date(eventMs).toISOString()
           : demoEvent.redeemedAt
-        if (!seenDemoIds.has(demoEvent.id)) {
-          seenDemoIds.add(demoEvent.id)
+        if (rememberSeenId(seenDemoIds, demoEvent.id)) {
           callback({
             type: 'gacha',
             card: demoEvent.card,

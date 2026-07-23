@@ -1,11 +1,11 @@
 # Cloudflare Workers Deployment Workflow
 # Cloudflare Workersデプロイメントワークフロー
 #
-# Database migrations are applied to the authoritative PlanetScale PostgreSQL
-# database through the provider-neutral runner (`scripts/db-migrate.js`). The
-# package scripts pin `--provider=planetscale`, so the deploy pipeline remains
-# usable after the Supabase project, REST endpoint, secrets, and CLI integration
-# are removed.
+# Database migrations intentionally run in the independent
+# `planetscale-migrate.yml` workflow. Keeping DDL outside this workflow prevents
+# its `cancel-in-progress: true` deployment policy from terminating a migration
+# mid-flight. This workflow therefore owns only application/auxiliary-worker
+# deployment and remains usable after every Supabase secret is removed.
 #
 # - preview branch -> twica-preview Worker / preview logical database
 # - main branch    -> twica Worker / production logical database
@@ -32,43 +32,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  database-migrations:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    environment: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Apply PlanetScale migrations
-        run: |
-          if [ "$RESOLVED_ENV" = "production" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Production migrations are only allowed from the main branch"
-            exit 1
-          fi
-          npm run db:migrate:apply
-          npm run db:migrate:verify
-        env:
-          # Configure this secret independently in the preview/production
-          # GitHub Environments. It must use the corresponding PlanetScale
-          # logical database and a migration-capable role.
-          DATABASE_URL: ${{ secrets.PLANETSCALE_DATABASE_URL }}
-          RESOLVED_ENV: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
-
   legacy-app-deploy:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'
-    needs: database-migrations
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,7 +85,6 @@ jobs:
 
   auxiliary-workers:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'))
-    needs: database-migrations
     runs-on: ubuntu-latest
     permissions:
       contents: read

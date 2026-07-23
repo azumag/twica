@@ -22,6 +22,14 @@ import {
   cards as cardsTable,
 } from "@/lib/db/schema";
 
+// One redemption currently produces at most 15 history rows. The former limit
+// of 10 could split a single multi-draw across polling responses; because the
+// client cursor advances by redeemed_at, the remaining rows shared the same
+// timestamp and were permanently skipped. Keep a bounded amount of headroom
+// while guaranteeing that the supported maximum draw remains one response and
+// therefore one visual/sound batch.
+const OVERLAY_EVENT_ROW_LIMIT = 100;
+
 interface RouteParams {
   params: Promise<{ streamerId: string }>;
 }
@@ -211,7 +219,7 @@ async function fetchOverlayHistoryWithRewardIdPg(
       )
     )
     .orderBy(asc(gachaHistoryTable.redeemed_at))
-    .limit(10);
+    .limit(OVERLAY_EVENT_ROW_LIMIT);
 }
 
 /**
@@ -251,7 +259,7 @@ async function fetchOverlayHistoryWithoutRewardIdPg(
       )
     )
     .orderBy(asc(gachaHistoryTable.redeemed_at))
-    .limit(10);
+    .limit(OVERLAY_EVENT_ROW_LIMIT);
 }
 
 /**
@@ -356,9 +364,11 @@ async function getOverlayHistoryRowsPg(
 /**
  * GET /api/overlay/[streamerId]/events
  *
- * Public polling fallback for OBS overlays. Realtime remains the primary path,
- * but this endpoint lets overlays recover when Supabase Realtime rejects public
- * channel joins or a browser source loses its WebSocket for a long period.
+ * Public polling transport for OBS overlays.
+ *
+ * It is the temporary primary transport while issue #802 rolls out Durable
+ * Objects WebSockets, then remains the permanent gap-recovery fallback. The
+ * endpoint reads only authoritative PlanetScale history.
  */
 export async function GET(
   request: NextRequest,
@@ -433,7 +443,7 @@ export async function GET(
             .eq("streamer_id", streamerId)
             .gt("redeemed_at", since)
             .order("redeemed_at", { ascending: true })
-            .limit(10),
+            .limit(OVERLAY_EVENT_ROW_LIMIT),
         "overlayEvents",
         { maxRetries: 1 }
       );
@@ -453,7 +463,7 @@ export async function GET(
               .eq("streamer_id", streamerId)
               .gt("redeemed_at", since)
               .order("redeemed_at", { ascending: true })
-              .limit(10),
+              .limit(OVERLAY_EVENT_ROW_LIMIT),
           "overlayEvents:reward-id-fallback",
           { maxRetries: 1 }
         );
