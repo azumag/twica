@@ -1,64 +1,41 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js'
-import { getSupabaseElevatedKey } from './keys'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 /**
- * Supabase環境変数を取得・バリデーションする共通ヘルパー
- * 環境変数に改行や空白が混入する場合があるため（Cloudflareダッシュボードでのペースト時など）
- * JWTには空白文字が含まれないため、すべての空白・改行を除去する
+ * Retired Supabase admin compatibility facade.
+ *
+ * The application runtime is PlanetScale-only. This module remains temporarily
+ * because deleting every PostgREST branch is a larger mechanical cleanup, but
+ * it no longer imports or constructs the Supabase SDK at runtime and never
+ * reads a Supabase URL/key. Existing parity tests replace this module with a
+ * fixture from tests/setup.ts.
+ *
+ * A Proxy is returned so old pg-capable routes may still initialize an admin
+ * variable before their driver branch without crashing after all Supabase
+ * secrets are deleted. Any actual property access is a regression and fails
+ * immediately with a precise error instead of attempting the retired service.
  */
-function getSupabaseCredentials(): { url: string; key: string } {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
-  const key = getSupabaseElevatedKey()
-
-  if (!url || !key) {
-    throw new Error('Missing Supabase environment variables')
-  }
-
-  return { url, key }
+function createRetiredSupabaseClient(): SupabaseClient {
+  return new Proxy({} as SupabaseClient, {
+    get() {
+      throw new Error(
+        '[supabase] Retired runtime path accessed. This operation must use the pg/PlanetScale implementation.'
+      )
+    },
+  })
 }
 
-/**
- * Singleton Supabase admin client
- * Creating a new client on every request is expensive and causes latency.
- * This singleton pattern reuses the same client instance across requests.
- *
- * シングルトンのSupabase管理クライアント
- * リクエストごとに新しいクライアントを作成すると高コストで遅延の原因になる。
- * このシングルトンパターンでリクエスト間でクライアントインスタンスを再利用する。
- */
 let supabaseAdmin: SupabaseClient | null = null
 
+/** Safe to call in pg routes; no credentials, SDK client, or I/O are resolved. */
 export function getSupabaseAdmin(): SupabaseClient {
-  if (supabaseAdmin) {
-    return supabaseAdmin
-  }
-
-  const { url, key } = getSupabaseCredentials()
-  supabaseAdmin = createClient(url, key)
+  supabaseAdmin ??= createRetiredSupabaseClient()
   return supabaseAdmin
 }
 
-/**
- * Singleton Supabase admin client with cache disabled (no-store fetch)
- * Reuses the same client instance to avoid redundant createClient() CPU cost.
- * The no-store fetch option ensures fresh data on every query.
- *
- * キャッシュ無効（no-store fetch）のシングルトンSupabase管理クライアント
- * createClient() のCPU負荷を避けるため同一インスタンスを再利用する。
- * no-store fetchオプションにより毎回最新データを取得する。
- */
 let supabaseAdminNoCache: SupabaseClient | null = null
 
+/** Compatibility alias for former no-store callers; behaviour is identical. */
 export function getSupabaseAdminNoCache(): SupabaseClient {
-  if (supabaseAdminNoCache) {
-    return supabaseAdminNoCache
-  }
-
-  const { url, key } = getSupabaseCredentials()
-  supabaseAdminNoCache = createClient(url, key, {
-    global: {
-      fetch: (url, options = {}) => fetch(url, { ...options, cache: 'no-store' }),
-    },
-  })
+  supabaseAdminNoCache ??= createRetiredSupabaseClient()
   return supabaseAdminNoCache
 }

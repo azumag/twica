@@ -350,6 +350,23 @@ type MaintenanceMode =
      済み（`/api/twitch/eventsub` 本体とは異なり `queue-during-maintenance`
      ではない）。**メンテナンス解除後（mode=off）にのみ実行する運用**の
      ため、メンテ中に誤って叩いても他の書き込みと同様にブロックされる。
+  5. **自動ドレイン（Issue #695 の代替、KVベース部分改善の2項目目、
+     `workers/error-reporter/src/index.ts` の `processEventSubParkAutoDrain`）
+     が上記手動手順のバックストップとして20分毎に自動実行される。**
+     Cron Worker（`twica-error-reporter`）が `*/20 * * * *` の専用トリガーで
+     prod/preview 両方の `GET /api/maintenance-status`（off確認）→
+     `POST /api/admin/eventsub-replay`（dry-run で最古エントリの経過時間を
+     peek → 10分以上滞留していれば limit=20 の1バッチのみ本実行）を行う。
+     手動CLI（`scripts/replay-maintenance-eventsub.js`）と異なり cursor
+     ページネーションで完走はしない（1回のtickにつき1バッチのみ、残りは
+     次回tickに委ねる）ため、**カットオーバー直後に即座に全件救済したい
+     場合は引き続き手動CLIの実行を推奨**する。自動ドレインは「手動実行を
+     忘れた場合の保険」という位置づけ。認証には
+     `EVENTSUB_REPLAY_SECRET_PROD`/`EVENTSUB_REPLAY_SECRET_PREVIEW`
+     という Cron Worker 専用の secrets が必要（値は本項目2の
+     `EVENTSUB_REPLAY_SECRET` と同じものを `wrangler secret put` で
+     このワーカーにも設定する。未設定の場合は該当環境への自動ドレインのみ
+     安全にスキップされ、警告ログが出る）。
 
 ### 4.4 CI enforcement（`scripts/check-maintenance-surfaces.js`）
 
@@ -580,24 +597,186 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    ```
    - `--clean --if-exists`: preview リハーサルでの再実行を安全にするため。
      本番の初回カットオーバーでは対象 DB が空である前提のため実質 no-op。
-6. **スキーマ照合**: `DATABASE_URL=<PlanetScale接続文字列> node scripts/verify-db-schema.js`
-   を実行し、`src/lib/db/schema.ts` との差分・SELECT smoke を確認する
-   （既存スクリプトをそのまま流用可能。CI では実行しない運用も踏襲）。
+   - **所有権問題への対処（2026-07-22 preview rehearsalで実測、重要）**:
+     baseline（`db/planetscale/bootstrap.sql`/`public-schema.sql`/`grants.sql`、
+     `docs/planetscale-schema-baseline.md`）を適用したロールと、本手順の restore を
+     実行するロールが異なると、`--clean` が発行する既存オブジェクトの `DROP` 文が
+     「must be owner of ...」エラーで大量に失敗する（preview rehearsalで実測789件）。
+     `--no-owner` は restore されるオブジェクトへの所有者付与をスキップするだけで、
+     `--clean` 自身が行う「restore前に既存オブジェクトを消す」処理には効果が無いため
+     （PostgreSQL の `DROP` はオブジェクト所有者〔またはそのロールのメンバー〕しか
+     実行できない仕様）。
+     **対処**: restore 前に一度、対象DBの `public` スキーマを所有者ごと作り直してから
+     （`--clean` を使わずに）restore する。
+     ```sql
+     -- restore実行ロールで対象DBに接続して実行
+     SET ROLE postgres;
+     DROP SCHEMA public CASCADE;
+     CREATE SCHEMA public AUTHORIZATION pg_database_owner;
+     GRANT USAGE ON SCHEMA public TO PUBLIC;
+     ```
+     ```bash
+     pg_restore --no-owner --no-privileges \
+       -d "postgresql://<planetscale-role>:<password>@<planetscale-host>:5432/<db>?sslmode=require" \
+       twica_prod_*.dump
+     ```
+     （**`--if-exists` は付けない**こと。2026-07-22 preview rehearsalで実際に
+     `pg_restore --no-owner --no-privileges --if-exists ...`〔`--clean`無し〕を
+     実行したところ、実PostgreSQL 17.10バイナリで `pg_restore: error: option
+     --if-exists requires option -c/--clean` エラーとなり実行不能だった
+     〔`--if-exists`は`--clean`前提のオプション、PostgreSQL仕様〕。上記スキーマ再作成に
+     より対象は既に空のため、`--clean`（＝`--if-exists`）自体が不要）。
+     - `SET ROLE postgres` が成功する条件: 接続ロールが DB 所有者ロール（`postgres`）の
+       メンバーであること（PostgreSQL仕様）。PlanetScale の管理ロールは通常この条件を
+       満たす。
+     - `DROP SCHEMA public CASCADE` がロール横断で成功する理由: PostgreSQL の仕様上、
+       スキーマの削除可否は**スキーマ自体の所有権のみ**で判定され、スキーマに内包される
+       個々のオブジェクト（テーブル・関数等）の所有者が誰であるかは問われない
+       （`CASCADE` はスキーマ所有者の権限でオブジェクトごと連鎖削除する）。
+     - restore後、`public` スキーマは空の状態から作られるため、dump に含まれる
+       `CREATE SCHEMA public` 文は「already exists」エラーになるが、これは**無害・想定内**
+       （直前に作成済みの空スキーマへ以降のテーブル/関数等が復元されるだけで、
+       restore の他の部分には影響しない）。
+     - restore完了後、`public` スキーマは作り直されているため、以前 baseline 適用時に
+       与えた `service_role` 等への権限（`GRANT`・`ALTER DEFAULT PRIVILEGES`）も
+       スキーマごと失われている。**`db/planetscale/grants.sql` を再適用すること**:
+       ```bash
+       psql "$PLANETSCALE_DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f db/planetscale/grants.sql
+       ```
+       （`bootstrap.sql`のロール・スタブ関数・拡張機能はスキーマ外に作られるため
+       再適用不要。`public-schema.sql`は本手順の pg_restore が実体のDDLを持ち込むため
+       同様に不要）。**再適用は必ず restore を実行したのと同じロールで行うこと**
+       （重要）: `grants.sql` の `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
+       IN SCHEMA public` はテーブル所有者（またはGRANT OPTION保有者）でなければ
+       実行できない（PostgreSQL仕様）。restoreされたテーブルは`--no-owner`にも
+       関わらず実際には restore 接続ロールの所有物になるため、別ロールで
+       `grants.sql` を実行すると一部/全部のGRANTが権限エラーで失敗しうる。
+       同様に `ALTER DEFAULT PRIVILEGES IN SCHEMA public`（`FOR ROLE`句なし）は
+       「この文を実行したロール（current_user）が将来作成するオブジェクト」にしか
+       効かない（`grants.sql`冒頭コメントのFableレビューM-3注記を参照）ため、
+       これも実行ロールを揃えないと意味を失う。
+       なお `grants.sql` は `GRANT USAGE ON SCHEMA public` だけでなく
+       `GRANT USAGE ON SCHEMA extensions`（`grants.sql`内）も含み、`public`
+       スキーマ内オブジェクトへのGRANTに限定されない。全文が単純な`GRANT`/
+       `ALTER DEFAULT PRIVILEGES`（`CREATE ROLE`のような非冪等文は含まない）のため、
+       再適用そのものは冪等・無害。
+6. **db:cutover:verify によるフル検証（GO/NO-GOゲート、2026-07-21 Issue #697 Chunk 4で
+   本統合。旧記載のTODOは解消済み）**:
+   ```bash
+   SOURCE_DATABASE_URL="<Supabase Direct connection>" \
+   TARGET_DATABASE_URL="<PlanetScale接続文字列>" \
+     npm run db:cutover:verify -- \
+     --source-environment=production --source-provider=supabase \
+     --target-environment=production --target-provider=planetscale \
+     --layers=identity,schema,data,invariants,canary \
+     --operation-id=cutover-<YYYY-MM-DD>
+   ```
+   Issue #697本文が定義する6層（Layer 1: identity、Layer 2: schema、Layer 3+4:
+   data〔件数/key range統計 + deterministic checksum〕、Layer 5: invariants
+   〔業務不変条件〕、Layer 6: canary〔targetへの実runtimeトランザクション検証〕）を
+   `--layers=identity,schema,data,invariants,canary` でフル実行する。
+
+   **前提条件（Chunk 1から変更なし）**: `db:cutover:init-identity`
+   （`twica_meta.database_identity`のseeding）を4つの実インスタンス
+   （Supabase/PlanetScale × prod/preview）それぞれに対して、`db:cutover:verify`
+   を初めて使う前に1回ずつ手動実行しておく必要がある（詳細は
+   `scripts/db-cutover/init-identity.mjs` のヘルプ・コード冒頭コメント参照）。
+
+   **`scripts/verify-db-schema.js` との併用**: `db:cutover:verify` のschema layer
+   （source/target 2DBの生DDL比較）とは検証対象が異なる独立した安全網として、
+   従来どおり `DATABASE_URL=<PlanetScale接続文字列> node scripts/verify-db-schema.js`
+   （target単体とアプリの`src/lib/db/schema.ts`定義との比較・SELECT smoke）も併用する。
    **注意: 「差分ゼロ・exit 0」は期待できない。** pg_dump/restore は prod の
    実スキーマをそのまま移送するため、既知のスキーマドリフト（#625:
-   `battles`/`battle_stats` テーブルが prod に存在しない・`cards` の 8 列が
-   prod に欠落）は新 DB にもそのまま引き継がれる。スクリプトは schema.ts を
-   正として双方向で差分検出し、schema.ts 側の全テーブルへ SELECT smoke を
-   発行するため、**期待される出力は次の通り**（これ以外の差分が出た場合のみ
-   異常と判断する）:
+   `battles`/`battle_stats` テーブルが prod に存在しない）は新 DB にもそのまま
+   引き継がれる。**期待される出力は次の通り**（これ以外の差分が出た場合のみ異常と判断する）:
    - table missing in DB × 2（battles / battle_stats）
-   - column missing in DB × 8（cards: card_number/hp/atk/def/spd/
-     skill_type/skill_name/skill_power）
    - SELECT smoke failure × 2（battles / battle_stats、テーブル不在のため）
    - 終了コード **1**（差分ありのため非ゼロ終了が正常。exit 0 を成功条件に
      した自動化スクリプトでラップしないこと）
+   同じ既知ドリフト（#625）は `db:cutover:verify` 側では
+   `scripts/db-cutover/cutover-allowlist.mjs` の `BATTLE_FEATURE_TABLES_ABSENT_IN_PROD`
+   エントリにより `severity:"info"` へ自動的に降格され、GO/NO-GO判断を妨げない
+   （8章「既知スキーマドリフトの扱い」の対応関係も参照）。
+
+   **schema layer（Layer 2）の期待される出力（2026-07-22 preview rehearsalで実測、
+   preview/prod共通の想定内差分）**: 実Supabase（PG 17.6）↔ 実PlanetScale（PG 17.10）で
+   5層フル実行した結果、schema layer は次の2件を検出するが、いずれも
+   `cutover-allowlist.mjs` により `severity:"info"`（`allowlisted:true`）へ自動的に
+   降格され、GO/NO-GO判断を妨げない:
+   - `EXTENSION_MISMATCH`（target限定: `hypopg::pscale_extensions`）: hypopgは
+     PlanetScaleがインフラ管理用に標準搭載する拡張であり、ユーザー側の操作では
+     削除できない恒久的な環境差（`HYPOPG_EXTENSION_PLANETSCALE_MANAGED`エントリ）。
+   - `SCHEMA_OBJECT_DEFINITION_MISMATCH`（`TABLE::public::cards` /
+     `TABLE::public::blob_files` の2件）: PG 17.6（Supabase）と17.10（PlanetScale）の
+     CHECK制約deparse表記差（`ARRAY`キャストの書式・`AND`式の括弧の付き方のみで、
+     意味的な制約内容は同一。手動diffで確認済み）。SupabaseはPG 17.10相当を
+     提供していないためバージョンparityでは解消できず、
+     `CHECK_CONSTRAINT_DEPARSE_VERSION_DIFF`エントリで許容する。**Supabaseが
+     PG 17.10相当を提供するようになった時点でこのallowlistエントリを削除し、
+     以降は完全一致を要求すること**（`scripts/db-cutover/cutover-allowlist.mjs`
+     の当該エントリのreasonに同旨を明記済み）。緩和策: このallowlist存続中でも、
+     `scripts/verify-db-schema.js`がtarget単体を`src/lib/db/schema.ts`と独立照合し、
+     Layer 4（deterministic data checksum）が実データの内容一致を別途保証する。
+     **ただし残余ギャップとして、`verify-db-schema.js`は列名・型・NOT NULLのみを
+     照合しCHECK制約は一切照合せず、Layer 4 checksumも行データの内容のみが対象
+     （DDL/制約定義は対象外）である。したがってこのallowlist存続中、cards/blob_files
+     のCHECK制約自体が意味的に変化・削除された場合（deparse表記差ではなく実際の
+     制約内容の変更）は、上記どの緩和策によっても検出されない**（詳細は
+     `scripts/db-cutover/cutover-allowlist.mjs`の当該エントリのreason参照）。
+   これ以外の`EXTENSION_MISMATCH`・`SCHEMA_OBJECT_DEFINITION_MISMATCH`（allowlist
+   非該当の対象）が出た場合は、`severity:"fail"`のまま従来どおり検出される
+   （allowlistは登録済みの識別子単位でのみ働き、一括の降格ではない）。
+
+   **2026-07-20 訂正（`cards` 列欠落は解消済み）**: 本節は以前「`cards` の 8 列
+   （card_number/hp/atk/def/spd/skill_type/skill_name/skill_power）が prod に
+   欠落しており column missing in DB × 8 が追加で出る」と記載していたが、この記載は
+   古い。`supabase/migrations/20260718000000_repair_cards_missing_columns.sql`
+   （#625修復migration）で prod の `cards` テーブルは既に修復済みであり、
+   `db/planetscale/public-schema.sql` にも修復後の8列が実データ由来で反映済み
+   であることを確認した。よって cards列欠落による差分はもはや発生しない想定。
+   実施直前の再検証で万一この8列の差分が再出現した場合は、prod側で修復migrationが
+   未適用（ロールバックされた等）の可能性を疑うこと。
+
+   **GO/NO-GOゲート（Issue #697本文の受け入れ条件、必須・以下を満たさない限り
+   手順8・手順10へ進んではならない）**: `db:cutover:verify` が出力するJSON report
+   （標準出力、および `db/planetscale/.artifacts/` 配下に保存されるJSON/Markdown
+   両ファイル、5.3節参照）の **`decision` フィールドが `"pass"` であること** を
+   目視確認する。終了コードの意味（`scripts/db-cutover/verify.mjs`の規約）:
+   report（`decision`フィールド）が出力された上で `"fail"` または
+   `"not-evaluated"` なら **exit 1**（検証NG、GOではないという判定結果そのもの）。
+   **exit 2** はreport自体を生成できなかった運用エラー（接続不可・予期しない例外等で
+   `decision`が一切出力されない場合）を意味し、`"fail"`判定とは区別すること
+   （exit 2の場合はfindingを精査する対象がそもそも無いため、エラーメッセージ
+   〔stderr〕を確認し接続設定等の運用面の問題を先に解消する）。いずれの終了コードも
+   非ゼロであり、手順8・手順10へ進んではならない点は共通。report内の `findings`
+   （`severity:"fail"` の項目）を精査し原因を解消してから再実行すること
+   （`severity:"info"` のfinding、特にallowlist該当〔`allowlisted:true`〕のものは
+   GO判断を妨げない）。**canary layer（Layer 6）がfailした場合**は下記
+   「canary fail時のfixture復旧手順」を実施すること。
+   `--fail-fast` を付けると最初にfailしたlayerで実行を打ち切れる（デバッグ用途、
+   通常のcutover実施時はfull-report modeのまま原因を1回で洗い出すことを推奨）。
+
+   **canary fail時のfixture復旧手順**（`canary-rollback-verification` finding
+   がfailした場合。canaryはtargetへ実際に書き込みトランザクションを開き必ず
+   ROLLBACKする設計〔`withRollbackOnlyTransaction`〕のため通常は発生しないはずの
+   異常系だが、万一の場合の復旧手順）:
+   1. report findings内の `CANARY_ROLLBACK_TRACE_*` コードのfinding message
+      から、残存しているfixture識別子（`cutover-canary-<uuid>` 形式の
+      `twitch_user_id`、`cutover-canary:<uuid>` 形式の `event_id`）を確認する。
+   2. target側で該当識別子のfixture streamers行を削除する（`cards`/`gacha_history`
+      はON DELETE CASCADEで連鎖的に除去される）:
+      `DELETE FROM streamers WHERE twitch_user_id = '<cutover-canary-<uuid>形式の値>';`
+   3. fixture users行は`user_cards`経由でのみcascadeするため、別途削除する:
+      `DELETE FROM users WHERE twitch_user_id = '<同上>';`
+   4. 削除後、再度同じ識別子でSELECTし0件になったことを確認する。
+   5. **この異常が実際に発生した場合、`withRollbackOnlyTransaction`のROLLBACK保証が
+      何らかの理由で機能しなかった可能性がある。単にfixtureを消して手順を続行せず、
+      cutoverを中断してオーナーへ即座にエスカレーションすること**（データ整合性に
+      関わる重大な異常のシグナルであり、根本原因の特定が優先）。
 7. **シーケンス値の確認**（6章）。
-8. **Hyperdrive の接続先を PlanetScale に切り替える**（`wrangler hyperdrive
+8. **Hyperdrive の接続先を PlanetScale に切り替える**（**手順6のGO/NO-GOゲートを
+   満たしている〔`decision:"pass"`〕ことを確認してから実施する。**`wrangler hyperdrive
    update` または config 再作成。詳細は 7章ロールバック手順と対になる操作。
    `DB_TARGET`（4.9節）で dual binding 切替を使う場合も含め、**切替後は
    必ず `GET /api/admin/db-health?target=planetscale`（4.9節）で実際に
@@ -605,7 +784,8 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    不正値を黙って `'supabase'` にフォールバックするため、タイポによる
    切替不発をこの確認以外で検知する手段がない）。
 9. **最小限の書き込み系疎通確認**を1系統実施（例: ガチャ実引き1回）。
-10. **read-only 解除**（prod → preview の順、または一括）。
+10. **read-only 解除**（**手順6のGO/NO-GOゲートを満たしていることを確認してから
+    実施する。**prod → preview の順、または一括）。
 11. **EventSub リプレイ**: メンテナンス中に KV へ退避された payload を
     リプレイする（4.3節、**実装済み**。`scripts/replay-maintenance-eventsub.js`
     を dry-run → 本実行の順で実行し、`failed` 件数が0になることを確認する）。
@@ -620,8 +800,8 @@ DB サイズ 0.334GB（1章）・テーブル25・インデックス/制約付�
 |---|---|---|
 | pg_dump | 数十秒〜1分程度 | 0.334GB は custom format 圧縮ダンプとして小規模。ネットワーク帯域より DB 側のスキャン/圧縮がボトルネックになりにくい規模 |
 | pg_restore（インデックス再構築含む） | 1〜3分程度 | テーブル数25・インデックス数十本程度の規模であれば、単一ノード PS-5 でも数分以内が妥当な見積り |
-| スキーマ照合 + 最小疎通確認 | 数分 | `verify-db-schema.js` 実行 + 手動でのガチャ実引き確認 |
-| **書き込み停止が必須な区間の合計目安** | **5〜10分程度** | 上記の合計。#568 の「数分の書き込み停止ウィンドウ」方針と整合 |
+| `db:cutover:verify`（5層フル実行）+ `verify-db-schema.js` + 最小疎通確認 | 数分〜要実測 | `identity`/`schema`は数秒〜数十秒程度と見込まれるが、**`data`層（全table件数/key range/checksum、全行スキャン）と`invariants`層（業務不変条件、複数SQL）はテーブル数・行数に比例して伸びうるため、現時点では根拠のある見積りができていない**（下記の重要な注記参照）。手動でのガチャ実引き確認を含む |
+| **書き込み停止が必須な区間の合計目安** | **5〜10分程度（暫定・要実測更新）** | 上記の合計。#568 の「数分の書き込み停止ウィンドウ」方針と整合する前提だが、`data`/`invariants`層の実測時間次第でこの前提が崩れる可能性がある（下記注記） |
 | 告知上の想定所要時間（バッファ込み） | 最大15〜30分程度 | 異常時の判断・ロールバック検討の時間を見込んだ告知用の幅。3章テンプレートの `<N>` に反映する |
 
 **重要**: `docs/db-driver-migration.md` にある「切替後 `wrangler tail` を
@@ -631,9 +811,68 @@ DB サイズ 0.334GB（1章）・テーブル25・インデックス/制約付�
 6章の残りのチェック項目は書き込み再開後も並行して継続してよい
 （異常が見つかった場合のみ、その時点で7章のロールバック判断を行う）。
 
+**重要（Issue #697 Chunk 4追記、preview リハーサル時に最優先で実測すること）**:
+上表の「書き込み停止が必須な区間の合計目安（5〜10分程度）」は元々
+「スキーマ照合 + 最小疎通確認 数分」という軽量な処理を前提にしていた。
+5.1節手順6が`db:cutover:verify`の5層フル実行（`identity,schema,data,
+invariants,canary`）へ置き換わったことで、特に`data`層（schema.ts定義の
+全テーブルを`--chunk-size`単位で全行スキャンしchecksumを計算する）と
+`invariants`層（複数の業務不変条件SQLをsource/target双方に発行する）の
+実行時間が、本番相当のデータ量に対してどの程度になるかは**未実測**であり、
+現行の見積り前提を変えうる。preview環境でのリハーサル実施時に
+`db:cutover:verify`のstderr進捗ログ（テーブル単位・invariant単位・
+canaryチェック単位で逐次出力される）から実測時間を記録し、本節の見積り
+（表・書き込み停止区間の合計目安・3章告知テンプレートの`<N>`）を実測値で
+確定させること（freeze時間の圧迫に直結するため、この実測を経ずに本番へ
+臨まないこと）。canary層（fixture INSERT・RPC実行・トリガー発火・
+SAVEPOINT×6を伴う）自体の所要時間も同様に未実測であり、合わせて記録する。
+
 実測に基づく再見積りは、preview 環境でのリハーサル実施後に本節を
 更新すること（#666 の受け入れ条件「preview でのリハーサルで手順どおりに
 完了できることを確認」に対応）。
+
+**2026-07-22 preview rehearsal 実測値（フロー検証、本番見積りには使わないこと）**:
+実Supabase preview ↔ 実PlanetScale preview で5.1節手順3〜6を実施した際の実測時間。
+
+| 区間 | 実測値 |
+|---|---|
+| pg_dump | 約19秒 |
+| pg_restore | 約3.5秒 |
+| `db:cutover:verify`（5層フル実行: identity/schema/data/invariants/canary） | 約42秒 |
+
+**注意（重要）**: 上記はあくまで preview 環境の規模（テーブル25・データ極小）での
+実測であり、**本番相当のデータ量に対する見積りとしてはそのまま使わないこと**。
+`data`層（全table全行スキャン+checksum）・`invariants`層（複数SQLをsource/target
+双方に発行）は行数に比例して伸びる設計（5.1節手順6・本節冒頭の表の根拠列を参照）
+のため、prodのデータ量が増えるほど実測値は本表より伸びる。本rehearsalの主目的は
+「手順どおりに一連のフロー（dump→restore→verify）が完了できること」の確認であり、
+上表はダウンタイム見積り自体の確定値ではない（本節冒頭の表・書き込み停止区間の
+合計目安の更新は、本番相当のデータ量での再実測を経てから行うこと）。
+
+### 5.3 report artifact（`db/planetscale/.artifacts/`）の保存期間・アクセス権
+
+（Issue #697 Chunk 4追記）`db:cutover:verify` はJSON reportを標準出力へ出すのに加え、
+`db/planetscale/.artifacts/` 配下（`.gitignore` 済み、リポジトリにコミットされない
+ローカル保存）へ同一内容のJSONファイルと、人間向けに整形したMarkdownファイル
+（`report-markdown.mjs`が生成、同一basename・拡張子違いのペア）を保存する。
+
+- **内容とredaction**: report自体は接続文字列・パスワード等の秘密情報を含まない
+  （`core.redactSecretsFromText`による多重redaction、各layerのfindingメッセージも
+  同様の規律に従う。canary layerのfindingは列名・型名・件数・fixture識別子のみで
+  非fixture行の実データ値を含まない、layer-canary.mjs冒頭コメント参照）。ただし
+  **uuid（instanceId・fixture識別子）やTwitch数値ID（identity層のsource/target
+  識別情報、invariants層のサンプル識別子）等の識別子は含まれる**ため、完全に
+  無害な情報ではない。
+- **共有時の扱い**: 上記の理由により、report artifact（JSON/Markdownとも）の
+  **全文をリポジトリ・GitHub issue・チャット等へそのまま貼り付けないこと**。
+  チームで状況を共有する場合は `decision` の値・failしたfinding件数・該当layer名
+  程度の要約に留める（詳細な調査が必要な場合は、report自体を直接見られる人が
+  ローカルファイルを参照する）。
+- **保存期間**: cutover完了後、本番運用が安定していることを確認する期間
+  （目安2週間）は削除せず保持する（異常が事後に発覚した場合の調査材料として）。
+  安定確認期間を過ぎれば削除して構わない。監査目的で長期保存が必要な場合は、
+  この期間の終了前にローカルバックアップ（暗号化した外部ストレージ等、
+  本ランブックのスコープ外）に含めること。
 
 ## 6. 検証チェックリスト
 
@@ -866,8 +1105,16 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
         migration は追記専用・履歴改変をしない運用のため、既存の 00002 を
         書き換えたり再適用したりはしない）。この方針で問題ないかオーナー最終確認
       - `cards` の 8 列（card_number は採番用・残り 7 列が battle 系。列名一覧は
-        `src/lib/db/cards-safe-columns.ts`、経緯は #625）: prod に欠落したまま
-        移行すると、新 DB でも `CARDS_SAFE_COLUMNS` フォールバックが恒久的に
-        必要になる。**切替前に prod へ列追加 migration を適用してドリフトを
-        解消しておくか**、ドリフトごと移送するかをオーナー判断
-        （解消しておく方がコード側のフォールバックを将来削除できる）
+        `src/lib/db/cards-safe-columns.ts`、経緯は #625）: **解消済み（2026-07-20
+        追記）。** `supabase/migrations/20260718000000_repair_cards_missing_columns.sql`
+        により prod へ列追加済みで、`db/planetscale/public-schema.sql` にも
+        修復後の8列が反映済みであることを確認した（6章6項の訂正メモ参照）。
+        本項目のオーナー判断待ちは解消済み。`CARDS_SAFE_COLUMNS` フォールバック
+        自体（コード側）を削除するかどうかは本ランブックのスコープ外
+        （別issueで扱う）。
+      - **`db:cutover:verify`（5.1節手順6）での扱い**: 上記の`battles`/
+        `battle_stats`欠落は`scripts/db-cutover/cutover-allowlist.mjs`の
+        `BATTLE_FEATURE_TABLES_ABSENT_IN_PROD`エントリに対応しており、
+        `data`層・`invariants`層双方で自動的に`severity:"info"`へ降格される
+        （5.1節手順6参照。新しい既知ドリフトが発生した場合はこのファイルへ
+        エントリを追加すること）。

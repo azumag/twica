@@ -1,71 +1,12 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js'
-import { logger } from './logger'
-import { reportRealtimeError } from './sentry/error-handler'
-import { getSupabaseElevatedKey, getSupabasePublicKey } from './supabase/keys'
-
 /*
- * Supabase Realtime Connection Lifecycle
- * ========================================
- * 
- * Expected Connection Statuses (Normal, Not Errors):
- * - SUBSCRIBED: Successfully connected and subscribed
- * - CLOSED: Connection closed normally (cleanup, page navigation)
- * - TIMED_OUT: Connection timed out during idle periods
- * - CHANNEL_ERROR: Channel-specific errors (handled gracefully)
+ * Overlay transport compatibility facade
  *
- * These statuses are part of normal WebSocket lifecycle and do not indicate
- * application errors. They are logged at INFO level for debugging purposes.
- *
- * Actual Errors (Reported to Sentry):
- * - Repeated connection failures beyond max retries
- * - Unexpected error messages
- * - Subscription failures that prevent functionality
- *
- * Note: Browser console may show "Connection closed" messages during page
- * transitions or cleanup. This is expected behavior and does not affect
- * application functionality.
+ * Supabase Realtime used to be the primary overlay transport. The overlay now
+ * consumes authoritative gacha_history rows through PlanetScale-backed HTTP
+ * polling. Keeping these exported shapes avoids a flag-day rewrite of the OBS
+ * page while removing every Supabase URL/key/WebSocket dependency from the
+ * browser bundle and gacha write path.
  */
-
-let supabaseRealtime: SupabaseClient | null = null
-
-const GACHA_CHANNEL_CONFIG = {
-  config: {
-    private: true,
-  },
-} as const
-
-function getSupabaseRealtimeClient(): SupabaseClient {
-  if (supabaseRealtime) {
-    return supabaseRealtime
-  }
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
-  const isBrowser = typeof window !== 'undefined'
-  // Browser subscriptions must use public keys. Server-side broadcast can use
-  // the elevated secret/service_role key, falling back to the public key for
-  // local/dev environments where the server key is not configured.
-  const supabaseKey = isBrowser
-    ? getSupabasePublicKey()
-    : getSupabaseElevatedKey() || getSupabasePublicKey()
-
-  if (!supabaseUrl || !supabaseKey) {
-    if (process.env.CI || process.env.NODE_ENV === 'test') {
-      throw new Error('Realtime not available in CI/test environment')
-    } else {
-      throw new Error('Missing Supabase environment variables for realtime')
-    }
-  }
-
-  supabaseRealtime = createClient(supabaseUrl, supabaseKey, {
-    realtime: {
-      params: {
-        eventsPerSecond: 10,
-      },
-    },
-  })
-
-  return supabaseRealtime
-}
 
 export interface GachaBroadcastPayload {
   type: 'gacha'
@@ -85,6 +26,15 @@ export interface GachaBroadcastPayload {
   }>
   userTwitchUsername: string
   rewardId?: string | null
+  /**
+   * Last authoritative history timestamp included in this payload.
+   *
+   * The overlay page copies only this value into its emergency fallback
+   * cursor. Using callback wall-clock time can skip a redemption committed
+   * between the primary query and callback execution. Demo events omit the
+   * field because they must never advance the business-history cursor.
+   */
+  historyCursor?: string
 }
 
 export interface RealtimeError {
@@ -94,274 +44,261 @@ export interface RealtimeError {
   isExpected?: boolean
 }
 
-// 接続中の一時的なステータス（エラーではない）
-// Temporary statuses during connection (not errors)
-const CONNECTING_STATUSES = ['SUBSCRIBING']
-
-// 正常な切断ステータス（エラーではない）
-// Expected close statuses (not errors)
-const EXPECTED_CLOSE_STATUSES = ['CLOSED', 'TIMED_OUT', 'CHANNEL_ERROR']
-
-export async function broadcastGachaResult(
-  streamerId: string,
-  payload: GachaBroadcastPayload,
-  options: { maxRetries?: number; retryDelay?: number } = {}
-): Promise<void> {
-  const { maxRetries = 3, retryDelay = 1000 } = options
-
-  // getSupabaseRealtimeClient() や client.channel() がリトライループ前に throw する可能性がある
-  // （環境変数不正、クライアント初期化失敗など）。これらのエラーも try/catch 内に含め、
-  // throw せずに warn ログに留めることで「ガチャ成功・ブロードキャスト失敗」の設計を維持する。
-  // 呼び出し元の外側 catch がガチャ全体の致命的エラーと誤認するのを防止する。
-  // Issue #359-#365: Codex review P2 "Restore local catch around broadcast call" 対応
-  let client: ReturnType<typeof getSupabaseRealtimeClient>
-  let channel: ReturnType<ReturnType<typeof getSupabaseRealtimeClient>['channel']>
-  try {
-    client = getSupabaseRealtimeClient()
-    channel = client.channel(`gacha:${streamerId}`, GACHA_CHANNEL_CONFIG)
-  } catch (initError) {
-    logger.warn(`[Broadcast] Failed to initialize realtime client for streamer ${streamerId}`, {
-      error: initError instanceof Error ? initError.message : String(initError),
-    })
-    // throw しない: ガチャ処理の成否に影響しない
-    return
-  }
-
-  try {
-    let attemptCount = 0
-    while (attemptCount <= maxRetries) {
-      try {
-        // httpSend() を明示的に使用し REST API 経由で送信 (Issue #222)
-        // サーバーサイド(Cloudflare Workers)ではWebSocket不要のため、
-        // send() の自動フォールバック（deprecated）を回避する
-        const result = await channel.httpSend('gacha_result', payload)
-        if (!result.success) {
-          throw new Error(`Broadcast HTTP send failed: ${result.status} ${result.error}`)
-        }
-        return
-      } catch (error) {
-        attemptCount++
-        logger.warn(`Broadcast attempt ${attemptCount}/${maxRetries} failed:`, error)
-
-        if (attemptCount > maxRetries) {
-          // ブロードキャスト失敗はガチャ処理自体に影響しない（OBSオーバーレイへの通知のみ）
-          // 一時的な502/タイムアウトで大量のGitHub Issueが作成されるのを防ぐため、
-          // reportRealtimeError ではなく warn ログに留める (Issue #359-#365)
-          logger.warn(`[Broadcast] Failed after ${maxRetries} retries for streamer ${streamerId}`, {
-            error: error instanceof Error ? error.message : String(error),
-            retryCount: attemptCount - 1,
-          })
-          // throw しない: 呼び出し元(eventsub/gacha API)でのreportErrorによる重複Issue化を防止
-          return
-        }
-
-        const delay = attemptCount * retryDelay
-        logger.info(`Retrying broadcast in ${delay}ms...`)
-        await new Promise(resolve => setTimeout(resolve, delay))
-      }
-    }
-  } finally {
-    try {
-      client.removeChannel(channel)
-    } catch {
-      logger.info(`Channel cleanup completed for streamer ${streamerId}`)
-    }
-  }
+interface PollingEvent {
+  id: string
+  eventId: string | null
+  redeemedAt: string
+  userTwitchUsername: string
+  rewardId?: string | null
+  card: GachaBroadcastPayload['card']
 }
 
-const getRetryDelay = (retryCount: number, baseDelay: number): number => {
-  const backoffDelay = Math.min(baseDelay * Math.pow(2, retryCount), 30000)
-  const jitter = Math.random() * 1000
-  return backoffDelay + jitter
+/**
+ * Compatibility no-op for server callers.
+ *
+ * The gacha result has already been committed to PlanetScale before this is
+ * called, and the overlay polling endpoint reads that authoritative row. OBS
+ * demos, which intentionally have no history row, use demo-event-store.
+ */
+export async function broadcastGachaResult(
+  _streamerId: string,
+  _payload: GachaBroadcastPayload,
+  _options: { maxRetries?: number; retryDelay?: number } = {}
+): Promise<void> {
+  return
 }
 
 export interface SubscribeOptions {
-  // Defaults to unlimited retries for long-lived OBS browser sources.
-  // Pass a finite number only when the caller wants to stop reconnecting.
+  /** Consecutive polling failures before stopping; unlimited by default. */
   maxRetries?: number
+  /** Polling interval and base retry delay; defaults to three seconds. */
   retryDelay?: number
   onError?: (error: RealtimeError) => void
   onSuccess?: () => void
-  // デバッグ用：接続ステータスの変化を追跡するコールバック
-  // OBSブラウザソースでの接続問題を調査するために使用
   onStatusChange?: (status: string) => void
 }
 
+function eventUrl(streamerId: string, since: string, demo: boolean): string {
+  const suffix = demo ? 'demo-events' : 'events'
+  const url = new URL(`/api/overlay/${streamerId}/${suffix}`, window.location.origin)
+  url.searchParams.set('since', since)
+  url.searchParams.set('_', String(Date.now()))
+  return url.toString()
+}
+
+function fetchJsonWithXhr<T>(url: string, fetchError: unknown): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (typeof XMLHttpRequest === 'undefined') {
+      reject(fetchError)
+      return
+    }
+    const xhr = new XMLHttpRequest()
+    xhr.open('GET', url, true)
+    xhr.responseType = 'json'
+    xhr.timeout = 10000
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve((xhr.response ?? JSON.parse(xhr.responseText)) as T)
+        } catch (parseError) {
+          reject(parseError)
+        }
+      } else {
+        reject(new Error(`HTTP ${xhr.status}`))
+      }
+    }
+    xhr.onerror = () => reject(fetchError)
+    xhr.ontimeout = () => reject(new Error('XHR timeout'))
+    xhr.send()
+  })
+}
+
+/**
+ * OBS browser sources can run an older Chromium where fetch is less reliable.
+ *
+ * XHR is attempted only when fetch itself rejects (a network/runtime failure).
+ * Retrying an HTTP 4xx/5xx or malformed JSON through XHR would duplicate the
+ * request, consume the public rate-limit twice, and hide the original server
+ * response without improving compatibility.
+ */
+async function fetchJson<T>(url: string): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(url, { cache: 'no-store' })
+  } catch (fetchError) {
+    return fetchJsonWithXhr<T>(url, fetchError)
+  }
+
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json() as Promise<T>
+}
+
+function eventGroupId(event: PollingEvent): string {
+  return event.eventId?.replace(/:\d+$/, '') ?? event.id
+}
+
+/**
+ * Emit history rows as the same multi-draw batch shape formerly broadcast by
+ * Realtime. This preserves the overlay's “one sound per N-draw” behaviour.
+ */
+function emitHistoryBatches(
+  events: PollingEvent[],
+  callback: (payload: GachaBroadcastPayload) => void
+): void {
+  const groups = new Map<string, PollingEvent[]>()
+  for (const event of events) {
+    const id = eventGroupId(event)
+    const group = groups.get(id)
+    if (group) group.push(event)
+    else groups.set(id, [event])
+  }
+
+  for (const group of groups.values()) {
+    const first = group[0]
+    const last = group[group.length - 1]
+    callback({
+      type: 'gacha',
+      card: first.card,
+      ...(group.length > 1 ? { cards: group.map((event) => event.card) } : {}),
+      userTwitchUsername: first.userTwitchUsername,
+      rewardId: first.rewardId ?? null,
+      historyCursor: last.redeemedAt,
+    })
+  }
+}
+
+const MAX_SEEN_EVENT_IDS = 512
+
+/**
+ * Keep duplicate protection bounded for multi-hour OBS sessions. The cursor
+ * excludes old events from future responses, so retaining the newest IDs is
+ * enough to cover retries and eventual-consistency overlap without an
+ * ever-growing Set.
+ */
+function rememberSeenId(seen: Set<string>, id: string): boolean {
+  if (seen.has(id)) return false
+  seen.add(id)
+  if (seen.size > MAX_SEEN_EVENT_IDS) {
+    const oldest = seen.values().next().value as string | undefined
+    if (oldest) seen.delete(oldest)
+  }
+  return true
+}
+
+/**
+ * Subscribe to overlay events through HTTP polling.
+ *
+ * The function name is retained for compatibility with the OBS page. This loop
+ * announces itself active immediately, disabling the older fallback loop before
+ * both can own different cursors. Transient failures are retried internally and
+ * only an explicitly finite retry limit hands control back through onError.
+ */
 export function subscribeToGachaResults(
   streamerId: string,
   callback: (payload: GachaBroadcastPayload) => void,
   options: SubscribeOptions = {}
 ): () => void {
-  const {
-    maxRetries = Number.POSITIVE_INFINITY,
-    retryDelay = 3000,
-    onError,
-    onSuccess,
-    onStatusChange,
-  } = options
-
-  let client: SupabaseClient | null = null
-  let channel: ReturnType<SupabaseClient['channel']> | null = null
+  const maxRetries = options.maxRetries ?? Number.POSITIVE_INFINITY
+  const intervalMs = options.retryDelay ?? 3000
+  let disposed = false
+  let timeout: ReturnType<typeof setTimeout> | null = null
   let retryCount = 0
-  let isDisposed = false
-  let retryTimeout: ReturnType<typeof setTimeout> | null = null
-  let subscriptionGeneration = 0
+  let cursor = new Date().toISOString()
+  let demoCursor = cursor
+  const seenHistoryIds = new Set<string>()
+  const seenDemoIds = new Set<string>()
 
-  const hasRetryLimit = Number.isFinite(maxRetries)
-
-  const cleanup = () => {
-    isDisposed = true
-    subscriptionGeneration++
-    if (retryTimeout) {
-      clearTimeout(retryTimeout)
-      retryTimeout = null
-    }
-    if (channel) {
-      client?.removeChannel(channel)
-      channel = null
-    }
+  const schedule = (delay: number) => {
+    if (disposed) return
+    timeout = setTimeout(() => {
+      void poll()
+    }, delay)
   }
 
-  const subscribe = () => {
-    if (isDisposed) {
-      return
-    }
-
-    subscriptionGeneration++
-    const currentGeneration = subscriptionGeneration
-
-    if (retryTimeout) {
-      clearTimeout(retryTimeout)
-      retryTimeout = null
-    }
-
-    // リトライ時に前回のチャネルをクリーンアップ
-    // 古いチャネルのコールバックが残るとretryCountが想定より早く増加するため
-    // Clean up previous channel before creating a new one to prevent
-    // stale callbacks from incrementing retryCount unexpectedly
-    if (channel && client) {
-      try {
-        client.removeChannel(channel)
-      } catch {
-        // クリーンアップ失敗は非致命的、ログのみ
-        logger.info(`Previous channel cleanup for gacha:${streamerId}`)
-      }
-      channel = null
-    }
-
-    // デバッグ用：サブスクリプション開始を通知
-    onStatusChange?.('INITIALIZING')
+  const poll = async () => {
+    if (disposed) return
+    options.onStatusChange?.('POLLING')
 
     try {
-      client = getSupabaseRealtimeClient()
-      onStatusChange?.('CLIENT_CREATED')
-      channel = client.channel(`gacha:${streamerId}`, GACHA_CHANNEL_CONFIG)
-      onStatusChange?.('CHANNEL_CREATED')
+      // Business events and demo events deliberately use separate cursors. A
+      // current-time demo must never advance past a concurrent DB redemption.
+      const [historyResponse, demoResponse] = await Promise.all([
+        fetchJson<{ events?: PollingEvent[] }>(eventUrl(streamerId, cursor, false)),
+        fetchJson<{ event?: PollingEvent | null }>(eventUrl(streamerId, demoCursor, true))
+          .catch(() => ({ event: null })),
+      ])
 
-      channel
-        .on('broadcast', { event: 'gacha_result' }, (payload) => {
-          if (isDisposed || currentGeneration !== subscriptionGeneration) {
-            return
-          }
+      const newHistoryEvents: PollingEvent[] = []
+      for (const event of historyResponse.events ?? []) {
+        const eventMs = Date.parse(event.redeemedAt)
+        cursor = Number.isFinite(eventMs)
+          ? new Date(eventMs).toISOString()
+          : event.redeemedAt
+        if (!rememberSeenId(seenHistoryIds, event.id)) continue
+        newHistoryEvents.push(event)
+      }
+      emitHistoryBatches(newHistoryEvents, callback)
 
-          try {
-            callback(payload.payload as GachaBroadcastPayload)
-          } catch (error) {
-            logger.error(`Error processing gacha result payload:`, error)
-            // クライアントサイドの同期コールバック内のため await 不可
-            // .catch() でunhandled promise rejectionを防止
-            void reportRealtimeError(error, {
-              action: 'process_payload',
-              streamerId,
-            }).catch(e => console.warn('[Error Tracking] Failed to report:', e))
-          }
-        })
-        .subscribe((status, err) => {
-          // デバッグ用：すべてのステータス変化を通知
-          // OBSブラウザソースでの接続問題を調査するために使用
-          if (isDisposed || currentGeneration !== subscriptionGeneration) {
-            return
-          }
+      const demoEvent = demoResponse.event ?? null
+      if (demoEvent) {
+        const eventMs = Date.parse(demoEvent.redeemedAt)
+        demoCursor = Number.isFinite(eventMs)
+          ? new Date(eventMs).toISOString()
+          : demoEvent.redeemedAt
+        if (rememberSeenId(seenDemoIds, demoEvent.id)) {
+          callback({
+            type: 'gacha',
+            card: demoEvent.card,
+            userTwitchUsername: demoEvent.userTwitchUsername,
+            rewardId: demoEvent.rewardId ?? null,
+          })
+        }
+      }
 
-          onStatusChange?.(`SUBSCRIBE_STATUS: ${status}`)
-
-          if (status === 'SUBSCRIBED') {
-            retryCount = 0
-            logger.info(`Successfully subscribed to gacha:${streamerId}`)
-            onSuccess?.()
-          } else if (CONNECTING_STATUSES.includes(status)) {
-            // 接続中の一時的なステータス（リトライカウントを増やさない）
-            // Temporary connecting status - don't count as error
-            logger.info(`Connection in progress for gacha:${streamerId}, status: ${status}`)
-            onStatusChange?.(`CONNECTING: ${status}`)
-          } else {
-            const isExpected = EXPECTED_CLOSE_STATUSES.includes(status)
-
-            const error: RealtimeError = {
-              type: 'connection',
-              message: `Realtime connection issue: ${status}`,
-              error: err,
-              isExpected,
-            }
-
-            if (isExpected) {
-              logger.info(`Expected connection closure for gacha:${streamerId}, status: ${status}`)
-            } else {
-              logger.warn(`Connection issue for gacha:${streamerId}, status: ${status}`)
-              // クライアントサイドの同期コールバック内のため await 不可
-              void reportRealtimeError(err, {
-                action: 'subscribe',
-                streamerId,
-                status,
-                retryCount,
-              }).catch(e => console.warn('[Error Tracking] Failed to report:', e))
-            }
-
-            onError?.(error)
-
-            if (!hasRetryLimit || retryCount < maxRetries) {
-              retryCount++
-              const delay = getRetryDelay(retryCount, retryDelay)
-              const retryLabel = hasRetryLimit ? `${retryCount}/${maxRetries}` : `${retryCount}`
-              logger.info(`Retrying connection (attempt ${retryLabel}) in ${Math.round(delay)}ms...`)
-              retryTimeout = setTimeout(subscribe, delay)
-            } else {
-              logger.warn(`Max retries (${maxRetries}) reached for gacha:${streamerId}`)
-              const maxRetriesError: RealtimeError = {
-                type: 'connection',
-                message: 'Max retries reached. Please refresh the page to reconnect.',
-                error: null,
-                isExpected: false,
-              }
-              onError?.(maxRetriesError)
-            }
-          }
-        })
+      retryCount = 0
+      schedule(intervalMs)
     } catch (error) {
-      logger.error(`Failed to subscribe to gacha:${streamerId}:`, error)
-      // 同期関数 subscribe() 内のため await 不可
-      void reportRealtimeError(error, {
-        action: 'subscribe',
-        streamerId,
-      }).catch(e => console.warn('[Error Tracking] Failed to report:', e))
+      retryCount += 1
+      const exhausted = Number.isFinite(maxRetries) && retryCount > maxRetries
 
-      const realtimeError: RealtimeError = {
-        type: 'subscription',
-        message: 'Failed to subscribe to realtime channel',
-        error,
+      if (exhausted) {
+        options.onError?.({
+          type: 'connection',
+          message: 'Overlay polling retry limit reached',
+          error,
+          isExpected: false,
+        })
+        return
       }
 
-      onError?.(realtimeError)
-
-      if (!hasRetryLimit || retryCount < maxRetries) {
-        retryCount++
-        const delay = getRetryDelay(retryCount, retryDelay)
-        retryTimeout = setTimeout(subscribe, delay)
-      }
+      options.onStatusChange?.(`POLLING_RETRY:${retryCount}`)
+      const backoff = Math.min(intervalMs * Math.pow(2, Math.max(0, retryCount - 1)), 30000)
+      schedule(backoff)
     }
   }
 
-  subscribe()
+  if (typeof window === 'undefined') {
+    Promise.resolve().then(() => {
+      if (!disposed) {
+        options.onError?.({
+          type: 'connection',
+          message: 'Overlay polling is available only in the browser',
+          error: null,
+          isExpected: true,
+        })
+      }
+    })
+  } else {
+    // Mark the polling transport as the active owner before the first request.
+    // The existing overlay fallback watches this callback and immediately
+    // becomes version-check-only, eliminating a duplicate-fetch window.
+    options.onStatusChange?.('POLLING_ACTIVE')
+    options.onSuccess?.()
+    void poll()
+  }
 
-  return cleanup
+  return () => {
+    disposed = true
+    if (timeout) clearTimeout(timeout)
+  }
 }

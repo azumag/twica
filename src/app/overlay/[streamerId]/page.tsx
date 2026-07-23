@@ -136,8 +136,8 @@ interface OverlayOptions {
 // リロード対象外として扱われる(overlay-version.ts 参照)。
 const CURRENT_OVERLAY_VERSION = process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev";
 
-// Issue #569: Realtime接続中に「バージョン確認だけ」を行う間隔。
-// 接続中はフォールバックポーリング本来の目的(イベント取得)を行わず、
+// Issue #569: primary transport稼働中に「バージョン確認だけ」を行う間隔。
+// 接続中は旧フォールバックポーリングでイベント取得を重複させず、
 // この間隔でoverlayVersionだけを軽量に確認する(pollOverlayEvents参照)。
 // レビュー指摘: 以前はリロードジッター上限(RELOAD_JITTER_MAX_MS)と同じ
 // 定数(TEN_MINUTES_MS)を共有していたが、「確認間隔」と「ジッター上限」は
@@ -776,9 +776,11 @@ export default function OverlayPage() {
   }, [attemptReload]);
 
   /**
-   * Realtime が購読できない環境向けの polling fallback。
-   * Supabase Realtime の public channel join が CHANNEL_ERROR になる場合でも、
-   * ガチャ履歴から overlay 表示を継続できるようにする。
+   * 旧transportから残すversion-check兼緊急polling loop。
+   *
+   * 現在のprimary pollingはsubscribeToGachaResults内でPlanetScale履歴を読み、
+   * connectionStatus=connected中はここでeventsを処理しない。これにより二重表示を
+   * 防ぎつつ、将来DO WebSocket primaryへ切り替えた後も同じversion-checkを再利用する。
    */
   const pollOverlayEvents = useCallback(async () => {
     // 3秒おきのポーリングURLは接続中/未接続どちらの経路でも同一なため共通化する
@@ -790,10 +792,10 @@ export default function OverlayPage() {
     };
 
     if (connectionStatusRef.current === "connected") {
-      // Issue #569: Realtime接続中もこの関数は3秒おきに呼ばれ続けるが、
+      // Issue #569: primary transport接続中もこの関数は3秒おきに呼ばれ続けるが、
       // 従来は何もせず早期returnしていた。ここに「VERSION_CHECK_INTERVAL_MSに
       // 1回、バージョン確認だけ行う」経路を追加する。
-      // 理由: Realtime受信イベントにはhistoryId/eventIdが無くseenHistoryIdsRefに
+      // 理由: primary transportの受信イベントはこの旧loopのseenHistoryIdsRefに
       // 登録されないため、接続中にevents配列を処理すると同一演出がポーリング
       // 経路からも再生され二重演出になる。そのため接続中は応答のoverlayVersion
       // だけを読み、events配列には一切触れない(表示・カーソル前進・seen登録の
@@ -938,7 +940,7 @@ export default function OverlayPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.debug]);
 
-  // Connect to Supabase Realtime for real-time events
+  // Start the current overlay transport (PlanetScale polling until #802 DO rollout).
   // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
   // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
   useEffect(() => {
@@ -946,14 +948,20 @@ export default function OverlayPage() {
 
     queueMicrotask(() => {
       addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
-      addDebugLogRef.current(`Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL ? 'configured' : 'missing'}`);
+      addDebugLogRef.current('Transport: PlanetScale polling');
     });
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
       addDebugLogRef.current(`Received payload: ${payload.type}`);
       if (payload.type === 'gacha' && payload.card) {
-        // Avoid replaying the same event through polling if Realtime later drops.
-        pollCursorRef.current = new Date().toISOString();
+        // Primary polling provides the exact timestamp that its DB query
+        // delivered. Advancing to callback wall-clock time would skip any row
+        // committed between that query and this callback when emergency
+        // fallback takes over. Demo payloads intentionally omit historyCursor
+        // and therefore never advance the business-history cursor.
+        if (payload.historyCursor) {
+          pollCursorRef.current = payload.historyCursor;
+        }
         displayResultRef.current({
           card: payload.card as unknown as Card,
           cards: payload.cards as unknown as Card[] | undefined,

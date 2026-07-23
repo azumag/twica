@@ -783,10 +783,6 @@ export type Card = Database['public']['Tables']['cards']['Row'] & {
 export type User = Database['public']['Tables']['users']['Row']
 export type UserCard = Database['public']['Tables']['user_cards']['Row']
 export type GachaHistory = Database['public']['Tables']['gacha_history']['Row']
-export type Battle = Database['public']['Tables']['battles']['Row'] & {
-  opponent_card_data?: OpponentCardData | null
-}
-export type BattleStats = Database['public']['Tables']['battle_stats']['Row']
 // Helper type for additional gacha rewards
 // 追加ガチャ報酬のヘルパー型
 export type StreamerAdditionalGachaReward = Database['public']['Tables']['streamer_additional_gacha_rewards']['Row']
@@ -833,62 +829,4 @@ export function extractTwitchUserId(streamers: unknown): string | null {
 
 export type UserCardWithDetails = UserCard & {
   card: CardWithStreamer
-}
-
-export type BattleWithDetails = Battle & {
-  user_card: UserCardWithDetails
-  opponent_card: CardWithStreamer
-}
-
-// Battle related types
-export interface BattleLog {
-  turn: number
-  actor: 'user' | 'opponent'
-  action: 'attack' | 'skill'
-  damage?: number
-  heal?: number
-  message: string
-}
-
-export interface OpponentCardData {
-  id: string
-  name: string
-  hp: number
-  atk: number
-  def: number
-  spd: number
-  skill_type: 'attack' | 'defense' | 'heal' | 'special'
-  skill_name: string
-  image_url: string
-  rarity: Rarity
-}
-
-export interface BattleCard {
-  id: string
-  name: string
-  hp: number
-  currentHp: number
-  atk: number
-  def: number
-  spd: number
-  skill_type: SkillType
-  skill_name: string
-  skill_power: number
-  image_url?: string | null
-  rarity?: Rarity
-}
-
-export interface BattleResultData {
-  result: BattleResult
-  turnCount: number
-  userHp: number
-  opponentHp: number
-  logs: BattleLog[]
-}
-
-export interface SkillResult {
-  damage?: number
-  heal?: number
-  defenseUp?: number
-  message: string
 }

@@ -23,10 +23,3 @@ export function clearUserContext() {}
 
 // No-op: request context tracking disabled until error monitoring is re-enabled
 export function setRequestContext(_requestId: string, _path: string) {}
-
-// No-op: game context tracking disabled until error monitoring is re-enabled
-export function setGameContext(_gameData: {
-  battleId?: string
-  cardId?: string
-  outcome?: string
-}) {}

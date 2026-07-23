@@ -38,8 +38,34 @@ const KV_BINDING_NAME = 'RATE_LIMIT_KV'
  * 退避データのキープレフィックス。RATE_LIMIT_KV 内で既に使われている
  * rate limit 用キー（`ratelimit:*`、src/lib/rate-limit.ts 参照）と
  * 名前空間が衝突しないよう分離する。
+ *
+ * 相互参照（ドリフト防止）: workers/error-reporter/src/index.ts の
+ * backlog 監視（EVENTSUB_PARK_KEY_PREFIX / EVENTSUB_PARK_RECEIVED_AT_PATTERN）が
+ * このプレフィックスと下の buildParkedEventSubKey のキー組み立てを、KV値を
+ * 読まずキー名だけでパースできる前提で独立に再実装している（当該ワーカーは
+ * @opennextjs/cloudflare 等 Next.js 専用の依存を持つこのモジュールを直接
+ * import できないため）。このプレフィックスやキー形式（区切り文字・時刻
+ * フォーマット）を変更したら、必ずワーカー側の実装も追従して変更すること。
+ *
+ * ドリフトの機械的検知（Fable レビュー Major-3 対応）: このコメントでの相互参照
+ * だけでは実装がドリフトしてもテストは気づけない。そのため KEY_PREFIX と
+ * buildParkedEventSubKey を export し、tests/unit/error-reporter-worker.test.ts
+ * の契約テストで「worker 側のプレフィックス定数・パーサが、この export された
+ * 本家の値・関数が生成するキーと実際に一致するか」を検証する
+ * （worker パッケージ自体は import できなくても、テストファイルは両方を
+ * import できる）。
  */
-const KEY_PREFIX = 'maintenance:eventsub:'
+export const KEY_PREFIX = 'maintenance:eventsub:'
+
+/**
+ * 退避キー名を組み立てる。プレフィックス・区切り文字・フィールド順序の
+ * 唯一のソース（parkEventSubNotification もこれを使う。以前は同じ式を
+ * 関数内にインライン展開しており、export された定数と実際に使われる組み立て
+ * ロジックが分離しうる余地があったため、Major-3 対応の一環として関数化した）。
+ */
+export function buildParkedEventSubKey(receivedAt: string, messageId: string): string {
+  return `${KEY_PREFIX}${receivedAt}:${messageId}`
+}
 
 /**
  * 退避データの TTL（秒）。7日間。
@@ -136,6 +162,39 @@ async function getMaintenanceKvBinding(): Promise<KVNamespaceLike | null> {
 }
 
 /**
+ * payload（`{ subscription, event, ... }`）から `event.user_input` を除去した
+ * コピーを返す（issue #695代替のKVベース部分改善、項目3: payload最小化）。
+ *
+ * `user_input` はチャンネルポイント報酬に紐づく視聴者の自由入力テキストで、
+ * `handleRedemption`/`handleRaidNotification`（src/lib/services/
+ * eventsub-redemption.ts）のどちらも参照しておらず、リプレイ処理に不要
+ * （grep で無参照を確認済み）。他のフィールド（`user_id`/`user_name`/
+ * `reward.id`等）はhandlerが受け取る型が宣言している形を保つために残す
+ * （一部フィールド、例えば`user_login`は実際には未使用だが、fail-safe設計
+ * （handlerが期待する形をそのまま維持する）を優先し、個別に精査して削る
+ * ことはしない。Fableレビューで「削れるのはuser_inputのみ、他を削ると
+ * fail-safe設計を壊すリスクの方が大きい」と判定済み）。TTL 7日のKVに
+ * 視聴者の自由入力テキストを保持し続ける期間を減らす、最小限のPII削減。
+ *
+ * `payload`は`unknown`（外部由来のJSONをそのまま受け取る型）なので、
+ * 期待する形（`event`がオブジェクト）でない場合は何もせず元のpayloadを
+ * そのまま返す（防御的、fail-safe。未知のsubscription typeも全量退避する
+ * という既存方針を壊さないため、構造チェックで弾いたり例外を投げたりしない）。
+ * 元の`payload`オブジェクト・`event`オブジェクトは変更しない（呼び出し元が
+ * まだ参照している可能性があるため、分割代入で新しいオブジェクトを作り、
+ * 元のオブジェクトへの`delete`は行わない）。
+ */
+function stripUserInputFromPayload(payload: unknown): unknown {
+  if (typeof payload !== 'object' || payload === null) return payload
+  const { event, ...rest } = payload as Record<string, unknown>
+  if (typeof event !== 'object' || event === null || !('user_input' in event)) {
+    return payload
+  }
+  const { user_input: _userInput, ...eventWithoutUserInput } = event as Record<string, unknown>
+  return { ...rest, event: eventWithoutUserInput }
+}
+
+/**
  * EventSub notification を KV へ退避する。
  *
  * 戻り値は「退避に成功したか」を示すが、呼び出し側（route.ts）は成功・失敗の
@@ -157,12 +216,12 @@ export async function parkEventSubNotification(
   // ISO8601 の受信時刻をキーに含めることで、KV list 時に受信時刻順でソートされる
   // （リプレイ時の処理順の目安になる）。messageId も付与して同一ミリ秒内の
   // 複数通知でもキーが衝突しないようにする。
-  const key = `${KEY_PREFIX}${receivedAt}:${input.messageId}`
+  const key = buildParkedEventSubKey(receivedAt, input.messageId)
 
   const record: ParkedEventSubRecord = {
     messageId: input.messageId,
     subscriptionType: input.subscriptionType,
-    payload: input.payload,
+    payload: stripUserInputFromPayload(input.payload),
     receivedAt,
     maintenanceMode: input.maintenanceState.mode,
     maintenanceOperationId: input.maintenanceState.operationId,

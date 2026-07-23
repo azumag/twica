@@ -82,6 +82,107 @@ describe('parkEventSubNotification (#694 Stage 4)', () => {
     )
   })
 
+  it('payload.event.user_input はKVへ保存する前に除去され、他のフィールドは保持される（issue #695代替 項目3: payload最小化）', async () => {
+    const put = vi.fn().mockResolvedValue(undefined)
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { put } },
+    })
+
+    const { parkEventSubNotification } = await importParkModule()
+
+    await parkEventSubNotification({
+      messageId: 'msg-2',
+      payload: {
+        subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+        event: {
+          id: 'redemption-1',
+          user_id: 'user-1',
+          user_name: 'viewer',
+          user_input: '視聴者が自由入力した個人情報を含みうるテキスト',
+          reward: { id: 'reward-1', title: 'ガチャ' },
+        },
+      },
+      subscriptionType: 'channel.channel_points_custom_reward_redemption.add',
+      maintenanceState: BASE_MAINTENANCE_STATE,
+    })
+
+    const [, value] = put.mock.calls[0]
+    const parsed = JSON.parse(value)
+    // event.user_input は除去
+    expect(parsed.payload.event).not.toHaveProperty('user_input')
+    // リプレイに必要な他のフィールドはそのまま残る
+    expect(parsed.payload.event).toEqual({
+      id: 'redemption-1',
+      user_id: 'user-1',
+      user_name: 'viewer',
+      reward: { id: 'reward-1', title: 'ガチャ' },
+    })
+    // event以外のトップレベルフィールド（subscription等）も維持される
+    expect(parsed.payload.subscription).toEqual({
+      type: 'channel.channel_points_custom_reward_redemption.add',
+    })
+  })
+
+  it('user_input を含まないpayloadはそのまま保存される（余計な変換をしない）', async () => {
+    const put = vi.fn().mockResolvedValue(undefined)
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { put } },
+    })
+
+    const { parkEventSubNotification } = await importParkModule()
+
+    await parkEventSubNotification({
+      messageId: 'msg-3',
+      payload: { subscription: { type: 'channel.raid' }, event: { viewers: 5 } },
+      subscriptionType: 'channel.raid',
+      maintenanceState: BASE_MAINTENANCE_STATE,
+    })
+
+    const [, value] = put.mock.calls[0]
+    const parsed = JSON.parse(value)
+    expect(parsed.payload).toEqual({ subscription: { type: 'channel.raid' }, event: { viewers: 5 } })
+  })
+
+  it('payload自体がオブジェクトでない場合は防御的にそのまま保存する（未知のsubscription typeを全量退避する既存方針を壊さない）', async () => {
+    const put = vi.fn().mockResolvedValue(undefined)
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { put } },
+    })
+
+    const { parkEventSubNotification } = await importParkModule()
+
+    await parkEventSubNotification({
+      messageId: 'msg-4',
+      payload: 'not-an-object',
+      subscriptionType: 'unknown.type',
+      maintenanceState: BASE_MAINTENANCE_STATE,
+    })
+
+    const [, value] = put.mock.calls[0]
+    const parsed = JSON.parse(value)
+    expect(parsed.payload).toBe('not-an-object')
+  })
+
+  it('payloadはオブジェクトだがeventがオブジェクトでない・存在しない場合も防御的にそのまま保存する', async () => {
+    const put = vi.fn().mockResolvedValue(undefined)
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { put } },
+    })
+
+    const { parkEventSubNotification } = await importParkModule()
+
+    await parkEventSubNotification({
+      messageId: 'msg-5',
+      payload: { subscription: { type: 'unknown.type' }, event: 'not-an-object' },
+      subscriptionType: 'unknown.type',
+      maintenanceState: BASE_MAINTENANCE_STATE,
+    })
+
+    const [, value] = put.mock.calls[0]
+    const parsed = JSON.parse(value)
+    expect(parsed.payload).toEqual({ subscription: { type: 'unknown.type' }, event: 'not-an-object' })
+  })
+
   it('KVバインディングが未取得（Workers外）なら false を返し warn ログを出す', async () => {
     mocks.getCloudflareContext.mockRejectedValue(new Error('not in workers'))
 

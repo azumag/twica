@@ -32,50 +32,6 @@ export interface GachaErrorResponse extends ApiErrorResponse {
   error: string
 }
 
-export interface BattleSuccessResponse {
-  battleId: string
-  result: 'win' | 'lose' | 'draw'
-  turnCount: number
-  userCard: {
-    id: string
-    name: string
-    hp: number
-    currentHp: number
-    atk: number
-    def: number
-    spd: number
-    skill_type: 'attack' | 'defense' | 'heal' | 'special'
-    skill_name: string
-    image_url: string
-    rarity: Rarity
-  }
-  opponentCard: {
-    id: string
-    name: string
-    hp: number
-    currentHp: number
-    atk: number
-    def: number
-    spd: number
-    skill_type: 'attack' | 'defense' | 'heal' | 'special'
-    skill_name: string
-    image_url: string
-    rarity: Rarity
-  }
-  logs: Array<{
-    round: number
-    attacker: 'user' | 'opponent'
-    action: string
-    damage?: number
-    heal?: number
-    effect?: string
-  }>
-}
-
-export interface BattleErrorResponse extends ApiErrorResponse {
-  error: string
-}
-
 export interface CardResponse {
   id: string
   streamer_id: string

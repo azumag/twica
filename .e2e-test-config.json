@@ -69,28 +69,6 @@
       }
     },
     {
-      "name": "カードバトル",
-      "path": "/battle",
-      "title": "カードバトル - TwiCa",
-      "authRequired": true,
-      "requiredUserType": "viewer",
-      "elements": {
-        "battleArena": "バトルアリーナ",
-        "cardDeck": "デッキ"
-      }
-    },
-    {
-      "name": "バトル統計",
-      "path": "/battle/stats",
-      "title": "バトル統計 - TwiCa",
-      "authRequired": true,
-      "requiredUserType": "viewer",
-      "elements": {
-        "statsTable": "統計表",
-        "winRate": "勝率"
-      }
-    },
-    {
       "name": "ダッシュボード（配信者）",
       "path": "/dashboard",
       "title": "ダッシュボード - TwiCa",

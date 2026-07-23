@@ -23,23 +23,29 @@ jobs:
         run: npm ci
 
       - name: Typecheck
-        # #588: 型エラーの検出漏れ防止のため tsc --noEmit をゲート化する。
-        # 既に依存インストール済みの test job に同居させ、新規 job による
-        # 追加の npm ci / セットアップコストを避ける。
-        run: npm run typecheck
+        id: typecheck
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee typecheck-output.log
+
+      - name: Upload failed typecheck output
+        if: steps.typecheck.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-output
+          path: typecheck-output.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Supabase shutdown independence check
+        # Static boundary check: runtime/browser/deploy paths must remain usable
+        # after the Supabase project and all URL/key secrets are deleted.
+        run: npm run check:supabase-shutdown
 
       - name: Maintenance write surface check
-        # #694 Stage 5: config/maintenance-write-surfaces.json への登録漏れを
-        # 機械的に検出する (TypeScript Compiler APIでroute.tsのPOST/PUT/PATCH/DELETE
-        # exportを走査し、inventoryとの同期・stale entry・スキーマ違反を検証)。
-        # git履歴やベースブランチとの比較を必要とせず現在のツリー状態のみを見る
-        # 純粋なNodeスクリプトのため、Typecheck同様に依存インストール済みの
-        # test jobに同居させ、独立jobによる追加の npm ci コストを避ける。
         run: npm run check:maintenance-surfaces
 
       - name: Unit tests
-        # 失敗時に大量の成功ログで原因が埋もれないよう、最初の失敗で停止し、
-        # 機械可読なJSONレポートを生成する。失敗時のみ次のstepでartifact化する。
         run: npm run test:unit -- --reporter=json --outputFile=vitest-report.json --bail=1
 
       - name: Upload failed unit test report
@@ -54,11 +60,36 @@ jobs:
       - name: Integration tests
         run: npm run test:integration
 
+  supabase-shutdown-build:
+    name: Application build without Supabase variables
+    needs: test
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build without Supabase URL or keys
+        run: npm run build
+        env:
+          NEXT_PUBLIC_VERSION: ${{ github.sha }}
+          NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          TWITCH_CLIENT_ID: dummy_client_id
+          TWITCH_CLIENT_SECRET: dummy_client_secret
+          TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
+          CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
+
   analysis:
-    # #701 サブタスク7: analysis/(admin dashboard)のtypecheck/buildをroot CIへ統合し、
-    # ブラウザ側へのSupabase直接依存の再導入をCIで機械的に防ぐ。analysisはroot workspaceの
-    # 一部ではなく独自のpackage.json/package-lock.jsonを持つ別npmパッケージのため、
-    # root `npm ci` とは別に `analysis/` 配下で独立してインストールする
     name: Analysis dashboard (guard / typecheck / build)
     runs-on: ubuntu-latest
 
@@ -75,9 +106,6 @@ jobs:
             analysis/package-lock.json
 
       - name: Browser Supabase dependency guard
-        # analysis/src(ブラウザ配信コード)への@supabase直接import・
-        # VITE_*SUPABASE*環境変数の再混入をチェック(#701)。npm installなしで動く
-        # 純粋なNodeスクリプトのため、依存インストールより先に実行してフィードバックを早める
         run: node scripts/check-analysis-browser-supabase.js
 
       - name: Install analysis dependencies
@@ -93,16 +121,6 @@ jobs:
         working-directory: analysis
 
       - name: Verify built bundle has no Supabase string
-        # regexベースのソーススキャン(1つ前のstep)は、境界外(analysis/dev/**)からの
-        # 間接import経由での混入や難読化された文字列連結までは検知できない。
-        # ビルド成果物そのものをgrepすることで、最終的にブラウザへ配信される
-        # bundleに"supabase"文字列が一切含まれないことを直接検証する
-        # (regexガードが「うっかり再導入」を防ぎ、この一手が「最終成果物」を保証する二段構え)
-        #
-        # fail-closed: グロブが1件もマッチしない(ビルド成果物のパスが変わった等)場合、
-        # 展開されないグロブ文字列に対する grep はエラー終了するが、その終了コードは
-        # `if` の条件としては「偽」扱いになり、そのままだと「一致なし」と誤認して
-        # 静かに通過してしまう(fail-open)。ファイル件数を事前に明示チェックして防ぐ
         run: |
           shopt -s nullglob
           bundle_files=(analysis/dist/assets/*.js)
@@ -117,7 +135,6 @@ jobs:
           echo "OK: bundleにSupabase文字列は含まれていません (${#bundle_files[@]} ファイルを検証)"
 
   lint:
-    # preview → main PR のときだけ lint を実行（不要な CI 実行を削減）
     if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref == 'preview'
     runs-on: ubuntu-latest
 
@@ -137,11 +154,6 @@ jobs:
         run: npm run lint
 
   migration-order-check:
-    # マイグレーション番号の out-of-order チェック (#541)。
-    # PR ごとに、ベースブランチとの merge-base 以降で新規追加された
-    # supabase/migrations/*.sql の番号がベースブランチの既存最大番号より
-    # 大きいことを検証する（マージ順序と採番順序のズレが原因だった #525-527 の再発防止）。
-    # push イベント（マージ後）にはこの比較対象がないため PR コンテキストのみで実行する。
     name: Migration order check
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -149,7 +161,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # ベースブランチとの merge-base を計算するために全履歴を取得する
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -162,46 +173,7 @@ jobs:
         run: npm ci
 
       - name: Fetch base branch
-        # PR の base ブランチの「現時点の」最新状態を明示的に取得する。
-        # actions/checkout はチェックアウト対象 ref の履歴のみを取得するため、
-        # 自分がブランチを作成した後に base ブランチへ別 PR がマージされていた場合
-        # その最新コミットは fetch-depth: 0 だけでは取得されない。
         run: git fetch origin ${{ github.base_ref }}
 
       - name: Check migration order
         run: npm run check:migration-order -- --base=origin/${{ github.base_ref }}
-
-  build:
-    runs-on: ubuntu-latest
-    needs: [test, lint]
-    # Cloudflare Workers Builds handles app builds after cutover.
-    # Before cutover, keep this as the fallback build gate.
-    if: ${{ !failure() && !cancelled() && vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true' }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-        env:
-          NEXT_PUBLIC_VERSION: ${{ github.sha }}
-          NEXT_PUBLIC_SUPABASE_URL: https://dummy.supabase.co
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: dummy_publishable_key
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: dummy_anon_key
-          NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
-          NEXT_PUBLIC_APP_URL: http://localhost:3000
-          TWITCH_CLIENT_ID: dummy_client_id
-          TWITCH_CLIENT_SECRET: dummy_client_secret
-          TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
-          SUPABASE_SECRET_KEY: dummy_secret_key
-          SUPABASE_SERVICE_ROLE_KEY: dummy_service_role_key
-          BLOB_READ_WRITE_TOKEN: dummy_blob_token

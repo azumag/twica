@@ -1,15 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { createHash } from 'node:crypto'
 import type { Plugin } from 'vite'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Card, SupabaseAdminSchema, InquiryStatus, Rarity, Streamer } from '../src/types/database'
-import {
-  buildStreamerChatAccessRows,
-  type ChatAccessBotAccountRow,
-  type ChatAccessSenderSettingRow,
-  type ChatAccessStreamerRow,
-  type ChatAccessUserScopeRow,
-} from '../src/lib/chatAnnouncementAccess'
 import {
   createAnnouncementPg,
   createSupportCodePg,
@@ -56,12 +48,6 @@ interface GachaChartRow {
   cards: GachaChartCard | null
   streamers: Streamer | null
 }
-
-// 投票キャンペーンの識別子（2026選挙応援キャンペーン）
-// analysis/src/pages/Streamers.tsx の同名定数と揃える。
-// キャンペーン終了後はこの定数とクエリを削除すること
-const VOTE_CAMPAIGN_TYPE = 'campaign' as const
-const VOTE_CAMPAIGN_MEMO = '2026選挙応援' as const
 
 type RouteContext = {
   req: IncomingMessage
@@ -180,19 +166,38 @@ function isMissingRpcError(error: unknown): boolean {
   return code === '42883' || code === 'PGRST202'
 }
 
-// 戻り値を `T | null` にすると「RPC未適用（フォールバックすべき）」と
-// 「RPCは成功したがたまたまfalsyな値(null/0/空文字)を返した」を呼び出し側の
-// truthyチェック(`if (result) ...`)で区別できず、後者が誤ってフォールバック側に
-// 落ちて本来のバグを隠してしまう。found フラグで明示的に区別する
-type RpcResult<T> = { found: true; data: T } | { found: false }
-
-async function tryJsonbRpc<T>(
+// get_analysis_*() JSONB RPC（00073_add_analysis_dashboard_rpcs.sql）を呼ぶ共通ヘルパー。
+//
+// #700 以前は関数未検出（42883/PGRST202）時に無音でNode側の低速な全件集計へ
+// フォールバックしていたが、この設計はPlanetScale移行後にRPC未適用というスキーマ
+// 不備を隠してしまう（issue #700本文・2026-07-10コメント）。そのためフォールバックは
+// 廃止し、missing RPCも通常のエラーと同様に明示的に呼び出し元へ伝播させる。
+// pg直結経路（adminApiPg.ts の callAnalysisJsonFunction）も同じ方針で実装済みであり、
+// 両経路の挙動を揃える。
+// ただし getGachaSummary はこの callJsonbRpc を経由しておらず、パラメータ付き
+// RPC呼び出しのため従来のsilent fallbackが未対応のまま残っている
+// （フォローアップ: issue #700のコメント参照。callJsonbRpc にパラメータ引数を
+// 追加して統合する形で別途対応が必要）。
+//
+// missing RPCの場合だけ、原因（未適用のmigration）を名指しした分かりやすい
+// メッセージへ差し替える。呼び出し元の外側ハンドラ（localAdminApiPlugin内のcatch）が
+// error.messageをそのままJSONレスポンスに含めるため、生のPostgrestError（
+// 「Could not find the function ...」等）よりも運用者が対処しやすい文言にする。
+async function callJsonbRpc<T>(
   client: SupabaseClient<SupabaseAdminSchema>,
   functionName: string
-): Promise<RpcResult<T>> {
+): Promise<T> {
   const { data, error } = await client.rpc(functionName as never)
-  if (!error) return { found: true, data: data as T }
-  if (isMissingRpcError(error)) return { found: false }
+  if (!error) return data as T
+  if (isMissingRpcError(error)) {
+    throw Object.assign(
+      new Error(
+        `Required RPC "${functionName}" is missing. Apply ` +
+          'supabase/migrations/00073_add_analysis_dashboard_rpcs.sql (or later) to this database.'
+      ),
+      { cause: error }
+    )
+  }
   throw error
 }
 
@@ -248,67 +253,6 @@ function parsePagination(url: URL): { page: number; pageSize: number } {
     })
   }
   return { page, pageSize }
-}
-
-async function fetchUsersForTwitchIds(
-  client: SupabaseClient<SupabaseAdminSchema>,
-  twitchIds: string[]
-): Promise<ChatAccessUserScopeRow[]> {
-  const rows: ChatAccessUserScopeRow[] = []
-  const batchSize = 500
-
-  for (let index = 0; index < twitchIds.length; index += batchSize) {
-    const batch = twitchIds.slice(index, index + batchSize)
-    const batchRows = await fetchAllPaged(() =>
-      client
-        .from('users')
-        .select('twitch_user_id, twitch_scopes')
-        .in('twitch_user_id', batch)
-    )
-    rows.push(...(batchRows as ChatAccessUserScopeRow[]))
-  }
-
-  return rows
-}
-
-// streamers を渡さない場合は自前で取得する（互換性のためオプション引数として残置）。
-// /streamers ルートは既に取得済みの streamers 配列を渡すことで二重取得を避ける。
-async function listStreamerChatAccess(
-  client: SupabaseClient<SupabaseAdminSchema>,
-  streamers?: ChatAccessStreamerRow[]
-) {
-  const resolvedStreamers =
-    streamers ??
-    ((await fetchAllPaged(() =>
-      client
-        .from('streamers')
-        .select('id, twitch_user_id, chat_announcement_enabled')
-        .order('created_at', { ascending: false })
-    )) as ChatAccessStreamerRow[])
-
-  const twitchIds = [...new Set(resolvedStreamers.map((streamer) => streamer.twitch_user_id))]
-
-  const [userScopes, senderSettings, botAccounts] = await Promise.all([
-    fetchUsersForTwitchIds(client, twitchIds),
-    fetchAllPaged(() =>
-      client
-        .from('streamer_chat_sender_settings')
-        .select('streamer_id, sender_mode, custom_bot_account_id')
-    ) as Promise<ChatAccessSenderSettingRow[]>,
-    fetchAllPaged(() =>
-      client
-        .from('twitch_bot_accounts')
-        .select('id, owner_type, streamer_id, status')
-        .eq('status', 'active')
-    ) as Promise<ChatAccessBotAccountRow[]>,
-  ])
-
-  return buildStreamerChatAccessRows({
-    streamers: resolvedStreamers,
-    userScopes,
-    senderSettings,
-    botAccounts,
-  })
 }
 
 export async function listLicenses(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
@@ -533,168 +477,25 @@ export async function listAnnouncements(client: SupabaseClient<SupabaseAdminSche
   })
 }
 
-// 直近30日分、日次バケットの{date, count}配列を返す共通ヘルパー。
-// growth chart(users.created_at / gacha_history.redeemed_at)の両方で使う。
-// 1テーブルあたり30本のindex-onlyなCOUNTクエリをPromise.allで並列実行する
-// (RPC化していない理由: getOverview()冒頭のコメント/呼び出し元コメント参照)
-async function getDailyGrowth(
-  client: SupabaseClient<SupabaseAdminSchema>,
-  table: 'users' | 'gacha_history',
-  dateColumn: 'created_at' | 'redeemed_at'
-): Promise<{ date: string; count: number }[]> {
-  const days = 30
-  const today = new Date()
-  const dayStarts: Date[] = []
-  for (let i = days - 1; i >= 0; i--) {
-    dayStarts.push(
-      new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i))
-    )
-  }
-
-  const counts = await Promise.all(
-    dayStarts.map((dayStart) => {
-      const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000)
-      return client
-        .from(table)
-        .select('*', { count: 'exact', head: true })
-        .gte(dateColumn, dayStart.toISOString())
-        .lt(dateColumn, dayEnd.toISOString())
-    })
-  )
-
-  return dayStarts.map((dayStart, index) => {
-    const result = counts[index]
-    if (result.error) throw result.error
-    return {
-      date: dayStart.toISOString().slice(0, 10),
-      count: result.count || 0,
-    }
-  })
-}
-
-// 直近30日の gacha_history を streamer_id のみ取得し、Node側で集計してトップ10を返す。
-// 表示に必要な情報(表示名/アイコン)はトップ10のstreamer_idだけ後引きする
+// 直近30日の配信者別ガチャ数トップ10を返す。集計は get_analysis_streamer_leaderboard()
+// （00073_add_analysis_dashboard_rpcs.sql）がDB側で行う。
+// missing RPC時にNode側で直近30日のgacha_history全件を取得し手動集計する低速な
+// フォールバックが以前ここにあったが、#700によりRPC欠落を無音で隠す設計を廃止したため削除した
+// （callJsonbRpc がmissing RPCを含め常に例外を伝播する）。
 export async function getStreamerLeaderboard(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') return getStreamerLeaderboardPg(env)
-
-  const rpcRows = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamer_leaderboard')
-  if (rpcRows.found) return rpcRows.data
-
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-
-  const rows = (await fetchAllPaged(() =>
-    client
-      .from('gacha_history')
-      .select('streamer_id')
-      .gte('redeemed_at', thirtyDaysAgo)
-  )) as { streamer_id: string }[]
-
-  const countByStreamerId = new Map<string, number>()
-  for (const row of rows) {
-    countByStreamerId.set(row.streamer_id, (countByStreamerId.get(row.streamer_id) || 0) + 1)
-  }
-
-  const top10 = Array.from(countByStreamerId.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-
-  if (top10.length === 0) return []
-
-  const top10Ids = top10.map(([streamerId]) => streamerId)
-  const { data: streamersData, error } = await client
-    .from('streamers')
-    .select('id, twitch_display_name, twitch_profile_image_url')
-    .in('id', top10Ids)
-  if (error) throw error
-
-  const streamerById = new Map(
-    (streamersData || []).map((streamer) => [streamer.id, streamer])
-  )
-
-  return top10.map(([streamerId, drawCount]) => {
-    const streamer = streamerById.get(streamerId)
-    return {
-      streamerId,
-      displayName: streamer?.twitch_display_name || 'Unknown',
-      profileImageUrl: streamer?.twitch_profile_image_url ?? null,
-      drawCount,
-    }
-  })
+  return callJsonbRpc<unknown[]>(client, 'get_analysis_streamer_leaderboard')
 }
 
+// overview統計（ユーザー数・配信者数・カード数・期間別ガチャ数・直近ガチャ・日次成長）を
+// 返す。集計は get_analysis_overview()（00073_add_analysis_dashboard_rpcs.sql）が
+// DB側で行う。missing RPC時にPromise.allで複数countクエリ+30日分の日次成長クエリ
+// (getDailyGrowth、1テーブルあたり30本のCOUNTクエリ)をNode側で発行するフォールバックが
+// 以前ここにあったが、#700によりRPC欠落を無音で隠す設計を廃止したため削除した
+// （callJsonbRpc がmissing RPCを含め常に例外を伝播する）。
 export async function getOverview(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') return getOverviewPg(env)
-
-  const rpcOverview = await tryJsonbRpc<unknown>(client, 'get_analysis_overview')
-  if (rpcOverview.found) return rpcOverview.data
-
-  const now = new Date()
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
-  const weekStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
-
-  const [
-    usersResult,
-    streamersResult,
-    cardsResult,
-    todayGachaResult,
-    weekGachaResult,
-    monthGachaResult,
-    recentGachaResult,
-    userGrowth,
-    gachaGrowth,
-  ] = await Promise.all([
-    client.from('users').select('*', { count: 'exact', head: true }),
-    client.from('streamers').select('*', { count: 'exact', head: true }),
-    client.from('cards').select('*', { count: 'exact', head: true }),
-    client
-      .from('gacha_history')
-      .select('*', { count: 'exact', head: true })
-      .gte('redeemed_at', todayStart),
-    client
-      .from('gacha_history')
-      .select('*', { count: 'exact', head: true })
-      .gte('redeemed_at', weekStart),
-    client
-      .from('gacha_history')
-      .select('*', { count: 'exact', head: true })
-      .gte('redeemed_at', monthStart),
-    client
-      .from('gacha_history')
-      .select('*, cards(*), streamers(*)')
-      .order('redeemed_at', { ascending: false })
-      .limit(10),
-    getDailyGrowth(client, 'users', 'created_at'),
-    getDailyGrowth(client, 'gacha_history', 'redeemed_at'),
-  ])
-
-  const requiredResults = [
-    usersResult,
-    streamersResult,
-    cardsResult,
-    todayGachaResult,
-    weekGachaResult,
-    monthGachaResult,
-    recentGachaResult,
-  ]
-
-  for (const result of requiredResults) {
-    if (result.error) throw result.error
-  }
-
-  return {
-    stats: {
-      totalUsers: usersResult.count || 0,
-      totalStreamers: streamersResult.count || 0,
-      totalCards: cardsResult.count || 0,
-      todayGacha: todayGachaResult.count || 0,
-      weekGacha: weekGachaResult.count || 0,
-      monthGacha: monthGachaResult.count || 0,
-    },
-    recentGacha: recentGachaResult.data || [],
-    userGrowth,
-    gachaGrowth,
-  }
+  return callJsonbRpc<unknown>(client, 'get_analysis_overview')
 }
 
 // analysis/src/pages/Users.tsx の fetchUsers() が期待する形と揃える
@@ -708,98 +509,26 @@ export async function getOverview(client: SupabaseClient<SupabaseAdminSchema>, e
 export const USER_SAFE_COLUMNS =
   'id, twitch_user_id, twitch_username, twitch_display_name, twitch_profile_image_url, tos_accepted_at, twitch_scopes, created_at, updated_at'
 
+// ユーザー一覧（カード所持数付き）を返す。集計は get_analysis_users()
+// （00073_add_analysis_dashboard_rpcs.sql）がDB側で行う。missing RPC時にfetchAllPaged
+// でusers全件+user_cards(count)埋め込みを取得するフォールバックが以前ここにあったが、
+// #700によりRPC欠落を無音で隠す設計を廃止したため削除した
+// （callJsonbRpc がmissing RPCを含め常に例外を伝播する）。
 export async function listUsers(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') return listUsersPg(env)
-
-  const rpcUsers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_users')
-  if (rpcUsers.found) return rpcUsers.data
-
-  return fetchAllPaged(() =>
-    client
-      .from('users')
-      .select(`${USER_SAFE_COLUMNS}, user_cards(count)`)
-      .order('created_at', { ascending: false })
-  )
+  return callJsonbRpc<unknown[]>(client, 'get_analysis_users')
 }
 
-// analysis/src/pages/Streamers.tsx の fetchStreamers() が現在ブラウザ側で行っている
-// 4つの並列クエリ + SHA-256計算(crypto.subtle, 1配信者ずつ非同期)を1本のサーバーサイド
-// 処理に統合する。SHA-256はNodeの同期API(createHash)で計算するため高速。
+// analysis/src/pages/Streamers.tsx の fetchStreamers() が期待する、カード数・
+// ストレージ使用量・チャット送信可否・投票キャンペーン特典を含む配信者一覧を返す。
+// 集計は get_analysis_streamers()（00073_add_analysis_dashboard_rpcs.sql）がDB側で行う。
+// missing RPC時にstreamers/storage_usage/streamer_storage_bonusを個別取得しSHA-256計算・
+// チャットアクセス判定（listStreamerChatAccess）をNode側で組み立てるフォールバックが
+// 以前ここにあったが、#700によりRPC欠落を無音で隠す設計を廃止したため削除した
+// （callJsonbRpc がmissing RPCを含め常に例外を伝播する）。
 export async function listStreamersWithStats(client: SupabaseClient<SupabaseAdminSchema>, env: Env) {
   if (getAnalysisDbDriver(env) === 'pg') return listStreamersWithStatsPg(env)
-
-  const rpcStreamers = await tryJsonbRpc<unknown[]>(client, 'get_analysis_streamers')
-  if (rpcStreamers.found) return rpcStreamers.data
-
-  type StreamerWithCardCount = Streamer & { cards: { count: number }[] }
-
-  const [streamersRaw, storageUsageRows, storageBonusRows] = await Promise.all([
-    fetchAllPaged(() =>
-      client
-        .from('streamers')
-        // streamers-cards間には card_owner_stats 経由のmany-to-many関係も存在するため、
-        // 素の cards(count) だと "more than one relationship was found" でPostgRESTがエラーになる。
-        // 直接FK(cards_streamer_id_fkey)を明示して曖昧さを解消する
-        .select('*, cards!cards_streamer_id_fkey(count)')
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: true }) // 安定ソート: created_at同値時のページ間重複/欠落を防ぐ
-    ),
-    fetchAllPaged(() =>
-      client.from('storage_usage').select('user_prefix, bytes_used').neq('user_prefix', '_global_')
-    ),
-    fetchAllPaged(() =>
-      client
-        .from('streamer_storage_bonus')
-        .select('streamer_id')
-        .eq('type', VOTE_CAMPAIGN_TYPE)
-        .eq('memo', VOTE_CAMPAIGN_MEMO)
-    ),
-  ])
-
-  const streamers = streamersRaw as unknown as StreamerWithCardCount[]
-
-  // listStreamerChatAccessに既に取得済みのstreamersを渡し、内部での再取得を避ける
-  const chatAccessRows = await listStreamerChatAccess(
-    client,
-    streamers.map((streamer) => ({
-      id: streamer.id,
-      twitch_user_id: streamer.twitch_user_id,
-      chat_announcement_enabled: streamer.chat_announcement_enabled,
-    }))
-  )
-  const chatAccessByStreamerId = new Map(chatAccessRows.map((access) => [access.streamer_id, access]))
-
-  const storageSizeByPrefix = new Map<string, number>()
-  ;(storageUsageRows as { user_prefix: string; bytes_used: number }[]).forEach((row) => {
-    storageSizeByPrefix.set(row.user_prefix, row.bytes_used)
-  })
-
-  const voteCampaignStreamerIdSet = new Set(
-    (storageBonusRows as { streamer_id: string }[]).map((row) => row.streamer_id)
-  )
-
-  return streamers.map((streamer) => {
-    const { cards, ...streamerFields } = streamer
-    const cardCount = cards?.[0]?.count ?? 0
-
-    // blob_files/storage_usageのuser_prefixと同じ方式(SHA-256先頭8文字)で算出
-    const userPrefix = createHash('sha256').update(streamer.twitch_user_id).digest('hex').slice(0, 8)
-    const storageBytes = storageSizeByPrefix.get(userPrefix) || 0
-
-    const chatAccess = chatAccessByStreamerId.get(streamer.id)
-    const hasVoteCampaignBonus = voteCampaignStreamerIdSet.has(streamer.id)
-
-    return {
-      ...streamerFields,
-      card_count: cardCount,
-      storage_bytes: storageBytes,
-      has_chat_scope: chatAccess?.has_chat_scope ?? false,
-      chat_send_available: chatAccess?.chat_send_available ?? false,
-      has_active_bot_sender: chatAccess?.has_active_bot_sender ?? false,
-      chat_sender_mode: chatAccess?.sender_mode ?? 'streamer',
-      has_vote_campaign_bonus: hasVoteCampaignBonus,
-    }
-  })
+  return callJsonbRpc<unknown[]>(client, 'get_analysis_streamers')
 }
 
 // #701: StreamerCards.tsx/StreamerGachaHistory.tsxがブラウザから直接

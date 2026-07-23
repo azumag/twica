@@ -4,26 +4,30 @@ export interface EnvConfig {
   optional?: boolean
 }
 
+interface RequiredEnvVarGroup {
+  names: readonly string[]
+  label: string
+}
+
 export const requiredEnvVars: EnvConfig[] = [
   { name: 'NEXT_PUBLIC_APP_URL', required: true },
   { name: 'NEXT_PUBLIC_TWITCH_CLIENT_ID', required: true },
   { name: 'TWITCH_CLIENT_SECRET', required: true },
   { name: 'TWITCH_EVENTSUB_SECRET', required: true },
-  { name: 'NEXT_PUBLIC_SUPABASE_URL', required: true },
-  // BLOB_READ_WRITE_TOKEN は Vercel Blob 用で、Cloudflare R2 ネイティブバインディング移行後は不要
+  // Database connectivity is supplied by the HYPERDRIVE_PLANETSCALE binding in
+  // Workers (or DATABASE_URL_PLANETSCALE for local development), not by a
+  // Supabase URL/key pair. BLOB_READ_WRITE_TOKEN is also obsolete after R2.
   { name: 'CSRF_TOKEN_SALT', required: true },
 ]
 
-export const requiredEnvVarGroups = [
-  {
-    names: ['NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'],
-    label: 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY',
-  },
-  {
-    names: ['SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
-    label: 'SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY',
-  },
-] as const
+/**
+ * Alternative required-variable groups.
+ *
+ * Supabase public/admin key groups were intentionally removed after the
+ * PlanetScale cutover. Keeping them here would make module initialization fail
+ * before any pg query whenever the retired Supabase project is shut down.
+ */
+export const requiredEnvVarGroups: ReadonlyArray<RequiredEnvVarGroup> = []
 
 export function validateEnvVars(): { valid: boolean; missing: string[] } {
   const missing: string[] = []
@@ -66,9 +70,9 @@ export function validateCSRFTokenSalt(): { valid: boolean; error?: string } {
   }
 
   if (salt.length < 32) {
-    return { 
-      valid: false, 
-      error: 'CSRF_TOKEN_SALT must be at least 32 characters for cryptographic security' 
+    return {
+      valid: false,
+      error: 'CSRF_TOKEN_SALT must be at least 32 characters for cryptographic security'
     }
   }
 

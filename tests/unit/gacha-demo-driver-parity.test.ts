@@ -1,21 +1,10 @@
-/**
- * #663: 低頻度APIルート群のpg直結移行 — POST /api/gacha/demo の
- * postgrest経路 / pg経路パリティテスト
- *
- * このルートは他の対象ルートと異なり getSupabaseAdmin() を使わず
- * createClient(supabaseUrl, supabaseKey) でアドホックなクライアントを生成する
- * （公開デモエンドポイントのため）。pg 経路は supabaseUrl/supabaseKey の設定
- * 有無に依存しないことも検証する。
- */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { POST } from '@/app/api/gacha/demo/route'
 import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}))
-vi.mock('@/lib/realtime', () => ({
-  broadcastGachaResult: vi.fn(() => Promise.resolve()),
 }))
 
 const CARD_ROW = {
@@ -43,10 +32,6 @@ const CARD_ROW = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-// 本番未デプロイ8列(card_number/hp/atk/def/spd/skill_type/skill_name/skill_power)を
-// 除いた行。CARDS_SAFE_COLUMNS 再試行の成功レスポンスを模す (#663 self-review fix、
-// 外部レビュー指摘: fetchCardByIdPg/fetchActiveCardsForStreamerPg にも
-// cards/route.ts と同じ列欠落フォールバックが必要)。
 const SAFE_CARD_ROW = {
   id: 'card-1',
   streamer_id: 'streamer-1',
@@ -64,9 +49,6 @@ const SAFE_CARD_ROW = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-// pg (postgres.js) が本番未デプロイ列に対して throw する 42703 相当のエラー。
-// isMissingCardsBattleColumnError の判定ロジック（"column" を含むテキスト +
-// 欠落8列のいずれかの列名を含む）に一致させる。
 const MISSING_BATTLE_COLUMN_ERROR = {
   code: '42703',
   message: 'column "hp" of relation "cards" does not exist',
@@ -77,14 +59,15 @@ interface PgResponse {
   error?: unknown
 }
 
-function createDrizzleDbMock(config: { selects?: PgResponse[] } = {}) {
+function createDrizzleDbMock(selects: PgResponse[]) {
   let selectIndex = 0
   const db = {
     select: vi.fn(() => {
-      const responses = config.selects ?? [{ rows: [] }]
-      const response = responses[Math.min(selectIndex, responses.length - 1)]
+      const response = selects[Math.min(selectIndex, selects.length - 1)] ?? { rows: [] }
       selectIndex += 1
-      const resolve = () => (response.error ? Promise.reject(response.error) : Promise.resolve(response.rows ?? []))
+      const resolve = () => response.error
+        ? Promise.reject(response.error)
+        : Promise.resolve(response.rows ?? [])
       const builder: any = {
         from: vi.fn(() => builder),
         where: vi.fn(() => builder),
@@ -97,59 +80,42 @@ function createDrizzleDbMock(config: { selects?: PgResponse[] } = {}) {
   return { db }
 }
 
-function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
+function primePgDb(selects: PgResponse[]) {
+  const mock = createDrizzleDbMock(selects)
   vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
+  return mock
 }
 
-function createRequest(body: Record<string, unknown>): NextRequest {
+function request(body: Record<string, unknown>): NextRequest {
   return new NextRequest('http://localhost:3000/api/gacha/demo', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
 }
 
-describe('POST /api/gacha/demo: postgrest / pg 経路の互換 (#663)', () => {
-  const originalEnv = { ...process.env }
+const SUPABASE_ENV_NAMES = [
+  'NEXT_PUBLIC_SUPABASE_URL',
+  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'SUPABASE_SECRET_KEY',
+] as const
 
+describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://test.supabase.co'
-    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key'
+    for (const name of SUPABASE_ENV_NAMES) vi.stubEnv(name, undefined)
   })
 
   afterEach(() => {
     vi.unstubAllEnvs()
-    process.env = { ...originalEnv }
   })
 
-  it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証。cardIdでカードが見つかる場合）', async () => {
-    vi.stubEnv('DB_DRIVER', undefined)
-    vi.doMock('@supabase/supabase-js', () => ({
-      createClient: vi.fn(() => ({
-        from: vi.fn(() => ({
-          select: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle: vi.fn().mockResolvedValue({ data: CARD_ROW, error: null }) })) })),
-        })),
-      })),
-    }))
+  it('fetches a requested card with no Supabase URL or key', async () => {
+    primePgDb([{ rows: [CARD_ROW] }])
 
-    const { POST } = await import('@/app/api/gacha/demo/route')
-    const response = await POST(createRequest({ cardId: 'card-1' }))
-    const body = await response.json()
-
-    expect(response.status).toBe(200)
-    expect(body.card.id).toBe('card-1')
-    expect(getDb).not.toHaveBeenCalled()
-    vi.doUnmock('@supabase/supabase-js')
-  })
-
-  it('DB_DRIVER=pg-read: cardId指定時、pg経路でカードが取得される', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
-    const pg = createDrizzleDbMock({ selects: [{ rows: [CARD_ROW] }] })
-    primePgDb(pg)
-
-    const { POST } = await import('@/app/api/gacha/demo/route')
-    const response = await POST(createRequest({ cardId: 'card-1' }))
+    const response = await POST(request({ cardId: 'card-1' }))
     const body = await response.json()
 
     expect(response.status).toBe(200)
@@ -157,13 +123,12 @@ describe('POST /api/gacha/demo: postgrest / pg 経路の互換 (#663)', () => {
     expect(getDb).toHaveBeenCalled()
   })
 
-  it('DB_DRIVER=pg-read: streamerId指定時、pg経路でアクティブカードからランダム選択される', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
-    const pg = createDrizzleDbMock({ selects: [{ rows: [CARD_ROW] }] })
-    primePgDb(pg)
+  it('ignores stale DB_DRIVER=postgrest and still reads PlanetScale', async () => {
+    vi.stubEnv('TWICA_ENABLE_LEGACY_SUPABASE', undefined)
+    vi.stubEnv('DB_DRIVER', 'postgrest')
+    primePgDb([{ rows: [CARD_ROW] }])
 
-    const { POST } = await import('@/app/api/gacha/demo/route')
-    const response = await POST(createRequest({ streamerId: 'streamer-1' }))
+    const response = await POST(request({ streamerId: 'streamer-1' }))
     const body = await response.json()
 
     expect(response.status).toBe(200)
@@ -171,13 +136,21 @@ describe('POST /api/gacha/demo: postgrest / pg 経路の互換 (#663)', () => {
     expect(getDb).toHaveBeenCalled()
   })
 
-  it('DB_DRIVER=pg-read: pg経路が失敗してもデモカードにフォールバックする（既存の安全側フォールバック挙動を維持）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
-    const pg = createDrizzleDbMock({ selects: [{ error: new Error('connection failure') }] })
-    primePgDb(pg)
+  it('selects an active streamer card', async () => {
+    primePgDb([{ rows: [CARD_ROW] }])
+    vi.spyOn(Math, 'random').mockReturnValue(0)
 
-    const { POST } = await import('@/app/api/gacha/demo/route')
-    const response = await POST(createRequest({ cardId: 'nonexistent' }))
+    const response = await POST(request({ streamerId: 'streamer-1' }))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.card.id).toBe('card-1')
+  })
+
+  it('falls back to a built-in demo card when PostgreSQL is unavailable', async () => {
+    primePgDb([{ error: new Error('connection failure') }])
+
+    const response = await POST(request({ cardId: 'missing' }))
     const body = await response.json()
 
     expect(response.status).toBe(200)
@@ -185,59 +158,17 @@ describe('POST /api/gacha/demo: postgrest / pg 経路の互換 (#663)', () => {
     expect(body.userTwitchUsername).toBe('DemoUser')
   })
 
-  it('DB_DRIVER=pg-read: cardId指定時、cardsテーブルの本番未デプロイ8列欠落エラーからCARDS_SAFE_COLUMNSで再試行し実カードが返る（#663 self-review fix）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
-    const pg = createDrizzleDbMock({
-      selects: [{ error: MISSING_BATTLE_COLUMN_ERROR }, { rows: [SAFE_CARD_ROW] }],
-    })
-    primePgDb(pg)
+  it('retries with CARDS_SAFE_COLUMNS when production-only battle columns are absent', async () => {
+    const pg = primePgDb([
+      { error: MISSING_BATTLE_COLUMN_ERROR },
+      { rows: [SAFE_CARD_ROW] },
+    ])
 
-    const { POST } = await import('@/app/api/gacha/demo/route')
-    const response = await POST(createRequest({ cardId: 'card-1' }))
+    const response = await POST(request({ cardId: 'card-1' }))
     const body = await response.json()
 
     expect(response.status).toBe(200)
-    // デモカードへのフォールバックではなく、実カード(card-1)が返ることを検証する。
-    // 列欠落フォールバックが無いと catch で null 扱いになりデモカードにすり替わる。
     expect(body.card.id).toBe('card-1')
-    expect(body.card.streamer_id).toBe('streamer-1')
     expect(pg.db.select).toHaveBeenCalledTimes(2)
-  })
-
-  it('DB_DRIVER=pg-read: streamerId指定時、cardsテーブルの本番未デプロイ8列欠落エラーからCARDS_SAFE_COLUMNSで再試行し実カードが返る（#663 self-review fix）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
-    const pg = createDrizzleDbMock({
-      selects: [{ error: MISSING_BATTLE_COLUMN_ERROR }, { rows: [SAFE_CARD_ROW] }],
-    })
-    primePgDb(pg)
-
-    const { POST } = await import('@/app/api/gacha/demo/route')
-    const response = await POST(createRequest({ streamerId: 'streamer-1' }))
-    const body = await response.json()
-
-    expect(response.status).toBe(200)
-    // デモカードへのフォールバックではなく、配信者の実カード(card-1)が返ることを検証する。
-    expect(body.card.id).toBe('card-1')
-    expect(body.card.streamer_id).toBe('streamer-1')
-    expect(pg.db.select).toHaveBeenCalledTimes(2)
-  })
-
-  it('DB_DRIVER=pg-read: supabaseUrl/supabaseKey が未設定でもpg経路は動作する（アドホッククライアント非依存の検証）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
-    delete process.env.NEXT_PUBLIC_SUPABASE_URL
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY
-    delete process.env.SUPABASE_SECRET_KEY
-    delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    const pg = createDrizzleDbMock({ selects: [{ rows: [CARD_ROW] }] })
-    primePgDb(pg)
-
-    const { POST } = await import('@/app/api/gacha/demo/route')
-    const response = await POST(createRequest({ cardId: 'card-1' }))
-    const body = await response.json()
-
-    expect(response.status).toBe(200)
-    expect(body.card.id).toBe('card-1')
-    expect(getDb).toHaveBeenCalled()
   })
 })
