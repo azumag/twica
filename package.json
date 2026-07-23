@@ -41,8 +41,6 @@
     "probe:maintenance": "node scripts/probe-maintenance-write-surfaces.js",
     "replay:maintenance-eventsub": "node scripts/replay-maintenance-eventsub.js",
     "smoke-check": "node scripts/smoke-check.js",
-    "migrate:vercel-to-r2": "node scripts/migrate-vercel-blob-to-r2.js",
-    "migrate:vercel-to-r2:dry": "node scripts/migrate-vercel-blob-to-r2.js --dry-run",
     "error-reporter:deploy": "cd workers/error-reporter && npx wrangler deploy",
     "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail"
   },
