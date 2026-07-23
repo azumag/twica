@@ -188,12 +188,18 @@ migrationがある状態でも確認なしに通常applyを実行してよい」
 `20260723150000`を含む別のツリーへ切り替えてから行うこと。
 
 ```bash
-# 1. bootstrap対象のツリーに20260723150000がまだ存在しないことを、
-#    「ブランチ名」ではなく実ファイルの有無で機械的に確認してから実行する
-#    （ブランチ名は将来のマージで指す内容が変わるため信用しない）。
-#    (`git checkout origin/main` は detached HEAD になるが、ここではファイルを
-#    読むだけで何もcommitしないため問題ない)
-git fetch origin main && git checkout origin/main
+# 1. bootstrap対象のツリーを、ブランチ名（例: origin/main）ではなく固定コミットSHAで
+#    明示的に指定する。ブランチ名は本PRのマージ後さらに main が進むと指す内容が
+#    変わってしまうため、「今」#788を含まないことが確認済みの固定点を使う
+#    （claude-reviewで指摘: ブランチ名指定は将来のmain進行に対して脆弱）。
+#    2026-07-23時点でorigin/mainの最新コミットは 9066070dc7405e7b7b44eb153fa3558b4c3e1083
+#    であり、これは#788を含まないことを確認済み（このコミット以前のどのmainコミットでもよい）。
+git fetch origin main
+git checkout 9066070dc7405e7b7b44eb153fa3558b4c3e1083
+# 上記SHAが古くなっていた場合、または別のコミットを使う場合に備え、
+# 実ファイルの有無による機械的な確認も必ず行う（ブランチ名同様、SHA直指定であっても
+# 「この手順を書いた時点の情報が古いまま放置される」リスクは残るため、
+# 最終防御としてコマンドで検証する）。
 test -f supabase/migrations/20260723150000_add_channel_points_capability.sql && \
   { echo "NG: このツリーには#788のmigrationが既に含まれている。bootstrapしないこと"; exit 1; }
 DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --bootstrap --provider=planetscale
