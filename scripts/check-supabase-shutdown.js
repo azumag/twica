@@ -7,8 +7,12 @@ const path = require('path')
 const ROOT = path.resolve(__dirname, '..')
 const failures = []
 
+function absolute(relativePath) {
+  return path.join(ROOT, relativePath)
+}
+
 function read(relativePath) {
-  return fs.readFileSync(path.join(ROOT, relativePath), 'utf8')
+  return fs.readFileSync(absolute(relativePath), 'utf8')
 }
 
 function fail(message) {
@@ -33,12 +37,18 @@ function assertPresent(relativePath, patterns) {
   }
 }
 
+function assertMissingFile(relativePath) {
+  if (fs.existsSync(absolute(relativePath))) {
+    fail(`${relativePath}: retired Supabase entry point must remain deleted`)
+  }
+}
+
 function walk(relativeDirectory) {
-  const root = path.join(ROOT, relativeDirectory)
+  const root = absolute(relativeDirectory)
   const files = []
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    const absolute = path.join(root, entry.name)
-    const relative = path.relative(ROOT, absolute).split(path.sep).join('/')
+    const entryAbsolute = path.join(root, entry.name)
+    const relative = path.relative(ROOT, entryAbsolute).split(path.sep).join('/')
     if (entry.isDirectory()) files.push(...walk(relative))
     else if (/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(entry.name)) files.push(relative)
   }
@@ -57,10 +67,8 @@ for (const file of [...walk('src/app'), ...walk('src/components')]) {
 }
 
 // Full call-site inventory for issue #687. A dormant getSupabaseAdmin() handle
-// is harmless, but every file that can actually obtain one must also contain a
-// pg/gacha driver branch. This rejects newly added Supabase-only functions
-// before they reach production. The facade definition itself is the only
-// exception.
+// is harmless, but every file that can obtain one must also contain a pg/gacha
+// driver branch. This rejects newly added Supabase-only functions.
 for (const file of srcFiles) {
   if (file === 'src/lib/supabase/admin.ts') continue
   const source = read(file)
@@ -69,6 +77,16 @@ for (const file of srcFiles) {
   if (!/\b(?:isPgReadEnabled|isPgWriteEnabled|getGachaDbDriver)\b/.test(source)) {
     fail(`${file}: getSupabaseAdmin call has no pg/gacha driver branch`)
   }
+}
+
+for (const retiredPath of [
+  'src/lib/supabase/client.ts',
+  'src/lib/supabase/server.ts',
+  'src/lib/supabase/index.ts',
+  'src/lib/supabase/keys.ts',
+  'scripts/migrate-vercel-blob-to-r2.js',
+]) {
+  assertMissingFile(retiredPath)
 }
 
 assertAbsent('src/lib/realtime.ts', [
@@ -89,11 +107,30 @@ assertAbsent('src/lib/supabase/admin.ts', [
   ['Supabase URL/key lookup', /(?:NEXT_PUBLIC_)?SUPABASE_(?:URL|KEY|SECRET|SERVICE)/],
 ])
 
-assertAbsent('.github/workflows/deploy-cloudflare.yml', [
-  ['Supabase CLI action', /supabase\/setup-cli/],
-  ['Supabase migration command', /supabase\s+db\s+push/],
-  ['Supabase database secret', /SUPABASE_DB_URL/],
-  ['Supabase browser build variable', /NEXT_PUBLIC_SUPABASE_/],
+for (const workflow of [
+  '.github/workflows/deploy-cloudflare.yml',
+  '.github/workflows/smoke-check.yml',
+]) {
+  assertAbsent(workflow, [
+    ['Supabase CLI action', /supabase\/setup-cli/],
+    ['Supabase migration command', /supabase\s+db\s+push/],
+    ['Supabase database secret', /SUPABASE_DB_URL/],
+    ['Supabase browser/build variable', /NEXT_PUBLIC_SUPABASE_/],
+    ['Supabase elevated key', /SUPABASE_(?:SECRET|SERVICE_ROLE)_KEY/],
+  ])
+}
+
+assertAbsent('scripts/smoke-check.js', [
+  ['Supabase SDK', /@supabase\//],
+  ['Supabase credential', /(?:NEXT_PUBLIC_)?SUPABASE_(?:URL|KEY|SECRET|SERVICE)/],
+  ['PostgREST query client', /\.from\(['"]/],
+])
+assertPresent('scripts/smoke-check.js', [
+  ['postgres.js client', /require\(['"]postgres['"]\)/],
+  ['information_schema query', /information_schema\.(?:columns|tables)/],
+])
+assertPresent('.github/workflows/smoke-check.yml', [
+  ['PlanetScale smoke secret', /PLANETSCALE_DATABASE_URL/],
 ])
 
 assertAbsent('wrangler.toml', [
@@ -146,6 +183,9 @@ for (const [name, command] of Object.entries(packageJson.scripts || {})) {
   if (/\bnpx\s+supabase\b|\bsupabase\s+db\b/.test(String(command))) {
     fail(`package.json scripts.${name}: invokes the retired Supabase CLI path`)
   }
+  if (/migrate-vercel-blob-to-r2/.test(String(command))) {
+    fail(`package.json scripts.${name}: invokes the retired Supabase-backed storage migration`)
+  }
 }
 for (const scriptName of [
   'db:status',
@@ -167,4 +207,4 @@ if (failures.length > 0) {
   process.exit(1)
 }
 
-console.log('OK: all admin call sites, runtime, overlay, startup validation, bindings, and deploy paths are independent of Supabase')
+console.log('OK: admin call sites, runtime, overlay, monitoring, startup validation, bindings, and deploy paths are independent of Supabase')
