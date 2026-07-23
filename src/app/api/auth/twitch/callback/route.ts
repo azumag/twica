@@ -24,7 +24,7 @@ import { getDb } from '@/lib/db/client'
 import { isPgReadEnabled, isPgWriteEnabled } from '@/lib/db/flags'
 import { withDbRetry } from '@/lib/db/retry'
 import { streamers as streamersTable, users as usersTable } from '@/lib/db/schema'
-import { probeChannelPointsCapability } from '@/lib/twitch/channel-points'
+import { isDefinitiveCapabilityResult, probeChannelPointsCapability } from '@/lib/twitch/channel-points'
 import { persistChannelPointsCapability } from '@/lib/twitch/channel-points-access'
 
 interface AuthCallbackDriverError {
@@ -608,7 +608,7 @@ export async function GET(request: NextRequest) {
       if (hasChannelPointsScope) {
         try {
           const probeResult = await probeChannelPointsCapability(twitchUser.id)
-          if (probeResult.definitive) {
+          if (isDefinitiveCapabilityResult(probeResult)) {
             await persistChannelPointsCapability(twitchUser.id, probeResult)
           }
         } catch (error) {

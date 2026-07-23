@@ -155,9 +155,14 @@ export async function recordChannelPointsApiFailure(
   }
 }
 
+// EnableChannelPointsAccessResultのunionから直接['error']をindexed accessすると、
+// ok:trueメンバーにerrorプロパティが無いためTSエラーになる。判定用の理由型を
+// 独立して名前付けする。
+export type EnableChannelPointsAccessErrorReason = 'capability_not_available' | 'user_not_found'
+
 export type EnableChannelPointsAccessResult =
   | { ok: true; streamerId: string }
-  | { ok: false; error: 'capability_not_available' | 'user_not_found' }
+  | { ok: false; error: EnableChannelPointsAccessErrorReason }
 
 /**
  * enable_channel_points_streamer_access RPC の例外メッセージ（RAISE EXCEPTION の
@@ -165,7 +170,7 @@ export type EnableChannelPointsAccessResult =
  * 両経路ともPostgresのエラーmessageフィールドにRAISE EXCEPTIONの文字列がそのまま
  * 載るため、同一のmessage起点で判定できる（driver parity）。
  */
-function classifyEnableRpcError(message: string): EnableChannelPointsAccessResult['error'] | null {
+function classifyEnableRpcError(message: string): EnableChannelPointsAccessErrorReason | null {
   if (message.includes('CAPABILITY_NOT_AVAILABLE')) return 'capability_not_available'
   if (message.includes('USER_NOT_FOUND')) return 'user_not_found'
   return null

@@ -35,6 +35,19 @@ export interface ChannelPointsCapabilityResult {
 /** definitive=true をリテラル型で強制する。一時失敗の結果を誤って永続化APIへ渡せなくする。 */
 export type DefinitiveCapabilityResult = ChannelPointsCapabilityResult & { definitive: true }
 
+/**
+ * `result.definitive` の真偽値チェックだけでは、`definitive: boolean` という
+ * プレーンなフィールド宣言のためTypeScriptの制御フロー解析が `DefinitiveCapabilityResult`
+ * への型絞り込みを行わない（呼び出し側で `if (result.definitive)` の中で
+ * `persistChannelPointsCapability(id, result)` を呼ぶと型エラーになる）。
+ * 型ガード関数として定義し、呼び出し側の絞り込みを可能にする。
+ */
+export function isDefinitiveCapabilityResult(
+  result: ChannelPointsCapabilityResult
+): result is DefinitiveCapabilityResult {
+  return result.definitive === true
+}
+
 export interface CancelRedemptionParams {
   /** 配信者のTwitchユーザーID（数値ID文字列。EventSub payload の broadcaster_user_id） */
   broadcasterTwitchUserId: string

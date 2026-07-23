@@ -76,6 +76,9 @@ vi.mock('@/lib/url-utils', () => ({
 const mockProbeChannelPointsCapability = vi.fn()
 vi.mock('@/lib/twitch/channel-points', () => ({
   probeChannelPointsCapability: (...args: unknown[]) => mockProbeChannelPointsCapability(...args),
+  // 実装と同じ判定ロジック（result.definitive === true）。route側の型ガード呼び出しを
+  // モック環境でも動作させる（モジュール全体をvi.mockしているため実関数は使えない）。
+  isDefinitiveCapabilityResult: (result: { definitive: boolean }) => result.definitive === true,
 }))
 const mockPersistChannelPointsCapability = vi.fn().mockResolvedValue(undefined)
 vi.mock('@/lib/twitch/channel-points-access', () => ({

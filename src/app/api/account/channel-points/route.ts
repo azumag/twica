@@ -7,7 +7,11 @@ import { handleApiError } from '@/lib/error-handler'
 import { BROADCASTER_TYPE, COOKIE_NAMES, ERROR_MESSAGES, getSessionCookieOptions } from '@/lib/constants'
 import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { hasScope } from '@/lib/twitch/token-manager'
-import { probeChannelPointsCapability, type DefinitiveCapabilityResult } from '@/lib/twitch/channel-points'
+import {
+  isDefinitiveCapabilityResult,
+  probeChannelPointsCapability,
+  type DefinitiveCapabilityResult,
+} from '@/lib/twitch/channel-points'
 import {
   enableChannelPointsStreamerAccess,
   getChannelPointsAccessState,
@@ -131,7 +135,7 @@ export async function POST(request: NextRequest) {
     }
 
     const probeResult = await probeChannelPointsCapability(session.twitchUserId)
-    if (probeResult.definitive) {
+    if (isDefinitiveCapabilityResult(probeResult)) {
       await persistChannelPointsCapability(session.twitchUserId, probeResult)
     }
     const state = await getChannelPointsAccessState(session.twitchUserId)
@@ -186,7 +190,7 @@ export async function PUT(request: NextRequest) {
 
     // 保存済みのavailableを信用せず、必ず新しいProbeで再検証する。
     const probeResult = await probeChannelPointsCapability(session.twitchUserId)
-    if (probeResult.definitive) {
+    if (isDefinitiveCapabilityResult(probeResult)) {
       await persistChannelPointsCapability(session.twitchUserId, probeResult)
     }
 

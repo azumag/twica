@@ -43,6 +43,7 @@ const JA = {
   unavailableMessage:
     "現在Twitch上でチャネルポイントを利用できません。Twitch Creator Dashboardで収益化オンボーディングとチャネルポイント設定をご確認ください。",
   unavailableRecheckButton: "再判定",
+  checkingMessage: "Twitchへ確認中です...",
   unknownMessage: "Twitchへの確認に一時的に失敗しました。保存済みの状態は変わっていません。",
   unknownRetryButton: "再試行",
   capabilityLostWarning: "Channel Points操作には再認証・再判定が必要です。配信設定自体は引き続き利用できます。",
@@ -255,13 +256,19 @@ describe("ChannelPointsAccessSection", () => {
     );
     vi.stubGlobal("fetch", buildFetchMock({ get: getHandler, post: postHandler }));
 
-    renderSection({ mode: "off" });
+    const { rerender } = renderSection({ mode: "off" });
 
     await waitFor(() => expect(postHandler).toHaveBeenCalledTimes(1));
+    // runProbe() は成功後finally節で必ずfetchState()(GET)を呼び直す設計のため、
+    // checking表示が終わって再判定ボタンが戻ってくるまで待つことで、そのGETも
+    // 含めた一連の非同期チェーンが完全に片付いたことを保証する
+    // (afterEachでのfetchモック解除より前に未解決のfetch呼び出しを残さないため)。
+    await screen.findByRole("button", { name: JA.unknownRetryButton });
 
-    // 追加の再render(Strict Modeの二重effect実行相当の懸念)を発生させても
+    // 追加の再render(Strict Modeの二重effect実行相当の懸念)を発生させても、
+    // 同一コンポーネントインスタンスに対するrerenderであるため新規mountは起きず、
     // autoProbeStarted(useRef)ガードにより再発火しないことを確認する。
-    render(buildTree({ mode: "off" }));
+    rerender(buildTree({ mode: "off" }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(postHandler).toHaveBeenCalledTimes(1);
   });
@@ -323,10 +330,14 @@ describe("ChannelPointsAccessSection", () => {
     fireEvent.click(enableButton);
 
     await waitFor(() => expect(putHandler).toHaveBeenCalledTimes(1));
+    // 実装は setMessage(成功) → await fetchState()(GET) → router.refresh() の順で
+    // 実行される。成功メッセージの描画はfetchState/refreshより先に起こりうるため、
+    // 「メッセージが見える」ことをもって後続処理の完了を仮定せず、
+    // router.refresh呼び出しとGET再取得の両方を個別にwaitForで待つ
+    // (afterEachでfetchモックが解除される前に非同期チェーンを完全に片付けるため)。
     await waitFor(() => expect(screen.getByText(JA.enableSuccess)).toBeInTheDocument());
-    expect(routerMocks.refresh).toHaveBeenCalledTimes(1);
-    // 初回GET + PUT成功後の再取得で計2回
-    expect(getHandler).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(getHandler).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(routerMocks.refresh).toHaveBeenCalledTimes(1));
   });
 
   it("unavailable状態では案内メッセージ(Twitch Creator Dashboard誘導)と再判定ボタンを表示し、クリックでPOSTが呼ばれる", async () => {
@@ -355,6 +366,11 @@ describe("ChannelPointsAccessSection", () => {
     fireEvent.click(recheckButton);
 
     await waitFor(() => expect(postHandler).toHaveBeenCalledTimes(1));
+    // runProbe()はfinally節で必ずfetchState()(GET)を呼び直してからchecking状態を
+    // 解除する。再判定ボタンが復帰するまで待つことで、そのGETも含めた一連の
+    // 非同期チェーンが完全に片付いたことを保証する
+    // (afterEachでのfetchモック解除より前に未解決のfetch呼び出しを残さないため)。
+    await screen.findByRole("button", { name: JA.unavailableRecheckButton });
   });
 
   it("自動probeが一時失敗しても、直前の確定状態(capabilityCheckedAt)を消さずunknown/再試行を表示する", async () => {
@@ -441,17 +457,14 @@ describe("ChannelPointsAccessSection", () => {
     // handleEnable の失敗パスは data.error を一切参照せず、常に
     // t("messages.enableFailed") (またはparseMaintenanceErrorのmessage)に
     // フォールバックする実装になっている。data.errorがオブジェクト形状でも
-    // 无視されるため、フォールバック文言が安全に描画されることを確認する。
+    // 無視されるため、フォールバック文言が安全に描画されることを確認する。
+    const getHandler = vi.fn(() =>
+      jsonResponse(makeState({ capability: "available", enabled: false, hasRequiredScope: true }))
+    );
     const putHandler = vi.fn(() =>
       jsonResponse({ error: { code: "some_code", message: "Something failed" }, enabled: false }, 200)
     );
-    vi.stubGlobal(
-      "fetch",
-      buildFetchMock({
-        get: () => jsonResponse(makeState({ capability: "available", enabled: false, hasRequiredScope: true })),
-        put: putHandler,
-      })
-    );
+    vi.stubGlobal("fetch", buildFetchMock({ get: getHandler, put: putHandler }));
 
     renderSection({ mode: "off" });
 
@@ -462,6 +475,10 @@ describe("ChannelPointsAccessSection", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).not.toContain("[object Object]");
     expect(alert.textContent).not.toContain("object Object");
+    // 失敗パスもfinally節で必ずfetchState()(GET)を呼び直してから完了する。
+    // それを待つことで、afterEachでのfetchモック解除より前に未解決のfetch呼び出しを
+    // 残さないようにする。
+    await waitFor(() => expect(getHandler).toHaveBeenCalledTimes(2));
   });
 
   describe("channelPointsAccess i18n キーの ja/en 両対応 (コンポーネントが実際に t() で参照するキーのみ)", () => {

@@ -170,7 +170,10 @@ export default function ChannelPointsAccessSection({
 
       const errorData = await response.json().catch(() => ({}));
       const maintenanceError = parseMaintenanceError(response, errorData);
-      setMessage({ type: "error", text: maintenanceError?.message || errorData.error || t("messages.genericError") });
+      // errorData.errorはAPI契約上は文字列だが、想定外のレスポンス形状
+      // （オブジェクト等）をそのままJSX子要素へ渡すとReactがクラッシュするため防御する。
+      const fallbackText = typeof errorData.error === "string" ? errorData.error : undefined;
+      setMessage({ type: "error", text: maintenanceError?.message || fallbackText || t("messages.genericError") });
       setChecking(false);
     } catch {
       setMessage({ type: "error", text: t("messages.genericError") });

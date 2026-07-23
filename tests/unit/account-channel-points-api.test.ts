@@ -43,6 +43,9 @@ vi.mock('@/lib/twitch/token-manager', () => ({
 
 vi.mock('@/lib/twitch/channel-points', () => ({
   probeChannelPointsCapability: vi.fn(),
+  // 実装と同じ判定ロジック（result.definitive === true）。route側の型ガード呼び出しを
+  // モック環境でも動作させる（モジュール全体をvi.mockしているため実関数は使えない）。
+  isDefinitiveCapabilityResult: (result: { definitive: boolean }) => result.definitive === true,
 }))
 
 vi.mock('@/lib/twitch/channel-points-access', () => ({
@@ -61,21 +64,26 @@ const session = {
   version: 1,
 }
 
-function makeRequest(method: string, init?: RequestInit) {
+// signalを除外: lib.dom.d.tsのRequestInit.signalはAbortSignal | nullを許容するが、
+// next/serverのNextRequest内部init型はAbortSignal | undefinedのみを受け付けるため
+// 型不一致になる。このテストではsignalを使わないため型からも除外する。
+type TestRequestInit = Omit<RequestInit, 'signal'>
+
+function makeRequest(method: string, init?: TestRequestInit) {
   return new NextRequest('http://localhost:3000/api/account/channel-points', {
     method,
     ...init,
   })
 }
 
-function postRequest(init?: RequestInit) {
+function postRequest(init?: TestRequestInit) {
   return makeRequest('POST', {
     headers: { 'content-type': 'application/json' },
     ...init,
   })
 }
 
-function putRequest(init?: RequestInit) {
+function putRequest(init?: TestRequestInit) {
   return makeRequest('PUT', init)
 }
 
