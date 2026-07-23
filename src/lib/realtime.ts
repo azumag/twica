@@ -147,12 +147,10 @@ function emitHistoryBatches(
 /**
  * Subscribe to overlay events through HTTP polling.
  *
- * The function name is retained for compatibility with the OBS page. A
- * successful first poll invokes onSuccess, so the page suppresses its older
- * duplicate fallback poll. The loop owns its exact database cursor and retries
- * transient failures internally; it only invokes onError after an explicitly
- * finite retry limit is exhausted. This prevents the legacy fallback from
- * replacing the exact cursor with `Date.now()` and skipping a concurrent row.
+ * The function name is retained for compatibility with the OBS page. This loop
+ * announces itself active immediately, disabling the older fallback loop before
+ * both can own different cursors. Transient failures are retried internally and
+ * only an explicitly finite retry limit hands control back through onError.
  */
 export function subscribeToGachaResults(
   streamerId: string,
@@ -164,7 +162,6 @@ export function subscribeToGachaResults(
   let disposed = false
   let timeout: ReturnType<typeof setTimeout> | null = null
   let retryCount = 0
-  let successNotified = false
   let cursor = new Date().toISOString()
   let demoCursor = cursor
   const seenHistoryIds = new Set<string>()
@@ -220,11 +217,6 @@ export function subscribeToGachaResults(
       }
 
       retryCount = 0
-      if (!successNotified) {
-        successNotified = true
-        options.onStatusChange?.('POLLING_ACTIVE')
-        options.onSuccess?.()
-      }
       schedule(intervalMs)
     } catch (error) {
       retryCount += 1
@@ -258,6 +250,11 @@ export function subscribeToGachaResults(
       }
     })
   } else {
+    // Mark the polling transport as the active owner before the first request.
+    // The existing overlay fallback watches this callback and immediately
+    // becomes version-check-only, eliminating a duplicate-fetch window.
+    options.onStatusChange?.('POLLING_ACTIVE')
+    options.onSuccess?.()
     void poll()
   }
 
