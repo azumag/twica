@@ -46,7 +46,7 @@ function walk(relativeDirectory) {
 }
 
 // Browser and route code must never import a Supabase runtime SDK again. The
-// compatibility adapters are deliberately isolated under src/lib/supabase/.
+// compatibility type/adapters are deliberately isolated under src/lib/supabase/.
 for (const file of [...walk('src/app'), ...walk('src/components')]) {
   assertAbsent(file, [
     ['Supabase SDK import', /from\s+['"]@supabase\//],
@@ -64,6 +64,12 @@ assertAbsent('src/app/api/gacha/demo/route.ts', [
   ['Supabase SDK import', /@supabase\//],
   ['Supabase URL/key', /(?:NEXT_PUBLIC_)?SUPABASE_(?:URL|KEY|SECRET|SERVICE)/],
   ['Realtime broadcast', /broadcastGachaResult/],
+])
+
+assertAbsent('src/lib/supabase/admin.ts', [
+  ['runtime SDK factory import', /import\s*\{[^}]*\bcreateClient\b/],
+  ['runtime SDK construction', /\bcreateClient\s*\(/],
+  ['Supabase URL/key lookup', /(?:NEXT_PUBLIC_)?SUPABASE_(?:URL|KEY|SECRET|SERVICE)/],
 ])
 
 assertAbsent('.github/workflows/deploy-cloudflare.yml', [
@@ -88,8 +94,8 @@ assertPresent('src/lib/db/target.ts', [
   ['legacy target gate', /isLegacySupabaseEnabled/],
 ])
 assertPresent('src/lib/supabase/admin.ts', [
-  ['lazy compatibility client', /createLazySupabaseClient/],
-  ['legacy access gate', /isLegacySupabaseEnabled/],
+  ['non-instantiating retired facade', /createRetiredSupabaseClient/],
+  ['precise leaked-path failure', /Retired runtime path accessed/],
 ])
 assertPresent('analysis/vite.config.ts', [
   ['analysis pg default', /ANALYSIS_DB_DRIVER\s*=\s*['"]pg['"]/],
