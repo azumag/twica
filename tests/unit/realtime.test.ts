@@ -1,130 +1,208 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { subscribeToGachaResults } from '@/lib/realtime'
 
-const { createClientMock, loggerMock, reportRealtimeErrorMock } = vi.hoisted(() => ({
-  createClientMock: vi.fn(),
-  loggerMock: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-  reportRealtimeErrorMock: vi.fn().mockResolvedValue(undefined),
-}))
+const CARD_A = {
+  id: 'card-a',
+  name: 'A',
+  description: null,
+  image_url: null,
+  rarity: 'common',
+}
+const CARD_B = { ...CARD_A, id: 'card-b', name: 'B' }
 
-vi.mock('@supabase/supabase-js', () => ({
-  createClient: createClientMock,
-}))
+function jsonResponse(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: vi.fn().mockResolvedValue(body),
+  } as unknown as Response
+}
 
-vi.mock('@/lib/logger', () => ({
-  logger: loggerMock,
-}))
-
-vi.mock('@/lib/sentry/error-handler', () => ({
-  reportRealtimeError: reportRealtimeErrorMock,
-}))
-
-type StatusCallback = (status: string, err?: unknown) => void
-
-describe('subscribeToGachaResults', () => {
-  const statusCallbacks: StatusCallback[] = []
-  const channels: Array<{
-    on: ReturnType<typeof vi.fn>
-    subscribe: ReturnType<typeof vi.fn>
-  }> = []
-  const client = {
-    channel: vi.fn(),
-    removeChannel: vi.fn(),
+async function flushPromises(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve()
   }
-  let randomSpy: ReturnType<typeof vi.spyOn>
+}
 
+describe('subscribeToGachaResults: HTTP polling transport', () => {
   beforeEach(() => {
     vi.useFakeTimers()
-    randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0)
-    statusCallbacks.length = 0
-    channels.length = 0
-    client.channel.mockReset()
-    client.removeChannel.mockReset()
-    createClientMock.mockReturnValue(client)
-    loggerMock.info.mockClear()
-    loggerMock.warn.mockClear()
-    loggerMock.error.mockClear()
-    reportRealtimeErrorMock.mockClear()
-
-    client.channel.mockImplementation(() => {
-      const channel = {
-        on: vi.fn(() => channel),
-        subscribe: vi.fn((callback: StatusCallback) => {
-          statusCallbacks.push(callback)
-          return channel
-        }),
-      }
-      channels.push(channel)
-      return channel
-    })
+    // A rejected fetch would otherwise enter happy-dom's real XHR fallback.
+    // Individual compatibility coverage for XHR lives in the overlay page tests.
+    vi.stubGlobal('XMLHttpRequest', undefined)
   })
 
   afterEach(() => {
-    randomSpy.mockRestore()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
-  it('keeps retrying by default for long-lived overlay subscriptions', async () => {
-    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
-      retryDelay: 10,
+  it('groups N-draw history rows and consumes a separate demo event', async () => {
+    const redeemedAt = '2026-07-24T00:00:01.000Z'
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/demo-events')) {
+        return jsonResponse({
+          event: {
+            id: 'demo:1',
+            eventId: 'demo:1',
+            redeemedAt: '2026-07-24T00:00:02.000Z',
+            userTwitchUsername: 'DemoUser',
+            rewardId: null,
+            card: CARD_A,
+          },
+        })
+      }
+      return jsonResponse({
+        events: [
+          {
+            id: 'history-1',
+            eventId: 'event-1',
+            redeemedAt,
+            userTwitchUsername: 'viewer',
+            rewardId: 'reward-1',
+            card: CARD_A,
+          },
+          {
+            id: 'history-2',
+            eventId: 'event-1:2',
+            redeemedAt,
+            userTwitchUsername: 'viewer',
+            rewardId: 'reward-1',
+            card: CARD_B,
+          },
+        ],
+      })
     })
+    vi.stubGlobal('fetch', fetchMock)
 
-    expect(channels).toHaveLength(1)
+    const callback = vi.fn()
+    const onSuccess = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', callback, {
+      retryDelay: 1000,
+      onSuccess,
+    })
+    await flushPromises()
 
-    for (let i = 0; i < 6; i++) {
-      statusCallbacks[i]('CHANNEL_ERROR')
-      await vi.runOnlyPendingTimersAsync()
-    }
-
-    expect(channels).toHaveLength(7)
-    expect(loggerMock.warn).not.toHaveBeenCalledWith(
-      expect.stringContaining('Max retries'),
-    )
+    expect(onSuccess).toHaveBeenCalledTimes(1)
+    expect(callback).toHaveBeenCalledTimes(2)
+    expect(callback.mock.calls[0][0]).toEqual({
+      type: 'gacha',
+      card: CARD_A,
+      cards: [CARD_A, CARD_B],
+      userTwitchUsername: 'viewer',
+      rewardId: 'reward-1',
+    })
+    expect(callback.mock.calls[1][0]).toMatchObject({
+      type: 'gacha',
+      card: CARD_A,
+      userTwitchUsername: 'DemoUser',
+    })
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/events?'))).toBe(true)
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/demo-events?'))).toBe(true)
 
     cleanup()
   })
 
-  it('stops retrying when a finite maxRetries value is provided', async () => {
+  it('deduplicates rows returned again by a subsequent poll', async () => {
+    const event = {
+      id: 'history-1',
+      eventId: 'event-1',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_A,
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes('/demo-events')
+        ? jsonResponse({ event: null })
+        : jsonResponse({ events: [event] })
+    ))
+
+    const callback = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', callback, { retryDelay: 10 })
+    await flushPromises()
+    expect(callback).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    expect(callback).toHaveBeenCalledTimes(1)
+
+    cleanup()
+  })
+
+  it('retries transient failures without switching to a second cursor owner', async () => {
+    let historyAttempts = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/demo-events')) return jsonResponse({ event: null })
+      historyAttempts += 1
+      if (historyAttempts === 1) throw new Error('temporary network error')
+      return jsonResponse({ events: [] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const onError = vi.fn()
+    const onSuccess = vi.fn()
+    const onStatusChange = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
+      retryDelay: 10,
+      onError,
+      onSuccess,
+      onStatusChange,
+    })
+    await flushPromises()
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(onStatusChange).toHaveBeenCalledWith('POLLING_RETRY:1')
+
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    expect(onSuccess).toHaveBeenCalledTimes(1)
+
+    cleanup()
+  })
+
+  it('reports an error only after an explicitly finite retry limit is exhausted', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/demo-events')) return jsonResponse({ event: null })
+      throw new Error('offline')
+    }))
+
     const onError = vi.fn()
     const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
       maxRetries: 1,
       retryDelay: 10,
       onError,
     })
+    await flushPromises()
+    expect(onError).not.toHaveBeenCalled()
 
-    statusCallbacks[0]('CHANNEL_ERROR')
-    await vi.runOnlyPendingTimersAsync()
-    statusCallbacks[1]('CHANNEL_ERROR')
-    await vi.runOnlyPendingTimersAsync()
-
-    expect(channels).toHaveLength(2)
-    expect(loggerMock.warn).toHaveBeenCalledWith(
-      'Max retries (1) reached for gacha:streamer-1',
-    )
-    expect(onError).toHaveBeenLastCalledWith(
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: 'Max retries reached. Please refresh the page to reconnect.',
+        message: 'Overlay polling retry limit reached',
         isExpected: false,
-      }),
+      })
     )
 
     cleanup()
   })
 
-  it('does not reconnect from stale callbacks after cleanup', async () => {
-    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
-      retryDelay: 10,
-    })
+  it('cleanup cancels future polling', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes('/demo-events')
+        ? jsonResponse({ event: null })
+        : jsonResponse({ events: [] })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), { retryDelay: 10 })
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
 
     cleanup()
-    statusCallbacks[0]('CHANNEL_ERROR')
-    await vi.runOnlyPendingTimersAsync()
-
-    expect(channels).toHaveLength(1)
-    expect(client.removeChannel).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })
