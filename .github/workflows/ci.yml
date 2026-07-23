@@ -48,6 +48,35 @@ jobs:
       - name: Integration tests
         run: npm run test:integration
 
+  supabase-shutdown-build:
+    name: Application build without Supabase variables
+    needs: test
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build without Supabase URL or keys
+        run: npm run build
+        env:
+          NEXT_PUBLIC_VERSION: ${{ github.sha }}
+          NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          TWITCH_CLIENT_ID: dummy_client_id
+          TWITCH_CLIENT_SECRET: dummy_client_secret
+          TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
+          CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
+
   analysis:
     name: Analysis dashboard (guard / typecheck / build)
     runs-on: ubuntu-latest
@@ -136,31 +165,3 @@ jobs:
 
       - name: Check migration order
         run: npm run check:migration-order -- --base=origin/${{ github.base_ref }}
-
-  build:
-    runs-on: ubuntu-latest
-    needs: [test, lint]
-    if: ${{ !failure() && !cancelled() && vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true' }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build without Supabase variables
-        run: npm run build
-        env:
-          NEXT_PUBLIC_VERSION: ${{ github.sha }}
-          NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
-          NEXT_PUBLIC_APP_URL: http://localhost:3000
-          TWITCH_CLIENT_ID: dummy_client_id
-          TWITCH_CLIENT_SECRET: dummy_client_secret
-          TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
-          CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
