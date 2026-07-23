@@ -3,8 +3,9 @@
 #
 # Database migrations are applied to the authoritative PlanetScale PostgreSQL
 # database through the provider-neutral runner (`scripts/db-migrate.js`). The
-# deploy pipeline therefore remains usable after the Supabase project, REST
-# endpoint, secrets, and CLI integration are removed.
+# package scripts pin `--provider=planetscale`, so the deploy pipeline remains
+# usable after the Supabase project, REST endpoint, secrets, and CLI integration
+# are removed.
 #
 # - preview branch -> twica-preview Worker / preview logical database
 # - main branch    -> twica Worker / production logical database
@@ -56,8 +57,8 @@ jobs:
             echo "::error::Production migrations are only allowed from the main branch"
             exit 1
           fi
-          npm run db:migrate:apply -- --provider=planetscale
-          npm run db:migrate:verify -- --provider=planetscale
+          npm run db:migrate:apply
+          npm run db:migrate:verify
         env:
           # Configure this secret independently in the preview/production
           # GitHub Environments. It must use the corresponding PlanetScale
