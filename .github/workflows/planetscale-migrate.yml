@@ -67,7 +67,9 @@
 # `scripts/db-migrate.js`にはmigrationの加法性を判定する仕組みが無いため、
 # 非加法的な変更を含むmigrationについては、このworkflowでの自動適用に任せず、
 # デプロイ順序を人間が管理した上で手動適用すること（例: 新コードのデプロイ完了を
-# 確認してから該当migrationを個別に`apply`する）。
+# 確認してから該当migrationを個別に`apply`する）。この制約を機械的に強制する
+# （非加法的DDLを検知したら明示フラグ無しではブロックする）フォローアップは
+# issue #800 で追跡している。
 #
 # Prerequisites / 前提条件:
 # - GitHub Environment "production" に Secret `PLANETSCALE_DATABASE_URL`
