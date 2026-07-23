@@ -6,14 +6,14 @@ import { getSession } from "@/lib/session";
 import { checkRateLimit, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
-import { broadcastGachaResult } from "@/lib/realtime";
+import { publishCommittedGachaBatch } from "@/lib/overlay-realtime/publisher";
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
 vi.mock("@/lib/request-validation");
-vi.mock("@/lib/realtime");
+vi.mock("@/lib/overlay-realtime/publisher");
 vi.mock("@/lib/services/gacha");
 vi.mock("@/lib/user-data");
 
@@ -22,7 +22,7 @@ const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockGetRateLimitIdentifier = vi.mocked(getRateLimitIdentifier);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
 const mockValidateContentType = vi.mocked(validateContentType);
-const mockBroadcastGachaResult = vi.mocked(broadcastGachaResult);
+const mockPublishCommittedGachaBatch = vi.mocked(publishCommittedGachaBatch);
 const MockGachaService = vi.mocked(GachaService);
 const mockGetStreamerIdByTwitchUserId = vi.mocked(getStreamerIdByTwitchUserId);
 
@@ -61,7 +61,10 @@ describe("POST /api/gacha", () => {
     });
     mockValidateCSRFToken.mockResolvedValue({ valid: true });
     mockValidateContentType.mockReturnValue(null);
-    mockBroadcastGachaResult.mockResolvedValue(undefined);
+    mockPublishCommittedGachaBatch.mockResolvedValue({
+      outcome: "accepted",
+      attempts: 1,
+    });
     // Issue #781: 自チャンネル制限のデフォルトは「呼び出し者(twitch-1)が
     // streamer-1の持ち主」。既存テストはいずれも streamerId: "streamer-1" を
     // 使っているため、このデフォルトのままなら全て通る。
@@ -136,7 +139,7 @@ describe("POST /api/gacha", () => {
 
       expect(res.status).toBe(403);
       expect(executeGachaMock).not.toHaveBeenCalled();
-      expect(mockBroadcastGachaResult).not.toHaveBeenCalled();
+      expect(mockPublishCommittedGachaBatch).not.toHaveBeenCalled();
     });
 
     it("returns 403 when the caller has no streamer row at all", async () => {

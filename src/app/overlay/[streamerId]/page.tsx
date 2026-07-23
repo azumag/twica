@@ -778,9 +778,10 @@ export default function OverlayPage() {
   /**
    * 旧transportから残すversion-check兼緊急polling loop。
    *
-   * 現在のprimary pollingはsubscribeToGachaResults内でPlanetScale履歴を読み、
+   * 現在のtransport controllerはsubscribeToGachaResults内でDOをprimaryとし、
+   * PlanetScale履歴をgap recoveryとして読み、
    * connectionStatus=connected中はここでeventsを処理しない。これにより二重表示を
-   * 防ぎつつ、将来DO WebSocket primaryへ切り替えた後も同じversion-checkを再利用する。
+   * 防ぎつつ、旧loopをversion-check専用として安全に残す。
    */
   const pollOverlayEvents = useCallback(async () => {
     // 3秒おきのポーリングURLは接続中/未接続どちらの経路でも同一なため共通化する
@@ -940,7 +941,7 @@ export default function OverlayPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.debug]);
 
-  // Start the current overlay transport (PlanetScale polling until #802 DO rollout).
+  // Start the runtime-configured DO primary with PlanetScale gap recovery.
   // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
   // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
   useEffect(() => {
@@ -948,7 +949,9 @@ export default function OverlayPage() {
 
     queueMicrotask(() => {
       addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
-      addDebugLogRef.current('Transport: PlanetScale polling');
+      addDebugLogRef.current(
+        'Transport controller: Durable Objects primary + PlanetScale recovery'
+      );
     });
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
@@ -967,6 +970,10 @@ export default function OverlayPage() {
           cards: payload.cards as unknown as Card[] | undefined,
           userTwitchUsername: payload.userTwitchUsername,
           rewardId: payload.rewardId ?? null,
+          // A reconnect recovery page can contain only part of a very large
+          // backlog. Preserve the versioned batch key so later pages do not
+          // replay the same N-draw sound even though their cards still render.
+          soundGroupId: payload.soundGroupId,
         });
       }
     }, {

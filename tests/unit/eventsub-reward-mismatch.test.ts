@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/twitch/eventsub/route'
 import { reportError } from '@/lib/sentry/error-handler'
 import { getSupabaseAdmin, getSupabaseAdminNoCache } from '@/lib/supabase/admin'
-import { broadcastGachaResult } from '@/lib/realtime'
+import { publishCommittedGachaBatch } from '@/lib/overlay-realtime/publisher'
 import { TwitchChatService } from '@/lib/twitch/chat-service'
 
 const mocks = vi.hoisted(() => ({
@@ -49,8 +49,11 @@ vi.mock('@/lib/rate-limit', () => ({
   rateLimits: { eventsub: {} },
 }))
 
-vi.mock('@/lib/realtime', () => ({
-  broadcastGachaResult: vi.fn(),
+vi.mock('@/lib/overlay-realtime/publisher', () => ({
+  publishCommittedGachaBatch: vi.fn().mockResolvedValue({
+    outcome: 'accepted',
+    attempts: 1,
+  }),
 }))
 
 vi.mock('@/lib/twitch/chat-service', () => ({
@@ -72,7 +75,7 @@ vi.mock('@/lib/logger', () => ({
 const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 const mockGetSupabaseAdminNoCache = vi.mocked(getSupabaseAdminNoCache)
 const mockReportError = vi.mocked(reportError)
-const mockBroadcastGachaResult = vi.mocked(broadcastGachaResult)
+const mockPublishCommittedGachaBatch = vi.mocked(publishCommittedGachaBatch)
 const mockTwitchChatService = vi.mocked(TwitchChatService)
 
 async function signEventSubBody(secret: string, messageId: string, timestamp: string, body: string): Promise<string> {
@@ -233,7 +236,7 @@ describe('EventSub reward mismatch handling', () => {
       from_broadcaster_user_login: 'raider',
       from_broadcaster_user_name: 'Raider',
     }, messageId)
-    expect(mockBroadcastGachaResult).toHaveBeenCalledWith(
+    expect(mockPublishCommittedGachaBatch).toHaveBeenCalledWith(
       'streamer-1',
       expect.objectContaining({
         card: cards[0],
@@ -311,7 +314,7 @@ describe('EventSub reward mismatch handling', () => {
     }))
 
     expect(response.status).toBe(200)
-    expect(mockBroadcastGachaResult).toHaveBeenCalledWith(
+    expect(mockPublishCommittedGachaBatch).toHaveBeenCalledWith(
       'streamer-1',
       expect.objectContaining({
         card: cards[0],
@@ -375,7 +378,7 @@ describe('EventSub reward mismatch handling', () => {
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ received: true })
-    expect(mockBroadcastGachaResult).toHaveBeenCalledWith(
+    expect(mockPublishCommittedGachaBatch).toHaveBeenCalledWith(
       'streamer-1',
       expect.objectContaining({ card: cards[0], cards: [...cards] }),
       expect.any(Object),

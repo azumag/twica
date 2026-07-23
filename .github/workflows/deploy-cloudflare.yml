@@ -32,6 +32,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  overlay-realtime:
+    # The main application can be deployed by Cloudflare Workers Builds, but
+    # the standalone room Worker is intentionally owned here. Wrangler deploys
+    # a version atomically; using the same per-ref concurrency group therefore
+    # makes a superseded push safe while avoiding two overlapping DO migrations.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck overlay realtime Worker
+        run: npm run overlay-realtime:typecheck
+
+      - name: Deploy preview room Worker
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
+        run: npm run overlay-realtime:deploy:preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy production room Worker
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        run: npm run overlay-realtime:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
   legacy-app-deploy:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'
     runs-on: ubuntu-latest

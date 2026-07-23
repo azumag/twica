@@ -22,7 +22,7 @@ import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin"
 import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
-import { broadcastGachaResult } from "@/lib/realtime";
+import { publishCommittedGachaBatch } from "@/lib/overlay-realtime/publisher";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
 import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
@@ -300,6 +300,7 @@ export async function handleRaidNotification(messageId: string, event: {
       broadcasterTwitchUserId: toBroadcasterUserId,
       streamer,
       userId: fromBroadcasterUserId,
+      batchId: messageId,
     },
     retryable: false,
   };
@@ -320,6 +321,8 @@ export interface RedemptionNotifyData {
   broadcasterTwitchUserId: string;
   streamer: EventSubStreamerInfo;
   userId: string;
+  /** gacha_history.event_id の1枚目と一致するEventSub message ID。 */
+  batchId: string;
 }
 
 /**
@@ -355,7 +358,8 @@ export interface RedemptionOutcome {
 export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   const results = await Promise.allSettled([
     // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
-    broadcastGachaResult(data.streamer.id, data.gachaResult, {
+    publishCommittedGachaBatch(data.streamer.id, data.gachaResult, {
+      batchId: data.batchId,
       maxRetries: 1,
       retryDelay: 500,
     }),
@@ -371,8 +375,8 @@ export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<
   ]);
 
   // 通知失敗をログ出力 + エラー追跡
-  // Note: broadcastGachaResult (i=0) は内部でリトライし失敗時も throw しない設計 (Issue #359-#365)
-  // そのため broadcast は 'rejected' にならず、失敗ログは broadcastGachaResult 内で warn として出力される
+  // Note: publishCommittedGachaBatch (i=0) は失敗を結果へ閉じ込め、polling回収へ
+  // 委ねる設計のため rejected にならない。詳細はpublisher側の構造化warnで追跡する。
   // chatAnnouncement (i=1) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
@@ -704,6 +708,7 @@ export async function handleRedemption(messageId: string, event: {
         broadcasterTwitchUserId: event.broadcaster_user_id,
         streamer,
         userId: event.user_id,
+        batchId: messageId,
       },
       retryable: false,
     };
