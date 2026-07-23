@@ -18,6 +18,22 @@
 # Supabase マイグレーションは `supabase db push --db-url` でビルド前に自動適用される。
 # 各 GitHub Environment に SUPABASE_DB_URL を設定すること。
 #
+# Production の実DBは issue #699 で PlanetScale (Postgres互換) へ cutover 済みのため、
+# `supabase db push` は rollback用に温存している旧Supabase本番へのみ適用される。実際に
+# アプリが読み書きする本番PlanetScaleへは、下記 `planetscale-migrations` ジョブが
+# `scripts/db-migrate.js apply --provider=planetscale` を自動実行する
+# （production・main ブランチのみ。preview はまだ PlanetScale 未cutoverのため対象外）。
+# 初回有効化前に一度だけ手動での bootstrap 登録が必要。詳細・手順は
+# `docs/planetscale-schema-baseline.md` の「issue #788・CI自動化に伴う追記」節を参照。
+#
+# Production's live DB was cut over from Supabase to PlanetScale (Postgres-compatible)
+# in issue #699, so `supabase db push` now only reaches the retained (rollback-only)
+# legacy Supabase production DB. The `planetscale-migrations` job below applies
+# `scripts/db-migrate.js apply --provider=planetscale` against the actual production
+# DB on every push to main (preview is not yet cut over, so it's excluded). A one-time
+# manual bootstrap registration is required before first use — see
+# `docs/planetscale-schema-baseline.md`.
+#
 # - preview branch → twica-preview Worker (preview environment)
 # - main branch    → twica Worker (production environment)
 #
@@ -37,6 +53,12 @@
 #    - NEXT_PUBLIC_SUPABASE_URL
 #    - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 #    - NEXT_PUBLIC_TWITCH_CLIENT_ID
+#
+# 3. "production" environment only, additionally:
+#    "production" environment のみ、追加で以下の Secret を設定:
+#    - PLANETSCALE_DATABASE_URL: PlanetScale本番Postgresへの直接接続文字列
+#      (migration専用。Hyperdrive経由のアプリ実行時接続とは別物。
+#      db/planetscale/bootstrap.sql 等の手動適用と同じ接続文字列を使うこと)
 
 name: Cloudflare Deploy Support
 
@@ -104,6 +126,61 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           RESOLVED_ENV: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+
+  # 本番の実DB（PlanetScale、issue #699でcutover済み）へ scripts/db-migrate.js で
+  # migrationを自動適用する。production・main ブランチのみが対象（preview はまだ
+  # PlanetScale 未cutoverのため対象外。cutoverしたら preview 向けの同種ジョブを追加する）。
+  #
+  # legacy-app-deploy / auxiliary-workers からは意図的に needs で依存させない
+  # （このジョブが失敗してもブロックしない独立ジョブとする）。理由:
+  # - CLOUDFLARE_WORKERS_BUILDS_ENABLED=true の場合、実アプリデプロイは Cloudflare の
+  #   Git連携がこの workflow と無関係に進む。ここでブロックしても実効性が薄い。
+  # - アプリ側は列欠落（migration未適用）を検知してもクラッシュせず機能を無効化した
+  #   状態へ縮退する設計（deploy-window fallback、issue #788）を前提にしている。
+  # 失敗時の可視化は通常のコミットステータスチェック（および対象PR/コミットの
+  # デフォルトのGitHub通知）に委ねる。required check化やSlack通知等の追加アラートは
+  # 現時点ではYAGNIと判断し導入していない（必要になれば別途追加する）。
+  #
+  # 初回有効化前に一度だけ、既存migrationを「実行せず履歴登録のみ」する手動bootstrapが
+  # 必要（docs/planetscale-schema-baseline.md 参照）。未実施のままだと、history table
+  # 不在 + pending件数過多で db-migrate.js 自身の安全ガード（shouldBlockFreshApply）が
+  # 働き、データ破壊なく exit 1 する（＝赤くなり続けるだけで、73件が誤実行されることはない）。
+  planetscale-migrations:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ジョブ自体は if: で production (main push または workflow_dispatch の
+      # environment=production 選択) にのみ限定しているが、Supabase migrations の
+      # 既存ステップと同様、workflow_dispatch 経路で非 main ブランチから production を
+      # 選択した場合に備えた実行時ガードも二重に入れる（if: 条件の書き間違い・将来の
+      # 変更に対する多層防御。本番DBへのmigration適用はerror-reporter再デプロイ等より
+      # 破壊的なため、単一の防御層に頼らない）。
+      - name: Apply PlanetScale migrations
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::PlanetScale production migrations are only allowed from the main branch"
+            exit 1
+          fi
+          node scripts/db-migrate.js apply --provider=planetscale
+        env:
+          DATABASE_URL: ${{ secrets.PLANETSCALE_DATABASE_URL }}
+          MIGRATION_APPLIED_BY: github-actions[${{ github.run_id }}]
 
   legacy-app-deploy:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'

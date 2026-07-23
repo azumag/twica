@@ -155,6 +155,47 @@ migrationがある状態でも確認なしに通常applyを実行してよい」
 以降、PlanetScale向けの新規migrationは通常の `apply --provider=planetscale`
 （`--bootstrap` 無し）で追加していける。
 
+**重要（issue #788・CI自動化に伴う追記、本番未実施の場合は必ず読むこと）**:
+本節の「73件」は本ドキュメント執筆時点（Chunk 1〜2）の`supabase/migrations/`ファイル数
+（71件）+ bootstrap + baseline の合計である。その後 issue #788 で
+`supabase/migrations/20260723150000_add_channel_points_capability.sql` が追加されたため、
+現在の `--provider=planetscale` pending件数は **74件**（既存73 + 新規1件）になっている。
+
+**`--bootstrap` は「実DBが既にその内容を反映済み」のmigrationにのみ使ってよい
+（SQLを実行せず履歴にのみ登録するため）。`20260723150000_add_channel_points_capability.sql`
+は本番PlanetScaleにまだ一度も適用されていない、実行が必要な真に新規のmigrationのため、
+このファイルを`--bootstrap`で登録してはならない**。誤って含めてしまうと、
+「履歴上は適用済み」なのに実際にはALTER TABLE/CREATE FUNCTIONが未実行という状態になり、
+`src/lib/twitch/channel-points-access.ts`のdeploy-windowフォールバック
+（列欠落を`capability: 'unknown'`へ静かに縮退させる設計）と組み合わさって、
+**CIも赤くならず気付かれないまま該当機能が本番で恒久的に無効化される**事故につながる
+（設計レビューで指摘されたCritical項目）。
+
+本番でまだ一度も`--bootstrap`を実行していない場合、正しい手順は以下の2段階:
+
+```bash
+# 1. 20260723150000_add_channel_points_capability.sql を含まないコミット
+#    （#788昇格前のmainブランチ等）を checkout し、既存73件のみをbootstrap登録する。
+git checkout main   # #788がまだ昇格されていないコミット
+DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --bootstrap --provider=planetscale
+
+# 2. 上記の後、20260723150000_add_channel_points_capability.sql を含むコミットで、
+#    この1件だけを実際に適用する（--bootstrap を付けない通常の apply）。
+git checkout <#788を含むコミット>
+DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --provider=planetscale
+```
+
+既に（誤って）#788を含む状態で`--bootstrap`を実行してしまった場合は、
+`twica_meta.schema_migrations`から該当versionの行を手動DELETEしてから
+`apply --provider=planetscale`を再実行することで復旧できる
+（`--bootstrap`は履歴登録のみでSQL実行を伴わないため、この復旧操作自体に副作用は無い）。
+
+**CI自動化について**: `.github/workflows/deploy-cloudflare.yml`の`planetscale-migrations`
+ジョブ（production環境・mainブランチのみ、`legacy-app-deploy`/`auxiliary-workers`はブロック
+しない独立ジョブ）が、`main`へのpush毎に`apply --provider=planetscale`（`--bootstrap`無し）
+を自動実行する。上記のワンタイムbootstrapが完了していれば、以降の新規migrationはこの
+ジョブが自動適用する。`--bootstrap`はワンタイム作業のためCIには含めない。
+
 **「pending 73件」の成立条件について（N-7、Fableレビュー2回目で明記）**: 上記の「73件」は
 既存71ファイル（`00001`〜`20260718140000`）+ bootstrap + baseline の合計だが、この73件を
 **まっさらなDBへ`--bootstrap`無しの素の`apply --provider=planetscale`で実行することはできない**。
