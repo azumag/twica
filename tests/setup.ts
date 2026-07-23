@@ -9,6 +9,10 @@ process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'test-anon-key'
 process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'test-publishable-key'
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key'
 process.env.SUPABASE_SECRET_KEY = 'test-secret-key'
+// Existing parity tests intentionally exercise the retired PostgREST branch.
+// Production/preview must never set this opt-in; without it runtime defaults to
+// pg + PlanetScale even if stale DB_DRIVER/DB_TARGET values remain.
+process.env.TWICA_ENABLE_LEGACY_SUPABASE = 'true'
 process.env.TWITCH_CLIENT_SECRET = 'test-client-secret'
 process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'test-client-id'
 process.env.TWITCH_EVENTSUB_SECRET = 'test-eventsub-secret'
@@ -37,7 +41,7 @@ vi.mock('@/lib/supabase/admin', () => ({
 }))
 
 // #570: pg 直結経路（postgres.js + Drizzle）のグローバルモック。
-// 既存テストは DB_DRIVER 未設定（= 'postgrest' 経路）で動くため getDb は呼ばれない。
+// 既存テストは明示的な legacy opt-in により postgrest 経路で動くため getDb は呼ばれない。
 // 万一呼ばれた場合はフラグ分岐漏れ（設計違反）を即検出できるよう throw するスタブにする。
 // pg 経路をテストしたいファイルでは vi.mocked(getDb).mockResolvedValue(...) で上書きする。
 //
@@ -45,21 +49,16 @@ vi.mock('@/lib/supabase/admin', () => ({
 // こと。#688 で normalizePgTimestampString / installIsoTimestampParsers が追加され、
 // getDb 以外にも実行時エクスポートが増えた。この2つは DB 接続を持たない純関数
 // （timestamp 文字列の正規化・postgres.js クライアントへのパーサ差し替え）なので、
-// vi.importActual で実体を re-export し、getDb だけを throw スタブに差し替える
-// （docs/TESTING_SUPABASE_MOCKS.md や tests/unit/gacha-history-api.test.ts 等の
-// `@/lib/supabase/admin` importOriginal パターンと同じ方針。手動での形状同期を避け、
-// #688 のようなエクスポート追加時にこのファイルを追随し忘れるリスクを構造的に消す）。
-// なお tests/unit/db-client.test.ts / db-client-timestamp-normalization.test.ts は
-// 冒頭で vi.unmock('@/lib/db/client') してこのグローバルモック自体を無効化した上で
-// 実装本体（getDb 含む）を検証しているため、ここでの re-export 方式とは独立している。
+// vi.importActual で実体を re-export し、getDb だけを throw スタブに差し替える。
+// なお db-client 系テストは vi.unmock('@/lib/db/client') して実装本体を検証する。
 vi.mock('@/lib/db/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/db/client')>()
   return {
     ...actual,
     getDb: vi.fn(() => {
       throw new Error(
-        'getDb() must not be called in unit tests: DB_DRIVER defaults to postgrest. ' +
-          'Override with vi.mocked(getDb).mockResolvedValue(...) to test the pg path.'
+        'getDb() must not be called in legacy-compat unit tests. ' +
+        'Override with vi.mocked(getDb).mockResolvedValue(...) to test the pg path.'
       )
     }),
   }
