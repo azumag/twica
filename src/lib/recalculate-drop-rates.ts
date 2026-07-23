@@ -9,9 +9,12 @@ import { logger } from "@/lib/logger";
 // ため、import が存在するだけでは挙動に影響しない(#570 の設計。tests/setup.ts の
 // getDb throw スタブが「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
 // ---------------------------------------------------------------------------
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { isPgWriteEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
+import { cards as cardsTable } from "@/lib/db/schema";
+import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
 
 /**
  * batch_update_card_drop_rates RPC の pg 直結エラーを PostgREST .rpc() の error と
@@ -103,6 +106,76 @@ export async function executeBatchUpdateCardDropRatesRpcPg(
   }
 }
 
+type RecalculationCard = Pick<
+  Card,
+  "id" | "rarity" | "is_active" | "intra_rarity_weight"
+>;
+
+/**
+ * Issue #794: DB_DRIVER=pg では再計算対象も PlanetScale から取得する。
+ *
+ * 以前は更新RPCだけが pg 直結で、前後の SELECT は Supabase のままだったため、
+ * cutover後に PlanetScale へ追加されたカードが再計算対象から漏れていた。
+ * 読み書き混在処理は isPgWriteEnabled() で処理全体を同じDBへ揃える。
+ */
+async function fetchActiveCardsForRecalculationPg(
+  streamerId: string
+): Promise<RecalculationCard[]> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select({
+          id: cardsTable.id,
+          rarity: cardsTable.rarity,
+          is_active: cardsTable.is_active,
+          intra_rarity_weight: cardsTable.intra_rarity_weight,
+        })
+        .from(cardsTable)
+        .where(
+          and(
+            eq(cardsTable.streamer_id, streamerId),
+            eq(cardsTable.is_active, true)
+          )
+        );
+    },
+    "recalculateIfAutoMode: active cards(pg)",
+    { idempotent: true }
+  );
+
+  // is_active=true で絞っているため、この処理内では nullable なDB型を
+  // calculateDropRates が要求する boolean として安全に扱える。
+  return rows as RecalculationCard[];
+}
+
+/**
+ * Issue #794: pg更新後のカードも同じ PlanetScale 接続から取得する。
+ * cards の無指定 select は本番未デプロイ列を要求しうるため、安全列を明示する。
+ */
+async function fetchRecalculatedCardsPg(
+  streamerId: string,
+  updatedCardIds: string[]
+): Promise<Card[]> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select(CARDS_SAFE_COLUMNS)
+        .from(cardsTable)
+        .where(
+          and(
+            eq(cardsTable.streamer_id, streamerId),
+            inArray(cardsTable.id, updatedCardIds)
+          )
+        );
+    },
+    "recalculateIfAutoMode: recalculated cards(pg)",
+    { idempotent: true }
+  );
+
+  return normalizeDropRate(rows as Card[]);
+}
+
 /**
  * Recalculate active cards drop_rate when rarity auto mode is enabled.
  * Returns updated active cards, [] when no active cards exist, or null when auto mode is disabled.
@@ -117,17 +190,27 @@ export async function recalculateIfAutoMode(
     return null;
   }
 
-  const { data: activeCards, error: activeCardsError } = await supabaseAdmin
-    .from("cards")
-    .select("id, rarity, is_active, intra_rarity_weight")
-    .eq("streamer_id", streamerId)
-    .eq("is_active", true);
+  // Issue #794: 一連の再計算中に参照先を混在させないため、分岐値を1回だけ確定する。
+  // pg-read は書き込みがPostgRESTのままなので、読み取りも従来側へ揃える。
+  const pgWriteEnabled = isPgWriteEnabled();
 
-  if (activeCardsError) {
-    throw activeCardsError;
+  let activeCards: RecalculationCard[];
+  if (pgWriteEnabled) {
+    activeCards = await fetchActiveCardsForRecalculationPg(streamerId);
+  } else {
+    const { data, error } = await supabaseAdmin
+      .from("cards")
+      .select("id, rarity, is_active, intra_rarity_weight")
+      .eq("streamer_id", streamerId)
+      .eq("is_active", true);
+
+    if (error) {
+      throw error;
+    }
+    activeCards = (data || []) as RecalculationCard[];
   }
 
-  const updates = calculateDropRates(activeCards || [], rarityWeights);
+  const updates = calculateDropRates(activeCards, rarityWeights);
   if (updates.length === 0) {
     return [];
   }
@@ -140,11 +223,8 @@ export async function recalculateIfAutoMode(
   }));
 
   // #573: isPgWriteEnabled() のときだけ pg 直結(postgres.js)経路へ分岐する。
-  // pg 側は PostgREST .rpc() と同一の { data, error } 形状へ正規化して返す
-  // (executeBatchUpdateCardDropRatesRpcPg の doc コメント参照)ため、直後の
-  // 既存エラー分岐(rpcError → throw)とカウント照合ログはそのまま両経路で
-  // 共有される。フラグ未設定時は下の既存 supabase-js 実装が無変更のまま実行される。
-  const { data: rpcResult, error: rpcError } = isPgWriteEnabled()
+  // Issue #794: pgWriteEnabled は上の SELECT と共通で、同じ処理中にDBをまたがない。
+  const { data: rpcResult, error: rpcError } = pgWriteEnabled
     ? await executeBatchUpdateCardDropRatesRpcPg(streamerId, rpcPayload)
     : await supabaseAdmin.rpc(
         "batch_update_card_drop_rates",
@@ -168,6 +248,10 @@ export async function recalculateIfAutoMode(
   }
 
   const updatedCardIds = updates.map((update) => update.id);
+  if (pgWriteEnabled) {
+    return fetchRecalculatedCardsPg(streamerId, updatedCardIds);
+  }
+
   const { data: recalculatedCards, error: recalculatedCardsError } = await supabaseAdmin
     .from("cards")
     .select("*")
