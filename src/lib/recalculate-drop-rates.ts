@@ -14,7 +14,10 @@ import { getDb } from "@/lib/db/client";
 import { isPgWriteEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
+import {
+  CARDS_SAFE_COLUMNS,
+  withCardsBattleColumnFallback,
+} from "@/lib/db/cards-safe-columns";
 
 /**
  * batch_update_card_drop_rates RPC の pg 直結エラーを PostgREST .rpc() の error と
@@ -156,24 +159,29 @@ async function fetchRecalculatedCardsPg(
   streamerId: string,
   updatedCardIds: string[]
 ): Promise<Card[]> {
-  const rows = await withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select(CARDS_SAFE_COLUMNS)
-        .from(cardsTable)
-        .where(
-          and(
-            eq(cardsTable.streamer_id, streamerId),
-            inArray(cardsTable.id, updatedCardIds)
-          )
-        );
-    },
-    "recalculateIfAutoMode: recalculated cards(pg)",
-    { idempotent: true }
-  );
+  async function selectCards(useSafeColumns: boolean) {
+    return withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        const query = useSafeColumns
+          ? db.select(CARDS_SAFE_COLUMNS)
+          : db.select();
+        return query
+          .from(cardsTable)
+          .where(
+            and(
+              eq(cardsTable.streamer_id, streamerId),
+              inArray(cardsTable.id, updatedCardIds)
+            )
+          );
+      },
+      "recalculateIfAutoMode: recalculated cards(pg)",
+      { idempotent: true }
+    );
+  }
 
-  return normalizeDropRate(rows as Card[]);
+  const rows = await withCardsBattleColumnFallback(selectCards);
+  return normalizeDropRate(rows as unknown as Card[]);
 }
 
 /**
