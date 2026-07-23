@@ -90,8 +90,10 @@ async function fetchJson<T>(url: string): Promise<T> {
  *
  * The function name is retained for compatibility with the OBS page. A
  * successful first poll invokes onSuccess, so the page suppresses its older
- * duplicate fallback poll. If this loop fails, onError marks the page
- * disconnected and that fallback automatically resumes.
+ * duplicate fallback poll. The loop owns its exact database cursor and retries
+ * transient failures internally; it only invokes onError after an explicitly
+ * finite retry limit is exhausted. This prevents the legacy fallback from
+ * replacing the exact cursor with `Date.now()` and skipping a concurrent row.
  */
 export function subscribeToGachaResults(
   streamerId: string,
@@ -170,19 +172,20 @@ export function subscribeToGachaResults(
     } catch (error) {
       retryCount += 1
       const exhausted = Number.isFinite(maxRetries) && retryCount > maxRetries
-      options.onError?.({
-        type: 'connection',
-        message: exhausted
-          ? 'Overlay polling retry limit reached'
-          : 'Overlay polling temporarily unavailable',
-        error,
-        isExpected: !exhausted,
-      })
 
-      if (!exhausted) {
-        const backoff = Math.min(intervalMs * Math.pow(2, Math.max(0, retryCount - 1)), 30000)
-        schedule(backoff)
+      if (exhausted) {
+        options.onError?.({
+          type: 'connection',
+          message: 'Overlay polling retry limit reached',
+          error,
+          isExpected: false,
+        })
+        return
       }
+
+      options.onStatusChange?.(`POLLING_RETRY:${retryCount}`)
+      const backoff = Math.min(intervalMs * Math.pow(2, Math.max(0, retryCount - 1)), 30000)
+      schedule(backoff)
     }
   }
 
