@@ -835,13 +835,18 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
         provider指定が固定される用途では専用の環境変数より既存フラグの再利用が
         シンプルなため）
       - **実装済み（2026-07-23）**: `scripts/db-migrate.js apply --provider=planetscale`
-        を実行する独立ジョブ`planetscale-migrations`を`deploy-cloudflare.yml`に追加した。
+        を実行する新規workflow `.github/workflows/planetscale-migrate.yml`を追加した。
         production・mainブランチのみが対象（preview はまだ PlanetScale 未cutoverのため
-        対象外。cutover後にpreview向けの同種ジョブを追加する）。既存の
-        `legacy-app-deploy`/`auxiliary-workers`はブロックしない独立ジョブとした
-        （Cloudflare Workers Builds有効時、実アプリデプロイはこのworkflowと無関係に
-        進むため、ここでブロックしても実効性が薄い。かつアプリ側は既にmigration遅延への
-        耐性＝deploy-window fallbackを実装済みのため）。
+        対象外。cutover後にpreview向けの同種workflowを追加する）。既存の
+        `legacy-app-deploy`/`auxiliary-workers`（`deploy-cloudflare.yml`側）はブロック
+        しない独立workflowとした（Cloudflare Workers Builds有効時、実アプリデプロイは
+        この一連のworkflowと無関係に進むため、ここでブロックしても実効性が薄い。かつ
+        アプリ側は既にmigration遅延への耐性＝deploy-window fallbackを実装済みのため）。
+        `deploy-cloudflare.yml`に同居させず別ファイルにしたのは、GitHub Actionsの
+        concurrencyがrun単位で効くため（job単位で別groupを指定しても、そのjobが属する
+        run自体がworkflowレベルのconcurrency＝`deploy-cloudflare.yml`の
+        `cancel-in-progress: true`でキャンセルされる動作からは守れない。claude-reviewの
+        指摘を受けてファイル分離に変更）。
         初回有効化前に一度だけ、既存migrationの手動bootstrap登録が必要
         （`docs/planetscale-schema-baseline.md`「issue #788・CI自動化に伴う追記」節参照）。
         新規secret `PLANETSCALE_DATABASE_URL`をGitHub Environment "production"に

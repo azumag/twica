@@ -210,7 +210,7 @@ DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js status --pro
 
 検証を通過すれば、以降は`20260723150000_add_channel_points_capability.sql`のみが
 未適用として残る。この1件は、#788昇格PRをmainへマージした後の最初の本番デプロイで
-`planetscale-migrations`ジョブが自動的に適用する（下記「CI自動化について」参照）。
+`.github/workflows/planetscale-migrate.yml`が自動的に適用する（下記「CI自動化について」参照）。
 今すぐ手動で適用したい場合は、#788を含むツリーのまま
 `DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js apply --provider=planetscale`
 を追加実行してもよいが、CIジョブと同じ処理を先取りするだけなので必須ではない。
@@ -221,11 +221,14 @@ DATABASE_URL="$PLANETSCALE_DATABASE_URL" node scripts/db-migrate.js status --pro
 再実行することで復旧できる（`--bootstrap`は履歴登録のみでSQL実行を伴わないため、
 この復旧操作自体に副作用は無い）。
 
-**CI自動化について**: `.github/workflows/deploy-cloudflare.yml`の`planetscale-migrations`
-ジョブ（production環境・mainブランチのみ、`legacy-app-deploy`/`auxiliary-workers`はブロック
-しない独立ジョブ）が、`main`へのpush毎に`apply --provider=planetscale`（`--bootstrap`無し）
-を自動実行する。上記のワンタイムbootstrapが完了していれば、以降の新規migrationはこの
-ジョブが自動適用する。`--bootstrap`はワンタイム作業のためCIには含めない。
+**CI自動化について**: `.github/workflows/planetscale-migrate.yml`（production環境・
+mainブランチのみが対象の独立workflow）が、`main`へのpush毎に`apply --provider=planetscale`
+（`--bootstrap`無し）を自動実行する。上記のワンタイムbootstrapが完了していれば、以降の
+新規migrationはこのworkflowが自動適用する。`--bootstrap`はワンタイム作業のためCIには
+含めない。`deploy-cloudflare.yml`とは意図的に別ファイルに分離している
+（理由は`planetscale-migrate.yml`冒頭コメント参照。要約: `deploy-cloudflare.yml`の
+`concurrency: cancel-in-progress: true`に本番migration実行中のジョブが巻き込まれて
+キャンセルされる事故を、ファイル分離により構造的に防ぐため）。
 
 **「pending 73件」の成立条件について（N-7、Fableレビュー2回目で明記）**: 上記の「73件」は
 既存71ファイル（`00001`〜`20260718140000`）+ bootstrap + baseline の合計だが、この73件を
