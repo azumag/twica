@@ -29,14 +29,10 @@ Object.defineProperty(global.navigator, 'clipboard', {
   writable: true,
 })
 
-// Global mocks
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: vi.fn(() => createMockSupabaseClient()),
-}))
-
+// Global compatibility mock for old PostgREST parity fixtures. Production
+// imports the non-instantiating retired facade instead.
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: vi.fn(() => createMockSupabaseClient()),
-  // logger.error → logErrorFromLogger → logErrorToSupabase で使用される
   getSupabaseAdmin: vi.fn(() => createMockSupabaseClient()),
 }))
 
