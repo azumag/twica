@@ -1,0 +1,137 @@
+# PlanetScale Production Migration Workflow
+# PlanetScale本番マイグレーションWorkflow
+#
+# 本番の実DB（PlanetScale、issue #699でcutover済み）へ scripts/db-migrate.js で
+# migrationを自動適用する。production・main ブランチのみが対象（preview はまだ
+# PlanetScale 未cutoverのため対象外。cutoverしたら preview 向けの同種workflowを追加する）。
+#
+# 【なぜ deploy-cloudflare.yml に同居させず、別ファイルに分離しているか（重要）】
+# GitHub Actionsのconcurrencyは「同じgroup名を持つ別runが来たら、そのrun全体をキャンセルする」
+# という run 単位の仕組みであり、job単位で別groupを指定しても、そのjobが属するrun自体が
+# workflowレベルのconcurrencyでキャンセルされる動作からは守れない（公式ドキュメントに
+# 明示的な反証が無く、コミュニティでも同様の報告が複数ある。job-level concurrencyは
+# 「別runの同名jobどうしの調停」であって「自runがキャンセルされることへの盾」ではない）。
+# `deploy-cloudflare.yml` は `concurrency: { group: deploy-${{ github.ref }},
+# cancel-in-progress: true }` を持つため、本番migrationジョブを同じファイル内に置くと、
+# main への連続pushで実行中のmigrationジョブごと強制終了されうる（claude-reviewで
+# 実際に指摘された）。本番PlanetScaleへ書き込み中のプロセスが中断されると、
+# 通常のトランザクション内migrationはコネクション切断で自動rollbackされ安全だが、
+# 将来 `migration-transaction: forbidden`（`CREATE INDEX CONCURRENTLY`等、
+# トランザクション外実行が必須）なmigrationが追加された場合、INVALIDなオブジェクトの
+# 残留・手動復旧を要する半端な状態を招きうる。ファイルを分離すれば、このworkflow自身の
+# concurrencyグループがdeploy-cloudflare.ymlのそれと完全に独立するため、この事故は
+# 構造的に発生しなくなる。
+#
+# Applies `scripts/db-migrate.js apply --provider=planetscale` against production's
+# live DB (PlanetScale, cut over in issue #699) on every push to main. Preview is
+# excluded (not yet cut over).
+#
+# Kept in its own file rather than as a job in deploy-cloudflare.yml because GitHub
+# Actions concurrency cancellation operates at the run level: a workflow-level
+# `cancel-in-progress: true` group cancels an entire in-progress run — including any
+# job inside it that declares its own, differently-named job-level concurrency group.
+# Job-level concurrency only arbitrates between same-named jobs across different runs;
+# it provides no protection against the enclosing run itself being cancelled. Since
+# `deploy-cloudflare.yml` has `concurrency: { group: deploy-${{ github.ref }},
+# cancel-in-progress: true }`, co-locating this job there would let rapid consecutive
+# pushes to main kill an in-progress production migration mid-flight (flagged by
+# claude-review). A separate file gives this workflow its own independent concurrency
+# scope, eliminating that risk structurally.
+#
+# 初回有効化前に一度だけ、既存migrationを「実行せず履歴登録のみ」する手動bootstrapが
+# 必要。詳細・手順は `docs/planetscale-schema-baseline.md` の
+# 「issue #788・CI自動化に伴う追記」節を参照。未実施のままだと、history table
+# 不在 + pending件数過多で db-migrate.js 自身の安全ガード（shouldBlockFreshApply）が
+# 働き、データ破壊なく exit 1 する（＝赤くなり続けるだけで、全件が誤実行されることはない）。
+#
+# legacy-app-deploy / auxiliary-workers（deploy-cloudflare.yml側）からは意図的に
+# 依存させない（このworkflowが失敗してもアプリデプロイをブロックしない）。理由:
+# - CLOUDFLARE_WORKERS_BUILDS_ENABLED=true の場合、実アプリデプロイは Cloudflare の
+#   Git連携がこの workflow と無関係に進む。ここでブロックしても実効性が薄い。
+# - アプリ側は列欠落（migration未適用）を検知してもクラッシュせず機能を無効化した
+#   状態へ縮退する設計（deploy-window fallback、issue #788）を前提にしている。
+# 失敗時の可視化は通常のコミットステータスチェック（および対象コミットの
+# デフォルトのGitHub通知）に委ねる。required check化やSlack通知等の追加アラートは
+# 現時点ではYAGNIと判断し導入していない（必要になれば別途追加する）。
+#
+# 【運用制約: このパイプラインで自動適用してよいのは additive なmigrationのみ
+# （claude-reviewで指摘、必ず読むこと）】
+# 上記のdeploy-window fallback前提（列欠落時に機能を無効化して縮退する設計）は、
+# 「列追加」のような加法的(additive)な変更にしか成り立たない。`DROP COLUMN`・
+# `RENAME COLUMN`・型変更のような非加法的(non-additive)な変更を含むmigrationを
+# このパイプラインでそのまま自動適用すると、Cloudflare Workers Builds経由の
+# アプリデプロイ（本workflowとは非同期・順序保証なしで進行する）との兼ね合いで、
+# 新アプリコードが未適用スキーマを読む、または旧アプリコードが削除済みカラムを
+# 読むといった本番障害に直結しうる（industry-standardなexpand/contractパターンで
+# いう「contract」フェーズを無条件に自動化してしまうことに相当）。
+# `scripts/db-migrate.js`にはmigrationの加法性を判定する仕組みが無いため、
+# 非加法的な変更を含むmigrationについては、このworkflowでの自動適用に任せず、
+# デプロイ順序を人間が管理した上で手動適用すること（例: 新コードのデプロイ完了を
+# 確認してから該当migrationを個別に`apply`する）。この制約を機械的に強制する
+# （非加法的DDLを検知したら明示フラグ無しではブロックする）フォローアップは
+# issue #800 で追跡している。
+#
+# Prerequisites / 前提条件:
+# - GitHub Environment "production" に Secret `PLANETSCALE_DATABASE_URL`
+#   （PlanetScale本番Postgresへの直接接続文字列。migration専用、Hyperdrive経由の
+#   アプリ実行時接続とは別物）を設定すること。
+
+name: PlanetScale Production Migrations
+
+on:
+  push:
+    branches: [main]
+
+  # 手動再実行用（例: 一時的な接続エラーからのリトライ）。
+  # このworkflowは常にproduction/mainのみを対象とするため、
+  # deploy-cloudflare.ymlのような環境選択インプットは不要。
+  workflow_dispatch: {}
+
+# このworkflow専用の独立したconcurrencyグループ。cancel-in-progress: false により、
+# main への連続pushがあっても、先行のmigration runが完走するまで後続はキューで待つ
+# （キャンセルしない）。deploy-cloudflare.ymlのconcurrencyグループとは名前・スコープとも
+# 完全に独立している（ファイル冒頭コメント参照）。
+concurrency:
+  group: planetscale-migrate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  planetscale-migrations:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: production
+    # pg_advisory_lock（scripts/db-migrate.js）はロック取得までブロックする。
+    # 手動bootstrap作業との時間的重複等でロックが解放されない場合に備え、
+    # GitHub Actionsのデフォルトタイムアウト(6時間)に張り付き続けないよう上限を設ける。
+    # 通常のDDL適用は数秒〜数分で完了する想定のため、10分は十分に余裕を持たせた値。
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # push トリガーは branches: [main] で既に限定されているが、workflow_dispatch は
+      # GitHub UI上で任意のブランチ/refを選んで手動実行できてしまうため、既存の
+      # Supabase migrations ステップ（deploy-cloudflare.yml）と同じ流儀で実行時ガードも
+      # 入れる（本番DBへのmigration適用はerror-reporter再デプロイ等より破壊的なため、
+      # trigger設定という単一の防御層に頼らない）。
+      - name: Apply PlanetScale migrations
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::PlanetScale production migrations are only allowed from the main branch"
+            exit 1
+          fi
+          node scripts/db-migrate.js apply --provider=planetscale
+        env:
+          DATABASE_URL: ${{ secrets.PLANETSCALE_DATABASE_URL }}
+          MIGRATION_APPLIED_BY: github-actions[${{ github.run_id }}]
