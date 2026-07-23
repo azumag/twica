@@ -11,6 +11,7 @@ import {
   type EventSubSubscriptionForStatus,
 } from "@/lib/twitch/eventsub-status";
 import { logPerf, perfStart } from "@/lib/perf";
+import { logger } from "@/lib/logger";
 // Issue #690 (#570 パイロット踏襲): pg 直結の読み取り経路。DB_DRIVER=pg-read/pg の
 // ときのみ使われる。getDb() は withDbRetry の queryFn 内で呼ぶ規約
 // (src/lib/db/retry.ts 参照)。フラグ未設定時はこれらのモジュールは一切呼ばれない。
@@ -23,6 +24,11 @@ import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
 } from "@/lib/db/schema";
+import {
+  getChannelPointsAccessState,
+  persistChannelPointsCapability,
+  recordChannelPointsApiFailure,
+} from "@/lib/twitch/channel-points-access";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -45,7 +51,17 @@ function isRaidStateSchemaError(error: { message?: string; code?: string } | nul
     || message.includes("raid_gacha_draw_count");
 }
 
-async function getTwitchRewards(twitchUserId: string): Promise<{ rewards: TwitchReward[]; requiresReauth?: boolean; error?: string }> {
+interface TwitchRewardsResult {
+  rewards: TwitchReward[];
+  requiresReauth?: boolean;
+  // Twitch APIが一時的に失敗した（429/5xx/その他非2xx）ことを示す。
+  // #788: この場合は保存済みcapability確定状態を破壊しない。
+  temporarilyUnavailable?: boolean;
+  // 401/403を受けた場合のみ設定。呼び出し元がDB確定状態を同期するために使う。
+  capabilitySyncStatus?: 401 | 403;
+}
+
+async function getTwitchRewards(twitchUserId: string): Promise<TwitchRewardsResult> {
   const accessToken = await getTwitchAccessToken(twitchUserId);
   if (!accessToken) {
     return { rewards: [], requiresReauth: true };
@@ -62,15 +78,19 @@ async function getTwitchRewards(twitchUserId: string): Promise<{ rewards: Twitch
   );
 
   if (response.status === 401) {
-    return { rewards: [], requiresReauth: true };
+    return { rewards: [], requiresReauth: true, capabilitySyncStatus: 401 };
   }
 
+  // #788: 403を「Affiliateではない」固定文言(旧affiliateRequired契約)ではなく、
+  // Capability状態ベースの契約へ置き換える。呼び出し元がDBのcapabilityを
+  // unavailableへ同期する。
   if (response.status === 403) {
-    return { rewards: [], error: "affiliateRequired" };
+    return { rewards: [], capabilitySyncStatus: 403 };
   }
 
   if (!response.ok) {
-    return { rewards: [], error: "fetchFailed" };
+    // 429/5xx等の一時失敗。DB確定状態は破壊しない。
+    return { rewards: [], temporarilyUnavailable: true };
   }
 
   const data = await response.json();
@@ -402,19 +422,57 @@ export async function GET(request: NextRequest) {
     );
 
     if (!hasRequiredScope) {
+      const accessState = await getChannelPointsAccessState(session.twitchUserId);
       return NextResponse.json({
         hasRequiredScope: false,
         rewards: [],
         requiresReauth: true,
+        capability: accessState?.capability ?? "unknown",
+        capabilityCheckedAt: accessState?.checkedAt ?? null,
       });
     }
 
-    const { rewards, requiresReauth, error } = await getTwitchRewards(session.twitchUserId);
+    const { rewards, requiresReauth, temporarilyUnavailable, capabilitySyncStatus } =
+      await getTwitchRewards(session.twitchUserId);
+
+    if (capabilitySyncStatus) {
+      await recordChannelPointsApiFailure(session.twitchUserId, capabilitySyncStatus);
+    }
+    let accessState = await getChannelPointsAccessState(session.twitchUserId);
+
+    // #788 子E #793 Fableレビュー Major-2: Twitch APIが実際に200で成功したにもかかわらず、
+    // 保存済みcapabilityが古いunavailable/reauth_required/unknownのままだと、報酬一覧は
+    // 正常に返るのにUIが「利用不可」エラーを表示し続けてしまう（オンボーディング完了後の
+    // 自己回復手段が手動再判定しかない状態）。実際の200成功を根拠にavailableへ回復させる。
+    // 既にavailableなら無駄な書き込みをしない。
+    if (!capabilitySyncStatus && !requiresReauth && !temporarilyUnavailable && accessState?.capability !== "available") {
+      // Fableレビュー Major-B: この自己回復はあくまで補助的な同期であり、
+      // 失敗（デプロイ窓・maintenance中の書き込み不可等）してもTwitchから実際に
+      // 取得できた報酬一覧を返すレスポンス自体を巻き込んではならない
+      // （401/403同期のrecordChannelPointsApiFailureと同じ「握りつぶす」方針に揃える）。
+      try {
+        await persistChannelPointsCapability(session.twitchUserId, {
+          capability: "available",
+          reason: "ok",
+          httpStatus: 200,
+          definitive: true,
+        });
+        accessState = await getChannelPointsAccessState(session.twitchUserId);
+      } catch (error) {
+        logger.warn("Channel Point Bootstrap API: failed to self-heal capability to available (ignored)", {
+          twitchUserId: session.twitchUserId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     const responsePayload: Record<string, unknown> = {
       hasRequiredScope: true,
       rewards,
       requiresReauth,
-      error,
+      temporarilyUnavailable: temporarilyUnavailable === true,
+      capability: accessState?.capability ?? "unknown",
+      capabilityCheckedAt: accessState?.checkedAt ?? null,
     };
 
     if (diagnostics && !requiresReauth) {

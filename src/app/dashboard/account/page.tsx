@@ -8,6 +8,7 @@ import { LanguageSwitcherSettings } from "@/components/LanguageSwitcher";
 import VoteCampaignReshowSetting from "@/components/VoteCampaignReshowSetting";
 import SupportPlanSection from "@/components/SupportPlanSection";
 import TwitchSubCheckSection from "@/components/TwitchSubCheckSection";
+import ChannelPointsAccessSection from "@/components/ChannelPointsAccessSection";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -79,6 +80,12 @@ export default async function AccountSettingsPage() {
         {/* Twitchサブスク確認セクション */}
         <TwitchSubCheckSection
           initialHasSub={twitchSubInfo?.twitch_has_sub === true}
+        />
+
+        {/* Channel Points利用可否確認・非Affiliate向け配信者機能オプトイン (#788) */}
+        <ChannelPointsAccessSection
+          broadcasterType={session.broadcasterType}
+          initialEnabled={session.channelPointsEnabled === true}
         />
       </div>
     </div>

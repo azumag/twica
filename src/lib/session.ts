@@ -70,7 +70,11 @@ export const getSession = cache(async (): Promise<Session | null> => {
 
 export function canUseStreamerFeatures(session: Session | null): boolean {
   if (!session) return false
-  return session.broadcasterType === BROADCASTER_TYPE.AFFILIATE || session.broadcasterType === BROADCASTER_TYPE.PARTNER
+  return session.broadcasterType === BROADCASTER_TYPE.AFFILIATE
+    || session.broadcasterType === BROADCASTER_TYPE.PARTNER
+    // #788: 非Affiliateユーザーが明示的にtwica配信者機能を有効化した場合も配信者扱いにする。
+    // 旧Cookie（フィールド無し）はundefined→falseとなり、既存挙動を維持する。
+    || session.channelPointsEnabled === true
 }
 
 export async function clearSession(): Promise<void> {

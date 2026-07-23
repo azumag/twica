@@ -4,6 +4,7 @@ import { POST } from '@/app/api/auth/reauth/route'
 import { getSession } from '@/lib/session'
 import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
 import { validateCSRFToken } from '@/lib/csrf'
+import { COOKIE_NAMES } from '@/lib/constants'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/csrf', () => ({
@@ -57,6 +58,19 @@ function createRequest(additionalScopes: string[]): NextRequest {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ additionalScopes }),
+  })
+}
+
+// #788 子C #791: returnTo単体、またはadditionalScopesとの組み合わせを
+// リクエストボディで自由に指定するためのヘルパー（上のcreateRequestは
+// additionalScopes専用のため、既存テストへの影響を避けて別関数にする）。
+function createRequestWithBody(body: Record<string, unknown>): NextRequest {
+  return new NextRequest('http://localhost:3000/api/auth/reauth', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
   })
 }
 
@@ -243,5 +257,92 @@ describe('POST /api/auth/reauth scope merge', () => {
     const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
     expect(getTwitchAuthUrl).not.toHaveBeenCalled()
     expect(mockDeleteTwitchTokens).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /api/auth/reauth returnTo cookie (#788 子C #791)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+
+    mockGetSession.mockResolvedValue({
+      twitchUserId: '123456789',
+      twitchUsername: 'test-user',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/avatar.png',
+      broadcasterType: 'affiliate',
+      expiresAt: Date.now() + 60_000,
+      version: 1,
+    })
+    mockDeleteTwitchTokens.mockResolvedValue()
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
+
+    const { checkRateLimit, getRateLimitIdentifier } = await import('@/lib/rate-limit')
+    vi.mocked(checkRateLimit).mockResolvedValue({
+      success: true,
+      limit: 5,
+      remaining: 4,
+      reset: Date.now() + 60_000,
+    })
+    vi.mocked(getRateLimitIdentifier).mockResolvedValue('user:123456789')
+
+    // 既定: 既存の追加スコープなし（このdescribeの関心はreturnToであり、
+    // スコープ保持ロジックは上のdescribeで既にカバー済みのため単純化する）
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(
+      mockUserScopesQuery({ data: { twitch_scopes: [] }, error: null }) as any
+    )
+  })
+
+  it('returnToが/で始まる相対パスの場合、RETURN_TOクッキーにその値を設定する', async () => {
+    const response = await POST(createRequestWithBody({ returnTo: '/dashboard/account' }))
+
+    expect(response.status).toBe(200)
+    expect(response.cookies.get(COOKIE_NAMES.RETURN_TO)?.value).toBe('/dashboard/account')
+  })
+
+  it('returnToが絶対URLの場合、RETURN_TOクッキーは設定されない（オープンリダイレクト対策）', async () => {
+    const response = await POST(createRequestWithBody({ returnTo: 'https://evil.example.com/x' }))
+
+    expect(response.status).toBe(200)
+    expect(response.cookies.get(COOKIE_NAMES.RETURN_TO)).toBeUndefined()
+  })
+
+  it('returnToがプロトコル相対URL(//で開始)の場合、RETURN_TOクッキーは設定されない（オープンリダイレクト対策）', async () => {
+    const response = await POST(createRequestWithBody({ returnTo: '//evil.example.com' }))
+
+    expect(response.status).toBe(200)
+    expect(response.cookies.get(COOKIE_NAMES.RETURN_TO)).toBeUndefined()
+  })
+
+  it('returnToを省略した場合、RETURN_TOクッキーは設定されず、既存の挙動のまま完了する', async () => {
+    const response = await POST(createRequest(['user:read:subscriptions']))
+
+    expect(response.status).toBe(200)
+    expect(response.cookies.get(COOKIE_NAMES.RETURN_TO)).toBeUndefined()
+  })
+
+  it('returnToとadditionalScopesを同時に指定した場合、スコープ処理とcookie設定の両方が行われる', async () => {
+    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
+    vi.mocked(getSupabaseAdmin).mockReturnValue(
+      mockUserScopesQuery({
+        data: { twitch_scopes: ['user:write:chat'] },
+        error: null,
+      }) as any
+    )
+
+    const response = await POST(
+      createRequestWithBody({ additionalScopes: ['user:read:subscriptions'], returnTo: '/dashboard/account' })
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.cookies.get(COOKIE_NAMES.RETURN_TO)?.value).toBe('/dashboard/account')
+
+    const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
+    expect(getTwitchAuthUrl).toHaveBeenCalledWith(
+      'https://example.com/api/auth/twitch/callback',
+      'fixed-state',
+      ['user:write:chat', 'user:read:subscriptions']
+    )
+    expect(mockDeleteTwitchTokens).toHaveBeenCalledWith('123456789')
   })
 })
