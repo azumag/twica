@@ -8,7 +8,12 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode, executeBatchUpdateCardDropRatesRpcPg } from "@/lib/recalculate-drop-rates";
 import { logger } from "@/lib/logger";
+import { and, eq, inArray } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
 import { isPgWriteEnabled } from "@/lib/db/flags";
+import { withDbRetry } from "@/lib/db/retry";
+import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
+import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 /**
@@ -19,6 +24,102 @@ interface DropRateUpdate {
   id: string;
   dropRate: number;
   intraRarityWeight?: number;
+}
+
+interface StreamerForBatchUpdate {
+  id: string;
+  rarity_weights: Record<string, number> | null;
+}
+
+/**
+ * Issue #794: DB_DRIVER=pg のとき、所有権確認も更新RPCと同じPlanetScaleで行う。
+ * 既存PostgREST経路はエラーを明示処理せず data=null → 403 に倒すため、
+ * pg経路も取得失敗時はnullを返して外部挙動を揃える。
+ */
+async function fetchStreamerForBatchUpdatePg(
+  streamerId: string,
+  twitchUserId: string
+): Promise<StreamerForBatchUpdate | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamersTable.id,
+            rarity_weights: streamersTable.rarity_weights,
+          })
+          .from(streamersTable)
+          .where(
+            and(
+              eq(streamersTable.id, streamerId),
+              eq(streamersTable.twitch_user_id, twitchUserId)
+            )
+          )
+          .limit(1);
+      },
+      "Cards Batch Update API: streamer ownership check(pg)",
+      { idempotent: true }
+    );
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Issue #794: 更新対象カードの存在確認もPlanetScale上の同じスナップショットで行う。
+ */
+async function fetchExistingCardsForBatchUpdatePg(
+  streamerId: string,
+  cardIds: string[]
+): Promise<Array<{ id: string }> | null> {
+  try {
+    return await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ id: cardsTable.id })
+          .from(cardsTable)
+          .where(
+            and(
+              eq(cardsTable.streamer_id, streamerId),
+              inArray(cardsTable.id, cardIds)
+            )
+          );
+      },
+      "Cards Batch Update API: existing cards check(pg)",
+      { idempotent: true }
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Issue #794: 更新後レスポンスもPlanetScaleから取得する。
+ * 無指定selectは本番未デプロイ列を要求しうるためCARDS_SAFE_COLUMNSを使う。
+ */
+async function fetchUpdatedCardsForBatchUpdatePg(
+  streamerId: string,
+  cardIds: string[]
+) {
+  return withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select(CARDS_SAFE_COLUMNS)
+        .from(cardsTable)
+        .where(
+          and(
+            eq(cardsTable.streamer_id, streamerId),
+            inArray(cardsTable.id, cardIds)
+          )
+        );
+    },
+    "Cards Batch Update API: fetch updated cards(pg)",
+    { idempotent: true }
+  );
 }
 
 /**
@@ -104,14 +205,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Issue #794: 読み取り・RPC更新・更新後取得を同じDBへ揃える。
+    // pg-read は書き込みがPostgRESTのままなので従来経路を維持する。
+    const pgWriteEnabled = isPgWriteEnabled();
+
     // Verify streamer owns this streamer profile
     // 配信者がこのstreamerプロフィールを所有しているか確認
-    const { data: streamer } = await supabaseAdmin
-      .from("streamers")
-      .select("id, rarity_weights")
-      .eq("id", streamerId)
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
+    let streamer: StreamerForBatchUpdate | null;
+    if (pgWriteEnabled) {
+      streamer = await fetchStreamerForBatchUpdatePg(streamerId, session.twitchUserId);
+    } else {
+      const result = await supabaseAdmin
+        .from("streamers")
+        .select("id, rarity_weights")
+        .eq("id", streamerId)
+        .eq("twitch_user_id", session.twitchUserId)
+        .maybeSingle();
+      streamer = result.data as StreamerForBatchUpdate | null;
+    }
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
@@ -156,11 +267,18 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const { data: existingCards } = await supabaseAdmin
-      .from("cards")
-      .select("id")
-      .eq("streamer_id", streamerId)
-      .in("id", cardIds);
+
+    let existingCards: Array<{ id: string }> | null;
+    if (pgWriteEnabled) {
+      existingCards = await fetchExistingCardsForBatchUpdatePg(streamerId, cardIds);
+    } else {
+      const result = await supabaseAdmin
+        .from("cards")
+        .select("id")
+        .eq("streamer_id", streamerId)
+        .in("id", cardIds);
+      existingCards = result.data as Array<{ id: string }> | null;
+    }
 
     if (!existingCards || existingCards.length !== cardIds.length) {
       return NextResponse.json(
@@ -183,7 +301,7 @@ export async function POST(request: NextRequest) {
     // #573: isPgWriteEnabled() のときだけ pg 直結経路へ分岐する。pg 側の { data, error }
     // 正規化は recalculate-drop-rates.ts の executeBatchUpdateCardDropRatesRpcPg を
     // 共有する(同じ RPC を呼ぶ実装を2箇所に重複させない。doc コメント参照)。
-    const { data: rpcResult, error: rpcError } = isPgWriteEnabled()
+    const { data: rpcResult, error: rpcError } = pgWriteEnabled
       ? await executeBatchUpdateCardDropRatesRpcPg(streamerId, rpcPayload)
       : await supabaseAdmin.rpc(
           "batch_update_card_drop_rates",
@@ -224,14 +342,24 @@ export async function POST(request: NextRequest) {
 
     // 更新後のカードデータを取得して返す
     // 再計算済みの場合はそちらを優先
-    const { data: updatedCards, error: fetchError } = await supabaseAdmin
-      .from("cards")
-      .select()
-      .eq("streamer_id", streamerId)
-      .in("id", cardIds);
+    let updatedCards;
+    if (pgWriteEnabled) {
+      try {
+        updatedCards = await fetchUpdatedCardsForBatchUpdatePg(streamerId, cardIds);
+      } catch (fetchError) {
+        return handleDatabaseError(fetchError, "Cards Batch Update API: Failed to fetch updated cards");
+      }
+    } else {
+      const { data, error: fetchError } = await supabaseAdmin
+        .from("cards")
+        .select()
+        .eq("streamer_id", streamerId)
+        .in("id", cardIds);
 
-    if (fetchError) {
-      return handleDatabaseError(fetchError, "Cards Batch Update API: Failed to fetch updated cards");
+      if (fetchError) {
+        return handleDatabaseError(fetchError, "Cards Batch Update API: Failed to fetch updated cards");
+      }
+      updatedCards = data;
     }
 
     return NextResponse.json({
