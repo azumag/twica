@@ -159,10 +159,13 @@ export default function ChannelPointSettings({
       }
 
       setNeedsReauth(false);
-      if (data.error === "affiliateRequired") {
-        setError(t("messages.affiliateRequired"));
-      } else if (data.error) {
-        setError(t("messages.fetchFailed"));
+      // #788: 旧affiliateRequired文字列契約をCapability状態ベースの契約へ置き換える。
+      // 403(Twitch側の利用不可)はcapability==="unavailable"、429/5xx等の一時失敗は
+      // temporarilyUnavailableで区別し、それぞれ別の文言・再試行導線を表示する。
+      if (data.capability === "unavailable") {
+        setError(t("messages.channelPointsUnavailable"));
+      } else if (data.temporarilyUnavailable) {
+        setError(t("messages.temporarilyUnavailable"));
       }
       setRewards(Array.isArray(data.rewards) ? data.rewards : []);
 

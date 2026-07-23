@@ -23,6 +23,7 @@ import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
 } from "@/lib/db/schema";
+import { getChannelPointsAccessState, recordChannelPointsApiFailure } from "@/lib/twitch/channel-points-access";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -45,7 +46,17 @@ function isRaidStateSchemaError(error: { message?: string; code?: string } | nul
     || message.includes("raid_gacha_draw_count");
 }
 
-async function getTwitchRewards(twitchUserId: string): Promise<{ rewards: TwitchReward[]; requiresReauth?: boolean; error?: string }> {
+interface TwitchRewardsResult {
+  rewards: TwitchReward[];
+  requiresReauth?: boolean;
+  // Twitch APIが一時的に失敗した（429/5xx/その他非2xx）ことを示す。
+  // #788: この場合は保存済みcapability確定状態を破壊しない。
+  temporarilyUnavailable?: boolean;
+  // 401/403を受けた場合のみ設定。呼び出し元がDB確定状態を同期するために使う。
+  capabilitySyncStatus?: 401 | 403;
+}
+
+async function getTwitchRewards(twitchUserId: string): Promise<TwitchRewardsResult> {
   const accessToken = await getTwitchAccessToken(twitchUserId);
   if (!accessToken) {
     return { rewards: [], requiresReauth: true };
@@ -62,15 +73,19 @@ async function getTwitchRewards(twitchUserId: string): Promise<{ rewards: Twitch
   );
 
   if (response.status === 401) {
-    return { rewards: [], requiresReauth: true };
+    return { rewards: [], requiresReauth: true, capabilitySyncStatus: 401 };
   }
 
+  // #788: 403を「Affiliateではない」固定文言(旧affiliateRequired契約)ではなく、
+  // Capability状態ベースの契約へ置き換える。呼び出し元がDBのcapabilityを
+  // unavailableへ同期する。
   if (response.status === 403) {
-    return { rewards: [], error: "affiliateRequired" };
+    return { rewards: [], capabilitySyncStatus: 403 };
   }
 
   if (!response.ok) {
-    return { rewards: [], error: "fetchFailed" };
+    // 429/5xx等の一時失敗。DB確定状態は破壊しない。
+    return { rewards: [], temporarilyUnavailable: true };
   }
 
   const data = await response.json();
@@ -402,19 +417,31 @@ export async function GET(request: NextRequest) {
     );
 
     if (!hasRequiredScope) {
+      const accessState = await getChannelPointsAccessState(session.twitchUserId);
       return NextResponse.json({
         hasRequiredScope: false,
         rewards: [],
         requiresReauth: true,
+        capability: accessState?.capability ?? "unknown",
+        capabilityCheckedAt: accessState?.checkedAt ?? null,
       });
     }
 
-    const { rewards, requiresReauth, error } = await getTwitchRewards(session.twitchUserId);
+    const { rewards, requiresReauth, temporarilyUnavailable, capabilitySyncStatus } =
+      await getTwitchRewards(session.twitchUserId);
+
+    if (capabilitySyncStatus) {
+      await recordChannelPointsApiFailure(session.twitchUserId, capabilitySyncStatus);
+    }
+    const accessState = await getChannelPointsAccessState(session.twitchUserId);
+
     const responsePayload: Record<string, unknown> = {
       hasRequiredScope: true,
       rewards,
       requiresReauth,
-      error,
+      temporarilyUnavailable: temporarilyUnavailable === true,
+      capability: accessState?.capability ?? "unknown",
+      capabilityCheckedAt: accessState?.checkedAt ?? null,
     };
 
     if (diagnostics && !requiresReauth) {

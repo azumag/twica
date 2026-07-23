@@ -586,7 +586,6 @@
       "mainRewardDesc": "Choose the channel point redemption that triggers card draws, and the card pack it draws from."
     },
     "messages": {
-      "affiliateRequired": "You must be a Twitch Affiliate or Partner to use channel points.",
       "rateLimit": "Too many requests. Please wait and try again.",
       "fetchFailed": "Failed to fetch redemptions. Please log in again.",
       "rewardCreated": "Redemption created",
@@ -596,7 +595,9 @@
       "saveSuccess": "Saved (EventSub registration complete)",
       "eventsubFailed": "Settings saved, but EventSub registration failed. Please verify the URL is accessible externally.",
       "scopeRequired": "To enable the Channel Points integration, please grant Twitch permission to read and manage your channel point redemptions.",
-      "reauthorizeFailed": "Re-authentication failed. Please try again later."
+      "reauthorizeFailed": "Re-authentication failed. Please try again later.",
+      "channelPointsUnavailable": "Channel Points are not currently available on Twitch for this channel. Please check your monetization onboarding and Channel Points settings in the Twitch Creator Dashboard.",
+      "temporarilyUnavailable": "Temporarily unable to check with Twitch. Please try again shortly."
     },
     "form": {
       "selectReward": "Select the channel point redemption that triggers card draws",
@@ -1040,7 +1041,8 @@
     "dashboard": "Dashboard",
     "userSettings": "User Settings",
     "logout": "Logout",
-    "announcements": "Announcements"
+    "announcements": "Announcements",
+    "streamerBadge": "Streamer"
   },
   "accountPage": {
     "title": "User Settings",
@@ -1316,6 +1318,46 @@
       "checkFailed": "Check failed. Please try again later.",
       "reauthorizeFailed": "Re-authorization failed.",
       "networkError": "A network error occurred."
+    }
+  },
+  "channelPointsAccess": {
+    "title": "Channel Points / Streamer Features",
+    "description": "Check whether Channel Points are available on Twitch for your channel, and explicitly enable twica's streamer features even if you're not a Twitch Affiliate.",
+    "loading": "Loading status...",
+    "affiliate": {
+      "message": "You already have access to streamer features as a Twitch Affiliate/Partner."
+    },
+    "reauth": {
+      "message": "Checking Channel Points availability requires additional Twitch permission.",
+      "button": "Re-link with Twitch to check",
+      "buttonLoading": "Redirecting..."
+    },
+    "checking": {
+      "message": "Checking with Twitch..."
+    },
+    "available": {
+      "message": "We confirmed Channel Points are available on Twitch for your channel.",
+      "enableDescription": "Enabling this unlocks card management, overlays, and reward settings.",
+      "enableButton": "Enable streamer features on twica",
+      "enableButtonLoading": "Enabling..."
+    },
+    "enabled": {
+      "message": "Streamer features are enabled.",
+      "settingsLink": "Open streaming settings"
+    },
+    "unavailable": {
+      "message": "Channel Points are not currently available on Twitch for this channel. Please check your monetization onboarding and Channel Points settings in the Twitch Creator Dashboard.",
+      "recheckButton": "Recheck"
+    },
+    "unknown": {
+      "message": "Temporarily unable to check with Twitch. Your saved status has not changed.",
+      "retryButton": "Retry"
+    },
+    "capabilityLostWarning": "Channel Points actions require re-authorization or a recheck. Your streaming settings remain accessible.",
+    "messages": {
+      "enableSuccess": "Streamer features have been enabled.",
+      "enableFailed": "Failed to enable. Please try again later.",
+      "genericError": "An error occurred. Please try again later."
     }
   }
 }

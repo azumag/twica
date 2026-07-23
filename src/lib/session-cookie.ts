@@ -10,6 +10,10 @@ export interface SessionPayload {
   expiresAt: number // Unix timestamp (milliseconds)
   csrfTokenHash?: string
   version: number // Optimistic locking
+  // #788: 非Affiliateユーザーがtwica配信者機能を明示的に有効化したかのセッションミラー。
+  // DBが正本、これはアクセス判定用の高速な署名済みミラー。後方互換のためoptional。
+  // 未定義の旧Cookieはfalse相当として扱う（canUseStreamerFeatures参照）。
+  channelPointsEnabled?: boolean
 }
 
 interface VerifySessionOptions {
@@ -84,6 +88,10 @@ export function parseSession(raw: string): SessionPayload {
     }
     if (parsed.version > Number.MAX_SAFE_INTEGER) {
       throw new Error('Invalid session: version exceeds maximum safe integer value')
+    }
+    // channelPointsEnabledはoptional（旧Cookieには存在しない）。存在する場合のみ型検証する。
+    if (parsed.channelPointsEnabled !== undefined && typeof parsed.channelPointsEnabled !== 'boolean') {
+      throw new Error('Invalid session: channelPointsEnabled must be a boolean')
     }
 
     return parsed as SessionPayload

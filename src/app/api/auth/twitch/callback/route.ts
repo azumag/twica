@@ -24,6 +24,8 @@ import { getDb } from '@/lib/db/client'
 import { isPgReadEnabled, isPgWriteEnabled } from '@/lib/db/flags'
 import { withDbRetry } from '@/lib/db/retry'
 import { streamers as streamersTable, users as usersTable } from '@/lib/db/schema'
+import { probeChannelPointsCapability } from '@/lib/twitch/channel-points'
+import { persistChannelPointsCapability } from '@/lib/twitch/channel-points-access'
 
 interface AuthCallbackDriverError {
   code?: string
@@ -180,6 +182,34 @@ async function upsertAuthStreamerPg(payload: {
  * 継続するため、この極めて稀なケース（クエリは成功するが行取得だけ失敗する状況）
  * でのみ挙動が異なる。安全側にしか倒れないため許容する。
  */
+/**
+ * channel_points_enabled フラグ単独読み取りの pg 直結実装 (#788 子C #791)。
+ *
+ * 意図的に users upsert / 他の読み取りから独立させている（Fable設計レビュー
+ * Critical-1）: このフラグ読み取りが users upsert に混ざっていると、
+ * migration未適用のデプロイ窓で列が存在せず upsert 自体が失敗し、
+ * affiliate/partnerを含む全ユーザーのログインが壊れてしまう。呼び出し元は
+ * このクエリのあらゆる失敗（列未適用の42703を含む）を catch し、false へ
+ * フォールバックしてログインを継続させる。
+ */
+async function fetchChannelPointsEnabledFlagPg(twitchUserId: string): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+      const { db } = await getDb()
+      return db
+        .select({ channel_points_enabled: usersTable.channel_points_enabled })
+        .from(usersTable)
+        .where(eq(usersTable.twitch_user_id, twitchUserId))
+        .limit(1)
+    },
+    'auth callback(channel points enabled flag)',
+    // 読み取り専用クエリのため冪等（リトライ可）
+    { idempotent: true }
+  )
+  return rows[0]?.channel_points_enabled === true
+}
+
 async function fetchTosAcceptedPg(twitchUserId: string): Promise<{ tos_accepted_at: string | null } | null> {
   const rows = await withDbRetry(
     async () => {
@@ -542,6 +572,54 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // #788 子C #791: channel_points_enabled フラグを独立読み取りし、セッションへミラーする。
+    // users upsertには混ぜない（Critical-1、fetchChannelPointsEnabledFlagPgのdocコメント参照）。
+    // あらゆる失敗（新列未適用の42703/PGRST204を含む）でfalseへフォールバックし、
+    // ログイン自体は継続する。
+    let channelPointsEnabled = false
+    try {
+      if (isPgReadEnabled()) {
+        channelPointsEnabled = await fetchChannelPointsEnabledFlagPg(twitchUser.id)
+      } else {
+        const { data: cpUser, error: cpError } = await supabaseAdmin
+          .from('users')
+          .select('channel_points_enabled')
+          .eq('twitch_user_id', twitchUser.id)
+          .maybeSingle()
+        if (cpError) throw cpError
+        channelPointsEnabled = cpUser?.channel_points_enabled === true
+      }
+    } catch (error) {
+      logger.warn('Auth callback: Failed to read channel_points_enabled flag (falling back to false)', {
+        twitchUserId: twitchUser.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      channelPointsEnabled = false
+    }
+
+    // #788 子C #791: step-up再認証直後（isReauthFlow）でChannel Pointsスコープを
+    // 新たに取得した場合のみCapability Probeを自動実行する。毎ログインでは実行しない
+    // （stale再判定の責務はアカウント設定UIの自動POSTに置く。Fable設計レビュー2回目 Major）。
+    // definitiveな結果のみ保存し、ログイン自体は失敗させない。
+    if (isReauthFlow && tokens.scope) {
+      const hasChannelPointsScope =
+        tokens.scope.includes(ADDITIONAL_SCOPES.CHANNEL_READ_REDEMPTIONS) ||
+        tokens.scope.includes(ADDITIONAL_SCOPES.CHANNEL_MANAGE_REDEMPTIONS)
+      if (hasChannelPointsScope) {
+        try {
+          const probeResult = await probeChannelPointsCapability(twitchUser.id)
+          if (probeResult.definitive) {
+            await persistChannelPointsCapability(twitchUser.id, probeResult)
+          }
+        } catch (error) {
+          logger.warn('Auth callback: Channel Points capability probe failed (ignored, login continues)', {
+            twitchUserId: twitchUser.id,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+    }
+
     // Set session cookie with user info only (no tokens - Supabase Auth handles tokens)
     const sessionData = JSON.stringify({
       twitchUserId: twitchUser.id,
@@ -551,6 +629,7 @@ export async function GET(request: NextRequest) {
       broadcasterType: twitchUser.broadcaster_type,
       expiresAt: Date.now() + SESSION_CONFIG.MAX_AGE_MS,
       version: 1,
+      channelPointsEnabled,
     })
 
     // Log session data size for debugging

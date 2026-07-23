@@ -11,6 +11,7 @@ import { validateCSRFToken } from "@/lib/csrf";
 // 解消）。このファイルは DB_DRIVER フラグや getDb 等の pg 直結モジュールを直接
 // 参照しない（ヘルパー内部に閉じる）。
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
+import { recordChannelPointsApiFailure } from "@/lib/twitch/channel-points-access";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -399,6 +400,11 @@ export async function POST(request: NextRequest) {
 
     if (!subscribeResponse.ok) {
       const error = await subscribeResponse.json();
+
+      // #788 子E #793: 401/403はDBのcapability確定状態を同期する。
+      if (subscribeResponse.status === 401 || subscribeResponse.status === 403) {
+        await recordChannelPointsApiFailure(session.twitchUserId, subscribeResponse.status);
+      }
 
       // 409 Conflict: サブスクリプションが既に存在する場合
       // 既存のサブスクリプションを取得して返す

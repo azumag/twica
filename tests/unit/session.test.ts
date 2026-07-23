@@ -169,6 +169,98 @@ describe('parseSession', () => {
     const session = parseSession(JSON.stringify(validSession))
     expect(session.version).toBe(Number.MAX_SAFE_INTEGER)
   })
+
+  it('should parse successfully when channelPointsEnabled is absent (legacy cookie) and leave it undefined', () => {
+    const legacySession = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: 'affiliate',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1
+    }
+
+    const session = parseSession(JSON.stringify(legacySession))
+    expect(session.channelPointsEnabled).toBeUndefined()
+  })
+
+  it('should preserve channelPointsEnabled: true', () => {
+    const validSession = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: true
+    }
+
+    const session = parseSession(JSON.stringify(validSession))
+    expect(session.channelPointsEnabled).toBe(true)
+  })
+
+  it('should preserve channelPointsEnabled: false', () => {
+    const validSession = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: false
+    }
+
+    const session = parseSession(JSON.stringify(validSession))
+    expect(session.channelPointsEnabled).toBe(false)
+  })
+
+  it('should throw error if channelPointsEnabled is a string instead of a boolean', () => {
+    const invalidSession = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: 'true'
+    }
+
+    expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('channelPointsEnabled must be a boolean')
+  })
+
+  it('should throw error if channelPointsEnabled is a number instead of a boolean', () => {
+    const invalidSession = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: 1
+    }
+
+    expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('channelPointsEnabled must be a boolean')
+  })
+
+  it('should throw error if channelPointsEnabled is null', () => {
+    const invalidSession = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: null
+    }
+
+    expect(() => parseSession(JSON.stringify(invalidSession))).toThrow('channelPointsEnabled must be a boolean')
+  })
 })
 
 describe('canUseStreamerFeatures', () => {
@@ -216,6 +308,80 @@ describe('canUseStreamerFeatures', () => {
 
   it('should return false for null session', () => {
     expect(canUseStreamerFeatures(null)).toBe(false)
+  })
+
+  it('should return true for affiliate broadcaster even when channelPointsEnabled is false', () => {
+    const session: Session = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: 'affiliate',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: false
+    }
+
+    expect(canUseStreamerFeatures(session)).toBe(true)
+  })
+
+  it('should return true for partner broadcaster even when channelPointsEnabled is false', () => {
+    const session: Session = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: 'partner',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: false
+    }
+
+    expect(canUseStreamerFeatures(session)).toBe(true)
+  })
+
+  it('should return true for non-affiliate broadcaster who explicitly opted in via channelPointsEnabled', () => {
+    const session: Session = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: true
+    }
+
+    expect(canUseStreamerFeatures(session)).toBe(true)
+  })
+
+  it('should return false for non-affiliate broadcaster with channelPointsEnabled explicitly false', () => {
+    const session: Session = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1,
+      channelPointsEnabled: false
+    }
+
+    expect(canUseStreamerFeatures(session)).toBe(false)
+  })
+
+  it('should return false for non-affiliate broadcaster with channelPointsEnabled omitted (legacy session)', () => {
+    const session: Session = {
+      twitchUserId: '12345',
+      twitchUsername: 'testuser',
+      twitchDisplayName: 'Test User',
+      twitchProfileImageUrl: 'https://example.com/image.png',
+      broadcasterType: '',
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      version: 1
+    }
+
+    expect(canUseStreamerFeatures(session)).toBe(false)
   })
 })
 

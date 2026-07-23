@@ -88,9 +88,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 })
     }
 
-    // リクエストボディから追加スコープを取得（オプション）
-    // Get additional scopes from request body (optional)
+    // リクエストボディから追加スコープ・returnToを取得（オプション）
+    // Get additional scopes and returnTo from request body (optional)
     let requestedScopes: string[] = []
+    // #788 子C #791: アカウント設定からのstep-up再認証がcallback後に同じページへ
+    // 戻れるよう、任意のreturnToを受け付ける。login/route.tsの既存パターン
+    // （'/'始まり・'//'非始まりの同一origin相対パスのみ許可）を踏襲する。
+    let returnTo: string | undefined
     try {
       const body = await request.json()
       if (body.additionalScopes && Array.isArray(body.additionalScopes)) {
@@ -99,6 +103,13 @@ export async function POST(request: Request) {
         requestedScopes = body.additionalScopes.filter((scope: string) =>
           VALID_ADDITIONAL_SCOPES.includes(scope)
         )
+      }
+      if (
+        typeof body.returnTo === 'string' &&
+        body.returnTo.startsWith('/') &&
+        !body.returnTo.startsWith('//')
+      ) {
+        returnTo = body.returnTo
       }
     } catch {
       // JSONパースエラーは無視（ボディが空の場合も含む）
@@ -168,6 +179,12 @@ export async function POST(request: Request) {
     // callbackで再認証フローを識別するためにstateを保存
     // Store state marker so callback can identify re-auth flow
     response.cookies.set(COOKIE_NAMES.REAUTH_STATE, state, STATE_COOKIE_OPTIONS)
+
+    // #788 子C #791: returnToが指定されていればcallback後の戻り先としてserver-side設定する
+    // （clientがdocument.cookieを直接書く方式は取らない）
+    if (returnTo) {
+      response.cookies.set(COOKIE_NAMES.RETURN_TO, returnTo, STATE_COOKIE_OPTIONS)
+    }
 
     return response
   } catch (error) {

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { getTranslations } from "next-intl/server";
-import { getSession } from "@/lib/session";
+import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { LogoutButton } from "@/components/LogoutButton";
 
 interface HeaderProps {
@@ -19,7 +19,9 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
   const t = await getTranslations("header");
   if (!session) return null;
 
-  const isStreamer = session.broadcasterType === "partner" || session.broadcasterType === "affiliate";
+  // #788: 非Affiliateユーザーが明示的にtwica配信者機能を有効化した場合もisStreamerに含める。
+  // broadcasterTypeの直接比較ではなく、共通判定helperを使う（子E #793監査対象）。
+  const isStreamer = canUseStreamerFeatures(session);
 
   return (
     <header className="border-b border-gray-800 bg-gray-900/95 backdrop-blur">
@@ -49,10 +51,11 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
             <span className="max-w-[80px] truncate text-sm text-white sm:hidden">
               {session.twitchDisplayName}
             </span>
-            {/* broadcaster type バッジ - PCのみ表示 */}
+            {/* 配信者バッジ - PCのみ表示。broadcasterTypeが空(非Affiliateオプトイン)の
+                場合に空文字を表示しないよう、常にi18n済みラベルを使う。 */}
             {isStreamer && (
               <span className="hidden rounded bg-purple-600 px-2 py-0.5 text-xs text-white sm:inline">
-                {session.broadcasterType}
+                {session.broadcasterType || t("streamerBadge")}
               </span>
             )}
           </div>

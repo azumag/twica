@@ -53,6 +53,24 @@ vi.mock('@/lib/twitch/token-manager', () => ({
 vi.mock('@/lib/supabase/admin', () => ({
   getSupabaseAdmin: vi.fn(),
 }))
+// #788: capability probe の永続化状態を読む/書くヘルパー。このテストファイルは
+// getOwnedStreamer/getAdditionalRewards のドライバ分岐（postgrest vs pg）だけを
+// 検証対象としており、capability state 自体の pg/postgrest 分岐は
+// channel-points-access.ts 側の責務（別途ユニットテストで検証）。ここをモックせず
+// 実装のまま呼ばせると、GET ハンドラが必ず呼ぶ getChannelPointsAccessState が
+// 「users」テーブル/クエリを追加で叩いてしまい、このファイルが検証したい
+// streamers/streamer_additional_gacha_rewards への呼び出し回数・実引数の
+// アサーションを汚染する（db.select 呼び出し回数が streamers/rewards 分の
+// 期待値からズレる等）。モジュール全体を固定値でモックすることでpg/postgrest
+// 分岐を問わず一定の応答を返させ、本来の検証対象に集中させる。
+vi.mock('@/lib/twitch/channel-points-access', () => ({
+  getChannelPointsAccessState: vi.fn().mockResolvedValue({
+    capability: 'unknown',
+    checkedAt: null,
+    enabled: false,
+  }),
+  recordChannelPointsApiFailure: vi.fn().mockResolvedValue(undefined),
+}))
 // handleApiError/handleDatabaseError → logAndRecordError → logErrorFromLogger は
 // 既定で getSupabaseAdmin() 経由の "errors" テーブル書き込みを行う（DB_DRIVER 移行
 // とは無関係な既存のエラーロギング基盤）。ここではその副作用を排除し、

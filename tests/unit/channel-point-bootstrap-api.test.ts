@@ -20,6 +20,20 @@ vi.mock('@/lib/twitch/token-manager', () => ({
 vi.mock('@/lib/supabase/admin', () => ({
   getSupabaseAdmin: vi.fn(),
 }))
+// #788: GET ハンドラは早期returnも含め常に getChannelPointsAccessState を呼ぶため、
+// このモジュールをモックしないと未モックの実装（users テーブルへの
+// supabase-js/pgクエリ）が走ってしまい、このファイルが検証したい
+// hasRequiredScope/rewards/diagnostics周りの挙動と無関係な失敗を招く。
+// デフォルトは capability: 'unknown' とし、capability/temporarilyUnavailable の
+// 挙動そのものを検証するテストではケースごとに mockResolvedValueOnce で上書きする。
+vi.mock('@/lib/twitch/channel-points-access', () => ({
+  getChannelPointsAccessState: vi.fn().mockResolvedValue({
+    capability: 'unknown',
+    checkedAt: null,
+    enabled: false,
+  }),
+  recordChannelPointsApiFailure: vi.fn().mockResolvedValue(undefined),
+}))
 
 const session = {
   twitchUserId: 'streamer-1',
@@ -54,6 +68,7 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
 
   it('scope不足ならTwitch rewardsを呼ばずreauthを返す', async () => {
     const { hasScope } = await import('@/lib/twitch/token-manager')
+    const { getChannelPointsAccessState } = await import('@/lib/twitch/channel-points-access')
     vi.mocked(hasScope).mockResolvedValue(false)
 
     const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
@@ -62,6 +77,10 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
 
     expect(body).toMatchObject({ hasRequiredScope: false, rewards: [], requiresReauth: true })
     expect(global.fetch).not.toHaveBeenCalled()
+    // #788: scope不足の早期returnでもcapability状態を読み、レスポンスへ含める
+    expect(getChannelPointsAccessState).toHaveBeenCalledWith('streamer-1')
+    expect(body.capability).toBe('unknown')
+    expect(body.capabilityCheckedAt).toBeNull()
   })
 
   it('diagnostics=0ではscope確認とrewards取得だけを返す', async () => {
@@ -135,5 +154,74 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
     expect(body.raidEventSubStatus).toBe('active')
     expect(body.additionalRewards).toHaveLength(1)
     expect(body.raidGiftDrawCount).toBe(3)
+  })
+
+  // #788: Capability Probe導入に伴い、旧 error: "affiliateRequired" /
+  // "fetchFailed" 契約を廃止し、capability / temporarilyUnavailable ベースの
+  // 契約へ置き換えた（route.ts のgetTwitchRewards・GETハンドラ参照）。
+  // 以下はその新契約の3ケース（403/401/一時失敗）を検証する。
+  it('Twitch 403応答時はrecordChannelPointsApiFailure(403)を呼びcapabilityが最新のDB確定状態を返す（error: affiliateRequiredは返さない）', async () => {
+    const { hasScope, getTwitchAccessToken } = await import('@/lib/twitch/token-manager')
+    const { getChannelPointsAccessState, recordChannelPointsApiFailure } =
+      await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockResolvedValue('token-1')
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Forbidden' }), { status: 403 }) as any
+    )
+    // recordChannelPointsApiFailure(403)がDBへ永続化した後の状態を模す
+    // （route は recordChannelPointsApiFailure 呼び出し後に再度状態を読み直す）
+    vi.mocked(getChannelPointsAccessState).mockResolvedValueOnce({
+      capability: 'unavailable',
+      checkedAt: '2026-07-23T00:00:00.000Z',
+      enabled: false,
+    })
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+    const body = await response.json()
+
+    expect(recordChannelPointsApiFailure).toHaveBeenCalledWith('streamer-1', 403)
+    expect(body.capability).toBe('unavailable')
+    expect(body.capabilityCheckedAt).toBe('2026-07-23T00:00:00.000Z')
+    expect(body.rewards).toEqual([])
+    expect(body.error).toBeUndefined()
+  })
+
+  it('Twitch 401応答時はrecordChannelPointsApiFailure(401)を呼びrequiresReauth:trueを返す', async () => {
+    const { hasScope, getTwitchAccessToken } = await import('@/lib/twitch/token-manager')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockResolvedValue('token-1')
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 401 }) as any
+    )
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+    const body = await response.json()
+
+    expect(recordChannelPointsApiFailure).toHaveBeenCalledWith('streamer-1', 401)
+    expect(body.requiresReauth).toBe(true)
+    expect(body.rewards).toEqual([])
+  })
+
+  it('Twitch 429/5xx等の一時失敗ではtemporarilyUnavailable:trueを返しDB確定状態は破壊しない(recordChannelPointsApiFailure未呼び出し)', async () => {
+    const { hasScope, getTwitchAccessToken } = await import('@/lib/twitch/token-manager')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockResolvedValue('token-1')
+    // 429/5xxはどちらも「非401/403の非2xx」という同一分岐（!response.ok）を通る
+    // ため、代表として429のみ検証する。
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Too Many Requests' }), { status: 429 }) as any
+    )
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+    const body = await response.json()
+
+    expect(body.temporarilyUnavailable).toBe(true)
+    expect(recordChannelPointsApiFailure).not.toHaveBeenCalled()
   })
 })
