@@ -1,15 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { createClientMock } = vi.hoisted(() => ({
-  createClientMock: vi.fn(),
-}))
-
 // tests/setup.ts mocks the compatibility client for legacy parity tests. This
-// file deliberately loads the production lazy implementation instead.
+// file deliberately loads the production retired facade instead.
 vi.unmock('@/lib/supabase/admin')
-vi.mock('@supabase/supabase-js', () => ({
-  createClient: createClientMock,
-}))
 
 import {
   getDbDriverMode,
@@ -76,20 +69,18 @@ describe('full Supabase shutdown runtime', () => {
     expect(validateEnvVars()).toEqual({ valid: true, missing: [] })
   })
 
-  it('may construct dormant admin handles without resolving credentials or the SDK', () => {
+  it('constructs dormant admin handles without credentials, SDK construction, or I/O', () => {
     expect(() => getSupabaseAdmin()).not.toThrow()
     expect(() => getSupabaseAdminNoCache()).not.toThrow()
-    expect(createClientMock).not.toHaveBeenCalled()
   })
 
-  it('fails loudly if a leaked compatibility query actually tries to use Supabase', () => {
+  it('fails loudly if a leaked compatibility query actually tries to use the retired path', () => {
     expect(() => getSupabaseAdmin().from).toThrow(
-      '[supabase] Legacy runtime access is disabled'
+      '[supabase] Retired runtime path accessed'
     )
-    expect(createClientMock).not.toHaveBeenCalled()
   })
 
-  it('allows the retired route only under an explicit compatibility gate', () => {
+  it('allows legacy flag parsing only for test compatibility', () => {
     vi.stubEnv('TWICA_ENABLE_LEGACY_SUPABASE', 'true')
     vi.stubEnv('DB_DRIVER', 'postgrest')
     vi.stubEnv('GACHA_DB_DRIVER', 'postgrest')
