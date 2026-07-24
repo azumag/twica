@@ -118,7 +118,7 @@ describe('OverlayPage', () => {
     ).toBe(false)
   })
 
-  it('RealtimeのN連ガチャを全カード表示し、効果音は一度だけ再生する', async () => {
+  it('ページ分割されたRealtimeのN連を全表示し、soundGroupの効果音は一度だけ再生する', async () => {
     vi.useFakeTimers()
 
     const playMock = vi.fn().mockResolvedValue(undefined)
@@ -168,8 +168,15 @@ describe('OverlayPage', () => {
       onGachaResult?.({
         type: 'gacha',
         card: cards[0],
-        cards,
+        cards: cards.slice(0, 2),
         userTwitchUsername: 'Viewer',
+        soundGroupId: 'batch-split',
+      })
+      onGachaResult?.({
+        type: 'gacha',
+        card: cards[2],
+        userTwitchUsername: 'Viewer',
+        soundGroupId: 'batch-split',
       })
     })
 

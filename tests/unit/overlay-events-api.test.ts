@@ -1,50 +1,119 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { and, asc, eq, gt, or } from "drizzle-orm";
 import { GET } from "@/app/api/overlay/[streamerId]/events/route";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { createMockQueryBuilder } from "../utils/supabase-mock";
+import { getDb } from "@/lib/db/client";
+import {
+  gachaHistory as gachaHistoryTable,
+  cards as cardsTable,
+} from "@/lib/db/schema";
 
 vi.mock("@/lib/rate-limit");
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 vi.mock("@/lib/sentry/error-handler", () => ({
   reportError: vi.fn(),
   reportApiError: vi.fn(),
   logErrorFromLogger: vi.fn(),
 }));
 
+const STREAMER_ID = "123e4567-e89b-42d3-a456-426614174000";
+const SINCE = "2026-01-01T00:00:00.000Z";
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 
-function createRequest(streamerId: string, params: Record<string, string> = {}): NextRequest {
-  const url = new URL(`http://localhost/api/overlay/${streamerId}/events`);
+interface QueryCall {
+  fields: Record<string, unknown>;
+  fromTable?: unknown;
+  joinTable?: unknown;
+  joinCondition?: unknown;
+  whereCondition?: unknown;
+  orderByConditions?: unknown[];
+  limitValue?: number;
+}
+
+/**
+ * Drizzle の fluent chain を記録し、選択列だけを fixture から射影する。
+ * 実装が reward_id を選び忘れた場合や、streamer 条件・複合カーソル・上限を
+ * 変更した場合にレスポンスだけでなくクエリ契約のテストも失敗する。
+ */
+function createDbMock(
+  responses: Array<{ rows?: Record<string, unknown>[]; error?: unknown }>
+) {
+  let responseIndex = 0;
+  const calls: QueryCall[] = [];
+  const select = vi.fn((fields: Record<string, unknown>) => {
+    const call: QueryCall = { fields };
+    calls.push(call);
+    const builder = {
+      from(table: unknown) {
+        call.fromTable = table;
+        return builder;
+      },
+      leftJoin(table: unknown, condition: unknown) {
+        call.joinTable = table;
+        call.joinCondition = condition;
+        return builder;
+      },
+      where(condition: unknown) {
+        call.whereCondition = condition;
+        return builder;
+      },
+      orderBy(...conditions: unknown[]) {
+        call.orderByConditions = conditions;
+        return builder;
+      },
+      limit(limit: number) {
+        call.limitValue = limit;
+        const response =
+          responses[Math.min(responseIndex, responses.length - 1)];
+        responseIndex += 1;
+        if (response.error) return Promise.reject(response.error);
+        return Promise.resolve(
+          (response.rows ?? []).map((row) =>
+            Object.fromEntries(
+              Object.keys(fields).map((key) => [key, row[key]])
+            )
+          )
+        );
+      },
+    };
+    return builder;
+  });
+  return { select, calls };
+}
+
+function useRows(rows: Record<string, unknown>[]) {
+  const db = createDbMock([{ rows }]);
+  vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as never);
+  return db;
+}
+
+function createRequest(params: Record<string, string> = {}): NextRequest {
+  const url = new URL(
+    `http://localhost/api/overlay/${STREAMER_ID}/events`
+  );
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }
   return new NextRequest(url);
 }
 
-function createRouteParams(streamerId: string) {
+function routeParams(streamerId = STREAMER_ID) {
   return { params: Promise.resolve({ streamerId }) };
 }
 
-/** gacha_history クエリの共通モック生成。thenableにしてawait対応 */
-function createHistoryQuery(response: { data: unknown; error: unknown }) {
-  const q = createMockQueryBuilder();
-  (q as unknown as Record<string, unknown>).then = (resolve: (value: unknown) => void) => {
-    resolve(response);
-    return q;
-  };
-  return q;
-}
+const DISPLAY_ROW = {
+  id: "history-1",
+  event_id: "event-1",
+  redeemed_at: "2026-01-01T00:00:01.000Z",
+  user_twitch_username: "viewer",
+  reward_id: "reward-1",
+  card_id: "card-1",
+  card_name: "Card",
+  card_description: null,
+  card_image_url: null,
+  card_rarity: "rare",
+};
 
-// Issue #591: gacha_history.reward_id (migration 00070) がポーリング経路の
-// レスポンスに正しく反映されること、および列未デプロイ時のデプロイ窓フォール
-// バックを検証する。
 describe("GET /api/overlay/[streamerId]/events", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -52,224 +121,211 @@ describe("GET /api/overlay/[streamerId]/events", () => {
       success: true,
       limit: 120,
       remaining: 119,
-      reset: Date.now() + 60000,
-    });
-  });
-
-  it("returns 400 when since is missing/invalid", async () => {
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
-
-    const res = await GET(createRequest("streamer-1"), createRouteParams("streamer-1"));
-    expect(res.status).toBe(400);
-  });
-
-  it("reward_id列の値をrewardIdとしてそのまま返す(Issue #591)", async () => {
-    const historyQuery = createHistoryQuery({
-      data: [
-        {
-          id: "h1",
-          event_id: "event-1",
-          redeemed_at: "2026-01-01T00:00:01Z",
-          user_twitch_username: "viewer1",
-          reward_id: "reward-abc",
-          cards: { id: "c1", name: "Card1", description: null, image_url: null, rarity: "rare" },
-        },
-      ],
-      error: null,
-    });
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => historyQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
-
-    const res = await GET(
-      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
-      createRouteParams("streamer-1")
-    );
-
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.events).toHaveLength(1);
-    expect(body.events[0].rewardId).toBe("reward-abc");
-  });
-
-  it("reward_idがnullの行はrewardId: nullを返す(レイドガチャ等)", async () => {
-    const historyQuery = createHistoryQuery({
-      data: [
-        {
-          id: "h2",
-          event_id: null,
-          redeemed_at: "2026-01-01T00:00:02Z",
-          user_twitch_username: "viewer2",
-          reward_id: null,
-          cards: { id: "c2", name: "Card2", description: null, image_url: null, rarity: "common" },
-        },
-      ],
-      error: null,
-    });
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => historyQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
-
-    const res = await GET(
-      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
-      createRouteParams("streamer-1")
-    );
-
-    const body = await res.json();
-    expect(body.events[0].rewardId).toBeNull();
-  });
-
-  it("reward_id列未デプロイ時(42703)は列無しSELECTへフォールバックしrewardId: nullを返す(デプロイ窓, Issue #591)", async () => {
-    const failingQuery = createHistoryQuery({
-      data: null,
-      error: { message: "column gacha_history.reward_id does not exist", code: "42703" },
-    });
-    const fallbackQuery = createHistoryQuery({
-      data: [
-        {
-          id: "h3",
-          event_id: "event-3",
-          redeemed_at: "2026-01-01T00:00:03Z",
-          user_twitch_username: "viewer3",
-          cards: { id: "c3", name: "Card3", description: null, image_url: null, rarity: "epic" },
-        },
-      ],
-      error: null,
-    });
-
-    const fromMock = vi.fn((table: string) => {
-      if (table !== "gacha_history") return createMockQueryBuilder();
-      return fromMock.mock.calls.filter(([name]) => name === "gacha_history").length === 1
-        ? failingQuery
-        : fallbackQuery;
-    });
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: fromMock,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
-
-    const res = await GET(
-      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
-      createRouteParams("streamer-1")
-    );
-
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.events).toHaveLength(1);
-    expect(body.events[0].rewardId).toBeNull();
-    expect(fromMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("列未デプロイ以外のDBエラーはフォールバックせず500を返す", async () => {
-    const failingQuery = createHistoryQuery({
-      data: null,
-      error: { message: "connection reset", code: "08006" },
-    });
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => failingQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
-
-    const res = await GET(
-      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
-      createRouteParams("streamer-1")
-    );
-
-    expect(res.status).toBe(500);
-  });
-});
-
-// Issue #569: overlay のバージョン不一致検出＋アイドル時自動リロード機構向けに、
-// ポーリング応答へ overlayVersion を追加したことを検証する。
-describe("GET /api/overlay/[streamerId]/events: overlayVersion (Issue #569)", () => {
-  const originalOverlayVersion = process.env.NEXT_PUBLIC_OVERLAY_VERSION;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCheckRateLimit.mockResolvedValue({
-      success: true,
-      limit: 120,
-      remaining: 119,
-      reset: Date.now() + 60000,
+      reset: Math.floor(Date.now() / 1000) + 60,
     });
   });
 
   afterEach(() => {
-    // 他のテストファイル/テストへ影響しないよう、テスト前の値へ必ず戻す
-    if (originalOverlayVersion !== undefined) {
-      process.env.NEXT_PUBLIC_OVERLAY_VERSION = originalOverlayVersion;
-    } else {
-      delete process.env.NEXT_PUBLIC_OVERLAY_VERSION;
-    }
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
-  it("NEXT_PUBLIC_OVERLAY_VERSION未設定時はoverlayVersion: 'dev'を返す", async () => {
-    delete process.env.NEXT_PUBLIC_OVERLAY_VERSION;
-
-    const historyQuery = createHistoryQuery({ data: [], error: null });
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => historyQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
-
-    const res = await GET(
-      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
-      createRouteParams("streamer-1")
+  it("不正な streamer、since、afterId をDB接続前に拒否する", async () => {
+    const invalidStreamer = await GET(
+      createRequest({ since: SINCE }),
+      routeParams("not-a-uuid")
+    );
+    const missingSince = await GET(createRequest(), routeParams());
+    const invalidAfterId = await GET(
+      createRequest({
+        since: SINCE,
+        afterId: "bad),streamer_id.eq.other",
+      }),
+      routeParams()
     );
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.overlayVersion).toBe("dev");
+    expect(invalidStreamer.status).toBe(400);
+    expect(missingSince.status).toBe(400);
+    expect(invalidAfterId.status).toBe(400);
+    expect(getDb).not.toHaveBeenCalled();
   });
 
-  it("NEXT_PUBLIC_OVERLAY_VERSION設定時はその値をoverlayVersionとして返す", async () => {
-    process.env.NEXT_PUBLIC_OVERLAY_VERSION = "abc123def456";
-
-    const historyQuery = createHistoryQuery({ data: [], error: null });
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => historyQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
-
-    const res = await GET(
-      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
-      createRouteParams("streamer-1")
-    );
-
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.overlayVersion).toBe("abc123def456");
-  });
-
-  it("events配列を含む応答でもoverlayVersionが同居する(既存フィールドとの後方互換)", async () => {
-    process.env.NEXT_PUBLIC_OVERLAY_VERSION = "v-test";
-
-    const historyQuery = createHistoryQuery({
-      data: [
-        {
-          id: "h1",
-          event_id: "event-1",
-          redeemed_at: "2026-01-01T00:00:01Z",
-          user_twitch_username: "viewer1",
-          reward_id: null,
-          cards: { id: "c1", name: "Card1", description: null, image_url: null, rarity: "rare" },
-        },
-      ],
-      error: null,
+  it("rate limitの本文とheadersを維持しDBへ接続しない", async () => {
+    mockCheckRateLimit.mockResolvedValue({
+      success: false,
+      limit: 120,
+      remaining: 0,
+      reset: Math.floor(Date.now() / 1000) + 30,
     });
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => historyQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
 
-    const res = await GET(
-      createRequest("streamer-1", { since: "2026-01-01T00:00:00Z" }),
-      createRouteParams("streamer-1")
+    const response = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body).toMatchObject({ error: expect.any(String) });
+    expect(response.headers.get("X-RateLimit-Limit")).toBe("120");
+    expect(response.headers.get("X-RateLimit-Remaining")).toBe("0");
+    expect(getDb).not.toHaveBeenCalled();
+  });
+
+  it("legacy応答でreward_idとカードを返し、非表示tailまでcursorを進める", async () => {
+    const missingCardTail = {
+      ...DISPLAY_ROW,
+      id: "history-2",
+      event_id: "event-2",
+      redeemed_at: "2026-01-01T00:00:02.000Z",
+      card_id: null,
+      card_name: null,
+      card_rarity: null,
+    };
+    useRows([DISPLAY_ROW, missingCardTail]);
+
+    const response = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.events).toEqual([
+      {
+        id: "history-1",
+        eventId: "event-1",
+        redeemedAt: "2026-01-01T00:00:01.000Z",
+        userTwitchUsername: "viewer",
+        rewardId: "reward-1",
+        card: {
+          id: "card-1",
+          name: "Card",
+          description: null,
+          image_url: null,
+          rarity: "rare",
+        },
+      },
+    ]);
+    expect(body.nextCursor).toEqual({
+      redeemedAt: missingCardTail.redeemed_at,
+      historyId: missingCardTail.id,
+    });
+    expect(body.realtimeEvents).toBeUndefined();
+  });
+
+  it("V1応答と同一timestamp用の複合cursor条件を返す", async () => {
+    const afterId = "123e4567-e89b-42d3-a456-426614174001";
+    const db = useRows([DISPLAY_ROW]);
+
+    const response = await GET(
+      createRequest({ since: SINCE, afterId, contract: "v1" }),
+      routeParams()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(db.calls[0].whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+        or(
+          gt(gachaHistoryTable.redeemed_at, SINCE),
+          and(
+            eq(gachaHistoryTable.redeemed_at, SINCE),
+            gt(gachaHistoryTable.id, afterId)
+          )
+        )
+      )
+    );
+    expect(body.events).toBeUndefined();
+    expect(body.realtimeEvents[0]).toMatchObject({
+      schemaVersion: 1,
+      eventId: "event-1",
+      streamerId: STREAMER_ID,
+      soundGroupId: "event-1",
+    });
+  });
+
+  it("PlanetScale queryが必要列・join・安定順・bounded limitを使う", async () => {
+    const db = useRows([]);
+
+    const response = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
     );
 
-    const body = await res.json();
-    expect(body.overlayVersion).toBe("v-test");
-    expect(body.events).toHaveLength(1);
+    expect(response.status).toBe(200);
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.fields.reward_id).toBe(gachaHistoryTable.reward_id);
+    expect(call.fromTable).toBe(gachaHistoryTable);
+    expect(call.joinTable).toBe(cardsTable);
+    expect(call.joinCondition).toEqual(
+      eq(gachaHistoryTable.card_id, cardsTable.id)
+    );
+    expect(call.whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+        gt(gachaHistoryTable.redeemed_at, SINCE)
+      )
+    );
+    expect(call.orderByConditions).toEqual([
+      asc(gachaHistoryTable.redeemed_at),
+      asc(gachaHistoryTable.id),
+    ]);
+    expect(call.limitValue).toBe(100);
+  });
+
+  it("恒久DBエラーを既存Database error envelopeで返す", async () => {
+    const db = createDbMock([
+      { error: { code: "42601", message: "syntax error" } },
+    ]);
+    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as never);
+
+    const response = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "Database error",
+    });
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("一時DB障害は1回だけ再試行して打ち切る", async () => {
+    vi.useFakeTimers();
+    const db = createDbMock([
+      { error: { code: "08006", message: "connection reset" } },
+    ]);
+    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as never);
+
+    const responsePromise = GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+    await vi.runAllTimersAsync();
+    const response = await responsePromise;
+
+    expect(response.status).toBe(500);
+    expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("空配列とoverlayVersionの後方互換を維持する", async () => {
+    vi.stubEnv("NEXT_PUBLIC_OVERLAY_VERSION", "v-test");
+    useRows([]);
+
+    const response = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      events: [],
+      nextCursor: null,
+      overlayVersion: "v-test",
+    });
   });
 });

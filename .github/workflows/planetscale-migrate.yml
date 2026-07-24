@@ -1,9 +1,9 @@
-# PlanetScale Production Migration Workflow
-# PlanetScale本番マイグレーションWorkflow
+# PlanetScale Migration Workflow
+# PlanetScaleマイグレーションWorkflow
 #
-# 本番の実DB（PlanetScale、issue #699でcutover済み）へ scripts/db-migrate.js で
-# migrationを自動適用する。production・main ブランチのみが対象（preview はまだ
-# PlanetScale 未cutoverのため対象外。cutoverしたら preview 向けの同種workflowを追加する）。
+# main/production（issue #699）と preview/preview（issue #803）の実DBは
+# PlanetScaleへcutover済みである。ブランチとGitHub Environmentを1対1で対応させ、
+# `scripts/db-migrate.js`で同じmigrationを各論理DBへ順序どおり適用する。
 #
 # 【なぜ deploy-cloudflare.yml に同居させず、別ファイルに分離しているか（重要）】
 # GitHub Actionsのconcurrencyは「同じgroup名を持つ別runが来たら、そのrun全体をキャンセルする」
@@ -13,7 +13,7 @@
 # 「別runの同名jobどうしの調停」であって「自runがキャンセルされることへの盾」ではない）。
 # `deploy-cloudflare.yml` は `concurrency: { group: deploy-${{ github.ref }},
 # cancel-in-progress: true }` を持つため、本番migrationジョブを同じファイル内に置くと、
-# main への連続pushで実行中のmigrationジョブごと強制終了されうる（claude-reviewで
+# main/preview への連続pushで実行中のmigrationジョブごと強制終了されうる（claude-reviewで
 # 実際に指摘された）。本番PlanetScaleへ書き込み中のプロセスが中断されると、
 # 通常のトランザクション内migrationはコネクション切断で自動rollbackされ安全だが、
 # 将来 `migration-transaction: forbidden`（`CREATE INDEX CONCURRENTLY`等、
@@ -22,9 +22,8 @@
 # concurrencyグループがdeploy-cloudflare.ymlのそれと完全に独立するため、この事故は
 # 構造的に発生しなくなる。
 #
-# Applies `scripts/db-migrate.js apply --provider=planetscale` against production's
-# live DB (PlanetScale, cut over in issue #699) on every push to main. Preview is
-# excluded (not yet cut over).
+# Applies `scripts/db-migrate.js apply --provider=planetscale` against the
+# branch-matched PlanetScale logical database on every push to main or preview.
 #
 # Kept in its own file rather than as a job in deploy-cloudflare.yml because GitHub
 # Actions concurrency cancellation operates at the run level: a workflow-level
@@ -34,9 +33,9 @@
 # it provides no protection against the enclosing run itself being cancelled. Since
 # `deploy-cloudflare.yml` has `concurrency: { group: deploy-${{ github.ref }},
 # cancel-in-progress: true }`, co-locating this job there would let rapid consecutive
-# pushes to main kill an in-progress production migration mid-flight (flagged by
-# claude-review). A separate file gives this workflow its own independent concurrency
-# scope, eliminating that risk structurally.
+# pushes kill an in-progress migration mid-flight (flagged by claude-review).
+# A separate file gives this workflow its own independent concurrency scope,
+# eliminating that risk structurally for both logical databases.
 #
 # 初回有効化前に一度だけ、既存migrationを「実行せず履歴登録のみ」する手動bootstrapが
 # 必要。詳細・手順は `docs/planetscale-schema-baseline.md` の
@@ -72,35 +71,40 @@
 # issue #800 で追跡している。
 #
 # Prerequisites / 前提条件:
-# - GitHub Environment "production" に Secret `PLANETSCALE_DATABASE_URL`
-#   （PlanetScale本番Postgresへの直接接続文字列。migration専用、Hyperdrive経由の
-#   アプリ実行時接続とは別物）を設定すること。
+# - GitHub Environment "production" / "preview" の双方に
+#   Secret `PLANETSCALE_DATABASE_URL` を設定すること。各値は同名Environmentに対応する
+#   PlanetScale論理DBへの直接接続文字列であり、Hyperdrive経由のruntime接続とは別物。
+# - 両DBともbaseline bootstrap済みであること。未実施の場合はfresh-applyガードが
+#   全件誤適用を拒否するが、workflowは失敗する。
 
-name: PlanetScale Production Migrations
+name: PlanetScale Migrations
 
 on:
   push:
-    branches: [main]
+    branches: [main, preview]
 
-  # 手動再実行用（例: 一時的な接続エラーからのリトライ）。
-  # このworkflowは常にproduction/mainのみを対象とするため、
-  # deploy-cloudflare.ymlのような環境選択インプットは不要。
+  # 手動再実行ではGitHub UIでmainまたはpreviewのrefを選ぶ。Environmentを別inputで
+  # 選ばせると「previewコード + production secret」のような危険な組合せを作れるため、
+  # 対象Environmentは常にGITHUB_REFから機械的に導出する。
   workflow_dispatch: {}
 
 # このworkflow専用の独立したconcurrencyグループ。cancel-in-progress: false により、
-# main への連続pushがあっても、先行のmigration runが完走するまで後続はキューで待つ
+# 同一ブランチへの連続pushがあっても、先行のmigration runが完走するまで後続はキューで待つ
 # （キャンセルしない）。deploy-cloudflare.ymlのconcurrencyグループとは名前・スコープとも
-# 完全に独立している（ファイル冒頭コメント参照）。
+# 完全に独立し、main/previewはrefを含むgroup名によって互いにも干渉しない。
 concurrency:
   group: planetscale-migrate-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   planetscale-migrations:
+    # workflow_dispatchは任意refを選べる。feature branchをjob開始前に拒否し、
+    # production/preview Environment secretをそのコードへ一切公開しない。
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    environment: production
+    environment: ${{ github.ref == 'refs/heads/preview' && 'preview' || 'production' }}
     # pg_advisory_lock（scripts/db-migrate.js）はロック取得までブロックする。
     # 手動bootstrap作業との時間的重複等でロックが解放されない場合に備え、
     # GitHub Actionsのデフォルトタイムアウト(6時間)に張り付き続けないよう上限を設ける。
@@ -120,18 +124,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # push トリガーは branches: [main] で既に限定されているが、workflow_dispatch は
-      # GitHub UI上で任意のブランチ/refを選んで手動実行できてしまうため、既存の
-      # Supabase migrations ステップ（deploy-cloudflare.yml）と同じ流儀で実行時ガードも
-      # 入れる（本番DBへのmigration適用はerror-reporter再デプロイ等より破壊的なため、
-      # trigger設定という単一の防御層に頼らない）。
+      # job-level ifに加えstep内でもrefを検証する多重防御。将来job条件が編集されても、
+      # main/preview以外のコードからmigration-capable secretを使ったDDLを実行させない。
+      # apply後のverifyで履歴checksumとdisk上migrationの不一致も同じrun内で検出する。
       - name: Apply PlanetScale migrations
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::PlanetScale production migrations are only allowed from the main branch"
+          if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/preview" ]; then
+            echo "::error::PlanetScale migrations are only allowed from main or preview"
             exit 1
           fi
           node scripts/db-migrate.js apply --provider=planetscale
+          node scripts/db-migrate.js verify --provider=planetscale
         env:
           DATABASE_URL: ${{ secrets.PLANETSCALE_DATABASE_URL }}
           MIGRATION_APPLIED_BY: github-actions[${{ github.run_id }}]

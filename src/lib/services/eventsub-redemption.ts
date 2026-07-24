@@ -22,7 +22,7 @@ import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin"
 import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
-import { broadcastGachaResult } from "@/lib/realtime";
+import { publishCommittedGachaBatch } from "@/lib/overlay-realtime/publisher";
 import { logger } from "@/lib/logger";
 import { reportError } from "@/lib/sentry/error-handler";
 import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
@@ -31,6 +31,8 @@ import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolvePackDisplayName } from "@/lib/collection-packs";
+import { runInBackground } from "@/lib/background-task";
+export { runInBackground } from "@/lib/background-task";
 // #573: チャット通知プレースホルダ用 get_user_card_counts（読み取り専用 RPC）の
 // pg 直結分岐用。フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに
 // 一切入らないため、import が存在するだけでは挙動に影響しない(#570 の設計。
@@ -182,34 +184,6 @@ export function findNewCardNamesForCurrentDraw(
   return newCardNames;
 }
 
-/**
- * Cloudflare Workers の waitUntil() でレスポンス返却後にバックグラウンド実行し、
- * ローカル開発等 waitUntil が使えない環境では同期フォールバックする共通ヘルパー。
- * ガチャ成功・レイド成功・売り切れ通知(Issue #544/#546)の3箇所で同一パターンが
- * 必要なため、重複を避けてここに集約する。
- *
- * `task` は呼び出し時点で既に開始済みの Promise を渡すこと（この関数自身は
- * 処理を起動しない）。waitUntil に登録できればそのまま非同期に流れ、登録できない
- * 環境（ローカル開発等）では task の完了を待ってから返る。
- *
- * Run `task` in the background via Cloudflare Workers' waitUntil() so it executes
- * after the response is returned. Falls back to awaiting synchronously when
- * waitUntil is unavailable (e.g. local dev). Shared across the 3 call sites that
- * need this exact pattern (gacha success, raid success, sold-out notification).
- */
-export async function runInBackground(label: string, task: Promise<void>): Promise<void> {
-  try {
-    const { getCloudflareContext } = await import('@opennextjs/cloudflare');
-    const { ctx } = await getCloudflareContext({ async: true });
-    ctx.waitUntil(task);
-  } catch (e) {
-    logger.warn(`[EventSub] waitUntil unavailable (${label}), falling back to sync`, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-    await task;
-  }
-}
-
 export async function handleRaidNotification(messageId: string, event: {
   from_broadcaster_user_id?: string;
   from_broadcaster_user_login?: string;
@@ -300,6 +274,7 @@ export async function handleRaidNotification(messageId: string, event: {
       broadcasterTwitchUserId: toBroadcasterUserId,
       streamer,
       userId: fromBroadcasterUserId,
+      batchId: messageId,
     },
     retryable: false,
   };
@@ -320,6 +295,8 @@ export interface RedemptionNotifyData {
   broadcasterTwitchUserId: string;
   streamer: EventSubStreamerInfo;
   userId: string;
+  /** gacha_history.event_id の1枚目と一致するEventSub message ID。 */
+  batchId: string;
 }
 
 /**
@@ -355,7 +332,8 @@ export interface RedemptionOutcome {
 export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
   const results = await Promise.allSettled([
     // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
-    broadcastGachaResult(data.streamer.id, data.gachaResult, {
+    publishCommittedGachaBatch(data.streamer.id, data.gachaResult, {
+      batchId: data.batchId,
       maxRetries: 1,
       retryDelay: 500,
     }),
@@ -371,8 +349,8 @@ export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<
   ]);
 
   // 通知失敗をログ出力 + エラー追跡
-  // Note: broadcastGachaResult (i=0) は内部でリトライし失敗時も throw しない設計 (Issue #359-#365)
-  // そのため broadcast は 'rejected' にならず、失敗ログは broadcastGachaResult 内で warn として出力される
+  // Note: publishCommittedGachaBatch (i=0) は失敗を結果へ閉じ込め、polling回収へ
+  // 委ねる設計のため rejected にならない。詳細はpublisher側の構造化warnで追跡する。
   // chatAnnouncement (i=1) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
@@ -704,6 +682,7 @@ export async function handleRedemption(messageId: string, event: {
         broadcasterTwitchUserId: event.broadcaster_user_id,
         streamer,
         userId: event.user_id,
+        batchId: messageId,
       },
       retryable: false,
     };

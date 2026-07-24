@@ -241,7 +241,10 @@ export async function POST(request: Request) {
           twitchUserId: session.twitchUserId,
           code: persistError.code,
           message: persistError.message,
-          supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+          // 接続先 URL は秘密情報に近い運用データであり、ログへ出す必要がない。
+          // また停止済み Supabase の環境変数を診断目的だけで参照すると、将来の
+          // 削除ガードをすり抜けるため、選択された抽象ドライバー名だけを残す。
+          databaseDriver: isPgWriteEnabled() ? 'pg' : 'retired-postgrest',
         })
       } else {
         logger.error('[TwitchSub] Failed to persist subscription result:', {

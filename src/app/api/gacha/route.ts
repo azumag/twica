@@ -7,7 +7,9 @@ import { setUserContext, setRequestContext } from "@/lib/sentry/user-context";
 import { GACHA_COST, ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
-import { broadcastGachaResult, GachaBroadcastPayload } from "@/lib/realtime";
+import type { GachaBroadcastPayload } from "@/lib/realtime";
+import { publishCommittedGachaBatch } from "@/lib/overlay-realtime/publisher";
+import { runInBackground } from "@/lib/background-task";
 import { logger } from "@/lib/logger";
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import type { GachaSuccessResponse, GachaErrorResponse, ApiRateLimitResponse } from "@/types/api";
@@ -150,8 +152,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ガチャ成功時、オーバーレイにリアルタイム通知を送信
-    // Broadcast gacha result to overlay via Supabase Realtime
+    // ガチャ成功時、確定済み履歴を基にDurable Objectへ即時通知する。
+    // PlanetScale pollingも同じ履歴を読むため、即時通知失敗時も欠落しない。
     const payload: GachaBroadcastPayload = {
       type: "gacha",
       card: {
@@ -164,10 +166,14 @@ export async function POST(request: NextRequest) {
       userTwitchUsername: result.data.userTwitchUsername,
     };
 
-    // broadcastGachaResult は内部でリトライし、失敗時も throw しない設計
-    // （OBSオーバーレイへの通知のみで、ガチャ処理の成否に影響しないため Issue #359-#365）
-    // 失敗ログは broadcastGachaResult 内で warn として出力される
-    await broadcastGachaResult(streamerId, payload);
+    // DB commit後のevent_id/history_idを再読込してversioned envelopeを構築する。
+    // 即時通知が失敗してもPlanetScale pollingが回収するため、ガチャ成否は変えない。
+    await runInBackground(
+      'manual gacha realtime publish',
+      publishCommittedGachaBatch(streamerId, payload, {
+        batchId: manualDrawEventId,
+      })
+    );
     logger.info(`Gacha result broadcast attempted for streamer ${streamerId}`);
 
     return NextResponse.json<GachaSuccessResponse>({

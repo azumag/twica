@@ -39,6 +39,11 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // `server-only` is a Next.js compile-time boundary marker and has no
+      // browser/runtime implementation for Vite to resolve. Alias only inside
+      // Vitest so tests can import server modules while production keeps the
+      // real marker import and Next.js still rejects accidental client usage.
+      'server-only': path.resolve(__dirname, './tests/stubs/server-only.ts'),
     },
   },
 })

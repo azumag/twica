@@ -1,80 +1,21 @@
 # Cloudflare Workers Deployment Workflow
 # Cloudflare Workersデプロイメントワークフロー
 #
-# GitHub Actions always applies Supabase migrations from the existing GitHub
-# Environment secrets. Legacy app deploys run here until Cloudflare Workers
-# Builds is enabled. After setting the repository variable
-# CLOUDFLARE_WORKERS_BUILDS_ENABLED=true, app deploys are handled by Cloudflare
-# and this workflow keeps migrations plus the auxiliary error-reporter Worker.
+# Database migrations intentionally run in the independent
+# `planetscale-migrate.yml` workflow. Keeping DDL outside this workflow prevents
+# its `cancel-in-progress: true` deployment policy from terminating a migration
+# mid-flight. This workflow therefore owns only application/auxiliary-worker
+# deployment and remains usable after every Supabase secret is removed.
 #
-# Cloudflare Workers Builds に切り替えるまでは、OpenNext（@opennextjs/cloudflare）
-# を使用して Next.js アプリを GitHub Actions からデプロイする。
-# リポジトリ変数 CLOUDFLARE_WORKERS_BUILDS_ENABLED=true を設定した後は、
-# アプリ本体のデプロイは Cloudflare 側で行い、この workflow はマイグレーションと
-# 補助 Worker を扱う。
-#
-# Supabase migrations are applied automatically via `supabase db push --db-url`
-# before the build step. Each GitHub Environment holds its own SUPABASE_DB_URL.
-# Supabase マイグレーションは `supabase db push --db-url` でビルド前に自動適用される。
-# 各 GitHub Environment に SUPABASE_DB_URL を設定すること。
-#
-# Production の実DBは issue #699 で PlanetScale (Postgres互換) へ cutover 済みのため、
-# `supabase db push` は rollback用に温存している旧Supabase本番へのみ適用される。実際に
-# アプリが読み書きする本番PlanetScaleへは、別ファイル
-# `.github/workflows/planetscale-migrate.yml` が
-# `scripts/db-migrate.js apply --provider=planetscale` を自動実行する
-# （production・main ブランチのみ。preview はまだ PlanetScale 未cutoverのため対象外）。
-# このworkflowとは別ファイルに分離している（なぜ別ファイルかの理由も含め）詳細は
-# `planetscale-migrate.yml` 冒頭のコメントを参照。初回有効化前に一度だけ手動での
-# bootstrap 登録が必要。詳細・手順は `docs/planetscale-schema-baseline.md` の
-# 「issue #788・CI自動化に伴う追記」節を参照。
-#
-# Production's live DB was cut over from Supabase to PlanetScale (Postgres-compatible)
-# in issue #699, so `supabase db push` now only reaches the retained (rollback-only)
-# legacy Supabase production DB. A separate workflow file,
-# `.github/workflows/planetscale-migrate.yml`, applies
-# `scripts/db-migrate.js apply --provider=planetscale` against the actual production
-# DB on every push to main (preview is not yet cut over, so it's excluded). See that
-# file's header comment for why it's kept separate. A one-time manual bootstrap
-# registration is required before first use — see `docs/planetscale-schema-baseline.md`.
-#
-# - preview branch → twica-preview Worker (preview environment)
-# - main branch    → twica Worker (production environment)
-#
-# Prerequisites / 前提条件:
-#
-# 1. GitHub repository secrets (shared across environments):
-#    リポジトリレベルの Secrets（全環境共通）:
-#    - CLOUDFLARE_API_TOKEN: API token with Workers edit permissions
-#    - CLOUDFLARE_ACCOUNT_ID: Your Cloudflare account ID
-#
-# 2. GitHub Environments: Create "preview" and "production" environments
-#    in Settings → Environments, each with the following secrets:
-#    GitHub Environments: Settings → Environments で "preview" と "production" を作成し、
-#    それぞれに以下の Secrets を設定:
-#    - SUPABASE_DB_URL               (Session pooler URI, port 5432)
-#    - NEXT_PUBLIC_APP_URL          (e.g. preview: https://twica-preview.xxx.workers.dev)
-#    - NEXT_PUBLIC_SUPABASE_URL
-#    - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-#    - NEXT_PUBLIC_TWITCH_CLIENT_ID
-#
-# 3. "production" environment only, additionally:
-#    "production" environment のみ、追加で以下の Secret を設定:
-#    - PLANETSCALE_DATABASE_URL: PlanetScale本番Postgresへの直接接続文字列
-#      (migration専用。Hyperdrive経由のアプリ実行時接続とは別物。
-#      db/planetscale/bootstrap.sql 等の手動適用と同じ接続文字列を使うこと)
+# - preview branch -> twica-preview Worker / preview logical database
+# - main branch    -> twica Worker / production logical database
 
 name: Cloudflare Deploy Support
 
 on:
   push:
-    # branches: [preview]
-    # Uncomment to also auto-deploy production on push to main
-    # mainへのプッシュ時にも本番自動デプロイするにはコメント解除
     branches: [main, preview]
 
-  # Manual trigger allows deploying any branch to either environment
-  # 手動トリガーで任意のブランチをどちらの環境にもデプロイ可能
   workflow_dispatch:
     inputs:
       environment:
@@ -86,71 +27,60 @@ on:
           - preview
           - production
 
-# Prevent concurrent deployments to the same environment
-# 同一環境への同時デプロイを防止
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  supabase-migrations:
+  overlay-realtime:
+    # The main application can be deployed by Cloudflare Workers Builds, but
+    # the standalone room Worker is intentionally owned here. Wrangler deploys
+    # a version atomically; using the same per-ref concurrency group therefore
+    # makes a superseded push safe while avoiding two overlapping DO migrations.
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
-    # GitHub Environment を動的に選択することで、環境ごとの Secrets が自動的に解決される。
-    # workflow_dispatch の場合は手動選択、push の場合はブランチ名で判定。
-    # Dynamically select the GitHub Environment so that per-environment
-    # Secrets are resolved automatically. workflow_dispatch uses the manual
-    # selection; push events are determined by branch name.
     environment: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Supabase CLI をセットアップし、マイグレーションを適用する。
-      # Node.js / npm ci より前に配置し、マイグレーション失敗時に
-      # 不要な依存インストールを回避する。
-      # --db-url 方式により supabase link 不要・シークレット1つで動作する。
-      - name: Setup Supabase CLI
-        uses: supabase/setup-cli@v1
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          version: 2.76.14
+          node-version: "20"
+          cache: "npm"
 
-      # production 環境へのマイグレーションは main ブランチからのみ許可。
-      # workflow_dispatch で非 main ブランチから production を選択した場合を防止する。
-      - name: Apply Supabase migrations
-        run: |
-          if [ "$RESOLVED_ENV" = "production" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Production migrations are only allowed from the main branch"
-            exit 1
-          fi
-          supabase db push --db-url "$SUPABASE_DB_URL" --yes
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck overlay realtime Worker
+        run: npm run overlay-realtime:typecheck
+
+      - name: Deploy preview room Worker
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
+        run: npm run overlay-realtime:deploy:preview
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          RESOLVED_ENV: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy production room Worker
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        run: npm run overlay-realtime:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   legacy-app-deploy:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'
-    needs: supabase-migrations
     runs-on: ubuntu-latest
     permissions:
       contents: read
       deployments: write
-
-    # GitHub Environment を動的に選択することで、環境ごとの Secrets が自動的に解決される。
-    # workflow_dispatch の場合は手動選択、push の場合はブランチ名で判定。
-    # Dynamically select the GitHub Environment so that per-environment
-    # Secrets are resolved automatically. workflow_dispatch uses the manual
-    # selection; push events are determined by branch name.
     environment: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
 
     steps:
-      # デプロイコマンドを環境に応じて決定する。
-      # preview → `workers:deploy:preview`、production → `workers:deploy`。
-      # Determine the deploy command based on the resolved environment.
-      # preview → `workers:deploy:preview`, production → `workers:deploy`.
       - name: Determine deploy command
         id: env
         run: |
@@ -172,40 +102,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # NEXT_PUBLIC_* 変数はビルド時にクライアントJSにインライン化されるため、
-      # ここで設定する必要がある。各値は GitHub Environment の Secrets から取得され、
-      # preview / production で異なる値が自動的に使われる。
-      # サーバー側のシークレットは Cloudflare Worker Secrets として
-      # wrangler / ダッシュボード経由で設定済みのため、ビルド時には不要。
-      #
-      # NEXT_PUBLIC_* variables are inlined into client JS at build time,
-      # so they must be set here. Values are pulled from the GitHub Environment
-      # Secrets, automatically resolving to the correct per-environment values.
-      # Server-side secrets are configured as Cloudflare Worker Secrets
-      # via wrangler / dashboard and are NOT needed at build time.
       - name: Build
         run: npm run workers:build
         env:
           NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID }}
           NEXT_PUBLIC_CF_IMAGES_ENABLED: ${{ secrets.NEXT_PUBLIC_CF_IMAGES_ENABLED }}
 
-      # Wrangler は CLOUDFLARE_API_TOKEN 環境変数で認証する。
-      # Wrangler authenticates via CLOUDFLARE_API_TOKEN env var.
       - name: Deploy
         run: ${{ steps.env.outputs.deploy_cmd }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # Error Reporter Cron Worker のデプロイ（本番のみ）
-      # Supabase errors テーブルの未処理エラーを定期的に GitHub Issue 化する。
-      # Secrets (SUPABASE_URL, SUPABASE_SECRET_KEY, GITHUB_TOKEN) は
-      # Cloudflare Dashboard で事前設定が必要。
-      # See: https://github.com/azumag/twica/issues/239
       - name: Deploy Error Reporter Cron Worker
         if: steps.env.outputs.deploy_cmd != 'npm run workers:deploy:preview'
         working-directory: workers/error-reporter
@@ -216,7 +125,6 @@ jobs:
 
   auxiliary-workers:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'))
-    needs: supabase-migrations
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -234,11 +142,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Error Reporter Cron Worker のデプロイ（本番のみ）
-      # Supabase errors テーブルの未処理エラーを定期的に GitHub Issue 化する。
-      # Secrets (SUPABASE_URL, SUPABASE_SECRET_KEY, GITHUB_TOKEN) は
-      # Cloudflare Dashboard で事前設定が必要。
-      # See: https://github.com/azumag/twica/issues/239
       - name: Deploy Error Reporter Cron Worker
         working-directory: workers/error-reporter
         run: npx wrangler deploy

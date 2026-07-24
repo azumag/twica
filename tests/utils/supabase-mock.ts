@@ -9,6 +9,7 @@ export interface MockQueryBuilder<T = unknown> {
   eq: (column: string, value: unknown) => MockQueryBuilder<T>
   neq: (column: string, value: unknown) => MockQueryBuilder<T>
   gt: (column: string, value: unknown) => MockQueryBuilder<T>
+  or: (filters: string) => MockQueryBuilder<T>
   gte: (column: string, value: unknown) => MockQueryBuilder<T>
   lt: (column: string, value: unknown) => MockQueryBuilder<T>
   lte: (column: string, value: unknown) => MockQueryBuilder<T>
@@ -46,7 +47,7 @@ export function createMockQueryBuilder<T = unknown>(
 
   const chainableMethods = [
     'select', 'insert', 'upsert', 'update', 'delete',
-    'eq', 'neq', 'gt', 'gte', 'lt', 'lte',
+    'eq', 'neq', 'gt', 'or', 'gte', 'lt', 'lte',
     'like', 'ilike', 'in', 'is', 'not',
     'order', 'limit', 'range'
   ]
