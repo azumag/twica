@@ -58,7 +58,7 @@ function normalizeDateParam(value: string | null): string | null {
   // cursor to that value, every later poll therefore returned HTTP 400 and no
   // subsequent gacha result could be displayed.
   const match = value.match(
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|([+-])(\d{2}):(\d{2}))$/
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|([+-]| )(\d{2}):(\d{2}))$/
   );
   if (match) {
     const [
@@ -112,8 +112,13 @@ function normalizeDateParam(value: string | null): string | null {
       const offsetHours = Number(offsetHourText);
       const offsetMinutePart = Number(offsetMinuteText);
       if (offsetHours > 23 || offsetMinutePart > 59) return null;
+      // A literal plus in a query string can be normalized to a space by an
+      // application/x-www-form-urlencoded parser before NextRequest exposes
+      // the value. In the timezone-sign position only, treat that space as a
+      // positive offset. The strict surrounding timestamp pattern prevents
+      // accepting arbitrary whitespace or a malformed public cursor.
       offsetMinutes =
-        (offsetSign === "+" ? 1 : -1) *
+        (offsetSign === "-" ? -1 : 1) *
         (offsetHours * 60 + offsetMinutePart);
     }
 
@@ -298,6 +303,19 @@ export async function GET(
     // forever and prevent later committed rows from being reached.
     const lastHistoryRow =
       overlayHistoryRows[overlayHistoryRows.length - 1] ?? null;
+    // Never expose the database driver's signed-offset/microsecond wire value
+    // as the next public cursor. A canonical UTC cursor avoids query-string
+    // plus-sign ambiguity on every later OBS poll even if an intermediary
+    // applies form-decoding semantics. The row already passed through the
+    // same database timestamp contract used by the query predicate, so a
+    // normalization failure indicates a server-side invariant violation.
+    const normalizedNextCursor = lastHistoryRow
+      ? normalizeDateParam(lastHistoryRow.redeemed_at)
+      : null;
+    if (lastHistoryRow && !normalizedNextCursor) {
+      throw new Error("Invalid redeemed_at value returned by the database");
+    }
+
     return NextResponse.json({
       // Existing OBS pages retain the legacy row shape. New controllers opt
       // into V1 to avoid returning duplicate card payloads during rollout.
@@ -306,7 +324,7 @@ export async function GET(
         : { events }),
       nextCursor: lastHistoryRow
         ? {
-            redeemedAt: lastHistoryRow.redeemed_at,
+            redeemedAt: normalizedNextCursor,
             historyId: lastHistoryRow.id,
           }
         : null,
