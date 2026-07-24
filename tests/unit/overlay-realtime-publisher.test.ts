@@ -172,6 +172,62 @@ describe('publishCommittedGachaBatch', () => {
     ).resolves.toBe(true)
   })
 
+  it('publishes through the Workers Service Binding instead of global fetch', async () => {
+    const serviceFetch = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 })
+    )
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'do-primary',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://twica-overlay-realtime-preview.example.workers.dev',
+        OVERLAY_REALTIME_PUBLISH_SECRET: 'runtime-service-secret',
+        OVERLAY_REALTIME_SERVICE: { fetch: serviceFetch },
+      },
+    } as never)
+    const globalFetch = vi.fn()
+    vi.stubGlobal('fetch', globalFetch)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({ outcome: 'accepted', attempts: 1 })
+
+    expect(globalFetch).not.toHaveBeenCalled()
+    expect(serviceFetch).toHaveBeenCalledTimes(1)
+    const request = serviceFetch.mock.calls[0][0] as Request
+    expect(request).toBeInstanceOf(Request)
+    expect(request.method).toBe('POST')
+    expect(new URL(request.url).pathname).toBe(
+      `/internal/v1/rooms/${STREAMER_ID}/publish`
+    )
+    const body = await request.clone().text()
+    const headers = Object.fromEntries(request.headers.entries())
+    await expect(
+      verifyPublishSignature(
+        'runtime-service-secret',
+        new URL(request.url).pathname,
+        body,
+        headers['x-twica-timestamp'],
+        headers['x-twica-nonce'],
+        headers['x-twica-signature']
+      )
+    ).resolves.toBe(true)
+  })
+
   it('does not mix missing Workers bindings with stale process values', async () => {
     vi.mocked(getCloudflareContext).mockResolvedValue({ env: {} } as never)
     const fetchMock = vi.fn()

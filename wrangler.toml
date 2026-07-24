@@ -45,6 +45,13 @@ binding = "HYPERDRIVE_PLANETSCALE"
 id = "1dc2ec4d087e41a6931e8e18944c1fd2"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
 
+# Cloudflare blocks global fetch() from one Worker to another Worker on the
+# same zone. Bind the realtime publisher directly so signed gacha events stay
+# on Cloudflare's internal path and never depend on workers.dev routing.
+[[services]]
+binding = "OVERLAY_REALTIME_SERVICE"
+service = "twica-overlay-realtime"
+
 # Public value that must survive dashboard-only configuration overwrites.
 [vars]
 NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
@@ -88,3 +95,7 @@ bucket_name = "twica-sound-dev"
 binding = "HYPERDRIVE_PLANETSCALE"
 id = "5caf2d40d4f04fc49bc47053ab47ec22"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
+[[env.preview.services]]
+binding = "OVERLAY_REALTIME_SERVICE"
+service = "twica-overlay-realtime-preview"

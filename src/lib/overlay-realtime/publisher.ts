@@ -117,6 +117,11 @@ interface OverlayRealtimePublisherEnvironment {
   streamerAllowlist: string | undefined
   publishUrl: string | undefined
   publishSecret: string | undefined
+  publishService: OverlayRealtimeServiceBinding | undefined
+}
+
+interface OverlayRealtimeServiceBinding {
+  fetch(request: Request): Promise<Response>
 }
 
 function stringBinding(
@@ -125,6 +130,20 @@ function stringBinding(
 ): string | undefined {
   const value = env[key]
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function serviceBinding(
+  env: Record<string, unknown>
+): OverlayRealtimeServiceBinding | undefined {
+  const value = env.OVERLAY_REALTIME_SERVICE
+  return (
+    typeof value === 'object'
+    && value !== null
+    && 'fetch' in value
+    && typeof value.fetch === 'function'
+  )
+    ? value as OverlayRealtimeServiceBinding
+    : undefined
 }
 
 /**
@@ -157,6 +176,7 @@ async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnviro
         runtimeEnv,
         'OVERLAY_REALTIME_PUBLISH_SECRET'
       ),
+      publishService: serviceBinding(runtimeEnv),
     }
   } catch (error) {
     if (process.env.NODE_ENV === 'production') {
@@ -171,6 +191,7 @@ async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnviro
         streamerAllowlist: undefined,
         publishUrl: undefined,
         publishSecret: undefined,
+        publishService: undefined,
       }
     }
 
@@ -181,6 +202,7 @@ async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnviro
       streamerAllowlist: process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
       publishUrl: process.env.OVERLAY_REALTIME_PUBLISH_URL,
       publishSecret: process.env.OVERLAY_REALTIME_PUBLISH_SECRET,
+      publishService: undefined,
     }
   }
 }
@@ -260,7 +282,7 @@ export async function publishCommittedGachaBatch(
       const timeout = setTimeout(() => controller.abort(), 1_500)
 
       try {
-        const response = await fetch(url, {
+        const requestInit: RequestInit = {
           method: 'POST',
           body,
           headers: {
@@ -270,7 +292,14 @@ export async function publishCommittedGachaBatch(
             'x-twica-signature': signature,
           },
           signal: controller.signal,
-        })
+        }
+        // Cloudflare rejects global fetch() calls from one Worker to another
+        // Worker on the same zone. The Service Binding is the supported,
+        // zero-network-hop path in deployed Workers; global fetch remains only
+        // for next dev and Vitest, where no Workers binding exists.
+        const response = publisherEnv.publishService
+          ? await publisherEnv.publishService.fetch(new Request(url, requestInit))
+          : await fetch(url, requestInit)
         if (response.ok) return { outcome: 'accepted', attempts: attempt }
         if (!retryableStatus(response.status) || attempt >= maxAttempts) {
           logger.warn('[overlay-realtime] publish rejected', {
