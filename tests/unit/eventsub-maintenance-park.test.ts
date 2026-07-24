@@ -42,8 +42,11 @@ vi.mock('@/lib/rate-limit', () => ({
   rateLimits: { eventsub: {} },
 }))
 
-vi.mock('@/lib/realtime', () => ({
-  broadcastGachaResult: vi.fn(),
+vi.mock('@/lib/overlay-realtime/publisher', () => ({
+  publishCommittedGachaBatch: vi.fn().mockResolvedValue({
+    outcome: 'accepted',
+    attempts: 1,
+  }),
 }))
 
 vi.mock('@/lib/twitch/token-manager', () => ({

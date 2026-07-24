@@ -28,6 +28,9 @@ jobs:
           set -o pipefail
           npm run typecheck 2>&1 | tee typecheck-output.log
 
+      - name: Typecheck overlay realtime Worker
+        run: npm run overlay-realtime:typecheck
+
       - name: Upload failed typecheck output
         if: steps.typecheck.outcome == 'failure'
         uses: actions/upload-artifact@v4

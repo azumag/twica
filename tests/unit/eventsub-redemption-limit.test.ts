@@ -25,8 +25,11 @@ vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn(),
 }))
 
-vi.mock('@/lib/realtime', () => ({
-  broadcastGachaResult: vi.fn().mockResolvedValue(undefined),
+vi.mock('@/lib/overlay-realtime/publisher', () => ({
+  publishCommittedGachaBatch: vi.fn().mockResolvedValue({
+    outcome: 'accepted',
+    attempts: 1,
+  }),
 }))
 
 vi.mock('@/lib/twitch/chat-service', () => ({
