@@ -226,7 +226,13 @@ const overlayRealtimeWorker = {
       if (!validation.ok) return json({ error: validation.error }, 400)
 
       const id = env.OVERLAY_ROOMS.idFromName(publishStreamerId)
-      return env.OVERLAY_ROOMS.get(id).fetch('https://room.internal/publish', {
+      // Build one concrete Request before crossing the Durable Object binding.
+      // Cloudflare accepts both fetch(url, init) and fetch(Request), but the
+      // latter makes the exact method, internal pathname, headers, and body a
+      // single immutable value. Keeping that boundary explicit removes
+      // overload interpretation as a variable when diagnosing a runtime-only
+      // room route miss.
+      const roomRequest = new Request('https://room.internal/publish', {
         method: 'POST',
         body,
         headers: {
@@ -236,6 +242,17 @@ const overlayRealtimeWorker = {
           'x-internal-timestamp': String(auth.timestamp),
         },
       })
+      const roomResponse = await env.OVERLAY_ROOMS.get(id).fetch(roomRequest)
+      if (!roomResponse.ok) {
+        // Only non-secret routing metadata is logged. The signed request body,
+        // nonce, username, and card fields remain excluded from observability.
+        console.warn('[overlay-realtime] room publish rejected', {
+          method: roomRequest.method,
+          pathname: new URL(roomRequest.url).pathname,
+          status: roomResponse.status,
+        })
+      }
+      return roomResponse
     }
 
     return json({ error: 'Not found' }, 404)
