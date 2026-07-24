@@ -481,6 +481,14 @@ export class OverlayRoom {
       return json({ accepted: true, fanoutCount, failedCount }, 202)
     }
 
+    // This fallback is reachable only through the Durable Object binding, not
+    // from the public Worker router. Keep the method and normalized pathname in
+    // observability logs so production-only routing differences can be
+    // diagnosed without recording signed headers, card payloads, or usernames.
+    console.warn('[overlay-realtime] room route miss', {
+      method: request.method,
+      pathname: url.pathname,
+    })
     return json({ error: 'Not found' }, 404)
   }
 
