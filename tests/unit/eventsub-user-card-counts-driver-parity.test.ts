@@ -1,20 +1,10 @@
 /**
- * #573: eventsub チャット通知プレースホルダ用 get_user_card_counts RPC の
- * postgrest / pg 直結ドライバ切替パリティテスト
+ * #573/#803: EventSubチャット通知のPlanetScale固定回帰テスト。
  *
- * sendChatAnnouncement の {num}/{unique} は getSupabaseAdminNoCache 経由の RPC で
- * 取得される。この呼び出しはガチャ EventSub フロー内のため、全体フラグではなく
- * ガチャ経路専用の getGachaDbDriver() === 'pg' のときのみ RPC 実行が pg 直結
- * (fetchUserCardCountsRpcPg) に切り替わることを固定する:
- *   1. フラグ未設定時(既定 'postgrest')は getDb が一切呼ばれず既存挙動が不変
- *   2. pg 経路(GACHA_DB_DRIVER=pg)では NoCache クライアントの rpc へ流れず、
- *      同一 RPC データから同一のプレースホルダ({num}=当選カード所持数 /
- *      {unique}=アクティブ種類数)が組み立てられる（名前付き引数 + ::uuid 明示キャスト）
- *   3. 既存 postgrest 経路のこの呼び出しには 42883 フォールバックが無いため、
- *      pg 経路でも特別扱いせず「warn ログ + プレースホルダ未定義のまま通知送信」
- *      の同じ外部挙動になる（postgrest へのフォールスルーもしない）
- *   4. GACHA_DB_DRIVER=postgrest による緊急ロールバックはガチャ実行(execute_gacha_
- *      transaction)と通知経路を一括で旧経路へ戻す(経路の食い違いを作らない)
+ * 旧driver secretの有無・値に関係なく、`{num}/{unique}/{newCards}/{all}`を
+ * PlanetScaleから取得し、退役済みNoCache clientを呼ばないことを固定する。
+ * DB/RPC障害時は空placeholderでチャット通知を継続しつつ、deployment errorを
+ * best-effortで永続監視へ送り、reporter障害もEventSub 2xxへ影響させない。
  *
  * モックの流儀は tests/unit/eventsub-reward-mismatch.test.ts（EventSub 署名付き
  * POST + GachaService / chat-service モック）と
@@ -103,7 +93,10 @@ async function signEventSubBody(secret: string, messageId: string, timestamp: st
  * {num}/{unique} を含むテンプレートを持つ配信者への単発ガチャ成功を再現する
  * 署名付き EventSub 通知リクエストを作る。
  */
-async function createRedemptionRequest(messageId: string): Promise<NextRequest> {
+async function createRedemptionRequest(
+  messageId: string,
+  template = '@{user} {card} 所持{num}枚目 コンプ進捗{unique}',
+): Promise<NextRequest> {
   const secret = 'eventsub-test-secret'
   process.env.TWITCH_EVENTSUB_SECRET = secret
   const timestamp = '2026-07-01T10:00:00Z'
@@ -127,7 +120,7 @@ async function createRedemptionRequest(messageId: string): Promise<NextRequest> 
       streamer: {
         id: 'streamer-1',
         chat_announcement_enabled: true,
-        chat_announcement_template: '@{user} {card} 所持{num}枚目 コンプ進捗{unique}',
+        chat_announcement_template: template,
         chat_announcement_multi_template: null,
         chat_announcement_multi_show_cards: false,
       },
@@ -206,21 +199,18 @@ describe('EventSub get_user_card_counts ドライバパリティ (#573)', () => 
     vi.unstubAllEnvs()
   })
 
-  it('postgrest 経路(フラグ未設定): NoCache クライアントの rpc で実行され getDb は呼ばれない', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: USER_CARD_COUNT_ROWS, error: null })
+  it('フラグ未設定でもPlanetScale RPCを使い、退役済みNoCache clientを呼ばない', async () => {
+    const rpc = vi.fn()
     mockGetSupabaseAdminNoCache.mockReturnValue({
       rpc,
     } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+    const sqlMock = setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
 
-    const response = await POST(await createRedemptionRequest('eventsub-counts-postgrest'))
+    const response = await POST(await createRedemptionRequest('eventsub-counts-default'))
 
     expect(response.status).toBe(200)
-    // 既存経路の呼び出し形状(名前付きパラメータのオブジェクト)が不変であること
-    expect(rpc).toHaveBeenCalledWith('get_user_card_counts', {
-      p_twitch_user_id: 'viewer-1',
-      p_streamer_id: 'streamer-1',
-    })
-    expect(getDb).not.toHaveBeenCalled()
+    expect(sqlMock).toHaveBeenCalledTimes(1)
+    expect(rpc).not.toHaveBeenCalled()
     expect(mocks.buildMessage).toHaveBeenCalledWith(
       '@{user} {card} 所持{num}枚目 コンプ進捗{unique}',
       expect.objectContaining({ num: 3, unique: 1 }),
@@ -283,7 +273,7 @@ describe('EventSub get_user_card_counts ドライバパリティ (#573)', () => 
     )
     // 通知自体はカウント無しでも必ず送信される
     expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
-    // 既存と同じ warn ログ経路（reportError はしない）
+    // 通知は継続するが、RPC未デプロイは運用監視へ永続化する。
     expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
       'Failed to fetch user card counts for chat announcement',
       expect.objectContaining({
@@ -291,35 +281,91 @@ describe('EventSub get_user_card_counts ドライバパリティ (#573)', () => 
         userTwitchId: 'viewer-1',
       }),
     )
-    expect(mockReportError).not.toHaveBeenCalled()
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('get_user_card_counts'),
+      }),
+      expect.objectContaining({
+        context: 'eventsub:sendChatAnnouncement:userCardCounts',
+        streamerId: 'streamer-1',
+      }),
+    )
     // postgrest RPC へのフォールスルーはしない
     expect(rpc).not.toHaveBeenCalled()
   })
 
-  it('緊急ロールバック(DB_DRIVER=pg + GACHA_DB_DRIVER=postgrest): 通知経路もガチャ経路と揃って postgrest で実行される', async () => {
-    // GACHA_DB_DRIVER=postgrest はガチャ実行フロー全体(execute_gacha_transaction と
-    // このチャット通知用 RPC)を1つのレバーで旧経路へ戻す。通知経路が全体フラグ
-    // (DB_DRIVER)で分岐していると、ロールバック時に通知だけ pg 直結に残る
-    // 「経路の食い違い」が起きるため、それが無いこと(getDb 不呼出 + NoCache rpc
-    // 呼出)を固定する。
+  it('旧driver secretがpostgrestでも通知はPlanetScaleに固定する', async () => {
     vi.stubEnv('DB_DRIVER', 'pg')
     vi.stubEnv('GACHA_DB_DRIVER', 'postgrest')
-    const rpc = vi.fn().mockResolvedValue({ data: USER_CARD_COUNT_ROWS, error: null })
+    const rpc = vi.fn()
     mockGetSupabaseAdminNoCache.mockReturnValue({
       rpc,
     } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+    const sqlMock = setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
 
     const response = await POST(await createRedemptionRequest('eventsub-counts-rollback'))
 
     expect(response.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('get_user_card_counts', {
-      p_twitch_user_id: 'viewer-1',
-      p_streamer_id: 'streamer-1',
-    })
-    expect(getDb).not.toHaveBeenCalled()
+    expect(sqlMock).toHaveBeenCalledTimes(1)
+    expect(rpc).not.toHaveBeenCalled()
     expect(mocks.buildMessage).toHaveBeenCalledWith(
       '@{user} {card} 所持{num}枚目 コンプ進捗{unique}',
       expect.objectContaining({ num: 3, unique: 1 }),
+    )
+  })
+
+  it('{all}テンプレートはPlanetScaleのactive card countを使いSupabase stubを呼ばない', async () => {
+    const rpc = vi.fn()
+    mockGetSupabaseAdminNoCache.mockReturnValue({
+      rpc,
+    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+    const sqlMock = setupPgSql([{ rows: [{ count: 42 }] }])
+
+    const response = await POST(
+      await createRedemptionRequest('eventsub-counts-all', '@{user} 全{all}枚'),
+    )
+
+    expect(response.status).toBe(200)
+    expect(sqlMock).toHaveBeenCalledTimes(1)
+    const { text, values } = renderSqlCall(sqlMock, 0)
+    expect(text).toContain('from cards')
+    expect(text).toContain('is_active = true')
+    expect(values).toEqual(['streamer-1'])
+    expect(mocks.buildMessage).toHaveBeenCalledWith(
+      '@{user} 全{all}枚',
+      expect.objectContaining({ all: 42 }),
+    )
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('{all}取得失敗は空placeholderで通知を継続しdeployment errorを記録する', async () => {
+    setupPgSql([{ reject: pgError('42501', 'permission denied for table cards') }])
+    mockReportError.mockRejectedValue(new Error('reporter unavailable'))
+
+    const response = await POST(
+      await createRedemptionRequest('eventsub-counts-all-error', '@{user} 全{all}枚'),
+    )
+
+    expect(response.status).toBe(200)
+    expect(mocks.buildMessage).toHaveBeenCalledWith(
+      '@{user} 全{all}枚',
+      expect.objectContaining({ all: undefined }),
+    )
+    expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'permission denied for table cards',
+      }),
+      expect.objectContaining({
+        context: 'eventsub:sendChatAnnouncement:activeCardCount',
+        streamerId: 'streamer-1',
+      }),
+    )
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      '[EventSub] Failed to persist notification error',
+      expect.objectContaining({
+        context: 'eventsub:sendChatAnnouncement:activeCardCount',
+      }),
     )
   })
 })

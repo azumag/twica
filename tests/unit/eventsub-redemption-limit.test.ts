@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getDb } from '@/lib/db/client'
+import { reportError } from '@/lib/sentry/error-handler'
 
 // Issue #108 / PR #450: カード発行可能枚数の上限到達はストリーマーの設定運用上の正常イベントなので、
 // EventSub の redemption ハンドラーで reportError (= GitHub Issue 化) を呼ばずに warn ログのみで終わること。
@@ -10,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   cancelRedemption: vi.fn(),
   sendChatMessage: vi.fn(),
-  // streamers.select('chat_announcement_enabled') の返り値。テストごとに上書きする。
+  // PlanetScaleのstreamers SELECT結果。テストごとに上書きする。
   // デフォルトはnull(=行なし)とし、既存テストの「チャット通知は送られない」挙動を維持する。
   streamerSettings: null as { chat_announcement_enabled: boolean } | null,
 }))
@@ -47,31 +49,17 @@ vi.mock('@/lib/twitch/channel-points', () => ({
   cancelRedemption: mocks.cancelRedemption,
 }))
 
-// 既存履歴チェック (gacha_history.select.eq.maybeSingle) を「未処理」として返すための supabase admin モック。
-// New event id → no existing history row → handleRedemption proceeds to gachaService call.
-// streamers テーブルへのクエリ (Issue #544 のチャット通知設定取得) は mocks.streamerSettings を返す。
+// 旧Supabase互換fixture。postSoldOutNotifyのstreamers設定取得はPlanetScaleへ移行済みであり、
+// このmockから配信者設定を返すと退役経路へ戻ってもテストが通るため、常に行なしに固定する。
 vi.mock('@/lib/supabase/admin', () => ({
   getSupabaseAdmin: vi.fn(() => ({
-    from: vi.fn((table: string) => {
-      if (table === 'streamers') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockImplementation(() =>
-                Promise.resolve({ data: mocks.streamerSettings, error: null })
-              ),
-            })),
-          })),
-        }
-      }
-      return {
-        select: vi.fn(() => ({
-          eq: vi.fn(() => ({
-            maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-          })),
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
         })),
-      }
-    }),
+      })),
+    })),
   })),
   getSupabaseAdminNoCache: vi.fn(),
 }))
@@ -91,8 +79,29 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 const TEST_SECRET = 'test-eventsub-secret'
+const mockReportError = vi.mocked(reportError)
 
 const ORIGINAL_SECRET = process.env.TWITCH_EVENTSUB_SECRET
+
+/**
+ * postSoldOutNotifyが実行するDrizzleチェーン
+ * `db.select().from().where().limit(1)` を忠実に再現する。
+ * limitの評価時に最新のmocks.streamerSettingsを読むため、各テストは従来どおり
+ * true / false / 行なしを代入するだけで通知契約を切り替えられる。
+ */
+function mockStreamerSettingsDb() {
+  const limit = vi.fn().mockImplementation(() =>
+    Promise.resolve(mocks.streamerSettings ? [mocks.streamerSettings] : []),
+  )
+  const where = vi.fn(() => ({ limit }))
+  const from = vi.fn(() => ({ where }))
+  const select = vi.fn(() => ({ from }))
+
+  vi.mocked(getDb).mockResolvedValue({
+    db: { select } as never,
+    sql: {} as never,
+  })
+}
 
 beforeEach(() => {
   process.env.TWITCH_EVENTSUB_SECRET = TEST_SECRET
@@ -100,6 +109,8 @@ beforeEach(() => {
   mocks.streamerSettings = null
   mocks.cancelRedemption.mockResolvedValue({ success: true })
   mocks.sendChatMessage.mockResolvedValue(true)
+  mockReportError.mockReset().mockResolvedValue(undefined)
+  mockStreamerSettingsDb()
 })
 
 afterEach(() => {
@@ -170,6 +181,7 @@ describe('EventSub redemption: card issuance limit error handling', () => {
     const { GachaService } = await import('@/lib/services/gacha')
     const { reportError } = await import('@/lib/sentry/error-handler')
     const mockReport = vi.mocked(reportError)
+    mockReport.mockRejectedValue(new Error('reporter unavailable'))
     const mockExecute = vi.fn().mockResolvedValue({ success: false, error: CARD_ISSUANCE_MESSAGES.soldOut })
     vi.mocked(GachaService).mockImplementation(() => ({
       executeGachaForEventSub: mockExecute,
@@ -354,6 +366,31 @@ describe('EventSub redemption: sold-out chat notification + channel points refun
     expect(mocks.sendChatMessage).toHaveBeenCalledTimes(1)
   })
 
+  it('sold-out chatとreporterが継続的にrejectしても返還結果とEventSub 200を維持する', async () => {
+    await mockSoldOut()
+    mocks.streamerSettings = { chat_announcement_enabled: true }
+    mocks.cancelRedemption.mockResolvedValue({ success: true })
+    mocks.sendChatMessage.mockRejectedValue(new Error('Twitch chat unavailable'))
+    mockReportError.mockRejectedValue(new Error('reporter unavailable'))
+
+    const { POST } = await import('@/app/api/twitch/eventsub/route')
+    const req = await buildRedemptionRequest(
+      'msg-chat-and-reporter-error-1',
+      'redemption-chat-error-1',
+    )
+    const res = await POST(req as unknown as import('next/server').NextRequest)
+
+    expect(res.status).toBe(200)
+    expect(mocks.cancelRedemption).toHaveBeenCalledTimes(1)
+    expect(mocks.sendChatMessage).toHaveBeenCalledTimes(1)
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Twitch chat unavailable' }),
+      expect.objectContaining({
+        context: 'eventsub:postSoldOutNotify:chatAnnouncement',
+      }),
+    )
+  })
+
   it('chat_announcement_enabled が false の場合: 返還は試みるがチャット通知はしない', async () => {
     await mockSoldOut()
     mocks.streamerSettings = { chat_announcement_enabled: false }
@@ -377,6 +414,36 @@ describe('EventSub redemption: sold-out chat notification + channel points refun
     const res = await POST(req as unknown as import('next/server').NextRequest)
 
     expect(res.status).toBe(200)
+    expect(mocks.sendChatMessage).not.toHaveBeenCalled()
+  })
+
+  it('streamer設定DBとerror reporterが失敗しても返還済み状態とEventSub 200を維持する', async () => {
+    await mockSoldOut()
+    mocks.cancelRedemption.mockResolvedValue({ success: true })
+    vi.mocked(getDb).mockRejectedValue(new Error('PlanetScale unavailable'))
+    const { reportError } = await import('@/lib/sentry/error-handler')
+    const mockReport = vi.mocked(reportError)
+    mockReport.mockRejectedValue(new Error('reporter unavailable'))
+
+    const { POST } = await import('@/app/api/twitch/eventsub/route')
+    const req = await buildRedemptionRequest(
+      'msg-settings-db-error-1',
+      'redemption-settings-error-1',
+    )
+    const res = await POST(req as unknown as import('next/server').NextRequest)
+
+    expect(res.status).toBe(200)
+    expect(mocks.cancelRedemption).toHaveBeenCalledWith({
+      broadcasterTwitchUserId: 'broadcaster-1',
+      rewardId: 'reward-1',
+      redemptionId: 'redemption-settings-error-1',
+    })
+    expect(mockReport).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'PlanetScale unavailable' }),
+      expect.objectContaining({
+        context: 'eventsub:postSoldOutNotify:streamerSettings',
+      }),
+    )
     expect(mocks.sendChatMessage).not.toHaveBeenCalled()
   })
 })
