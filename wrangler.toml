@@ -36,11 +36,21 @@ preview_bucket_name = "twica-sound-dev"
 # Authoritative production PostgreSQL connection. The retired Supabase
 # Hyperdrive binding was removed so a stale DB target cannot open the old
 # project after shutdown. Query caching remains disabled on the referenced
-# Hyperdrive config to preserve event-polling freshness.
+# Hyperdrive config to preserve event-polling freshness. Its external
+# origin_connection_limit is intentionally 10; together with preview's 5 this
+# remains below PlanetScale's 25 direct-connection ceiling and leaves headroom
+# because Cloudflare documents the Hyperdrive limit as a soft maximum.
 [[hyperdrive]]
 binding = "HYPERDRIVE_PLANETSCALE"
 id = "1dc2ec4d087e41a6931e8e18944c1fd2"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
+# Cloudflare blocks global fetch() from one Worker to another Worker on the
+# same zone. Bind the realtime publisher directly so signed gacha events stay
+# on Cloudflare's internal path and never depend on workers.dev routing.
+[[services]]
+binding = "OVERLAY_REALTIME_SERVICE"
+service = "twica-overlay-realtime"
 
 # Public value that must survive dashboard-only configuration overwrites.
 [vars]
@@ -78,7 +88,14 @@ binding = "R2_SOUNDS"
 bucket_name = "twica-sound-dev"
 
 # Authoritative preview PostgreSQL connection.
+# The previous config was deleted after its stale direct sessions exhausted the
+# PlanetScale connection limit. Keep this preview-only config capped at five
+# origin connections so preview validation cannot starve production traffic.
 [[env.preview.hyperdrive]]
 binding = "HYPERDRIVE_PLANETSCALE"
-id = "4b8d1f014cce457fbbc009f3c09592f4"
+id = "5caf2d40d4f04fc49bc47053ab47ec22"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
+
+[[env.preview.services]]
+binding = "OVERLAY_REALTIME_SERVICE"
+service = "twica-overlay-realtime-preview"

@@ -199,6 +199,185 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
+  it('画像メタデータ取得が停止しても、タイムアウト後にN連キューを最後まで進める', async () => {
+    vi.useFakeTimers()
+
+    let imageLoadCount = 0
+    const imageInstances: MockImage[] = []
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(value: string) {
+        void value
+        imageLoadCount += 1
+        imageInstances.push(this)
+        // 重いGIFなどでブラウザの画像メタデータ取得が完了しない場合でも、
+        // 表示キュー全体を無期限に止めないことがこの回帰テストの対象である。
+        // 1・3枚目だけは通常どおりロード完了し、2枚目は意図的に無応答にする。
+        if (imageLoadCount !== 2) {
+          setTimeout(() => this.onload?.(), 0)
+        }
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-1', name: 'Alpha', description: null,
+          image_url: 'https://example.com/alpha.png', rarity: 'rare',
+        },
+        cards: [
+          {
+            id: 'card-1', name: 'Alpha', description: null,
+            image_url: 'https://example.com/alpha.png', rarity: 'rare',
+          },
+          {
+            id: 'card-2', name: 'Beta', description: null,
+            image_url: 'https://example.com/stalled.gif', rarity: 'common',
+          },
+          {
+            id: 'card-3', name: 'Gamma', description: null,
+            image_url: 'https://example.com/gamma.png', rarity: 'legendary',
+          },
+        ],
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Alpha')).toBeInTheDocument()
+
+    // 1枚目の表示終了後、2枚目の画像ロードは応答しない。切替の0.5秒後から
+    // タイムアウト直前まで結果領域は空であり、2枚目が早まって表示されない。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6500 + 1499)
+    })
+    expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
+    expect(screen.queryByText('Beta')).not.toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1 + 100)
+    })
+    expect(screen.getByText('Beta')).toBeInTheDocument()
+
+    // 2枚目の表示終了後は3枚目の通常ロードへ戻り、無応答だった1枚によって
+    // キューが恒久停止しない。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6500 + 100)
+    })
+    expect(screen.getByText('Gamma')).toBeInTheDocument()
+
+    // タイムアウト済みの2枚目が後から縦長としてロード完了しても、現在の3枚目の
+    // レイアウトを変更してはならない。autoPortraitの既定値はtrueなので、古い
+    // onload が state を更新すると通常カードの見出し(Gamma)が画像のみ表示に
+    // 切り替わって消える。この確認で stale callback の汚染を防ぐ。
+    imageInstances[1].width = 100
+    imageInstances[1].height = 200
+    await act(async () => {
+      imageInstances[1].onload?.()
+    })
+    expect(screen.getByText('Gamma')).toBeInTheDocument()
+  })
+
+  it('画像メタデータ待機中にunmountすると、タイムアウト後も後続カードを開始しない', async () => {
+    vi.useFakeTimers()
+
+    const imageInstances: MockImage[] = []
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(value: string) {
+        void value
+        imageInstances.push(this)
+        // 最初のカードだけ通常ロード、2枚目は無応答にしてunmount時の保留状態を作る。
+        if (imageInstances.length === 1) {
+          setTimeout(() => this.onload?.(), 0)
+        }
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    const playMock = vi.fn().mockResolvedValue(undefined)
+    class MockAudio {
+      currentTime = 0
+      preload = ''
+      constructor(src?: string) {
+        void src
+      }
+      play = playMock
+      pause = vi.fn()
+    }
+    vi.stubGlobal('Audio', MockAudio)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: 'https://example.com/gacha.mp3', soundEnabled: true }),
+    }))
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const view = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    playMock.mockClear()
+
+    const cards = ['Alpha', 'Beta', 'Gamma'].map((name, index) => ({
+      id: `card-${index + 1}`,
+      name,
+      description: null,
+      image_url: `https://example.com/${name.toLowerCase()}.png`,
+      rarity: 'rare',
+    }))
+    act(() => {
+      onGachaResult?.({ type: 'gacha', card: cards[0], cards, userTwitchUsername: 'Viewer' })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(imageInstances).toHaveLength(2)
+    const playsBeforeUnmount = playMock.mock.calls.length
+
+    view.unmount()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    // cleanup後に保留タイムアウトが解決しても、3枚目を開始する追加処理・音再生を
+    // 行わない。インスタンス数は後続の画像判定が起きていないことの決定的な観測点。
+    expect(imageInstances).toHaveLength(2)
+    expect(playMock).toHaveBeenCalledTimes(playsBeforeUnmount)
+  })
+
   // エフェクト演出を1枚のカードで発火させる共通ヘルパ
   const renderWithGacha = async (
     search: string,

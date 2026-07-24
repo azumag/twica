@@ -245,6 +245,190 @@ describe("GET /api/overlay/[streamerId]/events", () => {
     });
   });
 
+  it("前レスポンスのPostgreSQLマイクロ秒cursorを正規化して次のqueryへ渡す", async () => {
+    const afterId = "123e4567-e89b-42d3-a456-426614174001";
+    const postgresCursor = "2026-07-24T14:40:14.511943+00:00";
+    const normalizedCursor = "2026-07-24T14:40:14.511943Z";
+    const db = useRows([]);
+
+    // createRequest はoverlayのnextCursor往復と同じくURLSearchParamsを使う。
+    // これにより、以前は不正なsince値として拒否された+00:00 offsetのエンコードを
+    // 実際のリクエスト経路のまま検証できる。
+    const response = await GET(
+      createRequest({ since: postgresCursor, afterId }),
+      routeParams()
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.calls[0].whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+        or(
+          gt(gachaHistoryTable.redeemed_at, normalizedCursor),
+          and(
+            eq(gachaHistoryTable.redeemed_at, normalizedCursor),
+            gt(gachaHistoryTable.id, afterId)
+          )
+        )
+      )
+    );
+  });
+
+  it("Cloudflareで+が空白化されたPostgreSQL cursorを正規化してqueryへ渡す", async () => {
+    const rawPlusCursor = "2026-07-24T14:40:14.511943+00:00";
+    const normalizedCursor = "2026-07-24T14:40:14.511943Z";
+    const db = useRows([]);
+
+    // 生の+を含むquery stringはURLSearchParamsでSPACEに復号される。この経路を
+    // 明示して、CDNやform decoderを通ったpolling cursorも受理する契約を固定する。
+    const response = await GET(
+      new NextRequest(
+        `http://localhost/api/overlay/${STREAMER_ID}/events?since=${rawPlusCursor}`
+      ),
+      routeParams()
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.calls[0].whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+        gt(gachaHistoryTable.redeemed_at, normalizedCursor)
+      )
+    );
+  });
+
+  it("nextCursorはPostgreSQL timestampのマイクロ秒を保持したUTC ISOで返す", async () => {
+    const rawPostgresTimestamp = "2026-07-24T14:40:14.511943+00:00";
+    useRows([
+      {
+        ...DISPLAY_ROW,
+        redeemed_at: rawPostgresTimestamp,
+      },
+    ]);
+
+    const response = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.nextCursor).toEqual({
+      redeemedAt: "2026-07-24T14:40:14.511943Z",
+      historyId: DISPLAY_ROW.id,
+    });
+  });
+
+  it("マイクロ秒cursorの次pollは同一行を除外する複合条件を維持する", async () => {
+    const rawPostgresTimestamp = "2026-07-24T14:40:14.511943+00:00";
+    const historyId = "123e4567-e89b-42d3-a456-426614174001";
+    const db = createDbMock([
+      {
+        rows: [
+          {
+            ...DISPLAY_ROW,
+            id: historyId,
+            redeemed_at: rawPostgresTimestamp,
+          },
+        ],
+      },
+      { rows: [] },
+    ]);
+    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as never);
+
+    const firstResponse = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+    const firstBody = await firstResponse.json();
+
+    expect(firstBody.nextCursor).toEqual({
+      redeemedAt: "2026-07-24T14:40:14.511943Z",
+      historyId,
+    });
+
+    const secondResponse = await GET(
+      createRequest({
+        since: firstBody.nextCursor.redeemedAt,
+        afterId: firstBody.nextCursor.historyId,
+      }),
+      routeParams()
+    );
+
+    expect(secondResponse.status).toBe(200);
+    expect(db.calls[1].whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+        or(
+          gt(gachaHistoryTable.redeemed_at, "2026-07-24T14:40:14.511943Z"),
+          and(
+            eq(gachaHistoryTable.redeemed_at, "2026-07-24T14:40:14.511943Z"),
+            gt(gachaHistoryTable.id, historyId)
+          )
+        )
+      )
+    );
+  });
+
+  it("signed offsetをUTC日付境界をまたいでマイクロ秒まで正規化する", async () => {
+    const db = useRows([]);
+    const cursors = [
+      {
+        input: "2026-07-24T00:15:00.123456+09:30",
+        expected: "2026-07-23T14:45:00.123456Z",
+      },
+      {
+        input: "2026-07-24T23:30:00.654321-04:00",
+        expected: "2026-07-25T03:30:00.654321Z",
+      },
+    ];
+
+    for (const { input, expected } of cursors) {
+      const response = await GET(createRequest({ since: input }), routeParams());
+      expect(response.status).toBe(200);
+      expect(db.calls.at(-1)?.whereCondition).toEqual(
+        and(
+          eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+          gt(gachaHistoryTable.redeemed_at, expected)
+        )
+      );
+    }
+  });
+
+  it("leap dayは受理し、calendar・offset・非ISO入力はDB接続前に拒否する", async () => {
+    const db = useRows([]);
+    const leapDay = await GET(
+      createRequest({ since: "2024-02-29T23:59:59.123456Z" }),
+      routeParams()
+    );
+
+    expect(leapDay.status).toBe(200);
+    expect(db.calls[0].whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+        gt(gachaHistoryTable.redeemed_at, "2024-02-29T23:59:59.123456Z")
+      )
+    );
+
+    const invalidCursors = [
+      "0000-01-01T00:00:00Z",
+      "2024-02-30T00:00:00Z",
+      "2024-01-01T24:00:00Z",
+      "2024-01-01T00:00:00+24:00",
+      "2024-01-01T00:00:00+00:60",
+      "0001-01-01T00:00:00+23:59",
+      "9999-12-31T23:59:59-23:59",
+      "2024-01-01T00:00:00",
+      "1721832014511",
+      "2024/01/01 00:00:00Z",
+    ];
+    for (const since of invalidCursors) {
+      const response = await GET(createRequest({ since }), routeParams());
+      expect(response.status).toBe(400);
+    }
+    expect(db.calls).toHaveLength(1);
+  });
+
   it("PlanetScale queryが必要列・join・安定順・bounded limitを使う", async () => {
     const db = useRows([]);
 

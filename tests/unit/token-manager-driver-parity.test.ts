@@ -9,7 +9,7 @@
  * フルスイートは実行せず、このファイル（と関連する変更分）のみを対象とする。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import {
   getTwitchAccessToken,
   getBotAccountForChat,
@@ -21,14 +21,20 @@ import {
   saveTwitchScopes,
 } from '@/lib/twitch/token-manager'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { refreshTwitchToken } from '@/lib/twitch/auth'
+import { refreshTwitchToken, TwitchTokenRefreshError } from '@/lib/twitch/auth'
 import { getDb } from '@/lib/db/client'
 import {
   twitchBotAccounts as twitchBotAccountsTable,
   users as usersTable,
 } from '@/lib/db/schema'
 
-vi.mock('@/lib/twitch/auth')
+// 自動モックは Error subclass の constructor を vi.fn に置換し、status を失わせる。
+// token-manager は 4xx/5xx の恒久性を `TwitchTokenRefreshError.status` で判定するため、
+// 実クラスを保持したまま、外部 I/O を行う refresh 関数だけを差し替える。
+vi.mock('@/lib/twitch/auth', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/lib/twitch/auth')>()
+  return { ...actual, refreshTwitchToken: vi.fn() }
+})
 // logger.error は実装だと Supabase errors パイプラインへ fire-and-forget するため、
 // テストでは副作用のないモックに差し替える（dashboard-data-driver-parity と同じ）
 vi.mock('@/lib/logger', () => ({
@@ -45,6 +51,7 @@ vi.mock('@/lib/logger', () => ({
 interface PostgrestResult {
   data?: unknown
   error?: unknown
+  reject?: unknown
 }
 
 function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult[]>) {
@@ -52,6 +59,10 @@ function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult
     Object.entries(resultsByTable).map(([table, results]) => [table, [...results]])
   )
   const updateCalls: Array<{ table: string; values: Record<string, unknown> }> = []
+  const updateFilterCalls: Array<{
+    table: string
+    filters: Array<{ column: string; value: unknown }>
+  }> = []
   const from = vi.fn((table: string) => {
     const queue = queues[table]
     if (!queue || queue.length === 0) {
@@ -59,23 +70,34 @@ function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult
     }
     const result = queue.length > 1 ? (queue.shift() as PostgrestResult) : queue[0]
     const resolved = { data: result.data ?? null, error: result.error ?? null }
+    const resolve = () => result.reject === undefined
+      ? Promise.resolve(resolved)
+      : Promise.reject(result.reject)
+    let activeUpdateFilters: Array<{ column: string; value: unknown }> | null = null
     const builder: any = {
       select: vi.fn(() => builder),
-      eq: vi.fn(() => builder),
+      eq: vi.fn((column: string, value: unknown) => {
+        // CASの安全性はUPDATEのID条件と旧refresh token条件の両方に依存する。
+        // 読み取りチェーンのeqは混ぜず、update()後のfilterだけを記録する。
+        activeUpdateFilters?.push({ column, value })
+        return builder
+      }),
       order: vi.fn(() => builder),
       limit: vi.fn(() => builder),
       update: vi.fn((values: Record<string, unknown>) => {
         updateCalls.push({ table, values })
+        activeUpdateFilters = []
+        updateFilterCalls.push({ table, filters: activeUpdateFilters })
         return builder
       }),
-      maybeSingle: vi.fn(() => Promise.resolve(resolved)),
-      single: vi.fn(() => Promise.resolve(resolved)),
+      maybeSingle: vi.fn(resolve),
+      single: vi.fn(resolve),
       then: (onFulfilled: any, onRejected: any) =>
-        Promise.resolve(resolved).then(onFulfilled, onRejected),
+        resolve().then(onFulfilled, onRejected),
     }
     return builder
   })
-  return { from, updateCalls }
+  return { from, updateCalls, updateFilterCalls }
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +256,7 @@ describe('token-manager: postgrest / pg 経路の互換 (#572)', () => {
       await expect(getTwitchAccessToken('123456789')).resolves.toBeNull()
     })
 
-    it('DB_DRIVER=pg: 期限切れ時のリフレッシュ保存とスコープ全置換が users へ正しい set/where で UPDATE される', async () => {
+    it('DB_DRIVER=pg: tokenとscopeを同じCAS UPDATEで保存し、無条件の後続scope UPDATEを行わない', async () => {
       vi.stubEnv('DB_DRIVER', 'pg')
       vi.mocked(refreshTwitchToken).mockResolvedValue(REFRESHED_TOKENS)
       const pg = createDrizzleDbMock({
@@ -245,24 +267,113 @@ describe('token-manager: postgrest / pg 経路の互換 (#572)', () => {
       const token = await getTwitchAccessToken('123456789')
 
       expect(token).toBe('new-token')
-      // 1回目: refreshTwitchAccessTokenPg のトークン保存
+      // OAuth callback の新しい scope を古い refresh 処理が後から上書きしないよう、
+      // token と scope は旧 refresh token 条件付きの1回の UPDATE にまとめる。
+      expect(pg.updateCalls).toHaveLength(1)
       expect(pg.updateCalls[0].table).toBe(usersTable)
       expect(pg.updateCalls[0].set).toEqual({
         twitch_access_token: 'new-token',
         twitch_refresh_token: 'new-refresh-token',
         twitch_token_expires_at: expect.any(String),
+        twitch_scopes: ['user:read:email'],
       })
-      expect(pg.updateCalls[0].where).toEqual(eq(usersTable.twitch_user_id, '123456789'))
-      // 2回目: saveTwitchScopesPg のスコープ全置換
-      expect(pg.updateCalls[1].table).toBe(usersTable)
-      expect(pg.updateCalls[1].set).toEqual({ twitch_scopes: ['user:read:email'] })
-      expect(pg.updateCalls[1].where).toEqual(eq(usersTable.twitch_user_id, '123456789'))
+      expect(pg.updateCalls[0].where).toEqual(and(
+        eq(usersTable.twitch_user_id, '123456789'),
+        eq(usersTable.twitch_refresh_token, 'refresh-token'),
+      ))
+    })
+
+    it('同一userの2並行refreshは2回交換し、CAS loserもwinner tokenを返して後続UPDATEしない', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg')
+      const loserTokens = {
+        ...REFRESHED_TOKENS,
+        access_token: 'loser-access-token',
+        refresh_token: 'loser-refresh-token',
+        scope: ['loser:scope'],
+      }
+      const winnerTokens = {
+        ...REFRESHED_TOKENS,
+        access_token: 'winner-access-token',
+        refresh_token: 'winner-refresh-token',
+        scope: ['winner:scope'],
+      }
+      vi.mocked(refreshTwitchToken)
+        .mockResolvedValueOnce(winnerTokens)
+        .mockResolvedValueOnce(loserTokens)
+      const pg = createDrizzleDbMock({
+        selects: [
+          { rows: [{ ...VALID_USER_TOKEN_ROW, twitch_token_expires_at: PAST_ISO }] },
+          { rows: [{ ...VALID_USER_TOKEN_ROW, twitch_token_expires_at: PAST_ISO }] },
+          { rows: [{ twitch_access_token: 'winner-access-token' }] },
+        ],
+        updates: [
+          { rows: [{ twitch_access_token: 'winner-access-token' }] },
+          { rows: [] },
+        ],
+      })
+      primePgDb(pg)
+
+      const results = await Promise.all([
+        getTwitchAccessToken('123456789'),
+        getTwitchAccessToken('123456789'),
+      ])
+
+      expect(refreshTwitchToken).toHaveBeenCalledTimes(2)
+      expect(results).toEqual(['winner-access-token', 'winner-access-token'])
+      expect(pg.updateCalls).toHaveLength(2)
+      expect(pg.updateCalls[0].set).toMatchObject({
+        twitch_access_token: 'winner-access-token',
+        twitch_refresh_token: 'winner-refresh-token',
+        twitch_scopes: ['winner:scope'],
+      })
+      for (const call of pg.updateCalls) {
+        // loser の書込み試行も同じ旧 refresh token を条件とするため、winner が
+        // rotation を保存した後は0件となり、資格情報もscopeも上書きできない。
+        expect(call.where).toEqual(and(
+          eq(usersTable.twitch_user_id, '123456789'),
+          eq(usersTable.twitch_refresh_token, 'refresh-token'),
+        ))
+      }
+      expect(pg.updateCalls[1].set).toMatchObject({
+        twitch_access_token: 'loser-access-token',
+        twitch_refresh_token: 'loser-refresh-token',
+        twitch_scopes: ['loser:scope'],
+      })
+      // CAS後にscopeだけを無条件保存する3回目のUPDATEが無いことが、
+      // callbackが保存した新scopeとのinterleaving回帰を構造的に防ぐ。
+      expect(pg.updateCalls).toHaveLength(2)
+    })
+
+    it('PostgRESTでもCAS loserはwinnerのaccess tokenを再読込する', async () => {
+      vi.stubEnv('DB_DRIVER', undefined)
+      vi.mocked(refreshTwitchToken).mockResolvedValue({ ...REFRESHED_TOKENS, scope: [] })
+      const client = createSupabaseClientMock({
+        users: [
+          { data: { ...VALID_USER_TOKEN_ROW, twitch_token_expires_at: PAST_ISO } },
+          { data: null },
+          { data: { twitch_access_token: 'postgrest-winner-token' } },
+        ],
+      })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+
+      await expect(getTwitchAccessToken('123456789')).resolves.toBe('postgrest-winner-token')
+      expect(client.updateCalls).toHaveLength(1)
+      expect(client.updateFilterCalls).toEqual([{
+        table: 'users',
+        filters: [
+          { column: 'twitch_user_id', value: '123456789' },
+          { column: 'twitch_refresh_token', value: 'refresh-token' },
+        ],
+      }])
     })
 
     it('DB_DRIVER=pg-read: 読み取りは pg・期限切れ時のトークン保存は postgrest のまま（フラグ使い分けの検証）', async () => {
       vi.stubEnv('DB_DRIVER', 'pg-read')
       vi.mocked(refreshTwitchToken).mockResolvedValue({ ...REFRESHED_TOKENS, scope: [] })
-      const client = createSupabaseClientMock({ users: [{ data: null }] })
+      // pg-read の refresh 保存は PostgREST CAS の更新結果を返す。
+      const client = createSupabaseClientMock({
+        users: [{ data: { twitch_access_token: 'new-token' } }],
+      })
       vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
       const pg = createDrizzleDbMock({
         selects: [{ rows: [{ ...VALID_USER_TOKEN_ROW, twitch_token_expires_at: PAST_ISO }] }],
@@ -272,9 +383,24 @@ describe('token-manager: postgrest / pg 経路の互換 (#572)', () => {
       const token = await getTwitchAccessToken('123456789')
 
       expect(token).toBe('new-token')
-      // 書き込み（トークン保存）は postgrest 経路（refreshTwitchAccessToken 本体）
+      // pg-read の書込みもtoken/scopeを同じPostgREST CASへまとめる。
       expect(client.updateCalls).toHaveLength(1)
-      expect(client.updateCalls[0].table).toBe('users')
+      expect(client.updateCalls[0]).toEqual({
+        table: 'users',
+        values: {
+          twitch_access_token: 'new-token',
+          twitch_refresh_token: 'new-refresh-token',
+          twitch_token_expires_at: expect.any(String),
+          twitch_scopes: [],
+        },
+      })
+      expect(client.updateFilterCalls).toEqual([{
+        table: 'users',
+        filters: [
+          { column: 'twitch_user_id', value: '123456789' },
+          { column: 'twitch_refresh_token', value: 'refresh-token' },
+        ],
+      }])
       // pg 側では update が呼ばれない
       expect(pg.updateCalls).toHaveLength(0)
     })
@@ -516,12 +642,179 @@ describe('token-manager: postgrest / pg 経路の互換 (#572)', () => {
         status: 'active',
         last_error: null,
       })
-      expect(pg.updateCalls[0].where).toEqual(eq(twitchBotAccountsTable.id, 'bot-account-1'))
+      expect(pg.updateCalls[0].where).toEqual(and(
+        eq(twitchBotAccountsTable.id, 'bot-account-1'),
+        eq(twitchBotAccountsTable.twitch_refresh_token, 'bot-refresh-token'),
+      ))
     })
 
-    it('リフレッシュ失敗: pg 経路で status=error が保存され null を返す（既存挙動と同じ）', async () => {
+    it('同一BOTの2並行refreshは2回交換し、CAS loserもwinner tokenを返して上書きしない', async () => {
       vi.stubEnv('DB_DRIVER', 'pg')
-      vi.mocked(refreshTwitchToken).mockRejectedValue(new Error('refresh failed'))
+      const loserTokens = {
+        ...REFRESHED_TOKENS,
+        access_token: 'loser-bot-access-token',
+        refresh_token: 'loser-bot-refresh-token',
+        scope: ['loser:bot-scope'],
+      }
+      const winnerTokens = {
+        ...REFRESHED_TOKENS,
+        access_token: 'winner-bot-token',
+        refresh_token: 'winner-bot-refresh-token',
+        scope: ['winner:bot-scope'],
+      }
+      vi.mocked(refreshTwitchToken)
+        .mockResolvedValueOnce(winnerTokens)
+        .mockResolvedValueOnce(loserTokens)
+      const expiredBot = { ...BOT_ROW, twitch_token_expires_at: PAST_ISO }
+      const pg = createDrizzleDbMock({
+        selects: [
+          { rows: [STREAMER_ROW] },
+          { rows: [STREAMER_ROW] },
+          { rows: [SETTINGS_CUSTOM] },
+          { rows: [SETTINGS_CUSTOM] },
+          { rows: [expiredBot] },
+          { rows: [expiredBot] },
+          { rows: [{ twitch_access_token: 'winner-bot-token' }] },
+        ],
+        updates: [
+          { rows: [{ twitch_access_token: 'winner-bot-token' }] },
+          { rows: [] },
+        ],
+      })
+      primePgDb(pg)
+
+      const results = await Promise.all([
+        getBotAccountForChat('broadcaster-1'),
+        getBotAccountForChat('broadcaster-2'),
+      ])
+
+      expect(refreshTwitchToken).toHaveBeenCalledTimes(2)
+      expect(results.map(result => result?.accessToken)).toEqual([
+        'winner-bot-token',
+        'winner-bot-token',
+      ])
+      expect(pg.updateCalls).toHaveLength(2)
+      expect(pg.updateCalls[0].set).toMatchObject({
+        twitch_access_token: 'winner-bot-token',
+        twitch_refresh_token: 'winner-bot-refresh-token',
+        scopes: ['winner:bot-scope'],
+      })
+      for (const call of pg.updateCalls) {
+        expect(call.where).toEqual(and(
+          eq(twitchBotAccountsTable.id, 'bot-account-1'),
+          eq(twitchBotAccountsTable.twitch_refresh_token, 'bot-refresh-token'),
+        ))
+      }
+      expect(pg.updateCalls[1].set).toMatchObject({
+        twitch_access_token: 'loser-bot-access-token',
+        twitch_refresh_token: 'loser-bot-refresh-token',
+        scopes: ['loser:bot-scope'],
+      })
+    })
+
+    it('PostgRESTでもBOTのCAS loserはwinnerのaccess tokenを再読込する', async () => {
+      vi.stubEnv('DB_DRIVER', undefined)
+      vi.mocked(refreshTwitchToken).mockResolvedValue(REFRESHED_TOKENS)
+      const expiredBot = { ...BOT_ROW, twitch_token_expires_at: PAST_ISO }
+      const client = createSupabaseClientMock({
+        streamers: [{ data: STREAMER_ROW }],
+        streamer_chat_sender_settings: [{ data: SETTINGS_CUSTOM }],
+        twitch_bot_accounts: [
+          { data: expiredBot },
+          { data: null },
+          { data: { twitch_access_token: 'postgrest-winner-bot-token' } },
+        ],
+      })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+
+      await expect(getBotAccountForChat('broadcaster-1')).resolves.toMatchObject({
+        accessToken: 'postgrest-winner-bot-token',
+      })
+      expect(client.updateCalls).toHaveLength(1)
+      expect(client.updateFilterCalls).toEqual([{
+        table: 'twitch_bot_accounts',
+        filters: [
+          { column: 'id', value: 'bot-account-1' },
+          { column: 'twitch_refresh_token', value: 'bot-refresh-token' },
+        ],
+      }])
+    })
+
+    it('BOTの一時的522失敗はactiveを維持し、次の呼び出しで回復する', async () => {
+      vi.stubEnv('DB_DRIVER', 'pg')
+      const expiredBot = { ...BOT_ROW, twitch_token_expires_at: PAST_ISO }
+      vi.mocked(refreshTwitchToken).mockRejectedValueOnce(new TwitchTokenRefreshError(522))
+      const firstPg = createDrizzleDbMock({
+        selects: [
+          { rows: [STREAMER_ROW] },
+          { rows: [SETTINGS_CUSTOM] },
+          { rows: [expiredBot] },
+        ],
+      })
+      primePgDb(firstPg)
+
+      await expect(getBotAccountForChat('broadcaster-1')).resolves.toBeNull()
+      // transient失敗ではstatusを変更しないため、active filterから除外されない。
+      expect(firstPg.updateCalls).toHaveLength(0)
+      const { logger } = await import('@/lib/logger')
+      expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain('gateway unavailable')
+
+      vi.mocked(refreshTwitchToken).mockResolvedValueOnce(REFRESHED_TOKENS)
+      const secondPg = createDrizzleDbMock({
+        selects: [
+          { rows: [STREAMER_ROW] },
+          { rows: [SETTINGS_CUSTOM] },
+          { rows: [expiredBot] },
+        ],
+      })
+      primePgDb(secondPg)
+      await expect(getBotAccountForChat('broadcaster-1')).resolves.toMatchObject({
+        accessToken: 'new-token',
+      })
+      expect(refreshTwitchToken).toHaveBeenCalledTimes(2)
+    })
+
+    it.each([
+      ['custom_bot', SETTINGS_CUSTOM],
+      ['official_bot', { sender_mode: 'official_bot', custom_bot_account_id: null }],
+    ])('PostgRESTの%sもnetwork失敗ではactiveを維持し、次回回復する', async (mode, settings) => {
+      vi.stubEnv('DB_DRIVER', undefined)
+      const expiredBot = {
+        ...BOT_ROW,
+        owner_type: mode === 'official_bot' ? 'system' : 'streamer',
+        twitch_token_expires_at: PAST_ISO,
+      }
+      vi.mocked(refreshTwitchToken).mockRejectedValueOnce(new TwitchTokenRefreshError())
+      const firstClient = createSupabaseClientMock({
+        streamers: [{ data: STREAMER_ROW }],
+        streamer_chat_sender_settings: [{ data: settings }],
+        twitch_bot_accounts: [{ data: expiredBot }],
+      })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(firstClient as any)
+
+      await expect(getBotAccountForChat('broadcaster-1')).resolves.toBeNull()
+      expect(firstClient.updateCalls).toHaveLength(0)
+
+      vi.mocked(refreshTwitchToken).mockResolvedValueOnce(REFRESHED_TOKENS)
+      const secondClient = createSupabaseClientMock({
+        streamers: [{ data: STREAMER_ROW }],
+        streamer_chat_sender_settings: [{ data: settings }],
+        twitch_bot_accounts: [
+          { data: expiredBot },
+          { data: { twitch_access_token: 'new-token' } },
+        ],
+      })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(secondClient as any)
+
+      await expect(getBotAccountForChat('broadcaster-1')).resolves.toMatchObject({
+        accessToken: 'new-token',
+      })
+      expect(refreshTwitchToken).toHaveBeenCalledTimes(2)
+    })
+
+    it.each([400, 401])('資格情報失効status=%iだけはpg経路で status=error を保存する', async status => {
+      vi.stubEnv('DB_DRIVER', 'pg')
+      vi.mocked(refreshTwitchToken).mockRejectedValue(new TwitchTokenRefreshError(status))
       const pg = createDrizzleDbMock({
         selects: [
           { rows: [STREAMER_ROW] },
@@ -536,8 +829,96 @@ describe('token-manager: postgrest / pg 経路の互換 (#572)', () => {
       expect(result).toBeNull()
       expect(pg.updateCalls).toHaveLength(1)
       expect(pg.updateCalls[0].table).toBe(twitchBotAccountsTable)
-      expect(pg.updateCalls[0].set).toEqual({ status: 'error', last_error: 'refresh failed' })
-      expect(pg.updateCalls[0].where).toEqual(eq(twitchBotAccountsTable.id, 'bot-account-1'))
+      expect(pg.updateCalls[0].set).toEqual({ status: 'error', last_error: 'token_refresh_failed' })
+      expect(pg.updateCalls[0].where).toEqual(and(
+        eq(twitchBotAccountsTable.id, 'bot-account-1'),
+        eq(twitchBotAccountsTable.twitch_refresh_token, 'bot-refresh-token'),
+      ))
+    })
+
+    it.each([400, 401])('資格情報失効status=%iだけはPostgRESTでも status=error を保存する', async status => {
+      vi.stubEnv('DB_DRIVER', undefined)
+      vi.mocked(refreshTwitchToken).mockRejectedValue(new TwitchTokenRefreshError(status))
+      const client = createSupabaseClientMock({
+        streamers: [{ data: STREAMER_ROW }],
+        streamer_chat_sender_settings: [{ data: SETTINGS_CUSTOM }],
+        twitch_bot_accounts: [
+          { data: { ...BOT_ROW, twitch_token_expires_at: PAST_ISO } },
+          { data: null },
+        ],
+      })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+
+      await expect(getBotAccountForChat('broadcaster-1')).resolves.toBeNull()
+      expect(client.updateCalls).toEqual([{
+        table: 'twitch_bot_accounts',
+        values: { status: 'error', last_error: 'token_refresh_failed' },
+      }])
+      // 先行refresh/callbackが資格情報を更新済みならactiveをerrorへ戻さない。
+      // 恒久エラー状態の保存にもIDと交換時点の旧refresh tokenを必須にする。
+      expect(client.updateFilterCalls).toEqual([{
+        table: 'twitch_bot_accounts',
+        filters: [
+          { column: 'id', value: 'bot-account-1' },
+          { column: 'twitch_refresh_token', value: 'bot-refresh-token' },
+        ],
+      }])
+    })
+
+    it.each([
+      ['pg', 403],
+      ['pg', 404],
+      ['pg', 501],
+      ['postgrest', 403],
+      ['postgrest', 404],
+      ['postgrest', 501],
+    ])('%s経路のstatus=%iは資格情報失効と断定せずactiveを維持する', async (driver, status) => {
+      vi.mocked(refreshTwitchToken).mockRejectedValue(new TwitchTokenRefreshError(status))
+      const expiredBot = { ...BOT_ROW, twitch_token_expires_at: PAST_ISO }
+
+      if (driver === 'pg') {
+        vi.stubEnv('DB_DRIVER', 'pg')
+        const pg = createDrizzleDbMock({
+          selects: [
+            { rows: [STREAMER_ROW] },
+            { rows: [SETTINGS_CUSTOM] },
+            { rows: [expiredBot] },
+          ],
+        })
+        primePgDb(pg)
+        await expect(getBotAccountForChat('broadcaster-1')).resolves.toBeNull()
+        expect(pg.updateCalls).toHaveLength(0)
+      } else {
+        vi.stubEnv('DB_DRIVER', undefined)
+        const client = createSupabaseClientMock({
+          streamers: [{ data: STREAMER_ROW }],
+          streamer_chat_sender_settings: [{ data: SETTINGS_CUSTOM }],
+          twitch_bot_accounts: [{ data: expiredBot }],
+        })
+        vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+        await expect(getBotAccountForChat('broadcaster-1')).resolves.toBeNull()
+        expect(client.updateCalls).toHaveLength(0)
+      }
+    })
+
+    it('PostgRESTの恒久エラー状態保存がtransport rejectしてもnullへ縮退する', async () => {
+      vi.stubEnv('DB_DRIVER', undefined)
+      vi.mocked(refreshTwitchToken).mockRejectedValue(new TwitchTokenRefreshError(401))
+      const client = createSupabaseClientMock({
+        streamers: [{ data: STREAMER_ROW }],
+        streamer_chat_sender_settings: [{ data: SETTINGS_CUSTOM }],
+        twitch_bot_accounts: [
+          { data: { ...BOT_ROW, twitch_token_expires_at: PAST_ISO } },
+          { reject: new Error('status update transport failed') },
+        ],
+      })
+      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
+
+      await expect(getBotAccountForChat('broadcaster-1')).resolves.toBeNull()
+      expect(client.updateCalls).toEqual([{
+        table: 'twitch_bot_accounts',
+        values: { status: 'error', last_error: 'token_refresh_failed' },
+      }])
     })
 
     it('sender_mode=streamer / 設定なし: 両経路とも null（BOT スキーマ未デプロイ窓 42P01 も null）', async () => {

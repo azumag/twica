@@ -4,7 +4,6 @@ import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { cookies } from 'next/headers'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { handleAuthError } from '@/lib/auth-error-handler'
-import { reportAuthError } from '@/lib/sentry/error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
@@ -261,11 +260,8 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ authUrl })
   } catch (error) {
-    reportAuthError(error, {
-      provider: 'twitch',
-      action: 'login',
-    })
-    
+    // handleAuthError が唯一の永続化責任点。ここで別途 reportAuthError を呼ぶと
+    // 同一例外が2件の errors 行・自動issueになる。
     // Return JSON for API routes since the frontend expects JSON response
     // フロントエンドがJSONレスポンスを期待しているため、APIルート用にJSONを返す
     return handleAuthError(error, 'unknown_error', { route: 'twitch_login' }, { returnJson: true })

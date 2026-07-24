@@ -3,7 +3,7 @@
  *
  * 背景: src/app/api/twitch/eventsub/route.ts に実装されていたガチャ抽選実行・
  * チャット通知・レイド処理のロジックを、以下2つの理由からこのモジュールへ
- * 純粋に移動（ロジック変更ゼロ）した。
+ * 当初はロジック変更なしで移動した。
  *
  * 1. Issue #787（EventSubリプレイ機構）: メンテナンス中に KV へ退避された
  *    EventSub notification を後から再処理する新規エンドポイント
@@ -15,10 +15,9 @@
  *    maintenance退避判定など、Webhook受信の関心事のみを残し、実際のガチャ
  *    実行・通知ロジックはこちらに集約する。
  *
- * 移動元の route.ts と全く同じロジック・コメントを保持しており、関数本体の
- * 中身は一切変更していない（Issue #787 の絶対条件）。
+ * 抽出後の修正はこの共有モジュールだけに集約し、ライブWebhookとリプレイが
+ * 必ず同じPlanetScale・通知契約を使う。
  */
-import { getSupabaseAdmin, getSupabaseAdminNoCache } from "@/lib/supabase/admin";
 import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
@@ -33,17 +32,39 @@ import { countCharacters } from "@/lib/text-utils";
 import { resolvePackDisplayName } from "@/lib/collection-packs";
 import { runInBackground } from "@/lib/background-task";
 export { runInBackground } from "@/lib/background-task";
-// #573: チャット通知プレースホルダ用 get_user_card_counts（読み取り専用 RPC）の
-// pg 直結分岐用。フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに
-// 一切入らないため、import が存在するだけでは挙動に影響しない(#570 の設計。
-// tests/setup.ts の getDb throw スタブも「postgrest 経路で getDb が呼ばれない」
-// ことを構造的に保証している)。
+// #573/#803: チャット通知プレースホルダ、売り切れ設定取得ともPlanetScale固定。
+// 退役済みSupabase clientと旧driver secretの値には依存しない。
 import { getDb } from "@/lib/db/client";
-import { getGachaDbDriver } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
+import { eq } from "drizzle-orm";
+import { streamers as streamersTable } from "@/lib/db/schema";
 
 export const CARD_LIST_SEPARATOR = "、";
 export const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = '@{user} が{draws}連ガチャで {rarityCounts} を獲得しました！{cards}';
+
+/**
+ * ガチャ確定後の補助通知エラーをbest-effortで永続化する。
+ *
+ * Error reporter自体が停止していても、既に確定したカード付与・ポイント返還・
+ * EventSub 2xxを巻き戻してはならない。reportErrorは通常内部で失敗を吸収するが、
+ * テストdoubleや将来の実装変更がrejectしても通知境界から漏らさないため、ここで
+ * 最終防御する。console warnはDBを使わずCloudflare Observabilityへ残る。
+ */
+async function reportNotificationError(
+  error: unknown,
+  context: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await reportError(error, context);
+  } catch (reportingError) {
+    logger.warn('[EventSub] Failed to persist notification error', {
+      context: context.context,
+      error: reportingError instanceof Error
+        ? reportingError.message
+        : String(reportingError),
+    });
+  }
+}
 // Issue #597: {packName} でデフォルト(未分類)パックの表示名オーバーライドが
 // 未設定の場合のフォールバックラベル。チャット文言は他の箇所(rarityMap等)と
 // 同様に i18n非対応でハードコードする。messages/*.json の
@@ -359,7 +380,7 @@ export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         streamerId: data.streamer.id,
       });
-      await reportError(result.reason, {
+      await reportNotificationError(result.reason, {
         context: `eventsub:postRedemptionNotify:${label}`,
         streamerId: data.streamer.id,
         broadcasterTwitchUserId: data.broadcasterTwitchUserId,
@@ -416,7 +437,7 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
           redemptionId,
           reason: result.reason,
         });
-        await reportError(new Error(`cancelRedemption failed: ${result.reason ?? 'unknown'}`), {
+        await reportNotificationError(new Error(`cancelRedemption failed: ${result.reason ?? 'unknown'}`), {
           context: 'eventsub:postSoldOutNotify:cancelRedemption',
           broadcasterTwitchUserId,
           rewardId,
@@ -432,7 +453,7 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
         redemptionId,
         error: error instanceof Error ? error.message : String(error),
       });
-      await reportError(error, {
+      await reportNotificationError(error, {
         context: 'eventsub:postSoldOutNotify:cancelRedemption',
         broadcasterTwitchUserId,
         rewardId,
@@ -449,17 +470,35 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
   }
 
   try {
-    const supabaseAdmin = getSupabaseAdmin();
-    const { data: streamer, error } = await supabaseAdmin
-      .from('streamers')
-      .select('chat_announcement_enabled')
-      .eq('twitch_user_id', broadcasterTwitchUserId)
-      .maybeSingle();
-
-    if (error) {
+    let streamer: { chat_announcement_enabled: boolean } | null = null;
+    try {
+      // Sold-out redemptions use the same post-commit notification boundary as
+      // successful draws. Reading settings from PlanetScale here prevents the
+      // retired Supabase stub from also breaking point-refund notifications.
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ chat_announcement_enabled: streamersTable.chat_announcement_enabled })
+            .from(streamersTable)
+            .where(eq(streamersTable.twitch_user_id, broadcasterTwitchUserId))
+            .limit(1);
+        },
+        "eventsub:postSoldOutNotify:streamer",
+        { idempotent: true },
+      );
+      streamer = rows[0] ?? null;
+    } catch (error) {
       logger.warn('[postSoldOutNotify] Failed to fetch chat announcement settings', {
         broadcasterTwitchUserId,
-        error: error.message,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Point refund has already been attempted, so monitoring failure must not
+      // turn the webhook into a retry storm. Persist the deployment/permission
+      // failure best-effort, then preserve the existing no-chat fallback.
+      await reportNotificationError(error, {
+        context: 'eventsub:postSoldOutNotify:streamerSettings',
+        broadcasterTwitchUserId,
       });
       return;
     }
@@ -485,7 +524,7 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
       broadcasterTwitchUserId,
       error: error instanceof Error ? error.message : String(error),
     });
-    await reportError(error, {
+    await reportNotificationError(error, {
       context: 'eventsub:postSoldOutNotify:chatAnnouncement',
       broadcasterTwitchUserId,
     });
@@ -698,8 +737,8 @@ export async function handleRedemption(messageId: string, event: {
 
 /**
  * sendChatAnnouncement の {num}/{unique}/{newCards} 用 get_user_card_counts RPC の
- * pg 直結(postgres.js)実装 (#573)。getGachaDbDriver() === 'pg' のときのみ呼ばれる
- * (フラグ分岐の判断根拠は呼び出し側 userCardCountsPromise のコメント参照)。
+ * pg 直結(postgres.js)実装 (#573/#803)。Supabase admin clientは現在fail-closed
+ * stubのため、EventSub成功後の通知経路もPlanetScaleへ固定する。
  *
  * PostgREST .rpc() と同一の { data, error } 形状へ正規化して返すことで、呼び出し側の
  * 既存分岐（error → logger.warn + プレースホルダを未定義のまま空文字化 / data →
@@ -749,6 +788,42 @@ export async function fetchUserCardCountsRpcPg(
   } catch (error) {
     return {
       data: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+/**
+ * チャット通知の `{all}` 用に、PlanetScale上のアクティブカード総数を取得する。
+ *
+ * 旧実装は退役済みSupabase admin stubから `.from('cards')` を呼び、テンプレートが
+ * `{all}` を含む本番ガチャだけを同期的に失敗させていた。通知はガチャ確定後の処理
+ * なので、読み取り失敗は既存契約どおりerror値へ正規化し、カード付与自体や他の
+ * 通知処理を巻き戻さない。接続取得をretry callback内に置くことで一時切断だけを
+ * bounded retryする。
+ */
+async function fetchActiveCardCountPg(
+  streamerId: string,
+): Promise<{ count: number | null; error: { message: string } | null }> {
+  try {
+    const count = await withDbRetry(
+      async () => {
+        const { sql } = await getDb();
+        const rows = await sql<{ count: number }[]>`
+          select count(*)::integer as count
+          from cards
+          where streamer_id = ${streamerId}::uuid
+            and is_active = true
+        `;
+        return rows[0]?.count ?? 0;
+      },
+      "eventsub:sendChatAnnouncement:activeCardCount",
+      { idempotent: true },
+    );
+    return { count, error: null };
+  } catch (error) {
+    return {
+      count: null,
       error: { message: error instanceof Error ? error.message : String(error) },
     };
   }
@@ -844,16 +919,10 @@ export async function sendChatAnnouncement(
   let newCardNames: string[] = [];
 
   if (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo) {
-    const supabaseAdminNoCache = getSupabaseAdminNoCache();
-
     // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
     // {all}: count active cards for this streamer (user-independent)
     const allCountPromise = needsAllCount
-      ? supabaseAdminNoCache
-          .from('cards')
-          .select('id', { count: 'exact', head: true })
-          .eq('streamer_id', streamer.id)
-          .eq('is_active', true)
+      ? fetchActiveCardCountPg(streamer.id)
       : null;
 
     // {num} / {unique} は RPC `get_user_card_counts` で DB 側 GROUP BY 済みの
@@ -863,23 +932,11 @@ export async function sendChatAnnouncement(
     // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
     // RPC does not filter by is_active, so we filter on the client.
     //
-    // #573: この呼び出しはガチャ EventSub フロー内（ガチャ成功後のチャット通知）
-    // のため、全体フラグ（DB_DRIVER / isPgReadEnabled）ではなく execute_gacha_transaction
-    // と同じ getGachaDbDriver() で分岐する。GACHA_DB_DRIVER=postgrest による緊急
-    // ロールバック時に通知経路だけ pg 直結に残る「経路の食い違い」を作らない —
-    // ロールバックは1つのレバーでガチャ実行フロー全体を旧経路へ戻せる必要がある
-    // （gacha.ts getIssuedCounts と同じ判断）。
-    // pg 側は同一の { data, error } 形状へ正規化して返すため、下の
-    // userCardCountsResult の消費コード（error → warn / data → 集計）は
-    // 両経路で完全に共有される（NoCache 相当である根拠・エラー処理方針は
-    // fetchUserCardCountsRpcPg の doc コメント参照）。
+    // Supabase admin clientはfail-closed stubなので、環境に残る旧driver secretを
+    // 参照してはならない。直前のガチャ確定と同じPlanetScaleを直接読むことで、
+    // `{num}` / `{unique}` / `{newCards}`へ最新の所持数を反映する。
     const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo)
-      ? (getGachaDbDriver() === 'pg'
-          ? fetchUserCardCountsRpcPg(userId, streamer.id)
-          : supabaseAdminNoCache.rpc('get_user_card_counts', {
-              p_twitch_user_id: userId,
-              p_streamer_id: streamer.id,
-            }))
+      ? fetchUserCardCountsRpcPg(userId, streamer.id)
       : null;
 
     // transient な transport / runtime 例外が throw されるとチャット通知全体が
@@ -899,6 +956,10 @@ export async function sendChatAnnouncement(
             streamerId: streamer.id,
             error: allCountResult.error.message,
           });
+          await reportNotificationError(new Error(allCountResult.error.message), {
+            context: 'eventsub:sendChatAnnouncement:activeCardCount',
+            streamerId: streamer.id,
+          });
         } else {
           allCount = allCountResult?.count ?? 0;
         }
@@ -910,6 +971,10 @@ export async function sendChatAnnouncement(
             streamerId: streamer.id,
             userTwitchId: userId,
             error: userCardCountsResult.error.message,
+          });
+          await reportNotificationError(new Error(userCardCountsResult.error.message), {
+            context: 'eventsub:sendChatAnnouncement:userCardCounts',
+            streamerId: streamer.id,
           });
           if (needsUniqueCount || needsNewCardInfo) {
             // RPC 失敗時は 0 にフォールバックせず、未定義のままプレースホルダを空文字化
@@ -948,6 +1013,10 @@ export async function sendChatAnnouncement(
         streamerId: streamer.id,
         userTwitchId: userId,
         error: err instanceof Error ? err.message : String(err),
+      });
+      await reportNotificationError(err, {
+        context: 'eventsub:sendChatAnnouncement:countQueries',
+        streamerId: streamer.id,
       });
     }
   }

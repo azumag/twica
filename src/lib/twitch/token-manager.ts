@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { withRetry } from '@/lib/supabase/retry';
-import { refreshTwitchToken, type TwitchTokens } from './auth';
+import { refreshTwitchToken, TwitchTokenRefreshError, type TwitchTokens } from './auth';
 import { logger } from '@/lib/logger';
 // -----------------------------------------------------------------------------
 // #572 (#570 パイロット踏襲): pg 直結経路。
@@ -43,6 +43,24 @@ export class TwitchTokenError extends Error {
     super(message);
     this.name = 'TwitchTokenError';
   }
+}
+
+// Cloudflare Workers の fetch/DB I/O はリクエストコンテキストに所属するため、pending
+// Promise をmodule scopeへ保存して別リクエストからawaitしてはいけない。並行refreshは
+// token endpointまで各リクエスト内で完結させ、保存時に「交換に使用した旧refresh token」
+// を条件とするDB CASだけで競合を解決する。CAS loserはwinnerのaccess tokenを再読込するため
+// ローテーション済み資格情報を上書きしない。Durable Objectによる分散直列化は、現時点では
+// DB CASで整合性を満たせるためYAGNIとし、request-scoped I/O境界を優先する。
+
+function shouldDisableBotCredential(error: unknown): boolean {
+  // Twitch が資格情報の失効を示す400/401だけを再認証対象にする。403/404/501等は
+  // client設定・WAF・上流機能の問題でも起こるため、単にretry対象外という理由だけで
+  // BOTを無効化してはいけない（retry方針とcredential失効判定は別の責務）。
+  // 522/network/壊れた2xx応答やDB保存障害で status='error' にすると、取得クエリの
+  // active filterから永久除外され、障害復旧後も自動再試行できなくなる。
+  return error instanceof TwitchTokenRefreshError
+    && error.kind === 'http'
+    && (error.status === 400 || error.status === 401);
 }
 
 /**
@@ -422,9 +440,10 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
   try {
     const tokens = await refreshTwitchToken(account.twitch_refresh_token);
     const refreshedExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+    let accessToken = tokens.access_token;
 
     try {
-      await withDbRetry(
+      const updated = await withDbRetry(
         async () => {
           const { db } = await getDb();
           return db
@@ -437,17 +456,39 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
               status: 'active',
               last_error: null,
             })
-            .where(eq(twitchBotAccountsTable.id, account.id));
+            .where(and(
+              eq(twitchBotAccountsTable.id, account.id),
+              eq(twitchBotAccountsTable.twitch_refresh_token, account.twitch_refresh_token),
+            ))
+            .returning({ twitch_access_token: twitchBotAccountsTable.twitch_access_token });
         },
         'getBotAccountForChat(save refreshed token)',
-        // リトライしても同じトークン値を書く UPDATE のため冪等（リトライ可）
+        // 旧 refresh token 条件付きCASなので、isolate間競合・接続断後の再試行でも
+        // 後勝ちの古い資格情報が新しいローテーション結果を上書きしない。
         { idempotent: true },
       );
-    } catch (error) {
-      if (!isMissingBotSchemaErrorPg(error)) {
-        // 外側の catch で status:'error' 保存 + null 返却（既存経路と同じ流れ）
-        throw error;
+
+      if (updated.length === 0) {
+        const winner = await withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            return db
+              .select({ twitch_access_token: twitchBotAccountsTable.twitch_access_token })
+              .from(twitchBotAccountsTable)
+              .where(eq(twitchBotAccountsTable.id, account.id))
+              .limit(1);
+          },
+          'getBotAccountForChat(read CAS winner)',
+          { idempotent: true },
+        );
+        const winnerAccessToken = winner[0]?.twitch_access_token;
+        if (!winnerAccessToken) {
+          throw new Error('Concurrent BOT token refresh winner is unavailable');
+        }
+        accessToken = winnerAccessToken;
       }
+    } catch (error) {
+      if (!isMissingBotSchemaErrorPg(error)) throw error;
       logger.warn('Twitch BOT accounts table not found in schema, returning refreshed token without saving', {
         broadcasterTwitchUserId,
       });
@@ -458,32 +499,34 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
       senderId: account.twitch_user_id,
       username: account.twitch_username,
       displayName: account.twitch_display_name,
-      accessToken: tokens.access_token,
+      accessToken,
       ownerType: account.owner_type,
     };
   } catch (error) {
-    logger.error('Failed to refresh BOT Twitch access token', { broadcasterTwitchUserId, error });
-    // 既存 postgrest 経路はこの update の結果（error）を確認せず無視する（best-effort）。
-    // pg 直結では失敗が throw になるため catch で握りつぶし、「必ず null を返す」
-    // 同じ外部挙動に合わせる（ここで throw すると経路によって呼び出し元の挙動が変わる）。
-    try {
-      await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          return db
-            .update(twitchBotAccountsTable)
-            .set({
-              status: 'error',
-              last_error: error instanceof Error ? error.message : String(error),
-            })
-            .where(eq(twitchBotAccountsTable.id, account.id));
-        },
-        'getBotAccountForChat(save error status)',
-        // リトライしても同じ値（catch 済みエラーの文字列）を書く UPDATE のため冪等
-        { idempotent: true },
-      );
-    } catch {
-      // best-effort 書き込みの失敗は無視（既存経路がエラーを確認しないのと同等）
+    // Token endpoint 本文や下位例外は永続化せず、固定理由だけを1回記録する。
+    logger.error('Failed to refresh BOT Twitch access token', {
+      broadcasterTwitchUserId,
+      accountId: account.id,
+    });
+    if (shouldDisableBotCredential(error)) {
+      try {
+        await withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            return db
+              .update(twitchBotAccountsTable)
+              .set({ status: 'error', last_error: 'token_refresh_failed' })
+              .where(and(
+                eq(twitchBotAccountsTable.id, account.id),
+                eq(twitchBotAccountsTable.twitch_refresh_token, account.twitch_refresh_token),
+              ));
+          },
+          'getBotAccountForChat(save error status)',
+          { idempotent: true },
+        );
+      } catch {
+        // best-effort。エラー状態保存の失敗で chat 呼出しへ例外を追加しない。
+      }
     }
     return null;
   }
@@ -609,28 +652,29 @@ export async function getBotAccountForChat(broadcasterTwitchUserId: string): Pro
   if (!botAccount) {
     return null;
   }
+  const account = botAccount;
 
-  const expiresAt = new Date(botAccount.twitch_token_expires_at);
+  const expiresAt = new Date(account.twitch_token_expires_at);
   if (isNaN(expiresAt.getTime())) {
     return null;
   }
 
   if (expiresAt > new Date()) {
     return {
-      accountId: botAccount.id,
-      senderId: botAccount.twitch_user_id,
-      username: botAccount.twitch_username,
-      displayName: botAccount.twitch_display_name,
-      accessToken: botAccount.twitch_access_token,
-      ownerType: botAccount.owner_type,
+      accountId: account.id,
+      senderId: account.twitch_user_id,
+      username: account.twitch_username,
+      displayName: account.twitch_display_name,
+      accessToken: account.twitch_access_token,
+      ownerType: account.owner_type,
     };
   }
 
   try {
-    const tokens = await refreshTwitchToken(botAccount.twitch_refresh_token);
+    const tokens = await refreshTwitchToken(account.twitch_refresh_token);
     const refreshedExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
 
-    const { error } = await supabaseAdmin
+    const { data: updated, error } = await supabaseAdmin
       .from('twitch_bot_accounts')
       .update({
         twitch_access_token: tokens.access_token,
@@ -640,34 +684,56 @@ export async function getBotAccountForChat(broadcasterTwitchUserId: string): Pro
         status: 'active',
         last_error: null,
       })
-      .eq('id', botAccount.id);
+      .eq('id', account.id)
+      .eq('twitch_refresh_token', account.twitch_refresh_token)
+      .select('twitch_access_token')
+      .maybeSingle();
 
-    if (error && !isMissingBotSchemaError(error)) {
-      throw error;
-    }
+    if (error && !isMissingBotSchemaError(error)) throw error;
     if (isMissingBotSchemaError(error)) {
       logger.warn('Twitch BOT accounts table not found in schema, returning refreshed token without saving', {
         broadcasterTwitchUserId,
       });
     }
 
+    let accessToken = updated?.twitch_access_token as string | undefined;
+    if (!error && !accessToken) {
+      const { data: winner, error: winnerError } = await supabaseAdmin
+        .from('twitch_bot_accounts')
+        .select('twitch_access_token')
+        .eq('id', account.id)
+        .maybeSingle();
+      if (winnerError || !winner?.twitch_access_token) {
+        throw new Error('Concurrent BOT token refresh winner is unavailable');
+      }
+      accessToken = winner.twitch_access_token;
+    }
+
     return {
-      accountId: botAccount.id,
-      senderId: botAccount.twitch_user_id,
-      username: botAccount.twitch_username,
-      displayName: botAccount.twitch_display_name,
-      accessToken: tokens.access_token,
-      ownerType: botAccount.owner_type,
+      accountId: account.id,
+      senderId: account.twitch_user_id,
+      username: account.twitch_username,
+      displayName: account.twitch_display_name,
+      accessToken: accessToken ?? tokens.access_token,
+      ownerType: account.owner_type,
     };
   } catch (error) {
-    logger.error('Failed to refresh BOT Twitch access token', { broadcasterTwitchUserId, error });
-    await supabaseAdmin
-      .from('twitch_bot_accounts')
-      .update({
-        status: 'error',
-        last_error: error instanceof Error ? error.message : String(error),
-      })
-      .eq('id', botAccount.id);
+    logger.error('Failed to refresh BOT Twitch access token', {
+      broadcasterTwitchUserId,
+      accountId: account.id,
+    });
+    if (shouldDisableBotCredential(error)) {
+      try {
+        await supabaseAdmin
+          .from('twitch_bot_accounts')
+          .update({ status: 'error', last_error: 'token_refresh_failed' })
+          .eq('id', account.id)
+          .eq('twitch_refresh_token', account.twitch_refresh_token);
+      } catch {
+        // PostgREST transport reject も best-effort として吸収し、PG経路と同じく
+        // chat 呼出しへ二次例外を伝播させたり別のAPI writerを増やしたりしない。
+      }
+    }
     return null;
   }
 }
@@ -796,18 +862,20 @@ export async function getCustomBotAccountDisplayForStreamer(
  * refreshTwitchAccessToken の pg 直結実装 (#572)
  *
  * users への UPDATE（書き込み）を含む関数のため、呼び出し元は isPgWriteEnabled() で
- * 関数全体を分岐する。スコープ同期（saveTwitchScopes）は共有関数のまま呼び、その
- * 内部で再度フラグ分岐される。PGRST204（トークン列未デプロイ）のデプロイ窓
- * フォールバックは、pg 直結では UPDATE 対象列の欠落が SQLSTATE 42703 になるため
- * isPgMissingColumnError で再現する（トークン値はログに出さない既存慣習を踏襲）。
+ * 関数全体を分岐する。tokenとscopeは同じCAS UPDATEへ統合し、OAuth callbackが
+ * 並行して保存した新しいtoken/scopeを旧refresh結果の後続UPDATEで上書きしない。
+ * PGRST204（トークン列未デプロイ）のデプロイ窓フォールバックは、pg 直結では
+ * UPDATE対象列の欠落がSQLSTATE 42703になるためisPgMissingColumnErrorで再現する。
  */
 async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: string): Promise<string> {
   try {
     const tokens = await refreshTwitchToken(refreshToken);
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+    let wonRefreshRace = false;
+    let accessToken = tokens.access_token;
 
     try {
-      await withDbRetry(
+      const updated = await withDbRetry(
         async () => {
           // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
           const { db } = await getDb();
@@ -817,20 +885,43 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
               twitch_access_token: tokens.access_token,
               twitch_refresh_token: tokens.refresh_token,
               twitch_token_expires_at: expiresAt.toISOString(),
+              twitch_scopes: tokens.scope ?? [],
             })
-            .where(eq(usersTable.twitch_user_id, twitchUserId));
+            // requestを跨いだPromise共有はWorkersで禁止されるため、交換に使った旧
+            // refresh tokenがまだ現行値の場合だけtoken/scopeを原子的に保存する。
+            // 接続断後のDB retryでも
+            // 1回目が成功済みなら2回目は0件となり、winnerの値を再取得できる。
+            .where(and(
+              eq(usersTable.twitch_user_id, twitchUserId),
+              eq(usersTable.twitch_refresh_token, refreshToken),
+            ))
+            .returning({ twitch_access_token: usersTable.twitch_access_token });
         },
         'refreshTwitchAccessToken(save)',
-        // リトライしても同じトークン値を書く UPDATE のため冪等（リトライ可）。
-        // なお、このリトライは同一呼び出し内の再送としては冪等だが、リトライ待機
-        // （バックオフ合計で最大約1.4秒 = 100+300+1000ms）の間に別リクエストの並行
-        // リフレッシュが新しいトークンを書き込んだ場合、古い値で上書きする競合窓を
-        // 広げる側面がある。この競合自体は postgrest 経路の並行リフレッシュにも
-        // 存在する既知の性質であり（検知手段のないブラインド UPDATE）、リトライ禁止に
-        // すると一時障害だけで確実にトークンが失われる方が害が大きいため、リトライを
-        // 許容する。根本対応（楽観ロック）は Phase 2 以降の検討事項。
+        // CAS は再実行時に旧値が一致しなくなるため、接続断後も安全にリトライ可能。
         { idempotent: true },
       );
+      wonRefreshRace = updated.length > 0;
+
+      if (!wonRefreshRace) {
+        const winner = await withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            return db
+              .select({ twitch_access_token: usersTable.twitch_access_token })
+              .from(usersTable)
+              .where(eq(usersTable.twitch_user_id, twitchUserId))
+              .limit(1);
+          },
+          'refreshTwitchAccessToken(read CAS winner)',
+          { idempotent: true },
+        );
+        const winnerAccessToken = winner[0]?.twitch_access_token;
+        if (!winnerAccessToken) {
+          throw new Error('Concurrent Twitch token refresh winner is unavailable');
+        }
+        accessToken = winnerAccessToken;
+      }
     } catch (error) {
       if (isPgMissingColumnError(error)) {
         logger.warn('Twitch token columns not found in schema, returning token without saving', { twitchUserId, error });
@@ -839,27 +930,14 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
       throw error;
     }
 
-    // リフレッシュレスポンスのスコープで DB を全置換する（best-effort）。
-    // 設計判断の詳細は postgrest 経路（下の refreshTwitchAccessToken 本体）の
-    // 同箇所コメントを参照（DB/トークン乖離の永続化防止のための全置換）。
-    if (tokens.scope && tokens.scope.length > 0) {
-      try {
-        await saveTwitchScopes(twitchUserId, tokens.scope);
-      } catch (scopeSaveError) {
-        logger.warn('Failed to sync scopes on token refresh (best-effort)', {
-          twitchUserId,
-          error: scopeSaveError instanceof Error ? scopeSaveError.message : String(scopeSaveError),
-        });
-      }
-    }
-
-    return tokens.access_token;
-  } catch (error) {
-    logger.error('Failed to refresh Twitch access token', { twitchUserId, error });
+    return accessToken;
+  } catch {
+    // 永続化責任は bootstrap/rewards/callback 等の API 境界に統一する。ここで
+    // logger.error を使うと同じ例外を下位層と境界の双方が errors へ書く。
+    logger.warn('Failed to refresh Twitch access token', { twitchUserId });
     throw new TwitchTokenError(
       'Failed to refresh Twitch access token',
-      'REFRESH_FAILED',
-      error instanceof Error ? error : undefined
+      'REFRESH_FAILED'
     );
   }
 }
@@ -875,14 +953,18 @@ async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: stri
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
 
     const supabaseAdmin = getSupabaseAdmin();
-    const { error } = await supabaseAdmin
+    const { data: updated, error } = await supabaseAdmin
       .from('users')
       .update({
         twitch_access_token: tokens.access_token,
         twitch_refresh_token: tokens.refresh_token,
         twitch_token_expires_at: expiresAt.toISOString(),
+        twitch_scopes: tokens.scope ?? [],
       })
-      .eq('twitch_user_id', twitchUserId);
+      .eq('twitch_user_id', twitchUserId)
+      .eq('twitch_refresh_token', refreshToken)
+      .select('twitch_access_token')
+      .maybeSingle();
 
     if (error) {
       // If columns don't exist (PGRST204), just return the token without saving
@@ -892,36 +974,27 @@ async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: stri
       }
       throw error;
     }
+    let accessToken = updated?.twitch_access_token as string | undefined;
+    const wonRefreshRace = Boolean(accessToken);
 
-    // リフレッシュレスポンスのスコープでDBを全置換する（best-effort）
-    // Twitchのrefreshレスポンスはトークンの実スコープを返す（公式ドキュメント準拠）。
-    // 以前はDBスコープとマージしていたが、トークンにないスコープがDBに残ると
-    // DB/トークン乖離が永続化し401エラーの原因になるため、全置換に変更。
-    // callbackの自動リダイレクト機構により、追加スコープはログイン時に復元される。
-    //
-    // Full replace DB scopes with refresh response scopes (best-effort).
-    // Twitch refresh response returns actual token scopes (per official docs).
-    // Previously merged with DB scopes, but stale DB scopes cause permanent
-    // DB/token divergence and repeated 401 errors. Full replace keeps DB in sync.
-    // Callback's auto-redirect mechanism recovers additional scopes on login.
-    if (tokens.scope && tokens.scope.length > 0) {
-      try {
-        await saveTwitchScopes(twitchUserId, tokens.scope);
-      } catch (scopeSaveError) {
-        logger.warn('Failed to sync scopes on token refresh (best-effort)', {
-          twitchUserId,
-          error: scopeSaveError instanceof Error ? scopeSaveError.message : String(scopeSaveError),
-        });
+    if (!wonRefreshRace) {
+      const { data: winner, error: winnerError } = await supabaseAdmin
+        .from('users')
+        .select('twitch_access_token')
+        .eq('twitch_user_id', twitchUserId)
+        .maybeSingle();
+      if (winnerError || !winner?.twitch_access_token) {
+        throw new Error('Concurrent Twitch token refresh winner is unavailable');
       }
+      accessToken = winner.twitch_access_token;
     }
 
-    return tokens.access_token;
-  } catch (error) {
-    logger.error('Failed to refresh Twitch access token', { twitchUserId, error });
+    return accessToken!;
+  } catch {
+    logger.warn('Failed to refresh Twitch access token', { twitchUserId });
     throw new TwitchTokenError(
       'Failed to refresh Twitch access token',
-      'REFRESH_FAILED',
-      error instanceof Error ? error : undefined
+      'REFRESH_FAILED'
     );
   }
 }

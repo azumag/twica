@@ -1,6 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
@@ -12,16 +11,97 @@ import {
 } from "@/lib/collections/collection-existence";
 import { validatePackName } from "@/lib/validation/collection-name";
 import type { ApiRateLimitResponse } from "@/types/api";
-// ---------------------------------------------------------------------------
-// #573: rename_card_pack RPC の pg 直結経路 (isPgWriteEnabled()) 用。フラグ未設定時
-// (既定 'postgrest')はこれらのモジュールの実行パスに一切入らないため、import が
-// 存在するだけでは挙動に影響しない(#570 の設計。tests/setup.ts の getDb throw
-// スタブが「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
-// ---------------------------------------------------------------------------
 import { getDb } from "@/lib/db/client";
-import { isPgWriteEnabled } from "@/lib/db/flags";
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgFunctionNotFoundError } from "@/lib/db/errors";
+import { and, eq } from "drizzle-orm";
+import { streamers as streamersTable } from "@/lib/db/schema";
+
+interface OwnedStreamerCatalogResult {
+  streamer: { id: string; card_pack_names: string[] } | null;
+  cardPackNamesUnavailable: boolean;
+  error: unknown;
+}
+
+/**
+ * 所有権確認とパック一覧を同一の PlanetScale クエリで取得する。
+ *
+ * ここは認可境界なので、`streamerId` 単独の検索に分離してはならない。Drizzle の
+ * 値バインディングを使い、利用者が指定した ID を SQL 文字列へ連結しないことで
+ * SQL injection を防ぎつつ、従来の Supabase の `.eq(...).eq(...)` と同じ
+ * 「所有者でなければ存在しない」契約を維持する。
+ *
+ * card_pack_names の schema rollout 中だけは、既存 API と同じ挙動として所有権を
+ * 再確認してから空配列を返す。PATCH は一覧がない状態で安全に rename できないため、
+ * 呼び出し側が `cardPackNamesUnavailable` を 503 へ変換する。
+ */
+async function loadOwnedStreamerCatalog(
+  streamerId: string,
+  twitchUserId: string,
+): Promise<OwnedStreamerCatalogResult> {
+  const ownershipFilter = and(
+    eq(streamersTable.id, streamerId),
+    eq(streamersTable.twitch_user_id, twitchUserId),
+  );
+
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamersTable.id,
+            card_pack_names: streamersTable.card_pack_names,
+          })
+          .from(streamersTable)
+          .where(ownershipFilter)
+          .limit(1);
+      },
+      "cards collections: load owned catalog",
+      { idempotent: true },
+    );
+    const row = rows[0] ?? null;
+    return {
+      streamer: row
+        ? {
+            id: row.id,
+            card_pack_names: Array.isArray(row.card_pack_names) ? row.card_pack_names : [],
+          }
+        : null,
+      cardPackNamesUnavailable: false,
+      error: null,
+    };
+  } catch (error) {
+    if (!isMissingCardPackNamesColumnError(error)) {
+      return { streamer: null, cardPackNamesUnavailable: false, error };
+    }
+
+    try {
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ id: streamersTable.id })
+            .from(streamersTable)
+            .where(ownershipFilter)
+            .limit(1);
+        },
+        "cards collections: load ownership without catalog",
+        { idempotent: true },
+      );
+      return {
+        streamer: rows[0] ? { id: rows[0].id, card_pack_names: [] } : null,
+        // 42703 は catalog 列の未展開だけを示し、行の所有までは示さない。
+        // fallback が0行なら非所有者なので、PATCH が deploy-window の 503 を返して
+        // リソースの存在を曖昧にしてはならない。所有者だけが 503 の対象になる。
+        cardPackNamesUnavailable: Boolean(rows[0]),
+        error: null,
+      };
+    } catch (fallbackError) {
+      return { streamer: null, cardPackNamesUnavailable: false, error: fallbackError };
+    }
+  }
+}
 
 /**
  * rename_card_pack RPC のエラーを PostgREST .rpc() の error と同じ
@@ -151,43 +231,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // Verify the session owns this streamer profile, and read the pre-defined
-    // pack list in the same query.
-    const { data: streamer, error: streamerError } = await supabaseAdmin
-      .from("streamers")
-      .select("id, card_pack_names")
-      .eq("id", streamerId)
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
-
-    if (streamerError) {
-      // Deploy-window fallback: column not migrated yet → no packs exist.
-      if (isMissingCardPackNamesColumnError(streamerError)) {
-        const { data: ownedStreamer } = await supabaseAdmin
-          .from("streamers")
-          .select("id")
-          .eq("id", streamerId)
-          .eq("twitch_user_id", session.twitchUserId)
-          .maybeSingle();
-        if (!ownedStreamer) {
-          return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
-        }
-        return NextResponse.json({ collections: [] });
-      }
+    const result = await loadOwnedStreamerCatalog(streamerId, session.twitchUserId);
+    if (result.error || !result.streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
-
-    if (!streamer) {
-      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
-    }
-
-    const collections = Array.isArray(streamer.card_pack_names)
-      ? (streamer.card_pack_names as string[])
-      : [];
-
-    return NextResponse.json({ collections });
+    return NextResponse.json({ collections: result.streamer.card_pack_names });
   } catch (error) {
     return handleApiError(error, "Cards Collections API: GET");
   }
@@ -287,35 +335,14 @@ export async function PATCH(request: NextRequest) {
     }
     const newName = newNameValidation.value;
 
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // Ownership check + current catalog snapshot, so we can validate
-    // membership/duplication with a normal 400 BEFORE ever calling the RPC
-    // (the RPC re-validates too, but only as defense-in-depth against races —
-    // see RENAME_CARD_PACK_VALIDATION_ERRORS above).
-    const { data: streamer, error: streamerError } = await supabaseAdmin
-      .from("streamers")
-      .select("id, card_pack_names")
-      .eq("id", streamerId)
-      .eq("twitch_user_id", session.twitchUserId)
-      .maybeSingle();
-
-    if (streamerError) {
-      // Deploy-window fallback: the card_pack_names column (and therefore any
-      // pack the streamer could rename) isn't migrated yet.
-      if (isMissingCardPackNamesColumnError(streamerError)) {
-        return NextResponse.json({ error: ERROR_MESSAGES.PACK_RENAME_NOT_READY }, { status: 503 });
-      }
+    const result = await loadOwnedStreamerCatalog(streamerId, session.twitchUserId);
+    if (result.error || !result.streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
-
-    if (!streamer) {
-      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+    if (result.cardPackNamesUnavailable) {
+      return NextResponse.json({ error: ERROR_MESSAGES.PACK_RENAME_NOT_READY }, { status: 503 });
     }
-
-    const catalog: string[] = Array.isArray(streamer.card_pack_names)
-      ? (streamer.card_pack_names as string[])
-      : [];
+    const catalog = result.streamer.card_pack_names;
 
     if (oldName === newName) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
@@ -327,18 +354,10 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    // #573: isPgWriteEnabled() のときだけ pg 直結経路へ分岐する。pg 側は
-    // PostgREST .rpc() と同一の { data, error } 形状へ正規化して返す
-    // (renameCardPackRpcPg の doc コメント参照)ため、直後の既存エラー分岐
-    // (isMissingRenameCardPackFunctionError → 503 / RENAME_CARD_PACK_VALIDATION_ERRORS
-    // → 400 / それ以外 → handleDatabaseError)はそのまま両経路で共有される。
-    const { error: rpcError } = isPgWriteEnabled()
-      ? await renameCardPackRpcPg(streamerId, oldName, newName)
-      : await supabaseAdmin.rpc("rename_card_pack", {
-          p_streamer_id: streamerId,
-          p_old_name: oldName,
-          p_new_name: newName,
-        });
+    // postgres.js は RPC エラーを throw するため、下流の既存 HTTP エラー契約へ
+    // 正規化する renameCardPackRpcPg を必ず使う。実行時フラグで退役済み
+    // Supabase 経路へ戻る余地をなくすことが #806 の要件である。
+    const { error: rpcError } = await renameCardPackRpcPg(streamerId, oldName, newName);
 
     if (rpcError) {
       if (isMissingRenameCardPackFunctionError(rpcError)) {

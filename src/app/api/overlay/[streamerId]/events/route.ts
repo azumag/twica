@@ -50,24 +50,91 @@ interface OverlayHistoryRow {
 function normalizeDateParam(value: string | null): string | null {
   if (!value) return null;
 
-  const timestamp = Date.parse(value);
-  if (Number.isFinite(timestamp)) {
-    return new Date(timestamp).toISOString();
-  }
-
-  // Some OBS/Cloudflare combinations send PostgreSQL microseconds, while
-  // JavaScript date parsers commonly accept only milliseconds.
+  // PlanetScale/PostgreSQL returns timestamptz cursors with a signed offset
+  // and microseconds (for example `...14.511943+00:00`). Parse that stable
+  // wire shape explicitly instead of depending on Date.parse: the
+  // Cloudflare/OpenNext runtime has rejected the signed-offset form even
+  // though browsers commonly accept it. Once the first row advanced the OBS
+  // cursor to that value, every later poll therefore returned HTTP 400 and no
+  // subsequent gacha result could be displayed.
   const match = value.match(
-    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-]| )(\d{2}):(\d{2}))$/
   );
   if (!match) return null;
 
-  const [, base, fraction = "", timezone] = match;
-  const normalized = `${base}.${fraction.padEnd(3, "0").slice(0, 3)}${timezone}`;
-  const normalizedTimestamp = Date.parse(normalized);
-  return Number.isFinite(normalizedTimestamp)
-    ? new Date(normalizedTimestamp).toISOString()
-    : null;
+  const [
+    ,
+    yearText,
+    monthText,
+    dayText,
+    hourText,
+    minuteText,
+    secondText,
+    fraction = "",
+    timezone,
+    offsetSign,
+    offsetHourText,
+    offsetMinuteText,
+  ] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  // PostgreSQL represents years before 1 CE with a separate BC suffix rather
+  // than ISO year zero. This public cursor grammar intentionally excludes BC
+  // and extended years so every accepted value remains a four-digit DB value.
+  if (year < 1) return null;
+
+  // Build at whole-second precision. JavaScript Date stores only
+  // milliseconds, while PostgreSQL cursors use up to six fractional digits.
+  // Keeping the fraction outside Date prevents truncating the authoritative
+  // `(redeemed_at, id)` cursor and re-reading the same database row forever.
+  // setUTCFullYear is used instead of Date.UTC so four-digit years below 100
+  // are not implicitly remapped into 1900-1999.
+  const localDate = new Date(0);
+  localDate.setUTCFullYear(year, month - 1, day);
+  localDate.setUTCHours(hour, minute, second, 0);
+
+  // Date setters normalize invalid calendar values (for example February 30)
+  // instead of rejecting them. Compare every component so a malformed public
+  // cursor cannot silently move the polling window to another day.
+  if (
+    localDate.getUTCFullYear() !== year ||
+    localDate.getUTCMonth() !== month - 1 ||
+    localDate.getUTCDate() !== day ||
+    localDate.getUTCHours() !== hour ||
+    localDate.getUTCMinutes() !== minute ||
+    localDate.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+
+  let offsetMinutes = 0;
+  if (timezone !== "Z") {
+    const offsetHours = Number(offsetHourText);
+    const offsetMinutePart = Number(offsetMinuteText);
+    if (offsetHours > 23 || offsetMinutePart > 59) return null;
+    // A literal plus in a query string can be normalized to a space by an
+    // application/x-www-form-urlencoded parser before NextRequest exposes
+    // the value. In the timezone-sign position only, treat that space as a
+    // positive offset. The strict surrounding timestamp pattern prevents
+    // accepting arbitrary whitespace or a malformed public cursor.
+    offsetMinutes =
+      (offsetSign === "-" ? -1 : 1) *
+      (offsetHours * 60 + offsetMinutePart);
+  }
+
+  const utcDate = new Date(localDate.getTime() - offsetMinutes * 60_000);
+  // A valid four-digit local year can cross into year 0 or 10000 after offset
+  // conversion. Date#toISOString uses an extended signed-year representation
+  // there, which is outside this endpoint's strict cursor grammar and would
+  // make fixed-width canonicalization unsafe.
+  const utcYear = utcDate.getUTCFullYear();
+  if (utcYear < 1 || utcYear > 9999) return null;
+  const utcWholeSecond = utcDate.toISOString().slice(0, 19);
+  return `${utcWholeSecond}${fraction ? `.${fraction}` : ""}Z`;
 }
 
 /**
@@ -241,6 +308,19 @@ export async function GET(
     // forever and prevent later committed rows from being reached.
     const lastHistoryRow =
       overlayHistoryRows[overlayHistoryRows.length - 1] ?? null;
+    // Never expose the database driver's signed-offset/microsecond wire value
+    // as the next public cursor. A canonical UTC cursor avoids query-string
+    // plus-sign ambiguity on every later OBS poll even if an intermediary
+    // applies form-decoding semantics. The row already passed through the
+    // same database timestamp contract used by the query predicate, so a
+    // normalization failure indicates a server-side invariant violation.
+    const normalizedNextCursor = lastHistoryRow
+      ? normalizeDateParam(lastHistoryRow.redeemed_at)
+      : null;
+    if (lastHistoryRow && !normalizedNextCursor) {
+      throw new Error("Invalid redeemed_at value returned by the database");
+    }
+
     return NextResponse.json({
       // Existing OBS pages retain the legacy row shape. New controllers opt
       // into V1 to avoid returning duplicate card payloads during rollout.
@@ -249,7 +329,7 @@ export async function GET(
         : { events }),
       nextCursor: lastHistoryRow
         ? {
-            redeemedAt: lastHistoryRow.redeemed_at,
+            redeemedAt: normalizedNextCursor,
             historyId: lastHistoryRow.id,
           }
         : null,
