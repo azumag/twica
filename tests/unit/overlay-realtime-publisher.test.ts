@@ -57,6 +57,7 @@ describe('publishCommittedGachaBatch', () => {
   })
 
   afterEach(() => {
+    vi.unstubAllEnvs()
     process.env = { ...ORIGINAL_ENV }
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -274,7 +275,7 @@ describe('publishCommittedGachaBatch', () => {
   })
 
   it('fails closed when the production Workers context cannot be read', async () => {
-    process.env.NODE_ENV = 'production'
+    vi.stubEnv('NODE_ENV', 'production')
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
