@@ -138,28 +138,50 @@ function stringBinding(
  * for `next dev`, Vitest, and other non-Workers execution contexts.
  */
 async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnvironment> {
-  let runtimeEnv: Record<string, unknown> = {}
   try {
     const { getCloudflareContext } = await import('@opennextjs/cloudflare')
     const { env } = await getCloudflareContext({ async: true })
-    runtimeEnv = env as unknown as Record<string, unknown>
-  } catch {
-    // OpenNext does not install a request context in local Node execution.
-  }
+    const runtimeEnv = env as unknown as Record<string, unknown>
+    // Treat Workers bindings as one atomic configuration snapshot. Falling
+    // back one key at a time could combine a rotated runtime secret with a
+    // stale build-time URL, or bypass polling-only mode after a binding is
+    // deliberately removed.
+    return {
+      mode: stringBinding(runtimeEnv, 'OVERLAY_REALTIME_MODE'),
+      streamerAllowlist: stringBinding(
+        runtimeEnv,
+        'OVERLAY_REALTIME_STREAMER_ALLOWLIST'
+      ),
+      publishUrl: stringBinding(runtimeEnv, 'OVERLAY_REALTIME_PUBLISH_URL'),
+      publishSecret: stringBinding(
+        runtimeEnv,
+        'OVERLAY_REALTIME_PUBLISH_SECRET'
+      ),
+    }
+  } catch (error) {
+    if (process.env.NODE_ENV === 'production') {
+      // A production publish must fail closed when its Workers request context
+      // is unavailable. The polling source remains authoritative, so skipping
+      // is safer than sending with possibly stale build-time credentials.
+      logger.warn('[overlay-realtime] runtime publisher context unavailable', {
+        errorName: error instanceof Error ? error.name : 'unknown',
+      })
+      return {
+        mode: undefined,
+        streamerAllowlist: undefined,
+        publishUrl: undefined,
+        publishSecret: undefined,
+      }
+    }
 
-  return {
-    mode:
-      stringBinding(runtimeEnv, 'OVERLAY_REALTIME_MODE') ??
-      process.env.OVERLAY_REALTIME_MODE,
-    streamerAllowlist:
-      stringBinding(runtimeEnv, 'OVERLAY_REALTIME_STREAMER_ALLOWLIST') ??
-      process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
-    publishUrl:
-      stringBinding(runtimeEnv, 'OVERLAY_REALTIME_PUBLISH_URL') ??
-      process.env.OVERLAY_REALTIME_PUBLISH_URL,
-    publishSecret:
-      stringBinding(runtimeEnv, 'OVERLAY_REALTIME_PUBLISH_SECRET') ??
-      process.env.OVERLAY_REALTIME_PUBLISH_SECRET,
+    // `next dev` and Vitest have no OpenNext request context. Their environment
+    // is process-local and cannot cross the preview/production Workers boundary.
+    return {
+      mode: process.env.OVERLAY_REALTIME_MODE,
+      streamerAllowlist: process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
+      publishUrl: process.env.OVERLAY_REALTIME_PUBLISH_URL,
+      publishSecret: process.env.OVERLAY_REALTIME_PUBLISH_SECRET,
+    }
   }
 }
 

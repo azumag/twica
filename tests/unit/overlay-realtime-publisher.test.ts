@@ -171,6 +171,137 @@ describe('publishCommittedGachaBatch', () => {
     ).resolves.toBe(true)
   })
 
+  it('does not mix missing Workers bindings with stale process values', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({ env: {} } as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'mode-disabled',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when a Workers publisher credential is missing', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'do-primary',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://runtime-overlay-realtime.example.workers.dev',
+      },
+    } as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'configuration-missing',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('honors the Workers polling-only kill switch over stale process mode', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'polling-only',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://runtime-overlay-realtime.example.workers.dev',
+        OVERLAY_REALTIME_PUBLISH_SECRET: 'rotated-runtime-secret',
+      },
+    } as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'mode-disabled',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the production Workers context cannot be read', async () => {
+    process.env.NODE_ENV = 'production'
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'mode-disabled',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('does no database or network work behind the polling-only kill switch', async () => {
     process.env.OVERLAY_REALTIME_MODE = 'polling-only'
     const fetchMock = vi.fn()
