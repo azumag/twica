@@ -180,3 +180,77 @@ jobs:
 
       - name: Check migration order
         run: npm run check:migration-order -- --base=origin/${{ github.base_ref }}
+
+  planetscale-migration-postgres:
+    name: PlanetScale migration PostgreSQL 17
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply PlanetScale baseline and additive migrations
+        # SQL文字列テストではPL/pgSQLの構文や三値論理を検証できない。実運用と同じ
+        # PostgreSQL 17へ各ファイルを個別transactionで順序どおり適用し、途中の
+        # 1ファイルでも失敗したらON_ERROR_STOPでjobを停止する。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/migrations/20260719180000_planetscale_bootstrap.sql
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/migrations/20260719180100_planetscale_public_schema_baseline.sql
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/grants.sql
+          # runtime migration runnerと同じdescriptor parserで、共通migrationと
+          # PlanetScale専用migrationをマージ・provider filter・名前順sortする。
+          # CIだけ別の対象集合を再実装すると、新しい共通migrationを見落とすため。
+          mapfile -t migrations < <(node -e "
+            const path = require('node:path');
+            const core = require('./scripts/lib/db-migrate-core');
+            const descriptors = core.loadMigrationFilesFromDirs([
+              path.resolve('supabase/migrations'),
+              path.resolve('db/planetscale/migrations'),
+            ]);
+            const errors = core.collectDescriptorErrors(descriptors);
+            if (errors.length > 0) throw new Error(JSON.stringify(errors));
+            for (const descriptor of descriptors) {
+              if (
+                BigInt(descriptor.version) > 20260719180100n
+                && core.isProviderApplicable(descriptor, 'planetscale')
+              ) {
+                console.log(path.join(descriptor.sourceDir, descriptor.filename));
+              }
+            }
+          ")
+          for migration in "${migrations[@]}"; do
+            psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+              -f "$migration"
+          done
+
+      - name: Verify transactional gacha outbox invariants
+        # 旧RPC互換、single/N連、歯抜け復旧、NULL副作用0、権限、lease fencingを
+        # 実DBで検証し、新RPC欠落による全ガチャfail-closedをPR段階で防ぐ。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/transactional-chat-outbox-postgres.sql
+
+      - name: Verify concurrent duplicate fencing
+        # 先行COMMIT前に同じeventを別接続から実行し、同じcard/別cardのどちらでも
+        # 後続がlimit_reachedではなくduplicateへ収束することを確認する。
+        env:
+          PGPASSWORD: postgres
+        run: bash tests/fixtures/transactional-chat-outbox-concurrency.sh
