@@ -275,6 +275,12 @@ export async function publishCommittedGachaBatch(
         if (!retryableStatus(response.status) || attempt >= maxAttempts) {
           logger.warn('[overlay-realtime] publish rejected', {
             streamerId,
+            // Origin/path are public routing metadata and contain no signature,
+            // secret, or payload. Keeping them in the rejection log makes a
+            // stale cross-environment endpoint diagnosable without weakening
+            // the HMAC boundary or exposing viewer/card data.
+            targetOrigin: url.origin,
+            targetPath: url.pathname,
             status: response.status,
             attempt,
           })
