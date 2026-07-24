@@ -23,6 +23,24 @@ const mocks = vi.hoisted(() => ({
       .trim()
   }),
   sendChatMessage: vi.fn().mockResolvedValue(true),
+  claimChatNotificationBatch: vi.fn(),
+  decodeChatNotificationPayload: vi.fn(),
+  markChatNotificationSent: vi.fn(),
+  deadLetterChatNotification: vi.fn(),
+  retryChatNotification: vi.fn(),
+  getCloudflareContext: vi.fn(),
+}))
+
+vi.mock('@opennextjs/cloudflare', () => ({
+  getCloudflareContext: mocks.getCloudflareContext,
+}))
+
+vi.mock('@/lib/services/chat-notification-outbox', () => ({
+  claimChatNotificationBatch: mocks.claimChatNotificationBatch,
+  decodeChatNotificationPayload: mocks.decodeChatNotificationPayload,
+  markChatNotificationSent: mocks.markChatNotificationSent,
+  deadLetterChatNotification: mocks.deadLetterChatNotification,
+  retryChatNotification: mocks.retryChatNotification,
 }))
 
 vi.mock('@/lib/services/gacha', () => ({
@@ -134,6 +152,11 @@ async function createNotificationRequest(gachaError: string): Promise<NextReques
 describe('EventSub reward mismatch handling', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // 追加報酬確認などのretryable失敗は、署名済みEventSub本文をKVへdurable park
+    // できた場合にのみ200を返す。reportErrorの既存検証を実運用の成功経路で保つ。
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { put: vi.fn().mockResolvedValue(undefined) } },
+    })
     mocks.buildMessage.mockImplementation((template: string | null, placeholders: { user: string; card: string; cards?: string; draws?: number; rarityCounts?: string; newCards?: string; newCardCount?: number }) => {
       const messageTemplate = template || '{user} got {card}'
       return messageTemplate
@@ -148,6 +171,38 @@ describe('EventSub reward mismatch handling', () => {
         .trim()
     })
     mocks.sendChatMessage.mockResolvedValue(true)
+    // #803: チャット通知はハンドラの一時メモリではなく、ガチャtransactionで
+    // 永続化済みのversioned outbox payloadから再構築する。各ケースのガチャ結果を
+    // payloadへ複製し、N連カード/テンプレートの既存期待値をこの本番経路で検証する。
+    mocks.claimChatNotificationBatch.mockImplementation(async (batchId: string) => {
+      const result = await mocks.executeGachaForEventSub.mock.results.at(-1)?.value
+      if (!result?.success) return null
+      return {
+        id: '11111111-1111-4111-8111-111111111111',
+        batchId,
+        payloadVersion: 1,
+        leaseId: '22222222-2222-4222-8222-222222222222',
+        attemptCount: 1,
+        createdAt: '2026-07-01T00:00:00.000Z',
+        payload: {
+          batchId,
+          broadcasterTwitchUserId: 'broadcaster-1',
+          userId: 'viewer-1',
+          streamer: result.data.streamer,
+          gachaResult: {
+            type: 'gacha',
+            card: result.data.card,
+            cards: result.data.cards,
+            userTwitchUsername: result.data.userTwitchUsername,
+            collectionName: result.data.collectionName,
+          },
+        },
+      }
+    })
+    mocks.decodeChatNotificationPayload.mockImplementation((claim) => claim.payload)
+    mocks.markChatNotificationSent.mockResolvedValue(true)
+    mocks.deadLetterChatNotification.mockResolvedValue(true)
+    mocks.retryChatNotification.mockResolvedValue('pending')
     primeUserCardCounts([])
   })
 

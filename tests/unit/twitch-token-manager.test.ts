@@ -39,43 +39,18 @@ function createDrizzleDbMock(config: {
     twitch_token_expires_at: pastIso(),
     ...(config.refreshState ?? {}),
   }
-  let refreshLockHeld = false
-  const makeTx = () => {
-    const tx: any = async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      const query = strings.join('?').replace(/\s+/g, ' ').trim()
-      if (query.includes('pg_try_advisory_xact_lock')) return [{ acquired: true }]
-      if (query.includes('select twitch_access_token') && query.includes('from users')) {
-        return [{
-          twitch_access_token: refreshState.twitch_access_token,
-          twitch_refresh_token: refreshState.twitch_refresh_token,
-          twitch_token_expires_at: refreshState.twitch_token_expires_at,
-        }]
-      }
-      if (query.startsWith('update users')) {
-        if (config.refreshUpdateError) throw config.refreshUpdateError
-        refreshState.twitch_access_token = values[0]
-        refreshState.twitch_refresh_token = values[1]
-        refreshState.twitch_token_expires_at = values[2]
-        refreshState.twitch_scopes = values[3]
-        return [{ twitch_access_token: refreshState.twitch_access_token }]
-      }
-      throw new Error(`Unexpected refresh SQL: ${query}`)
-    }
-    tx.array = (value: unknown) => value
-    return tx
-  }
-  const sql = {
-    begin: vi.fn(async (callback: (tx: any) => Promise<unknown>) => {
-      if (refreshLockHeld) return { acquired: false }
-      refreshLockHeld = true
-      try { return await callback(makeTx()) } finally { refreshLockHeld = false }
-    }),
-  }
+  const initialRefreshToken = refreshState.twitch_refresh_token
+  // 実装のlease取得は UPDATE ... RETURNING の0/1行で競合を表す。fixtureも
+  // request間共有状態を持ち、OAuthを実行するleaderを一人だけに固定する。
+  let refreshLeaseId = refreshState.twitch_refresh_lease_id as string | null | undefined
+  const sql = {}
 
   const db = {
     select: vi.fn((fields: Record<string, unknown>) => {
       const responses = config.selects ?? [{ rows: [] }]
-      const response = responses[Math.min(selectIndex, responses.length - 1)]
+      const response = selectIndex < responses.length
+        ? responses[selectIndex]
+        : { rows: [refreshState] }
       selectIndex += 1
       const resolve = () =>
         response.error
@@ -108,9 +83,27 @@ function createDrizzleDbMock(config: {
           return builder
         }),
         where: vi.fn(() => builder),
-        // refresh のCASは更新件数を returning() で判定する。thenableだけでは
-        // 成功行が空扱いとなるため、本番Drizzleと同じ結果を返す。
-        returning: vi.fn(() => resolve()),
+        // refresh のCASは returning() の行数で勝者を判定する。更新後は旧refresh
+        // tokenが変わるため、後続requestは0行となりwinnerを再読込する。
+        returning: vi.fn(() => {
+          if (config.refreshUpdateError) return Promise.reject(config.refreshUpdateError)
+          const values = updateValues.at(-1) ?? {}
+          const requestedLeaseId = values.twitch_refresh_lease_id
+          if (typeof requestedLeaseId === 'string' && values.twitch_access_token === undefined) {
+            if (refreshLeaseId && refreshLeaseId !== requestedLeaseId) return Promise.resolve([])
+            refreshLeaseId = requestedLeaseId
+            Object.assign(refreshState, values)
+            return Promise.resolve([{ leaseId: requestedLeaseId }])
+          }
+          if (values.twitch_refresh_lease_expires_at !== undefined
+            && values.twitch_access_token === undefined) {
+            return Promise.resolve(refreshLeaseId ? [{ leaseId: refreshLeaseId }] : [])
+          }
+          if (refreshState.twitch_refresh_token !== initialRefreshToken || !refreshLeaseId) return Promise.resolve([])
+          Object.assign(refreshState, values)
+          refreshLeaseId = null
+          return Promise.resolve([{ twitch_access_token: refreshState.twitch_access_token }])
+        }),
         then: (onFulfilled: any, onRejected: any) =>
           resolve().then(onFulfilled, onRejected),
       }

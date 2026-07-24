@@ -15,9 +15,19 @@ const TWITCH_API_URL = 'https://api.twitch.tv/helix'
 // 4xx (401/403/404) is treated as terminal failure. Capped at 2 retries (3 attempts total)
 // to avoid excessive DO CPU time on the EventSub path. See Issue #389.
 const CHAT_SEND_MAX_ATTEMPTS = 3
+// EventSub waitUntilの30秒内で、token refresh（最大13秒）とDB処理の後にも
+// chat送信を完了させる。各試行3秒 + retry待機合計750msで最大約9.75秒。
+const CHAT_SEND_REQUEST_TIMEOUT_MS = 3_000
 // 250ms, 500ms。ジッターは付けない（並列度が低く herd 効果が小さいため）。
 const CHAT_SEND_RETRY_DELAYS_MS = [250, 500]
-const RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504])
+/**
+ * Twitch/CDNの一時応答。408・429と全5xxを同じbounded retryへ統一する。
+ * 個別の5xx列挙では522/523/524等のCloudflare障害が恒久失敗としてDLQ化され、
+ * 回復後にも再送されないため、HTTPクラスで判定する。
+ */
+function isRetryableHttpStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599)
+}
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
@@ -89,6 +99,31 @@ interface TwitchApiError {
   message?: string
 }
 
+interface TwitchChatSendResponse {
+  data?: Array<{
+    message_id?: string
+    is_sent?: boolean
+    drop_reason?: {
+      code?: string
+      message?: string
+    } | null
+  }>
+}
+
+export type ChatSendOutcome =
+  | { outcome: 'sent' }
+  | { outcome: 'terminal'; reason: string }
+  | { outcome: 'retryable'; reason: string }
+  | { outcome: 'aborted'; reason: string }
+
+export interface ChatSendOptions {
+  /**
+   * 資格情報解決後かつ各Twitch fetch直前のfence。false/例外なら外部送信しない。
+   * transactional outboxはここでlease所有権を更新し、旧所有者の二重送信を防ぐ。
+   */
+  beforeExternalSend?: () => Promise<boolean>
+}
+
 /**
  * Twitch Chat Service
  * Twitch Helix APIを使用してチャットメッセージを送信するサービス
@@ -109,6 +144,20 @@ export class TwitchChatService {
    * @returns 成功した場合はtrue、失敗した場合はfalse
    */
   async sendChatMessage(broadcasterTwitchUserId: string, message: string): Promise<boolean> {
+    const result = await this.sendChatMessageDetailed(broadcasterTwitchUserId, message)
+    return result.outcome === 'sent'
+  }
+
+  /**
+   * transactional outbox relay向けの分類付き送信。
+   * scope/credential欠落と4xxは再試行しても直らないterminal、429/5xx/通信障害は
+   * retryableとして返す。既存呼び出しはsendChatMessage()のboolean契約を維持する。
+   */
+  async sendChatMessageDetailed(
+    broadcasterTwitchUserId: string,
+    message: string,
+    options: ChatSendOptions = {},
+  ): Promise<ChatSendOutcome> {
     const botAccount = await getBotAccountForChat(broadcasterTwitchUserId)
     let senderTwitchUserId = broadcasterTwitchUserId
     let accessToken = botAccount?.accessToken ?? null
@@ -121,7 +170,7 @@ export class TwitchChatService {
       const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
       if (!hasChatScope) {
         logger.info('Skipping chat message - user:write:chat scope not granted', { broadcasterTwitchUserId })
-        return false
+        return { outcome: 'terminal', reason: 'user:write:chat scope not granted' }
       }
 
       // 配信者本人のアクセストークンを取得（user:write:chatスコープが必要）
@@ -135,7 +184,7 @@ export class TwitchChatService {
         senderTwitchUserId,
         usingBotAccount: Boolean(botAccount),
       })
-      return false
+      return { outcome: 'terminal', reason: 'chat sender access token unavailable' }
     }
 
     // メッセージを500文字に制限（Twitch APIの制限）
@@ -167,19 +216,70 @@ export class TwitchChatService {
 
     for (let attempt = 1; attempt <= CHAT_SEND_MAX_ATTEMPTS; attempt++) {
       try {
+        if (options.beforeExternalSend) {
+          try {
+            if (!await options.beforeExternalSend()) {
+              logger.warn('Chat message aborted before external send - delivery ownership lost', {
+                broadcasterTwitchUserId,
+                senderTwitchUserId,
+                attempt,
+              })
+              return { outcome: 'aborted', reason: 'chat delivery ownership lost before send' }
+            }
+          } catch (error) {
+            // fence確認不能時に送ると、別relayとの二重送信を否定できない。
+            // lease失効後の次回claimへ委ねるため、外部APIはfail-closedで停止する。
+            logger.warn('Chat message aborted before external send - delivery fence failed', {
+              broadcasterTwitchUserId,
+              senderTwitchUserId,
+              attempt,
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return {
+              outcome: 'aborted',
+              reason: `chat delivery fence failed: ${error instanceof Error ? error.message : String(error)}`,
+            }
+          }
+        }
+
         // Twitch Helix API: POST /helix/chat/messages
         // sender_id と broadcaster_id を同じにすることで、配信者として投稿
-        const response = await fetch(`${TWITCH_API_URL}/chat/messages`, requestInit)
+        const response = await fetch(`${TWITCH_API_URL}/chat/messages`, {
+          ...requestInit,
+          // retryごとに新しいsignalを作る。ループ外で作ると1回目の期限が後続試行にも
+          // 引き継がれ、正常なretryまで即時abortされる。
+          signal: AbortSignal.timeout(CHAT_SEND_REQUEST_TIMEOUT_MS),
+        })
 
         if (response.ok) {
-          logger.info('Chat message sent successfully', {
-            broadcasterTwitchUserId,
-            senderTwitchUserId,
-            usingBotAccount: Boolean(botAccount),
-            messageLength: countCharacters(truncatedMessage),
-            attempt,
-          })
-          return true
+          // HelixはHTTP 200でもAutoMod等でdata[0].is_sent=falseを返す。statusだけで
+          // sent扱いするとoutboxをackして通知を永久欠落させるため、bodyを必ず確認する。
+          const successBody = await response.json().catch(() => ({})) as TwitchChatSendResponse
+          const sentResult = successBody.data?.[0]
+          if (sentResult?.is_sent === true) {
+            logger.info('Chat message sent successfully', {
+              broadcasterTwitchUserId,
+              senderTwitchUserId,
+              usingBotAccount: Boolean(botAccount),
+              messageLength: countCharacters(truncatedMessage),
+              attempt,
+            })
+            return { outcome: 'sent' }
+          }
+
+          const dropCode = sentResult?.drop_reason?.code ?? 'invalid-success-response'
+          const dropMessage = sentResult?.drop_reason?.message
+            ?? 'Twitch returned 200 without is_sent=true'
+          lastResponse = response
+          lastResponseErrorBody = {
+            error: dropCode,
+            status: response.status,
+            message: dropMessage,
+          }
+          lastException = null
+          // 同じ本文を再送してもAutoMod等の判定は変わらないためterminalとし、
+          // 後続通知を塞がずDLQから人間が内容を確認できるようにする。
+          break
         }
 
         const errorBody: TwitchApiError = await response.json().catch(() => ({}))
@@ -187,10 +287,10 @@ export class TwitchChatService {
         lastResponseErrorBody = errorBody
         lastException = null
 
-        // 4xx は永続的失敗とみなしリトライしない（401 スコープ・403 禁止・404 not found 等）。
-        // 429 と 5xx のみリトライ対象。
-        // 4xx is terminal (not retryable). Only 429 and 5xx are retried.
-        const isRetryable = RETRYABLE_HTTP_STATUSES.has(response.status) && attempt < CHAT_SEND_MAX_ATTEMPTS
+        // 通常の4xxは恒久失敗（401 scope・403禁止・404 not found等）。
+        // timeoutを表す408、rate limitの429、全5xxだけを一時障害として再試行する。
+        // Ordinary 4xx is terminal; only 408, 429, and all 5xx are retried.
+        const isRetryable = isRetryableHttpStatus(response.status) && attempt < CHAT_SEND_MAX_ATTEMPTS
         if (!isRetryable) {
           break
         }
@@ -268,7 +368,15 @@ export class TwitchChatService {
         // reportApiError 自体の失敗はベストエフォート — メインフローをブロックしない
         // reportApiError failure is best-effort — must not block main flow
       }
-      return false
+      return isRetryableHttpStatus(lastResponse.status)
+        ? {
+            outcome: 'retryable',
+            reason: `Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`,
+          }
+        : {
+            outcome: 'terminal',
+            reason: `Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`,
+          }
     }
 
     // ネットワーク例外パス。reportError 内部で console.error も出力される
@@ -285,7 +393,10 @@ export class TwitchChatService {
       // reportError 自体の失敗はベストエフォート — 必ず return false に到達させる
       // reportError failure is best-effort — must always reach return false
     }
-    return false
+    return {
+      outcome: 'retryable',
+      reason: lastException instanceof Error ? lastException.message : String(lastException),
+    }
   }
 
   /**

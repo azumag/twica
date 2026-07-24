@@ -122,7 +122,7 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 #
 # EventSub 退避 backlog 自動ドレイン（2項目目）用の追加 secrets:
 # - EVENTSUB_REPLAY_SECRET_PROD: 本番アプリ（twica）の EVENTSUB_REPLAY_SECRET と
-#   同じ値。本番アプリ側は docs/db-phase2-runbook.md 4.3節のとおり
+#   同じ値。本番アプリ側は docs/history/migration/DB_PHASE2_RUNBOOK.md 4.3節のとおり
 #   `wrangler versions secret put EVENTSUB_REPLAY_SECRET` で設定済みなので、
 #   その値をそのままこのワーカーの EVENTSUB_REPLAY_SECRET_PROD にも
 #   `wrangler secret put EVENTSUB_REPLAY_SECRET_PROD` で設定すること

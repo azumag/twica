@@ -3,15 +3,9 @@ import { isPgMissingNamedColumnError } from "@/lib/db/errors";
 export const CARD_ISSUANCE_MESSAGES = {
   invalid: "発行可能枚数は1以上の整数、または空欄で入力してください",
   soldOut: "このカードは発行可能枚数に達しています",
-  // R2 (PR #450 レビュー follow-up): execute_gacha_transaction RPC が未デプロイ
-  // (42883)の間、executeGachaLegacy は発行枚数を FOR UPDATE で原子的に検証
-  // できないため limited カードの抽選を拒否する。以前はこの拒否が soldOut と
-  // 全く同じ文字列を使っていたため、eventsub route.ts の抑止フィルタ
-  // (genuine soldOut は Sentry/Issue化しない)が本来アラートすべき「RPC未デプロイ」
-  // という異常事態まで一緒に握りつぶしてしまっていた。ユーザー向け文言としては
-  // 区別せず「一時的に抽選できません」で十分だが、内部的な error 文字列としては
-  // soldOut と別の値にすることで、eventsub 側の抑止対象に含めず reportError を
-  // 発火させ、本番で確実にアラートされるようにする。
+  // execute_gacha_transaction RPC が未配備（42883）の場合は、上限を原子的に検証
+  // できないため抽選をfail-closedにする。通常のsold-outと別文言にすることで、
+  // EventSubの既知sold-out抑止に巻き込まず、deployment errorを必ず通知する。
   limitUnavailable: "上限付きカードは現在一時的に抽選できません",
 } as const;
 

@@ -17,18 +17,44 @@ const ts = require('typescript')
 const ROOT = path.resolve(__dirname, '..')
 const failures = []
 const REQUIRE_OPEN_NEXT = process.argv.includes('--require-open-next')
-const REQUIRE_AUX_WORKERS = process.argv.includes('--require-aux-workers')
 const REQUIRED_OPEN_NEXT_ARTIFACTS = [
   '.open-next/worker.js',
   '.open-next/middleware/handler.mjs',
   '.open-next/server-functions/default/handler.mjs',
 ]
-const REQUIRED_AUX_WORKER_ARTIFACTS = [
-  'workers/error-reporter/dist/production/index.js',
-  'workers/error-reporter/dist/preview/index.js',
-  'workers/overlay-realtime/dist/production/index.js',
-  'workers/overlay-realtime/dist/preview/index.js',
-]
+const AUX_WORKER_ARTIFACT_BY_FLAG = Object.freeze({
+  '--require-error-reporter-production':
+    'workers/error-reporter/dist/production/index.js',
+  '--require-error-reporter-preview':
+    'workers/error-reporter/dist/preview/index.js',
+  '--require-overlay-realtime-production':
+    'workers/overlay-realtime/dist/production/index.js',
+  '--require-overlay-realtime-preview':
+    'workers/overlay-realtime/dist/preview/index.js',
+})
+const REQUIRED_AUX_WORKER_ARTIFACTS = Object.freeze(
+  Object.values(AUX_WORKER_ARTIFACT_BY_FLAG),
+)
+
+/**
+ * CLI flagから今回のjobが生成すべき補助Worker成果物だけを返す。
+ *
+ * CIは全構成を1回でbuildするため`--require-aux-workers`を使い、deploy jobは
+ * 公開対象だけをbuildするため個別flagを使う。対応表を単一化しておくことで、
+ * workflowの最適化時に「buildしたがguardしない」「guardするが別成果物を見る」
+ * というsilent passを防ぐ。重複flagは同じ成果物を二重検査する必要がないため除く。
+ */
+function getRequiredAuxWorkerArtifacts(argv = process.argv) {
+  if (argv.includes('--require-aux-workers')) {
+    return [...REQUIRED_AUX_WORKER_ARTIFACTS]
+  }
+
+  return [...new Set(
+    Object.entries(AUX_WORKER_ARTIFACT_BY_FLAG)
+      .filter(([flag]) => argv.includes(flag))
+      .map(([, artifact]) => artifact),
+  )]
+}
 
 function absolute(relativePath) {
   return path.join(ROOT, relativePath)
@@ -399,6 +425,17 @@ const generatedBundlePatterns = [
   // retired Realtime実装の残存シグナルとして安全に扱える。
   ['Supabase Realtime protocol marker', /\b(?:phx_join|postgres_changes)\b/],
 ]
+// `.opencode/plans` はagent/operatorが次の変更判断に直接使う「現行の計画面」。
+// runtime sourceだけを守っても、ここに退役providerのsecret追加や旧Vercel deploy
+// 手順が残ると、そのまま再導入される。履歴資料はdocs/historyへ隔離し、現行plan
+// だけを厳しく検査する。
+const currentPlanPatterns = [
+  ...runtimePatterns,
+  ['Supabase CLI action', /supabase\/setup-cli|\bsupabase\s+db\s+push\b/i],
+  ['Supabase browser/build variable', /\bNEXT_PUBLIC_SUPABASE_/],
+  ['Supabase elevated key', /\bSUPABASE_(?:SECRET|SERVICE_ROLE)_KEY\b/],
+  ['retired Vercel deployment path', /\b(?:Vercel auto-deploy|Vercel CLI|vercel\s+(?:deploy|--prod))\b/i],
+]
 
 if (require.main === module) {
 const runtimeSourceFiles = [
@@ -410,6 +447,10 @@ const runtimeSourceFiles = [
 for (const file of runtimeSourceFiles) {
   assertNoRetiredAstDependencies(file)
   assertAbsent(file, runtimePatterns)
+}
+
+for (const file of walk('.opencode/plans', /\.md$/)) {
+  assertAbsent(file, currentPlanPatterns)
 }
 
 assertRawAbsent('src/lib/twitch/token-manager.ts', [
@@ -470,11 +511,10 @@ if (REQUIRE_OPEN_NEXT) {
     ])
   }
 }
-if (REQUIRE_AUX_WORKERS) {
-  // 各Wrangler設定のproduction/preview dry-run bundleを個別に要求する。
-  // ディレクトリwalkだけでは、build step削除やoutdir変更が0件scanのまま成功する。
-  for (const artifact of REQUIRED_AUX_WORKER_ARTIFACTS) assertRequiredFile(artifact)
-}
+// deploy workflowでは、そのjobが実際に公開するWorker/環境だけをbuildする。全4 bundleを
+// jobごとに重複生成せず、それでも未build成果物のsilent passを許さないよう個別flagで
+// 対応する1ファイルを必須化する。CIは--require-aux-workersで全構成を検査する。
+for (const artifact of getRequiredAuxWorkerArtifacts()) assertRequiredFile(artifact)
 
 // Test-only aliases and facades can hide a production import after its source
 // module is deleted. Reject those local compatibility entry points as well,
@@ -620,7 +660,11 @@ module.exports = {
   findGeneratedBundleDependencies: (source) => (
     findMatchingPatternLabels(stripComments(source), generatedBundlePatterns)
   ),
+  findRetiredCurrentPlanDependencies: (source) => (
+    findMatchingPatternLabels(stripComments(source), currentPlanPatterns)
+  ),
   findMissingRequiredFiles,
   findRetiredAstDependencies,
+  getRequiredAuxWorkerArtifacts,
   stripComments,
 }

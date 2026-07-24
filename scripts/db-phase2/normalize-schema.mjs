@@ -80,7 +80,7 @@ export const OBJECT_CATEGORY = {
 
 // --schema=public 指定でも万一混入した場合に備えて除外するSupabase管理スキーマ一覧。
 // realtime.messages/realtime.topic()（00034）はSupabase Realtime継続利用のためPhase 2の
-// 移送対象外（docs/planetscale-migration-audit.md 2.3節）、auth/storage/vault/
+// 移送対象外（docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md 2.3節）、auth/storage/vault/
 // supabase_migrationsも同様にpublicスキーマの範囲外であるべきオブジェクト。
 const SUPABASE_MANAGED_SCHEMAS = ['auth', 'realtime', 'storage', 'vault', 'supabase_migrations']
 

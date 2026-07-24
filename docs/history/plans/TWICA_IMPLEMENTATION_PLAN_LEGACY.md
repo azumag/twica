@@ -1,3 +1,12 @@
+# Archived Twica Implementation Plan
+
+> **履歴資料（現行手順ではありません）**
+>
+> この計画は初期の Supabase / Vercel 構成を前提としており、現在の
+> PlanetScale PostgreSQL / Cloudflare Workers 構成には適用できません。
+> 現行の構成・検証・デプロイ手順は `docs/ARCHITECTURE.md`、
+> `docs/QA.md`、`docs/cloudflare-workers-builds.md` を参照してください。
+
 # Twica Implementation Plan
 
 ## 1. Overview

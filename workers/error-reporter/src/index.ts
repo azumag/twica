@@ -98,7 +98,7 @@ interface Env {
    * route.ts` が検証する共有シークレット）と同じ値を、このワーカー用にも
    * `wrangler secret put EVENTSUB_REPLAY_SECRET_PROD` で設定する想定。
    * prod/preview で別々の secret 値を運用している前提のため（docs/
-   * db-phase2-runbook.md 4.3節: 両環境で `openssl rand -hex 32` により
+   * history/migration/DB_PHASE2_RUNBOOK.md 4.3節: 両環境で `openssl rand -hex 32` により
    * 個別に生成・設定済み）、_PROD/_PREVIEW を分けている。未設定の場合は
    * 該当ターゲットへのドレインのみを安全にスキップする
    * （processEventSubParkAutoDrain 参照）。
@@ -1097,7 +1097,7 @@ maintenance mode 中に KV へ退避された EventSub notification
 - maintenance mode が意図せず有効なまま長時間放置されている
 - maintenance mode は解除済みだが、退避データのリプレイが未実施
   （\`npm run replay:maintenance-eventsub -- --url=<base-url>\`、
-  詳細は docs/db-phase2-runbook.md を参照）
+  詳細は docs/history/migration/DB_PHASE2_RUNBOOK.md を参照）
 
 ### 対応後
 このアラートには自動クローズが無いため、対応後は手動でこの Issue を
@@ -1183,7 +1183,7 @@ export async function processEventSubParkBacklog(env: Env): Promise<void> {
 }
 
 // =============================================================================
-// EventSub 退避 backlog 自動ドレイン（RATE_LIMIT_KV → eventsub-replay API）
+// EventSub退避/chat outbox自動ドレイン（DB + RATE_LIMIT_KV → replay API）
 //
 // Issue #695（EventSub の Cloudflare Queue 化）の代替として承認された、
 // KV ベース部分改善の2項目目。1項目目（上記 processEventSubParkBacklog）は
@@ -1267,11 +1267,10 @@ const EVENTSUB_AUTO_DRAIN_OLDEST_AGE_MINUTES_THRESHOLD = 10
 
 /**
  * 「最古エントリの経過時間」だけを安価に確認するための dry-run peek 呼び出しの
- * limit。1件だけ取得すれば十分（eventsub-park.ts の KV list は受信時刻の
- * 辞書順＝時系列順を返すため、limit=1 の1件目が常に全体の最古エントリになる。
- * getEventSubParkBacklogStats の「keys配列の先頭がそのまま最古」という
- * ロジックと同じ前提に立つ、HTTP 経由版）。dry-run なので KV の書き込み・
- * 削除は発生しない。
+ * limit。routeはDB outbox workとKV listを結合後にreceivedAt順へ再整列するため、
+ * limit=1のresults[0]が両保存先を通じた最古候補になる。DB-only pendingや
+ * 保持期限cleanupだけが残る場合も実relayを起動できる。dry-runなのでDB/KVの
+ * 状態変更は発生しない。
  */
 const EVENTSUB_AUTO_DRAIN_PEEK_LIMIT = 1
 
@@ -1279,18 +1278,17 @@ const EVENTSUB_AUTO_DRAIN_PEEK_LIMIT = 1
  * 実際にドレイン（リプレイ実行）する際の1バッチあたりの limit。
  * サーバー側 `DEFAULT_LIMIT`（route.ts）と同じ控えめな値を明示的に指定し、
  * 1回の HTTP リクエストが長時間化しないようにする（route.ts は各エントリを
- * 直列 await するため、件数が多いほどレスポンスが遅くなる。詳細は
- * scripts/replay-maintenance-eventsub.js の FETCH_TIMEOUT_MS コメント参照）。
+ * 直列 await するため、件数が多いほどレスポンスが遅くなる。ただしroute側は
+ * DB outboxを最大5件に制限し、DB+KVをこのlimit内で共有したうえで105秒の
+ * wall-clock budgetを持つ。未処理分はcursor/未claim状態のまま次tickへ残る）。
  */
 const EVENTSUB_AUTO_DRAIN_BATCH_LIMIT = 20
 
 /**
  * fetch のタイムアウト（ミリ秒）。対象アプリが無応答の場合に Cron Worker の
  * 実行がハングし続けるのを防ぐ。peek（limit=1、dry-run で KV 書き込みなし）は
- * 軽量なので短め、実ドレイン（limit=20、各エントリ直列処理）は
- * scripts/replay-maintenance-eventsub.js と同じ 120秒（同スクリプトの
- * FETCH_TIMEOUT_MS コメント参照: 1エントリ最大3秒 × 20件を安全側に見た値）を
- * そのまま踏襲する。
+ * 軽量なので短め、実ドレインは120秒とする。アプリroute自身が105秒で新規処理を
+ * 停止するため、残り15秒をレスポンス転送・Worker側ログ処理へ確保できる。
  */
 const EVENTSUB_AUTO_DRAIN_PEEK_TIMEOUT_MS = 30_000
 const EVENTSUB_AUTO_DRAIN_REPLAY_TIMEOUT_MS = 120_000
@@ -1400,7 +1398,7 @@ interface EventSubAutoDrainTarget {
  * 1ターゲットに対する自動ドレインを実行する。
  * 1. baseUrl / secret の両方が設定されていることを確認（無ければ warn して no-op）
  * 2. maintenance mode が 'off' であることを確認（off 以外・確認不能ならスキップ）
- * 3. dry-run peek（limit=1）で最古エントリの経過時間を確認
+ * 3. dry-run peek（limit=1）でDB outboxまたはKVの最古エントリ経過時間を確認
  *    （backlog が無ければ、または閾値未満ならここで終了）
  * 4. 実ドレイン（limit=EVENTSUB_AUTO_DRAIN_BATCH_LIMIT、1バッチのみ）を実行し、結果をログ出力
  *

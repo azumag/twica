@@ -14,6 +14,11 @@ const mocks = vi.hoisted(() => ({
   // streamers.select('chat_announcement_enabled') の返り値。テストごとに上書きする。
   // デフォルトはnull(=行なし)とし、既存テストの「チャット通知は送られない」挙動を維持する。
   streamerSettings: null as { chat_announcement_enabled: boolean } | null,
+  getCloudflareContext: vi.fn(),
+}))
+
+vi.mock('@opennextjs/cloudflare', () => ({
+  getCloudflareContext: mocks.getCloudflareContext,
 }))
 
 vi.mock('@/lib/services/gacha', () => {
@@ -74,6 +79,11 @@ beforeEach(() => {
   mocks.streamerSettings = null
   mocks.cancelRedemption.mockResolvedValue({ success: true })
   mocks.sendChatMessage.mockResolvedValue(true)
+  // 予期しないガチャ失敗は503にせず、元のEventSub本文をKVへdurable parkして
+  // Twitch再送による二重実行を避ける。既存のreportError検証はこの成功経路でも維持する。
+  mocks.getCloudflareContext.mockResolvedValue({
+    env: { RATE_LIMIT_KV: { put: vi.fn().mockResolvedValue(undefined) } },
+  })
   const db = {
     select: vi.fn(() => ({
       from: vi.fn(() => ({

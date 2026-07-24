@@ -92,6 +92,10 @@ async function upsertAuthUserPg(payload: {
           twitch_access_token: payload.accessToken,
           twitch_refresh_token: payload.refreshToken,
           twitch_token_expires_at: payload.expiresAtIso,
+          // OAuth callbackはcredentialの権威writer。進行中refreshのleaseを同じ
+          // UPSERTで無効化し、旧leaderがcallback結果を後から上書きできなくする。
+          twitch_refresh_lease_id: null,
+          twitch_refresh_lease_expires_at: null,
         }
         return db
           .insert(usersTable)

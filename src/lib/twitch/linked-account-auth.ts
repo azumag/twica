@@ -105,6 +105,10 @@ async function persistLinkedAccountPg(params: {
     twitch_access_token: tokens.access_token,
     twitch_refresh_token: tokens.refresh_token,
     twitch_token_expires_at: expiresAt.toISOString(),
+    // BOT再連携callbackは既存credentialを置換するため、旧refresh leaderの
+    // fencing tokenも同時に破棄する。
+    twitch_refresh_lease_id: null,
+    twitch_refresh_lease_expires_at: null,
     scopes: tokens.scope ?? [],
     status: 'active',
     last_error: null,

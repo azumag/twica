@@ -104,7 +104,7 @@ export const ALLOWLIST = [
       '確定しており、cutover検証ツールが本番に元から存在するこの欠落を移行起因の問題として' +
       '扱わないようにする。battle機能を再実装する時点で、新DB向けのテーブル作成migrationを' +
       '別途書く運用（既存00002を書き換えない）。',
-    reference: 'Issue #625 / docs/db-phase2-runbook.md 8章「既知スキーマドリフトの扱い」',
+    reference: 'Issue #625 / docs/history/migration/DB_PHASE2_RUNBOOK.md 8章「既知スキーマドリフトの扱い」',
   },
   {
     code: 'HYPOPG_EXTENSION_PLANETSCALE_MANAGED',
@@ -121,7 +121,7 @@ export const ALLOWLIST = [
       'previewでのdb:cutover:verify 5層フル実行）で「target限定: hypopg::pscale_extensions」として実際に検出し、' +
       '確認した。本エントリは`hypopg::pscale_extensions`という完全一致キーにのみ適用され、同名の拡張が' +
       '万一別スキーマ経由（PlanetScale管理外の経路）で入った場合は対象外（fail）とする。',
-    reference: 'Issue #697 preview rehearsal（2026-07-22）/ docs/db-phase2-runbook.md 5.1節手順6',
+    reference: 'Issue #697 preview rehearsal（2026-07-22）/ docs/history/migration/DB_PHASE2_RUNBOOK.md 5.1節手順6',
   },
   {
     code: 'CHECK_CONSTRAINT_DEPARSE_VERSION_DIFF',
@@ -147,7 +147,7 @@ export const ALLOWLIST = [
       '意味的に変化・削除された場合（deparse表記差ではなく実際の制約内容の変更）は、' +
       'どの緩和策（verify-db-schema.js・Layer 4 checksum）によっても検出されない' +
       '残余ギャップがある。',
-    reference: 'Issue #697 preview rehearsal（2026-07-22）/ docs/db-phase2-runbook.md 5.1節手順6',
+    reference: 'Issue #697 preview rehearsal（2026-07-22）/ docs/history/migration/DB_PHASE2_RUNBOOK.md 5.1節手順6',
   },
 ]
 

@@ -169,6 +169,10 @@ const EXPECTED_BOT_FIELDS = {
   scopes: ['user:write:chat'],
   status: 'active',
   last_error: null,
+  // 接続し直したBOTは以前のrefresh leaderを引き継がない。新credentialの保存と
+  // 同時にleaseを明示的に空へ戻し、旧leaderのfencingを無効化する。
+  twitch_refresh_lease_id: null,
+  twitch_refresh_lease_expires_at: null,
 }
 
 describe('handleLinkedAccountCallback: PlanetScale経路 (#572/#708)', () => {

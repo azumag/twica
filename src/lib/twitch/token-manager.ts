@@ -5,7 +5,7 @@ import { logger } from '@/lib/logger.server';
 // getDb()は接続回復を有効にするためwithDbRetryのqueryFn内で取得する。
 // timestamptzはdb/client.tsでISO 8601へ正規化され、期限判定はnew Date()経由。
 // -----------------------------------------------------------------------------
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull, lte, or, sql } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
 
 import { withDbRetry } from '@/lib/db/retry';
@@ -29,11 +29,301 @@ export class TwitchTokenError extends Error {
 }
 
 // Workersのfetch/DB I/Oはrequest contextに所属するため、pending Promiseをmodule
-// scopeへ保存して別requestからawaitしてはいけない。各request内でTwitch refreshを
-// 完結させ、保存時に「交換へ使った旧refresh token」を条件とするDB CASで競合を解決する。
-// CAS loserはwinnerのaccess tokenを再読込するため、ローテーション済み資格情報を
-// 上書きしない。Cloudflare公式どおりtransactionへ外部APIを含めず、Hyperdrive接続を
-// provider待ちの間pinしない。
+// scopeへ保存して別requestからawaitしてはいけない。同じcredential行の短期leaseを
+// DB時刻で取得し、Twitch endpointを呼ぶrequestをisolate横断で1件に絞る。外部APIは
+// transaction外で呼び、保存時はlease IDをfencing tokenとして期限切れ旧leaderの
+// 上書きも拒否する。Twitch公式の「refreshは1 threadで実施して配布」とCloudflare/
+// Hyperdriveのrequest-scope制約を同時に満たす境界である。
+const TWITCH_REFRESH_LEASE_TTL_SECONDS = 40
+const TWITCH_REFRESH_SAVE_LEASE_TTL_SECONDS = 60
+// Twitch token refreshの最大13秒より最小累計（約14.85秒）を長くし、遅いleaderの
+// 保存をfollowersが観測できるようにする。一方、25% jitter込みの最大累計は約18.6秒
+// なので、Cloudflare waitUntilの30秒内にchat送信（最大約9.75秒）の余白も残す。
+// 無制限pollやrequest context外の共有Promiseは使わない。
+const REFRESH_WINNER_POLL_DELAYS_MS = [
+  0,
+  100,
+  250,
+  500,
+  1_000,
+  1_500,
+  2_000,
+  2_500,
+  3_000,
+  3_000,
+  1_000,
+]
+
+type RefreshLeaseOptions = {
+  acquire: (leaseId: string) => Promise<boolean>
+  release: (leaseId: string) => Promise<void>
+  readWinner: () => Promise<string | null>
+  refreshAndPersist: (leaseId: string) => Promise<string>
+}
+
+function waitForDelay(delayMs: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, delayMs))
+}
+
+async function waitForRefreshWinner(
+  readWinner: () => Promise<string | null>,
+): Promise<string | null> {
+  // DBのLISTEN/NOTIFYはHyperdriveのpooled接続と相性が悪いため使わない。通常は
+  // 最初の数百msでwinnerを観測し、遅い場合も約18.6秒・最大11 readに制限する。
+  // 同時followersが同じ瞬間にSELECTしないよう各待機へ最大25%のjitterを加え、
+  // 51並行時のDB負荷とユーザー待ち時間をboundedにする。
+  for (const delayMs of REFRESH_WINNER_POLL_DELAYS_MS) {
+    if (delayMs > 0) {
+      const jitterMs = Math.floor(Math.random() * Math.max(1, Math.floor(delayMs / 4)))
+      await waitForDelay(delayMs + jitterMs)
+    }
+    const winner = await readWinner()
+    if (winner) return winner
+  }
+  return null
+}
+
+async function runWithRefreshLease(options: RefreshLeaseOptions): Promise<string> {
+  const leaseId = crypto.randomUUID()
+  const acquired = await options.acquire(leaseId)
+
+  if (!acquired) {
+    const winner = await waitForRefreshWinner(options.readWinner)
+    if (winner) return winner
+    // leaseを奪ってOAuthを重複実行しない。leader異常終了時はDB時刻で40秒後に
+    // 次の通常requestが回復できるため、このrequestは上限付き待機後に失敗する。
+    throw new Error('Twitch token refresh is already in progress')
+  }
+
+  const releaseBestEffort = async () => {
+    try {
+      await options.release(leaseId)
+    } catch {
+      // token保存成功時は同じUPDATEでleaseを解除済み。callback winner等で残った
+      // leaseの明示解除に失敗しても期限で回復し、利用可能なtokenを失敗扱いしない。
+    }
+  }
+
+  try {
+    const accessToken = await options.refreshAndPersist(leaseId)
+    await releaseBestEffort()
+    return accessToken
+  } catch (error) {
+    // OAuth callback等が並行して新しいpairを保存した場合だけwinnerを採用する。
+    // winnerが無い失敗でもowner条件付きでleaseを解除する。既に待機中のfollowersは
+    // 再取得せず失敗するため同一波のstampedeは起こさず、次の通常requestだけが
+    // 直ちに回復を試せる。期限まで40秒間すべての通知を拒否する窓を残さない。
+    const winner = await options.readWinner()
+    await releaseBestEffort()
+    if (winner) {
+      return winner
+    }
+    throw error
+  }
+}
+
+async function acquireUserRefreshLease(
+  twitchUserId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .update(usersTable)
+        .set({
+          twitch_refresh_lease_id: leaseId,
+          // DB時刻だけで取得可否と期限を決め、Worker間のclock skewを排除する。
+          twitch_refresh_lease_expires_at:
+            sql`now() + (${TWITCH_REFRESH_LEASE_TTL_SECONDS} * interval '1 second')`,
+        })
+        .where(and(
+          eq(usersTable.twitch_user_id, twitchUserId),
+          eq(usersTable.twitch_refresh_token, attemptedRefreshToken),
+          // 初回read後に別request/callbackが有効期限だけ更新した場合も、古い判定で
+          // OAuthを再実行しない。取得可否はWorker時計ではなくDB時刻で再検証する。
+          lte(usersTable.twitch_token_expires_at, sql`now()`),
+          or(
+            isNull(usersTable.twitch_refresh_lease_id),
+            isNull(usersTable.twitch_refresh_lease_expires_at),
+            lte(usersTable.twitch_refresh_lease_expires_at, sql`now()`),
+            // 接続断後のwithDbRetryは同じUUIDで再実行するため冪等に成功させる。
+            eq(usersTable.twitch_refresh_lease_id, leaseId),
+          ),
+        ))
+        .returning({ leaseId: usersTable.twitch_refresh_lease_id })
+    },
+    'refreshTwitchAccessToken(acquire lease)',
+    { idempotent: true },
+  )
+  return rows[0]?.leaseId === leaseId
+}
+
+async function releaseUserRefreshLease(
+  twitchUserId: string,
+  leaseId: string,
+): Promise<void> {
+  await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      await db
+        .update(usersTable)
+        .set({
+          twitch_refresh_lease_id: null,
+          twitch_refresh_lease_expires_at: null,
+        })
+        .where(and(
+          eq(usersTable.twitch_user_id, twitchUserId),
+          eq(usersTable.twitch_refresh_lease_id, leaseId),
+        ))
+    },
+    'refreshTwitchAccessToken(release lease)',
+    { idempotent: true },
+  )
+}
+
+async function renewUserRefreshLeaseForSave(
+  twitchUserId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .update(usersTable)
+        .set({
+          // OAuth（最大約28秒）の後に保存専用の余裕を取り直す。DB接続の
+          // connect_timeout 10秒 × 最大4試行 + backoffを60秒内へ収める。
+          twitch_refresh_lease_expires_at:
+            sql`now() + (${TWITCH_REFRESH_SAVE_LEASE_TTL_SECONDS} * interval '1 second')`,
+        })
+        .where(and(
+          eq(usersTable.twitch_user_id, twitchUserId),
+          eq(usersTable.twitch_refresh_token, attemptedRefreshToken),
+          eq(usersTable.twitch_refresh_lease_id, leaseId),
+        ))
+        .returning({ leaseId: usersTable.twitch_refresh_lease_id })
+    },
+    'refreshTwitchAccessToken(renew lease for save)',
+    { idempotent: true },
+  )
+  return rows[0]?.leaseId === leaseId
+}
+
+async function acquireBotRefreshLease(
+  accountId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .update(twitchBotAccountsTable)
+        .set({
+          twitch_refresh_lease_id: leaseId,
+          twitch_refresh_lease_expires_at:
+            sql`now() + (${TWITCH_REFRESH_LEASE_TTL_SECONDS} * interval '1 second')`,
+        })
+        .where(and(
+          eq(twitchBotAccountsTable.id, accountId),
+          eq(twitchBotAccountsTable.twitch_refresh_token, attemptedRefreshToken),
+          lte(twitchBotAccountsTable.twitch_token_expires_at, sql`now()`),
+          or(
+            isNull(twitchBotAccountsTable.twitch_refresh_lease_id),
+            isNull(twitchBotAccountsTable.twitch_refresh_lease_expires_at),
+            lte(twitchBotAccountsTable.twitch_refresh_lease_expires_at, sql`now()`),
+            eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+          ),
+        ))
+        .returning({ leaseId: twitchBotAccountsTable.twitch_refresh_lease_id })
+    },
+    'getBotAccountForChat(acquire refresh lease)',
+    { idempotent: true },
+  )
+  return rows[0]?.leaseId === leaseId
+}
+
+async function renewBotRefreshLeaseForSave(
+  accountId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .update(twitchBotAccountsTable)
+        .set({
+          twitch_refresh_lease_expires_at:
+            sql`now() + (${TWITCH_REFRESH_SAVE_LEASE_TTL_SECONDS} * interval '1 second')`,
+        })
+        .where(and(
+          eq(twitchBotAccountsTable.id, accountId),
+          eq(twitchBotAccountsTable.twitch_refresh_token, attemptedRefreshToken),
+          eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+        ))
+        .returning({ leaseId: twitchBotAccountsTable.twitch_refresh_lease_id })
+    },
+    'getBotAccountForChat(renew refresh lease for save)',
+    { idempotent: true },
+  )
+  return rows[0]?.leaseId === leaseId
+}
+
+async function releaseBotRefreshLease(
+  accountId: string,
+  leaseId: string,
+): Promise<void> {
+  await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      await db
+        .update(twitchBotAccountsTable)
+        .set({
+          twitch_refresh_lease_id: null,
+          twitch_refresh_lease_expires_at: null,
+        })
+        .where(and(
+          eq(twitchBotAccountsTable.id, accountId),
+          eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+        ))
+    },
+    'getBotAccountForChat(release refresh lease)',
+    { idempotent: true },
+  )
+}
+
+async function markBotRefreshLeaseFailed(
+  accountId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<void> {
+  await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      await db
+        .update(twitchBotAccountsTable)
+        .set({
+          status: 'error',
+          last_error: 'token_refresh_failed',
+          twitch_refresh_lease_id: null,
+          twitch_refresh_lease_expires_at: null,
+        })
+        .where(and(
+          eq(twitchBotAccountsTable.id, accountId),
+          eq(twitchBotAccountsTable.twitch_refresh_token, attemptedRefreshToken),
+          eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+          eq(twitchBotAccountsTable.status, 'active'),
+        ))
+    },
+    'getBotAccountForChat(save fenced error status)',
+    { idempotent: true },
+  )
+}
+
 function shouldDisableBotCredential(error: unknown): boolean {
   // Twitch が資格情報の失効を示す400/401だけを再認証対象にする。403/404/501等は
   // client設定・WAF・上流機能の問題でも起こるため、単にretry対象外という理由だけで
@@ -43,6 +333,66 @@ function shouldDisableBotCredential(error: unknown): boolean {
   return error instanceof TwitchTokenRefreshError
     && error.kind === 'http'
     && (error.status === 400 || error.status === 401);
+}
+
+async function readUserRefreshWinner(
+  twitchUserId: string,
+): Promise<string | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            twitch_access_token: usersTable.twitch_access_token,
+          })
+          .from(usersTable)
+          .where(and(
+            eq(usersTable.twitch_user_id, twitchUserId),
+            // Twitchは成功時もrefresh tokenを同じ値で返し得る。token値の変化ではなく、
+            // DB時刻で有効なaccess tokenが保存済みかをwinnerの唯一の条件にする。
+            gt(usersTable.twitch_token_expires_at, sql`now()`),
+          ))
+          .limit(1);
+      },
+      'refreshTwitchAccessToken(read CAS winner)',
+      { idempotent: true },
+    );
+    const winner = rows[0];
+    return winner?.twitch_access_token ?? null;
+  } catch {
+    // 元のOAuth/保存エラーをDB再確認エラーで置き換えない。API境界が既存の
+    // REFRESH_FAILEDとして扱い、token値や下位応答本文もログへ露出させない。
+    return null;
+  }
+}
+
+async function readBotRefreshWinner(
+  accountId: string,
+): Promise<string | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            twitch_access_token: twitchBotAccountsTable.twitch_access_token,
+          })
+          .from(twitchBotAccountsTable)
+          .where(and(
+            eq(twitchBotAccountsTable.id, accountId),
+            gt(twitchBotAccountsTable.twitch_token_expires_at, sql`now()`),
+          ))
+          .limit(1);
+      },
+      'getBotAccountForChat(read CAS winner)',
+      { idempotent: true },
+    );
+    const winner = rows[0];
+    return winner?.twitch_access_token ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -118,7 +468,21 @@ async function getTwitchAccessTokenPg(twitchUserId: string): Promise<string | nu
     return user.twitch_access_token;
   }
 
-  return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
+  try {
+    return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
+  } catch (error) {
+    if (isPgMissingColumnError(error)) {
+      // migration/app workflowは独立しており、lease列が先行配備されていない窓が
+      // あり得る。旧CAS-onlyへ戻すと並行OAuth上限を再発させるため、OAuthを呼ばず
+      // token access自体をfail-closedにする。
+      logger.error('Twitch token columns are missing; denying token access', {
+        twitchUserId,
+        error,
+      })
+      return null
+    }
+    throw error
+  }
 }
 
 export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
@@ -361,65 +725,83 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
   }
 
   try {
-    const tokens = await refreshTwitchToken(account.twitch_refresh_token);
-    const refreshedExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-    let accessToken = tokens.access_token;
-
-    try {
-      const updated = await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          return db
-            .update(twitchBotAccountsTable)
-            .set({
-              twitch_access_token: tokens.access_token,
-              twitch_refresh_token: tokens.refresh_token,
-              twitch_token_expires_at: refreshedExpiresAt.toISOString(),
-              scopes: tokens.scope ?? [],
-              status: 'active',
-              last_error: null,
-            })
-            .where(and(
-              eq(twitchBotAccountsTable.id, account.id),
-              eq(twitchBotAccountsTable.twitch_refresh_token, account.twitch_refresh_token),
-            ))
-            .returning({ twitch_access_token: twitchBotAccountsTable.twitch_access_token });
-        },
-        'getBotAccountForChat(save refreshed token)',
-        // 旧refresh token条件付きCASなので、isolate間競合や接続断後の再試行でも
-        // 後勝ちの古い資格情報が新しいローテーション結果を上書きしない。
-        { idempotent: true },
-      );
-      if (updated.length === 0) {
-        const winner = await withDbRetry(
-          async () => {
-            const { db } = await getDb();
-            return db
-              .select({ twitch_access_token: twitchBotAccountsTable.twitch_access_token })
-              .from(twitchBotAccountsTable)
-              .where(eq(twitchBotAccountsTable.id, account.id))
-              .limit(1);
-          },
-          'getBotAccountForChat(read CAS winner)',
-          { idempotent: true },
-        );
-        const winnerAccessToken = winner[0]?.twitch_access_token;
-        if (!winnerAccessToken) {
-          throw new Error('Concurrent BOT token refresh winner is unavailable');
+    const accessToken = await runWithRefreshLease({
+      acquire: leaseId => acquireBotRefreshLease(
+        account.id,
+        account.twitch_refresh_token,
+        leaseId,
+      ),
+      release: leaseId => releaseBotRefreshLease(account.id, leaseId),
+      readWinner: () => readBotRefreshWinner(account.id),
+      refreshAndPersist: async leaseId => {
+        let tokens: TwitchTokens
+        try {
+          tokens = await refreshTwitchToken(account.twitch_refresh_token)
+        } catch (error) {
+          // callbackが同値refresh tokenで新しい有効期限を保存する場合もある。
+          // statusをerrorへ変える前にDB時刻で有効なwinnerを確認する。
+          const callbackWinner = await readBotRefreshWinner(account.id)
+          if (callbackWinner) return callbackWinner
+          if (shouldDisableBotCredential(error)) {
+            try {
+              // permanent失効もlease ownerだけが確定できる。期限切れ旧leaderや
+              // callback成功後の0件UPDATEは、新credential/statusを変更しない。
+              await markBotRefreshLeaseFailed(
+                account.id,
+                account.twitch_refresh_token,
+                leaseId,
+              )
+            } catch {
+              // error状態の永続化失敗で元のOAuthエラーを置き換えない。leaseは
+              // 未解除のままDB期限で回復し、次requestのstampedeを防ぐ。
+            }
+          }
+          throw error
         }
-        accessToken = winnerAccessToken;
-      }
-    } catch (error) {
-      if (isMissingBotSchemaErrorPg(error)) {
-        // 保存できない一時tokenを返すと次回も失効済みcredentialを読み直す。安全な
-        // fallbackがないため、schema不整合を成功扱いせず外側でnullへ縮退する。
-        logger.error('Twitch BOT schema is missing; refusing to return an unpersisted refreshed token', {
-          broadcasterTwitchUserId,
-          error,
-        });
-      }
-      throw error;
-    }
+        const renewed = await renewBotRefreshLeaseForSave(
+          account.id,
+          account.twitch_refresh_token,
+          leaseId,
+        )
+        if (!renewed) {
+          throw new Error('BOT token refresh lease expired before save')
+        }
+        const refreshedExpiresAt = new Date(Date.now() + tokens.expires_in * 1000)
+        const updated = await withDbRetry(
+          async () => {
+            const { db } = await getDb()
+            return db
+              .update(twitchBotAccountsTable)
+              .set({
+                twitch_access_token: tokens.access_token,
+                twitch_refresh_token: tokens.refresh_token,
+                twitch_token_expires_at: refreshedExpiresAt.toISOString(),
+                scopes: tokens.scope ?? [],
+                status: 'active',
+                last_error: null,
+                twitch_refresh_lease_id: null,
+                twitch_refresh_lease_expires_at: null,
+              })
+              .where(and(
+                eq(twitchBotAccountsTable.id, account.id),
+                eq(twitchBotAccountsTable.twitch_refresh_token, account.twitch_refresh_token),
+                // lease期限後に新leaderが所有権を取った場合、旧leaderの遅い応答を
+                // token CASだけでなくfencing IDでも拒否する。
+                eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+              ))
+              .returning({ twitch_access_token: twitchBotAccountsTable.twitch_access_token })
+          },
+          'getBotAccountForChat(save refreshed token)',
+          // token + lease IDのCASなので、応答消失後の再実行は0件となり、
+          // runWithRefreshLeaseが保存済みwinnerを再読込できる。
+          { idempotent: true },
+        )
+        if (updated.length === 0) {
+          throw new Error('BOT token refresh lease was superseded before save')
+        }
+        return updated[0].twitch_access_token
+      },
+    })
 
     return {
       accountId: account.id,
@@ -429,32 +811,12 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
       accessToken,
       ownerType: account.owner_type,
     };
-  } catch (error) {
+  } catch {
     // Token endpoint 本文や下位例外は永続化せず、固定理由だけを1回記録する。
     logger.error('Failed to refresh BOT Twitch access token', {
       broadcasterTwitchUserId,
       accountId: account.id,
     });
-    if (shouldDisableBotCredential(error)) {
-      try {
-        await withDbRetry(
-          async () => {
-            const { db } = await getDb();
-            return db
-              .update(twitchBotAccountsTable)
-              .set({ status: 'error', last_error: 'token_refresh_failed' })
-              .where(and(
-                eq(twitchBotAccountsTable.id, account.id),
-                eq(twitchBotAccountsTable.twitch_refresh_token, account.twitch_refresh_token),
-              ));
-          },
-          'getBotAccountForChat(save error status)',
-          { idempotent: true },
-        );
-      } catch {
-        // best-effort。状態保存失敗でchat呼び出しへ追加例外を持ち込まない。
-      }
-    }
     return null;
   }
 }
@@ -559,68 +921,59 @@ export async function getCustomBotAccountDisplayForStreamer(
  */
 async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: string): Promise<string> {
   try {
-    const tokens = await refreshTwitchToken(refreshToken);
-    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-    let accessToken = tokens.access_token;
-
-    try {
-      const updated = await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          return db
-            .update(usersTable)
-            .set({
-              twitch_access_token: tokens.access_token,
-              twitch_refresh_token: tokens.refresh_token,
-              twitch_token_expires_at: expiresAt.toISOString(),
-              twitch_scopes: tokens.scope ?? [],
-            })
-            // 交換に使った旧refresh tokenがまだ現行値の場合だけtoken/scopeを保存する。
-            // DB retryで1回目が成功済みでも2回目は0件となり、winnerを再取得できる。
-            .where(and(
-              eq(usersTable.twitch_user_id, twitchUserId),
-              eq(usersTable.twitch_refresh_token, refreshToken),
-            ))
-            .returning({ twitch_access_token: usersTable.twitch_access_token });
-        },
-        'refreshTwitchAccessToken(save)',
-        // CASは再実行時に旧値が一致しなくなるため、接続断後も安全に再試行できる。
-        { idempotent: true },
-      );
-
-      if (updated.length === 0) {
-        const winner = await withDbRetry(
-          async () => {
-            const { db } = await getDb();
-            return db
-              .select({ twitch_access_token: usersTable.twitch_access_token })
-              .from(usersTable)
-              .where(eq(usersTable.twitch_user_id, twitchUserId))
-              .limit(1);
-          },
-          'refreshTwitchAccessToken(read CAS winner)',
-          { idempotent: true },
-        );
-        const winnerAccessToken = winner[0]?.twitch_access_token;
-        if (!winnerAccessToken) {
-          throw new Error('Concurrent Twitch token refresh winner is unavailable');
-        }
-        accessToken = winnerAccessToken;
-      }
-    } catch (error) {
-      if (isPgMissingColumnError(error)) {
-        // ローテーション後のtokenを保存せず返すと永続状態と不整合になるため、
-        // schema欠落は成功扱いせず再認証へ誘導する。
-        logger.error('Twitch token columns are missing; refusing to return an unpersisted token', {
+    return await runWithRefreshLease({
+      acquire: leaseId => acquireUserRefreshLease(
+        twitchUserId,
+        refreshToken,
+        leaseId,
+      ),
+      release: leaseId => releaseUserRefreshLease(twitchUserId, leaseId),
+      readWinner: () => readUserRefreshWinner(twitchUserId),
+      refreshAndPersist: async leaseId => {
+        const tokens = await refreshTwitchToken(refreshToken)
+        const renewed = await renewUserRefreshLeaseForSave(
           twitchUserId,
-          error,
-        });
-      }
-      throw error;
-    }
-
-    return accessToken;
-  } catch {
+          refreshToken,
+          leaseId,
+        )
+        if (!renewed) {
+          throw new Error('Twitch token refresh lease expired before save')
+        }
+        const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
+        const updated = await withDbRetry(
+          async () => {
+            const { db } = await getDb()
+            return db
+              .update(usersTable)
+              .set({
+                twitch_access_token: tokens.access_token,
+                twitch_refresh_token: tokens.refresh_token,
+                twitch_token_expires_at: expiresAt.toISOString(),
+                twitch_scopes: tokens.scope ?? [],
+                twitch_refresh_lease_id: null,
+                twitch_refresh_lease_expires_at: null,
+              })
+              .where(and(
+                eq(usersTable.twitch_user_id, twitchUserId),
+                eq(usersTable.twitch_refresh_token, refreshToken),
+                eq(usersTable.twitch_refresh_lease_id, leaseId),
+              ))
+              .returning({ twitch_access_token: usersTable.twitch_access_token })
+          },
+          'refreshTwitchAccessToken(save)',
+          { idempotent: true },
+        )
+        const persistedAccessToken = updated[0]?.twitch_access_token
+        if (!persistedAccessToken) {
+          throw new Error('Twitch token refresh lease was superseded before save')
+        }
+        return persistedAccessToken
+      },
+    })
+  } catch (error) {
+    // lease列未配備は呼び出し元がfail-closed nullへ落とすため、SQLSTATEを
+    // TwitchTokenErrorで隠さずそのまま返す。
+    if (isPgMissingColumnError(error)) throw error
     // 永続化責任は bootstrap/rewards/callback 等の API 境界に統一する。ここで
     // logger.error を使うと同じ例外を下位層と境界の双方が errors へ書く。
     logger.warn('Failed to refresh Twitch access token', { twitchUserId });
@@ -653,6 +1006,10 @@ async function saveTwitchTokensPg(twitchUserId: string, tokens: TwitchTokens): P
             twitch_access_token: tokens.access_token,
             twitch_refresh_token: tokens.refresh_token,
             twitch_token_expires_at: expiresAt.toISOString(),
+            // login/callback等からの権威保存は、同値refresh tokenでも進行中leaseを
+            // 無効化し、旧leaderのfencing saveを0件にする。
+            twitch_refresh_lease_id: null,
+            twitch_refresh_lease_expires_at: null,
           })
           .where(eq(usersTable.twitch_user_id, twitchUserId));
       },
@@ -695,6 +1052,9 @@ async function deleteTwitchTokensPg(twitchUserId: string): Promise<void> {
             twitch_access_token: null,
             twitch_refresh_token: null,
             twitch_token_expires_at: null,
+            // logoutはcredentialだけでなく進行中refreshの書込権も失効させる。
+            twitch_refresh_lease_id: null,
+            twitch_refresh_lease_expires_at: null,
           })
           .where(eq(usersTable.twitch_user_id, twitchUserId));
       },

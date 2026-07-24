@@ -63,7 +63,7 @@ function detectLocale(request: NextRequest): Locale {
     const languages = acceptLanguage
       .split(',')
       .map((lang) => {
-             const [code, qValue] = lang.trim().split(';q=')
+        const [code, qValue] = lang.trim().split(';q=')
         return {
           code: code.split('-')[0].toLowerCase(),
           quality: qValue ? parseFloat(qValue) : 1,

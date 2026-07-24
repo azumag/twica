@@ -28,7 +28,7 @@ Issue #666（親: #664 / #568 Phase 2-2）のドラフト。
   判定されたが、コストベネフィット判定の結果**数分停止方式を正式採用**と
   し、2026-07-19にオーナー承認済み（#667/#696はこの判断によりクローズ）。
   以下の pg_dump/restore 方式が本ランブックの正とする手順。
-- `docs/planetscale-migration-audit.md`（#665 migration移植監査 / #667 logical
+- `docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md`（#665 migration移植監査 / #667 logical
   replication可否検証）は2026-07-10に作成・2026-07-19に追加調査を反映済み。
   Docker上でmigration 65ファイル全件の適用検証、シーケンス0件・PK無しテーブル
   0件の実測確認、PlanetScale側のRLS/ロール機構調査、logical replicationの
@@ -37,7 +37,7 @@ Issue #666（親: #664 / #568 Phase 2-2）のドラフト。
 
 ## 1. 現状把握（DB 規模・スキーマ規模）
 
-grepベースの推定値は`docs/planetscale-migration-audit.md`のDocker実測（2026-07-10）で
+grepベースの推定値は`docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md`のDocker実測（2026-07-10）で
 裏取り済み。migrationファイル数のみ、その後の開発継続で増加している（2026-07-19時点で再カウント）。
 
 | 項目 | 値 | 根拠 |
@@ -47,7 +47,7 @@ grepベースの推定値は`docs/planetscale-migration-audit.md`のDocker実測
 | テーブル数 | 25（schema.ts定義ベース）。**prod実体は23**（`battles`/`battle_stats`が#625ドリフトによりprodに存在しないため） | migrations 内の `CREATE TABLE` 抽出数と `src/lib/db/schema.ts` の `pgTable(` 呼び出し数が一致（25）。詳細は5章 |
 | plpgsql 関数 | **22個**（実DBカタログの一意な関数名、Docker実測） | 旧「約28」はCREATE OR REPLACEによる重複を除いていない概算だったため実測値に更新 |
 | トリガー | 11 | `CREATE TRIGGER` の一意名カウント、Docker実測で一致確認済み |
-| SERIAL/IDENTITY 列・DB シーケンス | **ゼロ**（grep + Docker実測の両方で確認済み） | `information_schema.sequences`が空であることをDocker上の実DBカタログ照会で直接確認（`docs/planetscale-migration-audit.md` 2.5節） |
+| SERIAL/IDENTITY 列・DB シーケンス | **ゼロ**（grep + Docker実測の両方で確認済み） | `information_schema.sequences`が空であることをDocker上の実DBカタログ照会で直接確認（`docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md` 2.5節） |
 | PK/replica identity無しテーブル | **ゼロ**（全25テーブルが`relreplident='d'`＝主キー基準） | 同上。logical replicationの弱点（PK無しテーブルのUPDATE/DELETE不可）に該当しないことの裏付け |
 
 0.334GB は PS-5（単一ノード$5/月・HA$15/月、東京リージョン提供あり）の
@@ -546,7 +546,7 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
      エラーで失敗する**（PostgreSQL標準仕様、部分スキップではない）。
      `auth`/`realtime`はアプリ層認証・Supabase Realtime継続利用の設計上
      Phase 2の移送対象外のため、`public`スキーマのみに明示的にスコープする
-     （詳細は`docs/planetscale-migration-audit.md` 6.3節）。
+     （詳細は`docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md` 6.3節）。
    - `--no-owner --no-privileges`: PlanetScale 側のロール名は
      `twica_app` と同一に揃えられるとは限らないため、所有者/権限の
      ダンプ復元は行わず、restore 後に `docs/db-driver-migration.md`
@@ -565,11 +565,11 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    prod 実体由来の値**: テーブル **23**（battles/battle_stats が prod に
    存在しないため）・トリガー **9**（11個のうち `update_battle_stats_trigger` /
    `update_battle_stats_updated_at` の2個は battle 系テーブル上のため存在
-   しない）・関数は`docs/planetscale-migration-audit.md`のDocker実測で
+   しない）・関数は`docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md`のDocker実測で
    一意名22個と確定済みだが、prod実体での過不足（#625ドリフトの影響有無）は
    未確認、リハーサル時に実測して確定させる。
 4.5. **PlanetScale側の事前ロール・スタブ関数投入（2026-07-19追加、restore前に必須）**:
-   `docs/planetscale-migration-audit.md` 6.1節の通り、34ファイル・78箇所の
+   `docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md` 6.1節の通り、34ファイル・78箇所の
    RLSポリシー/GRANT文が`service_role`/`anon`/`authenticated`ロールを参照し、
    5テーブル（storage_usage/blob_files/errors/support_codes/user_licenses）の
    ポリシーが`auth.jwt()`/`auth.role()`関数を参照する。これらがPlanetScale側に
@@ -905,17 +905,17 @@ Phase 2（プロバイダ切替）特有の項目を追加したもの。
 - [ ] 5.1手順4.5で投入した`service_role`/`anon`/`authenticated`ロールと
       `auth.uid()`/`auth.jwt()`/`auth.role()`スタブ関数が実際に存在し、
       pg_restoreがこれらを参照するRLSポリシー/GRANT文（34ファイル・78箇所、
-      `docs/planetscale-migration-audit.md` 6.1節）でエラーなく完了したこと
+      `docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md` 6.1節）でエラーなく完了したこと
 - [ ] PlanetScale 側の接続ロールに `docs/db-driver-migration.md` 相当の
       権限構成（`service_role` 相当の GRANT・`twica_app`への`BYPASSRLS`）が
       適用されている。**PlanetScaleのRLS/ロール機構の調査は完了済み**
-      （`docs/planetscale-migration-audit.md` 6.1節: RLS自体・GRANT/REVOKE・
+      （`docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md` 6.1節: RLS自体・GRANT/REVOKE・
       `SECURITY DEFINER`はSupabaseと同一セマンティクス、`service_role`等の
       組み込みロールと`auth.jwt()`等の関数は非対応で上記の通り代替済み）。
       実機での`CREATE ROLE`/`ALTER ROLE ... BYPASSRLS`成功は未検証のため
       リハーサルで確認すること
 - [ ] シーケンス現在値が正しい（6章 → 本節の下、独立の6.4節参照。
-      `docs/planetscale-migration-audit.md`のDocker実測でシーケンス0件・
+      `docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md`のDocker実測でシーケンス0件・
       PK無しテーブル0件を確認済みのため、実質的にsetval手順は不要と
       見込まれるが、本番DBに対する最終確認は必須）
 
@@ -1034,7 +1034,7 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
       運用が続く限り増加するため、**技術調査を先行させても意味がなく、
       実施直前に再確認する運用のまま**でよい
 - [x] **PlanetScale 側のロール/RLS 機構が Supabase と同一のセマンティクスか**:
-      2026-07-19、技術調査完了（`docs/planetscale-migration-audit.md` 6.1節）。
+      2026-07-19、技術調査完了（`docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md` 6.1節）。
       RLS自体・GRANT/REVOKE・`SECURITY DEFINER`関数はSupabaseと同一セマンティクス。
       `service_role`/`anon`/`authenticated`ロールと`auth.jwt()`/`auth.role()`
       関数はPlanetScale側に存在しないため、restore前に空ロール・スタブ関数を
@@ -1044,14 +1044,14 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
       基づく事前対処）。**この対処方針で進めてよいかオーナー確認をお願いします**
       （リハーサル未実施の状態でこの設計のまま次のリハーサル工程に進むか、
       あるいは他の懸念があるか）
-- [x] **シーケンス値の扱い**: `docs/planetscale-migration-audit.md`が
+- [x] **シーケンス値の扱い**: `docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md`が
       2026-07-10のDocker実測で作成・裏取り済み（本ドキュメントの旧記述
       「未作成」は誤り、6.4節参照）。シーケンス0件・PK無しテーブル0件を
       実DBカタログ照会で確認済み。restore後の本番DBでの最終確認（6.4節の
       チェックリスト）は引き続き必要だが、setval手順が不要になる可能性が高い
       ことは技術的に裏付けられている
 - [x] **切替方式（数分停止 vs logical replication による無停止化）**:
-      2026-07-19、#667の技術調査完了（`docs/planetscale-migration-audit.md`
+      2026-07-19、#667の技術調査完了（`docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md`
       6.2節）。技術的にはlogical replicationも採用可能と判定されたが、
       コストベネフィット判定により**数分停止方式（pg_dump/restore）を正式採用
       とし、#667/#696（実環境リハーサル）は実施しないことを推奨**
@@ -1061,7 +1061,7 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
       **2026-07-19、オーナー承認済み。数分停止方式（pg_dump/restore）で確定。
       #667/#696はこの判断によりクローズしてよい**
 - [x] **切替後の migration 適用手段と migration 履歴の移送**: 2026-07-19、
-      設計調査完了（`docs/planetscale-migration-audit.md` 6.3節）。推奨方針:
+      設計調査完了（`docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md` 6.3節）。推奨方針:
       - `supabase_migrations.schema_migrations`（履歴テーブル）は**移送しない**
         （スキーマ指定なしのpg_dumpだと`twica_app`が権限を持たないスキーマに
         遭遇してpg_dump全体が失敗するリスクがあるため、5.1節を`-n public`

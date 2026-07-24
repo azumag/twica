@@ -6,6 +6,11 @@ import { GachaService } from '@/lib/services/gacha'
 
 const mocks = vi.hoisted(() => ({
   executeGachaForEventSub: vi.fn(),
+  getCloudflareContext: vi.fn(),
+}))
+
+vi.mock('@opennextjs/cloudflare', () => ({
+  getCloudflareContext: mocks.getCloudflareContext,
 }))
 
 vi.mock('@/lib/services/gacha', () => ({
@@ -92,6 +97,11 @@ async function createNotificationRequest(payload: unknown): Promise<NextRequest>
 describe('EventSub redemption handling', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // unexpected/retryable の失敗は元のWebhookをKVに永続退避できた場合だけ200。
+    // このfixtureはreportErrorの回帰テストを、実運用と同じdurable park成功経路で行う。
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { put: vi.fn().mockResolvedValue(undefined) } },
+    })
   })
 
   it('does not report stale EventSub notifications for missing streamers', async () => {

@@ -1,11 +1,11 @@
 /**
  * #663/#708: GET /api/auth/twitch/callback のPlanetScale経路テスト
  *
- * このルートは4箇所で supabase-js の .from() を呼ぶ:
- *   1. 既存スコープ読み取り（isPgReadEnabled、スコープ乖離チェック）
- *   2. users への UPSERT（isPgWriteEnabled、トークン・プロフィール保存）
- *   3. streamers への UPSERT（isPgWriteEnabled、アフィリエイト時のみ・結果を確認しない best-effort）
- *   4. users.tos_accepted_at 読み取り（isPgReadEnabled、TOS 同意確認）
+ * このルートはPlanetScaleへ4つの操作を行う:
+ *   1. 既存スコープ読み取り（スコープ乖離チェック）
+ *   2. users への UPSERT（トークン・プロフィール保存）
+ *   3. streamers への UPSERT（アフィリエイト時のみ・結果を確認しない best-effort）
+ *   4. users.tos_accepted_at 読み取り（TOS 同意確認）
  *
  * tests/unit/auth-scope-preservation.test.ts のモック構成（next/headers・
  * next/server・session・supabase/admin 等）を踏襲しつつ、pg 経路のアサーション
@@ -192,6 +192,8 @@ describe('GET /api/auth/twitch/callback: PlanetScale経路 (#663/#708)', () => {
       twitch_username: 'testuser',
       twitch_access_token: 'test-access-token',
       twitch_refresh_token: 'test-refresh-token',
+      twitch_refresh_lease_id: null,
+      twitch_refresh_lease_expires_at: null,
     })
     expect(pg.insertCalls[0].conflictSet).toEqual(pg.insertCalls[0].values)
 

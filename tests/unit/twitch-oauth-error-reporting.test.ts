@@ -80,6 +80,7 @@ function primeExpiredTokenDb() {
     twitch_refresh_token: 'expired-refresh-token',
     twitch_token_expires_at: new Date(Date.now() - 60_000).toISOString(),
   }
+  let refreshLeaseId: string | null = null
   const db = {
     select: vi.fn((fields: Record<string, unknown>) => {
       const keys = Object.keys(fields)
@@ -88,12 +89,48 @@ function primeExpiredTokenDb() {
         : keys.includes('capability')
           ? { capability: 'available', checkedAt: null, enabled: true }
           : expiredToken
+      // readWinnerは `access_token + expiry > DB now()` の条件である。fixtureが
+      // 期限切れの旧tokenをwinnerとして返すと、refresh失敗が下流APIまで漏れて
+      // OAuth retry数・HTTP応答を誤って観測してしまう。
+      const rows = keys.length === 1 && keys.includes('twitch_access_token')
+        ? []
+        : [row]
       const builder: any = {
         from: vi.fn(() => builder),
         where: vi.fn(() => builder),
         limit: vi.fn(() => builder),
         then: (onFulfilled: (value: unknown) => unknown, onRejected: (reason: unknown) => unknown) =>
-          Promise.resolve([row]).then(onFulfilled, onRejected),
+          Promise.resolve(rows).then(onFulfilled, onRejected),
+      }
+      return builder
+    }),
+    // token-managerはrefresh前にleaseを原子的に取得し、OAuth後にleaseを延長して
+    // fencing付き保存する。ここでは各UPDATEのRETURNING形状だけを再現し、実際の
+    // HTTP失敗をlease fixtureの欠落で隠さない。
+    update: vi.fn(() => {
+      let values: Record<string, unknown> = {}
+      const builder: any = {
+        set: vi.fn((next: Record<string, unknown>) => {
+          values = next
+          return builder
+        }),
+        where: vi.fn(() => builder),
+        returning: vi.fn(() => {
+          if (typeof values.twitch_refresh_lease_id === 'string') {
+            refreshLeaseId = values.twitch_refresh_lease_id
+            return Promise.resolve([{ leaseId: refreshLeaseId }])
+          }
+          if (values.twitch_refresh_lease_expires_at !== undefined
+            && values.twitch_access_token === undefined) {
+            return Promise.resolve(refreshLeaseId ? [{ leaseId: refreshLeaseId }] : [])
+          }
+          if (values.twitch_access_token !== undefined) {
+            return Promise.resolve([{ twitch_access_token: values.twitch_access_token }])
+          }
+          return Promise.resolve([])
+        }),
+        then: (onFulfilled: (value: unknown) => unknown, onRejected: (reason: unknown) => unknown) =>
+          Promise.resolve([]).then(onFulfilled, onRejected),
       }
       return builder
     }),

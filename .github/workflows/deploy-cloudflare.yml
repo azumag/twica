@@ -58,10 +58,17 @@ jobs:
       - name: Typecheck overlay realtime Worker
         run: npm run overlay-realtime:typecheck
 
-      - name: Build and verify auxiliary Worker bundles
+      - name: Build and verify preview room Worker bundle
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
         run: |
-          npm run auxiliary-workers:build
-          npm run check:supabase-shutdown -- --require-aux-workers
+          npm run overlay-realtime:build:preview
+          npm run check:supabase-shutdown -- --require-overlay-realtime-preview
+
+      - name: Build and verify production room Worker bundle
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        run: |
+          npm run overlay-realtime:build:production
+          npm run check:supabase-shutdown -- --require-overlay-realtime-production
 
       - name: Deploy preview room Worker
         if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
@@ -114,13 +121,19 @@ jobs:
           NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID }}
           NEXT_PUBLIC_CF_IMAGES_ENABLED: ${{ secrets.NEXT_PUBLIC_CF_IMAGES_ENABLED }}
 
-      - name: Build auxiliary Worker bundles
-        run: npm run auxiliary-workers:build
+      - name: Build production Error Reporter bundle
+        if: steps.env.outputs.deploy_cmd != 'npm run workers:deploy:preview'
+        run: npm run error-reporter:build:production
 
       - name: Verify deployable artifacts are Supabase-independent
         # CI と deploy の時間差・workflow_dispatch 直行のどちらでも同じ境界を
         # 強制し、検査していない OpenNext Worker を公開しない。
-        run: npm run check:supabase-shutdown -- --require-open-next --require-aux-workers
+        run: |
+          if [ "${{ steps.env.outputs.deploy_cmd }}" = "npm run workers:deploy:preview" ]; then
+            npm run check:supabase-shutdown -- --require-open-next
+          else
+            npm run check:supabase-shutdown -- --require-open-next --require-error-reporter-production
+          fi
 
       - name: Deploy
         run: ${{ steps.env.outputs.deploy_cmd }}
@@ -155,10 +168,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build and verify auxiliary Worker bundles
+      - name: Build and verify production Error Reporter bundle
         run: |
-          npm run auxiliary-workers:build
-          npm run check:supabase-shutdown -- --require-aux-workers
+          npm run error-reporter:build:production
+          npm run check:supabase-shutdown -- --require-error-reporter-production
 
       - name: Deploy Error Reporter Cron Worker
         working-directory: workers/error-reporter

@@ -28,8 +28,10 @@ flowchart LR
 | Twitch API / EventSub | ログイン、チャネルポイント、配信イベント |
 | Sentry + Error Reporter | エラー記録と GitHub Issue 作成 |
 
-Supabase SDK・CLI・実行時接続・環境変数・Secrets は廃止済みです。新しい実装、CI 設定、
-運用手順に Supabase を再導入しないでください。
+Supabase SDK・CLI・実行時接続・環境変数参照はコードと tracked 設定から撤去済みです。
+新しい実装、CI 設定、運用手順へ再導入しないでください。Cloudflare に残る旧 Secrets は、
+PG/DO-only release の観測期間と利用ゼロ確認を終えた後に preview、production の順で
+削除します。
 
 ## ローカル開発
 

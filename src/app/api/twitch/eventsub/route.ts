@@ -165,17 +165,44 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ received: true });
     }
 
+    let retryableOutcome = false;
     if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD) {
       // ガチャ実行のみawaitし、通知処理はwaitUntil()で遅延実行してCPU時間を削減
       // Only await gacha execution; defer notifications via waitUntil() to reduce CPU time
       const result = await handleRedemption(messageId, event);
+      retryableOutcome = result.retryable;
       if (result.notify) {
         await runInBackground('gacha redemption', postRedemptionNotify(result.notify));
       }
     } else if (subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID) {
       const result = await handleRaidNotification(messageId, event);
+      retryableOutcome = result.retryable;
       if (result.notify) {
         await runInBackground('raid gift', postRedemptionNotify(result.notify));
+      }
+    }
+
+    if (retryableOutcome) {
+      // Twitch公式のWebhook推奨は、時間のかかる/失敗し得る処理を2xx前に永続
+      // queueへ置き、非同期consumerで完了させる方式。通常処理を先に試す現行構造でも、
+      // N連途中のDB一時障害を検知した時点で生payloadを既存durable inboxへ保存すれば、
+      // 1〜N-1枚だけcommitした状態をCron replayが残りから完遂できる。
+      // https://dev.twitch.tv/docs/eventsub/handling-webhook-events/
+      const parked = await parkEventSubNotification({
+        messageId,
+        payload: data,
+        subscriptionType,
+        maintenanceState,
+      });
+      if (!parked) {
+        // retry recordを永続化できないまま2xxを返すとTwitchは配送完了とみなし、
+        // 部分付与・outbox欠落が永久化する。maintenance中の可用性優先方針とは違い、
+        // 既に業務処理が失敗した通常時は503で再送を要求し、データ欠落を防ぐ。
+        logger.error('[EventSub] Retryable notification could not be persisted', {
+          messageId,
+          subscriptionType,
+        });
+        return NextResponse.json({ received: false, retryable: true }, { status: 503 });
       }
     }
 

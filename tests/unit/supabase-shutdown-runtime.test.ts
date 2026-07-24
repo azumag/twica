@@ -7,7 +7,9 @@ const {
   REQUIRED_OPEN_NEXT_ARTIFACTS,
   findGeneratedBundleDependencies,
   findMissingRequiredFiles,
+  findRetiredCurrentPlanDependencies,
   findRetiredAstDependencies,
+  getRequiredAuxWorkerArtifacts,
   stripComments,
   // eslint-disable-next-line @typescript-eslint/no-require-imports
 } = require('../../scripts/check-supabase-shutdown.js')
@@ -149,6 +151,36 @@ describe('full Supabase shutdown runtime', () => {
     }
   })
 
+  it('CI用の一括flagは全補助Worker artifactを要求する', () => {
+    expect(getRequiredAuxWorkerArtifacts(['node', 'guard', '--require-aux-workers']))
+      .toEqual(REQUIRED_AUX_WORKER_ARTIFACTS)
+  })
+
+  it.each([
+    [
+      '--require-error-reporter-production',
+      'workers/error-reporter/dist/production/index.js',
+    ],
+    [
+      '--require-error-reporter-preview',
+      'workers/error-reporter/dist/preview/index.js',
+    ],
+    [
+      '--require-overlay-realtime-production',
+      'workers/overlay-realtime/dist/production/index.js',
+    ],
+    [
+      '--require-overlay-realtime-preview',
+      'workers/overlay-realtime/dist/preview/index.js',
+    ],
+  ])('deploy用の個別flag %s は対応するartifactだけを要求する', (flag, artifact) => {
+    expect(getRequiredAuxWorkerArtifacts(['node', 'guard', flag])).toEqual([artifact])
+  })
+
+  it('補助Worker flagが無い場合は未生成artifactを要求しない', () => {
+    expect(getRequiredAuxWorkerArtifacts(['node', 'guard'])).toEqual([])
+  })
+
   it.each([
     '@supabase/supabase-js',
     'NEXT_PUBLIC_SUPABASE_URL',
@@ -172,5 +204,22 @@ describe('full Supabase shutdown runtime', () => {
   it('生成bundle内の単なる一般的なPostgreSQL処理は誤検知しない', () => {
     expect(findGeneratedBundleDependencies('const provider = "PlanetScale PostgreSQL"'))
       .toEqual([])
+  })
+
+  it.each([
+    'NEXT_PUBLIC_SUPABASE_URL をGitHub Secretsへ追加する',
+    'SUPABASE_SERVICE_ROLE_KEY をCIへ設定する',
+    'uses: supabase/setup-cli@v1',
+    'supabase db push --linked',
+    'Vercel auto-deployを推奨する',
+    'vercel deploy --prod',
+  ])('現行agent planへ退役provider/deploy手順を再導入できない: %s', (instruction) => {
+    expect(findRetiredCurrentPlanDependencies(instruction)).not.toEqual([])
+  })
+
+  it('現行Cloudflare/PlanetScale計画はagent plan guardを通過する', () => {
+    expect(findRetiredCurrentPlanDependencies(
+      'Cloudflare Workersへdeployし、PlanetScale migration verifyを実行する',
+    )).toEqual([])
   })
 })

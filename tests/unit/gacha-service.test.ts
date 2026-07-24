@@ -28,6 +28,7 @@ interface DbFixture {
     is_duplicate?: boolean
     limit_reached?: boolean
     history_id?: string | null
+    cards?: unknown[]
   } | null>>
   issuedCounts?: Array<QueueEntry<Record<string, number> | null>>
 }
@@ -139,6 +140,12 @@ const testCards = [
   },
 ]
 
+const persistedThreeDrawCards = [
+  { ...testCards[0], id: 'card-1', name: 'First Card' },
+  { ...testCards[0], id: 'card-2', name: 'Second Card' },
+  { ...testCards[0], id: 'card-3', name: 'Third Card' },
+]
+
 const baseStreamer = {
   id: 'streamer-1',
   channel_point_reward_id: 'main-reward',
@@ -184,6 +191,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
     expect(Object.keys(fixture.select.mock.calls[0][0])).toContain('max_issuance_count')
     expect(fixture.transactionCalls[0]).toEqual([
       'event-1', 'user-1', 'Viewer', 'card-1', 'streamer-1', 100, 'reward-1',
+      null, 1, 1, null,
     ])
   })
 
@@ -857,6 +865,13 @@ describe('GachaService.executeGachaForEventSub', () => {
     expect(fixture.transactionCalls.map((call) => call[6])).toEqual([
       'additional-reward', 'additional-reward', 'additional-reward',
     ])
+    // 同じEventSubバッチの各drawを、RPC内のchat outboxへ1-based index付きで
+    // 原子的に保存する。パック名も全drawで同じ値をbindする。
+    expect(fixture.transactionCalls.map((call) => call.slice(7, 11))).toEqual([
+      ['event-multi', 1, 3, 'characters'],
+      ['event-multi', 2, 3, 'characters'],
+      ['event-multi', 3, 3, 'characters'],
+    ])
   })
 
   it('全件完了済みのEventSub再送はDuplicate eventを返す', async () => {
@@ -901,6 +916,16 @@ describe('GachaService.executeGachaForEventSub', () => {
         gacha_history: [{ value: [{ event_id: 'event-resume' }] }],
         cards: [{ value: testCards }],
       },
+      transactions: [
+        { value: { is_duplicate: false, history_id: 'second' } },
+        {
+          value: {
+            is_duplicate: false,
+            history_id: 'third',
+            cards: persistedThreeDrawCards,
+          },
+        },
+      ],
     })
 
     const result = await new GachaService().executeGachaForEventSub({
@@ -913,6 +938,115 @@ describe('GachaService.executeGachaForEventSub', () => {
       'event-resume:2', 'event-resume:3',
     ])
     expect(fixture.transactionCalls.map((call) => call[5])).toEqual([null, null])
+    if (result.success) {
+      expect(result.data.cards).toEqual(persistedThreeDrawCards)
+      expect(result.data.card).toEqual(persistedThreeDrawCards[0])
+    }
+  })
+
+  it('N連先頭drawのCOMMIT後に応答を失ってもduplicate再試行から残りを完遂する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 3,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        // 初回prefixは0。接続再試行がduplicateを返した後の再読込では、
+        // 応答を失ったdraw1がcommit済みとして見える。
+        gacha_history: [
+          { value: [] },
+          { value: [{ event_id: 'event-response-lost-first' }] },
+        ],
+        cards: [{ value: testCards }],
+      },
+      transactions: [
+        { error: dbError('response lost after commit', 'CONNECTION_CLOSED') },
+        { value: { is_duplicate: true } },
+        { value: { is_duplicate: false, history_id: 'second' } },
+        {
+          value: {
+            is_duplicate: false,
+            history_id: 'third',
+            cards: persistedThreeDrawCards,
+          },
+        },
+      ],
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 300 },
+    }, 'event-response-lost-first')
+
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
+      'event-response-lost-first',
+      'event-response-lost-first',
+      'event-response-lost-first:2',
+      'event-response-lost-first:3',
+    ])
+    if (result.success) {
+      expect(result.data.cards).toEqual(persistedThreeDrawCards)
+    }
+  })
+
+  it('N連中間drawのCOMMIT後に応答を失ってもprefixを再読込して最終drawへ進む', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 3,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [
+          { value: [] },
+          {
+            value: [
+              { event_id: 'event-response-lost-middle' },
+              { event_id: 'event-response-lost-middle:2' },
+            ],
+          },
+        ],
+        cards: [{ value: testCards }],
+      },
+      transactions: [
+        { value: { is_duplicate: false, history_id: 'first' } },
+        { error: dbError('response lost after commit', 'CONNECTION_CLOSED') },
+        { value: { is_duplicate: true } },
+        {
+          value: {
+            is_duplicate: false,
+            history_id: 'third',
+            cards: persistedThreeDrawCards,
+          },
+        },
+      ],
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 300 },
+    }, 'event-response-lost-middle')
+
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
+      'event-response-lost-middle',
+      'event-response-lost-middle:2',
+      'event-response-lost-middle:2',
+      'event-response-lost-middle:3',
+    ])
+    if (result.success) {
+      expect(result.data.cards).toEqual(persistedThreeDrawCards)
+    }
   })
 
   it('履歴が歯抜けなら先頭連続分の次から再開する', async () => {
@@ -932,6 +1066,15 @@ describe('GachaService.executeGachaForEventSub', () => {
         }],
         cards: [{ value: testCards }],
       },
+      transactions: [
+        { value: { is_duplicate: false, history_id: 'second' } },
+        {
+          value: {
+            is_duplicate: true,
+            cards: persistedThreeDrawCards,
+          },
+        },
+      ],
     })
 
     const result = await new GachaService().executeGachaForEventSub({
@@ -943,6 +1086,10 @@ describe('GachaService.executeGachaForEventSub', () => {
     expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
       'event-gap:2', 'event-gap:3',
     ])
+    if (result.success) {
+      expect(result.data.cards).toEqual(persistedThreeDrawCards)
+      expect(result.data.card).toEqual(persistedThreeDrawCards[0])
+    }
   })
 
   it('履歴readエラーならカード発行前に停止する', async () => {

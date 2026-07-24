@@ -35,6 +35,14 @@ import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolvePackDisplayName } from "@/lib/collection-packs";
 import { runInBackground } from "@/lib/background-task";
+import {
+  claimChatNotificationBatch,
+  decodeChatNotificationPayload,
+  deadLetterChatNotification,
+  markChatNotificationSent,
+  renewChatNotificationLease,
+  retryChatNotification,
+} from "@/lib/services/chat-notification-outbox";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 export { runInBackground } from "@/lib/background-task";
 // チャット通知プレースホルダと売り切れ設定を、ガチャ確定と同じPlanetScaleから
@@ -324,6 +332,18 @@ export interface RedemptionNotifyData {
   userId: string;
   /** gacha_history.event_id の1枚目と一致するEventSub message ID。 */
   batchId: string;
+  /**
+   * ガチャcommit時点の所有数系placeholder。outbox relayは再送時に現在値を
+   * 再問合せせず、このsnapshotから毎回同じ本文を生成する。
+   */
+  chatSnapshot?: ChatAnnouncementSnapshot;
+}
+
+export interface ChatAnnouncementSnapshot {
+  cardCount: number;
+  uniqueCount: number;
+  allCount: number;
+  newCardNames: string[];
 }
 
 /**
@@ -356,7 +376,99 @@ export interface RedemptionOutcome {
  * Post-redemption notifications (broadcast + chat) run after response via waitUntil().
  * broadcast and chat are independent, so execute in parallel with Promise.allSettled.
  */
-export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
+export async function postRedemptionNotify(
+  data: RedemptionNotifyData,
+  options: { externalSendDeadlineAt?: number } = {},
+): Promise<void> {
+  const chatTask = (async () => {
+    // chat無効時はexecute_gacha_transactionもoutboxを作らないためDB操作ゼロ。
+    if (!data.streamer.chat_announcement_enabled) return;
+
+    // outbox行はカード付与と同じDB transactionで既にcommit済み。ここでは短い
+    // owner-fenced claimだけを取得し、Cron/手動relayとの通常の二重送信を防ぐ。
+    const claim = await claimChatNotificationBatch(data.batchId);
+    if (!claim) return;
+
+    let deliveryStatePersisted = false;
+    try {
+      // DBにcommitされたversioned payloadを正本にする。メモリ上のdataはN連の
+      // 部分再開時に今回分しか含まない可能性があるため、claim後の配送には使わない。
+      const persistedData = decodeChatNotificationPayload(claim);
+      if (!persistedData) {
+        const persisted = await deadLetterChatNotification(
+          claim,
+          `transactional chat outbox payload v${claim.payloadVersion} is invalid`,
+        );
+        deliveryStatePersisted = true;
+        throw new Error(
+          persisted
+            ? 'Chat announcement payload moved to DLQ'
+            : 'Chat announcement payload DLQ update lost its lease',
+        );
+      }
+      const outcome = await sendChatAnnouncement(
+        persistedData.broadcasterTwitchUserId,
+        persistedData.streamer,
+        persistedData.gachaResult.card,
+        persistedData.gachaResult.userTwitchUsername,
+        persistedData.userId,
+        persistedData.gachaResult.cards,
+        persistedData.gachaResult.collectionName,
+        persistedData.chatSnapshot,
+        async () => {
+          // replay routeが期限切れで応答を返した後に、遅れて資格情報解決が完了しても
+          // Twitch送信を開始しない。期限内ならowner-fenced lease更新を最終送信許可にする。
+          if (
+            options.externalSendDeadlineAt !== undefined
+            && Date.now() >= options.externalSendDeadlineAt
+          ) {
+            return false;
+          }
+          const renewed = await renewChatNotificationLease(claim);
+          // renewのDB接続待ち中に開始期限を跨いだ場合も、外部送信は開始しない。
+          return renewed && (
+            options.externalSendDeadlineAt === undefined
+            || Date.now() < options.externalSendDeadlineAt
+          );
+        },
+      );
+      if (outcome.outcome === 'sent' || outcome.outcome === 'skipped') {
+        const persisted = await markChatNotificationSent(claim);
+        // Twitch送信とDB ackは同一transactionにできない。送信後にleaseを失って
+        // ackできなければ別relayが再送し得るため、成功として黙殺せず通知する。
+        deliveryStatePersisted = true;
+        if (!persisted) {
+          throw new Error('Chat announcement sent but outbox ack lost its lease');
+        }
+        return;
+      }
+      if (outcome.outcome === 'terminal') {
+        const persisted = await deadLetterChatNotification(claim, outcome.reason);
+        deliveryStatePersisted = true;
+        if (!persisted) {
+          throw new Error(`Chat announcement DLQ update lost its lease: ${outcome.reason}`);
+        }
+        throw new Error(`Chat announcement moved to DLQ: ${outcome.reason}`);
+      }
+      if (outcome.outcome === 'aborted') {
+        // leaseを失った（またはfence確認不能な）所有者は、新所有者の状態を
+        // pending/deadへ上書きしてはならない。現在のlease失効/新所有者へ委ねる。
+        deliveryStatePersisted = true;
+        throw new Error(`Chat announcement aborted: ${outcome.reason}`);
+      }
+      const retryState = await retryChatNotification(claim, outcome.reason);
+      deliveryStatePersisted = true;
+      throw new Error(`Chat announcement ${retryState}: ${outcome.reason}`);
+    } catch (error) {
+      // sendChatAnnouncement自体の予期しないthrowも一時障害として上限付き再試行へ戻す。
+      const reason = error instanceof Error ? error.message : String(error);
+      if (!deliveryStatePersisted) {
+        await retryChatNotification(claim, reason);
+      }
+      throw error;
+    }
+  })();
+
   const results = await Promise.allSettled([
     // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
     publishCommittedGachaBatch(data.streamer.id, data.gachaResult, {
@@ -364,15 +476,7 @@ export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<
       maxRetries: 1,
       retryDelay: 500,
     }),
-    sendChatAnnouncement(
-      data.broadcasterTwitchUserId,
-      data.streamer,
-      data.gachaResult.card,
-      data.gachaResult.userTwitchUsername,
-      data.userId,
-      data.gachaResult.cards,
-      data.gachaResult.collectionName
-    ),
+    chatTask,
   ]);
 
   // 通知失敗をログ出力 + エラー追跡
@@ -832,7 +936,16 @@ async function fetchActiveCardCountPg(
  * @param userId - ガチャを引いたユーザーのTwitch ID
  * @param cards - 複数枚ガチャ時の獲得カード一覧
  * @param collectionName - 抽選が絞られたパックの collection_name（無制限ガチャは null/undefined、Issue #597）
+ * @param snapshot - ガチャcommit時点の所有数系placeholder（outbox v1では必須）
+ * @param beforeExternalSend - 資格情報解決後・Twitch送信直前に行うowner fence
  */
+export type ChatAnnouncementOutcome =
+  | { outcome: 'sent' }
+  | { outcome: 'skipped' }
+  | { outcome: 'terminal'; reason: string }
+  | { outcome: 'retryable'; reason: string }
+  | { outcome: 'aborted'; reason: string };
+
 export async function sendChatAnnouncement(
   broadcasterTwitchUserId: string,
   streamer: {
@@ -847,8 +960,10 @@ export async function sendChatAnnouncement(
   userName: string,
   userId: string,
   cards?: GachaCard[],
-  collectionName?: string | null
-): Promise<void> {
+  collectionName?: string | null,
+  snapshot?: ChatAnnouncementSnapshot,
+  beforeExternalSend?: () => Promise<boolean>,
+): Promise<ChatAnnouncementOutcome> {
   const drawnCards = cards && cards.length > 0 ? cards : [card];
   const isMultiDraw = drawnCards.length > 1;
   const cardNames = drawnCards.map((drawnCard) => drawnCard.name);
@@ -874,7 +989,7 @@ export async function sendChatAnnouncement(
       broadcasterTwitchUserId,
       streamerId: streamer.id,
     });
-    return;
+    return { outcome: 'skipped' };
   }
 
   // レアリティの日本語/英語変換マップ
@@ -905,12 +1020,12 @@ export async function sendChatAnnouncement(
     && streamer.chat_announcement_multi_show_cards
     && (usesNewCardPlaceholders || shouldAppendDefaultNewCards);
 
-  let cardCount: number | undefined;
-  let uniqueCount: number | undefined;
-  let allCount: number | undefined;
-  let newCardNames: string[] = [];
+  let cardCount: number | undefined = snapshot?.cardCount;
+  let uniqueCount: number | undefined = snapshot?.uniqueCount;
+  let allCount: number | undefined = snapshot?.allCount;
+  let newCardNames: string[] = snapshot?.newCardNames ?? [];
 
-  if (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo) {
+  if (!snapshot && (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo)) {
     // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
     // {all}: count active cards for this streamer (user-independent)
     const allCountPromise = needsAllCount
@@ -1097,9 +1212,21 @@ export async function sendChatAnnouncement(
     message = fitted.message;
   }
 
-  const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
+  // 古いテストdoubleはsendChatMessageDetailedを実装しないためbooleanへ互換変換する。
+  // 本番classは必ず分類付きAPIを持ち、恒久失敗を無限再試行しない。
+  const outcome = typeof chatService.sendChatMessageDetailed === 'function'
+    ? beforeExternalSend
+      ? await chatService.sendChatMessageDetailed(
+          broadcasterTwitchUserId,
+          message,
+          { beforeExternalSend },
+        )
+      : await chatService.sendChatMessageDetailed(broadcasterTwitchUserId, message)
+    : (await chatService.sendChatMessage(broadcasterTwitchUserId, message))
+      ? { outcome: 'sent' as const }
+      : { outcome: 'retryable' as const, reason: 'chat send failed' };
 
-  if (success) {
+  if (outcome.outcome === 'sent') {
     logger.info('Chat announcement sent', {
       broadcasterTwitchUserId,
       streamerId: streamer.id,
@@ -1118,4 +1245,5 @@ export async function sendChatAnnouncement(
       multiDraw: isMultiDraw,
     });
   }
+  return outcome;
 }

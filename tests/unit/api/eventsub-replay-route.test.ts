@@ -6,6 +6,14 @@ import type { ParkedEventSubRecord } from '@/lib/maintenance/eventsub-park'
 const mocks = vi.hoisted(() => ({
   listParkedEventSubNotifications: vi.fn(),
   deleteParkedEventSubNotification: vi.fn(),
+  claimDueChatNotifications: vi.fn(),
+  peekChatNotificationOutboxWork: vi.fn(),
+  decodeChatNotificationPayload: vi.fn(),
+  markChatNotificationSent: vi.fn(),
+  renewChatNotificationLease: vi.fn(),
+  deadLetterChatNotification: vi.fn(),
+  retryChatNotification: vi.fn(),
+  sendChatAnnouncement: vi.fn(),
   handleRedemption: vi.fn(),
   handleRaidNotification: vi.fn(),
   postRedemptionNotify: vi.fn(),
@@ -20,10 +28,21 @@ vi.mock('@/lib/maintenance/eventsub-park', () => ({
   deleteParkedEventSubNotification: mocks.deleteParkedEventSubNotification,
 }))
 
+vi.mock('@/lib/services/chat-notification-outbox', () => ({
+  claimDueChatNotifications: mocks.claimDueChatNotifications,
+  peekChatNotificationOutboxWork: mocks.peekChatNotificationOutboxWork,
+  decodeChatNotificationPayload: mocks.decodeChatNotificationPayload,
+  markChatNotificationSent: mocks.markChatNotificationSent,
+  renewChatNotificationLease: mocks.renewChatNotificationLease,
+  deadLetterChatNotification: mocks.deadLetterChatNotification,
+  retryChatNotification: mocks.retryChatNotification,
+}))
+
 vi.mock('@/lib/services/eventsub-redemption', () => ({
   handleRedemption: mocks.handleRedemption,
   handleRaidNotification: mocks.handleRaidNotification,
   postRedemptionNotify: mocks.postRedemptionNotify,
+  sendChatAnnouncement: mocks.sendChatAnnouncement,
 }))
 
 vi.mock('@/lib/rate-limit', () => ({
@@ -89,6 +108,49 @@ function makeRecord(overrides: Partial<ParkedEventSubRecord> = {}): ParkedEventS
   }
 }
 
+function makeChatOutboxClaim(payloadOverrides: Record<string, unknown> = {}) {
+  return {
+    id: '11111111-1111-4111-8111-111111111111',
+    batchId: 'chat-batch-1',
+    leaseId: '22222222-2222-4222-8222-222222222222',
+    attemptCount: 1,
+    payloadVersion: 1,
+    createdAt: '2026-07-01T00:00:00.000Z',
+    payload: {
+      batchId: 'chat-batch-1',
+      broadcasterTwitchUserId: 'broadcaster-1',
+      userId: 'viewer-1',
+      streamer: {
+        id: 'streamer-1',
+        chat_announcement_enabled: true,
+        chat_announcement_template: null,
+        chat_announcement_multi_template: null,
+        chat_announcement_multi_show_cards: false,
+      },
+      gachaResult: {
+        type: 'gacha',
+        userTwitchUsername: 'Viewer',
+        card: {
+          id: 'card-1', name: 'Alpha', description: null, image_url: null,
+          rarity: 'rare', drop_rate: 1,
+        },
+        cards: [{
+          id: 'card-1', name: 'Alpha', description: null, image_url: null,
+          rarity: 'rare', drop_rate: 1,
+        }],
+        collectionName: 'Collection',
+        ...payloadOverrides,
+      },
+      chatSnapshot: {
+        cardCount: 1,
+        uniqueCount: 1,
+        allCount: 10,
+        newCardNames: ['Alpha'],
+      },
+    }
+  }
+}
+
 /** counts の完全一致比較用ヘルパー。新設カテゴリ(unknownType/invalidPayload)は省略時0。 */
 function expectedCounts(overrides: Partial<{
   succeeded: number
@@ -121,10 +183,25 @@ describe('POST /api/admin/eventsub-replay', () => {
       listComplete: true,
     })
     mocks.deleteParkedEventSubNotification.mockResolvedValue(undefined)
+    mocks.claimDueChatNotifications.mockReset()
+    mocks.claimDueChatNotifications.mockResolvedValue([])
+    mocks.peekChatNotificationOutboxWork.mockResolvedValue([])
+    mocks.decodeChatNotificationPayload.mockImplementation((claim) => {
+      const payload = claim?.payload
+      return payload && typeof payload === 'object' && 'broadcasterTwitchUserId' in payload
+        ? payload
+        : null
+    })
+    mocks.markChatNotificationSent.mockResolvedValue(true)
+    mocks.renewChatNotificationLease.mockReset()
+    mocks.renewChatNotificationLease.mockResolvedValue(true)
+    mocks.deadLetterChatNotification.mockResolvedValue(true)
+    mocks.retryChatNotification.mockResolvedValue('pending')
     mocks.reportError.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     delete process.env.EVENTSUB_REPLAY_SECRET
   })
 
@@ -238,6 +315,279 @@ describe('POST /api/admin/eventsub-replay', () => {
     })
   })
 
+  describe('transactional chat outbox の処理', () => {
+    it('chat送信成功時はowner-fenced sentへ更新する', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent' })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.sendChatAnnouncement).toHaveBeenCalledTimes(1)
+      expect(mocks.sendChatAnnouncement).toHaveBeenCalledWith(
+        'broadcaster-1',
+        expect.any(Object),
+        expect.objectContaining({ id: 'card-1' }),
+        'Viewer',
+        'viewer-1',
+        expect.any(Array),
+        'Collection',
+        {
+          cardCount: 1,
+          uniqueCount: 1,
+          allCount: 10,
+          newCardNames: ['Alpha'],
+        },
+        expect.any(Function),
+      )
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(claim)
+      expect(json.results[0].outcome).toBe('succeeded')
+    })
+
+    it('外部送信開始期限内に開始済みなら、遅延成功をroute deadlineまで待って1回だけackする', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+
+      let resolveSend: (() => void) | undefined
+      const sendFinished = new Promise<void>((resolve) => { resolveSend = resolve })
+      let entered: (() => void) | undefined
+      const enteredSend = new Promise<void>((resolve) => { entered = resolve })
+      mocks.sendChatAnnouncement.mockImplementationOnce(async (...args) => {
+        const beforeExternalSend = args.at(-1) as () => Promise<boolean>
+        // 15秒reserve前に開始した送信は、後続のHelix応答をrouteが待つ。
+        await expect(beforeExternalSend()).resolves.toBe(true)
+        entered?.()
+        await sendFinished
+        return { outcome: 'sent' }
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const responsePromise = POST(createReplayRequest({}))
+      await enteredSend
+      // 開始後に時間が進んでも、開始済み送信の成功とackを捨てない。
+      vi.setSystemTime(new Date(104_999))
+      resolveSend?.()
+      const json = await (await responsePromise).json()
+
+      expect(mocks.renewChatNotificationLease).toHaveBeenCalledWith(claim)
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(1)
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(claim)
+      expect(json.counts).toEqual(expectedCounts({ succeeded: 1, total: 1 }))
+    })
+
+    it('15秒reserve後は外部送信を開始せず、lease更新・ackをせず次tickへ残す', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockImplementationOnce(async (...args) => {
+        const beforeExternalSend = args.at(-1) as () => Promise<boolean>
+        // route本体の105秒deadlineではなく、15秒reserveを引いた開始期限を越える。
+        vi.setSystemTime(new Date(90_000))
+        expect(await beforeExternalSend()).toBe(false)
+        return { outcome: 'aborted', reason: 'chat delivery ownership lost before send' }
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.renewChatNotificationLease).not.toHaveBeenCalled()
+      expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+      expect(json.results[0]).toMatchObject({
+        outcome: 'failed',
+        error: 'chat delivery ownership lost before send',
+      })
+    })
+
+    it('renew中に開始期限を越えた場合も、renew後の再確認で外部送信とackを止める', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+      mocks.renewChatNotificationLease.mockImplementationOnce(async () => {
+        // 先行チェックは通過したが、DB lease更新中に15秒reserve境界を越えた。
+        vi.setSystemTime(new Date(90_000))
+        return true
+      })
+      mocks.sendChatAnnouncement.mockImplementationOnce(async (...args) => {
+        const beforeExternalSend = args.at(-1) as () => Promise<boolean>
+        expect(await beforeExternalSend()).toBe(false)
+        return { outcome: 'aborted', reason: 'chat delivery ownership lost before send' }
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.renewChatNotificationLease).toHaveBeenCalledWith(claim)
+      expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+      expect(json.results[0]).toMatchObject({
+        outcome: 'failed',
+        error: 'chat delivery ownership lost before send',
+      })
+    })
+
+    it('送信成功後にack leaseを失った場合は成功表示せずreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent' })
+      mocks.markChatNotificationSent.mockResolvedValue(false)
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(json.results[0]).toMatchObject({
+        outcome: 'failed',
+        error: 'sent, but outbox ack lost its lease',
+      })
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+    })
+
+    it('一時失敗はbackoff付きpendingへ戻す', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'retryable', reason: 'Twitch API 503' })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.retryChatNotification).toHaveBeenCalledWith(claim, 'Twitch API 503')
+      expect(json.results[0]).toMatchObject({ outcome: 'failed', error: 'pending: Twitch API 503' })
+    })
+
+    it('恒久失敗は即DLQ化し、後続claimを塞がない', async () => {
+      const terminal = makeChatOutboxClaim()
+      const success = { ...makeChatOutboxClaim(), id: '33333333-3333-4333-8333-333333333333', batchId: 'chat-batch-2' }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([terminal])
+        .mockResolvedValueOnce([success])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement
+        .mockResolvedValueOnce({ outcome: 'terminal', reason: 'scope missing' })
+        .mockResolvedValueOnce({ outcome: 'sent' })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(terminal, 'scope missing')
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(success)
+      expect(json.results.map((result: { outcome: string }) => result.outcome)).toEqual(['failed', 'succeeded'])
+    })
+
+    it('恒久失敗20件を1 tickあたり5件ずつDLQ化し、後続tickで21件目を配送する', async () => {
+      const terminalClaims = Array.from({ length: 20 }, (_, index) => {
+        const claim = makeChatOutboxClaim()
+        return {
+          ...claim,
+          id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+          batchId: `terminal-batch-${index + 1}`,
+        }
+      })
+      const twentyFirst = {
+        ...makeChatOutboxClaim(),
+        id: '99999999-9999-4999-8999-999999999999',
+        batchId: 'success-batch-21',
+      }
+      for (const terminal of terminalClaims) {
+        mocks.claimDueChatNotifications.mockResolvedValueOnce([terminal])
+      }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([twentyFirst])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'terminal',
+        reason: 'user:write:chat scope not granted',
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      for (let tick = 0; tick < 4; tick += 1) {
+        const result = await (await POST(createReplayRequest({ limit: 20 }))).json()
+        // 1 requestは外部I/O timeoutとKV relayの公平性を守るため5件だけ処理する。
+        expect(result.counts).toEqual(expectedCounts({ failed: 5, total: 5 }))
+      }
+      expect(mocks.deadLetterChatNotification).toHaveBeenCalledTimes(20)
+
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent' })
+      const second = await (await POST(createReplayRequest({ limit: 20 }))).json()
+
+      expect(mocks.claimDueChatNotifications).toHaveBeenNthCalledWith(
+        21,
+        1,
+        { maintain: true },
+      )
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(twentyFirst)
+      expect(second.counts).toEqual(expectedCounts({ succeeded: 1, total: 1 }))
+    })
+
+    it('maintenance KV一覧取得が失敗しても、その前にDB outboxを配送・ackする', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent' })
+      mocks.listParkedEventSubNotifications.mockRejectedValue(new Error('KV unavailable'))
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+
+      await expect(POST(createReplayRequest({}))).rejects.toThrow('KV unavailable')
+      expect(mocks.sendChatAnnouncement).toHaveBeenCalledTimes(1)
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(claim)
+    })
+
+    it('不正outbox payloadはinvalid-payloadとしてreportしDLQ化する', async () => {
+      const claim = { ...makeChatOutboxClaim(), payload: { batchId: 'missing-required-fields' } }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(json.results[0].outcome).toBe('invalid-payload')
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(
+        claim,
+        'transactional chat outbox payload v1 is invalid',
+      )
+      expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+    })
+
+    it('dry-runはDB outboxをclaimしない', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      await POST(createReplayRequest({ dryRun: true }))
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+    })
+
+    it('KVが空でもdry-run peekにDB-only pendingを返しCron実relayを起動できる', async () => {
+      mocks.peekChatNotificationOutboxWork.mockResolvedValue([{
+        id: '77777777-7777-4777-8777-777777777777',
+        batchId: 'db-only-batch',
+        createdAt: '2026-07-01T00:00:00.000Z',
+      }])
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ dryRun: true, limit: 1 }))).json()
+
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          key: 'chat-outbox:77777777-7777-4777-8777-777777777777',
+          messageId: 'db-only-batch',
+          outcome: 'dry-run',
+        }),
+      ])
+      expect(mocks.peekChatNotificationOutboxWork).toHaveBeenCalledWith(1)
+      expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('CHANNEL_POINTS_REDEMPTION_ADD の処理', () => {
     it('成功時はpostRedemptionNotifyを呼び、KVエントリを削除する', async () => {
       const record = makeRecord()
@@ -255,7 +605,10 @@ describe('POST /api/admin/eventsub-replay', () => {
       const json = await response.json()
 
       expect(mocks.handleRedemption).toHaveBeenCalledWith('message-1', payloadEventOf(record))
-      expect(mocks.postRedemptionNotify).toHaveBeenCalledWith(gachaResult)
+      expect(mocks.postRedemptionNotify).toHaveBeenCalledWith(
+        gachaResult,
+        expect.objectContaining({ externalSendDeadlineAt: expect.any(Number) }),
+      )
       expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledWith('maintenance:eventsub:key-1')
       expect(json.results[0].outcome).toBe('succeeded')
       expect(json.counts).toEqual(expectedCounts({ succeeded: 1, total: 1 }))
@@ -430,7 +783,10 @@ describe('POST /api/admin/eventsub-replay', () => {
 
       expect(mocks.handleRaidNotification).toHaveBeenCalledWith('message-1', payloadEventOf(record))
       expect(mocks.handleRedemption).not.toHaveBeenCalled()
-      expect(mocks.postRedemptionNotify).toHaveBeenCalledWith(raidResult)
+      expect(mocks.postRedemptionNotify).toHaveBeenCalledWith(
+        raidResult,
+        expect.objectContaining({ externalSendDeadlineAt: expect.any(Number) }),
+      )
       expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledWith('maintenance:eventsub:key-raid')
       expect(json.results[0].outcome).toBe('succeeded')
     })

@@ -127,7 +127,7 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
 
       // 名前付き引数・明示キャスト・bind 値の並びを固定する(位置ズレ事故防止)
       const { text, values } = renderSqlCall(sqlMock, 0)
-      expect(text).toContain('execute_gacha_transaction')
+      expect(text).toContain('execute_gacha_transaction_with_chat_outbox')
       expect(text).toContain('p_event_id => $')
       expect(text).toContain('p_user_twitch_id => $')
       expect(text).toContain('p_user_twitch_username => $')
@@ -135,7 +135,11 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       expect(text).toContain('p_streamer_id => $::uuid')
       expect(text).toContain('p_reward_cost => $::integer')
       expect(text).toContain('p_reward_id => $')
-      expect(values).toEqual(['event-1', 'user-1', 'testuser', 'card-1', 'streamer-1', null, null])
+      expect(text).toContain('p_chat_batch_id => $')
+      expect(text).toContain('p_draw_index => $::integer')
+      expect(text).toContain('p_draw_count => $::integer')
+      expect(text).toContain('p_collection_name => $')
+      expect(values).toEqual(['event-1', 'user-1', 'testuser', 'card-1', 'streamer-1', null, null, null, 1, 1, null])
 
     })
 
@@ -152,7 +156,7 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
 
       expect(result.success).toBe(true)
       const { values } = renderSqlCall(sqlMock, 0)
-      expect(values).toEqual(['event-reward', 'user-1', 'testuser', 'card-1', 'streamer-1', 500, 'reward-abc'])
+      expect(values).toEqual(['event-reward', 'user-1', 'testuser', 'card-1', 'streamer-1', 500, 'reward-abc', null, 1, 1, null])
     })
 
     it('冪等再送(同一 event_id の2回目 → is_duplicate)は Duplicate event を返す', async () => {

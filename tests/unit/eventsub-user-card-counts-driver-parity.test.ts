@@ -15,6 +15,19 @@ const mocks = vi.hoisted(() => ({
   executeGachaForEventSub: vi.fn(),
   buildMessage: vi.fn(() => 'built message'),
   sendChatMessage: vi.fn().mockResolvedValue(true),
+  claimChatNotificationBatch: vi.fn(),
+  decodeChatNotificationPayload: vi.fn(),
+  markChatNotificationSent: vi.fn(),
+  deadLetterChatNotification: vi.fn(),
+  retryChatNotification: vi.fn(),
+}))
+
+vi.mock('@/lib/services/chat-notification-outbox', () => ({
+  claimChatNotificationBatch: mocks.claimChatNotificationBatch,
+  decodeChatNotificationPayload: mocks.decodeChatNotificationPayload,
+  markChatNotificationSent: mocks.markChatNotificationSent,
+  deadLetterChatNotification: mocks.deadLetterChatNotification,
+  retryChatNotification: mocks.retryChatNotification,
 }))
 
 vi.mock('@/lib/services/gacha', () => ({
@@ -173,10 +186,123 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     mockReportError.mockResolvedValue(undefined)
     mocks.buildMessage.mockReturnValue('built message')
     mocks.sendChatMessage.mockResolvedValue(true)
+    mocks.claimChatNotificationBatch.mockImplementation(async (batchId: string) => {
+      const latestResult = mocks.executeGachaForEventSub.mock.results.at(-1)?.value
+      const outcome = latestResult ? await latestResult : null
+      const gachaResult = outcome?.success ? outcome.data : null
+      return {
+        id: '11111111-1111-4111-8111-111111111111',
+        batchId,
+        payloadVersion: 1,
+        leaseId: '22222222-2222-4222-8222-222222222222',
+        attemptCount: 1,
+        createdAt: '2026-07-01T00:00:00.000Z',
+        payload: gachaResult
+          ? {
+              batchId,
+              broadcasterTwitchUserId: 'broadcaster-1',
+              userId: 'viewer-1',
+              streamer: gachaResult.streamer,
+              gachaResult: { type: 'gacha', ...gachaResult },
+            }
+          : {},
+      }
+    })
+    mocks.decodeChatNotificationPayload.mockImplementation((claim) => claim.payload)
+    mocks.markChatNotificationSent.mockResolvedValue(true)
+    mocks.deadLetterChatNotification.mockResolvedValue(true)
+    mocks.retryChatNotification.mockResolvedValue('pending')
+  })
+
+  it('outbox snapshotがあればrelay時のDB現在値を読まず同じplaceholder本文を使う', async () => {
+    const sqlMock = setupPgSql([
+      { reject: new Error('relay must not query mutable card counts') },
+    ])
+    const request = await createRedemptionRequest('eventsub-snapshot-counts')
+    const persistedClaim = {
+      id: '11111111-1111-4111-8111-111111111111',
+      batchId: 'eventsub-snapshot-counts',
+      payloadVersion: 1,
+      leaseId: '22222222-2222-4222-8222-222222222222',
+      attemptCount: 1,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      payload: {
+        batchId: 'eventsub-snapshot-counts',
+        broadcasterTwitchUserId: 'broadcaster-1',
+        userId: 'viewer-1',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} {card} {num}/{unique}/{all}',
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: false,
+        },
+        gachaResult: {
+          type: 'gacha',
+          card: {
+            id: 'card-1', name: 'Alpha', description: null, image_url: null,
+            rarity: 'rare', drop_rate: 1,
+          },
+          cards: [{
+            id: 'card-1', name: 'Alpha', description: null, image_url: null,
+            rarity: 'rare', drop_rate: 1,
+          }],
+          userTwitchUsername: 'Viewer',
+        },
+        chatSnapshot: {
+          cardCount: 2,
+          uniqueCount: 3,
+          allCount: 4,
+          newCardNames: ['Alpha'],
+        },
+      },
+    }
+    mocks.claimChatNotificationBatch.mockResolvedValueOnce(persistedClaim)
+    mocks.decodeChatNotificationPayload.mockReturnValueOnce(persistedClaim.payload)
+
+    const response = await POST(request)
+
+    expect(response.status).toBe(200)
+    expect(sqlMock).not.toHaveBeenCalled()
+    expect(mocks.buildMessage).toHaveBeenCalledWith(
+      '@{user} {card} {num}/{unique}/{all}',
+      expect.objectContaining({ num: 2, unique: 3, all: 4 }),
+    )
+    expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(persistedClaim)
   })
 
   it('名前付き引数のSQLを実行し、所持数とアクティブ種類数を組み立てる', async () => {
     const sqlMock = setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
+    // HTTPハンドラ内の一時オブジェクトではなく、ガチャ確定と同じtransactionで
+    // 保存済みのpayloadだけが通知本文の入力になることを明示する。テンプレートを
+    // EventSub実行結果と意図的に変え、将来メモリ上の結果を再利用しても通らない。
+    const persistedClaim = {
+      id: '11111111-1111-4111-8111-111111111111',
+      batchId: 'eventsub-counts-pg',
+      payloadVersion: 1,
+      leaseId: '22222222-2222-4222-8222-222222222222',
+      attemptCount: 1,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      payload: {
+        batchId: 'eventsub-counts-pg',
+        broadcasterTwitchUserId: 'broadcaster-1',
+        userId: 'viewer-1',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} persisted {card} 所持{num}枚目 コンプ進捗{unique}',
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: false,
+        },
+        gachaResult: {
+          type: 'gacha',
+          card: { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+          userTwitchUsername: 'Viewer',
+        },
+      },
+    }
+    mocks.claimChatNotificationBatch.mockResolvedValueOnce(persistedClaim)
+    mocks.decodeChatNotificationPayload.mockReturnValueOnce(persistedClaim.payload)
 
     const response = await POST(await createRedemptionRequest('eventsub-counts-pg'))
 
@@ -191,10 +317,18 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     expect(values).toEqual(['viewer-1', 'streamer-1'])
 
     expect(mocks.buildMessage).toHaveBeenCalledWith(
-      '@{user} {card} 所持{num}枚目 コンプ進捗{unique}',
+      '@{user} persisted {card} 所持{num}枚目 コンプ進捗{unique}',
       expect.objectContaining({ num: 3, unique: 1 }),
     )
     expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
+    // outboxはガチャtransaction内で既に作成済み。ライブ配送はclaim後の
+    // Twitch成功時だけowner-fenced sentへ更新する。
+    expect(mocks.claimChatNotificationBatch).toHaveBeenCalledWith('eventsub-counts-pg')
+    expect(mocks.decodeChatNotificationPayload).toHaveBeenCalledWith(persistedClaim)
+    // outbox schema version 1を復号しているため、メモリ上の通知値ではなく
+    // 将来のversioned payload移行にも追従する経路をこのdriver parityで固定する。
+    expect(persistedClaim.payloadVersion).toBe(1)
+    expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(1)
   })
 
   it('{all} はPlanetScaleのアクティブカード総数だけをbindし、通知本文へ渡す', async () => {
@@ -309,6 +443,9 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
       'eventsub-chat-and-reporter-reject',
     )
     expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
+    // 予期しない送信throwは上限付きbackoffへ戻し、Cron relayが回収する。
+    expect(mocks.retryChatNotification).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
     expect(mockReportError).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'chat transport unavailable' }),
       expect.objectContaining({ context: 'eventsub:postRedemptionNotify:chatAnnouncement' }),

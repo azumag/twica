@@ -4,7 +4,7 @@ import { type Result, ok, err } from '@/types/result'
 import { logger } from '@/lib/logger.server'
 import { reportError } from '@/lib/sentry/error-handler'
 // ガチャはカード付与と履歴記録を同じ PostgreSQL トランザクションへ閉じ込める。
-// #708 以降は PlanetScale の execute_gacha_transaction が唯一の実行経路であり、
+// #708 以降は PlanetScale のversioned gacha transaction RPCが唯一の実行経路であり、
 // 関数欠落時に非原子的な複数クエリへ縮退させない。
 import { getDb } from '@/lib/db/client'
 
@@ -108,6 +108,8 @@ interface GachaTransactionRpcResult {
   is_duplicate?: boolean
   limit_reached?: boolean
   history_id?: string | null
+  /** 最終drawだけが返す、gacha_historyからevent_id順に再構成した完全なbatch。 */
+  cards?: GachaCard[] | null
 }
 
 /**
@@ -223,7 +225,15 @@ export class GachaService {
     // (gacha-sound-rules.ts の targetType: 'reward', #451/#586)が発火するようにする。
     // EventSub経由(executeGachaForEventSub)のみ利用可能。レイドガチャ
     // (executeGachaForRaidEvent)はチャネルポイント報酬に紐付かないため常にundefined。
-    rewardId?: string | null
+    rewardId?: string | null,
+    // EventSub/raidのN連をtransactional chat outboxへ順番どおり組み立てる情報。
+    // 手動ガチャはチャット通知対象外なので未指定のままにする。
+    chatOutbox?: {
+      batchId: string
+      drawIndex: number
+      drawCount: number
+      collectionName?: string | null
+    }
   ): Promise<Result<GachaResult>> {
     try {
       // Get active cards for this streamer (optionally scoped to a pack).
@@ -431,6 +441,10 @@ export class GachaService {
               streamerId,
               rewardCost: rewardCost ?? null,
               rewardId: rewardId ?? null,
+              chatBatchId: chatOutbox?.batchId ?? null,
+              drawIndex: chatOutbox?.drawIndex ?? 1,
+              drawCount: chatOutbox?.drawCount ?? 1,
+              collectionName: chatOutbox?.collectionName ?? null,
             })
 
         if (rpcError) {
@@ -438,7 +452,7 @@ export class GachaService {
           // ユーザー・所持カードを別々に書くため原子性もない。RPC 欠落は明示的に
           // fail-closed とし、通常の reportError 経路で運用へ通知する。
           if (rpcError.code === '42883') {
-            logger.error('execute_gacha_transaction is required but not deployed', {
+            logger.error('execute_gacha_transaction_with_chat_outbox is required but not deployed', {
               streamerId, userTwitchId, eventId,
             })
           }
@@ -454,6 +468,20 @@ export class GachaService {
 
         // EventSub重複通知の場合（event_idが既に処理済み）
         if (rpcResult?.is_duplicate) {
+          if (
+            chatOutbox
+            && chatOutbox.drawCount > 1
+            && rpcResult.cards?.length === chatOutbox.drawCount
+          ) {
+            // N連最終drawの応答消失・歯抜け回復では、duplicate RPCがDB履歴から
+            // 完全batchを再構成して返す。単発や途中drawのduplicateは従来どおり
+            // 終端し、完全batchがある場合だけoverlay用成功結果へ復元する。
+            return ok({
+              card: rpcResult.cards[chatOutbox.drawIndex - 1] ?? rpcResult.cards[0],
+              cards: rpcResult.cards,
+              userTwitchUsername,
+            })
+          }
           return err('Duplicate event')
         }
 
@@ -467,6 +495,7 @@ export class GachaService {
 
         return ok({
           card: selectedCard,
+          cards: rpcResult?.cards ?? undefined,
           userTwitchUsername,
         })
       }
@@ -476,16 +505,15 @@ export class GachaService {
   }
 
   /**
-   * execute_gacha_transaction RPC の PlanetScale 直結(postgres.js)実装 (#573)。
+   * execute_gacha_transaction_with_chat_outbox RPC のPlanetScale直結実装 (#573/#803)。
    * executeGacha の単一路線として呼ばれ、既存の { data, error } 形状を維持することで、
    * 呼び出し側の後続分岐(42883 fail-closed・is_duplicate・limit_reached 再抽選)
    * を共有する。
    *
    * 名前付き引数(p_event_id => ...)で呼ぶ理由: 位置引数だと将来のパラメータ追加・
    * 並び替えで「隣の引数へズレたまま型だけ合ってしまう」取り違え事故(課金系では
-   * 致命的)を検出できない。migration 00070 のシグネチャ(7引数、末尾2つは
-   * DEFAULT NULL)と名前で1対1対応させ、PostgREST .rpc() が名前付きで呼ぶ挙動とも
-   * 揃える。値はすべて postgres.js のバインドパラメータとして送られるため
+   * 致命的)を検出できない。Issue #803のversioned 11引数シグネチャと名前で
+   * 1対1対応させる。値はすべて postgres.js のバインドパラメータとして送られるため
    * SQL インジェクションは構造的に不可能。uuid 引数は明示 ::uuid キャストで
    * 型解決を固定する(integer も同様)。text 引数は unknown のまま送っても
    * 名前付き引数の関数解決で text へ一意に強制されるためキャスト不要。
@@ -499,13 +527,10 @@ export class GachaService {
    * json/jsonb には影響しない。
    *
    * リトライ: withDbRetry(..., { idempotent: eventId !== null })。
-   * - eventId が非 null の場合のみリトライを許可する。RPC は gacha_history へ
-   *   ON CONFLICT (event_id) DO NOTHING で INSERT し(migration 00070)、重複時は
-   *   users/user_cards への書き込み前に is_duplicate:true で early return するため、
-   *   同一 event_id での再実行は副作用ゼロ(=冪等)。接続断リトライ後の
-   *   is_duplicate:true は「初回が実はコミットされていた」ケースを含むが、これは
-   *   EventSub 再送と同じ err('Duplicate event') 扱いが正しい(カードは初回実行分が
-   *   既に付与済みで、二重付与も未付与も起きない)。
+   * - eventId が非 null の場合のみリトライを許可する。RPC はevent advisory lockと
+   *   gacha_history.event_id UNIQUEで同じeventを直列・冪等化する。接続断リトライ後の
+   *   is_duplicate:true は「初回が実はコミット済み」を含む。単発は完了済みとして
+   *   終端し、N連はexecuteGachaDrawsがDB prefixを再読込して残drawへ進む。
    * - Issue #661 (migration 00076) 以降、RPC 自体が p_event_id=NULL を
    *   RAISE EXCEPTION で拒否するため、eventId=null での呼び出しは(このメソッドに
    *   到達する前段の呼び出し元がすべて非 null を渡す設計であることも合わせ、
@@ -533,6 +558,10 @@ export class GachaService {
     streamerId: string
     rewardCost: number | null
     rewardId: string | null
+    chatBatchId: string | null
+    drawIndex: number
+    drawCount: number
+    collectionName: string | null
   }): Promise<{ data: GachaTransactionRpcResult | null; error: GachaRpcDriverError | null }> {
     try {
       // セキュリティレビュー指摘対応: 接続断リトライが実際に発生したかどうかを
@@ -545,14 +574,18 @@ export class GachaService {
           // クライアント再取得が必要。src/lib/db/retry.ts 参照)
           const { sql } = await getDb()
           const rows = await sql<{ result: GachaTransactionRpcResult | null }[]>`
-            select execute_gacha_transaction(
+            select execute_gacha_transaction_with_chat_outbox(
               p_event_id => ${params.eventId},
               p_user_twitch_id => ${params.userTwitchId},
               p_user_twitch_username => ${params.userTwitchUsername},
               p_card_id => ${params.cardId}::uuid,
               p_streamer_id => ${params.streamerId}::uuid,
               p_reward_cost => ${params.rewardCost}::integer,
-              p_reward_id => ${params.rewardId}
+              p_reward_id => ${params.rewardId},
+              p_chat_batch_id => ${params.chatBatchId},
+              p_draw_index => ${params.drawIndex}::integer,
+              p_draw_count => ${params.drawCount}::integer,
+              p_collection_name => ${params.collectionName}
             ) as result
           `
           return rows[0]?.result ?? null
@@ -560,21 +593,16 @@ export class GachaService {
         'gacha:executeGacha:rpc(pg)',
         { idempotent: params.eventId !== null },
       )
-      // 2回以上実行された(=接続断リトライが発生した)後の is_duplicate / limit_reached
-      // は、「初回実行が実はコミット済みで応答だけ失われた」ケースを含む。
-      // - is_duplicate: ON CONFLICT (event_id) により再実行が重複扱いになった
-      // - limit_reached: migration 00070 の評価順序では発行上限チェックが event_id
-      //   重複チェックより先に走るため、発行上限付きカードでは重複でも上限到達として
-      //   返る(その後の再抽選 → is_duplicate → err('Duplicate event') に至る)
-      // どちらもカード付与・ポイント消費は初回分の1回で正しく完結している
-      // (データ不整合なし)が、視聴者への演出・チャット通知が欠落する。ログ無しでは
-      // 本物の EventSub 再送の is_duplicate と区別できないため、warn で観測可能に
-      // する(既知の稀な事象。plpgsql の評価順序修正は migration が必要なため
-      // Phase 2 対応。docs/db-driver-migration.md 参照)。戻り値は変更しない。
+      // 2回以上実行された(=接続断リトライが発生した)後のis_duplicateは、
+      // 「初回COMMIT成功・応答だけ消失」を含む。N連では呼出側がDB prefixを再読込して
+      // 残りへ進むが、接続品質の観測と単発overlayのgap調査に使えるようwarnを残す。
+      // limit_reachedはevent advisory lock導入後、同一eventのcommit済み履歴を
+      // duplicate確認より後回しにして誤判定することはなく、別eventが発行枠を先取
+      // した本物の競合を示す。ログにtoken等の秘密情報は含めない。
       // ログにトークン等の秘密情報は含めない。
       if (attemptCount >= 2 && (data?.is_duplicate || data?.limit_reached)) {
         logger.warn(
-          `[db:pg] gacha rpc returned ${data.is_duplicate ? 'is_duplicate' : 'limit_reached'} after connection retry — 初回実行がコミット済みだった可能性があり、その場合視聴者への演出が欠落する(既知の稀な事象、docs/db-driver-migration.md 参照)`,
+          `[db:pg] gacha rpc returned ${data.is_duplicate ? 'is_duplicate' : 'limit_reached'} after connection retry`,
           {
             eventId: params.eventId,
             streamerId: params.streamerId,
@@ -874,6 +902,7 @@ export class GachaService {
   ): Promise<Result<GachaResult>> {
     const cards: GachaCard[] = []
     let firstResult: GachaResult | null = null
+    let persistedBatchCards: GachaCard[] | null = null
 
     // Issue #512: EventSub再送がバッチ途中(例: 5連中2枚目まで成功、3枚目で
     // 失敗)のリトライを兼ねる場合、常に index=0 からやり直すと1枚目が
@@ -899,6 +928,8 @@ export class GachaService {
         return err('Duplicate event')
       }
     }
+    let completedDrawCount = resumeFromIndex
+    let requiresPersistedBatch = resumeFromIndex > 0
 
     for (let index = resumeFromIndex; index < drawCount; index += 1) {
       const drawEventId = buildDrawEventId(eventId, index)
@@ -911,18 +942,47 @@ export class GachaService {
         drawRewardCost,
         collectionName,
         weightsConfig,
-        rewardId
+        rewardId,
+        eventId
+          ? {
+              batchId: eventId,
+              drawIndex: index + 1,
+              drawCount,
+              collectionName,
+            }
+          : undefined
       )
 
       if (!result.success) {
-        // resumeFromIndex(過去のリトライで既に完了した分)も合わせた、この
-        // バッチ全体での確定済み枚数。cards.length だけで判定すると、再開
+        if (result.error === 'Duplicate event' && eventId && drawCount > 1) {
+          // RPCの接続断リトライでは「初回COMMIT成功・応答消失」の後、同じdrawを
+          // 再実行してduplicateが返る。このduplicateをバッチ全体の重複として
+          // 終端すると、1〜N-1枚だけ確定して最終outboxが永久に作られない。
+          // 正本のDB prefixを再読込し、今回のdrawまで進んでいればその次へ飛ぶ。
+          const refreshedPrefix = await this.countCompletedDrawPrefix(eventId, drawCount)
+          if (!refreshedPrefix.success) {
+            return err(refreshedPrefix.error)
+          }
+          if (refreshedPrefix.data > completedDrawCount) {
+            completedDrawCount = refreshedPrefix.data
+            requiresPersistedBatch = true
+            if (completedDrawCount >= drawCount) {
+              // 最終drawのduplicate RPC自身が全履歴からoutboxを冪等再構成済み。
+              return err('Duplicate event')
+            }
+            index = completedDrawCount - 1
+            continue
+          }
+        }
+
+        // 過去のリトライと、このリクエスト中にDBで確認できた進捗を合わせた
+        // バッチ全体の確定済み枚数。cards.lengthだけで判定すると、再開
         // 直後の1件目で早速エラーになった場合に「0枚成功」扱いになり、実際は
-        // resumeFromIndex 枚が既に確定済みであるにもかかわらず生の
+        // completedDrawCount枚が既に確定済みであるにもかかわらず生の
         // soldOut/DBエラーがそのまま呼び出し元に伝播してしまう(soldOut側の
         // 全額返還処理などが、既に一部カードを受け取ったユーザーに対して
         // 誤って走りかねない)。
-        const totalCompleted = resumeFromIndex + cards.length
+        const totalCompleted = completedDrawCount
         if (totalCompleted > 0 && result.error !== 'Duplicate event') {
           logger.warn('Multi-draw gacha stopped after partial success', {
             streamerId,
@@ -953,15 +1013,28 @@ export class GachaService {
 
       cards.push(result.data.card)
       firstResult ??= result.data
+      if (result.data.cards?.length === drawCount) {
+        persistedBatchCards = result.data.cards
+      }
+      completedDrawCount = Math.max(completedDrawCount, index + 1)
     }
 
     if (!firstResult) {
       return err('Failed to execute gacha draws')
     }
+    if (requiresPersistedBatch && !persistedBatchCards) {
+      // prefix再開時のローカルcardsは残drawだけなので、そのままpublisherへ渡すと
+      // batch, batch:2...へ誤採番して既存drawを上書きし、末尾を欠落させる。
+      // versioned RPCの完全batchが無ければ誤ったoverlayを送らずretryableに倒す。
+      return err('Completed multi-draw is missing persisted batch cards')
+    }
+
+    const completeCards = persistedBatchCards ?? cards
 
     return ok({
       ...firstResult,
-      cards,
+      card: completeCards[0],
+      cards: completeCards,
     })
   }
 

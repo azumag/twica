@@ -1,4 +1,7 @@
-# Next.js Invariant Error - Issue #90
+# Next.js Invariant Error - Issue #90（履歴）
+
+> この文書は廃止済み Supabase Realtime 経路の障害記録です。現行 overlay transport は
+> Durable Objects WebSocket と PlanetScale polling です。
 
 ## Problem
 

@@ -34,8 +34,16 @@ PlanetScale PostgreSQL のみを使用する。段階移行で使った PostgRES
 - 読み取りは `withDbRetry(..., { idempotent: true })` で一時的な接続断を再試行
   できる。非冪等書き込みは commit 結果不明時の二重実行を避けるため、明示的な
   根拠なしに retry を有効化しない。
-- ガチャの `execute_gacha_transaction` が欠落している場合は fail-closed。
+- ガチャの `execute_gacha_transaction_with_chat_outbox` が欠落している場合は fail-closed。
   原子性のない複数クエリへ縮退させない。
+
+## Twitch chat transactional outbox
+
+ガチャ履歴、カード付与、チャット通知payloadは
+`execute_gacha_transaction_with_chat_outbox`の同一transactionで確定します。
+外部Twitch APIはtransaction外で送信し、`chat_notification_outbox`のleaseで
+relay所有者をfenceします。配送保証、DLQ、保持期限、手動復旧は
+`docs/QA.md`の「Transactional chat outbox」を正本とします。
 
 ## CI ガード
 
@@ -49,4 +57,5 @@ PlanetScale PostgreSQL のみを使用する。段階移行で使った PostgRES
 - root/analysis package への `@supabase/*` 再追加
 - deploy/smoke workflow への Supabase migration・secret 再導入
 
-切替期間の詳細な判断記録は `docs/db-phase2-runbook.md` に履歴として残す。
+切替期間の詳細な判断記録は
+`docs/history/migration/DB_PHASE2_RUNBOOK.md` に履歴として残す。
