@@ -112,8 +112,58 @@ async function buildCommittedEnvelope(
   return event
 }
 
-function resolvePublishUrl(streamerId: string): URL | null {
-  const base = process.env.OVERLAY_REALTIME_PUBLISH_URL
+interface OverlayRealtimePublisherEnvironment {
+  mode: string | undefined
+  streamerAllowlist: string | undefined
+  publishUrl: string | undefined
+  publishSecret: string | undefined
+}
+
+function stringBinding(
+  env: Record<string, unknown>,
+  key: keyof NodeJS.ProcessEnv
+): string | undefined {
+  const value = env[key]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/**
+ * Resolve private publisher configuration from the active Workers request.
+ *
+ * OpenNext exposes Cloudflare runtime variables and secrets through
+ * `getCloudflareContext().env`. Reading that binding first is important:
+ * Workers secrets can be rotated independently of a Next.js build, whereas a
+ * direct `process.env.NAME` reference may retain the value that existed while
+ * the server bundle was produced. `process.env` remains the explicit fallback
+ * for `next dev`, Vitest, and other non-Workers execution contexts.
+ */
+async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnvironment> {
+  let runtimeEnv: Record<string, unknown> = {}
+  try {
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare')
+    const { env } = await getCloudflareContext({ async: true })
+    runtimeEnv = env as unknown as Record<string, unknown>
+  } catch {
+    // OpenNext does not install a request context in local Node execution.
+  }
+
+  return {
+    mode:
+      stringBinding(runtimeEnv, 'OVERLAY_REALTIME_MODE') ??
+      process.env.OVERLAY_REALTIME_MODE,
+    streamerAllowlist:
+      stringBinding(runtimeEnv, 'OVERLAY_REALTIME_STREAMER_ALLOWLIST') ??
+      process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
+    publishUrl:
+      stringBinding(runtimeEnv, 'OVERLAY_REALTIME_PUBLISH_URL') ??
+      process.env.OVERLAY_REALTIME_PUBLISH_URL,
+    publishSecret:
+      stringBinding(runtimeEnv, 'OVERLAY_REALTIME_PUBLISH_SECRET') ??
+      process.env.OVERLAY_REALTIME_PUBLISH_SECRET,
+  }
+}
+
+function resolvePublishUrl(streamerId: string, base: string | undefined): URL | null {
   if (!base) return null
   try {
     const url = new URL(base)
@@ -144,17 +194,18 @@ export async function publishCommittedGachaBatch(
   payload: OverlayPublishPayload,
   options: OverlayPublishOptions
 ): Promise<OverlayPublishResult> {
+  const publisherEnv = await getPublisherEnvironment()
   if (!isOverlayRealtimeStreamerEnabled(
-    process.env.OVERLAY_REALTIME_MODE,
-    process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
+    publisherEnv.mode,
+    publisherEnv.streamerAllowlist,
     streamerId
   )) {
     return { outcome: 'skipped', attempts: 0, errorCode: 'mode-disabled' }
   }
 
   try {
-    const secret = process.env.OVERLAY_REALTIME_PUBLISH_SECRET
-    const url = resolvePublishUrl(streamerId)
+    const secret = publisherEnv.publishSecret
+    const url = resolvePublishUrl(streamerId, publisherEnv.publishUrl)
     if (!secret || !url) {
       logger.warn('[overlay-realtime] publisher configuration missing', { streamerId })
       return { outcome: 'skipped', attempts: 0, errorCode: 'configuration-missing' }

@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { getDb } from '@/lib/db/client'
 import { verifyPublishSignature } from '@/lib/overlay-realtime/signature'
+
+vi.mock('@opennextjs/cloudflare', () => ({
+  getCloudflareContext: vi.fn(),
+}))
 
 vi.mock('@/lib/logger', () => ({
   logger: {
@@ -40,6 +45,9 @@ async function flushPromises(): Promise<void> {
 describe('publishCommittedGachaBatch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(getCloudflareContext).mockRejectedValue(
+      new Error('Cloudflare request context is unavailable in unit tests')
+    )
     process.env.OVERLAY_REALTIME_MODE = 'do-primary'
     process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST = STREAMER_ID
     process.env.OVERLAY_REALTIME_PUBLISH_URL =
@@ -106,6 +114,56 @@ describe('publishCommittedGachaBatch', () => {
         process.env.OVERLAY_REALTIME_PUBLISH_SECRET!,
         url.pathname,
         body,
+        headers['x-twica-timestamp'],
+        headers['x-twica-nonce'],
+        headers['x-twica-signature']
+      )
+    ).resolves.toBe(true)
+  })
+
+  it('prefers rotated Workers runtime secrets over build-time process values', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'do-primary',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://runtime-overlay-realtime.example.workers.dev',
+        OVERLAY_REALTIME_PUBLISH_SECRET: 'rotated-runtime-secret',
+      },
+    } as never)
+    process.env.OVERLAY_REALTIME_PUBLISH_URL =
+      'https://stale-build-value.example.workers.dev'
+    process.env.OVERLAY_REALTIME_PUBLISH_SECRET = 'stale-build-secret'
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({ outcome: 'accepted', attempts: 1 })
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(url.hostname).toBe('runtime-overlay-realtime.example.workers.dev')
+    const headers = init.headers as Record<string, string>
+    await expect(
+      verifyPublishSignature(
+        'rotated-runtime-secret',
+        url.pathname,
+        String(init.body),
         headers['x-twica-timestamp'],
         headers['x-twica-nonce'],
         headers['x-twica-signature']
