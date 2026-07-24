@@ -40,7 +40,14 @@ describe('findViolations', () => {
   it('VITE_*SUPABASE*形式の環境変数参照を検出する', () => {
     const content = `const url = import.meta.env.VITE_DASHBOARD_SUPABASE_URL`
     const violations = findViolations(content)
-    expect(violations).toEqual([{ line: 1, kind: 'vite-supabase-env', text: content }])
+    expect(violations).toEqual([{ line: 1, kind: 'supabase-env', text: content }])
+  })
+
+  it('Node側のSupabase service-role環境変数参照も検出する', () => {
+    const content = `const key = env.DASHBOARD_SUPABASE_SECRET_KEY`
+    expect(findViolations(content)).toEqual([
+      { line: 1, kind: 'supabase-env', text: content },
+    ])
   })
 
   it('別の命名のVITE変数やSUPABASE単体は誤検知しない', () => {
@@ -60,7 +67,7 @@ describe('findViolations', () => {
     const violations = findViolations(content)
     expect(violations).toEqual([
       { line: 1, kind: 'supabase-import', text: expect.stringContaining('@supabase/supabase-js') },
-      { line: 2, kind: 'vite-supabase-env', text: expect.stringContaining('VITE_DASHBOARD_SUPABASE_ANON_KEY') },
+      { line: 2, kind: 'supabase-env', text: expect.stringContaining('VITE_DASHBOARD_SUPABASE_ANON_KEY') },
     ])
   })
 })

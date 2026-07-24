@@ -1,6 +1,5 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — GET /api/user-cards の
- * postgrest経路 / pg経路パリティテスト
+ * #708: GET /api/user-cards のPostgres専用経路テスト。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { NextRequest } from 'next/server'
@@ -62,20 +61,13 @@ function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
   vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
 }
 
-function createSupabaseMock(userResult: { data: unknown; error: unknown }, cardsResult: { data: unknown; error: unknown }) {
-  return {
-    from: vi.fn((table: string) => {
-      if (table === 'users') {
-        return { select: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle: vi.fn().mockResolvedValue(userResult) })) })) }
-      }
-      return { select: vi.fn(() => ({ eq: vi.fn(() => ({ range: vi.fn().mockResolvedValue(cardsResult) })) })) }
-    }),
-  }
-}
-
-describe('GET /api/user-cards: postgrest / pg 経路の互換 (#663)', () => {
+describe('GET /api/user-cards: Postgres専用経路 (#708)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // tests/setup.ts は削除待ちの旧PostgREST parity fixture向けに互換opt-inを
+    // 有効化する。このファイルは本番と同じ「フラグ未設定ならPostgres」という
+    // 契約を検証するため、旧DB_DRIVER値を再導入せず互換sandbox自体を無効化する。
+    vi.stubEnv('TWICA_ENABLE_LEGACY_SUPABASE', 'false')
     mockGetSession.mockResolvedValue({
       twitchUserId: 'user123',
       twitchUsername: 'testuser',
@@ -91,26 +83,7 @@ describe('GET /api/user-cards: postgrest / pg 経路の互換 (#663)', () => {
     vi.unstubAllEnvs()
   })
 
-  it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-    vi.stubEnv('DB_DRIVER', undefined)
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      createSupabaseMock(
-        { data: { id: 'user-uuid-1', twitch_user_id: 'user123' }, error: null },
-        { data: [{ id: 'uc1', user_id: 'user-uuid-1', card_id: 'card1', obtained_at: '2026-01-01T00:00:00Z' }], error: null }
-      ) as any
-    )
-
-    const response = await GET(createRequest())
-    const body = await response.json()
-
-    expect(response.status).toBe(200)
-    expect(body).toHaveLength(1)
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('DB_DRIVER=pg-read: pg経路で正しいuser_idを条件にuser_cardsが取得される（postgrest経路と同じ結果）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
+  it('フラグなしでPostgresから正しいuser_idのuser_cardsを取得する', async () => {
     const pg = createDrizzleDbMock({
       selects: [
         { rows: [{ id: 'user-uuid-1', twitch_user_id: 'user123' }] },
@@ -129,8 +102,7 @@ describe('GET /api/user-cards: postgrest / pg 経路の互換 (#663)', () => {
     ])
   })
 
-  it('DB_DRIVER=pg-read: ユーザーが見つからなければ500（handleDatabaseError、postgrest経路と同じ外部挙動）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
+  it('ユーザーが見つからなければhandleDatabaseErrorで500を返す', async () => {
     const pg = createDrizzleDbMock({ selects: [{ rows: [] }] })
     primePgDb(pg)
 
