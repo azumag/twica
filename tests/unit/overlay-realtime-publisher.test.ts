@@ -217,8 +217,13 @@ describe('publishCommittedGachaBatch', () => {
   })
 
   it('publishes through the Workers Service Binding instead of global fetch', async () => {
+    const cancelBody = vi.fn().mockResolvedValue(undefined)
     const serviceFetch = vi.fn().mockResolvedValue(
-      Response.json({ accepted: true }, { status: 202 })
+      {
+        ok: true,
+        status: 202,
+        body: { cancel: cancelBody },
+      } as unknown as Response
     )
     vi.mocked(getCloudflareContext).mockResolvedValue({
       env: {
@@ -252,6 +257,7 @@ describe('publishCommittedGachaBatch', () => {
 
     expect(globalFetch).not.toHaveBeenCalled()
     expect(serviceFetch).toHaveBeenCalledTimes(1)
+    expect(cancelBody).toHaveBeenCalledTimes(1)
     const request = serviceFetch.mock.calls[0][0] as Request
     expect(request).toBeInstanceOf(Request)
     expect(request.method).toBe('POST')

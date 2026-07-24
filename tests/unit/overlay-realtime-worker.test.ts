@@ -98,6 +98,9 @@ describe('overlay realtime Worker router', () => {
     expect(roomRequest).toBeInstanceOf(Request)
     expect(roomRequest.method).toBe('POST')
     expect(new URL(roomRequest.url).pathname).toBe('/publish')
+    expect(roomRequest.headers.get('x-internal-streamer-id')).toBe(STREAMER_ID)
+    expect(roomRequest.headers.get('x-internal-nonce')).toBe(nonce)
+    expect(roomRequest.headers.get('x-internal-timestamp')).toBe(timestamp)
     expect(await roomRequest.text()).toBe(body)
   })
 
