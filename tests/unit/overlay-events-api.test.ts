@@ -245,6 +245,35 @@ describe("GET /api/overlay/[streamerId]/events", () => {
     });
   });
 
+  it("前レスポンスのPostgreSQLマイクロ秒cursorを正規化して次のqueryへ渡す", async () => {
+    const afterId = "123e4567-e89b-42d3-a456-426614174001";
+    const postgresCursor = "2026-07-24T14:40:14.511943+00:00";
+    const normalizedCursor = "2026-07-24T14:40:14.511Z";
+    const db = useRows([]);
+
+    // createRequest はoverlayのnextCursor往復と同じくURLSearchParamsを使う。
+    // これにより、以前は不正なsince値として拒否された+00:00 offsetのエンコードを
+    // 実際のリクエスト経路のまま検証できる。
+    const response = await GET(
+      createRequest({ since: postgresCursor, afterId }),
+      routeParams()
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.calls[0].whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+        or(
+          gt(gachaHistoryTable.redeemed_at, normalizedCursor),
+          and(
+            eq(gachaHistoryTable.redeemed_at, normalizedCursor),
+            gt(gachaHistoryTable.id, afterId)
+          )
+        )
+      )
+    );
+  });
+
   it("PlanetScale queryが必要列・join・安定順・bounded limitを使う", async () => {
     const db = useRows([]);
 
