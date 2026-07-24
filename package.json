@@ -65,6 +65,7 @@
     "@aws-sdk/client-s3": "^3.972.0",
     "@cloudflare/workers-types": "4.20260702.1",
     "@opennextjs/cloudflare": "^1.16.1",
+    "@swc/helpers": "^0.5.23",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
