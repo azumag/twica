@@ -225,6 +225,21 @@ function retryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500
 }
 
+async function discardResponseBody(response: Response): Promise<void> {
+  if (!response.body) return
+  try {
+    // The publisher needs only the HTTP status. Cloudflare counts a response
+    // whose headers arrived but whose body remains unread as an open
+    // connection; canceling it promptly releases that slot for concurrent
+    // EventSub deliveries without parsing or logging private response data.
+    await response.body.cancel()
+  } catch {
+    // Transport cleanup is best-effort. A successfully classified publish
+    // response must not be turned into a failed gacha notification because its
+    // already-unused body stream was concurrently closed by the runtime.
+  }
+}
+
 /**
  * Publish after the database transaction has committed.
  *
@@ -300,6 +315,7 @@ export async function publishCommittedGachaBatch(
         const response = publisherEnv.publishService
           ? await publisherEnv.publishService.fetch(new Request(url, requestInit))
           : await fetch(url, requestInit)
+        await discardResponseBody(response)
         if (response.ok) return { outcome: 'accepted', attempts: attempt }
         if (!retryableStatus(response.status) || attempt >= maxAttempts) {
           logger.warn('[overlay-realtime] publish rejected', {
