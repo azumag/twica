@@ -78,7 +78,10 @@ binding = "R2_SOUNDS"
 bucket_name = "twica-sound-dev"
 
 # Authoritative preview PostgreSQL connection.
+# The previous config was deleted after its stale direct sessions exhausted the
+# PlanetScale connection limit. Keep this preview-only config capped at five
+# origin connections so preview validation cannot starve production traffic.
 [[env.preview.hyperdrive]]
 binding = "HYPERDRIVE_PLANETSCALE"
-id = "4b8d1f014cce457fbbc009f3c09592f4"
+id = "5caf2d40d4f04fc49bc47053ab47ec22"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
