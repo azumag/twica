@@ -113,6 +113,7 @@ async function buildCommittedEnvelope(
 }
 
 interface OverlayRealtimePublisherEnvironment {
+  runtime: 'workers' | 'local'
   mode: string | undefined
   streamerAllowlist: string | undefined
   publishUrl: string | undefined
@@ -166,6 +167,7 @@ async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnviro
     // stale build-time URL, or bypass polling-only mode after a binding is
     // deliberately removed.
     return {
+      runtime: 'workers',
       mode: stringBinding(runtimeEnv, 'OVERLAY_REALTIME_MODE'),
       streamerAllowlist: stringBinding(
         runtimeEnv,
@@ -187,6 +189,7 @@ async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnviro
         errorName: error instanceof Error ? error.name : 'unknown',
       })
       return {
+        runtime: 'workers',
         mode: undefined,
         streamerAllowlist: undefined,
         publishUrl: undefined,
@@ -198,6 +201,7 @@ async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnviro
     // `next dev` and Vitest have no OpenNext request context. Their environment
     // is process-local and cannot cross the preview/production Workers boundary.
     return {
+      runtime: 'local',
       mode: process.env.OVERLAY_REALTIME_MODE,
       streamerAllowlist: process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
       publishUrl: process.env.OVERLAY_REALTIME_PUBLISH_URL,
@@ -228,10 +232,9 @@ function retryableStatus(status: number): boolean {
 async function discardResponseBody(response: Response): Promise<void> {
   if (!response.body) return
   try {
-    // The publisher needs only the HTTP status. Cloudflare counts a response
-    // whose headers arrived but whose body remains unread as an open
-    // connection; canceling it promptly releases that slot for concurrent
-    // EventSub deliveries without parsing or logging private response data.
+    // The publisher needs only the HTTP status. Canceling the unread stream is
+    // Cloudflare's recommended cleanup and releases its remaining resources
+    // without parsing or logging private response data.
     await response.body.cancel()
   } catch {
     // Transport cleanup is best-effort. A successfully classified publish
@@ -265,7 +268,11 @@ export async function publishCommittedGachaBatch(
   try {
     const secret = publisherEnv.publishSecret
     const url = resolvePublishUrl(streamerId, publisherEnv.publishUrl)
-    if (!secret || !url) {
+    if (
+      !secret
+      || !url
+      || (publisherEnv.runtime === 'workers' && !publisherEnv.publishService)
+    ) {
       logger.warn('[overlay-realtime] publisher configuration missing', { streamerId })
       return { outcome: 'skipped', attempts: 0, errorCode: 'configuration-missing' }
     }

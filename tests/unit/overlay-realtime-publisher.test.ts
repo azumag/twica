@@ -123,6 +123,9 @@ describe('publishCommittedGachaBatch', () => {
   })
 
   it('prefers rotated Workers runtime secrets over build-time process values', async () => {
+    const serviceFetch = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 })
+    )
     vi.mocked(getCloudflareContext).mockResolvedValue({
       env: {
         OVERLAY_REALTIME_MODE: 'do-primary',
@@ -130,6 +133,7 @@ describe('publishCommittedGachaBatch', () => {
         OVERLAY_REALTIME_PUBLISH_URL:
           'https://runtime-overlay-realtime.example.workers.dev',
         OVERLAY_REALTIME_PUBLISH_SECRET: 'rotated-runtime-secret',
+        OVERLAY_REALTIME_SERVICE: { fetch: serviceFetch },
       },
     } as never)
     process.env.OVERLAY_REALTIME_PUBLISH_URL =
@@ -157,19 +161,59 @@ describe('publishCommittedGachaBatch', () => {
       )
     ).resolves.toEqual({ outcome: 'accepted', attempts: 1 })
 
-    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(fetchMock).not.toHaveBeenCalled()
+    const request = serviceFetch.mock.calls[0][0] as Request
+    const url = new URL(request.url)
     expect(url.hostname).toBe('runtime-overlay-realtime.example.workers.dev')
-    const headers = init.headers as Record<string, string>
+    const body = await request.clone().text()
+    const headers = Object.fromEntries(request.headers.entries())
     await expect(
       verifyPublishSignature(
         'rotated-runtime-secret',
         url.pathname,
-        String(init.body),
+        body,
         headers['x-twica-timestamp'],
         headers['x-twica-nonce'],
         headers['x-twica-signature']
       )
     ).resolves.toBe(true)
+  })
+
+  it('fails closed when a Workers Service Binding is missing', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'do-primary',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://runtime-overlay-realtime.example.workers.dev',
+        OVERLAY_REALTIME_PUBLISH_SECRET: 'runtime-secret',
+      },
+    } as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'configuration-missing',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('publishes through the Workers Service Binding instead of global fetch', async () => {
