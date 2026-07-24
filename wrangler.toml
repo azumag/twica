@@ -36,7 +36,10 @@ preview_bucket_name = "twica-sound-dev"
 # Authoritative production PostgreSQL connection. The retired Supabase
 # Hyperdrive binding was removed so a stale DB target cannot open the old
 # project after shutdown. Query caching remains disabled on the referenced
-# Hyperdrive config to preserve event-polling freshness.
+# Hyperdrive config to preserve event-polling freshness. Its external
+# origin_connection_limit is intentionally 10; together with preview's 5 this
+# remains below PlanetScale's 25 direct-connection ceiling and leaves headroom
+# because Cloudflare documents the Hyperdrive limit as a soft maximum.
 [[hyperdrive]]
 binding = "HYPERDRIVE_PLANETSCALE"
 id = "1dc2ec4d087e41a6931e8e18944c1fd2"
