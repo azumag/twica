@@ -112,8 +112,106 @@ async function buildCommittedEnvelope(
   return event
 }
 
-function resolvePublishUrl(streamerId: string): URL | null {
-  const base = process.env.OVERLAY_REALTIME_PUBLISH_URL
+interface OverlayRealtimePublisherEnvironment {
+  runtime: 'workers' | 'local'
+  mode: string | undefined
+  streamerAllowlist: string | undefined
+  publishUrl: string | undefined
+  publishSecret: string | undefined
+  publishService: OverlayRealtimeServiceBinding | undefined
+}
+
+interface OverlayRealtimeServiceBinding {
+  fetch(request: Request): Promise<Response>
+}
+
+function stringBinding(
+  env: Record<string, unknown>,
+  key: keyof NodeJS.ProcessEnv
+): string | undefined {
+  const value = env[key]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function serviceBinding(
+  env: Record<string, unknown>
+): OverlayRealtimeServiceBinding | undefined {
+  const value = env.OVERLAY_REALTIME_SERVICE
+  return (
+    typeof value === 'object'
+    && value !== null
+    && 'fetch' in value
+    && typeof value.fetch === 'function'
+  )
+    ? value as OverlayRealtimeServiceBinding
+    : undefined
+}
+
+/**
+ * Resolve private publisher configuration from the active Workers request.
+ *
+ * OpenNext exposes Cloudflare runtime variables and secrets through
+ * `getCloudflareContext().env`. Reading that binding first is important:
+ * Workers secrets can be rotated independently of a Next.js build, whereas a
+ * direct `process.env.NAME` reference may retain the value that existed while
+ * the server bundle was produced. `process.env` remains the explicit fallback
+ * for `next dev`, Vitest, and other non-Workers execution contexts.
+ */
+async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnvironment> {
+  try {
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare')
+    const { env } = await getCloudflareContext({ async: true })
+    const runtimeEnv = env as unknown as Record<string, unknown>
+    // Treat Workers bindings as one atomic configuration snapshot. Falling
+    // back one key at a time could combine a rotated runtime secret with a
+    // stale build-time URL, or bypass polling-only mode after a binding is
+    // deliberately removed.
+    return {
+      runtime: 'workers',
+      mode: stringBinding(runtimeEnv, 'OVERLAY_REALTIME_MODE'),
+      streamerAllowlist: stringBinding(
+        runtimeEnv,
+        'OVERLAY_REALTIME_STREAMER_ALLOWLIST'
+      ),
+      publishUrl: stringBinding(runtimeEnv, 'OVERLAY_REALTIME_PUBLISH_URL'),
+      publishSecret: stringBinding(
+        runtimeEnv,
+        'OVERLAY_REALTIME_PUBLISH_SECRET'
+      ),
+      publishService: serviceBinding(runtimeEnv),
+    }
+  } catch (error) {
+    if (process.env.NODE_ENV === 'production') {
+      // A production publish must fail closed when its Workers request context
+      // is unavailable. The polling source remains authoritative, so skipping
+      // is safer than sending with possibly stale build-time credentials.
+      logger.warn('[overlay-realtime] runtime publisher context unavailable', {
+        errorName: error instanceof Error ? error.name : 'unknown',
+      })
+      return {
+        runtime: 'workers',
+        mode: undefined,
+        streamerAllowlist: undefined,
+        publishUrl: undefined,
+        publishSecret: undefined,
+        publishService: undefined,
+      }
+    }
+
+    // `next dev` and Vitest have no OpenNext request context. Their environment
+    // is process-local and cannot cross the preview/production Workers boundary.
+    return {
+      runtime: 'local',
+      mode: process.env.OVERLAY_REALTIME_MODE,
+      streamerAllowlist: process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
+      publishUrl: process.env.OVERLAY_REALTIME_PUBLISH_URL,
+      publishSecret: process.env.OVERLAY_REALTIME_PUBLISH_SECRET,
+      publishService: undefined,
+    }
+  }
+}
+
+function resolvePublishUrl(streamerId: string, base: string | undefined): URL | null {
   if (!base) return null
   try {
     const url = new URL(base)
@@ -131,6 +229,20 @@ function retryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500
 }
 
+async function discardResponseBody(response: Response): Promise<void> {
+  if (!response.body) return
+  try {
+    // The publisher needs only the HTTP status. Canceling the unread stream is
+    // Cloudflare's recommended cleanup and releases its remaining resources
+    // without parsing or logging private response data.
+    await response.body.cancel()
+  } catch {
+    // Transport cleanup is best-effort. A successfully classified publish
+    // response must not be turned into a failed gacha notification because its
+    // already-unused body stream was concurrently closed by the runtime.
+  }
+}
+
 /**
  * Publish after the database transaction has committed.
  *
@@ -144,18 +256,23 @@ export async function publishCommittedGachaBatch(
   payload: OverlayPublishPayload,
   options: OverlayPublishOptions
 ): Promise<OverlayPublishResult> {
+  const publisherEnv = await getPublisherEnvironment()
   if (!isOverlayRealtimeStreamerEnabled(
-    process.env.OVERLAY_REALTIME_MODE,
-    process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
+    publisherEnv.mode,
+    publisherEnv.streamerAllowlist,
     streamerId
   )) {
     return { outcome: 'skipped', attempts: 0, errorCode: 'mode-disabled' }
   }
 
   try {
-    const secret = process.env.OVERLAY_REALTIME_PUBLISH_SECRET
-    const url = resolvePublishUrl(streamerId)
-    if (!secret || !url) {
+    const secret = publisherEnv.publishSecret
+    const url = resolvePublishUrl(streamerId, publisherEnv.publishUrl)
+    if (
+      !secret
+      || !url
+      || (publisherEnv.runtime === 'workers' && !publisherEnv.publishService)
+    ) {
       logger.warn('[overlay-realtime] publisher configuration missing', { streamerId })
       return { outcome: 'skipped', attempts: 0, errorCode: 'configuration-missing' }
     }
@@ -187,7 +304,7 @@ export async function publishCommittedGachaBatch(
       const timeout = setTimeout(() => controller.abort(), 1_500)
 
       try {
-        const response = await fetch(url, {
+        const requestInit: RequestInit = {
           method: 'POST',
           body,
           headers: {
@@ -197,11 +314,25 @@ export async function publishCommittedGachaBatch(
             'x-twica-signature': signature,
           },
           signal: controller.signal,
-        })
+        }
+        // Cloudflare rejects global fetch() calls from one Worker to another
+        // Worker on the same zone. The Service Binding is the supported,
+        // zero-network-hop path in deployed Workers; global fetch remains only
+        // for next dev and Vitest, where no Workers binding exists.
+        const response = publisherEnv.publishService
+          ? await publisherEnv.publishService.fetch(new Request(url, requestInit))
+          : await fetch(url, requestInit)
+        await discardResponseBody(response)
         if (response.ok) return { outcome: 'accepted', attempts: attempt }
         if (!retryableStatus(response.status) || attempt >= maxAttempts) {
           logger.warn('[overlay-realtime] publish rejected', {
             streamerId,
+            // Origin/path are public routing metadata and contain no signature,
+            // secret, or payload. Keeping them in the rejection log makes a
+            // stale cross-environment endpoint diagnosable without weakening
+            // the HMAC boundary or exposing viewer/card data.
+            targetOrigin: url.origin,
+            targetPath: url.pathname,
             status: response.status,
             attempt,
           })

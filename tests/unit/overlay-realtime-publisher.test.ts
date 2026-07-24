@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { getDb } from '@/lib/db/client'
 import { verifyPublishSignature } from '@/lib/overlay-realtime/signature'
+
+vi.mock('@opennextjs/cloudflare', () => ({
+  getCloudflareContext: vi.fn(),
+}))
 
 vi.mock('@/lib/logger', () => ({
   logger: {
@@ -40,6 +45,9 @@ async function flushPromises(): Promise<void> {
 describe('publishCommittedGachaBatch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(getCloudflareContext).mockRejectedValue(
+      new Error('Cloudflare request context is unavailable in unit tests')
+    )
     process.env.OVERLAY_REALTIME_MODE = 'do-primary'
     process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST = STREAMER_ID
     process.env.OVERLAY_REALTIME_PUBLISH_URL =
@@ -49,6 +57,7 @@ describe('publishCommittedGachaBatch', () => {
   })
 
   afterEach(() => {
+    vi.unstubAllEnvs()
     process.env = { ...ORIGINAL_ENV }
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -111,6 +120,293 @@ describe('publishCommittedGachaBatch', () => {
         headers['x-twica-signature']
       )
     ).resolves.toBe(true)
+  })
+
+  it('prefers rotated Workers runtime secrets over build-time process values', async () => {
+    const serviceFetch = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 })
+    )
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'do-primary',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://runtime-overlay-realtime.example.workers.dev',
+        OVERLAY_REALTIME_PUBLISH_SECRET: 'rotated-runtime-secret',
+        OVERLAY_REALTIME_SERVICE: { fetch: serviceFetch },
+      },
+    } as never)
+    process.env.OVERLAY_REALTIME_PUBLISH_URL =
+      'https://stale-build-value.example.workers.dev'
+    process.env.OVERLAY_REALTIME_PUBLISH_SECRET = 'stale-build-secret'
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({ outcome: 'accepted', attempts: 1 })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    const request = serviceFetch.mock.calls[0][0] as Request
+    const url = new URL(request.url)
+    expect(url.hostname).toBe('runtime-overlay-realtime.example.workers.dev')
+    const body = await request.clone().text()
+    const headers = Object.fromEntries(request.headers.entries())
+    await expect(
+      verifyPublishSignature(
+        'rotated-runtime-secret',
+        url.pathname,
+        body,
+        headers['x-twica-timestamp'],
+        headers['x-twica-nonce'],
+        headers['x-twica-signature']
+      )
+    ).resolves.toBe(true)
+  })
+
+  it('fails closed when a Workers Service Binding is missing', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'do-primary',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://runtime-overlay-realtime.example.workers.dev',
+        OVERLAY_REALTIME_PUBLISH_SECRET: 'runtime-secret',
+      },
+    } as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'configuration-missing',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('publishes through the Workers Service Binding instead of global fetch', async () => {
+    const cancelBody = vi.fn().mockResolvedValue(undefined)
+    const serviceFetch = vi.fn().mockResolvedValue(
+      {
+        ok: true,
+        status: 202,
+        body: { cancel: cancelBody },
+      } as unknown as Response
+    )
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'do-primary',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://twica-overlay-realtime-preview.example.workers.dev',
+        OVERLAY_REALTIME_PUBLISH_SECRET: 'runtime-service-secret',
+        OVERLAY_REALTIME_SERVICE: { fetch: serviceFetch },
+      },
+    } as never)
+    const globalFetch = vi.fn()
+    vi.stubGlobal('fetch', globalFetch)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({ outcome: 'accepted', attempts: 1 })
+
+    expect(globalFetch).not.toHaveBeenCalled()
+    expect(serviceFetch).toHaveBeenCalledTimes(1)
+    expect(cancelBody).toHaveBeenCalledTimes(1)
+    const request = serviceFetch.mock.calls[0][0] as Request
+    expect(request).toBeInstanceOf(Request)
+    expect(request.method).toBe('POST')
+    expect(new URL(request.url).pathname).toBe(
+      `/internal/v1/rooms/${STREAMER_ID}/publish`
+    )
+    const body = await request.clone().text()
+    const headers = Object.fromEntries(request.headers.entries())
+    await expect(
+      verifyPublishSignature(
+        'runtime-service-secret',
+        new URL(request.url).pathname,
+        body,
+        headers['x-twica-timestamp'],
+        headers['x-twica-nonce'],
+        headers['x-twica-signature']
+      )
+    ).resolves.toBe(true)
+  })
+
+  it('does not mix missing Workers bindings with stale process values', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({ env: {} } as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'mode-disabled',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when a Workers publisher credential is missing', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'do-primary',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://runtime-overlay-realtime.example.workers.dev',
+      },
+    } as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'configuration-missing',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('honors the Workers polling-only kill switch over stale process mode', async () => {
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: 'polling-only',
+        OVERLAY_REALTIME_STREAMER_ALLOWLIST: STREAMER_ID,
+        OVERLAY_REALTIME_PUBLISH_URL:
+          'https://runtime-overlay-realtime.example.workers.dev',
+        OVERLAY_REALTIME_PUBLISH_SECRET: 'rotated-runtime-secret',
+      },
+    } as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'mode-disabled',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the production Workers context cannot be read', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'mode-disabled',
+    })
+    expect(getDb).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('does no database or network work behind the polling-only kill switch', async () => {

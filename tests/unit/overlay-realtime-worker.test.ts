@@ -93,10 +93,15 @@ describe('overlay realtime Worker router', () => {
 
     expect(response.status).toBe(202)
     expect(idFromName).toHaveBeenCalledWith(STREAMER_ID)
-    expect(roomFetch).toHaveBeenCalledWith(
-      'https://room.internal/publish',
-      expect.objectContaining({ method: 'POST', body })
-    )
+    expect(roomFetch).toHaveBeenCalledTimes(1)
+    const roomRequest = roomFetch.mock.calls[0][0] as Request
+    expect(roomRequest).toBeInstanceOf(Request)
+    expect(roomRequest.method).toBe('POST')
+    expect(new URL(roomRequest.url).pathname).toBe('/publish')
+    expect(roomRequest.headers.get('x-internal-streamer-id')).toBe(STREAMER_ID)
+    expect(roomRequest.headers.get('x-internal-nonce')).toBe(nonce)
+    expect(roomRequest.headers.get('x-internal-timestamp')).toBe(timestamp)
+    expect(await roomRequest.text()).toBe(body)
   })
 
   it('does not touch a room when the signature is invalid', async () => {
