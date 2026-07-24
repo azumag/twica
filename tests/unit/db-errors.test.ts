@@ -3,6 +3,7 @@ import {
   getErrorChain,
   isPgFunctionNotFoundError,
   isPgMissingColumnError,
+  isPgMissingNamedColumnError,
   isPgMissingTableError,
   isPgUniqueViolationError,
 } from '@/lib/db/errors'
@@ -48,6 +49,50 @@ describe('db/errors SQLSTATE 判定', () => {
   it('isPgUniqueViolationError: 23505 のみ true', () => {
     expect(isPgUniqueViolationError(pgError('23505'))).toBe(true)
     expect(isPgUniqueViolationError(pgError('42703'))).toBe(false)
+  })
+})
+
+describe('isPgMissingNamedColumnError', () => {
+  it('同じエラー階層に42703と対象列名がある場合だけtrue', () => {
+    expect(
+      isPgMissingNamedColumnError(
+        Object.assign(new Error('column "gacha_sound_rules" does not exist'), {
+          code: '42703',
+        }),
+        ['gacha_sound_rules'],
+      ),
+    ).toBe(true)
+    expect(
+      isPgMissingNamedColumnError(
+        Object.assign(new Error('column "other_column" does not exist'), {
+          code: '42703',
+        }),
+        ['gacha_sound_rules'],
+      ),
+    ).toBe(false)
+  })
+
+  it('Drizzle wrapperのSQLに列名があってもcauseが別列ならfalse', () => {
+    const wrapper = drizzleWrappedError(
+      Object.assign(new Error('column "other_column" does not exist'), {
+        code: '42703',
+      }),
+    )
+    wrapper.message =
+      'Failed query: update "streamers" set "gacha_sound_rules" = $1, "other_column" = $2'
+
+    expect(isPgMissingNamedColumnError(wrapper, ['gacha_sound_rules'])).toBe(false)
+  })
+
+  it('接続障害・空の列名配列・unknown入力を安全に拒否する', () => {
+    expect(
+      isPgMissingNamedColumnError(
+        Object.assign(new Error('connection closed'), { code: '08006' }),
+        ['gacha_sound_rules'],
+      ),
+    ).toBe(false)
+    expect(isPgMissingNamedColumnError(pgError('42703'), [])).toBe(false)
+    expect(isPgMissingNamedColumnError(null, ['gacha_sound_rules'])).toBe(false)
   })
 })
 

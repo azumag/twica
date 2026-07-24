@@ -6,22 +6,12 @@ import { POST as POST_MESSAGE } from "@/app/api/support-inquiries/[id]/messages/
 import { getSession } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getUserPlan } from "@/lib/plan";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { validateCSRFToken } from "@/lib/csrf";
-import {
-  createMockQueryBuilder,
-  createMockResponse,
-} from "../utils/supabase-mock";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/plan");
 vi.mock("@/lib/csrf");
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 vi.mock("@/lib/sentry/error-handler", () => ({
   reportError: vi.fn(),
   reportApiError: vi.fn(),
@@ -34,7 +24,6 @@ vi.mock("next/cache", () => ({
 const mockGetSession = vi.mocked(getSession);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockGetUserPlan = vi.mocked(getUserPlan);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
 
 const MOCK_SESSION = {
@@ -90,42 +79,6 @@ describe("GET /api/support-inquiries", () => {
     mockGetUserPlan.mockResolvedValue("basic");
     const res = await GET(createGetRequest());
     expect(res.status).toBe(403);
-  });
-
-  it("returns inquiries for supporter user", async () => {
-    mockGetSession.mockResolvedValue(MOCK_SESSION);
-    mockGetUserPlan.mockResolvedValue("support");
-
-    const mockInquiries = [
-      {
-        id: "inq-1",
-        twitch_user_id: "user123",
-        twitch_display_name: "TestUser",
-        category: "bug",
-        subject: "Test bug",
-        body: "Bug description",
-        status: "open",
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-01T00:00:00Z",
-      },
-    ];
-
-    // createMockQueryBuilder の then をオーバーライドして、
-    // チェイン終端（order以降）で直接データを返すようにする
-    const mockQuery = createMockQueryBuilder();
-    // order の後に Promise として解決されるため、then を追加
-    (mockQuery.order as any).mockReturnValue({
-      ...mockQuery,
-      then: (resolve: (value: any) => void) =>
-        resolve({ data: mockInquiries, error: null }),
-    });
-    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
-
-    const res = await GET(createGetRequest());
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.inquiries).toHaveLength(1);
-    expect(data.inquiries[0].id).toBe("inq-1");
   });
 
   it("returns 429 when rate limited", async () => {
@@ -237,26 +190,6 @@ describe("POST /api/support-inquiries", () => {
     expect(res.status).toBe(400);
   });
 
-  it("creates inquiry and returns 201", async () => {
-    mockGetSession.mockResolvedValue(MOCK_SESSION);
-    mockGetUserPlan.mockResolvedValue("support");
-
-    const mockQuery = createMockQueryBuilder(
-      createMockResponse({ id: "new-inq-id" })
-    );
-    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
-
-    const res = await POST(
-      createPostRequest({
-        category: "bug",
-        subject: "Test Bug",
-        body: "Found a bug",
-      })
-    );
-    expect(res.status).toBe(201);
-    const data = await res.json();
-    expect(data.id).toBe("new-inq-id");
-  });
 });
 
 describe("GET /api/support-inquiries/[id]", () => {
@@ -291,21 +224,6 @@ describe("GET /api/support-inquiries/[id]", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 404 when inquiry not found", async () => {
-    mockGetSession.mockResolvedValue(MOCK_SESSION);
-    mockGetUserPlan.mockResolvedValue("support");
-
-    const mockQuery = createMockQueryBuilder(
-      createMockResponse(null, new Error("Not found"))
-    );
-    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
-
-    const res = await GET_DETAIL(
-      createGetRequest(`/api/support-inquiries/${VALID_UUID}`),
-      { params: Promise.resolve({ id: VALID_UUID }) }
-    );
-    expect(res.status).toBe(404);
-  });
 });
 
 describe("DELETE /api/support-inquiries/[id]", () => {
@@ -350,26 +268,6 @@ describe("DELETE /api/support-inquiries/[id]", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 404 when the inquiry does not belong to the user", async () => {
-    mockGetSession.mockResolvedValue(MOCK_SESSION);
-    mockGetUserPlan.mockResolvedValue("support");
-
-    const mockQuery = createMockQueryBuilder(
-      createMockResponse(null, new Error("Not found"))
-    );
-    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
-
-    const res = await DELETE_DETAIL(
-      createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`),
-      { params: Promise.resolve({ id: VALID_UUID }) }
-    );
-
-    expect(res.status).toBe(404);
-    expect(mockQuery.delete).toHaveBeenCalled();
-    expect(mockQuery.eq).toHaveBeenCalledWith("id", VALID_UUID);
-    expect(mockQuery.eq).toHaveBeenCalledWith("twitch_user_id", "user123");
-  });
-
   it("returns 429 when rate limited", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION);
     mockGetUserPlan.mockResolvedValue("support");
@@ -388,27 +286,6 @@ describe("DELETE /api/support-inquiries/[id]", () => {
     expect(res.status).toBe(429);
   });
 
-  it("deletes the user's own inquiry", async () => {
-    mockGetSession.mockResolvedValue(MOCK_SESSION);
-    mockGetUserPlan.mockResolvedValue("support");
-
-    const mockQuery = createMockQueryBuilder(
-      createMockResponse({ id: VALID_UUID })
-    );
-    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
-
-    const res = await DELETE_DETAIL(
-      createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`),
-      { params: Promise.resolve({ id: VALID_UUID }) }
-    );
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true });
-    expect(mockQuery.delete).toHaveBeenCalled();
-    expect(mockQuery.select).toHaveBeenCalledWith("id");
-    expect(mockQuery.eq).toHaveBeenCalledWith("id", VALID_UUID);
-    expect(mockQuery.eq).toHaveBeenCalledWith("twitch_user_id", "user123");
-  });
 });
 
 describe("POST /api/support-inquiries/[id]/messages", () => {
@@ -475,45 +352,4 @@ describe("POST /api/support-inquiries/[id]/messages", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 404 when inquiry not found", async () => {
-    mockGetSession.mockResolvedValue(MOCK_SESSION);
-    mockGetUserPlan.mockResolvedValue("support");
-
-    const mockQuery = createMockQueryBuilder(
-      createMockResponse(null, new Error("Not found"))
-    );
-    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
-
-    const res = await POST_MESSAGE(
-      createPostRequest(
-        { body: "Reply" },
-        `/api/support-inquiries/${VALID_UUID}/messages`
-      ),
-      { params: Promise.resolve({ id: VALID_UUID }) }
-    );
-    expect(res.status).toBe(404);
-  });
-
-  it("returns 400 when inquiry is closed", async () => {
-    mockGetSession.mockResolvedValue(MOCK_SESSION);
-    mockGetUserPlan.mockResolvedValue("support");
-
-    const mockQuery = createMockQueryBuilder(
-      createMockResponse({
-        id: VALID_UUID,
-        status: "closed",
-        twitch_user_id: "user123",
-      })
-    );
-    mockGetSupabaseAdmin.mockReturnValue({ from: () => mockQuery } as any);
-
-    const res = await POST_MESSAGE(
-      createPostRequest(
-        { body: "Reply" },
-        `/api/support-inquiries/${VALID_UUID}/messages`
-      ),
-      { params: Promise.resolve({ id: VALID_UUID }) }
-    );
-    expect(res.status).toBe(400);
-  });
 });

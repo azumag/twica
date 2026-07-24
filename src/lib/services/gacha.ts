@@ -1,31 +1,29 @@
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { selectWeightedCard } from '@/lib/gacha'
 import { normalizeDropRate } from '@/lib/card-utils'
-import { Result, ok, err } from '@/types/result'
-import { logger } from '@/lib/logger'
+import { type Result, ok, err } from '@/types/result'
+import { logger } from '@/lib/logger.server'
 import { reportError } from '@/lib/sentry/error-handler'
-import { withRetry } from '@/lib/supabase/retry'
-// #573: ガチャ経路(チャネルポイント消費を伴う課金系クリティカルパス)の pg 直結分岐用。
-// フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに一切入らないため、
-// import が存在するだけでは挙動に影響しない(#570 の設計。tests/setup.ts の getDb
-// throw スタブも「postgrest 経路で getDb が呼ばれない」ことを構造的に保証している)。
+// ガチャはカード付与と履歴記録を同じ PostgreSQL トランザクションへ閉じ込める。
+// #708 以降は PlanetScale のversioned gacha transaction RPCが唯一の実行経路であり、
+// 関数欠落時に非原子的な複数クエリへ縮退させない。
 import { getDb } from '@/lib/db/client'
-import { getGachaDbDriver } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
-import { getSqlState, isPgFunctionNotFoundError } from '@/lib/db/errors'
-import { and, eq, inArray, isNull } from 'drizzle-orm'
+import {
+  getSqlState,
+  isPgFunctionNotFoundError,
+  isPgMissingNamedColumnError,
+} from '@/lib/db/errors'
+import { and, count, eq, inArray, isNull } from 'drizzle-orm'
 import {
   cards as cardsTable,
   gachaHistory,
   streamerAdditionalGachaRewards,
   streamers,
+  userCards,
 } from '@/lib/db/schema'
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError } from '@/lib/card-issuance'
-import {
-  isMissingCollectionNameColumn,
-  isMissingRarityWeightsScopeColumnError,
-  isMissingPackRarityWeightsColumnError,
-} from '@/lib/collections/collection-existence'
+import { isMissingCollectionNameColumn } from '@/lib/collections/collection-existence'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from '@/lib/rarity-weight-calculator'
 
@@ -85,9 +83,14 @@ export interface GachaResult {
   streamer?: EventSubStreamerInfo
 }
 
-function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
-  const message = error?.message ?? ''
-  return error?.code === 'PGRST204' || message.includes('draw_count') || message.includes('is_raid_limited')
+function isRaidOptionsSchemaError(error: GachaReadDriverError | null | undefined) {
+  // normalizePgReadError は互換的な code/message に加えて元エラーを cause に保持する。
+  // DrizzleQueryError の SQL 文と cause の SQLSTATE を混ぜると別列の欠落を誤認する
+  // ため、実際の postgres.js/Drizzle エラーチェーンだけを共通 helper へ渡す。
+  return isPgMissingNamedColumnError(error?.cause ?? error, [
+    'draw_count',
+    'is_raid_limited',
+  ])
 }
 
 const ADDITIONAL_REWARD_OPTIONS_UNAVAILABLE = 'Additional reward options unavailable'
@@ -105,13 +108,14 @@ interface GachaTransactionRpcResult {
   is_duplicate?: boolean
   limit_reached?: boolean
   history_id?: string | null
+  /** 最終drawだけが返す、gacha_historyからevent_id順に再構成した完全なbatch。 */
+  cards?: GachaCard[] | null
 }
 
 /**
- * pg 直結経路のエラーを PostgREST .rpc() の error と同じ「code + message」形状へ
- * 正規化するための最小型(#573)。postgres.js は PostgrestError と異なりエラーを
- * throw するため、executeGacha 内の既存エラー分岐(42883→legacy フォールバック、
- * reportError + err())を両経路で共有するにはこの形への詰め替えが必要。
+ * PlanetScale RPCのthrowを「code + message」形状へ正規化するための最小型(#573)。
+ * executeGachaは42883を必須migration不足としてfail-closedにし、その他も
+ * reportError + err()へ統一して運用通知するため、この形へ詰め替える。
  * code を optional にしているのは、接続断系(CONNECTION_CLOSED 等)や
  * 非 Error オブジェクトが throw された場合に SQLSTATE が存在しないため。
  */
@@ -130,9 +134,9 @@ interface GachaReadDriverError {
    * 実際の SQLSTATE・メッセージ（Drizzle にラップされた場合は cause 側にしか
    * 無い）を見つける。以前の normalizePgReadError はトップレベルの code/message
    * だけをコピーして cause を捨てていたため、これらの判定関数に正規化後の
-   * エラーを渡すと常に false になり、GACHA_DB_DRIVER=pg かつ本番未デプロイ列
-   * 欠落で #685 のデプロイ窓フォールバックが発動しない事故が起こりうる
-   * （getActiveCardsForStreamer (pg) と同型のバグ）。cause を保持することで
+   * エラーを渡すと常に false になり、本番未デプロイ列の欠落時に #685 の
+   * デプロイ窓フォールバックが発動しない事故が起こりうる
+   * （getActiveCardsForStreamer と同型のバグ）。cause を保持することで
    * getErrorChain(normalizedError) が元のチェーン全体を辿れるようにする。
    */
   cause?: unknown
@@ -179,15 +183,7 @@ function parseIssuedCardCountsRpc(rpcResult: unknown): Map<string, number> {
   return counts
 }
 
-function isStreamerSettingsSchemaError(error: { message?: string; code?: string } | null | undefined) {
-  const message = error?.message ?? ''
-  return error?.code === 'PGRST204'
-    || message.includes('raid_gacha_active_until')
-    || message.includes('raid_gacha_draw_count')
-    || message.includes('chat_announcement_multi_template')
-    || message.includes('chat_announcement_multi_show_cards')
-    || message.includes('channel_point_collection_name')
-}
+
 
 function isRaidGachaActive(activeUntil: string | null | undefined, now = new Date()): boolean {
   if (!activeUntil) return false
@@ -209,17 +205,6 @@ function buildDrawEventId(eventId: string | undefined, index: number): string | 
 }
 
 export class GachaService {
-  /**
-   * PostgREST経路を実際に使う時だけSupabase admin clientを生成する。
-   * GACHA_DB_DRIVER=pg では全read/writeをHyperdriveへ揃えているため、class fieldで
-   * eagerly生成すると、Phase 4でSupabase環境変数を削除した後もconstructorだけで
-   * throwしてPG経路へ到達できない。getSupabaseAdmin()自体がsingletonなので、
-   * getter化してもPostgREST経路でclientを繰り返し生成するコストは発生しない。
-   */
-  private get supabase() {
-    return getSupabaseAdmin()
-  }
-
   async executeGacha(
     streamerId: string,
     userTwitchId: string,
@@ -240,7 +225,15 @@ export class GachaService {
     // (gacha-sound-rules.ts の targetType: 'reward', #451/#586)が発火するようにする。
     // EventSub経由(executeGachaForEventSub)のみ利用可能。レイドガチャ
     // (executeGachaForRaidEvent)はチャネルポイント報酬に紐付かないため常にundefined。
-    rewardId?: string | null
+    rewardId?: string | null,
+    // EventSub/raidのN連をtransactional chat outboxへ順番どおり組み立てる情報。
+    // 手動ガチャはチャット通知対象外なので未指定のままにする。
+    chatOutbox?: {
+      batchId: string
+      drawIndex: number
+      drawCount: number
+      collectionName?: string | null
+    }
   ): Promise<Result<GachaResult>> {
     try {
       // Get active cards for this streamer (optionally scoped to a pack).
@@ -260,16 +253,11 @@ export class GachaService {
       // query below, or the fallback would silently ignore the requested pack
       // and draw from ALL of the streamer's cards during that deploy window.
       //
-      // Issue #579 (#576 フェーズ2): intra_rarity_weight (migration 00026, 既存の
-      // 安定列) はパック内レアリティ自動配分の計算にのみ必要なので、パック指定時
-      // のみ SELECT に追加する。supabase-js は select() の *リテラル* 文字列から
-      // Row 型を推論するため(変数文字列や三項式を渡すと型が崩れる)、列リストが
-      // 異なる分岐ごとに select() 呼び出し自体を分ける。パック未指定クエリの
-      // 列リストは従来(main の #108 実装)と完全に同一のまま維持する。
-      // #718: ガチャの読み取りと書き込みは同じ GACHA_DB_DRIVER で切り替える。
-      // DB_DRIVER と分離すると、緊急ロールバック時に抽選プールだけ別 provider を
-      // 読み続ける split-brain が起きるため、課金系クリティカルパスを一つの
-      // rollback unit として扱う。PG 読み取りは冪等なので接続断リトライを許可する。
+      // Issue #579 (#576 フェーズ2): intra_rarity_weight (migration 00026) は
+      // パック内レアリティ自動配分の計算にのみ必要なので、パック指定時だけ取得する。
+      // #718/#803: 抽選プールの読み取りから課金トランザクションまでを同じ
+      // PlanetScale 接続先に揃え、異なる provider を参照する split-brain を防ぐ。
+      // この読み取りは冪等なので、接続断に限ってリトライを許可する。
       let cards: Array<{
         id: string
         name: string
@@ -287,7 +275,7 @@ export class GachaService {
       // includeIssuanceLimit=false のときだけ当該列をSQLから外し、呼出側contractは
       // nullを補って維持する。これにより片側だけpack条件を直し忘れる事故を防ぐ。
       const loadPgCards = async (includeIssuanceLimit: boolean) => {
-        const { db } = await getDb()
+                            const { db } = await getDb()
         const predicates = [
           eq(cardsTable.streamer_id, streamerId),
           eq(cardsTable.is_active, true),
@@ -317,100 +305,29 @@ export class GachaService {
         }))
       }
 
-      if (getGachaDbDriver() === 'pg') {
+      try {
+        cards = await withDbRetry(
+          () => loadPgCards(true),
+          'gacha:executeGacha:cards',
+          { idempotent: true }
+        )
+        cardsError = null
+      } catch (error) {
+        cards = null
+        cardsError = normalizePgReadError(error)
+      }
+
+      if (cardsError && isMissingCardIssuanceColumnError(cardsError)) {
         try {
           cards = await withDbRetry(
-            () => loadPgCards(true),
-            'gacha:executeGacha:cards',
+            () => loadPgCards(false),
+            'gacha:executeGacha:cards:fallback',
             { idempotent: true }
           )
           cardsError = null
         } catch (error) {
           cards = null
           cardsError = normalizePgReadError(error)
-        }
-      } else {
-        const result = await withRetry(
-          () => {
-          if (collectionName) {
-            let query = this.supabase
-              .from('cards')
-              .select('id, name, description, image_url, rarity, drop_rate, max_issuance_count, intra_rarity_weight')
-              .eq('streamer_id', streamerId)
-              .eq('is_active', true)
-
-            // Issue #555: DEFAULT_PACK_SENTINEL means "draw only from unclassified
-            // cards" (collection_name IS NULL) — the inverse of a normal named-pack
-            // filter, which needs `.eq(...)` against a literal string value.
-            // `.eq('collection_name', DEFAULT_PACK_SENTINEL)` would never match any
-            // card (no card's collection_name literally equals that sentinel), so
-            // this must branch to `.is(...)` instead.
-            query = collectionName === DEFAULT_PACK_SENTINEL
-              ? query.is('collection_name', null)
-              : query.eq('collection_name', collectionName)
-
-            return query
-          }
-
-          return this.supabase
-            .from('cards')
-            .select('id, name, description, image_url, rarity, drop_rate, max_issuance_count')
-            .eq('streamer_id', streamerId)
-            .eq('is_active', true)
-        },
-          'gacha:executeGacha:cards',
-        )
-        cards = result.data
-        cardsError = result.error
-      }
-
-      if (cardsError && isMissingCardIssuanceColumnError(cardsError)) {
-        if (getGachaDbDriver() === 'pg') {
-          try {
-            cards = await withDbRetry(
-              () => loadPgCards(false),
-              'gacha:executeGacha:cards:fallback',
-              { idempotent: true }
-            )
-            cardsError = null
-          } catch (error) {
-            cards = null
-            cardsError = normalizePgReadError(error)
-          }
-        } else {
-          const fallbackResult = await withRetry(
-            () => {
-            // Issue #579: fallback 側もパック指定時は intra_rarity_weight を含める
-            // (含めないと発行上限列のデプロイ窓中だけパック内自動配分が
-            // intra=デフォルト1.0 扱いになり配分が静かにズレる)。列リストが
-            // 異なるため primary クエリと同様に select() を分岐ごとに分ける。
-            if (collectionName) {
-              let query = this.supabase
-                .from('cards')
-                .select('id, name, description, image_url, rarity, drop_rate, intra_rarity_weight')
-                .eq('streamer_id', streamerId)
-                .eq('is_active', true)
-
-              query = collectionName === DEFAULT_PACK_SENTINEL
-                ? query.is('collection_name', null)
-                : query.eq('collection_name', collectionName)
-
-              return query
-            }
-
-            return this.supabase
-              .from('cards')
-              .select('id, name, description, image_url, rarity, drop_rate')
-              .eq('streamer_id', streamerId)
-              .eq('is_active', true)
-          },
-            'gacha:executeGacha:cards:fallback',
-          )
-          cards = fallbackResult.data?.map((card) => ({
-            ...card,
-            max_issuance_count: null,
-          })) ?? null
-          cardsError = fallbackResult.error
         }
       }
 
@@ -509,21 +426,14 @@ export class GachaService {
         // gacha_history, users, user_cards を1トランザクションでアトミックに実行
         // 従来は3回の個別DB操作で中間状態（履歴あり・カード未付与）が発生しえた
         //
-        // #573: ガチャ書き込み(課金系・EventSub 高頻度のクリティカルパス)の pg 直結分岐。
-        // 全体フラグ(DB_DRIVER)ではなく getGachaDbDriver() で分岐する:
-        // GACHA_DB_DRIVER はガチャ経路「だけ」を全体フラグと独立に即時ロールバック/
-        // 先行切替できる緊急スイッチ(本番障害時の影響範囲を最小化する独立レバー。
-        // src/lib/db/flags.ts 参照)。フラグ未設定時は従来どおり下の supabase-js
-        // (PostgREST)経路が無変更のまま実行される。
+        // ガチャ書き込みは課金・EventSub の高頻度クリティカルパスなので、取引全体を
+        // PlanetScale の単一 RPC に閉じ込める。これにより履歴と発行済み数が別接続先へ
+        // 分かれる中間状態を作らない。
         //
-        // 分岐は「RPC を実行して { data, error } を得る」部分だけに絞る。pg 側
-        // (executeGachaTransactionRpcPg)が PostgREST .rpc() と同一の { data, error }
-        // 形状へ正規化して返すため、この直後のエラー分岐(42883→executeGachaLegacy
-        // フォールバック、reportError + err())と is_duplicate / limit_reached の
-        // 後続処理(limit_reached 再抽選ループ含む)は両経路で完全に共有される —
-        // 経路によって外部挙動が変わる余地を分岐点1箇所に閉じ込めるための設計。
-        const { data: rpcResult, error: rpcError } = getGachaDbDriver() === 'pg'
-          ? await this.executeGachaTransactionRpcPg({
+        // RPC結果を { data, error } に正規化し、42883を含む失敗はfail-closed、
+        // 成功時だけ is_duplicate / limit_reached の後続処理へ進む。停止済みDBへ
+        // 逃がす非原子的な経路は持たず、課金結果の正本をPlanetScaleに固定する。
+        const { data: rpcResult, error: rpcError } = await this.executeGachaTransactionRpcPg({
               eventId: eventId || null,
               userTwitchId,
               userTwitchUsername,
@@ -531,41 +441,20 @@ export class GachaService {
               streamerId,
               rewardCost: rewardCost ?? null,
               rewardId: rewardId ?? null,
+              chatBatchId: chatOutbox?.batchId ?? null,
+              drawIndex: chatOutbox?.drawIndex ?? 1,
+              drawCount: chatOutbox?.drawCount ?? 1,
+              collectionName: chatOutbox?.collectionName ?? null,
             })
-          : await withRetry(
-              () => this.supabase.rpc('execute_gacha_transaction', {
-                p_event_id: eventId || null,
-                p_user_twitch_id: userTwitchId,
-                p_user_twitch_username: userTwitchUsername,
-                p_card_id: selectedCard.id,
-                p_streamer_id: streamerId,
-                p_reward_cost: rewardCost ?? null,
-                p_reward_id: rewardId ?? null,
-              }),
-              'gacha:executeGacha:rpc',
-            )
 
         if (rpcError) {
-          // RPC関数が未デプロイの場合（マイグレーション前）は旧ロジックにフォールバック
-          // 無停止デプロイ時にアプリコードが先にデプロイされても、
-          // ユーザーのチャネルポイントが消費されカード未付与になることを防ぐ
-          // TODO: マイグレーション適用確認後にフォールバックを削除
-          //
-          // Issue #591 (p_reward_id追加): PostgREST はRPCを名前付き引数で呼ぶため、
-          // 本アプリコードが先にデプロイされ p_reward_id を送っても、DB側が
-          // migration 00070 未適用(旧6引数版のまま)だと該当パラメータ名を
-          // 解決できず 42883 になる — 00033 で p_reward_cost を追加した際と
-          // 全く同じ性質のデプロイ窓リスクであり、この既存フォールバックが
-          // そのまま吸収する。列とRPCは同一migrationファイル内でアトミックに
-          // 追加されるため、この42883の間は gacha_history.reward_id 列も
-          // 未デプロイ — だからこそ下の executeGachaLegacy は reward_id を
-          // 書き込まない(書けば列不在でPGRST204になるため、詳細は
-          // executeGachaLegacy 内のコメント参照)。
+          // #708: Supabase 停止後は旧3クエリ経路へ逃がせない。旧経路は履歴・
+          // ユーザー・所持カードを別々に書くため原子性もない。RPC 欠落は明示的に
+          // fail-closed とし、通常の reportError 経路で運用へ通知する。
           if (rpcError.code === '42883') {
-            logger.warn('execute_gacha_transaction not found, falling back to legacy operations', {
+            logger.error('execute_gacha_transaction_with_chat_outbox is required but not deployed', {
               streamerId, userTwitchId, eventId,
             })
-            return this.executeGachaLegacy(streamerId, userTwitchId, userTwitchUsername, selectedCard, eventId, rewardCost)
           }
 
           await reportError(new Error(`Gacha RPC failed: ${rpcError.message}`), {
@@ -579,6 +468,20 @@ export class GachaService {
 
         // EventSub重複通知の場合（event_idが既に処理済み）
         if (rpcResult?.is_duplicate) {
+          if (
+            chatOutbox
+            && chatOutbox.drawCount > 1
+            && rpcResult.cards?.length === chatOutbox.drawCount
+          ) {
+            // N連最終drawの応答消失・歯抜け回復では、duplicate RPCがDB履歴から
+            // 完全batchを再構成して返す。単発や途中drawのduplicateは従来どおり
+            // 終端し、完全batchがある場合だけoverlay用成功結果へ復元する。
+            return ok({
+              card: rpcResult.cards[chatOutbox.drawIndex - 1] ?? rpcResult.cards[0],
+              cards: rpcResult.cards,
+              userTwitchUsername,
+            })
+          }
           return err('Duplicate event')
         }
 
@@ -592,6 +495,7 @@ export class GachaService {
 
         return ok({
           card: selectedCard,
+          cards: rpcResult?.cards ?? undefined,
           userTwitchUsername,
         })
       }
@@ -601,17 +505,15 @@ export class GachaService {
   }
 
   /**
-   * execute_gacha_transaction RPC の pg 直結(postgres.js)実装 (#573)。
-   * GACHA_DB_DRIVER=pg (または DB_DRIVER=pg かつ GACHA_DB_DRIVER 未設定)のときのみ
-   * executeGacha から呼ばれる。PostgREST .rpc() と同一の { data, error } 形状を
-   * 返すことで、呼び出し側の後続分岐(42883 フォールバック・is_duplicate・
-   * limit_reached 再抽選)を両経路で共有する。
+   * execute_gacha_transaction_with_chat_outbox RPC のPlanetScale直結実装 (#573/#803)。
+   * executeGacha の単一路線として呼ばれ、既存の { data, error } 形状を維持することで、
+   * 呼び出し側の後続分岐(42883 fail-closed・is_duplicate・limit_reached 再抽選)
+   * を共有する。
    *
    * 名前付き引数(p_event_id => ...)で呼ぶ理由: 位置引数だと将来のパラメータ追加・
    * 並び替えで「隣の引数へズレたまま型だけ合ってしまう」取り違え事故(課金系では
-   * 致命的)を検出できない。migration 00070 のシグネチャ(7引数、末尾2つは
-   * DEFAULT NULL)と名前で1対1対応させ、PostgREST .rpc() が名前付きで呼ぶ挙動とも
-   * 揃える。値はすべて postgres.js のバインドパラメータとして送られるため
+   * 致命的)を検出できない。Issue #803のversioned 11引数シグネチャと名前で
+   * 1対1対応させる。値はすべて postgres.js のバインドパラメータとして送られるため
    * SQL インジェクションは構造的に不可能。uuid 引数は明示 ::uuid キャストで
    * 型解決を固定する(integer も同様)。text 引数は unknown のまま送っても
    * 名前付き引数の関数解決で text へ一意に強制されるためキャスト不要。
@@ -625,13 +527,10 @@ export class GachaService {
    * json/jsonb には影響しない。
    *
    * リトライ: withDbRetry(..., { idempotent: eventId !== null })。
-   * - eventId が非 null の場合のみリトライを許可する。RPC は gacha_history へ
-   *   ON CONFLICT (event_id) DO NOTHING で INSERT し(migration 00070)、重複時は
-   *   users/user_cards への書き込み前に is_duplicate:true で early return するため、
-   *   同一 event_id での再実行は副作用ゼロ(=冪等)。接続断リトライ後の
-   *   is_duplicate:true は「初回が実はコミットされていた」ケースを含むが、これは
-   *   EventSub 再送と同じ err('Duplicate event') 扱いが正しい(カードは初回実行分が
-   *   既に付与済みで、二重付与も未付与も起きない)。
+   * - eventId が非 null の場合のみリトライを許可する。RPC はevent advisory lockと
+   *   gacha_history.event_id UNIQUEで同じeventを直列・冪等化する。接続断リトライ後の
+   *   is_duplicate:true は「初回が実はコミット済み」を含む。単発は完了済みとして
+   *   終端し、N連はexecuteGachaDrawsがDB prefixを再読込して残drawへ進む。
    * - Issue #661 (migration 00076) 以降、RPC 自体が p_event_id=NULL を
    *   RAISE EXCEPTION で拒否するため、eventId=null での呼び出しは(このメソッドに
    *   到達する前段の呼び出し元がすべて非 null を渡す設計であることも合わせ、
@@ -659,6 +558,10 @@ export class GachaService {
     streamerId: string
     rewardCost: number | null
     rewardId: string | null
+    chatBatchId: string | null
+    drawIndex: number
+    drawCount: number
+    collectionName: string | null
   }): Promise<{ data: GachaTransactionRpcResult | null; error: GachaRpcDriverError | null }> {
     try {
       // セキュリティレビュー指摘対応: 接続断リトライが実際に発生したかどうかを
@@ -671,14 +574,18 @@ export class GachaService {
           // クライアント再取得が必要。src/lib/db/retry.ts 参照)
           const { sql } = await getDb()
           const rows = await sql<{ result: GachaTransactionRpcResult | null }[]>`
-            select execute_gacha_transaction(
+            select execute_gacha_transaction_with_chat_outbox(
               p_event_id => ${params.eventId},
               p_user_twitch_id => ${params.userTwitchId},
               p_user_twitch_username => ${params.userTwitchUsername},
               p_card_id => ${params.cardId}::uuid,
               p_streamer_id => ${params.streamerId}::uuid,
               p_reward_cost => ${params.rewardCost}::integer,
-              p_reward_id => ${params.rewardId}
+              p_reward_id => ${params.rewardId},
+              p_chat_batch_id => ${params.chatBatchId},
+              p_draw_index => ${params.drawIndex}::integer,
+              p_draw_count => ${params.drawCount}::integer,
+              p_collection_name => ${params.collectionName}
             ) as result
           `
           return rows[0]?.result ?? null
@@ -686,21 +593,16 @@ export class GachaService {
         'gacha:executeGacha:rpc(pg)',
         { idempotent: params.eventId !== null },
       )
-      // 2回以上実行された(=接続断リトライが発生した)後の is_duplicate / limit_reached
-      // は、「初回実行が実はコミット済みで応答だけ失われた」ケースを含む。
-      // - is_duplicate: ON CONFLICT (event_id) により再実行が重複扱いになった
-      // - limit_reached: migration 00070 の評価順序では発行上限チェックが event_id
-      //   重複チェックより先に走るため、発行上限付きカードでは重複でも上限到達として
-      //   返る(その後の再抽選 → is_duplicate → err('Duplicate event') に至る)
-      // どちらもカード付与・ポイント消費は初回分の1回で正しく完結している
-      // (データ不整合なし)が、視聴者への演出・チャット通知が欠落する。ログ無しでは
-      // 本物の EventSub 再送の is_duplicate と区別できないため、warn で観測可能に
-      // する(既知の稀な事象。plpgsql の評価順序修正は migration が必要なため
-      // Phase 2 対応。docs/db-driver-migration.md 参照)。戻り値は変更しない。
+      // 2回以上実行された(=接続断リトライが発生した)後のis_duplicateは、
+      // 「初回COMMIT成功・応答だけ消失」を含む。N連では呼出側がDB prefixを再読込して
+      // 残りへ進むが、接続品質の観測と単発overlayのgap調査に使えるようwarnを残す。
+      // limit_reachedはevent advisory lock導入後、同一eventのcommit済み履歴を
+      // duplicate確認より後回しにして誤判定することはなく、別eventが発行枠を先取
+      // した本物の競合を示す。ログにtoken等の秘密情報は含めない。
       // ログにトークン等の秘密情報は含めない。
       if (attemptCount >= 2 && (data?.is_duplicate || data?.limit_reached)) {
         logger.warn(
-          `[db:pg] gacha rpc returned ${data.is_duplicate ? 'is_duplicate' : 'limit_reached'} after connection retry — 初回実行がコミット済みだった可能性があり、その場合視聴者への演出が欠落する(既知の稀な事象、docs/db-driver-migration.md 参照)`,
+          `[db:pg] gacha rpc returned ${data.is_duplicate ? 'is_duplicate' : 'limit_reached'} after connection retry`,
           {
             eventId: params.eventId,
             streamerId: params.streamerId,
@@ -714,12 +616,9 @@ export class GachaService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
 
-      // 42883 (undefined_function) = RPC 未デプロイのデプロイ窓。code:'42883' へ
-      // 正規化して返し、呼び出し側の既存分岐(rpcError.code === '42883' →
-      // executeGachaLegacy)にそのまま乗せる。executeGachaLegacy は postgrest 実装の
-      // まま変更しない: 異常時(マイグレーションとコードのデプロイ順ズレ)に頼る
-      // 最後の安全弁は、本番実績のある既存経路へ逃がすほうが「新経路の不具合が
-      // フォールバック先まで巻き込む」リスクを避けられるため(#573 の設計判断)。
+      // 42883 (undefined_function) = 必須RPC未デプロイ。code:'42883'へ正規化し、
+      // 呼び出し側で明示的にfail-closedにする。履歴・所持カードを分割更新する
+      // 非原子的経路へ逃がすとポイント消費との不整合を再導入するため禁止する。
       // isPgFunctionNotFoundError を明示的に使うのは、検知ロジックを
       // src/lib/db/errors.ts に一元化し、将来判定方法が変わっても正規化後の
       // code が '42883' で安定するようにするため。
@@ -757,104 +656,105 @@ export class GachaService {
    * フィルタリングロジックへの影響はない。
    */
   private async getIssuedCounts(cardIds: string[]): Promise<Result<Map<string, number>>> {
-    // #573: get_issued_card_counts はガチャ実行フロー(executeGacha)の内部呼び出しで
-    // あるため、全体フラグ(DB_DRIVER)ではなく execute_gacha_transaction と同じ
-    // getGachaDbDriver() で分岐する。GACHA_DB_DRIVER=postgrest による緊急ロール
-    // バックのとき、この呼び出しだけ pg 直結に残る「経路の食い違い」を作らない —
-    // ロールバックは1つのレバーでガチャ実行フロー全体を旧経路へ戻せる必要がある。
-    if (getGachaDbDriver() === 'pg') {
+    // get_issued_card_counts はガチャ実行フローの内部処理であり、実行 RPC と同じ
+    // PlanetScale 接続先を使う。発行済み数だけが別経路に分かれないようにする。
+    try {
+      const rpcData = await withDbRetry(
+        async () => {
+          // 規約: getDb() は queryFn の中で呼ぶ(src/lib/db/retry.ts 参照)
+          const { sql } = await getDb()
+          // migration 00069 の定義は RETURNS JSONB ({ "<card_id>": <count> })。
+          // RETURNS TABLE ではないため行集合展開(select * from fn(...))は不要で、
+          // スカラー SELECT + rows[0].result で PostgREST .rpc() の data と同一
+          // 形状のオブジェクトが得られる(jsonb→JS オブジェクト変換の根拠は
+          // executeGachaTransactionRpcPg の doc コメント参照)。両経路とも
+          // 同じ parseIssuedCardCountsRpc に通すため Map の中身も完全一致する。
+          //
+          // p_card_ids (uuid[]) の渡し方: postgres.js は fetch_types:false
+          // (src/lib/db/client.ts)では配列型の型情報(typeArrayMap)を接続時に
+          // 取得しないため、JS 配列をそのままバインドすると PG の配列リテラル
+          // ではなく 'id1,id2' 形式の壊れたテキストに直列化される
+          // (node_modules/postgres/src/types.js の inferType が配列を unknown
+          // 扱いにし、connection.js の Bind が '' + x で文字列化するため。
+          // sql.array() ヘルパーも typeArrayMap が空のため同様に壊れる)。
+          // その値は関数解決に失敗して 42883 を誘発し、下の「未デプロイ」
+          // フォールバックへ*静かに常時*落ちてしまう(性能改善 #548 が無効化
+          // されたままアラートも出ない)。これを避けるため、カンマ結合した
+          // テキスト1個をバインドし DB 側で string_to_array(...)::uuid[] に
+          // 展開する。値は常にバインドパラメータのままなので SQL インジェク
+          // ションは構造的に不可能。cardIds は DB 由来の UUID(16進+ハイフン)
+          // でカンマを含まず、区切りが曖昧になることもない。
+          const rows = await sql<{ result: unknown }[]>`
+            select get_issued_card_counts(
+              p_card_ids => string_to_array(${cardIds.join(',')}, ',')::uuid[]
+            ) as result
+          `
+          return rows[0]?.result
+        },
+        'gacha:executeGacha:issuedCounts(pg)',
+        // 読み取り専用(migration 00069 で STABLE 宣言)のため冪等としてリトライを
+        // opt-in する。リトライ回数・バックオフは既存 postgrest 経路の withRetry
+        // (オプション未指定)と同じ既定値([100,300,1000]ms・最大3回)で特性が揃う。
+        { idempotent: true },
+      )
+      return ok(parseIssuedCardCountsRpc(rpcData))
+    } catch (error) {
+      if (!isPgFunctionNotFoundError(error)) {
+        // 既存 postgrest 経路の非 42883 エラーと同じ外部挙動(`Database error:`
+        // プレフィックスの err)に揃える。
+        return err(`Database error: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      // 42883 の場合だけ、同じ PlanetScale 上の user_cards を直接集計する。
+      // 接続先を変えずにデプロイ窓の読み取り可用性を維持し、停止済み Supabase
+      // への暗黙フォールバックを構造的に排除する。
+      logger.warn('get_issued_card_counts unavailable; aggregating user_cards directly', {
+        cardCount: cardIds.length,
+      })
+      // 42883 は直接集計で正しい抽選結果を維持できるが、必須migrationの欠落を
+      // warnだけで恒久運用すると高コストなfallbackが常態化しても検知できない。
+      // 本処理はガチャ確定前のread-only補助クエリなので、errorsテーブルへ確実に
+      // 記録した後も同じPlanetScale上の集計へ進める（Supabaseへの退避はしない）。
       try {
-        const rpcData = await withDbRetry(
-          async () => {
-            // 規約: getDb() は queryFn の中で呼ぶ(src/lib/db/retry.ts 参照)
-            const { sql } = await getDb()
-            // migration 00069 の定義は RETURNS JSONB ({ "<card_id>": <count> })。
-            // RETURNS TABLE ではないため行集合展開(select * from fn(...))は不要で、
-            // スカラー SELECT + rows[0].result で PostgREST .rpc() の data と同一
-            // 形状のオブジェクトが得られる(jsonb→JS オブジェクト変換の根拠は
-            // executeGachaTransactionRpcPg の doc コメント参照)。両経路とも
-            // 同じ parseIssuedCardCountsRpc に通すため Map の中身も完全一致する。
-            //
-            // p_card_ids (uuid[]) の渡し方: postgres.js は fetch_types:false
-            // (src/lib/db/client.ts)では配列型の型情報(typeArrayMap)を接続時に
-            // 取得しないため、JS 配列をそのままバインドすると PG の配列リテラル
-            // ではなく 'id1,id2' 形式の壊れたテキストに直列化される
-            // (node_modules/postgres/src/types.js の inferType が配列を unknown
-            // 扱いにし、connection.js の Bind が '' + x で文字列化するため。
-            // sql.array() ヘルパーも typeArrayMap が空のため同様に壊れる)。
-            // その値は関数解決に失敗して 42883 を誘発し、下の「未デプロイ」
-            // フォールバックへ*静かに常時*落ちてしまう(性能改善 #548 が無効化
-            // されたままアラートも出ない)。これを避けるため、カンマ結合した
-            // テキスト1個をバインドし DB 側で string_to_array(...)::uuid[] に
-            // 展開する。値は常にバインドパラメータのままなので SQL インジェク
-            // ションは構造的に不可能。cardIds は DB 由来の UUID(16進+ハイフン)
-            // でカンマを含まず、区切りが曖昧になることもない。
-            const rows = await sql<{ result: unknown }[]>`
-              select get_issued_card_counts(
-                p_card_ids => string_to_array(${cardIds.join(',')}, ',')::uuid[]
-              ) as result
-            `
-            return rows[0]?.result
+        await reportError(
+          new Error(
+            `get_issued_card_counts RPC unavailable (SQLSTATE 42883): ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+          {
+            context: 'gacha:getIssuedCounts:missingRpc',
+            sqlState: '42883',
+            cardCount: cardIds.length,
           },
-          'gacha:executeGacha:issuedCounts(pg)',
-          // 読み取り専用(migration 00069 で STABLE 宣言)のため冪等としてリトライを
-          // opt-in する。リトライ回数・バックオフは既存 postgrest 経路の withRetry
-          // (オプション未指定)と同じ既定値([100,300,1000]ms・最大3回)で特性が揃う。
-          { idempotent: true },
         )
-        return ok(parseIssuedCardCountsRpc(rpcData))
-      } catch (error) {
-        if (!isPgFunctionNotFoundError(error)) {
-          // 既存 postgrest 経路の非 42883 エラーと同じ外部挙動(`Database error:`
-          // プレフィックスの err)に揃える。
-          return err(`Database error: ${error instanceof Error ? error.message : String(error)}`)
-        }
-        // 42883 = RPC 未デプロイのデプロイ窓。異常時は本番実績のある既存経路へ
-        // 逃がす方針(#573、executeGachaTransactionRpcPg と同じ判断)に従い、下の
-        // 既存 postgrest 実装へフォールスルーする。既存実装は自身の 42883
-        // フォールバック(select+in→JS 集計)を持つため最終的に旧来の集計へ到達
-        // する。PostgREST rpc の1往復が余分に挟まるが、マイグレーション未適用の
-        // 過渡期にのみ発生する一時状態であり、select+in 集計ロジックをここへ
-        // 複製する(恒久的な重複コード)より安全と判断した。
-        logger.warn('get_issued_card_counts pg path unavailable (42883), falling back to postgrest path', {
-          cardCount: cardIds.length,
+      } catch (reportingError) {
+        // 監視保存は抽選の補助処理。reporter障害で安全な直接集計まで失敗させず、
+        // DB非依存のWorkerログを残して同じPlanetScale上のfallbackへ進む。
+        logger.warn('Failed to persist missing get_issued_card_counts alert', {
+          error: reportingError instanceof Error
+            ? reportingError.message
+            : String(reportingError),
         })
       }
     }
 
-    const { data: rpcData, error: rpcError } = await withRetry(
-      () => this.supabase.rpc('get_issued_card_counts', { p_card_ids: cardIds }),
-      'gacha:executeGacha:issuedCounts',
-    )
-
-    if (!rpcError) {
-      return ok(parseIssuedCardCountsRpc(rpcData))
+    try {
+      const rows = await withDbRetry(
+        async () => {
+          const { db } = await getDb()
+          return db
+            .select({ cardId: userCards.card_id, issuedCount: count() })
+            .from(userCards)
+            .where(inArray(userCards.card_id, cardIds))
+            .groupBy(userCards.card_id)
+        },
+        'gacha:executeGacha:issuedCounts(fallback)',
+        { idempotent: true },
+      )
+      return ok(new Map(rows.map((row) => [row.cardId, Number(row.issuedCount)])))
+    } catch (error) {
+      return err(`Database error: ${error instanceof Error ? error.message : String(error)}`)
     }
-
-    if (rpcError.code !== '42883') {
-      return err(`Database error: ${rpcError.message}`)
-    }
-
-    logger.warn('get_issued_card_counts not deployed, falling back to per-row aggregation', {
-      cardCount: cardIds.length,
-    })
-
-    const { data: issuedRows, error: issuedError } = await this.supabase
-      .from('user_cards')
-      .select('card_id')
-      .in('card_id', cardIds)
-
-    if (issuedError) {
-      return err(`Database error: ${issuedError.message}`)
-    }
-
-    const issuedCounts = new Map<string, number>()
-    for (const row of issuedRows || []) {
-      const cardId = (row as { card_id?: string }).card_id
-      if (!cardId) continue
-      issuedCounts.set(cardId, (issuedCounts.get(cardId) || 0) + 1)
-    }
-    return ok(issuedCounts)
   }
 
   /**
@@ -924,8 +824,7 @@ export class GachaService {
       image_url: originalCard.image_url,
       rarity: originalCard.rarity,
       drop_rate: originalCard.drop_rate,
-      // Issue #108: legacy フォールバック(executeGachaLegacy)が発行上限の
-      // 再チェックに参照するため、再構築後も必ず引き継ぐ。
+      // Issue #108: 発行上限の再チェックに参照するため、再構築後も必ず引き継ぐ。
       max_issuance_count: originalCard.max_issuance_count ?? null,
     }
   }
@@ -952,29 +851,17 @@ export class GachaService {
 
     let data: Array<{ event_id: string | null }> | null
     let error: GachaReadDriverError | null
-    if (getGachaDbDriver() === 'pg') {
-      try {
-        data = await withDbRetry(async () => {
-          const { db } = await getDb()
-          return db.select({ event_id: gachaHistory.event_id })
-            .from(gachaHistory)
-            .where(inArray(gachaHistory.event_id, candidateEventIds))
-        }, 'gacha:executeGachaDraws:completedPrefix', { idempotent: true })
-        error = null
-      } catch (queryError) {
-        data = null
-        error = normalizePgReadError(queryError)
-      }
-    } else {
-      const result = await withRetry(
-        () => this.supabase
-          .from('gacha_history')
-          .select('event_id')
-          .in('event_id', candidateEventIds),
-        'gacha:executeGachaDraws:completedPrefix',
-      )
-      data = result.data
-      error = result.error
+    try {
+      data = await withDbRetry(async () => {
+        const { db } = await getDb()
+        return db.select({ event_id: gachaHistory.event_id })
+          .from(gachaHistory)
+          .where(inArray(gachaHistory.event_id, candidateEventIds))
+      }, 'gacha:executeGachaDraws:completedPrefix', { idempotent: true })
+      error = null
+    } catch (queryError) {
+      data = null
+      error = normalizePgReadError(queryError)
     }
 
     if (error) {
@@ -1015,6 +902,7 @@ export class GachaService {
   ): Promise<Result<GachaResult>> {
     const cards: GachaCard[] = []
     let firstResult: GachaResult | null = null
+    let persistedBatchCards: GachaCard[] | null = null
 
     // Issue #512: EventSub再送がバッチ途中(例: 5連中2枚目まで成功、3枚目で
     // 失敗)のリトライを兼ねる場合、常に index=0 からやり直すと1枚目が
@@ -1040,6 +928,8 @@ export class GachaService {
         return err('Duplicate event')
       }
     }
+    let completedDrawCount = resumeFromIndex
+    let requiresPersistedBatch = resumeFromIndex > 0
 
     for (let index = resumeFromIndex; index < drawCount; index += 1) {
       const drawEventId = buildDrawEventId(eventId, index)
@@ -1052,18 +942,47 @@ export class GachaService {
         drawRewardCost,
         collectionName,
         weightsConfig,
-        rewardId
+        rewardId,
+        eventId
+          ? {
+              batchId: eventId,
+              drawIndex: index + 1,
+              drawCount,
+              collectionName,
+            }
+          : undefined
       )
 
       if (!result.success) {
-        // resumeFromIndex(過去のリトライで既に完了した分)も合わせた、この
-        // バッチ全体での確定済み枚数。cards.length だけで判定すると、再開
+        if (result.error === 'Duplicate event' && eventId && drawCount > 1) {
+          // RPCの接続断リトライでは「初回COMMIT成功・応答消失」の後、同じdrawを
+          // 再実行してduplicateが返る。このduplicateをバッチ全体の重複として
+          // 終端すると、1〜N-1枚だけ確定して最終outboxが永久に作られない。
+          // 正本のDB prefixを再読込し、今回のdrawまで進んでいればその次へ飛ぶ。
+          const refreshedPrefix = await this.countCompletedDrawPrefix(eventId, drawCount)
+          if (!refreshedPrefix.success) {
+            return err(refreshedPrefix.error)
+          }
+          if (refreshedPrefix.data > completedDrawCount) {
+            completedDrawCount = refreshedPrefix.data
+            requiresPersistedBatch = true
+            if (completedDrawCount >= drawCount) {
+              // 最終drawのduplicate RPC自身が全履歴からoutboxを冪等再構成済み。
+              return err('Duplicate event')
+            }
+            index = completedDrawCount - 1
+            continue
+          }
+        }
+
+        // 過去のリトライと、このリクエスト中にDBで確認できた進捗を合わせた
+        // バッチ全体の確定済み枚数。cards.lengthだけで判定すると、再開
         // 直後の1件目で早速エラーになった場合に「0枚成功」扱いになり、実際は
-        // resumeFromIndex 枚が既に確定済みであるにもかかわらず生の
+        // completedDrawCount枚が既に確定済みであるにもかかわらず生の
         // soldOut/DBエラーがそのまま呼び出し元に伝播してしまう(soldOut側の
         // 全額返還処理などが、既に一部カードを受け取ったユーザーに対して
         // 誤って走りかねない)。
-        const totalCompleted = resumeFromIndex + cards.length
+        const totalCompleted = completedDrawCount
         if (totalCompleted > 0 && result.error !== 'Duplicate event') {
           logger.warn('Multi-draw gacha stopped after partial success', {
             streamerId,
@@ -1094,15 +1013,28 @@ export class GachaService {
 
       cards.push(result.data.card)
       firstResult ??= result.data
+      if (result.data.cards?.length === drawCount) {
+        persistedBatchCards = result.data.cards
+      }
+      completedDrawCount = Math.max(completedDrawCount, index + 1)
     }
 
     if (!firstResult) {
       return err('Failed to execute gacha draws')
     }
+    if (requiresPersistedBatch && !persistedBatchCards) {
+      // prefix再開時のローカルcardsは残drawだけなので、そのままpublisherへ渡すと
+      // batch, batch:2...へ誤採番して既存drawを上書きし、末尾を欠落させる。
+      // versioned RPCの完全batchが無ければ誤ったoverlayを送らずretryableに倒す。
+      return err('Completed multi-draw is missing persisted batch cards')
+    }
+
+    const completeCards = persistedBatchCards ?? cards
 
     return ok({
       ...firstResult,
-      cards,
+      card: completeCards[0],
+      cards: completeCards,
     })
   }
 
@@ -1112,93 +1044,7 @@ export class GachaService {
    * アトミック性は保証されないが、カード付与されないよりは良い
    * TODO: マイグレーション適用確認後にこのメソッドを削除
    */
-  private async executeGachaLegacy(
-    streamerId: string, userTwitchId: string, userTwitchUsername: string,
-    selectedCard: GachaCard, eventId?: string, rewardCost?: number
-  ): Promise<Result<GachaResult>> {
-    // Legacy パスは execute_gacha_transaction RPC が未デプロイの一時的状態のためのフォールバック。
-    // この経路では FOR UPDATE による行ロックが取れず、発行枚数チェックと INSERT を
-    // アトミックに実行できないため、上限超過の race condition を防げない。
-    // よって発行可能枚数 (max_issuance_count) が設定されたカードは legacy パスでは抽選対象外とする。
-    // limited カードは migration 適用後の RPC パス経由でのみ付与可能。
-    // The legacy fallback runs only while execute_gacha_transaction is missing on the DB.
-    // Without FOR UPDATE row locking we cannot enforce issuance limits atomically here,
-    // so refuse to issue limited cards via this path to avoid over-issuing.
-    //
-    // R2 (PR #450 レビュー follow-up): この拒否は「本物の soldOut (発行枚数上限に
-    // 到達済み)」とは全く別の異常系(RPC関数が本番に存在しない = マイグレーション
-    // 未適用のはずが後続コードだけ先にデプロイされた不整合状態)である。以前は
-    // soldOut と同一の文字列を返していたため、eventsub route.ts のソフトフェイル
-    // 抑止フィルタ(発行枚数上限到達は運用上正常なので reportError しない)に巻き
-    // 込まれ、この深刻な不整合が本番で一切アラートされなかった。専用の
-    // limitUnavailable を返すことで、genuine soldOut の抑止は維持したまま、この
-    // ケースだけ確実に reportError が発火するようにする。
-    if (selectedCard.max_issuance_count !== null && selectedCard.max_issuance_count !== undefined) {
-      logger.warn('Legacy fallback: refused to issue limited card (RPC not deployed yet)', {
-        streamerId, userTwitchId, eventId, cardId: selectedCard.id,
-      })
-      return err(CARD_ISSUANCE_MESSAGES.limitUnavailable)
-    }
 
-    // gacha_history upsert（冪等性のためevent_idで重複チェック）
-    //
-    // Issue #591: ここでは意図的に reward_id を書き込まない。この legacy パスに
-    // 到達するのは execute_gacha_transaction RPC が 42883 (未デプロイ) の場合のみ
-    // で、gacha_history.reward_id 列と当該RPCは同一migrationファイル(00070)で
-    // アトミックに追加されるため、RPCが無い=列も無い状態が保証される。ここで
-    // reward_id キーを含めると、PostgREST の書き込み経路は列不在を PGRST204
-    // として返す — つまり「RPC未デプロイ時の安全弁」であるこの legacy パス
-    // 自体を、列追加のせいで壊してしまう。ポーリング経路の報酬別サウンドは
-    // このデプロイ窓の間だけ rarity/all ルールにフォールバックする(=許容範囲)。
-    const { error: historyError } = await this.supabase
-      .from('gacha_history')
-      .upsert({
-        event_id: eventId || null,
-        user_twitch_id: userTwitchId,
-        user_twitch_username: userTwitchUsername,
-        card_id: selectedCard.id,
-        streamer_id: streamerId,
-        reward_cost: rewardCost ?? null,
-      }, {
-        onConflict: 'event_id',
-        ignoreDuplicates: true,
-      })
-
-    if (historyError) {
-      return err(`Failed to record history: ${historyError.message}`)
-    }
-
-    // users upsert
-    const { data: user } = await this.supabase
-      .from('users')
-      .upsert({
-        twitch_user_id: userTwitchId,
-        twitch_username: userTwitchUsername,
-        twitch_display_name: userTwitchUsername,
-      }, {
-        onConflict: 'twitch_user_id',
-        ignoreDuplicates: true,
-      })
-      .select('id')
-      .maybeSingle()
-
-    // user_cards insert
-    if (user) {
-      const { error: collectionError } = await this.supabase
-        .from('user_cards')
-        .insert({
-          user_id: user.id,
-          card_id: selectedCard.id,
-          obtained_at: new Date().toISOString(),
-        })
-
-      if (collectionError && collectionError.code !== '23505') {
-        logger.warn('Legacy fallback: Failed to add to collection:', collectionError.message)
-      }
-    }
-
-    return ok({ card: selectedCard, userTwitchUsername })
-  }
 
   /**
    * Execute gacha for EventSub channel point redemption
@@ -1241,42 +1087,29 @@ export class GachaService {
       } | null
       let streamerError: GachaReadDriverError | null
 
-      if (getGachaDbDriver() === 'pg') {
-        try {
-          const rows = await withDbRetry(async () => {
-            const { db } = await getDb()
-            return db.select({
-              id: streamers.id,
-              channel_point_reward_id: streamers.channel_point_reward_id,
-              channel_point_collection_name: streamers.channel_point_collection_name,
-              chat_announcement_enabled: streamers.chat_announcement_enabled,
-              chat_announcement_template: streamers.chat_announcement_template,
-              chat_announcement_multi_template: streamers.chat_announcement_multi_template,
-              chat_announcement_multi_show_cards: streamers.chat_announcement_multi_show_cards,
-              raid_gacha_active_until: streamers.raid_gacha_active_until,
-              rarity_weights: streamers.rarity_weights,
-              rarity_weights_scope: streamers.rarity_weights_scope,
-              pack_rarity_weights: streamers.pack_rarity_weights,
-              default_card_pack_name: streamers.default_card_pack_name,
-            }).from(streamers).where(eq(streamers.twitch_user_id, event.broadcaster_user_id)).limit(1)
-          }, 'gacha:executeGachaForEventSub:streamer', { idempotent: true })
-          streamer = rows[0] ?? null
-          streamerError = null
-        } catch (error) {
-          streamer = null
-          streamerError = normalizePgReadError(error)
-        }
-      } else {
-        const result = await withRetry(
-          () => this.supabase
-            .from('streamers')
-            .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, rarity_weights_scope, pack_rarity_weights, default_card_pack_name')
-            .eq('twitch_user_id', event.broadcaster_user_id)
-            .maybeSingle(),
-          'gacha:executeGachaForEventSub:streamer',
-        )
-        streamer = result.data
-        streamerError = result.error
+      try {
+        const rows = await withDbRetry(async () => {
+          const { db } = await getDb()
+          return db.select({
+            id: streamers.id,
+            channel_point_reward_id: streamers.channel_point_reward_id,
+            channel_point_collection_name: streamers.channel_point_collection_name,
+            chat_announcement_enabled: streamers.chat_announcement_enabled,
+            chat_announcement_template: streamers.chat_announcement_template,
+            chat_announcement_multi_template: streamers.chat_announcement_multi_template,
+            chat_announcement_multi_show_cards: streamers.chat_announcement_multi_show_cards,
+            raid_gacha_active_until: streamers.raid_gacha_active_until,
+            rarity_weights: streamers.rarity_weights,
+            rarity_weights_scope: streamers.rarity_weights_scope,
+            pack_rarity_weights: streamers.pack_rarity_weights,
+            default_card_pack_name: streamers.default_card_pack_name,
+          }).from(streamers).where(eq(streamers.twitch_user_id, event.broadcaster_user_id)).limit(1)
+        }, 'gacha:executeGachaForEventSub:streamer', { idempotent: true })
+        streamer = rows[0] ?? null
+        streamerError = null
+      } catch (error) {
+        streamer = null
+        streamerError = normalizePgReadError(error)
       }
 
       // Issue #579 (#576 フェーズ2): rarity_weights_scope / pack_rarity_weights は
@@ -1290,31 +1123,9 @@ export class GachaService {
       // 再取得する。欠落時は rarity_weights_scope=null
       // (resolveRarityWeightsForPool は null/undefined を 'global' として扱う)
       // / pack_rarity_weights=null (パック別上書きなし) を安全側デフォルトとする。
-      // PG フラグは必要 migration の適用確認後にだけ有効化する運用契約のため、
-      // PG 側で 42703 が出た場合に PostgREST へ跨いだ fallback は行わない。
-      // ここで旧経路へ混ぜると Phase 2 の provider 切替後に古い DB を読んで抽選する
-      // 危険がある。PG 経路はエラーとして停止し、GACHA_DB_DRIVER 全体を戻す。
-      if (
-        getGachaDbDriver() !== 'pg' &&
-        streamerError &&
-        (isMissingRarityWeightsScopeColumnError(streamerError) || isMissingPackRarityWeightsColumnError(streamerError))
-      ) {
-        // default_card_pack_name (00063) は rarity_weights_scope/pack_rarity_weights
-        // (00065) より先行するマイグレーションのため、この分岐に来る時点で確実に
-        // デプロイ済み。選択して問題ない。
-        const weightsFallback = await withRetry(
-          () => this.supabase
-            .from('streamers')
-            .select('id, channel_point_reward_id, channel_point_collection_name, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights, default_card_pack_name')
-            .eq('twitch_user_id', event.broadcaster_user_id)
-            .maybeSingle(),
-          'gacha:executeGachaForEventSub:streamer:weights-fallback',
-        )
-        streamer = weightsFallback.data
-          ? { ...weightsFallback.data, rarity_weights_scope: null, pack_rarity_weights: null }
-          : weightsFallback.data
-        streamerError = weightsFallback.error
-      }
+      // PlanetScale 側で 42703 が出た場合も、停止予定の旧 provider へ跨いだ
+      // fallback は行わない。異なる DB の古い状態を読んで抽選する危険を避けるため、
+      // 現行経路のエラーとして停止し、migration 不足を明示的に修復する。
 
       // Issue #393: targeted fallback when ONLY channel_point_collection_name is
       // missing (00061 deploy window). Re-select WITHOUT that column but WITH all
@@ -1325,60 +1136,9 @@ export class GachaService {
       // raid_gacha_active_until. 列が複数欠落していれば後続の広域 fallback が拾う。
       // rarity_weights_scope/pack_rarity_weights はこの分岐に来る時点で確実に
       // 未デプロイ(上のコメント参照)なので選択せず null 固定にする。
-      if (getGachaDbDriver() !== 'pg' && streamerError && isMissingCollectionNameColumn(streamerError)) {
-        const collectionFallback = await withRetry(
-          () => this.supabase
-            .from('streamers')
-            .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_active_until, rarity_weights')
-            .eq('twitch_user_id', event.broadcaster_user_id)
-            .maybeSingle(),
-          'gacha:executeGachaForEventSub:streamer:collection-fallback',
-        )
-        streamer = collectionFallback.data
-          ? {
-              ...collectionFallback.data,
-              channel_point_collection_name: null,
-              rarity_weights_scope: null,
-              pack_rarity_weights: null,
-              // default_card_pack_name (00063) は channel_point_collection_name (00061)
-              // より後発のマイグレーションのため、この分岐に来る時点で確実に未デプロイ。
-              // 選択せず null 固定にする(Issue #597)。
-              default_card_pack_name: null,
-            }
-          : collectionFallback.data
-        streamerError = collectionFallback.error
-      }
 
-      if (getGachaDbDriver() !== 'pg' && isStreamerSettingsSchemaError(streamerError)) {
-        const fallbackResult = await withRetry(
-          () => this.supabase
-            .from('streamers')
-            .select('id, channel_point_reward_id, chat_announcement_enabled, chat_announcement_template')
-            .eq('twitch_user_id', event.broadcaster_user_id)
-            .maybeSingle(),
-          'gacha:executeGachaForEventSub:streamer:fallback',
-        )
-        streamer = fallbackResult.data
-          ? {
-              ...fallbackResult.data,
-              // 列未デプロイ時は全カード対象 (NULL) として扱う
-              channel_point_collection_name: null,
-              chat_announcement_multi_template: null,
-              chat_announcement_multi_show_cards: true,
-              raid_gacha_active_until: null,
-              // Issue #579: この分岐も同じ理由でレアリティ重み列は未取得のため
-              // 手動モード相当(rarity_weights=null)に倒す。
-              rarity_weights: null,
-              rarity_weights_scope: null,
-              pack_rarity_weights: null,
-              // Issue #597: この分岐は channel_point_collection_name(00061)より
-              // 前段の欠落まで拾う最も古いフォールバックのため、default_card_pack_name
-              // (00063)も確実に未デプロイ。選択せず null 固定にする。
-              default_card_pack_name: null,
-            }
-          : fallbackResult.data
-        streamerError = fallbackResult.error
-      }
+
+
 
       if (streamerError) {
         return err(`Database error fetching streamer: ${streamerError.message}`)
@@ -1446,59 +1206,31 @@ export class GachaService {
         collection_name: string | null
       } | null
       let additionalError: GachaReadDriverError | null
-      if (getGachaDbDriver() === 'pg') {
-        try {
-          const rows = await withDbRetry(async () => {
-            const { db } = await getDb()
-            return db.select({
-              id: streamerAdditionalGachaRewards.id,
-              draw_count: streamerAdditionalGachaRewards.draw_count,
-              is_raid_limited: streamerAdditionalGachaRewards.is_raid_limited,
-              collection_name: streamerAdditionalGachaRewards.collection_name,
-            }).from(streamerAdditionalGachaRewards).where(and(
-              eq(streamerAdditionalGachaRewards.streamer_id, streamer.id),
-              eq(streamerAdditionalGachaRewards.reward_id, event.reward.id),
-            )).limit(1)
-          }, 'gacha:executeGachaForEventSub:additionalReward', { idempotent: true })
-          additionalReward = rows[0] ?? null
-          additionalError = null
-        } catch (error) {
-          additionalReward = null
-          additionalError = normalizePgReadError(error)
-        }
-      } else {
-        const result = await withRetry(
-          () => this.supabase
-            .from('streamer_additional_gacha_rewards')
-            .select('id, draw_count, is_raid_limited, collection_name')
-            .eq('streamer_id', streamer.id)
-            .eq('reward_id', event.reward.id)
-            .maybeSingle(),
-          'gacha:executeGachaForEventSub:additionalReward',
-        )
-        additionalReward = result.data
-        additionalError = result.error
+      try {
+        const rows = await withDbRetry(async () => {
+          const { db } = await getDb()
+          return db.select({
+            id: streamerAdditionalGachaRewards.id,
+            draw_count: streamerAdditionalGachaRewards.draw_count,
+            is_raid_limited: streamerAdditionalGachaRewards.is_raid_limited,
+            collection_name: streamerAdditionalGachaRewards.collection_name,
+          }).from(streamerAdditionalGachaRewards).where(and(
+            eq(streamerAdditionalGachaRewards.streamer_id, streamer.id),
+            eq(streamerAdditionalGachaRewards.reward_id, event.reward.id),
+          )).limit(1)
+        }, 'gacha:executeGachaForEventSub:additionalReward', { idempotent: true })
+        additionalReward = rows[0] ?? null
+        additionalError = null
+      } catch (error) {
+        additionalReward = null
+        additionalError = normalizePgReadError(error)
       }
 
       // Deploy-window fallback: only the collection_name column is missing.
       // Handled separately from raid-option errors so we don't needlessly block
       // the additional reward gacha (it just falls back to "all cards").
       // collection_name 列のみ未デプロイなら null fallback（追加報酬ガチャは止めない）。
-      if (getGachaDbDriver() !== 'pg' && additionalError && isMissingCollectionNameColumn(additionalError)) {
-        const fallbackResult = await withRetry(
-          () => this.supabase
-            .from('streamer_additional_gacha_rewards')
-            .select('id, draw_count, is_raid_limited')
-            .eq('streamer_id', streamer.id)
-            .eq('reward_id', event.reward.id)
-            .maybeSingle(),
-          'gacha:executeGachaForEventSub:additionalReward:collection-fallback',
-        )
-        additionalReward = fallbackResult.data
-          ? { ...fallbackResult.data, collection_name: null }
-          : fallbackResult.data
-        additionalError = fallbackResult.error
-      }
+
 
       if (isRaidOptionsSchemaError(additionalError)) {
         logger.warn('Additional reward options schema is unavailable; refusing to execute a 1-draw fallback', {
@@ -1559,54 +1291,26 @@ export class GachaService {
         raid_gacha_draw_count: number
       } | null
       let streamerError: GachaReadDriverError | null
-      if (getGachaDbDriver() === 'pg') {
-        try {
-          const rows = await withDbRetry(async () => {
-            const { db } = await getDb()
-            return db.select({
-              id: streamers.id,
-              chat_announcement_enabled: streamers.chat_announcement_enabled,
-              chat_announcement_template: streamers.chat_announcement_template,
-              chat_announcement_multi_template: streamers.chat_announcement_multi_template,
-              chat_announcement_multi_show_cards: streamers.chat_announcement_multi_show_cards,
-              raid_gacha_draw_count: streamers.raid_gacha_draw_count,
-            }).from(streamers).where(eq(streamers.twitch_user_id, event.to_broadcaster_user_id)).limit(1)
-          }, 'gacha:executeGachaForRaidEvent:streamer', { idempotent: true })
-          streamer = rows[0] ?? null
-          streamerError = null
-        } catch (error) {
-          streamer = null
-          streamerError = normalizePgReadError(error)
-        }
-      } else {
-        const result = await withRetry(
-          () => this.supabase
-            .from('streamers')
-            .select('id, chat_announcement_enabled, chat_announcement_template, chat_announcement_multi_template, chat_announcement_multi_show_cards, raid_gacha_draw_count')
-            .eq('twitch_user_id', event.to_broadcaster_user_id)
-            .maybeSingle(),
-          'gacha:executeGachaForRaidEvent:streamer',
-        )
-        streamer = result.data
-        streamerError = result.error
+      try {
+        const rows = await withDbRetry(async () => {
+          const { db } = await getDb()
+          return db.select({
+            id: streamers.id,
+            chat_announcement_enabled: streamers.chat_announcement_enabled,
+            chat_announcement_template: streamers.chat_announcement_template,
+            chat_announcement_multi_template: streamers.chat_announcement_multi_template,
+            chat_announcement_multi_show_cards: streamers.chat_announcement_multi_show_cards,
+            raid_gacha_draw_count: streamers.raid_gacha_draw_count,
+          }).from(streamers).where(eq(streamers.twitch_user_id, event.to_broadcaster_user_id)).limit(1)
+        }, 'gacha:executeGachaForRaidEvent:streamer', { idempotent: true })
+        streamer = rows[0] ?? null
+        streamerError = null
+      } catch (error) {
+        streamer = null
+        streamerError = normalizePgReadError(error)
       }
 
-      if (getGachaDbDriver() !== 'pg' && isStreamerSettingsSchemaError(streamerError)) {
-        const fallbackResult = await this.supabase
-          .from('streamers')
-          .select('id, chat_announcement_enabled, chat_announcement_template')
-          .eq('twitch_user_id', event.to_broadcaster_user_id)
-          .maybeSingle()
-        streamer = fallbackResult.data
-          ? {
-              ...fallbackResult.data,
-              chat_announcement_multi_template: null,
-              chat_announcement_multi_show_cards: true,
-              raid_gacha_draw_count: 0,
-            }
-          : fallbackResult.data
-        streamerError = fallbackResult.error
-      }
+
 
       if (streamerError || !streamer) {
         return err('Streamer not found')

@@ -3,13 +3,10 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES, TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { validateCSRFToken } from "@/lib/csrf";
-// 厳格レビュー指摘 (minor-1): streamer 存在確認クエリ（postgrest/pg 分岐込み）は
-// src/lib/user-data.ts の getStreamerIdByTwitchUserId() に統合済み
-// （src/app/dashboard/history/page.tsx の実装 #711 と完全に同一クエリだった重複を
-// 解消）。このファイルは DB_DRIVER フラグや getDb 等の pg 直結モジュールを直接
-// 参照しない（ヘルパー内部に閉じる）。
+// 配信者の存在確認は getStreamerIdByTwitchUserId() に集約する。
+// この Route は DB クライアントを直接扱わず、接続方式をヘルパー内へ閉じ込める。
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
@@ -320,9 +317,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Get streamer info
-    // 厳格レビュー指摘 (minor-1): postgrest/pg 分岐は getStreamerIdByTwitchUserId()
-    // 内部に閉じており、DB_DRIVER 未設定時（既定 'postgrest'）の挙動は完全に不変
-    // （ヘルパーの JSDoc・src/lib/db/flags.ts 参照）。
+    // DB アクセスは getStreamerIdByTwitchUserId() に集約する。
     const streamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
 
     if (!streamer) {
@@ -532,7 +527,7 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // handleApiError 内部で await logger.error() → Supabase 記録を行う
+      // handleApiError内部でlogger.errorをawaitし、PlanetScaleへの記録を完了する。
       return handleApiError(error, `EventSub subscription failed: status=${subscribeResponse.status}, broadcaster=${session.twitchUserId}, rewardId=${rewardId}`);
     }
 

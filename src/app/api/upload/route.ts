@@ -5,7 +5,7 @@ import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
 import { ERROR_MESSAGES, UPLOAD_CONFIG, STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
 import { getFileTypeFromBuffer, getFileExtension, isValidExtension } from '@/lib/file-utils';
-import { logger } from '@/lib/logger';
+import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadToR2WithRetry } from '@/lib/r2-client';
 import { retryCloudflareR2Upload } from '@/lib/r2-retry-policy';

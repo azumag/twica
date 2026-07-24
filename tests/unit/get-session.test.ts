@@ -14,7 +14,9 @@ vi.mock('next/headers', () => ({
   cookies: vi.fn(async () => mockCookieStore),
 }))
 
-vi.mock('@/lib/logger', () => ({
+// session.ts は server-only logger を使う。ここでも同じ entry point を mock し、
+// Cookie 異常時の分類だけを検証して DB 永続化の副作用は logger.server.test に隔離する。
+vi.mock('@/lib/logger.server', () => ({
   logger,
 }))
 

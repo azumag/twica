@@ -10,8 +10,10 @@
  * 使用量情報をDBで管理する方式に変更
  */
 
+import 'server-only';
+
 import { UPLOAD_CONFIG } from './constants';
-import { logger } from './logger';
+import { logger } from './logger.server';
 import { getStorageUsageFromDB, getStorageBonusBytes } from './storage-db';
 import { getPlanStorageBytes } from './plan';
 

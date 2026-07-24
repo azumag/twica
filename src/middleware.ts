@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server'
-import { updateSession } from '@/lib/supabase/middleware'
+import { updateSession } from '@/lib/session-middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setSecurityHeaders } from '@/lib/security-headers'
 import { ERROR_MESSAGES } from '@/lib/constants'

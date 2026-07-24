@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     // Generated artifacts created by local build / deploy tooling
     ".open-next/**",
     ".wrangler/**",
+    "workers/*/dist/**",
     // Exclude analysis directory (separate project with bundled artifacts)
     // analysis ディレクトリを除外（バンドル済み成果物を含む別プロジェクト）
     "analysis/**",

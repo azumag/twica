@@ -1,6 +1,5 @@
 /**
- * #572: linked-account-auth (handleLinkedAccountCallback) の
- * postgrest 経路 / pg 経路の互換テスト
+ * #572/#708: linked-account-authのPlanetScale経路テスト
  *
  * tests/unit/token-manager-driver-parity.test.ts と同じ流儀。書き込み系の要件どおり
  * 「pg 経路で正しいテーブル・values/set 内容・where/conflict 条件で INSERT/UPDATE/
@@ -12,7 +11,6 @@ import { and, eq } from 'drizzle-orm'
 import { handleLinkedAccountCallback } from '@/lib/twitch/linked-account-auth'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { exchangeCodeForTokens, getTwitchUser } from '@/lib/twitch/auth'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
 import {
   streamers as streamersTable,
@@ -32,53 +30,6 @@ vi.mock('@/lib/twitch/auth', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
-
-// ---------------------------------------------------------------------------
-// postgrest 経路のモック: from(table) ごとの結果キュー + 書き込み引数の記録
-// （select().single() / upsert() を await するチェーンに対応）
-// ---------------------------------------------------------------------------
-
-interface PostgrestResult {
-  data?: unknown
-  error?: unknown
-}
-
-function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult[]>) {
-  const queues = Object.fromEntries(
-    Object.entries(resultsByTable).map(([table, results]) => [table, [...results]])
-  )
-  const writeCalls: Array<{ table: string; kind: 'insert' | 'update' | 'upsert'; values: unknown }> = []
-  const from = vi.fn((table: string) => {
-    const queue = queues[table]
-    if (!queue || queue.length === 0) {
-      throw new Error(`no mock result configured for table: ${table}`)
-    }
-    const result = queue.length > 1 ? (queue.shift() as PostgrestResult) : queue[0]
-    const resolved = { data: result.data ?? null, error: result.error ?? null }
-    const builder: any = {
-      select: vi.fn(() => builder),
-      eq: vi.fn(() => builder),
-      maybeSingle: vi.fn(() => Promise.resolve(resolved)),
-      single: vi.fn(() => Promise.resolve(resolved)),
-      insert: vi.fn((values: unknown) => {
-        writeCalls.push({ table, kind: 'insert', values })
-        return builder
-      }),
-      update: vi.fn((values: unknown) => {
-        writeCalls.push({ table, kind: 'update', values })
-        return builder
-      }),
-      upsert: vi.fn((values: unknown) => {
-        writeCalls.push({ table, kind: 'upsert', values })
-        return builder
-      }),
-      then: (onFulfilled: any, onRejected: any) =>
-        Promise.resolve(resolved).then(onFulfilled, onRejected),
-    }
-    return builder
-  })
-  return { from, writeCalls }
-}
 
 // ---------------------------------------------------------------------------
 // pg 経路のモック: select / update / insert (values / returning /
@@ -218,9 +169,13 @@ const EXPECTED_BOT_FIELDS = {
   scopes: ['user:write:chat'],
   status: 'active',
   last_error: null,
+  // 接続し直したBOTは以前のrefresh leaderを引き継がない。新credentialの保存と
+  // 同時にleaseを明示的に空へ戻し、旧leaderのfencingを無効化する。
+  twitch_refresh_lease_id: null,
+  twitch_refresh_lease_expires_at: null,
 }
 
-describe('handleLinkedAccountCallback: postgrest / pg 経路の互換 (#572)', () => {
+describe('handleLinkedAccountCallback: PlanetScale経路 (#572/#708)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getSession).mockResolvedValue({ twitchUserId: 'streamer-twitch-1' } as any)
@@ -230,34 +185,18 @@ describe('handleLinkedAccountCallback: postgrest / pg 経路の互換 (#572)', (
   })
 
   afterEach(() => {
-    vi.unstubAllEnvs()
     vi.useRealTimers()
   })
 
-  it('新規接続: pg 経路で正しい values の INSERT + PK(streamer_id) を conflict target とする upsert が実行され、リダイレクト先が postgrest 経路と一致する', async () => {
-    // expires_at（実行時刻由来）を両経路で一致させるため Date のみ固定
+  it('新規接続: 正しいvaluesのINSERTとstreamer_id競合upsertを実行する', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
 
-    // postgrest 経路（既存 BOT なし → insert）
-    vi.stubEnv('DB_DRIVER', undefined)
-    const client = createSupabaseClientMock({
-      streamers: [{ data: { id: 'streamer-1' } }],
-      twitch_bot_accounts: [{ data: null }, { data: { id: 'bot-account-1' } }],
-      streamer_chat_sender_settings: [{ data: null }],
-    })
-    vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
-    const postgrestRes = await handleLinkedAccountCallback(CALLBACK_ARGS)
-
-    // pg 経路
-    vi.stubEnv('DB_DRIVER', 'pg')
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: 'streamer-1' }] }, { rows: [] }],
     })
     primePgDb(pg)
     const pgRes = await handleLinkedAccountCallback(CALLBACK_ARGS)
 
-    // リダイレクト先（外部から見える結果）の一致
-    expect(pgRes.headers.get('location')).toBe(postgrestRes.headers.get('location'))
     expect(pgRes.headers.get('location')).toBe(`${BASE_URL}/dashboard/settings?bot=connected`)
 
     // INSERT: twitch_bot_accounts へ owner_type / streamer_id 付きの values
@@ -268,8 +207,6 @@ describe('handleLinkedAccountCallback: postgrest / pg 経路の互換 (#572)', (
       owner_type: 'streamer',
       streamer_id: 'streamer-1',
     })
-    // postgrest 経路の insert 引数とも完全一致（Date 固定により expires_at 含む）
-    expect(pg.insertCalls[0].values).toEqual(client.writeCalls[0].values)
     expect(pg.insertCalls[0].returningSelection).toEqual({ id: twitchBotAccountsTable.id })
 
     // upsert: streamer_chat_sender_settings の conflict target は PK の streamer_id
@@ -286,26 +223,13 @@ describe('handleLinkedAccountCallback: postgrest / pg 経路の互換 (#572)', (
       sender_mode: 'custom_bot',
       custom_bot_account_id: 'bot-account-1',
     })
-    // postgrest 経路の upsert 引数（insert values）とも一致
-    expect(pg.insertCalls[1].values).toEqual(client.writeCalls[1].values)
-
     // UPDATE は発生しない（新規のため）
     expect(pg.updateCalls).toHaveLength(0)
   })
 
-  it('既存 BOT の更新: pg 経路で正しい set/where の UPDATE になり、リダイレクト先が一致する', async () => {
+  it('既存BOTの更新: 正しいset/whereでUPDATEする', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
 
-    vi.stubEnv('DB_DRIVER', undefined)
-    const client = createSupabaseClientMock({
-      streamers: [{ data: { id: 'streamer-1' } }],
-      twitch_bot_accounts: [{ data: { id: 'bot-existing-1' } }, { data: { id: 'bot-existing-1' } }],
-      streamer_chat_sender_settings: [{ data: null }],
-    })
-    vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
-    const postgrestRes = await handleLinkedAccountCallback(CALLBACK_ARGS)
-
-    vi.stubEnv('DB_DRIVER', 'pg')
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: 'streamer-1' }] }, { rows: [{ id: 'bot-existing-1' }] }],
       updates: [{ rows: [{ id: 'bot-existing-1' }] }],
@@ -313,14 +237,12 @@ describe('handleLinkedAccountCallback: postgrest / pg 経路の互換 (#572)', (
     primePgDb(pg)
     const pgRes = await handleLinkedAccountCallback(CALLBACK_ARGS)
 
-    expect(pgRes.headers.get('location')).toBe(postgrestRes.headers.get('location'))
     expect(pgRes.headers.get('location')).toBe(`${BASE_URL}/dashboard/settings?bot=connected`)
 
     // UPDATE: 既存行 id を where にした botAccountFields の全量 set
     expect(pg.updateCalls).toHaveLength(1)
     expect(pg.updateCalls[0].table).toBe(twitchBotAccountsTable)
     expect(pg.updateCalls[0].set).toEqual(EXPECTED_BOT_FIELDS)
-    expect(pg.updateCalls[0].set).toEqual(client.writeCalls[0].values)
     expect(pg.updateCalls[0].where).toEqual(eq(twitchBotAccountsTable.id, 'bot-existing-1'))
     expect(pg.updateCalls[0].returningSelection).toEqual({ id: twitchBotAccountsTable.id })
 
@@ -335,7 +257,6 @@ describe('handleLinkedAccountCallback: postgrest / pg 経路の互換 (#572)', (
   })
 
   it('pg 経路の読み取りが既存実装と同じ条件（streamers.twitch_user_id / 既存 BOT の owner_type + streamer_id）で発行される', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: 'streamer-1' }] }, { rows: [] }],
     })
@@ -364,25 +285,17 @@ describe('handleLinkedAccountCallback: postgrest / pg 経路の互換 (#572)', (
     )
   })
 
-  it('streamer 不在: 両経路とも database_error へリダイレクトする', async () => {
-    vi.stubEnv('DB_DRIVER', undefined)
-    const client = createSupabaseClientMock({ streamers: [{ data: null }] })
-    vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
-    const postgrestRes = await handleLinkedAccountCallback(CALLBACK_ARGS)
-
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('streamer不在はdatabase_errorへリダイレクトする', async () => {
     const pg = createDrizzleDbMock({ selects: [{ rows: [] }] })
     primePgDb(pg)
     const pgRes = await handleLinkedAccountCallback(CALLBACK_ARGS)
 
-    expect(pgRes.headers.get('location')).toBe(postgrestRes.headers.get('location'))
     expect(pgRes.headers.get('location')).toBe(
       `${BASE_URL}/dashboard/settings?bot_error=database_error`
     )
   })
 
-  it('pg 経路の DB エラーは database_error に落ちる（外側 catch の bot_auth_failed に化けない）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('DBエラーはdatabase_errorに落ちる（外側catchのbot_auth_failedに化けない）', async () => {
     const pg = createDrizzleDbMock({
       selects: [{ error: { code: '42601', message: 'syntax error' } }],
     })
@@ -395,20 +308,4 @@ describe('handleLinkedAccountCallback: postgrest / pg 経路の互換 (#572)', (
     )
   })
 
-  it('フラグ未設定 / pg-read では getDb が一切呼ばれない（書き込み含む処理のため pg-read でも postgrest のまま）', async () => {
-    for (const driver of [undefined, 'pg-read']) {
-      vi.stubEnv('DB_DRIVER', driver as string)
-      const client = createSupabaseClientMock({
-        streamers: [{ data: { id: 'streamer-1' } }],
-        twitch_bot_accounts: [{ data: null }, { data: { id: 'bot-account-1' } }],
-        streamer_chat_sender_settings: [{ data: null }],
-      })
-      vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
-
-      const res = await handleLinkedAccountCallback(CALLBACK_ARGS)
-
-      expect(res.headers.get('location')).toBe(`${BASE_URL}/dashboard/settings?bot=connected`)
-      expect(getDb).not.toHaveBeenCalled()
-    }
-  })
 })

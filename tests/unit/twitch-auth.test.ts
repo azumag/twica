@@ -302,6 +302,46 @@ describe('refreshTwitchToken', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it('3秒timeoutが2回続いても13秒budget内の3回目で成功する', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((delayMs) => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(), delayMs)
+      return controller.signal
+    })
+    const waitForAbort = (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('Timed out', 'TimeoutError')),
+          { once: true },
+        )
+      })
+    const mockTokens = {
+      access_token: 'third-attempt-access',
+      refresh_token: 'third-attempt-refresh',
+      expires_in: 3600,
+      token_type: 'bearer',
+      scope: [],
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(waitForAbort)
+      .mockImplementationOnce(waitForAbort)
+      .mockResolvedValueOnce(new Response(JSON.stringify(mockTokens), { status: 200 }))
+    const { refreshTwitchToken } = await import('@/lib/twitch/auth')
+
+    const result = refreshTwitchToken('old-refresh-token')
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual(mockTokens)
+    expect(timeoutSpy).toHaveBeenCalledTimes(3)
+    expect(timeoutSpy).toHaveBeenNthCalledWith(1, 3_000)
+    expect(timeoutSpy).toHaveBeenNthCalledWith(2, 3_000)
+    expect(timeoutSpy).toHaveBeenNthCalledWith(3, 3_000)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
   it('Retry-Afterのdelta-secondsを最低待機時間として尊重する', async () => {
     vi.useFakeTimers()
     const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')

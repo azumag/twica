@@ -81,8 +81,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build without Supabase URL or keys
-        run: npm run build
+      - name: Build deployable Worker without Supabase URL or keys
+        # `next build` だけでは OpenNext の middleware / Worker 成果物を生成しない。
+        # 本番へ出すのと同じ build を使い、生成段階で旧 provider が混入する回帰も検査する。
+        run: npm run workers:build
         env:
           NEXT_PUBLIC_VERSION: ${{ github.sha }}
           NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
@@ -91,6 +93,16 @@ jobs:
           TWITCH_CLIENT_SECRET: dummy_client_secret
           TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
           CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
+
+      - name: Build production and preview auxiliary Worker bundles
+        # Wranglerの実deployと同じbundler/config解決をdry-runし、source scan後に
+        # conditional exportやpluginが旧providerを注入する回帰も検査対象にする。
+        run: npm run auxiliary-workers:build
+
+      - name: Verify every generated deploy artifact is Supabase-independent
+        # 両フラグは成果物のsilent skipを禁止する。outdirやbuild stepが変わった場合も
+        # 検査成功にはせず、deploy boundaryの明示更新を要求する。
+        run: npm run check:supabase-shutdown -- --require-open-next --require-aux-workers
 
   analysis:
     name: Analysis dashboard (guard / typecheck / build)

@@ -38,7 +38,6 @@ export default async function GachaHistoryPage() {
     // Get streamer_id for the current user
     // 現在のユーザーのstreamer_idを取得
     // #711: user-data.ts の getStreamerIdByTwitchUserId に委譲
-    // （isPgReadEnabled() による経路分岐は関数内部で行われるため、このページは
     // フラグを意識しない）。
     const streamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
 

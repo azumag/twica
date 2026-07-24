@@ -8,27 +8,22 @@
  *
  * 注意: 定数・型は plan-constants.ts に定義。
  * クライアントコンポーネントからは plan-constants.ts を直接 import すること。
- * plan.ts はサーバー専用モジュール（Supabase, Twitch API）に依存するため、
+ * plan.tsはサーバー専用モジュール（PlanetScale、Twitch API）に依存するため、
  * クライアントバンドルに含めると env-validation のモジュール評価時バリデーションでクラッシュする。
  */
 
 import { cache } from 'react'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { withRetry } from '@/lib/supabase/retry'
-import { logger } from '@/lib/logger'
+
+
+import { logger } from '@/lib/logger.server'
 import { hasTwitchSub } from '@/lib/twitch/sub-check'
 import { PLAN_PRIORITY, PLAN_STORAGE_BONUS } from '@/lib/plan-constants'
 import { logPerf, perfStart } from '@/lib/perf'
 import type { PlanType } from '@/lib/plan-constants'
-// -----------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。
-// getLicensePlan / getCachedTwitchSubPlan はどちらも読み取り専用のため
-// isPgReadEnabled() で分岐する。既存 supabase-js 実装は 1 文字も変えず、
-// フラグ未設定時は完全に従来どおり動く。
-// -----------------------------------------------------------------------------
+// PlanetScale-only: プラン判定はすべて同じ接続先から読み取り、DB 経路の切替は行わない。
 import { and, eq, inArray } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import {
   supportCodes as supportCodesTable,
@@ -103,7 +98,7 @@ export const getUserPlanSnapshot = cache(async function getUserPlanSnapshot(twit
 /**
  * getLicensePlan の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - `.select('plan_type, support_codes!inner(status)')` の埋め込み + `.in('support_codes.status', ...)`
  *   は user_licenses INNER JOIN support_codes（FK: user_licenses.code_id →
  *   support_codes.id、migration 00017）+ status の inArray() が等価。
@@ -158,54 +153,14 @@ async function getLicensePlanPg(twitchUserId: string): Promise<PlanType> {
  * user_licenses と support_codes(status) をJOINし、有効なコードに紐づくライセンスのみ有効とする。
  */
 async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return getLicensePlanPg(twitchUserId)
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin()
-
-    // 502 一時障害に対するリトライ (Issue #339)
-    const { data, error } = await withRetry(
-      () => supabaseAdmin
-        .from('user_licenses')
-        .select('plan_type, support_codes!inner(status)')
-        .eq('twitch_user_id', twitchUserId)
-        .in('support_codes.status', ['active', 'rotating']),
-      'getLicensePlan',
-    )
-
-    if (error) {
-      logger.error('[Plan] Failed to get license plan:', error)
-      return 'basic'
-    }
-
-    if (!data || data.length === 0) {
-      return 'basic'
-    }
-
-    // 最上位プランを判定（patron > support > basic）
-    let highestPlan: PlanType = 'basic'
-    for (const license of data) {
-      const planType = license.plan_type as PlanType
-      if (PLAN_PRIORITY[planType] > PLAN_PRIORITY[highestPlan]) {
-        highestPlan = planType
-      }
-    }
-
-    return highestPlan
-  } catch (error) {
-    logger.error('[Plan] Error getting license plan:', error)
-    return 'basic'
-  }
+  // PlanetScale の読み取りをこの関数に閉じ込め、呼び出し側に接続方式を露出しない。
+  return getLicensePlanPg(twitchUserId)
 }
 
 /**
  * getCachedTwitchSubPlan の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - `.maybeSingle()` は twitch_user_id が UNIQUE ではない前提（database.ts に制約
  *   記載なし）だが、既存実装が maybeSingle（0〜1行）を仮定しているため、
  *   LIMIT 1 + rows[0] ?? null で同じ外部挙動にする。
@@ -241,31 +196,8 @@ async function getCachedTwitchSubPlanPg(twitchUserId: string): Promise<PlanType>
 }
 
 async function getCachedTwitchSubPlan(twitchUserId: string): Promise<PlanType> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return getCachedTwitchSubPlanPg(twitchUserId)
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin()
-    const { data, error } = await withRetry(
-      () => supabaseAdmin
-        .from('users')
-        .select('twitch_has_sub')
-        .eq('twitch_user_id', twitchUserId)
-        .maybeSingle(),
-      'getCachedTwitchSubPlan',
-    )
-
-    if (error || !data) {
-      return 'basic'
-    }
-
-    return data.twitch_has_sub === true ? 'twitch_sub' : 'basic'
-  } catch (error) {
-    logger.error('[Plan] Error getting cached Twitch sub plan:', error)
-    return 'basic'
-  }
+  // PlanetScale の読み取りをこの関数に閉じ込める。
+  return getCachedTwitchSubPlanPg(twitchUserId)
 }
 
 /**

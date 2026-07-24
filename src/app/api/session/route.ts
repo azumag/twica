@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { setCSRFToken } from '@/lib/csrf'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 
 /**
  * セッション取得 API。

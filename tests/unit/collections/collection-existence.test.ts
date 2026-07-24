@@ -7,18 +7,15 @@ import {
   checkCollectionHasActiveCards,
 } from "@/lib/collections/collection-existence";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
-import { createMockQueryBuilder } from "../../utils/supabase-mock";
 import { getDb } from "@/lib/db/client";
 import { cards as cardsTable } from "@/lib/db/schema";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/types/database";
 
 describe("isMissingCollectionNameColumn", () => {
-  it("detects the WRITE shape (PGRST204 schema-cache miss)", () => {
+  it("detects the PostgreSQL WRITE shape (42703)", () => {
     expect(
       isMissingCollectionNameColumn({
-        code: "PGRST204",
-        message: "Could not find the 'collection_name' column of 'cards' in the schema cache",
+        code: "42703",
+        message: 'column "collection_name" of relation "cards" does not exist',
       })
     ).toBe(true);
   });
@@ -44,8 +41,8 @@ describe("isMissingCollectionNameColumn", () => {
   it("does NOT match raid-option schema errors (no false positive)", () => {
     expect(
       isMissingCollectionNameColumn({
-        code: "PGRST204",
-        message: "Could not find the 'draw_count' column",
+        code: "42703",
+        message: 'column "draw_count" of relation "streamer_additional_gacha_rewards" does not exist',
       })
     ).toBe(false);
     expect(
@@ -56,11 +53,11 @@ describe("isMissingCollectionNameColumn", () => {
     ).toBe(false);
   });
 
-  it("does NOT match unrelated columns even on a bare PGRST204", () => {
+  it("does NOT match unrelated columns on 42703", () => {
     expect(
       isMissingCollectionNameColumn({
-        code: "PGRST204",
-        message: "Could not find the 'some_other_column' column",
+        code: "42703",
+        message: 'column "some_other_column" does not exist',
       })
     ).toBe(false);
   });
@@ -102,7 +99,10 @@ describe("isMissingCollectionNameColumn", () => {
     const wrapped = {
       query: 'select "draw_count" from "streamer_additional_gacha_rewards" where ...',
       params: [],
-      cause: { code: "PGRST204", message: "Could not find the 'draw_count' column" },
+      cause: {
+        code: "42703",
+        message: 'column "draw_count" of relation "streamer_additional_gacha_rewards" does not exist',
+      },
     };
     expect(isMissingCollectionNameColumn(wrapped)).toBe(false);
   });
@@ -131,11 +131,11 @@ describe("isMissingCollectionNameColumn", () => {
 
 // Issue #554: `streamers.default_card_pack_name` deploy-window detection.
 describe("isMissingDefaultCardPackNameColumnError", () => {
-  it("detects the WRITE shape (PGRST204)", () => {
+  it("detects the WRITE shape (42703)", () => {
     expect(
       isMissingDefaultCardPackNameColumnError({
-        code: "PGRST204",
-        message: "Could not find the 'default_card_pack_name' column of 'streamers' in the schema cache",
+        code: "42703",
+        message: 'column "default_card_pack_name" of relation "streamers" does not exist',
       })
     ).toBe(true);
   });
@@ -152,8 +152,8 @@ describe("isMissingDefaultCardPackNameColumnError", () => {
   it("does not match unrelated columns", () => {
     expect(
       isMissingDefaultCardPackNameColumnError({
-        code: "PGRST204",
-        message: "Could not find the 'card_pack_names' column",
+        code: "42703",
+        message: 'column "card_pack_names" does not exist',
       })
     ).toBe(false);
   });
@@ -212,65 +212,9 @@ describe("isMissingRenameCardPackFunctionError", () => {
   });
 });
 
-// Issue #555: DEFAULT_PACK_SENTINEL asks about the DEFAULT (unclassified) pack
-// — collection_name IS NULL — the inverse of the normal named-pack `.eq(...)`
-// lookup. Fixes the query shape used by checkCollectionHasActiveCards.
-describe("checkCollectionHasActiveCards", () => {
-  function buildCardsQuery(count: number | null, error: unknown = null) {
-    const q = createMockQueryBuilder();
-    (q as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ count, error });
-      return q;
-    };
-    return q;
-  }
-
-  it("queries a normal pack name via .eq('collection_name', name)", async () => {
-    const cardsQuery = buildCardsQuery(3);
-    const supabase = { from: vi.fn(() => cardsQuery) } as unknown as SupabaseClient<Database>;
-
-    const result = await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
-
-    expect(result).toBe("exists");
-    expect(cardsQuery.eq).toHaveBeenCalledWith("collection_name", "weapons");
-    expect(cardsQuery.is).not.toHaveBeenCalled();
-  });
-
-  it("queries DEFAULT_PACK_SENTINEL via .is('collection_name', null), NOT .eq", async () => {
-    const cardsQuery = buildCardsQuery(2);
-    const supabase = { from: vi.fn(() => cardsQuery) } as unknown as SupabaseClient<Database>;
-
-    const result = await checkCollectionHasActiveCards(supabase, "streamer-1", DEFAULT_PACK_SENTINEL);
-
-    expect(result).toBe("exists");
-    expect(cardsQuery.is).toHaveBeenCalledWith("collection_name", null);
-    // A literal .eq('collection_name', '__default__') would never match any real
-    // card, so it must not be used for the sentinel.
-    expect(cardsQuery.eq).not.toHaveBeenCalledWith("collection_name", DEFAULT_PACK_SENTINEL);
-  });
-
-  it("returns 'absent' when the default pack has zero active (unclassified) cards", async () => {
-    const cardsQuery = buildCardsQuery(0);
-    const supabase = { from: vi.fn(() => cardsQuery) } as unknown as SupabaseClient<Database>;
-
-    const result = await checkCollectionHasActiveCards(supabase, "streamer-1", DEFAULT_PACK_SENTINEL);
-    expect(result).toBe("absent");
-  });
-
-  it("returns 'schema-not-ready' for the deploy-window column error even when checking the sentinel", async () => {
-    const cardsQuery = buildCardsQuery(null, {
-      code: "42703",
-      message: "column cards.collection_name does not exist",
-    });
-    const supabase = { from: vi.fn(() => cardsQuery) } as unknown as SupabaseClient<Database>;
-
-    const result = await checkCollectionHasActiveCards(supabase, "streamer-1", DEFAULT_PACK_SENTINEL);
-    expect(result).toBe("schema-not-ready");
-  });
-});
-
-// #663: pg 直結経路（postgrest 経路との形状互換）
-describe("checkCollectionHasActiveCards: postgrest / pg 経路の互換 (#663)", () => {
+// Supabase停止後はPlanetScale直結だけが実行経路になる。旧PostgRESTとの比較ではなく、
+// 実際に残るDrizzleクエリの条件とエラー処理を直接検証する。
+describe("checkCollectionHasActiveCards: PlanetScale経路", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -304,23 +248,11 @@ describe("checkCollectionHasActiveCards: postgrest / pg 経路の互換 (#663)",
     return { db, calls };
   }
 
-  it("通常のパック名: 両経路とも exists/absent が一致する", async () => {
-    const cardsQuery = createMockQueryBuilder();
-    (cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ count: 3, error: null });
-      return cardsQuery;
-    };
-    const supabase = { from: vi.fn(() => cardsQuery) } as unknown as SupabaseClient<Database>;
-
-    vi.stubEnv("DB_DRIVER", undefined);
-    const postgrestResult = await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
-
-    vi.stubEnv("DB_DRIVER", "pg-read");
+  it("通常のパック名をstreamer・active・collection条件で検索する", async () => {
     const pg = createDrizzleDbMock({ rowCount: 3 });
     vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
-    const pgResult = await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
+    const pgResult = await checkCollectionHasActiveCards("streamer-1", "weapons");
 
-    expect(pgResult).toEqual(postgrestResult);
     expect(pgResult).toBe("exists");
     expect(pg.calls[0].whereCondition).toEqual(
       and(
@@ -332,12 +264,9 @@ describe("checkCollectionHasActiveCards: postgrest / pg 経路の互換 (#663)",
   });
 
   it("DEFAULT_PACK_SENTINEL: pg 経路は isNull(collection_name) で判定し absent を返す", async () => {
-    const supabase = { from: vi.fn() } as unknown as SupabaseClient<Database>;
-
-    vi.stubEnv("DB_DRIVER", "pg-read");
     const pg = createDrizzleDbMock({ rowCount: 0 });
     vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
-    const pgResult = await checkCollectionHasActiveCards(supabase, "streamer-1", DEFAULT_PACK_SENTINEL);
+    const pgResult = await checkCollectionHasActiveCards("streamer-1", DEFAULT_PACK_SENTINEL);
 
     expect(pgResult).toBe("absent");
     expect(pg.calls[0].whereCondition).toEqual(
@@ -350,38 +279,19 @@ describe("checkCollectionHasActiveCards: postgrest / pg 経路の互換 (#663)",
   });
 
   it("pg 経路で列未デプロイエラー(42703)時は schema-not-ready を返す", async () => {
-    const supabase = { from: vi.fn() } as unknown as SupabaseClient<Database>;
-
-    vi.stubEnv("DB_DRIVER", "pg-read");
     const pg = createDrizzleDbMock({
       error: { code: "42703", message: "column cards.collection_name does not exist" },
     });
     vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
 
-    const result = await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
+    const result = await checkCollectionHasActiveCards("streamer-1", "weapons");
     expect(result).toBe("schema-not-ready");
   });
 
   it("pg 経路で想定外のエラーは throw する", async () => {
-    const supabase = { from: vi.fn() } as unknown as SupabaseClient<Database>;
-
-    vi.stubEnv("DB_DRIVER", "pg-read");
     const pg = createDrizzleDbMock({ error: { code: "08006", message: "connection failure" } });
     vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
 
-    await expect(checkCollectionHasActiveCards(supabase, "streamer-1", "weapons")).rejects.toBeTruthy();
-  });
-
-  it("postgrest 経路（フラグ未設定）では getDb が一切呼ばれない", async () => {
-    const cardsQuery = createMockQueryBuilder();
-    (cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ count: 1, error: null });
-      return cardsQuery;
-    };
-    const supabase = { from: vi.fn(() => cardsQuery) } as unknown as SupabaseClient<Database>;
-
-    vi.stubEnv("DB_DRIVER", undefined);
-    await checkCollectionHasActiveCards(supabase, "streamer-1", "weapons");
-    expect(getDb).not.toHaveBeenCalled();
+    await expect(checkCollectionHasActiveCards("streamer-1", "weapons")).rejects.toBeTruthy();
   });
 });

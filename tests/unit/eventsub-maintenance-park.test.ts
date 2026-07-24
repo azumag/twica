@@ -25,11 +25,6 @@ vi.mock('@/lib/services/gacha', () => ({
   })),
 }))
 
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
-  getSupabaseAdminNoCache: vi.fn(),
-}))
-
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn().mockResolvedValue(undefined),
   reportApiError: vi.fn(),
@@ -187,6 +182,55 @@ describe('EventSub route x maintenance mode (#694 Stage 4)', () => {
 
       expect(response.status).toBe(200)
       expect(mocks.executeGachaForEventSub).toHaveBeenCalledTimes(1)
+    })
+
+    it('N連途中などretryableな失敗は2xx前にdurable inboxへ保存する', async () => {
+      stubMaintenanceEnv({ MAINTENANCE_MODE: 'off' })
+      const put = vi.fn().mockResolvedValue(undefined)
+      mocks.getCloudflareContext.mockResolvedValue({ env: { RATE_LIMIT_KV: { put } } })
+      mocks.executeGachaForEventSub.mockResolvedValue({
+        success: false,
+        error: 'Partial gacha completion: 2/3 draws succeeded before error: connection closed',
+      })
+
+      const { POST } = await import('@/app/api/twitch/eventsub/route')
+      const request = await createEventSubRequest(
+        'notification',
+        notificationPayload,
+        'msg-partial-retry',
+      )
+      const response = await POST(request)
+
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toEqual({ received: true })
+      expect(put).toHaveBeenCalledTimes(1)
+      const [, value] = put.mock.calls[0]
+      const parked = JSON.parse(value)
+      expect(parked.messageId).toBe('msg-partial-retry')
+      expect(parked.maintenanceMode).toBe('off')
+      expect(parked.payload).toEqual(notificationPayload)
+    })
+
+    it('retryable通知を永続化できなければ503でTwitch再送を要求する', async () => {
+      stubMaintenanceEnv({ MAINTENANCE_MODE: 'off' })
+      const put = vi.fn().mockRejectedValue(new Error('KV unavailable'))
+      mocks.getCloudflareContext.mockResolvedValue({ env: { RATE_LIMIT_KV: { put } } })
+      mocks.executeGachaForEventSub.mockResolvedValue({
+        success: false,
+        error: 'Partial gacha completion: 2/3 draws succeeded before error: connection closed',
+      })
+
+      const { POST } = await import('@/app/api/twitch/eventsub/route')
+      const request = await createEventSubRequest(
+        'notification',
+        notificationPayload,
+        'msg-partial-park-failed',
+      )
+      const response = await POST(request)
+
+      expect(response.status).toBe(503)
+      await expect(response.json()).resolves.toEqual({ received: false, retryable: true })
+      expect(put).toHaveBeenCalledTimes(1)
     })
   })
 

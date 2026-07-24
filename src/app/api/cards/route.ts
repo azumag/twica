@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { unstable_cache } from "next/cache";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import {
   validateCardName,
   validateCardDescription,
@@ -16,30 +16,25 @@ import { validateContentType } from "@/lib/request-validation";
 import { normalizeDropRate } from "@/lib/card-utils";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { sha256Prefix } from "@/lib/crypto-utils";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
 import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
-// #663 (#570/#572 パイロット踏襲): pg 直結経路。POST/GET とも読み取り・書き込みが
-// 混在しうるため、DB アクセス部分は isPgWriteEnabled()（POST）/ isPgReadEnabled()
-// （GET は読み取り専用）で分岐する。既存 supabase-js 実装は 1 文字も変えず、
-// フラグ未設定時（既定 'postgrest'）は完全に従来どおり動く。pg 実装は各所の
-// xxxPg 関数に置き、getDb() は withDbRetry の queryFn 内で呼ぶ規約
-// (src/lib/db/retry.ts 参照)。
+// カードの読み取りと更新は PlanetScale の単一接続を使う。
+// 接続は各 xxxPg 関数の withDbRetry queryFn 内で取得する。
 // -----------------------------------------------------------------------------
 import { and, count as countAggregate, eq, inArray, sql, type AnyColumn } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable, userCards as userCardsTable } from "@/lib/db/schema";
 import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
-// card-issuance.ts / collection-existence.ts の判定ヘルパーは postgrest/pg
 // 両対応の汎用判定（error.code の SQLSTATE、error.message のテキスト一致）のため、
 // この形にキャストするだけで pg のエラーも判定できる（新規ヘルパーは作らない）。
 type CardsSchemaError = { message?: string; code?: string; details?: string; hint?: string } | null | undefined;
@@ -52,11 +47,9 @@ const CARDS_CACHE_TTL = 30;
  * POST /api/cards の streamer 所有権確認 (id, rarity_weights, card_pack_names) の
  * pg 直結実装 (#663)。card_pack_names 列未デプロイ時のフォールバックを含む。
  *
- * PostgREST 実装との対応:
  * - `.eq("id", ...).eq("twitch_user_id", ...).maybeSingle()` は id が PK のため
  *   LIMIT 1 + rows[0] ?? null で同じ外部挙動。
  * - card_pack_names 列未デプロイ(42703)を検知したら列を落として再試行し、
- *   card_pack_names: [] を注入する（postgrest 経路と同じフォールバック）。
  * - 想定外のエラーは throw して呼び出し元(POST)の外側 catch で 500 にする。
  */
 async function fetchStreamerForCardCreatePg(
@@ -115,14 +108,12 @@ async function fetchStreamerForCardCreatePg(
  * collection_name の3段階デプロイ窓フォールバック付き、さらに RETURNING 列の
  * フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
  *
- * PostgREST 実装との対応:
  * - `.insert(...).select().maybeSingle()` は `.insert(...).values(...).returning()`
  *   が等価（RETURNING で挿入行を1回の往復で取得）。
  * - 各フォールバックは同じ判定ヘルパー(isMissingCardNumberColumnError 等)を
  *   そのまま再利用する。ON CONFLICT の無い INSERT のため各試行は非冪等
  *   （withDbRetry にオプションを渡さない = リトライなし）。
  * - unique_violation (23505) は呼び出し元(POST)で isCardNumberConflictError
- *   により 409 に変換される（postgrest 経路と共通）。
  *
  * self-review fix: 無指定 `.returning()` は schema.ts の静的列リストを生成する
  * ため、本番に実在しない8列(card_number/hp/atk/def/spd/skill_*、
@@ -233,7 +224,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const supabaseAdmin = getSupabaseAdmin();
+
     const body = await request.json();
     const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber, maxIssuanceCount } = body;
 
@@ -313,37 +304,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify streamer owns this streamer profile
-    let streamer: { id: string; rarity_weights: Record<string, number> | null; card_pack_names: string[] } | null;
-    let cardPackNamesUnavailable = false;
-
-    if (isPgWriteEnabled()) {
-      const result = await fetchStreamerForCardCreatePg(streamerId, session.twitchUserId);
-      streamer = result.streamer;
-      cardPackNamesUnavailable = result.cardPackNamesUnavailable;
-    } else {
-      let { data: streamerData, error: streamerSelectError } = await supabaseAdmin
-        .from("streamers")
-        .select("id, rarity_weights, card_pack_names")
-        .eq("id", streamerId)
-        .eq("twitch_user_id", session.twitchUserId)
-        .maybeSingle();
-
-      // Issue #393再設計: card_pack_names(事前登録パック一覧)列がデプロイ窓で
-      // まだ無い場合、membership検証ができない。ownership確認自体は
-      // rarity_weightsのみで継続できるようフォールバックする。
-      if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
-        const retryResult = await supabaseAdmin
-          .from("streamers")
-          .select("id, rarity_weights")
-          .eq("id", streamerId)
-          .eq("twitch_user_id", session.twitchUserId)
-          .maybeSingle();
-        streamerData = retryResult.data ? { ...retryResult.data, card_pack_names: [] as string[] } : null;
-        streamerSelectError = retryResult.error;
-        cardPackNamesUnavailable = true;
-      }
-      streamer = streamerData;
-    }
+    const streamerLookup = await fetchStreamerForCardCreatePg(streamerId, session.twitchUserId);
+    const streamer = streamerLookup.streamer;
+    const cardPackNamesUnavailable = streamerLookup.cardPackNamesUnavailable;
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
@@ -398,59 +361,7 @@ export async function POST(request: NextRequest) {
       insertData.intra_rarity_weight = intraRarityWeight;
     }
 
-    let card: Record<string, unknown> | null;
-    let error: unknown;
-
-    if (isPgWriteEnabled()) {
-      const result = await insertCardPg(insertData);
-      card = result.card;
-      error = result.error;
-    } else {
-      let { data: cardData, error: insertError } = await supabaseAdmin
-        .from("cards")
-        .insert(insertData)
-        .select()
-        .maybeSingle();
-
-      if (insertError && isMissingCardNumberColumnError(insertError)) {
-        delete insertData.card_number;
-        const retryResult = await supabaseAdmin
-          .from("cards")
-          .insert(insertData)
-          .select()
-          .maybeSingle();
-        cardData = retryResult.data;
-        insertError = retryResult.error;
-      }
-      if (insertError && isMissingCardIssuanceColumnError(insertError)) {
-        delete insertData.max_issuance_count;
-        const retryResult = await supabaseAdmin
-          .from("cards")
-          .insert(insertData)
-          .select()
-          .maybeSingle();
-        cardData = retryResult.data;
-        insertError = retryResult.error;
-      }
-
-      // Issue #393: deploy-window safety. If collection_name is not migrated yet,
-      // retry without it so card creation still succeeds (the pack is dropped for
-      // this card; the streamer can re-assign it once the column is live). Mirrors
-      // the card_number missing-column retry above.
-      if (insertError && isMissingCollectionNameColumn(insertError) && "collection_name" in insertData) {
-        delete insertData.collection_name;
-        const retryResult = await supabaseAdmin
-          .from("cards")
-          .insert(insertData)
-          .select()
-          .maybeSingle();
-        cardData = retryResult.data;
-        insertError = retryResult.error;
-      }
-
-      card = cardData;
-      error = insertError;
-    }
+    const { card, error } = await insertCardPg(insertData);
 
     if (error) {
       if (isCardNumberConflictError(error)) {
@@ -467,7 +378,6 @@ export async function POST(request: NextRequest) {
     let recalculatedCards = null;
     try {
       recalculatedCards = await recalculateIfAutoMode(
-        supabaseAdmin,
         streamerId,
         streamer.rarity_weights
       );
@@ -514,7 +424,6 @@ type CardWithIssuanceLimit = { id: string; max_issuance_count?: number | null };
  * (attachIssuedCounts) 側で「1件も無ければ問い合わせをスキップする」判定済みの
  * ため、ここでは常に inArray で絞り込む。
  *
- * PostgREST 実装との対応:
  * - `.in("card_id", limitedCardIds)` は inArray() が等価。
  * - 取得失敗はログのみでカード一覧自体は返す（ベストエフォート、既存と同じ）。
  */
@@ -542,7 +451,7 @@ async function attachIssuedCountsPg<T extends CardWithIssuanceLimit>(
     }
 
     return cards.map((card) => {
-      if (card.max_issuance_count === null || card.max_issuance_count === undefined) {
+                       if (card.max_issuance_count === null || card.max_issuance_count === undefined) {
         return card;
       }
       return { ...card, issued_count: issuedCounts.get(card.id) ?? 0 };
@@ -560,7 +469,6 @@ async function attachIssuedCountsPg<T extends CardWithIssuanceLimit>(
  *
  * - 限定カードが0件（大多数のケース = 無制限カードのみ）なら user_cards への
  *   問い合わせ自体をスキップし、不要なDB負荷を避ける（Issueの受け入れ条件）。
- * - Supabase(PostgREST)クライアントは任意のGROUP BY集計をサポートしないため、
  *   対象カードのuser_cards.card_idを1クエリで取得し、アプリ側でCOUNTする
  *   （Issue #548と同様の「limited-card subsetのみ対象にする」考え方）。
  *   行数は対象カードの発行上限に頭打ちされるため、無制限カードを含む全件
@@ -570,14 +478,12 @@ async function attachIssuedCountsPg<T extends CardWithIssuanceLimit>(
  *
  * Only cards with max_issuance_count set ("limited cards") get an issued_count
  * looked up from user_cards. Skips the query entirely when there are no limited
- * cards on the page (the common case) to avoid unnecessary DB load. PostgREST
  * has no arbitrary GROUP BY, so we fetch card_id rows for the limited subset in
  * a single query and COUNT them in application code (bounded by each card's
  * issuance cap, not the whole table). Failures are best-effort: the card list
  * is still returned, just without issued_count.
  */
 async function attachIssuedCounts<T extends CardWithIssuanceLimit>(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   cards: T[]
 ): Promise<Array<T & { issued_count?: number }>> {
   const limitedCardIds = cards
@@ -588,36 +494,11 @@ async function attachIssuedCounts<T extends CardWithIssuanceLimit>(
     return cards;
   }
 
-  // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return attachIssuedCountsPg(cards, limitedCardIds);
-  }
-
-  const { data: issuedRows, error } = await supabaseAdmin
-    .from("user_cards")
-    .select("card_id")
-    .in("card_id", limitedCardIds);
-
-  if (error) {
-    logger.error("Cards API: Failed to fetch issued counts (Issue #542)", error);
-    return cards;
-  }
-
-  const issuedCounts = new Map<string, number>();
-  for (const row of (issuedRows || []) as { card_id: string }[]) {
-    issuedCounts.set(row.card_id, (issuedCounts.get(row.card_id) || 0) + 1);
-  }
-
-  return cards.map((card) => {
-    if (card.max_issuance_count === null || card.max_issuance_count === undefined) {
-      return card;
-    }
-    return { ...card, issued_count: issuedCounts.get(card.id) ?? 0 };
-  });
+  // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+  return attachIssuedCountsPg(cards, limitedCardIds);
 }
 
 /**
- * NULLS LAST を明示した ORDER BY 式を組み立てる。PostgREST の
  * `.order(col, { ascending, nullsFirst: false })` は昇順・降順どちらでも
  * NULL を末尾に置くが、PostgreSQL の素の ASC/DESC のデフォルトは
  * 「ASC=NULLS LAST」「DESC=NULLS FIRST」なので、DESC側は明示指定しないと
@@ -647,7 +528,6 @@ function resolveSortColumn(sortField: SortField): AnyColumn {
 /**
  * fetchCardsFromDB の pg 直結実装 (#663)。
  *
- * PostgREST 実装は `{ count: "exact" }` （Content-Range トリック）で行取得と
  * 件数取得を1往復にまとめるが、Drizzle に同等機能は無いため、(1) COUNT(*) の
  * クエリと (2) ページネーション済みの行取得クエリの2クエリに分ける。往復数の
  * 完全一致ではなく、最終的な count の値と rows の内容が一致することを機能的
@@ -693,7 +573,6 @@ async function fetchCardsFromDBPg(
   const primarySortColumn = resolveSortColumn(sortField);
   const primaryOrderExprs = [orderByNullsLast(primarySortColumn, ascending)];
   if (sortField === "display_order") {
-    // display_order は card_number の後に作成日昇順で安定ソートする（postgrest 経路と同じ）
     primaryOrderExprs.push(orderByNullsLast(cardsTable.created_at, true));
   }
 
@@ -766,104 +645,31 @@ async function fetchCardsFromDB(
   offset: number,
   sortField: SortField,
   sortDirection: SortDirection,
-  statusFilter: StatusFilter,
-  includeInactive: boolean
+  statusFilter: StatusFilter
 ): Promise<{ cards: unknown[]; count: number | null }> {
   const start = Date.now();
-  const supabaseAdmin = getSupabaseAdmin();
 
-  // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    const { cards: pgCards, count: pgCount } = await fetchCardsFromDBPg(
-      streamerId,
-      limit,
-      offset,
-      sortField,
-      sortDirection,
-      statusFilter
-    );
-    const cardsWithIssuedCounts = await attachIssuedCounts(
-      supabaseAdmin,
-      normalizeDropRate(pgCards as Array<{ drop_rate: unknown } & CardWithIssuanceLimit>)
-    );
-    logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${pgCards.length} cards)`);
-    return { cards: cardsWithIssuedCounts, count: pgCount };
-  }
 
-  let query = supabaseAdmin
-    .from("cards")
-    .select("*", { count: "exact" })
-    .eq("streamer_id", streamerId);
-
-  // Apply status filter
-  // ステータスフィルターを適用
-  if (statusFilter === "active") {
-    query = query.eq("is_active", true);
-  } else if (statusFilter === "inactive") {
-    query = query.eq("is_active", false);
-  } else if (!includeInactive && statusFilter === "all") {
-    // Legacy behavior handled in caller
-  }
-
-  // Apply sorting - all fields use DB-side sorting for correct pagination
-  // 並び替えを適用 - ページネーション整合性のため全フィールドDB側でソート
-  const ascending = sortDirection === "asc";
-  // Use stable DB-side ordering for correct pagination.
-  // display_order uses manually assigned card numbers first, then old cards first.
-  const dbSortField = sortField === "rarity"
-    ? "rarity_order"
-    : sortField === "display_order"
-      ? "card_number"
-      : sortField;
-  query = query.order(dbSortField, { ascending, nullsFirst: false });
-  if (sortField === "display_order") {
-    query = query.order("created_at", { ascending: true, nullsFirst: false });
-  }
-  query = query.range(offset, offset + limit - 1);
-
-  let { data: cards, error, count } = await query;
-  if (
-    error &&
-    (sortField === "card_number" || sortField === "display_order") &&
-    isMissingCardNumberColumnError(error)
-  ) {
-    const fallbackQuery = supabaseAdmin
-      .from("cards")
-      .select("*", { count: "exact" })
-      .eq("streamer_id", streamerId);
-
-    let filteredFallbackQuery = fallbackQuery;
-    if (statusFilter === "active") {
-      filteredFallbackQuery = filteredFallbackQuery.eq("is_active", true);
-    } else if (statusFilter === "inactive") {
-      filteredFallbackQuery = filteredFallbackQuery.eq("is_active", false);
-    }
-
-    const fallbackResult = await filteredFallbackQuery
-      .order("created_at", { ascending, nullsFirst: false })
-      .range(offset, offset + limit - 1);
-    cards = fallbackResult.data;
-    error = fallbackResult.error;
-    count = fallbackResult.count;
-  }
-  if (error) throw error;
-
-  // Issue #542: 限定カードにのみ発行済み枚数(issued_count)を付与する
-  const cardsWithIssuedCounts = await attachIssuedCounts(
-    supabaseAdmin,
-    normalizeDropRate((cards || []) as Array<{ drop_rate: unknown } & CardWithIssuanceLimit>)
+  // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+  const { cards: pgCards, count: pgCount } = await fetchCardsFromDBPg(
+    streamerId,
+    limit,
+    offset,
+    sortField,
+    sortDirection,
+    statusFilter
   );
-
-  logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${cards?.length || 0} cards)`);
-
-  return { cards: cardsWithIssuedCounts, count };
+  const cardsWithIssuedCounts = await attachIssuedCounts(
+    normalizeDropRate(pgCards as Array<{ drop_rate: unknown } & CardWithIssuanceLimit>)
+  );
+  logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${pgCards.length} cards)`);
+  return { cards: cardsWithIssuedCounts, count: pgCount };
 }
 
 /**
  * GET /api/cards の streamer 所有権確認 (id のみ) の pg 直結実装 (#663)。
- * 読み取り専用のため isPgReadEnabled() で分岐する。twitchUserId が undefined
+ * 読み取り専用のため PlanetScale の単一接続を使用する。twitchUserId が undefined
  * （未ログイン）の場合は空文字列で照合し、常に不一致（403）にする —
- * postgrest 経路が `.eq("twitch_user_id", undefined)` で実質どのユーザーとも
  * 一致しないのと同じ「認証なしは常に forbidden」という外部挙動を保つ。
  */
 async function checkStreamerOwnershipForCardsListPg(
@@ -885,7 +691,6 @@ async function checkStreamerOwnershipForCardsListPg(
     );
     return rows.length > 0;
   } catch {
-    // postgrest 経路もこの SELECT のエラーで即 500 化はせず、`!streamer` と同じ
     // 分岐（403）に倒れる。pg 版も同じ外部挙動に合わせる。
     return false;
   }
@@ -913,16 +718,12 @@ export async function GET(request: NextRequest) {
     ? sortDirParam as SortDirection
     : "desc";
 
-  // Status filter parameter (default: all for includeInactive=true, active otherwise)
-  // ステータスフィルターパラメータ（デフォルト: includeInactive=trueならall、それ以外はactive）
+  // Status filter parameter (default: all)
+  // ステータスフィルターパラメータ（デフォルト: all）
   const statusParam = searchParams.get("status");
   const statusFilter: StatusFilter = statusParam && VALID_STATUS_FILTERS.includes(statusParam as StatusFilter)
     ? statusParam as StatusFilter
     : "all";
-
-  // Legacy support: includeInactive parameter
-  // レガシーサポート: includeInactiveパラメータ
-  const includeInactive = searchParams.get("includeInactive") === "true";
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
   const rateLimitResult = await checkRateLimit(rateLimits.cardsGet, identifier);
@@ -949,21 +750,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabaseAdmin = getSupabaseAdmin();
-    let streamerFound: boolean;
 
-    if (isPgReadEnabled()) {
-      streamerFound = await checkStreamerOwnershipForCardsListPg(streamerId, session?.twitchUserId);
-    } else {
-      const { data: streamer, error: streamerError } = await supabaseAdmin
-        .from("streamers")
-        .select("id")
-        .eq("id", streamerId)
-        .eq("twitch_user_id", session?.twitchUserId)
-        .maybeSingle();
-
-      streamerFound = !streamerError && !!streamer;
-    }
+    const streamerFound = await checkStreamerOwnershipForCardsListPg(
+      streamerId,
+      session?.twitchUserId,
+    );
 
     if (!streamerFound) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
@@ -971,9 +762,9 @@ export async function GET(request: NextRequest) {
 
     // Use cached fetch to reduce CPU usage from repeated queries
     // 繰り返しクエリによるCPU使用量を削減するためキャッシュ済みフェッチを使用
-    const cacheKey = `cards-${streamerId}-${limit}-${offset}-${sortField}-${sortDirection}-${statusFilter}-${includeInactive}`;
+    const cacheKey = `cards-${streamerId}-${limit}-${offset}-${sortField}-${sortDirection}-${statusFilter}`;
     const cachedFetch = unstable_cache(
-      async () => fetchCardsFromDB(streamerId, limit, offset, sortField, sortDirection, statusFilter, includeInactive),
+      async () => fetchCardsFromDB(streamerId, limit, offset, sortField, sortDirection, statusFilter),
       [cacheKey],
       {
         revalidate: CARDS_CACHE_TTL,

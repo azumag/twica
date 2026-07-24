@@ -1,16 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
 import {
   listParkedEventSubNotifications,
   deleteParkedEventSubNotification,
 } from "@/lib/maintenance/eventsub-park";
 import {
+  claimDueChatNotifications,
+  decodeChatNotificationPayload,
+  deadLetterChatNotification,
+  markChatNotificationSent,
+  peekChatNotificationOutboxWork,
+  renewChatNotificationLease,
+  retryChatNotification,
+} from "@/lib/services/chat-notification-outbox";
+import {
   handleRedemption,
   handleRaidNotification,
   postRedemptionNotify,
+  sendChatAnnouncement,
 } from "@/lib/services/eventsub-redemption";
 
 /**
@@ -62,11 +72,52 @@ function timingSafeEqualString(expected: string, actual: string): boolean {
 /** リクエストボディの1バッチあたりの取得件数の既定値・上限値。 */
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+// 呼び出し元CronのHTTP timeoutは120秒。応答・ログ書き込み用に15秒を残し、
+// 105秒で新規work開始を停止する。20件を各最大約9.75秒で直列送信すると
+// 120秒を超えるため、件数上限だけでなくwall-clock budgetも必須。
+const EVENTSUB_REPLAY_BUDGET_MS = 105_000;
+// Helix chatは3秒timeout×3回 + 250/500ms backoffで最大約9.75秒。route deadline
+// 直前に送信を始めると、Promise.raceが成功結果を捨ててackせず次tickで重複する。
+// 15秒前から新しい外部送信を禁止し、開始済み送信・JSON decode・DB ackを収容する。
+const CHAT_SEND_SETTLEMENT_RESERVE_MS = 15_000;
+// DB outboxが常に満杯でも、同じrequest内でmaintenance KVを処理する余地を残す。
+// 次tickは未claim行を期限順に続行するため、throughputより公平性とtimeout回避を優先。
+const CHAT_OUTBOX_RELAY_LIMIT = 5;
 
 interface ReplayRequestBody {
   cursor?: string;
   limit?: number;
   dryRun?: boolean;
+}
+
+type DeadlineResult<T> =
+  | { completed: true; value: T }
+  | { completed: false };
+
+/**
+ * 非協調的なDB/token処理が長引いてもrouteをCronの120秒より前に返す。
+ * timeout後も元Promiseが解決する可能性はあるため、Twitch外部送信側でも
+ * deadline + owner-fenceを検査し、遅延完了した旧処理が送信しない二重防御にする。
+ */
+async function awaitBeforeReplayDeadline<T>(
+  operation: Promise<T>,
+  deadlineAt: number,
+): Promise<DeadlineResult<T>> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) return { completed: false };
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<DeadlineResult<T>>((resolve) => {
+    timeoutId = setTimeout(() => resolve({ completed: false }), remainingMs);
+  });
+  try {
+    return await Promise.race([
+      operation.then((value): DeadlineResult<T> => ({ completed: true, value })),
+      timeout,
+    ]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
 }
 
 /**
@@ -172,6 +223,9 @@ async function reportErrorSafely(
 }
 
 export async function POST(request: NextRequest) {
+  const replayDeadlineAt = Date.now() + EVENTSUB_REPLAY_BUDGET_MS;
+  const externalChatSendDeadlineAt =
+    replayDeadlineAt - CHAT_SEND_SETTLEMENT_RESERVE_MS;
   // fail-closed: シークレット自体が未設定の場合は、設定忘れで誰でもアクセス
   // できてしまう事故を防ぐため 500 を返す（403 ではなく、運用側の設定不備を
   // 明確に区別するため）。
@@ -239,21 +293,184 @@ export async function POST(request: NextRequest) {
   if (requestBody.cursor !== undefined && typeof requestBody.cursor !== "string") {
     return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
   }
-
   const dryRun = requestBody.dryRun === true;
   const limit = Math.min(
     MAX_LIMIT,
     Math.max(1, requestBody.limit ?? DEFAULT_LIMIT)
   );
 
-  const { entries, cursor, listComplete } = await listParkedEventSubNotifications({
-    cursor: requestBody.cursor,
-    limit,
-  });
-
   const results: ReplayResultEntry[] = [];
 
+  if (dryRun) {
+    const workItems = await peekChatNotificationOutboxWork(limit);
+    for (const item of workItems) {
+      results.push({
+        key: `chat-outbox:${item.id}`,
+        messageId: item.batchId,
+        subscriptionType: "twica.transactional-chat-outbox.v1",
+        receivedAt: item.createdAt,
+        outcome: "dry-run",
+      });
+    }
+  }
+
+  // transactional chat outboxはKV maintenance backlogと別の公平なlimitで処理する。
+  // 恒久失敗は即DLQ、一時失敗はnext_attempt_atへ戻すため、古い20件が後続の
+  // カード付与EventSubを塞ぐことはない。さらにKV一覧取得より先に処理することで、
+  // KV障害時もDB outboxの配送を進める。KV取得が後で失敗するとroute自体は失敗するが、
+  // Cronの次回実行ごとに独立したchat batchをdrainでき、KV復旧を待つ必要がない。
+  // dry-runはclaim/状態変更を一切しない。
+  if (!dryRun) {
+    // まとめてleaseして直列送信すると後半のleaseが送信前に失効するため、
+    // 1件claim→送信→ackを繰り返す。最初のclaimだけ保持期限メンテナンスも行う。
+    const chatOutboxLimit = Math.min(limit, CHAT_OUTBOX_RELAY_LIMIT);
+    for (let claimIndex = 0; claimIndex < chatOutboxLimit; claimIndex += 1) {
+      if (Date.now() >= replayDeadlineAt) break;
+      const claimResult = await awaitBeforeReplayDeadline(
+        claimDueChatNotifications(1, {
+          maintain: claimIndex === 0,
+        }),
+        replayDeadlineAt,
+      );
+      if (!claimResult.completed) break;
+      const [claim] = claimResult.value;
+      if (!claim) break;
+      const baseResult = {
+        key: `chat-outbox:${claim.id}`,
+        messageId: claim.batchId,
+        subscriptionType: "twica.transactional-chat-outbox.v1",
+        receivedAt: claim.createdAt,
+      };
+
+      const data = decodeChatNotificationPayload(claim);
+      if (!data) {
+        const error = `transactional chat outbox payload v${claim.payloadVersion} is invalid`;
+        const persisted = await deadLetterChatNotification(claim, error);
+        if (!persisted) {
+          logger.warn("[eventsub-replay] invalid payload DLQ update lost its lease", {
+            outboxId: claim.id,
+            messageId: claim.batchId,
+          });
+        }
+        await reportErrorSafely(new Error(`[eventsub-replay] ${error}`), {
+          key: baseResult.key,
+          messageId: claim.batchId,
+          subscriptionType: baseResult.subscriptionType,
+        });
+        results.push({ ...baseResult, outcome: "invalid-payload", error });
+        continue;
+      }
+
+      try {
+        const deliveryResult = await awaitBeforeReplayDeadline(
+          sendChatAnnouncement(
+            data.broadcasterTwitchUserId,
+            data.streamer,
+            data.gachaResult.card,
+            data.gachaResult.userTwitchUsername,
+            data.userId,
+            data.gachaResult.cards,
+            data.gachaResult.collectionName,
+            data.chatSnapshot,
+            async () => {
+              if (Date.now() >= externalChatSendDeadlineAt) return false;
+              const renewed = await renewChatNotificationLease(claim);
+              // renew自体が接続待ちで開始期限を跨ぐ場合がある。更新成功だけで
+              // 送信許可せず、実際のHelix fetch直前時刻も必ず再確認する。
+              return renewed && Date.now() < externalChatSendDeadlineAt;
+            },
+          ),
+          replayDeadlineAt,
+        );
+        if (!deliveryResult.completed) {
+          // 送信Promiseが後から資格情報解決を終えても上のdeadline fenceでTwitchへ
+          // 到達しない。行は更新せずlease失効後の次tickへ安全に委ねる。
+          results.push({ ...baseResult, outcome: "failed", error: "replay deadline reached" });
+          break;
+        }
+        const outcome = deliveryResult.value;
+        if (outcome.outcome === "sent" || outcome.outcome === "skipped") {
+          const persisted = await markChatNotificationSent(claim);
+          if (!persisted) {
+            // Twitch送信成功とDB ackは原子的にできない。owner leaseを失っていた場合は
+            // 別relayが再送する可能性があるため、黙って成功扱いにせず運用へ通知する。
+            await reportErrorSafely(
+              new Error("[eventsub-replay] chat sent but outbox ack lost its lease"),
+              { key: baseResult.key, messageId: claim.batchId }
+            );
+          }
+          results.push({
+            ...baseResult,
+            outcome: persisted
+              ? (outcome.outcome === "sent" ? "succeeded" : "skipped")
+              : "failed",
+            ...(persisted ? {} : { error: "sent, but outbox ack lost its lease" }),
+          });
+        } else if (outcome.outcome === "terminal") {
+          const persisted = await deadLetterChatNotification(claim, outcome.reason);
+          await reportErrorSafely(
+            new Error(`[eventsub-replay] chat notification moved to DLQ: ${outcome.reason}`),
+            { key: baseResult.key, messageId: claim.batchId, persisted }
+          );
+          results.push({ ...baseResult, outcome: "failed", error: `DLQ: ${outcome.reason}` });
+        } else if (outcome.outcome === "retryable") {
+          const state = await retryChatNotification(claim, outcome.reason);
+          if (state === "lost-lease") {
+            await reportErrorSafely(
+              new Error("[eventsub-replay] chat retry update lost its lease"),
+              { key: baseResult.key, messageId: claim.batchId }
+            );
+          }
+          results.push({
+            ...baseResult,
+            outcome: "failed",
+            error: `${state}: ${outcome.reason}`,
+          });
+        } else {
+          // lost lease / deadline / fence障害時は、新所有者の状態を上書きしない。
+          results.push({ ...baseResult, outcome: "failed", error: outcome.reason });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const state = await retryChatNotification(claim, message);
+        logger.error("[eventsub-replay] transactional chat relay failed", {
+          outboxId: claim.id,
+          messageId: claim.batchId,
+          state,
+          error: message,
+        });
+        results.push({ ...baseResult, outcome: "failed", error: `${state}: ${message}` });
+      }
+    }
+  }
+
+  // non-dry-runではDB outboxとKVを合わせてrequest limit以内に収める。
+  // DB側で上限を消費した場合やdeadline到達時はcursorを進めず、次tickで同じ
+  // backlogを確実に再評価する。dry-runは両保存先の最古候補比較だけなので別枠。
+  const remainingKvLimit = dryRun ? limit : Math.max(0, limit - results.length);
+  const parkedListResult = remainingKvLimit > 0 && Date.now() < replayDeadlineAt
+    ? await awaitBeforeReplayDeadline(
+        listParkedEventSubNotifications({
+          cursor: requestBody.cursor,
+          limit: remainingKvLimit,
+        }),
+        replayDeadlineAt,
+      )
+    : { completed: false as const };
+  const {
+    entries,
+    cursor,
+    listComplete,
+  } = parkedListResult.completed
+    ? parkedListResult.value
+    : {
+        entries: [],
+        cursor: requestBody.cursor,
+        listComplete: false,
+      };
+
   for (const { key, record } of entries) {
+    if (!dryRun && Date.now() >= replayDeadlineAt) break;
     const baseResult = {
       key,
       messageId: record.messageId,
@@ -287,15 +504,32 @@ export async function POST(request: NextRequest) {
       }
 
       try {
-        const result = await handleRedemption(
-          record.messageId,
-          payloadEvent as Parameters<typeof handleRedemption>[1]
+        const handleResult = await awaitBeforeReplayDeadline(
+          handleRedemption(
+            record.messageId,
+            payloadEvent as Parameters<typeof handleRedemption>[1],
+          ),
+          replayDeadlineAt,
         );
+        if (!handleResult.completed) {
+          results.push({ ...baseResult, outcome: "failed", error: "replay deadline reached" });
+          break;
+        }
+        const result = handleResult.value;
 
         if (result.notify) {
           // バッチ処理の完了をレスポンスで正確に報告するため、waitUntilではなく
           // 同期awaitする（既存のライブ経路のレイテンシ最適化とは異なる要件）。
-          await postRedemptionNotify(result.notify);
+          const notifyResult = await awaitBeforeReplayDeadline(
+            postRedemptionNotify(result.notify, {
+              externalSendDeadlineAt: externalChatSendDeadlineAt,
+            }),
+            replayDeadlineAt,
+          );
+          if (!notifyResult.completed) {
+            results.push({ ...baseResult, outcome: "failed", error: "replay deadline reached" });
+            break;
+          }
           results.push({ ...baseResult, outcome: "succeeded" });
           await deleteParkedEntrySafely(key, record.messageId);
         } else if (result.retryable) {
@@ -341,13 +575,30 @@ export async function POST(request: NextRequest) {
       }
 
       try {
-        const result = await handleRaidNotification(
-          record.messageId,
-          payloadEvent as Parameters<typeof handleRaidNotification>[1]
+        const handleResult = await awaitBeforeReplayDeadline(
+          handleRaidNotification(
+            record.messageId,
+            payloadEvent as Parameters<typeof handleRaidNotification>[1],
+          ),
+          replayDeadlineAt,
         );
+        if (!handleResult.completed) {
+          results.push({ ...baseResult, outcome: "failed", error: "replay deadline reached" });
+          break;
+        }
+        const result = handleResult.value;
 
         if (result.notify) {
-          await postRedemptionNotify(result.notify);
+          const notifyResult = await awaitBeforeReplayDeadline(
+            postRedemptionNotify(result.notify, {
+              externalSendDeadlineAt: externalChatSendDeadlineAt,
+            }),
+            replayDeadlineAt,
+          );
+          if (!notifyResult.completed) {
+            results.push({ ...baseResult, outcome: "failed", error: "replay deadline reached" });
+            break;
+          }
           results.push({ ...baseResult, outcome: "succeeded" });
           await deleteParkedEntrySafely(key, record.messageId);
         } else if (result.retryable) {
@@ -381,6 +632,12 @@ export async function POST(request: NextRequest) {
     // 退避データが黙って失われるfail-openになってしまう。そのためKVエントリは
     // 削除せず、TTL(7日)に任せる（または運用者が手動対応できるよう残す）。
     results.push({ ...baseResult, outcome: "unknown-type" });
+  }
+
+  if (dryRun) {
+    // DB outboxとKVは別々に時系列取得されるため、workerがresults[0]を全体の最古
+    // として安全マージン判定できるよう、結合後にISO8601時刻で再整列する。
+    results.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
   }
 
   const counts = {

@@ -27,7 +27,8 @@
  *   EVENTSUB_REPLAY_SECRET=<secret> node scripts/replay-maintenance-eventsub.js --url=<base-url> --limit=50
  *   npm run replay:maintenance-eventsub -- --url=<base-url>
  *
- * 運用手順の詳細（実行タイミング・前提条件）は docs/db-phase2-runbook.md を参照。
+ * 運用手順の詳細（実行タイミング・前提条件）は
+ * docs/history/migration/DB_PHASE2_RUNBOOK.md を参照。
  */
 
 'use strict'

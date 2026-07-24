@@ -4,6 +4,7 @@ import { POST } from '@/app/api/support/deactivate/route'
 import { getSession } from '@/lib/session'
 import { validateCSRFToken } from '@/lib/csrf'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/csrf')
@@ -14,13 +15,6 @@ vi.mock('@/lib/rate-limit', () => ({
   rateLimits: { deactivatePlan: {} },
   getRateLimitIdentifier: vi.fn().mockResolvedValue('user:user123'),
 }))
-vi.mock('@/lib/supabase/admin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
-  return {
-    ...actual,
-    getSupabaseAdmin: vi.fn(),
-  }
-})
 
 const mockGetSession = vi.mocked(getSession)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
@@ -32,6 +26,17 @@ function createRequest(): NextRequest {
       'Content-Type': 'application/json',
     },
   })
+}
+
+/** deactivate_all_licensesのpostgres.jsタグ結果または例外を注入する。 */
+function primeDeactivateRpc(result: unknown, error?: unknown) {
+  const sql = vi.fn(() =>
+    error === undefined
+      ? Promise.resolve([{ result }])
+      : Promise.reject(error)
+  )
+  vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sql as never })
+  return sql
 }
 
 describe('POST /api/support/deactivate', () => {
@@ -86,13 +91,7 @@ describe('POST /api/support/deactivate', () => {
   })
 
   it('should return 200 and planType basic on success', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({
-        data: { success: true, deleted_count: 2 },
-        error: null,
-      }),
-    } as any)
+    primeDeactivateRpc({ success: true, deleted_count: 2 })
 
     const response = await POST(createRequest())
     expect(response.status).toBe(200)
@@ -102,13 +101,7 @@ describe('POST /api/support/deactivate', () => {
   })
 
   it('should return 200 even when no licenses exist (idempotent)', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({
-        data: { success: true, deleted_count: 0 },
-        error: null,
-      }),
-    } as any)
+    primeDeactivateRpc({ success: true, deleted_count: 0 })
 
     const response = await POST(createRequest())
     expect(response.status).toBe(200)
@@ -118,30 +111,17 @@ describe('POST /api/support/deactivate', () => {
   })
 
   it('should return 500 when RPC fails', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({
-        data: null,
-        error: { message: 'DB error', code: '500' },
-      }),
-    } as any)
+    primeDeactivateRpc(null, { message: 'DB error', code: '500' })
 
     const response = await POST(createRequest())
     expect(response.status).toBe(500)
   })
 
   it('should call RPC with correct parameters', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    const rpcMock = vi.fn().mockResolvedValue({
-      data: { success: true, deleted_count: 1 },
-      error: null,
-    })
-    vi.mocked(getSupabaseAdmin).mockReturnValue({ rpc: rpcMock } as any)
+    const sql = primeDeactivateRpc({ success: true, deleted_count: 1 })
 
     await POST(createRequest())
 
-    expect(rpcMock).toHaveBeenCalledWith('deactivate_all_licenses', {
-      p_twitch_user_id: 'user123',
-    })
+    expect(sql.mock.calls[0].slice(1)).toEqual(['user123'])
   })
 })

@@ -1,27 +1,21 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers'
 import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError, getTwitchAuthUrl } from '@/lib/twitch/auth'
 import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { saveTwitchScopes } from '@/lib/twitch/token-manager'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { handleAuthError } from '@/lib/auth-error-handler'
 import { COOKIE_NAMES, SESSION_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions, STATE_COOKIE_OPTIONS } from '@/lib/constants'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import { getBaseUrl } from '@/lib/url-utils'
 import { signSession } from '@/lib/session'
 import { handleLinkedAccountCallback } from '@/lib/twitch/linked-account-auth'
 import { guardWriteRedirect } from '@/lib/maintenance/guard'
-// ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() / isPgWriteEnabled() が false を返すため getDb() は一切
-// 呼ばれず、既存の supabase-js 経路が従来どおり実行される。読み取り専用のクエリは
-// isPgReadEnabled()、書き込みは isPgWriteEnabled() で分岐する（token-manager.ts
-// 冒頭のフラグ使い分け方針と同じ）。
-// ---------------------------------------------------------------------------
+// DB アクセスは PlanetScale の単一接続へ統一する。
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled, isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { streamers as streamersTable, users as usersTable } from '@/lib/db/schema'
 import { isDefinitiveCapabilityResult, probeChannelPointsCapability } from '@/lib/twitch/channel-points'
@@ -34,7 +28,6 @@ interface AuthCallbackDriverError {
 
 /**
  * スコープ乖離チェック用の既存ユーザー読み取りの pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約
  * （migration 00001）により最大 1 行のため、LIMIT 1 + rows[0] ?? null で同じ
  * 外部挙動。
  */
@@ -68,7 +61,6 @@ async function fetchExistingUserScopesPg(
 /**
  * users への UPSERT（トークン・プロフィール保存）の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応: onConflict('twitch_user_id') の UPSERT は users の
  * twitch_user_id UNIQUE 制約（migration 00001）を conflict target とした
  * INSERT ... ON CONFLICT DO UPDATE と等価。既存経路は upsertError を検知次第
  * ログ出力後に throw し、直後の外側 catch で 'database_error' へ変換する。
@@ -100,6 +92,10 @@ async function upsertAuthUserPg(payload: {
           twitch_access_token: payload.accessToken,
           twitch_refresh_token: payload.refreshToken,
           twitch_token_expires_at: payload.expiresAtIso,
+          // OAuth callbackはcredentialの権威writer。進行中refreshのleaseを同じ
+          // UPSERTで無効化し、旧leaderがcallback結果を後から上書きできなくする。
+          twitch_refresh_lease_id: null,
+          twitch_refresh_lease_expires_at: null,
         }
         return db
           .insert(usersTable)
@@ -123,7 +119,6 @@ async function upsertAuthUserPg(payload: {
 /**
  * streamers への UPSERT（アフィリエイト/パートナー時のみ）の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応が重要な差異: 既存経路は
  * `await supabaseAdmin.from('streamers').upsert(...)` の戻り値を分割代入せず
  * 破棄しているため、外側の try/catch は「クエリ結果の error フィールド」は
  * 一切見ておらず、fetch() 自体が reject した場合（実質的にほぼ発生しない）だけを
@@ -161,7 +156,6 @@ async function upsertAuthStreamerPg(payload: {
       { idempotent: true },
     )
   } catch (error) {
-    // 既存 postgrest 経路はこの upsert の結果（error）を確認せず無視する
     // （best-effort）。pg 直結では失敗が throw になるため catch で握りつぶし、
     // 同じ外部挙動（コールバック全体は失敗させない）に合わせる。
     logger.warn('Auth callback: Streamer upsert failed (ignored, best-effort)', {
@@ -173,7 +167,6 @@ async function upsertAuthStreamerPg(payload: {
 
 /**
  * TOS 同意確認読み取りの pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約により
  * 最大 1 行のため LIMIT 1 + rows[0] ?? null で同じ外部挙動。
  * 既知の差異: 既存経路は destructure で error を確認しないため、クエリレベルの
  * エラー時は data=null → `null?.tos_accepted_at !== null` が true と評価され
@@ -299,10 +292,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabaseAdmin = getSupabaseAdmin()
+
     // Twitchへのトークン交換リクエストでは、元のリダイレクトURIと一致する必要がある
     const redirectUri = `${baseUrl}/api/auth/twitch/callback`
-    
+
     let tokens
     try {
       tokens = await exchangeCodeForTokens(code, redirectUri)
@@ -375,14 +368,8 @@ export async function GET(request: NextRequest) {
     let skipScopeSave = false
     if (!isReauthFlow && !scopeRestoreFailed && !isScopeRecovery) {
       try {
-        // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-        const { data: existingUser, error: existingScopeError } = isPgReadEnabled()
-          ? await fetchExistingUserScopesPg(twitchUser.id)
-          : await supabaseAdmin
-              .from('users')
-              .select('twitch_scopes')
-              .eq('twitch_user_id', twitchUser.id)
-              .maybeSingle()
+        // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+        const { data: existingUser, error: existingScopeError } = await fetchExistingUserScopesPg(twitchUser.id)
 
         if (existingScopeError) {
           // DB読み取り失敗: fail-safe(スキップ)で保護。リダイレクトできない（スコープ不明）
@@ -442,48 +429,18 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-      // #663: 書き込みのため isPgWriteEnabled() で分岐。pg 版（upsertAuthUserPg）は
+      // #663: 書き込みのため PlanetScale の単一接続を使用。pg 版（upsertAuthUserPg）は
       // 内部でログ出力後に throw するため、既存の「エラー時ログ＋throw」と同じ
       // 外部挙動になる。
-      if (isPgWriteEnabled()) {
-        await upsertAuthUserPg({
-          twitchUserId: twitchUser.id,
-          twitchUsername: twitchUser.login,
-          twitchDisplayName: twitchUser.display_name,
-          twitchProfileImageUrl: twitchUser.profile_image_url,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          expiresAtIso: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
-        })
-      } else {
-        // upsertのエラーを明示的にチェック（Supabase JSはエラー時にthrowせずerrorオブジェクトを返す）
-        // Explicitly check upsert error (Supabase JS returns error object instead of throwing)
-        const { error: upsertError } = await supabaseAdmin
-          .from('users')
-          .upsert({
-            twitch_user_id: twitchUser.id,
-            twitch_username: twitchUser.login,
-            twitch_display_name: twitchUser.display_name,
-            twitch_profile_image_url: twitchUser.profile_image_url,
-            twitch_access_token: tokens.access_token,
-            twitch_refresh_token: tokens.refresh_token,
-            twitch_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
-          }, {
-            onConflict: 'twitch_user_id',
-          })
-
-        if (upsertError) {
-          logger.error('Auth callback: User upsert failed', {
-            twitchUserId: twitchUser.id,
-            error: upsertError,
-            code: upsertError.code,
-            message: upsertError.message,
-            details: upsertError.details,
-            hint: upsertError.hint,
-          })
-          throw upsertError
-        }
-      }
+      await upsertAuthUserPg({
+        twitchUserId: twitchUser.id,
+        twitchUsername: twitchUser.login,
+        twitchDisplayName: twitchUser.display_name,
+        twitchProfileImageUrl: twitchUser.profile_image_url,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        expiresAtIso: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+      })
 
       // トークン交換時に付与されたスコープをDBに全置換で保存する。
       // loginルートがOAuthリクエストに既存スコープ（user:write:chat等）を含めるため、
@@ -543,29 +500,15 @@ export async function GET(request: NextRequest) {
 
     if (canBeStreamer) {
       try {
-        // #663: 書き込みのため isPgWriteEnabled() で分岐。pg 版
+        // #663: 書き込みのため PlanetScale の単一接続を使用。pg 版
         // （upsertAuthStreamerPg）は既存経路と同じく結果を確認しない
         // best-effort UPSERT として内部でエラーを握りつぶすため、この catch は
-        // 両経路とも実質的に発火しない（postgrest 経路のコメント参照）。
-        if (isPgWriteEnabled()) {
-          await upsertAuthStreamerPg({
-            twitchUserId: twitchUser.id,
-            twitchUsername: twitchUser.login,
-            twitchDisplayName: twitchUser.display_name,
-            twitchProfileImageUrl: twitchUser.profile_image_url,
-          })
-        } else {
-          await supabaseAdmin
-            .from('streamers')
-            .upsert({
-              twitch_user_id: twitchUser.id,
-              twitch_username: twitchUser.login,
-              twitch_display_name: twitchUser.display_name,
-              twitch_profile_image_url: twitchUser.profile_image_url,
-            }, {
-              onConflict: 'twitch_user_id',
-            })
-        }
+        await upsertAuthStreamerPg({
+          twitchUserId: twitchUser.id,
+          twitchUsername: twitchUser.login,
+          twitchDisplayName: twitchUser.display_name,
+          twitchProfileImageUrl: twitchUser.profile_image_url,
+        })
       } catch (error) {
         return handleAuthError(
           error,
@@ -578,21 +521,11 @@ export async function GET(request: NextRequest) {
 
     // #788 子C #791: channel_points_enabled フラグを独立読み取りし、セッションへミラーする。
     // users upsertには混ぜない（Critical-1、fetchChannelPointsEnabledFlagPgのdocコメント参照）。
-    // あらゆる失敗（新列未適用の42703/PGRST204を含む）でfalseへフォールバックし、
+    // あらゆる失敗（新列未適用の42703を含む）でfalseへフォールバックし、
     // ログイン自体は継続する。
     let channelPointsEnabled = false
     try {
-      if (isPgReadEnabled()) {
-        channelPointsEnabled = await fetchChannelPointsEnabledFlagPg(twitchUser.id)
-      } else {
-        const { data: cpUser, error: cpError } = await supabaseAdmin
-          .from('users')
-          .select('channel_points_enabled')
-          .eq('twitch_user_id', twitchUser.id)
-          .maybeSingle()
-        if (cpError) throw cpError
-        channelPointsEnabled = cpUser?.channel_points_enabled === true
-      }
+      channelPointsEnabled = await fetchChannelPointsEnabledFlagPg(twitchUser.id)
     } catch (error) {
       logger.warn('Auth callback: Failed to read channel_points_enabled flag (falling back to false)', {
         twitchUserId: twitchUser.id,
@@ -624,7 +557,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Set session cookie with user info only (no tokens - Supabase Auth handles tokens)
+    // Session cookieにはユーザー情報だけを保存し、Twitch tokenはサーバー側DBに隔離する。
     const sessionData = JSON.stringify({
       twitchUserId: twitchUser.id,
       twitchUsername: twitchUser.login,
@@ -647,17 +580,9 @@ export async function GET(request: NextRequest) {
     // Check if user has accepted Terms of Service
     let hasTosAccepted = false
     try {
-      // #663: 読み取り専用のため isPgReadEnabled() で分岐。既知の挙動差は
+      // #663: 読み取り専用のため PlanetScale の単一接続を使用。既知の挙動差は
       // fetchTosAcceptedPg の doc コメント参照（pg 版はより安全側に倒れるのみ）。
-      const userData = isPgReadEnabled()
-        ? await fetchTosAcceptedPg(twitchUser.id)
-        : (
-            await supabaseAdmin
-              .from('users')
-              .select('tos_accepted_at')
-              .eq('twitch_user_id', twitchUser.id)
-              .maybeSingle()
-          ).data
+      const userData = await fetchTosAcceptedPg(twitchUser.id)
 
       hasTosAccepted = userData?.tos_accepted_at !== null
 

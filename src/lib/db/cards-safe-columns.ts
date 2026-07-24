@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------
 // cards テーブルの「本番未デプロイ8列」フォールバック用ヘルパー (#663 self-review fix)
 //
-// 背景: src/lib/db/schema.ts の cards テーブル定義には、本番 Supabase の実テーブル
+// 背景: src/lib/db/schema.ts の cards テーブル定義には、本番 DB の実テーブル
 // には存在しない8列（card_number, hp, atk, def, spd, skill_type, skill_name,
 // skill_power）が含まれている(Issue #625で確認済みの既知ドリフト。マイグレーション
 // 履歴上は適用済みだが実テーブルには列が無い)。card_number は #393/#548 以降、
@@ -10,9 +10,8 @@
 // (バトル機能用、未着手のカードバトル機能の残骸)は一度もフォールバック対象に
 // なっていなかった。
 //
-// Drizzle の無指定 `.select()` / `.returning()` は PostgREST の `select("*")`
-// （実在する列だけを動的に返す）と異なり、TypeScript スキーマ定義(schema.ts)に
-// 基づく「静的な列リスト」を生成する。そのため本番でこれらの列を含む
+// Drizzle の無指定 `.select()` / `.returning()` は TypeScript スキーマ定義
+// (schema.ts) に基づく静的な列リストを生成する。そのため本番でこれらの列を含む
 // SELECT/RETURNING を発行すると `column "hp" does not exist` 等で必ず失敗する。
 //
 // 対応方針: 既存の「まず試す→列不足エラーを検知→列を除いて再試行」パターン
@@ -20,14 +19,14 @@
 // まず無指定(全列)を試み、失敗したらここで定義する明示列リスト
 // (CARDS_SAFE_COLUMNS)で再試行する。preview 等、実際に8列が存在する環境では
 // 無指定 select/returning がそのまま成功するため、明示列リストへは経路が
-// 到達しない(= 全列を返す挙動を維持。postgrest 経路とのパリティを保つ)。
+// 到達しない（全列を返す挙動を維持する）。
 // -----------------------------------------------------------------------------
 
 import { cards as cardsTable } from "@/lib/db/schema";
-import { getErrorChain } from "@/lib/db/errors";
+import { isPgMissingNamedColumnError } from "@/lib/db/errors";
 
 /**
- * 本番 Supabase の cards テーブルに実在しないことが確認済みの8列 (Issue #625,
+ * 本番 cards テーブルに実在しないことが確認済みの8列 (Issue #625,
  * scripts/verify-db-schema.js による実測)。card_number はカード番号採番用、
  * 残り7列は未着手のカードバトル機能用に schema.ts へ定義されているだけで、
  * 対応するマイグレーションが本番に適用されていない。
@@ -49,7 +48,7 @@ export const CARDS_MISSING_IN_PRODUCTION_COLUMNS = [
  *
  * rarity_order は GENERATED ALWAYS AS ... STORED の生成カラムで INSERT/UPDATE
  * 対象外だが、SELECT/RETURNING は可能かつ本番に実在するため含める
- * (postgrest 経路の select("*") も返す)。
+ * （生成列を含めて API の既存レスポンス形状を維持する）。
  */
 export const CARDS_SAFE_COLUMNS = {
   id: cardsTable.id,
@@ -70,10 +69,8 @@ export const CARDS_SAFE_COLUMNS = {
 
 /**
  * 「cards テーブルの本番未デプロイ8列のいずれかが存在しない」ことによる
- * SELECT/RETURNING 失敗を検知する。card-number-errors.ts の
- * isMissingCardNumberColumnError と同じ判定ロジック（postgrest 由来の
- * "schema cache"/PGRST204、raw postgres 由来の "column ... does not exist"
- * (42703) の両方にマッチする汎用テキスト判定）を、8列全てに拡張したもの。
+ * SELECT/RETURNING 失敗を検知する。SQLSTATE 42703 と対象列名を同じ
+ * PostgresError 階層で確認し、8列全てへ適用する。
  *
  * pg (postgres.js) の RETURNING/SELECT は列リストをまとめて評価するため、
  * エラーメッセージには通常「最初に解決できなかった1列」のみが含まれる
@@ -92,29 +89,15 @@ export const CARDS_SAFE_COLUMNS = {
  * 階層ごとに独立判定する理由 (Fable厳格レビュー指摘・中4): 当初の実装は
  * 全階層の message/details/hint を1本のテキストへ連結してから判定していたが、
  * これだと無関係な階層の文言に判定対象の列名が偶然含まれているだけで誤検知
- * しうる。典型例: Drizzle の DrizzleQueryError.message は「実行された SQL文
+ * しうる。典型例: Drizzle の DrizzleQueryError.message は「実行された SQL 文
  * そのもの」であり、SELECT 対象列を並べた文字列には8列のどれかの列名が
  * 高確率で含まれる。一方 cause（本当の原因）は全く別の理由（接続断・権限
- * エラー等）かもしれない。これを連結すると「無関係な原因なのに8列欠落と
- * 誤判定」してしまう。判定条件（"schema cache"/"column"/PGRST204/42703 の
- * いずれか **かつ** 対象列名を含む）を各階層の自分自身の情報だけに適用し、
- * どこか1階層でも満たせば true とする（生の postgres.js エラーはチェーンが
- * 1要素になるだけなので既存の後方互換は保たれる）。
+ * エラー等）かもしれない。これを連結すると「無関係な原因なのに8列欠落」と
+ * 誤判定してしまう。共通 helper は SQLSTATE 42703 と対象列名を同じ階層に要求し、
+ * 生の postgres.js エラーと Drizzle のラップ済みエラーを安全に扱う。
  */
 export function isMissingCardsBattleColumnError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-
-  return getErrorChain(error).some((layer) => {
-    if (typeof layer !== "object" || layer === null) return false;
-    const err = layer as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
-    const text = [err.message, err.details, err.hint].map((value) => String(value || "")).join(" ");
-
-    const looksLikeSchemaError =
-      text.includes("schema cache") || text.includes("column") || err.code === "PGRST204" || err.code === "42703";
-    if (!looksLikeSchemaError) return false;
-
-    return CARDS_MISSING_IN_PRODUCTION_COLUMNS.some((column) => text.includes(column));
-  });
+  return isPgMissingNamedColumnError(error, CARDS_MISSING_IN_PRODUCTION_COLUMNS);
 }
 
 /**

@@ -8,7 +8,7 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { deleteFromR2 } from "@/lib/r2-client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 
 export async function POST(request: NextRequest) {
   try {

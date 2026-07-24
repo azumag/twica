@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { parseSession, canUseStreamerFeatures, signSession, verifySession, Session } from '@/lib/session'
 
-vi.mock('@/lib/logger', () => ({
+// session.ts が server-only logger を参照しても、payload parser の単体テストへ
+// 永続化副作用を持ち込まないため同じ server-only entry point を mock する。
+vi.mock('@/lib/logger.server', () => ({
   logger: {
     info: vi.fn(),
     warn: vi.fn(),

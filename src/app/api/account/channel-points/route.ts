@@ -17,7 +17,7 @@ import {
   getChannelPointsAccessState,
   persistChannelPointsCapability,
 } from '@/lib/twitch/channel-points-access'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 
 // #788 子C #791: 保存済みcapability確認が「stale」とみなされる猶予期間。
 // これを超えたら/dashboard/accountの初回表示時にUIが自動で再判定(POST)する。

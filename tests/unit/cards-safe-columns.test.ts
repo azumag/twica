@@ -34,8 +34,8 @@ function wrappedMissingCardsBattleColumnError(column: string = 'card_number') {
   return err
 }
 
-// 2026-07 本番障害の回帰テスト: DB_DRIVER=pg-read 有効時、
-// getActiveCardsForStreamer (pg) が「column "card_number" ... does not
+// 2026-07 本番障害の回帰テスト: getActiveCardsForStreamer が
+// 「column "card_number" ... does not
 // exist」(SQLSTATE 42703) で失敗し、CARDS_SAFE_COLUMNS フォールバック
 // (#685) が発動せずカード一覧が空表示になった。原因は Drizzle が
 // postgres.js のエラーを DrizzleQueryError で `{ query, params, cause }` に

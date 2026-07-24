@@ -1,22 +1,16 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — POST/GET /api/cards の
- * postgrest経路 / pg経路パリティテスト
+ * #663: POST/GET /api/cards のPlanetScale契約テスト
  *
- * support-inquiries-routes-driver-parity.test.ts / storage-db-driver-parity.test.ts
- * と同じ流儀: 同一 fixture を両経路のモックに与え、戻り値・ステータスコードが
- * deepEqual になることと、pg 経路で正しいテーブル/条件(values/where)が使われる
- * ことを検証する。既存の tests/unit/cards-get-api.test.ts /
- * tests/unit/api/cards-collection-membership.test.ts（postgrest 経路のみ検証）は
- * 変更しない。
+ * 現行 Drizzle 実装の所有権・読み書き・競合応答と、
+ * 本番スキーマ移行中の安全な列フォールバックを検証する。
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { POST, GET } from "@/app/api/cards/route";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getStorageUsage } from "@/lib/storage-usage";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getDb } from "@/lib/db/client";
 import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
 
@@ -24,10 +18,6 @@ vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
 vi.mock("@/lib/storage-usage");
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 vi.mock("@/lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -46,7 +36,6 @@ const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
 const mockGetStorageUsage = vi.mocked(getStorageUsage);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 
 const SESSION = {
   twitchUserId: "user1",
@@ -57,48 +46,6 @@ const SESSION = {
   expiresAt: Date.now() + 60_000,
   version: 1,
 };
-
-// ---------------------------------------------------------------------------
-// postgrest 経路のモック: table ごとの結果キュー + insert/update の呼び出し記録
-// ---------------------------------------------------------------------------
-
-interface PostgrestResult {
-  data?: unknown;
-  error?: unknown;
-  count?: number | null;
-}
-
-function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult[]>) {
-  const queues = Object.fromEntries(
-    Object.entries(resultsByTable).map(([table, results]) => [table, [...results]])
-  );
-  const insertCalls: Array<{ table: string; values: unknown }> = [];
-
-  const from = vi.fn((table: string) => {
-    const queue = queues[table];
-    if (!queue || queue.length === 0) {
-      throw new Error(`no mock result configured for table: ${table}`);
-    }
-    const result = queue.length > 1 ? (queue.shift() as PostgrestResult) : queue[0];
-    const resolved = { data: result.data ?? null, error: result.error ?? null, count: result.count ?? null };
-    const builder: any = {
-      select: vi.fn(() => builder),
-      insert: vi.fn((values: unknown) => {
-        insertCalls.push({ table, values });
-        return builder;
-      }),
-      eq: vi.fn(() => builder),
-      in: vi.fn(() => builder),
-      order: vi.fn(() => builder),
-      range: vi.fn(() => builder),
-      maybeSingle: vi.fn(() => Promise.resolve(resolved)),
-      then: (onFulfilled: any, onRejected: any) => Promise.resolve(resolved).then(onFulfilled, onRejected),
-    };
-    return builder;
-  });
-
-  return { from, insertCalls };
-}
 
 // ---------------------------------------------------------------------------
 // pg 経路のモック: select(fields?).from(table).where().orderBy().limit().offset() /
@@ -216,7 +163,7 @@ function createGetRequest(params: Record<string, string> = {}): NextRequest {
   return new NextRequest(url);
 }
 
-describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
+describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(SESSION);
@@ -231,11 +178,7 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
     mockGetStorageUsage.mockResolvedValue({ planOverLimit: false } as Awaited<ReturnType<typeof getStorageUsage>>);
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  describe("POST /api/cards（読み書き混在: isPgWriteEnabled で関数全体を分岐）", () => {
+  describe("POST /api/cards", () => {
     // rarity_weights: null にして recalculateIfAutoMode を即 return null（DB非到達）にする
     const STREAMER_ROW = { id: "streamer-1", rarity_weights: null, card_pack_names: [] };
     const REQUEST_BODY = {
@@ -273,19 +216,7 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       drop_rate: 0.5,
     };
 
-    it("成功時: 同一 fixture で両経路の戻り値が deepEqual になり、pg 経路が正しい INSERT values を使う", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        streamers: [{ data: STREAMER_ROW }],
-        cards: [{ data: CREATED_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await POST(createPostRequest(REQUEST_BODY));
-      expect(postgrestRes.status).toBe(200);
-      const postgrestJson = await postgrestRes.json();
-      expect(client.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("成功時は正しいINSERT値と作成結果を返す", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [STREAMER_ROW] }],
         inserts: [{ rows: [CREATED_ROW] }],
@@ -295,20 +226,11 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       expect(pgRes.status).toBe(200);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson).toEqual({ ...CREATED_ROW, recalculatedCards: null });
       expect(pg.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
-      expect(pg.insertCalls[0].values).toEqual(client.insertCalls[0].values);
     });
 
-    it("streamer所有権なし: 両経路とも403を返しINSERTは発生しない", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ streamers: [{ data: null }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await POST(createPostRequest(REQUEST_BODY));
-      expect(postgrestRes.status).toBe(403);
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("streamer所有権なしでは403を返しINSERTしない", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);
       const pgRes = await POST(createPostRequest(REQUEST_BODY));
@@ -316,27 +238,12 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       expect(pg.insertCalls).toHaveLength(0);
     });
 
-    it("card_number列デプロイ窓フォールバック: 両経路とも列を落として再試行し200を返す", async () => {
-      const missingColumnErrorPostgrest = {
-        code: "PGRST204",
-        message: "Could not find the 'card_number' column of 'cards' in the schema cache",
-      };
+    it("card_number列デプロイ窓では列を落として再試行し200を返す", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" of relation "cards" does not exist',
       };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        streamers: [{ data: STREAMER_ROW }],
-        cards: [{ data: null, error: missingColumnErrorPostgrest }, { data: CREATED_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await POST(createPostRequest(REQUEST_BODY));
-      expect(postgrestRes.status).toBe(200);
-      expect(client.insertCalls[1].values).not.toHaveProperty("card_number");
-
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({
         selects: [{ rows: [STREAMER_ROW] }],
         inserts: [{ error: missingColumnErrorPg }, { rows: [CREATED_ROW] }],
@@ -348,26 +255,12 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       expect(pg.insertCalls[1].values).not.toHaveProperty("card_number");
     });
 
-    it("card_number一意制約違反(23505): 両経路とも409を返す", async () => {
-      const conflictErrorPostgrest = {
-        code: "23505",
-        message: 'duplicate key value violates unique constraint "cards_streamer_card_number_unique"',
-      };
+    it("card_number一意制約違反(23505)は409を返す", async () => {
       const conflictErrorPg = {
         code: "23505",
         message: 'duplicate key value violates unique constraint "cards_streamer_card_number_unique"',
       };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        streamers: [{ data: STREAMER_ROW }],
-        cards: [{ data: null, error: conflictErrorPostgrest }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await POST(createPostRequest({ ...REQUEST_BODY, cardNumber: 5 }));
-      expect(postgrestRes.status).toBe(409);
-
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({
         selects: [{ rows: [STREAMER_ROW] }],
         inserts: [{ error: conflictErrorPg }],
@@ -375,28 +268,6 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       primePgDb(pg);
       const pgRes = await POST(createPostRequest({ ...REQUEST_BODY, cardNumber: 5 }));
       expect(pgRes.status).toBe(409);
-    });
-
-    it("フラグ未設定時は getDb が呼ばれない（挙動不変の検証）", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        streamers: [{ data: STREAMER_ROW }],
-        cards: [{ data: CREATED_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await POST(createPostRequest(REQUEST_BODY));
-      expect(getDb).not.toHaveBeenCalled();
-    });
-
-    it("pg-read では書き込み関数のため postgrest のまま（getDb が呼ばれない）", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
-      const client = createSupabaseClientMock({
-        streamers: [{ data: STREAMER_ROW }],
-        cards: [{ data: CREATED_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await POST(createPostRequest(REQUEST_BODY));
-      expect(getDb).not.toHaveBeenCalled();
     });
 
     // self-review fix (#663): 本番 cards テーブルには card_number/hp/atk/def/spd/
@@ -432,7 +303,6 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
         updated_at: "2026-01-01T00:00:00Z",
       };
 
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({
         selects: [{ rows: [STREAMER_ROW] }],
         inserts: [
@@ -455,7 +325,7 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
     });
   });
 
-  describe("GET /api/cards（読み取り: isPgReadEnabled）", () => {
+  describe("GET /api/cards", () => {
     const STREAMER_OWNERSHIP_ROW = { id: "streamer-1" };
     const CARD_ROWS = [
       {
@@ -494,18 +364,7 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       },
     ];
 
-    it("成功時: 同一 fixture で両経路の戻り値(cards/pagination)が deepEqual になる", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        streamers: [{ data: STREAMER_OWNERSHIP_ROW }],
-        cards: [{ data: CARD_ROWS, count: 2 }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await GET(createGetRequest({ streamerId: "streamer-1" }));
-      expect(postgrestRes.status).toBe(200);
-      const postgrestJson = await postgrestRes.json();
-
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("成功時はカードとページネーションを返す", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [STREAMER_OWNERSHIP_ROW] }, { rows: [{ count: 2 }] }, { rows: CARD_ROWS }],
       });
@@ -514,49 +373,23 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       expect(pgRes.status).toBe(200);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson.cards).toHaveLength(2);
       expect(pgJson.pagination).toEqual({ total: 2, limit: 12, offset: 0, hasMore: false });
     });
 
-    it("streamer所有権なし: 両経路とも403を返す", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ streamers: [{ data: null }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await GET(createGetRequest({ streamerId: "streamer-1" }));
-      expect(postgrestRes.status).toBe(403);
-
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("streamer所有権なしでは403を返す", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);
       const pgRes = await GET(createGetRequest({ streamerId: "streamer-1" }));
       expect(pgRes.status).toBe(403);
     });
 
-    it("card_number ソート列デプロイ窓フォールバック: 両経路とも created_at ソートへフォールバックし同じ件数を返す", async () => {
-      const missingColumnErrorPostgrest = {
-        code: "PGRST204",
-        message: "Could not find the 'card_number' column of 'cards' in the schema cache",
-      };
+    it("card_numberソート列デプロイ窓ではcreated_atへフォールバックする", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" does not exist',
       };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        streamers: [{ data: STREAMER_OWNERSHIP_ROW }],
-        cards: [
-          { data: null, error: missingColumnErrorPostgrest, count: null },
-          { data: CARD_ROWS, count: 2 },
-        ],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await GET(createGetRequest({ streamerId: "streamer-1", sortField: "card_number" }));
-      expect(postgrestRes.status).toBe(200);
-      const postgrestJson = await postgrestRes.json();
-
-      vi.stubEnv("DB_DRIVER", "pg-read");
       const pg = createDrizzleDbMock({
         selects: [
           { rows: [STREAMER_OWNERSHIP_ROW] },
@@ -570,7 +403,6 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       expect(pgRes.status).toBe(200);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson.cards).toHaveLength(2);
       expect(pgJson.pagination.total).toBe(2);
     });
@@ -587,7 +419,6 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
         message: 'column "hp" of relation "cards" does not exist',
       };
 
-      vi.stubEnv("DB_DRIVER", "pg-read");
       const pg = createDrizzleDbMock({
         selects: [
           { rows: [STREAMER_OWNERSHIP_ROW] }, // streamer ownership
@@ -613,27 +444,5 @@ describe("POST/GET /api/cards: postgrest / pg 経路の互換 (#663)", () => {
       expect(lastSelectFields).toEqual(CARDS_SAFE_COLUMNS);
     });
 
-    it("フラグ未設定時は getDb が呼ばれない（挙動不変の検証）", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        streamers: [{ data: STREAMER_OWNERSHIP_ROW }],
-        cards: [{ data: CARD_ROWS, count: 2 }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await GET(createGetRequest({ streamerId: "streamer-1" }));
-      expect(getDb).not.toHaveBeenCalled();
-    });
-
-    it("pg 経路では supabase-js の .from() が一切呼ばれない（getSupabaseAdmin() 自体はDB非到達の軽量呼び出しのため許容）", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
-      const client = createSupabaseClientMock({});
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const pg = createDrizzleDbMock({
-        selects: [{ rows: [STREAMER_OWNERSHIP_ROW] }, { rows: [{ count: 2 }] }, { rows: CARD_ROWS }],
-      });
-      primePgDb(pg);
-      await GET(createGetRequest({ streamerId: "streamer-1" }));
-      expect(client.from).not.toHaveBeenCalled();
-    });
   });
 });

@@ -120,7 +120,7 @@
 
 ### 事前条件
 - ローカル開発サーバーが http://localhost:3000 で稼働中
-- Supabaseデータベースが利用可能
+- PlanetScale PostgreSQL（local は `DATABASE_URL_PLANETSCALE`）が利用可能
 - テスト用ストリーマーアカウント (twitch_user_id: 123456789) がセットアップ済み
 
 ### 認証モック
@@ -152,3 +152,51 @@
 - 複数ブラウザ対応（Chromium, Firefox, WebKit）
 - 並列実行（CI環境ではワーカー1）
 - リトライ（CI環境では2回）
+
+## Preview Twitch 実経路（production前の必須ゲート）
+
+### 事前条件
+
+- previewアプリとpreview PlanetScale migrationが同じrevisionまで成功している。
+- Twitch EventSub callbackがpreviewを向き、`azumagbanjo`で対象の実チャネルポイント
+  報酬を引き換えられる。
+- OBS/browser sourceはpreview overlay URLを使い、開発者向けDEMOボタンではなく
+  Twitchの実引き換えを使う。
+- チャット通知を有効にし、実引き換え対象の報酬ID・カードパックを確認する。
+
+### 単発を連続で引き換える
+
+1. 同じ実チャネルポイント報酬を、1件目のoverlay表示終了後に2回引き換える。
+2. 1件目、2件目が引き換え順にそれぞれ1回だけoverlayへ表示される。
+3. 軽い静止画カードでも2件目が表示され、GIFのpreload時間に依存しない。
+4. 各引き換えに対応するチャットが送信され、ユーザー名・カード名が一致する。
+5. `gacha_history`、`user_cards`、`chat_notification_outbox`の`batch_id`を照合し、
+   outboxが`sent`で`attempt_count=1`、`pending/processing/dead`滞留なしを確認する。
+
+### N連を引き換える
+
+1. 2枚以上の実報酬を1回引き換える。
+2. 全カードがoverlayへ順番どおり表示され、2枚目以降が欠落しない。
+3. チャットは設定どおり1バッチに集約され、表示カード名・枚数が実結果と一致する。
+4. outboxの`payload_version=1`、`expected_draw_count`と`assembled_draw_count`が
+   一致し、途中`building`を経ず`sent`になっている。
+
+### relay障害回復
+
+1. previewだけで一時的なTwitch 5xx相当をテストdoubleまたは管理テストにより発生させる。
+2. outboxが`pending`へ戻り、`next_attempt_at`がbackoff後を示す。
+3. 次回管理relayで`sent`へ進み、後続の通知も処理される。
+4. 恒久失敗20件を`dead`へ移した次回claimで、21件目が`sent`になる。
+5. maintenance KV一覧取得を失敗させても、DB outbox claim/sendが先に実行される。
+
+### N連途中のDB障害回復
+
+1. previewの管理テストで3連の3枚目だけに一時DB障害を発生させる。
+2. 1〜2枚目が一度だけ確定し、ライブWebhook payloadが2xx前にKVへ保存される。
+3. Cron replay後に3枚目だけが追加され、`gacha_history`と`user_cards`が合計3件になる。
+4. 完成したoutboxが1件だけ作られ、payloadのカード順・枚数が3連結果と一致する。
+5. KV保存自体を失敗させた場合はWebhookが503となり、Twitch再送後に同じ冪等結果へ収束する。
+
+上記をpreviewで完了し、Cloudflare/DB/error-reporterに新規エラーがないことを確認するまで
+productionへ進めません。production反映後も単発を2回実引き換えし、overlayとchatを
+同じ観点でsmoke testします。

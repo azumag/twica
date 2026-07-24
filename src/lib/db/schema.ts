@@ -1,10 +1,10 @@
 // =============================================================================
-// Drizzle ORM スキーマ定義（既存 Supabase PostgreSQL スキーマへの型付け）
+// Drizzle ORM スキーマ定義（PlanetScale PostgreSQLスキーマへの型付け）
 // =============================================================================
 //
-// このファイルは既存 Supabase スキーマ（supabase/migrations が正）への型付けであり、
-// drizzle-kit による migration 生成には使用しない。
-// スキーマ変更は従来どおり supabase/migrations で行う。
+// このファイルは既存DBスキーマへの型付けであり、drizzle-kitによるmigration生成には
+// 使用しない。`supabase/migrations` は歴史的なディレクトリ名を維持した共通DDL正本で、
+// `scripts/db-migrate.js --provider=planetscale` がPlanetScaleへ適用する。
 //
 // 設計方針（実行時クエリの正確性 = 列名・PG 型・NULL 制約・デフォルト値 が唯一の品質基準）:
 // - 列プロパティ名は DB 列名そのまま（snake_case）。既存コードが PostgREST の
@@ -157,6 +157,9 @@ export const users = pgTable('users', {
   twitch_access_token: text('twitch_access_token'),
   twitch_refresh_token: text('twitch_refresh_token'),
   twitch_token_expires_at: timestamp('twitch_token_expires_at', { withTimezone: true, mode: 'string' }),
+  // 20260724190000: OAuth refreshのisolate間single-flightと期限切れleaderのfencing
+  twitch_refresh_lease_id: uuid('twitch_refresh_lease_id'),
+  twitch_refresh_lease_expires_at: timestamp('twitch_refresh_lease_expires_at', { withTimezone: true, mode: 'string' }),
   // 00005: 利用規約同意日時（NULL = 未同意）
   tos_accepted_at: timestamp('tos_accepted_at', { withTimezone: true, mode: 'string' }),
   // 00009: text[] DEFAULT '{}'（DDL に NOT NULL は無い）
@@ -201,6 +204,30 @@ export const gachaHistory = pgTable('gacha_history', {
   // 00070: 起点になった Twitch チャネルポイント報酬 ID（EventSub 経由以外は NULL）
   reward_id: text('reward_id'),
   redeemed_at: timestamp('redeemed_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
+})
+
+// -----------------------------------------------------------------------------
+// chat_notification_outbox（Issue #708: transactional chat outbox）
+// Twitch API配送はat-least-once。processing leaseで通常の同時送信を防ぐが、
+// Twitch送信成功後〜sent記録前の停止時だけは重複送信を許容する。
+// -----------------------------------------------------------------------------
+export const chatNotificationOutbox = pgTable('chat_notification_outbox', {
+  id: uuid('id').primaryKey().default(sql`extensions.uuid_generate_v4()`),
+  batch_id: text('batch_id').notNull(),
+  payload_version: smallint('payload_version').notNull().default(1),
+  payload: jsonb('payload').$type<Json>().notNull(),
+  expected_draw_count: integer('expected_draw_count').notNull(),
+  assembled_draw_count: integer('assembled_draw_count').notNull(),
+  status: text('status').notNull().default('pending'),
+  attempt_count: integer('attempt_count').notNull().default(0),
+  next_attempt_at: timestamp('next_attempt_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  lease_id: uuid('lease_id'),
+  lease_expires_at: timestamp('lease_expires_at', { withTimezone: true, mode: 'string' }),
+  last_error: text('last_error'),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  sent_at: timestamp('sent_at', { withTimezone: true, mode: 'string' }),
+  dead_at: timestamp('dead_at', { withTimezone: true, mode: 'string' }),
 })
 
 // -----------------------------------------------------------------------------
@@ -472,6 +499,9 @@ export const twitchBotAccounts = pgTable('twitch_bot_accounts', {
   twitch_access_token: text('twitch_access_token').notNull(),
   twitch_refresh_token: text('twitch_refresh_token').notNull(),
   twitch_token_expires_at: timestamp('twitch_token_expires_at', { withTimezone: true, mode: 'string' }).notNull(),
+  // 20260724190000: OAuth refreshのisolate間single-flightと期限切れleaderのfencing
+  twitch_refresh_lease_id: uuid('twitch_refresh_lease_id'),
+  twitch_refresh_lease_expires_at: timestamp('twitch_refresh_lease_expires_at', { withTimezone: true, mode: 'string' }),
   // text[] DEFAULT '{}'（NOT NULL は無い）
   scopes: text('scopes').array().default(sql`'{}'::text[]`),
   // 'active' | 'revoked' | 'error'

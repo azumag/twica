@@ -1,8 +1,7 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — POST /api/announcements/read の
- * postgrest経路 / pg経路パリティテスト
+ * #663/#708: POST /api/announcements/read のPlanetScale書き込みテスト
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/announcements/read/route'
 import { getSession } from '@/lib/session'
@@ -71,7 +70,7 @@ function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
   vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
 }
 
-describe('POST /api/announcements/read: postgrest / pg 経路の互換 (#663)', () => {
+describe('POST /api/announcements/read: PlanetScale経路 (#663/#708)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetSession.mockResolvedValue({
@@ -86,24 +85,7 @@ describe('POST /api/announcements/read: postgrest / pg 経路の互換 (#663)', 
     mockValidateCSRFToken.mockResolvedValue({ valid: true } as any)
   })
 
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-    vi.stubEnv('DB_DRIVER', undefined)
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({ upsert: vi.fn().mockResolvedValue({ error: null }) })),
-    } as any)
-
-    const response = await POST(createRequest())
-    expect(response.status).toBe(200)
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('DB_DRIVER=pg: 正しいテーブル/値でUPSERTされ、200を返す（postgrest経路と同じ外部挙動）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('正しいテーブル/値でUPSERTされ、200を返す', async () => {
     const pg = createDrizzleDbMock()
     primePgDb(pg)
 
@@ -123,8 +105,7 @@ describe('POST /api/announcements/read: postgrest / pg 経路の互換 (#663)', 
     ])
   })
 
-  it('DB_DRIVER=pg: 重複呼び出し（ON CONFLICT DO NOTHING）でもエラーにならず200を返す', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('重複呼び出し（ON CONFLICT DO NOTHING）でもエラーにならず200を返す', async () => {
     const pg = createDrizzleDbMock({ inserts: [{ rows: [] }] })
     primePgDb(pg)
 
@@ -132,8 +113,7 @@ describe('POST /api/announcements/read: postgrest / pg 経路の互換 (#663)', 
     expect(response.status).toBe(200)
   })
 
-  it('DB_DRIVER=pg: DBエラー時は500を返す（postgrest経路と同じ外部挙動）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('DBエラー時は500を返す', async () => {
     const pg = createDrizzleDbMock({ inserts: [{ error: new Error('connection failure') }] })
     primePgDb(pg)
 
@@ -142,7 +122,6 @@ describe('POST /api/announcements/read: postgrest / pg 経路の互換 (#663)', 
   })
 
   it('不正なUUID形式では400を返す（DB未到達）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
     const response = await POST(createRequest('not-a-uuid'))
     expect(response.status).toBe(400)
     expect(getDb).not.toHaveBeenCalled()

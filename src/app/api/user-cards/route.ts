@@ -1,17 +1,14 @@
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { getSession } from '@/lib/session'
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { userCards as userCardsTable, users as usersTable } from '@/lib/db/schema'
 
@@ -21,7 +18,6 @@ interface UserCardsDriverError {
 
 /**
  * users 取得の pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約
  * （migration 00001）により最大 1 行のため LIMIT 1 + rows[0] ?? null で同じ
  * 外部挙動。
  */
@@ -53,9 +49,6 @@ async function fetchUserPg(
 
 /**
  * user_cards 取得の pg 直結実装 (#663)
- * PostgREST 実装との対応: .range(0, 9999) は「0〜9999 行目（10000 行）」を返す
- * PostgREST 独自の指定方法で、Drizzle の .limit(10000) と等価（デフォルト
- * offset は 0 のため .offset() は不要）。PostgREST デフォルトの 1000 件制限
  * 回避という既存意図をそのまま引き継ぐ。
  */
 async function fetchUserCardsPg(
@@ -122,14 +115,8 @@ export async function GET(request: NextRequest) {
 
     // Get user data
     // ユーザーデータを取得
-    // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-    const { data: userData, error: userError } = isPgReadEnabled()
-      ? await fetchUserPg(session.twitchUserId)
-      : await getSupabaseAdmin()
-          .from('users')
-          .select('id, twitch_user_id')
-          .eq('twitch_user_id', session.twitchUserId)
-          .maybeSingle()
+    // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+    const { data: userData, error: userError } = await fetchUserPg(session.twitchUserId)
 
     if (userError || !userData) {
       return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
@@ -137,14 +124,7 @@ export async function GET(request: NextRequest) {
 
     // Get user's cards with details
     // ユーザーのカード詳細を取得
-    // .range(0, 9999) でPostgRESTデフォルト1000件制限を回避
-    const { data: userCards, error: cardsError } = isPgReadEnabled()
-      ? await fetchUserCardsPg(userData.id)
-      : await getSupabaseAdmin()
-          .from('user_cards')
-          .select('id, user_id, card_id, obtained_at')
-          .eq('user_id', userData.id)
-          .range(0, 9999)
+    const { data: userCards, error: cardsError } = await fetchUserCardsPg(userData.id)
 
     if (cardsError) {
       return handleDatabaseError(cardsError, "Failed to fetch user cards")

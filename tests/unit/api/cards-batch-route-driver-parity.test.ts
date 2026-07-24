@@ -1,29 +1,21 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — POST /api/cards/batch の
- * postgrest経路 / pg経路パリティテスト
+ * #663: POST /api/cards/batch のPlanetScale契約テスト
  *
- * support-inquiries-routes-driver-parity.test.ts / storage-db-driver-parity.test.ts
- * と同じ流儀: 同一 fixture を両経路のモックに与え、戻り値・ステータスコードが
- * deepEqual になることと、pg 経路で正しいテーブル/条件(values)が使われることを
- * 検証する。このルートにはフォールバックチェーンが無い(postgrest経路にも無い)。
+ * 現行 Drizzle 実装の戻り値・所有権・一括 INSERT 値と、
+ * 本番スキーマ移行中の RETURNING フォールバックを検証する。
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { POST } from "@/app/api/cards/batch/route";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getDb } from "@/lib/db/client";
 import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 vi.mock("@/lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -37,7 +29,6 @@ const mockGetSession = vi.mocked(getSession);
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 
 const SESSION = {
   twitchUserId: "user1",
@@ -48,44 +39,6 @@ const SESSION = {
   expiresAt: Date.now() + 60_000,
   version: 1,
 };
-
-// ---------------------------------------------------------------------------
-// postgrest 経路のモック
-// ---------------------------------------------------------------------------
-
-interface PostgrestResult {
-  data?: unknown;
-  error?: unknown;
-}
-
-function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult[]>) {
-  const queues = Object.fromEntries(
-    Object.entries(resultsByTable).map(([table, results]) => [table, [...results]])
-  );
-  const insertCalls: Array<{ table: string; values: unknown }> = [];
-
-  const from = vi.fn((table: string) => {
-    const queue = queues[table];
-    if (!queue || queue.length === 0) {
-      throw new Error(`no mock result configured for table: ${table}`);
-    }
-    const result = queue.length > 1 ? (queue.shift() as PostgrestResult) : queue[0];
-    const resolved = { data: result.data ?? null, error: result.error ?? null };
-    const builder: any = {
-      select: vi.fn(() => builder),
-      insert: vi.fn((values: unknown) => {
-        insertCalls.push({ table, values });
-        return builder;
-      }),
-      eq: vi.fn(() => builder),
-      maybeSingle: vi.fn(() => Promise.resolve(resolved)),
-      then: (onFulfilled: any, onRejected: any) => Promise.resolve(resolved).then(onFulfilled, onRejected),
-    };
-    return builder;
-  });
-
-  return { from, insertCalls };
-}
 
 // ---------------------------------------------------------------------------
 // pg 経路のモック
@@ -183,7 +136,7 @@ function createBatchRequest(body: Record<string, unknown>): NextRequest {
   });
 }
 
-describe("POST /api/cards/batch: postgrest / pg 経路の互換 (#663)", () => {
+describe("POST /api/cards/batch: PlanetScale契約 (#663)", () => {
   // rarity_weights: null にして recalculateIfAutoMode を即 return null（DB非到達）にする
   const STREAMER_ROW = { id: "streamer-1", rarity_weights: null };
   const REQUEST_BODY = {
@@ -245,23 +198,7 @@ describe("POST /api/cards/batch: postgrest / pg 経路の互換 (#663)", () => {
     mockValidateCSRFToken.mockResolvedValue({ valid: true });
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("成功時: 同一 fixture で両経路の戻り値が deepEqual になり、pg 経路が正しい一括 INSERT values を使う", async () => {
-    vi.stubEnv("DB_DRIVER", undefined);
-    const client = createSupabaseClientMock({
-      streamers: [{ data: STREAMER_ROW }],
-      cards: [{ data: CREATED_ROWS }],
-    });
-    mockGetSupabaseAdmin.mockReturnValue(client as any);
-    const postgrestRes = await POST(createBatchRequest(REQUEST_BODY));
-    expect(postgrestRes.status).toBe(200);
-    const postgrestJson = await postgrestRes.json();
-    expect(client.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
-
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("成功時は正しい一括INSERT値と作成結果を返す", async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [STREAMER_ROW] }],
       inserts: [{ rows: CREATED_ROWS }],
@@ -271,7 +208,6 @@ describe("POST /api/cards/batch: postgrest / pg 経路の互換 (#663)", () => {
     expect(pgRes.status).toBe(200);
     const pgJson = await pgRes.json();
 
-    expect(pgJson).toEqual(postgrestJson);
     expect(pgJson).toEqual({
       success: true,
       created: 2,
@@ -280,17 +216,9 @@ describe("POST /api/cards/batch: postgrest / pg 経路の互換 (#663)", () => {
     });
     expect(pg.insertCalls[0].table).toBeDefined();
     expect(pg.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
-    expect(pg.insertCalls[0].values).toEqual(client.insertCalls[0].values);
   });
 
-  it("streamer所有権なし: 両経路とも403を返しINSERTは発生しない", async () => {
-    vi.stubEnv("DB_DRIVER", undefined);
-    const client = createSupabaseClientMock({ streamers: [{ data: null }] });
-    mockGetSupabaseAdmin.mockReturnValue(client as any);
-    const postgrestRes = await POST(createBatchRequest(REQUEST_BODY));
-    expect(postgrestRes.status).toBe(403);
-
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("streamer所有権なしでは403を返しINSERTしない", async () => {
     const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
     primePgDb(pg);
     const pgRes = await POST(createBatchRequest(REQUEST_BODY));
@@ -298,19 +226,9 @@ describe("POST /api/cards/batch: postgrest / pg 経路の互換 (#663)", () => {
     expect(pg.insertCalls).toHaveLength(0);
   });
 
-  it("INSERT失敗: 両経路とも500を返す", async () => {
+  it("INSERT失敗時は500を返す", async () => {
     const dbError = { code: "XX000", message: "unexpected database error" };
 
-    vi.stubEnv("DB_DRIVER", undefined);
-    const client = createSupabaseClientMock({
-      streamers: [{ data: STREAMER_ROW }],
-      cards: [{ data: null, error: dbError }],
-    });
-    mockGetSupabaseAdmin.mockReturnValue(client as any);
-    const postgrestRes = await POST(createBatchRequest(REQUEST_BODY));
-    expect(postgrestRes.status).toBe(500);
-
-    vi.stubEnv("DB_DRIVER", "pg");
     const pg = createDrizzleDbMock({
       selects: [{ rows: [STREAMER_ROW] }],
       inserts: [{ error: dbError }],
@@ -370,7 +288,6 @@ describe("POST /api/cards/batch: postgrest / pg 経路の互換 (#663)", () => {
       },
     ];
 
-    vi.stubEnv("DB_DRIVER", "pg");
     const pg = createDrizzleDbMock({
       selects: [{ rows: [STREAMER_ROW] }],
       inserts: [
@@ -396,38 +313,4 @@ describe("POST /api/cards/batch: postgrest / pg 経路の互換 (#663)", () => {
     expect(Object.keys(pg.insertCalls[1].returningFields ?? {})).not.toContain("hp");
   });
 
-  it("フラグ未設定時は getDb が呼ばれない（挙動不変の検証）", async () => {
-    vi.stubEnv("DB_DRIVER", undefined);
-    const client = createSupabaseClientMock({
-      streamers: [{ data: STREAMER_ROW }],
-      cards: [{ data: CREATED_ROWS }],
-    });
-    mockGetSupabaseAdmin.mockReturnValue(client as any);
-    await POST(createBatchRequest(REQUEST_BODY));
-    expect(getDb).not.toHaveBeenCalled();
-  });
-
-  it("pg-read では書き込み関数のため postgrest のまま（getDb が呼ばれない）", async () => {
-    vi.stubEnv("DB_DRIVER", "pg-read");
-    const client = createSupabaseClientMock({
-      streamers: [{ data: STREAMER_ROW }],
-      cards: [{ data: CREATED_ROWS }],
-    });
-    mockGetSupabaseAdmin.mockReturnValue(client as any);
-    await POST(createBatchRequest(REQUEST_BODY));
-    expect(getDb).not.toHaveBeenCalled();
-  });
-
-  it("pg 経路では supabase-js の .from() が一切呼ばれない", async () => {
-    vi.stubEnv("DB_DRIVER", "pg");
-    const pg = createDrizzleDbMock({
-      selects: [{ rows: [STREAMER_ROW] }],
-      inserts: [{ rows: CREATED_ROWS }],
-    });
-    primePgDb(pg);
-    const client = createSupabaseClientMock({});
-    mockGetSupabaseAdmin.mockReturnValue(client as any);
-    await POST(createBatchRequest(REQUEST_BODY));
-    expect(client.from).not.toHaveBeenCalled();
-  });
 });

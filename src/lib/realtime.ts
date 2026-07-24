@@ -68,6 +68,7 @@ interface PollingResponse {
   events?: PollingEvent[]
   realtimeEvents?: GachaRealtimeEventV1[]
   nextCursor?: PollingCursor | null
+  demoEvent?: PollingEvent | null
 }
 
 /**
@@ -103,15 +104,13 @@ const CONNECTED_GAP_RECOVERY_MS = 30_000
 function eventUrl(
   streamerId: string,
   cursor: PollingCursor,
-  demo: boolean
+  demoCursor: PollingCursor
 ): string {
-  const suffix = demo ? 'demo-events' : 'events'
-  const url = new URL(`/api/overlay/${streamerId}/${suffix}`, window.location.origin)
+  const url = new URL(`/api/overlay/${streamerId}/events`, window.location.origin)
   url.searchParams.set('since', cursor.redeemedAt)
-  if (!demo) {
-    url.searchParams.set('contract', 'v1')
-    if (cursor.historyId) url.searchParams.set('afterId', cursor.historyId)
-  }
+  url.searchParams.set('demoSince', demoCursor.redeemedAt)
+  url.searchParams.set('contract', 'v1')
+  if (cursor.historyId) url.searchParams.set('afterId', cursor.historyId)
   url.searchParams.set('_', String(Date.now()))
   return url.toString()
 }
@@ -308,11 +307,13 @@ export function subscribeToGachaResults(
     pollInFlight = true
     options.onStatusChange?.('POLLING')
     try {
-      const [historyResponse, demoResponse] = await Promise.all([
-        fetchJson<PollingResponse>(eventUrl(streamerId, historyCursor, false)),
-        fetchJson<{ event?: PollingEvent | null }>(eventUrl(streamerId, demoCursor, true))
-          .catch(() => ({ event: null })),
-      ])
+      // History recovery and the rare operator demo share one HTTP response.
+      // Keeping separate cursors in that response preserves the critical rule
+      // that a demo timestamp must never advance committed gacha history, while
+      // avoiding one always-on Worker invocation per active OBS overlay.
+      const historyResponse = await fetchJson<PollingResponse>(
+        eventUrl(streamerId, historyCursor, demoCursor)
+      )
 
       const rawEvents = historyResponse.events ?? []
       const envelopes = historyResponse.realtimeEvents?.length
@@ -327,7 +328,7 @@ export function subscribeToGachaResults(
         historyCursor = { redeemedAt: last.redeemedAt, historyId: last.id }
       }
 
-      const demoEvent = demoResponse.event ?? null
+      const demoEvent = historyResponse.demoEvent ?? null
       if (demoEvent) {
         demoCursor = { redeemedAt: demoEvent.redeemedAt, historyId: demoEvent.id }
         const demoId = demoEvent.eventId ?? `demo:${demoEvent.id}`

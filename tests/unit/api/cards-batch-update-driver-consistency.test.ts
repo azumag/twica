@@ -1,12 +1,11 @@
 import { NextRequest } from "next/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/api/cards/batch-update/route";
 import { getDb } from "@/lib/db/client";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
@@ -22,7 +21,6 @@ const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockGetRateLimitIdentifier = vi.mocked(getRateLimitIdentifier);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
 const mockValidateContentType = vi.mocked(validateContentType);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 
 function createPgSelectMock(responses: unknown[][]) {
   let responseIndex = 0;
@@ -73,7 +71,6 @@ function createRequest(): NextRequest {
 describe("POST /api/cards/batch-update DB driver consistency (#794)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("DB_DRIVER", "pg");
 
     mockGetSession.mockResolvedValue({
       twitchUserId: "twitch-user-1",
@@ -94,10 +91,6 @@ describe("POST /api/cards/batch-update DB driver consistency (#794)", () => {
     mockGetRateLimitIdentifier.mockResolvedValue("user:twitch-user-1");
     mockValidateCSRFToken.mockResolvedValue({ valid: true });
     mockValidateContentType.mockReturnValue(null);
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it("uses PlanetScale for ownership, card validation, recalculation, and response reads", async () => {
@@ -155,16 +148,6 @@ describe("POST /api/cards/batch-update DB driver consistency (#794)", () => {
       sql,
     } as never);
 
-    const supabaseAdmin = {
-      from: vi.fn(() => {
-        throw new Error("Supabase read must not run in pg mode");
-      }),
-      rpc: vi.fn(() => {
-        throw new Error("Supabase RPC must not run in pg mode");
-      }),
-    };
-    mockGetSupabaseAdmin.mockReturnValue(supabaseAdmin as never);
-
     const response = await POST(createRequest());
     const body = await response.json();
 
@@ -176,8 +159,6 @@ describe("POST /api/cards/batch-update DB driver consistency (#794)", () => {
       recalculatedCards,
     });
     expect(pg.select).toHaveBeenCalledTimes(5);
-    expect(supabaseAdmin.from).not.toHaveBeenCalled();
-    expect(supabaseAdmin.rpc).not.toHaveBeenCalled();
     expect(sql).toHaveBeenCalledTimes(2);
 
     const firstSqlValues = (sql.mock.calls[0] as [

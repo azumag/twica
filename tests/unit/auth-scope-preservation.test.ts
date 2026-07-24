@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { getDb } from '@/lib/db/client'
+import type { NextResponse } from 'next/server'
 
 // --- Mocks ---
 
@@ -46,31 +48,50 @@ vi.mock('@/lib/session', () => ({
   verifySession: (payload: string) => Promise.resolve(payload),
 }))
 
-// supabase admin - チェーン可能なモック
-// getSupabaseAdmin()の呼び出しごとにmockをリセットしないよう、
-// 永続的なモックオブジェクトを使用する
-const mockMaybeSingle = vi.fn().mockResolvedValue({ data: null, error: null })
-const mockEq = vi.fn().mockReturnValue({ maybeSingle: mockMaybeSingle, error: null })
-const mockSelect = vi.fn().mockReturnValue({ eq: mockEq })
-const mockUpdate = vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) })
-const mockUpsert = vi.fn().mockResolvedValue({ error: null })
-const mockFrom = vi.fn().mockReturnValue({
-  select: mockSelect,
-  upsert: mockUpsert,
-  update: mockUpdate,
-})
+// PlanetScale/Drizzle は SELECT の失敗を `{ data, error }` ではなく throw で通知する。
+// 対象列ごとに独立した mock を持たせることで、withDbRetry による同一クエリの再実行が
+// 後続の channel_points_enabled / TOS 読み取り結果を誤って消費しないようにする。
+// これは実際の Drizzle builder と同じ「投影列でクエリを識別し、rows を返す」契約である。
+const mockReadTwitchScopes = vi.fn().mockResolvedValue([])
+const mockReadChannelPointsEnabled = vi.fn().mockResolvedValue([])
+const mockReadTosAccepted = vi.fn().mockResolvedValue([{ tos_accepted_at: '2024-01-01' }])
+const mockUpsert = vi.fn().mockResolvedValue(undefined)
+vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
 
-const mockSupabaseClient = { from: mockFrom }
+function createDbMock() {
+  const select = vi.fn((projection: Record<string, unknown>) => {
+    const readRows = 'twitch_scopes' in projection
+      ? mockReadTwitchScopes
+      : 'channel_points_enabled' in projection
+        ? mockReadChannelPointsEnabled
+        : 'tos_accepted_at' in projection
+          ? mockReadTosAccepted
+          : null
 
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(() => mockSupabaseClient),
-}))
+    if (!readRows) {
+      throw new Error(`Unexpected Drizzle SELECT projection: ${Object.keys(projection).join(',')}`)
+    }
+
+    const limit = vi.fn(() => readRows())
+    const where = vi.fn().mockReturnValue({ limit })
+    const from = vi.fn().mockReturnValue({ where })
+    return { from }
+  })
+
+  const onConflictDoUpdate = vi.fn(async () => mockUpsert())
+  const values = vi.fn().mockReturnValue({ onConflictDoUpdate })
+  const insert = vi.fn().mockReturnValue({ values })
+  return { select, insert }
+}
 
 // twitch auth
 // 実関数 isInvalidAuthorizationCodeError(error: unknown) と同じ引数個数で宣言する。
 // vi.fn の型はコールバック引数から推論されるため、0引数のままだと
 // モックするモジュールの型 (error: unknown) => boolean と合わずコンパイルエラーになる。
-const mockIsInvalidAuthorizationCodeError = vi.fn((_error: unknown) => false)
+const mockIsInvalidAuthorizationCodeError = vi.fn((_error: unknown) => {
+  void _error
+  return false
+})
 vi.mock('@/lib/twitch/auth', () => ({
   getTwitchAuthUrl: vi.fn((_redirectUri: string, _state: string, additionalScopes?: string[]) =>
     `https://twitch.tv/authorize?scopes=${(additionalScopes ?? []).join(',')}`
@@ -97,17 +118,26 @@ vi.mock('@/lib/rate-limit', () => ({
 // error handlers and sentry
 // 実関数 handleAuthError(error, errorType, context?, options?) と同じ引数個数で宣言する。
 // 2引数のままだとモックするモジュールの型(4引数)と合わずコンパイルエラーになる。
-const mockHandleAuthError = vi.fn((_err: unknown, code: string, _context?: Record<string, unknown>, _options?: { returnJson?: boolean; baseUrl?: string }) => ({
-  type: 'error',
-  code,
-  cookies: {
-    set: vi.fn(),
-    delete: vi.fn(),
-  },
-  headers: {
-    get: vi.fn(),
-  },
-}))
+const mockHandleAuthError = vi.fn((
+  _err: unknown,
+  code: string,
+  _context?: Record<string, unknown>,
+  _options?: { returnJson?: boolean; baseUrl?: string },
+) => {
+  void _context
+  void _options
+  return {
+    type: 'error',
+    code,
+    cookies: {
+      set: vi.fn(),
+      delete: vi.fn(),
+    },
+    headers: {
+      get: vi.fn(),
+    },
+  }
+})
 vi.mock('@/lib/auth-error-handler', () => ({
   // 同上: mock自体の引数型が実関数と一致しているため直接割り当てる
   handleAuthError: mockHandleAuthError,
@@ -152,17 +182,11 @@ describe('Auth scope preservation: login route', () => {
     mockCookieStore.set.mockReturnValue(undefined)
     mockGetSession.mockResolvedValue(null)
     mockParseSession.mockImplementation(() => { throw new Error('Invalid session') })
-    // Supabaseチェーンを再構築（clearAllMocksでリセットされるため）
-    mockEq.mockReturnValue({ maybeSingle: mockMaybeSingle, error: null })
-    mockSelect.mockReturnValue({ eq: mockEq })
-    mockUpdate.mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) })
-    mockUpsert.mockResolvedValue({ error: null })
-    mockFrom.mockReturnValue({
-      select: mockSelect,
-      upsert: mockUpsert,
-      update: mockUpdate,
-    })
-    mockMaybeSingle.mockResolvedValue({ data: null, error: null })
+    mockUpsert.mockResolvedValue(undefined)
+    mockReadTwitchScopes.mockReset().mockResolvedValue([])
+    mockReadChannelPointsEnabled.mockReset().mockResolvedValue([])
+    mockReadTosAccepted.mockReset().mockResolvedValue([{ tos_accepted_at: '2024-01-01' }])
+    vi.mocked(getDb).mockResolvedValue({ db: createDbMock(), sql: {} } as any)
   })
 
   it('DB障害時にスコープ復元失敗ガードCookieが設定される', async () => {
@@ -173,10 +197,9 @@ describe('Auth scope preservation: login route', () => {
     })
 
     // DBクエリがエラーを返す
-    mockMaybeSingle.mockResolvedValue({
-      data: null,
-      error: { code: 'PGRST000', message: 'Connection failed' },
-    })
+    mockReadTwitchScopes.mockRejectedValue(
+      Object.assign(new Error('Connection failed'), { code: '08006' }),
+    )
 
     const { GET } = await import('@/app/api/auth/twitch/login/route')
     await GET(createMockRequest())
@@ -205,10 +228,7 @@ describe('Auth scope preservation: login route', () => {
     })
 
     // DBクエリが正常に返す（追加スコープなし）
-    mockMaybeSingle.mockResolvedValue({
-      data: { twitch_scopes: null },
-      error: null,
-    })
+    mockReadTwitchScopes.mockResolvedValue([{ twitch_scopes: null }])
 
     const { GET } = await import('@/app/api/auth/twitch/login/route')
     await GET(createMockRequest())
@@ -232,7 +252,7 @@ describe('Auth scope preservation: login route', () => {
     await GET(createMockRequest())
 
     // 非数値のためDBクエリが呼ばれないことを確認
-    expect(mockFrom).not.toHaveBeenCalledWith('users')
+    expect(getDb).not.toHaveBeenCalled()
   })
 
   it('SCOPE_RESTORE_USER_ID Cookieが存在しない場合、twitchUserIdを抽出せずDBクエリを呼ばない', async () => {
@@ -243,7 +263,7 @@ describe('Auth scope preservation: login route', () => {
     await GET(createMockRequest())
 
     // twitchUserIdが取得できないためDBクエリが呼ばれないことを確認
-    expect(mockFrom).not.toHaveBeenCalledWith('users')
+    expect(getDb).not.toHaveBeenCalled()
   })
 
   it('明示ログアウト後: SCOPE_RESTORE_USER_ID CookieからtwitchUserIdを取得し追加スコープをOAuthリクエストに含める', async () => {
@@ -254,10 +274,9 @@ describe('Auth scope preservation: login route', () => {
     })
 
     // DBに追加スコープがある
-    mockMaybeSingle.mockResolvedValue({
-      data: { twitch_scopes: ['user:read:email', 'user:write:chat'] },
-      error: null,
-    })
+    mockReadTwitchScopes.mockResolvedValue([
+      { twitch_scopes: ['user:read:email', 'user:write:chat'] },
+    ])
 
     const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
     const { GET } = await import('@/app/api/auth/twitch/login/route')
@@ -291,10 +310,9 @@ describe('Auth scope preservation: login route', () => {
     mockParseSession.mockReturnValue(expiredSession)
 
     // DBに追加スコープがある
-    mockMaybeSingle.mockResolvedValue({
-      data: { twitch_scopes: ['user:read:email', 'user:write:chat'] },
-      error: null,
-    })
+    mockReadTwitchScopes.mockResolvedValue([
+      { twitch_scopes: ['user:read:email', 'user:write:chat'] },
+    ])
 
     const { getTwitchAuthUrl } = await import('@/lib/twitch/auth')
     const { GET } = await import('@/app/api/auth/twitch/login/route')
@@ -313,21 +331,15 @@ describe('Auth scope preservation: login route', () => {
 describe('Auth scope preservation: callback route', () => {
   let exchangeCodeForTokens: ReturnType<typeof vi.fn>
   let getTwitchUser: ReturnType<typeof vi.fn>
-  // callbackルートは2回DB参照する:
-  // 1. 既存スコープ保護チェック（twitch_scopes取得）
-  // 2. TOSチェック（tos_accepted_at取得）
-  const setCallbackMaybeSingleResults = (existingScopes: string[] | null = null) => {
-    mockMaybeSingle.mockReset()
-    // 1回目: 既存スコープ保護チェック
-    mockMaybeSingle.mockResolvedValueOnce({
-      data: existingScopes !== null ? { twitch_scopes: existingScopes } : null,
-      error: null,
-    })
-    // 2回目: TOSチェック
-    mockMaybeSingle.mockResolvedValueOnce({
-      data: { tos_accepted_at: '2024-01-01' },
-      error: null,
-    })
+  // callbackルートの独立した3つの SELECT を投影列ごとに設定する。
+  // 呼び出し順のキューにしないのは、読み取りリトライが発生しても別クエリの
+  // fixture を消費しないことを保証するため。
+  const setCallbackReadResults = (existingScopes: string[] | null = null) => {
+    mockReadTwitchScopes.mockReset().mockResolvedValue(
+      existingScopes !== null ? [{ twitch_scopes: existingScopes }] : [],
+    )
+    mockReadChannelPointsEnabled.mockReset().mockResolvedValue([])
+    mockReadTosAccepted.mockReset().mockResolvedValue([{ tos_accepted_at: '2024-01-01' }])
   }
 
   beforeEach(async () => {
@@ -360,18 +372,9 @@ describe('Auth scope preservation: callback route', () => {
       broadcaster_type: 'affiliate',
     })
 
-    // Supabaseチェーンを再構築
-    mockEq.mockReturnValue({ maybeSingle: mockMaybeSingle, error: null })
-    mockSelect.mockReturnValue({ eq: mockEq })
-    mockUpdate.mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) })
-    mockUpsert.mockResolvedValue({ error: null })
-    mockFrom.mockReturnValue({
-      select: mockSelect,
-      upsert: mockUpsert,
-      update: mockUpdate,
-    })
-    // TOSチェック: users.tos_accepted_at取得
-    setCallbackMaybeSingleResults()
+    mockUpsert.mockResolvedValue(undefined)
+    vi.mocked(getDb).mockResolvedValue({ db: createDbMock(), sql: {} } as any)
+    setCallbackReadResults()
   })
 
   it('無効な認証コード時は非ログ対象エラーで処理し、state Cookieを削除する', async () => {
@@ -460,7 +463,7 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
     // DBに追加スコープなし（デフォルトスコープのみ）
-    setCallbackMaybeSingleResults(['user:read:email'])
+    setCallbackReadResults(['user:read:email'])
 
     const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
@@ -516,7 +519,7 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
 
-    const { NextRequest, NextResponse } = await import('next/server')
+    const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 
@@ -542,7 +545,7 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
 
-    const { NextRequest, NextResponse } = await import('next/server')
+    const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 
@@ -564,9 +567,9 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
     // DBに追加スコープ（user:write:chat）がある
-    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
+    setCallbackReadResults(['user:read:email', 'user:write:chat'])
 
-    const { NextRequest, NextResponse } = await import('next/server')
+    const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 
@@ -598,7 +601,7 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
     // DBに追加スコープなし
-    setCallbackMaybeSingleResults(['user:read:email'])
+    setCallbackReadResults(['user:read:email'])
 
     const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
@@ -617,7 +620,7 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
     // DBにchat + sub両方ある
-    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat', 'user:read:subscriptions'])
+    setCallbackReadResults(['user:read:email', 'user:write:chat', 'user:read:subscriptions'])
 
     // トークンにはchatのみ含まれている（subは欠落）
     exchangeCodeForTokens.mockResolvedValue({
@@ -628,7 +631,7 @@ describe('Auth scope preservation: callback route', () => {
       scope: ['user:read:email', 'user:write:chat'],
     })
 
-    const { NextRequest, NextResponse } = await import('next/server')
+    const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 
@@ -650,17 +653,11 @@ describe('Auth scope preservation: callback route', () => {
       if (name === 'twitch_auth_state') return { value: 'test-state-123' }
       return undefined
     })
-    // DB読み取りエラー
-    mockMaybeSingle.mockReset()
-    mockMaybeSingle.mockResolvedValueOnce({
-      data: null,
-      error: { code: 'PGRST000', message: 'Connection failed' },
-    })
-    // TOSチェック
-    mockMaybeSingle.mockResolvedValueOnce({
-      data: { tos_accepted_at: '2024-01-01' },
-      error: null,
-    })
+    // 一時的な接続障害が全リトライで継続するケースを再現する。SELECT対象列ごとの
+    // fixture なので、リトライが後続のTOS読み取り成功値を消費することはない。
+    mockReadTwitchScopes.mockRejectedValue(
+      Object.assign(new Error('Connection failed'), { code: '08006' }),
+    )
 
     const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
@@ -670,6 +667,7 @@ describe('Auth scope preservation: callback route', () => {
     await GET(request)
 
     // fail-safeによりスキップ
+    expect(mockReadTwitchScopes).toHaveBeenCalledTimes(4)
     expect(mockSaveTwitchScopes).not.toHaveBeenCalled()
   })
 
@@ -682,9 +680,9 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
     // DBに追加スコープがある（通常ログインならリダイレクトされるケース）
-    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
+    setCallbackReadResults(['user:read:email', 'user:write:chat'])
 
-    const { NextRequest, NextResponse } = await import('next/server')
+    const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 
@@ -710,9 +708,9 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
     // DBに追加スコープがある → 乖離検出 → リダイレクト
-    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
+    setCallbackReadResults(['user:read:email', 'user:write:chat'])
 
-    const { NextRequest, NextResponse } = await import('next/server')
+    const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 
@@ -733,7 +731,7 @@ describe('Auth scope preservation: callback route', () => {
       return undefined
     })
     // DBに追加スコープがある（通常ログインならスキップされるケース）
-    setCallbackMaybeSingleResults(['user:read:email', 'user:write:chat'])
+    setCallbackReadResults(['user:read:email', 'user:write:chat'])
 
     const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
@@ -750,7 +748,7 @@ describe('Auth scope preservation: callback route', () => {
     // 認証完了後はセッションCookieにtwitchUserIdが含まれるため
     // スコープ復元用Cookie（twica_scope_restore_uid）は不要になる
     // After successful auth, twitchUserId is in session cookie, so scope-restore cookie is cleaned up
-    const { NextRequest, NextResponse } = await import('next/server')
+    const { NextRequest } = await import('next/server')
     const url = 'http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123'
     const request = new NextRequest(url)
 

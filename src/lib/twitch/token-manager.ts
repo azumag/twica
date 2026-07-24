@@ -1,30 +1,13 @@
-import { getSupabaseAdmin } from '@/lib/supabase/admin';
-import { withRetry } from '@/lib/supabase/retry';
 import { refreshTwitchToken, TwitchTokenRefreshError, type TwitchTokens } from './auth';
-import { logger } from '@/lib/logger';
+import { logger } from '@/lib/logger.server';
 // -----------------------------------------------------------------------------
-// #572 (#570 パイロット踏襲): pg 直結経路。
-// 各関数の先頭でフラグ分岐し、既存 supabase-js 実装は 1 文字も変えずに残す
-// （フラグ未設定時は完全に従来どおり動く）。pg 実装は同ファイル内の xxxPg 関数に
-// 置き、getDb() は withDbRetry の queryFn 内で呼ぶ規約（src/lib/db/retry.ts 参照）。
-//
-// フラグの使い分け（#572 の設計判断）:
-// - 読み取りだけの関数 → isPgReadEnabled()（pg-read / pg で切替）
-// - 書き込みを含む関数（読み取りが混在する場合も含む）→ isPgWriteEnabled()
-//   （pg のときのみ切替。読み書きで別経路が混ざると障害切り分けが困難になるため、
-//   混在関数は関数全体を書き込みフラグで分岐する）
-//
-// 日付の表現形式（#688 で更新。announcements.ts / dashboard-data.ts パイロットと同様）:
-// pg 直結の timestamptz は src/lib/db/client.ts の installIsoTimestampParsers()
-// により接続確立時に ISO 8601 へ正規化されるため、PostgREST 経路と表現形式が
-// 一致する（正規化前は PG テキスト形式 '2026-03-10 12:00:00.123456+00' だった）。
-// 本モジュールの日付消費はすべて new Date() 経由の期限判定のみで（日付文字列を
-// 戻り値として返す関数は無い）、正規化前後どちらの形式でも V8 は同一時刻に解釈
-// するため実害はなかったが、正規化後は文字列表現も PostgREST 経路と一致する。
+// Twitch credential・scope・BOT設定はPlanetScale/Drizzleの単一経路。
+// getDb()は接続回復を有効にするためwithDbRetryのqueryFn内で取得する。
+// timestamptzはdb/client.tsでISO 8601へ正規化され、期限判定はnew Date()経由。
 // -----------------------------------------------------------------------------
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull, lte, or, sql } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
-import { isPgReadEnabled, isPgWriteEnabled } from '@/lib/db/flags';
+
 import { withDbRetry } from '@/lib/db/retry';
 import { isPgMissingColumnError, isPgMissingTableError } from '@/lib/db/errors';
 import {
@@ -45,43 +28,382 @@ export class TwitchTokenError extends Error {
   }
 }
 
-// Cloudflare Workers の fetch/DB I/O はリクエストコンテキストに所属するため、pending
-// Promise をmodule scopeへ保存して別リクエストからawaitしてはいけない。並行refreshは
-// token endpointまで各リクエスト内で完結させ、保存時に「交換に使用した旧refresh token」
-// を条件とするDB CASだけで競合を解決する。CAS loserはwinnerのaccess tokenを再読込するため
-// ローテーション済み資格情報を上書きしない。Durable Objectによる分散直列化は、現時点では
-// DB CASで整合性を満たせるためYAGNIとし、request-scoped I/O境界を優先する。
+// Workersのfetch/DB I/Oはrequest contextに所属するため、pending Promiseをmodule
+// scopeへ保存して別requestからawaitしてはいけない。同じcredential行の短期leaseを
+// DB時刻で取得し、Twitch endpointを呼ぶrequestをisolate横断で1件に絞る。外部APIは
+// transaction外で呼び、保存時はlease IDをfencing tokenとして期限切れ旧leaderの
+// 上書きも拒否する。Twitch公式の「refreshは1 threadで実施して配布」とCloudflare/
+// Hyperdriveのrequest-scope制約を同時に満たす境界である。
+const TWITCH_REFRESH_LEASE_TTL_SECONDS = 40
+const TWITCH_REFRESH_SAVE_LEASE_TTL_SECONDS = 60
+// Twitch token refreshの最大13秒より最小累計（約14.85秒）を長くし、遅いleaderの
+// 保存をfollowersが観測できるようにする。一方、25% jitter込みの最大累計は約18.6秒
+// なので、Cloudflare waitUntilの30秒内にchat送信（最大約9.75秒）の余白も残す。
+// 無制限pollやrequest context外の共有Promiseは使わない。
+const REFRESH_WINNER_POLL_DELAYS_MS = [
+  0,
+  100,
+  250,
+  500,
+  1_000,
+  1_500,
+  2_000,
+  2_500,
+  3_000,
+  3_000,
+  1_000,
+]
+
+type RefreshLeaseOptions = {
+  acquire: (leaseId: string) => Promise<boolean>
+  release: (leaseId: string) => Promise<void>
+  readWinner: () => Promise<string | null>
+  refreshAndPersist: (leaseId: string) => Promise<string>
+}
+
+function waitForDelay(delayMs: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, delayMs))
+}
+
+async function waitForRefreshWinner(
+  readWinner: () => Promise<string | null>,
+): Promise<string | null> {
+  // DBのLISTEN/NOTIFYはHyperdriveのpooled接続と相性が悪いため使わない。通常は
+  // 最初の数百msでwinnerを観測し、遅い場合も約18.6秒・最大11 readに制限する。
+  // 同時followersが同じ瞬間にSELECTしないよう各待機へ最大25%のjitterを加え、
+  // 51並行時のDB負荷とユーザー待ち時間をboundedにする。
+  for (const delayMs of REFRESH_WINNER_POLL_DELAYS_MS) {
+    if (delayMs > 0) {
+      const jitterMs = Math.floor(Math.random() * Math.max(1, Math.floor(delayMs / 4)))
+      await waitForDelay(delayMs + jitterMs)
+    }
+    const winner = await readWinner()
+    if (winner) return winner
+  }
+  return null
+}
+
+async function runWithRefreshLease(options: RefreshLeaseOptions): Promise<string> {
+  const leaseId = crypto.randomUUID()
+  const acquired = await options.acquire(leaseId)
+
+  if (!acquired) {
+    const winner = await waitForRefreshWinner(options.readWinner)
+    if (winner) return winner
+    // leaseを奪ってOAuthを重複実行しない。leader異常終了時はDB時刻で40秒後に
+    // 次の通常requestが回復できるため、このrequestは上限付き待機後に失敗する。
+    throw new Error('Twitch token refresh is already in progress')
+  }
+
+  const releaseBestEffort = async () => {
+    try {
+      await options.release(leaseId)
+    } catch {
+      // token保存成功時は同じUPDATEでleaseを解除済み。callback winner等で残った
+      // leaseの明示解除に失敗しても期限で回復し、利用可能なtokenを失敗扱いしない。
+    }
+  }
+
+  try {
+    const accessToken = await options.refreshAndPersist(leaseId)
+    await releaseBestEffort()
+    return accessToken
+  } catch (error) {
+    // OAuth callback等が並行して新しいpairを保存した場合だけwinnerを採用する。
+    // winnerが無い失敗でもowner条件付きでleaseを解除する。既に待機中のfollowersは
+    // 再取得せず失敗するため同一波のstampedeは起こさず、次の通常requestだけが
+    // 直ちに回復を試せる。期限まで40秒間すべての通知を拒否する窓を残さない。
+    const winner = await options.readWinner()
+    await releaseBestEffort()
+    if (winner) {
+      return winner
+    }
+    throw error
+  }
+}
+
+async function acquireUserRefreshLease(
+  twitchUserId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .update(usersTable)
+        .set({
+          twitch_refresh_lease_id: leaseId,
+          // DB時刻だけで取得可否と期限を決め、Worker間のclock skewを排除する。
+          twitch_refresh_lease_expires_at:
+            sql`now() + (${TWITCH_REFRESH_LEASE_TTL_SECONDS} * interval '1 second')`,
+        })
+        .where(and(
+          eq(usersTable.twitch_user_id, twitchUserId),
+          eq(usersTable.twitch_refresh_token, attemptedRefreshToken),
+          // 初回read後に別request/callbackが有効期限だけ更新した場合も、古い判定で
+          // OAuthを再実行しない。取得可否はWorker時計ではなくDB時刻で再検証する。
+          lte(usersTable.twitch_token_expires_at, sql`now()`),
+          or(
+            isNull(usersTable.twitch_refresh_lease_id),
+            isNull(usersTable.twitch_refresh_lease_expires_at),
+            lte(usersTable.twitch_refresh_lease_expires_at, sql`now()`),
+            // 接続断後のwithDbRetryは同じUUIDで再実行するため冪等に成功させる。
+            eq(usersTable.twitch_refresh_lease_id, leaseId),
+          ),
+        ))
+        .returning({ leaseId: usersTable.twitch_refresh_lease_id })
+    },
+    'refreshTwitchAccessToken(acquire lease)',
+    { idempotent: true },
+  )
+  return rows[0]?.leaseId === leaseId
+}
+
+async function releaseUserRefreshLease(
+  twitchUserId: string,
+  leaseId: string,
+): Promise<void> {
+  await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      await db
+        .update(usersTable)
+        .set({
+          twitch_refresh_lease_id: null,
+          twitch_refresh_lease_expires_at: null,
+        })
+        .where(and(
+          eq(usersTable.twitch_user_id, twitchUserId),
+          eq(usersTable.twitch_refresh_lease_id, leaseId),
+        ))
+    },
+    'refreshTwitchAccessToken(release lease)',
+    { idempotent: true },
+  )
+}
+
+async function renewUserRefreshLeaseForSave(
+  twitchUserId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .update(usersTable)
+        .set({
+          // OAuth（最大約28秒）の後に保存専用の余裕を取り直す。DB接続の
+          // connect_timeout 10秒 × 最大4試行 + backoffを60秒内へ収める。
+          twitch_refresh_lease_expires_at:
+            sql`now() + (${TWITCH_REFRESH_SAVE_LEASE_TTL_SECONDS} * interval '1 second')`,
+        })
+        .where(and(
+          eq(usersTable.twitch_user_id, twitchUserId),
+          eq(usersTable.twitch_refresh_token, attemptedRefreshToken),
+          eq(usersTable.twitch_refresh_lease_id, leaseId),
+        ))
+        .returning({ leaseId: usersTable.twitch_refresh_lease_id })
+    },
+    'refreshTwitchAccessToken(renew lease for save)',
+    { idempotent: true },
+  )
+  return rows[0]?.leaseId === leaseId
+}
+
+async function acquireBotRefreshLease(
+  accountId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .update(twitchBotAccountsTable)
+        .set({
+          twitch_refresh_lease_id: leaseId,
+          twitch_refresh_lease_expires_at:
+            sql`now() + (${TWITCH_REFRESH_LEASE_TTL_SECONDS} * interval '1 second')`,
+        })
+        .where(and(
+          eq(twitchBotAccountsTable.id, accountId),
+          eq(twitchBotAccountsTable.twitch_refresh_token, attemptedRefreshToken),
+          lte(twitchBotAccountsTable.twitch_token_expires_at, sql`now()`),
+          or(
+            isNull(twitchBotAccountsTable.twitch_refresh_lease_id),
+            isNull(twitchBotAccountsTable.twitch_refresh_lease_expires_at),
+            lte(twitchBotAccountsTable.twitch_refresh_lease_expires_at, sql`now()`),
+            eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+          ),
+        ))
+        .returning({ leaseId: twitchBotAccountsTable.twitch_refresh_lease_id })
+    },
+    'getBotAccountForChat(acquire refresh lease)',
+    { idempotent: true },
+  )
+  return rows[0]?.leaseId === leaseId
+}
+
+async function renewBotRefreshLeaseForSave(
+  accountId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      return db
+        .update(twitchBotAccountsTable)
+        .set({
+          twitch_refresh_lease_expires_at:
+            sql`now() + (${TWITCH_REFRESH_SAVE_LEASE_TTL_SECONDS} * interval '1 second')`,
+        })
+        .where(and(
+          eq(twitchBotAccountsTable.id, accountId),
+          eq(twitchBotAccountsTable.twitch_refresh_token, attemptedRefreshToken),
+          eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+        ))
+        .returning({ leaseId: twitchBotAccountsTable.twitch_refresh_lease_id })
+    },
+    'getBotAccountForChat(renew refresh lease for save)',
+    { idempotent: true },
+  )
+  return rows[0]?.leaseId === leaseId
+}
+
+async function releaseBotRefreshLease(
+  accountId: string,
+  leaseId: string,
+): Promise<void> {
+  await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      await db
+        .update(twitchBotAccountsTable)
+        .set({
+          twitch_refresh_lease_id: null,
+          twitch_refresh_lease_expires_at: null,
+        })
+        .where(and(
+          eq(twitchBotAccountsTable.id, accountId),
+          eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+        ))
+    },
+    'getBotAccountForChat(release refresh lease)',
+    { idempotent: true },
+  )
+}
+
+async function markBotRefreshLeaseFailed(
+  accountId: string,
+  attemptedRefreshToken: string,
+  leaseId: string,
+): Promise<void> {
+  await withDbRetry(
+    async () => {
+      const { db } = await getDb()
+      await db
+        .update(twitchBotAccountsTable)
+        .set({
+          status: 'error',
+          last_error: 'token_refresh_failed',
+          twitch_refresh_lease_id: null,
+          twitch_refresh_lease_expires_at: null,
+        })
+        .where(and(
+          eq(twitchBotAccountsTable.id, accountId),
+          eq(twitchBotAccountsTable.twitch_refresh_token, attemptedRefreshToken),
+          eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+          eq(twitchBotAccountsTable.status, 'active'),
+        ))
+    },
+    'getBotAccountForChat(save fenced error status)',
+    { idempotent: true },
+  )
+}
 
 function shouldDisableBotCredential(error: unknown): boolean {
   // Twitch が資格情報の失効を示す400/401だけを再認証対象にする。403/404/501等は
   // client設定・WAF・上流機能の問題でも起こるため、単にretry対象外という理由だけで
   // BOTを無効化してはいけない（retry方針とcredential失効判定は別の責務）。
-  // 522/network/壊れた2xx応答やDB保存障害で status='error' にすると、取得クエリの
-  // active filterから永久除外され、障害復旧後も自動再試行できなくなる。
+  // 522/network/壊れた2xx応答やDB保存障害でstatus='error'にすると、取得クエリの
+  // active filterから外れ、上流復旧後も自動再試行できなくなる。
   return error instanceof TwitchTokenRefreshError
     && error.kind === 'http'
     && (error.status === 400 || error.status === 401);
 }
 
+async function readUserRefreshWinner(
+  twitchUserId: string,
+): Promise<string | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            twitch_access_token: usersTable.twitch_access_token,
+          })
+          .from(usersTable)
+          .where(and(
+            eq(usersTable.twitch_user_id, twitchUserId),
+            // Twitchは成功時もrefresh tokenを同じ値で返し得る。token値の変化ではなく、
+            // DB時刻で有効なaccess tokenが保存済みかをwinnerの唯一の条件にする。
+            gt(usersTable.twitch_token_expires_at, sql`now()`),
+          ))
+          .limit(1);
+      },
+      'refreshTwitchAccessToken(read CAS winner)',
+      { idempotent: true },
+    );
+    const winner = rows[0];
+    return winner?.twitch_access_token ?? null;
+  } catch {
+    // 元のOAuth/保存エラーをDB再確認エラーで置き換えない。API境界が既存の
+    // REFRESH_FAILEDとして扱い、token値や下位応答本文もログへ露出させない。
+    return null;
+  }
+}
+
+async function readBotRefreshWinner(
+  accountId: string,
+): Promise<string | null> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            twitch_access_token: twitchBotAccountsTable.twitch_access_token,
+          })
+          .from(twitchBotAccountsTable)
+          .where(and(
+            eq(twitchBotAccountsTable.id, accountId),
+            gt(twitchBotAccountsTable.twitch_token_expires_at, sql`now()`),
+          ))
+          .limit(1);
+      },
+      'getBotAccountForChat(read CAS winner)',
+      { idempotent: true },
+    );
+    const winner = rows[0];
+    return winner?.twitch_access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * getTwitchAccessToken の pg 直結実装 (#572)
  *
- * PostgREST 実装との対応:
- * - users を twitch_user_id で 1 行取得。既存の .maybeSingle() は twitch_user_id の
- *   UNIQUE 制約（migration 00001）により最大 1 行なので、LIMIT 1 + rows[0] ?? null で
- *   同じ外部挙動になる（0 行はエラーではなく null）。
- * - 列未デプロイ時の 42703 → warn + null について: 既存 postgrest 経路の PGRST204
- *   分岐は SELECT では実際には作動しない（PGRST204 はリクエストボディの列が
- *   スキーマキャッシュに無い「書き込み時」のコード。SELECT の列欠落は PostgREST
- *   でも PostgreSQL の 42703 がエラー応答としてそのまま返り、既存実装は
- *   TwitchTokenError('DATABASE_ERROR') として throw する）。つまり pg 版の
- *   isPgMissingColumnError → warn + null は PGRST204 の忠実な再現ではなく、
- *   トークン列追加マイグレーション前のコードが先行デプロイされる窓（SELECT 系
- *   デプロイ窓）で、トークン取得を例外で落とすのではなく「トークン無し」として
- *   安全側に倒すための意図的な動作である。
+ * - users を twitch_user_id で 1 行取得。UNIQUE 制約（migration 00001）により
+ *   最大 1 行なので、LIMIT 1 + rows[0] ?? null とする。
+ * - トークン列追加 migration よりコードが先行する窓では SQLSTATE 42703 を
+ *   warn + null とし、「トークン無し」の安全側へ倒す。
  * - 取得後の期限判定は既存実装と同一ロジック。期限切れ時の refreshTwitchAccessToken は
- *   共有関数のまま呼び、その内部で isPgWriteEnabled() により独立して経路が選ばれる
- *   （pg-read では読み取りのみ pg、書き込みは PostgREST という運用モードそのもの）。
+ *   共有関数のまま呼ぶ。
  */
 async function getTwitchAccessTokenPg(twitchUserId: string): Promise<string | null> {
   let user:
@@ -114,7 +436,10 @@ async function getTwitchAccessTokenPg(twitchUserId: string): Promise<string | nu
     user = rows[0] ?? null;
   } catch (dbError) {
     if (isPgMissingColumnError(dbError)) {
-      logger.warn('Twitch token columns not found in schema', { twitchUserId, error: dbError });
+      logger.error('Twitch token columns are missing; denying token access', {
+        twitchUserId,
+        error: dbError,
+      });
       return null;
     }
     logger.error('Database error fetching user tokens', { twitchUserId, error: dbError });
@@ -143,63 +468,26 @@ async function getTwitchAccessTokenPg(twitchUserId: string): Promise<string | nu
     return user.twitch_access_token;
   }
 
-  return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
+  try {
+    return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
+  } catch (error) {
+    if (isPgMissingColumnError(error)) {
+      // migration/app workflowは独立しており、lease列が先行配備されていない窓が
+      // あり得る。旧CAS-onlyへ戻すと並行OAuth上限を再発させるため、OAuthを呼ばず
+      // token access自体をfail-closedにする。
+      logger.error('Twitch token columns are missing; denying token access', {
+        twitchUserId,
+        error,
+      })
+      return null
+    }
+    throw error
+  }
 }
 
 export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
-  // #572: この関数自体の DB アクセスは読み取りのみのため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return getTwitchAccessTokenPg(twitchUserId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: user, error: dbError } = await withRetry(
-    () => supabaseAdmin
-      .from('users')
-      .select('twitch_access_token, twitch_refresh_token, twitch_token_expires_at')
-      .eq('twitch_user_id', twitchUserId)
-      .maybeSingle(),
-    'twitch token fetch',
-  );
-
-  if (dbError) {
-    // PGRST204 means column not found - token columns may not exist in schema
-    if (dbError.code === 'PGRST204') {
-      logger.warn('Twitch token columns not found in schema', { twitchUserId, error: dbError });
-      return null;
-    }
-
-    // Other database errors are unexpected and should be thrown
-    // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
-    logger.error('Database error fetching user tokens', { twitchUserId, error: dbError });
-    throw new TwitchTokenError(
-      'Failed to fetch user tokens from database',
-      'DATABASE_ERROR',
-      dbError
-    );
-  }
-
-  if (!user || !user.twitch_access_token || !user.twitch_refresh_token) {
-    return null;
-  }
-
-  if (!user.twitch_token_expires_at) {
-    return null;
-  }
-
-  const expiresAt = new Date(user.twitch_token_expires_at);
-  if (isNaN(expiresAt.getTime())) {
-    return null;
-  }
-
-  const now = new Date();
-  if (expiresAt > now) {
-    return user.twitch_access_token;
-  }
-
-  return await refreshTwitchAccessToken(twitchUserId, user.twitch_refresh_token);
+  // 読み取りから期限切れ時のCAS更新までPlanetScaleの単一経路で完結させる。
+  return getTwitchAccessTokenPg(twitchUserId);
 }
 
 export interface BotChatAccount {
@@ -222,36 +510,26 @@ interface BotAccountRow {
   twitch_token_expires_at: string;
 }
 
-function isMissingBotSchemaError(error: { code?: string } | null): boolean {
-  return error?.code === 'PGRST204' || error?.code === 'PGRST205' || error?.code === '42P01';
-}
 
-/**
- * isMissingBotSchemaError の pg 直結版 (#572)
- * PostgREST の PGRST204（列がスキーマキャッシュに無い）/ PGRST205（テーブルが
- * スキーマキャッシュに無い）は PostgREST 固有のコードで、pg 直結では PostgreSQL が
- * 直接 42703 (undefined_column) / 42P01 (undefined_table) を返すため両者で判定する。
- */
+
+/** PostgreSQL が返す 42703 (undefined_column) / 42P01 (undefined_table) を判定する。 */
 function isMissingBotSchemaErrorPg(error: unknown): boolean {
   return isPgMissingColumnError(error) || isPgMissingTableError(error);
 }
 
 /**
- * getBotAccountForChat の pg 直結実装 (#572)
+ * getBotAccountForChat のPlanetScale実装。
  *
  * 読み取り（streamers / streamer_chat_sender_settings / twitch_bot_accounts）と
- * 書き込み（リフレッシュ後のトークン保存・エラーステータス保存）が混在する関数の
- * ため、呼び出し元は isPgWriteEnabled() で関数全体を分岐する（ファイル冒頭の
- * フラグ使い分け方針を参照）。
+ * 書き込み（リフレッシュ後のトークン保存・エラーステータス保存）を同じ
+ * PlanetScale接続へ固定し、認証情報が別DBへ分断されないようにする。
  *
- * PostgREST 実装との対応:
  * - 各 .maybeSingle() は一意条件（streamers.twitch_user_id UNIQUE /
  *   streamer_chat_sender_settings.streamer_id PK / twitch_bot_accounts.id PK）
- *   での取得のため LIMIT 1 + rows[0] ?? null で同じ外部挙動。official_bot の
- *   .order(created_at, ascending).limit(1) は orderBy(asc) + limit(1) が等価。
- * - isMissingBotSchemaError による「BOT スキーマ未デプロイ窓」フォールバックは
- *   isMissingBotSchemaErrorPg（42703/42P01）で再現。
- * - トークン値はログに出さない（既存のログ慣習どおり error オブジェクトのみ）。
+ *   で取得するため LIMIT 1 + rows[0] ?? null とする。official_bot は
+ *   created_at昇順の先頭を正本として選ぶ。
+ * - BOTスキーマ未配備はSQLSTATE 42703/42P01で検知し、安全側へ縮退する。
+ * - トークン値はログに出さない。
  */
 async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<BotChatAccount | null> {
   let streamer: { id: string } | null;
@@ -307,7 +585,10 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
     senderSettings = rows[0] ?? null;
   } catch (settingsError) {
     if (isMissingBotSchemaErrorPg(settingsError)) {
-      logger.warn('Chat sender settings table not found in schema', { broadcasterTwitchUserId });
+      logger.error('Chat sender settings schema is missing; disabling BOT chat sender', {
+        broadcasterTwitchUserId,
+        error: settingsError,
+      });
       return null;
     }
     logger.error('Database error fetching chat sender settings', { broadcasterTwitchUserId, error: settingsError });
@@ -322,7 +603,7 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
     return null;
   }
 
-  // PostgREST 経路の select 文字列と同一の 8 列（両モード共通）
+  // 認証と送信に必要な8列だけを取得し、不要なcredential露出を避ける。
   const botAccountColumns = {
     id: twitchBotAccountsTable.id,
     owner_type: twitchBotAccountsTable.owner_type,
@@ -368,7 +649,10 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
       botAccount = (rows[0] ?? null) as BotAccountRow | null;
     } catch (error) {
       if (isMissingBotSchemaErrorPg(error)) {
-        logger.warn('Twitch BOT accounts table not found in schema', { broadcasterTwitchUserId });
+        logger.error('Twitch BOT accounts schema is missing; disabling custom BOT sender', {
+          broadcasterTwitchUserId,
+          error,
+        });
         return null;
       }
       logger.error('Database error fetching custom BOT account', { broadcasterTwitchUserId, error });
@@ -402,7 +686,10 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
       botAccount = (rows[0] ?? null) as BotAccountRow | null;
     } catch (error) {
       if (isMissingBotSchemaErrorPg(error)) {
-        logger.warn('Twitch BOT accounts table not found in schema', { broadcasterTwitchUserId });
+        logger.error('Twitch BOT accounts schema is missing; disabling official BOT sender', {
+          broadcasterTwitchUserId,
+          error,
+        });
         return null;
       }
       logger.error('Database error fetching official BOT account', { broadcasterTwitchUserId, error });
@@ -438,61 +725,83 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
   }
 
   try {
-    const tokens = await refreshTwitchToken(account.twitch_refresh_token);
-    const refreshedExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-    let accessToken = tokens.access_token;
-
-    try {
-      const updated = await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          return db
-            .update(twitchBotAccountsTable)
-            .set({
-              twitch_access_token: tokens.access_token,
-              twitch_refresh_token: tokens.refresh_token,
-              twitch_token_expires_at: refreshedExpiresAt.toISOString(),
-              scopes: tokens.scope ?? [],
-              status: 'active',
-              last_error: null,
-            })
-            .where(and(
-              eq(twitchBotAccountsTable.id, account.id),
-              eq(twitchBotAccountsTable.twitch_refresh_token, account.twitch_refresh_token),
-            ))
-            .returning({ twitch_access_token: twitchBotAccountsTable.twitch_access_token });
-        },
-        'getBotAccountForChat(save refreshed token)',
-        // 旧 refresh token 条件付きCASなので、isolate間競合・接続断後の再試行でも
-        // 後勝ちの古い資格情報が新しいローテーション結果を上書きしない。
-        { idempotent: true },
-      );
-
-      if (updated.length === 0) {
-        const winner = await withDbRetry(
-          async () => {
-            const { db } = await getDb();
-            return db
-              .select({ twitch_access_token: twitchBotAccountsTable.twitch_access_token })
-              .from(twitchBotAccountsTable)
-              .where(eq(twitchBotAccountsTable.id, account.id))
-              .limit(1);
-          },
-          'getBotAccountForChat(read CAS winner)',
-          { idempotent: true },
-        );
-        const winnerAccessToken = winner[0]?.twitch_access_token;
-        if (!winnerAccessToken) {
-          throw new Error('Concurrent BOT token refresh winner is unavailable');
+    const accessToken = await runWithRefreshLease({
+      acquire: leaseId => acquireBotRefreshLease(
+        account.id,
+        account.twitch_refresh_token,
+        leaseId,
+      ),
+      release: leaseId => releaseBotRefreshLease(account.id, leaseId),
+      readWinner: () => readBotRefreshWinner(account.id),
+      refreshAndPersist: async leaseId => {
+        let tokens: TwitchTokens
+        try {
+          tokens = await refreshTwitchToken(account.twitch_refresh_token)
+        } catch (error) {
+          // callbackが同値refresh tokenで新しい有効期限を保存する場合もある。
+          // statusをerrorへ変える前にDB時刻で有効なwinnerを確認する。
+          const callbackWinner = await readBotRefreshWinner(account.id)
+          if (callbackWinner) return callbackWinner
+          if (shouldDisableBotCredential(error)) {
+            try {
+              // permanent失効もlease ownerだけが確定できる。期限切れ旧leaderや
+              // callback成功後の0件UPDATEは、新credential/statusを変更しない。
+              await markBotRefreshLeaseFailed(
+                account.id,
+                account.twitch_refresh_token,
+                leaseId,
+              )
+            } catch {
+              // error状態の永続化失敗で元のOAuthエラーを置き換えない。leaseは
+              // 未解除のままDB期限で回復し、次requestのstampedeを防ぐ。
+            }
+          }
+          throw error
         }
-        accessToken = winnerAccessToken;
-      }
-    } catch (error) {
-      if (!isMissingBotSchemaErrorPg(error)) throw error;
-      logger.warn('Twitch BOT accounts table not found in schema, returning refreshed token without saving', {
-        broadcasterTwitchUserId,
-      });
-    }
+        const renewed = await renewBotRefreshLeaseForSave(
+          account.id,
+          account.twitch_refresh_token,
+          leaseId,
+        )
+        if (!renewed) {
+          throw new Error('BOT token refresh lease expired before save')
+        }
+        const refreshedExpiresAt = new Date(Date.now() + tokens.expires_in * 1000)
+        const updated = await withDbRetry(
+          async () => {
+            const { db } = await getDb()
+            return db
+              .update(twitchBotAccountsTable)
+              .set({
+                twitch_access_token: tokens.access_token,
+                twitch_refresh_token: tokens.refresh_token,
+                twitch_token_expires_at: refreshedExpiresAt.toISOString(),
+                scopes: tokens.scope ?? [],
+                status: 'active',
+                last_error: null,
+                twitch_refresh_lease_id: null,
+                twitch_refresh_lease_expires_at: null,
+              })
+              .where(and(
+                eq(twitchBotAccountsTable.id, account.id),
+                eq(twitchBotAccountsTable.twitch_refresh_token, account.twitch_refresh_token),
+                // lease期限後に新leaderが所有権を取った場合、旧leaderの遅い応答を
+                // token CASだけでなくfencing IDでも拒否する。
+                eq(twitchBotAccountsTable.twitch_refresh_lease_id, leaseId),
+              ))
+              .returning({ twitch_access_token: twitchBotAccountsTable.twitch_access_token })
+          },
+          'getBotAccountForChat(save refreshed token)',
+          // token + lease IDのCASなので、応答消失後の再実行は0件となり、
+          // runWithRefreshLeaseが保存済みwinnerを再読込できる。
+          { idempotent: true },
+        )
+        if (updated.length === 0) {
+          throw new Error('BOT token refresh lease was superseded before save')
+        }
+        return updated[0].twitch_access_token
+      },
+    })
 
     return {
       accountId: account.id,
@@ -502,248 +811,25 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
       accessToken,
       ownerType: account.owner_type,
     };
-  } catch (error) {
+  } catch {
     // Token endpoint 本文や下位例外は永続化せず、固定理由だけを1回記録する。
     logger.error('Failed to refresh BOT Twitch access token', {
       broadcasterTwitchUserId,
       accountId: account.id,
     });
-    if (shouldDisableBotCredential(error)) {
-      try {
-        await withDbRetry(
-          async () => {
-            const { db } = await getDb();
-            return db
-              .update(twitchBotAccountsTable)
-              .set({ status: 'error', last_error: 'token_refresh_failed' })
-              .where(and(
-                eq(twitchBotAccountsTable.id, account.id),
-                eq(twitchBotAccountsTable.twitch_refresh_token, account.twitch_refresh_token),
-              ));
-          },
-          'getBotAccountForChat(save error status)',
-          { idempotent: true },
-        );
-      } catch {
-        // best-effort。エラー状態保存の失敗で chat 呼出しへ例外を追加しない。
-      }
-    }
     return null;
   }
 }
 
 export async function getBotAccountForChat(broadcasterTwitchUserId: string): Promise<BotChatAccount | null> {
-  // #572: BOT トークンのリフレッシュ保存（書き込み）を含む読み書き混在関数のため、
-  // isPgWriteEnabled() で関数全体を分岐する（ファイル冒頭のフラグ使い分け方針）。
-  if (isPgWriteEnabled()) {
-    return getBotAccountForChatPg(broadcasterTwitchUserId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: streamer, error: dbError } = await supabaseAdmin
-    .from('streamers')
-    .select('id')
-    .eq('twitch_user_id', broadcasterTwitchUserId)
-    .maybeSingle();
-
-  if (dbError) {
-    logger.error('Database error fetching BOT account', { broadcasterTwitchUserId, error: dbError });
-    throw new TwitchTokenError(
-      'Failed to fetch BOT account from database',
-      'DATABASE_ERROR',
-      dbError
-    );
-  }
-
-  if (!streamer) {
-    return null;
-  }
-
-  const { data: senderSettings, error: settingsError } = await supabaseAdmin
-    .from('streamer_chat_sender_settings')
-    .select('sender_mode, custom_bot_account_id')
-    .eq('streamer_id', streamer.id)
-    .maybeSingle();
-
-  if (settingsError) {
-    if (isMissingBotSchemaError(settingsError)) {
-      logger.warn('Chat sender settings table not found in schema', { broadcasterTwitchUserId });
-      return null;
-    }
-    logger.error('Database error fetching chat sender settings', { broadcasterTwitchUserId, error: settingsError });
-    throw new TwitchTokenError(
-      'Failed to fetch chat sender settings from database',
-      'DATABASE_ERROR',
-      settingsError
-    );
-  }
-
-  if (!senderSettings || senderSettings.sender_mode === 'streamer') {
-    return null;
-  }
-
-  let botAccount: BotAccountRow | null = null;
-
-  if (senderSettings.sender_mode === 'custom_bot') {
-    if (!senderSettings.custom_bot_account_id) {
-      return null;
-    }
-
-    const { data, error } = await supabaseAdmin
-      .from('twitch_bot_accounts')
-      .select(`
-        id,
-        owner_type,
-        twitch_user_id,
-        twitch_username,
-        twitch_display_name,
-        twitch_access_token,
-        twitch_refresh_token,
-        twitch_token_expires_at
-      `)
-      .eq('id', senderSettings.custom_bot_account_id)
-      .eq('owner_type', 'streamer')
-      .eq('streamer_id', streamer.id)
-      .eq('status', 'active')
-      .maybeSingle();
-
-    if (error) {
-      if (isMissingBotSchemaError(error)) {
-        logger.warn('Twitch BOT accounts table not found in schema', { broadcasterTwitchUserId });
-        return null;
-      }
-      logger.error('Database error fetching custom BOT account', { broadcasterTwitchUserId, error });
-      throw new TwitchTokenError('Failed to fetch custom BOT account from database', 'DATABASE_ERROR', error);
-    }
-
-    botAccount = data as BotAccountRow | null;
-  } else if (senderSettings.sender_mode === 'official_bot') {
-    const { data, error } = await supabaseAdmin
-      .from('twitch_bot_accounts')
-      .select(`
-        id,
-        owner_type,
-        twitch_user_id,
-        twitch_username,
-        twitch_display_name,
-        twitch_access_token,
-        twitch_refresh_token,
-        twitch_token_expires_at
-      `)
-      .eq('owner_type', 'system')
-      .eq('status', 'active')
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) {
-      if (isMissingBotSchemaError(error)) {
-        logger.warn('Twitch BOT accounts table not found in schema', { broadcasterTwitchUserId });
-        return null;
-      }
-      logger.error('Database error fetching official BOT account', { broadcasterTwitchUserId, error });
-      throw new TwitchTokenError('Failed to fetch official BOT account from database', 'DATABASE_ERROR', error);
-    }
-
-    botAccount = data as BotAccountRow | null;
-  }
-
-  if (!botAccount) {
-    return null;
-  }
-  const account = botAccount;
-
-  const expiresAt = new Date(account.twitch_token_expires_at);
-  if (isNaN(expiresAt.getTime())) {
-    return null;
-  }
-
-  if (expiresAt > new Date()) {
-    return {
-      accountId: account.id,
-      senderId: account.twitch_user_id,
-      username: account.twitch_username,
-      displayName: account.twitch_display_name,
-      accessToken: account.twitch_access_token,
-      ownerType: account.owner_type,
-    };
-  }
-
-  try {
-    const tokens = await refreshTwitchToken(account.twitch_refresh_token);
-    const refreshedExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-    const { data: updated, error } = await supabaseAdmin
-      .from('twitch_bot_accounts')
-      .update({
-        twitch_access_token: tokens.access_token,
-        twitch_refresh_token: tokens.refresh_token,
-        twitch_token_expires_at: refreshedExpiresAt.toISOString(),
-        scopes: tokens.scope ?? [],
-        status: 'active',
-        last_error: null,
-      })
-      .eq('id', account.id)
-      .eq('twitch_refresh_token', account.twitch_refresh_token)
-      .select('twitch_access_token')
-      .maybeSingle();
-
-    if (error && !isMissingBotSchemaError(error)) throw error;
-    if (isMissingBotSchemaError(error)) {
-      logger.warn('Twitch BOT accounts table not found in schema, returning refreshed token without saving', {
-        broadcasterTwitchUserId,
-      });
-    }
-
-    let accessToken = updated?.twitch_access_token as string | undefined;
-    if (!error && !accessToken) {
-      const { data: winner, error: winnerError } = await supabaseAdmin
-        .from('twitch_bot_accounts')
-        .select('twitch_access_token')
-        .eq('id', account.id)
-        .maybeSingle();
-      if (winnerError || !winner?.twitch_access_token) {
-        throw new Error('Concurrent BOT token refresh winner is unavailable');
-      }
-      accessToken = winner.twitch_access_token;
-    }
-
-    return {
-      accountId: account.id,
-      senderId: account.twitch_user_id,
-      username: account.twitch_username,
-      displayName: account.twitch_display_name,
-      accessToken: accessToken ?? tokens.access_token,
-      ownerType: account.owner_type,
-    };
-  } catch (error) {
-    logger.error('Failed to refresh BOT Twitch access token', {
-      broadcasterTwitchUserId,
-      accountId: account.id,
-    });
-    if (shouldDisableBotCredential(error)) {
-      try {
-        await supabaseAdmin
-          .from('twitch_bot_accounts')
-          .update({ status: 'error', last_error: 'token_refresh_failed' })
-          .eq('id', account.id)
-          .eq('twitch_refresh_token', account.twitch_refresh_token);
-      } catch {
-        // PostgREST transport reject も best-effort として吸収し、PG経路と同じく
-        // chat 呼出しへ二次例外を伝播させたり別のAPI writerを増やしたりしない。
-      }
-    }
-    return null;
-  }
+  // BOT設定・token refresh・CAS保存はPlanetScaleの同じrequest内で完結させる。
+  return getBotAccountForChatPg(broadcasterTwitchUserId);
 }
 
 /**
- * getCustomBotAccountDisplayForStreamer の pg 直結実装 (#572)
+ * getCustomBotAccountDisplayForStreamer のPlanetScale実装。
  *
- * 読み取り専用の関数のため isPgReadEnabled() で分岐する。
- * 既存実装はエラーを分割代入で握りつぶして null を返す（settingsError / 2 本目は
- * error 自体を受け取らない）ため、pg 版も各クエリを catch して null に落とす。
+ * 表示補助はDB障害時に認証処理を止めない契約のため、各クエリをcatchしてnullへ落とす。
  */
 async function getCustomBotAccountDisplayForStreamerPg(
   streamerId: string
@@ -769,7 +855,7 @@ async function getCustomBotAccountDisplayForStreamerPg(
     );
     settings = rows[0] ?? null;
   } catch {
-    // 既存経路は settingsError 時に（ログなしで）null を返す。同じ外部挙動に合わせる。
+    // 表示補助の失敗は呼び出し元の設定画面を止めず、未設定表示へ縮退する。
     return null;
   }
 
@@ -805,7 +891,7 @@ async function getCustomBotAccountDisplayForStreamerPg(
     );
     botAccount = rows[0] ?? null;
   } catch {
-    // 既存経路は error を受け取らず data=null → null を返す。同じ外部挙動に合わせる。
+    // BOT表示名を取得できない場合は未設定表示へ縮退する。
     return null;
   }
 
@@ -822,116 +908,72 @@ async function getCustomBotAccountDisplayForStreamerPg(
 export async function getCustomBotAccountDisplayForStreamer(
   streamerId: string
 ): Promise<{ username: string | null; displayName: string | null } | null> {
-  // #572: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return getCustomBotAccountDisplayForStreamerPg(streamerId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: settings, error: settingsError } = await supabaseAdmin
-    .from('streamer_chat_sender_settings')
-    .select('sender_mode, custom_bot_account_id')
-    .eq('streamer_id', streamerId)
-    .maybeSingle();
-
-  if (settingsError || settings?.sender_mode !== 'custom_bot' || !settings.custom_bot_account_id) {
-    return null;
-  }
-
-  const { data: botAccount } = await supabaseAdmin
-    .from('twitch_bot_accounts')
-    .select('twitch_username, twitch_display_name')
-    .eq('id', settings.custom_bot_account_id)
-    .eq('owner_type', 'streamer')
-    .eq('streamer_id', streamerId)
-    .eq('status', 'active')
-    .maybeSingle();
-
-  if (!botAccount) {
-    return null;
-  }
-
-  return {
-    username: botAccount.twitch_username,
-    displayName: botAccount.twitch_display_name,
-  };
+  return getCustomBotAccountDisplayForStreamerPg(streamerId);
 }
 
 /**
  * refreshTwitchAccessToken の pg 直結実装 (#572)
  *
- * users への UPDATE（書き込み）を含む関数のため、呼び出し元は isPgWriteEnabled() で
- * 関数全体を分岐する。tokenとscopeは同じCAS UPDATEへ統合し、OAuth callbackが
+ * tokenとscopeは同じCAS UPDATEへ統合し、OAuth callbackが
  * 並行して保存した新しいtoken/scopeを旧refresh結果の後続UPDATEで上書きしない。
- * PGRST204（トークン列未デプロイ）のデプロイ窓フォールバックは、pg 直結では
- * UPDATE対象列の欠落がSQLSTATE 42703になるためisPgMissingColumnErrorで再現する。
+ * トークン列未配備のデプロイ窓は SQLSTATE 42703 を
+ * isPgMissingColumnError で判定する（トークン値はログに出さない）。
  */
 async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: string): Promise<string> {
   try {
-    const tokens = await refreshTwitchToken(refreshToken);
-    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-    let wonRefreshRace = false;
-    let accessToken = tokens.access_token;
-
-    try {
-      const updated = await withDbRetry(
-        async () => {
-          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
-          const { db } = await getDb();
-          return db
-            .update(usersTable)
-            .set({
-              twitch_access_token: tokens.access_token,
-              twitch_refresh_token: tokens.refresh_token,
-              twitch_token_expires_at: expiresAt.toISOString(),
-              twitch_scopes: tokens.scope ?? [],
-            })
-            // requestを跨いだPromise共有はWorkersで禁止されるため、交換に使った旧
-            // refresh tokenがまだ現行値の場合だけtoken/scopeを原子的に保存する。
-            // 接続断後のDB retryでも
-            // 1回目が成功済みなら2回目は0件となり、winnerの値を再取得できる。
-            .where(and(
-              eq(usersTable.twitch_user_id, twitchUserId),
-              eq(usersTable.twitch_refresh_token, refreshToken),
-            ))
-            .returning({ twitch_access_token: usersTable.twitch_access_token });
-        },
-        'refreshTwitchAccessToken(save)',
-        // CAS は再実行時に旧値が一致しなくなるため、接続断後も安全にリトライ可能。
-        { idempotent: true },
-      );
-      wonRefreshRace = updated.length > 0;
-
-      if (!wonRefreshRace) {
-        const winner = await withDbRetry(
-          async () => {
-            const { db } = await getDb();
-            return db
-              .select({ twitch_access_token: usersTable.twitch_access_token })
-              .from(usersTable)
-              .where(eq(usersTable.twitch_user_id, twitchUserId))
-              .limit(1);
-          },
-          'refreshTwitchAccessToken(read CAS winner)',
-          { idempotent: true },
-        );
-        const winnerAccessToken = winner[0]?.twitch_access_token;
-        if (!winnerAccessToken) {
-          throw new Error('Concurrent Twitch token refresh winner is unavailable');
+    return await runWithRefreshLease({
+      acquire: leaseId => acquireUserRefreshLease(
+        twitchUserId,
+        refreshToken,
+        leaseId,
+      ),
+      release: leaseId => releaseUserRefreshLease(twitchUserId, leaseId),
+      readWinner: () => readUserRefreshWinner(twitchUserId),
+      refreshAndPersist: async leaseId => {
+        const tokens = await refreshTwitchToken(refreshToken)
+        const renewed = await renewUserRefreshLeaseForSave(
+          twitchUserId,
+          refreshToken,
+          leaseId,
+        )
+        if (!renewed) {
+          throw new Error('Twitch token refresh lease expired before save')
         }
-        accessToken = winnerAccessToken;
-      }
-    } catch (error) {
-      if (isPgMissingColumnError(error)) {
-        logger.warn('Twitch token columns not found in schema, returning token without saving', { twitchUserId, error });
-        return tokens.access_token;
-      }
-      throw error;
-    }
-
-    return accessToken;
-  } catch {
+        const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
+        const updated = await withDbRetry(
+          async () => {
+            const { db } = await getDb()
+            return db
+              .update(usersTable)
+              .set({
+                twitch_access_token: tokens.access_token,
+                twitch_refresh_token: tokens.refresh_token,
+                twitch_token_expires_at: expiresAt.toISOString(),
+                twitch_scopes: tokens.scope ?? [],
+                twitch_refresh_lease_id: null,
+                twitch_refresh_lease_expires_at: null,
+              })
+              .where(and(
+                eq(usersTable.twitch_user_id, twitchUserId),
+                eq(usersTable.twitch_refresh_token, refreshToken),
+                eq(usersTable.twitch_refresh_lease_id, leaseId),
+              ))
+              .returning({ twitch_access_token: usersTable.twitch_access_token })
+          },
+          'refreshTwitchAccessToken(save)',
+          { idempotent: true },
+        )
+        const persistedAccessToken = updated[0]?.twitch_access_token
+        if (!persistedAccessToken) {
+          throw new Error('Twitch token refresh lease was superseded before save')
+        }
+        return persistedAccessToken
+      },
+    })
+  } catch (error) {
+    // lease列未配備は呼び出し元がfail-closed nullへ落とすため、SQLSTATEを
+    // TwitchTokenErrorで隠さずそのまま返す。
+    if (isPgMissingColumnError(error)) throw error
     // 永続化責任は bootstrap/rewards/callback 等の API 境界に統一する。ここで
     // logger.error を使うと同じ例外を下位層と境界の双方が errors へ書く。
     logger.warn('Failed to refresh Twitch access token', { twitchUserId });
@@ -943,66 +985,12 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
 }
 
 async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: string): Promise<string> {
-  // #572: 書き込み（users の UPDATE）を含む関数のため isPgWriteEnabled() で分岐。
-  if (isPgWriteEnabled()) {
-    return refreshTwitchAccessTokenPg(twitchUserId, refreshToken);
-  }
-
-  try {
-    const tokens = await refreshTwitchToken(refreshToken);
-    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-    const supabaseAdmin = getSupabaseAdmin();
-    const { data: updated, error } = await supabaseAdmin
-      .from('users')
-      .update({
-        twitch_access_token: tokens.access_token,
-        twitch_refresh_token: tokens.refresh_token,
-        twitch_token_expires_at: expiresAt.toISOString(),
-        twitch_scopes: tokens.scope ?? [],
-      })
-      .eq('twitch_user_id', twitchUserId)
-      .eq('twitch_refresh_token', refreshToken)
-      .select('twitch_access_token')
-      .maybeSingle();
-
-    if (error) {
-      // If columns don't exist (PGRST204), just return the token without saving
-      if (error.code === 'PGRST204') {
-        logger.warn('Twitch token columns not found in schema, returning token without saving', { twitchUserId, error });
-        return tokens.access_token;
-      }
-      throw error;
-    }
-    let accessToken = updated?.twitch_access_token as string | undefined;
-    const wonRefreshRace = Boolean(accessToken);
-
-    if (!wonRefreshRace) {
-      const { data: winner, error: winnerError } = await supabaseAdmin
-        .from('users')
-        .select('twitch_access_token')
-        .eq('twitch_user_id', twitchUserId)
-        .maybeSingle();
-      if (winnerError || !winner?.twitch_access_token) {
-        throw new Error('Concurrent Twitch token refresh winner is unavailable');
-      }
-      accessToken = winner.twitch_access_token;
-    }
-
-    return accessToken!;
-  } catch {
-    logger.warn('Failed to refresh Twitch access token', { twitchUserId });
-    throw new TwitchTokenError(
-      'Failed to refresh Twitch access token',
-      'REFRESH_FAILED'
-    );
-  }
+  return refreshTwitchAccessTokenPg(twitchUserId, refreshToken);
 }
 
 /**
- * saveTwitchTokens の pg 直結実装 (#572)
- * 書き込み（users の UPDATE）のみの関数のため isPgWriteEnabled() で分岐。
- * PGRST204 相当のデプロイ窓フォールバックは 42703 (isPgMissingColumnError) で再現。
+ * saveTwitchTokens のPlanetScale実装。
+ * 列未配備のデプロイ窓は 42703 (isPgMissingColumnError) で判定する。
  */
 async function saveTwitchTokensPg(twitchUserId: string, tokens: TwitchTokens): Promise<void> {
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
@@ -1018,6 +1006,10 @@ async function saveTwitchTokensPg(twitchUserId: string, tokens: TwitchTokens): P
             twitch_access_token: tokens.access_token,
             twitch_refresh_token: tokens.refresh_token,
             twitch_token_expires_at: expiresAt.toISOString(),
+            // login/callback等からの権威保存は、同値refresh tokenでも進行中leaseを
+            // 無効化し、旧leaderのfencing saveを0件にする。
+            twitch_refresh_lease_id: null,
+            twitch_refresh_lease_expires_at: null,
           })
           .where(eq(usersTable.twitch_user_id, twitchUserId));
       },
@@ -1030,44 +1022,23 @@ async function saveTwitchTokensPg(twitchUserId: string, tokens: TwitchTokens): P
     );
   } catch (error) {
     if (isPgMissingColumnError(error)) {
-      logger.warn('Twitch token columns not found in schema, skipping save', { twitchUserId, error });
-      return;
+      // token保存に安全な代替先はない。成功として返すとログイン完了後にtokenが
+      // 消失するため、schema欠落を明示して呼び出し元の認証処理をfail-closedにする。
+      logger.error('Twitch token columns are missing; token save failed closed', {
+        twitchUserId,
+        error,
+      });
     }
     throw error;
   }
 }
 
 export async function saveTwitchTokens(twitchUserId: string, tokens: TwitchTokens): Promise<void> {
-  // #572: 書き込みのみの関数のため isPgWriteEnabled() で分岐。
-  if (isPgWriteEnabled()) {
-    return saveTwitchTokensPg(twitchUserId, tokens);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-  const { error } = await supabaseAdmin
-    .from('users')
-    .update({
-      twitch_access_token: tokens.access_token,
-      twitch_refresh_token: tokens.refresh_token,
-      twitch_token_expires_at: expiresAt.toISOString(),
-    })
-    .eq('twitch_user_id', twitchUserId);
-
-  if (error) {
-    // If columns don't exist (PGRST204), just log and return
-    if (error.code === 'PGRST204') {
-      logger.warn('Twitch token columns not found in schema, skipping save', { twitchUserId, error });
-      return;
-    }
-    throw error;
-  }
+  return saveTwitchTokensPg(twitchUserId, tokens);
 }
 
 /**
- * deleteTwitchTokens の pg 直結実装 (#572)
- * 書き込み（users の UPDATE）のみの関数のため isPgWriteEnabled() で分岐。
+ * deleteTwitchTokens のPlanetScale実装。
  */
 async function deleteTwitchTokensPg(twitchUserId: string): Promise<void> {
   try {
@@ -1081,6 +1052,9 @@ async function deleteTwitchTokensPg(twitchUserId: string): Promise<void> {
             twitch_access_token: null,
             twitch_refresh_token: null,
             twitch_token_expires_at: null,
+            // logoutはcredentialだけでなく進行中refreshの書込権も失効させる。
+            twitch_refresh_lease_id: null,
+            twitch_refresh_lease_expires_at: null,
           })
           .where(eq(usersTable.twitch_user_id, twitchUserId));
       },
@@ -1094,38 +1068,19 @@ async function deleteTwitchTokensPg(twitchUserId: string): Promise<void> {
     );
   } catch (error) {
     if (isPgMissingColumnError(error)) {
-      logger.warn('Twitch token columns not found in schema, skipping deletion', { twitchUserId, error });
-      return;
+      // logout時の削除を成功扱いすると有効なcredentialがDBに残る。セキュリティ
+      // 境界なので、schema不整合は必ず呼び出し元へ伝播させる。
+      logger.error('Twitch token columns are missing; token deletion failed closed', {
+        twitchUserId,
+        error,
+      });
     }
     throw error;
   }
 }
 
 export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
-  // #572: 書き込みのみの関数のため isPgWriteEnabled() で分岐。
-  if (isPgWriteEnabled()) {
-    return deleteTwitchTokensPg(twitchUserId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { error } = await supabaseAdmin
-    .from('users')
-    .update({
-      twitch_access_token: null,
-      twitch_refresh_token: null,
-      twitch_token_expires_at: null,
-    })
-    .eq('twitch_user_id', twitchUserId);
-
-  if (error) {
-    // If columns don't exist (PGRST204), just log and return
-    if (error.code === 'PGRST204') {
-      logger.warn('Twitch token columns not found in schema, skipping deletion', { twitchUserId, error });
-      return;
-    }
-    throw error;
-  }
+  return deleteTwitchTokensPg(twitchUserId);
 }
 
 /**
@@ -1136,9 +1091,9 @@ export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
  * @returns スコープが付与されている場合はtrue
  */
 /**
- * hasScope の pg 直結実装 (#572)
- * 読み取り専用の関数のため isPgReadEnabled() で分岐。twitch_scopes は text[] 列
- * のため必ず Drizzle スキーマ経由で読む（fetch_types: false の生 SQL では配列が
+ * hasScope のPlanetScale実装。
+ * twitch_scopes は text[] 列のため必ずDrizzleスキーマ経由で読む
+ * （fetch_types: false の生SQLでは配列が
  * パースされない。src/lib/db/client.ts の注意書き参照）。
  */
 async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean> {
@@ -1161,7 +1116,11 @@ async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean>
     user = rows[0] ?? null;
   } catch (error) {
     if (isPgMissingColumnError(error)) {
-      logger.warn('twitch_scopes column not found in schema', { twitchUserId, scope });
+      logger.error('twitch_scopes column is missing; denying scope access', {
+        twitchUserId,
+        scope,
+        error,
+      });
       return false;
     }
     logger.error('Database error checking scope', { twitchUserId, scope, error });
@@ -1178,40 +1137,7 @@ async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean>
 }
 
 export async function hasScope(twitchUserId: string, scope: string): Promise<boolean> {
-  // #572: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return hasScopePg(twitchUserId, scope);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: user, error } = await withRetry(
-    () => supabaseAdmin
-      .from('users')
-      .select('twitch_scopes')
-      .eq('twitch_user_id', twitchUserId)
-      .maybeSingle(),
-    'Twitch scope check',
-  );
-
-  if (error) {
-    // PGRST204 means column not found - twitch_scopes column may not exist
-    if (error.code === 'PGRST204') {
-      logger.warn('twitch_scopes column not found in schema', { twitchUserId, scope });
-      return false;
-    }
-    // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
-    logger.error('Database error checking scope', { twitchUserId, scope, error });
-    return false;
-  }
-
-  // twitch_scopesがnullまたは空配列の場合、追加スコープは付与されていない
-  // If twitch_scopes is null or empty, no additional scopes have been granted
-  if (!user?.twitch_scopes || user.twitch_scopes.length === 0) {
-    return false;
-  }
-
-  return user.twitch_scopes.includes(scope);
+  return hasScopePg(twitchUserId, scope);
 }
 
 /**
@@ -1223,10 +1149,10 @@ export async function hasScope(twitchUserId: string, scope: string): Promise<boo
  * @param scope - 削除するスコープ（例: 'user:write:chat'）
  */
 /**
- * removeScope の pg 直結実装 (#572)
+ * removeScope のPlanetScale実装。
  * 読み取り（現在のスコープ取得）と書き込み（除外後の全置換 UPDATE）が混在する
- * 関数のため、呼び出し元は isPgWriteEnabled() で関数全体を分岐する。
- * 既存実装はどのエラーでも throw せず静かに return するため、pg 版も同じ。
+ * ため、両方を同じDB接続へ固定する。一般DB障害は権限表示を安全側へ倒すため
+ * 静かにreturnし、schema欠落だけはデプロイ不整合として伝播する。
  */
 async function removeScopePg(twitchUserId: string, scope: string): Promise<void> {
   let user: { twitch_scopes: string[] | null } | null;
@@ -1248,7 +1174,14 @@ async function removeScopePg(twitchUserId: string, scope: string): Promise<void>
     user = rows[0] ?? null;
   } catch (fetchError) {
     if (isPgMissingColumnError(fetchError)) {
-      return;
+      // 無効と判明したscopeを削除できない状態を成功扱いしない。呼び出し元へ
+      // 伝播させ、権限状態の乖離を監視・再試行できるようにする。
+      logger.error('twitch_scopes column is missing; scope removal failed closed', {
+        twitchUserId,
+        scope,
+        error: fetchError,
+      });
+      throw fetchError;
     }
     logger.error('Failed to fetch scopes for removal', { twitchUserId, scope, error: fetchError });
     return;
@@ -1277,7 +1210,12 @@ async function removeScopePg(twitchUserId: string, scope: string): Promise<void>
     );
   } catch (updateError) {
     if (isPgMissingColumnError(updateError)) {
-      return;
+      logger.error('twitch_scopes column is missing; scope removal update failed closed', {
+        twitchUserId,
+        scope,
+        error: updateError,
+      });
+      throw updateError;
     }
     logger.error('Failed to remove scope', { twitchUserId, scope, error: updateError });
     return;
@@ -1291,53 +1229,7 @@ async function removeScopePg(twitchUserId: string, scope: string): Promise<void>
 }
 
 export async function removeScope(twitchUserId: string, scope: string): Promise<void> {
-  // #572: 読み取りと書き込みが混在する関数のため isPgWriteEnabled() で関数全体を分岐。
-  if (isPgWriteEnabled()) {
-    return removeScopePg(twitchUserId, scope);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: user, error: fetchError } = await supabaseAdmin
-    .from('users')
-    .select('twitch_scopes')
-    .eq('twitch_user_id', twitchUserId)
-    .maybeSingle();
-
-  if (fetchError) {
-    if (fetchError.code === 'PGRST204') {
-      return;
-    }
-    logger.error('Failed to fetch scopes for removal', { twitchUserId, scope, error: fetchError });
-    return;
-  }
-
-  if (!user?.twitch_scopes || !user.twitch_scopes.includes(scope)) {
-    return;
-  }
-
-  // 指定スコープを除外した配列で更新
-  // Update with the scope filtered out
-  const updatedScopes = user.twitch_scopes.filter((s: string) => s !== scope);
-
-  const { error: updateError } = await supabaseAdmin
-    .from('users')
-    .update({ twitch_scopes: updatedScopes })
-    .eq('twitch_user_id', twitchUserId);
-
-  if (updateError) {
-    if (updateError.code === 'PGRST204') {
-      return;
-    }
-    logger.error('Failed to remove scope', { twitchUserId, scope, error: updateError });
-    return;
-  }
-
-  logger.info('Removed invalid scope from user', {
-    twitchUserId,
-    removedScope: scope,
-    remainingScopes: updatedScopes,
-  });
+  return removeScopePg(twitchUserId, scope);
 }
 
 /**
@@ -1351,8 +1243,7 @@ export async function removeScope(twitchUserId: string, scope: string): Promise<
  * @param scopes - 保存するスコープの配列
  */
 /**
- * saveTwitchScopes の pg 直結実装 (#572)
- * 書き込み（users の UPDATE）のみの関数のため isPgWriteEnabled() で分岐。
+ * saveTwitchScopes のPlanetScale実装。
  */
 async function saveTwitchScopesPg(twitchUserId: string, scopes: string[]): Promise<void> {
   try {
@@ -1373,8 +1264,12 @@ async function saveTwitchScopesPg(twitchUserId: string, scopes: string[]): Promi
     );
   } catch (error) {
     if (isPgMissingColumnError(error)) {
-      logger.warn('twitch_scopes column not found in schema, skipping save', { twitchUserId, error });
-      return;
+      // 実tokenのscopeとの全置換に失敗したまま成功を返すと、DB上の権限表示が
+      // 恒久的に誤る。schema欠落はlogger.errorへ残して呼び出し元へ伝播する。
+      logger.error('twitch_scopes column is missing; scope save failed closed', {
+        twitchUserId,
+        error,
+      });
     }
     logger.error('Failed to save Twitch scopes', { twitchUserId, scopes, error });
     throw error;
@@ -1384,31 +1279,7 @@ async function saveTwitchScopesPg(twitchUserId: string, scopes: string[]): Promi
 }
 
 export async function saveTwitchScopes(twitchUserId: string, scopes: string[]): Promise<void> {
-  // #572: 書き込みのみの関数のため isPgWriteEnabled() で分岐。
-  if (isPgWriteEnabled()) {
-    return saveTwitchScopesPg(twitchUserId, scopes);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { error } = await supabaseAdmin
-    .from('users')
-    .update({
-      twitch_scopes: scopes,
-    })
-    .eq('twitch_user_id', twitchUserId);
-
-  if (error) {
-    // PGRST204 means column not found - twitch_scopes column may not exist yet
-    if (error.code === 'PGRST204') {
-      logger.warn('twitch_scopes column not found in schema, skipping save', { twitchUserId, error });
-      return;
-    }
-    logger.error('Failed to save Twitch scopes', { twitchUserId, scopes, error });
-    throw error;
-  }
-
-  logger.info('Saved Twitch scopes for user', { twitchUserId, scopeCount: scopes.length });
+  return saveTwitchScopesPg(twitchUserId, scopes);
 }
 
 /**
@@ -1420,11 +1291,10 @@ export async function saveTwitchScopes(twitchUserId: string, scopes: string[]): 
  * @returns スコープ配列、トークン無効時は空配列、判定不能時はnull
  */
 /**
- * validateTokenScopes の pg 直結実装 (#572)
+ * validateTokenScopes のPlanetScale実装。
  *
- * DB アクセスは読み取りのみ（リフレッシュも書き込みも行わない read-only 契約）の
- * 関数のため isPgReadEnabled() で分岐。DB 読み取り以降の Twitch /oauth2/validate
- * 呼び出しと判定ロジックは既存実装と同一（コメントの設計判断も同じ）。
+ * DBアクセスは読み取りのみで、リフレッシュも書き込みも行わない。
+ * ローカル期限を確認してからTwitch /oauth2/validateを呼び、不要な外部I/Oを避ける。
  */
 async function validateTokenScopesPg(twitchUserId: string): Promise<string[] | null> {
   try {
@@ -1455,8 +1325,7 @@ async function validateTokenScopesPg(twitchUserId: string): Promise<string[] | n
 
     if (!user?.twitch_access_token) return null;
 
-    // トークンがローカルで期限切れなら Twitch API を叩かず null を返す
-    // （設計判断の詳細は postgrest 経路の同箇所コメントを参照）
+    // ローカルで期限切れならTwitch APIを叩かず、判定不能としてnullを返す。
     if (user.twitch_token_expires_at) {
       const expiresAt = new Date(user.twitch_token_expires_at);
       if (!isNaN(expiresAt.getTime()) && expiresAt <= new Date()) {
@@ -1488,67 +1357,5 @@ async function validateTokenScopesPg(twitchUserId: string): Promise<string[] | n
 }
 
 export async function validateTokenScopes(twitchUserId: string): Promise<string[] | null> {
-  // #572: DB アクセスは読み取りのみ（read-only 契約）の関数のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return validateTokenScopesPg(twitchUserId);
-  }
-
-  try {
-    // DBからトークンと有効期限を直接読み取る（リフレッシュしない）
-    // check-scope GETはread-onlyであるべきなので、getTwitchAccessToken()は使わない
-    // getTwitchAccessToken()は期限切れ時にリフレッシュ→DB書き込みを行うため
-    // Read token and expiry from DB without triggering refresh.
-    // check-scope GET must be read-only; getTwitchAccessToken() would refresh expired
-    // tokens and write to DB, violating the read-only contract.
-    const supabaseAdmin = getSupabaseAdmin();
-    const { data: user, error: dbError } = await withRetry(
-      () => supabaseAdmin
-        .from('users')
-        .select('twitch_access_token, twitch_token_expires_at')
-        .eq('twitch_user_id', twitchUserId)
-        .maybeSingle(),
-      'twitch token scope validation fetch',
-    );
-
-    if (dbError || !user?.twitch_access_token) return null;
-
-    // トークンがローカルで期限切れならTwitch APIを叩かずnullを返す。
-    // 期限切れは通常の状態であり、スコープ失効とは異なる。
-    // nullを返すことでcheck-scope APIはDB側の結果を信頼する。
-    // 実際にスコープを使う機能(chat送信、sub確認)側で401時に個別対処される。
-    // If token is locally expired, return null without hitting Twitch API.
-    // Expiry is normal operation, not scope revocation. Returning null lets
-    // check-scope API trust the DB result. Actual scope usage (chat, sub check)
-    // handles 401 individually when the feature is invoked.
-    if (user.twitch_token_expires_at) {
-      const expiresAt = new Date(user.twitch_token_expires_at);
-      if (!isNaN(expiresAt.getTime()) && expiresAt <= new Date()) {
-        return null;
-      }
-    }
-
-    const response = await fetch('https://id.twitch.tv/oauth2/validate', {
-      headers: { 'Authorization': `OAuth ${user.twitch_access_token}` },
-    });
-
-    // 401/403（期限内トークンに対して）= revoke等の無効化 → 空配列で乖離検出
-    // 401/403 on a non-expired token = revoked/invalidated → return empty array
-    if (response.status === 401 || response.status === 403) {
-      return [];
-    }
-    // ネットワークエラー/5xx = 判定不能 → nullで呼び出し元にDB信頼を委ねる
-    // Network error/5xx = unable to determine → return null so caller falls back to DB
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    return data.scopes ?? [];
-  } catch (error) {
-    // DBエラー/ネットワーク例外時 → nullで呼び出し元にDB信頼を委ねる
-    // On DB error/network exception → return null so caller falls back to DB
-    logger.warn('Failed to validate token scopes', {
-      twitchUserId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
+  return validateTokenScopesPg(twitchUserId);
 }

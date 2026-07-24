@@ -1,20 +1,17 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — 追加ガチャ報酬APIの
- * postgrest経路 / pg経路パリティテスト
+ * #663: 追加ガチャ報酬APIのPlanetScale契約テスト
  *
  * 対象: GET/POST/DELETE /api/streamer/additional-rewards
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getDb } from "@/lib/db/client";
 import { streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable } from "@/lib/db/schema";
-import { createMockQueryBuilder } from "../utils/supabase-mock";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
@@ -23,10 +20,6 @@ vi.mock("@/lib/request-validation");
 vi.mock("@/lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 
 const mockGetSession = vi.mocked(getSession);
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
@@ -143,7 +136,7 @@ async function loadRoute() {
   return import("@/app/api/streamer/additional-rewards/route");
 }
 
-describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", () => {
+describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(STREAMER_SESSION as any);
@@ -153,31 +146,8 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
     mockValidateContentType.mockReturnValue(null);
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   describe("GET", () => {
-    it("フラグ未設定時は getDb が呼ばれない（挙動不変の検証）", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const streamerQuery = createMockQueryBuilder();
-      (streamerQuery.maybeSingle as any).mockResolvedValue({ data: { id: "streamer-1" }, error: null });
-      const rewardsQuery = createMockQueryBuilder();
-      (rewardsQuery as any).then = (resolve: (v: unknown) => void) => {
-        resolve({ data: [], error: null });
-        return rewardsQuery;
-      };
-      const fromMock = vi.fn((table: string) => (table === "streamers" ? streamerQuery : rewardsQuery));
-      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as any);
-
-      const { GET } = await loadRoute();
-      const response = await GET(new NextRequest("http://localhost/api/streamer/additional-rewards"));
-
-      expect(response.status).toBe(200);
-      expect(getDb).not.toHaveBeenCalled();
-    });
-
-    it("DB_DRIVER=pg-read: 同一fixtureで両経路の戻り値が一致する", async () => {
+    it("報酬一覧を返し、streamer_idで絞り込む", async () => {
       const REWARD_ROW = {
         id: "reward-1",
         reward_id: "extra-1",
@@ -188,21 +158,6 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
         created_at: "2026-01-01T00:00:00.000Z",
       };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const streamerQuery = createMockQueryBuilder();
-      (streamerQuery.maybeSingle as any).mockResolvedValue({ data: { id: "streamer-1" }, error: null });
-      const rewardsQuery = createMockQueryBuilder();
-      (rewardsQuery as any).then = (resolve: (v: unknown) => void) => {
-        resolve({ data: [REWARD_ROW], error: null });
-        return rewardsQuery;
-      };
-      const fromMock = vi.fn((table: string) => (table === "streamers" ? streamerQuery : rewardsQuery));
-      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as any);
-      const { GET: postgrestGET } = await loadRoute();
-      const postgrestResponse = await postgrestGET(new NextRequest("http://localhost/api/streamer/additional-rewards"));
-      const postgrestBody = await postgrestResponse.json();
-
-      vi.stubEnv("DB_DRIVER", "pg-read");
       const pg = createDrizzleDbMock({
         selects: [{ rows: [{ id: "streamer-1" }] }, { rows: [REWARD_ROW] }],
       });
@@ -211,14 +166,13 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       const pgResponse = await pgGET(new NextRequest("http://localhost/api/streamer/additional-rewards"));
       const pgBody = await pgResponse.json();
 
-      expect(pgResponse.status).toBe(postgrestResponse.status);
-      expect(pgBody).toEqual(postgrestBody);
+      expect(pgResponse.status).toBe(200);
+      expect(pgBody).toEqual([REWARD_ROW]);
       expect(getDb).toHaveBeenCalled();
       expect(pg.selectCalls[1].where).toEqual(eq(streamerAdditionalGachaRewardsTable.streamer_id, "streamer-1"));
     });
 
-    it("DB_DRIVER=pg-read: streamerが見つからなければ両経路とも404", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("streamerが見つからなければ404", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);
 
@@ -227,8 +181,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       expect(response.status).toBe(404);
     });
 
-    it("DB_DRIVER=pg-read: collection_name列欠落 → raid列欠落の2段カスケードで最小列セットにフォールバックする", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("collection_name列欠落 → raid列欠落の2段カスケードで最小列セットにフォールバックする", async () => {
       let selectCall = 0;
       const db = {
         select: vi.fn((fields: Record<string, unknown>) => {
@@ -294,8 +247,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
     // Drizzle にラップされた形状でも列欠落フォールバックが働くこと、かつ
     // SQL 文に列名が偶然写っているだけの無関係なエラー（接続断等）では
     // 誤って最小列セットへ縮退しないことの両方を検証する。
-    it("DB_DRIVER=pg-read: raid列欠落(Drizzleラップ形状)でも最小列セットにフォールバックする", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("raid列欠落(Drizzleラップ形状)でも最小列セットにフォールバックする", async () => {
       let selectCall = 0;
       const db = {
         select: vi.fn((fields: Record<string, unknown>) => {
@@ -357,11 +309,10 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       ]);
     });
 
-    it("DB_DRIVER=pg-read: 接続断エラー（SQL文にdraw_countを含む）は最小列セットへ誤って縮退せずそのまま500になる", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("接続断エラー（SQL文にdraw_countを含む）は最小列セットへ誤って縮退せずそのまま500になる", async () => {
       let selectCall = 0;
       const db = {
-        select: vi.fn((fields: Record<string, unknown>) => {
+        select: vi.fn(() => {
           selectCall += 1;
           const thisCall = selectCall;
           const builder: any = {
@@ -400,28 +351,10 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
   });
 
   describe("POST", () => {
-    it("DB_DRIVER=pg: 所有権確認 + INSERT が正しいテーブル/値で実行され、戻り値が postgrest 経路と一致する", async () => {
+    it("所有権確認後に正しいテーブルと値でINSERTする", async () => {
       const OWNED_STREAMER = { id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: [] as string[] };
       const NEW_REWARD = { id: "additional-1", reward_id: "extra-reward", reward_name: "Extra", draw_count: 5, is_raid_limited: false };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const streamerQuery = createMockQueryBuilder();
-      (streamerQuery.maybeSingle as any).mockResolvedValue({ data: OWNED_STREAMER, error: null });
-      const insertQuery = createMockQueryBuilder();
-      (insertQuery.maybeSingle as any).mockResolvedValue({ data: NEW_REWARD, error: null });
-      const fromMock = vi.fn((table: string) => (table === "streamers" ? streamerQuery : insertQuery));
-      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as any);
-      const { POST: postgrestPOST } = await loadRoute();
-      const postgrestResponse = await postgrestPOST(
-        jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", {
-          rewardId: "extra-reward",
-          rewardName: "Extra",
-          drawCount: 5,
-        })
-      );
-      const postgrestBody = await postgrestResponse.json();
-
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNED_STREAMER] }],
         inserts: [{ rows: [NEW_REWARD] }],
@@ -437,8 +370,8 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       );
       const pgBody = await pgResponse.json();
 
-      expect(pgResponse.status).toBe(postgrestResponse.status);
-      expect(pgBody).toEqual(postgrestBody);
+      expect(pgResponse.status).toBe(200);
+      expect(pgBody).toEqual(expect.objectContaining({ success: true, reward: NEW_REWARD }));
       expect(getDb).toHaveBeenCalled();
       expect(pg.insertCalls[0].table).toBe(streamerAdditionalGachaRewardsTable);
       expect(pg.insertCalls[0].values).toEqual(
@@ -446,14 +379,9 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       );
     });
 
-    // 2026-07 Fable厳格レビュー指摘(中3)によりフィクスチャを修正: PGRST204 は
-    // PostgREST 固有のエラーコードで、pg 直結（postgres.js/Drizzle）が throw する
-    // エラーには存在しない概念のため、このテストの元のフィクスチャ
-    // ({ code: "PGRST204", ... }) は非現実的だった（pg 直結経路の
-    // isRaidOptionsSchemaErrorPg は SQLSTATE 42703 のみを見る設計に修正した。
-    // channel-point-bootstrap/route.ts の getAdditionalRewardsPg と同じ方針）。
-    it("DB_DRIVER=pg: raid列欠落エラー(42703)なら両経路とも503", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    // 現行 postgres.js/Drizzle が返す SQLSTATE 42703 を使い、
+    // isRaidOptionsSchemaErrorPg の本番エラー契約を直接検証する。
+    it("raid列欠落エラー(42703)なら503", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: [] }] }],
         inserts: [{ error: { code: "42703", message: 'column "draw_count" of relation "streamer_additional_gacha_rewards" does not exist' } }],
@@ -475,8 +403,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
     // 2026-07 Fable厳格レビュー指摘(高1相当バグの高2/中3ファミリー)の回帰テスト:
     // Drizzle にラップされた形状（{ query, params, cause }）でも同じ 503 判定が
     // 働くことを検証する。
-    it("DB_DRIVER=pg: raid列欠落エラー(Drizzleラップ形状)でも503", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("raid列欠落エラー(Drizzleラップ形状)でも503", async () => {
       const wrapped42703 = Object.assign(
         new Error('Failed query: insert into streamer_additional_gacha_rewards ("streamer_id", "draw_count", "is_raid_limited", ...) values (...)'),
         {
@@ -512,8 +439,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
     // でも、SQL 文に列名が写っているだけで raid-options-unavailable(503)へ
     // 誤って縮退してはならない（isRaidOptionsSchemaErrorPg は 42703 かつ
     // 該当列名を要求するため、接続断コードでは false になる）。
-    it("DB_DRIVER=pg: 接続断エラー（SQL文にdraw_countを含む）は503に誤判定されず素通しでエラーになる", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("接続断エラー（SQL文にdraw_countを含む）は503に誤判定されず素通しでエラーになる", async () => {
       const wrappedConnectionError = Object.assign(
         new Error('Failed query: insert into streamer_additional_gacha_rewards ("streamer_id", "draw_count", "is_raid_limited", ...) values (...)'),
         {
@@ -542,8 +468,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       expect(response.status).toBe(500);
     });
 
-    it("DB_DRIVER=pg: 一意制約違反(23505)なら両経路とも409", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("一意制約違反(23505)なら409", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: [] }] }],
         inserts: [{ error: { code: "23505", message: "duplicate key value" } }],
@@ -561,8 +486,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
     // 2026-07 Fable厳格レビュー指摘(高2)の回帰テスト: classifyError が以前は
     // トップレベルの code だけを見ていたため、Drizzle にラップされた 23505 は
     // 常に conflict 判定に失敗し 500 になっていた。
-    it("DB_DRIVER=pg: 一意制約違反(23505、Drizzleラップ形状)でも409", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("一意制約違反(23505、Drizzleラップ形状)でも409", async () => {
       const wrapped23505 = Object.assign(new Error("Failed query: insert into streamer_additional_gacha_rewards ..."), {
         query: "insert into streamer_additional_gacha_rewards ...",
         params: [],
@@ -582,8 +506,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       expect(response.status).toBe(409);
     });
 
-    it("DB_DRIVER=pg: card_pack_names列欠落時は報酬作成を続行しパック紐付けのみ見送る（collectionNameSkippedDeployWindow）", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("card_pack_names列欠落時は報酬作成を続行しパック紐付けのみ見送る（collectionNameSkippedDeployWindow）", async () => {
       let selectCall = 0;
       const db = {
         select: vi.fn((fields: Record<string, unknown>) => {
@@ -636,46 +559,12 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       expect(db.insert).toHaveBeenCalled();
     });
 
-    it("フラグ未設定 / pg-read では getDb が呼ばれない（POSTは書き込み関数のため isPgWriteEnabled のみで切替）", async () => {
-      const OWNED_STREAMER = { id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: [] as string[] };
-      for (const driver of [undefined, "pg-read"]) {
-        vi.clearAllMocks();
-        mockGetSession.mockResolvedValue(STREAMER_SESSION as any);
-        mockCanUseStreamerFeatures.mockReturnValue(true);
-        mockCheckRateLimit.mockResolvedValue({ success: true, limit: 10, remaining: 9, reset: Date.now() + 60_000 } as any);
-        mockValidateCSRFToken.mockResolvedValue({ valid: true } as any);
-        mockValidateContentType.mockReturnValue(null);
-
-        vi.stubEnv("DB_DRIVER", driver as string);
-        const streamerQuery = createMockQueryBuilder();
-        (streamerQuery.maybeSingle as any).mockResolvedValue({ data: OWNED_STREAMER, error: null });
-        const insertQuery = createMockQueryBuilder();
-        (insertQuery.maybeSingle as any).mockResolvedValue({
-          data: { id: "additional-1", reward_id: "extra-reward" },
-          error: null,
-        });
-        const fromMock = vi.fn((table: string) => (table === "streamers" ? streamerQuery : insertQuery));
-        vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as any);
-
-        const { POST } = await loadRoute();
-        const response = await POST(
-          jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", { rewardId: "extra-reward" })
-        );
-        expect(response.status).toBe(200);
-        expect(getDb).not.toHaveBeenCalled();
-      }
-    });
   });
 
   describe("DELETE", () => {
-    it("DB_DRIVER=pg: deleteAll=true が正しいテーブル/条件で実行され、deletedCountはpostgrest経路と同じnullを返す", async () => {
-      // postgrest 経路は .delete().select() のみで { count: 'exact' } を要求しない
-      // ため、本番でも response.count は常に null（node_modules/@supabase/
-      // postgrest-js の PostgrestQueryBuilder.delete() で確認済み）。この
-      // #663 移行は「経路の切替のみ」が目的で挙動改善はスコープ外のため、
-      // pg 経路も deletedCount: null で揃える（実際の削除件数を返すよう
-      // 「直した」場合、DB_DRIVER=pg 切替だけでレスポンスの値が変わってしまう）。
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("deleteAll=true が正しいテーブル/条件で実行され、互換レスポンスのdeletedCountはnullを返す", async () => {
+      // 公開APIの既存契約は削除件数を数えず null を返す。移行だけでクライアント
+      // 応答を変えないため、Drizzle の returning 行数は内部検証にのみ利用する。
       const pg = createDrizzleDbMock({
         selects: [{ rows: [{ id: "streamer-1" }] }],
         deletes: [{ rows: [{ id: "r1" }, { id: "r2" }] }],
@@ -694,8 +583,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       expect(pg.deleteCalls[0].where).toEqual(eq(streamerAdditionalGachaRewardsTable.streamer_id, "streamer-1"));
     });
 
-    it("DB_DRIVER=pg: rewardId指定の単一削除が正しい条件で実行される", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("rewardId指定の単一削除が正しい条件で実行される", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [{ id: "streamer-1" }] }],
         deletes: [{ rows: [] }],
@@ -718,8 +606,7 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       );
     });
 
-    it("DB_DRIVER=pg: streamerが見つからなければ404", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("streamerが見つからなければ404", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);
 
@@ -730,27 +617,5 @@ describe("streamer/additional-rewards: postgrest / pg 経路の互換 (#663)", (
       expect(response.status).toBe(404);
     });
 
-    it("フラグ未設定 / pg-read では getDb が呼ばれない（DELETEは読み書き混在のため isPgWriteEnabled のみで切替）", async () => {
-      for (const driver of [undefined, "pg-read"]) {
-        vi.clearAllMocks();
-        mockGetSession.mockResolvedValue(STREAMER_SESSION as any);
-        mockCanUseStreamerFeatures.mockReturnValue(true);
-        mockCheckRateLimit.mockResolvedValue({ success: true, limit: 10, remaining: 9, reset: Date.now() + 60_000 } as any);
-
-        vi.stubEnv("DB_DRIVER", driver as string);
-        const streamerQuery = createMockQueryBuilder();
-        (streamerQuery.maybeSingle as any).mockResolvedValue({ data: { id: "streamer-1" }, error: null });
-        const deleteQuery = createMockQueryBuilder();
-        const fromMock = vi.fn((table: string) => (table === "streamers" ? streamerQuery : deleteQuery));
-        vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as any);
-
-        const { DELETE } = await loadRoute();
-        const response = await DELETE(
-          new NextRequest("http://localhost/api/streamer/additional-rewards?rewardId=r1", { method: "DELETE" })
-        );
-        expect(response.status).toBe(200);
-        expect(getDb).not.toHaveBeenCalled();
-      }
-    });
   });
 });

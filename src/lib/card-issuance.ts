@@ -1,17 +1,11 @@
-import { getErrorChain } from "@/lib/db/errors";
+import { isPgMissingNamedColumnError } from "@/lib/db/errors";
 
 export const CARD_ISSUANCE_MESSAGES = {
   invalid: "発行可能枚数は1以上の整数、または空欄で入力してください",
   soldOut: "このカードは発行可能枚数に達しています",
-  // R2 (PR #450 レビュー follow-up): execute_gacha_transaction RPC が未デプロイ
-  // (42883)の間、executeGachaLegacy は発行枚数を FOR UPDATE で原子的に検証
-  // できないため limited カードの抽選を拒否する。以前はこの拒否が soldOut と
-  // 全く同じ文字列を使っていたため、eventsub route.ts の抑止フィルタ
-  // (genuine soldOut は Sentry/Issue化しない)が本来アラートすべき「RPC未デプロイ」
-  // という異常事態まで一緒に握りつぶしてしまっていた。ユーザー向け文言としては
-  // 区別せず「一時的に抽選できません」で十分だが、内部的な error 文字列としては
-  // soldOut と別の値にすることで、eventsub 側の抑止対象に含めず reportError を
-  // 発火させ、本番で確実にアラートされるようにする。
+  // execute_gacha_transaction RPC が未配備（42883）の場合は、上限を原子的に検証
+  // できないため抽選をfail-closedにする。通常のsold-outと別文言にすることで、
+  // EventSubの既知sold-out抑止に巻き込まず、deployment errorを必ず通知する。
   limitUnavailable: "上限付きカードは現在一時的に抽選できません",
 } as const;
 
@@ -49,11 +43,9 @@ export function parseCardIssuanceLimit(value: unknown): number | null | "invalid
   return value;
 }
 
-// cause チェーン対応 (2026-07 本番障害の恒久対応): card-number-errors.ts と同じ
-// postgrest/pg 両経路の共用判定パターン。pg 直結の insert/returning catch から
-// Drizzle にラップされたエラーがそのまま渡されるため、getErrorChain で
-// トップレベル→cause の各階層に判定を適用する（詳細は card-number-errors.ts
-// のコメント参照）。
+// cause チェーン対応 (2026-07 本番障害の恒久対応): pg 直結の
+// insert/returning catch から Drizzle にラップされたエラーがそのまま渡される。
+// isPgMissingNamedColumnError が各階層で SQLSTATE と列名を同時に確認する。
 //
 // 階層ごとに独立判定する理由 (Fable厳格レビュー指摘・中4、詳細は
 // card-number-errors.ts のコメント参照): 全階層のテキストを連結してから判定
@@ -61,19 +53,7 @@ export function parseCardIssuanceLimit(value: unknown): number | null | "invalid
 // 偶然含まれているだけで誤検知しうる。各階層の自分自身の情報だけで旧判定を
 // 適用し、どこか1階層でも満たせば true とする。
 export function isMissingCardIssuanceColumnError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-
-  return getErrorChain(error).some((layer) => {
-    if (typeof layer !== "object" || layer === null) return false;
-    const err = layer as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
-    const text = [err.message, err.details, err.hint].map((value) => String(value || "")).join(" ");
-
-    return text.includes("max_issuance_count") && (
-      text.includes("schema cache") ||
-      text.includes("column") ||
-      err.code === "PGRST204"
-    );
-  });
+  return isPgMissingNamedColumnError(error, ["max_issuance_count"]);
 }
 
 // Issue #542: 配信者がCardManagerで「あと何枚発行できるか」を一目で把握できる

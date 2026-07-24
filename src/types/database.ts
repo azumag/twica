@@ -801,7 +801,7 @@ export type CardWithStreamer = Card & {
   streamer: Streamer
 }
 
-// Types for Supabase query with streamer relation
+// Types for card queries that include a streamer relation.
 export type StreamerRelation = {
   twitch_user_id: string
 }

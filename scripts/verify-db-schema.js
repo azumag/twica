@@ -4,9 +4,9 @@
  * Drizzle スキーマ定義と実 DB の突き合わせ検証スクリプト (#570)
  *
  * 目的:
- * src/lib/db/schema.ts（手書きの Drizzle スキーマ）が実 DB（Supabase の
- * information_schema）と一致していることを、pg 直結経路（DB_DRIVER=pg-read/pg）へ
- * 切り替える「前」に確認する。列名・データ型・NOT NULL 制約の3点を照合し、
+ * src/lib/db/schema.ts（手書きの Drizzle スキーマ）が PlanetScale PostgreSQL の
+ * information_schema と一致していることを確認する。列名・データ型・NOT NULL
+ * 制約の3点を照合し、
  * 差分を表形式で出力する。テーブルの抜け漏れは双方向で検出する
  * （schema.ts にあって DB に無いテーブル / DB の public スキーマにあって
  * schema.ts に定義が無いテーブルの両方）。列照合の後に、接続ロールで全テーブルへ
@@ -17,7 +17,7 @@
  *
  * 使い方:
  *   DATABASE_URL="postgres://..." node scripts/verify-db-schema.js
- *   （preview / prod それぞれの Supabase Direct connection 文字列で実行する。
+ *   （preview / production それぞれの PlanetScale 接続文字列で実行する。
  *    docs/db-driver-migration.md 参照。DB 接続が必要なため CI では実行しない）
  *
  * 実装方針（重要）:

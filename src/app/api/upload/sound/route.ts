@@ -4,7 +4,7 @@ import { handleApiError, handleBlobError } from '@/lib/error-handler';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
 import { ERROR_MESSAGES, SOUND_UPLOAD_CONFIG } from '@/lib/constants';
 import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } from '@/lib/file-utils';
-import { logger } from '@/lib/logger';
+import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client';
 import { sha256Prefix } from '@/lib/crypto-utils';

@@ -17,11 +17,9 @@ import ChannelPointsAccessSection from "@/components/ChannelPointsAccessSection"
  * Twitchサブスク情報をDBから取得するヘルパー
  * エラー時はnullを返し、呼び出し元のレンダリングをブロックしない
  *
- * #711: users.twitch_has_sub の読み取りは user-data.ts の getTwitchSubRow に
- * 委譲（isPgReadEnabled() による経路分岐は関数内部で行われるため、このページは
- * フラグを意識しない）。getTwitchSubRow は pg 経路のクエリエラーも内部で
- * 握りつぶして null を返す設計のため、この try/catch は主に
- * getSupabaseAdmin()/getDb() 自体が投げる例外（設定不備等）に対する保険。
+ * users.twitch_has_sub のPlanetScale読み取りはuser-data.tsへ集約する。
+ * getTwitchSubRow はクエリエラーを内部でnullへ縮退するため、このtry/catchは
+ * getDb()自体の設定不備など、初期化例外に対する最終防御。
  */
 async function getTwitchSubInfo(twitchUserId: string) {
   try {

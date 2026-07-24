@@ -29,17 +29,17 @@ describe("card-number-errors", () => {
 });
 
 describe("isMissingCardNumberColumnError", () => {
-  it("detects PostgREST schema-cache errors for cards.card_number", () => {
+  it("detects PostgreSQL 42703 errors for cards.card_number", () => {
     expect(isMissingCardNumberColumnError({
-      code: "PGRST204",
-      message: "Could not find the 'card_number' column of 'cards' in the schema cache",
+      code: "42703",
+      message: 'column "card_number" of relation "cards" does not exist',
     })).toBe(true);
   });
 
   it("ignores unrelated missing-column errors", () => {
     expect(isMissingCardNumberColumnError({
-      code: "PGRST204",
-      message: "Could not find the 'other_column' column of 'cards' in the schema cache",
+      code: "42703",
+      message: 'column "other_column" of relation "cards" does not exist',
     })).toBe(false);
   });
 });
@@ -56,12 +56,12 @@ describe("Drizzle にラップされたエラー（cause チェーン）", () =>
     expect(isMissingCardNumberColumnError(wrapped(cause))).toBe(true);
   });
 
-  it("isMissingCardNumberColumnError: ラップされた PGRST204 も検知する", () => {
+  it("isMissingCardNumberColumnError: ラップされた別列の42703は検知しない", () => {
     const cause = {
-      code: "PGRST204",
-      message: "Could not find the 'card_number' column of 'cards' in the schema cache",
+      code: "42703",
+      message: 'column "other_column" of relation "cards" does not exist',
     };
-    expect(isMissingCardNumberColumnError(wrapped(cause))).toBe(true);
+    expect(isMissingCardNumberColumnError(wrapped(cause))).toBe(false);
   });
 
   it("isCardNumberConflictError: ラップされた 23505 (unique constraint) を検知する", () => {

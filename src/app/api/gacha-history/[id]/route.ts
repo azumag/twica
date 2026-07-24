@@ -1,18 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() / isPgWriteEnabled() が false を返すため getDb() は一切
-// 呼ばれず、既存の supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { gachaHistory as gachaHistoryTable } from "@/lib/db/schema";
 
@@ -26,7 +23,6 @@ interface GachaHistoryDriverError {
 
 /**
  * gacha_history 所有者確認の pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は id が PK のため最大 1 行、
  * LIMIT 1 + rows[0] ?? null で同じ外部挙動。
  */
 async function fetchGachaHistoryOwnerPg(
@@ -124,14 +120,8 @@ export async function DELETE(
     }
 
     // Verify the gacha history belongs to the user
-    // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-    const { data: history, error: fetchError } = isPgReadEnabled()
-      ? await fetchGachaHistoryOwnerPg(id)
-      : await getSupabaseAdmin()
-          .from("gacha_history")
-          .select("user_twitch_id")
-          .eq("id", id)
-          .maybeSingle();
+    // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+    const { data: history, error: fetchError } = await fetchGachaHistoryOwnerPg(id);
 
     if (fetchError || !history) {
       return handleDatabaseError(fetchError, "Fetching gacha history for deletion");
@@ -141,13 +131,8 @@ export async function DELETE(
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    // #663: 書き込みのため isPgWriteEnabled() で分岐。
-    const { error } = isPgWriteEnabled()
-      ? await deleteGachaHistoryPg(id)
-      : await getSupabaseAdmin()
-          .from("gacha_history")
-          .delete()
-          .eq("id", id);
+    // #663: 書き込みのため PlanetScale の単一接続を使用。
+    const { error } = await deleteGachaHistoryPg(id);
 
     if (error) {
       return handleDatabaseError(error, "Deleting gacha history");

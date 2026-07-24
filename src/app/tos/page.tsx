@@ -20,9 +20,8 @@ export default async function TosPage() {
   // ログインユーザーの場合、TOS同意状態を確認
   // Check TOS acceptance status for logged-in users
   //
-  // #711: users.tos_accepted_at の読み取りは user-data.ts の
-  // getTosAcceptanceRow に委譲（isPgReadEnabled() による経路分岐は関数内部で
-  // 行われるため、このページはフラグを意識しない）。
+  // users.tos_accepted_at のPlanetScale読み取りはuser-data.tsへ集約し、
+  // このページはDB接続やretryの詳細を持たない。
   let hasAccepted = false;
   if (session) {
     try {
@@ -41,7 +40,7 @@ export default async function TosPage() {
       hasAccepted = userData?.tos_accepted_at !== null;
     } catch {
       // エラーの場合は未同意として扱う（既存どおり「本当に throw された場合」
-      // ——getSupabaseAdmin() の設定不備等——のみここに到達する。クエリエラーは
+      // ——getDb() の設定不備等——のみここに到達する。クエリエラーは
       // 上記のとおり row=null として無視され、この catch には来ない）
       // Treat as not accepted on error
       hasAccepted = false;

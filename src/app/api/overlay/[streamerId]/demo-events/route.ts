@@ -19,13 +19,12 @@ const NO_STORE_HEADERS = {
 }
 
 /**
- * Poll the latest short-lived OBS demo event.
+ * Compatibility endpoint for OBS pages loaded before combined event polling.
  *
- * Real gacha events continue to come from the PlanetScale-backed `/events`
- * endpoint. Keeping demos separate prevents their current timestamp from
- * advancing the authoritative gacha_history cursor and skipping a concurrent
- * real redemption. It shares the overlay event limiter, so the two 3-second
- * polling requests remain inside one bounded per-IP budget.
+ * Current pages request demos through `/events?demoSince=...`, which preserves
+ * an independent demo cursor without one extra Worker invocation per polling
+ * cycle. Keep this route during the versioned auto-reload window so an OBS page
+ * that was already open at deployment does not lose its operator demo.
  */
 export async function GET(
   request: NextRequest,

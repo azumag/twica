@@ -9,19 +9,12 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
-import { createMockQueryBuilder } from '../utils/supabase-mock'
+import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/request-validation')
-vi.mock('@/lib/supabase/admin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
-  return {
-    ...actual,
-    getSupabaseAdmin: vi.fn(),
-  }
-})
 
 const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
@@ -35,6 +28,46 @@ function postRequest(drawCount: unknown) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ drawCount }),
   })
+}
+
+/**
+ * POSTの所有権SELECTとUPDATE ... RETURNINGを順に再現するPlanetScale fixture。
+ * 境界値テストでも成功ケースは認可を通過した実際のroute形状で永続化を確認する。
+ */
+function primeRaidGachaDb(drawCount: number) {
+  const selectBuilder: any = {}
+  selectBuilder.from = vi.fn(() => selectBuilder)
+  selectBuilder.where = vi.fn(() => selectBuilder)
+  selectBuilder.limit = vi.fn(() => selectBuilder)
+  selectBuilder.then = (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) =>
+    Promise.resolve([{
+      id: 'streamer-1',
+      raid_gacha_active_until: null,
+      raid_gacha_draw_count: 10,
+    }]).then(resolve, reject)
+
+  const updateCall: { values?: unknown } = {}
+  const updateBuilder: any = {}
+  updateBuilder.set = vi.fn((values: unknown) => {
+    updateCall.values = values
+    return updateBuilder
+  })
+  updateBuilder.where = vi.fn(() => updateBuilder)
+  updateBuilder.returning = vi.fn(() => updateBuilder)
+  updateBuilder.then = (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) =>
+    Promise.resolve([{
+      raid_gacha_active_until: null,
+      raid_gacha_draw_count: drawCount,
+    }]).then(resolve, reject)
+
+  vi.mocked(getDb).mockResolvedValue({
+    db: {
+      select: vi.fn(() => selectBuilder),
+      update: vi.fn(() => updateBuilder),
+    } as never,
+    sql: {} as never,
+  })
+  return updateCall
 }
 
 describe('/api/streamer/raid-gacha drawCount boundary validation', () => {
@@ -61,9 +94,6 @@ describe('/api/streamer/raid-gacha drawCount boundary validation', () => {
   })
 
   it('rejects a drawCount above the new upper bound (16 > 15) with a 400 and updated error message', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({ from: vi.fn() } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
     const response = await POST(postRequest(16))
 
     expect(response.status).toBe(400)
@@ -73,9 +103,6 @@ describe('/api/streamer/raid-gacha drawCount boundary validation', () => {
   })
 
   it('rejects a negative drawCount with a 400', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({ from: vi.fn() } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
     const response = await POST(postRequest(-1))
 
     expect(response.status).toBe(400)
@@ -85,68 +112,25 @@ describe('/api/streamer/raid-gacha drawCount boundary validation', () => {
   })
 
   it('accepts the new upper boundary value (15) and persists it', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'streamer-1', raid_gacha_active_until: null, raid_gacha_draw_count: 10 },
-      error: null,
-    })
-    const updateQuery = createMockQueryBuilder()
-    ;(updateQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { raid_gacha_active_until: null, raid_gacha_draw_count: 15 },
-      error: null,
-    })
-    // getOwnedStreamer does a SELECT (streamerQuery); POST then does an
-    // UPDATE (updateQuery) on the same table, so `from('streamers')` must
-    // be called twice and return the right builder each time.
-    let streamersCallCount = 0
-    const fromMock = vi.fn((table: string) => {
-      if (table === 'streamers') {
-        streamersCallCount += 1
-        return streamersCallCount === 1 ? streamerQuery : updateQuery
-      }
-      return createMockQueryBuilder()
-    })
-
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const updateCall = primeRaidGachaDb(15)
 
     const response = await POST(postRequest(15))
 
     expect(response.status).toBe(200)
-    expect(updateQuery.update).toHaveBeenCalledWith({ raid_gacha_draw_count: 15 })
+    expect(updateCall.values).toEqual({ raid_gacha_draw_count: 15 })
     await expect(response.json()).resolves.toEqual(
       expect.objectContaining({ success: true, drawCount: 15 })
     )
   })
 
   it('rejects the old upper boundary plus one (11) only if it exceeds the configured limit (non-regression: 11-15 now valid)', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'streamer-1', raid_gacha_active_until: null, raid_gacha_draw_count: 0 },
-      error: null,
-    })
-    const updateQuery = createMockQueryBuilder()
-    ;(updateQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { raid_gacha_active_until: null, raid_gacha_draw_count: 11 },
-      error: null,
-    })
-    let streamersCallCount = 0
-    const fromMock = vi.fn((table: string) => {
-      if (table === 'streamers') {
-        streamersCallCount += 1
-        return streamersCallCount === 1 ? streamerQuery : updateQuery
-      }
-      return createMockQueryBuilder()
-    })
-
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const updateCall = primeRaidGachaDb(11)
 
     // 11 was rejected under the old (<=10) limit; issue #641 raises the cap to 15,
     // so this value (previously invalid) must now be accepted end to end.
     const response = await POST(postRequest(11))
 
     expect(response.status).toBe(200)
-    expect(updateQuery.update).toHaveBeenCalledWith({ raid_gacha_draw_count: 11 })
+    expect(updateCall.values).toEqual({ raid_gacha_draw_count: 11 })
   })
 })

@@ -1,18 +1,8 @@
 import { vi } from 'vitest'
 import '@testing-library/jest-dom'
-import { createMockSupabaseClient } from './utils/supabase-mock'
 
 // Setup environment variables
 process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000'
-process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://test.supabase.co'
-process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'test-anon-key'
-process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'test-publishable-key'
-process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key'
-process.env.SUPABASE_SECRET_KEY = 'test-secret-key'
-// Existing parity tests intentionally exercise the retired PostgREST branch.
-// Production/preview must never set this opt-in; without it runtime defaults to
-// pg + PlanetScale even if stale DB_DRIVER/DB_TARGET values remain.
-process.env.TWICA_ENABLE_LEGACY_SUPABASE = 'true'
 process.env.TWITCH_CLIENT_SECRET = 'test-client-secret'
 process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'test-client-id'
 process.env.TWITCH_EVENTSUB_SECRET = 'test-eventsub-secret'
@@ -29,17 +19,10 @@ Object.defineProperty(global.navigator, 'clipboard', {
   writable: true,
 })
 
-// Global compatibility mock for old PostgREST parity fixtures. Production
-// imports the non-instantiating retired facade instead.
-vi.mock('@/lib/supabase/admin', () => ({
-  createAdminClient: vi.fn(() => createMockSupabaseClient()),
-  getSupabaseAdmin: vi.fn(() => createMockSupabaseClient()),
-}))
-
-// #570: pg 直結経路（postgres.js + Drizzle）のグローバルモック。
-// 既存テストは明示的な legacy opt-in により postgrest 経路で動くため getDb は呼ばれない。
-// 万一呼ばれた場合はフラグ分岐漏れ（設計違反）を即検出できるよう throw するスタブにする。
-// pg 経路をテストしたいファイルでは vi.mocked(getDb).mockResolvedValue(...) で上書きする。
+// PlanetScale直結経路（postgres.js + Drizzle）のグローバル境界。
+// DBアクセスを行う単体テストは、対象クエリの戻り値と呼び出し形状を明示した
+// getDb fixture を必ず設定する。暗黙の空DBを返すと、必要な認可・所有権検証が
+// 実行されたかを検出できず、実装回帰を成功扱いするため fail-fast にする。
 //
 // エクスポート形状は実モジュール（src/lib/db/client.ts）の実行時エクスポートと一致させる
 // こと。#688 で normalizePgTimestampString / installIsoTimestampParsers が追加され、
@@ -53,8 +36,8 @@ vi.mock('@/lib/db/client', async (importOriginal) => {
     ...actual,
     getDb: vi.fn(() => {
       throw new Error(
-        'getDb() must not be called in legacy-compat unit tests. ' +
-        'Override with vi.mocked(getDb).mockResolvedValue(...) to test the pg path.'
+        'getDb() requires an explicit PlanetScale/Drizzle fixture in this unit test. ' +
+        'Override it with vi.mocked(getDb).mockResolvedValue(...).'
       )
     }),
   }
