@@ -1,26 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { GET, PATCH } from "@/app/api/cards/collections/route";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { getDb } from "@/lib/db/client";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
-import { createMockQueryBuilder } from "../../utils/supabase-mock";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
 vi.mock("@/lib/request-validation");
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 
 const mockGetSession = vi.mocked(getSession);
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
 const mockValidateContentType = vi.mocked(validateContentType);
 
@@ -38,25 +33,44 @@ function mockAdmin(opts: {
   streamerError?: unknown;
   fallbackStreamer?: { id: string } | null;
 }) {
-  const streamerQuery = createMockQueryBuilder();
-  (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-    data: opts.streamer ?? null,
-    error: opts.streamerError ?? null,
-  });
-  const fallbackQuery = createMockQueryBuilder();
-  (fallbackQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-    data: opts.fallbackStreamer ?? null,
-    error: null,
-  });
-  let calls = 0;
-  mockGetSupabaseAdmin.mockReturnValue({
-    from: vi.fn(() => {
-      calls += 1;
-      return calls === 1 ? streamerQuery : fallbackQuery;
+  const responses = [
+    opts.streamerError
+      ? { error: opts.streamerError }
+      : { rows: opts.streamer ? [opts.streamer] : [] },
+    { rows: opts.fallbackStreamer ? [opts.fallbackStreamer] : [] },
+  ];
+  let selectIndex = 0;
+  const whereExpressions: unknown[] = [];
+  const db = {
+    select: vi.fn((fields: Record<string, unknown>) => {
+      const response = responses[Math.min(selectIndex++, responses.length - 1)];
+      const resolve = () => {
+        if ("error" in response) return Promise.reject(response.error);
+        return Promise.resolve(
+          response.rows.map((row) =>
+            Object.fromEntries(
+              Object.keys(fields).map((key) => [key, row[key as keyof typeof row] ?? null]),
+            ),
+          ),
+        );
+      };
+      const builder = {
+        from: vi.fn(),
+        where: vi.fn((expression: unknown) => {
+          whereExpressions.push(expression);
+          return builder;
+        }),
+        limit: vi.fn(),
+        then: (onFulfilled: (value: unknown) => unknown, onRejected: (reason: unknown) => unknown) =>
+          resolve().then(onFulfilled, onRejected),
+      };
+      builder.from.mockReturnValue(builder);
+      builder.limit.mockReturnValue(builder);
+      return builder;
     }),
-  } as unknown as ReturnType<typeof getSupabaseAdmin>);
-
-  return { streamerQuery, fallbackQuery };
+  };
+  vi.mocked(getDb).mockResolvedValue({ db, sql: vi.fn() } as never);
+  return { db, whereExpressions };
 }
 
 describe("GET /api/cards/collections", () => {
@@ -81,7 +95,7 @@ describe("GET /api/cards/collections", () => {
   });
 
   it("returns the streamer's pre-defined pack names", async () => {
-    mockAdmin({
+    const { whereExpressions } = mockAdmin({
       streamer: { id: "streamer-1", card_pack_names: ["weapons", "characters"] },
     });
 
@@ -89,6 +103,14 @@ describe("GET /api/cards/collections", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.collections).toEqual(["weapons", "characters"]);
+
+    // 認可境界は streamerId だけでなく、ログイン中の twitch_user_id も同じ
+    // WHERE に束縛する。SQL化して両カラムと両bind値を固定し、片方を落とす
+    // 回帰(他人のcatalog参照)を防ぐ。
+    const ownershipQuery = new MySqlDialect().sqlToQuery(whereExpressions[0] as never);
+    expect(ownershipQuery.sql).toContain("`streamers`.`id`");
+    expect(ownershipQuery.sql).toContain("`streamers`.`twitch_user_id`");
+    expect(ownershipQuery.params).toEqual(["streamer-1", "twitch-1"]);
   });
 
   it("returns an empty list when no packs are registered", async () => {
@@ -137,8 +159,8 @@ describe("GET /api/cards/collections", () => {
   });
 
   it("returns an empty list when card_pack_names is not deployed yet (READ 42703), after confirming ownership", async () => {
-    // Real PostgREST returns 42703 ("does not exist") for a SELECT on a missing
-    // column, not PGRST204 — the deploy-window fallback must accept that shape,
+    // PostgreSQL returns 42703 ("does not exist") for a SELECT on a missing
+    // column — the deploy-window fallback must accept that shape,
     // and must still verify ownership via a fallback query before responding.
     mockAdmin({
       streamer: undefined,
@@ -176,19 +198,30 @@ function makePatchRequest(body: unknown) {
 function mockAdminForPatch(opts: {
   streamer?: { id: string; card_pack_names?: string[] } | null;
   streamerError?: unknown;
+  fallbackStreamer?: { id: string } | null;
   rpcError?: unknown;
 }) {
-  const streamerQuery = createMockQueryBuilder();
-  (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-    data: opts.streamer ?? null,
-    error: opts.streamerError ?? null,
+  const dbMock = mockAdmin({
+    streamer: opts.streamer,
+    streamerError: opts.streamerError,
+    fallbackStreamer: opts.fallbackStreamer,
   });
-  const rpcMock = vi.fn().mockResolvedValue({ data: null, error: opts.rpcError ?? null });
-  mockGetSupabaseAdmin.mockReturnValue({
-    from: vi.fn(() => streamerQuery),
-    rpc: rpcMock,
-  } as unknown as ReturnType<typeof getSupabaseAdmin>);
-  return { streamerQuery, rpcMock };
+  // postgres.js は PostgREST の `{ error }` 応答ではなく例外を投げる。
+  // code と message を持つ Error に正規化し、ルートの実運用エラー分類を再現する。
+  const sqlMock = vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    void _strings;
+    void values;
+    if (opts.rpcError) {
+      const source = opts.rpcError as { code?: unknown; message?: unknown };
+      throw Object.assign(
+        new Error(typeof source.message === "string" ? source.message : String(opts.rpcError)),
+        { code: typeof source.code === "string" ? source.code : undefined },
+      );
+    }
+    return [];
+  });
+  vi.mocked(getDb).mockResolvedValue({ db: dbMock.db, sql: sqlMock } as never);
+  return { db: dbMock.db, sqlMock };
 }
 
 describe("PATCH /api/cards/collections", () => {
@@ -258,7 +291,7 @@ describe("PATCH /api/cards/collections", () => {
   });
 
   it("calls the rename_card_pack RPC with the exact validated arguments on success", async () => {
-    const { rpcMock } = mockAdminForPatch({
+    const { sqlMock } = mockAdminForPatch({
       streamer: { id: "streamer-1", card_pack_names: ["weapons", "characters"] },
     });
 
@@ -267,11 +300,8 @@ describe("PATCH /api/cards/collections", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(rpcMock).toHaveBeenCalledWith("rename_card_pack", {
-      p_streamer_id: "streamer-1",
-      p_old_name: "weapons",
-      p_new_name: "armory",
-    });
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+    expect(sqlMock.mock.calls[0].slice(1)).toEqual(["streamer-1", "weapons", "armory"]);
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.cardPackNames).toEqual(["armory", "characters"]);
@@ -288,13 +318,27 @@ describe("PATCH /api/cards/collections", () => {
   });
 
   it("returns 503 when the ownership SELECT itself hits the card_pack_names deploy window", async () => {
-    mockAdminForPatch({
+    const { sqlMock } = mockAdminForPatch({
       streamer: undefined,
       streamerError: { code: "42703", message: "column streamers.card_pack_names does not exist" },
+      fallbackStreamer: { id: "streamer-1" },
     });
 
     const res = await PATCH(makePatchRequest({ streamerId: "streamer-1", oldName: "weapons", newName: "armory" }));
     expect(res.status).toBe(503);
+    expect(sqlMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 rather than 503 when the 42703 fallback finds no owned streamer", async () => {
+    const { sqlMock } = mockAdminForPatch({
+      streamer: undefined,
+      streamerError: { code: "42703", message: "column streamers.card_pack_names does not exist" },
+      fallbackStreamer: null,
+    });
+
+    const res = await PATCH(makePatchRequest({ streamerId: "streamer-1", oldName: "weapons", newName: "armory" }));
+    expect(res.status).toBe(403);
+    expect(sqlMock).not.toHaveBeenCalled();
   });
 
   it("maps an unexpected RPC error to 500", async () => {
