@@ -9,8 +9,9 @@
  * 各 RPC について以下を固定する(既存 parity テストと同じ観点。
  * tests/unit/gacha-rpc-driver-parity.test.ts / dashboard-data-rpc-driver-parity.test.ts
  * / storage-db-driver-parity.test.ts の流儀を踏襲):
- *   1. postgrest 経路(フラグ未設定 = 既定 'postgrest'): getDb が一切呼ばれず
- *      既存 .rpc() 呼び出しの引数・外部挙動が完全に不変
+ *   1. #806 以外は postgrest 経路(フラグ未設定 = 既定 'postgrest')で getDb が
+ *      一切呼ばれず、既存 .rpc() 呼び出しの引数・外部挙動が完全に不変
+ *      (#806 の rename_card_pack は退役経路をなくすため常時 PlanetScale)
  *   2. pg 経路(DB_DRIVER=pg): 名前付き引数 + 明示キャストの SQL が実行され、
  *      戻り値/エラーが PostgREST .rpc() と同一形状に正規化される
  *   3. 冪等性設定: 非冪等 RPC (rename_card_pack / activate_support_code) は
@@ -368,7 +369,7 @@ describe('batch_update_card_drop_rates (#573)', () => {
 // 2. rename_card_pack
 // =============================================================================
 
-describe('rename_card_pack (#573)', () => {
+describe('rename_card_pack (#806)', () => {
   function makePatchRequest(body: unknown) {
     return new NextRequest('http://localhost/api/cards/collections', {
       method: 'PATCH',
@@ -377,44 +378,37 @@ describe('rename_card_pack (#573)', () => {
     })
   }
 
-  function mockAdminForPatch(opts: { streamer?: { id: string; card_pack_names?: string[] } | null; rpc?: ReturnType<typeof vi.fn> }) {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: opts.streamer ?? null,
-      error: null,
-    })
-    const rpc = opts.rpc ?? vi.fn().mockResolvedValue({ data: null, error: null })
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => streamerQuery),
-      rpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-    return { streamerQuery, rpc }
+  /**
+   * #806 以降 collections route は、所有権確認も rename RPC も常に
+   * PlanetScale の Drizzle/postgres.js 経路を通る。SELECT の thenable は
+   * Drizzle のクエリビルダが await 可能である実装契約を最小限で再現する。
+   */
+  function mockPgForPatch(
+    streamer: { id: string; card_pack_names?: string[] } | null,
+    sqlMock: ReturnType<typeof createSqlMock>
+  ) {
+    return primePgDbWithSelectResponses(sqlMock, [streamer ? [streamer] : []])
   }
 
   const CATALOG_STREAMER = { id: 'streamer-1', card_pack_names: ['weapons', 'characters'] }
 
-  it('postgrest 経路(フラグ未設定): 既存 supabase-js RPC で実行され getDb は呼ばれない', async () => {
-    const { rpc } = mockAdminForPatch({ streamer: CATALOG_STREAMER })
+  it('DB_DRIVER 未設定でも PlanetScale の Drizzle/postgres.js 経路で実行される', async () => {
+    const sqlMock = createSqlMock([{ rows: [] }])
+    const selectMock = mockPgForPatch(CATALOG_STREAMER, sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: 'armory' })
     )
 
     expect(res.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('rename_card_pack', {
-      p_streamer_id: 'streamer-1',
-      p_old_name: 'weapons',
-      p_new_name: 'armory',
-    })
-    expect(getDb).not.toHaveBeenCalled()
+    expect(selectMock).toHaveBeenCalledTimes(1)
+    expect(sqlMock).toHaveBeenCalledTimes(1)
+    expect(renderSqlCall(sqlMock, 0).values).toEqual(['streamer-1', 'weapons', 'armory'])
   })
 
-  it('pg 経路 正常系: 名前付き引数(::uuid 明示キャスト)で呼ばれ、レスポンス形状が postgrest 経路と一致する', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    const rpc = vi.fn()
-    mockAdminForPatch({ streamer: CATALOG_STREAMER, rpc })
+  it('固定 PlanetScale 経路: 名前付き引数(::uuid 明示キャスト)で呼ばれ、既存レスポンス形状を維持する', async () => {
     const sqlMock = createSqlMock([{ rows: [] }])
-    primePgDb(sqlMock)
+    const selectMock = mockPgForPatch(CATALOG_STREAMER, sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: '  armory  ' })
@@ -431,16 +425,14 @@ describe('rename_card_pack (#573)', () => {
     expect(text).toContain('p_old_name => $')
     expect(text).toContain('p_new_name => $')
     expect(values).toEqual(['streamer-1', 'weapons', 'armory'])
-    expect(rpc).not.toHaveBeenCalled()
+    expect(selectMock).toHaveBeenCalledTimes(1)
   })
 
   it('pg 経路 42883 (RPC未デプロイ): 既存と同じ 503 (PACK_RENAME_NOT_READY) を返す', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    mockAdminForPatch({ streamer: CATALOG_STREAMER })
     const sqlMock = createSqlMock([
       { reject: pgError('42883', 'function rename_card_pack(uuid, text, text) does not exist') },
     ])
-    primePgDb(sqlMock)
+    mockPgForPatch(CATALOG_STREAMER, sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: 'armory' })
@@ -452,10 +444,8 @@ describe('rename_card_pack (#573)', () => {
   it('pg 経路 レース由来の RAISE EXCEPTION (OLD_NAME_NOT_FOUND): 既存と同じ 400 を返す', async () => {
     // ルートの事前チェックを通過した後、RPC 実行までの間に並行編集が割り込んだ
     // レースを模す(cards-collections-route.test.ts の既存 postgrest テストと同種)。
-    vi.stubEnv('DB_DRIVER', 'pg')
-    mockAdminForPatch({ streamer: CATALOG_STREAMER })
     const sqlMock = createSqlMock([{ reject: pgError('P0001', 'OLD_NAME_NOT_FOUND') }])
-    primePgDb(sqlMock)
+    mockPgForPatch(CATALOG_STREAMER, sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: 'armory' })
@@ -465,15 +455,13 @@ describe('rename_card_pack (#573)', () => {
   })
 
   it('非冪等: CONNECTION_CLOSED でもリトライされず(1回のみ実行)、既存と同じ 500 を返す', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    mockAdminForPatch({ streamer: CATALOG_STREAMER })
     // 2回目の応答を成功にしておき、「リトライされていれば成功していた」状況でも
     // 1回で打ち切られること(=非冪等 RPC を安全側で扱えていること)を証明する
     const sqlMock = createSqlMock([
       { reject: pgError('CONNECTION_CLOSED', 'write CONNECTION_CLOSED') },
       { rows: [] },
     ])
-    primePgDb(sqlMock)
+    mockPgForPatch(CATALOG_STREAMER, sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: 'armory' })
