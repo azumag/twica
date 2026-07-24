@@ -12,8 +12,6 @@ const mocks = vi.hoisted(() => ({
   checkRateLimit: vi.fn(),
   getRateLimitIdentifier: vi.fn(),
   getDb: vi.fn(),
-  getDbTarget: vi.fn(),
-  getDbDriverMode: vi.fn(),
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
@@ -32,14 +30,6 @@ vi.mock("@/lib/logger", () => ({
 
 vi.mock("@/lib/db/client", () => ({
   getDb: mocks.getDb,
-}));
-
-vi.mock("@/lib/db/target", () => ({
-  getDbTarget: mocks.getDbTarget,
-}));
-
-vi.mock("@/lib/db/flags", () => ({
-  getDbDriverMode: mocks.getDbDriverMode,
 }));
 
 const TEST_SECRET = "test-db-health-secret";
@@ -68,8 +58,6 @@ describe("GET /api/admin/db-health", () => {
       reset: Date.now() + 60000,
     });
     mocks.getRateLimitIdentifier.mockResolvedValue("ip:127.0.0.1");
-    mocks.getDbTarget.mockReturnValue("supabase");
-    mocks.getDbDriverMode.mockReturnValue("pg");
     // sql はタグ付きテンプレートとして呼ばれる postgres.js クライアントのスタブ。
     // vi.fn() は通常関数として呼び出し可能なので `sql\`...\`` の形でも動作する。
     const sqlStub = vi.fn().mockResolvedValue([{ version_num: 150004 }]);
@@ -134,8 +122,7 @@ describe("GET /api/admin/db-health", () => {
     expect(mocks.getDb).not.toHaveBeenCalled();
   });
 
-  it("targetクエリ省略時はgetDbTarget()で解決したtargetを使い、serverVersionMajorを返す", async () => {
-    mocks.getDbTarget.mockReturnValue("supabase");
+  it("targetクエリ省略時はPlanetScaleを使い、serverVersionMajorを返す", async () => {
     const { GET } = await import("@/app/api/admin/db-health/route");
 
     const response = await GET(createHealthRequest());
@@ -144,15 +131,15 @@ describe("GET /api/admin/db-health", () => {
     const body = await response.json();
     expect(body).toMatchObject({
       driver: "pg",
-      target: "supabase",
+      target: "planetscale",
       serverVersionMajor: 15,
     });
     expect(typeof body.latencyMs).toBe("number");
     expect(body.error).toBeUndefined();
-    expect(mocks.getDb).toHaveBeenCalledWith({ target: "supabase" });
+    expect(mocks.getDb).toHaveBeenCalledWith();
   });
 
-  it("target=planetscaleを明示すればそのtargetでgetDbを呼ぶ", async () => {
+  it("target=planetscaleを明示しても同じ単一接続を使う", async () => {
     const { GET } = await import("@/app/api/admin/db-health/route");
 
     const response = await GET(createHealthRequest("/api/admin/db-health?target=planetscale"));
@@ -160,7 +147,7 @@ describe("GET /api/admin/db-health", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.target).toBe("planetscale");
-    expect(mocks.getDb).toHaveBeenCalledWith({ target: "planetscale" });
+    expect(mocks.getDb).toHaveBeenCalledWith();
   });
 
   it("不正なtargetクエリパラメータは400を返す", async () => {
@@ -171,6 +158,15 @@ describe("GET /api/admin/db-health", () => {
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toBe(ERROR_MESSAGES.INVALID_REQUEST);
+    expect(mocks.getDb).not.toHaveBeenCalled();
+  });
+
+  it("削除済みtarget=supabaseは400で拒否する", async () => {
+    const { GET } = await import("@/app/api/admin/db-health/route");
+
+    const response = await GET(createHealthRequest("/api/admin/db-health?target=supabase"));
+
+    expect(response.status).toBe(400);
     expect(mocks.getDb).not.toHaveBeenCalled();
   });
 

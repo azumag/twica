@@ -278,7 +278,7 @@ function buildMigrationDescriptor(filename, content) {
     // 直後の1文（SET LOCAL自身が暗黙的に作るトランザクション）で終わってしまい、
     // 後続のSQL文には一切適用されない。実際に `psql -f`（オートコミットモード）で
     // 00051を流すと `WARNING: SET LOCAL can only be used in transaction blocks` が
-    // 発生することをDocker実機検証で確認済み（docs/planetscale-migration-audit.md 3.1節、
+    // 発生することをDocker実機検証で確認済み（docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md 3.1節、
     // docs/planetscale-schema-baseline.md）。
     //
     // 現状の00051自体はforbiddenを宣言していないため、このガードは「将来この

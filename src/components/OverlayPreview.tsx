@@ -472,9 +472,7 @@ export default function OverlayPreview({
     // 依存に含める必要はない（含めるとselectedCardId変更だけでも誤発火してしまう）。
   }, [initializedStorageKey, storageKey, urlParams]);
 
-  // OBS DEMOを実行（Supabase Realtimeでブロードキャスト）
-  // OBSに設定したオーバーレイにも反映される
-  // Trigger OBS demo via Supabase Realtime broadcast
+  // OBS DEMOを統合events経路へ発行し、DO primaryとpolling gap recoveryの双方へ届ける。
   const triggerObsDemo = useCallback(async () => {
     if (isObsDemoExecuting) return;
     // 事前disable(ボタン)をすり抜けた場合でも、fetch自体を発火させないための二重ガード。
@@ -913,8 +911,7 @@ export default function OverlayPreview({
             {t("previewDemo")}
           </button>
 
-          {/* OBSデモボタン（Supabase RealtimeでOBSにも送信） */}
-          {/* OBS demo button (broadcasts via Supabase Realtime to OBS) */}
+          {/* OBSデモボタン（統合events経路でOBSへ送信） */}
           <button
             onClick={triggerObsDemo}
             disabled={isObsDemoExecuting || isMaintenanceBlocked}

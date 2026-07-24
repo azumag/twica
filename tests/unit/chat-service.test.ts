@@ -7,7 +7,7 @@ vi.mock('@/lib/twitch/token-manager');
 vi.mock('@/lib/env-validation', () => ({
   getEnvVar: vi.fn().mockReturnValue('test-client-id'),
 }));
-// reportApiError/reportError は Supabase を使うため mock で差し替え
+// 外部エラー永続化はunit testの対象外なのでmockで差し替える
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportApiError: vi.fn().mockResolvedValue(undefined),
   reportError: vi.fn().mockResolvedValue(undefined),
@@ -59,7 +59,7 @@ describe('TwitchChatService', () => {
       vi.mocked(global.fetch).mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
       } as Response);
 
       const result = await service.sendChatMessage('123456789', 'test message');
@@ -82,7 +82,7 @@ describe('TwitchChatService', () => {
       vi.mocked(global.fetch).mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
       } as Response);
 
       const result = await service.sendChatMessage('123456789', 'test message');
@@ -93,6 +93,7 @@ describe('TwitchChatService', () => {
       expect(global.fetch).toHaveBeenCalledWith(
         'https://api.twitch.tv/helix/chat/messages',
         expect.objectContaining({
+          signal: expect.any(AbortSignal),
           headers: expect.objectContaining({
             Authorization: 'Bearer bot-token',
           }),
@@ -112,7 +113,7 @@ describe('TwitchChatService', () => {
       vi.mocked(global.fetch).mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
       } as Response);
 
       await service.sendChatMessage('123456789', 'あ'.repeat(520));
@@ -127,6 +128,135 @@ describe('TwitchChatService', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe('sendChatMessageDetailed - outbox再試行分類', () => {
+    it('scope未付与とtoken欠落はAPIを呼ばずterminalに分類する', async () => {
+      vi.mocked(hasScope).mockResolvedValue(false);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        reason: 'user:write:chat scope not granted',
+      });
+      expect(global.fetch).not.toHaveBeenCalled();
+
+      vi.mocked(hasScope).mockResolvedValue(true);
+      vi.mocked(getTwitchAccessToken).mockResolvedValue(null);
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        reason: 'chat sender access token unavailable',
+      });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('401はterminal、503は最大試行後retryableに分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({
+          error: 'Unauthorized',
+          message: 'Insufficient authorization in token',
+        }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        reason: 'Twitch API 401: Insufficient authorization in token',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+
+      vi.mocked(global.fetch).mockClear();
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({
+          error: 'Service Unavailable',
+          message: 'temporary outage',
+        }),
+      } as Response);
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'retryable',
+        reason: 'Twitch API 503: temporary outage',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('network例外は最大試行後retryableに分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNRESET'));
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'retryable',
+        reason: 'ECONNRESET',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('外部送信直前fenceがfalseまたはthrowならfetchせずabortedに分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message', {
+        beforeExternalSend: vi.fn().mockResolvedValue(false),
+      })).resolves.toEqual({ outcome: 'aborted', reason: 'chat delivery ownership lost before send' });
+      expect(global.fetch).not.toHaveBeenCalled();
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message', {
+        beforeExternalSend: vi.fn().mockRejectedValue(new Error('lease lost')),
+      })).resolves.toEqual({ outcome: 'aborted', reason: 'chat delivery fence failed: lease lost' });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it.each([408, 429, 500, 522, 523, 524])('HTTP %iは最大3回後retryableに分類する', async (status) => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status,
+        json: () => Promise.resolve({ message: 'temporary outage' }),
+      } as Response);
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message')).resolves.toEqual({
+        outcome: 'retryable',
+        reason: `Twitch API ${status}: temporary outage`,
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('HTTP 200でもis_sent=falseならdrop_reason付きterminalに分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{
+            message_id: '',
+            is_sent: false,
+            drop_reason: {
+              code: 'automod_held',
+              message: 'The message was held by AutoMod.',
+            },
+          }],
+        }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        reason: 'Twitch API 200: The message was held by AutoMod.',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -233,7 +363,7 @@ describe('TwitchChatService', () => {
       vi.mocked(global.fetch).mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
       } as Response);
 
       const result = await service.sendChatMessage('123456789', 'test message');
@@ -293,7 +423,7 @@ describe('TwitchChatService', () => {
       vi.mocked(global.fetch).mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
       } as Response);
 
       await service.sendChatMessage('123456789', 'test message');
@@ -368,7 +498,7 @@ describe('TwitchChatService', () => {
         .mockResolvedValueOnce({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+          json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
         } as Response);
 
       const result = await service.sendChatMessage('123456789', 'test message');
@@ -419,7 +549,7 @@ describe('TwitchChatService', () => {
           .mockResolvedValueOnce({
             ok: true,
             status: 200,
-            json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+            json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
           } as Response);
 
         const result = await service.sendChatMessage('123456789', 'test message');
@@ -491,7 +621,7 @@ describe('TwitchChatService', () => {
         .mockResolvedValueOnce({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ data: [{ message_id: 'msg-123' }] }),
+          json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
         } as Response);
 
       const result = await service.sendChatMessage('123456789', 'test message');

@@ -5,6 +5,7 @@ import { getSession } from '@/lib/session'
 import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
 import { validateCSRFToken } from '@/lib/csrf'
 import { COOKIE_NAMES } from '@/lib/constants'
+import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/csrf', () => ({
@@ -39,14 +40,6 @@ vi.mock('@/lib/crypto-utils', () => ({
 vi.mock('@/lib/url-utils', () => ({
   getBaseUrl: vi.fn(() => 'https://example.com'),
 }))
-vi.mock('@/lib/supabase/admin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
-  return {
-    ...actual,
-    getSupabaseAdmin: vi.fn(),
-  }
-})
-
 const mockGetSession = vi.mocked(getSession)
 const mockDeleteTwitchTokens = vi.mocked(deleteTwitchTokens)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
@@ -74,13 +67,24 @@ function createRequestWithBody(body: Record<string, unknown>): NextRequest {
   })
 }
 
-function mockUserScopesQuery(result: { data: unknown; error: { code?: string; message?: string } | null }) {
-  const maybeSingle = vi.fn().mockResolvedValue(result)
-  const eq = vi.fn().mockReturnValue({ maybeSingle })
-  const select = vi.fn().mockReturnValue({ eq })
-  const from = vi.fn().mockReturnValue({ select })
-
-  return { from }
+function primeUserScopes(result: {
+  data: Record<string, unknown> | null
+  error: { code?: string; message?: string } | null
+}) {
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockImplementation(() =>
+            result.error
+              ? Promise.reject(result.error)
+              : Promise.resolve(result.data ? [result.data] : [])
+          ),
+        })),
+      })),
+    })),
+  }
+  vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as never)
 }
 
 describe('POST /api/auth/reauth scope merge', () => {
@@ -110,13 +114,10 @@ describe('POST /api/auth/reauth scope merge', () => {
   })
 
   it('既存の user:write:chat を保持したまま user:read:subscriptions を追加要求する', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      mockUserScopesQuery({
+    primeUserScopes({
         data: { twitch_scopes: ['user:read:email', 'user:write:chat'] },
         error: null,
-      }) as any
-    )
+    })
 
     const response = await POST(createRequest(['user:read:subscriptions']))
 
@@ -132,13 +133,10 @@ describe('POST /api/auth/reauth scope merge', () => {
   })
 
   it('既存・要求に重複があっても追加スコープは重複しない', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      mockUserScopesQuery({
+    primeUserScopes({
         data: { twitch_scopes: ['user:write:chat', 'user:read:subscriptions'] },
         error: null,
-      }) as any
-    )
+    })
 
     const response = await POST(createRequest(['user:read:subscriptions']))
 
@@ -150,13 +148,10 @@ describe('POST /api/auth/reauth scope merge', () => {
   })
 
   it('チャット権限を追加する再認証でも既存のサブスク権限を保持する', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      mockUserScopesQuery({
+    primeUserScopes({
         data: { twitch_scopes: ['user:read:subscriptions'] },
         error: null,
-      }) as any
-    )
+    })
 
     const response = await POST(createRequest(['user:write:chat']))
 
@@ -173,13 +168,10 @@ describe('POST /api/auth/reauth scope merge', () => {
   it('チャネルポイント連携有効化の再認証で channel:read/manage:redemptions を要求する', async () => {
     // Issue #398: 初回ログインのAUTH_SCOPESから削除されたチャネルポイント系スコープは、
     // 配信者が連携を有効化する瞬間の step-up 再認証で明示的に要求される。
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      mockUserScopesQuery({
+    primeUserScopes({
         data: { twitch_scopes: ['user:read:email'] },
         error: null,
-      }) as any
-    )
+    })
 
     const response = await POST(
       createRequest(['channel:read:redemptions', 'channel:manage:redemptions'])
@@ -198,9 +190,7 @@ describe('POST /api/auth/reauth scope merge', () => {
   it('既存チャネルポイント権限は新規スコープ追加時も保持される', async () => {
     // 既存ユーザーがchannel point系スコープをDB上に持っている場合、
     // 別機能のstep-up再認証でも消失しないことを保証する。
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      mockUserScopesQuery({
+    primeUserScopes({
         data: {
           twitch_scopes: [
             'user:read:email',
@@ -209,8 +199,7 @@ describe('POST /api/auth/reauth scope merge', () => {
           ],
         },
         error: null,
-      }) as any
-    )
+    })
 
     const response = await POST(createRequest(['user:write:chat']))
 
@@ -239,13 +228,10 @@ describe('POST /api/auth/reauth scope merge', () => {
   })
 
   it('スコープ取得のDBエラー時は再認証を中止し、トークン削除を行わない', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      mockUserScopesQuery({
+    primeUserScopes({
         data: null,
-        error: { code: 'PGRST000', message: 'db unavailable' },
-      }) as any
-    )
+        error: { code: '08006', message: 'db unavailable' },
+    })
 
     const response = await POST(createRequest(['user:read:subscriptions']))
 
@@ -287,10 +273,7 @@ describe('POST /api/auth/reauth returnTo cookie (#788 子C #791)', () => {
 
     // 既定: 既存の追加スコープなし（このdescribeの関心はreturnToであり、
     // スコープ保持ロジックは上のdescribeで既にカバー済みのため単純化する）
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      mockUserScopesQuery({ data: { twitch_scopes: [] }, error: null }) as any
-    )
+    primeUserScopes({ data: { twitch_scopes: [] }, error: null })
   })
 
   it('returnToが/で始まる相対パスの場合、RETURN_TOクッキーにその値を設定する', async () => {
@@ -322,13 +305,10 @@ describe('POST /api/auth/reauth returnTo cookie (#788 子C #791)', () => {
   })
 
   it('returnToとadditionalScopesを同時に指定した場合、スコープ処理とcookie設定の両方が行われる', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      mockUserScopesQuery({
+    primeUserScopes({
         data: { twitch_scopes: ['user:write:chat'] },
         error: null,
-      }) as any
-    )
+    })
 
     const response = await POST(
       createRequestWithBody({ additionalScopes: ['user:read:subscriptions'], returnTo: '/dashboard/account' })

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -17,12 +18,10 @@ vi.mock('@/lib/twitch/token-manager', () => ({
   hasScope: vi.fn(),
   getTwitchAccessToken: vi.fn(),
 }))
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
-}))
+vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
 // #788: GET ハンドラは早期returnも含め常に getChannelPointsAccessState を呼ぶため、
 // このモジュールをモックしないと未モックの実装（users テーブルへの
-// supabase-js/pgクエリ）が走ってしまい、このファイルが検証したい
+// 実際の PlanetScale/Drizzle クエリ）が走ってしまい、このファイルが検証したい
 // hasRequiredScope/rewards/diagnostics周りの挙動と無関係な失敗を招く。
 // デフォルトは capability: 'unknown' とし、capability/temporarilyUnavailable の
 // 挙動そのものを検証するテストではケースごとに mockResolvedValueOnce で上書きする。
@@ -104,7 +103,6 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
 
   it('diagnostics=1ではEventSubと追加報酬状態も返す', async () => {
     const { hasScope, getTwitchAccessToken } = await import('@/lib/twitch/token-manager')
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
     vi.mocked(hasScope).mockResolvedValue(true)
     vi.mocked(getTwitchAccessToken).mockResolvedValue('token-1')
     vi.mocked(global.fetch)
@@ -130,22 +128,26 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
         pagination: {},
       }), { status: 200 }) as any)
 
-    const streamerQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({
-        data: { id: 'streamer-db-1', channel_point_reward_id: 'reward-1', raid_gacha_draw_count: 3 },
-        error: null,
+    // ルートは streamer 所有権の一意行と追加報酬一覧を別々に読む。
+    // 選択フィールドで結果を振り分け、SQL ビルダーの外形まで実装契約に合わせる。
+    const db = {
+      select: vi.fn((fields: Record<string, unknown>) => {
+        const isStreamerQuery = Object.hasOwn(fields, 'channel_point_reward_id')
+        const builder: any = {
+          from: vi.fn(() => builder),
+          where: vi.fn(() => builder),
+          limit: vi.fn().mockResolvedValue([
+            { id: 'streamer-db-1', channel_point_reward_id: 'reward-1', raid_gacha_draw_count: 3 },
+          ]),
+          orderBy: vi.fn().mockResolvedValue([{ id: 'extra-1', reward_id: 'reward-2' }]),
+        }
+        if (!isStreamerQuery) {
+          builder.limit = vi.fn().mockResolvedValue([])
+        }
+        return builder
       }),
     }
-    const rewardsQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      order: vi.fn().mockResolvedValue({ data: [{ id: 'extra-1', reward_id: 'reward-2' }], error: null }),
-    }
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn((table: string) => table === 'streamers' ? streamerQuery : rewardsQuery),
-    } as any)
+    vi.mocked(getDb).mockResolvedValue({ db } as any)
 
     const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
     const response = await GET(request('http://localhost:3000/api/twitch/channel-point-bootstrap?diagnostics=1'))

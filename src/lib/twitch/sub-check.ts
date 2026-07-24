@@ -12,22 +12,19 @@
  *   スコープ除去はユーザーの手動確認 API (check-subscription) でのみ行う
  */
 
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { getEnvVar } from '@/lib/env-validation'
 import { getTwitchAccessToken } from '@/lib/twitch/token-manager'
 import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 // -----------------------------------------------------------------------------
 // #572 (#570 パイロット踏襲): pg 直結経路。
-// hasTwitchSub はキャッシュ読み取りとキャッシュ更新（users への UPDATE 2 箇所）が
-// 混在する関数のため、関数全体を isPgWriteEnabled() で分岐する（token-manager.ts
-// 冒頭のフラグ使い分け方針と同じ。読み書きで別経路が混ざると障害切り分けが困難に
-// なるため、pg-read モードでは本関数は従来の PostgREST 経路のまま動く）。
-// 既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時は完全に従来どおり動く。
+// hasTwitchSub はキャッシュの読み取りと更新を同じ PlanetScale 接続先で扱う。
+// これにより読み書きで接続先が混在せず、障害時の状態確認を一貫させる。
 // -----------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { users as usersTable } from '@/lib/db/schema'
 
@@ -53,7 +50,7 @@ export function isTwitchSubCheckEnabled(): boolean {
 /**
  * hasTwitchSub の pg 直結実装 (#572)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - users の読み取り: .maybeSingle() は twitch_user_id の UNIQUE 制約（migration
  *   00001）により最大 1 行のため、LIMIT 1 + rows[0] ?? null が同じ外部挙動。
  *   取得失敗（error）は既存実装と同じく false に落とす。
@@ -195,84 +192,8 @@ export async function hasTwitchSub(twitchUserId: string): Promise<boolean> {
     return false
   }
 
-  // #572: キャッシュ更新（書き込み）を含む読み書き混在関数のため isPgWriteEnabled()
-  // で関数全体を分岐。フラグ未設定時（既定 'postgrest'）は素通りし従来どおり動く。
-  if (isPgWriteEnabled()) {
-    return hasTwitchSubPg(twitchUserId)
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin()
-
-    const { data: user, error } = await supabaseAdmin
-      .from('users')
-      .select('twitch_sub_verified_at, twitch_has_sub, twitch_scopes')
-      .eq('twitch_user_id', twitchUserId)
-      .maybeSingle()
-
-    if (error || !user) {
-      return false
-    }
-
-    // user:read:subscriptions スコープがなければ判定不可
-    if (!user.twitch_scopes?.includes(ADDITIONAL_SCOPES.USER_READ_SUBSCRIPTIONS)) {
-      return false
-    }
-
-    // キャッシュ判定: 1時間以内なら前回の結果を返す
-    if (user.twitch_sub_verified_at) {
-      const verifiedAt = new Date(user.twitch_sub_verified_at).getTime()
-      if (Date.now() - verifiedAt < CACHE_DURATION_MS) {
-        return user.twitch_has_sub === true
-      }
-    }
-
-    // キャッシュ期限切れ → Twitch API で確認
-    const { hasSub } = await checkTwitchSubViaApi(twitchUserId)
-
-    if (hasSub !== null) {
-      // 正常結果: DB に保存（通常キャッシュ TTL で再検証）
-      const { data: updatedUser, error: updateError } = await supabaseAdmin
-        .from('users')
-        .update({
-          twitch_sub_verified_at: new Date().toISOString(),
-          twitch_has_sub: hasSub,
-        })
-        .eq('twitch_user_id', twitchUserId)
-        .select('twitch_user_id')
-        .maybeSingle()
-
-      // キャッシュ更新失敗はリクエスト継続に影響しない（次回アクセス時に再試行される）
-      // ユーザー削除等で0行更新となっても、次回 hasTwitchSub() でユーザー未取得 → false で解消
-      if (updateError || !updatedUser) {
-        logger.error('[TwitchSub] Failed to update sub cache:', { twitchUserId, error: updateError, updatedUser })
-      }
-
-      return hasSub
-    }
-
-    // API エラー時: タイムスタンプのみ更新して短縮 TTL でリトライを抑制
-    // twitch_has_sub は前回値を保持（ユーザーに不利にしない）
-    // 計算: now - (1h - 5min) = 55分前 → キャッシュ判定で「55分 < 60分 = 有効」→ 5分後に期限切れ
-    const errorCacheTimestamp = new Date(Date.now() - (CACHE_DURATION_MS - ERROR_CACHE_DURATION_MS))
-    const { data: updatedTs, error: tsError } = await supabaseAdmin
-      .from('users')
-      .update({
-        twitch_sub_verified_at: errorCacheTimestamp.toISOString(),
-      })
-      .eq('twitch_user_id', twitchUserId)
-      .select('twitch_user_id')
-      .maybeSingle()
-
-    if (tsError || !updatedTs) {
-      logger.error('[TwitchSub] Failed to update error cache timestamp:', { twitchUserId, error: tsError, updatedTs })
-    }
-
-    return user.twitch_has_sub === true
-  } catch (error) {
-    logger.error('[TwitchSub] Error checking subscription:', { twitchUserId, error })
-    return false
-  }
+  // キャッシュの読み取りと更新を同じ PlanetScale 接続先で実行する。
+  return hasTwitchSubPg(twitchUserId)
 }
 
 export type SubCheckResult = {

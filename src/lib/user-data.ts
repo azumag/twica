@@ -3,10 +3,9 @@
  *
  * tos/accept API ルート・eventsub/subscribe API ルート（POST、#690 の重複統合）・
  * 複数の Server Component（/tos, /dashboard/account, /dashboard/history）から
- * 呼ばれる、cards に依存しない単純な単一行読み取りを集約する。#570 パイロット（src/lib/announcements.ts）・#572（token-manager.ts）と
- * 同じ分岐パターン: isPgReadEnabled() で supabase-js 実装 / Drizzle 実装を切り替え、
- * DB_DRIVER 未設定時（既定 'postgrest'）はこのモジュールの pg 経路は一切実行されず、
- * 挙動は完全に従来どおりになる。
+ * 呼ばれる、cards に依存しない単純な単一行読み取りを集約する。#708 以降は
+ * PlanetScale/Drizzle の単一経路で実行し、呼び出し元ごとに異なる既存の
+ * エラー契約だけをこの境界で明示的に維持する。
  *
  * 設計方針（過剰な抽象化の回避。CLAUDE.md 規約 YAGNI）:
  * 3つのヘルパーはいずれも「異なる呼び出し元での既存のクセ」を個別に再現する
@@ -14,26 +13,25 @@
  * 対応する呼び出し元と再現しているクセを明記する。
  */
 import { eq } from 'drizzle-orm'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import { streamers as streamersTable, users as usersTable } from '@/lib/db/schema'
 
 /**
  * getTosAcceptanceRow の戻り値。
  *
- * supabase-js の `{ data, error }` の外形に倣った `{ row, error }` 契約にしている
- * 理由（Phase 1 の最重要原則「DB_DRIVER 未設定時の挙動不変」のため）:
+ * `{ row, error }` 契約にしている理由:
  * 同じクエリでも呼び出し元ごとに「エラー時の挙動」が異なるのが既存の正である。
  * - route.ts の GET: `if (error)` を検査して 500 応答 + logger.error
  * - tos/page.tsx: `const { data } = ...` で error を無視 → data=null →
  *   `userData?.tos_accepted_at !== null` が `undefined !== null` → true と評価され
  *   「クエリエラー時も hasAccepted=true」になる（クセ。修正は別Issue）
- * ヘルパーが throw する契約にすると、page 側の postgrest エラー時挙動が
- * 「無視して true」から「catch して false」へ変わってしまう（= フラグ未設定時の
- * 挙動が変わる）ため、throw せず error を値として返し、検査するか無視するかを
+ * ヘルパーが throw する契約にすると、page 側の従来のエラー時挙動が
+ * 「無視して true」から「catch して false」へ変わってしまうため、throw せず
+ * error を値として返し、検査するか無視するかを
  * 呼び出し元の既存コードに委ねる。
  */
 export interface TosAcceptanceRowResult {
@@ -56,67 +54,52 @@ export interface TosAcceptanceRowResult {
  * エラー時は throw せず error を値で返す契約（理由は TosAcceptanceRowResult 参照）。
  */
 export async function getTosAcceptanceRow(twitchUserId: string): Promise<TosAcceptanceRowResult> {
-  if (isPgReadEnabled()) {
-    try {
-      const rows = await withDbRetry(
-        async () => {
-          // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
-          // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
-          const { db } = await getDb()
-          return db
-            .select({ tos_accepted_at: usersTable.tos_accepted_at })
-            .from(usersTable)
-            .where(eq(usersTable.twitch_user_id, twitchUserId))
-            .limit(1) // twitch_user_id は UNIQUE（migration 00001）のため maybeSingle と同じ外部挙動
-        },
-        'getTosAcceptanceRow',
-        // 読み取り専用クエリのため冪等（リトライ可）
-        { idempotent: true }
-      )
-      return { row: rows[0] ?? null, error: null }
-    } catch (error) {
-      // pg 直結（postgres.js/Drizzle）はクエリエラーを throw するため、ここで
-      // 捕捉して postgrest の { data: null, error } と同じ外形へ写像する。
-      // ログを出す理由（チームレビュー SRE 指摘）: error を無視する呼び出し元
-      // （tos/page.tsx）経由の pg 障害は、ここでログしないと withDbRetry の
-      // console warn（errors テーブル→GitHub Issue 自動起票の対象外）しか痕跡が
-      // 残らず、同ファイルの他2ヘルパー（logger.error 済み）と観測性が非対称に
-      // なる。トレードオフ: error を検査する呼び出し元（route.ts GET）経由では
-      // route 側の既存ログと合わせて同一障害が errors テーブルに2行記録されるが、
-      // 二重起票のノイズより page 経路の可視性を優先する（クロスレビューで
-      // セキュリティ・QA 両視点の異議なしを確認済み）。この catch は
-      // DB_DRIVER=pg-read/pg 時のみ実行されるため、フラグ未設定時のログは不変。
-      logger.error('Failed to fetch tos_accepted_at (pg), mapping to { row: null, error }', {
-        twitchUserId,
-        error,
-      })
-      return {
-        row: null,
-        error: { message: error instanceof Error ? error.message : String(error) },
-      }
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
+        // 回復にはクライアント再取得が必要。src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ tos_accepted_at: usersTable.tos_accepted_at })
+          .from(usersTable)
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .limit(1) // twitch_user_id は UNIQUE（migration 00001）のため maybeSingle と同じ外部挙動
+      },
+      'getTosAcceptanceRow',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true }
+    )
+    return { row: rows[0] ?? null, error: null }
+  } catch (error) {
+    // PlanetScale の DB ドライバーはクエリエラーを throw するため、ここで
+    // 捕捉して呼び出し側が扱う { data: null, error } 形状へ写像する。
+    // ログを出す理由（チームレビュー SRE 指摘）: error を無視する呼び出し元
+    // （tos/page.tsx）経由の pg 障害は、ここでログしないと withDbRetry の
+    // console warn（errors テーブル→GitHub Issue 自動起票の対象外）しか痕跡が
+    // 残らず、同ファイルの他2ヘルパー（logger.error 済み）と観測性が非対称に
+    // なる。トレードオフ: error を検査する呼び出し元（route.ts GET）経由では
+    // route 側の既存ログと合わせて同一障害が errors テーブルに2行記録されるが、
+    // 二重起票のノイズより page 経路の可視性を優先する（クロスレビューで
+    // セキュリティ・QA 両視点の異議なしを確認済み）。
+    logger.error('Failed to fetch tos_accepted_at (pg), mapping to { row: null, error }', {
+      twitchUserId,
+      error,
+    })
+    return {
+      row: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
     }
   }
-
-  const supabaseAdmin = getSupabaseAdmin()
-  // 既存実装と同じく maybeSingle の { data, error } を throw せずそのまま渡す。
-  // error を検査するか無視するかは呼び出し元の既存コードが決める。
-  const { data, error } = await supabaseAdmin
-    .from('users')
-    .select('tos_accepted_at')
-    .eq('twitch_user_id', twitchUserId)
-    .maybeSingle()
-
-  return { row: data, error }
 }
 
 /**
  * users.twitch_has_sub を1行取得する。
  * 呼び出し元: src/app/dashboard/account/page.tsx の getTwitchSubInfo
  *
- * 既存の supabase-js 実装は `.maybeSingle()` の `{ data, error }` を分割代入する際に
- * error を無視し、常に data（クエリエラー時は通常 null）を返す設計になっている
- * （呼び出し元の try/catch は「例外が飛んだ場合」だけを保護しており、業務エラーは
- * 素通りする）。pg 直結（postgres.js/Drizzle）はクエリエラーを必ず throw するため、
+ * 移行前の旧 Supabase 実装は `.maybeSingle()` の `{ data, error }` を分割代入する際に
+ * error を無視し、常に data（クエリエラー時は通常 null）を返していた。
+ * PlanetScale の DB ドライバーはクエリエラーを必ず throw するため、
  * 同じ「エラーを握りつぶして null を返す」挙動にするには本関数内で明示的に catch
  * する必要がある。呼び出し元の catch に丸投げすると外部挙動は変わらないが、
  * 呼び出し元の実装に依存せずこのヘルパー単体でも安全側（null 返却）に倒れる方が
@@ -125,48 +108,35 @@ export async function getTosAcceptanceRow(twitchUserId: string): Promise<TosAcce
 export async function getTwitchSubRow(
   twitchUserId: string
 ): Promise<{ twitch_has_sub: boolean | null } | null> {
-  if (isPgReadEnabled()) {
-    try {
-      const rows = await withDbRetry(
-        async () => {
-          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
-          const { db } = await getDb()
-          return db
-            .select({ twitch_has_sub: usersTable.twitch_has_sub })
-            .from(usersTable)
-            .where(eq(usersTable.twitch_user_id, twitchUserId))
-            .limit(1) // twitch_user_id は UNIQUE（migration 00001）のため maybeSingle と同じ外部挙動
-        },
-        'getTwitchSubRow',
-        // 読み取り専用クエリのため冪等（リトライ可）
-        { idempotent: true }
-      )
-      return rows[0] ?? null
-    } catch (error) {
-      // 既存 supabase-js 実装が業務エラーを無視して null を返すのと同じ外部挙動
-      // （アカウント設定ページのレンダリングをブロックしない安全側の判断）。
-      // ログレベルは warn ではなく error にする（厳格レビュー指摘）: パイロット群
-      // （announcements.ts:209 の getUnreadAnnouncements、dashboard-data.ts:126 の
-      // getStreamerData 等）は pg 例外を安全側の値へ写像する際に一貫して
-      // logger.error を使っており、logger.error だけが errors テーブル経由の
-      // GitHub Issue 自動起票（src/lib/logger.ts:34-38 の logErrorFromLogger）まで
-      // 届く。warn のままだと同種の DB 障害でも本関数だけ起票対象から漏れ、
-      // 観測性がパイロット群と非対称になるため error に統一する。
-      logger.error('Failed to fetch twitch_has_sub (pg), returning null', { twitchUserId, error })
-      return null
-    }
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ twitch_has_sub: usersTable.twitch_has_sub })
+          .from(usersTable)
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .limit(1) // twitch_user_id は UNIQUE（migration 00001）のため maybeSingle と同じ外部挙動
+      },
+      'getTwitchSubRow',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true }
+    )
+    return rows[0] ?? null
+  } catch (error) {
+    // 移行前の旧 Supabase 実装が業務エラーを無視して null を返していたのと同じ外部挙動
+    // （アカウント設定ページのレンダリングをブロックしない安全側の判断）。
+    // ログレベルは warn ではなく error にする（厳格レビュー指摘）: パイロット群
+    // （announcements.ts:209 の getUnreadAnnouncements、dashboard-data.ts:126 の
+    // getStreamerData 等）は pg 例外を安全側の値へ写像する際に一貫して
+    // logger.error を使っており、logger.error だけが errors テーブル経由の
+    // GitHub Issue 自動起票（src/lib/logger.ts:34-38 の logErrorFromLogger）まで
+    // 届く。warn のままだと同種の DB 障害でも本関数だけ起票対象から漏れ、
+    // 観測性がパイロット群と非対称になるため error に統一する。
+    logger.error('Failed to fetch twitch_has_sub (pg), returning null', { twitchUserId, error })
+    return null
   }
-
-  const supabaseAdmin = getSupabaseAdmin()
-  // 既存実装は error を意図的に見ない（クエリエラー時は data が null になる想定で
-  // 呼び出し元のレンダリングをブロックしない設計）。挙動を変えないためここでも
-  // error は無視する。
-  const { data } = await supabaseAdmin
-    .from('users')
-    .select('twitch_has_sub')
-    .eq('twitch_user_id', twitchUserId)
-    .maybeSingle()
-  return data
 }
 
 /**
@@ -196,42 +166,30 @@ export async function getTwitchSubRow(
 export async function getStreamerIdByTwitchUserId(
   twitchUserId: string
 ): Promise<{ id: string } | null> {
-  if (isPgReadEnabled()) {
-    try {
-      const rows = await withDbRetry(
-        async () => {
-          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
-          const { db } = await getDb()
-          return db
-            .select({ id: streamersTable.id })
-            .from(streamersTable)
-            .where(eq(streamersTable.twitch_user_id, twitchUserId))
-            .limit(1) // twitch_user_id は UNIQUE（migration 00001）のため maybeSingle と同じ外部挙動
-        },
-        'getStreamerIdByTwitchUserId',
-        // 読み取り専用クエリのため冪等（リトライ可）
-        { idempotent: true }
-      )
-      return rows[0] ?? null
-    } catch (error) {
-      // postgrest 経路が error を無視して null 表示になるのと同じ外部挙動に写像
-      // （上記コメント参照）。原因調査用にログを残す（pg 経路のみの内部ログ。
-      // 既存 postgrest 経路のログは増やさない）。
-      // ログレベルは warn ではなく error にする（厳格レビュー指摘。理由は
-      // getTwitchSubRow の catch 節コメント参照: パイロット群との観測性の非対称を
-      // 避けるため、pg 例外→安全側マッピング時は logger.error に統一する）。
-      logger.error('Failed to fetch streamer id (pg), returning null', { twitchUserId, error })
-      return null
-    }
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb()
+        return db
+          .select({ id: streamersTable.id })
+          .from(streamersTable)
+          .where(eq(streamersTable.twitch_user_id, twitchUserId))
+          .limit(1) // twitch_user_id は UNIQUE（migration 00001）のため maybeSingle と同じ外部挙動
+      },
+      'getStreamerIdByTwitchUserId',
+      // 読み取り専用クエリのため冪等（リトライ可）
+      { idempotent: true }
+    )
+    return rows[0] ?? null
+  } catch (error) {
+    // postgrest 経路が error を無視して null 表示になるのと同じ外部挙動に写像
+    // （上記コメント参照）。原因調査用にログを残す（pg 経路のみの内部ログ。
+    // 既存 postgrest 経路のログは増やさない）。
+    // ログレベルは warn ではなく error にする（厳格レビュー指摘。理由は
+    // getTwitchSubRow の catch 節コメント参照: パイロット群との観測性の非対称を
+    // 避けるため、pg 例外→安全側マッピング時は logger.error に統一する）。
+    logger.error('Failed to fetch streamer id (pg), returning null', { twitchUserId, error })
+    return null
   }
-
-  const supabaseAdmin = getSupabaseAdmin()
-  // 既存実装は error を意図的に見ない（0行時に data=null になる挙動をそのまま
-  // 「streamer なし」判定に使っている）。挙動を変えないためここでも error は無視する。
-  const { data } = await supabaseAdmin
-    .from('streamers')
-    .select('id')
-    .eq('twitch_user_id', twitchUserId)
-    .maybeSingle()
-  return data
 }

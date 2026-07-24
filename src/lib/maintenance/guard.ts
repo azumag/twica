@@ -10,6 +10,10 @@
  * 実際に route / middleware から呼ばれるのは Stage 3 から。
  */
 import { NextResponse } from 'next/server'
+// この guard は middleware から同期的に呼ばれる。middleware は Edge runtime の
+// import graph に入るため、DB 永続化を含む logger.server ではなく、console 出力だけを
+// 行う共有 logger を使う。ここで server-only logger を import すると、到達しない
+// error 経路であっても bundler が DB/Node 依存を middleware bundle へ解決してしまう。
 import { logger } from '@/lib/logger'
 import {
   getMaintenanceState,

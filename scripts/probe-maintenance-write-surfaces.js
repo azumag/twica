@@ -42,7 +42,7 @@
  * 兆候）、「対象環境がmaintenance modeになっていない可能性」という
  * わかりやすいメッセージで早期終了する（本文中 looksLikeMaintenanceModeOff）。
  *
- * MAINTENANCE_MODE の設定例（docs/db-phase2-runbook.md 4章も参照）:
+ * MAINTENANCE_MODE の設定例（docs/history/migration/DB_PHASE2_RUNBOOK.md 4章も参照）:
  *   echo "read-only" | npx wrangler@4.112.0 versions secret put MAINTENANCE_MODE --env=preview
  *   npx wrangler@4.112.0 versions deploy <version-id>@100% --env=preview -y
  *   （wrangler は必ず 4.112.0 を明示する。ローカル既定の 4.61.0 系は本番/preview
@@ -125,7 +125,7 @@ const HELP_TEXT = `
     echo "read-only" | npx wrangler@4.112.0 versions secret put MAINTENANCE_MODE --env=preview
     npx wrangler@4.112.0 versions deploy <version-id>@100% --env=preview -y
 
-  詳細は docs/db-phase2-runbook.md の4章を参照してください。
+  詳細は docs/history/migration/DB_PHASE2_RUNBOOK.md の4章を参照してください。
 
 このスクリプトはCIでは実行しません（外部Workerへの実リクエストを伴うため）。
 config/maintenance-write-surfaces.json の全エントリについて、実際に稼働中の
@@ -503,7 +503,7 @@ async function main() {
     console.error('[probe-maintenance] 中断: block系エントリが1件も503を返しませんでした。')
     console.error('対象環境の MAINTENANCE_MODE が off のままになっている可能性があります。')
     console.error('preview等の対象環境で MAINTENANCE_MODE を read-only 等 (off以外) に')
-    console.error('設定してから再実行してください。設定手順は docs/db-phase2-runbook.md')
+    console.error('設定してから再実行してください。設定手順は docs/history/migration/DB_PHASE2_RUNBOOK.md')
     console.error('の4章、および本スクリプトの --help を参照。')
     console.error('========================================================================')
     for (const r of blockRuns) {

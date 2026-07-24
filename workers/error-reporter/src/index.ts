@@ -35,17 +35,16 @@ const USER_AGENT = 'twica-error-reporter'
 interface Env {
   /**
    * #711 C: errors/support_inquiries への直接クエリ用 Hyperdrive バインディング。
-   * ルート wrangler.toml（メインアプリ）の [[hyperdrive]] binding = "HYPERDRIVE_SUPABASE"
+   * ルート wrangler.toml（メインアプリ）の [[hyperdrive]] binding = "HYPERDRIVE_PLANETSCALE"
    * と同じ Hyperdrive config ID を指す（このワーカーの wrangler.toml 参照）。
-   * 同じ config を共有するため、Phase2 cutover 時に config の向き先が
-   * Supabase → PlanetScale へ切り替わっても、このワーカーのコードは一切
-   * 変更不要（接続文字列の差し替えだけで追従する）。
+   * 同じconfigを共有することで、アプリとreporterが常に同じPlanetScale正本を参照し、
+   * 片側だけ別DBへ接続する構成ドリフトを防ぐ。
    *
    * optional にしている理由: RATE_LIMIT_KV と同じく、wrangler.toml の設定漏れを
    * 型レベルでも許容し、scheduled() の起動時バリデーションと
    * createReporterDbClient 内の defensive throw の二段構えで安全に倒すため。
    */
-  HYPERDRIVE_SUPABASE?: HyperdriveBindingLike
+  HYPERDRIVE_PLANETSCALE?: HyperdriveBindingLike
   GITHUB_TOKEN: string
   GITHUB_REPO_OWNER: string
   GITHUB_REPO_NAME: string
@@ -75,7 +74,7 @@ interface Env {
    * （EventSub 退避 backlog の自動ドレイン）で使う設定・secrets。
    *
    * prod/preview 両方を対象にする理由: errors/inquiries 監視（このワーカー自体）は
-   * 本番 Supabase のみを見る設計（`.github/workflows/deploy-cloudflare.yml` の
+   * 本番PlanetScaleのみを見る設計（`.github/workflows/deploy-cloudflare.yml` の
    * `legacy-app-deploy`/`auxiliary-workers` job コメント「Error Reporter Cron
    * Worker のデプロイ（本番のみ）」参照。このワーカー自体、preview 用の
    * デプロイ・secrets を持たない）。しかし EventSub 退避（KV への park）は
@@ -84,9 +83,9 @@ interface Env {
    * 別 KV namespace（root wrangler.toml の [[kv_namespaces]] と
    * [env.preview.kv_namespaces] で id が異なる）を使う。そのため preview 側で
    * maintenance mode を使った検証作業（実績: deploy-architecture メモ参照）を
-   * 行った場合、preview 側にも退避データが溜まりうる。errors/inquiries 監視が
-   * 本番のみで足りるのは「監視対象データ（Supabase）がそもそも本番用の
-   * secrets しか設定されていない」という別の理由によるものであり、
+   * 行った場合、preview 側にも退避データが溜まりうる。errors/inquiries監視が
+   * 本番のみで足りるのは、reporterのproduction Hyperdriveが
+   * 本番PlanetScaleだけを指すという別の理由によるものであり、
    * EventSub 退避には同じ理由が当てはまらないため、ここでは prod/preview
    * 両方を明示的にドレイン対象にする。
    */
@@ -99,7 +98,7 @@ interface Env {
    * route.ts` が検証する共有シークレット）と同じ値を、このワーカー用にも
    * `wrangler secret put EVENTSUB_REPLAY_SECRET_PROD` で設定する想定。
    * prod/preview で別々の secret 値を運用している前提のため（docs/
-   * db-phase2-runbook.md 4.3節: 両環境で `openssl rand -hex 32` により
+   * history/migration/DB_PHASE2_RUNBOOK.md 4.3節: 両環境で `openssl rand -hex 32` により
    * 個別に生成・設定済み）、_PROD/_PREVIEW を分けている。未設定の場合は
    * 該当ターゲットへのドレインのみを安全にスキップする
    * （processEventSubParkAutoDrain 参照）。
@@ -149,9 +148,8 @@ interface HyperdriveBindingLike {
 // 共通ヘルパ: errors/support_inquiries への DB アクセス (#711 C)
 //
 // Hyperdrive バインディング経由で PostgreSQL に postgres.js で直結する。
-// メインアプリ（src/lib/db/client.ts）と同じ Hyperdrive config を指すため、
-// Phase2 cutover でその config の接続先が Supabase → PlanetScale に切り替わっても
-// このファイルは無修正で追従する。
+// メインアプリ（src/lib/db/client.ts）と同じPlanetScale Hyperdrive configを
+// 指すため、errors/support_inquiriesを別DBへ誤配線しない。
 //
 // メインアプリの getDb() との違い（意図的な簡略化。YAGNI）:
 //   - Drizzle は使わず raw SQL（postgres.js のタグ付きテンプレート）のみ。
@@ -182,11 +180,8 @@ interface HyperdriveBindingLike {
  * このファイルへ複製する理由: このワーカーは root とは別のデプロイ単位
  * （wrangler がこのディレクトリを直接バンドルする。EventSubParkKVNamespace
  * 節と同じ理由）であり、root の scripts/lib を import すると依存関係が
- * この Worker のバンドルへ暗黙に広がる。今日時点（Hyperdrive が Supabase を
- * 直接指す間）は sslrootcert が付与されないため実質 no-op だが、Phase2
- * cutover で config が PlanetScale へ向いた際に何もしなくても正しく動く
- * ようにするための先取り対応（cutover 時にこのファイルへ手を入れない、
- * というファイル冒頭コメントの約束を成立させるため）。
+   * この Worker のバンドルへ暗黙に広がる。PlanetScaleの接続文字列に含まれ得る
+   * sslrootcertをこのデプロイ単位でも同じ規則で除去し、TLS検証を維持する。
  *
  * export する理由: tests/unit/error-reporter-worker.test.ts の契約テストが、
  * 正本 scripts/lib/db-migrate-core.js の同名関数と代表的な入力で出力が
@@ -266,10 +261,10 @@ function installRawTimestampParser(client: postgres.Sql): void {
  *   正しさを優先する。
  */
 function createReporterDbClient(env: Env): postgres.Sql {
-  if (!env.HYPERDRIVE_SUPABASE) {
-    throw new Error('[Reporter] Missing HYPERDRIVE_SUPABASE binding in wrangler.toml')
+  if (!env.HYPERDRIVE_PLANETSCALE) {
+    throw new Error('[Reporter] Missing HYPERDRIVE_PLANETSCALE binding in wrangler.toml')
   }
-  const sql = postgres(stripPostgresJsIncompatibleSslParams(env.HYPERDRIVE_SUPABASE.connectionString), {
+  const sql = postgres(stripPostgresJsIncompatibleSslParams(env.HYPERDRIVE_PLANETSCALE.connectionString), {
     max: 1,
     connect_timeout: 10,
     idle_timeout: 20,
@@ -376,7 +371,7 @@ async function postIssueComment(env: Env, issueNumber: number, body: string): Pr
 // エラー処理（errors テーブル → GitHub Issue）
 // =============================================================================
 
-/** Supabase errors テーブルのレコード型 */
+/** PlanetScale errorsテーブルのレコード型。 */
 interface ErrorRecord {
   id: string
   error_type: string
@@ -617,7 +612,7 @@ export async function processErrors(env: Env): Promise<void> {
 // error 処理との違い: 問い合わせは1件ずつ一意なのでグループ化・再発コメント不要。
 // =============================================================================
 
-/** Supabase support_inquiries テーブルのレコード型（Issue 化に必要な列のみ） */
+/** PlanetScale support_inquiriesテーブルのレコード型（Issue化に必要な列のみ）。 */
 interface InquiryRecord {
   id: string
   twitch_user_id: string
@@ -1102,7 +1097,7 @@ maintenance mode 中に KV へ退避された EventSub notification
 - maintenance mode が意図せず有効なまま長時間放置されている
 - maintenance mode は解除済みだが、退避データのリプレイが未実施
   （\`npm run replay:maintenance-eventsub -- --url=<base-url>\`、
-  詳細は docs/db-phase2-runbook.md を参照）
+  詳細は docs/history/migration/DB_PHASE2_RUNBOOK.md を参照）
 
 ### 対応後
 このアラートには自動クローズが無いため、対応後は手動でこの Issue を
@@ -1188,7 +1183,7 @@ export async function processEventSubParkBacklog(env: Env): Promise<void> {
 }
 
 // =============================================================================
-// EventSub 退避 backlog 自動ドレイン（RATE_LIMIT_KV → eventsub-replay API）
+// EventSub退避/chat outbox自動ドレイン（DB + RATE_LIMIT_KV → replay API）
 //
 // Issue #695（EventSub の Cloudflare Queue 化）の代替として承認された、
 // KV ベース部分改善の2項目目。1項目目（上記 processEventSubParkBacklog）は
@@ -1231,7 +1226,7 @@ const MAINTENANCE_STATUS_PATH = '/api/maintenance-status'
  * 完全一致する文字列を追加すること（片方だけ変更するとこの分岐が機能しなくなる）。
  * 既存の5分毎トリガー（errors/inquiries/backlog監視、wrangler.toml 1個目の
  * crons エントリ）とは意図的に別トリガーにしている。理由: 既存トリガーは
- * Supabase ポーリングが主目的で高頻度（5分毎）だが、自動ドレインは HTTP 経由で
+   * errors/inquiriesポーリングが主目的で高頻度（5分毎）だが、自動ドレインはHTTP経由で
  * アプリ本体の書き込み系 API（eventsub-replay）を叩く処理であり、同じ頻度で
  * 回す必要性が薄い（maintenance window は頻繁に発生しない）。Free プランは
  * 3トリガー/worker まで無料なので、2個目のトリガーを追加しても追加コストは無い。
@@ -1272,11 +1267,10 @@ const EVENTSUB_AUTO_DRAIN_OLDEST_AGE_MINUTES_THRESHOLD = 10
 
 /**
  * 「最古エントリの経過時間」だけを安価に確認するための dry-run peek 呼び出しの
- * limit。1件だけ取得すれば十分（eventsub-park.ts の KV list は受信時刻の
- * 辞書順＝時系列順を返すため、limit=1 の1件目が常に全体の最古エントリになる。
- * getEventSubParkBacklogStats の「keys配列の先頭がそのまま最古」という
- * ロジックと同じ前提に立つ、HTTP 経由版）。dry-run なので KV の書き込み・
- * 削除は発生しない。
+ * limit。routeはDB outbox workとKV listを結合後にreceivedAt順へ再整列するため、
+ * limit=1のresults[0]が両保存先を通じた最古候補になる。DB-only pendingや
+ * 保持期限cleanupだけが残る場合も実relayを起動できる。dry-runなのでDB/KVの
+ * 状態変更は発生しない。
  */
 const EVENTSUB_AUTO_DRAIN_PEEK_LIMIT = 1
 
@@ -1284,18 +1278,17 @@ const EVENTSUB_AUTO_DRAIN_PEEK_LIMIT = 1
  * 実際にドレイン（リプレイ実行）する際の1バッチあたりの limit。
  * サーバー側 `DEFAULT_LIMIT`（route.ts）と同じ控えめな値を明示的に指定し、
  * 1回の HTTP リクエストが長時間化しないようにする（route.ts は各エントリを
- * 直列 await するため、件数が多いほどレスポンスが遅くなる。詳細は
- * scripts/replay-maintenance-eventsub.js の FETCH_TIMEOUT_MS コメント参照）。
+ * 直列 await するため、件数が多いほどレスポンスが遅くなる。ただしroute側は
+ * DB outboxを最大5件に制限し、DB+KVをこのlimit内で共有したうえで105秒の
+ * wall-clock budgetを持つ。未処理分はcursor/未claim状態のまま次tickへ残る）。
  */
 const EVENTSUB_AUTO_DRAIN_BATCH_LIMIT = 20
 
 /**
  * fetch のタイムアウト（ミリ秒）。対象アプリが無応答の場合に Cron Worker の
  * 実行がハングし続けるのを防ぐ。peek（limit=1、dry-run で KV 書き込みなし）は
- * 軽量なので短め、実ドレイン（limit=20、各エントリ直列処理）は
- * scripts/replay-maintenance-eventsub.js と同じ 120秒（同スクリプトの
- * FETCH_TIMEOUT_MS コメント参照: 1エントリ最大3秒 × 20件を安全側に見た値）を
- * そのまま踏襲する。
+ * 軽量なので短め、実ドレインは120秒とする。アプリroute自身が105秒で新規処理を
+ * 停止するため、残り15秒をレスポンス転送・Worker側ログ処理へ確保できる。
  */
 const EVENTSUB_AUTO_DRAIN_PEEK_TIMEOUT_MS = 30_000
 const EVENTSUB_AUTO_DRAIN_REPLAY_TIMEOUT_MS = 120_000
@@ -1405,7 +1398,7 @@ interface EventSubAutoDrainTarget {
  * 1ターゲットに対する自動ドレインを実行する。
  * 1. baseUrl / secret の両方が設定されていることを確認（無ければ warn して no-op）
  * 2. maintenance mode が 'off' であることを確認（off 以外・確認不能ならスキップ）
- * 3. dry-run peek（limit=1）で最古エントリの経過時間を確認
+ * 3. dry-run peek（limit=1）でDB outboxまたはKVの最古エントリ経過時間を確認
  *    （backlog が無ければ、または閾値未満ならここで終了）
  * 4. 実ドレイン（limit=EVENTSUB_AUTO_DRAIN_BATCH_LIMIT、1バッチのみ）を実行し、結果をログ出力
  *
@@ -1533,7 +1526,7 @@ export default {
     _ctx: ExecutionContext
   ): Promise<void> {
     if (event.cron === EVENTSUB_AUTO_DRAIN_CRON) {
-      // 自動ドレインは HYPERDRIVE_SUPABASE/GITHUB_TOKEN 等、既存3処理専用の
+      // 自動ドレインは HYPERDRIVE_PLANETSCALE/GITHUB_TOKEN 等、既存3処理専用の
       // binding/secrets に依存しないため、下の環境変数バリデーションより前で
       // 分岐・完結させる。
       try {
@@ -1544,12 +1537,10 @@ export default {
       return
     }
 
-    // 環境変数バリデーション（既存3処理共通）: 未設定の場合は早期リターン。
-    // binding/secret 未設定でも無害に空振りする（#711 C: PostgREST 用の
-    // SUPABASE_URL/SUPABASE_SECRET_KEY/SUPABASE_SERVICE_ROLE_KEY はもう使わない
-    // ため、Hyperdrive バインディングの有無を見る）。
-    if (!env.HYPERDRIVE_SUPABASE || !env.GITHUB_TOKEN) {
-      console.error('[Reporter] Missing required binding/secrets. Bind HYPERDRIVE_SUPABASE in wrangler.toml and set GITHUB_TOKEN via wrangler secret put')
+    // 環境変数バリデーション（既存3処理共通）: 必須 binding/secret が
+    // 未設定なら無害に早期リターンする。
+    if (!env.HYPERDRIVE_PLANETSCALE || !env.GITHUB_TOKEN) {
+      console.error('[Reporter] Missing required binding/secrets. Bind HYPERDRIVE_PLANETSCALE in wrangler.toml and set GITHUB_TOKEN via wrangler secret put')
       return
     }
     if (!env.GITHUB_REPO_OWNER || !env.GITHUB_REPO_NAME) {

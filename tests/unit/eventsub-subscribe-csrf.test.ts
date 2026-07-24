@@ -5,7 +5,7 @@ import { validateCSRFToken } from '@/lib/csrf'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+import { getDb } from '@/lib/db/client'
 
 // Issue #399 に対応するテスト: 状態変更 API (EventSub 登録/解除) が CSRF 検証失敗時に 403 を返すこと。
 // 正常系の詳細（Twitch API との連携）は既存 E2E の対象であり、ここでは CSRF ゲートのみ検証する。
@@ -16,9 +16,6 @@ vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: vi.fn(),
   getRateLimitIdentifier: vi.fn(),
   rateLimits: { eventsubSubscribePost: {}, eventsubSubscribeGet: {} },
-}))
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
 }))
 vi.mock('@/lib/logger', () => ({
   logger: {
@@ -33,7 +30,19 @@ const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockGetRateLimitIdentifier = vi.mocked(getRateLimitIdentifier)
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
+
+function primeStreamerExists() {
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([{ id: 'streamer-1' }]),
+        })),
+      })),
+    })),
+  }
+  vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as never)
+}
 
 function createPostRequest(): NextRequest {
   return new NextRequest('http://localhost:3000/api/twitch/eventsub/subscribe', {
@@ -58,6 +67,7 @@ function createDeleteRewardRequest(rewardId: string): NextRequest {
 describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    primeStreamerExists()
     mockGetSession.mockResolvedValue({
       twitchUserId: '123456789',
       twitchUsername: 'streamer',
@@ -116,17 +126,6 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     process.env.TWITCH_CLIENT_SECRET = 'client-secret'
     process.env.TWITCH_EVENTSUB_SECRET = 'eventsub-secret'
     process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
-    const streamerQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'streamer-1' }, error: null }),
-    }
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        throw new Error(`Unexpected table: ${table}`)
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
     ).mockResolvedValueOnce(
@@ -192,17 +191,6 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     process.env.TWITCH_CLIENT_SECRET = 'client-secret'
     process.env.TWITCH_EVENTSUB_SECRET = 'eventsub-secret'
     process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
-    const streamerQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'streamer-1' }, error: null }),
-    }
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        throw new Error(`Unexpected table: ${table}`)
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
     ).mockResolvedValueOnce(
@@ -303,17 +291,6 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     process.env.TWITCH_CLIENT_SECRET = 'client-secret'
     process.env.TWITCH_EVENTSUB_SECRET = 'eventsub-secret'
     process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
-    const streamerQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'streamer-1' }, error: null }),
-    }
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        throw new Error(`Unexpected table: ${table}`)
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
     ).mockResolvedValueOnce(
@@ -383,17 +360,6 @@ describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
     process.env.TWITCH_CLIENT_SECRET = 'client-secret'
     process.env.TWITCH_EVENTSUB_SECRET = 'eventsub-secret'
     process.env.NEXT_PUBLIC_APP_URL = 'https://twica.example'
-    const streamerQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'streamer-1' }, error: null }),
-    }
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        throw new Error(`Unexpected table: ${table}`)
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 }),
     ).mockResolvedValueOnce(

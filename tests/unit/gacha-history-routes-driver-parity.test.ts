@@ -1,6 +1,5 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — ガチャ履歴/統計ルート群の
- * postgrest経路 / pg経路パリティテスト
+ * #663: ガチャ履歴/統計ルート群の PlanetScale/Drizzle 回帰テスト
  *
  * 対象:
  *   - GET /api/gacha-history（streamer取得のみ対象。getGachaHistoryForStreamer等は
@@ -8,7 +7,7 @@
  *   - DELETE /api/gacha-history/[id]（所有者確認の読み取り + DELETE）
  *   - GET /api/gacha-stats（streamer取得のみ対象。getGachaStats等は既にpg直結対応済み）
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
@@ -102,14 +101,7 @@ function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
   vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
 }
 
-function createSupabaseStreamersMock(result: { data: unknown; error: unknown }) {
-  const maybeSingle = vi.fn().mockResolvedValue(result)
-  const eq = vi.fn(() => ({ maybeSingle }))
-  const select = vi.fn(() => ({ eq }))
-  return { from: vi.fn(() => ({ select })) }
-}
-
-describe('ガチャ履歴/統計ルート: postgrest / pg 経路の互換 (#663)', () => {
+describe('ガチャ履歴/統計ルート: PlanetScale 経路 (#663)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockCheckRateLimit.mockResolvedValue({ success: true, limit: 60, remaining: 59, reset: Date.now() + 60000 } as any)
@@ -120,28 +112,8 @@ describe('ガチャ履歴/統計ルート: postgrest / pg 経路の互換 (#663)
     vi.mocked(getGachaHistoryForStreamer).mockResolvedValue({ items: [], total: 0, page: 1, perPage: 20 } as any)
   })
 
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
   describe('GET /api/gacha-history', () => {
-    it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-      vi.stubEnv('DB_DRIVER', undefined)
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        createSupabaseStreamersMock({ data: { id: 'streamer-id-1' }, error: null }) as any
-      )
-
-      const { GET } = await import('@/app/api/gacha-history/route')
-      const url = new URL('http://localhost/api/gacha-history')
-      const response = await GET(new NextRequest(url))
-
-      expect(response.status).toBe(200)
-      expect(getDb).not.toHaveBeenCalled()
-    })
-
-    it('DB_DRIVER=pg-read: pg経路でstreamerが見つかれば既存関数（getGachaHistoryForStreamer）に正しいidを渡す', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg-read')
+    it('streamerが見つかれば既存関数（getGachaHistoryForStreamer）に正しいidを渡す', async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [{ id: 'streamer-id-1' }] }] })
       primePgDb(pg)
 
@@ -154,8 +126,7 @@ describe('ガチャ履歴/統計ルート: postgrest / pg 経路の互換 (#663)
       expect(getGachaHistoryForStreamer).toHaveBeenCalledWith('streamer-id-1', expect.any(Object))
     })
 
-    it('DB_DRIVER=pg-read: streamerが見つからなければ404（postgrest経路と同じ外部挙動）', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg-read')
+    it('streamerが見つからなければ404を返す', async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] })
       primePgDb(pg)
 
@@ -172,24 +143,7 @@ describe('ガチャ履歴/統計ルート: postgrest / pg 経路の互換 (#663)
       vi.mocked(getGachaStats).mockResolvedValue({ totalDraws: 0 } as any)
     })
 
-    it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-      vi.stubEnv('DB_DRIVER', undefined)
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        createSupabaseStreamersMock({ data: { id: 'streamer-id-1' }, error: null }) as any
-      )
-
-      const { GET } = await import('@/app/api/gacha-stats/route')
-      const url = new URL('http://localhost/api/gacha-stats')
-      url.searchParams.set('period', '7d')
-      const response = await GET(new NextRequest(url))
-
-      expect(response.status).toBe(200)
-      expect(getDb).not.toHaveBeenCalled()
-    })
-
-    it('DB_DRIVER=pg-read: pg経路でstreamerが見つかれば既存関数（getGachaStats）に正しいidを渡す', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg-read')
+    it('streamerが見つかれば既存関数（getGachaStats）に正しいidを渡す', async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [{ id: 'streamer-id-1' }] }] })
       primePgDb(pg)
 
@@ -203,8 +157,7 @@ describe('ガチャ履歴/統計ルート: postgrest / pg 経路の互換 (#663)
       expect(getGachaStats).toHaveBeenCalledWith('streamer-id-1', '30d')
     })
 
-    it('DB_DRIVER=pg-read: streamerが見つからなければ404（postgrest経路と同じ外部挙動）', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg-read')
+    it('streamerが見つからなければ404を返す', async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] })
       primePgDb(pg)
 
@@ -228,25 +181,7 @@ describe('ガチャ履歴/統計ルート: postgrest / pg 経路の互換 (#663)
       })
     }
 
-    it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-      vi.stubEnv('DB_DRIVER', undefined)
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      const maybeSingle = vi.fn().mockResolvedValue({ data: { user_twitch_id: 'streamer1' }, error: null })
-      const eqSelect = vi.fn(() => ({ maybeSingle }))
-      const select = vi.fn(() => ({ eq: eqSelect }))
-      const eqDelete = vi.fn().mockResolvedValue({ error: null })
-      const del = vi.fn(() => ({ eq: eqDelete }))
-      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: vi.fn(() => ({ select, delete: del })) } as any)
-
-      const { DELETE } = await import('@/app/api/gacha-history/[id]/route')
-      const response = await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: HISTORY_ID }) })
-
-      expect(response.status).toBe(200)
-      expect(getDb).not.toHaveBeenCalled()
-    })
-
-    it('DB_DRIVER=pg: 所有者確認 + DELETE が正しいテーブル/条件で実行される', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('所有者確認 + DELETE が正しいテーブル/条件で実行される', async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [{ user_twitch_id: 'streamer1' }] }],
         deletes: [{ rows: [] }],
@@ -263,8 +198,7 @@ describe('ガチャ履歴/統計ルート: postgrest / pg 経路の互換 (#663)
       expect(pg.deleteCalls[0].table).toBe(gachaHistoryTable)
     })
 
-    it('DB_DRIVER=pg: 所有者が一致しなければ403（postgrest経路と同じ外部挙動）', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('所有者が一致しなければ403を返す', async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [{ user_twitch_id: 'someone-else' }] }] })
       primePgDb(pg)
 
@@ -275,8 +209,7 @@ describe('ガチャ履歴/統計ルート: postgrest / pg 経路の互換 (#663)
       expect(pg.deleteCalls).toHaveLength(0)
     })
 
-    it('DB_DRIVER=pg: 対象行が存在しなければ500（handleDatabaseError、postgrest経路と同じ外部挙動）', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('対象行が存在しなければ500（handleDatabaseError）を返す', async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] })
       primePgDb(pg)
 

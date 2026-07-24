@@ -1,9 +1,8 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — POST /api/storage-bonus/vote-campaign の
- * postgrest経路 / pg経路パリティテスト
+ * #663: POST /api/storage-bonus/vote-campaign のPlanetScale回帰テスト
  *
- * tests/unit/vote-campaign.test.ts が既存postgrest経路の詳細な挙動を検証済みの
- * ため、本ファイルは pg 経路固有の観点（正しいテーブル/値での INSERT・
+ * tests/unit/vote-campaign.test.ts が認証・期間境界を検証するため、本ファイルは
+ * PlanetScale固有の観点（正しいテーブル/値での INSERT・
  * 23505競合時のリトライ・接続断時の非冪等挙動）に絞る。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -90,7 +89,7 @@ function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
   vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
 }
 
-describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 (#663)', () => {
+describe('POST /api/storage-bonus/vote-campaign: PlanetScale契約 (#663)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetSession.mockResolvedValue({
@@ -113,26 +112,9 @@ describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 
 
   afterEach(() => {
     vi.useRealTimers()
-    vi.unstubAllEnvs()
   })
 
-  it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-    vi.stubEnv('DB_DRIVER', undefined)
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({
-        select: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle: vi.fn().mockResolvedValue({ data: { id: 's1' }, error: null }) })) })),
-        insert: vi.fn(() => Promise.resolve({ data: null, error: null })),
-      })),
-    } as any)
-
-    const response = await POST(createRequest())
-    expect(response.status).toBe(200)
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('DB_DRIVER=pg: 既存streamerがあれば新規INSERTせず、正しいstreamer_idでボーナスがINSERTされる', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('既存streamerがあれば新規INSERTせず、正しいstreamer_idでボーナスがINSERTされる', async () => {
     const pg = createDrizzleDbMock({ selects: [{ rows: [{ id: 'existing-streamer-uuid' }] }] })
     primePgDb(pg)
 
@@ -146,8 +128,7 @@ describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 
     expect(pg.insertCalls[0].values).toMatchObject({ streamer_id: 'existing-streamer-uuid' })
   })
 
-  it('DB_DRIVER=pg: 既存streamerが無ければ新規INSERTしてからボーナスをINSERTする', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('既存streamerが無ければ新規INSERTしてからボーナスをINSERTする', async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [] }],
       inserts: [{ rows: [{ id: 'new-streamer-uuid' }] }, { rows: [{ id: 'bonus-1' }] }],
@@ -165,8 +146,7 @@ describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 
     expect(pg.insertCalls[1].values).toMatchObject({ streamer_id: 'new-streamer-uuid' })
   })
 
-  it('DB_DRIVER=pg: ボーナスINSERTが23505で失敗した場合は409（postgrest経路と同じ外部挙動）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('ボーナスINSERTが23505で失敗した場合は409', async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: 'existing-streamer-uuid' }] }],
       inserts: [{ error: { code: '23505', message: 'duplicate key' } }],
@@ -180,8 +160,7 @@ describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 
     expect(body.error).toBe('このキャンペーンは既に適用済みです')
   })
 
-  it('DB_DRIVER=pg: streamer作成が23505で失敗した場合はリトライして既存行を再取得する（レースコンディション対応）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('streamer作成が23505で失敗した場合はリトライして既存行を再取得する', async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [] }, { rows: [{ id: 'race-streamer-uuid' }] }],
       inserts: [{ error: { code: '23505', message: 'duplicate key' } }, { rows: [{ id: 'bonus-1' }] }],
@@ -202,8 +181,7 @@ describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 
   // insertStorageBonusPg / insertStreamerPg は以前トップレベルの code だけを
   // 見ていたため、ラップされた 23505 は常に code: undefined へ落ち、
   // 409（既に適用済み）判定が働かず 500 になっていた。
-  it('DB_DRIVER=pg: ボーナスINSERTが23505で失敗した場合（Drizzleラップ形状）でも409になる', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('ボーナスINSERTが23505で失敗した場合（Drizzleラップ形状）でも409になる', async () => {
     const wrapped23505 = Object.assign(new Error('Failed query: insert into streamer_storage_bonus ...'), {
       query: 'insert into streamer_storage_bonus ...',
       params: [],
@@ -222,8 +200,7 @@ describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 
     expect(body.error).toBe('このキャンペーンは既に適用済みです')
   })
 
-  it('DB_DRIVER=pg: streamer作成が23505で失敗した場合（Drizzleラップ形状）でもリトライして既存行を再取得する', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('streamer作成が23505で失敗した場合（Drizzleラップ形状）でも既存行を再取得する', async () => {
     const wrapped23505 = Object.assign(new Error('Failed query: insert into streamers ...'), {
       query: 'insert into streamers ...',
       params: [],
@@ -243,8 +220,7 @@ describe('POST /api/storage-bonus/vote-campaign: postgrest / pg 経路の互換 
     expect(pg.insertCalls[pg.insertCalls.length - 1].values).toMatchObject({ streamer_id: 'race-streamer-uuid' })
   })
 
-  it('DB_DRIVER=pg: streamer_storage_bonus の INSERT は接続断でもリトライされない（非冪等・二重付与防止）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('streamer_storage_bonusのINSERTは接続断でもリトライされない', async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: 'existing-streamer-uuid' }] }],
       inserts: [{ error: Object.assign(new Error('connection closed'), { code: 'CONNECTION_CLOSED' }) }],

@@ -37,17 +37,17 @@ describe('parseCardIssuanceLimit', () => {
 })
 
 describe('isMissingCardIssuanceColumnError', () => {
-  it('detects PostgREST schema-cache errors for max_issuance_count', () => {
+  it('detects PostgreSQL 42703 for max_issuance_count', () => {
     expect(isMissingCardIssuanceColumnError({
-      code: 'PGRST204',
-      message: "Could not find the 'max_issuance_count' column of 'cards' in the schema cache",
+      code: '42703',
+      message: 'column "max_issuance_count" of relation "cards" does not exist',
     })).toBe(true)
   })
 
   it('ignores unrelated missing-column errors', () => {
     expect(isMissingCardIssuanceColumnError({
-      code: 'PGRST204',
-      message: "Could not find the 'card_number' column of 'cards' in the schema cache",
+      code: '42703',
+      message: 'column "card_number" of relation "cards" does not exist',
     })).toBe(false)
   })
 

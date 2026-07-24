@@ -8,25 +8,19 @@ import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
 import { getSession, parseSession, verifySession } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { logger } from '@/lib/logger'
+
+import { logger } from '@/lib/logger.server'
 import { guardWriteRedirect } from '@/lib/maintenance/guard'
-// ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
-// ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { users as usersTable } from '@/lib/db/schema'
 
 /**
- * ログイン時のスコープ復元読み取りの pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約
- * （migration 00001）により最大 1 行のため、LIMIT 1 + rows[0] ?? null で同じ
- * 外部挙動。
+ * ログイン時のスコープをPlanetScaleから復元する。
+ * twitch_user_idのUNIQUE制約（migration 00001）により最大1行なので、
+ * LIMIT 1 + rows[0] ?? nullで存在しないユーザーも安全に扱う。
  */
 async function fetchScopeRestorationUserPg(
   twitchUserId: string
@@ -182,14 +176,8 @@ export async function GET(request: Request) {
       }
 
       if (twitchUserId) {
-        // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-        const { data: user, error: dbError } = isPgReadEnabled()
-          ? await fetchScopeRestorationUserPg(twitchUserId)
-          : await getSupabaseAdmin()
-              .from('users')
-              .select('twitch_scopes')
-              .eq('twitch_user_id', twitchUserId)
-              .maybeSingle()
+        // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+        const { data: user, error: dbError } = await fetchScopeRestorationUserPg(twitchUserId)
 
         if (dbError) {
           // DB障害時: スコープ復元に失敗したことをcallbackに伝達する

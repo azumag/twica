@@ -1,21 +1,17 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — support-inquiries API群の
- * postgrest経路 / pg経路パリティテスト
+ * #663: 低頻度APIルート群のPlanetScale直結移行 — support-inquiries API群
  *
  * 対象:
- *   - GET  /api/support-inquiries               （一覧取得: isPgReadEnabled）
- *   - POST /api/support-inquiries               （新規作成: isPgWriteEnabled）
- *   - GET  /api/support-inquiries/[id]           （詳細+メッセージ取得: isPgReadEnabled）
- *   - DELETE /api/support-inquiries/[id]         （削除: isPgWriteEnabled）
- *   - POST /api/support-inquiries/[id]/messages  （返信追加: isPgWriteEnabled、読み書き混在）
+ *   - GET  /api/support-inquiries               （一覧取得）
+ *   - POST /api/support-inquiries               （新規作成）
+ *   - GET  /api/support-inquiries/[id]           （詳細+メッセージ取得）
+ *   - DELETE /api/support-inquiries/[id]         （削除）
+ *   - POST /api/support-inquiries/[id]/messages  （返信追加、読み書き混在）
  *
- * storage-db-driver-parity.test.ts / gacha-history 系の流儀を踏襲:
- * 同一 fixture を両経路のモックに与え、戻り値・ステータスコードが deepEqual に
- * なることと、pg 経路で正しいテーブル/条件（where/orderBy/values）が使われる
- * ことを検証する。既存の tests/unit/support-inquiries-api.test.ts
- * （フラグ未設定の postgrest 経路のみを検証）は変更しない。
+ * 旧 PostgREST 経路は廃止済みのため、現行 Drizzle 実装が正しいテーブル・
+ * 所有権条件・並び順・書き込み値を使うことを API 境界で検証する。
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { GET, POST } from "@/app/api/support-inquiries/route";
@@ -24,7 +20,6 @@ import { POST as POST_MESSAGE } from "@/app/api/support-inquiries/[id]/messages/
 import { getSession } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getUserPlan } from "@/lib/plan";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getDb } from "@/lib/db/client";
 import {
@@ -36,11 +31,6 @@ vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/plan");
 vi.mock("@/lib/csrf");
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 vi.mock("@/lib/sentry/error-handler", () => ({
   reportError: vi.fn(),
   reportApiError: vi.fn(),
@@ -53,7 +43,6 @@ vi.mock("next/cache", () => ({
 const mockGetSession = vi.mocked(getSession);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockGetUserPlan = vi.mocked(getUserPlan);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
 
 const MOCK_SESSION = {
@@ -90,56 +79,7 @@ function createDeleteRequest(path: string): NextRequest {
 }
 
 // ---------------------------------------------------------------------------
-// postgrest 経路のモック: table ごとの結果キュー + insert/delete の呼び出し記録
-// ---------------------------------------------------------------------------
-
-interface PostgrestResult {
-  data?: unknown;
-  error?: unknown;
-}
-
-function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult[]>) {
-  const queues = Object.fromEntries(
-    Object.entries(resultsByTable).map(([table, results]) => [table, [...results]])
-  );
-  const insertCalls: Array<{ table: string; values: unknown }> = [];
-  const deleteCalls: Array<{ table: string }> = [];
-  const eqCalls: Array<{ table: string; column: string; value: unknown }> = [];
-
-  const from = vi.fn((table: string) => {
-    const queue = queues[table];
-    if (!queue || queue.length === 0) {
-      throw new Error(`no mock result configured for table: ${table}`);
-    }
-    const result = queue.length > 1 ? (queue.shift() as PostgrestResult) : queue[0];
-    const resolved = { data: result.data ?? null, error: result.error ?? null };
-    const builder: any = {
-      select: vi.fn(() => builder),
-      insert: vi.fn((values: unknown) => {
-        insertCalls.push({ table, values });
-        return builder;
-      }),
-      delete: vi.fn(() => {
-        deleteCalls.push({ table });
-        return builder;
-      }),
-      eq: vi.fn((column: string, value: unknown) => {
-        eqCalls.push({ table, column, value });
-        return builder;
-      }),
-      order: vi.fn(() => builder),
-      single: vi.fn(() => Promise.resolve(resolved)),
-      then: (onFulfilled: any, onRejected: any) =>
-        Promise.resolve(resolved).then(onFulfilled, onRejected),
-    };
-    return builder;
-  });
-
-  return { from, insertCalls, deleteCalls, eqCalls };
-}
-
-// ---------------------------------------------------------------------------
-// pg 経路のモック: select(fields).from(table).where().orderBy().limit() /
+// PlanetScale 経路のモック: select(fields).from(table).where().orderBy().limit() /
 // insert(table).values().returning() / delete(table).where().returning()
 // を await できる thenable builder。実引数を calls に記録する。
 // ---------------------------------------------------------------------------
@@ -237,7 +177,7 @@ function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
   vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any);
 }
 
-describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () => {
+describe("support-inquiries API群: PlanetScale契約 (#663)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(MOCK_SESSION);
@@ -251,11 +191,7 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
     });
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  describe("GET /api/support-inquiries（読み取り: isPgReadEnabled）", () => {
+  describe("GET /api/support-inquiries", () => {
     const ROWS = [
       {
         id: "inq-1",
@@ -270,46 +206,20 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       },
     ];
 
-    it("同一 fixture で両経路の戻り値が deepEqual になり、pg 経路が正しい where/orderBy を使う", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ support_inquiries: [{ data: ROWS }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await GET(createGetRequest());
-      expect(postgrestRes.status).toBe(200);
-      const postgrestJson = await postgrestRes.json();
-
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("一覧を返し、所有者と作成日時降順で絞り込む", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: ROWS }] });
       primePgDb(pg);
       const pgRes = await GET(createGetRequest());
       expect(pgRes.status).toBe(200);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson.inquiries).toEqual(ROWS);
 
       expect(pg.selectCalls[0].where).toEqual(eq(supportInquiriesTable.twitch_user_id, "user123"));
       expect(pg.selectCalls[0].orderBy).toEqual(desc(supportInquiriesTable.created_at));
     });
 
-    it("postgrest 経路（フラグ未設定）では getDb が一切呼ばれない", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ support_inquiries: [{ data: ROWS }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await GET(createGetRequest());
-      expect(getDb).not.toHaveBeenCalled();
-    });
-
-    it("pg 経路では supabase-js クライアントが一切呼ばれない", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
-      const pg = createDrizzleDbMock({ selects: [{ rows: ROWS }] });
-      primePgDb(pg);
-      await GET(createGetRequest());
-      expect(mockGetSupabaseAdmin).not.toHaveBeenCalled();
-    });
-
-    it("pg 経路で取得エラー時は両経路とも500を返す", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("取得エラー時は500を返す", async () => {
       const pg = createDrizzleDbMock({ selects: [{ error: { code: "08006", message: "connection failure" } }] });
       primePgDb(pg);
       const res = await GET(createGetRequest());
@@ -317,58 +227,38 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
     });
   });
 
-  describe("POST /api/support-inquiries（書き込み: isPgWriteEnabled、非冪等）", () => {
+  describe("POST /api/support-inquiries", () => {
     const REQUEST_BODY = { category: "bug", subject: "Test Bug", body: "Found a bug" };
 
-    it("同一 fixture で両経路の戻り値が deepEqual になり、pg 経路が正しい INSERT values を使う", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ support_inquiries: [{ data: { id: "new-inq-id" } }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await POST(createPostRequest(REQUEST_BODY));
-      expect(postgrestRes.status).toBe(201);
-      const postgrestJson = await postgrestRes.json();
-      expect(client.insertCalls[0].values).toEqual({
-        twitch_user_id: "user123",
-        twitch_display_name: "TestUser",
-        category: "bug",
-        subject: "Test Bug",
-        body: "Found a bug",
-      });
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("作成結果を返し、セッション由来の所有者情報を含めてINSERTする", async () => {
       const pg = createDrizzleDbMock({ inserts: [{ rows: [{ id: "new-inq-id" }] }] });
       primePgDb(pg);
       const pgRes = await POST(createPostRequest(REQUEST_BODY));
       expect(pgRes.status).toBe(201);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson).toEqual({ id: "new-inq-id" });
 
       expect(pg.insertCalls[0].table).toBe(supportInquiriesTable);
-      expect(pg.insertCalls[0].values).toEqual(client.insertCalls[0].values);
+      expect(pg.insertCalls[0].values).toEqual({
+        twitch_user_id: "user123",
+        twitch_display_name: "TestUser",
+        category: "bug",
+        subject: "Test Bug",
+        body: "Found a bug",
+      });
     });
 
-    it("INSERT 失敗: 両経路とも500を返す", async () => {
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("INSERT 失敗時は500を返す", async () => {
       const pg = createDrizzleDbMock({ inserts: [{ error: { code: "23505", message: "duplicate key" } }] });
       primePgDb(pg);
       const res = await POST(createPostRequest(REQUEST_BODY));
       expect(res.status).toBe(500);
     });
 
-    it("フラグ未設定 / pg-read では getDb が呼ばれない（書き込み関数のため pg-read でも postgrest のまま）", async () => {
-      for (const driver of [undefined, "pg-read"]) {
-        vi.stubEnv("DB_DRIVER", driver as string);
-        const client = createSupabaseClientMock({ support_inquiries: [{ data: { id: "new-inq-id" } }] });
-        mockGetSupabaseAdmin.mockReturnValue(client as any);
-        await POST(createPostRequest(REQUEST_BODY));
-        expect(getDb).not.toHaveBeenCalled();
-      }
-    });
   });
 
-  describe("GET /api/support-inquiries/[id]（読み取り: isPgReadEnabled）", () => {
+  describe("GET /api/support-inquiries/[id]", () => {
     const INQUIRY_ROW = {
       id: VALID_UUID,
       twitch_user_id: "user123",
@@ -391,20 +281,7 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       },
     ];
 
-    it("同一 fixture で両経路の戻り値が deepEqual になり、pg 経路が正しい where/orderBy を使う", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        support_inquiries: [{ data: INQUIRY_ROW }],
-        support_inquiry_messages: [{ data: MESSAGE_ROWS }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await GET_DETAIL(createGetRequest(`/api/support-inquiries/${VALID_UUID}`), {
-        params: Promise.resolve({ id: VALID_UUID }),
-      });
-      expect(postgrestRes.status).toBe(200);
-      const postgrestJson = await postgrestRes.json();
-
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("詳細とメッセージを返し、所有権条件と時系列順を使う", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [INQUIRY_ROW] }, { rows: MESSAGE_ROWS }] });
       primePgDb(pg);
       const pgRes = await GET_DETAIL(createGetRequest(`/api/support-inquiries/${VALID_UUID}`), {
@@ -413,7 +290,6 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       expect(pgRes.status).toBe(200);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson).toEqual({ inquiry: INQUIRY_ROW, messages: MESSAGE_ROWS });
 
       // 問い合わせ本体: id + twitch_user_id の所有権フィルタ
@@ -425,18 +301,7 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       expect(pg.selectCalls[1].orderBy).toEqual(asc(supportInquiryMessagesTable.created_at));
     });
 
-    it("問い合わせが見つからない場合、両経路とも404を返す", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        support_inquiries: [{ data: null, error: new Error("Not found") }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await GET_DETAIL(createGetRequest(`/api/support-inquiries/${VALID_UUID}`), {
-        params: Promise.resolve({ id: VALID_UUID }),
-      });
-      expect(postgrestRes.status).toBe(404);
-
-      vi.stubEnv("DB_DRIVER", "pg-read");
+    it("問い合わせが見つからない場合は404を返す", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);
       const pgRes = await GET_DETAIL(createGetRequest(`/api/support-inquiries/${VALID_UUID}`), {
@@ -445,32 +310,10 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       expect(pgRes.status).toBe(404);
     });
 
-    it("postgrest 経路（フラグ未設定）では getDb が一切呼ばれない", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        support_inquiries: [{ data: INQUIRY_ROW }],
-        support_inquiry_messages: [{ data: MESSAGE_ROWS }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await GET_DETAIL(createGetRequest(`/api/support-inquiries/${VALID_UUID}`), {
-        params: Promise.resolve({ id: VALID_UUID }),
-      });
-      expect(getDb).not.toHaveBeenCalled();
-    });
   });
 
-  describe("DELETE /api/support-inquiries/[id]（書き込み: isPgWriteEnabled、idempotent: true）", () => {
-    it("削除成功: 両経路の戻り値が一致し、pg 経路が id + twitch_user_id の where で DELETE する", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ support_inquiries: [{ data: { id: VALID_UUID } }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await DELETE_DETAIL(createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`), {
-        params: Promise.resolve({ id: VALID_UUID }),
-      });
-      expect(postgrestRes.status).toBe(200);
-      const postgrestJson = await postgrestRes.json();
-
-      vi.stubEnv("DB_DRIVER", "pg");
+  describe("DELETE /api/support-inquiries/[id]", () => {
+    it("削除成功時は、idと所有者の両方を条件にDELETEする", async () => {
       const pg = createDrizzleDbMock({ deletes: [{ rows: [{ id: VALID_UUID }] }] });
       primePgDb(pg);
       const pgRes = await DELETE_DETAIL(createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`), {
@@ -479,7 +322,6 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       expect(pgRes.status).toBe(200);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson).toEqual({ success: true });
 
       expect(pg.deleteCalls[0].table).toBe(supportInquiriesTable);
@@ -488,18 +330,7 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       );
     });
 
-    it("他ユーザー所有 / 存在しない場合、両経路とも404を返し何も削除されない", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        support_inquiries: [{ data: null, error: new Error("Not found") }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await DELETE_DETAIL(createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`), {
-        params: Promise.resolve({ id: VALID_UUID }),
-      });
-      expect(postgrestRes.status).toBe(404);
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("他ユーザー所有 / 存在しない場合は404を返す", async () => {
       const pg = createDrizzleDbMock({ deletes: [{ rows: [] }] });
       primePgDb(pg);
       const pgRes = await DELETE_DETAIL(createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`), {
@@ -508,20 +339,9 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       expect(pgRes.status).toBe(404);
     });
 
-    it("フラグ未設定 / pg-read では getDb が呼ばれない（書き込み関数のため pg-read でも postgrest のまま）", async () => {
-      for (const driver of [undefined, "pg-read"]) {
-        vi.stubEnv("DB_DRIVER", driver as string);
-        const client = createSupabaseClientMock({ support_inquiries: [{ data: { id: VALID_UUID } }] });
-        mockGetSupabaseAdmin.mockReturnValue(client as any);
-        await DELETE_DETAIL(createDeleteRequest(`/api/support-inquiries/${VALID_UUID}`), {
-          params: Promise.resolve({ id: VALID_UUID }),
-        });
-        expect(getDb).not.toHaveBeenCalled();
-      }
-    });
   });
 
-  describe("POST /api/support-inquiries/[id]/messages（読み書き混在: isPgWriteEnabled で関数全体を分岐）", () => {
+  describe("POST /api/support-inquiries/[id]/messages", () => {
     const OPEN_INQUIRY_ROW = { id: VALID_UUID, status: "open", twitch_user_id: "user123" };
     const CLOSED_INQUIRY_ROW = { id: VALID_UUID, status: "closed", twitch_user_id: "user123" };
     const MESSAGE_ROW = {
@@ -533,21 +353,7 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       created_at: "2026-01-01T02:00:00Z",
     };
 
-    it("返信追加成功: 両経路の戻り値が一致し、pg 経路が正しい INSERT values を使う", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        support_inquiries: [{ data: OPEN_INQUIRY_ROW }],
-        support_inquiry_messages: [{ data: MESSAGE_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await POST_MESSAGE(
-        createPostRequest({ body: "Reply" }, `/api/support-inquiries/${VALID_UUID}/messages`),
-        { params: Promise.resolve({ id: VALID_UUID }) }
-      );
-      expect(postgrestRes.status).toBe(201);
-      const postgrestJson = await postgrestRes.json();
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("返信追加成功時は、所有者確認後に正しい送信者情報でINSERTする", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OPEN_INQUIRY_ROW] }],
         inserts: [{ rows: [MESSAGE_ROW] }],
@@ -560,7 +366,6 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       expect(pgRes.status).toBe(201);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson).toEqual({ message: MESSAGE_ROW });
 
       expect(pg.insertCalls[0].table).toBe(supportInquiryMessagesTable);
@@ -572,19 +377,7 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       });
     });
 
-    it("問い合わせが見つからない場合、両経路とも404を返しINSERTは発生しない", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        support_inquiries: [{ data: null, error: new Error("Not found") }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await POST_MESSAGE(
-        createPostRequest({ body: "Reply" }, `/api/support-inquiries/${VALID_UUID}/messages`),
-        { params: Promise.resolve({ id: VALID_UUID }) }
-      );
-      expect(postgrestRes.status).toBe(404);
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("問い合わせが見つからない場合は404を返しINSERTしない", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);
       const pgRes = await POST_MESSAGE(
@@ -595,19 +388,7 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       expect(pg.insertCalls).toHaveLength(0);
     });
 
-    it("closedステータスの問い合わせには両経路とも400を返しINSERTは発生しない", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        support_inquiries: [{ data: CLOSED_INQUIRY_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await POST_MESSAGE(
-        createPostRequest({ body: "Reply" }, `/api/support-inquiries/${VALID_UUID}/messages`),
-        { params: Promise.resolve({ id: VALID_UUID }) }
-      );
-      expect(postgrestRes.status).toBe(400);
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("closedステータスの問い合わせには400を返しINSERTしない", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [CLOSED_INQUIRY_ROW] }] });
       primePgDb(pg);
       const pgRes = await POST_MESSAGE(
@@ -618,20 +399,5 @@ describe("support-inquiries API群: postgrest / pg 経路の互換 (#663)", () =
       expect(pg.insertCalls).toHaveLength(0);
     });
 
-    it("フラグ未設定 / pg-read では getDb が呼ばれない（書き込み関数のため pg-read でも postgrest のまま）", async () => {
-      for (const driver of [undefined, "pg-read"]) {
-        vi.stubEnv("DB_DRIVER", driver as string);
-        const client = createSupabaseClientMock({
-          support_inquiries: [{ data: OPEN_INQUIRY_ROW }],
-          support_inquiry_messages: [{ data: MESSAGE_ROW }],
-        });
-        mockGetSupabaseAdmin.mockReturnValue(client as any);
-        await POST_MESSAGE(
-          createPostRequest({ body: "Reply" }, `/api/support-inquiries/${VALID_UUID}/messages`),
-          { params: Promise.resolve({ id: VALID_UUID }) }
-        );
-        expect(getDb).not.toHaveBeenCalled();
-      }
-    });
   });
 });

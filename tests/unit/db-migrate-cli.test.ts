@@ -140,9 +140,9 @@ describe('resolveConfig', () => {
     expect(result.error).toContain('不明な引数')
   })
 
-  it('provider省略時は supabase がデフォルト', () => {
+  it('provider省略時は planetscale がデフォルト', () => {
     const result = resolveConfig(['node', 'db-migrate.js', 'status'], env) as { provider: string }
-    expect(result.provider).toBe('supabase')
+    expect(result.provider).toBe('planetscale')
   })
 
   it('不正なproviderはエラー', () => {
@@ -154,8 +154,8 @@ describe('resolveConfig', () => {
 
   // Issue #692 Fableレビュー 最終回・軽微指摘: `--provider=`（値が空文字列）は、フラグ自体が
   // 省略された場合と違い、CI等でシェル変数展開が空になった結果である可能性がある。
-  // 黙って supabase にフォールバックせず、明示的なエラーとして検知する。
-  it('--provider=（空値）はエラーで終了する（黙って supabase にフォールバックしない）', () => {
+  // 黙って planetscale にフォールバックせず、明示的なエラーとして検知する。
+  it('--provider=（空値）はエラーで終了する（黙って planetscale にフォールバックしない）', () => {
     const result = resolveConfig(['node', 'db-migrate.js', 'status', '--provider='], env) as {
       error: string
     }

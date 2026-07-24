@@ -1,13 +1,15 @@
+import 'server-only'
+
 import { NextResponse } from 'next/server'
 import { logErrorFromLogger } from './sentry/error-handler'
 import { sanitizeLogArg } from './log-sanitizer'
 import { ERROR_MESSAGES } from './constants'
 
 // Cloudflare Workers ではレスポンス返却後にバックグラウンド Promise が打ち切られるため、
-// Supabase 記録完了を await で確保する。logger.error（fire-and-forget）ではなく
+// PlanetScale記録完了をawaitで確保する。logger.error（fire-and-forget）ではなく
 // logErrorFromLogger を直接使用することで、記録の確実性を担保する。
 //
-// Issue #401: console 経路と Supabase 経路で同一の機密情報マスキングを適用するため、
+// Issue #401: console経路とPlanetScale経路で同一の機密情報マスキングを適用するため、
 // console 出力前に args をサニタイズする。生の error / additionalInfo がそのまま
 // Cloudflare Workers logs / wrangler tail に漏れないようにする。
 async function logAndRecordError(

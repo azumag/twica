@@ -4,7 +4,7 @@
  * provider-neutral migration runner CLI / Issue #692
  *
  * 背景:
- * 現行の migration 適用は `npm run db:push`（`supabase db push`）に一本化されており、
+ * 旧 migration 適用は `supabase db push` に一本化されており、
  * Supabase CLI の migration 履歴・実行semanticsに暗黙に依存している。PlanetScale切替後は
  * この経路が使えなくなるため、通常の PostgreSQL connection string（`postgres` パッケージ、
  * scripts/verify-db-schema.js と同じ依存）だけで動く独立の migration runner を用意する。
@@ -99,8 +99,7 @@ const HELP_TEXT = `
 
 オプション:
   --provider=<supabase|planetscale|postgres>
-            対象provider（省略時 supabase。PlanetScale切替（#691）後にこのデフォルトは
-            見直しが必要になる可能性がある）。migration descriptor の migration-providers
+            対象provider（省略時 planetscale）。migration descriptor の migration-providers
             宣言に基づき、対象外のmigrationは適用/表示から除外される。
             必ず "=" で値を指定すること（例: --provider=planetscale）。
             "--provider planetscale" のようにスペース区切りにすると不明な引数として
@@ -252,7 +251,7 @@ function resolveConfig(argv, env) {
   }
 
   // 「--provider=」（フラグは指定されているが値が空文字列）を、フラグ自体の省略と同じ
-  // supabaseフォールバックへ黙って倒さない（Issue #692 Fableレビュー 最終回・軽微指摘）。
+  // PlanetScale既定値へ黙って倒さない（Issue #692 Fableレビュー 最終回・軽微指摘）。
   // parseArgs は `--provider=` を providerFlag ありと判定し provider に空文字列を返す一方、
   // フラグ自体が省略された場合は provider が undefined になる（この2つは区別できる）。
   // CI等でシェル変数展開が空になった場合に黙って意図しないproviderへフォールバックする事故を
@@ -261,10 +260,9 @@ function resolveConfig(argv, env) {
     return { error: '--provider に値が指定されていません（例: --provider=planetscale）。' }
   }
 
-  // --provider のデフォルトは 'supabase' 固定（Issue #692 Fableレビュー Medium-3）。
-  // PlanetScale切替（#691）着手時、実運用のデフォルトprovider方針が変わる可能性があるため
-  // このデフォルト値自体を見直す必要が出てくるかもしれない。
-  const resolvedProvider = provider || 'supabase'
+  // #708 の切替完了後は、引数省略時も停止済みの旧DBを選ばない。明示的な
+  // `--provider=supabase` は履歴調査・退役検証用にだけ残す。
+  const resolvedProvider = provider || 'planetscale'
   if (!core.VALID_PROVIDERS.includes(resolvedProvider)) {
     return {
       error: `--provider には ${core.VALID_PROVIDERS.join('/')} のいずれかを指定してください: ${resolvedProvider}`,

@@ -1,17 +1,15 @@
 import type { Card } from "@/types/database";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import { normalizeDropRate } from "@/lib/card-utils";
 import { calculateDropRates } from "@/lib/rarity-weight-calculator";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 // ---------------------------------------------------------------------------
-// #573: batch_update_card_drop_rates RPC の pg 直結経路 (isPgWriteEnabled()) 用。
-// フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに一切入らない
-// ため、import が存在するだけでは挙動に影響しない(#570 の設計。tests/setup.ts の
-// getDb throw スタブが「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
+// batch_update_card_drop_rates RPC は PlanetScale 接続だけを使う。import 時点で
+// 接続を確立しないため、DB は実際のリクエスト実行時にのみ取得される。
 // ---------------------------------------------------------------------------
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgWriteEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable } from "@/lib/db/schema";
 import {
@@ -39,7 +37,7 @@ interface BatchUpdateRpcDriverError {
  * recalculateIfAutoMode(本ファイル)と POST /api/cards/batch-update
  * (src/app/api/cards/batch-update/route.ts)の両方が同じ RPC を名前付き引数で
  * 呼ぶため、pg 経路のSQL文・エラー正規化をこの1関数に集約して重複を避ける
- * (この2箇所は既存 supabase-js 実装の時点でも別々の .rpc() 呼び出しであり、
+ * (この2箇所は移行前の旧 Supabase 実装の時点でも別々の .rpc() 呼び出しであり、
  * そちらは変更しない — 新設する pg 経路の実装だけをここに共通化する)。
  *
  * 名前付き引数 + 明示キャストの理由は gacha.ts executeGachaTransactionRpcPg の
@@ -115,11 +113,11 @@ type RecalculationCard = Pick<
 >;
 
 /**
- * Issue #794: DB_DRIVER=pg では再計算対象も PlanetScale から取得する。
+ * Issue #794/#803: 再計算対象も PlanetScale から取得する。
  *
  * 以前は更新RPCだけが pg 直結で、前後の SELECT は Supabase のままだったため、
  * cutover後に PlanetScale へ追加されたカードが再計算対象から漏れていた。
- * 読み書き混在処理は isPgWriteEnabled() で処理全体を同じDBへ揃える。
+ * 読み書き混在処理は最初から最後まで同じ PlanetScale 接続先へ揃える。
  */
 async function fetchActiveCardsForRecalculationPg(
   streamerId: string
@@ -189,7 +187,6 @@ async function fetchRecalculatedCardsPg(
  * Returns updated active cards, [] when no active cards exist, or null when auto mode is disabled.
  */
 export async function recalculateIfAutoMode(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   streamerId: string,
   rarityWeights: Record<string, number> | null | undefined
 ): Promise<Card[] | null> {
@@ -198,25 +195,9 @@ export async function recalculateIfAutoMode(
     return null;
   }
 
-  // Issue #794: 一連の再計算中に参照先を混在させないため、分岐値を1回だけ確定する。
-  // pg-read は書き込みがPostgRESTのままなので、読み取りも従来側へ揃える。
-  const pgWriteEnabled = isPgWriteEnabled();
-
-  let activeCards: RecalculationCard[];
-  if (pgWriteEnabled) {
-    activeCards = await fetchActiveCardsForRecalculationPg(streamerId);
-  } else {
-    const { data, error } = await supabaseAdmin
-      .from("cards")
-      .select("id, rarity, is_active, intra_rarity_weight")
-      .eq("streamer_id", streamerId)
-      .eq("is_active", true);
-
-    if (error) {
-      throw error;
-    }
-    activeCards = (data || []) as RecalculationCard[];
-  }
+  // #708: 再計算の読み書きを同じ PlanetScale 接続へ固定する。切替フラグを
+  // 残すと停止済み Supabase へ片側だけ戻る余地が生じるため、入口から単一路線にする。
+  const activeCards = await fetchActiveCardsForRecalculationPg(streamerId);
 
   const updates = calculateDropRates(activeCards, rarityWeights);
   if (updates.length === 0) {
@@ -230,17 +211,8 @@ export async function recalculateIfAutoMode(
     drop_rate: update.dropRate,
   }));
 
-  // #573: isPgWriteEnabled() のときだけ pg 直結(postgres.js)経路へ分岐する。
-  // Issue #794: pgWriteEnabled は上の SELECT と共通で、同じ処理中にDBをまたがない。
-  const { data: rpcResult, error: rpcError } = pgWriteEnabled
-    ? await executeBatchUpdateCardDropRatesRpcPg(streamerId, rpcPayload)
-    : await supabaseAdmin.rpc(
-        "batch_update_card_drop_rates",
-        {
-          p_streamer_id: streamerId,
-          p_updates: rpcPayload,
-        }
-      );
+  const { data: rpcResult, error: rpcError } =
+    await executeBatchUpdateCardDropRatesRpcPg(streamerId, rpcPayload);
 
   if (rpcError) {
     throw rpcError;
@@ -256,19 +228,5 @@ export async function recalculateIfAutoMode(
   }
 
   const updatedCardIds = updates.map((update) => update.id);
-  if (pgWriteEnabled) {
-    return fetchRecalculatedCardsPg(streamerId, updatedCardIds);
-  }
-
-  const { data: recalculatedCards, error: recalculatedCardsError } = await supabaseAdmin
-    .from("cards")
-    .select("*")
-    .eq("streamer_id", streamerId)
-    .in("id", updatedCardIds);
-
-  if (recalculatedCardsError) {
-    throw recalculatedCardsError;
-  }
-
-  return normalizeDropRate((recalculatedCards || []) as Card[]);
+  return fetchRecalculatedCardsPg(streamerId, updatedCardIds);
 }

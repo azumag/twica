@@ -38,7 +38,7 @@ import postgres from 'postgres'
  * analysis 専用の Postgres 接続文字列を解決する。
  * `DASHBOARD_DATABASE_URL` が未設定の場合、無関係な値へ黙ってフォールバック
  * させず明示的に失敗させる（#570 の DATABASE_URL 解決と同じ「未設定は安全側で
- * throw」方針）。Supabase経路撤去後はこのURLが唯一のDB接続設定である。
+ * throw」方針）。退役済み Supabase 経路撤去後はこのURLが唯一のDB接続設定である。
  *
  * 接続ロールの権限要件: `get_analysis_*()` (00073_add_analysis_dashboard_rpcs.sql) は
  * `REVOKE ALL FROM PUBLIC; GRANT EXECUTE ... TO service_role` のため、
@@ -186,11 +186,11 @@ export async function listStreamersWithStatsPg(env: Record<string, string>): Pro
  * ストリーマー1件をidで取得する（`GET /streamers/:id` 相当、#701向けに新規追加。
  * `StreamerCards`/`StreamerGachaHistory`ページがブラウザから直接Supabaseへ
  * `.from('streamers').select('*').eq('id', id).single()` していた箇所を置き換える）。
- * 対象0件時は明示的に404を投げる。Supabase経路（`localAdminApi.ts`の
- * `getStreamerById`）もPGRST116を検知して同じく404にマッピングしているため、
- * このエンドポイントは両経路でステータスコードのparityが取れている
- * （`updateSupportCodeStatusPg`等の「pg経路のみ404、Supabase経路は素の500」という
- * 意図的divergenceパターンとは異なる）。
+ * 対象0件時は明示的に404を投げる。直接SQLのSELECT 0件はDBエラーではなく空の
+ * 行集合であり、postgres.jsからSQLSTATEは返らない。そのため、DB例外のcodeを
+ * 推測するのではなく`callAnalysisJsonFunction()`が返す`result === undefined`
+ * という実際のcardinalityをHTTP 404へ写像する。SQLSTATEは接続・権限・構文など
+ * 本物のDB障害にだけ使い、0件という正常な問い合わせ結果と混同しない。
  *
  * `to_jsonb(s.*)` で全列を返す。`streamers`テーブルには`users`テーブルの
  * twitch_access_token/twitch_refresh_tokenのような秘匿列が無い（BOTのOAuth
@@ -462,7 +462,7 @@ export async function getUserCardsSummaryPg(
   `
   const userRow = userRows[0]
   if (!userRow) {
-    // PostgREST版（PGRST116）と同じ 404 契約に揃える
+    // SELECT 0件はSQLSTATEを伴う例外ではないため、結果cardinalityから404へ写像する。
     throw Object.assign(new Error('User not found'), { statusCode: 404 })
   }
 
@@ -614,19 +614,15 @@ export async function createSupportCodePg(
 /**
  * サポートコードのステータスを更新する（`PATCH /support-codes/:id` 相当）。
  *
- * 対象行0件時の挙動は意図的な改善であり、PostgREST版との厳密な parity ではない
- * ことに注意: PostgREST版の `.update(...).eq('id', ...).select().single()` は
- * 対象0件で PGRST116 エラーオブジェクトを返すが、そのエラーには `statusCode`
- * プロパティが無いため、`handleRoute` 呼び出し元のcatch節（配信元:
- * `localAdminApiPlugin` の `configureServer`）ではそのまま素の HTTP 500 として
- * 露出する（404 にはならない）。pg直結側は `rows[0]?.result` が
- * `undefined`（=更新0件）になるのを明示的に検知し、意味的により正しい 404 を
- * 返すようにした。UI（analysis/src/pages/Licenses.tsx）はこのエラーを
- * console出力するだけで両ステータスコードを区別していないため実害はないが、
- * 「既存挙動を変えない」という本移植全体の原則からの意図的な逸脱として明記する。
+ * PostgreSQLのUPDATE 0件はエラーではなく、SQLSTATEを伴わない正常終了である。
+ * `RETURNING`も0行になるため、`rows[0]?.result === undefined`を明示的に検知して
+ * HTTP 404へ写像する。権限違反（42501）や制約違反（23xxx）など実際のDB障害は
+ * postgres.jsがthrowするので、この分岐では握り潰さず呼び出し元へそのまま伝わる。
+ * UI（analysis/src/pages/Licenses.tsx）はこのエラーをconsole出力するだけだが、
+ * APIとしては「対象なし」と「DB障害」を分離するほうが正しい。
  *
  * 【もう1つの既知の非対称性】PATCH body に `status` が無い場合（`params.status`
- * が `undefined`）、Supabase経路は JSON.stringify で `status` キー自体が
+ * が `undefined`）、退役済み Supabase 経路は JSON.stringify で `status` キー自体が
  * 消えるため実質 `updated_at` のみの更新として 200 成功する。pg直結側は
  * postgres.js が `undefined` バインドを UNDEFINED_VALUE で即 throw するため
  * 500 になる。UIは常に `status` を送るため実害はないが、`getGachaSummaryPg`
@@ -751,11 +747,11 @@ export async function listTwitchSubsPg(
  * `status` の値バリデーションは行わない（CHECK制約に合致しない値は
  * 単に0件ヒットになるだけで実害がないため、既存挙動を維持）。
  *
- * 条件は `status !== 'all'`（Supabase経路と厳密に同一）で判定する。
+ * 条件は `status !== 'all'`（退役済み Supabase 経路と厳密に同一）で判定する。
  * `status &&` のような truthy ガードは付けない: ルート側
  * （`localAdminApi.ts`, `url.searchParams.get('status') || 'all'`）では
  * 空文字が渡る経路は存在しないため実害はないが、`status=''` が渡った場合に
- * Supabase経路は絞り込みを適用（0件）する一方 truthy ガードだと pg経路だけ
+ * 退役済み Supabase 経路は絞り込みを適用（0件）する一方 truthy ガードだと pg経路だけ
  * 絞り込みを適用しない（全件を返す）fail-open な非対称になり得るため、
  * 将来の呼び出し元追加に備えて条件式そのものを揃えておく。
  */
@@ -773,12 +769,10 @@ export async function getSupportInquiriesPg(
 
 /**
  * 問い合わせのステータスを更新する（`PATCH /support-inquiries/:id` 相当）。
- * `updateSupportCodeStatusPg` と同じ理由・同じ「意図的な404改善」（PostgREST版の
- * PGRST116は`statusCode`を持たず実際には素の500として露出するため、pg直結側は
- * 更新0件を明示的に検知しより正しい404を返す）。PATCH bodyに`status`キー自体が
- * 無い場合の非対称（Supabase経路はupdated_atのみ更新して200、pg経路は
- * postgres.jsのUNDEFINED_VALUEで500）も同様に踏襲する
- * （`updateSupportCodeStatusPg`のdocコメント参照）。
+ * `updateSupportCodeStatusPg` と同様、UPDATE 0件はSQLSTATEを伴わないため
+ * `RETURNING`の空行を明示的に404へ写像し、本物のDB例外とは分離する。
+ * PATCH bodyに`status`キー自体が無い場合、postgres.jsはUNDEFINED_VALUEで
+ * 失敗させる。この入力契約は`updateSupportCodeStatusPg`のdocコメントを参照。
  */
 export async function updateSupportInquiryStatusPg(
   env: Record<string, string>,
@@ -930,9 +924,9 @@ interface AnnouncementPublishToggleUpdate {
  * 再利用でき、テストのfakeSqlTagもタグ付きテンプレートのfragment合成のみ対応済み
  * のため、新しいAPI表面を増やさずに済む）。
  *
- * 対象0件時は `updateSupportCodeStatusPg`/`updateSupportInquiryStatusPg` と同じ
- * 「意図的な404改善」（PostgREST版の `.single()` はPGRST116を返すが`statusCode`が
- * 無く実際には素の500として露出する）。
+ * 対象0件時は `updateSupportCodeStatusPg`/`updateSupportInquiryStatusPg` と同じ。
+ * UPDATE 0件はSQLSTATEを伴わない正常終了なので、`RETURNING`の空行をHTTP 404へ
+ * 明示的に写像する。DB例外は別経路でthrowされ、この判定に混入しない。
  */
 export async function updateAnnouncementPg(
   env: Record<string, string>,

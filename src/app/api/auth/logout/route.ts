@@ -6,7 +6,7 @@ import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { deleteTwitchTokens } from '@/lib/twitch/token-manager'
 import { clearCSRFToken, validateCSRFToken } from '@/lib/csrf'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import { getBaseUrl } from '@/lib/url-utils'
 
 export async function POST(request: Request) {

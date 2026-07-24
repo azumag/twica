@@ -5,6 +5,7 @@ import { getSession } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { hasScope } from '@/lib/twitch/token-manager'
 import { checkTwitchSubViaApi, isTwitchSubCheckEnabled } from '@/lib/twitch/sub-check'
+import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/session')
@@ -21,9 +22,7 @@ vi.mock('@/lib/twitch/sub-check', () => ({
   checkTwitchSubViaApi: vi.fn(),
   isTwitchSubCheckEnabled: vi.fn(),
 }))
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
-}))
+vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
 vi.mock('@/lib/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -49,22 +48,29 @@ function createRequest(): Request {
   })
 }
 
-function createSupabaseMock(options: {
-  upsertResult: { data: unknown; error: unknown }
-  readBackResult?: { data: unknown; error: unknown }
+function createDbMock(options: {
+  persistedRows: unknown[]
+  readBackRows?: unknown[]
+  persistError?: unknown
 }) {
-  const { upsertResult, readBackResult = upsertResult } = options
+  const {
+    persistedRows,
+    readBackRows = persistedRows,
+    persistError,
+  } = options
+  const returning = persistError
+    ? vi.fn().mockRejectedValue(persistError)
+    : vi.fn().mockResolvedValue(persistedRows)
+  const onConflictDoUpdate = vi.fn().mockReturnValue({ returning })
+  const values = vi.fn().mockReturnValue({ onConflictDoUpdate })
+  const insert = vi.fn().mockReturnValue({ values })
 
-  const upsertMaybeSingle = vi.fn().mockResolvedValue(upsertResult)
-  const upsertSelect = vi.fn().mockReturnValue({ maybeSingle: upsertMaybeSingle })
-  const upsert = vi.fn().mockReturnValue({ select: upsertSelect })
+  const limit = vi.fn().mockResolvedValue(readBackRows)
+  const where = vi.fn().mockReturnValue({ limit })
+  const from = vi.fn().mockReturnValue({ where })
+  const select = vi.fn().mockReturnValue({ from })
 
-  const readBackMaybeSingle = vi.fn().mockResolvedValue(readBackResult)
-  const readBackEq = vi.fn().mockReturnValue({ maybeSingle: readBackMaybeSingle })
-  const readBackSelect = vi.fn().mockReturnValue({ eq: readBackEq })
-
-  const from = vi.fn().mockReturnValue({ upsert, select: readBackSelect })
-  return { from }
+  return { insert, values, onConflictDoUpdate, returning, select, from, where, limit }
 }
 
 describe('POST /api/auth/twitch/check-subscription', () => {
@@ -89,19 +95,9 @@ describe('POST /api/auth/twitch/check-subscription', () => {
   })
 
   it('返却行が空かつ再読込で確認できない場合は saved=false を返す', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      createSupabaseMock({
-        upsertResult: {
-          data: null,
-          error: null,
-        },
-        readBackResult: {
-          data: null,
-          error: null,
-        },
-      }) as any
-    )
+    vi.mocked(getDb).mockResolvedValue({
+      db: createDbMock({ persistedRows: [], readBackRows: [] }),
+    } as any)
 
     const response = await POST(createRequest())
     const body = await response.json()
@@ -111,22 +107,15 @@ describe('POST /api/auth/twitch/check-subscription', () => {
   })
 
   it('返却行が空でも再読込で保存を確認できれば saved=true を返す', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      createSupabaseMock({
-        upsertResult: {
-          data: null,
-          error: null,
-        },
-        readBackResult: {
-          data: {
-            twitch_has_sub: true,
-            twitch_sub_verified_at: new Date().toISOString(),
-          },
-          error: null,
-        },
-      }) as any
-    )
+    vi.mocked(getDb).mockResolvedValue({
+      db: createDbMock({
+        persistedRows: [],
+        readBackRows: [{
+          twitch_has_sub: true,
+          twitch_sub_verified_at: new Date().toISOString(),
+        }],
+      }),
+    } as any)
 
     const response = await POST(createRequest())
     const body = await response.json()
@@ -136,15 +125,12 @@ describe('POST /api/auth/twitch/check-subscription', () => {
   })
 
   it('保存エラー時は500を返す', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      createSupabaseMock({
-        upsertResult: {
-          data: null,
-          error: { code: 'PGRST000', message: 'db error' },
-        },
-      }) as any
-    )
+    vi.mocked(getDb).mockResolvedValue({
+      db: createDbMock({
+        persistedRows: [],
+        persistError: Object.assign(new Error('db error'), { code: '08006' }),
+      }),
+    } as any)
 
     const response = await POST(createRequest())
     const body = await response.json()
@@ -153,34 +139,27 @@ describe('POST /api/auth/twitch/check-subscription', () => {
     expect(body).toEqual({ error: 'Failed to save subscription status' })
   })
 
-  it('PGRST204（スキーマ未適用）時は保存をスキップして成功を返す', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      createSupabaseMock({
-        upsertResult: {
-          data: null,
-          error: { code: 'PGRST204', message: 'column not found' },
-        },
-      }) as any
-    )
+  it('42703（スキーマ未適用）時は保存をスキップして成功を返す', async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      db: createDbMock({
+        persistedRows: [],
+        persistError: Object.assign(new Error('column not found'), { code: '42703' }),
+      }),
+    } as any)
 
     const response = await POST(createRequest())
     const body = await response.json()
 
     expect(response.status).toBe(200)
-    expect(body).toEqual({ success: true, hasSub: true, saved: false, saveFailureCode: 'PGRST204' })
+    expect(body).toEqual({ success: true, hasSub: true, saved: false, saveFailureCode: '42703' })
   })
 
   it('保存成功時は saved=true を返す', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(
-      createSupabaseMock({
-        upsertResult: {
-          data: { twitch_user_id: '123456789' },
-          error: null,
-        },
-      }) as any
-    )
+    vi.mocked(getDb).mockResolvedValue({
+      db: createDbMock({
+        persistedRows: [{ twitch_user_id: '123456789' }],
+      }),
+    } as any)
 
     const response = await POST(createRequest())
     const body = await response.json()

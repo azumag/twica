@@ -1,11 +1,10 @@
 /**
  * EventSub notification の KV 退避 (#694 Stage 4)
  *
- * maintenance mode（'off' 以外）のとき、EventSub webhook の notification メッセージを
- * DB へ書き込まず KV へ退避するための最小実装。呼び出し元（route.ts）は
- * mode !== 'off' のときだけこの関数を呼ぶ。リプレイ（退避データの再処理）は
- * このモジュールのスコープ外——退避データの形式だけリプレイ可能に設計し、
- * リプレイ手順自体は Stage 7 の runbook 更新で記載する。
+ * maintenance mode（'off' 以外）のnotification、または通常処理で一時障害になった
+ * notificationをKVへ退避するdurable inbox。通常時のretryable結果も同じ形式へ
+ * 保存することで、N連途中までcommitした後にWebhookへ2xxを返して残りを失うことを
+ * 防ぎ、既存のCron replayから残りだけを冪等に完遂できる。
  *
  * リプレイ実装者への注記（冪等性の前提）:
  * Twitch の EventSub は at-least-once 配送であり、加えて maintenance mode の
@@ -28,7 +27,7 @@
  * 分けたくなった場合は KV_BINDING_NAME を差し替えるだけで済むよう、
  * バインディング名をこの1箇所に集約している。
  */
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import type { MaintenanceState } from './state'
 
 /** 共用する KV バインディング名。専用 namespace に切り替える際はここだけ変更すればよい。 */
@@ -197,15 +196,16 @@ function stripUserInputFromPayload(payload: unknown): unknown {
 /**
  * EventSub notification を KV へ退避する。
  *
- * 戻り値は「退避に成功したか」を示すが、呼び出し側（route.ts）は成功・失敗の
- * どちらでも Twitch には 2xx を返し、DB 書き込みは行わない設計にしている。
+ * 戻り値は「退避に成功したか」を示す。maintenance分岐は成功・失敗のどちらでも
+ * Twitchへ2xxを返すが、通常処理がretryableになった分岐は失敗時に503を返す。
  * 理由: KV 書き込みに失敗する状況（KV障害等）で 500 を返すと Twitch の
  * 自動リトライに賭けることになるが、そのリトライも同じ KV 障害下では
  * 恐らく失敗し続ける一方で、5xx の連続はこの Stage 全体の前提である
  * 「Twitch への 5xx は subscription revoke 判定材料になるため厳禁」という
- * 制約に抵触するリスクがある。そのため「退避もできない = データロスを記録して
- * 前進する」を選び、2xx を返す判断を route.ts 側で行っている
- * （代替案・トレードオフは実装報告に記載）。
+ * 制約に抵触するリスクがある。そのためmaintenanceでは「退避もできない =
+ * データロスを記録して前進する」を選ぶ。一方、通常処理が既に一時失敗した場合は
+ * 2xxにすると再送機会がなくなるため、route.tsが503を返す。この非対称性は
+ * 可用性と部分付与の永久化防止をそれぞれ優先した意図的なもの。
  *
  * @returns 退避に成功したら true。KV バインディング未取得・put 失敗のいずれも false。
  */

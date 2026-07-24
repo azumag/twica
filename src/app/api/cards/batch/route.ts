@@ -1,33 +1,30 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import {
   validateCardName,
   validateImageUrl,
   validateRarity,
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 // -----------------------------------------------------------------------------
-// #663 (#570/#572 パイロット踏襲): pg 直結経路。POST は読み取り（所有権確認）と
-// 書き込み（一括 INSERT）が混在するため、DB アクセス部分は isPgWriteEnabled()
-// で分岐する（token-manager.ts の getBotAccountForChat と同じ方針）。既存
-// supabase-js 実装は 1 文字も変えず、フラグ未設定時（既定 'postgrest'）は
-// 完全に従来どおり動く。フォールバックチェーンは無い（postgrest 経路も無い）。
+// 一括カード作成の所有権確認と書き込みは PlanetScale の単一接続を使う。
 // -----------------------------------------------------------------------------
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgWriteEnabled } from "@/lib/db/flags";
+import type { Rarity } from "@/types/database";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
 import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
-import type { Rarity } from "@/types/database";
+
 
 /**
  * Card data for batch creation
@@ -44,10 +41,7 @@ interface BatchCardInput {
 
 /**
  * POST /api/cards/batch の streamer 所有権確認 (id, rarity_weights) の
- * pg 直結実装 (#663)。フォールバックチェーンは無い(postgrest 経路にも無い)。
  *
- * PostgREST 実装との対応:
- * - postgrest 経路は `data` のみ分割代入し error を確認しない
  *   （`const { data: streamer } = await ...`）ため、いかなるエラーも `!streamer`
  *   の 403 分岐に落ちる。pg 版も同じ外部挙動に合わせ、throw せず null を返す。
  */
@@ -77,11 +71,9 @@ async function selectStreamerForBatchCreatePg(
 
 /**
  * POST /api/cards/batch の一括 INSERT の pg 直結実装 (#663)。
- * 入力値のデプロイ窓フォールバックチェーンは無い(postgrest 経路にも無い。
  * cardsToInsert は card_number/hp/atk 等の本番未デプロイ列を最初から
  * 含めない)。
  *
- * PostgREST 実装との対応:
  * - `.insert(cardsToInsert).select()` は `.insert(...).values(...).returning()`
  *   が等価（RETURNING で挿入行を1回の往復で取得）。
  * - ON CONFLICT の無い一括 INSERT のため非冪等（withDbRetry にオプションを
@@ -177,7 +169,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const supabaseAdmin = getSupabaseAdmin();
+
     const body = await request.json();
     const { streamerId, cards } = body as { streamerId: string; cards: BatchCardInput[] };
 
@@ -202,19 +194,7 @@ export async function POST(request: NextRequest) {
 
     // Verify streamer owns this streamer profile
     // 配信者がこのstreamerプロフィールを所有しているか確認
-    let streamer: { id: string; rarity_weights: Record<string, number> | null } | null;
-
-    if (isPgWriteEnabled()) {
-      streamer = await selectStreamerForBatchCreatePg(streamerId, session.twitchUserId);
-    } else {
-      const { data } = await supabaseAdmin
-        .from("streamers")
-        .select("id, rarity_weights")
-        .eq("id", streamerId)
-        .eq("twitch_user_id", session.twitchUserId)
-        .maybeSingle();
-      streamer = data;
-    }
+    const streamer = await selectStreamerForBatchCreatePg(streamerId, session.twitchUserId);
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
@@ -275,21 +255,7 @@ export async function POST(request: NextRequest) {
 
     // Insert all cards at once
     // 全カードを一度に挿入
-    let createdCards: Record<string, unknown>[] | null;
-    let error: unknown;
-
-    if (isPgWriteEnabled()) {
-      const result = await insertCardsBatchPg(cardsToInsert);
-      createdCards = result.createdCards;
-      error = result.error;
-    } else {
-      const result = await supabaseAdmin
-        .from("cards")
-        .insert(cardsToInsert)
-        .select();
-      createdCards = result.data;
-      error = result.error;
-    }
+    const { createdCards, error } = await insertCardsBatchPg(cardsToInsert);
 
     if (error) {
       return handleDatabaseError(error, "Cards Batch API: Failed to create cards");
@@ -300,7 +266,6 @@ export async function POST(request: NextRequest) {
     let recalculatedCards = null;
     try {
       recalculatedCards = await recalculateIfAutoMode(
-        supabaseAdmin,
         streamerId,
         streamer.rarity_weights
       );

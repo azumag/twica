@@ -81,8 +81,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build without Supabase URL or keys
-        run: npm run build
+      - name: Build deployable Worker without Supabase URL or keys
+        # `next build` だけでは OpenNext の middleware / Worker 成果物を生成しない。
+        # 本番へ出すのと同じ build を使い、生成段階で旧 provider が混入する回帰も検査する。
+        run: npm run workers:build
         env:
           NEXT_PUBLIC_VERSION: ${{ github.sha }}
           NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
@@ -91,6 +93,16 @@ jobs:
           TWITCH_CLIENT_SECRET: dummy_client_secret
           TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
           CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
+
+      - name: Build production and preview auxiliary Worker bundles
+        # Wranglerの実deployと同じbundler/config解決をdry-runし、source scan後に
+        # conditional exportやpluginが旧providerを注入する回帰も検査対象にする。
+        run: npm run auxiliary-workers:build
+
+      - name: Verify every generated deploy artifact is Supabase-independent
+        # 両フラグは成果物のsilent skipを禁止する。outdirやbuild stepが変わった場合も
+        # 検査成功にはせず、deploy boundaryの明示更新を要求する。
+        run: npm run check:supabase-shutdown -- --require-open-next --require-aux-workers
 
   analysis:
     name: Analysis dashboard (guard / typecheck / build)
@@ -180,3 +192,77 @@ jobs:
 
       - name: Check migration order
         run: npm run check:migration-order -- --base=origin/${{ github.base_ref }}
+
+  planetscale-migration-postgres:
+    name: PlanetScale migration PostgreSQL 17
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply PlanetScale baseline and additive migrations
+        # SQL文字列テストではPL/pgSQLの構文や三値論理を検証できない。実運用と同じ
+        # PostgreSQL 17へ各ファイルを個別transactionで順序どおり適用し、途中の
+        # 1ファイルでも失敗したらON_ERROR_STOPでjobを停止する。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/migrations/20260719180000_planetscale_bootstrap.sql
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/migrations/20260719180100_planetscale_public_schema_baseline.sql
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/grants.sql
+          # runtime migration runnerと同じdescriptor parserで、共通migrationと
+          # PlanetScale専用migrationをマージ・provider filter・名前順sortする。
+          # CIだけ別の対象集合を再実装すると、新しい共通migrationを見落とすため。
+          mapfile -t migrations < <(node -e "
+            const path = require('node:path');
+            const core = require('./scripts/lib/db-migrate-core');
+            const descriptors = core.loadMigrationFilesFromDirs([
+              path.resolve('supabase/migrations'),
+              path.resolve('db/planetscale/migrations'),
+            ]);
+            const errors = core.collectDescriptorErrors(descriptors);
+            if (errors.length > 0) throw new Error(JSON.stringify(errors));
+            for (const descriptor of descriptors) {
+              if (
+                BigInt(descriptor.version) > 20260719180100n
+                && core.isProviderApplicable(descriptor, 'planetscale')
+              ) {
+                console.log(path.join(descriptor.sourceDir, descriptor.filename));
+              }
+            }
+          ")
+          for migration in "${migrations[@]}"; do
+            psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+              -f "$migration"
+          done
+
+      - name: Verify transactional gacha outbox invariants
+        # 旧RPC互換、single/N連、歯抜け復旧、NULL副作用0、権限、lease fencingを
+        # 実DBで検証し、新RPC欠落による全ガチャfail-closedをPR段階で防ぐ。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/transactional-chat-outbox-postgres.sql
+
+      - name: Verify concurrent duplicate fencing
+        # 先行COMMIT前に同じeventを別接続から実行し、同じcard/別cardのどちらでも
+        # 後続がlimit_reachedではなくduplicateへ収束することを確認する。
+        env:
+          PGPASSWORD: postgres
+        run: bash tests/fixtures/transactional-chat-outbox-concurrency.sh

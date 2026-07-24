@@ -1,4 +1,4 @@
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 
 type PerfContext = Record<string, string | number | boolean | null | undefined>;
 

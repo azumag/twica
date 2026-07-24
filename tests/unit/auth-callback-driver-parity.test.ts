@@ -1,18 +1,17 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — GET /api/auth/twitch/callback の
- * postgrest経路 / pg経路パリティテスト
+ * #663/#708: GET /api/auth/twitch/callback のPlanetScale経路テスト
  *
- * このルートは4箇所で supabase-js の .from() を呼ぶ:
- *   1. 既存スコープ読み取り（isPgReadEnabled、スコープ乖離チェック）
- *   2. users への UPSERT（isPgWriteEnabled、トークン・プロフィール保存）
- *   3. streamers への UPSERT（isPgWriteEnabled、アフィリエイト時のみ・結果を確認しない best-effort）
- *   4. users.tos_accepted_at 読み取り（isPgReadEnabled、TOS 同意確認）
+ * このルートはPlanetScaleへ4つの操作を行う:
+ *   1. 既存スコープ読み取り（スコープ乖離チェック）
+ *   2. users への UPSERT（トークン・プロフィール保存）
+ *   3. streamers への UPSERT（アフィリエイト時のみ・結果を確認しない best-effort）
+ *   4. users.tos_accepted_at 読み取り（TOS 同意確認）
  *
  * tests/unit/auth-scope-preservation.test.ts のモック構成（next/headers・
  * next/server・session・supabase/admin 等）を踏襲しつつ、pg 経路のアサーション
  * を追加する。
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { streamers as streamersTable, users as usersTable } from '@/lib/db/schema'
@@ -128,23 +127,7 @@ function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
   vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
 }
 
-function createSupabaseCallbackMock(options: { existingScopes?: string[] | null; tosAcceptedAt?: string | null } = {}) {
-  const { existingScopes = null, tosAcceptedAt = '2024-01-01' } = options
-  let selectCallCount = 0
-  const maybeSingle = vi.fn(() => {
-    selectCallCount += 1
-    if (selectCallCount === 1) {
-      return Promise.resolve({ data: existingScopes !== null ? { twitch_scopes: existingScopes } : null, error: null })
-    }
-    return Promise.resolve({ data: { tos_accepted_at: tosAcceptedAt }, error: null })
-  })
-  const eqFn = vi.fn(() => ({ maybeSingle }))
-  const select = vi.fn(() => ({ eq: eqFn }))
-  const upsert = vi.fn().mockResolvedValue({ error: null })
-  return { from: vi.fn(() => ({ select, upsert })) }
-}
-
-describe('GET /api/auth/twitch/callback: postgrest / pg 経路の互換 (#663)', () => {
+describe('GET /api/auth/twitch/callback: PlanetScale経路 (#663/#708)', () => {
   let exchangeCodeForTokens: ReturnType<typeof vi.fn>
   let getTwitchUser: ReturnType<typeof vi.fn>
 
@@ -177,27 +160,11 @@ describe('GET /api/auth/twitch/callback: postgrest / pg 経路の互換 (#663)',
     })
   })
 
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
   function createCallbackRequest() {
     return new NextRequest('http://localhost:3000/api/auth/twitch/callback?code=test-code&state=test-state-123')
   }
 
-  it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-    vi.stubEnv('DB_DRIVER', undefined)
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock() as any)
-
-    const { GET } = await import('@/app/api/auth/twitch/callback/route')
-    await GET(createCallbackRequest())
-
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('DB_DRIVER=pg: 既存スコープ読み取り・users UPSERT・streamers UPSERT・TOS読み取りが正しいテーブル/値で実行される', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('既存スコープ読み取り・users UPSERT・streamers UPSERT・TOS読み取りを実行する', async () => {
     const pg = createDrizzleDbMock({
       selects: [
         { rows: [] }, // 既存スコープなし（乖離チェック通過）
@@ -225,6 +192,8 @@ describe('GET /api/auth/twitch/callback: postgrest / pg 経路の互換 (#663)',
       twitch_username: 'testuser',
       twitch_access_token: 'test-access-token',
       twitch_refresh_token: 'test-refresh-token',
+      twitch_refresh_lease_id: null,
+      twitch_refresh_lease_expires_at: null,
     })
     expect(pg.insertCalls[0].conflictSet).toEqual(pg.insertCalls[0].values)
 
@@ -237,8 +206,7 @@ describe('GET /api/auth/twitch/callback: postgrest / pg 経路の互換 (#663)',
     })
   })
 
-  it('DB_DRIVER=pg: streamers UPSERT が失敗してもコールバック全体は成功する（既存postgrest経路のbest-effort挙動を再現）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('streamers UPSERTが失敗してもコールバック全体は成功する（best-effort）', async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [] }, { rows: [{ tos_accepted_at: '2024-01-01' }] }],
       inserts: [
@@ -262,8 +230,7 @@ describe('GET /api/auth/twitch/callback: postgrest / pg 経路の互換 (#663)',
     )
   })
 
-  it('DB_DRIVER=pg: users UPSERT が失敗すると database_error になる（postgrest経路と同じ外部挙動）', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('users UPSERTが失敗するとdatabase_errorになる', async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [] }],
       inserts: [{ error: new Error('connection lost') }],
@@ -281,26 +248,17 @@ describe('GET /api/auth/twitch/callback: postgrest / pg 経路の互換 (#663)',
     )
   })
 
-  it('postgrest経路とpg経路で最終的なリダイレクト先（TOS同意状況）が一致する', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock({ tosAcceptedAt: null }) as any)
-
-    const { GET: getWithPostgrest } = await import('@/app/api/auth/twitch/callback/route')
-    const postgrestResponse = await getWithPostgrest(createCallbackRequest())
-    const postgrestLocation = postgrestResponse.headers.get('location')
-
-    vi.stubEnv('DB_DRIVER', 'pg')
+  it('TOS未同意なら/tosへリダイレクトする', async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [] }, { rows: [{ tos_accepted_at: null }] }],
       inserts: [{ rows: [{}] }, { rows: [{ id: 'streamer-1' }] }],
     })
     primePgDb(pg)
 
-    const { GET: getWithPg } = await import('@/app/api/auth/twitch/callback/route')
-    const pgResponse = await getWithPg(createCallbackRequest())
+    const { GET } = await import('@/app/api/auth/twitch/callback/route')
+    const pgResponse = await GET(createCallbackRequest())
     const pgLocation = pgResponse.headers.get('location')
 
     expect(pgLocation).toContain('/tos')
-    expect(postgrestLocation).toContain('/tos')
   })
 })

@@ -8,6 +8,10 @@ import {
   gachaHistory as gachaHistoryTable,
   cards as cardsTable,
 } from "@/lib/db/schema";
+import {
+  __clearOverlayDemoEventsForTests,
+  publishOverlayDemoEvent,
+} from "@/lib/overlay/demo-event-store";
 
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/sentry/error-handler", () => ({
@@ -117,6 +121,7 @@ const DISPLAY_ROW = {
 describe("GET /api/overlay/[streamerId]/events", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __clearOverlayDemoEventsForTests();
     mockCheckRateLimit.mockResolvedValue({
       success: true,
       limit: 120,
@@ -130,7 +135,7 @@ describe("GET /api/overlay/[streamerId]/events", () => {
     vi.unstubAllEnvs();
   });
 
-  it("不正な streamer、since、afterId をDB接続前に拒否する", async () => {
+  it("不正な streamer、since、demoSince、afterId をDB接続前に拒否する", async () => {
     const invalidStreamer = await GET(
       createRequest({ since: SINCE }),
       routeParams("not-a-uuid")
@@ -143,10 +148,15 @@ describe("GET /api/overlay/[streamerId]/events", () => {
       }),
       routeParams()
     );
+    const invalidDemoSince = await GET(
+      createRequest({ since: SINCE, demoSince: "invalid" }),
+      routeParams()
+    );
 
     expect(invalidStreamer.status).toBe(400);
     expect(missingSince.status).toBe(400);
     expect(invalidAfterId.status).toBe(400);
+    expect(invalidDemoSince.status).toBe(400);
     expect(getDb).not.toHaveBeenCalled();
   });
 
@@ -315,6 +325,34 @@ describe("GET /api/overlay/[streamerId]/events", () => {
     expect(response.status).toBe(200);
     expect(body.nextCursor).toEqual({
       redeemedAt: "2026-07-24T14:40:14.511943Z",
+      historyId: DISPLAY_ROW.id,
+    });
+  });
+
+  it("デモを同じ応答で返すが履歴cursorはPlanetScale行だけで進める", async () => {
+    useRows([DISPLAY_ROW]);
+    const demoEvent = await publishOverlayDemoEvent(STREAMER_ID, {
+      id: "demo-card",
+      name: "Demo card",
+      description: null,
+      image_url: null,
+      rarity: "common",
+    });
+
+    const response = await GET(
+      createRequest({
+        since: SINCE,
+        demoSince: "2026-01-01T00:00:00.000Z",
+        contract: "v1",
+      }),
+      routeParams()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.demoEvent).toEqual(demoEvent);
+    expect(body.nextCursor).toEqual({
+      redeemedAt: DISPLAY_ROW.redeemed_at,
       historyId: DISPLAY_ROW.id,
     });
   });

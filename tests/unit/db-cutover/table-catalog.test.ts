@@ -38,13 +38,14 @@ const KNOWN_PRIMARY_KEYS: Record<string, string[]> = {
   card_owner_stats: ['streamer_id', 'card_id', 'user_twitch_id'],
   card_stone_balances: ['id'],
   card_stone_transactions: ['id'],
+  chat_notification_outbox: ['id'],
 }
 
 const schemaPath = join(__dirname, '../../../src/lib/db/schema.ts')
 const realSchemaSource = readFileSync(schemaPath, 'utf8')
 
 describe('extractPrimaryKeys（実際のschema.ts、drift検知）', () => {
-  it('全25テーブルのPKが KNOWN_PRIMARY_KEYS と完全一致する', () => {
+  it('全26テーブルのPKが KNOWN_PRIMARY_KEYS と完全一致する', () => {
     const extracted = extractPrimaryKeys(realSchemaSource)
     expect(extracted.size).toBe(Object.keys(KNOWN_PRIMARY_KEYS).length)
     for (const [table, expectedPk] of Object.entries(KNOWN_PRIMARY_KEYS)) {
@@ -142,8 +143,8 @@ describe('extractPrimaryKeys（合成fixture）', () => {
 describe('buildTableCatalog（実際のschema.ts）', () => {
   const catalog = buildTableCatalog(realSchemaSource)
 
-  it('25テーブル全てを含み、テーブル名昇順でソートされている', () => {
-    expect(catalog).toHaveLength(25)
+  it('26テーブル全てを含み、テーブル名昇順でソートされている', () => {
+    expect(catalog).toHaveLength(26)
     const names = catalog.map((t) => t.tableName)
     expect(names).toEqual([...names].sort())
   })

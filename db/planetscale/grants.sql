@@ -29,7 +29,7 @@
 --      （BYPASSRLS = RLSチェック自体をスキップする。GRANTされたDML権限の範囲でのみ
 --      操作可能という制約は変わらない）。
 --   2. PostgREST/anon/authenticated 経由のデータAPIモデル自体が廃止対象
---      （docs/planetscale-migration-audit.md 2.3節: 「移行完了後はこれらのポリシーを
+--      （docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md 2.3節: 「移行完了後はこれらのポリシーを
 --      app層認可に一本化して削除する方向が望ましい」）であり、個々のテーブルへの
 --      個別GRANTを将来も逐一追随させる保守コストに見合わない。
 --   3. `ALTER DEFAULT PRIVILEGES` により、00047が存在する理由そのもの

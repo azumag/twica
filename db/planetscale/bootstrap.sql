@@ -25,7 +25,7 @@
 -- 「既に一度bootstrap.sqlを適用済みのDB」の両方に対して適用して確認済み
 -- （docs/planetscale-schema-baseline.md 参照）。
 --
--- 撤去時期について（docs/planetscale-migration-audit.md 2.3節の所見を踏襲）:
+-- 撤去時期について（docs/history/migration/PLANETSCALE_MIGRATION_AUDIT.md 2.3節の所見を踏襲）:
 -- auth.*スタブ関数・anon/authenticated/service_roleロード・それらに依存するRLSポリシーは、
 -- 「文法上は動くが意味を持たないスタブ」である（pg直結経路にはJWTクレームが存在しないため
 -- auth.uid()等は常にNULL/固定値を返す）。#568の既定路線どおり、認可はアプリ層

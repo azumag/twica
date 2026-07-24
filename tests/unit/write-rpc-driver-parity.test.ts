@@ -1,25 +1,20 @@
 /**
- * #573 残り: 書き込み系 RPC 4件の postgrest 経路 / pg 直結経路 ドライバ切替パリティテスト
+ * #573: PlanetScale書き込み系RPC 4件の回帰テスト
  *   1. batch_update_card_drop_rates (src/lib/recalculate-drop-rates.ts,
  *      src/app/api/cards/batch-update/route.ts)
  *   2. rename_card_pack (src/app/api/cards/collections/route.ts, PATCH)
  *   3. activate_support_code (src/app/api/support/activate/route.ts)
  *   4. deactivate_all_licenses (src/app/api/support/deactivate/route.ts)
  *
- * 各 RPC について以下を固定する(既存 parity テストと同じ観点。
+ * 各RPCについて以下を固定する（既存PlanetScale RPCテストと同じ観点。
  * tests/unit/gacha-rpc-driver-parity.test.ts / dashboard-data-rpc-driver-parity.test.ts
- * / storage-db-driver-parity.test.ts の流儀を踏襲):
- *   1. #806 以外は postgrest 経路(フラグ未設定 = 既定 'postgrest')で getDb が
- *      一切呼ばれず、既存 .rpc() 呼び出しの引数・外部挙動が完全に不変
- *      (#806 の rename_card_pack は退役経路をなくすため常時 PlanetScale)
- *   2. pg 経路(DB_DRIVER=pg): 名前付き引数 + 明示キャストの SQL が実行され、
- *      戻り値/エラーが PostgREST .rpc() と同一形状に正規化される
- *   3. 冪等性設定: 非冪等 RPC (rename_card_pack / activate_support_code) は
- *      接続断(CONNECTION_CLOSED)でもリトライされず即エラーになること。
- *      冪等 RPC (batch_update_card_drop_rates / deactivate_all_licenses) は
- *      接続断後にリトライして成功すること
+ * / storage-db-driver-parity.test.ts の流儀を踏襲）:
+ *   1. 名前付き引数と必要な明示キャストを含むSQLが実行されること
+ *   2. routeの所有権確認を含め、読み書きがPlanetScale内で完結すること
+ *   3. 非冪等RPC（rename_card_pack / activate_support_code）は接続断でも
+ *      リトライされず、冪等RPCは接続断後に安全にリトライされること
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { executeBatchUpdateCardDropRatesRpcPg, recalculateIfAutoMode } from '@/lib/recalculate-drop-rates'
 import { POST as batchUpdatePost } from '@/app/api/cards/batch-update/route'
@@ -30,9 +25,7 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
-import { createMockQueryBuilder } from '../utils/supabase-mock'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit')
@@ -45,10 +38,6 @@ vi.mock('@/lib/sentry/error-handler')
 vi.mock('@/lib/crypto-utils', () => ({
   sha256: vi.fn().mockResolvedValue('hashed-code-value'),
 }))
-vi.mock('@/lib/supabase/admin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
-  return { ...actual, getSupabaseAdmin: vi.fn() }
-})
 
 const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
@@ -56,7 +45,6 @@ const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockGetRateLimitIdentifier = vi.mocked(getRateLimitIdentifier)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 const mockValidateContentType = vi.mocked(validateContentType)
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 
 const SESSION = {
   twitchUserId: 'twitch-user-123',
@@ -150,16 +138,12 @@ beforeEach(() => {
   setDefaultAuthMocks()
 })
 
-afterEach(() => {
-  vi.unstubAllEnvs()
-})
-
 // =============================================================================
 // 1. batch_update_card_drop_rates
 // =============================================================================
 
-describe('batch_update_card_drop_rates (#573)', () => {
-  describe('executeBatchUpdateCardDropRatesRpcPg (共有 pg 実装)', () => {
+describe('batch_update_card_drop_rates PlanetScale契約 (#573)', () => {
+  describe('executeBatchUpdateCardDropRatesRpcPg (共有PlanetScale実装)', () => {
     it('正常系: 名前付き引数(::uuid / ::jsonb 明示キャスト)で呼ばれ、jsonb 戻り値がそのまま得られる', async () => {
       const sqlMock = createSqlMock([{ rows: [{ result: { updated_count: 2 } }] }])
       primePgDb(sqlMock)
@@ -208,61 +192,26 @@ describe('batch_update_card_drop_rates (#573)', () => {
     })
   })
 
-  describe('recalculateIfAutoMode (pg 分岐)', () => {
+  describe('recalculateIfAutoMode (PlanetScale)', () => {
     const RARITY_WEIGHTS = { common: 100 }
     const ACTIVE_CARDS = [{ id: 'card-1', rarity: 'common', is_active: true, intra_rarity_weight: 1 }]
     const RECALCULATED_CARDS = [{ id: 'card-1', streamer_id: 'streamer-1', drop_rate: 1, rarity: 'common' }]
 
-    function createSupabaseAdminMock(rpc: ReturnType<typeof vi.fn>) {
-      let cardsCallCount = 0
-      const from = vi.fn((table: string) => {
-        expect(table).toBe('cards')
-        cardsCallCount += 1
-        const data = cardsCallCount === 1 ? ACTIVE_CARDS : RECALCULATED_CARDS
-        const qb = createMockQueryBuilder()
-        ;(qb as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-          resolve({ data, error: null })
-          return qb
-        }
-        return qb
-      })
-      return { from, rpc }
-    }
-
-    it('postgrest 経路(フラグ未設定): 既存 supabase-js RPC で実行され getDb は呼ばれない', async () => {
-      const rpc = vi.fn().mockResolvedValue({ data: { updated_count: 1 }, error: null })
-      const supabaseAdmin = createSupabaseAdminMock(rpc)
-
-      const result = await recalculateIfAutoMode(supabaseAdmin as any, 'streamer-1', RARITY_WEIGHTS)
-
-      expect(result).toEqual(RECALCULATED_CARDS)
-      expect(rpc).toHaveBeenCalledWith('batch_update_card_drop_rates', {
-        p_streamer_id: 'streamer-1',
-        p_updates: [{ id: 'card-1', drop_rate: 1 }],
-      })
-      expect(getDb).not.toHaveBeenCalled()
-    })
-
-    it('pg 経路(DB_DRIVER=pg): executeBatchUpdateCardDropRatesRpcPg 経由で実行され supabase rpc は不呼出', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
-      const rpc = vi.fn()
-      const supabaseAdmin = createSupabaseAdminMock(rpc)
+    it('PlanetScale経路: executeBatchUpdateCardDropRatesRpcPgで更新する', async () => {
       const sqlMock = createSqlMock([{ rows: [{ result: { updated_count: 1 } }] }])
       const selectMock = primePgDbWithSelectResponses(sqlMock, [ACTIVE_CARDS, RECALCULATED_CARDS])
 
-      const result = await recalculateIfAutoMode(supabaseAdmin as any, 'streamer-1', RARITY_WEIGHTS)
+      const result = await recalculateIfAutoMode('streamer-1', RARITY_WEIGHTS)
 
       expect(result).toEqual(RECALCULATED_CARDS)
       expect(selectMock).toHaveBeenCalledTimes(2)
       expect(sqlMock).toHaveBeenCalledTimes(1)
       const { values } = renderSqlCall(sqlMock, 0)
       expect(values).toEqual(['streamer-1', JSON.stringify([{ id: 'card-1', drop_rate: 1 }])])
-      expect(supabaseAdmin.from).not.toHaveBeenCalled()
-      expect(rpc).not.toHaveBeenCalled()
     })
   })
 
-  describe('POST /api/cards/batch-update (pg 分岐)', () => {
+  describe('POST /api/cards/batch-update (PlanetScale)', () => {
     function createRequest(body: Record<string, unknown>): NextRequest {
       return new NextRequest('http://localhost:3000/api/cards/batch-update', {
         method: 'POST',
@@ -271,57 +220,7 @@ describe('batch_update_card_drop_rates (#573)', () => {
       })
     }
 
-    /** streamers → cards(所有権確認) → cards(更新後データ取得) の順で呼ばれる */
-    function createBatchUpdateSupabaseMock(options: {
-      rpc?: ReturnType<typeof vi.fn>
-      updatedCards?: Record<string, unknown>[]
-    }) {
-      let fromCallCount = 0
-      const from = vi.fn((table: string) => {
-        fromCallCount += 1
-        if (table === 'streamers') {
-          const qb = createMockQueryBuilder()
-          ;(qb.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-            data: { id: 'streamer-1', rarity_weights: null },
-            error: null,
-          })
-          return qb
-        }
-        // cards: 1st call = ownership check, 2nd call = post-update fetch
-        const qb = createMockQueryBuilder()
-        const data = fromCallCount === 2 ? [{ id: 'card-1' }] : (options.updatedCards ?? [{ id: 'card-1' }])
-        const resultPromise = Promise.resolve({ data, error: null })
-        ;(qb.in as ReturnType<typeof vi.fn>).mockReturnValue({
-          ...qb,
-          then: resultPromise.then.bind(resultPromise),
-        })
-        return qb
-      })
-      const rpc = options.rpc ?? vi.fn()
-      mockGetSupabaseAdmin.mockReturnValue({ from, rpc } as unknown as ReturnType<typeof getSupabaseAdmin>)
-      return { from, rpc }
-    }
-
-    it('postgrest 経路(フラグ未設定): 既存 supabase-js RPC で実行され getDb は呼ばれない', async () => {
-      const rpc = vi.fn().mockResolvedValue({ data: { updated_count: 1 }, error: null })
-      createBatchUpdateSupabaseMock({ rpc, updatedCards: [{ id: 'card-1', drop_rate: 0.5 }] })
-
-      const response = await batchUpdatePost(
-        createRequest({ streamerId: 'streamer-1', updates: [{ id: 'card-1', dropRate: 0.5 }] })
-      )
-
-      expect(response.status).toBe(200)
-      expect(rpc).toHaveBeenCalledWith('batch_update_card_drop_rates', {
-        p_streamer_id: 'streamer-1',
-        p_updates: [{ id: 'card-1', drop_rate: 0.5 }],
-      })
-      expect(getDb).not.toHaveBeenCalled()
-    })
-
-    it('pg 経路(DB_DRIVER=pg): 名前付き引数の SQL が実行され、レスポンス形状が postgrest 経路と一致する', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
-      const rpc = vi.fn()
-      const { from } = createBatchUpdateSupabaseMock({ rpc, updatedCards: [{ id: 'card-1', drop_rate: 0.5 }] })
+    it('正常系: 所有権確認・対象確認・更新・再取得がPlanetScale内で完結する', async () => {
       const sqlMock = createSqlMock([{ rows: [{ result: { updated_count: 1 } }] }])
       const selectMock = primePgDbWithSelectResponses(sqlMock, [
         [{ id: 'streamer-1', rarity_weights: null }],
@@ -340,14 +239,9 @@ describe('batch_update_card_drop_rates (#573)', () => {
       expect(sqlMock).toHaveBeenCalledTimes(1)
       const { text } = renderSqlCall(sqlMock, 0)
       expect(text).toContain('batch_update_card_drop_rates')
-      // 読み取り・書き込みのいずれも postgrest 経路へ流れていないこと
-      expect(from).not.toHaveBeenCalled()
-      expect(rpc).not.toHaveBeenCalled()
     })
 
-    it('pg 経路で RPC エラー: 既存と同じ 500 (handleDatabaseError) を返す', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
-      const { from } = createBatchUpdateSupabaseMock({})
+    it('RPCエラーは500 (handleDatabaseError) を返す', async () => {
       const sqlMock = createSqlMock([{ reject: pgError('XX000', 'unexpected database error') }])
       const selectMock = primePgDbWithSelectResponses(sqlMock, [
         [{ id: 'streamer-1', rarity_weights: null }],
@@ -360,7 +254,6 @@ describe('batch_update_card_drop_rates (#573)', () => {
 
       expect(response.status).toBe(500)
       expect(selectMock).toHaveBeenCalledTimes(2)
-      expect(from).not.toHaveBeenCalled()
     })
   })
 })
@@ -369,7 +262,7 @@ describe('batch_update_card_drop_rates (#573)', () => {
 // 2. rename_card_pack
 // =============================================================================
 
-describe('rename_card_pack (#806)', () => {
+describe('rename_card_pack PlanetScale契約 (#573)', () => {
   function makePatchRequest(body: unknown) {
     return new NextRequest('http://localhost/api/cards/collections', {
       method: 'PATCH',
@@ -378,37 +271,20 @@ describe('rename_card_pack (#806)', () => {
     })
   }
 
-  /**
-   * #806 以降 collections route は、所有権確認も rename RPC も常に
-   * PlanetScale の Drizzle/postgres.js 経路を通る。SELECT の thenable は
-   * Drizzle のクエリビルダが await 可能である実装契約を最小限で再現する。
-   */
-  function mockPgForPatch(
-    streamer: { id: string; card_pack_names?: string[] } | null,
-    sqlMock: ReturnType<typeof createSqlMock>
-  ) {
-    return primePgDbWithSelectResponses(sqlMock, [streamer ? [streamer] : []])
-  }
-
   const CATALOG_STREAMER = { id: 'streamer-1', card_pack_names: ['weapons', 'characters'] }
 
-  it('DB_DRIVER 未設定でも PlanetScale の Drizzle/postgres.js 経路で実行される', async () => {
+  /**
+   * PATCHはRPC前に同じPlanetScale接続上でstreamer所有権とpack catalogを読む。
+   * ここを省略するとrouteはDB取得失敗を安全側の403へ変換するため、各RPC契約
+   * テストでも認可前提を実データ形状で満たしてからSQL結果を検証する。
+   */
+  function primeRenameDb(sqlMock: ReturnType<typeof createSqlMock>) {
+    return primePgDbWithSelectResponses(sqlMock, [[CATALOG_STREAMER]])
+  }
+
+  it('正常系: 所有権確認後、名前付き引数(::uuid 明示キャスト)で呼ばれる', async () => {
     const sqlMock = createSqlMock([{ rows: [] }])
-    const selectMock = mockPgForPatch(CATALOG_STREAMER, sqlMock)
-
-    const res = await collectionsPatch(
-      makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: 'armory' })
-    )
-
-    expect(res.status).toBe(200)
-    expect(selectMock).toHaveBeenCalledTimes(1)
-    expect(sqlMock).toHaveBeenCalledTimes(1)
-    expect(renderSqlCall(sqlMock, 0).values).toEqual(['streamer-1', 'weapons', 'armory'])
-  })
-
-  it('固定 PlanetScale 経路: 名前付き引数(::uuid 明示キャスト)で呼ばれ、既存レスポンス形状を維持する', async () => {
-    const sqlMock = createSqlMock([{ rows: [] }])
-    const selectMock = mockPgForPatch(CATALOG_STREAMER, sqlMock)
+    const selectMock = primeRenameDb(sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: '  armory  ' })
@@ -428,11 +304,11 @@ describe('rename_card_pack (#806)', () => {
     expect(selectMock).toHaveBeenCalledTimes(1)
   })
 
-  it('pg 経路 42883 (RPC未デプロイ): 既存と同じ 503 (PACK_RENAME_NOT_READY) を返す', async () => {
+  it('42883 (RPC未デプロイ) は503 (PACK_RENAME_NOT_READY) を返す', async () => {
     const sqlMock = createSqlMock([
       { reject: pgError('42883', 'function rename_card_pack(uuid, text, text) does not exist') },
     ])
-    mockPgForPatch(CATALOG_STREAMER, sqlMock)
+    primeRenameDb(sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: 'armory' })
@@ -441,11 +317,11 @@ describe('rename_card_pack (#806)', () => {
     expect(res.status).toBe(503)
   })
 
-  it('pg 経路 レース由来の RAISE EXCEPTION (OLD_NAME_NOT_FOUND): 既存と同じ 400 を返す', async () => {
+  it('レース由来のRAISE EXCEPTION (OLD_NAME_NOT_FOUND) は400を返す', async () => {
     // ルートの事前チェックを通過した後、RPC 実行までの間に並行編集が割り込んだ
-    // レースを模す(cards-collections-route.test.ts の既存 postgrest テストと同種)。
+    // レースを模す（所有権・catalogの事前SELECTは成功させる）。
     const sqlMock = createSqlMock([{ reject: pgError('P0001', 'OLD_NAME_NOT_FOUND') }])
-    mockPgForPatch(CATALOG_STREAMER, sqlMock)
+    primeRenameDb(sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: 'armory' })
@@ -454,14 +330,14 @@ describe('rename_card_pack (#806)', () => {
     expect(res.status).toBe(400)
   })
 
-  it('非冪等: CONNECTION_CLOSED でもリトライされず(1回のみ実行)、既存と同じ 500 を返す', async () => {
+  it('非冪等: CONNECTION_CLOSEDでもリトライされず1回のみ実行して500を返す', async () => {
     // 2回目の応答を成功にしておき、「リトライされていれば成功していた」状況でも
     // 1回で打ち切られること(=非冪等 RPC を安全側で扱えていること)を証明する
     const sqlMock = createSqlMock([
       { reject: pgError('CONNECTION_CLOSED', 'write CONNECTION_CLOSED') },
       { rows: [] },
     ])
-    mockPgForPatch(CATALOG_STREAMER, sqlMock)
+    primeRenameDb(sqlMock)
 
     const res = await collectionsPatch(
       makePatchRequest({ streamerId: 'streamer-1', oldName: 'weapons', newName: 'armory' })
@@ -476,7 +352,7 @@ describe('rename_card_pack (#806)', () => {
 // 3. activate_support_code
 // =============================================================================
 
-describe('activate_support_code (#573)', () => {
+describe('activate_support_code PlanetScale契約 (#573)', () => {
   function createActivateRequest(body: Record<string, unknown> = { code: 'test-code-123' }): NextRequest {
     return new NextRequest('http://localhost:3000/api/support/activate', {
       method: 'POST',
@@ -485,29 +361,7 @@ describe('activate_support_code (#573)', () => {
     })
   }
 
-  function mockAdminForActivate(rpc?: ReturnType<typeof vi.fn>) {
-    mockGetSupabaseAdmin.mockReturnValue({ rpc: rpc ?? vi.fn() } as unknown as ReturnType<typeof getSupabaseAdmin>)
-  }
-
-  it('postgrest 経路(フラグ未設定): 既存 supabase-js RPC で実行され getDb は呼ばれない', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: { success: true, plan_type: 'support' }, error: null })
-    mockAdminForActivate(rpc)
-
-    const response = await activatePost(createActivateRequest())
-
-    expect(response.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('activate_support_code', {
-      p_code_hash: 'hashed-code-value',
-      p_twitch_user_id: 'twitch-user-123',
-      p_fanbox_id: null,
-    })
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('pg 経路 正常系: 名前付き引数(text は無キャスト)で呼ばれ、レスポンス形状が postgrest 経路と一致する', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    const rpc = vi.fn()
-    mockAdminForActivate(rpc)
+  it('正常系: 名前付き引数（textは無キャスト）で呼ばれる', async () => {
     const sqlMock = createSqlMock([{ rows: [{ result: { success: true, plan_type: 'patron' } }] }])
     primePgDb(sqlMock)
 
@@ -524,12 +378,9 @@ describe('activate_support_code (#573)', () => {
     expect(text).toContain('p_twitch_user_id => $')
     expect(text).toContain('p_fanbox_id => $')
     expect(values).toEqual(['hashed-code-value', 'twitch-user-123', 'my-fanbox-id'])
-    expect(rpc).not.toHaveBeenCalled()
   })
 
-  it('pg 経路: RPC が返す ALREADY_ACTIVATED エラーは既存と同じ 409 にマッピングされる', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    mockAdminForActivate()
+  it('RPCが返すALREADY_ACTIVATEDエラーは409にマッピングされる', async () => {
     const sqlMock = createSqlMock([{ rows: [{ result: { error: 'ALREADY_ACTIVATED' } }] }])
     primePgDb(sqlMock)
 
@@ -538,9 +389,7 @@ describe('activate_support_code (#573)', () => {
     expect(response.status).toBe(409)
   })
 
-  it('非冪等: CONNECTION_CLOSED でもリトライされず(1回のみ実行)、既存と同じ 500 を返す', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    mockAdminForActivate()
+  it('非冪等: CONNECTION_CLOSEDでもリトライされず1回のみ実行して500を返す', async () => {
     // 2回目の応答を成功にしておき、リトライされていれば成功していた状況でも
     // 1回で打ち切られること(activation_count 二重加算・成功の見かけ失敗化を防ぐ)を証明する
     const sqlMock = createSqlMock([
@@ -560,7 +409,7 @@ describe('activate_support_code (#573)', () => {
 // 4. deactivate_all_licenses
 // =============================================================================
 
-describe('deactivate_all_licenses (#573)', () => {
+describe('deactivate_all_licenses PlanetScale契約 (#573)', () => {
   function createDeactivateRequest(): NextRequest {
     return new NextRequest('http://localhost:3000/api/support/deactivate', {
       method: 'POST',
@@ -568,25 +417,7 @@ describe('deactivate_all_licenses (#573)', () => {
     })
   }
 
-  function mockAdminForDeactivate(rpc?: ReturnType<typeof vi.fn>) {
-    mockGetSupabaseAdmin.mockReturnValue({ rpc: rpc ?? vi.fn() } as unknown as ReturnType<typeof getSupabaseAdmin>)
-  }
-
-  it('postgrest 経路(フラグ未設定): 既存 supabase-js RPC で実行され getDb は呼ばれない', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: { success: true, deleted_count: 2 }, error: null })
-    mockAdminForDeactivate(rpc)
-
-    const response = await deactivatePost(createDeactivateRequest())
-
-    expect(response.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('deactivate_all_licenses', { p_twitch_user_id: 'twitch-user-123' })
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('pg 経路 正常系: 名前付き引数(text は無キャスト)で呼ばれ、レスポンス形状が postgrest 経路と一致する', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    const rpc = vi.fn()
-    mockAdminForDeactivate(rpc)
+  it('正常系: 名前付き引数（textは無キャスト）で呼ばれる', async () => {
     const sqlMock = createSqlMock([{ rows: [{ result: { success: true, deleted_count: 1 } }] }])
     primePgDb(sqlMock)
 
@@ -601,12 +432,9 @@ describe('deactivate_all_licenses (#573)', () => {
     expect(text).toContain('deactivate_all_licenses')
     expect(text).toContain('p_twitch_user_id => $')
     expect(values).toEqual(['twitch-user-123'])
-    expect(rpc).not.toHaveBeenCalled()
   })
 
   it('冪等リトライ: CONNECTION_CLOSED 後にリトライして成功する(idempotent:true — DELETEは空集合に収束するため)', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    mockAdminForDeactivate()
     const sqlMock = createSqlMock([
       { reject: pgError('CONNECTION_CLOSED', 'write CONNECTION_CLOSED') },
       { rows: [{ result: { success: true, deleted_count: 0 } }] },
@@ -621,9 +449,7 @@ describe('deactivate_all_licenses (#573)', () => {
     expect(sqlMock).toHaveBeenCalledTimes(2)
   })
 
-  it('pg 経路で RPC エラー: 既存と同じ 500 (handleApiError) を返す', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg')
-    mockAdminForDeactivate()
+  it('RPCエラーは500 (handleApiError) を返す', async () => {
     const sqlMock = createSqlMock([{ reject: pgError('XX000', 'unexpected database error') }])
     primePgDb(sqlMock)
 

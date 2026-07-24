@@ -22,19 +22,33 @@ import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { publishCommittedGachaBatch } from "@/lib/overlay-realtime/publisher";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
-import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
+import {
+  TwitchChatService,
+  DEFAULT_CHAT_TEMPLATE,
+  type ChatMessagePlaceholders,
+} from "@/lib/twitch/chat-service";
 import { cancelRedemption } from "@/lib/twitch/channel-points";
-import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
+
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolvePackDisplayName } from "@/lib/collection-packs";
 import { runInBackground } from "@/lib/background-task";
+import {
+  claimChatNotificationBatch,
+  decodeChatNotificationPayload,
+  deadLetterChatNotification,
+  markChatNotificationSent,
+  renewChatNotificationLease,
+  retryChatNotification,
+} from "@/lib/services/chat-notification-outbox";
+import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 export { runInBackground } from "@/lib/background-task";
-// #573/#803: チャット通知プレースホルダ、売り切れ設定取得ともPlanetScale固定。
-// 退役済みSupabase clientと旧driver secretの値には依存しない。
+// チャット通知プレースホルダと売り切れ設定を、ガチャ確定と同じPlanetScaleから
+// 読む。旧driver設定に関係なくこの単一経路を使う。
 import { getDb } from "@/lib/db/client";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { eq } from "drizzle-orm";
 import { streamers as streamersTable } from "@/lib/db/schema";
@@ -48,7 +62,7 @@ export const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = '@{user} が{draws}連ガチャ�
  * Error reporter自体が停止していても、既に確定したカード付与・ポイント返還・
  * EventSub 2xxを巻き戻してはならない。reportErrorは通常内部で失敗を吸収するが、
  * テストdoubleや将来の実装変更がrejectしても通知境界から漏らさないため、ここで
- * 最終防御する。console warnはDBを使わずCloudflare Observabilityへ残る。
+ * 最終防御する。warnはDBを使わずCloudflare Observabilityへ残る。
  */
 async function reportNotificationError(
   error: unknown,
@@ -191,10 +205,10 @@ export function findNewCardNamesForCurrentDraw(
 
     const currentDrawCount = drawnCounts.get(drawnCard.id) ?? 0;
     const previousCount = finalCount - currentDrawCount;
-    // legacy fallback で user_cards INSERT が失敗すると finalCount=0 のまま返り、
-    // previousCount が負値になって「初出」誤通知が発生する。
+    // 所持数の取得に失敗して finalCount=0 へ縮退すると、previousCount が負値になって
+    // 「初出」誤通知が発生し得る。
     // 「初出」と判定するには「いま実際に所持している（finalCount > 0）」必要がある。
-    // If legacy fallback INSERT fails, finalCount stays 0 while currentDrawCount > 0,
+    // If the count lookup falls back to zero, finalCount can be below currentDrawCount,
     // making previousCount negative. Treat as "new card" only when the user actually owns it.
     if (finalCount > 0 && previousCount <= 0) {
       newCardNames.push(drawnCard.name);
@@ -318,6 +332,18 @@ export interface RedemptionNotifyData {
   userId: string;
   /** gacha_history.event_id の1枚目と一致するEventSub message ID。 */
   batchId: string;
+  /**
+   * ガチャcommit時点の所有数系placeholder。outbox relayは再送時に現在値を
+   * 再問合せせず、このsnapshotから毎回同じ本文を生成する。
+   */
+  chatSnapshot?: ChatAnnouncementSnapshot;
+}
+
+export interface ChatAnnouncementSnapshot {
+  cardCount: number;
+  uniqueCount: number;
+  allCount: number;
+  newCardNames: string[];
 }
 
 /**
@@ -350,7 +376,99 @@ export interface RedemptionOutcome {
  * Post-redemption notifications (broadcast + chat) run after response via waitUntil().
  * broadcast and chat are independent, so execute in parallel with Promise.allSettled.
  */
-export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<void> {
+export async function postRedemptionNotify(
+  data: RedemptionNotifyData,
+  options: { externalSendDeadlineAt?: number } = {},
+): Promise<void> {
+  const chatTask = (async () => {
+    // chat無効時はexecute_gacha_transactionもoutboxを作らないためDB操作ゼロ。
+    if (!data.streamer.chat_announcement_enabled) return;
+
+    // outbox行はカード付与と同じDB transactionで既にcommit済み。ここでは短い
+    // owner-fenced claimだけを取得し、Cron/手動relayとの通常の二重送信を防ぐ。
+    const claim = await claimChatNotificationBatch(data.batchId);
+    if (!claim) return;
+
+    let deliveryStatePersisted = false;
+    try {
+      // DBにcommitされたversioned payloadを正本にする。メモリ上のdataはN連の
+      // 部分再開時に今回分しか含まない可能性があるため、claim後の配送には使わない。
+      const persistedData = decodeChatNotificationPayload(claim);
+      if (!persistedData) {
+        const persisted = await deadLetterChatNotification(
+          claim,
+          `transactional chat outbox payload v${claim.payloadVersion} is invalid`,
+        );
+        deliveryStatePersisted = true;
+        throw new Error(
+          persisted
+            ? 'Chat announcement payload moved to DLQ'
+            : 'Chat announcement payload DLQ update lost its lease',
+        );
+      }
+      const outcome = await sendChatAnnouncement(
+        persistedData.broadcasterTwitchUserId,
+        persistedData.streamer,
+        persistedData.gachaResult.card,
+        persistedData.gachaResult.userTwitchUsername,
+        persistedData.userId,
+        persistedData.gachaResult.cards,
+        persistedData.gachaResult.collectionName,
+        persistedData.chatSnapshot,
+        async () => {
+          // replay routeが期限切れで応答を返した後に、遅れて資格情報解決が完了しても
+          // Twitch送信を開始しない。期限内ならowner-fenced lease更新を最終送信許可にする。
+          if (
+            options.externalSendDeadlineAt !== undefined
+            && Date.now() >= options.externalSendDeadlineAt
+          ) {
+            return false;
+          }
+          const renewed = await renewChatNotificationLease(claim);
+          // renewのDB接続待ち中に開始期限を跨いだ場合も、外部送信は開始しない。
+          return renewed && (
+            options.externalSendDeadlineAt === undefined
+            || Date.now() < options.externalSendDeadlineAt
+          );
+        },
+      );
+      if (outcome.outcome === 'sent' || outcome.outcome === 'skipped') {
+        const persisted = await markChatNotificationSent(claim);
+        // Twitch送信とDB ackは同一transactionにできない。送信後にleaseを失って
+        // ackできなければ別relayが再送し得るため、成功として黙殺せず通知する。
+        deliveryStatePersisted = true;
+        if (!persisted) {
+          throw new Error('Chat announcement sent but outbox ack lost its lease');
+        }
+        return;
+      }
+      if (outcome.outcome === 'terminal') {
+        const persisted = await deadLetterChatNotification(claim, outcome.reason);
+        deliveryStatePersisted = true;
+        if (!persisted) {
+          throw new Error(`Chat announcement DLQ update lost its lease: ${outcome.reason}`);
+        }
+        throw new Error(`Chat announcement moved to DLQ: ${outcome.reason}`);
+      }
+      if (outcome.outcome === 'aborted') {
+        // leaseを失った（またはfence確認不能な）所有者は、新所有者の状態を
+        // pending/deadへ上書きしてはならない。現在のlease失効/新所有者へ委ねる。
+        deliveryStatePersisted = true;
+        throw new Error(`Chat announcement aborted: ${outcome.reason}`);
+      }
+      const retryState = await retryChatNotification(claim, outcome.reason);
+      deliveryStatePersisted = true;
+      throw new Error(`Chat announcement ${retryState}: ${outcome.reason}`);
+    } catch (error) {
+      // sendChatAnnouncement自体の予期しないthrowも一時障害として上限付き再試行へ戻す。
+      const reason = error instanceof Error ? error.message : String(error);
+      if (!deliveryStatePersisted) {
+        await retryChatNotification(claim, reason);
+      }
+      throw error;
+    }
+  })();
+
   const results = await Promise.allSettled([
     // Realtime通知: waitUntil内でもCPU時間は有限のためリトライを1回に制限
     publishCommittedGachaBatch(data.streamer.id, data.gachaResult, {
@@ -358,15 +476,7 @@ export async function postRedemptionNotify(data: RedemptionNotifyData): Promise<
       maxRetries: 1,
       retryDelay: 500,
     }),
-    sendChatAnnouncement(
-      data.broadcasterTwitchUserId,
-      data.streamer,
-      data.gachaResult.card,
-      data.gachaResult.userTwitchUsername,
-      data.userId,
-      data.gachaResult.cards,
-      data.gachaResult.collectionName
-    ),
+    chatTask,
   ]);
 
   // 通知失敗をログ出力 + エラー追跡
@@ -472,9 +582,8 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
   try {
     let streamer: { chat_announcement_enabled: boolean } | null = null;
     try {
-      // Sold-out redemptions use the same post-commit notification boundary as
-      // successful draws. Reading settings from PlanetScale here prevents the
-      // retired Supabase stub from also breaking point-refund notifications.
+      // Sold-out redemptionも成功時と同じpost-commit境界で扱う。設定読取を
+      // PlanetScaleへ固定し、退役済みSupabase経路がポイント返還通知を壊さないようにする。
       const rows = await withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -493,9 +602,8 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
         broadcasterTwitchUserId,
         error: error instanceof Error ? error.message : String(error),
       });
-      // Point refund has already been attempted, so monitoring failure must not
-      // turn the webhook into a retry storm. Persist the deployment/permission
-      // failure best-effort, then preserve the existing no-chat fallback.
+      // ポイント返還は既に試行済みなので、監視保存の失敗でWebhook retry stormを
+      // 起こさない。schema/接続障害をbest-effortで記録し、チャットだけ省略する。
       await reportNotificationError(error, {
         context: 'eventsub:postSoldOutNotify:streamerSettings',
         broadcasterTwitchUserId,
@@ -616,8 +724,8 @@ export async function handleRedemption(messageId: string, event: {
         });
         return { notify: null, retryable: false };
       }
-      // カード発行可能枚数の上限到達（本物のsoldOut）、またはRPC未デプロイに
-      // 起因するlegacyフォールバックの拒否(limitUnavailable、#594)。
+      // カード発行可能枚数の上限到達（本物のsoldOut）、または必須RPC未デプロイを
+      // fail-closedにした結果(limitUnavailable、#594)。
       // どちらの場合も視聴者は既にチャンネルポイントを消費済みでカードを
       // 受け取れていないため、Issue #544/#546 の返還・チャット通知は両方の
       // ケースで実施する。一方 limitUnavailable は「RPCが本来存在すべきなのに
@@ -727,7 +835,7 @@ export async function handleRedemption(messageId: string, event: {
     };
   } catch (error) {
     // awaitしないとCloudflare Workersがレスポンス返却後にPromiseを打ち切り、
-    // Supabaseへのエラー記録が失われる
+    // PlanetScaleへのエラー記録が失われる
     await handleApiError(error, `EventSub redemption (messageId=${messageId})`);
     // 予期しない例外を握りつぶした結果のため、再試行価値ありとして扱う。
     // Unexpected exception was swallowed here - treat as retryable.
@@ -737,26 +845,17 @@ export async function handleRedemption(messageId: string, event: {
 
 /**
  * sendChatAnnouncement の {num}/{unique}/{newCards} 用 get_user_card_counts RPC の
- * pg 直結(postgres.js)実装 (#573/#803)。Supabase admin clientは現在fail-closed
- * stubのため、EventSub成功後の通知経路もPlanetScaleへ固定する。
+ * pg 直結(postgres.js)実装 (#573/#803)。EventSub成功後の通知経路も
+ * PlanetScaleへ固定し、退役Supabase clientや旧driver secretに依存しない。
  *
- * PostgREST .rpc() と同一の { data, error } 形状へ正規化して返すことで、呼び出し側の
- * 既存分岐（error → logger.warn + プレースホルダを未定義のまま空文字化 / data →
- * 行配列の集計）を両経路で完全に共有する（gacha.ts executeGachaTransactionRpcPg と
- * 同じ「分岐は RPC 実行の1箇所だけ」の設計）。
+ * { data, error } 形状へ正規化し、呼び出し側でDB障害時もプレースホルダを
+ * 空文字化してチャット本文自体は送れるようにする。
  *
- * キャッシュ非依存性: 既存経路がここで getSupabaseAdminNoCache（Cloudflare fetch
- * キャッシュを無効化したクライアント）を使うのは、直前のガチャで増えた所持数を
- * 通知に正確に反映するため。pg 直結は HTTP 層を介さず毎回 PostgreSQL へ直接
- * クエリする（キャッシュ層が存在しない）ため、NoCache クライアントと同じ
- * 「常に最新を読む」性質が構造的に保たれる。
+ * キャッシュ非依存性: pg直結はHTTP cacheを介さず毎回PostgreSQLへ問い合わせる
+ * ため、直前のガチャで増えた所持数を常に最新状態から読む。
  *
- * エラー処理: 既存 postgrest 経路のこの呼び出しには 42883（RPC 未デプロイ）
- * フォールバックが無い（エラー種別を問わず warn ログ + プレースホルダ空文字化）。
- * よって pg 版でも 42883 を特別扱いせず、あらゆるエラーを { data: null, error }
- * に正規化して既存と同じ外部挙動にする — 既存にない保護を勝手に増やさない
- * (#573 の方針)。通知はカウント無しでも必ず送信されるため、ここでの失敗が
- * チャット通知全体を落とすことはない。
+ * エラー処理: 42883を含む全DBエラーを { data: null, error } へ正規化し、
+ * 呼び出し側がerrorsテーブルへ記録してからカウント無しで通知を継続する。
  *
  * migration 00031: RETURNS JSONB（{ count, card, streamer } の行配列）。スカラー
  * SELECT + rows[0].result で PostgREST .rpc() の data と同一形状になる（jsonb →
@@ -794,13 +893,10 @@ export async function fetchUserCardCountsRpcPg(
 }
 
 /**
- * チャット通知の `{all}` 用に、PlanetScale上のアクティブカード総数を取得する。
- *
- * 旧実装は退役済みSupabase admin stubから `.from('cards')` を呼び、テンプレートが
- * `{all}` を含む本番ガチャだけを同期的に失敗させていた。通知はガチャ確定後の処理
- * なので、読み取り失敗は既存契約どおりerror値へ正規化し、カード付与自体や他の
- * 通知処理を巻き戻さない。接続取得をretry callback内に置くことで一時切断だけを
- * bounded retryする。
+ * チャット通知の `{all}` 用にPlanetScale上のアクティブカード総数を取得する。
+ * 通知はガチャ確定後の処理なので、読取失敗はerror値へ正規化し、カード付与や
+ * EventSub応答を巻き戻さない。接続取得をretry callback内に置くことで、
+ * request scope破棄後の一時切断だけをbounded retryする。
  */
 async function fetchActiveCardCountPg(
   streamerId: string,
@@ -840,7 +936,16 @@ async function fetchActiveCardCountPg(
  * @param userId - ガチャを引いたユーザーのTwitch ID
  * @param cards - 複数枚ガチャ時の獲得カード一覧
  * @param collectionName - 抽選が絞られたパックの collection_name（無制限ガチャは null/undefined、Issue #597）
+ * @param snapshot - ガチャcommit時点の所有数系placeholder（outbox v1では必須）
+ * @param beforeExternalSend - 資格情報解決後・Twitch送信直前に行うowner fence
  */
+export type ChatAnnouncementOutcome =
+  | { outcome: 'sent' }
+  | { outcome: 'skipped' }
+  | { outcome: 'terminal'; reason: string }
+  | { outcome: 'retryable'; reason: string }
+  | { outcome: 'aborted'; reason: string };
+
 export async function sendChatAnnouncement(
   broadcasterTwitchUserId: string,
   streamer: {
@@ -855,8 +960,10 @@ export async function sendChatAnnouncement(
   userName: string,
   userId: string,
   cards?: GachaCard[],
-  collectionName?: string | null
-): Promise<void> {
+  collectionName?: string | null,
+  snapshot?: ChatAnnouncementSnapshot,
+  beforeExternalSend?: () => Promise<boolean>,
+): Promise<ChatAnnouncementOutcome> {
   const drawnCards = cards && cards.length > 0 ? cards : [card];
   const isMultiDraw = drawnCards.length > 1;
   const cardNames = drawnCards.map((drawnCard) => drawnCard.name);
@@ -882,7 +989,7 @@ export async function sendChatAnnouncement(
       broadcasterTwitchUserId,
       streamerId: streamer.id,
     });
-    return;
+    return { outcome: 'skipped' };
   }
 
   // レアリティの日本語/英語変換マップ
@@ -913,12 +1020,12 @@ export async function sendChatAnnouncement(
     && streamer.chat_announcement_multi_show_cards
     && (usesNewCardPlaceholders || shouldAppendDefaultNewCards);
 
-  let cardCount: number | undefined;
-  let uniqueCount: number | undefined;
-  let allCount: number | undefined;
-  let newCardNames: string[] = [];
+  let cardCount: number | undefined = snapshot?.cardCount;
+  let uniqueCount: number | undefined = snapshot?.uniqueCount;
+  let allCount: number | undefined = snapshot?.allCount;
+  let newCardNames: string[] = snapshot?.newCardNames ?? [];
 
-  if (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo) {
+  if (!snapshot && (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo)) {
     // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
     // {all}: count active cards for this streamer (user-independent)
     const allCountPromise = needsAllCount
@@ -926,24 +1033,23 @@ export async function sendChatAnnouncement(
       : null;
 
     // {num} / {unique} は RPC `get_user_card_counts` で DB 側 GROUP BY 済みの
-    // ユーザー所持カード一覧を取得して求める（PostgREST の行数制限を根本的に回避）
+    // ユーザー所持カード一覧を取得して求める（DB側集約で固定行数制限を回避）
     // is_active フィルタは RPC が行わないため、ここでは JS 側で行う
     // {num} / {unique}: use RPC returning pre-aggregated per-card counts.
-    // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
+    // The RPC handles GROUP BY server-side, avoiding client-side row caps.
     // RPC does not filter by is_active, so we filter on the client.
     //
-    // Supabase admin clientはfail-closed stubなので、環境に残る旧driver secretを
-    // 参照してはならない。直前のガチャ確定と同じPlanetScaleを直接読むことで、
-    // `{num}` / `{unique}` / `{newCards}`へ最新の所持数を反映する。
+    // Supabase admin clientは削除済みなので、環境に残る旧driver secretを参照せず
+    // 直前のガチャ確定と同じPlanetScaleから最新の所持数を読む。
     const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo)
       ? fetchUserCardCountsRpcPg(userId, streamer.id)
       : null;
 
     // transient な transport / runtime 例外が throw されるとチャット通知全体が
     // 飛んでしまうため、Promise.all を try/catch で囲みフォールバック挙動を担保する。
-    // PostgREST の `error` payload は下の if で個別にハンドリングする。
+    // 正規化済みの `error` payload は下の if で個別にハンドリングする。
     // Wrap the Promise.all so transient transport/runtime rejections don't abort
-    // the whole chat announcement. PostgREST `error` payloads are still handled below.
+    // the whole chat announcement. Normalized DB error payloads are handled below.
     try {
       const [allCountResult, userCardCountsResult] = await Promise.all([
         allCountPromise,
@@ -1106,9 +1212,21 @@ export async function sendChatAnnouncement(
     message = fitted.message;
   }
 
-  const success = await chatService.sendChatMessage(broadcasterTwitchUserId, message);
+  // 古いテストdoubleはsendChatMessageDetailedを実装しないためbooleanへ互換変換する。
+  // 本番classは必ず分類付きAPIを持ち、恒久失敗を無限再試行しない。
+  const outcome = typeof chatService.sendChatMessageDetailed === 'function'
+    ? beforeExternalSend
+      ? await chatService.sendChatMessageDetailed(
+          broadcasterTwitchUserId,
+          message,
+          { beforeExternalSend },
+        )
+      : await chatService.sendChatMessageDetailed(broadcasterTwitchUserId, message)
+    : (await chatService.sendChatMessage(broadcasterTwitchUserId, message))
+      ? { outcome: 'sent' as const }
+      : { outcome: 'retryable' as const, reason: 'chat send failed' };
 
-  if (success) {
+  if (outcome.outcome === 'sent') {
     logger.info('Chat announcement sent', {
       broadcasterTwitchUserId,
       streamerId: streamer.id,
@@ -1127,4 +1245,5 @@ export async function sendChatAnnouncement(
       multiDraw: isMultiDraw,
     });
   }
+  return outcome;
 }

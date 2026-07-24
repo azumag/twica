@@ -1,5 +1,5 @@
 import { getEnvVar } from '@/lib/env-validation'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import { AUTH_SCOPES } from './scopes'
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
@@ -14,6 +14,11 @@ const REFRESH_RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504, 522, 5
 const MAX_REFRESH_ATTEMPTS = 3
 const MAX_RETRY_AFTER_MS = 2_000
 const RETRY_BASE_DELAY_MS = 100
+// EventSubのwaitUntilはtoken refresh後のDB保存とchat送信まで30秒内に終える必要が
+// ある。各試行3秒 × 最大3回にRetry-After待機（最大2秒 × 2回）が加わっても
+// refresh全体は13秒以内となる。timeout無しのfetchはlease期限後も生存し、旧leader
+// と新leaderが同じrefresh tokenを同時交換し得るため禁止する。
+const TWITCH_TOKEN_REQUEST_TIMEOUT_MS = 3_000
 
 type RetryAfter = { kind: 'missing' | 'invalid' } | { kind: 'valid'; delayMs: number }
 
@@ -163,6 +168,7 @@ async function postRefreshToken(body: URLSearchParams): Promise<Response> {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body,
+        signal: AbortSignal.timeout(TWITCH_TOKEN_REQUEST_TIMEOUT_MS),
       })
       if (response.ok || !REFRESH_RETRYABLE_STATUSES.has(response.status) || attempt === MAX_REFRESH_ATTEMPTS - 1) {
         return response

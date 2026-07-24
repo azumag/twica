@@ -1,7 +1,7 @@
 /**
  * #788 子C #791: GET /api/auth/twitch/callback の
  *   1. channel_points_enabled フラグのセッションcookieへのミラーリング
- *      （postgrest / pg 直結の両経路、列未デプロイ時のフォールバック含む）
+ *      （PlanetScale/Drizzle 経路、列未デプロイ時のフォールバック含む）
  *   2. step-up再認証（isReauthFlow）直後・channel-pointsスコープ取得時のみ実行される
  *      Capability Probe の自動実行条件
  * に絞ったテスト。
@@ -146,56 +146,6 @@ function createPgDbMock(
   return db
 }
 
-/**
- * postgrest 経路 (supabase-js) のモック。driver-parity.test.ts の
- * createSupabaseCallbackMock は select 呼び出し順で判定するが、上記と同じ理由で
- * select() に渡された列名文字列で判定する方式に変更している。
- */
-function createSupabaseCallbackMock(
-  options: {
-    existingScopes?: string[] | null
-    tosAcceptedAt?: string | null
-    channelPointsEnabled?: boolean | null
-    channelPointsSelectError?: { code?: string; message: string } | null
-  } = {}
-) {
-  const {
-    existingScopes = null,
-    tosAcceptedAt = '2024-01-01',
-    channelPointsEnabled = false,
-    channelPointsSelectError = null,
-  } = options
-
-  const select = vi.fn((columns: string) => {
-    const eq = vi.fn(() => ({
-      maybeSingle: vi.fn(() => {
-        if (columns.includes('twitch_scopes')) {
-          return Promise.resolve({
-            data: existingScopes !== null ? { twitch_scopes: existingScopes } : null,
-            error: null,
-          })
-        }
-        if (columns.includes('channel_points_enabled')) {
-          if (channelPointsSelectError) {
-            return Promise.resolve({ data: null, error: channelPointsSelectError })
-          }
-          return Promise.resolve({
-            data: channelPointsEnabled !== null ? { channel_points_enabled: channelPointsEnabled } : null,
-            error: null,
-          })
-        }
-        if (columns.includes('tos_accepted_at')) {
-          return Promise.resolve({ data: { tos_accepted_at: tosAcceptedAt }, error: null })
-        }
-        return Promise.resolve({ data: null, error: null })
-      }),
-    }))
-    return { eq }
-  })
-  const upsert = vi.fn().mockResolvedValue({ error: null })
-  return { from: vi.fn(() => ({ select, upsert })) }
-}
-
 describe('GET /api/auth/twitch/callback: channel_points_enabled セッションミラーリング & step-up再認証Capability Probe (#788 子C #791)', () => {
   let exchangeCodeForTokens: ReturnType<typeof vi.fn>
   let getTwitchUser: ReturnType<typeof vi.fn>
@@ -229,6 +179,7 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
       profile_image_url: 'https://example.com/avatar.png',
       broadcaster_type: 'affiliate',
     })
+    vi.mocked(getDb).mockResolvedValue({ db: createPgDbMock(), sql: {} } as any)
   })
 
   afterEach(() => {
@@ -254,8 +205,7 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
   }
 
   describe('channel_points_enabled フラグのセッション反映', () => {
-    it('DB_DRIVER=pg: channel_points_enabled列が未デプロイ(42703相当)でもログインは成功し、channelPointsEnabledはfalseにフォールバックする', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('channel_points_enabled列が未デプロイ(42703)でもログインは成功し、channelPointsEnabledはfalseにフォールバックする', async () => {
       // 42703 = undefined_column（postgres.js が投げるSQLSTATE形状のエラーを模擬）
       const missingColumnError = Object.assign(new Error('column "channel_points_enabled" does not exist'), {
         code: '42703',
@@ -272,24 +222,7 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
       expect(sessionData.channelPointsEnabled).toBe(false)
     })
 
-    it('postgrest経路: channel_points_enabled列が未デプロイ(PGRST204相当)でもログインは成功し、channelPointsEnabledはfalseにフォールバックする', async () => {
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        createSupabaseCallbackMock({
-          channelPointsSelectError: { code: 'PGRST204', message: "column 'channel_points_enabled' does not exist" },
-        }) as any
-      )
-
-      const { GET } = await import('@/app/api/auth/twitch/callback/route')
-      const response = await GET(createCallbackRequest())
-
-      expect(mockHandleAuthError).not.toHaveBeenCalled()
-      const sessionData = await runAndGetSessionData(response)
-      expect(sessionData.channelPointsEnabled).toBe(false)
-    })
-
-    it('DB_DRIVER=pg: channel_points_enabled=trueのとき、セッションのchannelPointsEnabledはtrue', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('PlanetScale上でchannel_points_enabled=trueのとき、セッションのchannelPointsEnabledはtrue', async () => {
       const db = createPgDbMock({ channelPointsEnabled: true })
       vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
 
@@ -300,20 +233,11 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
       expect(sessionData.channelPointsEnabled).toBe(true)
     })
 
-    it('postgrest経路: channel_points_enabled=trueのとき、セッションのchannelPointsEnabledはtrue', async () => {
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock({ channelPointsEnabled: true }) as any)
-
-      const { GET } = await import('@/app/api/auth/twitch/callback/route')
-      const response = await GET(createCallbackRequest())
-
-      const sessionData = await runAndGetSessionData(response)
-      expect(sessionData.channelPointsEnabled).toBe(true)
-    })
-
-    it('postgrest経路: channel_points_enabled=falseのとき、セッションのchannelPointsEnabledはfalse', async () => {
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock({ channelPointsEnabled: false }) as any)
+    it('PlanetScale上でchannel_points_enabled=falseのとき、セッションのchannelPointsEnabledはfalse', async () => {
+      vi.mocked(getDb).mockResolvedValue({
+        db: createPgDbMock({ channelPointsEnabled: false }),
+        sql: {},
+      } as any)
 
       const { GET } = await import('@/app/api/auth/twitch/callback/route')
       const response = await GET(createCallbackRequest())
@@ -333,9 +257,6 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
         token_type: 'bearer',
         scope: ['user:read:email', ADDITIONAL_SCOPES.CHANNEL_READ_REDEMPTIONS],
       })
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock() as any)
-
       const { GET } = await import('@/app/api/auth/twitch/callback/route')
       await GET(createCallbackRequest())
 
@@ -358,9 +279,6 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
         definitive: true,
       }
       mockProbeChannelPointsCapability.mockResolvedValue(definitiveResult)
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock() as any)
-
       const { GET } = await import('@/app/api/auth/twitch/callback/route')
       await GET(createCallbackRequest())
 
@@ -383,9 +301,6 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
         httpStatus: 200,
         definitive: true,
       })
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock() as any)
-
       const { GET } = await import('@/app/api/auth/twitch/callback/route')
       await GET(createCallbackRequest())
 
@@ -401,9 +316,6 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
         token_type: 'bearer',
         scope: ['user:read:subscriptions'],
       })
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock() as any)
-
       const { GET } = await import('@/app/api/auth/twitch/callback/route')
       await GET(createCallbackRequest())
 
@@ -425,9 +337,6 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
         httpStatus: 429,
         definitive: false,
       })
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock() as any)
-
       const { GET } = await import('@/app/api/auth/twitch/callback/route')
       const response = await GET(createCallbackRequest())
 
@@ -447,9 +356,6 @@ describe('GET /api/auth/twitch/callback: channel_points_enabled セッション�
         scope: ['user:read:email', ADDITIONAL_SCOPES.CHANNEL_READ_REDEMPTIONS],
       })
       mockProbeChannelPointsCapability.mockRejectedValue(new Error('network down'))
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(createSupabaseCallbackMock() as any)
-
       const { GET } = await import('@/app/api/auth/twitch/callback/route')
       const response = await GET(createCallbackRequest())
 

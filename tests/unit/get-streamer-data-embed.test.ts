@@ -1,49 +1,63 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { getStreamerData } from "@/lib/dashboard-data";
+/**
+ * cards.streamer_id の外部キー関係が、
+ * #803後もDrizzle LEFT JOINとして明示されることを確認する回帰テスト。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { getStreamerData } from '@/lib/dashboard-data'
+import { getDb } from '@/lib/db/client'
+import {
+  cards as cardsTable,
+  streamers as streamersTable,
+} from '@/lib/db/schema'
 
-vi.mock("@/lib/supabase/admin", () => ({
-  getSupabaseAdmin: vi.fn(),
-}));
-
-vi.mock("@/lib/logger", () => ({
+vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+}))
+vi.mock('react', async () => {
+  const actual = await vi.importActual<typeof import('react')>('react')
+  return { ...actual, cache: (fn: unknown) => fn }
+})
 
-vi.mock("react", async () => {
-  const actual = await vi.importActual<typeof import("react")>("react");
-  return { ...actual, cache: (fn: unknown) => fn };
-});
-
-vi.mock("@/lib/card-utils", () => ({
-  normalizeDropRate: (cards: unknown[]) => cards,
-}));
-
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
-
-describe("getStreamerData streamers->cards embed", () => {
+describe('getStreamerData streamers -> cards JOIN', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-  });
+    vi.clearAllMocks()
+  })
 
-  // Regression guard for PGRST201: migration 00051 added card_owner_stats which
-  // references both streamers and cards, making an un-hinted `cards (*)` embed
-  // ambiguous. The query must pin the relationship to the cards.streamer_id FK
-  // so card management / settings pages keep loading for affiliates/partners.
-  it("disambiguates the cards embed via the streamer_id foreign key constraint", async () => {
-    const maybeSingle = vi
-      .fn()
-      .mockResolvedValue({ data: { id: "s-1", cards: [] }, error: null });
-    const eq = vi.fn().mockReturnValue({ maybeSingle });
-    const select = vi.fn().mockReturnValue({ eq });
-    const from = vi.fn().mockReturnValue({ select });
-    mockGetSupabaseAdmin.mockReturnValue({ from } as never);
+  it('cards.streamer_id 関係をLEFT JOINし、1クエリでstreamerとcardsを返す', async () => {
+    const rows = [{
+      streamer: {
+        id: 's-1',
+        twitch_user_id: 'twitch-1',
+        twitch_username: 'streamer',
+        twitch_display_name: 'Streamer',
+      },
+      card: null,
+    }]
+    const where = vi.fn().mockResolvedValue(rows)
+    // vi.fn の引数型を明示し、呼び出し履歴を空 tuple と推論させない。
+    // 第2引数は Drizzle の ON 条件であり、この回帰テストでは第1引数だけを検証する。
+    const leftJoin = vi.fn<
+      (_table: unknown, _on: unknown) => { where: typeof where }
+    >(() => ({ where }))
+    const from = vi.fn(() => ({ leftJoin }))
+    const select = vi.fn(() => ({ from }))
+    vi.mocked(getDb).mockResolvedValue({
+      db: { select },
+      sql: {},
+    } as any)
 
-    await getStreamerData("twitch-1");
+    const result = await getStreamerData('twitch-1')
 
-    expect(from).toHaveBeenCalledWith("streamers");
-    const selectArg = select.mock.calls[0][0] as string;
-    expect(selectArg).toContain("cards!cards_streamer_id_fkey (*)");
-    expect(selectArg).not.toMatch(/(^|\s)cards \(\*\)/);
-  });
-});
+    expect(select).toHaveBeenCalledWith({
+      streamer: streamersTable,
+      card: cardsTable,
+    })
+    expect(from).toHaveBeenCalledWith(streamersTable)
+    expect(leftJoin).toHaveBeenCalledOnce()
+    expect(leftJoin.mock.calls[0][0]).toBe(cardsTable)
+    expect(result).toEqual({
+      streamer: rows[0].streamer,
+      cards: [],
+    })
+  })
+})

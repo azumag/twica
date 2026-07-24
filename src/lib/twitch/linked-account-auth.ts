@@ -1,23 +1,23 @@
 import { NextResponse } from 'next/server'
 
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError } from '@/lib/twitch/auth'
 import type { TwitchTokens, TwitchUser } from '@/lib/twitch/auth'
+
 import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { COOKIE_NAMES, ERROR_MESSAGES } from '@/lib/constants'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 // -----------------------------------------------------------------------------
 // #572 (#570 パイロット踏襲): pg 直結経路。
 // handleLinkedAccountCallback の DB アクセス（streamers 読み取り +
 // twitch_bot_accounts の update/insert + streamer_chat_sender_settings の upsert）
-// は書き込みを含む一連の処理のため、isPgWriteEnabled() で DB アクセス全体を分岐
-// する（token-manager.ts 冒頭のフラグ使い分け方針と同じ）。既存 supabase-js 実装は
-// 1 文字も変えず（else 節への再インデントのみ）、フラグ未設定時は従来どおり動く。
+// は書き込みを含む一連の処理のため、DB アクセス全体を PlanetScale へ統一する。
+// 読み取りと書き込みの接続先を分けないことで、リンク状態の整合性を保つ。
 // -----------------------------------------------------------------------------
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import {
   streamers as streamersTable,
@@ -38,7 +38,7 @@ function redirectToSettings(baseUrl: string, params: Record<string, string>) {
  * 外部挙動。DB エラーをここで throw すると呼び出し元の外側 catch により
  * 'bot_auth_failed' という別のエラー種別に化けてしまうため、必ず値で返す）。
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - streamers / 既存 BOT アカウントの .maybeSingle() は一意条件
  *   （streamers.twitch_user_id UNIQUE (00001) / twitch_bot_accounts の部分一意
  *   インデックス idx_twitch_bot_accounts_streamer_owner (00040): (streamer_id,
@@ -97,8 +97,7 @@ async function persistLinkedAccountPg(params: {
   // withDbRetry の queryFn（closure）から参照するため const に固定する
   const streamerId = streamer.id
 
-  // 既存 postgrest 経路の botAccountFields と同一内容（既存コード無変更の要件上、
-  // pg 経路側で独立に組み立てる）
+  // BOT資格情報を一つのオブジェクトへ固定し、作成・更新の両経路で列のずれを防ぐ。
   const botAccountFields = {
     twitch_user_id: botUser.id,
     twitch_username: botUser.login,
@@ -106,6 +105,10 @@ async function persistLinkedAccountPg(params: {
     twitch_access_token: tokens.access_token,
     twitch_refresh_token: tokens.refresh_token,
     twitch_token_expires_at: expiresAt.toISOString(),
+    // BOT再連携callbackは既存credentialを置換するため、旧refresh leaderの
+    // fencing tokenも同時に破棄する。
+    twitch_refresh_lease_id: null,
+    twitch_refresh_lease_expires_at: null,
     scopes: tokens.scope ?? [],
     status: 'active',
     last_error: null,
@@ -188,8 +191,8 @@ async function persistLinkedAccountPg(params: {
   }
 
   if (!botAccountId) {
-    // 既存経路の .single() は 0 行時に PGRST116 エラー → database_error になる。
-    // update 対象行の消失（並行削除）等の希少ケースでも同じ外部挙動に合わせる。
+    // RETURNING が0行なら更新対象が並行削除された可能性があるため
+    // database_error とし、保存成功を誤って返さない。
     logger.error('Linked account callback: failed to save linked account', {
       twitchUserId: streamerTwitchUserId,
       linkedTwitchUserId,
@@ -266,107 +269,15 @@ export async function handleLinkedAccountCallback({
 
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
 
-    // #572: DB 永続化（書き込みを含む一連の処理）のみをフラグで分岐する。
-    // フラグ未設定（既定 'postgrest'）時は else 節の既存 supabase-js 実装が
-    // そのまま実行され、挙動は完全に不変（1 文字も変更していない。再インデントのみ）。
-    if (isPgWriteEnabled()) {
-      const pgBotError = await persistLinkedAccountPg({
-        streamerTwitchUserId: session.twitchUserId,
-        botUser,
-        tokens,
-        expiresAt,
-      })
-      if (pgBotError) {
-        return redirectToSettings(baseUrl, { bot_error: pgBotError })
-      }
-    } else {
-      const supabaseAdmin = getSupabaseAdmin()
-
-      const { data: streamer, error: streamerError } = await supabaseAdmin
-        .from('streamers')
-        .select('id')
-        .eq('twitch_user_id', session.twitchUserId)
-        .maybeSingle()
-
-      if (streamerError || !streamer) {
-        logger.error('Linked account callback: failed to find streamer', {
-          twitchUserId: session.twitchUserId,
-          linkedTwitchUserId: botUser.id,
-          error: streamerError,
-        })
-        return redirectToSettings(baseUrl, { bot_error: 'database_error' })
-      }
-
-      const botAccountFields = {
-        twitch_user_id: botUser.id,
-        twitch_username: botUser.login,
-        twitch_display_name: botUser.display_name,
-        twitch_access_token: tokens.access_token,
-        twitch_refresh_token: tokens.refresh_token,
-        twitch_token_expires_at: expiresAt.toISOString(),
-        scopes: tokens.scope ?? [],
-        status: 'active',
-        last_error: null,
-      }
-
-      const { data: existingBotAccount, error: existingBotError } = await supabaseAdmin
-        .from('twitch_bot_accounts')
-        .select('id')
-        .eq('owner_type', 'streamer')
-        .eq('streamer_id', streamer.id)
-        .maybeSingle()
-
-      if (existingBotError) {
-        logger.error('Linked account callback: failed to fetch existing linked account', {
-          twitchUserId: session.twitchUserId,
-          linkedTwitchUserId: botUser.id,
-          error: existingBotError,
-        })
-        return redirectToSettings(baseUrl, { bot_error: 'database_error' })
-      }
-
-      const botAccountResult = existingBotAccount
-        ? await supabaseAdmin
-            .from('twitch_bot_accounts')
-            .update(botAccountFields)
-            .eq('id', existingBotAccount.id)
-            .select('id')
-            .single()
-        : await supabaseAdmin
-            .from('twitch_bot_accounts')
-            .insert({
-              ...botAccountFields,
-              owner_type: 'streamer',
-              streamer_id: streamer.id,
-            })
-            .select('id')
-            .single()
-
-      if (botAccountResult.error) {
-        logger.error('Linked account callback: failed to save linked account', {
-          twitchUserId: session.twitchUserId,
-          linkedTwitchUserId: botUser.id,
-          error: botAccountResult.error,
-        })
-        return redirectToSettings(baseUrl, { bot_error: 'database_error' })
-      }
-
-      const { error: senderSettingsError } = await supabaseAdmin
-        .from('streamer_chat_sender_settings')
-        .upsert({
-          streamer_id: streamer.id,
-          sender_mode: 'custom_bot',
-          custom_bot_account_id: botAccountResult.data.id,
-        })
-
-      if (senderSettingsError) {
-        logger.error('Linked account callback: failed to save chat sender settings', {
-          twitchUserId: session.twitchUserId,
-          linkedTwitchUserId: botUser.id,
-          error: senderSettingsError,
-        })
-        return redirectToSettings(baseUrl, { bot_error: 'database_error' })
-      }
+    // DB 永続化（書き込みを含む一連の処理）は PlanetScale の単一接続で実行する。
+    const pgBotError = await persistLinkedAccountPg({
+      streamerTwitchUserId: session.twitchUserId,
+      botUser,
+      tokens,
+      expiresAt,
+    })
+    if (pgBotError) {
+      return redirectToSettings(baseUrl, { bot_error: pgBotError })
     }
 
     logger.info('Linked account connected for chat announcements', {

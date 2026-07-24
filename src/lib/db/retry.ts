@@ -1,10 +1,8 @@
 /**
  * pg ドライバ (postgres.js + Drizzle) 用リトライユーティリティ (#570)
  *
- * 既存の src/lib/supabase/retry.ts（PostgREST の { data, error } 応答向け）の
- * pg ドライバ版。postgres.js はエラーを throw するため、こちらは throw された
- * エラーを分類してリトライする。バックオフ遅延は既存 retry.ts と同じ
- * [100, 300, 1000] ms に揃える（両経路で障害時の挙動を比較しやすくするため）。
+ * postgres.js はエラーを throw するため、throw されたエラーを分類して
+ * リトライする。既定のバックオフ遅延は [100, 300, 1000] ms。
  *
  * 重要な規約: リトライ対象の queryFn は「中で getDb() を呼ぶ」こと。
  * Cloudflare Workers ではクライアント（TCP ソケット）がリクエストスコープに
@@ -19,7 +17,7 @@
  *   }, 'context', { idempotent: true })
  */
 
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import { getErrorChain, getSqlState } from './errors'
 
 interface DbRetryOptions {
@@ -29,7 +27,7 @@ interface DbRetryOptions {
    */
   idempotent?: boolean
   maxRetries?: number
-  /** バックオフ遅延（ミリ秒）: 既定 [100, 300, 1000]（supabase/retry.ts と同一） */
+  /** バックオフ遅延（ミリ秒）: 既定 [100, 300, 1000] */
   delays?: number[]
 }
 
@@ -166,8 +164,8 @@ export async function withDbRetry<T>(
       }
 
       const delay = delays[Math.min(attempt, delays.length - 1)]
-      // ログ形式は supabase/retry.ts に合わせる。context の [db:pg] プレフィックスは
-      // 新経路（pg 直結）のログだけを wrangler tail 等で抽出するための観測用タグ。
+      // context の [db:pg] プレフィックスは PlanetScale 経路のログだけを
+      // wrangler tail 等で抽出するための観測用タグ。
       logger.warn(
         `[DB Retry] [db:pg] ${context} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms`,
         {

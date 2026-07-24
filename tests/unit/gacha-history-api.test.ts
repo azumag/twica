@@ -3,19 +3,16 @@ import { NextRequest } from "next/server";
 import { GET } from "@/app/api/gacha-history/route";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
-  createMockQueryBuilder,
-  createMockResponse,
-} from "../utils/supabase-mock";
+  getGachaHistoryForStreamer,
+  getGachaHistoryForUser,
+} from "@/lib/dashboard-data";
+import { getDb } from "@/lib/db/client";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
+vi.mock("@/lib/dashboard-data");
+vi.mock("@/lib/db/client", () => ({ getDb: vi.fn() }));
 vi.mock("@/lib/sentry/error-handler", () => ({
   reportError: vi.fn(),
   reportApiError: vi.fn(),
@@ -33,7 +30,17 @@ vi.mock("@/lib/constants", async (importOriginal) => {
 const mockGetSession = vi.mocked(getSession);
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
+const mockGetGachaHistoryForStreamer = vi.mocked(getGachaHistoryForStreamer);
+const mockGetGachaHistoryForUser = vi.mocked(getGachaHistoryForUser);
+
+function primeStreamerLookup(rows: Array<{ id: string }>) {
+  const limit = vi.fn().mockResolvedValue(rows);
+  const where = vi.fn(() => ({ limit }));
+  const from = vi.fn(() => ({ where }));
+  const select = vi.fn(() => ({ from }));
+  vi.mocked(getDb).mockResolvedValue({ db: { select }, sql: {} } as never);
+  return { select, from, where, limit };
+}
 
 function createRequest(params: Record<string, string> = {}): NextRequest {
   const url = new URL("http://localhost/api/gacha-history");
@@ -95,9 +102,6 @@ describe("GET /api/gacha-history", () => {
     mockGetSession.mockResolvedValue(session);
     mockCanUseStreamerFeatures.mockReturnValue(false);
 
-    // Mock gacha_history query for viewer
-    // 視聴者向けガチャ履歴クエリのモック
-    const historyQuery = createMockQueryBuilder();
     const historyData = [
       {
         id: "h1",
@@ -109,23 +113,10 @@ describe("GET /api/gacha-history", () => {
         cards: { id: "c1", name: "Card1", rarity: "common", image_url: null },
       },
     ];
-    const historyResponse = {
-      data: historyData,
-      error: null,
-      count: 1,
-    };
-    // Make query thenable for implicit await
-    // 暗黙のawait用にthenableに設定
-    (historyQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve(historyResponse);
-      return historyQuery;
-    };
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => historyQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+    mockGetGachaHistoryForUser.mockResolvedValue({
+      history: historyData,
+      pagination: { page: 1, perPage: 20, total: 1, totalPages: 1 },
+    } as never);
 
     const res = await GET(createRequest());
     expect(res.status).toBe(200);
@@ -133,6 +124,10 @@ describe("GET /api/gacha-history", () => {
     const body = await res.json();
     expect(body.history).toHaveLength(1);
     expect(body.pagination.total).toBe(1);
+    expect(mockGetGachaHistoryForUser).toHaveBeenCalledWith("viewer1", {
+      page: 1,
+      perPage: 20,
+    });
   });
 
   it("returns streamer gacha history with filters", async () => {
@@ -148,32 +143,11 @@ describe("GET /api/gacha-history", () => {
     mockGetSession.mockResolvedValue(session);
     mockCanUseStreamerFeatures.mockReturnValue(true);
 
-    // Streamer lookup + history query
-    // 配信者検索 + 履歴クエリ
-    const streamerQuery = createMockQueryBuilder();
-    (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
-      createMockResponse({ id: "streamer-id-1" })
-    );
-
-    const historyQuery = createMockQueryBuilder();
-    const historyResponse = {
-      data: [],
-      error: null,
-      count: 0,
-    };
-    (historyQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve(historyResponse);
-      return historyQuery;
-    };
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === "streamers") return streamerQuery;
-        return historyQuery;
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+    primeStreamerLookup([{ id: "streamer-id-1" }]);
+    mockGetGachaHistoryForStreamer.mockResolvedValue({
+      history: [],
+      pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
+    } as never);
 
     const res = await GET(
       createRequest({ username: "test", rarity: "epic", page: "1" })
@@ -183,6 +157,10 @@ describe("GET /api/gacha-history", () => {
     const body = await res.json();
     expect(body.history).toHaveLength(0);
     expect(body.pagination.total).toBe(0);
+    expect(mockGetGachaHistoryForStreamer).toHaveBeenCalledWith(
+      "streamer-id-1",
+      expect.objectContaining({ username: "test", rarity: "epic", page: 1 }),
+    );
   });
 
   it("returns personal history for streamer with view=personal", async () => {
@@ -198,11 +176,8 @@ describe("GET /api/gacha-history", () => {
     mockGetSession.mockResolvedValue(session);
     mockCanUseStreamerFeatures.mockReturnValue(true);
 
-    // Should use getGachaHistoryForUser path (no streamer lookup needed)
-    // getGachaHistoryForUser パスを使用する（配信者検索は不要）
-    const historyQuery = createMockQueryBuilder();
-    const historyResponse = {
-      data: [
+    mockGetGachaHistoryForUser.mockResolvedValue({
+      history: [
         {
           id: "h1",
           user_twitch_id: "streamer1",
@@ -213,19 +188,8 @@ describe("GET /api/gacha-history", () => {
           cards: { id: "c1", name: "Card1", rarity: "rare", image_url: null },
         },
       ],
-      error: null,
-      count: 1,
-    };
-    (historyQuery as unknown as Record<string, unknown>).then = (
-      resolve: (value: unknown) => void
-    ) => {
-      resolve(historyResponse);
-      return historyQuery;
-    };
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => historyQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+      pagination: { page: 1, perPage: 20, total: 1, totalPages: 1 },
+    } as never);
 
     const res = await GET(createRequest({ view: "personal" }));
     expect(res.status).toBe(200);
@@ -233,6 +197,7 @@ describe("GET /api/gacha-history", () => {
     const body = await res.json();
     expect(body.history).toHaveLength(1);
     expect(body.pagination.total).toBe(1);
+    expect(getDb).not.toHaveBeenCalled();
   });
 
   it("returns 404 when streamer not found", async () => {
@@ -248,14 +213,7 @@ describe("GET /api/gacha-history", () => {
     mockGetSession.mockResolvedValue(session);
     mockCanUseStreamerFeatures.mockReturnValue(true);
 
-    const streamerQuery = createMockQueryBuilder();
-    (streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
-      createMockResponse(null)
-    );
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => streamerQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>);
+    primeStreamerLookup([]);
 
     const res = await GET(createRequest());
     expect(res.status).toBe(404);

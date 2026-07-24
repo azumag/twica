@@ -1,21 +1,18 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { validateCSRFToken } from '@/lib/csrf'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { getUserPlan } from '@/lib/plan'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { handleApiError } from '@/lib/error-handler'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import type { ApiRateLimitResponse } from '@/types/api'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgWriteEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import {
   supportInquiries as supportInquiriesTable,
@@ -45,10 +42,8 @@ type AddInquiryMessagePgResult =
  *
  * 読み取り（所有権 + status チェック）と書き込み（メッセージ INSERT）が混在する
  * ハンドラのため、token-manager.ts の getBotAccountForChatPg と同じ流儀で
- * 関数全体を isPgWriteEnabled() 一括分岐にする（呼び出し元は
  * この関数の中だけで完結する結果を受け取り、そのままレスポンスを組み立てる）。
  *
- * PostgREST 実装との対応:
  * - 問い合わせの存在確認 + 所有権チェックは `.single()` 相当（id が PK のため
  *   LIMIT 1 + rows[0] ?? null）。0 行なら 'not_found'。
  * - status が 'closed' なら 'closed'。
@@ -187,61 +182,20 @@ export async function POST(
     }
 
     // #663: 読み取り（所有権/status チェック）と書き込み（メッセージ INSERT）が
-    // 混在するハンドラのため isPgWriteEnabled() で「関数全体」を分岐する
     // （token-manager.ts の getBotAccountForChat と同じ方針）。
-    if (isPgWriteEnabled()) {
-      const result = await addInquiryMessagePg(id, session.twitchUserId, messageBody.trim())
+    const result = await addInquiryMessagePg(id, session.twitchUserId, messageBody.trim())
 
-      if (result.outcome === 'not_found') {
-        return NextResponse.json({ error: ERROR_MESSAGES.INQUIRY_NOT_FOUND }, { status: 404 })
-      }
-      if (result.outcome === 'closed') {
-        return NextResponse.json({ error: ERROR_MESSAGES.INQUIRY_CLOSED }, { status: 400 })
-      }
-      if (result.outcome === 'error') {
-        return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
-      }
-
-      return NextResponse.json({ message: result.message }, { status: 201 })
-    }
-
-    const supabase = getSupabaseAdmin()
-
-    // 問い合わせの存在確認と所有権チェック
-    const { data: inquiry, error: inquiryError } = await supabase
-      .from('support_inquiries')
-      .select('id, status, twitch_user_id')
-      .eq('id', id)
-      .eq('twitch_user_id', session.twitchUserId)
-      .single()
-
-    if (inquiryError || !inquiry) {
+    if (result.outcome === 'not_found') {
       return NextResponse.json({ error: ERROR_MESSAGES.INQUIRY_NOT_FOUND }, { status: 404 })
     }
-
-    // closedステータスの問い合わせには返信不可
-    if (inquiry.status === 'closed') {
+    if (result.outcome === 'closed') {
       return NextResponse.json({ error: ERROR_MESSAGES.INQUIRY_CLOSED }, { status: 400 })
     }
-
-    // メッセージ追加
-    const { data: message, error: messageError } = await supabase
-      .from('support_inquiry_messages')
-      .insert({
-        inquiry_id: id,
-        sender_type: 'user',
-        sender_id: session.twitchUserId,
-        body: messageBody.trim(),
-      })
-      .select('id, inquiry_id, sender_type, sender_id, body, created_at')
-      .single()
-
-    if (messageError) {
-      logger.error('Failed to add inquiry message', { error: messageError.message })
+    if (result.outcome === 'error') {
       return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
     }
 
-    return NextResponse.json({ message }, { status: 201 })
+    return NextResponse.json({ message: result.message }, { status: 201 })
   } catch (error) {
     return handleApiError(error, 'POST /api/support-inquiries/[id]/messages')
   }

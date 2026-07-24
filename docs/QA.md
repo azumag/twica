@@ -1,215 +1,102 @@
-# QA結果
+# 現行 QA
 
-## 実施日時
-2026-01-19 22:26
+## 通常ゲート
 
-## 設計仕様との一致
-**一部不完全**
-
-### 実装内容の確認
-
-| 項目 | 設計書 | 実装 | 状態 |
-|------|--------|------|------|
-| TwitchTokenErrorクラス | src/lib/twitch/token-manager.ts | 実装済み (5-14行目) | ✅ 一致 |
-| getTwitchAccessTokenの改善 | エラー詳細化 | 実装済み (16-61行目) | ✅ 一致 |
-| refreshTwitchAccessTokenの改善 | エラー詳細化 | 実装済み (63-91行目) | ✅ 一致 |
-| handleTwitchTokenError | エラーコード別メッセージ | 実装済み (src/app/api/twitch/rewards/route.ts:12-28) | ✅ 一致 |
-| ERROR_MESSAGES追加 | TWITCH_TOKEN_REQUIRED, TWITCH_TOKEN_REFRESH_FAILED | 実装済み (src/lib/constants.ts:116-119) | ✅ 一致 |
-| handleApiError改善 | 非Error型のエラー処理 | 実装済み (src/lib/error-handler.ts:5-26) | ✅ 一致 |
-| reportApiError改善 | オブジェクトの詳細記録 | 実装済み (src/lib/sentry/error-handler.ts:33-77) | ✅ 一致 |
-| Session型修正 | versionプロパティを含む | 実装済み (src/lib/session.ts:13, src/app/battle/stats/page.tsx:42) | ✅ 一致 |
-
-### Issue #56: Error: No access token available
-**✅ 実装完了**
-
-- `TwitchTokenError` クラスが実装され、3つのエラーコードを区別:
-  - `NO_TOKEN`: トークンが存在しない
-  - `REFRESH_FAILED`: トークン更新に失敗
-  - `DATABASE_ERROR`: データベースエラー
-
-- エラーメッセージが詳細化され、ユーザーフレンドリーな日本語メッセージが提供される:
-  - `TWITCH_TOKEN_REQUIRED`: "Twitch連携が必要です。再ログインしてください。"
-  - `TWITCH_TOKEN_REFRESH_FAILED`: "Twitchトークンの更新に失敗しました。再ログインしてください。"
-  - `DATABASE_ERROR`: "サーバーエラーが発生しました。"
-
-- Sentryへの詳細なエラー報告が実装済み:
-  - エラーコードの記録
-  - ユーザーIDの記録
-  - 元のエラーオブジェクトの保持
-
-### Issue #57: API Auth Logout API: GET: [object Object]
-**✅ 実装完了**
-
-- `handleApiError` が非Error型のエラーを適切に処理:
-  - Errorインスタンスの場合: `error.message` を返す
-  - 文字列の場合: 文字列を返す
-  - オブジェクトの場合: `error.message` プロパティを返す
-
-- `reportApiError` が非Error型のエラーを詳細に記録:
-  - 文字列の場合: errorType='string', errorValueを記録
-  - オブジェクトの場合: errorType='object', errorObject, errorJsonを記録
-  - その他の場合: errorType, errorValueを記録
-
-### CI Build Failure: TypeScript型エラー
-**✅ 実装完了**
-
-- `src/lib/session.ts` の `Session` インターフェースに `version` プロパティが追加 (13行目)
-- `src/app/battle/stats/page.tsx` で `Session` 型を正しくインポートして使用 (10, 42行目)
-- ビルドが成功する
-
-## 単体テスト結果
-**⚠️ 部分的失敗**
-
-```
-Test Files  10 passed (10)
-     Tests  114 passed | 2 failed
+```bash
+npm run check:supabase-shutdown
+npm run typecheck
+npm run lint
+npm run test:unit
+npm run test:integration
+npm run workers:build
+npm run auxiliary-workers:build
+npm run check:supabase-shutdown -- --require-open-next --require-aux-workers
 ```
 
-### 失敗したテスト
+analysis dashboard は `analysis/` で `npm ci`, `npx tsc --noEmit`, `npm run build` を実行し、
+生成 bundle に旧 provider が含まれないことを CI で確認します。
 
-1. **tests/unit/twitch-token-manager.test.ts > Twitch Token Manager > getTwitchAccessToken > トークンが存在しない場合は null を返す**
-   - 期待: `token` が `null` になる
-   - 実際: `TwitchTokenError: No Twitch tokens found for user` がスローされる
-   - 原因: 設計変更により、トークンがない場合は `null` を返さず、`TwitchTokenError` をスローするようになった
-   - 状態: **テストが古い実装に基づいているため、更新が必要**
+## Preview 実経路ゲート
 
-2. **tests/unit/upload.test.ts > POST /api/upload > Vercel Blob エラー時 > 500 エラーを返す**
-   - 期待: `body.error` が `'Internal server error'` になる
-   - 実際: `body.error` が `'Vercel Blob error'` になる
-   - 原因: `handleApiError` が Error インスタンスの `message` プロパティをそのまま返す
-   - 状態: **エラーハンドリングの挙動を確認する必要がある**
+DB、OAuth、EventSub、overlay、chat に触れる変更は preview へ配備し、次を確認します。
 
-### 成功したテスト
-- logger: 6 tests ✅
-- env-validation: 10 tests ✅
-- gacha: 6 tests ✅
-- security-headers: 7 tests ✅
-- battle: 24 tests ✅
-- twitch-token-manager: 4/5 tests (1 fail) ✅
-- constants: 6 tests ✅
-- csrf (unit + integration): 34 tests ✅
-- upload: 16/17 tests (1 fail) ✅
+1. Twitch の実チャネルポイント報酬を複数回引き換える。
+2. 各結果が順番どおり overlay に表示される。
+3. 各結果の chat メッセージが送信される。
+4. EventSub direct と Queue replay の両経路を確認する。
+5. overlay WebSocket を再接続し、polling gap recovery で欠落・重複がないことを確認する。
+6. analysis dashboard の主要集計が PlanetScale の値と一致することを確認する。
 
-## 仕様との齟齬
-**なし** - 設計書の仕様は正しく実装されています。ただし、テストが古い実装に基づいているため、テストを更新する必要があります。
+production 反映後は同じ主要経路を smoke test し、旧 provider の outbound request と
+Secret access がゼロであることを観測してから旧 Secret を削除します。
 
-## 受け入れ基準
-**一部未達成**
+## Transactional chat outbox
 
-| 項目 | ステータス | 詳細 |
-|------|-----------|------|
-| Issue #56: アクセストークンエラー改善 | ✅ | 適切なエラーメッセージとSentry記録が実装されている |
-| Issue #57: ログアウトAPIエラー改善 | ✅ | 非Error型のエラーが適切に処理される |
-| CI Build Fix: TypeScriptビルド成功 | ✅ | ビルドが成功する |
-| すべてのテストがパス | ❌ | 2つのテストが失敗している |
+ガチャ確定とチャット通知payloadは
+`execute_gacha_transaction_with_chat_outbox` が同じDB transactionでcommitします。
+Twitch Chat APIにはidempotency keyがないため配送保証は **at-least-once** です。
+通常の同時relayは60秒のowner-fenced leaseで抑止しますが、Twitch送信成功後かつ
+DBの`sent`記録前に実行環境が停止した場合だけ、lease失効後に同じ通知が重複し得ます。
+欠落を避けるため、この境界では再送を優先します。
 
-## Linting
-**⚠️ 1警告**
+- チャット無効時はoutbox行を作らず、DB容量とrelay負荷を増やしません。
+- 429、5xx、通信障害は1分、5分、15分、60分のbackoffで最大5回試行します。
+- scope/credential欠落、429以外の4xx、不正payloadは`dead`へ移し、後続を塞ぎません。
+- N連は最終drawのtransactionで全`gacha_history`を順序付き再構成し、全件揃った
+  完成済み`pending`だけを作ります。途中失敗で配送不能な`building`行を残しません。
+- N連途中のDB一時障害は、ライブWebhookへ2xxを返す前に生通知を7日TTLのKV durable
+  inboxへ保存します。Cron replayが確定済みprefixを飛ばして残りを完遂し、最終drawが
+  outboxを組み立てます。KV保存にも失敗した通常時だけ503を返してTwitch再送を要求します。
+- `{num}`、`{unique}`、`{all}`、`{newCards}`はガチャcommit時点の値をoutboxへ保存し、
+  relay時に現在の所有数/catalogを再読込しません。backoff中に別ガチャや設定変更が
+  起きても、初回に送る予定だった本文を維持します。
+- `sent`は7日、`dead`は調査用に30日保持した後、Cron relayが削除します。
+- DB outbox relayはmaintenance EventSubのKV一覧取得より先に実行します。KV障害中も
+  チャットbacklogは1回につき最大`limit`件ずつ進みます。
 
-```
-/Users/azumag/work/twica/src/lib/sentry/error-handler.ts
-  63:18  warning  'e' is defined but never used  @typescript-eslint/no-unused-vars
-```
+保証境界は新RPCを使うアプリrevisionのdeploy時刻です。schema-first期間に旧RPCで
+すでに全drawが完了した履歴は、当時チャット送信済みか判定できないためbackfillせず、
+重複通知を避けます。旧revisionで一部だけ完了し、新revisionで最終drawを再開した
+バッチは、最終transactionが既存履歴を再構成してoutboxを作ります。
 
-これは `reportApiError` 関数の `catch` ブロックで使用されていない変数 `e` です。重大な問題ではありませんが、修正を推奨します。
+### 障害確認
 
-## 推奨事項
-
-### 1. twitch-token-manager.test.ts の更新
-トークンがない場合のテストを更新し、`TwitchTokenError` がスローされることを確認する:
-
-```typescript
-it('トークンが存在しない場合は TwitchTokenError をスローする', async () => {
-  const mockSupabaseAdmin: MockSupabaseAdmin = {
-    from: vi.fn().mockReturnThis(),
-    select: vi.fn().mockReturnThis(),
-    eq: vi.fn().mockReturnThis(),
-    single: vi.fn().mockResolvedValue({
-      data: null,
-      error: null,
-    }),
-    update: vi.fn().mockReturnThis(),
-  };
-
-  vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
-
-  await expect(getTwitchAccessToken('123456789')).rejects.toThrow(TwitchTokenError);
-  await expect(getTwitchAccessToken('123456789')).rejects.toThrow('No Twitch tokens found for user');
-});
+```sql
+SELECT id, batch_id, status, expected_draw_count, assembled_draw_count,
+       attempt_count, next_attempt_at, lease_expires_at, last_error,
+       created_at, sent_at, dead_at
+FROM chat_notification_outbox
+WHERE status IN ('pending', 'processing', 'dead')
+ORDER BY created_at;
 ```
 
-### 2. upload.test.ts の更新 または エラーハンドリングの修正
-Vercel Blob エラー時にどのようなエラーメッセージを返すべきかを確認:
+`dead`を再送する前に、`last_error`、Twitch scope/token、payload、対応する
+`gacha_history.event_id`を確認します。N連が部分完了してoutbox自体が無い場合は、
+通知行だけを手作業で作らず、ガチャ部分完了の原因を先に調査します。再送して安全だと
+確認した`dead` 1件だけを次のように戻し、管理relayを1回実行します。
 
-**オプションA**: テストを更新し、実際のエラーメッセージ ('Vercel Blob error') を期待する:
-
-```typescript
-it('500 エラーを返す', async () => {
-  // ... 設定コード ...
-  const body = await response.json()
-  expect(body.error).toBe('Vercel Blob error') // テストを更新
-});
+```sql
+UPDATE chat_notification_outbox
+SET status = 'pending',
+    attempt_count = 0,
+    next_attempt_at = now(),
+    lease_id = NULL,
+    lease_expires_at = NULL,
+    last_error = NULL,
+    dead_at = NULL,
+    updated_at = now()
+WHERE id = '<confirmed-outbox-uuid>'::uuid
+  AND status = 'dead';
 ```
 
-**オプションB**: エラーハンドリングを修正し、サードパーティAPIのエラーは 'Internal server error' を返す:
-
-```typescript
-// src/lib/error-handler.ts で handleApiError を修正
-export function handleApiError(error: unknown, context: string): NextResponse {
-  logger.error(`${context}:`, error)
-  reportApiError(context, 'API', error)
-
-  let userMessage = 'Internal server error';
-
-  if (error instanceof Error) {
-    // 外部サービスからのエラーは詳細を隠す
-    if (context.includes('API')) {
-      userMessage = 'Internal server error';
-    } else {
-      userMessage = error.message || 'Internal server error';
-    }
-  } else if (typeof error === 'string') {
-    userMessage = error;
-  } else if (error && typeof error === 'object') {
-    if ('message' in error && typeof error.message === 'string') {
-      userMessage = error.message;
-    }
-  }
-
-  return NextResponse.json({ error: userMessage }, { status: 500 })
-}
+```bash
+EVENTSUB_REPLAY_SECRET=... npm run replay:maintenance-eventsub -- \
+  --url=https://<target-preview-or-production-host> --limit=20
 ```
 
-### 3. Linting 警告の修正
-`src/lib/sentry/error-handler.ts:63` の未使用変数 `e` を削除:
+復旧後は対象行が`sent`になり、同じ`batch_id`のチャットが高々1回追加されたことを
+確認します。送信成功後のack前停止を意図的に再現した試験では重複が許容結果です。
 
-```typescript
-} catch (e) { // 'e' を削除または使用
-  errorMessage = `${method} ${endpoint}: [Unserializable Object]`;
-  scope.setExtra('errorType', 'unserializable');
-  scope.setExtra('errorString', String(error));
-}
-```
-
-## 総合評価
-**⚠️ 要改善**
-
-実装自体は設計書の仕様と一致していますが、以下の問題があります:
-
-1. **テスト失敗**: 2つのテストが失敗しており、テストの更新が必要
-2. **Linting 警告**: 1つの警告がある
-
-これらは実装自体の問題ではなく、テストコードの古さによるものです。実装エージェントに対して、以下の修正を依頼することを推奨します:
-
-1. `tests/unit/twitch-token-manager.test.ts` のトークンなしテストを更新
-2. `tests/unit/upload.test.ts` のVercel Blobエラーテストを更新 または エラーハンドリングを修正
-3. `src/lib/sentry/error-handler.ts` のLinting警告を修正
-
-## 次のアクション
-
-QAで問題が発見されたため、以下の手順で進行します：
-
-1. 実装エージェントにフィードバックを送信
-2. 修正完了後に再QAを実施
-3. QAに問題がない場合、git commit と push を実行
-4. アーキテクチャエージェントに次の実装の設計を依頼
+CIはPostgreSQL 17 serviceへPlanetScale baselineと全追加migrationを順次適用し、
+旧/新RPC、single/N連、歯抜け復旧、NULL副作用0、権限、lease fencingを実SQLで検証します。
+SQL本文の文字列検査だけをmigration構文のgateにしてはいけません。

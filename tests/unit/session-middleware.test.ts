@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
-import { updateSession } from '@/lib/supabase/middleware'
+import { updateSession } from '@/lib/session-middleware'
 import { COOKIE_NAMES } from '@/lib/constants'
 import { signSession } from '@/lib/session-cookie'
 

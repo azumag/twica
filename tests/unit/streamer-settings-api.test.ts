@@ -6,7 +6,13 @@ import { checkRateLimit } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
 import { getUserPlan } from '@/lib/plan'
-import { createSupabaseMock, createMockQueryBuilder } from '../utils/supabase-mock'
+import { getDb } from '@/lib/db/client'
+import {
+  cards as cardsTable,
+  streamers as streamersTable,
+  streamerChatSenderSettings as streamerChatSenderSettingsTable,
+  twitchBotAccounts as twitchBotAccountsTable,
+} from '@/lib/db/schema'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { legacySoundToRules } from '@/lib/gacha-sound-rules'
 
@@ -25,24 +31,176 @@ vi.mock('@/lib/plan')
 // route.ts の DEFAULT_RARITY_VALUES が空となり、デフォルトレアリティとの
 // 衝突検出ができなくなるため、ファクトリで実体をそのまま返す。
 vi.mock('@/lib/constants', async (importOriginal) => await importOriginal())
-vi.mock('@/lib/supabase/admin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
-  return {
-    ...actual,
-    getSupabaseAdmin: vi.fn(),
-  }
-})
-
 const mockGetSession = vi.mocked(getSession)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 const mockValidateContentType = vi.mocked(validateContentType)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockGetUserPlan = vi.mocked(getUserPlan)
+let currentDbFixture: any
+
+function createMockQueryBuilder() {
+  const query: any = {}
+  for (const method of [
+    'select', 'insert', 'upsert', 'update', 'delete',
+    'eq', 'neq', 'gt', 'or', 'gte', 'lt', 'lte',
+    'like', 'ilike', 'in', 'is', 'not',
+    'order', 'limit', 'range',
+  ]) {
+    query[method] = vi.fn().mockReturnValue(query)
+  }
+  query.single = vi.fn().mockResolvedValue({ data: null, error: null })
+  query.maybeSingle = vi.fn().mockResolvedValue({ data: null, error: null })
+  query.count = vi.fn().mockResolvedValue({ count: null, error: null })
+  return query
+}
+
+/**
+ * 設定値テスト用の最小fixture builder。DB固有のクライアントを模倣するのではなく、
+ * installDrizzleFixtureAdapter が消費する行データとエラーだけを組み立てる。
+ */
+function createDbFixture() {
+  const query = createMockQueryBuilder()
+  return {
+    withMaybeSingleResponse(data: unknown, error: unknown = null) {
+      query.maybeSingle.mockResolvedValue({ data, error })
+      return this
+    },
+    build() {
+      return { from: vi.fn(() => query) }
+    },
+    getQueryBuilder() {
+      return query
+    },
+  }
+}
+
+function installDbFixture(fixture: any) {
+  currentDbFixture = fixture
+}
+
+function tableName(table: unknown): string {
+  if (table === streamersTable) return 'streamers'
+  if (table === cardsTable) return 'cards'
+  if (table === streamerChatSenderSettingsTable) return 'streamer_chat_sender_settings'
+  if (table === twitchBotAccountsTable) return 'twitch_bot_accounts'
+  throw new Error('Unexpected Drizzle table in streamer settings test adapter')
+}
+
+/**
+ * 既存76ケースが持つ詳細な行fixtureを、現行 Drizzle のクエリ形状へ
+ * 接続するテスト専用アダプタ。fixture のデータ/エラーキューはそのまま利用しつつ、
+ * DB層では「エラーを返す」のではなく throw する本番 Drizzle の契約へ正規化する。
+ *
+ * このファイルの目的は設定値の検証・正規化・フォールバック網羅であり、SQL条件の
+ * 厳密な検証は streamer-settings-driver-parity.test.ts が担当する。
+ */
+function installDrizzleFixtureAdapter() {
+  vi.mocked(getDb).mockImplementation(async () => {
+    if (!currentDbFixture) {
+      throw new Error('No DB fixture installed for this test')
+    }
+    const client = currentDbFixture
+
+    const db = {
+      select: vi.fn((fields: Record<string, unknown>) => {
+        let table: unknown
+        const resolve = async () => {
+          const name = tableName(table)
+          const query = client.from(name)
+          query.select(Object.keys(fields).join(','))
+          if (name === 'streamers') {
+            query.eq('id', 'streamer123').eq('twitch_user_id', 'streamer123')
+            const result = await query.maybeSingle()
+            if (result.error) throw result.error
+            return result.data ? [result.data] : []
+          }
+
+          // collection existence checks are the only cards SELECTs in this
+          // suite. Calling both filters keeps the old fixture spies observable;
+          // preconfigured fixtures determine the result independently.
+          query
+            .eq('streamer_id', 'streamer123')
+            .eq('is_active', true)
+            .is('collection_name', null)
+          const result = await query
+          if (result.error) throw result.error
+          if (typeof result.count === 'number') return [{ count: result.count }]
+          return Array.isArray(result.data) ? result.data : []
+        }
+        const builder: any = {
+          from: vi.fn((value: unknown) => {
+            table = value
+            return builder
+          }),
+          where: vi.fn(() => builder),
+          limit: vi.fn(() => builder),
+          then: (onFulfilled: any, onRejected: any) =>
+            resolve().then(onFulfilled, onRejected),
+        }
+        return builder
+      }),
+      update: vi.fn((table: unknown) => {
+        let values: Record<string, unknown> = {}
+        const resolve = async () => {
+          const query = client.from(tableName(table))
+          const result = await query.update(values).eq('id', 'streamer123')
+          if (result?.error) throw result.error
+          return []
+        }
+        const builder: any = {
+          set: vi.fn((next: Record<string, unknown>) => {
+            values = { ...next }
+            return builder
+          }),
+          where: vi.fn(() => builder),
+          then: (onFulfilled: any, onRejected: any) =>
+            resolve().then(onFulfilled, onRejected),
+        }
+        return builder
+      }),
+      insert: vi.fn((table: unknown) => {
+        let values: unknown
+        const resolve = async () => {
+          const query = client.from(tableName(table))
+          const result = await query.upsert(values)
+          if (result?.error) throw result.error
+          return []
+        }
+        const builder: any = {
+          values: vi.fn((next: unknown) => {
+            values = next
+            return builder
+          }),
+          onConflictDoUpdate: vi.fn(() => builder),
+          then: (onFulfilled: any, onRejected: any) =>
+            resolve().then(onFulfilled, onRejected),
+        }
+        return builder
+      }),
+      delete: vi.fn((table: unknown) => {
+        const resolve = async () => {
+          const query = client.from(tableName(table))
+          const result = await query.delete().eq('streamer_id', 'streamer123')
+          if (result?.error) throw result.error
+          return []
+        }
+        const builder: any = {
+          where: vi.fn(() => builder),
+          then: (onFulfilled: any, onRejected: any) =>
+            resolve().then(onFulfilled, onRejected),
+        }
+        return builder
+      }),
+    }
+    return { db, sql: vi.fn() } as any
+  })
+}
 
 describe('POST /api/streamer/settings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    currentDbFixture = undefined
 
     mockGetSession.mockResolvedValue({
       twitchUserId: 'streamer123',
@@ -66,18 +224,18 @@ describe('POST /api/streamer/settings', () => {
     mockValidateContentType.mockReturnValue(null)
     // デフォルトは support プラン（gachaSoundRules を使用可能）
     mockGetUserPlan.mockResolvedValue('support')
+    installDrizzleFixtureAdapter()
   })
 
   it('should update streamer settings with valid data', async () => {
-    const mockSupabase = createSupabaseMock()
+    const mockDbFixture = createDbFixture()
       .withMaybeSingleResponse({
         id: 'streamer123',
         twitch_user_id: 'streamer123',
       })
       .build()
 
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+    installDbFixture(mockDbFixture)
 
     const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
       method: 'POST',
@@ -97,20 +255,19 @@ describe('POST /api/streamer/settings', () => {
     const data = await response.json()
     expect(data.success).toBe(true)
     expect(data.recalculatedCards).toBeNull()
-    expect(getSupabaseAdmin).toHaveBeenCalled()
+    expect(getDb).toHaveBeenCalled()
   })
 
   it('should update multi-draw chat announcement settings', async () => {
-    const builder = createSupabaseMock()
+    const builder = createDbFixture()
       .withMaybeSingleResponse({
         id: 'streamer123',
         twitch_user_id: 'streamer123',
       })
-    const mockSupabase = builder.build()
+    const mockDbFixture = builder.build()
     const query = builder.getQueryBuilder()
 
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+    installDbFixture(mockDbFixture)
 
     const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
       method: 'POST',
@@ -138,10 +295,9 @@ describe('POST /api/streamer/settings', () => {
   })
 
   it('should reject rarity weights when total is not 100%', async () => {
-    const mockSupabase = createSupabaseMock().build()
+    const mockDbFixture = createDbFixture().build()
 
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+    installDbFixture(mockDbFixture)
 
     const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
       method: 'POST',
@@ -162,15 +318,14 @@ describe('POST /api/streamer/settings', () => {
   })
 
   it('should allow empty rarity weights object for manual mode switch', async () => {
-    const mockSupabase = createSupabaseMock()
+    const mockDbFixture = createDbFixture()
       .withMaybeSingleResponse({
         id: 'streamer123',
         twitch_user_id: 'streamer123',
       })
       .build()
 
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+    installDbFixture(mockDbFixture)
 
     const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
       method: 'POST',
@@ -200,14 +355,11 @@ describe('POST /api/streamer/settings', () => {
       })
 
     const mockOk = async () => {
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-      const built = mockSupabase.build()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        built as unknown as ReturnType<typeof getSupabaseAdmin>
-      )
-      return mockSupabase.getQueryBuilder()
+      const built = mockDbFixture.build()
+      installDbFixture(built)
+      return mockDbFixture.getQueryBuilder()
     }
 
     it('rejects empty string key', async () => {
@@ -267,14 +419,11 @@ describe('POST /api/streamer/settings', () => {
       })
 
     const mockOk = async () => {
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-      const built = mockSupabase.build()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        built as unknown as ReturnType<typeof getSupabaseAdmin>
-      )
-      return mockSupabase.getQueryBuilder()
+      const built = mockDbFixture.build()
+      installDbFixture(built)
+      return mockDbFixture.getQueryBuilder()
     }
 
     it('rejects non-array value', async () => {
@@ -393,9 +542,8 @@ describe('POST /api/streamer/settings', () => {
   })
 
   it('should return 401 when user cannot use streamer features', async () => {
-    const mockSupabase = createSupabaseMock().build()
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const mockDbFixture = createDbFixture().build()
+    installDbFixture(mockDbFixture)
 
     vi.mocked(canUseStreamerFeatures).mockReturnValue(false)
 
@@ -422,17 +570,14 @@ describe('POST /api/streamer/settings', () => {
   // them via the existing dynamic updateData pattern.
   describe('unowned card visibility settings (Issue #395)', () => {
     it('should accept showUnownedCards/showUnownedCardDetails when both are booleans', async () => {
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({
           id: 'streamer123',
           twitch_user_id: 'streamer123',
         })
         .build()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
-      )
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -451,11 +596,8 @@ describe('POST /api/streamer/settings', () => {
     })
 
     it('should reject showUnownedCards when not a boolean', async () => {
-      const mockSupabase = createSupabaseMock().build()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
-      )
+      const mockDbFixture = createDbFixture().build()
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -472,11 +614,8 @@ describe('POST /api/streamer/settings', () => {
     })
 
     it('should reject showUnownedCardDetails when not a boolean', async () => {
-      const mockSupabase = createSupabaseMock().build()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
-      )
+      const mockDbFixture = createDbFixture().build()
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -494,17 +633,14 @@ describe('POST /api/streamer/settings', () => {
     it('should accept independent showUnownedCardDetails toggle without showUnownedCards', async () => {
       // 設定UIはトグル単位で部分送信するため、片方だけが届くケースが正常系
       // The UI may send only one of the two booleans on toggle; both halves must work alone.
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({
           id: 'streamer123',
           twitch_user_id: 'streamer123',
         })
         .build()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>
-      )
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -524,12 +660,11 @@ describe('POST /api/streamer/settings', () => {
     it('should return 403 for basic plan users attempting to set gachaSoundRules', async () => {
       mockGetUserPlan.mockResolvedValue('basic')
 
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
         .build()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -549,12 +684,11 @@ describe('POST /api/streamer/settings', () => {
     it('should allow support plan users to set gachaSoundRules', async () => {
       mockGetUserPlan.mockResolvedValue('support')
 
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
         .build()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -572,12 +706,11 @@ describe('POST /api/streamer/settings', () => {
     it.each(['patron', 'twitch_sub'] as const)('%s plan users can set gachaSoundRules', async (plan) => {
       mockGetUserPlan.mockResolvedValue(plan)
 
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
         .build()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -594,12 +727,11 @@ describe('POST /api/streamer/settings', () => {
       // gachaSoundRules リクエストは 403 になる（プレミアム機能を誤って許可しない方向のフェイルセーフ）
       mockGetUserPlan.mockResolvedValue('basic')
 
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
         .build()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -615,13 +747,12 @@ describe('POST /api/streamer/settings', () => {
   describe('gachaSoundRules legacy mirror + save echo (Issue #451 followup F1/F5)', () => {
     it('F1: mirrors ONLY an enabled all-type rule into gacha_sound_url/gacha_sound_enabled, not any enabled rule', async () => {
       mockGetUserPlan.mockResolvedValue('support')
-      const builder = createSupabaseMock()
+      const builder = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-      const mockSupabase = builder.build()
+      const mockDbFixture = builder.build()
       const query = builder.getQueryBuilder()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       // Only a rarity-scoped rule is configured (no catch-all "all" rule).
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
@@ -649,13 +780,12 @@ describe('POST /api/streamer/settings', () => {
 
     it('F1: mirrors an enabled all-type rule\'s URL even when a rarity rule is also present', async () => {
       mockGetUserPlan.mockResolvedValue('support')
-      const builder = createSupabaseMock()
+      const builder = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-      const mockSupabase = builder.build()
+      const mockDbFixture = builder.build()
       const query = builder.getQueryBuilder()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -679,13 +809,12 @@ describe('POST /api/streamer/settings', () => {
 
     it('F1: does not mirror a DISABLED all-type rule', async () => {
       mockGetUserPlan.mockResolvedValue('support')
-      const builder = createSupabaseMock()
+      const builder = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-      const mockSupabase = builder.build()
+      const mockDbFixture = builder.build()
       const query = builder.getQueryBuilder()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -708,12 +837,11 @@ describe('POST /api/streamer/settings', () => {
 
     it('F5: echoes the server-normalized (persisted) gachaSoundRules on success, not the raw submitted array', async () => {
       mockGetUserPlan.mockResolvedValue('support')
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
         .build()
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -744,18 +872,20 @@ describe('POST /api/streamer/settings', () => {
         data: { id: 'streamer123', twitch_user_id: 'streamer123' },
         error: null,
       })
-      // First update attempt fails because gacha_sound_rules isn't actually
-      // writable yet (schema-cache lag / migration not deployed).
+      // First update attempt fails because gacha_sound_rules migration is not
+      // deployed yet.
       ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
         eq: vi.fn().mockResolvedValue({
-          error: { code: 'PGRST204', message: "Could not find the 'gacha_sound_rules' column" },
+          error: {
+            code: '42703',
+            message: 'column "gacha_sound_rules" of relation "streamers" does not exist',
+          },
         }),
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -782,6 +912,14 @@ describe('POST /api/streamer/settings', () => {
   })
 
   describe('gachaSoundUrl URL validation', () => {
+    beforeEach(() => {
+      installDbFixture(
+        createDbFixture()
+          .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+          .build()
+      )
+    })
+
     it('should return 400 for non-HTTPS gachaSoundUrl', async () => {
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -854,10 +992,9 @@ describe('POST /api/streamer/settings', () => {
       return cardsQuery
     }
 
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
+    installDbFixture({
       from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    })
 
     const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
       method: 'POST',
@@ -889,10 +1026,9 @@ describe('POST /api/streamer/settings', () => {
       return cardsQuery
     }
 
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
+    installDbFixture({
       from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    })
 
     const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
       method: 'POST',
@@ -916,10 +1052,9 @@ describe('POST /api/streamer/settings', () => {
       error: null,
     })
 
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
+    installDbFixture({
       from: vi.fn(() => streamerQuery),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    })
 
     const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
       method: 'POST',
@@ -944,10 +1079,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -975,10 +1109,9 @@ describe('POST /api/streamer/settings', () => {
         return cardsQuery
       }
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1003,10 +1136,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1042,10 +1174,9 @@ describe('POST /api/streamer/settings', () => {
         return cardsQuery
       }
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1077,10 +1208,9 @@ describe('POST /api/streamer/settings', () => {
         return cardsQuery
       }
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1120,8 +1250,7 @@ describe('POST /api/streamer/settings', () => {
         return updateQuery
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture({ from: fromMock })
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1160,8 +1289,7 @@ describe('POST /api/streamer/settings', () => {
         return updateQuery
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({ from: fromMock } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture({ from: fromMock })
 
       const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1185,10 +1313,9 @@ describe('POST /api/streamer/settings', () => {
   describe('cardPackNames management + premium gate (Issue #269再設計)', () => {
     it('rejects non-array cardPackNames (400)', async () => {
       const streamerQuery = createMockQueryBuilder()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1207,10 +1334,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1235,10 +1361,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       // Request: keep "weapons" (existing), add "armor" (new, should be gated).
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
@@ -1264,10 +1389,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1290,10 +1414,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1307,7 +1430,7 @@ describe('POST /api/streamer/settings', () => {
 
     // 自己レビューで発見した重大バグの回帰テスト: SELECT側は card_pack_names
     // を正常に読めても、その後のUPDATEで同列が見つからずフォールバックする
-    // 稀なケース(スキーマキャッシュの伝播遅延等)で、実際には保存されて
+    // 稀なケース（rolling deploy で migration が遅延）でも、実際には保存されて
     // いないのに「この内容で保存できた」と偽ってはならない。
     it('reports the pre-write list (not the requested one) and a deploy-window flag when the UPDATE itself drops card_pack_names', async () => {
       mockGetUserPlan.mockResolvedValue('support')
@@ -1317,18 +1440,20 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
       // First update attempt fails because card_pack_names isn't actually
-      // writable yet (e.g. PostgREST schema-cache lag), even though the
+      // writable yet (migration lag), even though the
       // SELECT above succeeded moments earlier.
       ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
         eq: vi.fn().mockResolvedValue({
-          error: { code: 'PGRST204', message: "Could not find the 'card_pack_names' column" },
+          error: {
+            code: '42703',
+            message: 'column "card_pack_names" of relation "streamers" does not exist',
+          },
         }),
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1363,10 +1488,9 @@ describe('POST /api/streamer/settings', () => {
         return cardsQuery
       }
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : streamerQuery)),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1392,10 +1516,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1418,11 +1541,10 @@ describe('POST /api/streamer/settings', () => {
   // No plan gate, no catalog membership check — a pure standalone string field.
   describe('defaultCardPackName (Issue #554)', () => {
     it('rejects a reserved (`__`-prefixed) value', async () => {
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
         .build()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1434,11 +1556,10 @@ describe('POST /api/streamer/settings', () => {
     })
 
     it('rejects a value over the max length', async () => {
-      const mockSupabase = createSupabaseMock()
+      const mockDbFixture = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
         .build()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1450,12 +1571,11 @@ describe('POST /api/streamer/settings', () => {
     })
 
     it('saves a trimmed, valid display name', async () => {
-      const builder = createSupabaseMock()
+      const builder = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-      const mockSupabase = builder.build()
+      const mockDbFixture = builder.build()
       const query = builder.getQueryBuilder()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1470,12 +1590,11 @@ describe('POST /api/streamer/settings', () => {
     })
 
     it('resets to the generic label when defaultCardPackName is explicitly null', async () => {
-      const builder = createSupabaseMock()
+      const builder = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-      const mockSupabase = builder.build()
+      const mockDbFixture = builder.build()
       const query = builder.getQueryBuilder()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      installDbFixture(mockDbFixture)
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1500,14 +1619,16 @@ describe('POST /api/streamer/settings', () => {
       })
       ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
         eq: vi.fn().mockResolvedValue({
-          error: { code: 'PGRST204', message: "Could not find the 'default_card_pack_name' column" },
+          error: {
+            code: '42703',
+            message: 'column "default_card_pack_name" of relation "streamers" does not exist',
+          },
         }),
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1541,10 +1662,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1572,9 +1692,8 @@ describe('POST /api/streamer/settings', () => {
     })
 
     it('rejects an invalid rarityWeightsScope value (400)', async () => {
-      const mockSupabase = createSupabaseMock().build()
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>)
+      const mockDbFixture = createDbFixture().build()
+      installDbFixture(mockDbFixture)
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1598,10 +1717,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1630,10 +1748,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1661,10 +1778,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1697,10 +1813,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       // Removing 'armor' from the catalog — packRarityWeights is NOT part of this request.
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
@@ -1740,10 +1855,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1785,10 +1899,9 @@ describe('POST /api/streamer/settings', () => {
         error: null,
       })
 
-      const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-      vi.mocked(getSupabaseAdmin).mockReturnValue({
+      installDbFixture({
         from: vi.fn(() => streamerQuery),
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
+      })
 
       const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
         method: 'POST',
@@ -1814,14 +1927,16 @@ describe('POST /api/streamer/settings', () => {
         })
         ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
           eq: vi.fn().mockResolvedValue({
-            error: { code: 'PGRST204', message: "Could not find the 'rarity_weights_scope' column" },
+            error: {
+              code: '42703',
+              message: 'column "rarity_weights_scope" of relation "streamers" does not exist',
+            },
           }),
         })
 
-        const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-        vi.mocked(getSupabaseAdmin).mockReturnValue({
+        installDbFixture({
           from: vi.fn(() => streamerQuery),
-        } as unknown as ReturnType<typeof getSupabaseAdmin>)
+        })
 
         const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
           method: 'POST',
@@ -1848,14 +1963,16 @@ describe('POST /api/streamer/settings', () => {
         })
         ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
           eq: vi.fn().mockResolvedValue({
-            error: { code: 'PGRST204', message: "Could not find the 'pack_rarity_weights' column" },
+            error: {
+              code: '42703',
+              message: 'column "pack_rarity_weights" of relation "streamers" does not exist',
+            },
           }),
         })
 
-        const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-        vi.mocked(getSupabaseAdmin).mockReturnValue({
+        installDbFixture({
           from: vi.fn(() => streamerQuery),
-        } as unknown as ReturnType<typeof getSupabaseAdmin>)
+        })
 
         const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
           method: 'POST',

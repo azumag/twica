@@ -1,12 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { resolveCollectionNameField, isRegisteredOrUnchanged, DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import {
   checkCollectionHasActiveCards,
@@ -14,17 +14,12 @@ import {
   isMissingCardPackNamesColumnError,
 } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。
-// - GET は読み取り専用のため isPgReadEnabled() で分岐する。
-// - POST / DELETE は読み書きが混在する（DELETE も含め、所有権確認 SELECT を
-//   含めて）ため isPgWriteEnabled() で関数全体（の DB アクセス）を分岐する
-//   （src/lib/twitch/token-manager.ts 冒頭のフラグ使い分け方針と同じ）。
-// 既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時は完全に従来どおり動く。
-// pg 実装は getDb() を withDbRetry の queryFn 内で呼ぶ規約（src/lib/db/retry.ts 参照）。
+// GET、POST、DELETE の DB アクセスはすべて PlanetScale の単一接続を使う。
+// 接続は withDbRetry の queryFn 内で取得し、リトライ時に新しいクライアントを使う。
 // -----------------------------------------------------------------------------
 import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { getErrorChain, getSqlState } from "@/lib/db/errors";
 import {
@@ -34,23 +29,12 @@ import {
 
 type GenericDbError = { message?: string; code?: string; details?: string; hint?: string } | null | undefined;
 
-// PostgREST 専用の判定（下記コメント参照）: postgrest 経路の生の PostgrestError
-// にのみ使う。listAdditionalRewardsPostgrest / insertAdditionalReward の
-// postgrest 分岐（フラグ未設定時の既定経路）だけが呼ぶ。
-function isRaidOptionsSchemaError(error: GenericDbError) {
-  const message = error?.message ?? "";
-  return error?.code === "PGRST204" || message.includes("draw_count") || message.includes("is_raid_limited");
-}
-
 /**
- * pg 直結経路（listAdditionalRewardsPg / insertAdditionalRewardPg）専用の
+ * PlanetScale経路（listAdditionalRewardsPg / insertAdditionalRewardPg）の
  * raid-options（draw_count/is_raid_limited）列未デプロイ検知
- * (Fable厳格レビュー指摘・中3、pg-read 再投入で活性)。
+ * (Fable厳格レビュー指摘・中3)。
  *
- * 上の isRaidOptionsSchemaError（PostgREST 専用）をそのまま pg 直結の生エラーに
- * 適用すると過剰マッチする: PostgREST 版は「PGRST204、または message に
- * draw_count/is_raid_limited を含む」という広い一致だが、pg 直結で Drizzle に
- * ラップされた DrizzleQueryError.message は「実行された SQL 文そのもの」であり、
+ * Drizzle にラップされた DrizzleQueryError.message は実行 SQL 文そのもので、
  * このテーブルへの SELECT/INSERT は常に draw_count 列を含む。そのため原因を
  * 問わず（接続断・制約違反等でも）あらゆるエラーが schema-pending と誤判定され、
  * draw_count=1/is_raid_limited=false へ静かに縮退してしまう
@@ -87,7 +71,7 @@ interface AdditionalRewardRow {
 }
 
 // ---------------------------------------------------------------------------
-// GET: ownership lookup + reward listing (read-only → isPgReadEnabled)
+// GET: ownership lookup + reward listing (read-only → PlanetScale の単一接続)
 // ---------------------------------------------------------------------------
 
 async function getOwnedStreamerIdForRewardsPg(twitchUserId: string): Promise<string | null> {
@@ -107,32 +91,23 @@ async function getOwnedStreamerIdForRewardsPg(twitchUserId: string): Promise<str
     );
     return rows[0]?.id ?? null;
   } catch {
-    // 既存(postgrest)実装はこの SELECT のエラーを確認しない(data のみ分割代入)
     // ため、失敗時は data=undefined と同じ「not found」扱いに揃える。
     return null;
   }
 }
 
 async function getOwnedStreamerIdForRewards(twitchUserId: string): Promise<string | null> {
-  // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return getOwnedStreamerIdForRewardsPg(twitchUserId);
-  }
-  const supabaseAdmin = getSupabaseAdmin();
-  const { data: streamer } = await supabaseAdmin
-    .from("streamers")
-    .select("id")
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-  return streamer?.id ?? null;
+  // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+  return getOwnedStreamerIdForRewardsPg(twitchUserId);
+
 }
 
 /**
  * listAdditionalRewardsPg の各列セレクトと 2 段フォールバックチェイン (#663)
  *
- * PostgREST 実装との対応: collection_name 列欠落を isRaidOptionsSchemaError より
- * 先に判定する（両方 PGRST204 になりうるが、raid フォールバックは
- * draw_count/is_raid_limited を巻き込んで初期化してしまうため）。collection_name
+ * collection_name 列欠落を raid-options 列欠落より先に判定する。raid 側の
+ * フォールバックは draw_count/is_raid_limited を巻き込んで初期化するため、
+ * collection_name
  * 側のフォールバック取得がさらに raid 列欠落で失敗した場合は、そのままより
  * 少ない列セット（最終フォールバック）へ続けてカスケードする。
  */
@@ -222,62 +197,12 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
   }
 }
 
-async function listAdditionalRewardsPostgrest(streamerId: string): Promise<AdditionalRewardRow[]> {
-  const supabaseAdmin = getSupabaseAdmin();
 
-  // Fetch all additional rewards for this streamer
-  // このストリーマーの全ての追加報酬を取得
-  let { data: rewards, error } = await supabaseAdmin
-    .from("streamer_additional_gacha_rewards")
-    .select("id, reward_id, reward_name, draw_count, is_raid_limited, collection_name, created_at")
-    .eq("streamer_id", streamerId)
-    .order("created_at", { ascending: true });
-
-  // Issue #393: handle "only collection_name column missing" BEFORE the raid
-  // fallback. Both match PGRST204, but the raid fallback would wrongly reset
-  // draw_count / is_raid_limited, losing N-draw config. So check this first and
-  // fall back to "all cards" (collection_name: null) while keeping raid options.
-  if (error && isMissingCollectionNameColumn(error)) {
-    const fallbackResult = await supabaseAdmin
-      .from("streamer_additional_gacha_rewards")
-      .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
-      .eq("streamer_id", streamerId)
-      .order("created_at", { ascending: true });
-    rewards = (fallbackResult.data || []).map((reward) => ({
-      ...reward,
-      collection_name: null,
-    }));
-    error = fallbackResult.error;
-  }
-
-  if (isRaidOptionsSchemaError(error)) {
-    const fallbackResult = await supabaseAdmin
-      .from("streamer_additional_gacha_rewards")
-      .select("id, reward_id, reward_name, created_at")
-      .eq("streamer_id", streamerId)
-      .order("created_at", { ascending: true });
-    rewards = (fallbackResult.data || []).map((reward) => ({
-      ...reward,
-      draw_count: 1,
-      is_raid_limited: false,
-      collection_name: null,
-    }));
-    error = fallbackResult.error;
-  }
-
-  if (error) {
-    throw error;
-  }
-
-  return (rewards || []) as AdditionalRewardRow[];
-}
 
 async function listAdditionalRewards(streamerId: string): Promise<AdditionalRewardRow[]> {
-  // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return listAdditionalRewardsPg(streamerId);
-  }
-  return listAdditionalRewardsPostgrest(streamerId);
+  // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+  return listAdditionalRewardsPg(streamerId);
+
 }
 
 /**
@@ -337,7 +262,7 @@ export async function GET(request: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// POST: ownership lookup + insert (read+write mixed → isPgWriteEnabled)
+// POST: ownership lookup + insert (read+write mixed → PlanetScale の単一接続)
 // ---------------------------------------------------------------------------
 
 interface StreamerForAdditionalRewardPost {
@@ -396,7 +321,6 @@ async function getStreamerForAdditionalRewardPostPg(
           cardPackNamesUnavailable: true,
         };
       } catch {
-        // 既存(postgrest)実装同様、リトライも失敗した場合は streamer=null(→404)に
         // 揃える(この SELECT はエラーを 500 化しない既存の swallow パターン)。
         return { streamer: null, cardPackNamesUnavailable: true };
       }
@@ -406,35 +330,10 @@ async function getStreamerForAdditionalRewardPostPg(
 }
 
 async function getStreamerForAdditionalRewardPost(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   twitchUserId: string
 ): Promise<GetStreamerForAdditionalRewardPostResult> {
-  // #663: 読み書き混在(このあと INSERT する)のため isPgWriteEnabled() で分岐。
-  if (isPgWriteEnabled()) {
-    return getStreamerForAdditionalRewardPostPg(twitchUserId);
-  }
-
-  let { data: streamer, error: streamerSelectError } = await supabaseAdmin
-    .from("streamers")
-    .select("id, channel_point_reward_id, card_pack_names")
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-
-  // Issue #393再設計: card_pack_names がデプロイ窓で未検出の場合、それだけ
-  // 外して再試行する(所有権確認・メイン報酬確認は継続できるようにする)。
-  let cardPackNamesUnavailable = false;
-  if (streamerSelectError && isMissingCardPackNamesColumnError(streamerSelectError)) {
-    const retryResult = await supabaseAdmin
-      .from("streamers")
-      .select("id, channel_point_reward_id")
-      .eq("twitch_user_id", twitchUserId)
-      .maybeSingle();
-    streamer = retryResult.data ? { ...retryResult.data, card_pack_names: [] as string[] } : null;
-    streamerSelectError = retryResult.error;
-    cardPackNamesUnavailable = true;
-  }
-
-  return { streamer: streamer ?? null, cardPackNamesUnavailable };
+  // #663: 読み書き混在(このあと INSERT する)のため PlanetScale の単一接続を使用。
+  return getStreamerForAdditionalRewardPostPg(twitchUserId);
 }
 
 type InsertAdditionalRewardOutcome =
@@ -460,7 +359,7 @@ async function insertAdditionalRewardPg(
     );
 
   const classifyError = (error: unknown): InsertAdditionalRewardOutcome => {
-    if (isRaidOptionsSchemaErrorPg(error)) {
+                          if (isRaidOptionsSchemaErrorPg(error)) {
       return { kind: "raid-options-unavailable", error };
     }
     // getSqlState でチェーン（トップレベル→cause）全体から SQLSTATE を拾う
@@ -496,48 +395,10 @@ async function insertAdditionalRewardPg(
 }
 
 async function insertAdditionalReward(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   insertPayload: Record<string, unknown>
 ): Promise<InsertAdditionalRewardOutcome> {
-  // #663: 読み書き混在のため isPgWriteEnabled() で分岐。
-  if (isPgWriteEnabled()) {
-    return insertAdditionalRewardPg(insertPayload);
-  }
-
-  let { data: newReward, error } = await supabaseAdmin
-    .from("streamer_additional_gacha_rewards")
-    .insert(insertPayload)
-    .select()
-    .maybeSingle();
-
-  // Issue #393: deploy-window safety. Strip collection_name and retry if the
-  // column is not migrated yet. Must run BEFORE the raid-options check because
-  // both match PGRST204; otherwise we would return a misleading 503.
-  if (error && isMissingCollectionNameColumn(error) && "collection_name" in insertPayload) {
-    delete insertPayload.collection_name;
-    const retryResult = await supabaseAdmin
-      .from("streamer_additional_gacha_rewards")
-      .insert(insertPayload)
-      .select()
-      .maybeSingle();
-    newReward = retryResult.data;
-    error = retryResult.error;
-  }
-
-  if (isRaidOptionsSchemaError(error)) {
-    return { kind: "raid-options-unavailable", error };
-  }
-
-  if (error) {
-    // Handle unique constraint violation (reward already added)
-    // 一意制約違反を処理（報酬は既に追加済み）
-    if (error.code === "23505") {
-      return { kind: "conflict" };
-    }
-    return { kind: "error", error };
-  }
-
-  return { kind: "ok", reward: newReward };
+  // #663: 読み書き混在のため PlanetScale の単一接続を使用。
+  return insertAdditionalRewardPg(insertPayload);
 }
 
 /**
@@ -583,7 +444,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const supabaseAdmin = getSupabaseAdmin();
+
     const body = await request.json();
     const { rewardId, rewardName, drawCount, isRaidLimited } = body;
 
@@ -616,7 +477,6 @@ export async function POST(request: NextRequest) {
     // Get streamer info to verify ownership
     // ストリーマー情報を取得して所有権を確認
     const { streamer, cardPackNamesUnavailable } = await getStreamerForAdditionalRewardPost(
-      supabaseAdmin,
       session.twitchUserId
     );
 
@@ -675,7 +535,6 @@ export async function POST(request: NextRequest) {
     // assignment could not be persisted anyway.
     if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
       const existence = await checkCollectionHasActiveCards(
-        supabaseAdmin,
         streamer.id,
         collectionNameResult.value
       );
@@ -699,7 +558,7 @@ export async function POST(request: NextRequest) {
       insertPayload.collection_name = collectionNameResult.value;
     }
 
-    const insertOutcome = await insertAdditionalReward(supabaseAdmin, insertPayload);
+    const insertOutcome = await insertAdditionalReward(insertPayload);
 
     if (insertOutcome.kind === "raid-options-unavailable") {
       const errForLog = insertOutcome.error as { message?: string } | null | undefined;
@@ -743,7 +602,7 @@ export async function POST(request: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// DELETE: ownership lookup + delete (read+write mixed → isPgWriteEnabled)
+// DELETE: ownership lookup + delete (read+write mixed → PlanetScale の単一接続)
 // ---------------------------------------------------------------------------
 
 async function getOwnedStreamerIdForRewardsWritePg(twitchUserId: string): Promise<string | null> {
@@ -784,15 +643,8 @@ async function deleteAllAdditionalRewardsPg(streamerId: string): Promise<DeleteA
       // フィルタ指定の DELETE は再実行しても最終状態が同じ（2回目は0行削除）ため冪等
       { idempotent: true },
     );
-    // #663 self-review: postgrest 経路は .delete().select() のみで
-    // { count: 'exact' } を要求していないため、Prefer: count= ヘッダーが
-    // 送られず response.count は本番でも常に null（node_modules/@supabase/
-    // postgrest-js の PostgrestQueryBuilder.delete() / PostgrestBuilder の
-    // Content-Range 解析ロジックで確認済み）。deletedCount を実際の削除件数に
-    // すると DB_DRIVER=pg 切替だけでレスポンスの値が変わってしまう
-    // （このIssueは経路切替のみが目的で、挙動改善はスコープ外）ため、
-    // 既存の（実質バグだが）null を返す挙動にそろえる。.returning() で件数を
-    // 取得しないのも同じ理由（不要なペイロード往復を避ける）。
+    // 公開APIの既存契約は deletedCount=null。削除対象のIDを返す必要はないため
+    // RETURNING を付けず、不要な結果ペイロードとメモリ使用を避ける。
     return { error: null, deletedCount: null };
   } catch (error) {
     return { error, deletedCount: null };
@@ -859,18 +711,7 @@ export async function DELETE(request: NextRequest) {
 
     // Get streamer info to verify ownership
     // ストリーマー情報を取得して所有権を確認
-    let streamerId: string | null;
-    if (isPgWriteEnabled()) {
-      streamerId = await getOwnedStreamerIdForRewardsWritePg(session.twitchUserId);
-    } else {
-      const supabaseAdmin = getSupabaseAdmin();
-      const { data: streamer } = await supabaseAdmin
-        .from("streamers")
-        .select("id")
-        .eq("twitch_user_id", session.twitchUserId)
-        .maybeSingle();
-      streamerId = streamer?.id ?? null;
-    }
+    const streamerId = await getOwnedStreamerIdForRewardsWritePg(session.twitchUserId);
 
     if (!streamerId) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
@@ -879,62 +720,24 @@ export async function DELETE(request: NextRequest) {
     if (deleteAll) {
       // Delete all additional rewards for this streamer
       // このストリーマーの全ての追加報酬を削除
-      if (isPgWriteEnabled()) {
-        const { error, deletedCount } = await deleteAllAdditionalRewardsPg(streamerId);
-        if (error) {
-          return handleDatabaseError(error, "Additional Rewards API: DELETE ALL");
-        }
-        logger.info(
-          `All additional rewards deleted: streamerId=${streamerId}, count=${deletedCount}`
-        );
-        return NextResponse.json({ success: true, deletedCount });
-      }
-
-      const supabaseAdmin = getSupabaseAdmin();
-      const { error, count } = await supabaseAdmin
-        .from("streamer_additional_gacha_rewards")
-        .delete()
-        .eq("streamer_id", streamerId)
-        .select();
-
+      const { error, deletedCount } = await deleteAllAdditionalRewardsPg(streamerId);
       if (error) {
         return handleDatabaseError(error, "Additional Rewards API: DELETE ALL");
       }
-
       logger.info(
-        `All additional rewards deleted: streamerId=${streamerId}, count=${count}`
+        `All additional rewards deleted: streamerId=${streamerId}, count=${deletedCount}`
       );
-
-      return NextResponse.json({ success: true, deletedCount: count });
+      return NextResponse.json({ success: true, deletedCount });
     } else if (rewardId) {
       // Delete specific reward
       // 特定の報酬を削除
-      if (isPgWriteEnabled()) {
-        const { error } = await deleteAdditionalRewardByIdPg(streamerId, rewardId);
-        if (error) {
-          return handleDatabaseError(error, "Additional Rewards API: DELETE");
-        }
-        logger.info(
-          `Additional reward deleted: streamerId=${streamerId}, rewardId=${rewardId}`
-        );
-        return NextResponse.json({ success: true });
-      }
-
-      const supabaseAdmin = getSupabaseAdmin();
-      const { error } = await supabaseAdmin
-        .from("streamer_additional_gacha_rewards")
-        .delete()
-        .eq("streamer_id", streamerId)
-        .eq("reward_id", rewardId);
-
+      const { error } = await deleteAdditionalRewardByIdPg(streamerId, rewardId);
       if (error) {
         return handleDatabaseError(error, "Additional Rewards API: DELETE");
       }
-
       logger.info(
         `Additional reward deleted: streamerId=${streamerId}, rewardId=${rewardId}`
       );
-
       return NextResponse.json({ success: true });
     } else {
       return NextResponse.json(

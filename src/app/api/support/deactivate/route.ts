@@ -1,26 +1,21 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { validateCSRFToken } from '@/lib/csrf'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import type { ApiRateLimitResponse } from '@/types/api'
 // ---------------------------------------------------------------------------
-// #573: deactivate_all_licenses RPC の pg 直結経路 (isPgWriteEnabled()) 用。フラグ
-// 未設定時(既定 'postgrest')はこれらのモジュールの実行パスに一切入らないため、
 // import が存在するだけでは挙動に影響しない(#570 の設計。tests/setup.ts の
-// getDb throw スタブが「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
 // ---------------------------------------------------------------------------
 import { getDb } from '@/lib/db/client'
-import { isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 
 /**
- * deactivate_all_licenses RPC のエラーを PostgREST .rpc() の error と同じ
  * 「code + message」形状へ正規化するための最小型(#573)。postgres.js は
- * PostgrestError と異なりエラーを throw するため、既存のエラー分岐
  * (handleApiError への受け渡し)を両経路で共有するにはこの形への詰め替えが必要
  * (gacha.ts GachaRpcDriverError と同じ設計)。
  */
@@ -131,14 +126,9 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const supabaseAdmin = getSupabaseAdmin()
-    // #573: isPgWriteEnabled() のときだけ pg 直結経路へ分岐する。pg 側の
+
     // { data, error } 正規化は deactivateAllLicensesRpcPg の doc コメント参照。
-    const { data, error } = isPgWriteEnabled()
-      ? await deactivateAllLicensesRpcPg(session.twitchUserId)
-      : await supabaseAdmin.rpc('deactivate_all_licenses', {
-          p_twitch_user_id: session.twitchUserId,
-        })
+    const { data, error } = await deactivateAllLicensesRpcPg(session.twitchUserId)
 
     if (error) {
       return handleApiError(error, 'Support Deactivate API (RPC)')

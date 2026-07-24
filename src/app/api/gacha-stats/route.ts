@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import { handleApiError } from "@/lib/error-handler";
 import {
   checkRateLimit,
@@ -10,21 +10,16 @@ import {
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { getGachaStats, getGachaCardOwnerStats } from "@/lib/dashboard-data";
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。dashboard-data.ts 側の各関数
 // （getGachaStats / getGachaCardOwnerStats）は既に pg 直結対応済みのため、この
-// route に残る唯一の supabase-js 呼び出し（streamer 取得）のみを対応する。
 // ---------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { streamers as streamersTable } from "@/lib/db/schema";
 
 /**
  * streamer 取得の pg 直結実装 (#663)
- * gacha-history/route.ts の fetchStreamerIdPg と同一パターン（PostgREST 実装
  * との対応・エラー時の扱いも同じ）。
  */
 async function fetchStreamerIdPg(twitchUserId: string): Promise<{ id: string } | null> {
@@ -111,16 +106,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-    const streamer = isPgReadEnabled()
-      ? await fetchStreamerIdPg(session.twitchUserId)
-      : (
-          await getSupabaseAdmin()
-            .from("streamers")
-            .select("id")
-            .eq("twitch_user_id", session.twitchUserId)
-            .maybeSingle()
-        ).data;
+    // #663: 読み取り専用のため PlanetScale の単一接続を使用。
+    const streamer = await fetchStreamerIdPg(session.twitchUserId);
 
     if (!streamer) {
       return NextResponse.json(

@@ -11,7 +11,7 @@
  *
  * Environment:
  *   - SMOKE_TEST_BASE_URL (optional)
- *   - PLANETSCALE_DATABASE_URL, DATABASE_URL, or DATABASE_URL_PLANETSCALE
+ *   - PLANETSCALE_DATABASE_URL or DATABASE_URL_PLANETSCALE
  */
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -60,8 +60,9 @@ function formatSchemaCheckFailure({ table, column, error }) {
 }
 
 /**
- * Kept as a pure compatibility helper for existing tests and incident tooling.
- * Raw PostgreSQL uses 42703/42P01; old reports may still contain PGRST codes.
+ * PlanetScale PostgreSQL の schema 欠落を SQLSTATE と標準メッセージで検知する。
+ * HTTP API 固有の互換コードを受理すると退役経路の再導入を見逃すため、
+ * 現行ドライバーが返す 42703/42P01 だけをコード判定する。
  */
 function isSchemaMissingError(error) {
   if (!error || typeof error !== 'object') return false
@@ -72,10 +73,9 @@ function isSchemaMissingError(error) {
   return (
     error.code === '42703' ||
     error.code === '42P01' ||
-    error.code === 'PGRST204' ||
-    error.code === 'PGRST205' ||
     text.includes('does not exist') ||
-    text.includes('schema cache')
+    text.includes('undefined column') ||
+    text.includes('undefined table')
   )
 }
 
@@ -111,10 +111,12 @@ async function checkUrlEntry(url) {
 }
 
 function resolveDatabaseUrl(env) {
-  const value =
-    env.PLANETSCALE_DATABASE_URL ||
-    env.DATABASE_URL ||
-    env.DATABASE_URL_PLANETSCALE
+  // 名前付きの PlanetScale 接続だけを allow-list として受理する。汎用
+  // DATABASE_URL を fallback にすると、CI/運用環境に残った別サービスの URL を
+  // 成功として扱い、退役経路への誤配線を隠すため fail-closed にする。
+  // CI が注入する PLANETSCALE_DATABASE_URL を優先し、ローカル開発の
+  // DATABASE_URL_PLANETSCALE を次点に固定する。
+  const value = env.PLANETSCALE_DATABASE_URL || env.DATABASE_URL_PLANETSCALE
   return value && value.trim() ? value.trim() : null
 }
 
@@ -181,7 +183,7 @@ async function main() {
     schemaResults = [{
       ok: false,
       name: 'schema-checks',
-      detail: 'PlanetScale schema check requires PLANETSCALE_DATABASE_URL, DATABASE_URL, or DATABASE_URL_PLANETSCALE',
+      detail: 'PlanetScale schema check requires PLANETSCALE_DATABASE_URL or DATABASE_URL_PLANETSCALE',
     }]
   } else {
     const sql = postgres(databaseUrl, {

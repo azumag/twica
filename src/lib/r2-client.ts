@@ -12,7 +12,11 @@
  * See: https://github.com/azumag/twica/issues/235
  */
 
-import { logger } from './logger';
+// R2 操作は Route Handler / Server Action だけから呼ぶサーバー処理であり、失敗を
+// errors テーブルへ記録できる server-only logger を使う。Worker binding の利用可否は
+// 実行時に判定するが、このモジュール自体を Edge middleware から import してよいことを
+// 意味しないため、middleware 到達コードとの境界は静的テストで固定している。
+import { logger } from './logger.server';
 
 /**
  * Minimal R2Bucket interface matching Cloudflare Workers R2 API.

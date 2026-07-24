@@ -1,7 +1,7 @@
 /**
  * #708: GET /api/user-cards のPostgres専用経路テスト。
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { GET } from '@/app/api/user-cards/route'
 import { getSession } from '@/lib/session'
@@ -64,10 +64,6 @@ function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
 describe('GET /api/user-cards: Postgres専用経路 (#708)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // tests/setup.ts は削除待ちの旧PostgREST parity fixture向けに互換opt-inを
-    // 有効化する。このファイルは本番と同じ「フラグ未設定ならPostgres」という
-    // 契約を検証するため、旧DB_DRIVER値を再導入せず互換sandbox自体を無効化する。
-    vi.stubEnv('TWICA_ENABLE_LEGACY_SUPABASE', 'false')
     mockGetSession.mockResolvedValue({
       twitchUserId: 'user123',
       twitchUsername: 'testuser',
@@ -79,11 +75,7 @@ describe('GET /api/user-cards: Postgres専用経路 (#708)', () => {
     } as any)
   })
 
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  it('フラグなしでPostgresから正しいuser_idのuser_cardsを取得する', async () => {
+  it('PlanetScaleから正しいuser_idのuser_cardsを取得する', async () => {
     const pg = createDrizzleDbMock({
       selects: [
         { rows: [{ id: 'user-uuid-1', twitch_user_id: 'user123' }] },

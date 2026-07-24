@@ -1,21 +1,17 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { constantTimeEqual } from "@/lib/crypto-utils";
 import { getDb, type DbHandle } from "@/lib/db/client";
-import { getDbTarget, type DbTarget } from "@/lib/db/target";
-import { getDbDriverMode } from "@/lib/db/flags";
+
+
 
 /**
- * DB接続先 health/diagnostics エンドポイント (Issue #693)
- *
- * 背景: #693（Supabase / PlanetScale dual Hyperdrive binding と DB_TARGET
- * 切替）で、接続先を DB_TARGET 環境変数で明示的に切り替えられるようにした。
- * 本routeは、認証済み運用者が「今どの target に実際に到達しているか」を
+ * PlanetScale DB health/diagnostics エンドポイント (Issue #693/#708)。
+ * 本routeは、認証済み運用者が実接続を
  * 機密情報（接続文字列・ホスト名・DB名）を露出せずに確認するための診断用
- * エンドポイント。カットオーバー作業時に source(supabase)/target(planetscale)
- * 双方へ ?target= クエリで明示的に接続し、比較検証する用途も想定している。
+ * エンドポイント。
  *
  * スコープ外（YAGNI）: databaseIdentity/schemaDigest フィールドは実装しない。
  * これらは #691/#697 で作られる twica_meta.database_identity 相当のテーブルに
@@ -34,7 +30,7 @@ import { getDbDriverMode } from "@/lib/db/flags";
 
 interface DbHealthResponse {
   driver: string;
-  target: DbTarget;
+  target: "planetscale";
   serverVersionMajor: number | null;
   latencyMs: number;
   error?: string;
@@ -76,22 +72,18 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // target クエリパラメータ: 省略時は getDbTarget()（DB_TARGET 環境変数）で解決。
-  // 不正値（'supabase'/'planetscale' 以外）は 400。
+  // #708: 接続先は PlanetScale のみ。旧 target=supabase を明示した呼び出しは
+  // 停止済み DB へ到達させず 400 で拒否する。
   const rawTarget = request.nextUrl.searchParams.get("target");
-  let target: DbTarget;
-  if (rawTarget === null) {
-    target = getDbTarget();
-  } else if (rawTarget === "supabase" || rawTarget === "planetscale") {
-    target = rawTarget;
-  } else {
+  if (rawTarget !== null && rawTarget !== "planetscale") {
     return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
   }
+  const target = "planetscale" as const;
 
-  const driver = getDbDriverMode();
+  const driver = 'pg';
   const startedAt = Date.now();
 
-  // getDb({ target }) 自体の失敗（Hyperdrive binding 不足・DATABASE_URL 未設定等の
+  // getDb() 自体の失敗（Hyperdrive binding 不足・DATABASE_URL 未設定等の
   // target解決失敗）と、実クエリ発行時の失敗（DNS/認証/タイムアウト等の実接続
   // エラー）を分けて扱う。前者は resolveConnectionString（src/lib/db/client.ts）が
   // 投げる `[db:pg]` prefix付きメッセージ（env var名・binding名のみを含み機密情報を
@@ -103,7 +95,7 @@ export async function GET(request: NextRequest) {
   // 機密情報は露出しない」要件）。
   let sql: DbHandle["sql"];
   try {
-    ({ sql } = await getDb({ target }));
+    ({ sql } = await getDb());
   } catch (error) {
     const latencyMs = Date.now() - startedAt;
     const message = error instanceof Error ? error.message : String(error);

@@ -72,7 +72,7 @@ function sqlText(call: readonly unknown[]): string {
 }
 
 const mockEnv = {
-  HYPERDRIVE_SUPABASE: { connectionString: 'postgres://mock:mock@localhost:5432/mock' },
+  HYPERDRIVE_PLANETSCALE: { connectionString: 'postgres://mock:mock@localhost:5432/mock' },
   GITHUB_TOKEN: 'gh-token',
   GITHUB_REPO_OWNER: 'testowner',
   GITHUB_REPO_NAME: 'testrepo',
@@ -126,11 +126,11 @@ describe('reporter worker', () => {
   });
 
   describe('環境変数バリデーション', () => {
-    it('HYPERDRIVE_SUPABASE バインディングが未設定の場合は早期リターンする', async () => {
-      // HYPERDRIVE_SUPABASE は Env 型で optional なため、undefined を明示する
+    it('HYPERDRIVE_PLANETSCALE バインディングが未設定の場合は早期リターンする', async () => {
+      // HYPERDRIVE_PLANETSCALE は Env 型で optional なため、undefined を明示する
       // だけで「未設定」を再現できる（rest 分割代入による省略パターンは
       // 使わない未使用変数を生む＝eslint no-unused-vars 警告の元になるため避ける）。
-      const envWithoutHyperdrive = { ...mockEnv, HYPERDRIVE_SUPABASE: undefined };
+      const envWithoutHyperdrive = { ...mockEnv, HYPERDRIVE_PLANETSCALE: undefined };
       await worker.scheduled(mockEvent, envWithoutHyperdrive, mockCtx);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(mockSql).not.toHaveBeenCalled();
@@ -166,13 +166,13 @@ describe('reporter worker', () => {
   });
 
   describe('createReporterDbClient (#711 C)', () => {
-    it('HYPERDRIVE_SUPABASE 未設定で processErrors を直接呼ぶと例外を投げる', async () => {
-      // HYPERDRIVE_SUPABASE は Env 型で optional なため、undefined を明示する
+    it('HYPERDRIVE_PLANETSCALE 未設定で processErrors を直接呼ぶと例外を投げる', async () => {
+      // HYPERDRIVE_PLANETSCALE は Env 型で optional なため、undefined を明示する
       // だけで「未設定」を再現できる（rest 分割代入による省略パターンは
       // 使わない未使用変数を生む＝eslint no-unused-vars 警告の元になるため避ける）。
-      const envWithoutHyperdrive = { ...mockEnv, HYPERDRIVE_SUPABASE: undefined };
+      const envWithoutHyperdrive = { ...mockEnv, HYPERDRIVE_PLANETSCALE: undefined };
       await expect(processErrors(envWithoutHyperdrive)).rejects.toThrow(
-        /Missing HYPERDRIVE_SUPABASE binding/
+        /Missing HYPERDRIVE_PLANETSCALE binding/
       );
       expect(mockSql).not.toHaveBeenCalled();
     });
@@ -187,7 +187,7 @@ describe('reporter worker', () => {
 
       expect(postgresFactoryMock).toHaveBeenCalledTimes(1);
       const [connectionString, options] = postgresFactoryMock.mock.calls[0];
-      expect(connectionString).toBe(mockEnv.HYPERDRIVE_SUPABASE.connectionString);
+      expect(connectionString).toBe(mockEnv.HYPERDRIVE_PLANETSCALE.connectionString);
       expect(options).toMatchObject({ max: 1 });
       expect(options).not.toHaveProperty('fetch_types');
     });

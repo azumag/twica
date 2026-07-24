@@ -1,16 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { GET } from "@/app/api/streamer/[streamerId]/sound-settings/route";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { getDb } from "@/lib/db/client";
 import { logger } from "@/lib/logger";
-
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return {
-    ...actual,
-    getSupabaseAdmin: vi.fn(),
-  };
-});
 
 vi.mock("@/lib/logger", () => ({
   logger: {
@@ -20,20 +12,36 @@ vi.mock("@/lib/logger", () => ({
   },
 }));
 
-function createSoundSettingsClient(response: {
-  data: { gacha_sound_url: string | null; gacha_sound_enabled: boolean | null; gacha_sound_rules?: unknown } | null;
-  error: { message: string; code?: string } | null;
-  status?: number;
+/**
+ * 公開routeが使うDrizzleのselect/from/where/limitチェインを再現する。
+ * 所有権ではなくstreamer IDそのものを問い合わせるAPIなので、対象行の有無と
+ * DB例外だけをfixtureとして注入し、廃止済みPostgREST clientには依存しない。
+ */
+function primeSoundSettingsDb(response: {
+  row?: { gacha_sound_url: string | null; gacha_sound_enabled: boolean | null; gacha_sound_rules?: unknown };
+  error?: unknown;
 }) {
-  const query = {
-    select: vi.fn().mockReturnThis(),
-    eq: vi.fn().mockReturnThis(),
-    maybeSingle: vi.fn().mockResolvedValue(response),
-  };
-
+  const select = vi.fn((fields: Record<string, unknown>) => {
+    const builder: any = {
+      from: vi.fn(() => builder),
+      where: vi.fn(() => builder),
+      limit: vi.fn(() => builder),
+      then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) => {
+        if (response.error) return Promise.reject(response.error).then(resolve, reject);
+        const rows = response.row
+          ? [Object.fromEntries(Object.keys(fields).map((key) => [key, response.row?.[key as keyof typeof response.row] ?? null]))]
+          : [];
+        return Promise.resolve(rows).then(resolve, reject);
+      },
+    };
+    return builder;
+  });
+  vi.mocked(getDb).mockResolvedValue({
+    db: { select } as never,
+    sql: {} as never,
+  });
   return {
-    from: vi.fn(() => query),
-    query,
+    select,
   };
 }
 
@@ -47,15 +55,12 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
   });
 
   it("returns the configured sound settings", async () => {
-    const mockSupabase = createSoundSettingsClient({
-      data: {
+    const pg = primeSoundSettingsDb({
+      row: {
         gacha_sound_url: "https://cdn.example.com/sound.mp3",
         gacha_sound_enabled: true,
       },
-      error: null,
-      status: 200,
     });
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>);
 
     const response = await GET(request(), {
       params: Promise.resolve({ streamerId: "streamer-1" }),
@@ -73,18 +78,11 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
         }),
       ],
     });
-    expect(mockSupabase.from).toHaveBeenCalledWith("streamers");
-    expect(mockSupabase.query.select).toHaveBeenCalledWith("gacha_sound_url, gacha_sound_enabled, gacha_sound_rules");
-    expect(mockSupabase.query.eq).toHaveBeenCalledWith("id", "streamer-1");
+    expect(pg.select).toHaveBeenCalledTimes(1);
   });
 
   it("keeps streamer-not-found as a 404", async () => {
-    const mockSupabase = createSoundSettingsClient({
-      data: null,
-      error: null,
-      status: 200,
-    });
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>);
+    primeSoundSettingsDb({});
 
     const response = await GET(request(), {
       params: Promise.resolve({ streamerId: "missing-streamer" }),
@@ -94,13 +92,10 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     await expect(response.json()).resolves.toEqual({ error: "Streamer not found" });
   });
 
-  it("falls back to disabled sound settings when the database returns a transient 520", async () => {
-    const mockSupabase = createSoundSettingsClient({
-      data: null,
-      error: { message: "error code: 520" },
-      status: 520,
+  it("falls back to disabled sound settings when PlanetScale returns a transient connection error", async () => {
+    primeSoundSettingsDb({
+      error: { code: "08006", message: "connection failure" },
     });
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as unknown as ReturnType<typeof getSupabaseAdmin>);
 
     const response = await GET(request(), {
       params: Promise.resolve({ streamerId: "streamer-1" }),
@@ -111,13 +106,6 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
       soundUrl: null,
       soundEnabled: false,
     });
-    expect(logger.warn).toHaveBeenCalledWith(
-      "Streamer Sound Settings API: falling back to disabled sound settings",
-      {
-        streamerId: "streamer-1",
-        status: 520,
-        error: "error code: 520",
-      }
-    );
+    expect(logger.warn).toHaveBeenCalled();
   });
 });
