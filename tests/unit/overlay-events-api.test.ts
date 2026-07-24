@@ -274,6 +274,49 @@ describe("GET /api/overlay/[streamerId]/events", () => {
     );
   });
 
+  it("Cloudflareで+が空白化されたPostgreSQL cursorを正規化してqueryへ渡す", async () => {
+    const blankedOffsetCursor = "2026-07-24T14:40:14.511943 00:00";
+    const normalizedCursor = "2026-07-24T14:40:14.511Z";
+    const db = useRows([]);
+
+    // CDNが未エスケープの+を空白へ復号した場合も、polling cursorの意味は
+    // +00:00と同じである。URLSearchParams経由でその実際の入力形を固定する。
+    const response = await GET(
+      createRequest({ since: blankedOffsetCursor }),
+      routeParams()
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.calls[0].whereCondition).toEqual(
+      and(
+        eq(gachaHistoryTable.streamer_id, STREAMER_ID),
+        gt(gachaHistoryTable.redeemed_at, normalizedCursor)
+      )
+    );
+  });
+
+  it("nextCursorはPostgreSQL timestampをUTC ISO millisecondsで返す", async () => {
+    const rawPostgresTimestamp = "2026-07-24T14:40:14.511943+00:00";
+    useRows([
+      {
+        ...DISPLAY_ROW,
+        redeemed_at: rawPostgresTimestamp,
+      },
+    ]);
+
+    const response = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.nextCursor).toEqual({
+      redeemedAt: "2026-07-24T14:40:14.511Z",
+      historyId: DISPLAY_ROW.id,
+    });
+  });
+
   it("PlanetScale queryが必要列・join・安定順・bounded limitを使う", async () => {
     const db = useRows([]);
 
