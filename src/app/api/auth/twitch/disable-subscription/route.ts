@@ -6,9 +6,6 @@ import { ERROR_MESSAGES } from '@/lib/constants'
 
 import { logger } from '@/lib/logger.server'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgWriteEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -20,7 +17,6 @@ const DISABLED_SUB_VERIFIED_AT = '9999-12-31T00:00:00.000Z'
 
 /**
  * サブスク状態の手動無効化 UPDATE の pg 直結実装 (#663)
- * PostgREST 実装との対応: .select('twitch_user_id').maybeSingle() は
  * .returning({twitch_user_id}) の rows[0] ?? null と同じ外部挙動。書き込む値は
  * 固定値（DISABLED_SUB_VERIFIED_AT）のため、接続断リトライしても同じ内容を
  * 書く UPDATE ＝冪等。
@@ -92,7 +88,7 @@ export async function POST(request: Request) {
       )
     }
 
-    // #663: 書き込みのみのため isPgWriteEnabled() で分岐。
+    // #663: 書き込みのみのため PlanetScale の単一接続を使用。
     const { data: updatedUser, error: updateError } = await disableSubscriptionPg(session.twitchUserId)
 
     if (updateError || !updatedUser) {

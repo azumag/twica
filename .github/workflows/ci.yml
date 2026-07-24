@@ -81,8 +81,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build without Supabase URL or keys
-        run: npm run build
+      - name: Build deployable Worker without Supabase URL or keys
+        # `next build` だけでは OpenNext の middleware / Worker 成果物を生成しない。
+        # 本番へ出すのと同じ build を使い、生成段階で旧 provider が混入する回帰も検査する。
+        run: npm run workers:build
         env:
           NEXT_PUBLIC_VERSION: ${{ github.sha }}
           NEXT_PUBLIC_TWITCH_CLIENT_ID: dummy_client_id
@@ -93,9 +95,9 @@ jobs:
           CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
 
       - name: Verify generated application artifacts are Supabase-independent
-        # source検査をbuild後にも再実行し、bundler/generated Workerへ直接host・
-        # REST/Realtime path・credential識別子が混入する退行を拒否する。
-        run: npm run check:supabase-shutdown
+        # `--require-open-next` は成果物の silent skip を禁止する。build 出力先が
+        # 変わった場合も検査成功として扱わず、deploy boundary の更新を要求する。
+        run: npm run check:supabase-shutdown -- --require-open-next
 
   analysis:
     name: Analysis dashboard (guard / typecheck / build)

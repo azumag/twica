@@ -4,10 +4,8 @@ import { normalizeDropRate } from "@/lib/card-utils";
 import { calculateDropRates } from "@/lib/rarity-weight-calculator";
 import { logger } from "@/lib/logger.server";
 // ---------------------------------------------------------------------------
-// #573: batch_update_card_drop_rates RPC の pg 直結経路 (isPgWriteEnabled()) 用。
-// フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに一切入らない
-// ため、import が存在するだけでは挙動に影響しない(#570 の設計。tests/setup.ts の
-// getDb throw スタブが「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
+// batch_update_card_drop_rates RPC は PlanetScale 接続だけを使う。import 時点で
+// 接続を確立しないため、DB は実際のリクエスト実行時にのみ取得される。
 // ---------------------------------------------------------------------------
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
@@ -39,7 +37,7 @@ interface BatchUpdateRpcDriverError {
  * recalculateIfAutoMode(本ファイル)と POST /api/cards/batch-update
  * (src/app/api/cards/batch-update/route.ts)の両方が同じ RPC を名前付き引数で
  * 呼ぶため、pg 経路のSQL文・エラー正規化をこの1関数に集約して重複を避ける
- * (この2箇所は既存 supabase-js 実装の時点でも別々の .rpc() 呼び出しであり、
+ * (この2箇所は移行前の旧 Supabase 実装の時点でも別々の .rpc() 呼び出しであり、
  * そちらは変更しない — 新設する pg 経路の実装だけをここに共通化する)。
  *
  * 名前付き引数 + 明示キャストの理由は gacha.ts executeGachaTransactionRpcPg の
@@ -119,7 +117,7 @@ type RecalculationCard = Pick<
  *
  * 以前は更新RPCだけが pg 直結で、前後の SELECT は Supabase のままだったため、
  * cutover後に PlanetScale へ追加されたカードが再計算対象から漏れていた。
- * 読み書き混在処理は isPgWriteEnabled() で処理全体を同じDBへ揃える。
+ * 読み書き混在処理は最初から最後まで同じ PlanetScale 接続先へ揃える。
  */
 async function fetchActiveCardsForRecalculationPg(
   streamerId: string

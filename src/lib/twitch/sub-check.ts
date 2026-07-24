@@ -19,11 +19,8 @@ import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { logger } from '@/lib/logger.server'
 // -----------------------------------------------------------------------------
 // #572 (#570 パイロット踏襲): pg 直結経路。
-// hasTwitchSub はキャッシュ読み取りとキャッシュ更新（users への UPDATE 2 箇所）が
-// 混在する関数のため、関数全体を isPgWriteEnabled() で分岐する（token-manager.ts
-// 冒頭のフラグ使い分け方針と同じ。読み書きで別経路が混ざると障害切り分けが困難に
-// なるため、pg-read モードでは本関数は従来の PostgREST 経路のまま動く）。
-// 既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時は完全に従来どおり動く。
+// hasTwitchSub はキャッシュの読み取りと更新を同じ PlanetScale 接続先で扱う。
+// これにより読み書きで接続先が混在せず、障害時の状態確認を一貫させる。
 // -----------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -53,7 +50,7 @@ export function isTwitchSubCheckEnabled(): boolean {
 /**
  * hasTwitchSub の pg 直結実装 (#572)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - users の読み取り: .maybeSingle() は twitch_user_id の UNIQUE 制約（migration
  *   00001）により最大 1 行のため、LIMIT 1 + rows[0] ?? null が同じ外部挙動。
  *   取得失敗（error）は既存実装と同じく false に落とす。
@@ -195,8 +192,7 @@ export async function hasTwitchSub(twitchUserId: string): Promise<boolean> {
     return false
   }
 
-  // #572: キャッシュ更新（書き込み）を含む読み書き混在関数のため isPgWriteEnabled()
-  // で関数全体を分岐。フラグ未設定時（既定 'postgrest'）は素通りし従来どおり動く。
+  // キャッシュの読み取りと更新を同じ PlanetScale 接続先で実行する。
   return hasTwitchSubPg(twitchUserId)
 }
 

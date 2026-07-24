@@ -10,7 +10,34 @@ import {
   SMOKE_TEST_PATHS,
   SCHEMA_CHECKS,
   DEFAULT_BASE_URL,
+  resolveDatabaseUrl,
 } from '../../scripts/smoke-check.js'
+
+describe('resolveDatabaseUrl', () => {
+  it('CI 用の PLANETSCALE_DATABASE_URL をローカル用 DATABASE_URL_PLANETSCALE より優先する', () => {
+    expect(resolveDatabaseUrl({
+      PLANETSCALE_DATABASE_URL: '  postgres://ci-planetscale  ',
+      DATABASE_URL_PLANETSCALE: 'postgres://local-planetscale',
+    })).toBe('postgres://ci-planetscale')
+  })
+
+  it('PLANETSCALE_DATABASE_URL がなければ DATABASE_URL_PLANETSCALE を使う', () => {
+    expect(resolveDatabaseUrl({ DATABASE_URL_PLANETSCALE: ' postgres://local-planetscale ' }))
+      .toBe('postgres://local-planetscale')
+  })
+
+  it('汎用 DATABASE_URL だけは別サービスの誤配線を防ぐため明示的に拒否する', () => {
+    expect(resolveDatabaseUrl({ DATABASE_URL: 'postgres://unexpected-service' })).toBeNull()
+  })
+
+  it('空白だけの allow-list 値は未設定として扱う', () => {
+    expect(resolveDatabaseUrl({
+      PLANETSCALE_DATABASE_URL: '   ',
+      DATABASE_URL_PLANETSCALE: '',
+      DATABASE_URL: 'postgres://unexpected-service',
+    })).toBeNull()
+  })
+})
 
 describe('resolveBaseUrl', () => {
   it('SMOKE_TEST_BASE_URL が設定されていればそれを使う (末尾スラッシュは除去)', () => {

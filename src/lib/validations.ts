@@ -32,7 +32,7 @@ function sumDropRates(
 /**
  * validateDropRateSum の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - cards を streamer_id = X AND is_active = true で取得。
  * - 取得失敗時は同じエラーメッセージ（'Failed to validate drop rates'）を返す。
  */

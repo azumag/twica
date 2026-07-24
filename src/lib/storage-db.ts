@@ -56,7 +56,7 @@ export interface BlobFileInfo {
 /**
  * getStorageUsageFromDB の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - storage_usage を user_prefix IN (userPrefix, GLOBAL_PREFIX) で取得する
  *   `.in()` は inArray() が等価。
  * - 取得失敗時は「アップロードをブロックしない」安全側のデフォルト値を返す
@@ -114,8 +114,7 @@ async function getStorageUsageFromDBPg(userPrefix: string): Promise<StorageUsage
 }
 
 export async function getStorageUsageFromDB(userPrefix: string): Promise<StorageUsageResult> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  // PlanetScale の読み取りをこの関数に閉じ込める。
   return getStorageUsageFromDBPg(userPrefix);
 }
 
@@ -131,7 +130,7 @@ export async function getStorageUsageFromDB(userPrefix: string): Promise<Storage
 /**
  * recordBlobFile の pg 直結実装 (#572)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - blob_files INSERT の失敗は log + `Failed to record blob file: ...` の throw、
  *   外側 catch の log + 再 throw まで同じ流れ（エラーメッセージ本文はドライバ由来で
  *   異なるが、Error の形状・プレフィックスは同一）。
@@ -201,8 +200,7 @@ export async function recordBlobFile(
   fileSize: number,
   storageType: 'r2' | 'vercel'
 ): Promise<void> {
-  // #572: 書き込み（INSERT + RPC）を含む関数のため isPgWriteEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  // INSERT と使用量更新を同じ PlanetScale 接続で完結させる。
   return recordBlobFilePg(url, userPrefix, fileSize, storageType);
 }
 
@@ -216,7 +214,7 @@ export async function recordBlobFile(
 /**
  * removeBlobFile の pg 直結実装 (#572)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - blob_files の .maybeSingle() は url が PK のため LIMIT 1 + rows[0] ?? null で
  *   同じ外部挙動（0 行は warn ログ + null）。
  * - DELETE 失敗は log + `Failed to delete blob file: ...` の throw、外側 catch で
@@ -310,7 +308,7 @@ async function removeBlobFilePg(url: string): Promise<BlobFileInfo | null> {
 
 export async function removeBlobFile(url: string): Promise<BlobFileInfo | null> {
   // #572: 読み取り（削除対象の逆引き）と書き込み（DELETE + RPC）が混在する関数の
-  // ため isPgWriteEnabled() で関数全体を分岐。
+  // 同じ PlanetScale 接続内で読み取りと削除を完結させる。
   return removeBlobFilePg(url);
 }
 
@@ -324,7 +322,7 @@ export async function removeBlobFile(url: string): Promise<BlobFileInfo | null> 
 /**
  * getStorageBonusBytes の pg 直結実装 (#572)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - `streamers.select('streamer_storage_bonus(amount_mb)')` の埋め込みを
  *   streamers LEFT JOIN streamer_storage_bonus の 1 クエリで置き換える
  *   （往復回数のパリティ）。JOIN 条件はこの埋め込みが表す FK リレーション
@@ -371,7 +369,7 @@ async function getStorageBonusBytesPg(twitchUserId: string): Promise<number> {
 }
 
 export async function getStorageBonusBytes(twitchUserId: string): Promise<number> {
-  // #572: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // PlanetScale の読み取りをこの関数に閉じ込める。
   return getStorageBonusBytesPg(twitchUserId);
 }
 
@@ -387,7 +385,7 @@ export async function getStorageBonusBytes(twitchUserId: string): Promise<number
 /**
  * hasStorageBonusByTwitchUserId の pg 直結実装 (#572)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - `streamer_storage_bonus!inner(id)` + 埋め込み列への .eq() は「条件に合う
  *   ボーナスを持つ streamers 行だけを返す」INNER JOIN のため、
  *   INNER JOIN ... ON (FK 一致 AND type AND memo) が等価。存在確認だけなので
@@ -435,7 +433,7 @@ export async function hasStorageBonusByTwitchUserId(
   type: string,
   memo: string
 ): Promise<boolean> {
-  // #572: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // PlanetScale の読み取りをこの関数に閉じ込める。
   return hasStorageBonusByTwitchUserIdPg(twitchUserId, type, memo);
 }
 
@@ -467,7 +465,7 @@ export const shouldShowVoteCampaign = cache(async function shouldShowVoteCampaig
 /**
  * getAllStorageUsage の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - storage_usage を bytes_used 降順で全件取得。`.order('bytes_used', { ascending: false })`
  *   は orderBy(desc(...)) が等価。
  * - 失敗時は log + throw（recordBlobFilePg 等と同じ「取得できないなら呼び出し元に
@@ -513,6 +511,6 @@ export async function getAllStorageUsage(): Promise<Array<{
   bytesUsed: number;
   blobCount: number;
 }>> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // PlanetScale の読み取りをこの関数に閉じ込める。
   return getAllStorageUsagePg();
 }

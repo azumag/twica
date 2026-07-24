@@ -109,6 +109,11 @@ jobs:
           NEXT_PUBLIC_TWITCH_CLIENT_ID: ${{ secrets.NEXT_PUBLIC_TWITCH_CLIENT_ID }}
           NEXT_PUBLIC_CF_IMAGES_ENABLED: ${{ secrets.NEXT_PUBLIC_CF_IMAGES_ENABLED }}
 
+      - name: Verify deployable artifacts are Supabase-independent
+        # CI と deploy の時間差・workflow_dispatch 直行のどちらでも同じ境界を
+        # 強制し、検査していない OpenNext Worker を公開しない。
+        run: npm run check:supabase-shutdown -- --require-open-next
+
       - name: Deploy
         run: ${{ steps.env.outputs.deploy_cmd }}
         env:

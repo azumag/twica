@@ -1,3 +1,9 @@
+// rate-limit は src/middleware.ts から到達し、Cloudflare Workers の Edge runtime でも
+// 実行される。そのため DB 永続化を伴う logger.server を import してはならない。
+// rate-limit の warn/error は Cloudflare Observability の Workers console logs だけを
+// 記録先とする: middleware は全リクエスト前段で動くため、DB I/O を足すと Edge
+// compatibility・遅延・障害時の fail-open 契約を同時に損なう。詳細な永続化が必要な
+// server-only Route Handler は、その境界で logger.server を別途使用する。
 import { logger } from "./logger";
 
 /**

@@ -285,8 +285,12 @@ const HYPERDRIVE_BINDING_NAME = 'HYPERDRIVE_PLANETSCALE'
  * 接続文字列の解決。優先順:
  *   (1) Cloudflare env の HYPERDRIVE_PLANETSCALE
  *   (2) process.env.DATABASE_URL_PLANETSCALE（next dev）
- *   (3) process.env.DATABASE_URL（CLI/テスト用の一般的な別名）
- *   (4) どれも無ければ fail-closed
+ *   (3) どれも無ければ fail-closed
+ *
+ * `DATABASE_URL` は意図的に参照しない。名前が汎用的な接続文字列を本番の
+ * データ経路へ許可すると、別サービス（退役済み Supabase を含む）の誤設定を
+ * 静かに受理し得る。接続先を明示した allow-list のみを使う fail-closed は、
+ * 最小権限と誤配線の早期検知を両立するための境界である。
  */
 function resolveConnectionString(
   cfEnv: Record<string, unknown> | null,
@@ -301,14 +305,9 @@ function resolveConnectionString(
     return planetscaleDatabaseUrl
   }
 
-  const databaseUrl = process.env.DATABASE_URL?.trim()
-  if (databaseUrl) {
-    return databaseUrl
-  }
-
   throw new Error(
     `[db:pg] No PlanetScale connection configured: bind ${HYPERDRIVE_BINDING_NAME} ` +
-      'in wrangler.toml (Workers) or set DATABASE_URL_PLANETSCALE / DATABASE_URL (local dev).',
+      'in wrangler.toml (Workers) or set DATABASE_URL_PLANETSCALE (local dev).',
   )
 }
 

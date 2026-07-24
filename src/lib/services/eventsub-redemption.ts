@@ -479,7 +479,7 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
     let streamer: { chat_announcement_enabled: boolean } | null = null;
     try {
       // Sold-out redemptionも成功時と同じpost-commit境界で扱う。設定読取を
-      // PlanetScaleへ固定し、退役Supabase経路がポイント返還通知を壊さないようにする。
+      // PlanetScaleへ固定し、退役退役済み Supabase 経路がポイント返還通知を壊さないようにする。
       const rows = await withDbRetry(
         async () => {
           const { db } = await getDb();

@@ -12,9 +12,8 @@ import { logger } from '@/lib/logger.server'
 // #572 (#570 パイロット踏襲): pg 直結経路。
 // handleLinkedAccountCallback の DB アクセス（streamers 読み取り +
 // twitch_bot_accounts の update/insert + streamer_chat_sender_settings の upsert）
-// は書き込みを含む一連の処理のため、isPgWriteEnabled() で DB アクセス全体を分岐
-// する（token-manager.ts 冒頭のフラグ使い分け方針と同じ）。既存 supabase-js 実装は
-// 1 文字も変えず（else 節への再インデントのみ）、フラグ未設定時は従来どおり動く。
+// は書き込みを含む一連の処理のため、DB アクセス全体を PlanetScale へ統一する。
+// 読み取りと書き込みの接続先を分けないことで、リンク状態の整合性を保つ。
 // -----------------------------------------------------------------------------
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -39,7 +38,7 @@ function redirectToSettings(baseUrl: string, params: Record<string, string>) {
  * 外部挙動。DB エラーをここで throw すると呼び出し元の外側 catch により
  * 'bot_auth_failed' という別のエラー種別に化けてしまうため、必ず値で返す）。
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - streamers / 既存 BOT アカウントの .maybeSingle() は一意条件
  *   （streamers.twitch_user_id UNIQUE (00001) / twitch_bot_accounts の部分一意
  *   インデックス idx_twitch_bot_accounts_streamer_owner (00040): (streamer_id,
@@ -267,9 +266,7 @@ export async function handleLinkedAccountCallback({
 
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
 
-    // #572: DB 永続化（書き込みを含む一連の処理）のみをフラグで分岐する。
-    // フラグ未設定（既定 'postgrest'）時は else 節の既存 supabase-js 実装が
-    // そのまま実行され、挙動は完全に不変（1 文字も変更していない。再インデントのみ）。
+    // DB 永続化（書き込みを含む一連の処理）は PlanetScale の単一接続で実行する。
     const pgBotError = await persistLinkedAccountPg({
       streamerTwitchUserId: session.twitchUserId,
       botUser,

@@ -6,11 +6,7 @@ import { logger } from '@/lib/logger.server'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { getTosAcceptanceRow } from '@/lib/user-data'
 // -----------------------------------------------------------------------------
-// #711 (#570/#572 踏襲): pg 直結の書き込み経路。
-// 既存 supabase-js 実装（POST の isPgWriteEnabled() 分岐より下、GET の
-// getTosAcceptanceRow 経由の postgrest 実装）は 1 文字も変えずに残す
-// （フラグ未設定時は完全に従来どおり動く）。getDb() は withDbRetry の queryFn 内で
-// 呼ぶ規約（src/lib/db/retry.ts 参照）。
+// 利用規約同意の書き込みは PlanetScale の単一接続を使う。
 // -----------------------------------------------------------------------------
 import { getDb } from '@/lib/db/client'
 
@@ -40,9 +36,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // #711: 読み取り専用ではなく users への UPDATE（書き込み）のため
-    // isPgWriteEnabled() で分岐する（読み取り専用フラグ pg-read では postgrest
-    // 経路のまま。ファイル冒頭のコメント・token-manager.ts の使い分け方針を参照）。
+    // users への UPDATE は PlanetScale の単一接続で実行する。
     //
     // タイムスタンプは withDbRetry の queryFn の「外」で一度だけ計算する。
     // queryFn の中で new Date() を呼ぶと、接続断などでリトライされるたびに
@@ -68,7 +62,6 @@ export async function POST(request: NextRequest) {
         { idempotent: true }
       )
     } catch (error) {
-      // postgrest 経路の if (error) 分岐と同じ 500 JSON・ログメッセージを再現する
       // （エラー時のレスポンス/ログのパリティ維持がこのルートの必須要件）。
       logger.error('Failed to update TOS acceptance', {
         error: error instanceof Error ? error.message : String(error),
@@ -81,7 +74,6 @@ export async function POST(request: NextRequest) {
     }
 
     // ログの acceptedAt は DB 書き込みに使った値をそのまま再利用する。
-    // 直後の postgrest 経路（このファイルの下方）は書き込み用とログ用で
     // new Date().toISOString() を独立に2回呼んでおり、理論上ミリ秒単位で
     // ズレうる。この差は内部ログにのみ現れ、レスポンス JSON の形状には影響しない
     // ため、pg 経路では冪等性の根拠を明確にするためにあえて再現せず同一値を使う。
@@ -122,15 +114,12 @@ export async function GET() {
     }
 
     // #711: users.tos_accepted_at の読み取りは user-data.ts の
-    // getTosAcceptanceRow に委譲（isPgReadEnabled() による経路分岐は関数内部で
     // 行われるため、呼び出し側はフラグを意識しない。#570 パイロットと同じ方針）。
     //
-    // getTosAcceptanceRow は supabase-js の { data, error } の外形に倣った
     // { row, error } を throw せず返す契約。同じクエリでも呼び出し元ごとに
     // エラー時挙動が異なるのが既存の正（この GET は error 検査 → 500、
     // tos/page.tsx は error 無視）のため、判断を呼び出し元に残す設計
     // （詳細は src/lib/user-data.ts の TosAcceptanceRowResult コメント参照）。
-    // ここは既存 postgrest 実装の if (error) 分岐と同じ 500 JSON・ログメッセージを
     // 両ドライバで返す。
     const { row: user, error } = await getTosAcceptanceRow(session.twitchUserId)
 

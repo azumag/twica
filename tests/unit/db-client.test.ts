@@ -37,8 +37,8 @@ describe('getDb (#570 client.ts)', () => {
   })
 
   it('Workers: HYPERDRIVE バインディングの接続文字列を最優先で使う', async () => {
-    // DATABASE_URL も設定されている状態で HYPERDRIVE 側が勝つことを検証
-    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@local-host:5432/localdb')
+    // 明示的なローカル PlanetScale URL も設定されている状態で binding 側が勝つことを検証
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@local-host:5432/localdb')
     const ctx = { waitUntil: vi.fn() }
     mocks.getCloudflareContext.mockResolvedValue({
       env: {
@@ -57,7 +57,7 @@ describe('getDb (#570 client.ts)', () => {
   })
 
   it('Workers: 同一リクエスト（同一 ctx）ではハンドルを再利用し、別リクエストでは新規生成する', async () => {
-    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@local-host:5432/localdb')
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@local-host:5432/localdb')
     const ctxA = { waitUntil: vi.fn() }
     const ctxB = { waitUntil: vi.fn() }
     mocks.getCloudflareContext.mockResolvedValue({ env: {}, ctx: ctxA })
@@ -73,8 +73,8 @@ describe('getDb (#570 client.ts)', () => {
     expect(third).not.toBe(first)
   })
 
-  it('Node フォールバック: getCloudflareContext が throw したら DATABASE_URL のシングルトンを使う', async () => {
-    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@dev-host:5432/devdb')
+  it('Node フォールバック: getCloudflareContext が throw したら DATABASE_URL_PLANETSCALE のシングルトンを使う', async () => {
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@dev-host:5432/devdb')
     mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
 
     const { getDb } = await importClient()
@@ -86,8 +86,8 @@ describe('getDb (#570 client.ts)', () => {
     expect(second).toBe(first)
   })
 
-  it('接続先が未設定（HYPERDRIVE なし・DATABASE_URL なし）なら文脈が分かるメッセージで throw する', async () => {
-    vi.stubEnv('DATABASE_URL', undefined)
+  it('接続先が未設定（HYPERDRIVE なし・DATABASE_URL_PLANETSCALE なし）なら文脈が分かるメッセージで throw する', async () => {
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', undefined)
     mocks.getCloudflareContext.mockResolvedValue({ env: {}, ctx: { waitUntil: vi.fn() } })
 
     const { getDb } = await importClient()
@@ -95,11 +95,20 @@ describe('getDb (#570 client.ts)', () => {
   })
 
   it('Node フォールバックでも接続先未設定なら throw する', async () => {
-    vi.stubEnv('DATABASE_URL', undefined)
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', undefined)
     mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
 
     const { getDb } = await importClient()
     await expect(getDb()).rejects.toThrow(/DATABASE_URL/)
+  })
+
+  it('汎用 DATABASE_URL だけでは接続せず、誤ったサービスへの配線を fail-closed する', async () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@unexpected-host:5432/unexpected')
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', undefined)
+    mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
+
+    const { getDb } = await importClient()
+    await expect(getDb()).rejects.toThrow(/DATABASE_URL_PLANETSCALE/)
   })
 })
 
@@ -173,11 +182,11 @@ describe('stripPostgresJsIncompatibleSslParams (PlanetScale sslrootcert非互換
   })
 
   it('createHandle経由: sslrootcert付き接続文字列でも postgres.js の options.connection に sslrootcert が漏れず、sslmode(verify-full)は維持される', async () => {
-    // Node フォールバック経路（next dev）で DATABASE_URL に sslrootcert 付き接続文字列を
+    // Node フォールバック経路（next dev）で DATABASE_URL_PLANETSCALE に sslrootcert 付き接続文字列を
     // 与え、getDb() が内部で createHandle() を呼ぶ実際の経路を通して検証する
     // （fixture直呼びだけでなく、実際に postgres() へ渡る値まで確認する）。
     vi.stubEnv(
-      'DATABASE_URL',
+      'DATABASE_URL_PLANETSCALE',
       'postgres://user:pass@supabase-host:5432/db?sslmode=verify-full&sslrootcert=system'
     )
     mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
@@ -198,7 +207,7 @@ describe('stripPostgresJsIncompatibleSslParams (PlanetScale sslrootcert非互換
   // sslmode が付いていない sslrootcert=system 単体のURLで、修正前は options.ssl が
   // false（平文接続）になっていた（本テストがある行を参照してこの回帰を検知する）。
   it('Major-1 createHandle経由: sslrootcert=system のみ（sslmode無し）でも options.ssl が verify-full になり、平文接続へ落ちない', async () => {
-    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@supabase-host:5432/db?sslrootcert=system')
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@supabase-host:5432/db?sslrootcert=system')
     mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
 
     const { getDb } = await importClient()

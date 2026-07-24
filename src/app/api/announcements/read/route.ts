@@ -7,9 +7,6 @@ import { ERROR_MESSAGES } from '@/lib/constants'
 import { logger } from '@/lib/logger.server'
 import type { ApiRateLimitResponse } from '@/types/api'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgWriteEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { getDb } from '@/lib/db/client'
 
@@ -19,7 +16,6 @@ import { announcementReads as announcementReadsTable } from '@/lib/db/schema'
 /**
  * announcement_reads への UPSERT の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応: onConflict('announcement_id,twitch_user_id') は
  * この複合カラムに対する UNIQUE 制約を conflict target とした
  * INSERT ... ON CONFLICT DO UPDATE と等価。payload に含まれる列は conflict
  * target 自身（announcement_id / twitch_user_id）のみで、それ以外の列
@@ -27,7 +23,6 @@ import { announcementReads as announcementReadsTable } from '@/lib/db/schema'
  * ＝ DO NOTHING と実質的に同じ最終状態になる。ここでは意図をそのまま表せる
  * onConflictDoNothing を使う。read_at の DB 側 DEFAULT now() は INSERT 時のみ
  * 適用されるため、重複呼び出しで既読日時が上書きされることもない（既存の
- * postgrest 経路と同じ挙動）。
  *
  * 書き込む値は固定（announcementId / twitchUserId）のため、接続断リトライしても
  * 同じ内容を書く UPSERT ＝冪等。
@@ -110,7 +105,7 @@ export async function POST(request: NextRequest) {
     }
 
     // UNIQUE制約により重複INSERTはエラーになるため、upsertで冪等性を確保
-    // #663: 書き込みのため isPgWriteEnabled() で分岐。
+    // #663: 書き込みのため PlanetScale の単一接続を使用。
     const { error } = await upsertAnnouncementReadPg(announcementId, session.twitchUserId)
 
     if (error) {

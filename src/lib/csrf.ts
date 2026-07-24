@@ -25,7 +25,11 @@
 
 import { cookies } from 'next/headers'
 
-import { logger } from './logger'
+// CSRF 検証は Route Handler の server 境界で Cookie と session を扱う。想定外の
+// 検証例外は監査・復旧の対象なので、共通 console logger だけでなく errors テーブルへ
+// 非同期記録する server-only logger を使う。middleware からこの module を import
+// しないことは import-boundary test が保証する。
+import { logger } from './logger.server'
 import { reportSecurityError } from './sentry/error-handler'
 import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES, getSessionCookieOptions, getDeleteCookieOptions } from './constants'
 import { parseSession, signSession, type Session, verifySession } from './session'

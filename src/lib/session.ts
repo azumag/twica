@@ -1,7 +1,10 @@
 import { cookies } from 'next/headers'
 import { cache } from 'react'
 import { BROADCASTER_TYPE, COOKIE_NAMES, getDeleteCookieOptions, getSessionCookieOptions } from './constants'
-import { logger } from './logger'
+// next/headers を使うこのモジュールは request の Node/server 側でのみ実行される。
+// 想定外の Cookie 解析失敗は console 出力だけで終わらせず errors テーブルにも残すため、
+// client/Edge 到達可能な共有 logger ではなく server-only logger を明示的に選ぶ。
+import { logger } from './logger.server'
 import { type SessionPayload, parseSession, verifySession } from './session-cookie'
 
 export { parseSession, signSession, verifySession } from './session-cookie'

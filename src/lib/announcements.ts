@@ -104,13 +104,12 @@ export function hasAnnouncementBeenPublishedAt(
 }
 
 /**
- * getUnreadAnnouncements の Drizzle（pg 直結）実装 (#570 パイロット)
+ * getUnreadAnnouncements の PlanetScale 実装。
  *
- * 旧全体ドライバーフラグ=pg-read/pg のときのみ使われる、PostgREST 実装と同一のクエリ意味論を
- * 持つ読み取り経路。戻り値の形状（snake_case キー、日付は文字列）を既存実装と
- * 完全に一致させることが要件（呼び出し側は経路を意識しない）。
+ * 戻り値の形状（snake_case キー、日付は文字列）は移行前の旧 PostgREST 実装と
+ * 一致させ、呼び出し側が DB 接続方式を意識しないようにする。
  *
- * PostgREST 実装との対応:
+ * 移行前の旧 PostgREST 実装との意味論対応:
  * - announcements: is_published = true を created_at 降順で取得
  *   （表示期限の判定は既存実装と同じく isAnnouncementVisibleAt でサーバー側 JS 処理）
  * - announcement_reads: twitch_user_id 一致の既読 ID を取得
@@ -120,19 +119,19 @@ export function hasAnnouncementBeenPublishedAt(
  * 読み取り専用クエリのため冪等（idempotent: true）としてリトライを opt-in する。
  * timestamptz 列は Drizzle スキーマの mode: 'string' により文字列のまま返る
  * （Date オブジェクトへの変換はしない。既存実装のパリティ要件）。
- * 表現形式（#688 で更新）: pg 直結・PostgREST いずれも ISO 8601
+ * 表現形式（#688 で更新）: PlanetScale と移行前の旧 PostgREST はいずれも ISO 8601
  * （'2026-03-10T12:00:00.123456+00:00'）を返す。pg 直結は元々 PG テキスト形式
  * （'2026-03-10 12:00:00.123456+00'）で timestamptz を返していたが、Safari(JSC) の
  * new Date() ではその形式のパースが保証されないため、src/lib/db/client.ts の
  * installIsoTimestampParsers() が接続確立時に ISO 8601 へ正規化するパーサへ
  * 差し替えている（#688）。本モジュールの消費側（isAnnouncementVisibleAt と
  * AnnouncementBanner）は Date.parse 経由でしか日付を扱わないため、正規化前の
- * PG テキスト形式でも実害はなかったが、正規化後は PostgREST 経路と文字列表現も
+ * PG テキスト形式でも実害はなかったが、正規化後は旧 PostgREST 実装と文字列表現も
  * 完全一致する。
  */
 async function getUnreadAnnouncementsPg(twitchUserId: string): Promise<UnreadAnnouncement[]> {
   // どちらのクエリで失敗したかを catch 節のログで判別するためのフェーズタグ。
-  // PostgREST 経路が annError / readError を別メッセージでログしているのに合わせ、
+  // 移行前の旧 PostgREST 実装が annError / readError を別メッセージでログしていたのに合わせ、
   // preview 切替検証（wrangler tail での原因切り分け）を容易にする。
   let phase: 'announcements' | 'reads' = 'announcements'
   try {
@@ -195,19 +194,19 @@ async function getUnreadAnnouncementsPg(twitchUserId: string): Promise<UnreadAnn
         title: a.title,
         body: a.body,
         // severity は DB の CHECK 制約で 'info' | 'warning' | 'critical' が保証
-        // されている。PostgREST 経路も型検証なしで同じ生値を返しており、既存の
+        // されている。旧 PostgREST 実装も型検証なしで同じ生値を返しており、既存の
         // 戻り値型に合わせるキャスト（値の変換はしない）。
         severity: a.severity as UnreadAnnouncement['severity'],
         published_at: a.published_at,
         // created_at の DDL は DEFAULT now()（NOT NULL なし）のため Drizzle 型は
-        // string | null だが、実運用で NULL にはならない。PostgREST 経路の
+        // string | null だが、実運用で NULL にはならない。旧 PostgREST 実装の
         // 戻り値型（string）に合わせるキャスト（値の変換はしない）。
         created_at: a.created_at as string,
       }))
   } catch (error) {
     // 既存実装と同じく「取得失敗時は未読バナーを出さない」安全側の挙動。
     // phase により announcements / reads どちらの取得で失敗したかを判別できる
-    // （PostgREST 経路の annError / readError 別ログと同等の粒度）。
+    // （旧 PostgREST 実装の annError / readError 別ログと同等の粒度）。
     logger.error(`Error in getUnreadAnnouncements (pg:${phase})`, { error })
     return []
   }
@@ -221,10 +220,7 @@ async function getUnreadAnnouncementsPg(twitchUserId: string): Promise<UnreadAnn
  * @returns 未読お知らせ一覧（公開日時の降順）
  */
 export const getUnreadAnnouncements = cache(async (twitchUserId: string): Promise<UnreadAnnouncement[]> => {
-  // #570 パイロット: 旧全体ドライバーフラグ=pg-read/pg のときのみ Drizzle 直結経路へ切り替える。
-  // フラグ未設定時（既定 'postgrest'）はこの分岐を素通りし、以下の既存 supabase-js
-  // 実装が従来と完全に同一に実行される（挙動不変が Phase 1 の最重要安全要件）。
-                                              return getUnreadAnnouncementsPg(twitchUserId)
+  return getUnreadAnnouncementsPg(twitchUserId)
 })
 
 /**
@@ -341,8 +337,5 @@ async function getAllAnnouncementsPg(twitchUserId: string): Promise<Announcement
  * @returns 全お知らせ一覧（既読フラグ付き、作成日時の降順）
  */
 export async function getAllAnnouncements(twitchUserId: string): Promise<AnnouncementWithReadStatus[]> {
-  // #570 パイロット踏襲: 旧全体ドライバーフラグ=pg-read/pg のときのみ Drizzle 直結経路へ切り替える。
-  // フラグ未設定時（既定 'postgrest'）はこの分岐を素通りし、以下の既存 supabase-js
-  // 実装が従来と完全に同一に実行される（挙動不変が Phase 1 の最重要安全要件）。
   return getAllAnnouncementsPg(twitchUserId)
 }

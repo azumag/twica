@@ -20,12 +20,7 @@ import { hasTwitchSub } from '@/lib/twitch/sub-check'
 import { PLAN_PRIORITY, PLAN_STORAGE_BONUS } from '@/lib/plan-constants'
 import { logPerf, perfStart } from '@/lib/perf'
 import type { PlanType } from '@/lib/plan-constants'
-// -----------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。
-// getLicensePlan / getCachedTwitchSubPlan はどちらも読み取り専用のため
-// isPgReadEnabled() で分岐する。既存 supabase-js 実装は 1 文字も変えず、
-// フラグ未設定時は完全に従来どおり動く。
-// -----------------------------------------------------------------------------
+// PlanetScale-only: プラン判定はすべて同じ接続先から読み取り、DB 経路の切替は行わない。
 import { and, eq, inArray } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
 
@@ -103,7 +98,7 @@ export const getUserPlanSnapshot = cache(async function getUserPlanSnapshot(twit
 /**
  * getLicensePlan の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - `.select('plan_type, support_codes!inner(status)')` の埋め込み + `.in('support_codes.status', ...)`
  *   は user_licenses INNER JOIN support_codes（FK: user_licenses.code_id →
  *   support_codes.id、migration 00017）+ status の inArray() が等価。
@@ -158,15 +153,14 @@ async function getLicensePlanPg(twitchUserId: string): Promise<PlanType> {
  * user_licenses と support_codes(status) をJOINし、有効なコードに紐づくライセンスのみ有効とする。
  */
 async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  // PlanetScale の読み取りをこの関数に閉じ込め、呼び出し側に接続方式を露出しない。
   return getLicensePlanPg(twitchUserId)
 }
 
 /**
  * getCachedTwitchSubPlan の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - `.maybeSingle()` は twitch_user_id が UNIQUE ではない前提（database.ts に制約
  *   記載なし）だが、既存実装が maybeSingle（0〜1行）を仮定しているため、
  *   LIMIT 1 + rows[0] ?? null で同じ外部挙動にする。
@@ -202,7 +196,7 @@ async function getCachedTwitchSubPlanPg(twitchUserId: string): Promise<PlanType>
 }
 
 async function getCachedTwitchSubPlan(twitchUserId: string): Promise<PlanType> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
+  // PlanetScale の読み取りをこの関数に閉じ込める。
   return getCachedTwitchSubPlanPg(twitchUserId)
 }
 

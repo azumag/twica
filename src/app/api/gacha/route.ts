@@ -99,8 +99,8 @@ export async function POST(request: NextRequest) {
     // 何度でもドローできる」余地は意図して残している（配信者自身の持ち物に対する
     // QA行為であり、他者への経済的影響がないため許容する設計判断）。
     //
-    // 旧全体ドライバーフラグ/旧ガチャドライバーフラグどちらの経路でも動くよう、生クエリではなく
-    // pg/postgrest両対応の既存ヘルパー(getStreamerIdByTwitchUserId, #711)を再利用する。
+    // 生クエリを重複させず、PlanetScale を読む既存ヘルパー
+    // getStreamerIdByTwitchUserId() を再利用する。
     const ownedStreamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
     if (!ownedStreamer || ownedStreamer.id !== streamerId) {
       return NextResponse.json(

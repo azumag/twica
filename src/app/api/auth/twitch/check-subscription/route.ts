@@ -9,11 +9,8 @@ import { ERROR_MESSAGES } from '@/lib/constants'
 
 import { logger } from '@/lib/logger.server'
 // ---------------------------------------------------------------------------
-// #663 (#572 sub-check.ts の hasTwitchSub 踏襲): pg 直結経路。フラグ未設定時
-// （既定 'postgrest'）は isPgWriteEnabled() が false を返すため getDb() は
-// 一切呼ばれず、既存の supabase-js 経路が従来どおり実行される。
 // このルートは読み取り（読み戻し検証）と書き込み（キャッシュ保存）が混在するため
-// isPgWriteEnabled() で分岐する（token-manager.ts 冒頭のフラグ使い分け方針）。
+// PlanetScale の単一接続を使用する（token-manager.ts 冒頭のフラグ使い分け方針）。
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -82,7 +79,6 @@ async function persistSubscriptionResultPg(payload: {
 
 /**
  * 保存確認の読み戻し（persistedUser が空だった場合の検証読み取り）の pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約により
  * 最大 1 行のため LIMIT 1 + rows[0] ?? null で同じ外部挙動。
  */
 async function verifySubscriptionPersistPg(
@@ -200,7 +196,7 @@ export async function POST(request: Request) {
     // users 行が欠けている環境でも保存できるよう upsert を使用する。
 
     const verifiedAt = new Date().toISOString()
-    // #663: 書き込み（読み戻し検証を含む）のため isPgWriteEnabled() で分岐。
+    // #663: 書き込み（読み戻し検証を含む）のため PlanetScale の単一接続を使用。
     const { data: persistedUser, error: persistError } = await persistSubscriptionResultPg({
           twitchUserId: session.twitchUserId,
           twitchUsername: session.twitchUsername,

@@ -72,8 +72,8 @@ export async function getTosAcceptanceRow(twitchUserId: string): Promise<TosAcce
     )
     return { row: rows[0] ?? null, error: null }
   } catch (error) {
-    // pg 直結（postgres.js/Drizzle）はクエリエラーを throw するため、ここで
-    // 捕捉して postgrest の { data: null, error } と同じ外形へ写像する。
+    // PlanetScale の DB ドライバーはクエリエラーを throw するため、ここで
+    // 捕捉して呼び出し側が扱う { data: null, error } 形状へ写像する。
     // ログを出す理由（チームレビュー SRE 指摘）: error を無視する呼び出し元
     // （tos/page.tsx）経由の pg 障害は、ここでログしないと withDbRetry の
     // console warn（errors テーブル→GitHub Issue 自動起票の対象外）しか痕跡が
@@ -81,8 +81,7 @@ export async function getTosAcceptanceRow(twitchUserId: string): Promise<TosAcce
     // なる。トレードオフ: error を検査する呼び出し元（route.ts GET）経由では
     // route 側の既存ログと合わせて同一障害が errors テーブルに2行記録されるが、
     // 二重起票のノイズより page 経路の可視性を優先する（クロスレビューで
-    // セキュリティ・QA 両視点の異議なしを確認済み）。この catch は
-    // 旧全体ドライバーフラグ=pg-read/pg 時のみ実行されるため、フラグ未設定時のログは不変。
+    // セキュリティ・QA 両視点の異議なしを確認済み）。
     logger.error('Failed to fetch tos_accepted_at (pg), mapping to { row: null, error }', {
       twitchUserId,
       error,
@@ -98,10 +97,9 @@ export async function getTosAcceptanceRow(twitchUserId: string): Promise<TosAcce
  * users.twitch_has_sub を1行取得する。
  * 呼び出し元: src/app/dashboard/account/page.tsx の getTwitchSubInfo
  *
- * 既存の supabase-js 実装は `.maybeSingle()` の `{ data, error }` を分割代入する際に
- * error を無視し、常に data（クエリエラー時は通常 null）を返す設計になっている
- * （呼び出し元の try/catch は「例外が飛んだ場合」だけを保護しており、業務エラーは
- * 素通りする）。pg 直結（postgres.js/Drizzle）はクエリエラーを必ず throw するため、
+ * 移行前の旧 Supabase 実装は `.maybeSingle()` の `{ data, error }` を分割代入する際に
+ * error を無視し、常に data（クエリエラー時は通常 null）を返していた。
+ * PlanetScale の DB ドライバーはクエリエラーを必ず throw するため、
  * 同じ「エラーを握りつぶして null を返す」挙動にするには本関数内で明示的に catch
  * する必要がある。呼び出し元の catch に丸投げすると外部挙動は変わらないが、
  * 呼び出し元の実装に依存せずこのヘルパー単体でも安全側（null 返却）に倒れる方が
@@ -127,7 +125,7 @@ export async function getTwitchSubRow(
     )
     return rows[0] ?? null
   } catch (error) {
-    // 既存 supabase-js 実装が業務エラーを無視して null を返すのと同じ外部挙動
+    // 移行前の旧 Supabase 実装が業務エラーを無視して null を返していたのと同じ外部挙動
     // （アカウント設定ページのレンダリングをブロックしない安全側の判断）。
     // ログレベルは warn ではなく error にする（厳格レビュー指摘）: パイロット群
     // （announcements.ts:209 の getUnreadAnnouncements、dashboard-data.ts:126 の

@@ -13,9 +13,6 @@ import { randomBytesHex } from '@/lib/crypto-utils'
 import { getBaseUrl } from '@/lib/url-utils'
 import { validateCSRFToken } from '@/lib/csrf'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -115,7 +112,7 @@ export async function POST(request: Request) {
 
     // 既存の追加スコープも再認証要求に含める（user:write:chat などの消失防止）
     // Include already granted additional scopes so re-auth does not drop existing permissions.
-    // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+    // #663: 読み取り専用のため PlanetScale の単一接続を使用。
     const { data: user, error: scopeFetchError } = await fetchPreservedScopesPg(session.twitchUserId)
 
     // 42703 は twitch_scopes 列未配備のデプロイ窓だけを表す。その他の失敗は

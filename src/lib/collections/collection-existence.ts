@@ -140,7 +140,7 @@ export type CollectionExistenceResult =
 /**
  * checkCollectionHasActiveCards の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - `{ count: "exact", head: true }` は drizzle-orm の count() ヘルパー
  *   （`sql`count(*)`.mapWith(Number)` 相当）で件数のみ取得する形に置き換える。
  * - DEFAULT_PACK_SENTINEL の場合は isNull(collection_name)、それ以外は

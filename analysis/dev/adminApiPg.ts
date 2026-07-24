@@ -38,7 +38,7 @@ import postgres from 'postgres'
  * analysis 専用の Postgres 接続文字列を解決する。
  * `DASHBOARD_DATABASE_URL` が未設定の場合、無関係な値へ黙ってフォールバック
  * させず明示的に失敗させる（#570 の DATABASE_URL 解決と同じ「未設定は安全側で
- * throw」方針）。Supabase経路撤去後はこのURLが唯一のDB接続設定である。
+ * throw」方針）。退役済み Supabase 経路撤去後はこのURLが唯一のDB接続設定である。
  *
  * 接続ロールの権限要件: `get_analysis_*()` (00073_add_analysis_dashboard_rpcs.sql) は
  * `REVOKE ALL FROM PUBLIC; GRANT EXECUTE ... TO service_role` のため、
@@ -622,7 +622,7 @@ export async function createSupportCodePg(
  * APIとしては「対象なし」と「DB障害」を分離するほうが正しい。
  *
  * 【もう1つの既知の非対称性】PATCH body に `status` が無い場合（`params.status`
- * が `undefined`）、Supabase経路は JSON.stringify で `status` キー自体が
+ * が `undefined`）、退役済み Supabase 経路は JSON.stringify で `status` キー自体が
  * 消えるため実質 `updated_at` のみの更新として 200 成功する。pg直結側は
  * postgres.js が `undefined` バインドを UNDEFINED_VALUE で即 throw するため
  * 500 になる。UIは常に `status` を送るため実害はないが、`getGachaSummaryPg`
@@ -747,11 +747,11 @@ export async function listTwitchSubsPg(
  * `status` の値バリデーションは行わない（CHECK制約に合致しない値は
  * 単に0件ヒットになるだけで実害がないため、既存挙動を維持）。
  *
- * 条件は `status !== 'all'`（Supabase経路と厳密に同一）で判定する。
+ * 条件は `status !== 'all'`（退役済み Supabase 経路と厳密に同一）で判定する。
  * `status &&` のような truthy ガードは付けない: ルート側
  * （`localAdminApi.ts`, `url.searchParams.get('status') || 'all'`）では
  * 空文字が渡る経路は存在しないため実害はないが、`status=''` が渡った場合に
- * Supabase経路は絞り込みを適用（0件）する一方 truthy ガードだと pg経路だけ
+ * 退役済み Supabase 経路は絞り込みを適用（0件）する一方 truthy ガードだと pg経路だけ
  * 絞り込みを適用しない（全件を返す）fail-open な非対称になり得るため、
  * 将来の呼び出し元追加に備えて条件式そのものを揃えておく。
  */

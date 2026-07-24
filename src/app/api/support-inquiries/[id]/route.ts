@@ -9,9 +9,6 @@ import { handleApiError } from '@/lib/error-handler'
 import { logger } from '@/lib/logger.server'
 import type { ApiRateLimitResponse } from '@/types/api'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() / isPgWriteEnabled() が false を返すため getDb() は一切
-// 呼ばれず、既存の supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { and, asc, eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -31,7 +28,6 @@ interface SupportInquiryDetailDriverError {
 
 /**
  * GET /api/support-inquiries/[id] の問い合わせ本体取得の pg 直結実装 (#663)
- * PostgREST 実装との対応: `.single()` は id が PK のため LIMIT 1 + rows[0] ?? null
  * で同じ外部挙動（0 行ならルート側で INQUIRY_NOT_FOUND の 404 を返す）。
  */
 async function fetchInquiryByIdPg(
@@ -76,7 +72,6 @@ async function fetchInquiryByIdPg(
 
 /**
  * GET /api/support-inquiries/[id] のメッセージ一覧取得の pg 直結実装 (#663)
- * PostgREST 実装との対応: inquiry_id で絞り込み created_at 昇順で取得するだけの
  * 単純な読み取り。
  */
 async function fetchInquiryMessagesPg(
@@ -115,7 +110,6 @@ async function fetchInquiryMessagesPg(
 /**
  * DELETE /api/support-inquiries/[id] の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応: `.delete().eq(id).eq(twitch_user_id).select('id').single()`
  * は `.delete().where(and(eq(id), eq(twitch_user_id))).returning({ id })` の
  * rows[0] ?? null で同じ外部挙動（対象行なし・他ユーザー所有のいずれも 0 行削除
  * となり、ルート側で INQUIRY_NOT_FOUND の 404 を返す）。
@@ -188,7 +182,7 @@ export async function GET(
       )
     }
 
-    // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+    // #663: 読み取り専用のため PlanetScale の単一接続を使用。
     const { data: inquiry, error: inquiryError } = await fetchInquiryByIdPg(id, session.twitchUserId)
 
     if (inquiryError || !inquiry) {
@@ -257,7 +251,7 @@ export async function DELETE(
       )
     }
 
-    // #663: 書き込みのため isPgWriteEnabled() で分岐。
+    // #663: 書き込みのため PlanetScale の単一接続を使用。
     const { data: deletedInquiry, error } = await deleteSupportInquiryPg(id, session.twitchUserId)
 
     if (error || !deletedInquiry) {

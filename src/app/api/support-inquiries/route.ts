@@ -9,9 +9,6 @@ import { handleApiError } from '@/lib/error-handler'
 import { logger } from '@/lib/logger.server'
 import type { ApiRateLimitResponse } from '@/types/api'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() / isPgWriteEnabled() が false を返すため getDb() は一切
-// 呼ばれず、既存の supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { desc, eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -27,7 +24,6 @@ interface SupportInquiriesDriverError {
 
 /**
  * GET /api/support-inquiries の一覧取得の pg 直結実装 (#663)
- * PostgREST 実装との対応: twitch_user_id で絞り込み created_at 降順で取得する
  * だけの単純な読み取り。
  */
 async function fetchSupportInquiriesPg(
@@ -70,7 +66,6 @@ async function fetchSupportInquiriesPg(
 /**
  * POST /api/support-inquiries の新規作成の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応: `.select('id').single()` は `.returning({ id })` の
  * rows[0] で同じ外部挙動。ON CONFLICT の無い一度きりの INSERT のため非冪等
  * （既定 = リトライなし。接続断で「実際は成功したか不明」な状態のまま再送すると
  * 問い合わせの二重作成の恐れがある）。
@@ -135,7 +130,7 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+    // #663: 読み取り専用のため PlanetScale の単一接続を使用。
     const { data, error } = await fetchSupportInquiriesPg(session.twitchUserId)
 
     if (error) {
@@ -203,7 +198,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INQUIRY_BODY_TOO_LONG }, { status: 400 })
     }
 
-    // #663: 書き込みのため isPgWriteEnabled() で分岐。
+    // #663: 書き込みのため PlanetScale の単一接続を使用。
     const { data, error } = await insertSupportInquiryPg({
           twitchUserId: session.twitchUserId,
           twitchDisplayName: session.twitchDisplayName,

@@ -12,13 +12,7 @@ import { getBaseUrl } from '@/lib/url-utils'
 import { signSession } from '@/lib/session'
 import { handleLinkedAccountCallback } from '@/lib/twitch/linked-account-auth'
 import { guardWriteRedirect } from '@/lib/maintenance/guard'
-// ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() / isPgWriteEnabled() が false を返すため getDb() は一切
-// 呼ばれず、既存の supabase-js 経路が従来どおり実行される。読み取り専用のクエリは
-// isPgReadEnabled()、書き込みは isPgWriteEnabled() で分岐する（token-manager.ts
-// 冒頭のフラグ使い分け方針と同じ）。
-// ---------------------------------------------------------------------------
+// DB アクセスは PlanetScale の単一接続へ統一する。
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
 
@@ -34,7 +28,6 @@ interface AuthCallbackDriverError {
 
 /**
  * スコープ乖離チェック用の既存ユーザー読み取りの pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約
  * （migration 00001）により最大 1 行のため、LIMIT 1 + rows[0] ?? null で同じ
  * 外部挙動。
  */
@@ -68,7 +61,6 @@ async function fetchExistingUserScopesPg(
 /**
  * users への UPSERT（トークン・プロフィール保存）の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応: onConflict('twitch_user_id') の UPSERT は users の
  * twitch_user_id UNIQUE 制約（migration 00001）を conflict target とした
  * INSERT ... ON CONFLICT DO UPDATE と等価。既存経路は upsertError を検知次第
  * ログ出力後に throw し、直後の外側 catch で 'database_error' へ変換する。
@@ -123,7 +115,6 @@ async function upsertAuthUserPg(payload: {
 /**
  * streamers への UPSERT（アフィリエイト/パートナー時のみ）の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応が重要な差異: 既存経路は
  * `await supabaseAdmin.from('streamers').upsert(...)` の戻り値を分割代入せず
  * 破棄しているため、外側の try/catch は「クエリ結果の error フィールド」は
  * 一切見ておらず、fetch() 自体が reject した場合（実質的にほぼ発生しない）だけを
@@ -161,7 +152,6 @@ async function upsertAuthStreamerPg(payload: {
       { idempotent: true },
     )
   } catch (error) {
-    // 既存 postgrest 経路はこの upsert の結果（error）を確認せず無視する
     // （best-effort）。pg 直結では失敗が throw になるため catch で握りつぶし、
     // 同じ外部挙動（コールバック全体は失敗させない）に合わせる。
     logger.warn('Auth callback: Streamer upsert failed (ignored, best-effort)', {
@@ -173,7 +163,6 @@ async function upsertAuthStreamerPg(payload: {
 
 /**
  * TOS 同意確認読み取りの pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約により
  * 最大 1 行のため LIMIT 1 + rows[0] ?? null で同じ外部挙動。
  * 既知の差異: 既存経路は destructure で error を確認しないため、クエリレベルの
  * エラー時は data=null → `null?.tos_accepted_at !== null` が true と評価され
@@ -375,7 +364,7 @@ export async function GET(request: NextRequest) {
     let skipScopeSave = false
     if (!isReauthFlow && !scopeRestoreFailed && !isScopeRecovery) {
       try {
-        // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+        // #663: 読み取り専用のため PlanetScale の単一接続を使用。
         const { data: existingUser, error: existingScopeError } = await fetchExistingUserScopesPg(twitchUser.id)
 
         if (existingScopeError) {
@@ -436,7 +425,7 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-      // #663: 書き込みのため isPgWriteEnabled() で分岐。pg 版（upsertAuthUserPg）は
+      // #663: 書き込みのため PlanetScale の単一接続を使用。pg 版（upsertAuthUserPg）は
       // 内部でログ出力後に throw するため、既存の「エラー時ログ＋throw」と同じ
       // 外部挙動になる。
       await upsertAuthUserPg({
@@ -507,10 +496,9 @@ export async function GET(request: NextRequest) {
 
     if (canBeStreamer) {
       try {
-        // #663: 書き込みのため isPgWriteEnabled() で分岐。pg 版
+        // #663: 書き込みのため PlanetScale の単一接続を使用。pg 版
         // （upsertAuthStreamerPg）は既存経路と同じく結果を確認しない
         // best-effort UPSERT として内部でエラーを握りつぶすため、この catch は
-        // 両経路とも実質的に発火しない（postgrest 経路のコメント参照）。
         await upsertAuthStreamerPg({
           twitchUserId: twitchUser.id,
           twitchUsername: twitchUser.login,
@@ -588,7 +576,7 @@ export async function GET(request: NextRequest) {
     // Check if user has accepted Terms of Service
     let hasTosAccepted = false
     try {
-      // #663: 読み取り専用のため isPgReadEnabled() で分岐。既知の挙動差は
+      // #663: 読み取り専用のため PlanetScale の単一接続を使用。既知の挙動差は
       // fetchTosAcceptedPg の doc コメント参照（pg 版はより安全側に倒れるのみ）。
       const userData = await fetchTosAcceptedPg(twitchUser.id)
 

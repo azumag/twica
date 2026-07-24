@@ -14,11 +14,7 @@ import {
   getGachaUsersForStreamer,
 } from "@/lib/dashboard-data";
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。dashboard-data.ts 側の各関数
 // （getGachaHistoryForStreamer 等）は #571 で既に pg 直結対応済みのため、この
-// route に残る唯一の supabase-js 呼び出し（streamer 取得）のみを対応する。
 // ---------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
@@ -28,7 +24,6 @@ import { streamers as streamersTable } from "@/lib/db/schema";
 
 /**
  * streamer 取得の pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約
  * （migration 00001）により最大 1 行のため LIMIT 1 + rows[0] ?? null で同じ
  * 外部挙動。既存コードは error を確認しない（data のみ利用）ため、pg 版も
  * 取得失敗時は null（=配信者なし=404 扱い）に揃える。
@@ -126,7 +121,7 @@ export async function GET(request: NextRequest) {
     if (isStreamer && view !== "personal") {
       // Streamer: get their streamer_id
       // 配信者: streamer_idを取得
-      // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+      // #663: 読み取り専用のため PlanetScale の単一接続を使用。
       const streamer = await fetchStreamerIdPg(session.twitchUserId);
 
       if (!streamer) {

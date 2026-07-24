@@ -12,9 +12,8 @@ import {
 } from "@/lib/twitch/eventsub-status";
 import { logPerf, perfStart } from "@/lib/perf";
 import { logger } from "@/lib/logger.server";
-// Issue #690 (#570 パイロット踏襲): pg 直結の読み取り経路。旧全体ドライバーフラグ=pg-read/pg の
-// ときのみ使われる。getDb() は withDbRetry の queryFn 内で呼ぶ規約
-// (src/lib/db/retry.ts 参照)。フラグ未設定時はこれらのモジュールは一切呼ばれない。
+// チャネルポイント連携の読み取りは PlanetScale の単一接続を使う。
+// getDb() は withDbRetry の queryFn 内で取得する。
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 
@@ -210,9 +209,7 @@ async function getAdditionalRewardsPg(streamerId: string) {
 }
 
 async function getAdditionalRewards(streamerId: string) {
-  // Issue #690 (#570 パイロット踏襲): 旧全体ドライバーフラグ=pg-read/pg のときのみ pg 直結の
-  // getAdditionalRewardsPg へ切り替える。フラグ未設定時（既定 'postgrest'）は
-  // 以下の既存 supabase-js 実装がそのまま実行され、挙動は完全に不変。
+  // 追加報酬は PlanetScale の単一接続から取得する。
   return getAdditionalRewardsPg(streamerId);
 }
 
@@ -292,9 +289,7 @@ async function getOwnedStreamerPg(twitchUserId: string): Promise<{
 }
 
 async function getOwnedStreamer(twitchUserId: string) {
-  // Issue #690 (#570 パイロット踏襲): 旧全体ドライバーフラグ=pg-read/pg のときのみ pg 直結の
-  // getOwnedStreamerPg へ切り替える。フラグ未設定時（既定 'postgrest'）は以下の
-  // 既存 supabase-js 実装がそのまま実行され、挙動は完全に不変。
+  // 所有者確認は PlanetScale の単一接続から取得する。
   return getOwnedStreamerPg(twitchUserId);
 }
 

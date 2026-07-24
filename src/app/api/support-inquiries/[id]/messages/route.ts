@@ -9,9 +9,6 @@ import { handleApiError } from '@/lib/error-handler'
 import { logger } from '@/lib/logger.server'
 import type { ApiRateLimitResponse } from '@/types/api'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgWriteEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -45,10 +42,8 @@ type AddInquiryMessagePgResult =
  *
  * 読み取り（所有権 + status チェック）と書き込み（メッセージ INSERT）が混在する
  * ハンドラのため、token-manager.ts の getBotAccountForChatPg と同じ流儀で
- * 関数全体を isPgWriteEnabled() 一括分岐にする（呼び出し元は
  * この関数の中だけで完結する結果を受け取り、そのままレスポンスを組み立てる）。
  *
- * PostgREST 実装との対応:
  * - 問い合わせの存在確認 + 所有権チェックは `.single()` 相当（id が PK のため
  *   LIMIT 1 + rows[0] ?? null）。0 行なら 'not_found'。
  * - status が 'closed' なら 'closed'。
@@ -187,7 +182,6 @@ export async function POST(
     }
 
     // #663: 読み取り（所有権/status チェック）と書き込み（メッセージ INSERT）が
-    // 混在するハンドラのため isPgWriteEnabled() で「関数全体」を分岐する
     // （token-manager.ts の getBotAccountForChat と同じ方針）。
     const result = await addInquiryMessagePg(id, session.twitchUserId, messageBody.trim())
 

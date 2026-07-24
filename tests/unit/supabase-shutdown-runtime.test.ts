@@ -1,8 +1,15 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { stripComments } = require('../../scripts/check-supabase-shutdown.js')
+const {
+  REQUIRED_OPEN_NEXT_ARTIFACTS,
+  findGeneratedBundleDependencies,
+  findMissingRequiredFiles,
+  findRetiredAstDependencies,
+  stripComments,
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+} = require('../../scripts/check-supabase-shutdown.js')
 
 const repositoryRoot = resolve(__dirname, '../..')
 
@@ -55,5 +62,83 @@ describe('full Supabase shutdown runtime', () => {
     expect(packages).not.toHaveProperty('@supabase/ssr')
     expect(packages).not.toHaveProperty('@supabase/supabase-js')
     expect(packages).not.toHaveProperty('supabase')
+  })
+
+  it.each([
+    [
+      'named import aliasと別名client',
+      `
+        import { createClient as make } from '@supabase/supabase-js'
+        const backend = make('https://example.invalid', 'secret')
+        backend.from('users')
+      `,
+    ],
+    [
+      'namespace importと別名client',
+      `
+        import * as sdk from '@supabase/supabase-js'
+        const api = sdk.createClient('https://example.invalid', 'secret')
+        api.rpc('legacy_fn')
+      `,
+    ],
+    [
+      'dynamic import',
+      `const sdk = await import('@supabase/supabase-js')`,
+    ],
+    [
+      'CommonJS namespaceとdestructuring',
+      `
+        const sdk = require('@supabase/supabase-js')
+        const { createClient: make } = sdk
+        const backend = make('https://example.invalid', 'secret')
+        backend.channel('legacy')
+      `,
+    ],
+    [
+      'local wrapperへ渡すre-export',
+      `export { createClient as legacyClient } from '@supabase/supabase-js'`,
+    ],
+  ])('%s はAST provenance guardで拒否される', (_label, source) => {
+    const detected = findRetiredAstDependencies('src/fixture.ts', source)
+
+    expect(detected.length).toBeGreaterThan(0)
+  })
+
+  it('コメント・説明文字列・Drizzleの別名fromはSupabase clientと誤判定しない', () => {
+    const source = `
+      // supabase.from('history')
+      const history = "supabase.from('history')"
+      const api = getDrizzleDb()
+      api.from(users)
+    `
+
+    expect(findRetiredAstDependencies('src/safe-fixture.ts', source)).toEqual([])
+  })
+
+  it('必須OpenNext artifactが1件でも無ければ欠落として返す', () => {
+    const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'twica-shutdown-artifacts-'))
+    try {
+      expect(findMissingRequiredFiles(fixtureRoot, REQUIRED_OPEN_NEXT_ARTIFACTS))
+        .toEqual(REQUIRED_OPEN_NEXT_ARTIFACTS)
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    '@supabase/supabase-js',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    '/rest/v1/users',
+    '/realtime/v1/websocket',
+    'event:"phx_join"',
+    'type:"postgres_changes"',
+  ])('生成bundleのretired provider痕跡をliteral scanで拒否する: %s', (marker) => {
+    expect(findGeneratedBundleDependencies(`const bundled = ${JSON.stringify(marker)}`))
+      .not.toEqual([])
+  })
+
+  it('生成bundle内の単なる一般的なPostgreSQL処理は誤検知しない', () => {
+    expect(findGeneratedBundleDependencies('const provider = "PlanetScale PostgreSQL"'))
+      .toEqual([])
   })
 })

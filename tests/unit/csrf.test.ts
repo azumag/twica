@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cookies } from 'next/headers'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 
 import { COOKIE_NAMES, ERROR_MESSAGES } from '@/lib/constants'
 import { setCSRFToken, validateCSRFToken, hashToken, clearCSRFToken, hashIP, sanitizeURL } from '@/lib/csrf'
@@ -44,7 +44,9 @@ vi.mock('@/lib/constants', async () => {
 })
 
 vi.mock('next/headers')
-vi.mock('@/lib/logger')
+// csrf.ts の server-only logger を mock し、CSRF 判定テストを errors テーブルの
+// fire-and-forget 永続化から分離する。永続化委譲そのものは logger.server.test で検証する。
+vi.mock('@/lib/logger.server')
 vi.mock('@/lib/sentry/error-handler')
 
 const mockCookies = vi.mocked(cookies)

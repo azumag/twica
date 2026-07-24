@@ -6,9 +6,7 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { logger } from "@/lib/logger.server";
 import { legacySoundToRules, normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 // -----------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。GET は読み取り専用のため
-// isPgReadEnabled() で分岐する。既存 supabase-js 実装は 1 文字も変えず、
-// フラグ未設定時は完全に従来どおり動く。pg 実装は getSoundSettingsPg に置き、
+// #663 (#570 パイロット踏襲): PlanetScale 接続。GET は読み取り専用のため
 // getDb() は withDbRetry の queryFn 内で呼ぶ規約（src/lib/db/retry.ts 参照）。
 // -----------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
@@ -42,7 +40,6 @@ type SoundSettingsLookup =
 /**
  * getSoundSettings の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
  * - streamers を id で 1 行取得。id は PK のため LIMIT 1 + rows[0] ?? null で
  *   .maybeSingle() と同じ外部挙動。
  * - gacha_sound_rules 列欠落フォールバックは SQLSTATE 42703 と列名を同時に
@@ -117,8 +114,7 @@ async function getSoundSettingsPg(streamerId: string): Promise<SoundSettingsLook
 
 
 async function getSoundSettings(streamerId: string): Promise<SoundSettingsLookup> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  // #663: 読み取り専用の関数のため PlanetScale の単一接続を使用。
   return getSoundSettingsPg(streamerId);
 
 }

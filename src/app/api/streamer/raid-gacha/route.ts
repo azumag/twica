@@ -8,12 +8,8 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger.server";
 // -----------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。
-// - getOwnedStreamer は読み取り専用のため isPgReadEnabled() で分岐する。
-// - POST の UPDATE（raid_gacha_draw_count）は書き込みのため isPgWriteEnabled() で
-//   分岐する。
-// 既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時は完全に従来どおり動く。
-// pg 実装は getDb() を withDbRetry の queryFn 内で呼ぶ規約（src/lib/db/retry.ts 参照）。
+// レイドガチャの読み取りと更新は PlanetScale の単一接続を使う。
+// 接続は withDbRetry の queryFn 内で取得する。
 // -----------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
@@ -49,7 +45,6 @@ interface GetOwnedStreamerResult {
 /**
  * getOwnedStreamer の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
  * - streamers を twitch_user_id で 1 行取得。twitch_user_id は UNIQUE
  *   （migration 00001）のため LIMIT 1 + rows[0] ?? null で .maybeSingle() と
  *   同じ外部挙動。
@@ -114,8 +109,7 @@ async function getOwnedStreamerPg(twitchUserId: string): Promise<GetOwnedStreame
 }
 
 async function getOwnedStreamer(twitchUserId: string): Promise<GetOwnedStreamerResult> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  // #663: 読み取り専用の関数のため PlanetScale の単一接続を使用。
   return getOwnedStreamerPg(twitchUserId);
 }
 
@@ -161,7 +155,7 @@ async function updateRaidGachaDrawCount(
   streamerId: string,
   drawCount: number
 ): Promise<UpdateRaidGachaDrawCountResult> {
-  // #663: 書き込みのみの関数のため isPgWriteEnabled() で分岐。
+  // #663: 書き込みのみの関数のため PlanetScale の単一接続を使用。
   return updateRaidGachaDrawCountPg(streamerId, drawCount);
 }
 

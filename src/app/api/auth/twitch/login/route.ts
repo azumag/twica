@@ -12,9 +12,6 @@ import { getSession, parseSession, verifySession } from '@/lib/session'
 import { logger } from '@/lib/logger.server'
 import { guardWriteRedirect } from '@/lib/maintenance/guard'
 // ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
@@ -24,7 +21,6 @@ import { users as usersTable } from '@/lib/db/schema'
 
 /**
  * ログイン時のスコープ復元読み取りの pg 直結実装 (#663)
- * PostgREST 実装との対応: .maybeSingle() は twitch_user_id の UNIQUE 制約
  * （migration 00001）により最大 1 行のため、LIMIT 1 + rows[0] ?? null で同じ
  * 外部挙動。
  */
@@ -182,7 +178,7 @@ export async function GET(request: Request) {
       }
 
       if (twitchUserId) {
-        // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+        // #663: 読み取り専用のため PlanetScale の単一接続を使用。
         const { data: user, error: dbError } = await fetchScopeRestorationUserPg(twitchUserId)
 
         if (dbError) {

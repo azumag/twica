@@ -8,9 +8,20 @@
 const fs = require('fs')
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const path = require('path')
+// TypeScript Compiler API で import 構文を解析する。識別子名の正規表現だけでは
+// alias / namespace / dynamic import / re-export による迂回を見逃すため、構文上の
+// module provenance を検査する（TypeScript は既にroot devDependency）。
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const ts = require('typescript')
 
 const ROOT = path.resolve(__dirname, '..')
 const failures = []
+const REQUIRE_OPEN_NEXT = process.argv.includes('--require-open-next')
+const REQUIRED_OPEN_NEXT_ARTIFACTS = [
+  '.open-next/worker.js',
+  '.open-next/middleware/handler.mjs',
+  '.open-next/server-functions/default/handler.mjs',
+]
 
 function absolute(relativePath) {
   return path.join(ROOT, relativePath)
@@ -89,11 +100,15 @@ function stripComments(source) {
 
 function assertAbsent(relativePath, patterns) {
   const source = stripComments(read(relativePath))
-  for (const [label, pattern] of patterns) {
-    if (pattern.test(source)) {
-      fail(`${relativePath}: retired Supabase dependency reintroduced (${label})`)
-    }
+  for (const label of findMatchingPatternLabels(source, patterns)) {
+    fail(`${relativePath}: retired Supabase dependency reintroduced (${label})`)
   }
+}
+
+function findMatchingPatternLabels(source, patterns) {
+  return patterns
+    .filter(([, pattern]) => pattern.test(source))
+    .map(([label]) => label)
 }
 
 function assertPresent(relativePath, patterns) {
@@ -108,6 +123,209 @@ function assertPresent(relativePath, patterns) {
 function assertMissingFile(relativePath) {
   if (fs.existsSync(absolute(relativePath))) {
     fail(`${relativePath}: retired Supabase entry point must remain deleted`)
+  }
+}
+
+function assertRequiredFile(relativePath) {
+  if (!fs.existsSync(absolute(relativePath))) {
+    fail(`${relativePath}: required deploy artifact is missing; run workers:build before this guard`)
+  }
+}
+
+function findMissingRequiredFiles(rootDirectory, relativePaths) {
+  return relativePaths.filter(
+    (relativePath) => !fs.existsSync(path.join(rootDirectory, relativePath)),
+  )
+}
+
+const RETIRED_MODULE_PATTERN = /^(?:@supabase\/|@\/lib\/supabase(?:\/|$))/
+const RETIRED_CLIENT_METHODS = new Set([
+  'from',
+  'rpc',
+  'channel',
+  'removeChannel',
+  'auth',
+  'storage',
+  'functions',
+])
+
+/**
+ * ASTからmodule specifierを取得する。
+ *
+ * ImportDeclaration / ExportDeclarationに加え、`require()` と `import()` も
+ * CallExpressionとして扱う。文字列コメントや説明用の通常文字列はmodule loaderの
+ * 引数ではないので検知せず、実行可能な依存だけを拒否できる。
+ */
+function getLoadedModuleSpecifier(node) {
+  if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+    && node.moduleSpecifier
+    && ts.isStringLiteralLike(node.moduleSpecifier)) {
+    return node.moduleSpecifier.text
+  }
+  if (!ts.isCallExpression(node) || node.arguments.length !== 1
+    || !ts.isStringLiteralLike(node.arguments[0])) {
+    return null
+  }
+  if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+    return node.arguments[0].text
+  }
+  if (ts.isIdentifier(node.expression) && node.expression.text === 'require') {
+    return node.arguments[0].text
+  }
+  return null
+}
+
+/**
+ * Supabase SDK由来のbindingを追跡して、別名clientのruntime method呼出しを検知する。
+ *
+ * SDK importそのものも禁止だが、ここでsymbol由来を保持することで `backend.from()`
+ * のようにローカル変数名を変えた場合も「supabase」という名前に依存しない。
+ * local re-export/wrapperは元ファイル側のimportも全runtime sourceをAST走査するため
+ * 必ず拒否され、consumer側の名前だけでは検査結果を左右しない。
+ */
+function findRetiredAstDependencies(relativePath, source) {
+  const extension = path.extname(relativePath)
+  const scriptKind = extension === '.tsx'
+    ? ts.ScriptKind.TSX
+    : extension === '.jsx'
+      ? ts.ScriptKind.JSX
+      : ['.js', '.mjs', '.cjs'].includes(extension)
+        ? ts.ScriptKind.JS
+        : ts.ScriptKind.TS
+  const sourceFile = ts.createSourceFile(
+    relativePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKind,
+  )
+  const providerBindings = new Map()
+  const clientBindings = new Set()
+  const astFailures = []
+
+  function markProviderImports(node) {
+    const moduleSpecifier = getLoadedModuleSpecifier(node)
+    if (moduleSpecifier && RETIRED_MODULE_PATTERN.test(moduleSpecifier)) {
+      astFailures.push(
+        `${relativePath}: retired Supabase module loaded through executable syntax (${moduleSpecifier})`,
+      )
+    }
+    if (!ts.isImportDeclaration(node)
+      || !ts.isStringLiteralLike(node.moduleSpecifier)
+      || !RETIRED_MODULE_PATTERN.test(node.moduleSpecifier.text)
+      || !node.importClause) {
+      ts.forEachChild(node, markProviderImports)
+      return
+    }
+
+    if (node.importClause.name) {
+      providerBindings.set(node.importClause.name.text, 'factory')
+    }
+    const bindings = node.importClause.namedBindings
+    if (bindings && ts.isNamespaceImport(bindings)) {
+      providerBindings.set(bindings.name.text, 'namespace')
+    } else if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        const importedName = element.propertyName?.text || element.name.text
+        providerBindings.set(
+          element.name.text,
+          importedName === 'createClient' ? 'factory' : 'provider',
+        )
+      }
+    }
+    ts.forEachChild(node, markProviderImports)
+  }
+  markProviderImports(sourceFile)
+
+  function getRequiredProviderKind(expression) {
+    if (!ts.isCallExpression(expression)
+      || expression.arguments.length !== 1
+      || !ts.isIdentifier(expression.expression)
+      || expression.expression.text !== 'require'
+      || !ts.isStringLiteralLike(expression.arguments[0])
+      || !RETIRED_MODULE_PATTERN.test(expression.arguments[0].text)) {
+      return null
+    }
+    return 'namespace'
+  }
+
+  // CommonJSのnamespace aliasとdestructuringもES importと同じprovenanceへ正規化する。
+  // module load自体のFAILに加え、以後の変数名が変わってもclient method由来を説明できる。
+  function collectCommonJsProviderBindings(node) {
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const providerKind = getRequiredProviderKind(node.initializer)
+      if (providerKind && ts.isIdentifier(node.name)) {
+        providerBindings.set(node.name.text, providerKind)
+      }
+      if (ts.isObjectBindingPattern(node.name)
+        && ts.isIdentifier(node.initializer)
+        && providerBindings.get(node.initializer.text) === 'namespace') {
+        for (const element of node.name.elements) {
+          if (!ts.isIdentifier(element.name)) continue
+          const importedName = element.propertyName && ts.isIdentifier(element.propertyName)
+            ? element.propertyName.text
+            : element.name.text
+          providerBindings.set(
+            element.name.text,
+            importedName === 'createClient' ? 'factory' : 'provider',
+          )
+        }
+      }
+    }
+    ts.forEachChild(node, collectCommonJsProviderBindings)
+  }
+  collectCommonJsProviderBindings(sourceFile)
+
+  function expressionCreatesClient(expression) {
+    if (!ts.isCallExpression(expression)) return false
+    const callee = expression.expression
+    if (ts.isIdentifier(callee)) {
+      return providerBindings.get(callee.text) === 'factory'
+    }
+    return ts.isPropertyAccessExpression(callee)
+      && ts.isIdentifier(callee.expression)
+      && providerBindings.get(callee.expression.text) === 'namespace'
+      && callee.name.text === 'createClient'
+  }
+
+  // alias chain (`const api = backend`)も順序に依存せず収束するまで伝播する。
+  let changed = true
+  while (changed) {
+    changed = false
+    function collectClientBindings(node) {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const isClient = expressionCreatesClient(node.initializer)
+          || (ts.isIdentifier(node.initializer) && clientBindings.has(node.initializer.text))
+        if (isClient && !clientBindings.has(node.name.text)) {
+          clientBindings.add(node.name.text)
+          changed = true
+        }
+      }
+      ts.forEachChild(node, collectClientBindings)
+    }
+    collectClientBindings(sourceFile)
+  }
+
+  function checkClientCalls(node) {
+    if (ts.isCallExpression(node)
+      && ts.isPropertyAccessExpression(node.expression)
+      && ts.isIdentifier(node.expression.expression)
+      && clientBindings.has(node.expression.expression.text)
+      && RETIRED_CLIENT_METHODS.has(node.expression.name.text)) {
+      astFailures.push(
+        `${relativePath}: retired Supabase client method called from provider-derived binding `
+        + `(${node.expression.name.text})`,
+      )
+    }
+    ts.forEachChild(node, checkClientCalls)
+  }
+  checkClientCalls(sourceFile)
+  return astFailures
+}
+
+function assertNoRetiredAstDependencies(relativePath) {
+  for (const message of findRetiredAstDependencies(relativePath, read(relativePath))) {
+    fail(message)
   }
 }
 
@@ -130,10 +348,7 @@ function walk(
   return files
 }
 
-if (require.main === module) {
 const runtimePatterns = [
-  ['Supabase SDK import', /(?:from\s+|require\(\s*|import\(\s*)['"]@supabase\//],
-  ['retired Supabase module import', /(?:from\s+|require\(\s*|import\(\s*)['"]@\/lib\/supabase\//],
   // Match every identifier form (`process.env.*`, Workers `env.*`, destructuring,
   // and string-key lookups). Restricting this to process.env would leave a
   // straightforward bypass for Cloudflare bindings.
@@ -156,20 +371,27 @@ const runtimePatterns = [
   ['direct Supabase Auth API path', /\/auth\/v1(?:\/|\b)/i],
   ['direct Supabase Storage API path', /\/storage\/v1(?:\/|\b)/i],
   ['direct Supabase Functions API path', /\/functions\/v1(?:\/|\b)/i],
-  // import名をaliasしても、retired client由来の主要APIメソッド呼び出しは
-  // provenance名から検知する。Drizzleの `.from()` は対象に含めない。
-  [
-    'retired Supabase client method',
-    /\b(?:supabase|supabaseAdmin|supabaseClient|postgrest)(?:Client)?\s*\.\s*(?:from|rpc|channel|removeChannel|auth|storage|functions)\b/i,
-  ],
+]
+const generatedBundlePatterns = [
+  ...runtimePatterns,
+  // bundle後は元のimport構文が消えて単なるmodule id文字列だけ残る場合がある。
+  // sourceのAST検査と独立したliteral scanを併用し、生成器による再注入も拒否する。
+  ['Supabase package literal', /@supabase\//],
+  // Supabase Realtime clientが使うPhoenix channel protocolの代表的なevent名。
+  // application sourceにはこの文字列を使う独自protocolが無いため、bundle内では
+  // retired Realtime実装の残存シグナルとして安全に扱える。
+  ['Supabase Realtime protocol marker', /\b(?:phx_join|postgres_changes)\b/],
 ]
 
-for (const file of [
+if (require.main === module) {
+const runtimeSourceFiles = [
   ...walk('src'),
   ...walk('workers'),
   ...walk('analysis/src'),
   ...walk('analysis/dev'),
-]) {
+]
+for (const file of runtimeSourceFiles) {
+  assertNoRetiredAstDependencies(file)
   assertAbsent(file, runtimePatterns)
 }
 
@@ -182,7 +404,10 @@ for (const file of [
   'scripts/replay-maintenance-eventsub.js',
   'scripts/probe-maintenance-write-surfaces.js',
 ]) {
-  if (fs.existsSync(absolute(file))) assertAbsent(file, runtimePatterns)
+  if (fs.existsSync(absolute(file))) {
+    assertNoRetiredAstDependencies(file)
+    assertAbsent(file, runtimePatterns)
+  }
 }
 
 // CIのbuild後に再実行したときだけ存在する成果物も検査する。source guardだけ
@@ -196,7 +421,23 @@ for (const artifactRoot of [
   'workers/overlay-realtime/dist',
 ]) {
   for (const file of walk(artifactRoot)) {
-    assertAbsent(file, runtimePatterns)
+    assertAbsent(file, generatedBundlePatterns)
+  }
+}
+
+if (REQUIRE_OPEN_NEXT) {
+  // deployに必須のroot WorkerとEdge middleware chunkを個別に要求する。ディレクトリの
+  // 存在だけでは、出力構成変更でwalkが0件になった際にsilent passしてしまう。
+  for (const artifact of REQUIRED_OPEN_NEXT_ARTIFACTS) assertRequiredFile(artifact)
+
+  if (fs.existsSync(absolute('.open-next/middleware/handler.mjs'))) {
+    assertAbsent('.open-next/middleware/handler.mjs', [
+      // Edge middlewareへserver loggerが到達するとpostgres/DB clientまでbundleされる。
+      // import元の名前と生成後の代表symbol/bindingを併記して、tree-shaking結果に
+      // 依存せず本番Edge境界を守る。
+      ['server-only logger in Edge middleware', /(?:logger\.server|logErrorFromLogger)/],
+      ['database client in Edge middleware', /\b(?:postgres|HYPERDRIVE_PLANETSCALE)\b/i],
+    ])
   }
 }
 
@@ -329,4 +570,12 @@ if (failures.length > 0) {
 console.log('OK: runtime, dependencies, bindings, environment, and deploy paths are independent of Supabase')
 }
 
-module.exports = { stripComments }
+module.exports = {
+  REQUIRED_OPEN_NEXT_ARTIFACTS,
+  findGeneratedBundleDependencies: (source) => (
+    findMatchingPatternLabels(stripComments(source), generatedBundlePatterns)
+  ),
+  findMissingRequiredFiles,
+  findRetiredAstDependencies,
+  stripComments,
+}

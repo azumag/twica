@@ -14,11 +14,7 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 // -----------------------------------------------------------------------------
-// #663 (#570/#572 パイロット踏襲): pg 直結経路。POST は読み取り（所有権確認）と
-// 書き込み（一括 INSERT）が混在するため、DB アクセス部分は isPgWriteEnabled()
-// で分岐する（token-manager.ts の getBotAccountForChat と同じ方針）。既存
-// supabase-js 実装は 1 文字も変えず、フラグ未設定時（既定 'postgrest'）は
-// 完全に従来どおり動く。フォールバックチェーンは無い（postgrest 経路も無い）。
+// 一括カード作成の所有権確認と書き込みは PlanetScale の単一接続を使う。
 // -----------------------------------------------------------------------------
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
@@ -45,10 +41,7 @@ interface BatchCardInput {
 
 /**
  * POST /api/cards/batch の streamer 所有権確認 (id, rarity_weights) の
- * pg 直結実装 (#663)。フォールバックチェーンは無い(postgrest 経路にも無い)。
  *
- * PostgREST 実装との対応:
- * - postgrest 経路は `data` のみ分割代入し error を確認しない
  *   （`const { data: streamer } = await ...`）ため、いかなるエラーも `!streamer`
  *   の 403 分岐に落ちる。pg 版も同じ外部挙動に合わせ、throw せず null を返す。
  */
@@ -78,11 +71,9 @@ async function selectStreamerForBatchCreatePg(
 
 /**
  * POST /api/cards/batch の一括 INSERT の pg 直結実装 (#663)。
- * 入力値のデプロイ窓フォールバックチェーンは無い(postgrest 経路にも無い。
  * cardsToInsert は card_number/hp/atk 等の本番未デプロイ列を最初から
  * 含めない)。
  *
- * PostgREST 実装との対応:
  * - `.insert(cardsToInsert).select()` は `.insert(...).values(...).returning()`
  *   が等価（RETURNING で挿入行を1回の往復で取得）。
  * - ON CONFLICT の無い一括 INSERT のため非冪等（withDbRetry にオプションを

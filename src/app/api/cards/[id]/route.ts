@@ -22,11 +22,9 @@ import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssu
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
 import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
-// #663 (#570/#572 パイロット踏襲): pg 直結経路。PUT/DELETE とも読み取り
+// #663 (#570/#572 パイロット踏襲): PlanetScale 接続。PUT/DELETE とも読み取り
 // （所有権確認）と書き込み（UPDATE/DELETE）が混在するため、関数全体を
-// isPgWriteEnabled() で分岐する（token-manager.ts の getBotAccountForChat と
-// 同じ方針）。既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時
-// （既定 'postgrest'）は完全に従来どおり動く。pg 実装は各所の xxxPg 関数に
+// PlanetScale の単一接続を使用する（token-manager.ts の getBotAccountForChat と
 // 置き、getDb() は withDbRetry の queryFn 内で呼ぶ規約(src/lib/db/retry.ts 参照)。
 // -----------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
@@ -38,7 +36,6 @@ import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/ca
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
-// card-issuance.ts / collection-existence.ts の判定ヘルパーは postgrest/pg
 // 両対応の汎用判定（error.code の SQLSTATE、error.message のテキスト一致）のため、
 // この形にキャストするだけで pg のエラーも判定できる（新規ヘルパーは作らない）。
 type CardsSchemaError = { message?: string; code?: string; details?: string; hint?: string } | null | undefined;
@@ -179,7 +176,6 @@ async function selectCardOwnershipWithoutCollectionAndPackNames(id: string): Pro
  * card_pack_names → collection_name の2段階デプロイ窓フォールバック付き）の
  * pg 直結実装 (#663)。
  *
- * PostgREST 実装との対応:
  * - `streamers!cards_streamer_id_fkey!inner(...)` は
  *   `.innerJoin(streamersTable, eq(streamersTable.id, cardsTable.streamer_id))`
  *   が等価（FK: streamers.id = cards.streamer_id 上の INNER JOIN）。
@@ -188,7 +184,6 @@ async function selectCardOwnershipWithoutCollectionAndPackNames(id: string): Pro
  *   `{ ...cardFields, streamers: { twitch_user_id, rarity_weights, card_pack_names } }`
  *   の同じネスト形状に再構成する。
  * - 想定外のエラーを含め、いずれの取得も最終的に失敗した場合は throw せず
- *   `card: null` を返す。postgrest 経路もこの SELECT のエラーを明示チェックせず
  *   `!card` だけで 403 に倒しており（cardSelectError は「フォールバック判定」
  *   にのみ使われる）、同じ外部挙動に合わせるため。
  */
@@ -228,7 +223,6 @@ async function fetchCardForUpdatePg(id: string): Promise<{
 
   // Issue #269 (self-review fix): collection_name 列がデプロイ窓で未検出の場合、
   // それを落として再試行する。card_pack_names も併せて落とす(両方同時に
-  // 未デプロイという稀なケースの安全側対応。postgrest 経路と同じ)。
   if (currentError && isMissingCollectionNameColumn(currentError as CardsSchemaError)) {
     cardPackNamesUnavailable = true;
     currentError = null;
@@ -266,14 +260,12 @@ async function fetchCardForUpdatePg(id: string): Promise<{
  * collection_name の3段階デプロイ窓フォールバック付き、さらに RETURNING 列の
  * フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
  *
- * PostgREST 実装との対応:
  * - `.update(...).eq("id", id).select().maybeSingle()` は
  *   `.update(...).set(...).where(eq(id, ...)).returning()` が等価。
  * - 各フォールバックは同じ判定ヘルパー(isMissingCardNumberColumnError 等)を
  *   そのまま再利用する。
  * - リクエストボディの明示的な最終値を書き込む UPDATE のため冪等（リトライ可）。
  * - unique_violation (23505) は呼び出し元(PUT)で isCardNumberConflictError
- *   により 409 に変換される（postgrest 経路と共通）。
  *
  * self-review fix: 無指定 `.returning()` は schema.ts の静的列リストを生成する
  * ため、本番に実在しない8列(card_number/hp/atk/def/spd/skill_*、
@@ -599,8 +591,6 @@ export async function PUT(
  * DELETE /api/cards/[id] のオーナーシップ確認 SELECT（cards INNER JOIN
  * streamers、フォールバックチェーン無し）の pg 直結実装 (#663)。
  *
- * PostgREST 実装との対応:
- * - postgrest 経路は `data` のみ分割代入し error を確認しない
  *   （`const { data: card } = await ...`）ため、いかなるエラーも `!card` の
  *   403 分岐に落ちる。pg 版も同じ外部挙動に合わせ、throw せず null を返す。
  */

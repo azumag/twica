@@ -422,12 +422,9 @@ export class GachaService {
         // gacha_history, users, user_cards を1トランザクションでアトミックに実行
         // 従来は3回の個別DB操作で中間状態（履歴あり・カード未付与）が発生しえた
         //
-        // #573: ガチャ書き込み(課金系・EventSub 高頻度のクリティカルパス)の pg 直結分岐。
-        // 全体フラグ(旧全体ドライバーフラグ)ではなく getGachaDbDriver() で分岐する:
-        // 旧ガチャドライバーフラグ はガチャ経路「だけ」を全体フラグと独立に即時ロールバック/
-        // 先行切替できる緊急スイッチ(本番障害時の影響範囲を最小化する独立レバー。
-        // src/lib/db/flags.ts 参照)。フラグ未設定時は従来どおり下の supabase-js
-        // (PostgREST)経路が無変更のまま実行される。
+        // ガチャ書き込みは課金・EventSub の高頻度クリティカルパスなので、取引全体を
+        // PlanetScale の単一 RPC に閉じ込める。これにより履歴と発行済み数が別接続先へ
+        // 分かれる中間状態を作らない。
         //
         // 分岐は「RPC を実行して { data, error } を得る」部分だけに絞る。pg 側
         // (executeGachaTransactionRpcPg)が PostgREST .rpc() と同一の { data, error }
@@ -644,11 +641,8 @@ export class GachaService {
    * フィルタリングロジックへの影響はない。
    */
   private async getIssuedCounts(cardIds: string[]): Promise<Result<Map<string, number>>> {
-    // #573: get_issued_card_counts はガチャ実行フロー(executeGacha)の内部呼び出しで
-    // あるため、全体フラグ(旧全体ドライバーフラグ)ではなく execute_gacha_transaction と同じ
-    // getGachaDbDriver() で分岐する。旧ガチャドライバーフラグ=postgrest による緊急ロール
-    // バックのとき、この呼び出しだけ pg 直結に残る「経路の食い違い」を作らない —
-    // ロールバックは1つのレバーでガチャ実行フロー全体を旧経路へ戻せる必要がある。
+    // get_issued_card_counts はガチャ実行フローの内部処理であり、実行 RPC と同じ
+    // PlanetScale 接続先を使う。発行済み数だけが別経路に分かれないようにする。
     try {
       const rpcData = await withDbRetry(
         async () => {

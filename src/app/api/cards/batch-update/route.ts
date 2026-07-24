@@ -33,7 +33,6 @@ interface StreamerForBatchUpdate {
 
 /**
  * Issue #794: 旧全体ドライバーフラグ=pg のとき、所有権確認も更新RPCと同じPlanetScaleで行う。
- * 既存PostgREST経路はエラーを明示処理せず data=null → 403 に倒すため、
  * pg経路も取得失敗時はnullを返して外部挙動を揃える。
  */
 async function fetchStreamerForBatchUpdatePg(
@@ -272,7 +271,6 @@ export async function POST(request: NextRequest) {
       }
       return payload;
     });
-    // #573: isPgWriteEnabled() のときだけ pg 直結経路へ分岐する。pg 側の { data, error }
     // 正規化は recalculate-drop-rates.ts の executeBatchUpdateCardDropRatesRpcPg を
     // 共有する(同じ RPC を呼ぶ実装を2箇所に重複させない。doc コメント参照)。
     const { data: rpcResult, error: rpcError } =

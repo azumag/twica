@@ -45,7 +45,7 @@ export interface SupportInquiryMessage {
 /**
  * getUserInquiries の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応: 対象列を twitch_user_id で絞り込み created_at 降順で
+ * 旧 PostgREST 実装との対応: 対象列を twitch_user_id で絞り込み created_at 降順で
  * 取得するだけの単純な読み取り。取得失敗時は空配列を返す既存の安全側デグレードと
  * 同じ外部挙動（両方の catch ブロックを 1 つに集約するが、呼び出し元から見た
  * 結果は変わらない）。
@@ -91,15 +91,14 @@ async function getUserInquiriesPg(twitchUserId: string): Promise<SupportInquiry[
  * @returns 問い合わせ一覧（作成日時の降順）
  */
 export async function getUserInquiries(twitchUserId: string): Promise<SupportInquiry[]> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  // PlanetScale の読み取りをこの関数に閉じ込める。
   return getUserInquiriesPg(twitchUserId)
 }
 
 /**
  * getInquiryWithMessages の pg 直結実装 (#663)
  *
- * PostgREST 実装との対応:
+ * 旧 PostgREST 実装との対応:
  * - 問い合わせ本体は id + twitch_user_id（所有権チェック）で絞り込む。
  *   `.single()` は id が PK のため LIMIT 1 + rows[0] ?? null で同じ外部挙動
  *   （0 行なら null、呼び出し元は関数全体で null を返す）。
@@ -197,7 +196,6 @@ export async function getInquiryWithMessages(
   inquiryId: string,
   twitchUserId: string
 ): Promise<{ inquiry: SupportInquiry; messages: SupportInquiryMessage[] } | null> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  // PlanetScale の読み取りをこの関数に閉じ込める。
   return getInquiryWithMessagesPg(inquiryId, twitchUserId)
 }

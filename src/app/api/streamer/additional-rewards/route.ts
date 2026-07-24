@@ -14,13 +14,8 @@ import {
   isMissingCardPackNamesColumnError,
 } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。
-// - GET は読み取り専用のため isPgReadEnabled() で分岐する。
-// - POST / DELETE は読み書きが混在する（DELETE も含め、所有権確認 SELECT を
-//   含めて）ため isPgWriteEnabled() で関数全体（の DB アクセス）を分岐する
-//   （src/lib/twitch/token-manager.ts 冒頭のフラグ使い分け方針と同じ）。
-// 既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時は完全に従来どおり動く。
-// pg 実装は getDb() を withDbRetry の queryFn 内で呼ぶ規約（src/lib/db/retry.ts 参照）。
+// GET、POST、DELETE の DB アクセスはすべて PlanetScale の単一接続を使う。
+// 接続は withDbRetry の queryFn 内で取得し、リトライ時に新しいクライアントを使う。
 // -----------------------------------------------------------------------------
 import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
@@ -76,7 +71,7 @@ interface AdditionalRewardRow {
 }
 
 // ---------------------------------------------------------------------------
-// GET: ownership lookup + reward listing (read-only → isPgReadEnabled)
+// GET: ownership lookup + reward listing (read-only → PlanetScale の単一接続)
 // ---------------------------------------------------------------------------
 
 async function getOwnedStreamerIdForRewardsPg(twitchUserId: string): Promise<string | null> {
@@ -96,14 +91,13 @@ async function getOwnedStreamerIdForRewardsPg(twitchUserId: string): Promise<str
     );
     return rows[0]?.id ?? null;
   } catch {
-    // 既存(postgrest)実装はこの SELECT のエラーを確認しない(data のみ分割代入)
     // ため、失敗時は data=undefined と同じ「not found」扱いに揃える。
     return null;
   }
 }
 
 async function getOwnedStreamerIdForRewards(twitchUserId: string): Promise<string | null> {
-  // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+  // #663: 読み取り専用のため PlanetScale の単一接続を使用。
   return getOwnedStreamerIdForRewardsPg(twitchUserId);
 
 }
@@ -206,7 +200,7 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
 
 
 async function listAdditionalRewards(streamerId: string): Promise<AdditionalRewardRow[]> {
-  // #663: 読み取り専用のため isPgReadEnabled() で分岐。
+  // #663: 読み取り専用のため PlanetScale の単一接続を使用。
   return listAdditionalRewardsPg(streamerId);
 
 }
@@ -268,7 +262,7 @@ export async function GET(request: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// POST: ownership lookup + insert (read+write mixed → isPgWriteEnabled)
+// POST: ownership lookup + insert (read+write mixed → PlanetScale の単一接続)
 // ---------------------------------------------------------------------------
 
 interface StreamerForAdditionalRewardPost {
@@ -327,7 +321,6 @@ async function getStreamerForAdditionalRewardPostPg(
           cardPackNamesUnavailable: true,
         };
       } catch {
-        // 既存(postgrest)実装同様、リトライも失敗した場合は streamer=null(→404)に
         // 揃える(この SELECT はエラーを 500 化しない既存の swallow パターン)。
         return { streamer: null, cardPackNamesUnavailable: true };
       }
@@ -339,7 +332,7 @@ async function getStreamerForAdditionalRewardPostPg(
 async function getStreamerForAdditionalRewardPost(
   twitchUserId: string
 ): Promise<GetStreamerForAdditionalRewardPostResult> {
-  // #663: 読み書き混在(このあと INSERT する)のため isPgWriteEnabled() で分岐。
+  // #663: 読み書き混在(このあと INSERT する)のため PlanetScale の単一接続を使用。
   return getStreamerForAdditionalRewardPostPg(twitchUserId);
 }
 
@@ -404,7 +397,7 @@ async function insertAdditionalRewardPg(
 async function insertAdditionalReward(
   insertPayload: Record<string, unknown>
 ): Promise<InsertAdditionalRewardOutcome> {
-  // #663: 読み書き混在のため isPgWriteEnabled() で分岐。
+  // #663: 読み書き混在のため PlanetScale の単一接続を使用。
   return insertAdditionalRewardPg(insertPayload);
 }
 
@@ -609,7 +602,7 @@ export async function POST(request: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// DELETE: ownership lookup + delete (read+write mixed → isPgWriteEnabled)
+// DELETE: ownership lookup + delete (read+write mixed → PlanetScale の単一接続)
 // ---------------------------------------------------------------------------
 
 async function getOwnedStreamerIdForRewardsWritePg(twitchUserId: string): Promise<string | null> {
