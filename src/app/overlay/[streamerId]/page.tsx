@@ -155,6 +155,12 @@ const RELOAD_DEFER_RETRY_MS = 30 * 1000;
 // (メタデータ未ロードでNaN等)に使う「再生終了見込み」の安全上限。
 // リロード延期判定(soundPlayingUntilRef)のフォールバックにのみ使う
 const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
+// OBS Browser Source may keep a large animated image request pending without
+// firing either `load` or `error`. Aspect-ratio detection is presentation-only,
+// so it must never hold the business-event queue indefinitely. After this
+// bounded wait the card renders with the normal landscape layout; a slow image
+// may continue loading in the actual card element without blocking later draws.
+const IMAGE_METADATA_TIMEOUT_MS = 1_500;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
 const RELOAD_COOLDOWN_STORAGE_KEY = "twica-overlay-reload";
@@ -216,6 +222,15 @@ export default function OverlayPage() {
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
   const queueRef = useRef<GachaResult[]>([]);
   const isDisplayingRef = useRef(false);
+  // Image metadata checks are cancellable because their Promise is awaited by
+  // the display queue. Cleanup must resolve (not merely clear) pending checks,
+  // otherwise the suspended processQueue closure and its card remain retained.
+  const activeImageCheckCancelsRef = useRef<Set<() => void>>(new Set());
+  const isOverlayMountedRef = useRef(false);
+  // A streamer change can reuse this component instance. The generation lets
+  // an old async image check distinguish that transport cleanup from the new
+  // subscription setup, even when the mounted flag has already become true.
+  const queueGenerationRef = useRef(0);
   const playedSoundGroupIdsRef = useRef<Set<string>>(new Set());
   // processQueueの再帰呼び出し用ref（useCallback内で自身を参照するため）
   const processQueueRef = useRef<() => void>(() => {});
@@ -470,24 +485,52 @@ export default function OverlayPage() {
       }
 
       const img = new window.Image();
+      let settled = false;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+      // `finish` is shared by load/error/timeout so only the first terminal
+      // signal can update layout state. A late load after timeout must not
+      // overwrite the aspect ratio of a newer card already being displayed.
+      const finish = (
+        isPortrait: boolean,
+        isSmall: boolean,
+        updateLayout = true
+      ) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+        }
+        activeImageCheckCancelsRef.current.delete(cancel);
+        if (updateLayout && isOverlayMountedRef.current) {
+          setIsPortraitImage(isPortrait);
+          setIsSmallImage(isSmall);
+        }
+        resolve(isPortrait);
+      };
+      const cancel = () => {
+        // Cleanup resolves the awaited check while deliberately suppressing
+        // layout updates. processQueue's generation check below then prevents
+        // the cancelled card from scheduling animation or sound.
+        finish(false, false, false);
+      };
+      activeImageCheckCancelsRef.current.add(cancel);
+
       img.onload = () => {
         // 画像の縦が横より大きい（正方形でない縦長画像）の場合はポートレイト
         // Portrait if height is greater than width (not a square)
         const isPortrait = img.height > img.width;
-        setIsPortraitImage(isPortrait);
-
         // 画像が400x400未満の場合は小さい画像として判定
         // 小さい画像モードを自動適用するために使用
         const isSmall = img.width < 400 && img.height < 400;
-        setIsSmallImage(isSmall);
-
-        resolve(isPortrait);
+        finish(isPortrait, isSmall);
       };
       img.onerror = () => {
-        setIsPortraitImage(false);
-        setIsSmallImage(false);
-        resolve(false);
+        finish(false, false);
       };
+      timeoutId = setTimeout(() => {
+        finish(false, false);
+      }, IMAGE_METADATA_TIMEOUT_MS);
       img.src = imageUrl;
     });
   }, []);
@@ -583,6 +626,7 @@ export default function OverlayPage() {
    * 古いバージョンを参照する問題を回避する
    */
   const processQueue = useCallback(async () => {
+    const queueGeneration = queueGenerationRef.current;
     const next = queueRef.current.shift();
     if (!next) {
       isDisplayingRef.current = false;
@@ -592,6 +636,12 @@ export default function OverlayPage() {
 
     // 画像のアスペクト比をチェック（autoPortraitモード用）
     await checkImageAspectRatio(next.card.image_url);
+    if (
+      !isOverlayMountedRef.current
+      || queueGeneration !== queueGenerationRef.current
+    ) {
+      return;
+    }
 
     // このカードのレアリティに紐づくエフェクトを解決する。
     // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
@@ -945,7 +995,9 @@ export default function OverlayPage() {
   // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
   // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
   useEffect(() => {
+    isOverlayMountedRef.current = true;
     const playedSoundGroupIds = playedSoundGroupIdsRef.current;
+    const activeImageCheckCancels = activeImageCheckCancelsRef.current;
 
     queueMicrotask(() => {
       addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
@@ -1011,6 +1063,12 @@ export default function OverlayPage() {
     cleanupRef.current = cleanup;
 
     return () => {
+      isOverlayMountedRef.current = false;
+      queueGenerationRef.current += 1;
+      for (const cancel of [...activeImageCheckCancels]) {
+        cancel();
+      }
+      activeImageCheckCancels.clear();
       // キューをクリアして未再生アイテムを破棄
       queueRef.current = [];
       isDisplayingRef.current = false;
