@@ -119,7 +119,10 @@ export async function handleAuthError(
   const errorDetails = AUTH_ERROR_MAP[errorType] || AUTH_ERROR_MAP.unknown_error
 
   if (errorDetails.shouldLog) {
-    logger.error(`${errorDetails.message}:`, {
+    // reportAuthError がこの境界の唯一の errors writer。logger.error も内部で
+    // logErrorFromLogger を起動するため、同じ失敗を二重永続化して #810/#811 の
+    // ような重複issueを作る。診断用のconsole出力は warning に留める。
+    logger.warn(`${errorDetails.message}:`, {
       error,
       errorType,
       context,
