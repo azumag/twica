@@ -34,23 +34,11 @@
 
 import postgres from 'postgres'
 
-export type AnalysisDbDriver = 'supabase' | 'pg'
-
-/**
- * analysis ダッシュボード backend が使う DB 経路を判定する。
- * `src/lib/db/flags.ts` の `getDbDriverMode` と同じ「毎回呼び出し時に読む・trim する・
- * 未設定/不正値は安全側（既存動作である 'supabase'）に倒す」パターンに揃える。
- * root app の `DB_DRIVER` とは別軸（analysis 管理ダッシュボード専用）のため名前を分ける。
- */
-export function getAnalysisDbDriver(env: Record<string, string>): AnalysisDbDriver {
-  return env.ANALYSIS_DB_DRIVER?.trim() === 'pg' ? 'pg' : 'supabase'
-}
-
 /**
  * analysis 専用の Postgres 接続文字列を解決する。
- * `ANALYSIS_DB_DRIVER=pg` なのに `DASHBOARD_DATABASE_URL` が未設定の場合、無関係な
- * 値へ黙ってフォールバックさせず明示的に失敗させる（#570 の DATABASE_URL 解決と
- * 同じ「未設定は安全側で throw」方針）。
+ * `DASHBOARD_DATABASE_URL` が未設定の場合、無関係な値へ黙ってフォールバック
+ * させず明示的に失敗させる（#570 の DATABASE_URL 解決と同じ「未設定は安全側で
+ * throw」方針）。Supabase経路撤去後はこのURLが唯一のDB接続設定である。
  *
  * 接続ロールの権限要件: `get_analysis_*()` (00073_add_analysis_dashboard_rpcs.sql) は
  * `REVOKE ALL FROM PUBLIC; GRANT EXECUTE ... TO service_role` のため、
@@ -70,7 +58,7 @@ function resolveDashboardDatabaseUrl(env: Record<string, string>): string {
   const url = env.DASHBOARD_DATABASE_URL?.trim()
   if (!url) {
     throw new Error(
-      'ANALYSIS_DB_DRIVER=pg には DASHBOARD_DATABASE_URL の設定が必要です（analysis/.env.local 等）。'
+      'DASHBOARD_DATABASE_URL の設定が必要です（analysis/.env.local 等）。'
     )
   }
   return url

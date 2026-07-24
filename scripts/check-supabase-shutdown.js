@@ -185,9 +185,24 @@ assertPresent('src/lib/supabase/admin.ts', [
   ['non-instantiating retired facade', /createRetiredSupabaseClient/],
   ['precise leaked-path failure', /Retired runtime path accessed/],
 ])
-assertPresent('analysis/vite.config.ts', [
-  ['analysis pg default', /ANALYSIS_DB_DRIVER\s*=\s*['"]pg['"]/],
-])
+for (const file of [...walk('analysis/src'), ...walk('analysis/dev')]) {
+  assertAbsent(file, [
+    ['Supabase SDK import', /from\s+['"]@supabase\//],
+    ['Supabase SDK require', /require\(\s*['"]@supabase\//],
+    ['Supabase credential lookup', /[A-Za-z0-9_]*SUPABASE[A-Za-z0-9_]*/],
+    ['retired analysis driver switch', /ANALYSIS_DB_DRIVER/],
+  ])
+}
+
+const analysisPackageJson = JSON.parse(read('analysis/package.json'))
+for (const dependencyName of Object.keys({
+  ...(analysisPackageJson.dependencies || {}),
+  ...(analysisPackageJson.devDependencies || {}),
+})) {
+  if (dependencyName.startsWith('@supabase/')) {
+    fail(`analysis/package.json: retired Supabase dependency remains (${dependencyName})`)
+  }
+}
 
 const envValidation = read('src/lib/env-validation.ts')
 if (/name:\s*['"][^'"]*SUPABASE/.test(envValidation)) {
