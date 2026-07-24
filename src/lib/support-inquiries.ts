@@ -2,25 +2,21 @@
  * Support inquiry data access layer
  * 問い合わせデータのサーバー側取得ロジック
  *
- * Server Componentから直接呼び出して問い合わせデータを取得する。
- * getSupabaseAdmin() を使用し、service_role でアクセスする（既存パターン踏襲）。
+ * Server Componentから直接呼び出し、Hyperdrive経由のPlanetScale/Drizzleで
+ * 問い合わせデータを取得する。
  */
 
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
-// ---------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
-// isPgReadEnabled() が false を返すため getDb() は一切呼ばれず、既存の
-// supabase-js 経路が従来どおり実行される。
-// ---------------------------------------------------------------------------
+import 'server-only'
+
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import {
   supportInquiries as supportInquiriesTable,
   supportInquiryMessages as supportInquiryMessagesTable,
 } from '@/lib/db/schema'
-import { logger } from './logger'
+import { logger } from './logger.server'
 
 export type InquiryCategory = 'bug' | 'feature' | 'other'
 export type InquiryStatus = 'open' | 'in_progress' | 'resolved' | 'closed'
@@ -97,29 +93,7 @@ async function getUserInquiriesPg(twitchUserId: string): Promise<SupportInquiry[
 export async function getUserInquiries(twitchUserId: string): Promise<SupportInquiry[]> {
   // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
   // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return getUserInquiriesPg(twitchUserId)
-  }
-
-  try {
-    const supabase = getSupabaseAdmin()
-
-    const { data, error } = await supabase
-      .from('support_inquiries')
-      .select('id, twitch_user_id, twitch_display_name, category, subject, body, status, created_at, updated_at')
-      .eq('twitch_user_id', twitchUserId)
-      .order('created_at', { ascending: false })
-
-    if (error) {
-      logger.error('Failed to fetch user inquiries', { error: error.message })
-      return []
-    }
-
-    return (data || []) as SupportInquiry[]
-  } catch (error) {
-    logger.error('Error in getUserInquiries', { error })
-    return []
-  }
+  return getUserInquiriesPg(twitchUserId)
 }
 
 /**
@@ -225,43 +199,5 @@ export async function getInquiryWithMessages(
 ): Promise<{ inquiry: SupportInquiry; messages: SupportInquiryMessage[] } | null> {
   // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
   // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return getInquiryWithMessagesPg(inquiryId, twitchUserId)
-  }
-
-  try {
-    const supabase = getSupabaseAdmin()
-
-    // 問い合わせ本体を取得（ユーザーIDで所有権チェック）
-    const { data: inquiry, error: inquiryError } = await supabase
-      .from('support_inquiries')
-      .select('id, twitch_user_id, twitch_display_name, category, subject, body, status, created_at, updated_at')
-      .eq('id', inquiryId)
-      .eq('twitch_user_id', twitchUserId)
-      .single()
-
-    if (inquiryError || !inquiry) {
-      return null
-    }
-
-    // メッセージを時系列順で取得
-    const { data: messages, error: messagesError } = await supabase
-      .from('support_inquiry_messages')
-      .select('id, inquiry_id, sender_type, sender_id, body, created_at')
-      .eq('inquiry_id', inquiryId)
-      .order('created_at', { ascending: true })
-
-    if (messagesError) {
-      logger.error('Failed to fetch inquiry messages', { error: messagesError.message })
-      return { inquiry: inquiry as SupportInquiry, messages: [] }
-    }
-
-    return {
-      inquiry: inquiry as SupportInquiry,
-      messages: (messages || []) as SupportInquiryMessage[],
-    }
-  } catch (error) {
-    logger.error('Error in getInquiryWithMessages', { error })
-    return null
-  }
+  return getInquiryWithMessagesPg(inquiryId, twitchUserId)
 }

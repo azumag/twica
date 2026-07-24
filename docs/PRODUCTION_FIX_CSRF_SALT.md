@@ -63,9 +63,7 @@ Complete list of required environment variables for production:
 | `TWITCH_CLIENT_ID` | Yes | Twitch Client ID | Yes |
 | `TWITCH_CLIENT_SECRET` | Yes | Twitch Client Secret | Yes |
 | `TWITCH_EVENTSUB_SECRET` | Yes | Twitch EventSub webhook secret | Yes |
-| `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL | No |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase anonymous key | No |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key | Yes |
+| `HYPERDRIVE_PLANETSCALE` | Yes | PlanetScale database binding | Binding |
 | `BLOB_READ_WRITE_TOKEN` | Yes | Vercel Blob storage token | Yes |
 | **`CSRF_TOKEN_SALT`** | **Yes** | **CSRF protection salt (min 32 chars)** | **Yes** |
 | `CSRF_SIGNING_KEY` | Yes | CSRF token signing key | Yes |

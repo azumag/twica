@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
 import { getMaintenanceState } from "@/lib/maintenance/state";
 import { parkEventSubNotification } from "@/lib/maintenance/eventsub-park";

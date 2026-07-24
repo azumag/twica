@@ -28,7 +28,7 @@
  * 分けたくなった場合は KV_BINDING_NAME を差し替えるだけで済むよう、
  * バインディング名をこの1箇所に集約している。
  */
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import type { MaintenanceState } from './state'
 
 /** 共用する KV バインディング名。専用 namespace に切り替える際はここだけ変更すればよい。 */

@@ -1,20 +1,15 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — PUT/DELETE /api/cards/[id] の
- * postgrest経路 / pg経路パリティテスト
+ * #663: PUT/DELETE /api/cards/[id] のPlanetScale契約テスト
  *
- * support-inquiries-routes-driver-parity.test.ts / storage-db-driver-parity.test.ts
- * と同じ流儀: 同一 fixture を両経路のモックに与え、戻り値・ステータスコードが
- * deepEqual になることと、pg 経路で正しいテーブル/条件(values/where)が使われる
- * ことを検証する。既存の tests/unit/api/cards-collection-membership.test.ts
- * （postgrest 経路のみ検証）は変更しない。
+ * 現行 Drizzle 実装の所有権・更新・削除・競合応答と、
+ * 本番スキーマ移行中の安全な列フォールバックを検証する。
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { PUT, DELETE } from "@/app/api/cards/[id]/route";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getDb } from "@/lib/db/client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
@@ -23,10 +18,6 @@ vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
 vi.mock("@/lib/storage-db");
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 vi.mock("@/lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -40,7 +31,6 @@ const mockGetSession = vi.mocked(getSession);
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
 const mockRemoveBlobFile = vi.mocked(removeBlobFile);
 
 const SESSION = {
@@ -54,49 +44,6 @@ const SESSION = {
 };
 
 const CARD_ID = "card-1";
-
-// ---------------------------------------------------------------------------
-// postgrest 経路のモック: table ごとの結果キュー + insert/update/delete の呼び出し記録
-// ---------------------------------------------------------------------------
-
-interface PostgrestResult {
-  data?: unknown;
-  error?: unknown;
-}
-
-function createSupabaseClientMock(resultsByTable: Record<string, PostgrestResult[]>) {
-  const queues = Object.fromEntries(
-    Object.entries(resultsByTable).map(([table, results]) => [table, [...results]])
-  );
-  const updateCalls: Array<{ table: string; values: unknown }> = [];
-  const deleteCalls: Array<{ table: string }> = [];
-
-  const from = vi.fn((table: string) => {
-    const queue = queues[table];
-    if (!queue || queue.length === 0) {
-      throw new Error(`no mock result configured for table: ${table}`);
-    }
-    const result = queue.length > 1 ? (queue.shift() as PostgrestResult) : queue[0];
-    const resolved = { data: result.data ?? null, error: result.error ?? null };
-    const builder: any = {
-      select: vi.fn(() => builder),
-      update: vi.fn((values: unknown) => {
-        updateCalls.push({ table, values });
-        return builder;
-      }),
-      delete: vi.fn(() => {
-        deleteCalls.push({ table });
-        return builder;
-      }),
-      eq: vi.fn(() => builder),
-      maybeSingle: vi.fn(() => Promise.resolve(resolved)),
-      then: (onFulfilled: any, onRejected: any) => Promise.resolve(resolved).then(onFulfilled, onRejected),
-    };
-    return builder;
-  });
-
-  return { from, updateCalls, deleteCalls };
-}
 
 // ---------------------------------------------------------------------------
 // pg 経路のモック: select(fields).from(table).innerJoin().where().limit() /
@@ -231,7 +178,7 @@ function createDeleteRequest(): NextRequest {
   return new NextRequest(`http://localhost/api/cards/${CARD_ID}`, { method: "DELETE" });
 }
 
-describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", () => {
+describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(SESSION);
@@ -246,26 +193,10 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
     mockRemoveBlobFile.mockResolvedValue(null);
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  describe("PUT /api/cards/[id]（読み書き混在: isPgWriteEnabled で関数全体を分岐）", () => {
+  describe("PUT /api/cards/[id]", () => {
     // rarity_weights: null にして recalculateIfAutoMode を即 return null（DB非到達）にする
     //
-    // postgrest 経路は streamers を「埋め込みオブジェクト」として返す
-    // (card.streamers = {...}) のに対し、pg 経路は cards/streamers を
-    // INNER JOIN したフラットな行を select し、ルート側の fetchCardForUpdatePg が
-    // 同じネスト形状に再構成する。モックの fixture もそれぞれの形状に合わせる。
-    const OWNERSHIP_ROW_POSTGREST = {
-      streamer_id: "streamer-1",
-      image_url: null,
-      rarity: "common",
-      is_active: true,
-      intra_rarity_weight: 1,
-      collection_name: null,
-      streamers: { twitch_user_id: "user1", rarity_weights: null, card_pack_names: [] },
-    };
+    // JOIN 結果はルート内部でカードとストリーマーの所有権情報へ再構成される。
     const OWNERSHIP_ROW_PG = {
       streamer_id: "streamer-1",
       image_url: null,
@@ -294,20 +225,7 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       updated_at: "2026-01-02T00:00:00Z",
     };
 
-    it("成功時: 同一 fixture で両経路の戻り値が deepEqual になり、pg 経路が正しい UPDATE values を使う", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        cards: [{ data: OWNERSHIP_ROW_POSTGREST }, { data: UPDATED_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await PUT(createPutRequest({ name: "Renamed" }), {
-        params: Promise.resolve({ id: CARD_ID }),
-      });
-      expect(postgrestRes.status).toBe(200);
-      const postgrestJson = await postgrestRes.json();
-      expect(client.updateCalls[0].values).toEqual({ name: "Renamed" });
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("成功時は正しいUPDATE値と更新結果を返す", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNERSHIP_ROW_PG] }],
         updates: [{ rows: [UPDATED_ROW] }],
@@ -319,28 +237,14 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       expect(pgRes.status).toBe(200);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson).toEqual({ ...UPDATED_ROW, recalculatedCards: null });
       expect(pg.updateCalls[0].values).toEqual({ name: "Renamed" });
       expect(pg.selectCalls[0].joins).toHaveLength(1);
     });
 
-    it("所有者不一致: 両経路とも403を返しUPDATEは発生しない", async () => {
-      const otherOwnerRowPostgrest = {
-        ...OWNERSHIP_ROW_POSTGREST,
-        streamers: { ...OWNERSHIP_ROW_POSTGREST.streamers, twitch_user_id: "someone-else" },
-      };
+    it("所有者不一致では403を返しUPDATEしない", async () => {
       const otherOwnerRowPg = { ...OWNERSHIP_ROW_PG, twitch_user_id: "someone-else" };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ cards: [{ data: otherOwnerRowPostgrest }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await PUT(createPutRequest({ name: "Renamed" }), {
-        params: Promise.resolve({ id: CARD_ID }),
-      });
-      expect(postgrestRes.status).toBe(403);
-
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({ selects: [{ rows: [otherOwnerRowPg] }] });
       primePgDb(pg);
       const pgRes = await PUT(createPutRequest({ name: "Renamed" }), {
@@ -350,37 +254,14 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       expect(pg.updateCalls).toHaveLength(0);
     });
 
-    it("card_pack_names列デプロイ窓フォールバック: 両経路とも他フィールド編集は継続し200を返す", async () => {
-      const missingColumnErrorPostgrest = {
-        code: "42703",
-        message: "column streamers.card_pack_names does not exist",
-      };
+    it("card_pack_names列デプロイ窓でも他フィールド編集を継続する", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: "column streamers.card_pack_names does not exist",
       };
-      const ownershipWithoutPackNamesPostgrest = {
-        ...OWNERSHIP_ROW_POSTGREST,
-        streamers: { twitch_user_id: "user1", rarity_weights: null },
-      };
       const ownershipWithoutPackNamesPg = { ...OWNERSHIP_ROW_PG };
       delete (ownershipWithoutPackNamesPg as Record<string, unknown>).card_pack_names;
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        cards: [
-          { data: null, error: missingColumnErrorPostgrest },
-          { data: ownershipWithoutPackNamesPostgrest },
-          { data: UPDATED_ROW },
-        ],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await PUT(createPutRequest({ name: "Renamed" }), {
-        params: Promise.resolve({ id: CARD_ID }),
-      });
-      expect(postgrestRes.status).toBe(200);
-
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({
         selects: [{ error: missingColumnErrorPg }, { rows: [ownershipWithoutPackNamesPg] }],
         updates: [{ rows: [UPDATED_ROW] }],
@@ -395,32 +276,12 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       expect(pgJson).toEqual({ ...UPDATED_ROW, recalculatedCards: null });
     });
 
-    it("card_number列デプロイ窓フォールバック(UPDATE): 両経路とも列を落として再試行し200を返す", async () => {
-      const missingColumnErrorPostgrest = {
-        code: "PGRST204",
-        message: "Could not find the 'card_number' column of 'cards' in the schema cache",
-      };
+    it("card_number列デプロイ窓では列を落としてUPDATEを再試行する", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" of relation "cards" does not exist',
       };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        cards: [
-          { data: OWNERSHIP_ROW_POSTGREST },
-          { data: null, error: missingColumnErrorPostgrest },
-          { data: UPDATED_ROW },
-        ],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await PUT(createPutRequest({ name: "Renamed", cardNumber: 3 }), {
-        params: Promise.resolve({ id: CARD_ID }),
-      });
-      expect(postgrestRes.status).toBe(200);
-      expect(client.updateCalls[1].values).not.toHaveProperty("card_number");
-
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNERSHIP_ROW_PG] }],
         updates: [{ error: missingColumnErrorPg }, { rows: [UPDATED_ROW] }],
@@ -463,7 +324,6 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
         updated_at: "2026-01-02T00:00:00Z",
       };
 
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNERSHIP_ROW_PG] }],
         updates: [
@@ -487,23 +347,12 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       expect(Object.keys(pg.updateCalls[1].returningFields ?? {})).not.toContain("hp");
     });
 
-    it("card_number一意制約違反(23505): 両経路とも409を返す", async () => {
+    it("card_number一意制約違反(23505)は409を返す", async () => {
       const conflictError = {
         code: "23505",
         message: 'duplicate key value violates unique constraint "cards_streamer_card_number_unique"',
       };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        cards: [{ data: OWNERSHIP_ROW_POSTGREST }, { data: null, error: conflictError }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await PUT(createPutRequest({ cardNumber: 3 }), {
-        params: Promise.resolve({ id: CARD_ID }),
-      });
-      expect(postgrestRes.status).toBe(409);
-
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNERSHIP_ROW_PG] }],
         updates: [{ error: conflictError }],
@@ -515,36 +364,9 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       expect(pgRes.status).toBe(409);
     });
 
-    it("フラグ未設定時は getDb が呼ばれない（挙動不変の検証）", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({
-        cards: [{ data: OWNERSHIP_ROW_POSTGREST }, { data: UPDATED_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await PUT(createPutRequest({ name: "Renamed" }), { params: Promise.resolve({ id: CARD_ID }) });
-      expect(getDb).not.toHaveBeenCalled();
-    });
-
-    it("pg-read では書き込み関数のため postgrest のまま（getDb が呼ばれない）", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
-      const client = createSupabaseClientMock({
-        cards: [{ data: OWNERSHIP_ROW_POSTGREST }, { data: UPDATED_ROW }],
-      });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await PUT(createPutRequest({ name: "Renamed" }), { params: Promise.resolve({ id: CARD_ID }) });
-      expect(getDb).not.toHaveBeenCalled();
-    });
   });
 
-  describe("DELETE /api/cards/[id]（読み書き混在: isPgWriteEnabled で関数全体を分岐、DELETEはidempotent: true）", () => {
-    // postgrest 経路: streamers は埋め込みオブジェクト。pg 経路: cards/streamers を
-    // INNER JOIN したフラットな行を select し、selectCardOwnershipForDeletePg が
-    // 同じネスト形状に再構成する。
-    const OWNERSHIP_ROW_POSTGREST = {
-      streamer_id: "streamer-1",
-      image_url: null,
-      streamers: { twitch_user_id: "user1", rarity_weights: null },
-    };
+  describe("DELETE /api/cards/[id]", () => {
     const OWNERSHIP_ROW_PG = {
       streamer_id: "streamer-1",
       image_url: null,
@@ -552,15 +374,7 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       rarity_weights: null,
     };
 
-    it("成功時: 同一 fixture で両経路の戻り値が deepEqual になり、pg 経路が id で DELETE する", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ cards: [{ data: OWNERSHIP_ROW_POSTGREST }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
-      expect(postgrestRes.status).toBe(200);
-      const postgrestJson = await postgrestRes.json();
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("成功時はカードを削除して再計算結果を返す", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNERSHIP_ROW_PG] }],
         deletes: [{ rows: [{ id: CARD_ID }] }],
@@ -570,26 +384,14 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       expect(pgRes.status).toBe(200);
       const pgJson = await pgRes.json();
 
-      expect(pgJson).toEqual(postgrestJson);
       expect(pgJson).toEqual({ success: true, recalculatedCards: null });
       expect(pg.deleteCalls).toHaveLength(1);
       expect(pg.selectCalls[0].joins).toHaveLength(1);
     });
 
-    it("所有者不一致: 両経路とも403を返しDELETEは発生しない", async () => {
-      const otherOwnerRowPostgrest = {
-        ...OWNERSHIP_ROW_POSTGREST,
-        streamers: { ...OWNERSHIP_ROW_POSTGREST.streamers, twitch_user_id: "someone-else" },
-      };
+    it("所有者不一致では403を返しDELETEしない", async () => {
       const otherOwnerRowPg = { ...OWNERSHIP_ROW_PG, twitch_user_id: "someone-else" };
 
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ cards: [{ data: otherOwnerRowPostgrest }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
-      expect(postgrestRes.status).toBe(403);
-
-      vi.stubEnv("DB_DRIVER", "pg");
       const pg = createDrizzleDbMock({ selects: [{ rows: [otherOwnerRowPg] }] });
       primePgDb(pg);
       const pgRes = await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
@@ -597,34 +399,12 @@ describe("PUT/DELETE /api/cards/[id]: postgrest / pg 経路の互換 (#663)", ()
       expect(pg.deleteCalls).toHaveLength(0);
     });
 
-    it("対象カードが存在しない: 両経路とも403を返す", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ cards: [{ data: null }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      const postgrestRes = await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
-      expect(postgrestRes.status).toBe(403);
-
-      vi.stubEnv("DB_DRIVER", "pg");
+    it("対象カードが存在しない場合は403を返す", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);
       const pgRes = await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
       expect(pgRes.status).toBe(403);
     });
 
-    it("フラグ未設定時は getDb が呼ばれない（挙動不変の検証）", async () => {
-      vi.stubEnv("DB_DRIVER", undefined);
-      const client = createSupabaseClientMock({ cards: [{ data: OWNERSHIP_ROW_POSTGREST }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
-      expect(getDb).not.toHaveBeenCalled();
-    });
-
-    it("pg-read では書き込み関数のため postgrest のまま（getDb が呼ばれない）", async () => {
-      vi.stubEnv("DB_DRIVER", "pg-read");
-      const client = createSupabaseClientMock({ cards: [{ data: OWNERSHIP_ROW_POSTGREST }] });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
-      await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
-      expect(getDb).not.toHaveBeenCalled();
-    });
   });
 });

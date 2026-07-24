@@ -6,19 +6,54 @@ import {
   type PlanType,
 } from '@/lib/plan'
 import { hasTwitchSub } from '@/lib/twitch/sub-check'
+import { getDb } from '@/lib/db/client'
+import { getTableName } from 'drizzle-orm'
 
 vi.mock('@/lib/logger')
 vi.mock('@/lib/twitch/sub-check', () => ({
   hasTwitchSub: vi.fn().mockResolvedValue(false),
   isTwitchSubCheckEnabled: vi.fn().mockReturnValue(false),
 }))
-vi.mock('@/lib/supabase/admin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
-  return {
-    ...actual,
-    getSupabaseAdmin: vi.fn(),
-  }
-})
+vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
+
+function primePlanDb(config: {
+  licenseRows?: Array<{ plan_type: string }>
+  userRows?: Array<{ twitch_has_sub: boolean | null }>
+  error?: Error
+}) {
+  const select = vi.fn((fields: Record<string, unknown>) => ({
+    from: vi.fn((table: unknown) => {
+      const tableName = getTableName(table as never)
+      const rows =
+        tableName === 'user_licenses'
+          ? (config.licenseRows ?? [])
+          : tableName === 'users'
+            ? (config.userRows ?? [])
+            : []
+      const projected = rows.map((row) =>
+        Object.fromEntries(
+          Object.keys(fields).map((key) => [
+            key,
+            (row as Record<string, unknown>)[key] ?? null,
+          ]),
+        ),
+      )
+      const builder: any = {
+        innerJoin: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        limit: vi.fn(() => builder),
+        then: (onFulfilled: any, onRejected: any) =>
+          (config.error
+            ? Promise.reject(config.error)
+            : Promise.resolve(projected)
+          ).then(onFulfilled, onRejected),
+      }
+      return builder
+    }),
+  }))
+  vi.mocked(getDb).mockResolvedValue({ db: { select }, sql: {} } as never)
+  return select
+}
 
 describe('getUserPlan', () => {
   beforeEach(() => {
@@ -27,14 +62,7 @@ describe('getUserPlan', () => {
   })
 
   it('should return basic when user has no licenses', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockResolvedValue({ data: [], error: null }),
-      })),
-    } as any)
+    primePlanDb({ licenseRows: [] })
 
     const { getUserPlan } = await import('@/lib/plan')
     const result = await getUserPlan('user-no-license')
@@ -42,17 +70,7 @@ describe('getUserPlan', () => {
   })
 
   it('should return support when user has active support license', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockResolvedValue({
-          data: [{ plan_type: 'support', support_codes: { status: 'active' } }],
-          error: null,
-        }),
-      })),
-    } as any)
+    primePlanDb({ licenseRows: [{ plan_type: 'support' }] })
 
     const { getUserPlan } = await import('@/lib/plan')
     const result = await getUserPlan('user-support')
@@ -60,20 +78,9 @@ describe('getUserPlan', () => {
   })
 
   it('should return patron when user has both support and patron licenses (highest wins)', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockResolvedValue({
-          data: [
-            { plan_type: 'support', support_codes: { status: 'active' } },
-            { plan_type: 'patron', support_codes: { status: 'active' } },
-          ],
-          error: null,
-        }),
-      })),
-    } as any)
+    primePlanDb({
+      licenseRows: [{ plan_type: 'support' }, { plan_type: 'patron' }],
+    })
 
     const { getUserPlan } = await import('@/lib/plan')
     const result = await getUserPlan('user-multi')
@@ -81,17 +88,7 @@ describe('getUserPlan', () => {
   })
 
   it('should return basic when DB query fails (graceful degradation)', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockResolvedValue({
-          data: null,
-          error: { message: 'DB connection error' },
-        }),
-      })),
-    } as any)
+    primePlanDb({ error: new Error('DB connection error') })
 
     const { getUserPlan } = await import('@/lib/plan')
     const result = await getUserPlan('user-error')
@@ -99,12 +96,7 @@ describe('getUserPlan', () => {
   })
 
   it('should return basic when an exception is thrown', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => {
-        throw new Error('unexpected error')
-      }),
-    } as any)
+    vi.mocked(getDb).mockRejectedValue(new Error('unexpected error'))
 
     const { getUserPlan } = await import('@/lib/plan')
     const result = await getUserPlan('user-throw')
@@ -112,28 +104,10 @@ describe('getUserPlan', () => {
   })
 
   it('getUserPlanSnapshot uses DB state without calling Twitch subscription API', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    const from = vi.fn((table: string) => {
-      if (table === 'user_licenses') {
-        return {
-          select: vi.fn().mockReturnThis(),
-          eq: vi.fn().mockReturnThis(),
-          in: vi.fn().mockResolvedValue({
-            data: [{ plan_type: 'support', support_codes: { status: 'active' } }],
-            error: null,
-          }),
-        }
-      }
-      return {
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValue({
-          data: { twitch_has_sub: true },
-          error: null,
-        }),
-      }
+    primePlanDb({
+      licenseRows: [{ plan_type: 'support' }],
+      userRows: [{ twitch_has_sub: true }],
     })
-    vi.mocked(getSupabaseAdmin).mockReturnValue({ from } as any)
 
     const { getUserPlanSnapshot } = await import('@/lib/plan')
     const result = await getUserPlanSnapshot('user-snapshot')
@@ -195,14 +169,7 @@ describe('getPlanStorageBytes', () => {
   })
 
   it('should return 0 for basic plan', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockResolvedValue({ data: [], error: null }),
-      })),
-    } as any)
+    primePlanDb({ licenseRows: [] })
 
     const { getPlanStorageBytes } = await import('@/lib/plan')
     const result = await getPlanStorageBytes('user-basic')
@@ -210,17 +177,7 @@ describe('getPlanStorageBytes', () => {
   })
 
   it('should return 250MB for support plan', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockResolvedValue({
-          data: [{ plan_type: 'support', support_codes: { status: 'active' } }],
-          error: null,
-        }),
-      })),
-    } as any)
+    primePlanDb({ licenseRows: [{ plan_type: 'support' }] })
 
     const { getPlanStorageBytes } = await import('@/lib/plan')
     const result = await getPlanStorageBytes('user-support')
@@ -228,17 +185,7 @@ describe('getPlanStorageBytes', () => {
   })
 
   it('should return 500MB for patron plan', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: vi.fn(() => ({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        in: vi.fn().mockResolvedValue({
-          data: [{ plan_type: 'patron', support_codes: { status: 'active' } }],
-          error: null,
-        }),
-      })),
-    } as any)
+    primePlanDb({ licenseRows: [{ plan_type: 'patron' }] })
 
     const { getPlanStorageBytes } = await import('@/lib/plan')
     const result = await getPlanStorageBytes('user-patron')

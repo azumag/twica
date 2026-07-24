@@ -8,8 +8,8 @@ import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
 import { getBaseUrl } from '@/lib/url-utils'
 import { getSession, parseSession, verifySession } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { logger } from '@/lib/logger'
+
+import { logger } from '@/lib/logger.server'
 import { guardWriteRedirect } from '@/lib/maintenance/guard'
 // ---------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
@@ -18,7 +18,7 @@ import { guardWriteRedirect } from '@/lib/maintenance/guard'
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { users as usersTable } from '@/lib/db/schema'
 
@@ -183,13 +183,7 @@ export async function GET(request: Request) {
 
       if (twitchUserId) {
         // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-        const { data: user, error: dbError } = isPgReadEnabled()
-          ? await fetchScopeRestorationUserPg(twitchUserId)
-          : await getSupabaseAdmin()
-              .from('users')
-              .select('twitch_scopes')
-              .eq('twitch_user_id', twitchUserId)
-              .maybeSingle()
+        const { data: user, error: dbError } = await fetchScopeRestorationUserPg(twitchUserId)
 
         if (dbError) {
           // DB障害時: スコープ復元に失敗したことをcallbackに伝達する

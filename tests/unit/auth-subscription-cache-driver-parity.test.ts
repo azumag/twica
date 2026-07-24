@@ -1,6 +1,5 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — サブスク状態キャッシュ書き込みルートの
- * postgrest経路 / pg経路パリティテスト
+ * #663/#708: サブスク状態キャッシュのPlanetScale書き込みテスト
  *
  * 対象:
  *   - POST /api/auth/twitch/check-subscription（UPSERT + 読み戻し検証）
@@ -8,14 +7,13 @@
  *
  * token-manager-driver-parity.test.ts の流儀を踏襲する。
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { getSession } from '@/lib/session'
 import { validateCSRFToken } from '@/lib/csrf'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { hasScope } from '@/lib/twitch/token-manager'
 import { checkTwitchSubViaApi, isTwitchSubCheckEnabled } from '@/lib/twitch/sub-check'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
 import { users as usersTable } from '@/lib/db/schema'
 
@@ -132,27 +130,11 @@ function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
   vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
 }
 
-function createSupabaseUpsertMock(upsertResult: { data: unknown; error: unknown }, readBackResult?: { data: unknown; error: unknown }) {
-  const upsertMaybeSingle = vi.fn().mockResolvedValue(upsertResult)
-  const upsertSelect = vi.fn().mockReturnValue({ maybeSingle: upsertMaybeSingle })
-  const upsert = vi.fn().mockReturnValue({ select: upsertSelect })
-
-  const readBackMaybeSingle = vi.fn().mockResolvedValue(readBackResult ?? upsertResult)
-  const readBackEq = vi.fn().mockReturnValue({ maybeSingle: readBackMaybeSingle })
-  const readBackSelect = vi.fn().mockReturnValue({ eq: readBackEq })
-
-  const update = vi.fn().mockReturnValue({
-    eq: vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ maybeSingle: readBackMaybeSingle }) }),
-  })
-
-  return { from: vi.fn().mockReturnValue({ upsert, select: readBackSelect, update }) }
-}
-
 function createRequest(path: string): Request {
   return new Request(`http://localhost:3000${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
 }
 
-describe('サブスク状態キャッシュ書き込みルート: postgrest / pg 経路の互換 (#663)', () => {
+describe('サブスク状態キャッシュ書き込みルート: PlanetScale経路 (#663/#708)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(validateCSRFToken).mockResolvedValue({ valid: true } as any)
@@ -164,28 +146,8 @@ describe('サブスク状態キャッシュ書き込みルート: postgrest / pg
     vi.mocked(isTwitchSubCheckEnabled).mockReturnValue(true)
   })
 
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
   describe('POST /api/auth/twitch/check-subscription', () => {
-    it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-      vi.stubEnv('DB_DRIVER', undefined)
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        createSupabaseUpsertMock({ data: { twitch_user_id: '123456789' }, error: null }) as any
-      )
-
-      const { POST } = await import('@/app/api/auth/twitch/check-subscription/route')
-      const response = await POST(createRequest('/api/auth/twitch/check-subscription'))
-      const body = await response.json()
-
-      expect(response.status).toBe(200)
-      expect(body).toEqual({ success: true, hasSub: true, saved: true })
-      expect(getDb).not.toHaveBeenCalled()
-    })
-
-    it('DB_DRIVER=pg: pg経路で正しい set/onConflict の UPSERT が行われ、postgrest経路と同じレスポンス', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('正しいset/onConflictでUPSERTし成功レスポンスを返す', async () => {
       const pg = createDrizzleDbMock({ inserts: [{ rows: [{ twitch_user_id: '123456789' }] }] })
       primePgDb(pg)
 
@@ -204,8 +166,7 @@ describe('サブスク状態キャッシュ書き込みルート: postgrest / pg
       })
     })
 
-    it('DB_DRIVER=pg: 列欠落(42703)はPGRST204相当のスキーマ不一致として saved=false・200 を返す', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('列欠落(42703)はスキーマ不一致としてsaved=false・200を返す', async () => {
       const pg = createDrizzleDbMock({
         inserts: [{ error: { code: '42703', message: 'column does not exist' } }],
       })
@@ -219,8 +180,7 @@ describe('サブスク状態キャッシュ書き込みルート: postgrest / pg
       expect(body).toEqual({ success: true, hasSub: true, saved: false, saveFailureCode: '42703' })
     })
 
-    it('DB_DRIVER=pg: returning行が空の場合は読み戻しで検証し saved=true を返す', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('returning行が空の場合は読み戻しで検証しsaved=trueを返す', async () => {
       const pg = createDrizzleDbMock({
         inserts: [{ rows: [] }],
         selects: [{ rows: [{ twitch_has_sub: true, twitch_sub_verified_at: new Date().toISOString() }] }],
@@ -237,23 +197,7 @@ describe('サブスク状態キャッシュ書き込みルート: postgrest / pg
   })
 
   describe('POST /api/auth/twitch/disable-subscription', () => {
-    it('フラグ未設定時は getDb が呼ばれない（挙動不変の検証）', async () => {
-      vi.stubEnv('DB_DRIVER', undefined)
-      vi.mocked(getSupabaseAdmin).mockReturnValue(
-        createSupabaseUpsertMock({ data: { twitch_user_id: '123456789' }, error: null }) as any
-      )
-
-      const { POST } = await import('@/app/api/auth/twitch/disable-subscription/route')
-      const response = await POST(createRequest('/api/auth/twitch/disable-subscription'))
-      const body = await response.json()
-
-      expect(response.status).toBe(200)
-      expect(body).toEqual({ success: true, hasSub: false, twitchSubVerifiedAt: '9999-12-31T00:00:00.000Z' })
-      expect(getDb).not.toHaveBeenCalled()
-    })
-
-    it('DB_DRIVER=pg: pg経路で正しい set/where で UPDATE され、postgrest経路と同じレスポンス', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('正しいset/whereでUPDATEし成功レスポンスを返す', async () => {
       const pg = createDrizzleDbMock({ updates: [{ rows: [{ twitch_user_id: '123456789' }] }] })
       primePgDb(pg)
 
@@ -271,8 +215,7 @@ describe('サブスク状態キャッシュ書き込みルート: postgrest / pg
       expect(pg.updateCalls[0].where).toEqual(eq(usersTable.twitch_user_id, '123456789'))
     })
 
-    it('DB_DRIVER=pg: 更新対象行が無ければ500を返す', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg')
+    it('更新対象行が無ければ500を返す', async () => {
       const pg = createDrizzleDbMock({ updates: [{ rows: [] }] })
       primePgDb(pg)
 

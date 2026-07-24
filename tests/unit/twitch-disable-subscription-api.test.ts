@@ -4,6 +4,7 @@ import { validateCSRFToken } from '@/lib/csrf'
 import { getSession } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/session')
@@ -12,9 +13,7 @@ vi.mock('@/lib/rate-limit', () => ({
   getRateLimitIdentifier: vi.fn(),
   rateLimits: { twitchDisableSubscription: {} },
 }))
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
-}))
+vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
 vi.mock('@/lib/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -37,20 +36,14 @@ function createRequest(): Request {
   })
 }
 
-function createSupabaseMock(updateResult: { data: unknown; error: unknown }) {
-  const maybeSingle = vi.fn().mockResolvedValue(updateResult)
-  const select = vi.fn().mockReturnValue({ maybeSingle })
-  const eq = vi.fn().mockReturnValue({ select })
-  const update = vi.fn().mockReturnValue({ eq })
-  const from = vi.fn().mockReturnValue({ update })
-
-  return {
-    from,
-    update,
-    eq,
-    select,
-    maybeSingle,
-  }
+function createDbMock(rows: unknown[], updateError?: unknown) {
+  const returning = updateError
+    ? vi.fn().mockRejectedValue(updateError)
+    : vi.fn().mockResolvedValue(rows)
+  const where = vi.fn().mockReturnValue({ returning })
+  const set = vi.fn().mockReturnValue({ where })
+  const update = vi.fn().mockReturnValue({ set })
+  return { update, set, where, returning }
 }
 
 describe('POST /api/auth/twitch/disable-subscription', () => {
@@ -113,14 +106,8 @@ describe('POST /api/auth/twitch/disable-subscription', () => {
   })
 
   it('正常無効化時は 200 を返し far-future を保存する', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    const supabaseMock = createSupabaseMock({
-      data: { twitch_user_id: '123456789' },
-      error: null,
-    })
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: supabaseMock.from,
-    } as any)
+    const db = createDbMock([{ twitch_user_id: '123456789' }])
+    vi.mocked(getDb).mockResolvedValue({ db } as any)
 
     const response = await POST(createRequest())
     const body = await response.json()
@@ -131,20 +118,15 @@ describe('POST /api/auth/twitch/disable-subscription', () => {
       hasSub: false,
       twitchSubVerifiedAt: '9999-12-31T00:00:00.000Z',
     })
-    expect(supabaseMock.update).toHaveBeenCalledWith({
+    expect(db.set).toHaveBeenCalledWith({
       twitch_has_sub: false,
       twitch_sub_verified_at: '9999-12-31T00:00:00.000Z',
     })
-    expect(supabaseMock.eq).toHaveBeenCalledWith('twitch_user_id', '123456789')
   })
 
   it('DB エラー時は 500 を返す', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      from: createSupabaseMock({
-        data: null,
-        error: { code: 'PGRST000', message: 'db error' },
-      }).from,
+    vi.mocked(getDb).mockResolvedValue({
+      db: createDbMock([], Object.assign(new Error('db error'), { code: '42000' })),
     } as any)
 
     const response = await POST(createRequest())

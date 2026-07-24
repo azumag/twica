@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 
 /**
  * Register an already-started task with Cloudflare's request lifetime.

@@ -25,11 +25,6 @@ vi.mock('@/lib/services/gacha', () => ({
   })),
 }))
 
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
-  getSupabaseAdminNoCache: vi.fn(),
-}))
-
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn().mockResolvedValue(undefined),
   reportApiError: vi.fn(),

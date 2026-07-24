@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   checkRateLimit: vi.fn(),
   getRateLimitIdentifier: vi.fn(),
   reportError: vi.fn(),
+  logErrorFromLogger: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/maintenance/eventsub-park', () => ({
@@ -41,6 +42,8 @@ vi.mock('@/lib/logger', () => ({
 
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: mocks.reportError,
+  // logger.server のfire-and-forget永続化も同じhoisted fixtureで安全に完了させる。
+  logErrorFromLogger: mocks.logErrorFromLogger,
 }))
 
 const TEST_SECRET = 'test-eventsub-replay-secret'

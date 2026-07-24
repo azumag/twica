@@ -3,8 +3,8 @@ import { validateCSRFToken } from '@/lib/csrf'
 import { getSession } from '@/lib/session'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { logger } from '@/lib/logger'
+
+import { logger } from '@/lib/logger.server'
 // ---------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
 // isPgWriteEnabled() が false を返すため getDb() は一切呼ばれず、既存の
@@ -12,7 +12,7 @@ import { logger } from '@/lib/logger'
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { users as usersTable } from '@/lib/db/schema'
 
@@ -93,17 +93,7 @@ export async function POST(request: Request) {
     }
 
     // #663: 書き込みのみのため isPgWriteEnabled() で分岐。
-    const { data: updatedUser, error: updateError } = isPgWriteEnabled()
-      ? await disableSubscriptionPg(session.twitchUserId)
-      : await getSupabaseAdmin()
-          .from('users')
-          .update({
-            twitch_has_sub: false,
-            twitch_sub_verified_at: DISABLED_SUB_VERIFIED_AT,
-          })
-          .eq('twitch_user_id', session.twitchUserId)
-          .select('twitch_user_id')
-          .maybeSingle()
+    const { data: updatedUser, error: updateError } = await disableSubscriptionPg(session.twitchUserId)
 
     if (updateError || !updatedUser) {
       logger.error('[TwitchSub] Failed to disable subscription status:', {

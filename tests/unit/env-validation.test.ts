@@ -11,15 +11,6 @@ function restoreEnv() {
   Object.assign(process.env, originalEnv)
 }
 
-function removeSupabaseEnv() {
-  delete process.env.NEXT_PUBLIC_SUPABASE_URL
-  delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-  delete process.env.SUPABASE_SERVICE_ROLE_KEY
-  delete process.env.SUPABASE_SECRET_KEY
-  delete process.env.SUPABASE_DB_URL
-}
-
 beforeEach(() => {
   restoreEnv()
 })
@@ -40,7 +31,7 @@ describe('requiredEnvVars', () => {
     expect(names).toContain('CSRF_TOKEN_SALT')
   })
 
-  it('does not require a Supabase URL or key after the PlanetScale cutover', async () => {
+  it('contains only the current runtime requirements', async () => {
     const { requiredEnvVars, requiredEnvVarGroups } = await import('@/lib/env-validation')
     const serialized = JSON.stringify({ requiredEnvVars, requiredEnvVarGroups })
 
@@ -61,14 +52,6 @@ describe('validateEnvVars', () => {
     const result = validateEnvVars()
     expect(result.valid).toBe(false)
     expect(result.missing).toContain('NEXT_PUBLIC_APP_URL')
-  })
-
-  it('is valid with every Supabase variable deleted', async () => {
-    const { validateEnvVars } = await import('@/lib/env-validation')
-    removeSupabaseEnv()
-
-    const result = validateEnvVars()
-    expect(result).toEqual({ valid: true, missing: [] })
   })
 })
 

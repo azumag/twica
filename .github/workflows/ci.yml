@@ -92,6 +92,11 @@ jobs:
           TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
           CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
 
+      - name: Verify generated application artifacts are Supabase-independent
+        # source検査をbuild後にも再実行し、bundler/generated Workerへ直接host・
+        # REST/Realtime path・credential識別子が混入する退行を拒否する。
+        run: npm run check:supabase-shutdown
+
   analysis:
     name: Analysis dashboard (guard / typecheck / build)
     runs-on: ubuntu-latest

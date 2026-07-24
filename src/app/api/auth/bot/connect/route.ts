@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server';
 
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { getTwitchAuthUrl } from '@/lib/twitch/auth'
 import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { API_ROUTES, COOKIE_NAMES, ERROR_MESSAGES, STATE_COOKIE_OPTIONS } from '@/lib/constants'
@@ -17,7 +17,7 @@ import { handleApiError } from '@/lib/error-handler'
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { streamers as streamersTable } from '@/lib/db/schema'
 
@@ -71,15 +71,7 @@ export async function POST(request: NextRequest) {
     }
 
     // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-    const streamer = isPgReadEnabled()
-      ? await fetchStreamerIdPg(session.twitchUserId)
-      : (
-          await getSupabaseAdmin()
-            .from('streamers')
-            .select('id')
-            .eq('twitch_user_id', session.twitchUserId)
-            .maybeSingle()
-        ).data
+    const streamer = await fetchStreamerIdPg(session.twitchUserId)
 
     if (!streamer) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 })

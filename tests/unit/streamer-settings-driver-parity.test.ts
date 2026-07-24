@@ -1,14 +1,13 @@
 /**
- * #663: 低頻度APIルート群のpg直結移行 — 配信者設定APIの
- * postgrest経路 / pg経路パリティテスト
+ * #663: 配信者設定APIのPlanetScale契約テスト
  *
  * 対象: POST /api/streamer/settings
  * ここでは DB アクセスの形状（クエリ対象テーブル/条件/値、フォールバック
  * チェインの発火順序、skip フラグの立ち方）に焦点を当てる。バリデーション/
- * 正規化ロジックそのものの網羅的な検証は既存の tests/unit/streamer-settings-api.test.ts
- * （postgrest経路、76ケース）に委ねる。
+ * 正規化ロジックそのものの網羅的な検証は
+ * tests/unit/streamer-settings-api.test.ts に委ねる。
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
@@ -16,14 +15,12 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { getUserPlan } from "@/lib/plan";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getDb } from "@/lib/db/client";
 import {
   streamers as streamersTable,
   streamerChatSenderSettings as streamerChatSenderSettingsTable,
   twitchBotAccounts as twitchBotAccountsTable,
 } from "@/lib/db/schema";
-import { createSupabaseMock } from "../utils/supabase-mock";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
@@ -34,10 +31,6 @@ vi.mock("@/lib/constants", async (importOriginal) => await importOriginal());
 vi.mock("@/lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
 
 const mockGetSession = vi.mocked(getSession);
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
@@ -180,7 +173,7 @@ async function loadRoute() {
   return import("@/app/api/streamer/settings/route");
 }
 
-describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => {
+describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(SESSION as any);
@@ -191,48 +184,7 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
     mockGetUserPlan.mockResolvedValue("support" as any);
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("フラグ未設定時は getDb が呼ばれない（挙動不変の検証）", async () => {
-    vi.stubEnv("DB_DRIVER", undefined);
-    const mockSupabase = createSupabaseMock()
-      .withMaybeSingleResponse({ id: "streamer123", twitch_user_id: "streamer123" })
-      .build();
-    vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabase as any);
-
-    const { POST } = await loadRoute();
-    const response = await POST(
-      postRequest({ streamerId: "streamer123", channelPointRewardId: "reward-123" })
-    );
-
-    expect(response.status).toBe(200);
-    expect(getDb).not.toHaveBeenCalled();
-  });
-
-  it("DB_DRIVER=pg: 所有権SELECT + UPDATE が正しいテーブル/条件/値で実行され、戻り値が postgrest 経路と一致する", async () => {
-    vi.stubEnv("DB_DRIVER", undefined);
-    const supabaseMock = createSupabaseMock()
-      .withMaybeSingleResponse({
-        id: "streamer123",
-        channel_point_collection_name: null,
-        card_pack_names: [],
-        pack_rarity_weights: null,
-      })
-      .build();
-    vi.mocked(getSupabaseAdmin).mockReturnValue(supabaseMock as any);
-    const { POST: postgrestPOST } = await loadRoute();
-    const postgrestResponse = await postgrestPOST(
-      postRequest({
-        streamerId: "streamer123",
-        channelPointRewardId: "reward-123",
-        channelPointRewardName: "Test Reward",
-      })
-    );
-    const postgrestBody = await postgrestResponse.json();
-
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("所有権SELECT + UPDATE が正しいテーブル/条件/値で実行される", async () => {
     const pg = createDrizzleDbMock({
       selects: [
         {
@@ -254,8 +206,8 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
     );
     const pgBody = await pgResponse.json();
 
-    expect(pgResponse.status).toBe(postgrestResponse.status);
-    expect(pgBody).toEqual(postgrestBody);
+    expect(pgResponse.status).toBe(200);
+    expect(pgBody).toEqual(expect.objectContaining({ success: true }));
     expect(getDb).toHaveBeenCalled();
     expect(pg.selectCalls[0].where).toEqual(
       and(eq(streamersTable.id, "streamer123"), eq(streamersTable.twitch_user_id, "streamer123"))
@@ -267,8 +219,7 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
     expect(pg.updateCalls[0].where).toEqual(eq(streamersTable.id, "streamer123"));
   });
 
-  it("DB_DRIVER=pg: streamer所有権が無ければ両経路とも403", async () => {
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("streamer所有権が無ければ403", async () => {
     const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
     primePgDb(pg);
 
@@ -277,8 +228,7 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
     expect(response.status).toBe(403);
   });
 
-  it("DB_DRIVER=pg: rarity_weights_scope 列欠落 → 剥がして再試行し、rarityWeightsScopeSkippedDeployWindow を返す", async () => {
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("rarity_weights_scope 列欠落 → 剥がして再試行し、rarityWeightsScopeSkippedDeployWindow を返す", async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
       updates: [
@@ -290,7 +240,7 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
 
     const { POST } = await loadRoute();
     // rarityWeightsScope 単独だと剥がした後 updateData が空になり2回目のDB呼び出しが
-    // 発生しない(postgrest経路と同じ「空になったら error=null」短絡)ため、剥がされない
+    // 発生しない（「空になったら error=null」短絡）ため、剥がされない
     // 別フィールド(showUnownedCards)を同時に送って実際にリトライが発火することを検証する。
     const response = await POST(
       postRequest({ streamerId: "streamer123", rarityWeightsScope: "per_pack", showUnownedCards: true })
@@ -304,12 +254,16 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
     expect(pg.updateCalls[1].set).toEqual({ show_unowned_cards: true });
   });
 
-  it("DB_DRIVER=pg: gacha_sound_rules 列欠落 → legacy fallback で保存し、gachaSoundRulesSkippedDeployWindow を返す", async () => {
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("gacha_sound_rules 列欠落 → legacy fallback で保存し、gachaSoundRulesSkippedDeployWindow を返す", async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
       updates: [
-        { error: { code: "PGRST204", message: "Could not find the 'gacha_sound_rules' column" } },
+        {
+          error: {
+            code: "42703",
+            message: 'column "gacha_sound_rules" of relation "streamers" does not exist',
+          },
+        },
         { rows: [] },
       ],
     });
@@ -336,8 +290,7 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
     expect(pg.updateCalls[1].set).not.toHaveProperty("gacha_sound_rules");
   });
 
-  it("DB_DRIVER=pg: disconnectBot=true が UPSERT(onConflictDoUpdate) + DELETE を正しい条件で実行する", async () => {
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("disconnectBot=true が UPSERT(onConflictDoUpdate) + DELETE を正しい条件で実行する", async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
       inserts: [{ rows: [] }],
@@ -367,8 +320,7 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
     );
   });
 
-  it("DB_DRIVER=pg: disconnectBot 失敗時は両経路とも handleDatabaseError(500) を返す", async () => {
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("disconnectBot 失敗時は handleDatabaseError(500) を返す", async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
       inserts: [{ error: { code: "08006", message: "connection failure" } }],
@@ -380,8 +332,7 @@ describe("streamer/settings POST: postgrest / pg 経路の互換 (#663)", () => 
     expect(response.status).toBe(500);
   });
 
-  it("DB_DRIVER=pg: card_pack_names列欠落の所有権SELECTフォールバックが正しい列セットで再試行される", async () => {
-    vi.stubEnv("DB_DRIVER", "pg");
+  it("card_pack_names列欠落の所有権SELECTフォールバックが正しい列セットで再試行される", async () => {
     let selectCall = 0;
     const db = {
       select: vi.fn((fields: Record<string, unknown>) => {

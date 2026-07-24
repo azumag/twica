@@ -19,6 +19,7 @@ import {
   buildPollingRealtimeEvents,
   isValidStreamerId,
 } from "@/lib/overlay-realtime/contract";
+import { getOverlayDemoEvent } from "@/lib/overlay/demo-event-store";
 
 // A redemption produces at most 15 rows. The larger bounded page keeps one
 // batch together and gives gap recovery headroom without an unbounded query.
@@ -243,6 +244,16 @@ export async function GET(
         { status: 400 }
       );
     }
+    const demoSinceParam = searchParams.get("demoSince");
+    const demoSince = demoSinceParam
+      ? normalizeDateParam(demoSinceParam)
+      : null;
+    if (demoSinceParam && !demoSince) {
+      return NextResponse.json(
+        { error: "Invalid demoSince parameter" },
+        { status: 400 }
+      );
+    }
 
     const afterIdParam = searchParams.get("afterId");
     const afterId =
@@ -278,13 +289,20 @@ export async function GET(
       );
     }
 
+    // Start the optional KV read together with the PlanetScale query. Awaiting
+    // them serially would add KV latency to every active overlay even though
+    // the two stores and their cursors are independent.
+    const demoEventPromise = demoSince
+      ? getOverlayDemoEvent(streamerId, demoSince).catch(() => null)
+      : Promise.resolve(null);
+
     let overlayHistoryRows: OverlayHistoryRow[];
+    let demoEvent: Awaited<ReturnType<typeof getOverlayDemoEvent>>;
     try {
-      overlayHistoryRows = await getOverlayHistoryRows(
-        streamerId,
-        since,
-        afterId
-      );
+      [overlayHistoryRows, demoEvent] = await Promise.all([
+        getOverlayHistoryRows(streamerId, since, afterId),
+        demoEventPromise,
+      ]);
     } catch (error) {
       return handleDatabaseError(error, "Overlay Events API");
     }
@@ -303,6 +321,11 @@ export async function GET(
       })
       .filter((event): event is NonNullable<typeof event> => event !== null);
 
+    // Demo delivery is best-effort, unlike committed history. It shares this
+    // response to eliminate the former always-on `/demo-events` request, but a
+    // transient KV outage must never make PlanetScale gap recovery fail. The
+    // independent demo cursor also prevents an operator test from advancing
+    // the authoritative `(redeemed_at, history_id)` business cursor.
     // Advance by the last database row, including a defensive left-join miss.
     // Using the filtered display list could otherwise query the same tail row
     // forever and prevent later committed rows from being reached.
@@ -333,6 +356,7 @@ export async function GET(
             historyId: lastHistoryRow.id,
           }
         : null,
+      ...(demoSince ? { demoEvent } : {}),
       overlayVersion: process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev",
     });
   } catch (error) {

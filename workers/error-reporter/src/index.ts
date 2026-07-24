@@ -35,7 +35,7 @@ const USER_AGENT = 'twica-error-reporter'
 interface Env {
   /**
    * #711 C: errors/support_inquiries への直接クエリ用 Hyperdrive バインディング。
-   * ルート wrangler.toml（メインアプリ）の [[hyperdrive]] binding = "HYPERDRIVE_SUPABASE"
+   * ルート wrangler.toml（メインアプリ）の [[hyperdrive]] binding = "HYPERDRIVE_PLANETSCALE"
    * と同じ Hyperdrive config ID を指す（このワーカーの wrangler.toml 参照）。
    * 同じ config を共有するため、Phase2 cutover 時に config の向き先が
    * Supabase → PlanetScale へ切り替わっても、このワーカーのコードは一切
@@ -45,7 +45,7 @@ interface Env {
    * 型レベルでも許容し、scheduled() の起動時バリデーションと
    * createReporterDbClient 内の defensive throw の二段構えで安全に倒すため。
    */
-  HYPERDRIVE_SUPABASE?: HyperdriveBindingLike
+  HYPERDRIVE_PLANETSCALE?: HyperdriveBindingLike
   GITHUB_TOKEN: string
   GITHUB_REPO_OWNER: string
   GITHUB_REPO_NAME: string
@@ -266,10 +266,10 @@ function installRawTimestampParser(client: postgres.Sql): void {
  *   正しさを優先する。
  */
 function createReporterDbClient(env: Env): postgres.Sql {
-  if (!env.HYPERDRIVE_SUPABASE) {
-    throw new Error('[Reporter] Missing HYPERDRIVE_SUPABASE binding in wrangler.toml')
+  if (!env.HYPERDRIVE_PLANETSCALE) {
+    throw new Error('[Reporter] Missing HYPERDRIVE_PLANETSCALE binding in wrangler.toml')
   }
-  const sql = postgres(stripPostgresJsIncompatibleSslParams(env.HYPERDRIVE_SUPABASE.connectionString), {
+  const sql = postgres(stripPostgresJsIncompatibleSslParams(env.HYPERDRIVE_PLANETSCALE.connectionString), {
     max: 1,
     connect_timeout: 10,
     idle_timeout: 20,
@@ -1533,7 +1533,7 @@ export default {
     _ctx: ExecutionContext
   ): Promise<void> {
     if (event.cron === EVENTSUB_AUTO_DRAIN_CRON) {
-      // 自動ドレインは HYPERDRIVE_SUPABASE/GITHUB_TOKEN 等、既存3処理専用の
+      // 自動ドレインは HYPERDRIVE_PLANETSCALE/GITHUB_TOKEN 等、既存3処理専用の
       // binding/secrets に依存しないため、下の環境変数バリデーションより前で
       // 分岐・完結させる。
       try {
@@ -1544,12 +1544,10 @@ export default {
       return
     }
 
-    // 環境変数バリデーション（既存3処理共通）: 未設定の場合は早期リターン。
-    // binding/secret 未設定でも無害に空振りする（#711 C: PostgREST 用の
-    // SUPABASE_URL/SUPABASE_SECRET_KEY/SUPABASE_SERVICE_ROLE_KEY はもう使わない
-    // ため、Hyperdrive バインディングの有無を見る）。
-    if (!env.HYPERDRIVE_SUPABASE || !env.GITHUB_TOKEN) {
-      console.error('[Reporter] Missing required binding/secrets. Bind HYPERDRIVE_SUPABASE in wrangler.toml and set GITHUB_TOKEN via wrangler secret put')
+    // 環境変数バリデーション（既存3処理共通）: 必須 binding/secret が
+    // 未設定なら無害に早期リターンする。
+    if (!env.HYPERDRIVE_PLANETSCALE || !env.GITHUB_TOKEN) {
+      console.error('[Reporter] Missing required binding/secrets. Bind HYPERDRIVE_PLANETSCALE in wrangler.toml and set GITHUB_TOKEN via wrangler secret put')
       return
     }
     if (!env.GITHUB_REPO_OWNER || !env.GITHUB_REPO_NAME) {

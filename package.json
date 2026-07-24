@@ -48,8 +48,6 @@
     "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.8.0",
-    "@supabase/supabase-js": "^2.90.0",
     "drizzle-orm": "^0.45.2",
     "next": "16.1.6",
     "next-intl": "^4.7.0",
@@ -77,7 +75,6 @@
     "eslint-config-next": "16.1.6",
     "happy-dom": "^20.3.3",
     "jsdom": "^27.0.1",
-    "supabase": "^2.72.8",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^3.2.4",

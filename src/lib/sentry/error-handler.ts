@@ -1,3 +1,5 @@
+import 'server-only'
+
 /**
  * Error Reporting Abstraction Layer
  * エラーレポート抽象レイヤー
@@ -17,21 +19,21 @@
 
 /**
  * errors テーブルへの記録方針:
- * - サーバーサイド (Cloudflare Workers) でのみ動作
- * - クライアントサイドでは記録処理を実行しない
+ * - `server-only`境界内（Cloudflare Workers / Next.js server）でのみ動作
+ * - Client Componentは共有console loggerだけを使用し、このmoduleをimportしない
  * - DB への記録失敗はメインのエラー処理を阻害しない
- * - DB_DRIVER=pg はDrizzle、その他は従来のPostgRESTを使う
+ * - PlanetScale/Drizzle の単一経路で errors テーブルへ記録する
  *
  * dynamic import する理由:
- * - error-handler.ts はクライアント・サーバー両方からインポートされる
- * - サーバーサイドでのみ Supabase クライアントをロードする
+ * - 通常ログではDB moduleをロードせず、永続化が必要になった時だけ初期化する
+ * - db/retry.ts → logger.server.ts → 本moduleの循環を初期評価時に作らない
  *
  * 機密情報マスキング:
  * - sanitizeContext / extractErrorMessage は log-sanitizer.ts に集約
- * - 同じユーティリティを logger.ts も使用しており、console 経路 / Supabase 経路で
+ * - 同じユーティリティを logger.ts も使用しており、console 経路 / DB 記録経路で
  *   同一ポリシーが適用される（Issue #401）
  * - Sensitive-info masking lives in log-sanitizer so both the console pipeline
- *   (logger) and the Supabase pipeline use the same redaction policy.
+ *   (logger) and the database pipeline use the same redaction policy.
  */
 
 import { sanitizeContext, extractErrorMessage } from '@/lib/log-sanitizer'
@@ -65,7 +67,7 @@ function persistedContext(context: Record<string, unknown>): Json {
  * 再入ガード (#711 C 必須付帯作業「再入ガード + 不変条件コメント」)。
  *
  * 不変条件: src/lib/db/retry.ts の全ログ呼び出しは logger.warn のみを使用し、
- * logger.error（→ logger.ts の error() → logErrorFromLogger() → この関数）を
+ * logger.error（→ logger.server.ts → logErrorFromLogger() → この関数）を
  * 一度も呼ばない。したがって通常運用でこのガードが発火することはなく、将来
  * insert 経路（withDbRetry の queryFn 内やその周辺）に logger.error 等が
  * 混入した場合に無限再帰・スタック枯渇を防ぐための保険としてのみ機能する。
@@ -82,10 +84,8 @@ function persistedContext(context: Record<string, unknown>): Json {
  * エラーをどちらも記録する」テストがこの非干渉性を固定する回帰テスト。
  *
  * 型注釈のみの `import('node:async_hooks')`（下の Promise<...> 型引数）はコンパイル
- * 時に完全に消去されるため、この let 宣言自体をモジュールトップに置いても
- * webpack の依存解決には一切影響しない。影響するのは「実行時に評価される
- * import() 式」であり、それは logErrorToDatabase 内の
- * `if (process.env.NEXT_RUNTIME)` 分岐の字句上の内側に必ず置く（下記コメント参照）。
+ * 時に消去される。実体のdynamic importはNext.js server runtime内でだけ実行する。
+ * Client graphへの混入はこのファイル先頭の`server-only` markerがビルド時に拒否する。
  */
 let reentryGuardPromise: Promise<import('node:async_hooks').AsyncLocalStorage<true>> | undefined
 
@@ -95,28 +95,8 @@ async function logErrorToDatabase(
   stackTrace: string | null,
   context: Record<string, unknown>
 ): Promise<void> {
-  // Client bundles import this module through logger/realtime code, but the
-  // Supabase error table requires server-only service-role credentials.
-  if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'test') {
-    return
-  }
-
-  // 再入ガード: NEXT_RUNTIME が無いビルド（ブラウザバンドル）ではガードを
-  // 適用しない（そもそもここまで到達しないため実害はない）。
-  //
-  // C-1 (Fableレビュー・`npm run build` 失敗を実測): 'node:async_hooks' の動的
-  // import は、この if ブロックの字句上も「内側」に置く必要がある。以前の実装は
-  // この import() 式を別関数 getReentryGuard() の本体に置いていたが、その関数
-  // 定義自体はモジュールトップレベル（NEXT_RUNTIME 分岐の外）にあったため、
-  // webpack はモジュールをパースする時点で（呼び出しが実行時に到達可能かどうかに
-  // 関わらず）import() 式を静的に発見して依存解決を試み、ブラウザ向けビルドで
-  // 'node:async_hooks' を解決できず `npm run build` が UnhandledSchemeError で
-  // 失敗した（import trace: error-handler.ts ← logger.ts ← TwitchLoginButton.tsx）。
-  // NEXT_RUNTIME はビルド時に静的置換される値のため、ブラウザ向けビルドでは
-  // この if 自体が `if (undefined)` として丸ごと dead code 化され、
-  // 字句上その内側にある import() ごと除去される ―― これは直後の
-  // persistErrorToDatabase 内の pg 専用 import（getDb 等）と同じ仕組みであり、
-  // 既存パターンをそのまま踏襲する（このファイルの import は必ずこの形を守ること）。
+  // AsyncLocalStorageはNext.js server runtimeでのみ利用する。Client Componentから
+  // このmoduleへ到達すること自体は`server-only`がcompile-timeに拒否する。
   if (process.env.NEXT_RUNTIME) {
     let guard: import('node:async_hooks').AsyncLocalStorage<true>
     try {
@@ -172,48 +152,33 @@ async function persistErrorToDatabase(
       environment,
     }
 
-    // NEXT_RUNTIME is replaced at build time by Next.js. The browser build sees
-    // this branch as unreachable and removes the postgres.js import graph
-    // (net/tls/fs are unavailable in browsers), while node/edge server bundles
-    // retain it. A runtime-only `typeof window` guard is insufficient because
-    // webpack still resolves dynamic imports before that check executes.
-    if (process.env.NEXT_RUNTIME) {
-      // flags は環境変数だけを見る軽量moduleなので先に単独で読み込む。
-      // client/schema/retry はPG書き込みが有効な場合にだけ評価し、postgrestや
-      // pg-read環境の既存エラー記録をPG moduleのimport失敗へ巻き込まない。
-      const { isPgWriteEnabled } = await import('@/lib/db/flags')
+    // Next.js server runtime以外（単体テストやDB設定の無い補助CLI）から誤って
+    // 呼ばれた場合は永続化しない。Client graphは実行時判定ではなく、各server-only
+    // entry pointのmarkerでビルド時に遮断する。
+    if (!process.env.NEXT_RUNTIME) return
 
-      if (isPgWriteEnabled()) {
-        const [{ getDb }, { withDbRetry }, { errors }] = await Promise.all([
-          import('@/lib/db/client'),
-          import('@/lib/db/retry'),
-          import('@/lib/db/schema'),
-        ])
-        // errors.id is generated by the database (gen_random_uuid), so a
-        // connection loss can leave commit outcome unknown: the row may have
-        // been inserted before the response was lost, and a blind retry can
-        // then produce a duplicate row.
-        //
-        // #711 owner decision (issue #711 method-comparison comment, §4-3):
-        // idempotent: true — accept occasional duplicate error rows in
-        // exchange for surviving transient connection blips. Rationale: this
-        // table holds diagnostic error logs, not product/financial data, and
-        // error-reporter groups rows by (error_type, message) before opening a
-        // GitHub Issue, so a duplicate is harmless noise. A silently dropped
-        // error record (the failure mode of idempotent: false) is strictly
-        // worse for an error-tracking pipeline than an occasional duplicate.
-        await withDbRetry(async () => {
-          const { db } = await getDb()
-          return db.insert(errors).values(values)
-        }, 'error tracking insert', { idempotent: true })
-        return
-      }
-    }
-
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    const supabase = getSupabaseAdmin()
-
-    await supabase.from('errors').insert(values)
+    const [{ getDb }, { withDbRetry }, { errors }] = await Promise.all([
+      import('@/lib/db/client'),
+      import('@/lib/db/retry'),
+      import('@/lib/db/schema'),
+    ])
+    // errors.id is generated by the database (gen_random_uuid), so a
+    // connection loss can leave commit outcome unknown: the row may have
+    // been inserted before the response was lost, and a blind retry can
+    // then produce a duplicate row.
+    //
+    // #711 owner decision (issue #711 method-comparison comment, §4-3):
+    // idempotent: true — accept occasional duplicate error rows in
+    // exchange for surviving transient connection blips. Rationale: this
+    // table holds diagnostic error logs, not product/financial data, and
+    // error-reporter groups rows by (error_type, message) before opening a
+    // GitHub Issue, so a duplicate is harmless noise. A silently dropped
+    // error record (the failure mode of idempotent: false) is strictly
+    // worse for an error-tracking pipeline than an occasional duplicate.
+    await withDbRetry(async () => {
+      const { db } = await getDb()
+      return db.insert(errors).values(values)
+    }, 'error tracking insert', { idempotent: true })
   } catch (err) {
     // エラーDBへの記録失敗はメインのエラー処理を阻害しない
     // エラー詳細を出力して Cloudflare Workers Observability (wrangler tail) で確認可能にする
@@ -227,11 +192,11 @@ async function persistErrorToDatabase(
   }
 }
 
-// Issue #401: console 経路と Supabase 経路で同一マスキングポリシーを適用するため、
+// Issue #401: console 経路とPlanetScale永続化経路で同一マスキングポリシーを適用するため、
 // report*Error 系も console 出力前に context をサニタイズする。Cloudflare Workers logs /
 // wrangler tail に raw な OAuth token 等が漏れることを防止する。
 // Sanitize context for console output to enforce the same redaction policy
-// across both pipelines (Cloudflare Workers logs and Supabase errors table).
+// across both pipelines (Cloudflare Workers logs and the PlanetScale errors table).
 function consoleContext(context: Record<string, unknown> | undefined): Record<string, unknown> | string {
   if (!context) return ''
   return sanitizeContext(context)
@@ -269,7 +234,7 @@ export async function reportGachaError(error: Error | unknown, context: { stream
 export async function reportRealtimeError(error: unknown, context: { action?: string; streamerId?: string; status?: string; retryCount?: number; isExpected?: boolean }) {
   // Suppress expected connection events (CLOSED, TIMED_OUT, CHANNEL_ERROR)
   // to avoid noise in logs, matching previous Sentry behavior
-  // 期待されるステータスはログもSupabase記録もスキップ
+  // 期待されるステータスはログもDB記録もスキップ
   const EXPECTED_STATUSES = ['CLOSED', 'TIMED_OUT', 'CHANNEL_ERROR']
 
   if (context.isExpected || (context.status && EXPECTED_STATUSES.includes(context.status))) {
@@ -288,8 +253,8 @@ export async function reportSecurityError(error: Error | unknown, context: { act
 }
 
 /**
- * logger.error から呼ばれる Supabase 記録専用関数。
- * console 出力は logger.error 側で行うため、ここでは Supabase 記録のみ。
+ * server logger.error から呼ばれるPlanetScale記録専用関数。
+ * console出力はlogger.server.ts側で行うため、ここではDB記録のみ。
  * args から Error と context を自動抽出する。
  */
 export async function logErrorFromLogger(message: string, args: unknown[]): Promise<void> {
@@ -327,6 +292,6 @@ export async function logErrorFromLogger(message: string, args: unknown[]): Prom
     const fullMessage = errorDetail ? `${message} ${errorDetail}` : message
     await logErrorToDatabase('[Error]', fullMessage, stack, context)
   } catch {
-    // Supabase 報告失敗はメイン処理を阻害しない
+    // エラー記録自体の失敗は、呼び出し元のメイン処理を阻害しない。
   }
 }

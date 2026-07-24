@@ -1,5 +1,5 @@
 import { getEnvVar } from '@/lib/env-validation'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import { AUTH_SCOPES } from './scopes'
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'

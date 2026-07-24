@@ -10,7 +10,7 @@ import { validateContentType } from "@/lib/request-validation";
 import type { GachaBroadcastPayload } from "@/lib/realtime";
 import { publishCommittedGachaBatch } from "@/lib/overlay-realtime/publisher";
 import { runInBackground } from "@/lib/background-task";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import type { GachaSuccessResponse, GachaErrorResponse, ApiRateLimitResponse } from "@/types/api";
 
@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
     // 何度でもドローできる」余地は意図して残している（配信者自身の持ち物に対する
     // QA行為であり、他者への経済的影響がないため許容する設計判断）。
     //
-    // DB_DRIVER/GACHA_DB_DRIVERどちらの経路でも動くよう、生クエリではなく
+    // 旧全体ドライバーフラグ/旧ガチャドライバーフラグどちらの経路でも動くよう、生クエリではなく
     // pg/postgrest両対応の既存ヘルパー(getStreamerIdByTwitchUserId, #711)を再利用する。
     const ownedStreamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
     if (!ownedStreamer || ownedStreamer.id !== streamerId) {

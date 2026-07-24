@@ -1,10 +1,10 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { validateCSRFToken } from '@/lib/csrf'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import type { ApiRateLimitResponse } from '@/types/api'
 // ---------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。フラグ未設定時（既定 'postgrest'）は
@@ -12,7 +12,7 @@ import type { ApiRateLimitResponse } from '@/types/api'
 // supabase-js 経路が従来どおり実行される。
 // ---------------------------------------------------------------------------
 import { getDb } from '@/lib/db/client'
-import { isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { announcementReads as announcementReadsTable } from '@/lib/db/schema'
 
@@ -111,17 +111,7 @@ export async function POST(request: NextRequest) {
 
     // UNIQUE制約により重複INSERTはエラーになるため、upsertで冪等性を確保
     // #663: 書き込みのため isPgWriteEnabled() で分岐。
-    const { error } = isPgWriteEnabled()
-      ? await upsertAnnouncementReadPg(announcementId, session.twitchUserId)
-      : await getSupabaseAdmin()
-          .from('announcement_reads')
-          .upsert(
-            {
-              announcement_id: announcementId,
-              twitch_user_id: session.twitchUserId,
-            },
-            { onConflict: 'announcement_id,twitch_user_id' }
-          )
+    const { error } = await upsertAnnouncementReadPg(announcementId, session.twitchUserId)
 
     if (error) {
       logger.error('Failed to mark announcement as read', {

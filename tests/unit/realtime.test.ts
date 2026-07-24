@@ -54,23 +54,10 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     vi.useRealTimers()
   })
 
-  it('groups N-draw history rows and consumes a separate demo event', async () => {
+  it('groups N-draw history rows and consumes a demo from the same polling response', async () => {
     const redeemedAt = '2026-07-24T00:00:01.000Z'
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.includes('/demo-events')) {
-        return jsonResponse({
-          event: {
-            id: 'demo:1',
-            eventId: 'demo:1',
-            redeemedAt: '2026-07-24T00:00:02.000Z',
-            userTwitchUsername: 'DemoUser',
-            rewardId: null,
-            card: CARD_A,
-          },
-        })
-      }
-      return jsonResponse({
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
+      jsonResponse({
         events: [
           {
             id: 'history-1',
@@ -89,8 +76,16 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
             card: CARD_B,
           },
         ],
+        demoEvent: {
+          id: 'demo:1',
+          eventId: 'demo:1',
+          redeemedAt: '2026-07-24T00:00:02.000Z',
+          userTwitchUsername: 'DemoUser',
+          rewardId: null,
+          card: CARD_A,
+        },
       })
-    })
+    )
     vi.stubGlobal('fetch', fetchMock)
 
     const callback = vi.fn()
@@ -118,9 +113,62 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       userTwitchUsername: 'DemoUser',
     })
     expect(callback.mock.calls[1][0]).not.toHaveProperty('historyCursor')
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/events?'))).toBe(true)
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/demo-events?'))).toBe(true)
+    const pollingUrl = String(fetchMock.mock.calls[0][0])
+    expect(pollingUrl).toContain('/events?')
+    expect(pollingUrl).toContain('demoSince=')
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/demo-events'))).toBe(false)
 
+    cleanup()
+  })
+
+  it('advances only demoSince when a demo arrives without committed history', async () => {
+    const demoRedeemedAt = '2026-07-24T00:00:02.000Z'
+    const pollingUrls: URL[] = []
+    let pollingCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname.endsWith('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'test-v1',
+        })
+      }
+      pollingUrls.push(url)
+      pollingCalls += 1
+      return jsonResponse({
+        events: [],
+        nextCursor: null,
+        demoEvent: pollingCalls === 1
+          ? {
+              id: 'demo:only',
+              eventId: 'demo:only',
+              redeemedAt: demoRedeemedAt,
+              userTwitchUsername: 'DemoUser',
+              rewardId: null,
+              card: CARD_A,
+            }
+          : null,
+      })
+    }))
+
+    const callback = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', callback, {
+      retryDelay: 10,
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+
+    expect(pollingUrls).toHaveLength(2)
+    expect(pollingUrls[1].searchParams.get('since')).toBe(
+      pollingUrls[0].searchParams.get('since')
+    )
+    expect(pollingUrls[1].searchParams.has('afterId')).toBe(false)
+    expect(pollingUrls[1].searchParams.get('demoSince')).toBe(demoRedeemedAt)
+    expect(callback).toHaveBeenCalledTimes(1)
     cleanup()
   })
 
@@ -134,11 +182,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       rewardId: 'reward-1',
       card: { ...CARD_A, id: `card-${index + 1}` },
     }))
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) =>
-      String(input).includes('/demo-events')
-        ? jsonResponse({ event: null })
-        : jsonResponse({ events })
-    ))
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ events })))
 
     const callback = vi.fn()
     const cleanup = subscribeToGachaResults('streamer-1', callback)
@@ -159,11 +203,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       rewardId: null,
       card: CARD_A,
     }
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) =>
-      String(input).includes('/demo-events')
-        ? jsonResponse({ event: null })
-        : jsonResponse({ events: [event] })
-    ))
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ events: [event] })))
 
     const callback = vi.fn()
     const cleanup = subscribeToGachaResults('streamer-1', callback, { retryDelay: 10 })
@@ -179,8 +219,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
 
   it('retries transient failures without switching to a second cursor owner', async () => {
     let historyAttempts = 0
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes('/demo-events')) return jsonResponse({ event: null })
+    const fetchMock = vi.fn(async () => {
       historyAttempts += 1
       if (historyAttempts === 1) throw new Error('temporary network error')
       return jsonResponse({ events: [] })
@@ -283,7 +322,6 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
           configVersion: 'test-v1',
         })
       }
-      if (url.includes('/demo-events')) return jsonResponse({ event: null })
       historyCalls += 1
       return jsonResponse({
         events: historyCalls === 1 ? [] : [pollingRow],
@@ -353,7 +391,6 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
           configVersion: 'test-v1',
         })
       }
-      if (url.includes('/demo-events')) return jsonResponse({ event: null })
       historyCalls += 1
       return historyCalls === 1 ? pendingHistory : jsonResponse({ events: [] })
     }))
@@ -424,7 +461,6 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
           configVersion: `test-v${configCalls}`,
         })
       }
-      if (url.includes('/demo-events')) return jsonResponse({ event: null })
       return jsonResponse({ events: [] })
     }))
 
@@ -491,9 +527,6 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
           configVersion: 'polling-test',
         })
       }
-      if (String(input).includes('/demo-events')) {
-        return jsonResponse({ event: null })
-      }
       const page = pages[Math.min(historyCalls, pages.length - 1)]
       historyCalls += 1
       return jsonResponse({ realtimeEvents: page })
@@ -523,8 +556,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
   })
 
   it('reports an error only after an explicitly finite retry limit is exhausted', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes('/demo-events')) return jsonResponse({ event: null })
+    vi.stubGlobal('fetch', vi.fn(async () => {
       throw new Error('offline')
     }))
 
@@ -550,19 +582,15 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
   })
 
   it('cleanup cancels future polling', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
-      String(input).includes('/demo-events')
-        ? jsonResponse({ event: null })
-        : jsonResponse({ events: [] })
-    )
+    const fetchMock = vi.fn(async () => jsonResponse({ events: [] }))
     vi.stubGlobal('fetch', fetchMock)
 
     const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), { retryDelay: 10 })
     await flushPromises()
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
 
     cleanup()
     await vi.advanceTimersByTimeAsync(100)
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

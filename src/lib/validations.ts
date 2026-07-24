@@ -1,14 +1,10 @@
-import { getSupabaseAdmin } from './supabase/admin'
+
 import { CARD_DESCRIPTION_MAX_CHARACTERS, ERROR_MESSAGES } from './constants'
 import { countCharacters } from './text-utils'
-// -----------------------------------------------------------------------------
-// #663 (#570 パイロット踏襲): pg 直結経路。validateDropRateSum は読み取り専用の
-// ため isPgReadEnabled() で分岐する。既存 supabase-js 実装は 1 文字も変えず、
-// フラグ未設定時は完全に従来どおり動く。
-// -----------------------------------------------------------------------------
+// validateDropRateSumのDB読取はPlanetScale/Drizzleの単一経路。
 import { and, eq } from 'drizzle-orm'
 import { getDb } from './db/client'
-import { isPgReadEnabled } from './db/flags'
+
 import { withDbRetry } from './db/retry'
 import { cards as cardsTable } from './db/schema'
 
@@ -68,28 +64,11 @@ async function validateDropRateSumPg(
 }
 
 export async function validateDropRateSum(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   streamerId: string,
   newDropRate: number,
   excludeCardId?: string
 ): Promise<{ valid: boolean; error?: string }> {
-  // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return validateDropRateSumPg(streamerId, newDropRate, excludeCardId)
-  }
-
-  const { data: cards, error } = await supabaseAdmin
-    .from('cards')
-    .select('id, drop_rate')
-    .eq('streamer_id', streamerId)
-    .eq('is_active', true)
-
-  if (error) {
-    return { valid: false, error: 'Failed to validate drop rates' }
-  }
-
-  return sumDropRates(cards, newDropRate, excludeCardId)
+  return validateDropRateSumPg(streamerId, newDropRate, excludeCardId)
 }
 
 export function validateCardName(name: unknown): { valid: boolean; error?: string } {

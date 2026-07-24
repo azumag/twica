@@ -60,8 +60,9 @@ function formatSchemaCheckFailure({ table, column, error }) {
 }
 
 /**
- * Kept as a pure compatibility helper for existing tests and incident tooling.
- * Raw PostgreSQL uses 42703/42P01; old reports may still contain PGRST codes.
+ * PlanetScale PostgreSQL の schema 欠落を SQLSTATE と標準メッセージで検知する。
+ * HTTP API 固有の互換コードを受理すると退役経路の再導入を見逃すため、
+ * 現行ドライバーが返す 42703/42P01 だけをコード判定する。
  */
 function isSchemaMissingError(error) {
   if (!error || typeof error !== 'object') return false
@@ -72,10 +73,9 @@ function isSchemaMissingError(error) {
   return (
     error.code === '42703' ||
     error.code === '42P01' ||
-    error.code === 'PGRST204' ||
-    error.code === 'PGRST205' ||
     text.includes('does not exist') ||
-    text.includes('schema cache')
+    text.includes('undefined column') ||
+    text.includes('undefined table')
   )
 }
 

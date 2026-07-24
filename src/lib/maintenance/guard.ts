@@ -10,7 +10,7 @@
  * 実際に route / middleware から呼ばれるのは Stage 3 から。
  */
 import { NextResponse } from 'next/server'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import {
   getMaintenanceState,
   MAINTENANCE_ERROR_CODE_BY_MODE,

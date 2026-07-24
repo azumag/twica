@@ -1,4 +1,11 @@
-# DB Phase 2 メンテナンスランブック（Supabase → PlanetScale Postgres 切替）
+# DB Phase 2 メンテナンスランブック（履歴: Supabase → PlanetScale Postgres）
+
+> **履歴文書**: このランブックは切替期間中の判断・手順を保存するものです。
+> #708 完了後の runtime は PlanetScale + `HYPERDRIVE_PLANETSCALE` 固定であり、
+> `DB_DRIVER` / `GACHA_DB_DRIVER` / `DB_TARGET`、旧 DB binding、PostgREST
+> ロールバックはすべて廃止済みです。現行の接続・監視手順は
+> `docs/db-driver-migration.md` を参照してください。以下のフラグ操作を現在の
+> 環境で実行してはいけません。
 
 Issue #666（親: #664 / #568 Phase 2-2）のドラフト。
 

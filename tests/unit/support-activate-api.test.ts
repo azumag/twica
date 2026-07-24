@@ -4,6 +4,7 @@ import { POST } from '@/app/api/support/activate/route'
 import { getSession } from '@/lib/session'
 import { validateCSRFToken } from '@/lib/csrf'
 import { ERROR_MESSAGES, PLAN_CONFIG } from '@/lib/constants'
+import { getDb } from '@/lib/db/client'
 
 vi.mock('@/lib/session')
 vi.mock('@/lib/csrf')
@@ -17,13 +18,6 @@ vi.mock('@/lib/rate-limit', () => ({
   rateLimits: { activateCode: {} },
   getRateLimitIdentifier: vi.fn().mockResolvedValue('user:user123'),
 }))
-vi.mock('@/lib/supabase/admin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
-  return {
-    ...actual,
-    getSupabaseAdmin: vi.fn(),
-  }
-})
 vi.mock('@/lib/crypto-utils', () => ({
   sha256: vi.fn().mockResolvedValue('hashed-code-value'),
 }))
@@ -39,6 +33,17 @@ function createRequest(body: Record<string, unknown> = { code: 'test-code-123' }
     },
     body: JSON.stringify(body),
   })
+}
+
+/** activate_support_codeのpostgres.jsタグ呼び出しを結果単位で差し替える。 */
+function primeActivateRpc(result: unknown, error?: unknown) {
+  const sql = vi.fn(() =>
+    error === undefined
+      ? Promise.resolve([{ result }])
+      : Promise.reject(error)
+  )
+  vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sql as never })
+  return sql
 }
 
 describe('POST /api/support/activate', () => {
@@ -116,13 +121,7 @@ describe('POST /api/support/activate', () => {
   })
 
   it('should return success when RPC succeeds', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({
-        data: { success: true, plan_type: 'support' },
-        error: null,
-      }),
-    } as any)
+    primeActivateRpc({ success: true, plan_type: 'support' })
 
     const response = await POST(createRequest())
     expect(response.status).toBe(200)
@@ -132,13 +131,7 @@ describe('POST /api/support/activate', () => {
   })
 
   it('should return 404 for INVALID_CODE RPC error', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({
-        data: { error: 'INVALID_CODE' },
-        error: null,
-      }),
-    } as any)
+    primeActivateRpc({ error: 'INVALID_CODE' })
 
     const response = await POST(createRequest())
     expect(response.status).toBe(404)
@@ -147,26 +140,14 @@ describe('POST /api/support/activate', () => {
   })
 
   it('should return 410 for CODE_REVOKED RPC error', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({
-        data: { error: 'CODE_REVOKED' },
-        error: null,
-      }),
-    } as any)
+    primeActivateRpc({ error: 'CODE_REVOKED' })
 
     const response = await POST(createRequest())
     expect(response.status).toBe(410)
   })
 
   it('should return 409 for ALREADY_ACTIVATED RPC error', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({
-        data: { error: 'ALREADY_ACTIVATED' },
-        error: null,
-      }),
-    } as any)
+    primeActivateRpc({ error: 'ALREADY_ACTIVATED' })
 
     const response = await POST(createRequest())
     expect(response.status).toBe(409)
@@ -175,13 +156,7 @@ describe('POST /api/support/activate', () => {
   })
 
   it('should return 500 for unknown RPC errors', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    vi.mocked(getSupabaseAdmin).mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({
-        data: { error: 'UNKNOWN_ERROR_TYPE' },
-        error: null,
-      }),
-    } as any)
+    primeActivateRpc({ error: 'UNKNOWN_ERROR_TYPE' })
 
     const response = await POST(createRequest())
     expect(response.status).toBe(500)
@@ -189,37 +164,27 @@ describe('POST /api/support/activate', () => {
 
   it('should call sha256 with trimmed code before RPC', async () => {
     const { sha256 } = await import('@/lib/crypto-utils')
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    const rpcMock = vi.fn().mockResolvedValue({
-      data: { success: true, plan_type: 'support' },
-      error: null,
-    })
-    vi.mocked(getSupabaseAdmin).mockReturnValue({ rpc: rpcMock } as any)
+    const sql = primeActivateRpc({ success: true, plan_type: 'support' })
 
     await POST(createRequest({ code: '  code-with-spaces  ' }))
 
     expect(sha256).toHaveBeenCalledWith('code-with-spaces')
-    expect(rpcMock).toHaveBeenCalledWith('activate_support_code', {
-      p_code_hash: 'hashed-code-value',
-      p_twitch_user_id: 'user123',
-      p_fanbox_id: null,
-    })
+    expect(sql.mock.calls[0].slice(1)).toEqual([
+      'hashed-code-value',
+      'user123',
+      null,
+    ])
   })
 
   it('should pass fanboxId to RPC when provided', async () => {
-    const { getSupabaseAdmin } = await import('@/lib/supabase/admin')
-    const rpcMock = vi.fn().mockResolvedValue({
-      data: { success: true, plan_type: 'patron' },
-      error: null,
-    })
-    vi.mocked(getSupabaseAdmin).mockReturnValue({ rpc: rpcMock } as any)
+    const sql = primeActivateRpc({ success: true, plan_type: 'patron' })
 
     await POST(createRequest({ code: 'test-code', fanboxId: 'my-fanbox-id' }))
 
-    expect(rpcMock).toHaveBeenCalledWith('activate_support_code', {
-      p_code_hash: 'hashed-code-value',
-      p_twitch_user_id: 'user123',
-      p_fanbox_id: 'my-fanbox-id',
-    })
+    expect(sql.mock.calls[0].slice(1)).toEqual([
+      'hashed-code-value',
+      'user123',
+      'my-fanbox-id',
+    ])
   })
 })

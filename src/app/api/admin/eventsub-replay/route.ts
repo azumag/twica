@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
 import {
   listParkedEventSubNotifications,

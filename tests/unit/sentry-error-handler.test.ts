@@ -10,20 +10,12 @@ import {
 } from '@/lib/sentry/error-handler';
 import { getDb } from '@/lib/db/client';
 
-// Supabase admin のモック
-const mockInsert = vi.fn().mockResolvedValue({ error: null });
-const mockFrom = vi.fn().mockReturnValue({ insert: mockInsert });
-
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: () => ({ from: mockFrom }),
-}));
-
 vi.mock('@/lib/db/client', () => ({
   getDb: vi.fn(),
 }));
 
-const mockPgValues = vi.fn().mockResolvedValue(undefined);
-const mockPgInsert = vi.fn().mockReturnValue({ values: mockPgValues });
+const mockInsert = vi.fn().mockResolvedValue(undefined);
+const mockDrizzleInsert = vi.fn().mockReturnValue({ values: mockInsert });
 
 /**
  * 動的 import を含む非同期経路が対象 mock へ到達するまで、タイマーに依存せず待つ。
@@ -40,13 +32,12 @@ async function waitForMockCalls(mock: ReturnType<typeof vi.fn>, count: number): 
 describe('sentry/error-handler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv('DB_DRIVER', 'postgrest');
     vi.stubEnv('NEXT_RUNTIME', 'nodejs');
     // console 出力を抑制
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(getDb).mockResolvedValue({
-      db: { insert: mockPgInsert } as never,
+      db: { insert: mockDrizzleInsert } as never,
       sql: {} as never,
     });
   });
@@ -93,12 +84,11 @@ describe('sentry/error-handler', () => {
     });
   });
 
-  describe('Supabase へのエラーログ記録', () => {
+  describe('PlanetScale へのエラーログ記録', () => {
     it('Error オブジェクトの場合、message と stack を記録する', async () => {
       const error = new Error('test error');
       await reportError(error, { key: 'value' });
 
-      expect(mockFrom).toHaveBeenCalledWith('errors');
       expect(mockInsert).toHaveBeenCalledWith(
         expect.objectContaining({
           error_type: '[Error]',
@@ -136,9 +126,8 @@ describe('sentry/error-handler', () => {
     });
   });
 
-  describe('PG 直結へのエラーログ記録 (#711 C)', () => {
-    it('DB_DRIVER=pg では Drizzle insert を使い PostgREST を呼ばない', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg');
+  describe('PlanetScale 直結へのエラーログ記録 (#711 C)', () => {
+    it('Drizzle insert を使って保存する', async () => {
       vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica-preview.example');
 
       await reportError(new Error('pg error'), {
@@ -147,32 +136,17 @@ describe('sentry/error-handler', () => {
       });
 
       expect(getDb).toHaveBeenCalledTimes(1);
-      expect(mockPgInsert).toHaveBeenCalledTimes(1);
-      expect(mockPgValues).toHaveBeenCalledWith(expect.objectContaining({
+      expect(mockDrizzleInsert).toHaveBeenCalledTimes(1);
+      expect(mockInsert).toHaveBeenCalledWith(expect.objectContaining({
         error_type: '[Error]',
         message: 'pg error',
         context: { token: '[REDACTED]', safe: 'visible' },
         environment: 'preview',
       }));
-      expect(mockFrom).not.toHaveBeenCalled();
-    });
-
-    it('DB_DRIVER=pg-readではwriteを従来のPostgREST経路に留める', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg-read');
-
-      await reportError(new Error('read-only rollout'));
-
-      expect(getDb).not.toHaveBeenCalled();
-      expect(mockPgInsert).not.toHaveBeenCalled();
-      expect(mockFrom).toHaveBeenCalledWith('errors');
-      expect(mockInsert).toHaveBeenCalledWith(expect.objectContaining({
-        message: 'read-only rollout',
-      }));
     });
 
     it('PG insert失敗は呼び出し元へ伝播せずconsole警告へフォールバックする', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg');
-      mockPgValues.mockRejectedValueOnce(new Error('database unavailable'));
+      mockInsert.mockRejectedValueOnce(new Error('database unavailable'));
 
       await expect(reportError(new Error('original error'))).resolves.toBeUndefined();
 
@@ -183,31 +157,29 @@ describe('sentry/error-handler', () => {
     });
 
     it('失敗後も次のエラーは記録できる', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg');
-      mockPgValues
+      mockInsert
         .mockRejectedValueOnce(new Error('temporary failure'))
         .mockResolvedValueOnce(undefined);
 
       await reportError(new Error('first'));
       await reportError(new Error('second'));
 
-      expect(mockPgValues).toHaveBeenCalledTimes(2);
-      expect(mockPgValues.mock.calls[1][0]).toEqual(expect.objectContaining({ message: 'second' }));
+      expect(mockInsert).toHaveBeenCalledTimes(2);
+      expect(mockInsert.mock.calls[1][0]).toEqual(expect.objectContaining({ message: 'second' }));
     });
 
     it('別requestで並行発生した同一内容のエラーをどちらも記録する', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg');
       let releaseInsert!: () => void;
-      mockPgValues.mockReturnValueOnce(new Promise<void>((resolve) => {
+      mockInsert.mockReturnValueOnce(new Promise<void>((resolve) => {
         releaseInsert = resolve;
       }));
 
       const first = reportError('same incident');
-      await waitForMockCalls(mockPgValues, 1);
+      await waitForMockCalls(mockInsert, 1);
       const concurrent = reportError('same incident');
-      await waitForMockCalls(mockPgValues, 2);
+      await waitForMockCalls(mockInsert, 2);
 
-      expect(mockPgValues).toHaveBeenCalledTimes(2);
+      expect(mockInsert).toHaveBeenCalledTimes(2);
 
       releaseInsert();
       await Promise.all([first, concurrent]);
@@ -218,9 +190,8 @@ describe('sentry/error-handler', () => {
     // (将来 logger.error 等が混入するケースを想定)、内側の呼び出しは
     // AsyncLocalStorage ガードで弾かれ、無限再帰・二重insertを起こさない。
     it('insert経路の実行中に自分自身が再度呼ばれても再帰せずconsole警告のみ記録する', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg');
       let reentered = false;
-      mockPgValues.mockImplementationOnce(async () => {
+      mockInsert.mockImplementationOnce(async () => {
         if (!reentered) {
           reentered = true;
           // insert 経路の内部から（不変条件違反を模した）再度のエラー記録を発生させる
@@ -232,7 +203,7 @@ describe('sentry/error-handler', () => {
       await reportError(new Error('outer'));
 
       // 外側の insert は1回のみ（内側の再入呼び出しはガードで弾かれ insert に到達しない）
-      expect(mockPgValues).toHaveBeenCalledTimes(1);
+      expect(mockInsert).toHaveBeenCalledTimes(1);
       expect(console.warn).toHaveBeenCalledWith(
         '[Error Tracking] Reentrant error logging suppressed:',
         'nested from insert path',
@@ -242,10 +213,9 @@ describe('sentry/error-handler', () => {
     // #711 owner決定: エラー行の重複はエラーログとして無害、欠落より良い
     // という判断のもと、接続断系エラーは idempotent なリトライで自動回復する。
     it('接続断系エラーはidempotentなリトライで自動回復する（重複許容の承認済み判断）', async () => {
-      vi.stubEnv('DB_DRIVER', 'pg');
       vi.useFakeTimers();
       try {
-        mockPgValues
+        mockInsert
           .mockRejectedValueOnce(Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }))
           .mockResolvedValueOnce(undefined);
 
@@ -257,7 +227,7 @@ describe('sentry/error-handler', () => {
         // 1回目は失敗、2回目（リトライ）で成功。1回目の失敗はDB書き込みが
         // 発生したかどうか不明（idempotentゆえのリトライ判断）だが、
         // 呼び出し元へは伝播せず正常終了する。
-        expect(mockPgValues).toHaveBeenCalledTimes(2);
+        expect(mockInsert).toHaveBeenCalledTimes(2);
         expect(console.warn).not.toHaveBeenCalledWith(
           '[Error Tracking] Failed to persist error:',
           expect.anything(),
@@ -269,13 +239,13 @@ describe('sentry/error-handler', () => {
   });
 
   describe('reportRealtimeError の期待されるステータス抑制', () => {
-    it('isExpected: true の場合はログもSupabase記録もスキップする', async () => {
+    it('isExpected: true の場合はログもPlanetScale記録もスキップする', async () => {
       await reportRealtimeError(new Error('closed'), {
         action: 'subscribe',
         isExpected: true,
       });
 
-      expect(mockFrom).not.toHaveBeenCalled();
+      expect(mockInsert).not.toHaveBeenCalled();
       expect(console.error).not.toHaveBeenCalled();
     });
 
@@ -287,7 +257,7 @@ describe('sentry/error-handler', () => {
           status,
         });
 
-        expect(mockFrom).not.toHaveBeenCalled();
+        expect(mockInsert).not.toHaveBeenCalled();
       }
     );
 
@@ -297,7 +267,9 @@ describe('sentry/error-handler', () => {
         status: 'UNKNOWN_STATUS',
       });
 
-      expect(mockFrom).toHaveBeenCalledWith('errors');
+      expect(mockInsert).toHaveBeenCalledWith(expect.objectContaining({
+        error_type: '[Realtime Error]',
+      }));
     });
   });
 
@@ -379,7 +351,7 @@ describe('sentry/error-handler', () => {
       expect(insertArg.context.twitchUsername).toBe('visible-for-debug');
     });
 
-    // Issue #401: Supabase 経路だけでなく console 経路にも同じマスキングを適用する
+    // Issue #401: PlanetScale 経路だけでなく console 経路にも同じマスキングを適用する
     it('console 出力でも context のセンシティブキーは [REDACTED] になる', async () => {
       const consoleErrorSpy = vi.mocked(console.error);
       await reportError(new Error('boom'), {
@@ -430,9 +402,9 @@ describe('sentry/error-handler', () => {
   });
 
   describe('プレーンオブジェクト型エラーの処理 (Issue #262)', () => {
-    it('PostgrestError 形式のオブジェクトから message を抽出する', async () => {
-      const postgrestError = { code: '23505', message: 'duplicate key value', details: null, hint: null };
-      await reportError(postgrestError);
+    it('SQLSTATE付きのDBエラーオブジェクトから message を抽出する', async () => {
+      const databaseError = { code: '23505', message: 'duplicate key value', details: null, hint: null };
+      await reportError(databaseError);
 
       expect(mockInsert).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -457,8 +429,8 @@ describe('sentry/error-handler', () => {
     });
 
     it('reportApiError でもプレーンオブジェクトの message を抽出する', async () => {
-      const postgrestError = { code: '42P01', message: 'relation does not exist', details: null, hint: null };
-      await reportApiError('/api/streamers', 'POST', postgrestError);
+      const databaseError = { code: '42P01', message: 'relation does not exist', details: null, hint: null };
+      await reportApiError('/api/streamers', 'POST', databaseError);
 
       expect(mockInsert).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -518,9 +490,9 @@ describe('sentry/error-handler', () => {
     });
   });
 
-  describe('Supabase 記録失敗時のグレースフルデグラデーション', () => {
-    it('Supabase エラーでも例外を投げない', async () => {
-      mockInsert.mockRejectedValueOnce(new Error('Supabase down'));
+  describe('PlanetScale 記録失敗時のグレースフルデグラデーション', () => {
+    it('PlanetScale エラーでも例外を投げない', async () => {
+      mockInsert.mockRejectedValueOnce(new Error('PlanetScale down'));
 
       // 例外が投げられないことを確認
       await expect(reportError(new Error('test'))).resolves.toBeUndefined();
@@ -541,7 +513,7 @@ describe('sentry/error-handler', () => {
     });
   });
 
-  describe('logErrorFromLogger — logger.error からの Supabase 報告', () => {
+  describe('logErrorFromLogger — logger.error からの PlanetScale 報告', () => {
     it('Error オブジェクトを args から抽出して記録する', async () => {
       const error = new Error('db connection failed');
       await logErrorFromLogger('Query error:', [error]);
@@ -570,9 +542,9 @@ describe('sentry/error-handler', () => {
       expect(insertArg.stack_trace).toBeTruthy();
     });
 
-    it('{ error: PostgrestError } パターンからメッセージを抽出する', async () => {
-      const postgrestError = { code: '23505', message: 'duplicate key', details: null, hint: null };
-      await logErrorFromLogger('Insert failed:', [{ error: postgrestError }]);
+    it('{ error: databaseError } パターンからメッセージを抽出する', async () => {
+      const databaseError = { code: '23505', message: 'duplicate key', details: null, hint: null };
+      await logErrorFromLogger('Insert failed:', [{ error: databaseError }]);
 
       expect(mockInsert).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -581,9 +553,9 @@ describe('sentry/error-handler', () => {
       );
     });
 
-    it('PostgrestError が直接 args に渡された場合もメッセージを抽出する', async () => {
-      const postgrestError = { code: '23505', message: 'duplicate key', details: null, hint: null };
-      await logErrorFromLogger('Insert failed:', [postgrestError]);
+    it('DBエラーオブジェクトが直接 args に渡された場合もメッセージを抽出する', async () => {
+      const databaseError = { code: '23505', message: 'duplicate key', details: null, hint: null };
+      await logErrorFromLogger('Insert failed:', [databaseError]);
 
       expect(mockInsert).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -635,15 +607,15 @@ describe('sentry/error-handler', () => {
       );
     });
 
-    it('context オブジェクトを Supabase に渡す', async () => {
+    it('context オブジェクトを PlanetScale に渡す', async () => {
       await logErrorFromLogger('Failed:', [new Error('oops'), { endpoint: '/api/test' }]);
 
       const insertArg = mockInsert.mock.calls[0][0];
       expect(insertArg.context.endpoint).toBe('/api/test');
     });
 
-    it('Supabase 報告失敗でも例外を投げない', async () => {
-      mockInsert.mockRejectedValueOnce(new Error('Supabase down'));
+    it('PlanetScale 報告失敗でも例外を投げない', async () => {
+      mockInsert.mockRejectedValueOnce(new Error('PlanetScale down'));
       await expect(logErrorFromLogger('test', [new Error('e')])).resolves.toBeUndefined();
     });
 

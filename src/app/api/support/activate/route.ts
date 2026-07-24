@@ -1,13 +1,13 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { validateCSRFToken } from '@/lib/csrf'
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { validateContentType } from '@/lib/request-validation'
 import { handleApiError } from '@/lib/error-handler'
 import { sha256 } from '@/lib/crypto-utils'
 import { ERROR_MESSAGES, PLAN_CONFIG } from '@/lib/constants'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import type { ApiRateLimitResponse } from '@/types/api'
 // ---------------------------------------------------------------------------
 // #573: activate_support_code RPC の pg 直結経路 (isPgWriteEnabled()) 用。フラグ
@@ -16,7 +16,7 @@ import type { ApiRateLimitResponse } from '@/types/api'
 // getDb throw スタブが「postgrest 経路で getDb が呼ばれない」ことを構造的に保証)。
 // ---------------------------------------------------------------------------
 import { getDb } from '@/lib/db/client'
-import { isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 
 /**
@@ -77,7 +77,7 @@ async function activateSupportCodeRpcPg(params: {
   try {
     const data = await withDbRetry(async () => {
       // 規約: getDb() は queryFn の中で呼ぶ(src/lib/db/retry.ts 参照)
-      const { sql } = await getDb()
+                                     const { sql } = await getDb()
       const rows = await sql<{ result: unknown }[]>`
         select activate_support_code(
           p_code_hash => ${params.codeHash},
@@ -182,19 +182,13 @@ export async function POST(request: NextRequest) {
     // コードをSHA-256ハッシュ化（平文をDBに送信しない）
     const codeHash = await sha256(code.trim())
 
-    const supabaseAdmin = getSupabaseAdmin()
+
     // #573: isPgWriteEnabled() のときだけ pg 直結経路へ分岐する。pg 側の
     // { data, error } 正規化は activateSupportCodeRpcPg の doc コメント参照。
-    const { data, error } = isPgWriteEnabled()
-      ? await activateSupportCodeRpcPg({
+    const { data, error } = await activateSupportCodeRpcPg({
           codeHash,
           twitchUserId: session.twitchUserId,
           fanboxId: fanboxId?.trim() || null,
-        })
-      : await supabaseAdmin.rpc('activate_support_code', {
-          p_code_hash: codeHash,
-          p_twitch_user_id: session.twitchUserId,
-          p_fanbox_id: fanboxId?.trim() || null,
         })
 
     if (error) {

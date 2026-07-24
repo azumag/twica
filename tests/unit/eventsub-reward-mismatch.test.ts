@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/twitch/eventsub/route'
 import { reportError } from '@/lib/sentry/error-handler'
-import { getSupabaseAdmin, getSupabaseAdminNoCache } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
 import { publishCommittedGachaBatch } from '@/lib/overlay-realtime/publisher'
 import { TwitchChatService } from '@/lib/twitch/chat-service'
@@ -31,11 +30,6 @@ vi.mock('@/lib/services/gacha', () => ({
     executeGachaForEventSub: mocks.executeGachaForEventSub,
     executeGachaForRaidEvent: mocks.executeGachaForRaidEvent,
   })),
-}))
-
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
-  getSupabaseAdminNoCache: vi.fn(),
 }))
 
 vi.mock('@/lib/sentry/error-handler', () => ({
@@ -73,23 +67,17 @@ vi.mock('@/lib/logger', () => ({
   },
 }))
 
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
-const mockGetSupabaseAdminNoCache = vi.mocked(getSupabaseAdminNoCache)
 const mockReportError = vi.mocked(reportError)
 const mockPublishCommittedGachaBatch = vi.mocked(publishCommittedGachaBatch)
 const mockTwitchChatService = vi.mocked(TwitchChatService)
 
 /**
- * チャット通知の「初出」判定は、ガチャ確定後の最終所持数をPlanetScale上の
- * get_user_card_countsから読む。旧NoCache RPC fixtureを残すとクエリ失敗が
- * 通知用の空値へ安全に縮退し、テストが意図する初出条件を検証できないため、
- * PostgreSQL関数のJSONB戻り値と同じ `[{ result: rows }]` をSQLタグへ返す。
+ * チャット通知が参照する最新所持数RPCのpostgres.js fixture。
+ * タグ付きSQLの戻り値を実装と同じ `{ result }` 行形状で返す。
  */
-function mockUserCardCountRows(
-  rows: Array<{ count: number; card: { id: string; is_active: boolean } }>,
-) {
-  const sql = vi.fn().mockResolvedValue([{ result: rows }])
-  vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sql as never })
+function primeUserCardCounts(data: unknown) {
+  const sql = vi.fn().mockResolvedValue([{ result: data }])
+  vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as never)
   return sql
 }
 
@@ -160,22 +148,7 @@ describe('EventSub reward mismatch handling', () => {
         .trim()
     })
     mocks.sendChatMessage.mockResolvedValue(true)
-    const historyQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-    }
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'gacha_history') return historyQuery
-        throw new Error(`Unexpected table: ${table}`)
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-    mockGetSupabaseAdminNoCache.mockReturnValue({
-      rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
-    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
-    // 各テストを独立させ、前のケースの最終所持数fixtureを持ち越さない。
-    mockUserCardCountRows([])
+    primeUserCardCounts([])
   })
 
   it('does not report stale EventSub notifications for unconfigured rewards', async () => {
@@ -499,10 +472,10 @@ describe('EventSub reward mismatch handling', () => {
       { id: 'card-3', name: 'Gamma', description: null, image_url: null, rarity: 'legendary', drop_rate: 1 },
     ] as const
 
-    mockUserCardCountRows([
-      { count: 2, card: { id: 'card-1', is_active: true } },
-      { count: 2, card: { id: 'card-2', is_active: true } },
-      { count: 1, card: { id: 'card-3', is_active: true } },
+    primeUserCardCounts([
+          { count: 2, card: { id: 'card-1', is_active: true } },
+          { count: 2, card: { id: 'card-2', is_active: true } },
+          { count: 1, card: { id: 'card-3', is_active: true } },
     ])
 
     mocks.executeGachaForEventSub.mockResolvedValue({
@@ -562,9 +535,9 @@ describe('EventSub reward mismatch handling', () => {
       { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
     ] as const
 
-    mockUserCardCountRows([
-      { count: 1, card: { id: 'card-1', is_active: true } },
-      { count: 3, card: { id: 'card-2', is_active: true } },
+    primeUserCardCounts([
+          { count: 1, card: { id: 'card-1', is_active: true } },
+          { count: 3, card: { id: 'card-2', is_active: true } },
     ])
 
     mocks.executeGachaForEventSub.mockResolvedValue({
@@ -695,10 +668,7 @@ describe('EventSub reward mismatch handling', () => {
       { id: 'card-2', name: 'Rare B', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
       { id: 'card-3', name: 'Common A', description: null, image_url: null, rarity: 'common', drop_rate: 1 },
     ] as const
-    const rpc = vi.fn().mockResolvedValue({ data: [], error: null })
-    mockGetSupabaseAdminNoCache.mockReturnValue({
-      rpc,
-    } as unknown as ReturnType<typeof getSupabaseAdminNoCache>)
+    const sql = primeUserCardCounts([])
 
     mocks.executeGachaForEventSub.mockResolvedValue({
       success: true,
@@ -743,7 +713,7 @@ describe('EventSub reward mismatch handling', () => {
       'broadcaster-1',
       '@Viewer: 3連 レアx2、コモンx1',
     )
-    expect(rpc).not.toHaveBeenCalled()
+    expect(sql).not.toHaveBeenCalled()
   })
 
   // 「初出: ...」追記がメッセージ末尾切り（truncate）で消えないことを確認する。
@@ -778,8 +748,8 @@ describe('EventSub reward mismatch handling', () => {
       drop_rate: 1,
     }))
 
-    mockUserCardCountRows(
-      cards.map((card) => ({ count: 1, card: { id: card.id, is_active: true } })),
+    primeUserCardCounts(
+      cards.map((card) => ({ count: 1, card: { id: card.id, is_active: true } }))
     )
 
     mocks.executeGachaForEventSub.mockResolvedValue({
@@ -848,9 +818,9 @@ describe('EventSub reward mismatch handling', () => {
 
     // Beta は legacy fallback で INSERT 失敗 -> count=0 が返る想定。
     // 旧実装では previousCount = 0 - 1 = -1 で「初出」誤通知。
-    mockUserCardCountRows([
-      { count: 1, card: { id: 'card-1', is_active: true } },
-      { count: 0, card: { id: 'card-2', is_active: true } },
+    primeUserCardCounts([
+          { count: 1, card: { id: 'card-1', is_active: true } },
+          { count: 0, card: { id: 'card-2', is_active: true } },
     ])
 
     mocks.executeGachaForEventSub.mockResolvedValue({

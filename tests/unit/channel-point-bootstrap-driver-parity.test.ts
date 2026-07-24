@@ -1,32 +1,26 @@
 /**
  * Issue #690 (#570 パイロット踏襲): channel-point-bootstrap API の diagnostics=1
  * 経路（getOwnedStreamer / getAdditionalRewards、122-158行目付近）について、
- * postgrest 経路 / pg 経路の応答互換性を検証する。
+ * PlanetScale/Drizzle 経路の応答・SQL契約を検証する。
  *
  * 検証観点（tests/unit/announcements-driver-parity.test.ts と
  * tests/unit/overlay-events-api-pg.test.ts の確立パターンを踏襲）:
- *   1. フル select 経路: 両経路の応答 JSON が deepEqual
+ *   1. フル select 経路の応答 JSON
  *   2. raid 系カラムのスキーマドリフト時の縮退フォールバック経路
- *      (postgrest: isRaidOptionsSchemaError/isRaidStateSchemaError [PGRST204],
- *       pg: isPgMissingColumnError [42703]) でも両経路の応答 JSON が deepEqual
- *   3. streamer 行なし(maybeSingle → null / pg limit(1) → 空配列)でも
- *      両経路とも404 + STREAMER_NOT_FOUND
- *   4. フラグ分岐（postgrest経路でgetDb不使用／pg経路でsupabase-js不使用）
- *   5. pgクエリの実引数（where/orderBy/limit）の構造比較
+ *      (isPgMissingColumnError [42703])
+ *   3. streamer 行なし(limit(1) → 空配列)で404 + STREAMER_NOT_FOUND
+ *   4. クエリの実引数（where/orderBy/limit）の構造比較
  *   6. 【厳格レビュー指摘 nit-4】縮退フォールバック自身も失敗するケース:
  *      getOwnedStreamer/getAdditionalRewards それぞれで「初回スキーマエラー →
- *      フォールバッククエリも失敗」した場合に両経路とも500になり、応答本文まで
- *      一致すること（片方のドライバだけ200相当を返す・エラー種別を誤判定して
- *      ステータスがズレる、といったリグレッションを検知する）
+ *      フォールバッククエリも失敗」した場合に500となること
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { asc, eq } from 'drizzle-orm'
 import { GET } from '@/app/api/twitch/channel-point-bootstrap/route'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { hasScope, getTwitchAccessToken } from '@/lib/twitch/token-manager'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import {
@@ -50,19 +44,14 @@ vi.mock('@/lib/twitch/token-manager', () => ({
   hasScope: vi.fn(),
   getTwitchAccessToken: vi.fn(),
 }))
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
-}))
 // #788: capability probe の永続化状態を読む/書くヘルパー。このテストファイルは
-// getOwnedStreamer/getAdditionalRewards のドライバ分岐（postgrest vs pg）だけを
-// 検証対象としており、capability state 自体の pg/postgrest 分岐は
-// channel-points-access.ts 側の責務（別途ユニットテストで検証）。ここをモックせず
+// getOwnedStreamer/getAdditionalRewards の SQL 契約だけを検証対象としており、
+// capability state 自体は channel-points-access.ts 側の責務。ここをモックせず
 // 実装のまま呼ばせると、GET ハンドラが必ず呼ぶ getChannelPointsAccessState が
 // 「users」テーブル/クエリを追加で叩いてしまい、このファイルが検証したい
 // streamers/streamer_additional_gacha_rewards への呼び出し回数・実引数の
 // アサーションを汚染する（db.select 呼び出し回数が streamers/rewards 分の
-// 期待値からズレる等）。モジュール全体を固定値でモックすることでpg/postgrest
-// 分岐を問わず一定の応答を返させ、本来の検証対象に集中させる。
+// 期待値からズレる等）。モジュール全体を固定値でモックし、本来の検証対象に集中させる。
 vi.mock('@/lib/twitch/channel-points-access', () => ({
   getChannelPointsAccessState: vi.fn().mockResolvedValue({
     capability: 'unknown',
@@ -73,9 +62,8 @@ vi.mock('@/lib/twitch/channel-points-access', () => ({
   persistChannelPointsCapability: vi.fn().mockResolvedValue(undefined),
 }))
 // handleApiError/handleDatabaseError → logAndRecordError → logErrorFromLogger は
-// 既定で getSupabaseAdmin() 経由の "errors" テーブル書き込みを行う（DB_DRIVER 移行
-// とは無関係な既存のエラーロギング基盤）。ここではその副作用を排除し、
-// getOwnedStreamer/getAdditionalRewards のドライバ分岐だけを純粋に検証できる
+// 既定ではエラー記録の DB 書き込みを行う。ここではその副作用を排除し、
+// getOwnedStreamer/getAdditionalRewards のクエリだけを純粋に検証できる
 // ようにする（overlay-events-api-pg.test.ts と同じ対処）。
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn(),
@@ -89,7 +77,6 @@ const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockGetRateLimitIdentifier = vi.mocked(getRateLimitIdentifier)
 const mockHasScope = vi.mocked(hasScope)
 const mockGetTwitchAccessToken = vi.mocked(getTwitchAccessToken)
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 
 const TWITCH_USER_ID = 'streamer-1'
 
@@ -108,7 +95,7 @@ function request(): NextRequest {
 }
 
 // ---------------------------------------------------------------------------
-// フル select 経路の fixture（両経路で同じ論理データを表現する）
+// フル select 経路の fixture
 // ---------------------------------------------------------------------------
 const FULL_STREAMER_ROW = {
   id: 'streamer-db-1',
@@ -142,50 +129,7 @@ const EXPECTED_FALLBACK_ADDITIONAL_REWARDS = [
 ]
 
 // ---------------------------------------------------------------------------
-// postgrest 経路のモック: from(table).select().eq().order()/maybeSingle()
-// callIndex を共有することで「フル select 失敗 → フォールバック select 成功」の
-// 2回シーケンスを1つのテーブルモックで再現する。
-// ---------------------------------------------------------------------------
-function makeSequentialTableMock(
-  responses: Array<{ data: unknown; error: unknown }>,
-  terminal: 'maybeSingle' | 'order'
-) {
-  let callIndex = 0
-  return () => {
-    const builder: any = {
-      select: vi.fn(() => builder),
-      eq: vi.fn(() => builder),
-    }
-    const resolveNext = () => {
-      const response = responses[Math.min(callIndex, responses.length - 1)]
-      callIndex += 1
-      return Promise.resolve(response)
-    }
-    if (terminal === 'maybeSingle') {
-      builder.maybeSingle = vi.fn(resolveNext)
-    } else {
-      builder.order = vi.fn(resolveNext)
-    }
-    return builder
-  }
-}
-
-function createBootstrapSupabaseMock(
-  streamerResponses: Array<{ data: unknown; error: unknown }>,
-  rewardsResponses: Array<{ data: unknown; error: unknown }> = [{ data: [], error: null }]
-) {
-  const streamerFactory = makeSequentialTableMock(streamerResponses, 'maybeSingle')
-  const rewardsFactory = makeSequentialTableMock(rewardsResponses, 'order')
-  const from = vi.fn((table: string) => {
-    if (table === 'streamers') return streamerFactory()
-    if (table === 'streamer_additional_gacha_rewards') return rewardsFactory()
-    throw new Error(`Unexpected table: ${table}`)
-  })
-  return { from }
-}
-
-// ---------------------------------------------------------------------------
-// pg 経路のモック: db.select(fields).from(table).where(cond).limit(n)/orderBy(cond)
+// PlanetScale/Drizzle 経路のモック: db.select(fields).from(table).where(cond).limit(n)/orderBy(cond)
 // getOwnedStreamerPg は limit() で終端、getAdditionalRewardsPg は orderBy() で終端
 // するため、呼び出された終端メソッドで streamer 用/rewards 用のレスポンス列を
 // 判別する(overlay-events-api-pg.test.ts の createDrizzleOverlayDbMock と同じ
@@ -262,11 +206,6 @@ beforeEach(() => {
   mockGetTwitchAccessToken.mockResolvedValue('token-1')
 })
 
-afterEach(() => {
-  // db-flags.test.ts 等と同じ変数を扱うため、他テストへ漏れないよう必ず復元する
-  vi.unstubAllEnvs()
-})
-
 /**
  * diagnostics=1 経路で呼ばれる fetch 呼び出し順: (1) getTwitchRewards の
  * custom_rewards、(2) getAppAccessToken の oauth2/token、(3)
@@ -274,10 +213,7 @@ afterEach(() => {
  * ドライバ非依存(channel-point-bootstrap-api.test.ts で別途検証済み)のため、
  * ここでは空データで固定する。
  *
- * 1つの it() 内で postgrest 経路・pg 経路の両方を実行する（deepEqual 比較のため）
- * ケースがあるため、mockResolvedValueOnce の3連鎖は run* 呼び出しのたびに
- * その場でキューに積む(beforeEach で1回だけ積むと2回目のGET呼び出しでキューが
- * 枯渇し、fetchがundefinedを返してTypeErrorになるため)。
+ * mockResolvedValueOnce の3連鎖は各 GET 呼び出し直前にキューへ積む。
  */
 function queueDiagnosticsFetchResponses() {
   vi.mocked(global.fetch)
@@ -286,24 +222,10 @@ function queueDiagnosticsFetchResponses() {
     .mockResolvedValueOnce(new Response(JSON.stringify({ data: [], pagination: {} }), { status: 200 }) as any)
 }
 
-async function runPostgrestPath(
-  streamerResponses: Array<{ data: unknown; error: unknown }>,
-  rewardsResponses?: Array<{ data: unknown; error: unknown }>
-) {
-  vi.stubEnv('DB_DRIVER', undefined)
-  queueDiagnosticsFetchResponses()
-  const supabase = createBootstrapSupabaseMock(streamerResponses, rewardsResponses)
-  mockGetSupabaseAdmin.mockReturnValue(supabase as any)
-  const res = await GET(request())
-  const body = await res.json()
-  return { res, body, supabase }
-}
-
-async function runPgPath(
+async function runPlanetscalePath(
   streamerResponses: Array<{ rows?: Record<string, unknown>[]; error?: unknown }>,
   rewardsResponses?: Array<{ rows?: Record<string, unknown>[]; error?: unknown }>
 ) {
-  vi.stubEnv('DB_DRIVER', 'pg-read')
   queueDiagnosticsFetchResponses()
   const db = createDrizzleBootstrapDbMock(streamerResponses, rewardsResponses)
   vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
@@ -312,38 +234,26 @@ async function runPgPath(
   return { res, body, db }
 }
 
-describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: フル select 経路の postgrest / pg 互換 (#690)', () => {
-  it('同一データで両経路の応答JSONがdeepEqualになる', async () => {
-    const { res: postgrestRes, body: postgrestBody } = await runPostgrestPath(
-      [{ data: FULL_STREAMER_ROW, error: null }],
-      [{ data: [FULL_REWARD_ROW], error: null }]
-    )
-    const { res: pgRes, body: pgBody } = await runPgPath(
+describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: フル select 経路 (#690)', () => {
+  it('PlanetScale の同一データを応答JSONへ反映する', async () => {
+    const { res, body } = await runPlanetscalePath(
       [{ rows: [FULL_STREAMER_ROW] }],
       [{ rows: [FULL_REWARD_ROW] }]
     )
 
-    expect(postgrestRes.status).toBe(200)
-    expect(pgRes.status).toBe(200)
-    expect(postgrestBody.additionalRewards).toEqual(EXPECTED_FULL_ADDITIONAL_REWARDS)
-    expect(postgrestBody.raidGiftDrawCount).toBe(3)
-    expect(pgBody).toEqual(postgrestBody)
+    expect(res.status).toBe(200)
+    expect(body.additionalRewards).toEqual(EXPECTED_FULL_ADDITIONAL_REWARDS)
+    expect(body.raidGiftDrawCount).toBe(3)
   })
 
-  it('postgrest 経路（フラグ未設定）では getDb が一切呼ばれない（挙動不変の検証）', async () => {
-    await runPostgrestPath([{ data: FULL_STREAMER_ROW, error: null }], [{ data: [FULL_REWARD_ROW], error: null }])
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('pg 経路では supabase-js クライアントが一切呼ばれない', async () => {
-    const { db } = await runPgPath([{ rows: [FULL_STREAMER_ROW] }], [{ rows: [FULL_REWARD_ROW] }])
-    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
+  it('streamers と rewards を各1回ずつ取得する', async () => {
+    const { db } = await runPlanetscalePath([{ rows: [FULL_STREAMER_ROW] }], [{ rows: [FULL_REWARD_ROW] }])
     // streamers(limit終端) + rewards(orderBy終端) の2回だけ呼ばれる(フォールバック無し)
     expect(db.select).toHaveBeenCalledTimes(2)
   })
 
-  it('pgクエリが streamers/streamer_additional_gacha_rewards への where/orderBy/limit を正しい実引数で呼び出す', async () => {
-    const { db } = await runPgPath([{ rows: [FULL_STREAMER_ROW] }], [{ rows: [FULL_REWARD_ROW] }])
+  it('クエリが streamers/streamer_additional_gacha_rewards への where/orderBy/limit を正しい実引数で呼び出す', async () => {
+    const { db } = await runPlanetscalePath([{ rows: [FULL_STREAMER_ROW] }], [{ rows: [FULL_REWARD_ROW] }])
 
     expect(db.calls).toHaveLength(2)
     const streamerCall = db.calls[0]
@@ -360,25 +270,9 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: フル select �
   })
 })
 
-describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラム欠落時の縮退フォールバック互換 (#690)', () => {
-  it('postgrest(PGRST204) / pg(42703) いずれも縮退selectへフォールバックし、応答JSONがdeepEqualになる', async () => {
-    const { res: postgrestRes, body: postgrestBody, supabase } = await runPostgrestPath(
-      [
-        { data: null, error: { code: 'PGRST204', message: 'column streamers.raid_gacha_draw_count does not exist' } },
-        { data: FALLBACK_STREAMER_ROW, error: null },
-      ],
-      [
-        {
-          data: null,
-          error: {
-            code: 'PGRST204',
-            message: 'column streamer_additional_gacha_rewards.draw_count does not exist',
-          },
-        },
-        { data: [FALLBACK_REWARD_ROW], error: null },
-      ]
-    )
-    const { res: pgRes, body: pgBody, db } = await runPgPath(
+describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラム欠落時の縮退フォールバック (#690)', () => {
+  it('42703では縮退selectへフォールバックし、既定値を補完する', async () => {
+    const { res, body, db } = await runPlanetscalePath(
       [
         {
           error: {
@@ -399,22 +293,16 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
       ]
     )
 
-    expect(postgrestRes.status).toBe(200)
-    expect(pgRes.status).toBe(200)
-    // 両経路ともフォールバックのデフォルト値(draw_count:1, is_raid_limited:false,
-    // raid_gacha_draw_count:0)が補完されていること
-    expect(postgrestBody.additionalRewards).toEqual(EXPECTED_FALLBACK_ADDITIONAL_REWARDS)
-    expect(postgrestBody.raidGiftDrawCount).toBe(0)
-    expect(pgBody).toEqual(postgrestBody)
+    expect(res.status).toBe(200)
+    expect(body.additionalRewards).toEqual(EXPECTED_FALLBACK_ADDITIONAL_REWARDS)
+    expect(body.raidGiftDrawCount).toBe(0)
 
     // フォールバックが実際に発火した(各テーブル2回ずつクエリされた)ことの確認
-    expect(supabase.from).toHaveBeenCalledWith('streamers')
-    expect(supabase.from).toHaveBeenCalledWith('streamer_additional_gacha_rewards')
     expect(db.select).toHaveBeenCalledTimes(4)
   })
 
-  it('pgクエリのフォールバック時は縮退select(raid_gacha_draw_count/draw_count/is_raid_limitedを含まない)を発行する', async () => {
-    const { db } = await runPgPath(
+  it('フォールバック時は縮退select(raid_gacha_draw_count/draw_count/is_raid_limitedを含まない)を発行する', async () => {
+    const { db } = await runPlanetscalePath(
       [
         {
           error: {
@@ -450,7 +338,7 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
   })
 
   it('42703以外の恒久的エラーはフォールバックせず500(handleApiError経由)になる', async () => {
-    const { res, db } = await runPgPath([
+    const { res, db } = await runPlanetscalePath([
       { error: { code: '42601', message: 'syntax error' } },
     ])
 
@@ -460,19 +348,14 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
   })
 })
 
-describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: streamer行なしの postgrest / pg 互換 (#690)', () => {
-  it('streamerが見つからない場合、両経路とも404 + STREAMER_NOT_FOUNDでdeepEqualになる', async () => {
-    const { res: postgrestRes, body: postgrestBody, supabase } = await runPostgrestPath([
-      { data: null, error: null },
-    ])
-    const { res: pgRes, body: pgBody, db } = await runPgPath([{ rows: [] }])
+describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: streamer行なし (#690)', () => {
+  it('streamerが見つからない場合、404 + STREAMER_NOT_FOUNDになる', async () => {
+    const { res, body, db } = await runPlanetscalePath([{ rows: [] }])
 
-    expect(postgrestRes.status).toBe(404)
-    expect(pgRes.status).toBe(404)
-    expect(pgBody).toEqual(postgrestBody)
+    expect(res.status).toBe(404)
+    expect(body).toEqual({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND })
 
-    // streamer 未検出のため追加報酬クエリには到達しない(両経路とも)
-    expect(supabase.from).not.toHaveBeenCalledWith('streamer_additional_gacha_rewards')
+    // streamer 未検出のため追加報酬クエリには到達しない。
     expect(db.select).toHaveBeenCalledTimes(1)
   })
 })
@@ -485,22 +368,11 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: streamer行な�
 // handleDatabaseError 経由で固定レスポンス({ error: 'Database error' }, 500)、
 // getAdditionalRewards は throw して外側の try/catch → handleApiError 経由で
 // 固定レスポンス({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500) になる
-// （いずれも postgrest/pg で同一コードパスを通るため、エラー内容によらず
 // レスポンス本文は固定値。route.ts の該当 JSDoc 参照）。
 // ---------------------------------------------------------------------------
 describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: 縮退フォールバック自身も失敗するケース (#690 厳格レビュー nit-4)', () => {
-  it('getOwnedStreamer: 初回スキーマエラー→縮退fallbackも失敗した場合、両経路とも500 + { error: "Database error" }でdeepEqualになる', async () => {
-    const { res: postgrestRes, body: postgrestBody } = await runPostgrestPath([
-      {
-        data: null,
-        error: { code: 'PGRST204', message: 'column streamers.raid_gacha_draw_count does not exist' },
-      },
-      // フォールバッククエリ自体も失敗（スキーマエラーである必要はない。
-      // isRaidStateSchemaError は初回エラーにのみ適用され、フォールバック結果の
-      // error はそのまま返るだけのため任意のエラー種別でよい）
-      { data: null, error: { message: 'connection failure during fallback' } },
-    ])
-    const { res: pgRes, body: pgBody } = await runPgPath([
+  it('getOwnedStreamer: 初回スキーマエラー→縮退fallbackも失敗した場合、500 + { error: "Database error" }になる', async () => {
+    const { res, body } = await runPlanetscalePath([
       {
         error: {
           code: '42703',
@@ -515,30 +387,12 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: 縮退フォー
       { error: { code: '42601', message: 'syntax error during fallback' } },
     ])
 
-    expect(postgrestRes.status).toBe(500)
-    expect(pgRes.status).toBe(500)
-    expect(postgrestBody).toEqual({ error: 'Database error' })
-    expect(pgBody).toEqual(postgrestBody)
+    expect(res.status).toBe(500)
+    expect(body).toEqual({ error: 'Database error' })
   })
 
-  it('getAdditionalRewards: streamerは正常取得、追加報酬側の初回スキーマエラー→縮退fallbackも失敗した場合、両経路とも500 + { error: INTERNAL_ERROR }でdeepEqualになる', async () => {
-    const { res: postgrestRes, body: postgrestBody } = await runPostgrestPath(
-      [{ data: FULL_STREAMER_ROW, error: null }],
-      [
-        {
-          data: null,
-          error: {
-            code: 'PGRST204',
-            message: 'column streamer_additional_gacha_rewards.draw_count does not exist',
-          },
-        },
-        // フォールバッククエリ自体も失敗（getAdditionalRewards は
-        // fallbackResult.error をそのまま `error` に代入し、最終的に throw する
-        // ため任意のエラー種別でよい）
-        { data: null, error: { message: 'connection failure during fallback' } },
-      ]
-    )
-    const { res: pgRes, body: pgBody } = await runPgPath(
+  it('getAdditionalRewards: 初回スキーマエラー→縮退fallbackも失敗した場合、500 + { error: INTERNAL_ERROR }になる', async () => {
+    const { res, body } = await runPlanetscalePath(
       [{ rows: [FULL_STREAMER_ROW] }],
       [
         {
@@ -554,9 +408,7 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: 縮退フォー
       ]
     )
 
-    expect(postgrestRes.status).toBe(500)
-    expect(pgRes.status).toBe(500)
-    expect(postgrestBody).toEqual({ error: ERROR_MESSAGES.INTERNAL_ERROR })
-    expect(pgBody).toEqual(postgrestBody)
+    expect(res.status).toBe(500)
+    expect(body).toEqual({ error: ERROR_MESSAGES.INTERNAL_ERROR })
   })
 })

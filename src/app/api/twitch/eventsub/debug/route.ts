@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { handleApiError } from "@/lib/error-handler";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 

@@ -6,28 +6,20 @@
  * これにより操作数制限（2,000/月）を大幅に節約できる
  */
 
+import 'server-only';
+
 import { cache } from 'react';
-import { getSupabaseAdmin } from '@/lib/supabase/admin';
+
 import { UPLOAD_CONFIG, VOTE_CAMPAIGN_CONFIG } from './constants';
-import { logger } from './logger';
+import { logger } from './logger.server';
 // -----------------------------------------------------------------------------
-// #572 (#570 パイロット踏襲): pg 直結経路。
-// - blob_files への書き込み（recordBlobFile / removeBlobFile）は読み書き混在の
-//   関数のため isPgWriteEnabled() で関数全体を分岐する（token-manager.ts 冒頭の
-//   フラグ使い分け方針と同じ）。
-// - streamers 経由のボーナス読み取り（getStorageBonusBytes /
-//   hasStorageBonusByTwitchUserId）は読み取り専用のため isPgReadEnabled() で分岐。
-// - RPC update_storage_usage はイシュー区分上 #573 だが、呼び出し元 2 箇所が
-//   本ファイルの書き込み関数内に閉じているため、同一ファイルを 2 段階で触らず
-//   ここで一括置換する（getDb() の sql タグで
-//   `select update_storage_usage(p_xxx => ...)` を名前付き引数呼び出しする）。
-// - storage_usage の集計読み取り（getStorageUsageFromDB / getAllStorageUsage、
-//   #663）も読み取り専用のため isPgReadEnabled() で分岐。
-// 既存 supabase-js 実装は 1 文字も変えず、フラグ未設定時は完全に従来どおり動く。
+// blob_files / storage_usage / bonus設定はPlanetScale/Drizzleの単一経路。
+// update_storage_usageは同じ接続上の名前付きRPCとして実行し、読み書きが異なる
+// providerへ分離される余地を作らない。
 // -----------------------------------------------------------------------------
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
-import { isPgReadEnabled, isPgWriteEnabled } from '@/lib/db/flags';
+
 import { withDbRetry } from '@/lib/db/retry';
 import {
   blobFiles as blobFilesTable,
@@ -124,54 +116,7 @@ async function getStorageUsageFromDBPg(userPrefix: string): Promise<StorageUsage
 export async function getStorageUsageFromDB(userPrefix: string): Promise<StorageUsageResult> {
   // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
   // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return getStorageUsageFromDBPg(userPrefix);
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // ユーザーとグローバルの使用量を同時に取得
-    const { data, error } = await supabaseAdmin
-      .from('storage_usage')
-      .select('user_prefix, bytes_used')
-      .in('user_prefix', [userPrefix, GLOBAL_PREFIX]);
-
-    if (error) {
-      logger.error('[StorageDB] Failed to get storage usage:', error);
-      throw new Error(`Failed to get storage usage: ${error.message}`);
-    }
-
-    // 結果を解析
-    const userRow = data?.find(r => r.user_prefix === userPrefix);
-    const globalRow = data?.find(r => r.user_prefix === GLOBAL_PREFIX);
-
-    const userUsage = userRow?.bytes_used ?? 0;
-    const globalUsage = globalRow?.bytes_used ?? 0;
-
-    logger.info(`[StorageDB] Usage - User: ${userPrefix} = ${userUsage} bytes, Global = ${globalUsage} bytes`);
-
-    return {
-      userUsage,
-      globalUsage,
-      userLimitReached: userUsage >= UPLOAD_CONFIG.USER_STORAGE_LIMIT,
-      globalLimitReached: globalUsage >= UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
-      userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
-      globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
-    };
-  } catch (error) {
-    // 使用量を確認できない場合は、アップロードをブロックしないように制限に達していないと仮定
-    // ただし、エラーログは出力する
-    logger.error('[StorageDB] Failed to get storage usage, returning defaults:', error);
-    return {
-      userUsage: 0,
-      globalUsage: 0,
-      userLimitReached: false,
-      globalLimitReached: false,
-      userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
-      globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
-    };
-  }
+  return getStorageUsageFromDBPg(userPrefix);
 }
 
 /**
@@ -258,47 +203,7 @@ export async function recordBlobFile(
 ): Promise<void> {
   // #572: 書き込み（INSERT + RPC）を含む関数のため isPgWriteEnabled() で分岐。
   // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgWriteEnabled()) {
-    return recordBlobFilePg(url, userPrefix, fileSize, storageType);
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // ファイル情報を記録
-    const { error: insertError } = await supabaseAdmin
-      .from('blob_files')
-      .insert({
-        url,
-        user_prefix: userPrefix,
-        file_size: fileSize,
-        storage_type: storageType,
-      });
-
-    if (insertError) {
-      logger.error('[StorageDB] Failed to insert blob file record:', insertError);
-      throw new Error(`Failed to record blob file: ${insertError.message}`);
-    }
-
-    // 使用量を更新（ユーザーとグローバル）
-    // Supabaseの rpc() を使ってストアドファンクションを呼び出す
-    const { error: rpcError } = await supabaseAdmin.rpc('update_storage_usage', {
-      p_user_prefix: userPrefix,
-      p_size_delta: fileSize,
-      p_count_delta: 1,
-    });
-
-    if (rpcError) {
-      logger.error('[StorageDB] Failed to update storage usage:', rpcError);
-      // ファイル記録は成功したが使用量更新が失敗した場合、ログを出すが例外は投げない
-      // 次回の計算で補正される
-    }
-
-    logger.info(`[StorageDB] Recorded blob file: ${url}, size: ${fileSize}, type: ${storageType}`);
-  } catch (error) {
-    logger.error('[StorageDB] Error recording blob file:', error);
-    throw error;
-  }
+  return recordBlobFilePg(url, userPrefix, fileSize, storageType);
 }
 
 /**
@@ -406,65 +311,7 @@ async function removeBlobFilePg(url: string): Promise<BlobFileInfo | null> {
 export async function removeBlobFile(url: string): Promise<BlobFileInfo | null> {
   // #572: 読み取り（削除対象の逆引き）と書き込み（DELETE + RPC）が混在する関数の
   // ため isPgWriteEnabled() で関数全体を分岐。
-  if (isPgWriteEnabled()) {
-    return removeBlobFilePg(url);
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // ファイル情報を取得
-    const { data, error: selectError } = await supabaseAdmin
-      .from('blob_files')
-      .select('user_prefix, file_size, storage_type')
-      .eq('url', url)
-      .maybeSingle();
-
-    // maybeSingle()を使用しているため、行が見つからない場合はerrorではなくdata=nullが返る
-    if (selectError) {
-      logger.error('[StorageDB] Failed to get blob file record:', selectError);
-      throw new Error(`Failed to get blob file: ${selectError.message}`);
-    }
-
-    if (!data) {
-      logger.warn(`[StorageDB] Blob file not found in DB: ${url}`);
-      return null;
-    }
-
-    // ファイル情報を削除
-    const { error: deleteError } = await supabaseAdmin
-      .from('blob_files')
-      .delete()
-      .eq('url', url);
-
-    if (deleteError) {
-      logger.error('[StorageDB] Failed to delete blob file record:', deleteError);
-      throw new Error(`Failed to delete blob file: ${deleteError.message}`);
-    }
-
-    // 使用量を減算（ユーザーとグローバル）
-    const { error: rpcError } = await supabaseAdmin.rpc('update_storage_usage', {
-      p_user_prefix: data.user_prefix,
-      p_size_delta: -data.file_size,
-      p_count_delta: -1,
-    });
-
-    if (rpcError) {
-      logger.error('[StorageDB] Failed to update storage usage after delete:', rpcError);
-      // 使用量更新が失敗してもファイル削除は成功したのでログのみ
-    }
-
-    logger.info(`[StorageDB] Removed blob file: ${url}, size: ${data.file_size}`);
-
-    return {
-      userPrefix: data.user_prefix,
-      fileSize: data.file_size,
-      storageType: data.storage_type as 'r2' | 'vercel',
-    };
-  } catch (error) {
-    logger.error('[StorageDB] Error removing blob file:', error);
-    throw error;
-  }
+  return removeBlobFilePg(url);
 }
 
 /**
@@ -525,38 +372,7 @@ async function getStorageBonusBytesPg(twitchUserId: string): Promise<number> {
 
 export async function getStorageBonusBytes(twitchUserId: string): Promise<number> {
   // #572: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return getStorageBonusBytesPg(twitchUserId);
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // streamersテーブル経由でstreamer_storage_bonusをリレーションで取得
-    const { data, error } = await supabaseAdmin
-      .from('streamers')
-      .select('streamer_storage_bonus(amount_mb)')
-      .eq('twitch_user_id', twitchUserId)
-      .maybeSingle();
-
-    if (error || !data) {
-      return 0;
-    }
-
-    const bonuses = data.streamer_storage_bonus as Array<{ amount_mb: number }> | null;
-    if (!bonuses || bonuses.length === 0) {
-      return 0;
-    }
-
-    // MB → bytes に変換して合計
-    const totalMb = bonuses.reduce((sum, b) => sum + b.amount_mb, 0);
-    return totalMb * 1024 * 1024;
-  } catch (error) {
-    // ボーナス取得失敗時はゼロとする（ユーザーに不利にしない）
-    // logger.error が自動的に Supabase に記録するため reportError は不要
-    logger.error('[StorageDB] Failed to get storage bonus:', error);
-    return 0;
-  }
+  return getStorageBonusBytesPg(twitchUserId);
 }
 
 /**
@@ -620,25 +436,7 @@ export async function hasStorageBonusByTwitchUserId(
   memo: string
 ): Promise<boolean> {
   // #572: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return hasStorageBonusByTwitchUserIdPg(twitchUserId, type, memo);
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin();
-    // streamers テーブル経由で streamer_storage_bonus を検索
-    const { data } = await supabaseAdmin
-      .from('streamers')
-      .select('streamer_storage_bonus!inner(id)')
-      .eq('twitch_user_id', twitchUserId)
-      .eq('streamer_storage_bonus.type', type)
-      .eq('streamer_storage_bonus.memo', memo)
-      .maybeSingle();
-    return !!data;
-  } catch (error) {
-    logger.error('[StorageDB] Failed to check storage bonus by twitch_user_id:', error);
-    return false;
-  }
+  return hasStorageBonusByTwitchUserIdPg(twitchUserId, type, memo);
 }
 
 /**
@@ -650,7 +448,7 @@ export async function hasStorageBonusByTwitchUserId(
  * @returns キャンペーンボタンを表示すべき場合true
  */
 export const shouldShowVoteCampaign = cache(async function shouldShowVoteCampaign(twitchUserId: string): Promise<boolean> {
-  const now = new Date();
+                                              const now = new Date();
   if (now < VOTE_CAMPAIGN_CONFIG.START_DATE || now > VOTE_CAMPAIGN_CONFIG.END_DATE) {
     return false;
   }
@@ -716,30 +514,5 @@ export async function getAllStorageUsage(): Promise<Array<{
   blobCount: number;
 }>> {
   // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return getAllStorageUsagePg();
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    const { data, error } = await supabaseAdmin
-      .from('storage_usage')
-      .select('user_prefix, bytes_used, blob_count')
-      .order('bytes_used', { ascending: false });
-
-    if (error) {
-      logger.error('[StorageDB] Failed to get all storage usage:', error);
-      throw new Error(`Failed to get all storage usage: ${error.message}`);
-    }
-
-    return (data || []).map(row => ({
-      userPrefix: row.user_prefix,
-      bytesUsed: row.bytes_used,
-      blobCount: row.blob_count,
-    }));
-  } catch (error) {
-    logger.error('[StorageDB] Error getting all storage usage:', error);
-    throw error;
-  }
+  return getAllStorageUsagePg();
 }

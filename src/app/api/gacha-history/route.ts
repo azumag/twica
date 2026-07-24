@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import { handleApiError } from "@/lib/error-handler";
 import {
   checkRateLimit,
@@ -22,7 +22,7 @@ import {
 // ---------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { streamers as streamersTable } from "@/lib/db/schema";
 
@@ -127,15 +127,7 @@ export async function GET(request: NextRequest) {
       // Streamer: get their streamer_id
       // 配信者: streamer_idを取得
       // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-      const streamer = isPgReadEnabled()
-        ? await fetchStreamerIdPg(session.twitchUserId)
-        : (
-            await getSupabaseAdmin()
-              .from("streamers")
-              .select("id")
-              .eq("twitch_user_id", session.twitchUserId)
-              .maybeSingle()
-          ).data;
+      const streamer = await fetchStreamerIdPg(session.twitchUserId);
 
       if (!streamer) {
         return NextResponse.json(

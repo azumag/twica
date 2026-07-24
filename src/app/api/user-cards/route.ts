@@ -1,6 +1,6 @@
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { getSession } from '@/lib/session'
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { handleApiError, handleDatabaseError } from '@/lib/error-handler'
 import { ERROR_MESSAGES } from '@/lib/constants'
@@ -11,7 +11,7 @@ import { ERROR_MESSAGES } from '@/lib/constants'
 // ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import { userCards as userCardsTable, users as usersTable } from '@/lib/db/schema'
 
@@ -123,13 +123,7 @@ export async function GET(request: NextRequest) {
     // Get user data
     // ユーザーデータを取得
     // #663: 読み取り専用のため isPgReadEnabled() で分岐。
-    const { data: userData, error: userError } = isPgReadEnabled()
-      ? await fetchUserPg(session.twitchUserId)
-      : await getSupabaseAdmin()
-          .from('users')
-          .select('id, twitch_user_id')
-          .eq('twitch_user_id', session.twitchUserId)
-          .maybeSingle()
+    const { data: userData, error: userError } = await fetchUserPg(session.twitchUserId)
 
     if (userError || !userData) {
       return handleDatabaseError(userError ?? new Error('User not found'), "Failed to fetch user data")
@@ -138,13 +132,7 @@ export async function GET(request: NextRequest) {
     // Get user's cards with details
     // ユーザーのカード詳細を取得
     // .range(0, 9999) でPostgRESTデフォルト1000件制限を回避
-    const { data: userCards, error: cardsError } = isPgReadEnabled()
-      ? await fetchUserCardsPg(userData.id)
-      : await getSupabaseAdmin()
-          .from('user_cards')
-          .select('id, user_id, card_id, obtained_at')
-          .eq('user_id', userData.id)
-          .range(0, 9999)
+    const { data: userCards, error: cardsError } = await fetchUserCardsPg(userData.id)
 
     if (cardsError) {
       return handleDatabaseError(cardsError, "Failed to fetch user cards")

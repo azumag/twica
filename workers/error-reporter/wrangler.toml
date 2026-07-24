@@ -65,20 +65,14 @@ preview_id = "6604c73cdb474d6a8a50b8afd4076d5f"
 # postgres.js 直結へ移行した際に追加。src/index.ts の createReporterDbClient が
 # 使用する。
 #
-# ルート（メインアプリ）の wrangler.toml と**同じ Hyperdrive config ID** を
-# 再利用している（新規 config は作成していない）。理由: メインアプリと
-# この Worker は同じ Supabase DB を見ており、config を分けると cutover
-# （Supabase → PlanetScale への接続先切り替え）作業を2箇所で行う必要が
-# 生じ、片方だけ切り替え忘れる事故のリスクがある。同じ config を共有する
-# ことで、config 側の接続文字列を1箇所差し替えるだけでメインアプリ・この
-# Worker の両方が新しい接続先に自動追従し、この Worker のコード・
-# wrangler.toml をその時点で一切変更する必要がない（ファイル冒頭コメントの
-# 「cutover 時に無修正で追従する」という約束の実体）。
+# production はルートアプリと同じ PlanetScale Hyperdrive config ID を共有する。
+# これにより errors/support_inquiries もアプリ本体と必ず同じ正本DBを参照し、
+# 片方だけ別接続先へずれる構成を防ぐ。旧DB binding へのフォールバックは持たない。
 #
 # --caching-disabled 等の作成手順・localConnectionString の用途は
 # ルート wrangler.toml の [[hyperdrive]] コメント（本ファイルと同じ根拠）を参照。
 [[hyperdrive]]
-binding = "HYPERDRIVE_SUPABASE"
+binding = "HYPERDRIVE_PLANETSCALE"
 id = "1dc2ec4d087e41a6931e8e18944c1fd2"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
 
@@ -89,7 +83,8 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 # （issue #711 比較コメント §4-4 の未決事項への回答）。`wrangler dev`
 # （`--env preview` 指定時）や、将来 preview 環境へのデプロイが必要になった
 # 場合に備える。id はルート wrangler.toml の [env.preview.hyperdrive] と同じ
-# preview 用 config（twica-hyperdrive-preview）を指す。
+# reporter の preview 検証用 config を指す。ルートアプリの preview configとは
+# IDが異なるため、この環境を実運用へ昇格させる場合は接続先の一致を再検証する。
 #
 # m-2 (Fableレビュー指摘) 影響範囲の明記:
 # 1. この [env.preview] を追加したことで、CI（.github/workflows/
@@ -106,7 +101,7 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 #    APP_BASE_URL_PROD/PREVIEW）と [[kv_namespaces]]（RATE_LIMIT_KV）は
 #    [env.preview] 側に再宣言していない分だけ preview 実行時には存在しない
 #    （`npx wrangler deploy --dry-run --env preview` で実測確認済み: bindings
-#    一覧に HYPERDRIVE_SUPABASE のみが出力され、RATE_LIMIT_KV/vars は出ない）。
+#    一覧に HYPERDRIVE_PLANETSCALE のみが出力され、RATE_LIMIT_KV/vars は出ない）。
 #    つまり --env preview は「Hyperdrive バインディングだけを検証できる縮退
 #    モード」であり、errors/inquiries 以外の処理（backlog監視・自動ドレイン）を
 #    preview で試すには [env.preview.vars] / [env.preview.kv_namespaces] の
@@ -114,7 +109,7 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 [env.preview]
 
 [[env.preview.hyperdrive]]
-binding = "HYPERDRIVE_SUPABASE"
+binding = "HYPERDRIVE_PLANETSCALE"
 id = "1e3f6c4569bf4202a41c42711c878b86"
 localConnectionString = "postgres://user:password@localhost:5432/postgres"
 
@@ -122,12 +117,8 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 # Required secrets:
 # - GITHUB_TOKEN: GitHub Fine-grained PAT (scopes: Issues read/write)
 #
-# #711 C 移行後は SUPABASE_URL/SUPABASE_SECRET_KEY/SUPABASE_SERVICE_ROLE_KEY
-# はこのワーカーではもう使わない（DB アクセスは上記 [[hyperdrive]] 経由の
-# postgres.js 直結に置き換わったため）。既存デプロイに残っている場合、
-# 削除は必須ではないが（未使用になるだけで実害はない）、
-# `wrangler secret delete SUPABASE_URL` 等でオーナーが任意のタイミングで
-# 整理してよい。
+# DB アクセスは上記 PlanetScale Hyperdrive binding のみを使用する。
+# 旧 Supabase secrets は #708 の停止手順で削除する。
 #
 # EventSub 退避 backlog 自動ドレイン（2項目目）用の追加 secrets:
 # - EVENTSUB_REPLAY_SECRET_PROD: 本番アプリ（twica）の EVENTSUB_REPLAY_SECRET と

@@ -1,6 +1,6 @@
 import { getEnvVar } from '@/lib/env-validation'
 import { getTwitchAccessToken } from './token-manager'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 
 const TWITCH_API_URL = 'https://api.twitch.tv/helix'
 

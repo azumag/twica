@@ -105,16 +105,16 @@ describe('isSchemaMissingError', () => {
     expect(isSchemaMissingError({ code: '42P01', message: 'relation does not exist' })).toBe(true)
   })
 
-  it('PGRST204 (PostgRESTスキーマキャッシュ: 列不在) を検知する', () => {
-    expect(isSchemaMissingError({ code: 'PGRST204', message: "Could not find the 'foo' column" })).toBe(true)
+  it('SQLSTATEがなくても標準undefined column文言を検知する', () => {
+    expect(isSchemaMissingError({ message: 'undefined column cards.foo' })).toBe(true)
   })
 
-  it('PGRST205 (PostgRESTスキーマキャッシュ: テーブル不在) を検知する', () => {
-    expect(isSchemaMissingError({ code: 'PGRST205', message: "Could not find the table 'foo'" })).toBe(true)
+  it('SQLSTATEがなくても標準undefined table文言を検知する', () => {
+    expect(isSchemaMissingError({ message: 'undefined table public.foo' })).toBe(true)
   })
 
-  it('コードが無くてもメッセージに "schema cache" を含めば検知する', () => {
-    expect(isSchemaMissingError({ message: 'not present in schema cache' })).toBe(true)
+  it('退役HTTP API固有のschema cache文言だけでは検知しない', () => {
+    expect(isSchemaMissingError({ message: 'not present in schema cache' })).toBe(false)
   })
 
   it('無関係なDBエラー (例: 権限エラー) は検知しない', () => {

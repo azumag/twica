@@ -1,286 +1,308 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { getGachaUsersForStreamer } from "@/lib/dashboard-data";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { reportError } from "@/lib/sentry/error-handler";
+/**
+ * getGachaUsersForStreamer のPlanetScale RPCとDrizzle fallback契約。
+ *
+ * RPCはpostgres.jsのタグ関数、fallbackはDrizzle selectとして別々にfixture化する。
+ * これによりRETURNS JSONBの変換、ページング、未デプロイ/実行時障害の集約継続を、
+ * 退役したSupabase clientを再現せず検証できる。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Column, Table } from 'drizzle-orm'
+import { getGachaUsersForStreamer } from '@/lib/dashboard-data'
+import { getDb } from '@/lib/db/client'
+import {
+  cards as cardsTable,
+  gachaHistory as gachaHistoryTable,
+} from '@/lib/db/schema'
+import { logger } from '@/lib/logger'
+import { reportError } from '@/lib/sentry/error-handler'
 
-vi.mock("@/lib/supabase/admin", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/lib/supabase/admin")>();
-  return { ...actual, getSupabaseAdmin: vi.fn() };
-});
-vi.mock("@/lib/sentry/error-handler", () => ({
+vi.mock('@/lib/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
+vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn(),
   reportApiError: vi.fn(),
   logErrorFromLogger: vi.fn(),
-}));
-vi.mock("next/cache", () => ({
+}))
+vi.mock('next/cache', () => ({
   unstable_cache: (fn: () => Promise<unknown>) => fn,
-}));
+}))
 
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin);
-const mockReportError = vi.mocked(reportError);
+const streamerId = 'streamer-uuid-123'
 
-const STREAMER_ID = "streamer-uuid-123";
-
-/** RPC成功時のモッククライアントを作成 */
-function createRpcSuccessClient(rpcData: unknown) {
-  return {
-    rpc: vi.fn().mockResolvedValue({ data: rpcData, error: null }),
-    from: vi.fn(),
-  };
+function pgError(code: string, message: string) {
+  return Object.assign(new Error(message), { code })
 }
 
-/** RPCエラー時のモッククライアントを作成（フォールバック用のfromも設定） */
-function createRpcErrorClient(
-  errorCode: string,
-  errorMessage: string,
-  historyData: unknown[] | null = [],
-  cardsData: unknown[] | null = []
+function createSqlResponse(result: unknown) {
+  return vi.fn().mockResolvedValue(result === undefined ? [] : [{ result }])
+}
+
+function createFallbackDb(
+  historyRows: Array<Record<string, unknown>> = [],
+  cardRows: Array<Record<string, unknown>> = []
 ) {
-  // fromのチェーンメソッドをモック
-  const historyQuery = {
-    select: vi.fn().mockReturnThis(),
-    eq: vi.fn().mockReturnThis(),
-    order: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockResolvedValue({ data: historyData, error: null }),
-  };
-  const cardsQuery = {
-    select: vi.fn().mockReturnThis(),
-    eq: vi.fn().mockReturnValue({
-      eq: vi.fn().mockResolvedValue({ data: cardsData, error: null }),
-    }),
-  };
-
+  const rowsByTable = new Map<Table, Array<Record<string, unknown>>>([
+    [gachaHistoryTable, historyRows],
+    [cardsTable, cardRows],
+  ])
   return {
-    rpc: vi.fn().mockResolvedValue({
-      data: null,
-      error: { code: errorCode, message: errorMessage },
-    }),
-    from: vi.fn((table: string) => {
-      if (table === "gacha_history") return historyQuery;
-      if (table === "cards") return cardsQuery;
-      return historyQuery;
-    }),
-  };
+    select: vi.fn((fields: Record<string, unknown>) => ({
+      from: vi.fn((table: Table) => {
+        const evaluate = () =>
+          (rowsByTable.get(table) ?? []).map((row) =>
+            Object.fromEntries(
+              Object.entries(fields).map(([key, field]) => [
+                key,
+                row[(field as Column).name] ?? null,
+              ])
+            )
+          )
+        const builder: any = {
+          where: vi.fn(() => builder),
+          orderBy: vi.fn(() => builder),
+          limit: vi.fn(() => builder),
+          then: (onFulfilled: any, onRejected: any) =>
+            Promise.resolve().then(evaluate).then(onFulfilled, onRejected),
+        }
+        return builder
+      }),
+    })),
+  }
 }
 
-describe("getGachaUsersForStreamer", () => {
+function primeDb(options: {
+  rpcResult?: unknown
+  rpcError?: unknown
+  historyRows?: Array<Record<string, unknown>>
+  cardRows?: Array<Record<string, unknown>>
+}) {
+  const sql = options.rpcError
+    ? vi.fn().mockRejectedValue(options.rpcError)
+    : createSqlResponse(options.rpcResult)
+  const db = createFallbackDb(options.historyRows, options.cardRows)
+  vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+  return { sql, db }
+}
+
+const rpcUsers = {
+  users: [
+    {
+      user_twitch_id: 'user1',
+      username: 'Alice',
+      draw_count: 50,
+      last_draw_at: '2025-01-01T00:00:00Z',
+      unique_card_ids: ['card-a', 'card-b'],
+    },
+    {
+      user_twitch_id: 'user2',
+      username: 'Bob',
+      draw_count: 30,
+      last_draw_at: '2025-01-02T00:00:00Z',
+      unique_card_ids: ['card-a'],
+    },
+  ],
+  total: 2,
+}
+
+const fallbackHistory = [
+  {
+    user_twitch_id: 'user1',
+    user_twitch_username: 'Alice',
+    card_id: 'card-a',
+    redeemed_at: '2025-01-02T00:00:00Z',
+  },
+  {
+    user_twitch_id: 'user1',
+    user_twitch_username: 'Alice',
+    card_id: 'card-b',
+    redeemed_at: '2025-01-01T00:00:00Z',
+  },
+]
+
+describe('getGachaUsersForStreamer', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-  });
+    vi.clearAllMocks()
+  })
 
-  describe("RPC成功時", () => {
-    it("RPC結果をGachaUserEntry[]に正しく変換する", async () => {
-      const rpcData = {
-        users: [
-          {
-            user_twitch_id: "user1",
-            username: "Alice",
-            draw_count: 50,
-            last_draw_at: "2025-01-01T00:00:00Z",
-            unique_card_ids: ["card-a", "card-b"],
-          },
-          {
-            user_twitch_id: "user2",
-            username: "Bob",
-            draw_count: 30,
-            last_draw_at: "2025-01-02T00:00:00Z",
-            unique_card_ids: ["card-a"],
-          },
-        ],
-        total: 2,
-      };
-      mockGetSupabaseAdmin.mockReturnValue(
-        createRpcSuccessClient(rpcData) as any
-      );
+  it('RPC結果をGachaUserEntryへ変換する', async () => {
+    primeDb({ rpcResult: rpcUsers })
 
-      const result = await getGachaUsersForStreamer(STREAMER_ID, {
-        page: 1,
-        perPage: 20,
-      });
+    const result = await getGachaUsersForStreamer(streamerId, {
+      page: 1,
+      perPage: 20,
+    })
 
-      expect(result.users).toHaveLength(2);
-      expect(result.users[0]).toEqual({
-        userTwitchId: "user1",
-        username: "Alice",
+    expect(result.users).toEqual([
+      {
+        userTwitchId: 'user1',
+        username: 'Alice',
         drawCount: 50,
         uniqueCards: 2,
-        uniqueCardIds: ["card-a", "card-b"],
-        lastDrawAt: "2025-01-01T00:00:00Z",
-      });
-      expect(result.users[1]).toEqual({
-        userTwitchId: "user2",
-        username: "Bob",
+        uniqueCardIds: ['card-a', 'card-b'],
+        lastDrawAt: '2025-01-01T00:00:00Z',
+      },
+      {
+        userTwitchId: 'user2',
+        username: 'Bob',
         drawCount: 30,
         uniqueCards: 1,
-        uniqueCardIds: ["card-a"],
-        lastDrawAt: "2025-01-02T00:00:00Z",
-      });
-      expect(result.pagination).toEqual({
-        page: 1,
-        perPage: 20,
-        total: 2,
-        totalPages: 1,
-      });
-    });
+        uniqueCardIds: ['card-a'],
+        lastDrawAt: '2025-01-02T00:00:00Z',
+      },
+    ])
+    expect(result.pagination).toEqual({
+      page: 1,
+      perPage: 20,
+      total: 2,
+      totalPages: 1,
+    })
+  })
 
-    it("RPCのunique_card_idsに重複があってもユニーク種数として扱う", async () => {
-      const rpcData = {
-        users: [
-          {
-            user_twitch_id: "user1",
-            username: "Alice",
-            draw_count: 1455,
-            last_draw_at: "2026-05-13T05:00:00Z",
-            unique_card_ids: ["card-a", "card-b", "card-a", "card-b", "card-c"],
-          },
-        ],
+  it('重複したunique_card_idsを初出順で一意化する', async () => {
+    primeDb({
+      rpcResult: {
+        users: [{
+          user_twitch_id: 'user1',
+          username: 'Alice',
+          draw_count: 1455,
+          last_draw_at: '2026-05-13T05:00:00Z',
+          unique_card_ids: ['card-a', 'card-b', 'card-a', 'card-c'],
+        }],
         total: 1,
-      };
-      mockGetSupabaseAdmin.mockReturnValue(
-        createRpcSuccessClient(rpcData) as any
-      );
+      },
+    })
 
-      const result = await getGachaUsersForStreamer(STREAMER_ID);
+    const result = await getGachaUsersForStreamer(streamerId)
 
-      expect(result.users[0]).toMatchObject({
-        drawCount: 1455,
-        uniqueCards: 3,
-        uniqueCardIds: ["card-a", "card-b", "card-c"],
-      });
-    });
+    expect(result.users[0]).toMatchObject({
+      drawCount: 1455,
+      uniqueCards: 3,
+      uniqueCardIds: ['card-a', 'card-b', 'card-c'],
+    })
+  })
 
-    it("RPCにp_limit/p_offsetを正しく渡す", async () => {
-      const rpcData = { users: [], total: 0 };
-      const client = createRpcSuccessClient(rpcData);
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
+  it('RPCへstreamer/limit/offsetを名前付き引数の順で渡す', async () => {
+    const { sql } = primeDb({ rpcResult: { users: [], total: 0 } })
 
-      await getGachaUsersForStreamer(STREAMER_ID, { page: 3, perPage: 10 });
+    await getGachaUsersForStreamer(streamerId, { page: 3, perPage: 10 })
 
-      expect(client.rpc).toHaveBeenCalledWith(
-        "get_gacha_users_for_streamer",
-        { p_streamer_id: STREAMER_ID, p_limit: 10, p_offset: 20 }
-      );
-    });
+    const [strings, ...values] = sql.mock.calls[0] as [readonly string[], ...unknown[]]
+    expect(strings.join('$')).toContain('get_gacha_users_for_streamer')
+    expect(values).toEqual([streamerId, 10, 20])
+  })
 
-    it("ユーザーが0件の場合、空配列を返す", async () => {
-      const rpcData = { users: [], total: 0 };
-      mockGetSupabaseAdmin.mockReturnValue(
-        createRpcSuccessClient(rpcData) as any
-      );
+  it('0件とpagination切り上げを正規化する', async () => {
+    primeDb({ rpcResult: { users: [], total: 45 } })
 
-      const result = await getGachaUsersForStreamer(STREAMER_ID);
+    const result = await getGachaUsersForStreamer(streamerId, { perPage: 20 })
 
-      expect(result.users).toEqual([]);
-      expect(result.pagination.total).toBe(0);
-      expect(result.pagination.totalPages).toBe(0);
-    });
+    expect(result.users).toEqual([])
+    expect(result.pagination).toEqual({
+      page: 1,
+      perPage: 20,
+      total: 45,
+      totalPages: 3,
+    })
+  })
 
-    it("usernameがnullの場合、空文字に変換する", async () => {
-      const rpcData = {
-        users: [
-          {
-            user_twitch_id: "user1",
-            username: null,
-            draw_count: 5,
-            last_draw_at: "2025-01-01T00:00:00Z",
-            unique_card_ids: [],
-          },
-        ],
+  it('username=nullを空文字へ変換する', async () => {
+    primeDb({
+      rpcResult: {
+        users: [{
+          user_twitch_id: 'user1',
+          username: null,
+          draw_count: 1,
+          last_draw_at: '2025-01-01T00:00:00Z',
+          unique_card_ids: [],
+        }],
         total: 1,
-      };
-      mockGetSupabaseAdmin.mockReturnValue(
-        createRpcSuccessClient(rpcData) as any
-      );
+      },
+    })
 
-      const result = await getGachaUsersForStreamer(STREAMER_ID);
+    const result = await getGachaUsersForStreamer(streamerId)
 
-      expect(result.users[0].username).toBe("");
-    });
+    expect(result.users[0].username).toBe('')
+  })
 
-    it("totalPagesが正しく切り上げ計算される", async () => {
-      const rpcData = { users: [{ user_twitch_id: "u1", username: "A", draw_count: 1, last_draw_at: "2025-01-01T00:00:00Z", unique_card_ids: [] }], total: 21 };
-      mockGetSupabaseAdmin.mockReturnValue(
-        createRpcSuccessClient(rpcData) as any
-      );
+  it('RPC結果nullならDrizzle行からユーザー別に集約する', async () => {
+    primeDb({
+      rpcResult: undefined,
+      historyRows: fallbackHistory,
+      cardRows: [{ id: 'card-a' }, { id: 'card-b' }],
+    })
 
-      const result = await getGachaUsersForStreamer(STREAMER_ID, { perPage: 10 });
+    const result = await getGachaUsersForStreamer(streamerId)
 
-      expect(result.pagination.totalPages).toBe(3);
-    });
+    expect(result.users[0]).toMatchObject({
+      userTwitchId: 'user1',
+      drawCount: 2,
+      uniqueCards: 2,
+      uniqueCardIds: ['card-a', 'card-b'],
+    })
+  })
 
-    it("RPC結果がnull（エラーなし）の場合、フォールバックする", async () => {
-      // rpcResultがnullの場合はフォールバック（from経由のクエリが走る）
-      const client = createRpcErrorClient("42883", "n/a", [], []);
-      // rpcをnull返却に上書き
-      client.rpc = vi.fn().mockResolvedValue({ data: null, error: null });
-      mockGetSupabaseAdmin.mockReturnValue(client as any);
+  it('RPC未デプロイ(42883)は運用通知を1回送ってDrizzle fallbackへ移る', async () => {
+    primeDb({
+      rpcError: pgError('42883', 'function does not exist'),
+      historyRows: fallbackHistory,
+      cardRows: [{ id: 'card-a' }, { id: 'card-b' }],
+    })
 
-      const result = await getGachaUsersForStreamer(STREAMER_ID);
+    const result = await getGachaUsersForStreamer(streamerId)
 
-      // フォールバックで空結果
-      expect(result.users).toEqual([]);
-    });
-  });
+    expect(result.users).toHaveLength(1)
+    expect(logger.warn).toHaveBeenCalled()
+    // 42883 はデプロイ不整合のシグナルであり、表示を継続しても運用側で検知できる
+    // 必要がある。一方で fallback 自体は同一テストの行だけを使うため、通知はこの
+    // RPC 欠落に対する1回に限定して検証する。
+    expect(reportError).toHaveBeenCalledTimes(1)
+    expect(reportError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('get_gacha_users_for_streamer RPC unavailable (SQLSTATE 42883)'),
+      }),
+      {
+        context: 'dashboard:get_gacha_users_for_streamer:missing',
+        sqlState: '42883',
+        streamerId,
+      },
+    )
+  })
 
-  describe("RPC未デプロイ時（42883エラー）のフォールバック", () => {
-    it("クライアント側集約にフォールバックする", async () => {
-      const historyData = [
-        {
-          user_twitch_id: "user1",
-          user_twitch_username: "Alice",
-          card_id: "card-a",
-          redeemed_at: "2025-01-01T00:00:00Z",
-        },
-        {
-          user_twitch_id: "user1",
-          user_twitch_username: "Alice",
-          card_id: "card-b",
-          redeemed_at: "2025-01-02T00:00:00Z",
-        },
-      ];
-      const cardsData = [{ id: "card-a" }, { id: "card-b" }];
+  it('42883の通知処理が失敗してもDrizzle fallbackを継続する', async () => {
+    primeDb({
+      rpcError: pgError('42883', 'function does not exist'),
+      historyRows: fallbackHistory,
+      cardRows: [{ id: 'card-a' }, { id: 'card-b' }],
+    })
+    vi.mocked(reportError).mockRejectedValueOnce(new Error('reporter unavailable'))
 
-      mockGetSupabaseAdmin.mockReturnValue(
-        createRpcErrorClient(
-          "42883",
-          "function not found",
-          historyData,
-          cardsData
-        ) as any
-      );
+    const result = await getGachaUsersForStreamer(streamerId)
 
-      const result = await getGachaUsersForStreamer(STREAMER_ID);
+    // 可観測性基盤の障害は読み取り画面の可用性を下げない。通知側の失敗は
+    // reportMissingDashboardRpc 内で隔離されるため、集約結果は通常どおり返る。
+    expect(result.users[0]).toMatchObject({ userTwitchId: 'user1', drawCount: 2 })
+    expect(reportError).toHaveBeenCalledTimes(1)
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Failed to persist missing dashboard RPC alert',
+      expect.objectContaining({ rpcName: 'get_gacha_users_for_streamer' }),
+    )
+  })
 
-      expect(result.users).toHaveLength(1);
-      expect(result.users[0].userTwitchId).toBe("user1");
-      expect(result.users[0].drawCount).toBe(2);
-      expect(result.users[0].uniqueCardIds).toEqual(
-        expect.arrayContaining(["card-a", "card-b"])
-      );
-      // reportErrorは42883では呼ばれない
-      expect(mockReportError).not.toHaveBeenCalled();
-    });
-  });
+  it('その他のRPCエラーはreportErrorしつつfallback結果を返す', async () => {
+    primeDb({
+      rpcError: pgError('42501', 'permission denied'),
+      historyRows: fallbackHistory,
+      cardRows: [{ id: 'card-a' }, { id: 'card-b' }],
+    })
 
-  describe("RPCその他エラー時のフォールバック", () => {
-    it("reportErrorを呼びつつフォールバックする", async () => {
-      mockGetSupabaseAdmin.mockReturnValue(
-        createRpcErrorClient("PGRST202", "some db error", [], []) as any
-      );
+    const result = await getGachaUsersForStreamer(streamerId)
 
-      const result = await getGachaUsersForStreamer(STREAMER_ID);
-
-      // フォールバックで空結果（履歴データなし）
-      expect(result.users).toEqual([]);
-      // reportErrorが呼ばれている
-      expect(mockReportError).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: expect.stringContaining(
-            "get_gacha_users_for_streamer RPC failed"
-          ),
-        })
-      );
-    });
-  });
-});
+    expect(result.users[0].drawCount).toBe(2)
+    expect(reportError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('permission denied'),
+      })
+    )
+  })
+})

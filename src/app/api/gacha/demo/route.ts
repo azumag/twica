@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Card } from "@/types/database";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { getSession } from "@/lib/session";
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import { ERROR_MESSAGES } from "@/lib/constants";

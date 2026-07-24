@@ -94,25 +94,16 @@ function request(body: Record<string, unknown>): NextRequest {
   })
 }
 
-const SUPABASE_ENV_NAMES = [
-  'NEXT_PUBLIC_SUPABASE_URL',
-  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
-  'SUPABASE_SERVICE_ROLE_KEY',
-  'SUPABASE_SECRET_KEY',
-] as const
-
 describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    for (const name of SUPABASE_ENV_NAMES) vi.stubEnv(name, undefined)
   })
 
   afterEach(() => {
-    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
   })
 
-  it('fetches a requested card with no Supabase URL or key', async () => {
+  it('fetches a requested card from PlanetScale', async () => {
     primePgDb([{ rows: [CARD_ROW] }])
 
     const response = await POST(request({ cardId: 'card-1' }))
@@ -120,19 +111,6 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
 
     expect(response.status).toBe(200)
     expect(body.card.id).toBe('card-1')
-    expect(getDb).toHaveBeenCalled()
-  })
-
-  it('ignores stale DB_DRIVER=postgrest and still reads PlanetScale', async () => {
-    vi.stubEnv('TWICA_ENABLE_LEGACY_SUPABASE', undefined)
-    vi.stubEnv('DB_DRIVER', 'postgrest')
-    primePgDb([{ rows: [CARD_ROW] }])
-
-    const response = await POST(request({ streamerId: 'streamer-1' }))
-    const body = await response.json()
-
-    expect(response.status).toBe(200)
-    expect(body.card.streamer_id).toBe('streamer-1')
     expect(getDb).toHaveBeenCalled()
   })
 

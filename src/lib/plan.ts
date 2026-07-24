@@ -13,9 +13,9 @@
  */
 
 import { cache } from 'react'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { withRetry } from '@/lib/supabase/retry'
-import { logger } from '@/lib/logger'
+
+
+import { logger } from '@/lib/logger.server'
 import { hasTwitchSub } from '@/lib/twitch/sub-check'
 import { PLAN_PRIORITY, PLAN_STORAGE_BONUS } from '@/lib/plan-constants'
 import { logPerf, perfStart } from '@/lib/perf'
@@ -28,7 +28,7 @@ import type { PlanType } from '@/lib/plan-constants'
 // -----------------------------------------------------------------------------
 import { and, eq, inArray } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgReadEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import {
   supportCodes as supportCodesTable,
@@ -50,7 +50,7 @@ export { PLAN_STORAGE_BONUS, PLAN_MAX_IMAGE_WIDTH, PLAN_MAX_UPLOAD_SIZE, PLAN_AV
  * @returns 現在の有効プラン（ライセンスなしの場合は 'basic'）
  */
 export const getUserPlan = cache(async function getUserPlan(twitchUserId: string): Promise<PlanType> {
-  const startedAt = perfStart()
+                                   const startedAt = perfStart()
   try {
     // DBライセンス判定・Twitchサブスク判定を並列実行
     // hasTwitchSub は環境変数未設定時に即座に false を返すため、未設定環境でも安全
@@ -81,7 +81,7 @@ export const getUserPlan = cache(async function getUserPlan(twitchUserId: string
  * 外部Twitch APIへ再検証に行かず、DBに保存済みのライセンス/サブスク状態だけを見る。
  */
 export const getUserPlanSnapshot = cache(async function getUserPlanSnapshot(twitchUserId: string): Promise<PlanType> {
-  const startedAt = perfStart()
+                                           const startedAt = perfStart()
   try {
     const [licensePlan, cachedSubPlan] = await Promise.all([
       getLicensePlan(twitchUserId),
@@ -160,46 +160,7 @@ async function getLicensePlanPg(twitchUserId: string): Promise<PlanType> {
 async function getLicensePlan(twitchUserId: string): Promise<PlanType> {
   // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
   // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return getLicensePlanPg(twitchUserId)
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin()
-
-    // 502 一時障害に対するリトライ (Issue #339)
-    const { data, error } = await withRetry(
-      () => supabaseAdmin
-        .from('user_licenses')
-        .select('plan_type, support_codes!inner(status)')
-        .eq('twitch_user_id', twitchUserId)
-        .in('support_codes.status', ['active', 'rotating']),
-      'getLicensePlan',
-    )
-
-    if (error) {
-      logger.error('[Plan] Failed to get license plan:', error)
-      return 'basic'
-    }
-
-    if (!data || data.length === 0) {
-      return 'basic'
-    }
-
-    // 最上位プランを判定（patron > support > basic）
-    let highestPlan: PlanType = 'basic'
-    for (const license of data) {
-      const planType = license.plan_type as PlanType
-      if (PLAN_PRIORITY[planType] > PLAN_PRIORITY[highestPlan]) {
-        highestPlan = planType
-      }
-    }
-
-    return highestPlan
-  } catch (error) {
-    logger.error('[Plan] Error getting license plan:', error)
-    return 'basic'
-  }
+  return getLicensePlanPg(twitchUserId)
 }
 
 /**
@@ -242,30 +203,7 @@ async function getCachedTwitchSubPlanPg(twitchUserId: string): Promise<PlanType>
 
 async function getCachedTwitchSubPlan(twitchUserId: string): Promise<PlanType> {
   // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
-  if (isPgReadEnabled()) {
-    return getCachedTwitchSubPlanPg(twitchUserId)
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdmin()
-    const { data, error } = await withRetry(
-      () => supabaseAdmin
-        .from('users')
-        .select('twitch_has_sub')
-        .eq('twitch_user_id', twitchUserId)
-        .maybeSingle(),
-      'getCachedTwitchSubPlan',
-    )
-
-    if (error || !data) {
-      return 'basic'
-    }
-
-    return data.twitch_has_sub === true ? 'twitch_sub' : 'basic'
-  } catch (error) {
-    logger.error('[Plan] Error getting cached Twitch sub plan:', error)
-    return 'basic'
-  }
+  return getCachedTwitchSubPlanPg(twitchUserId)
 }
 
 /**

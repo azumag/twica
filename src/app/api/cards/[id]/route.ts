@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import {
   validateCardName,
   validateCardDescription,
@@ -12,7 +12,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { extractTwitchUserId } from "@/types/database";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { deleteFromR2 } from "@/lib/r2-client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
@@ -31,7 +31,7 @@ import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from
 // -----------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgWriteEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
 import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
@@ -62,7 +62,7 @@ function extractRarityWeights(streamers: unknown): Record<string, number> | null
 // extractRarityWeightsと同じ「array/objectどちらの埋め込み形状にも対応する」パターン。
 function extractCardPackNames(streamers: unknown): string[] {
   const readFrom = (value: unknown): string[] => {
-    if (value && typeof value === "object" && "card_pack_names" in value) {
+                     if (value && typeof value === "object" && "card_pack_names" in value) {
       const raw = (value as { card_pack_names: unknown }).card_pack_names;
       return Array.isArray(raw) ? (raw as string[]) : [];
     }
@@ -75,17 +75,7 @@ function extractCardPackNames(streamers: unknown): string[] {
 
 // デプロイ窓フォールバックで card_pack_names 列を落とした埋め込みを再構成する際、
 // extractCardPackNames が常に空配列を安全に読めるよう明示的に空配列を注入する。
-function withEmptyCardPackNames(streamers: unknown): unknown {
-  if (Array.isArray(streamers)) {
-    return streamers.map((entry) =>
-      entry && typeof entry === "object" ? { ...entry, card_pack_names: [] } : entry
-    );
-  }
-  if (streamers && typeof streamers === "object") {
-    return { ...streamers, card_pack_names: [] };
-  }
-  return streamers;
-}
+
 
 // PUT のオーナーシップ確認 SELECT（cards INNER JOIN streamers）が返す行の pg 直結形状。
 // デプロイ窓フォールバックで card_pack_names / collection_name を落とした場合も
@@ -387,7 +377,7 @@ export async function PUT(
   const { id } = await params;
 
   try {
-    const supabaseAdmin = getSupabaseAdmin();
+
     const body = await request.json();
     const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber, maxIssuanceCount } = body;
 
@@ -477,78 +467,9 @@ export async function PUT(
 
     // Verify ownership and get current image_url for cleanup
     // 所有権を確認し、クリーンアップ用に現在のimage_urlを取得
-    let card:
-      | {
-          streamer_id: string;
-          image_url: string | null;
-          rarity: string;
-          is_active: boolean | null;
-          intra_rarity_weight: number;
-          collection_name: string | null;
-          streamers: unknown;
-        }
-      | null;
-    let cardPackNamesUnavailable = false;
-
-    if (isPgWriteEnabled()) {
-      const result = await fetchCardForUpdatePg(id);
-      card = result.card;
-      cardPackNamesUnavailable = result.cardPackNamesUnavailable;
-    } else {
-      let { data: cardData, error: cardSelectError } = await supabaseAdmin
-        .from("cards")
-        // streamers の埋め込みは FK 制約名で一意化する: migration 00051 の
-        // card_owner_stats が cards↔streamers を m2m にも見せ、ヒントなしの
-        // streamers(...) は PGRST201 で失敗するため。
-        .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, collection_name, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights, card_pack_names)")
-        .eq("id", id)
-        .maybeSingle();
-
-      // Issue #393再設計: card_pack_names(事前登録パック一覧、streamers埋め込み内)
-      // がデプロイ窓で未検出の場合、それだけ外して再試行する(collection_nameは
-      // 既に本番稼働済みの列のため、通常この組み合わせのみが発生する)。
-      if (cardSelectError && isMissingCardPackNamesColumnError(cardSelectError)) {
-        const retryResult = await supabaseAdmin
-          .from("cards")
-          .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, collection_name, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
-          .eq("id", id)
-          .maybeSingle();
-        cardData = retryResult.data
-          ? ({ ...retryResult.data, streamers: withEmptyCardPackNames(retryResult.data.streamers) } as typeof cardData)
-          : null;
-        cardSelectError = retryResult.error;
-        cardPackNamesUnavailable = true;
-      }
-
-      // Issue #269 (self-review fix): collection_name was added to this
-      // ownership-check SELECT to read the current pack value for the gate
-      // below. During the deploy window (migration 00061 not applied yet) that
-      // turns the SELECT itself into a 42703 "column does not exist" error,
-      // which would 403 EVERY card edit — not just pack-related ones — because
-      // this branch only checked `!card`, not `error`. Retry without the
-      // column so unrelated edits keep working; the gate then just sees no
-      // current pack value (treated as null), matching every other #393
-      // deploy-window fallback in this codebase. card_pack_names も併せて落とす
-      // (両方同時に未デプロイという稀なケースの安全側対応)。
-      if (cardSelectError && isMissingCollectionNameColumn(cardSelectError)) {
-        const retryResult = await supabaseAdmin
-          .from("cards")
-          .select("streamer_id, image_url, rarity, is_active, intra_rarity_weight, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
-          .eq("id", id)
-          .maybeSingle();
-        cardData = retryResult.data
-          ? ({
-              ...retryResult.data,
-              collection_name: null,
-              streamers: withEmptyCardPackNames(retryResult.data.streamers),
-            } as typeof cardData)
-          : null;
-        cardSelectError = retryResult.error;
-        cardPackNamesUnavailable = true;
-      }
-
-      card = cardData;
-    }
+    const cardLookup = await fetchCardForUpdatePg(id);
+    const card = cardLookup.card;
+    const cardPackNamesUnavailable = cardLookup.cardPackNamesUnavailable;
 
     const twitchUserId = extractTwitchUserId(card?.streamers);
 
@@ -638,62 +559,7 @@ export async function PUT(
       }
     }
 
-    let updatedCard: Record<string, unknown> | null;
-    let error: unknown;
-
-    if (isPgWriteEnabled()) {
-      const result = await updateCardPg(id, updateData);
-      updatedCard = result.updatedCard;
-      error = result.error;
-    } else {
-      let { data: updatedCardData, error: updateError } = await supabaseAdmin
-        .from("cards")
-        .update(updateData)
-        .eq("id", id)
-        .select()
-        .maybeSingle();
-
-      if (updateError && isMissingCardNumberColumnError(updateError) && "card_number" in updateData) {
-        delete updateData.card_number;
-        const retryResult = await supabaseAdmin
-          .from("cards")
-          .update(updateData)
-          .eq("id", id)
-          .select()
-          .maybeSingle();
-        updatedCardData = retryResult.data;
-        updateError = retryResult.error;
-      }
-      if (updateError && isMissingCardIssuanceColumnError(updateError) && "max_issuance_count" in updateData) {
-        delete updateData.max_issuance_count;
-        const retryResult = await supabaseAdmin
-          .from("cards")
-          .update(updateData)
-          .eq("id", id)
-          .select()
-          .maybeSingle();
-        updatedCardData = retryResult.data;
-        updateError = retryResult.error;
-      }
-
-      // Issue #393: deploy-window safety — retry without collection_name if the
-      // column is not migrated yet so other field edits still persist. Mirrors the
-      // card_number retry above.
-      if (updateError && isMissingCollectionNameColumn(updateError) && "collection_name" in updateData) {
-        delete updateData.collection_name;
-        const retryResult = await supabaseAdmin
-          .from("cards")
-          .update(updateData)
-          .eq("id", id)
-          .select()
-          .maybeSingle();
-        updatedCardData = retryResult.data;
-        updateError = retryResult.error;
-      }
-
-      updatedCard = updatedCardData;
-      error = updateError;
-    }
+    const { updatedCard, error } = await updateCardPg(id, updateData);
 
     if (error) {
       if (isCardNumberConflictError(error)) {
@@ -711,7 +577,6 @@ export async function PUT(
     if (shouldRecalculate) {
       try {
         recalculatedCards = await recalculateIfAutoMode(
-          supabaseAdmin,
           card.streamer_id,
           rarityWeights
         );
@@ -836,25 +701,11 @@ export async function DELETE(
   const { id } = await params;
 
   try {
-    const supabaseAdmin = getSupabaseAdmin();
+
 
     // Get card with image_url for deletion
     // 削除用にimage_url付きでカードを取得
-    let card: { streamer_id: string; image_url: string | null; streamers: unknown } | null;
-
-    if (isPgWriteEnabled()) {
-      card = await selectCardOwnershipForDeletePg(id);
-    } else {
-      const { data } = await supabaseAdmin
-        .from("cards")
-        // streamers の埋め込みは FK 制約名で一意化する(PUT と同じ理由: migration
-        // 00051 の card_owner_stats が cards↔streamers を m2m にも見せ、ヒント
-        // なしの streamers(...) は PGRST201 で失敗するため)。
-        .select("streamer_id, image_url, streamers!cards_streamer_id_fkey!inner(twitch_user_id, rarity_weights)")
-        .eq("id", id)
-        .maybeSingle();
-      card = data;
-    }
+    const card = await selectCardOwnershipForDeletePg(id);
 
     const twitchUserId = extractTwitchUserId(card?.streamers);
 
@@ -894,18 +745,7 @@ export async function DELETE(
       }
     }
 
-    let error: unknown;
-
-    if (isPgWriteEnabled()) {
-      const result = await deleteCardPg(id);
-      error = result.error;
-    } else {
-      const result = await supabaseAdmin
-        .from("cards")
-        .delete()
-        .eq("id", id);
-      error = result.error;
-    }
+    const { error } = await deleteCardPg(id);
 
     if (error) {
       return handleDatabaseError(error, "Failed to delete card");
@@ -918,7 +758,6 @@ export async function DELETE(
     if (rarityWeights !== null) {
       try {
         recalculatedCards = await recalculateIfAutoMode(
-          supabaseAdmin,
           card.streamer_id,
           rarityWeights
         );

@@ -1,94 +1,59 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { describe, expect, it } from 'vitest'
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { stripComments } = require('../../scripts/check-supabase-shutdown.js')
 
-// tests/setup.ts mocks the compatibility client for legacy parity tests. This
-// file deliberately loads the production retired facade instead.
-vi.unmock('@/lib/supabase/admin')
+const repositoryRoot = resolve(__dirname, '../..')
 
-import {
-  getDbDriverMode,
-  getGachaDbDriver,
-  isPgReadEnabled,
-  isPgWriteEnabled,
-  isLegacySupabaseEnabled,
-} from '@/lib/db/flags'
-import { getDbTarget } from '@/lib/db/target'
-import { getSupabaseAdmin, getSupabaseAdminNoCache } from '@/lib/supabase/admin'
-import { validateEnvVars } from '@/lib/env-validation'
-
-const SUPABASE_ENV_NAMES = [
-  'NEXT_PUBLIC_SUPABASE_URL',
-  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
-  'SUPABASE_SERVICE_ROLE_KEY',
-  'SUPABASE_SECRET_KEY',
-  'SUPABASE_DB_URL',
-] as const
-
-beforeEach(() => {
-  vi.clearAllMocks()
-  vi.stubEnv('TWICA_ENABLE_LEGACY_SUPABASE', undefined)
-  vi.stubEnv('DB_DRIVER', undefined)
-  vi.stubEnv('GACHA_DB_DRIVER', undefined)
-  vi.stubEnv('DB_TARGET', undefined)
-  for (const name of SUPABASE_ENV_NAMES) {
-    vi.stubEnv(name, undefined)
-  }
-})
-
-afterEach(() => {
-  vi.unstubAllEnvs()
-})
-
+/**
+ * Supabase停止後の最小回帰テスト。
+ *
+ * 実装詳細をテスト用facadeで再現すると、削除した本番経路をテスト側だけで延命し、
+ * 将来の再導入を見逃す。ここではruntime entrypointの物理削除とroot dependencyの
+ * 削除を直接固定する。より広い文字列・binding・deploy path検査は
+ * scripts/check-supabase-shutdown.jsをCIで実行する。
+ */
 describe('full Supabase shutdown runtime', () => {
-  it('fails safe to pg + PlanetScale when every routing variable is absent', () => {
-    expect(isLegacySupabaseEnabled()).toBe(false)
-    expect(getDbDriverMode()).toBe('pg')
-    expect(isPgReadEnabled()).toBe(true)
-    expect(isPgWriteEnabled()).toBe(true)
-    expect(getGachaDbDriver()).toBe('pg')
-    expect(getDbTarget()).toBe('planetscale')
+  it('歴史説明の PostgREST .rpc() は除外し、実コードの Supabase client call は残す', () => {
+    const source = [
+      '// PostgREST .rpc() は旧経路の説明として許容する',
+      '/* supabaseAdmin.from("streamers") も履歴コメントなら許容する */',
+      'const endpoint = "https://example.supabase.co/rest/v1"',
+      'const result = supabaseAdmin.rpc("rename_card_pack")',
+    ].join('\n')
+
+    const executableSource = stripComments(source)
+    expect(executableSource).not.toMatch(/PostgREST\s*\.\s*rpc\(\)/)
+    expect(executableSource).not.toMatch(/supabaseAdmin\.from/)
+    expect(executableSource).toMatch(/https:\/\/example\.supabase\.co\/rest\/v1/)
+    expect(executableSource).toMatch(/supabaseAdmin\.rpc/)
   })
 
-  it('ignores stale rollback values when the explicit legacy gate is absent', () => {
-    vi.stubEnv('DB_DRIVER', 'postgrest')
-    vi.stubEnv('GACHA_DB_DRIVER', 'postgrest')
-    vi.stubEnv('DB_TARGET', 'supabase')
-
-    expect(getDbDriverMode()).toBe('pg')
-    expect(getGachaDbDriver()).toBe('pg')
-    expect(getDbTarget()).toBe('planetscale')
+  it.each([
+    'src/lib/supabase/admin.ts',
+    'src/lib/supabase/middleware.ts',
+    'src/lib/supabase/retry.ts',
+    'src/lib/db/flags.ts',
+    'src/lib/db/target.ts',
+  ])('%s は削除済みである', (relativePath) => {
+    expect(existsSync(resolve(repositoryRoot, relativePath))).toBe(false)
   })
 
-  it('also treats pg-read as pg because its writes previously required PostgREST', () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
-    expect(getDbDriverMode()).toBe('pg')
-    expect(isPgWriteEnabled()).toBe(true)
-  })
+  it('root packageからSupabase SDKが削除済みである', () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8')
+    ) as {
+      dependencies?: Record<string, string>
+      devDependencies?: Record<string, string>
+    }
+    const packages = {
+      ...packageJson.dependencies,
+      ...packageJson.devDependencies,
+    }
 
-  it('does not require any Supabase URL or key during startup validation', () => {
-    expect(validateEnvVars()).toEqual({ valid: true, missing: [] })
-  })
-
-  it('constructs dormant admin handles without credentials, SDK construction, or I/O', () => {
-    expect(() => getSupabaseAdmin()).not.toThrow()
-    expect(() => getSupabaseAdminNoCache()).not.toThrow()
-  })
-
-  it('fails loudly if a leaked compatibility query actually tries to use the retired path', () => {
-    expect(() => getSupabaseAdmin().from).toThrow(
-      '[supabase] Retired runtime path accessed'
-    )
-  })
-
-  it('allows legacy flag parsing only for test compatibility', () => {
-    vi.stubEnv('TWICA_ENABLE_LEGACY_SUPABASE', 'true')
-    vi.stubEnv('DB_DRIVER', 'postgrest')
-    vi.stubEnv('GACHA_DB_DRIVER', 'postgrest')
-    vi.stubEnv('DB_TARGET', 'supabase')
-
-    expect(isLegacySupabaseEnabled()).toBe(true)
-    expect(getDbDriverMode()).toBe('postgrest')
-    expect(getGachaDbDriver()).toBe('postgrest')
-    expect(getDbTarget()).toBe('supabase')
+    expect(packages).not.toHaveProperty('@supabase/ssr')
+    expect(packages).not.toHaveProperty('@supabase/supabase-js')
+    expect(packages).not.toHaveProperty('supabase')
   })
 })

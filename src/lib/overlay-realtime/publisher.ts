@@ -3,7 +3,7 @@ import 'server-only'
 import { and, eq, inArray } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
 import { gachaHistory } from '@/lib/db/schema'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import {
   OVERLAY_REALTIME_SCHEMA_VERSION,
   type GachaRealtimeEventV1,

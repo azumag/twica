@@ -2,9 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/twitch/eventsub/route'
 import { reportError } from '@/lib/sentry/error-handler'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { GachaService } from '@/lib/services/gacha'
-import { postRedemptionNotify } from '@/lib/services/eventsub-redemption'
 
 const mocks = vi.hoisted(() => ({
   executeGachaForEventSub: vi.fn(),
@@ -14,11 +12,6 @@ vi.mock('@/lib/services/gacha', () => ({
   GachaService: vi.fn().mockImplementation(() => ({
     executeGachaForEventSub: mocks.executeGachaForEventSub,
   })),
-}))
-
-vi.mock('@/lib/supabase/admin', () => ({
-  getSupabaseAdmin: vi.fn(),
-  getSupabaseAdminNoCache: vi.fn(),
 }))
 
 vi.mock('@/lib/sentry/error-handler', () => ({
@@ -57,7 +50,6 @@ vi.mock('@/lib/logger', () => ({
   },
 }))
 
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 const mockReportError = vi.mocked(reportError)
 const MockedGachaService = vi.mocked(GachaService)
 
@@ -100,18 +92,6 @@ async function createNotificationRequest(payload: unknown): Promise<NextRequest>
 describe('EventSub redemption handling', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockReportError.mockReset().mockResolvedValue(undefined)
-    const historyQuery = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-    }
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'gacha_history') return historyQuery
-        throw new Error(`Unexpected table: ${table}`)
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
   })
 
   it('does not report stale EventSub notifications for missing streamers', async () => {
@@ -165,41 +145,6 @@ describe('EventSub redemption handling', () => {
         context: 'eventsub:handleRedemption',
         broadcasterUserId: 'broadcaster-1',
         gachaError: 'Database error fetching streamer: permission denied',
-      }),
-    )
-  })
-
-  it('post-redemption chatとreporterが継続的にrejectしても通知taskはresolveする', async () => {
-    mockReportError.mockRejectedValue(new Error('reporter unavailable'))
-
-    await expect(postRedemptionNotify({
-      broadcasterTwitchUserId: 'broadcaster-1',
-      streamer: {
-        id: 'streamer-1',
-        chat_announcement_enabled: true,
-        chat_announcement_template: null,
-        chat_announcement_multi_template: null,
-        chat_announcement_multi_show_cards: false,
-      },
-      gachaResult: {
-        card: {
-          id: 'card-1',
-          name: 'Alpha',
-          description: null,
-          image_url: null,
-          rarity: 'rare',
-          drop_rate: 1,
-        },
-        userTwitchUsername: 'Viewer',
-      },
-      userId: 'viewer-1',
-      batchId: 'eventsub-message-1',
-    } as never)).resolves.toBeUndefined()
-
-    expect(mockReportError).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        context: 'eventsub:postRedemptionNotify:chatAnnouncement',
       }),
     )
   })

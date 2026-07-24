@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server'
 
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
+
 import { exchangeCodeForTokens, getTwitchUser, isInvalidAuthorizationCodeError } from '@/lib/twitch/auth'
 import type { TwitchTokens, TwitchUser } from '@/lib/twitch/auth'
+
 import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { COOKIE_NAMES, ERROR_MESSAGES } from '@/lib/constants'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 // -----------------------------------------------------------------------------
 // #572 (#570 パイロット踏襲): pg 直結経路。
 // handleLinkedAccountCallback の DB アクセス（streamers 読み取り +
@@ -17,7 +18,7 @@ import { logger } from '@/lib/logger'
 // -----------------------------------------------------------------------------
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
-import { isPgWriteEnabled } from '@/lib/db/flags'
+
 import { withDbRetry } from '@/lib/db/retry'
 import {
   streamers as streamersTable,
@@ -188,8 +189,8 @@ async function persistLinkedAccountPg(params: {
   }
 
   if (!botAccountId) {
-    // 既存経路の .single() は 0 行時に PGRST116 エラー → database_error になる。
-    // update 対象行の消失（並行削除）等の希少ケースでも同じ外部挙動に合わせる。
+    // RETURNING が0行なら更新対象が並行削除された可能性があるため
+    // database_error とし、保存成功を誤って返さない。
     logger.error('Linked account callback: failed to save linked account', {
       twitchUserId: streamerTwitchUserId,
       linkedTwitchUserId,
@@ -269,104 +270,14 @@ export async function handleLinkedAccountCallback({
     // #572: DB 永続化（書き込みを含む一連の処理）のみをフラグで分岐する。
     // フラグ未設定（既定 'postgrest'）時は else 節の既存 supabase-js 実装が
     // そのまま実行され、挙動は完全に不変（1 文字も変更していない。再インデントのみ）。
-    if (isPgWriteEnabled()) {
-      const pgBotError = await persistLinkedAccountPg({
-        streamerTwitchUserId: session.twitchUserId,
-        botUser,
-        tokens,
-        expiresAt,
-      })
-      if (pgBotError) {
-        return redirectToSettings(baseUrl, { bot_error: pgBotError })
-      }
-    } else {
-      const supabaseAdmin = getSupabaseAdmin()
-
-      const { data: streamer, error: streamerError } = await supabaseAdmin
-        .from('streamers')
-        .select('id')
-        .eq('twitch_user_id', session.twitchUserId)
-        .maybeSingle()
-
-      if (streamerError || !streamer) {
-        logger.error('Linked account callback: failed to find streamer', {
-          twitchUserId: session.twitchUserId,
-          linkedTwitchUserId: botUser.id,
-          error: streamerError,
-        })
-        return redirectToSettings(baseUrl, { bot_error: 'database_error' })
-      }
-
-      const botAccountFields = {
-        twitch_user_id: botUser.id,
-        twitch_username: botUser.login,
-        twitch_display_name: botUser.display_name,
-        twitch_access_token: tokens.access_token,
-        twitch_refresh_token: tokens.refresh_token,
-        twitch_token_expires_at: expiresAt.toISOString(),
-        scopes: tokens.scope ?? [],
-        status: 'active',
-        last_error: null,
-      }
-
-      const { data: existingBotAccount, error: existingBotError } = await supabaseAdmin
-        .from('twitch_bot_accounts')
-        .select('id')
-        .eq('owner_type', 'streamer')
-        .eq('streamer_id', streamer.id)
-        .maybeSingle()
-
-      if (existingBotError) {
-        logger.error('Linked account callback: failed to fetch existing linked account', {
-          twitchUserId: session.twitchUserId,
-          linkedTwitchUserId: botUser.id,
-          error: existingBotError,
-        })
-        return redirectToSettings(baseUrl, { bot_error: 'database_error' })
-      }
-
-      const botAccountResult = existingBotAccount
-        ? await supabaseAdmin
-            .from('twitch_bot_accounts')
-            .update(botAccountFields)
-            .eq('id', existingBotAccount.id)
-            .select('id')
-            .single()
-        : await supabaseAdmin
-            .from('twitch_bot_accounts')
-            .insert({
-              ...botAccountFields,
-              owner_type: 'streamer',
-              streamer_id: streamer.id,
-            })
-            .select('id')
-            .single()
-
-      if (botAccountResult.error) {
-        logger.error('Linked account callback: failed to save linked account', {
-          twitchUserId: session.twitchUserId,
-          linkedTwitchUserId: botUser.id,
-          error: botAccountResult.error,
-        })
-        return redirectToSettings(baseUrl, { bot_error: 'database_error' })
-      }
-
-      const { error: senderSettingsError } = await supabaseAdmin
-        .from('streamer_chat_sender_settings')
-        .upsert({
-          streamer_id: streamer.id,
-          sender_mode: 'custom_bot',
-          custom_bot_account_id: botAccountResult.data.id,
-        })
-
-      if (senderSettingsError) {
-        logger.error('Linked account callback: failed to save chat sender settings', {
-          twitchUserId: session.twitchUserId,
-          linkedTwitchUserId: botUser.id,
-          error: senderSettingsError,
-        })
-        return redirectToSettings(baseUrl, { bot_error: 'database_error' })
-      }
+    const pgBotError = await persistLinkedAccountPg({
+      streamerTwitchUserId: session.twitchUserId,
+      botUser,
+      tokens,
+      expiresAt,
+    })
+    if (pgBotError) {
+      return redirectToSettings(baseUrl, { bot_error: pgBotError })
     }
 
     logger.info('Linked account connected for chat announcements', {

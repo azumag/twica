@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
@@ -11,13 +11,13 @@ import {
   type EventSubSubscriptionForStatus,
 } from "@/lib/twitch/eventsub-status";
 import { logPerf, perfStart } from "@/lib/perf";
-import { logger } from "@/lib/logger";
-// Issue #690 (#570 パイロット踏襲): pg 直結の読み取り経路。DB_DRIVER=pg-read/pg の
+import { logger } from "@/lib/logger.server";
+// Issue #690 (#570 パイロット踏襲): pg 直結の読み取り経路。旧全体ドライバーフラグ=pg-read/pg の
 // ときのみ使われる。getDb() は withDbRetry の queryFn 内で呼ぶ規約
 // (src/lib/db/retry.ts 参照)。フラグ未設定時はこれらのモジュールは一切呼ばれない。
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgMissingColumnError } from "@/lib/db/errors";
 import {
@@ -39,17 +39,9 @@ interface TwitchReward {
   is_enabled: boolean;
 }
 
-function isRaidOptionsSchemaError(error: { message?: string; code?: string } | null | undefined) {
-  const message = error?.message ?? "";
-  return error?.code === "PGRST204" || message.includes("draw_count") || message.includes("is_raid_limited");
-}
 
-function isRaidStateSchemaError(error: { message?: string; code?: string } | null | undefined) {
-  const message = error?.message ?? "";
-  return error?.code === "PGRST204"
-    || message.includes("raid_gacha_active_until")
-    || message.includes("raid_gacha_draw_count");
-}
+
+
 
 interface TwitchRewardsResult {
   rewards: TwitchReward[];
@@ -151,32 +143,15 @@ async function getSubscriptionsByUserId(
 /**
  * Issue #690: getAdditionalRewards の pg 直結実装。
  *
- * PostgREST 実装（下の getAdditionalRewards の postgrest 分岐）との対応:
  * - フル select（id, reward_id, reward_name, draw_count, is_raid_limited,
  *   created_at）を streamer_id で絞り込み created_at 昇順に取得する。
- * - isRaidOptionsSchemaError（PGRST204 or draw_count/is_raid_limited を含む
- *   メッセージ）に相当する「デプロイ窓フォールバック」を pg 版でも維持する。
- *   draw_count・is_raid_limited は migration 00041 で追加された列であり、
- *   マイグレーション未適用の DB に新しいアプリコードがデプロイされる短い窓で
- *   42703 undefined_column が発生しうる（PostgREST の PGRST204 はスキーマ
- *   キャッシュ固有のエラーのため pg 直結では発生しないが、列そのものが無い
- *   場合の 42703 は pg でも起こり得る。本番相当のマイグレーション適用済み
- *   環境ではこの分岐はほぼ発火しないが、src/lib/db/errors.ts の
- *   「デプロイ窓フォールバック」規約（isPgMissingColumnError = 42703 判定）に
- *   準拠して同等の縮退フォールバックを用意しておく）。
- * - 発火条件の差について（厳格レビュー指摘・意図的な差）: pg 側は 42703
- *   （未定義列）のみで発火し、postgrest 側の isRaidOptionsSchemaError
- *   （PGRST204、または message に draw_count/is_raid_limited を含む任意エラー）
- *   より条件が厳密に狭い。支配的シナリオ（デプロイ窓での列欠落そのもの）では
- *   両者とも発火するため一致するが、PGRST204 は PostgREST のスキーマキャッシュ
- *   固有のエラーコードで pg 直結には存在しない概念であり、message 文字列一致による
- *   広い判定を pg 側にそのまま移植する意味がない。db/errors.ts の SQLSTATE
- *   ベース判定規約に沿ってこの差を意図的に許容している。
+ * - draw_count・is_raid_limited は migration 00041 で追加されたため、rolling
+ *   deploy の短い窓だけ SQLSTATE 42703 を検知して縮退クエリへ切り替える。
+ *   任意の message 文字列ではなく SQLSTATE を根拠にし、接続障害や権限エラーを
+ *   migration 遅延として握りつぶさない。
  * - フォールバック時は draw_count: 1 / is_raid_limited: false を補完する
- *   （PostgREST 版と同じデフォルト値。streamerAdditionalGachaRewards スキーマの
- *   DEFAULT 値とも一致）。
- * - PostgREST 版はエラーを `throw error` するのみで独自の例外型に変換しない。
- *   pg 版も withDbRetry 内で発生した例外をそのまま伝播させる（呼び出し元の
+ *   （streamerAdditionalGachaRewards schema の DEFAULT 値と一致）。
+ * - withDbRetry 内で発生した例外はそのまま伝播させる（呼び出し元の
  *   GET ハンドラの try/catch が handleApiError で 500 を返す既存挙動を維持）。
  */
 async function getAdditionalRewardsPg(streamerId: string) {
@@ -235,73 +210,23 @@ async function getAdditionalRewardsPg(streamerId: string) {
 }
 
 async function getAdditionalRewards(streamerId: string) {
-  // Issue #690 (#570 パイロット踏襲): DB_DRIVER=pg-read/pg のときのみ pg 直結の
+  // Issue #690 (#570 パイロット踏襲): 旧全体ドライバーフラグ=pg-read/pg のときのみ pg 直結の
   // getAdditionalRewardsPg へ切り替える。フラグ未設定時（既定 'postgrest'）は
   // 以下の既存 supabase-js 実装がそのまま実行され、挙動は完全に不変。
-  if (isPgReadEnabled()) {
-    return getAdditionalRewardsPg(streamerId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-  let { data: rewards, error } = await supabaseAdmin
-    .from("streamer_additional_gacha_rewards")
-    .select("id, reward_id, reward_name, draw_count, is_raid_limited, created_at")
-    .eq("streamer_id", streamerId)
-    .order("created_at", { ascending: true });
-
-  if (isRaidOptionsSchemaError(error)) {
-    const fallbackResult = await supabaseAdmin
-      .from("streamer_additional_gacha_rewards")
-      .select("id, reward_id, reward_name, created_at")
-      .eq("streamer_id", streamerId)
-      .order("created_at", { ascending: true });
-    rewards = (fallbackResult.data || []).map((reward) => ({
-      ...reward,
-      draw_count: 1,
-      is_raid_limited: false,
-    }));
-    error = fallbackResult.error;
-  }
-
-  if (error) {
-    throw error;
-  }
-
-  return rewards || [];
+  return getAdditionalRewardsPg(streamerId);
 }
 
 /**
  * Issue #690: getOwnedStreamer の pg 直結実装。
  *
- * PostgREST 実装（下の getOwnedStreamer の postgrest 分岐）との対応:
- * - `.maybeSingle()` は streamers.twitch_user_id が UNIQUE 制約（migration
+ * - streamers.twitch_user_id は UNIQUE 制約（migration
  *   00001）を持つため「0 行または 1 行」しか返り得ない。Drizzle 側は
- *   `.limit(1)` + `rows[0] ?? null` で同じ外部挙動にする
+ *   `.limit(1)` + `rows[0] ?? null` で取得する
  *   （src/lib/twitch/token-manager.ts の getBotAccountForChatPg と同じ
  *   パターン）。
- * - isRaidStateSchemaError（PGRST204 or raid_gacha_active_until/
- *   raid_gacha_draw_count を含むメッセージ）に相当する「デプロイ窓
- *   フォールバック」を pg 版でも維持する。raid_gacha_draw_count は
- *   migration 00043 で追加された列であり、getAdditionalRewardsPg と同様の
- *   理由（本番適用済みならほぼ発火しないが、デプロイ窓フォールバック規約に
- *   準拠するため）で isPgMissingColumnError（42703）検知の縮退フォールバック
- *   を用意する。
- * - 発火条件の差について（厳格レビュー指摘・意図的な差）: pg 側は 42703
- *   （未定義列）のみで発火し、postgrest 側の isRaidStateSchemaError
- *   （PGRST204、または message に raid_gacha_active_until/raid_gacha_draw_count
- *   を含む任意エラー）より条件が厳密に狭い。支配的シナリオ（デプロイ窓での
- *   列欠落そのもの）では両者とも発火するため一致するが、PGRST204 は PostgREST の
- *   スキーマキャッシュ固有のエラーコードで pg 直結には存在しない概念であり、
- *   message 文字列一致による広い判定を pg 側にそのまま移植する意味がない。
- *   db/errors.ts の SQLSTATE ベース判定規約に沿ってこの差を意図的に許容している
- *   （getAdditionalRewardsPg と同じ判断）。
- * - フォールバック時は raid_gacha_draw_count: 0 を補完する（PostgREST 版と
- *   同じデフォルト値。streamers スキーマの DEFAULT 値とも一致）。
- * - 戻り値の外形（呼び出し側から見た挙動）を完全パリティで維持するため、
- *   PostgREST 版と同じ `{ streamer, error }` 形状で返す。PostgREST は
- *   `{ data, error }` を返す非例外スタイルだが、postgres.js は例外を throw
- *   するため、pg 版は try/catch で例外を捕捉し announcements.ts 等の既存
- *   パイロットパターンに倣って `{ streamer: null, error }` に写像する。
+ * - raid_gacha_draw_count は migration 00043 で追加されたため、42703 の
+ *   デプロイ窓だけ縮退し、raid_gacha_draw_count: 0 を補完する。
+ * - postgres.js の例外は `{ streamer: null, error }` に写像する。
  *   呼び出し元（GET ハンドラ）は `if (streamerError) return
  *   handleDatabaseError(...)` という既存の分岐をそのまま使い続けられる
  *   （呼び出し側コードは 1 文字も変更していない）。
@@ -367,33 +292,10 @@ async function getOwnedStreamerPg(twitchUserId: string): Promise<{
 }
 
 async function getOwnedStreamer(twitchUserId: string) {
-  // Issue #690 (#570 パイロット踏襲): DB_DRIVER=pg-read/pg のときのみ pg 直結の
+  // Issue #690 (#570 パイロット踏襲): 旧全体ドライバーフラグ=pg-read/pg のときのみ pg 直結の
   // getOwnedStreamerPg へ切り替える。フラグ未設定時（既定 'postgrest'）は以下の
   // 既存 supabase-js 実装がそのまま実行され、挙動は完全に不変。
-  if (isPgReadEnabled()) {
-    return getOwnedStreamerPg(twitchUserId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-  let { data: streamer, error } = await supabaseAdmin
-    .from("streamers")
-    .select("id, channel_point_reward_id, raid_gacha_draw_count")
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-
-  if (isRaidStateSchemaError(error)) {
-    const fallbackResult = await supabaseAdmin
-      .from("streamers")
-      .select("id, channel_point_reward_id")
-      .eq("twitch_user_id", twitchUserId)
-      .maybeSingle();
-    streamer = fallbackResult.data
-      ? { ...fallbackResult.data, raid_gacha_draw_count: 0 }
-      : fallbackResult.data;
-    error = fallbackResult.error;
-  }
-
-  return { streamer, error };
+  return getOwnedStreamerPg(twitchUserId);
 }
 
 export async function GET(request: NextRequest) {

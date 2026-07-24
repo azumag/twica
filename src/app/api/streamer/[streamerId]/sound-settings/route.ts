@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { withRetry } from "@/lib/supabase/retry";
+import { type NextRequest, NextResponse } from "next/server";
+
+
 import { handleApiError } from "@/lib/error-handler";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { legacySoundToRules, normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 // -----------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。GET は読み取り専用のため
@@ -13,8 +13,9 @@ import { legacySoundToRules, normalizeGachaSoundRules } from "@/lib/gacha-sound-
 // -----------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
+import { isPgMissingNamedColumnError } from "@/lib/db/errors";
 import { streamers as streamersTable } from "@/lib/db/schema";
 
 interface RouteParams {
@@ -44,11 +45,8 @@ type SoundSettingsLookup =
  * PostgREST 実装との対応:
  * - streamers を id で 1 行取得。id は PK のため LIMIT 1 + rows[0] ?? null で
  *   .maybeSingle() と同じ外部挙動。
- * - gacha_sound_rules 列欠落フォールバックは、既存実装と同じ汎用テキスト判定
- *   （code === "PGRST204" || message に "gacha_sound_rules" を含む）を再利用する。
- *   pg（postgres.js）の 42703 は code こそ異なるが、message に列名がそのまま
- *   含まれるため message.includes(...) 側で同じ条件式のまま判定できる
- *   （#663 の設計判断: 新規の pg 専用エラー整形ヘルパーは作らない）。
+ * - gacha_sound_rules 列欠落フォールバックは SQLSTATE 42703 と列名を同時に
+ *   確認し、接続断や別列のエラーを縮退対象へ含めない。
  * - フォールバック取得も失敗した場合、または最初から gacha_sound_rules 以外の
  *   理由で失敗した場合は 'degraded' を返し、呼び出し元が既存と同じ「効果音無効」
  *   応答にフォールバックする。
@@ -95,8 +93,7 @@ async function getSoundSettingsPg(streamerId: string): Promise<SoundSettingsLook
     const rows = await selectFull();
     return { kind: "ok", streamer: rows[0] ?? null };
   } catch (error) {
-    const err = error as { code?: string; message?: string } | null | undefined;
-    if (err?.code === "PGRST204" || String(err?.message ?? "").includes("gacha_sound_rules")) {
+    if (isPgMissingNamedColumnError(error, ["gacha_sound_rules"])) {
       try {
         const rows = await selectLegacy();
         const row = rows[0] ?? null;
@@ -111,62 +108,19 @@ async function getSoundSettingsPg(streamerId: string): Promise<SoundSettingsLook
     }
     logger.warn("Streamer Sound Settings API: falling back to disabled sound settings", {
       streamerId,
-      error: err?.message ?? String(error),
+      error: error instanceof Error ? error.message : String(error),
     });
     return { kind: "degraded" };
   }
 }
 
-async function getSoundSettingsPostgrest(streamerId: string): Promise<SoundSettingsLookup> {
-  const supabaseAdmin = getSupabaseAdmin();
 
-  // 配信者の効果音設定のみを取得
-  // パブリックエンドポイントなので必要最小限の情報のみ返す
-  // 502 一時障害に対するリトライ (Issue #325)
-  const soundSettingsResult = await withRetry(
-    () => supabaseAdmin
-      .from("streamers")
-      .select("gacha_sound_url, gacha_sound_enabled, gacha_sound_rules")
-      .eq("id", streamerId)
-      .maybeSingle(),
-    'getSoundSettings',
-  );
-  let streamer = soundSettingsResult.data;
-  let error = soundSettingsResult.error;
-  const { status } = soundSettingsResult;
-
-  if (error && (error.code === "PGRST204" || error.message.includes("gacha_sound_rules"))) {
-    const fallbackResult = await withRetry(
-      () => supabaseAdmin
-        .from("streamers")
-        .select("gacha_sound_url, gacha_sound_enabled")
-        .eq("id", streamerId)
-        .maybeSingle(),
-      "getLegacySoundSettings",
-    );
-    streamer = fallbackResult.data ? { ...fallbackResult.data, gacha_sound_rules: [] } : fallbackResult.data;
-    error = fallbackResult.error;
-  }
-
-  if (error) {
-    logger.warn("Streamer Sound Settings API: falling back to disabled sound settings", {
-      streamerId,
-      status,
-      error: error.message,
-    });
-    return { kind: "degraded" };
-  }
-
-  return { kind: "ok", streamer: streamer ?? null };
-}
 
 async function getSoundSettings(streamerId: string): Promise<SoundSettingsLookup> {
   // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
   // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return getSoundSettingsPg(streamerId);
-  }
-  return getSoundSettingsPostgrest(streamerId);
+  return getSoundSettingsPg(streamerId);
+
 }
 
 /**

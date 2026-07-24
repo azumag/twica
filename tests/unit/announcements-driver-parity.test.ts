@@ -1,14 +1,7 @@
-/**
- * #570 パイロット: getUnreadAnnouncements の postgrest 経路 / pg 経路の形状互換テスト
- *
- * 同一 fixture を両経路のモックに与え、戻り値が deepEqual であることを検証する。
- * pg 経路（Drizzle）は PostgREST 経路と「完全に同じ戻り値形状（snake_case キー、
- * 日付は文字列）」を返すことが Phase 1 の要件（呼び出し側は経路を意識しない）。
- */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+/** #570: PlanetScale/Drizzle お知らせ取得の形状・条件・障害時挙動を固定する。 */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { desc, eq } from 'drizzle-orm'
 import { getUnreadAnnouncements, getAllAnnouncements } from '@/lib/announcements'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { getDb } from '@/lib/db/client'
 import {
   announcementReads as announcementReadsTable,
@@ -16,19 +9,19 @@ import {
 } from '@/lib/db/schema'
 
 // ---------------------------------------------------------------------------
-// 共通 fixture（両経路に同じ行データを与える）
+// PlanetScale query fixture
 // 実時刻に依存しないよう、過去/未来の判定は十分に離れた日時を使う
 // ---------------------------------------------------------------------------
 
 /**
- * announcements テーブルの行（SELECT 対象列のみ。日付は PostgREST が返す文字列形式）
+ * announcements テーブルの行（SELECT対象列のみ。日時はAPI契約のISO 8601形式）
  *
  * 注意（#688 で更新）: #688 以降、pg 直結の timestamptz は src/lib/db/client.ts の
- * installIsoTimestampParsers() により接続確立時に ISO 8601 へ正規化されるため、
- * PostgREST 経路と表現形式が一致する（正規化前は PG テキスト形式
+ * installIsoTimestampParsers() により接続確立時に ISO 8601 へ正規化される
+ * （正規化前は PG テキスト形式
  * '2026-03-10 12:00:00.123456+00' だった）。このモック自体は getDb() を丸ごと
- * 差し替えており src/lib/db/client.ts の正規化パーサを経由しないため、両経路に
- * 同一の ISO 8601 文字列を与えることで形式一致後の状態を再現している
+ * 差し替えており src/lib/db/client.ts の正規化パーサを経由しないため、
+ * ISO 8601 文字列を与えて接続後の状態を再現する
  * （実装側の根拠は src/lib/announcements.ts のコメント参照）。
  * 正規化パーサ自体の単体テストは tests/unit/db-client-timestamp-normalization.test.ts、
  * 実機確認は preview 検証（docs/db-driver-migration.md）に委ねる。
@@ -180,29 +173,6 @@ const EXPECTED_ALL = [
 ]
 
 // ---------------------------------------------------------------------------
-// postgrest 経路のモック: from().select().eq().order() を await できる thenable builder
-// ---------------------------------------------------------------------------
-
-function createThenableBuilder(result: { data: unknown; error: null }) {
-  const builder: any = {
-    select: vi.fn(() => builder),
-    eq: vi.fn(() => builder),
-    order: vi.fn(() => builder),
-    then: (onFulfilled: any, onRejected: any) =>
-      Promise.resolve(result).then(onFulfilled, onRejected),
-  }
-  return builder
-}
-
-function createSupabaseClientMock() {
-  const from = vi.fn((table: string) => {
-    const data = table === 'announcements' ? ANNOUNCEMENT_ROWS : READ_ROWS
-    return createThenableBuilder({ data, error: null })
-  })
-  return { from }
-}
-
-// ---------------------------------------------------------------------------
 // pg 経路のモック: db.select(fields).from(table).where().orderBy() を await できる
 // thenable builder。実 Drizzle と同様に「select で指定された列だけ」を fixture 行から
 // 射影して返す（実装が列を選び忘れた場合に形状差としてテストが落ちるようにする。
@@ -263,48 +233,23 @@ function createDrizzleDbMock() {
 // テスト本体
 // ---------------------------------------------------------------------------
 
-describe('getUnreadAnnouncements: postgrest / pg 経路の形状互換 (#570)', () => {
+describe('getUnreadAnnouncements: PlanetScale 経路 (#570)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  // 環境変数は vi.stubEnv で設定し vi.unstubAllEnvs で確実に復元する。
-  // process.env への直接 mutation は、テスト失敗時に復元されず同一プロセスで
-  // 実行される他テストへ漏れる構造的リスクがあるため使わない
-  // （db-flags.test.ts と同じ変数を扱うため特に重要）。
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  async function runPostgrestPath() {
-    // DB_DRIVER 未設定（= 既定の postgrest 経路）を再現
-    vi.stubEnv('DB_DRIVER', undefined)
-    const client = createSupabaseClientMock()
-    vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
-    const result = await getUnreadAnnouncements('viewer-1')
-    return { result, client }
-  }
-
   async function runPgPath() {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
     const db = createDrizzleDbMock()
     vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
     const result = await getUnreadAnnouncements('viewer-1')
     return { result, db }
   }
 
-  it('同一 fixture で両経路の戻り値が deepEqual になる', async () => {
-    const { result: postgrestResult, client } = await runPostgrestPath()
-    const { result: pgResult, db } = await runPgPath()
+  it('fixture を期待する公開・未読形状で返す', async () => {
+    const { result, db } = await runPgPath()
 
-    // 両経路が実際に実行されたこと（フラグ分岐の検証）
-    expect(client.from).toHaveBeenCalledWith('announcements')
-    expect(client.from).toHaveBeenCalledWith('announcement_reads')
     expect(db.select).toHaveBeenCalledTimes(2)
-
-    // 形状互換の本体: キー・値とも完全一致
-    expect(pgResult).toEqual(postgrestResult)
-    expect(postgrestResult).toEqual(EXPECTED)
+    expect(result).toEqual(EXPECTED)
   })
 
   // 先行レビュー指摘への対応: フィールド射影の一致だけでは、where/orderBy に渡す
@@ -324,41 +269,18 @@ describe('getUnreadAnnouncements: postgrest / pg 経路の形状互換 (#570)', 
     expect(db.calls[1].whereCondition).toEqual(eq(announcementReadsTable.twitch_user_id, 'viewer-1'))
   })
 
-  it('日付フィールドは両経路とも文字列（Date オブジェクトではない）で返る', async () => {
-    const { result: postgrestResult } = await runPostgrestPath()
-    const { result: pgResult } = await runPgPath()
+  it('日付フィールドは文字列（Date オブジェクトではない）で返る', async () => {
+    const { result } = await runPgPath()
 
-    for (const result of [postgrestResult, pgResult]) {
-      expect(result.length).toBeGreaterThan(0)
-      for (const announcement of result) {
-        // created_at は常に文字列
-        expect(typeof announcement.created_at).toBe('string')
-        // published_at は文字列または null（Date になっていないこと）
-        if (announcement.published_at !== null) {
-          expect(typeof announcement.published_at).toBe('string')
-        }
-        expect(announcement.published_at).not.toBeInstanceOf(Date)
-        expect(announcement.created_at).not.toBeInstanceOf(Date)
+    expect(result.length).toBeGreaterThan(0)
+    for (const announcement of result) {
+      expect(typeof announcement.created_at).toBe('string')
+      if (announcement.published_at !== null) {
+        expect(typeof announcement.published_at).toBe('string')
       }
+      expect(announcement.published_at).not.toBeInstanceOf(Date)
+      expect(announcement.created_at).not.toBeInstanceOf(Date)
     }
-  })
-
-  it('postgrest 経路（フラグ未設定）では getDb が一切呼ばれない（挙動不変の検証）', async () => {
-    await runPostgrestPath()
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('pg 経路では supabase-js クライアントが一切呼ばれない', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
-    const client = createSupabaseClientMock()
-    vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
-    const db = createDrizzleDbMock()
-    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
-
-    const result = await getUnreadAnnouncements('viewer-1')
-
-    expect(result).toEqual(EXPECTED)
-    expect(client.from).not.toHaveBeenCalled()
   })
 })
 
@@ -367,41 +289,23 @@ describe('getUnreadAnnouncements: postgrest / pg 経路の形状互換 (#570)', 
  * isPgReadEnabled() 分岐が漏れていた（姉妹関数 getUnreadAnnouncements は
  * #570 パイロットで既に移行済み）。上と同じ形状互換方針で pg 直結分岐を検証する。
  */
-describe('getAllAnnouncements: postgrest / pg 経路の形状互換 (#663 Category A)', () => {
+describe('getAllAnnouncements: PlanetScale 経路 (#663 Category A)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  async function runPostgrestPathAll() {
-    vi.stubEnv('DB_DRIVER', undefined)
-    const client = createSupabaseClientMock()
-    vi.mocked(getSupabaseAdmin).mockReturnValue(client as any)
-    const result = await getAllAnnouncements('viewer-1')
-    return { result, client }
-  }
-
   async function runPgPathAll() {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
     const db = createDrizzleDbMock()
     vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
     const result = await getAllAnnouncements('viewer-1')
     return { result, db }
   }
 
-  it('同一 fixture で両経路の戻り値が deepEqual になる（期限切れも含む・is_read/read_at 付き）', async () => {
-    const { result: postgrestResult, client } = await runPostgrestPathAll()
-    const { result: pgResult, db } = await runPgPathAll()
+  it('fixture を期限切れも含む is_read/read_at 付き形状で返す', async () => {
+    const { result, db } = await runPgPathAll()
 
-    expect(client.from).toHaveBeenCalledWith('announcements')
-    expect(client.from).toHaveBeenCalledWith('announcement_reads')
     expect(db.select).toHaveBeenCalledTimes(2)
-
-    expect(pgResult).toEqual(postgrestResult)
-    expect(postgrestResult).toEqual(EXPECTED_ALL)
+    expect(result).toEqual(EXPECTED_ALL)
   })
 
   it('pgクエリが announcements への where(is_published=true)・orderBy(created_at desc) を正しい実引数で呼び出す', async () => {
@@ -416,32 +320,11 @@ describe('getAllAnnouncements: postgrest / pg 経路の形状互換 (#663 Catego
     expect(db.calls[1].whereCondition).toEqual(eq(announcementReadsTable.twitch_user_id, 'viewer-1'))
   })
 
-  it('postgrest 経路（フラグ未設定）では getDb が一切呼ばれない（挙動不変の検証）', async () => {
-    await runPostgrestPathAll()
-    expect(getDb).not.toHaveBeenCalled()
-  })
-
-  it('pg 経路では supabase-js クライアントが一切呼ばれない', async () => {
-    const { result, client } = await (async () => {
-      vi.stubEnv('DB_DRIVER', 'pg-read')
-      const supabaseClient = createSupabaseClientMock()
-      vi.mocked(getSupabaseAdmin).mockReturnValue(supabaseClient as any)
-      const db = createDrizzleDbMock()
-      vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
-      const res = await getAllAnnouncements('viewer-1')
-      return { result: res, client: supabaseClient }
-    })()
-
-    expect(result).toEqual(EXPECTED_ALL)
-    expect(client.from).not.toHaveBeenCalled()
-  })
-
-  // postgrest 経路の非対称フォールバック（announcements 失敗→[]、reads 失敗→全件既読扱い）
-  // を pg 経路でも再現できているかは、実装の中で最もバグを埋め込みやすい箇所
+  // announcements 失敗→[]、reads 失敗→全件既読扱いという非対称fallbackは、
+  // 実装の中で最もバグを埋め込みやすい箇所
   // （getUnreadAnnouncementsPg は両フェーズとも一律 [] を返すのに対し、こちらは
   // reads フェーズだけ別のフォールバックを持つ非対称構造のため）。
   it('reads クエリが失敗した場合、pg 経路は全お知らせを既読扱い（read_at: null）で返す', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
     const db = createDrizzleDbMock()
     // 1回目の select (announcements) は正常応答、2回目の select (reads) は throw する
     // ようラップする。実装は announcements → reads の順で呼ぶことに依存しているため、
@@ -473,7 +356,6 @@ describe('getAllAnnouncements: postgrest / pg 経路の形状互換 (#663 Catego
   })
 
   it('announcements クエリが失敗した場合、pg 経路は空配列を返す', async () => {
-    vi.stubEnv('DB_DRIVER', 'pg-read')
     const db = createDrizzleDbMock()
     db.select = vi.fn(() => ({
       from: vi.fn(() => ({

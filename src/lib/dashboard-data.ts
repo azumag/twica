@@ -1,13 +1,13 @@
 import { cache } from "react";
 import { unstable_cache } from "next/cache";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { logger } from "@/lib/logger";
+
+import { logger } from "@/lib/logger.server";
 import { normalizeDropRate } from "@/lib/card-utils";
 import { reportError } from "@/lib/sentry/error-handler";
-import { withRetry } from "@/lib/supabase/retry";
+
 import { logPerf, perfStart } from "@/lib/perf";
 // ---------------------------------------------------------------------------
-// #571: pg 直結経路 (DB_DRIVER=pg-read/pg) 用の import。
+// #571: pg 直結経路 (旧全体ドライバーフラグ=pg-read/pg) 用の import。
 // フラグ未設定時（既定 'postgrest'）は isPgReadEnabled() が false を返すため
 // getDb() は一切呼ばれず、既存の supabase-js 経路が従来どおり実行される。
 // count は既存コードの `const { count } = await ...` 分割代入と名前が衝突する
@@ -21,14 +21,16 @@ import {
   desc,
   eq,
   getTableColumns,
+  gt,
   gte,
   ilike,
   inArray,
   lt,
+  notLike,
 } from "drizzle-orm";
 import { getDb, type DbHandle } from "@/lib/db/client";
 import { isPgFunctionNotFoundError, isPgMissingColumnError, isPgUniqueViolationError } from "@/lib/db/errors";
-import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
 // Issue #685: cards テーブルの本番未デプロイ8列（card_number/hp/atk/def/spd/
 // skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバック。
@@ -50,7 +52,7 @@ import {
 // Issue #557: デプロイ窓 (00064 未適用) の collection_name 列欠落検知に再利用。
 // 既存ヘルパは "collection_name" 文言でゲートしており、collection_completions
 // の同名列にもそのまま一致する。
-import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+
 import type { Card, Streamer, GachaHistory, Database } from "@/types/database";
 
 interface CardWithDetails extends Card {
@@ -63,6 +65,40 @@ interface GachaHistoryWithCard extends GachaHistory {
 }
 
 /**
+ * 必須RPCが欠落した場合に、読み取り可用性を保つフォールバックと運用アラートを
+ * 同時に成立させる。SQLSTATE 42883 は「安全に無視できる通常状態」ではなく、
+ * コードとschemaのデプロイ不整合なので、warnだけではIssue #708の本番監視要件を
+ * 満たさない。一方、下流には同じPlanetScaleテーブルから再集計できる安全な
+ * read-only経路があるため、ここではエラーを永続化してから表示を継続する。
+ */
+async function reportMissingDashboardRpc(
+  rpcName: string,
+  message: string,
+  context: Record<string, unknown>,
+): Promise<void> {
+  logger.warn(`${rpcName} not deployed, falling back to direct PlanetScale query`, context);
+  try {
+    await reportError(
+      new Error(`${rpcName} RPC unavailable (SQLSTATE 42883): ${message}`),
+      {
+        context: `dashboard:${rpcName}:missing`,
+        sqlState: "42883",
+        ...context,
+      },
+    );
+  } catch (reportingError) {
+    // reporterは本来内部で失敗を吸収するが、将来の実装変更でもread-only
+    // fallbackを巻き込まない最終防御。warnはDB非依存でWorkerログへ残る。
+    logger.warn("Failed to persist missing dashboard RPC alert", {
+      rpcName,
+      error: reportingError instanceof Error
+        ? reportingError.message
+        : String(reportingError),
+    });
+  }
+}
+
+/**
  * getStreamerData の Drizzle（pg 直結）実装 (#571)
  *
  * PostgREST 実装との対応:
@@ -70,7 +106,7 @@ interface GachaHistoryWithCard extends GachaHistory {
  *   streamers LEFT JOIN cards の1クエリで置き換える（往復回数のパリティ）。
  *   JOIN 条件 cards.streamer_id = streamers.id は FK 制約
  *   cards_streamer_id_fkey が表す関係そのものであり、PostgREST の埋め込みヒント
- *   （PGRST201 回避）と同じリレーションを SQL で明示していることになる。
+ *   外部キーで表される同じリレーションを SQL で明示している。
  * - PostgREST の max-rows(1000) は「トップレベル行」にのみ適用され、埋め込み
  *   配列は打ち切られない。よってこの JOIN にも LIMIT は付けない（カード全件）。
  * - streamers.twitch_user_id は UNIQUE（migration 00001）のため streamer は
@@ -152,54 +188,9 @@ async function getStreamerDataPg(
  * Supabaseのリレーションを使用して1回のクエリで取得し、ネットワーク往復を削減
  */
 export const getStreamerData = cache(async (twitchUserId: string) => {
-  // #571: DB_DRIVER=pg-read/pg のときのみ Drizzle 直結経路へ切り替える。
+  // #571: 旧全体ドライバーフラグ=pg-read/pg のときのみ Drizzle 直結経路へ切り替える。
   // フラグ未設定時は素通りし、以下の既存 supabase-js 実装が従来どおり実行される。
-  if (isPgReadEnabled()) {
-    return getStreamerDataPg(twitchUserId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  // Single query: get streamer with their cards using foreign key relation
-  // 1回のクエリ: 外部キーリレーションを使用して配信者とカードを取得
-  //
-  // 埋め込みは必ず FK 制約名 cards_streamer_id_fkey を明示する。
-  // migration 00051 で追加した card_owner_stats が streamers(id) と cards(id) の
-  // 双方を参照する中間テーブルとなり、PostgREST が streamers→cards を
-  // (1) cards.streamer_id 経由の直接リレーション
-  // (2) card_owner_stats 経由の many-to-many リレーション
-  // の2通りに解決できてしまう。ヒントなしの `cards (*)` は曖昧と判定され
-  // PGRST201 (Could not embed because more than one relationship was found)
-  // でクエリ全体が失敗し、streamer が null になって配信者が
-  // カード管理/設定ページから /dashboard へ誤リダイレクトされていた。
-  //
-  // Always disambiguate the embed via the FK constraint name. Migration 00051's
-  // card_owner_stats references both streamers and cards, so PostgREST finds two
-  // possible streamers→cards relationships (direct FK vs. m2m junction) and an
-  // un-hinted `cards (*)` fails with PGRST201, breaking these pages.
-  const { data: streamer } = await supabaseAdmin
-    .from("streamers")
-    .select(`
-      *,
-      cards!cards_streamer_id_fkey (*)
-    `)
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-
-  if (!streamer) return null;
-
-  // Extract and sort cards (newest first)
-  // Supabaseのリレーション型はdrop_rateがunknownになるため、Card[]にキャストしてから正規化
-  const cards = normalizeDropRate((streamer.cards || []) as Card[])
-    .sort((a, b) =>
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-
-  // Return without the nested cards to match expected interface
-  // 期待されるインターフェースに合わせてネストされたcardsを除外して返す
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { cards: _cardsNested, ...streamerData } = streamer;
-  return { streamer: streamerData, cards };
+                                       return getStreamerDataPg(twitchUserId);
 })
 
 /**
@@ -326,52 +317,7 @@ export const getStreamerDataPaginated = cache(async (
   perPage: number = 8
 ) => {
   // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
-  if (isPgReadEnabled()) {
-    return getStreamerDataPaginatedPg(twitchUserId, page, perPage);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-  const start = Date.now();
-
-  // Get streamer first
-  // まず配信者を取得
-  const { data: streamer } = await supabaseAdmin
-    .from("streamers")
-    .select("*")
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-
-  if (!streamer) return null;
-
-  // Get total count of cards for this streamer
-  // この配信者のカード総数を取得
-  const { count: totalCount } = await supabaseAdmin
-    .from("cards")
-    .select("*", { count: "exact", head: true })
-    .eq("streamer_id", streamer.id);
-
-  // Get paginated cards with ordering
-  // ページネーション付きでカードを取得（新しい順）
-  const offset = (page - 1) * perPage;
-  const { data: cards } = await supabaseAdmin
-    .from("cards")
-    .select("*")
-    .eq("streamer_id", streamer.id)
-    .order("created_at", { ascending: false })
-    .range(offset, offset + perPage - 1);
-
-  logger.info(`[Perf] getStreamerDataPaginated: ${Date.now() - start}ms (page ${page}, ${cards?.length || 0} cards)`);
-
-  return {
-    streamer,
-    cards: cards || [],
-    pagination: {
-      page,
-      perPage,
-      total: totalCount || 0,
-      totalPages: Math.ceil((totalCount || 0) / perPage),
-    },
-  };
+                                                return getStreamerDataPaginatedPg(twitchUserId, page, perPage);
 })
 
 /**
@@ -466,6 +412,46 @@ function parseRpcCardCounts(rpcResult: unknown): CardWithDetails[] {
   })));
 }
 
+async function fetchUserCardCountsDirectPg(
+  twitchUserId: string,
+  streamerId?: string,
+): Promise<CardWithDetails[]> {
+  return withDbRetry(
+    async () => {
+      const { sql } = await getDb();
+      const rows = streamerId
+        ? await sql<Array<{ count: number; card: Card; streamer: Streamer }>>`
+            select
+              count(*)::integer as count,
+              to_jsonb(c) as card,
+              to_jsonb(s) as streamer
+            from user_cards uc
+            inner join users u on u.id = uc.user_id
+            inner join cards c on c.id = uc.card_id
+            inner join streamers s on s.id = c.streamer_id
+            where u.twitch_user_id = ${twitchUserId}
+              and c.streamer_id = ${streamerId}::uuid
+            group by c.id, s.id
+          `
+        : await sql<Array<{ count: number; card: Card; streamer: Streamer }>>`
+            select
+              count(*)::integer as count,
+              to_jsonb(c) as card,
+              to_jsonb(s) as streamer
+            from user_cards uc
+            inner join users u on u.id = uc.user_id
+            inner join cards c on c.id = uc.card_id
+            inner join streamers s on s.id = c.streamer_id
+            where u.twitch_user_id = ${twitchUserId}
+            group by c.id, s.id
+          `;
+      return parseRpcCardCounts(rows);
+    },
+    streamerId ? "dashboard:userCardsDirectByStreamer" : "dashboard:userCardsDirect",
+    { idempotent: true },
+  );
+}
+
 /**
  * Internal function to fetch user cards from database
  * RPC get_user_card_counts でDB側集計を行い、PostgREST行数制限を根本的に回避する
@@ -476,13 +462,9 @@ function parseRpcCardCounts(rpcResult: unknown): CardWithDetails[] {
 async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetails[]> {
   const startTotal = Date.now();
 
-  const startClient = Date.now();
-  const supabaseAdmin = getSupabaseAdmin();
-  logger.info(`[Perf] getSupabaseAdmin: ${Date.now() - startClient}ms`);
-
   // RPC: DB側でGROUP BY集計（ユニークカード種類数のみ返却、行数制限の影響なし）
   const startQuery = Date.now();
-  // #573: DB_DRIVER=pg-read/pg のときのみ RPC 実行を pg 直結へ切り替える。
+  // #573: 旧全体ドライバーフラグ=pg-read/pg のときのみ RPC 実行を pg 直結へ切り替える。
   // pg 側は PostgREST .rpc() と同一の { data, error } 形状へ正規化して返すため、
   // この直後の成功時パース（parseRpcCardCounts）・42883 分岐（→ 既存 postgrest
   // 直接クエリフォールバック）・その他エラー分岐（reportError + 同フォールバック）は
@@ -493,21 +475,16 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
   // 引数リストは既存 .rpc() 呼び出しと同一（p_twitch_user_id のみ。p_streamer_id は
   // DEFAULT NULL に任せる）。text 引数は名前付き引数の関数解決で一意に強制される
   // ためキャスト不要（gacha.ts executeGachaTransactionRpcPg の doc コメント参照）。
-  const { data: rpcResult, error: rpcError } = isPgReadEnabled()
-    ? await executeDashboardRpcPg("get_user_card_counts(pg)", async (sql) => {
+  const { data: rpcResult, error: rpcError } = await executeDashboardRpcPg("get_user_card_counts(pg)", async (sql) => {
         // migration 00031: RETURNS JSONB（{ count, card, streamer } オブジェクトの
         // 配列）。PostgREST .rpc() の data と同じ「行配列」がそのまま得られる。
-        const rows = await sql<{ result: unknown }[]>`
+                                                                                                         const rows = await sql<{ result: unknown }[]>`
           select get_user_card_counts(
             p_twitch_user_id => ${twitchUserId}
           ) as result
         `;
         return rows[0]?.result ?? null;
-      })
-    : await withRetry(
-        () => supabaseAdmin.rpc("get_user_card_counts", { p_twitch_user_id: twitchUserId }),
-        "get_user_card_counts",
-      );
+      });
 
   if (!rpcError) {
     logger.info(`[Perf] getUserCards RPC: ${Date.now() - startQuery}ms`);
@@ -519,61 +496,23 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
   // RPCエラー時は直接クエリにフォールバック（DB一時障害でもカード空表示を防ぐ）
   // TODO: マイグレーション適用確認後にフォールバックを削除
   if (rpcError.code === "42883") {
-    logger.warn("get_user_card_counts not deployed, falling back to direct query");
+    await reportMissingDashboardRpc(
+      "get_user_card_counts",
+      rpcError.message,
+      { twitchUserId },
+    );
   } else {
-    reportError(new Error(`get_user_card_counts RPC failed: ${rpcError.message}`));
+    await reportError(new Error(`get_user_card_counts RPC failed: ${rpcError.message}`));
   }
 
-  const { data: user } = await supabaseAdmin
-    .from("users")
-    .select("id")
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-
-  if (!user) {
-    logger.info(`[Perf] getUserCards total (no user): ${Date.now() - startTotal}ms`);
+  try {
+    const cards = await fetchUserCardCountsDirectPg(twitchUserId);
+    logger.info(`[Perf] getUserCards total (direct fallback): ${Date.now() - startTotal}ms`);
+    return cards;
+  } catch (error) {
+    reportError(error, { context: "dashboard:getUserCards:directFallback", twitchUserId });
     return [];
   }
-
-  // streamers の埋め込みは FK 制約名で一意化する（getStreamerData と同じ理由:
-  // migration 00051 の card_owner_stats が cards↔streamers を m2m にも見せるため、
-  // ヒントなしの streamers(*) は PGRST201 で失敗する）。
-  const { data: userCards } = await supabaseAdmin
-    .from("user_cards")
-    .select("card_id, cards(*, streamers!cards_streamer_id_fkey(*))")
-    .eq("user_id", user.id)
-    .range(0, 9999);
-  logger.info(`[Perf] getUserCards query: ${Date.now() - startQuery}ms`);
-
-  if (!userCards || userCards.length === 0) {
-    logger.info(`[Perf] getUserCards total (no data): ${Date.now() - startTotal}ms`);
-    return [];
-  }
-
-  if (userCards.length === 10000) {
-    reportError(new Error(`user_cards hit 10000 row limit for user ${twitchUserId}`));
-  }
-
-  const cardMap = new Map<string, CardWithDetails>();
-
-  for (const uc of userCards) {
-    const card = uc.cards as unknown as Card & { streamers: Streamer };
-    if (!card) continue;
-
-    const existing = cardMap.get(card.id);
-    if (existing) {
-      existing.count++;
-    } else {
-      cardMap.set(card.id, {
-        ...card,
-        streamer: card.streamers,
-        count: 1,
-      });
-    }
-  }
-
-  logger.info(`[Perf] getUserCards total: ${Date.now() - startTotal}ms`);
-  return Array.from(cardMap.values());
 }
 
 /**
@@ -584,7 +523,7 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
  * unstable_cacheでリクエスト間キャッシュを使用してデータベース負荷を軽減
  */
 export const getUserCards = cache(async (twitchUserId: string): Promise<CardWithDetails[]> => {
-  const start = Date.now();
+                                    const start = Date.now();
 
   // Use Next.js cache with 30 second revalidation
   // Next.jsキャッシュを使用（30秒で再検証）
@@ -643,22 +582,7 @@ async function getRecentGachaHistoryPg(): Promise<GachaHistoryWithCard[]> {
 
 export async function getRecentGachaHistory(): Promise<GachaHistoryWithCard[]> {
   // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
-  if (isPgReadEnabled()) {
-    return getRecentGachaHistoryPg();
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: history } = await supabaseAdmin
-    .from("gacha_history")
-    .select(`
-      *,
-      cards (*)
-    `)
-    .order("redeemed_at", { ascending: false })
-    .limit(10);
-
-  return (history || []) as unknown as GachaHistoryWithCard[];
+  return getRecentGachaHistoryPg();
 }
 
 /**
@@ -816,72 +740,7 @@ export async function getGachaHistoryForStreamer(
   filters: GachaHistoryFilters = {}
 ): Promise<PaginatedGachaHistory> {
   // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
-  if (isPgReadEnabled()) {
-    return getGachaHistoryForStreamerPg(streamerId, filters);
-  }
-
-  const { page = 1, perPage = 20, username, rarity, cardId, userId, from, to } = filters;
-  const supabaseAdmin = getSupabaseAdmin();
-
-  // Use !inner join when filtering by rarity to ensure correct count
-  // レアリティフィルタ時は !inner JOINで正確なcountを保証
-  const joinType = rarity ? "cards!inner(*)" : "cards(*)";
-  let query = supabaseAdmin
-    .from("gacha_history")
-    .select(`*, ${joinType}`, { count: "exact" })
-    .eq("streamer_id", streamerId);
-
-  // Apply filters / フィルタを適用
-  if (username) {
-    // Escape LIKE pattern characters to prevent unintended matching
-    // LIKEパターン文字をエスケープして意図しないマッチを防止
-    const escaped = username.replace(/%/g, "\\%").replace(/_/g, "\\_");
-    query = query.ilike("user_twitch_username", `%${escaped}%`);
-  }
-  if (rarity) {
-    query = query.eq("cards.rarity", rarity);
-  }
-  if (cardId) {
-    query = query.eq("card_id", cardId);
-  }
-  if (userId) {
-    query = query.eq("user_twitch_id", userId);
-  }
-  if (from) {
-    query = query.gte("redeemed_at", from);
-  }
-  if (to) {
-    // Use "less than next day" instead of "less than or equal to end-of-day"
-    // to cleanly include the entire "to" date
-    // Note: dates are interpreted in UTC. For non-UTC users, boundary dates
-    // may shift by a few hours. This is acceptable for approximate date filtering.
-    // 「次の日未満」を使用して "to" 日付全体を含める
-    // 注: 日付はUTCで解釈される。非UTCユーザーでは境界日が数時間ずれる可能性があるが、
-    // 大まかな日付フィルタとしては許容範囲。
-    const nextDay = new Date(`${to}T00:00:00Z`);
-    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-    query = query.lt("redeemed_at", nextDay.toISOString());
-  }
-
-  // Apply pagination and ordering
-  // ページネーションと並び順を適用
-  const offset = (page - 1) * perPage;
-  query = query
-    .order("redeemed_at", { ascending: false })
-    .range(offset, offset + perPage - 1);
-
-  const { data, count } = await query;
-  const total = count || 0;
-
-  return {
-    history: (data || []) as unknown as GachaHistoryWithCard[],
-    pagination: {
-      page,
-      perPage,
-      total,
-      totalPages: Math.ceil(total / perPage),
-    },
-  };
+  return getGachaHistoryForStreamerPg(streamerId, filters);
 }
 
 /**
@@ -973,34 +832,7 @@ export async function getGachaHistoryForUser(
   filters: { page?: number; perPage?: number } = {}
 ): Promise<PaginatedGachaHistory> {
   // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
-  if (isPgReadEnabled()) {
-    return getGachaHistoryForUserPg(userTwitchId, filters);
-  }
-
-  const { page = 1, perPage = 20 } = filters;
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const offset = (page - 1) * perPage;
-  // Join streamers to show which channel the gacha was drawn on
-  // どのチャネルでガチャを引いたかを表示するため streamers を JOIN
-  const { data, count } = await supabaseAdmin
-    .from("gacha_history")
-    .select("*, cards(*), streamers(twitch_display_name)", { count: "exact" })
-    .eq("user_twitch_id", userTwitchId)
-    .order("redeemed_at", { ascending: false })
-    .range(offset, offset + perPage - 1);
-
-  const total = count || 0;
-
-  return {
-    history: (data || []) as unknown as GachaHistoryWithCard[],
-    pagination: {
-      page,
-      perPage,
-      total,
-      totalPages: Math.ceil(total / perPage),
-    },
-  };
+  return getGachaHistoryForUserPg(userTwitchId, filters);
 }
 
 /**
@@ -1076,7 +908,7 @@ async function fetchGachaUsersFallbackRowsPg(streamerId: string): Promise<
 > {
   return Promise.all([
     (async () => {
-      try {
+       try {
         const rows = await withDbRetry(
           async () => {
             const { db } = await getDb();
@@ -1120,7 +952,7 @@ async function fetchGachaUsersFallbackRowsPg(streamerId: string): Promise<
       }
     })(),
     (async () => {
-      try {
+       try {
         const rows = await withDbRetry(
           async () => {
             const { db } = await getDb();
@@ -1157,7 +989,7 @@ export async function getGachaUsersForStreamer(
   options: { page?: number; perPage?: number } = {}
 ): Promise<{ users: GachaUserEntry[]; pagination: { page: number; perPage: number; total: number; totalPages: number } }> {
   const { page = 1, perPage = 20 } = options;
-  const supabaseAdmin = getSupabaseAdmin();
+
   const offset = (page - 1) * perPage;
 
   // RPC: DB側でGROUP BY集約 + ページネーション（件数制限なし）
@@ -1166,11 +998,10 @@ export async function getGachaUsersForStreamer(
   // ログ分岐（42883 → warn / その他 → reportError）は両経路で共有され、
   // フォールバック集約のクエリ実行だけが下でもう1箇所分岐する。
   // uuid / integer 引数は明示キャストで型解決を固定する（gacha.ts と同じ規約）。
-  const { data: rpcResult, error: rpcError } = isPgReadEnabled()
-    ? await executeDashboardRpcPg("get_gacha_users_for_streamer(pg)", async (sql) => {
+  const { data: rpcResult, error: rpcError } = await executeDashboardRpcPg("get_gacha_users_for_streamer(pg)", async (sql) => {
         // migration 00032/00046: RETURNS JSONB ({ users: [...], total: n })。
         // PostgREST .rpc() の data と同じオブジェクトがそのまま得られる。
-        const rows = await sql<{ result: unknown }[]>`
+                                                                                                                 const rows = await sql<{ result: unknown }[]>`
           select get_gacha_users_for_streamer(
             p_streamer_id => ${streamerId}::uuid,
             p_limit => ${perPage}::integer,
@@ -1178,13 +1009,7 @@ export async function getGachaUsersForStreamer(
           ) as result
         `;
         return rows[0]?.result ?? null;
-      })
-    : await supabaseAdmin
-        .rpc("get_gacha_users_for_streamer", {
-          p_streamer_id: streamerId,
-          p_limit: perPage,
-          p_offset: offset,
-        });
+      });
 
   if (!rpcError && rpcResult) {
     // RPC成功: DB側集約結果をGachaUserEntry[]に変換
@@ -1192,7 +1017,7 @@ export async function getGachaUsersForStreamer(
     const rpcData = rpcResult as { users: Array<{ user_twitch_id: string; username: string; draw_count: number; last_draw_at: string; unique_card_ids: string[] }>; total: number };
     const rpcUsers = rpcData.users || [];
     const users: GachaUserEntry[] = rpcUsers.map((u) => {
-      const uniqueCardIds = normalizeUniqueCardIds(u.unique_card_ids);
+                                                   const uniqueCardIds = normalizeUniqueCardIds(u.unique_card_ids);
       return {
         userTwitchId: u.user_twitch_id,
         username: u.username || "",
@@ -1212,9 +1037,13 @@ export async function getGachaUsersForStreamer(
   // RPCエラー時はクライアント側集約にフォールバック（マイグレーション未適用時の互換性維持）
   // TODO: マイグレーション適用確認後にフォールバックを削除
   if (rpcError?.code === "42883") {
-    logger.warn("get_gacha_users_for_streamer not deployed, falling back to client-side aggregation");
+    await reportMissingDashboardRpc(
+      "get_gacha_users_for_streamer",
+      rpcError.message,
+      { streamerId },
+    );
   } else if (rpcError) {
-    reportError(new Error(`get_gacha_users_for_streamer RPC failed: ${rpcError.message}`));
+    await reportError(new Error(`get_gacha_users_for_streamer RPC failed: ${rpcError.message}`));
   }
 
   // フォールバック: 既存のクライアント側集約ロジック（10,000件制限あり）
@@ -1222,21 +1051,7 @@ export async function getGachaUsersForStreamer(
   // （fetchGachaUsersFallbackRowsPg の doc コメント参照）。クエリ結果は
   // { data, error } 形状で正規化されるため、以降の集約・ページング処理は
   // 両経路で完全に共有される。
-  const [historyResult, activeCardsResult] = isPgReadEnabled()
-    ? await fetchGachaUsersFallbackRowsPg(streamerId)
-    : await Promise.all([
-        supabaseAdmin
-          .from("gacha_history")
-          .select("user_twitch_id, user_twitch_username, card_id, redeemed_at")
-          .eq("streamer_id", streamerId)
-          .order("redeemed_at", { ascending: false })
-          .limit(10000),
-        supabaseAdmin
-          .from("cards")
-          .select("id")
-          .eq("streamer_id", streamerId)
-          .eq("is_active", true),
-      ]);
+  const [historyResult, activeCardsResult] = await fetchGachaUsersFallbackRowsPg(streamerId);
 
   // フォールバックDBエラー時はreportErrorで検知可能にする
   if (historyResult.error) {
@@ -1434,7 +1249,7 @@ interface CardOwnerStatsRpcCardRow {
 
 type GachaCardOwnerStatsOwnerRow = {
   card_id: string;
-  obtained_at: string;
+  obtained_at: string | null;
   users:
     | {
         twitch_user_id: string;
@@ -1533,20 +1348,36 @@ const EMPTY_CHANNEL_POINT_STATS: GachaStatsResult["channelPointStats"] = {
 };
 
 async function fetchChannelPointUsageStatsFromHistory(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   streamerId: string,
   limit = 10
 ): Promise<GachaStatsResult["channelPointStats"]> {
-  const { data, error } = await supabaseAdmin
-    .from("gacha_history")
-    .select("user_twitch_id, user_twitch_username, reward_cost, redeemed_at")
-    .eq("streamer_id", streamerId)
-    .gt("reward_cost", 0)
-    .order("redeemed_at", { ascending: false })
-    .limit(10000);
-
-  if (error) {
-    reportError(new Error(`channel point usage fallback query failed: ${error.message}`));
+  let data: ChannelPointUsageHistoryRow[];
+  try {
+    data = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            user_twitch_id: gachaHistoryTable.user_twitch_id,
+            user_twitch_username: gachaHistoryTable.user_twitch_username,
+            reward_cost: gachaHistoryTable.reward_cost,
+            redeemed_at: gachaHistoryTable.redeemed_at,
+          })
+          .from(gachaHistoryTable)
+          .where(
+            and(
+              eq(gachaHistoryTable.streamer_id, streamerId),
+              gt(gachaHistoryTable.reward_cost, 0),
+            ),
+          )
+          .orderBy(desc(gachaHistoryTable.redeemed_at))
+          .limit(10000);
+      },
+      "dashboard:channelPointUsageHistory",
+      { idempotent: true },
+    );
+  } catch (error) {
+    reportError(error, { context: "dashboard:channelPointUsageHistory", streamerId });
     return EMPTY_CHANNEL_POINT_STATS;
   }
 
@@ -1558,7 +1389,7 @@ async function fetchChannelPointUsageStatsFromHistory(
   }>();
   let totalPoints = 0;
 
-  for (const row of (data || []) as ChannelPointUsageHistoryRow[]) {
+  for (const row of data) {
     const rewardCost = Number(row.reward_cost || 0);
     if (!row.user_twitch_id || rewardCost <= 0) continue;
 
@@ -1591,7 +1422,7 @@ async function fetchChannelPointUsageStatsFromHistory(
     ranking: Array.from(usageByUser.entries())
       .map(([userTwitchId, usage]) => ({ userTwitchId, ...usage }))
       .sort((a, b) => {
-        if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+              if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
         if (b.redemptionCount !== a.redemptionCount) return b.redemptionCount - a.redemptionCount;
         return (b.lastRedeemedAt || "").localeCompare(a.lastRedeemedAt || "");
       })
@@ -1630,7 +1461,6 @@ async function fetchChannelPointUsageStatsFromHistory(
  * 残骸であり、除外は Issue #784 の意図に合致する正しい挙動。
  */
 async function fetchGachaDropStatsFromHistory(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   streamerId: string,
   fromDateIso: string
 ): Promise<Omit<GachaStatsResult, "channelPointStats">> {
@@ -1641,61 +1471,86 @@ async function fetchGachaDropStatsFromHistory(
     rate: 0,
   }));
 
-  const [countResult, historyResult, cardsResult] = await Promise.all([
-    supabaseAdmin
-      .from("gacha_history")
-      .select("id", { count: "exact", head: true })
-      .eq("streamer_id", streamerId)
-      .gte("redeemed_at", fromDateIso)
-      .not("event_id", "like", "manual:%"),
-    supabaseAdmin
-      .from("gacha_history")
-      .select(
-        "card_id, user_twitch_id, user_twitch_username, redeemed_at, cards(rarity)"
-      )
-      .eq("streamer_id", streamerId)
-      .gte("redeemed_at", fromDateIso)
-      .not("event_id", "like", "manual:%")
-      .limit(10000),
-    supabaseAdmin
-      .from("cards")
-      .select("id, name, rarity, image_url, drop_rate, rarity_order, created_at")
-      .eq("streamer_id", streamerId)
-      .eq("is_active", true)
-      .order("rarity_order", { ascending: true })
-      .order("created_at", { ascending: false }),
-  ]);
-
-  if (countResult.error || historyResult.error || cardsResult.error) {
-    reportError(
-      new Error(
-        `gacha drop stats fallback query failed: ${
-          countResult.error?.message ||
-          historyResult.error?.message ||
-          cardsResult.error?.message
-        }`
-      )
-    );
-    return { totalDraws: 0, cardStats: [], rarityStats: emptyRarityStats };
-  }
-
-  const totalDraws = countResult.count || 0;
-  // Supabase の型推論が select('card_id, cards(rarity)') に対して不完全なため明示キャスト
-  const history = (historyResult.data || []) as unknown as Array<{
+  const historyFilter = and(
+    eq(gachaHistoryTable.streamer_id, streamerId),
+    gte(gachaHistoryTable.redeemed_at, fromDateIso),
+    notLike(gachaHistoryTable.event_id, "manual:%"),
+  );
+  let totalDraws: number;
+  let history: Array<{
     card_id: string;
     user_twitch_id: string;
     user_twitch_username: string | null;
     redeemed_at: string | null;
     cards: { rarity: string } | null;
   }>;
-  const cards = (cardsResult.data || []) as Array<{
+  let cards: Array<{
     id: string;
     name: string;
     rarity: string;
     image_url: string | null;
     drop_rate: number | string | null;
-    created_at: string;
+    created_at: string | null;
   }>;
+  try {
+    const [countResultRows, historyRows, cardRows] = await Promise.all([
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ count: countRows() })
+            .from(gachaHistoryTable)
+            .where(historyFilter);
+        },
+        "dashboard:gachaDropStats:count",
+        { idempotent: true },
+      ),
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              card_id: gachaHistoryTable.card_id,
+              user_twitch_id: gachaHistoryTable.user_twitch_id,
+              user_twitch_username: gachaHistoryTable.user_twitch_username,
+              redeemed_at: gachaHistoryTable.redeemed_at,
+              cards: { rarity: cardsTable.rarity },
+            })
+            .from(gachaHistoryTable)
+            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+            .where(historyFilter)
+            .limit(10000);
+        },
+        "dashboard:gachaDropStats:history",
+        { idempotent: true },
+      ),
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              id: cardsTable.id,
+              name: cardsTable.name,
+              rarity: cardsTable.rarity,
+              image_url: cardsTable.image_url,
+              drop_rate: cardsTable.drop_rate,
+              created_at: cardsTable.created_at,
+            })
+            .from(cardsTable)
+            .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+            .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at));
+        },
+        "dashboard:gachaDropStats:cards",
+        { idempotent: true },
+      ),
+    ]);
+    totalDraws = Number(countResultRows[0]?.count ?? 0);
+    history = historyRows;
+    cards = cardRows;
+  } catch (error) {
+    reportError(error, { context: "dashboard:gachaDropStats:fallback", streamerId });
+    return { totalDraws: 0, cardStats: [], rarityStats: emptyRarityStats };
+  }
 
   const drawCounts = new Map<string, number>();
   // 期間内にそのカードを引いたユーザーをカード×ユーザーで集計。
@@ -1732,7 +1587,7 @@ async function fetchGachaDropStatsFromHistory(
   );
 
   const cardStats = cards.map((card) => {
-    const actualCount = drawCounts.get(card.id) || 0;
+                                const actualCount = drawCounts.get(card.id) || 0;
     const allDrawers = Array.from(
       drawersByCard.get(card.id)?.values() || []
     ).sort(
@@ -1766,7 +1621,7 @@ async function fetchGachaDropStatsFromHistory(
     }
   }
   const rarityStats = FIXED_RARITIES.map((rarity) => {
-    const count = rarityCounts.get(rarity) || 0;
+                                           const count = rarityCounts.get(rarity) || 0;
     return {
       rarity,
       count,
@@ -1789,7 +1644,6 @@ export async function getGachaStats(
   streamerId: string,
   period: "7d" | "30d"
 ): Promise<GachaStatsResult> {
-  const supabaseAdmin = getSupabaseAdmin();
   const now = new Date();
   const daysAgo = period === "7d" ? 7 : 30;
   const fromDate = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
@@ -1809,12 +1663,11 @@ export async function getGachaStats(
   // 本番実績のある postgrest 実装のまま）は両経路で完全に共有される。
   // 引数リスト・値は既存 .rpc() 呼び出しと同一に揃え、uuid / timestamptz /
   // integer は明示キャストで型解決を固定する（gacha.ts と同じ規約）。
-  const [dropStatsResult, channelPointResult] = isPgReadEnabled()
-    ? await Promise.all([
+  const [dropStatsResult, channelPointResult] = await Promise.all([
         executeDashboardRpcPg("get_gacha_drop_stats(pg)", async (sql) => {
           // migration 00038/00050/00052: RETURNS JSONB
           // ({ total_draws, card_stats: [...], rarity_stats: [...] })
-          const rows = await sql<{ result: unknown }[]>`
+                                                            const rows = await sql<{ result: unknown }[]>`
             select get_gacha_drop_stats(
               p_streamer_id => ${streamerId}::uuid,
               p_from_date => ${fromDateIso}::timestamptz
@@ -1824,7 +1677,7 @@ export async function getGachaStats(
         }),
         executeDashboardRpcPg("get_channel_point_usage_stats(pg)", async (sql) => {
           // migration 00036/00039: RETURNS JSONB ({ total_points, ranking: [...] })
-          const rows = await sql<{ result: unknown }[]>`
+                                                                     const rows = await sql<{ result: unknown }[]>`
             select get_channel_point_usage_stats(
               p_streamer_id => ${streamerId}::uuid,
               p_from_date => ${null}::timestamptz,
@@ -1833,19 +1686,6 @@ export async function getGachaStats(
           `;
           return rows[0]?.result ?? null;
         }),
-      ])
-    : await Promise.all([
-        supabaseAdmin
-          .rpc("get_gacha_drop_stats", {
-            p_streamer_id: streamerId,
-            p_from_date: fromDateIso,
-          }),
-        supabaseAdmin
-          .rpc("get_channel_point_usage_stats", {
-            p_streamer_id: streamerId,
-            p_from_date: null,
-            p_limit: 10,
-          }),
       ]);
 
   // RPC が使えない場合（未デプロイ=42883 や実行時エラー）は履歴から直接集計する。
@@ -1854,11 +1694,13 @@ export async function getGachaStats(
   let dropStats = parseGachaDropStatsRpc(dropStatsResult.data);
   if (!dropStats) {
     if (dropStatsResult.error?.code === "42883") {
-      logger.warn(
-        "get_gacha_drop_stats not deployed, falling back to history aggregation"
+      await reportMissingDashboardRpc(
+        "get_gacha_drop_stats",
+        dropStatsResult.error.message,
+        { streamerId },
       );
     } else if (dropStatsResult.error) {
-      reportError(
+      await reportError(
         new Error(
           `get_gacha_drop_stats RPC failed: ${dropStatsResult.error.message}`
         )
@@ -1871,20 +1713,23 @@ export async function getGachaStats(
       );
     }
     dropStats = await fetchGachaDropStatsFromHistory(
-      supabaseAdmin,
       streamerId,
       fromDateIso
     );
   }
   const channelPointStats =
     parseChannelPointUsageStatsRpc(channelPointResult.data) ||
-    await fetchChannelPointUsageStatsFromHistory(supabaseAdmin, streamerId, 10);
+    await fetchChannelPointUsageStatsFromHistory(streamerId, 10);
 
   if (!parseChannelPointUsageStatsRpc(channelPointResult.data)) {
     if (channelPointResult.error?.code === "42883") {
-      logger.warn("get_channel_point_usage_stats not deployed, falling back to history aggregation");
+      await reportMissingDashboardRpc(
+        "get_channel_point_usage_stats",
+        channelPointResult.error.message,
+        { streamerId },
+      );
     } else if (channelPointResult.error) {
-      reportError(new Error(`get_channel_point_usage_stats RPC failed: ${channelPointResult.error.message}`));
+      await reportError(new Error(`get_channel_point_usage_stats RPC failed: ${channelPointResult.error.message}`));
     }
   }
 
@@ -1902,26 +1747,20 @@ export async function getGachaStats(
 export async function getGachaCardOwnerStats(
   streamerId: string
 ): Promise<GachaCardOwnerStatsResult> {
-  const supabaseAdmin = getSupabaseAdmin();
-
   // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」1箇所だけ
   // （executeDashboardRpcPg の doc コメント参照）。以降のパース・42883 警告・
   // reportError・user_cards 集計フォールバック（fetchCardOwnerStatsFromUserCards
   // は本番実績のある postgrest 実装のまま）は両経路で完全に共有される。
   // 引数リストは既存 .rpc() 呼び出しと同一（p_streamer_id のみ。p_limit_per_card は
   // DEFAULT に任せる）。uuid 引数は明示キャストで型解決を固定する。
-  const rpcResult = isPgReadEnabled()
-    ? await executeDashboardRpcPg("get_card_owner_stats(pg)", async (sql) => {
+  const rpcResult = await executeDashboardRpcPg("get_card_owner_stats(pg)", async (sql) => {
         // migration 00051: RETURNS JSONB ({ card_stats: [...] })
-        const rows = await sql<{ result: unknown }[]>`
+                                                                              const rows = await sql<{ result: unknown }[]>`
           select get_card_owner_stats(
             p_streamer_id => ${streamerId}::uuid
           ) as result
         `;
         return rows[0]?.result ?? null;
-      })
-    : await supabaseAdmin.rpc("get_card_owner_stats", {
-        p_streamer_id: streamerId,
       });
 
   const parsed = parseCardOwnerStatsRpc(rpcResult.data);
@@ -1932,15 +1771,17 @@ export async function getGachaCardOwnerStats(
   // RPC が未デプロイ(42883)/実行時エラーの場合は、旧来の user_cards 集計に
   // フォールバックして「データなし」の誤表示を防ぐ。
   if (rpcResult.error?.code === "42883") {
-    logger.warn(
-      "get_card_owner_stats not deployed, falling back to user_cards aggregation"
+    await reportMissingDashboardRpc(
+      "get_card_owner_stats",
+      rpcResult.error.message,
+      { streamerId },
     );
   } else if (rpcResult.error) {
-    reportError(
+    await reportError(
       new Error(`get_card_owner_stats RPC failed: ${rpcResult.error.message}`)
     );
   }
-  return fetchCardOwnerStatsFromUserCards(supabaseAdmin, streamerId);
+  return fetchCardOwnerStatsFromUserCards(streamerId);
 }
 
 function parseCardOwnerStatsRpc(
@@ -1979,59 +1820,77 @@ function parseCardOwnerStatsRpc(
  * 同じく user_cards から直接集計する（PostgREST 行上限対策で上限1万件）。
  */
 async function fetchCardOwnerStatsFromUserCards(
-  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
   streamerId: string
 ): Promise<GachaCardOwnerStatsResult> {
-  const [cardsResult, ownerResult] = await Promise.all([
-    supabaseAdmin
-      .from("cards")
-      .select("id, name, rarity, image_url, rarity_order, created_at")
-      .eq("streamer_id", streamerId)
-      .eq("is_active", true)
-      .order("rarity_order", { ascending: true })
-      .order("created_at", { ascending: false }),
-    supabaseAdmin
-      .from("user_cards")
-      .select(`
-        card_id,
-        obtained_at,
-        users!inner(twitch_user_id, twitch_username, twitch_display_name),
-        cards!inner(streamer_id, is_active)
-      `)
-      .eq("cards.streamer_id", streamerId)
-      .eq("cards.is_active", true)
-      .range(0, 9999),
-  ]);
-
-  if (cardsResult.error || ownerResult.error) {
-    reportError(
-      new Error(
-        `card owner stats fallback query failed: ${
-          cardsResult.error?.message || ownerResult.error?.message
-        }`
-      )
-    );
-    return { cardStats: [] };
-  }
-
-  const cards = (cardsResult.data || []) as Array<{
+  let cards: Array<{
     id: string;
     name: string;
     rarity: string;
     image_url: string | null;
   }>;
+  let ownerRows: GachaCardOwnerStatsOwnerRow[];
+  try {
+    [cards, ownerRows] = await Promise.all([
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              id: cardsTable.id,
+              name: cardsTable.name,
+              rarity: cardsTable.rarity,
+              image_url: cardsTable.image_url,
+            })
+            .from(cardsTable)
+            .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+            .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at));
+        },
+        "dashboard:cardOwnerStats:cards",
+        { idempotent: true },
+      ),
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              card_id: userCardsTable.card_id,
+              obtained_at: userCardsTable.obtained_at,
+              users: {
+                twitch_user_id: usersTable.twitch_user_id,
+                twitch_username: usersTable.twitch_username,
+                twitch_display_name: usersTable.twitch_display_name,
+              },
+            })
+            .from(userCardsTable)
+            .innerJoin(usersTable, eq(userCardsTable.user_id, usersTable.id))
+            .innerJoin(cardsTable, eq(userCardsTable.card_id, cardsTable.id))
+            .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+            .limit(10000);
+        },
+        "dashboard:cardOwnerStats:owners",
+        { idempotent: true },
+      ),
+    ]);
+  } catch (error) {
+    reportError(error, { context: "dashboard:cardOwnerStats:fallback", streamerId });
+    return { cardStats: [] };
+  }
 
   const ownersByCard = new Map<string, Map<string, GachaCardOwner>>();
-  for (const row of (ownerResult.data || []) as GachaCardOwnerStatsOwnerRow[]) {
+  for (const row of ownerRows) {
     const user = Array.isArray(row.users) ? row.users[0] : row.users;
     if (!user) continue;
 
+    // Drizzle は DB スキーマどおり obtained_at を nullable と推論する。集約結果の
+    // 公開型は文字列を要求するため、境界で空文字へ正規化し、既存の日時ソートでも
+    // NULL を最古として安定して扱えるようにする。
+    const obtainedAt = row.obtained_at || "";
     const cardOwners = ownersByCard.get(row.card_id) || new Map();
     const existing = cardOwners.get(user.twitch_user_id);
     if (existing) {
       existing.ownedCount += 1;
-      if (row.obtained_at > existing.lastObtainedAt) {
-        existing.lastObtainedAt = row.obtained_at;
+      if (obtainedAt > existing.lastObtainedAt) {
+        existing.lastObtainedAt = obtainedAt;
       }
     } else {
       cardOwners.set(user.twitch_user_id, {
@@ -2042,7 +1901,7 @@ async function fetchCardOwnerStatsFromUserCards(
           user.twitch_username ||
           user.twitch_user_id,
         ownedCount: 1,
-        lastObtainedAt: row.obtained_at,
+        lastObtainedAt: obtainedAt,
       });
     }
     ownersByCard.set(row.card_id, cardOwners);
@@ -2050,7 +1909,7 @@ async function fetchCardOwnerStatsFromUserCards(
 
   return {
     cardStats: cards.map((card) => {
-      const owners = Array.from(
+                           const owners = Array.from(
         ownersByCard.get(card.id)?.values() || []
       ).sort(
         (a, b) =>
@@ -2131,27 +1990,7 @@ async function fetchActiveCardsForStreamerFromDBPg(streamerId: string): Promise<
 async function fetchActiveCardsForStreamerFromDB(streamerId: string): Promise<Card[]> {
   // #571: pg 直結経路。unstable_cache の内側で分岐することでキャッシュ構造を
   // 変えない（フラグ未設定時は素通り。getStreamerDataPg 参照）
-  if (isPgReadEnabled()) {
-    return fetchActiveCardsForStreamerFromDBPg(streamerId);
-  }
-
-  const startTotal = Date.now();
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const startQuery = Date.now();
-  // Use generated column rarity_order for stable rarity sorting
-  // generated columnのrarity_orderを使用してレアリティ順で安定ソート
-  const { data: cards } = await supabaseAdmin
-    .from("cards")
-    .select("*")
-    .eq("streamer_id", streamerId)
-    .eq("is_active", true)
-    .order("rarity_order", { ascending: true })
-    .order("created_at", { ascending: false });
-  logger.info(`[Perf] getActiveCardsForStreamer query: ${Date.now() - startQuery}ms`);
-
-  logger.info(`[Perf] getActiveCardsForStreamer total: ${Date.now() - startTotal}ms`);
-  return normalizeDropRate(cards || []);
+  return fetchActiveCardsForStreamerFromDBPg(streamerId);
 }
 
 /**
@@ -2161,7 +2000,7 @@ async function fetchActiveCardsForStreamerFromDB(streamerId: string): Promise<Ca
 export const getActiveCardsForStreamer = cache(async (
   streamerId: string
 ): Promise<Card[]> => {
-  const start = Date.now();
+                                                 const start = Date.now();
 
   const cachedFetch = unstable_cache(
     async () => fetchActiveCardsForStreamerFromDB(streamerId),
@@ -2258,53 +2097,7 @@ export async function getActiveCardCountsForStreamers(
   streamerIds: string[]
 ): Promise<Map<string, ActiveCardCountForStreamer>> {
   // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
-  if (isPgReadEnabled()) {
-    return getActiveCardCountsForStreamersPg(streamerIds);
-  }
-
-  const startedAt = perfStart();
-  const uniqueStreamerIds = Array.from(new Set(streamerIds.filter(Boolean)));
-  const counts = new Map<string, ActiveCardCountForStreamer>();
-  for (const streamerId of uniqueStreamerIds) {
-    counts.set(streamerId, { totalActive: 0, activeCardIds: new Set() });
-  }
-
-  if (uniqueStreamerIds.length === 0) {
-    logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, { streamerCount: 0 });
-    return counts;
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-  const { data, error } = await withRetry(
-    () => supabaseAdmin
-      .from("cards")
-      .select("id, streamer_id")
-      .in("streamer_id", uniqueStreamerIds)
-      .eq("is_active", true),
-    "getActiveCardCountsForStreamers",
-  );
-
-  if (error) {
-    reportError(new Error(`active card count batch query failed: ${error.message}`));
-    logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, {
-      streamerCount: uniqueStreamerIds.length,
-      failed: true,
-    });
-    return counts;
-  }
-
-  for (const row of (data || []) as Array<{ id: string; streamer_id: string }>) {
-    const entry = counts.get(row.streamer_id);
-    if (!entry) continue;
-    entry.totalActive += 1;
-    entry.activeCardIds.add(row.id);
-  }
-
-  logPerf("dashboard-data", "getActiveCardCountsForStreamers", startedAt, {
-    streamerCount: uniqueStreamerIds.length,
-    activeCardCount: data?.length ?? 0,
-  });
-  return counts;
+  return getActiveCardCountsForStreamersPg(streamerIds);
 }
 
 /**
@@ -2319,7 +2112,6 @@ async function fetchUserCardsForStreamerFromDB(
   streamerId: string
 ): Promise<CardWithDetails[]> {
   const startTotal = Date.now();
-  const supabaseAdmin = getSupabaseAdmin();
 
   // RPC: DB側でGROUP BY集計 + streamer_idフィルタ
   const startQuery = Date.now();
@@ -2327,24 +2119,16 @@ async function fetchUserCardsForStreamerFromDB(
   // 成功時パース・42883 分岐・その他エラー分岐と postgrest 直接クエリ
   // フォールバックの共有方針は fetchUserCardsFromDB の分岐コメント参照。
   // uuid 引数（p_streamer_id）は明示キャストで型解決を固定する。
-  const { data: rpcResult, error: rpcError } = isPgReadEnabled()
-    ? await executeDashboardRpcPg("get_user_card_counts_for_streamer(pg)", async (sql) => {
+  const { data: rpcResult, error: rpcError } = await executeDashboardRpcPg("get_user_card_counts_for_streamer(pg)", async (sql) => {
         // migration 00031: RETURNS JSONB（{ count, card, streamer } の行配列）
-        const rows = await sql<{ result: unknown }[]>`
+                                                                                                                      const rows = await sql<{ result: unknown }[]>`
           select get_user_card_counts(
             p_twitch_user_id => ${twitchUserId},
             p_streamer_id => ${streamerId}::uuid
           ) as result
         `;
         return rows[0]?.result ?? null;
-      })
-    : await withRetry(
-        () => supabaseAdmin.rpc("get_user_card_counts", {
-          p_twitch_user_id: twitchUserId,
-          p_streamer_id: streamerId,
-        }),
-        "get_user_card_counts_for_streamer",
-      );
+      });
 
   if (!rpcError) {
     logger.info(`[Perf] getUserCardsForStreamer RPC: ${Date.now() - startQuery}ms`);
@@ -2356,58 +2140,27 @@ async function fetchUserCardsForStreamerFromDB(
   // RPCエラー時は直接クエリにフォールバック（DB一時障害でもカード空表示を防ぐ）
   // TODO: マイグレーション適用確認後にフォールバックを削除
   if (rpcError.code === "42883") {
-    logger.warn("get_user_card_counts not deployed, falling back to direct query");
+    await reportMissingDashboardRpc(
+      "get_user_card_counts",
+      rpcError.message,
+      { twitchUserId, streamerId },
+    );
   } else {
-    reportError(new Error(`get_user_card_counts RPC failed: ${rpcError.message}`));
+    await reportError(new Error(`get_user_card_counts RPC failed: ${rpcError.message}`));
   }
 
-  const { data: user } = await supabaseAdmin
-    .from("users")
-    .select("id")
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-
-  if (!user) {
-    logger.info(`[Perf] getUserCardsForStreamer total (no user): ${Date.now() - startTotal}ms`);
+  try {
+    const cards = await fetchUserCardCountsDirectPg(twitchUserId, streamerId);
+    logger.info(`[Perf] getUserCardsForStreamer total (direct fallback): ${Date.now() - startTotal}ms`);
+    return cards;
+  } catch (error) {
+    reportError(error, {
+      context: "dashboard:getUserCardsForStreamer:directFallback",
+      twitchUserId,
+      streamerId,
+    });
     return [];
   }
-
-  // streamers の埋め込みは FK 制約名で一意化する（getStreamerData と同じ理由:
-  // migration 00051 の card_owner_stats が cards↔streamers を m2m にも見せるため、
-  // ヒントなしの streamers(*) は PGRST201 で失敗する）。
-  const { data: userCards } = await supabaseAdmin
-    .from("user_cards")
-    .select("card_id, cards!inner(*, streamers!cards_streamer_id_fkey!inner(*))")
-    .eq("user_id", user.id)
-    .eq("cards.streamer_id", streamerId)
-    .range(0, 9999);
-  logger.info(`[Perf] getUserCardsForStreamer query: ${Date.now() - startQuery}ms`);
-
-  if (!userCards || userCards.length === 0) {
-    logger.info(`[Perf] getUserCardsForStreamer total (no data): ${Date.now() - startTotal}ms`);
-    return [];
-  }
-
-  const cardMap = new Map<string, CardWithDetails>();
-
-  for (const uc of userCards) {
-    const card = uc.cards as unknown as Card & { streamers: Streamer };
-    if (!card) continue;
-
-    const existing = cardMap.get(card.id);
-    if (existing) {
-      existing.count++;
-    } else {
-      cardMap.set(card.id, {
-        ...card,
-        streamer: card.streamers,
-        count: 1,
-      });
-    }
-  }
-
-  logger.info(`[Perf] getUserCardsForStreamer total: ${Date.now() - startTotal}ms`);
-  return Array.from(cardMap.values());
 }
 
 /**
@@ -2418,7 +2171,7 @@ export const getUserCardsForStreamer = cache(async (
   twitchUserId: string,
   streamerId: string
 ): Promise<CardWithDetails[]> => {
-  const start = Date.now();
+                                               const start = Date.now();
 
   // Use Next.js cache with 30 second revalidation
   // Next.jsキャッシュを使用（30秒で再検証）
@@ -2469,19 +2222,7 @@ async function getStreamerByIdPg(streamerId: string): Promise<Streamer | null> {
  */
 export const getStreamerById = cache(async (streamerId: string): Promise<Streamer | null> => {
   // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
-  if (isPgReadEnabled()) {
-    return getStreamerByIdPg(streamerId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-
-  const { data: streamer } = await supabaseAdmin
-    .from("streamers")
-    .select("*")
-    .eq("id", streamerId)
-    .maybeSingle();
-
-  return streamer;
+                                       return getStreamerByIdPg(streamerId);
 });
 
 /**
@@ -2621,82 +2362,8 @@ export const getUserCardDetail = cache(async (
   cardId: string
 ): Promise<CardWithDetails | null> => {
   // #571: pg 直結経路（フラグ未設定時は素通り。getStreamerDataPg 参照）
-  if (isPgReadEnabled()) {
-    return getUserCardDetailPg(twitchUserId, streamerId, cardId);
-  }
-
-  const start = Date.now();
-  const supabaseAdmin = getSupabaseAdmin();
-
-  // Get the card with streamer info to verify it belongs to the streamer
-  // カードと配信者情報を取得して、配信者のものかどうかを確認
-  // streamers の埋め込みは FK 制約名で一意化する（getStreamerData と同じ理由:
-  // migration 00051 の card_owner_stats が cards↔streamers を m2m にも見せるため、
-  // ヒントなしの streamers(*) は PGRST201 で失敗する）。
-  const { data: card } = await supabaseAdmin
-    .from("cards")
-    .select(`
-      *,
-      streamers!cards_streamer_id_fkey (*)
-    `)
-    .eq("id", cardId)
-    .eq("streamer_id", streamerId)
-    .maybeSingle();
-
-  if (!card) {
-    logger.info(`[Perf] getUserCardDetail (card not found): ${Date.now() - start}ms`);
-    return null;
-  }
-
-  // ユーザーの内部IDを取得
-  const { data: user } = await supabaseAdmin
-    .from("users")
-    .select("id")
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-
-  if (!user) {
-    logger.info(`[Perf] getUserCardDetail (user not found): ${Date.now() - start}ms`);
-    return null;
-  }
-
-  // user_cards を直接カウント（データ転送なし、行数制限の影響なし）
-  const { count } = await supabaseAdmin
-    .from("user_cards")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", user.id)
-    .eq("card_id", cardId);
-
-  const ownershipCount = count ?? 0;
-
-  // If user doesn't own this card, return null
-  // ユーザーがこのカードを所有していない場合はnullを返す
-  if (ownershipCount === 0) {
-    logger.info(`[Perf] getUserCardDetail (user doesn't own card): ${Date.now() - start}ms`);
-    return null;
-  }
-
-  logger.info(`[Perf] getUserCardDetail: ${Date.now() - start}ms`);
-
-  const cardWithStreamer = card as unknown as Card & { streamers: Streamer };
-  return {
-    ...cardWithStreamer,
-    streamer: cardWithStreamer.streamers,
-    count: ownershipCount,
-  };
+                                         return getUserCardDetailPg(twitchUserId, streamerId, cardId);
 });
-
-/**
- * PostgreSQL unique-constraint violation. Issue #557: completion records are
- * now written with a plain INSERT and this code is silently ignored, because
- * migration 00064 replaced the table's UNIQUE constraint with two PARTIAL
- * unique indexes — PostgREST's upsert (`ON CONFLICT (cols)`) cannot infer a
- * partial index as its conflict target, so upsert+ignoreDuplicates would
- * error on every write. A pre-INSERT SELECT is no substitute either (two
- * concurrent page loads could both see "not recorded yet" and both insert —
- * the DB-level unique index is the only race-free arbiter).
- */
-const UNIQUE_VIOLATION_CODE = "23505";
 
 /**
  * Shared write path for completion records (overall + per-pack).
@@ -2705,11 +2372,9 @@ const UNIQUE_VIOLATION_CODE = "23505";
  *
  * pg 直結分岐 (#663 Category A, 2026-07-11): このテーブルへの書き込みだけ
  * isPgWriteEnabled() 分岐が漏れていた（read 側の getCollectionCompletionsPg は
- * #571 で既に移行済み）。UNIQUE_VIOLATION_CODE ('23505') 判定・
- * isMissingCollectionNameColumn（デプロイ窓フォールバック）は postgrest 経路の
- * 既存ロジックをそのまま流用し、pg 版は isPgUniqueViolationError /
- * isPgMissingColumnError で同じ SQLSTATE 23505 / 42703 を判定する対の
- * ヘルパーを使う（getCollectionCompletionsPg と同じ方針）。
+ * #571 で既に移行済み）。isPgUniqueViolationError /
+ * isPgMissingColumnError で SQLSTATE 23505 / 42703 を判定する
+ * （getCollectionCompletionsPg と同じ方針）。
  * INSERT は非冪等な操作だが、対象テーブルの一意インデックス
  * (idx_collection_completions_overall_unique /
  * idx_collection_completions_pack_unique, migration 00064) が
@@ -2723,58 +2388,31 @@ async function insertCompletionRecord(
 ): Promise<void> {
   const { twitch_user_id: twitchUserId, streamer_id: streamerId, total_cards: totalCards } = row;
 
-  if (isPgWriteEnabled()) {
-    try {
-      await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          return db.insert(collectionCompletionsTable).values({
-            twitch_user_id: row.twitch_user_id,
-            streamer_id: row.streamer_id,
-            total_cards: row.total_cards,
-            // 全体コンプリートの INSERT は collection_name キー自体を省略する
-            // (postgrest 経路と同じ、00064 未適用スキーマとの互換のため)。
-            ...("collection_name" in row ? { collection_name: row.collection_name } : {}),
-          });
-        },
-        `dashboard:${context}`,
-        { idempotent: true },
-      );
-      return;
-    } catch (error) {
-      if (isPgUniqueViolationError(error)) return;
-      if ("collection_name" in row && isPgMissingColumnError(error)) return;
-      logger.error(`Failed to record collection completion: ${error instanceof Error ? error.message : String(error)}`);
-      reportError(error instanceof Error ? error : new Error(String(error)), {
-        context, twitchUserId, streamerId, totalCards,
-      });
-      return;
-    }
-  }
-
   try {
-    const supabaseAdmin = getSupabaseAdmin();
-    const { error } = await supabaseAdmin
-      .from("collection_completions")
-      .insert(row);
-    if (!error) return;
-    // Duplicate achievement (unique index hit): the normal repeat-visit case,
-    // same silent outcome the previous upsert+ignoreDuplicates produced.
-    if (error.code === UNIQUE_VIOLATION_CODE) return;
-    // Deploy window (new code + old schema): collection_name column not
-    // migrated yet. Only pack-scoped inserts ever carry the column (the
-    // overall record omits it entirely for exactly this compatibility), so
-    // skipping silently here loses nothing — the pack record will be written
-    // on the next page view after 00064 lands.
-    if ("collection_name" in row && isMissingCollectionNameColumn(error)) return;
-    logger.error(`Failed to record collection completion: ${error.message}`);
-    reportError(error, { context, twitchUserId, streamerId, totalCards });
-  } catch (err) {
-    // fire-and-forget: エラーでページ表示を壊さない
-    logger.error(`Unexpected error in ${context}: ${err}`);
-    reportError(err instanceof Error ? err : new Error(String(err)), {
+    await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db.insert(collectionCompletionsTable).values({
+          twitch_user_id: row.twitch_user_id,
+          streamer_id: row.streamer_id,
+          total_cards: row.total_cards,
+          // 全体コンプリートの INSERT は collection_name キー自体を省略する
+          // (postgrest 経路と同じ、00064 未適用スキーマとの互換のため)。
+          ...("collection_name" in row ? { collection_name: row.collection_name } : {}),
+        });
+      },
+      `dashboard:${context}`,
+      { idempotent: true },
+    );
+    return;
+  } catch (error) {
+    if (isPgUniqueViolationError(error)) return;
+    if ("collection_name" in row && isPgMissingColumnError(error)) return;
+    logger.error(`Failed to record collection completion: ${error instanceof Error ? error.message : String(error)}`);
+    reportError(error instanceof Error ? error : new Error(String(error)), {
       context, twitchUserId, streamerId, totalCards,
     });
+    return;
   }
 }
 
@@ -2939,47 +2577,11 @@ export const getCollectionCompletions = cache(async (
   twitchUserId: string,
   streamerId: string,
 ): Promise<CollectionCompletionRecord[]> => {
-  const cachedFetch = unstable_cache(
+                                                const cachedFetch = unstable_cache(
     async (): Promise<CollectionCompletionRecord[]> => {
       // #571: pg 直結経路。unstable_cache の内側で分岐することでキャッシュ
       // キー・タグ・TTL の構造を変えない（フラグ未設定時は素通り）
-      if (isPgReadEnabled()) {
-        return getCollectionCompletionsPg(twitchUserId, streamerId);
-      }
-
-      const supabaseAdmin = getSupabaseAdmin();
-      const { data, error } = await withRetry(
-        () => supabaseAdmin
-          .from("collection_completions")
-          .select("total_cards, completed_at, collection_name")
-          .eq("twitch_user_id", twitchUserId)
-          .eq("streamer_id", streamerId)
-          .order("completed_at", { ascending: false }),
-        "dashboard:getCollectionCompletions",
-      );
-      if (error) {
-        if (isMissingCollectionNameColumn(error)) {
-          // Deploy window fallback: re-select without the not-yet-deployed
-          // column (read-path 42703) and surface rows as overall completions.
-          const legacy = await withRetry(
-            () => supabaseAdmin
-              .from("collection_completions")
-              .select("total_cards, completed_at")
-              .eq("twitch_user_id", twitchUserId)
-              .eq("streamer_id", streamerId)
-              .order("completed_at", { ascending: false }),
-            "dashboard:getCollectionCompletions:legacy",
-          );
-          if (legacy.error) {
-            logger.error(`Failed to fetch collection completions (legacy): ${legacy.error.message}`);
-            return [];
-          }
-          return (legacy.data || []).map((row) => ({ ...row, collection_name: null }));
-        }
-        logger.error(`Failed to fetch collection completions: ${error.message}`);
-        return [];
-      }
-      return data || [];
+      return getCollectionCompletionsPg(twitchUserId, streamerId);
     },
     [`collection-completions-${twitchUserId}-${streamerId}`],
     { revalidate: 30, tags: [`collection-completions-${twitchUserId}-${streamerId}`] },

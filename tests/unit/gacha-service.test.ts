@@ -1,432 +1,219 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getTableName } from 'drizzle-orm'
 import { GachaService } from '@/lib/services/gacha'
-import { getSupabaseAdmin } from '@/lib/supabase/admin'
-import { createMockQueryBuilder } from '../utils/supabase-mock'
+import { getDb } from '@/lib/db/client'
+import { reportError } from '@/lib/sentry/error-handler'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { CARD_ISSUANCE_MESSAGES } from '@/lib/card-issuance'
-import { getDb } from '@/lib/db/client'
 
-vi.mock('@/lib/supabase/admin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/supabase/admin')>()
-  return { ...actual, getSupabaseAdmin: vi.fn() }
-})
-
-/**
- * Issue #718: GACHA_DB_DRIVER=pg で追加した課金系read pathを、実際の
- * GachaService公開メソッド経由で通す回帰テスト。単にgetDbを呼ぶだけでなく、
- * 選択列を固定し、Supabase table queryへ混在しないことも検証する。
- */
-describe('GachaService PG read paths (Issue #718)', () => {
-  function limitQuery(rows: unknown[]) {
-    return {
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
-      }),
-    }
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    vi.stubEnv('GACHA_DB_DRIVER', 'pg')
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(),
-      rpc: vi.fn(),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-  })
-
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  it('executeGachaのcardsをPGで読み、PostgRESTのcards tableへ触れない', async () => {
-    const where = vi.fn().mockResolvedValue(testCards)
-    const select = vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({ where }),
-    })
-    const sql = vi.fn().mockResolvedValue([{
-      result: { is_duplicate: false, limit_reached: false, history_id: 'history-pg-read' },
-    }])
-    mockGetDb.mockResolvedValue({ db: { select } as never, sql: sql as never })
-
-    const result = await new GachaService().executeGacha(
-      'streamer-1', 'user-1', 'Viewer', 'event-cards-pg-read'
-    )
-
-    expect(result.success).toBe(true)
-    expect(select).toHaveBeenCalledTimes(1)
-    expect(Object.keys(select.mock.calls[0][0])).toContain('max_issuance_count')
-    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
-  })
-
-  it('max_issuance_count未デプロイ時はPG内で列なし再読取しnullを補う', async () => {
-    const missingColumn = Object.assign(
-      new Error('column max_issuance_count does not exist'),
-      { code: '42703' }
-    )
-    const select = vi.fn()
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(missingColumn) }),
-      })
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(testCards.map(card => {
-          const { max_issuance_count: _omitted, ...withoutLimit } = card
-          void _omitted
-          return withoutLimit
-        })) }),
-      })
-    const sql = vi.fn().mockResolvedValue([{
-      result: { is_duplicate: false, limit_reached: false, history_id: 'history-pg-fallback' },
-    }])
-    mockGetDb.mockResolvedValue({ db: { select } as never, sql: sql as never })
-
-    const result = await new GachaService().executeGacha(
-      'streamer-1', 'user-1', 'Viewer', 'event-cards-pg-fallback'
-    )
-
-    expect(result.success).toBe(true)
-    expect(select).toHaveBeenCalledTimes(2)
-    expect(Object.keys(select.mock.calls[0][0])).toContain('max_issuance_count')
-    expect(Object.keys(select.mock.calls[1][0])).not.toContain('max_issuance_count')
-    if (result.success) {
-      expect(result.data.card.max_issuance_count).toBeNull()
-    }
-    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
-  })
-
-  // 2026-07 Fable厳格レビュー指摘(高1)の回帰テスト: Drizzle は postgres.js の
-  // PostgresError を DrizzleQueryError で `{ query, params, cause }` に1段
-  // ラップする。normalizePgReadError が以前はトップレベルの code/message だけを
-  // コピーして cause を捨てていたため、上の生エラー版テストは通っても、実際に
-  // 本番で発生する「ラップされた」エラー形状では
-  // isMissingCardIssuanceColumnError がフォールバックを検知できず、
-  // カード0件で失敗していた（getActiveCardsForStreamer (pg) の障害と同型）。
-  it('max_issuance_count未デプロイ(Drizzleラップ形状)でもPG内で列なし再読取しnullを補う', async () => {
-    const wrappedMissingColumn = Object.assign(
-      new Error('Failed query: select "id", "max_issuance_count", ... from "cards" where ...\nparams: streamer-1,true'),
-      {
-        query: 'select "id", "max_issuance_count", ... from "cards" where ...',
-        params: ['streamer-1', true],
-        // 実際の SQLSTATE・メッセージは cause 側にのみ存在する（postgres.js の
-        // PostgresError そのもの）。
-        cause: Object.assign(new Error('column "max_issuance_count" does not exist'), { code: '42703' }),
-      }
-    )
-    const select = vi.fn()
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(wrappedMissingColumn) }),
-      })
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(testCards.map(card => {
-          const { max_issuance_count: _omitted, ...withoutLimit } = card
-          void _omitted
-          return withoutLimit
-        })) }),
-      })
-    const sql = vi.fn().mockResolvedValue([{
-      result: { is_duplicate: false, limit_reached: false, history_id: 'history-pg-fallback-wrapped' },
-    }])
-    mockGetDb.mockResolvedValue({ db: { select } as never, sql: sql as never })
-
-    const result = await new GachaService().executeGacha(
-      'streamer-1', 'user-1', 'Viewer', 'event-cards-pg-fallback-wrapped'
-    )
-
-    expect(result.success).toBe(true)
-    expect(select).toHaveBeenCalledTimes(2)
-    expect(Object.keys(select.mock.calls[0][0])).toContain('max_issuance_count')
-    expect(Object.keys(select.mock.calls[1][0])).not.toContain('max_issuance_count')
-    if (result.success) {
-      expect(result.data.card.max_issuance_count).toBeNull()
-    }
-    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
-  })
-
-  it('streamer列欠落時はPostgRESTへ跨がずfail-closedする', async () => {
-    const missingColumn = Object.assign(
-      new Error('column rarity_weights_scope does not exist'),
-      { code: '42703' }
-    )
-    const select = vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockRejectedValue(missingColumn) }),
-      }),
-    })
-    mockGetDb.mockResolvedValue({ db: { select } as never, sql: vi.fn() as never })
-
-    const result = await new GachaService().executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'reward-1', cost: 100 },
-    }, 'event-schema-not-ready')
-
-    expect(result).toEqual({
-      success: false,
-      error: 'Database error fetching streamer: column rarity_weights_scope does not exist',
-    })
-    expect(select).toHaveBeenCalledTimes(1)
-    // 異なるproviderへ跨ぐfallbackは抽選プールのsplit-brainを起こすため禁止する。
-    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
-  })
-
-  it('EventSub streamerと追加報酬をPGで読み、未一致を安全に拒否する', async () => {
-    const select = vi.fn()
-      .mockReturnValueOnce(limitQuery([{
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        channel_point_collection_name: null,
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        chat_announcement_multi_template: null,
-        chat_announcement_multi_show_cards: true,
-        raid_gacha_active_until: null,
-        rarity_weights: null,
-        rarity_weights_scope: null,
-        pack_rarity_weights: null,
-        default_card_pack_name: null,
-      }]))
-      .mockReturnValueOnce(limitQuery([]))
-    mockGetDb.mockResolvedValue({ db: { select } as never, sql: vi.fn() as never })
-
-    const result = await new GachaService().executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'unknown-reward', cost: 100 },
-    }, 'event-pg-read')
-
-    expect(result).toEqual({ success: false, error: 'Reward ID mismatch' })
-    expect(select).toHaveBeenCalledTimes(2)
-    expect(Object.keys(select.mock.calls[0][0])).toEqual(expect.arrayContaining([
-      'id', 'channel_point_reward_id', 'rarity_weights_scope', 'pack_rarity_weights',
-    ]))
-    expect(Object.keys(select.mock.calls[1][0])).toEqual([
-      'id', 'draw_count', 'is_raid_limited', 'collection_name',
-    ])
-    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
-  })
-
-  it('raid streamerをPGで読み、無効設定ならカード発行前に停止する', async () => {
-    const select = vi.fn().mockReturnValueOnce(limitQuery([{
-      id: 'streamer-1',
-      chat_announcement_enabled: false,
-      chat_announcement_template: null,
-      chat_announcement_multi_template: null,
-      chat_announcement_multi_show_cards: true,
-      raid_gacha_draw_count: 0,
-    }]))
-    mockGetDb.mockResolvedValue({ db: { select } as never, sql: vi.fn() as never })
-
-    const result = await new GachaService().executeGachaForRaidEvent({
-      to_broadcaster_user_id: 'broadcaster-1',
-      from_broadcaster_user_id: 'raider-1',
-    }, 'raid-event-pg-read')
-
-    expect(result.success).toBe(false)
-    expect(select).toHaveBeenCalledTimes(1)
-    expect(Object.keys(select.mock.calls[0][0])).toEqual(expect.arrayContaining([
-      'id', 'raid_gacha_draw_count', 'chat_announcement_multi_show_cards',
-    ]))
-    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
-  })
-
-  it('N連再開判定でgacha_historyをPG読取し、権限エラーを発行前に返す', async () => {
-    const permissionError = Object.assign(new Error('permission denied'), { code: '42501' })
-    const select = vi.fn()
-      .mockReturnValueOnce(limitQuery([{
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        channel_point_collection_name: null,
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        chat_announcement_multi_template: null,
-        chat_announcement_multi_show_cards: true,
-        raid_gacha_active_until: null,
-        rarity_weights: null,
-        rarity_weights_scope: null,
-        pack_rarity_weights: null,
-        default_card_pack_name: null,
-      }]))
-      .mockReturnValueOnce(limitQuery([{
-        id: 'additional-1',
-        draw_count: 2,
-        is_raid_limited: false,
-        collection_name: null,
-      }]))
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(permissionError) }),
-      })
-    mockGetDb.mockResolvedValue({ db: { select } as never, sql: vi.fn() as never })
-
-    const result = await new GachaService().executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'additional-reward', cost: 100 },
-    }, 'event-prefix-pg-read')
-
-    expect(result.success).toBe(false)
-    expect(select).toHaveBeenCalledTimes(3)
-    expect(Object.keys(select.mock.calls[2][0])).toEqual(['event_id'])
-    expect(mockGetSupabaseAdmin).not.toHaveBeenCalled()
-  })
-})
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn(),
   reportApiError: vi.fn(),
   logErrorFromLogger: vi.fn(),
 }))
+
 vi.mock('@/lib/db/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/db/client')>()
   return { ...actual, getDb: vi.fn() }
 })
 
-const mockGetSupabaseAdmin = vi.mocked(getSupabaseAdmin)
 const mockGetDb = vi.mocked(getDb)
+const mockReportError = vi.mocked(reportError)
 
-// テスト用カードデータ
-const testCards = [
-  { id: 'card-1', name: 'Test Card', description: 'desc', image_url: null, rarity: 'common', collection_name: 'standard', drop_rate: 1.0, max_issuance_count: null },
-]
+type QueueEntry<T> = { value?: T; error?: unknown }
 
-/** cardsクエリの共通モック生成。thenableにしてawait対応 */
-function createCardsQuery<T extends Record<string, unknown>>(cards: T[]) {
-  const q = createMockQueryBuilder()
-  ;(q as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-    resolve({ data: cards, error: null })
-    return q
-  }
-  return q
+interface DbFixture {
+  tables?: Record<string, Array<QueueEntry<unknown[]>>>
+  transactions?: Array<QueueEntry<{
+    is_duplicate?: boolean
+    limit_reached?: boolean
+    history_id?: string | null
+  } | null>>
+  issuedCounts?: Array<QueueEntry<Record<string, number> | null>>
 }
 
 /**
- * rpc() の共通モック。Issue #548 以降、発行上限付きカードがあると
- * executeGacha は execute_gacha_transaction とは別に get_issued_card_counts も
- * 呼ぶため、単純な単一 mockResolvedValue では両者を区別できない。
- * 呼ばれた関数名(第1引数)で振り分け、get_issued_card_counts には
- * issuedCounts (card_id -> 発行済み枚数のプレーンオブジェクト、
- * get_issued_card_counts RPC の実際の戻り値と同じ形)を返す。
- * execute_gacha_transaction は呼ばれるたびに transactionResponses を
- * 1つずつ消費し、最後の要素は使い切った後も繰り返し返す
- * (`mockResolvedValue` と同じ「以降は同じ値」の挙動)。
+ * Drizzle の select builder と postgres.js の tagged-template SQL を再現する。
+ *
+ * 旧テストの PostgREST chain は、フィルターの記録だけで実際の実行境界が曖昧だった。
+ * 現行実装では `db.select(...).from(table)...` と DB 関数 SQL が別経路なので、
+ * テーブル単位の結果キューと関数単位の結果キューを明示的に分離する。各キューの
+ * 最終要素を再利用する仕様は、N連ガチャで同じカード集合・成功結果を繰り返す
+ * fixture を簡潔に表現しつつ、先頭要素をエラーにすれば接続再試行も検証できる。
  */
-function createRpcMock(options: {
-  issuedCounts?: Record<string, number>
-  transactionResponses: Array<{ data: unknown; error: { message: string; code?: string } | null }>
-}) {
-  const { issuedCounts = {}, transactionResponses } = options
-  let callIndex = 0
-  // 第2引数(params)を明示的にシグネチャへ含める: これが無いと vi.fn() の型が
-  // 1要素タプル([fnName: string])に推論され、呼び出し側で
-  // `mock.calls[n][1]` (params) にアクセスするコードが型エラーになる。
-  // params 自体はこのモックの分岐に使わないため、`void` で参照だけして
-  // no-unused-vars を満たす(呼び出し側の型安全性のためだけに存在する引数)。
-  return vi.fn((fnName: string, params?: Record<string, unknown>) => {
-    void params
-    if (fnName === 'get_issued_card_counts') {
-      return Promise.resolve({ data: issuedCounts, error: null })
-    }
-    const response = transactionResponses[Math.min(callIndex, transactionResponses.length - 1)]
-    callIndex += 1
-    return Promise.resolve(response)
+function installDbFixture(fixture: DbFixture = {}) {
+  const tableCursors = new Map<string, number>()
+  let transactionCursor = 0
+  let issuedCountsCursor = 0
+
+  function consume<T>(entries: Array<QueueEntry<T>> | undefined, cursor: number, fallback: T) {
+    if (!entries || entries.length === 0) return { entry: { value: fallback }, next: cursor }
+    const index = Math.min(cursor, entries.length - 1)
+    return { entry: entries[index], next: cursor + 1 }
+  }
+
+  const select = vi.fn((fields: Record<string, unknown>) => {
+    let tableName = ''
+    const builder: Record<string, unknown> = {}
+    const chain = vi.fn(() => builder)
+    Object.assign(builder, {
+      from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+        tableName = getTableName(table)
+        return builder
+      }),
+      where: chain,
+      limit: chain,
+      offset: chain,
+      orderBy: chain,
+      groupBy: chain,
+      innerJoin: chain,
+      leftJoin: chain,
+      then: (
+        onFulfilled: (value: unknown[]) => unknown,
+        onRejected?: (reason: unknown) => unknown,
+      ) => {
+        const cursor = tableCursors.get(tableName) ?? 0
+        const consumed = consume(fixture.tables?.[tableName], cursor, [])
+        tableCursors.set(tableName, consumed.next)
+        const promise = consumed.entry.error
+          ? Promise.reject(consumed.entry.error)
+          : Promise.resolve(consumed.entry.value ?? [])
+        return promise.then(onFulfilled, onRejected)
+      },
+    })
+    void fields
+    return builder
   })
+
+  const transactionCalls: unknown[][] = []
+  const issuedCountCalls: unknown[][] = []
+  const sql = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const statement = strings.join(' ')
+    if (statement.includes('get_issued_card_counts')) {
+      issuedCountCalls.push(values)
+      const consumed = consume(fixture.issuedCounts, issuedCountsCursor, {})
+      issuedCountsCursor = consumed.next
+      if (consumed.entry.error) return Promise.reject(consumed.entry.error)
+      return Promise.resolve([{ result: consumed.entry.value ?? {} }])
+    }
+
+    transactionCalls.push(values)
+    const consumed = consume(
+      fixture.transactions,
+      transactionCursor,
+      { is_duplicate: false, limit_reached: false, history_id: 'history-1' },
+    )
+    transactionCursor = consumed.next
+    if (consumed.entry.error) return Promise.reject(consumed.entry.error)
+    return Promise.resolve([{ result: consumed.entry.value ?? null }])
+  })
+
+  mockGetDb.mockResolvedValue({
+    db: { select } as never,
+    sql: sql as never,
+  })
+
+  return { select, sql, transactionCalls, issuedCountCalls, tableCursors }
 }
 
-describe('GachaService.executeGacha', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
+function dbError(message: string, code: string) {
+  return Object.assign(new Error(message), { code })
+}
 
-  it('正常系: RPC成功でカード結果を返す', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-1' },
-      error: null,
-    })
+function omitIssuanceLimit<T extends { max_issuance_count?: unknown }>(card: T) {
+  const { max_issuance_count: omitted, ...withoutIssuanceLimit } = card
+  void omitted
+  return withoutIssuanceLimit
+}
 
-    // モック設定後にサービスを生成（コンストラクタでgetSupabaseAdminを呼ぶため）
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+const testCards = [
+  {
+    id: 'card-1',
+    name: 'Test Card',
+    description: 'desc',
+    image_url: null,
+    rarity: 'common',
+    collection_name: 'standard',
+    drop_rate: 1,
+    max_issuance_count: null,
+  },
+]
 
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+const baseStreamer = {
+  id: 'streamer-1',
+  channel_point_reward_id: 'main-reward',
+  channel_point_collection_name: null,
+  chat_announcement_enabled: false,
+  chat_announcement_template: null,
+  chat_announcement_multi_template: null,
+  chat_announcement_multi_show_cards: true,
+  raid_gacha_active_until: null,
+  rarity_weights: null,
+  rarity_weights_scope: null,
+  pack_rarity_weights: null,
+  default_card_pack_name: null,
+}
 
-    expect(result.success).toBe(true)
-    if (result.success) {
-      expect(result.data.card.id).toBe('card-1')
-      expect(result.data.userTwitchUsername).toBe('testuser')
-    }
-    expect(mockRpc).toHaveBeenCalledWith('execute_gacha_transaction', {
-      p_event_id: 'event-1',
-      p_user_twitch_id: 'user-1',
-      p_user_twitch_username: 'testuser',
-      p_card_id: 'card-1',
-      p_streamer_id: 'streamer-1',
-      p_reward_cost: null,
-      p_reward_id: null,
-    })
-  })
+const baseEvent = {
+  broadcaster_user_id: 'broadcaster-1',
+  user_id: 'user-1',
+  user_login: 'viewer',
+  user_name: 'Viewer',
+  reward: { id: 'main-reward', cost: 100 },
+}
 
-  it('rewardId指定時: execute_gacha_transaction RPCにp_reward_idとして渡される(Issue #591)', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-reward-id' },
-      error: null,
-    })
+beforeEach(() => {
+  vi.clearAllMocks()
+})
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
-    const service = new GachaService()
-    // executeGacha の8番目の引数(rewardId)を直接渡す
-    const result = await service.executeGacha(
-      'streamer-1', 'user-1', 'testuser', 'event-reward-id',
-      undefined, undefined, undefined, 'reward-abc'
+describe('GachaService.executeGacha: PlanetScale read/write', () => {
+  it('カードをDrizzleで読み、名前付きSQL引数でトランザクションを実行する', async () => {
+    const fixture = installDbFixture({ tables: { cards: [{ value: testCards }] } })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-1', 100, undefined, undefined, 'reward-1',
     )
 
     expect(result.success).toBe(true)
-    expect(mockRpc).toHaveBeenCalledWith('execute_gacha_transaction', expect.objectContaining({
-      p_reward_id: 'reward-abc',
-    }))
+    expect(fixture.select).toHaveBeenCalledOnce()
+    expect(Object.keys(fixture.select.mock.calls[0][0])).toContain('max_issuance_count')
+    expect(fixture.transactionCalls[0]).toEqual([
+      'event-1', 'user-1', 'Viewer', 'card-1', 'streamer-1', 100, 'reward-1',
+    ])
   })
 
-  it('drop_rate が DECIMAL 文字列で返っても、結果カードの drop_rate は number に正規化される', async () => {
-    // Supabase JS client は DECIMAL(5,4) を文字列で返す場合がある
-    // (normalizeDropRate の存在理由)。返却カードを生 rows から再構築する
-    // 実装(#579)でも、正規化済み配列を参照して string が GachaResult /
-    // overlay broadcast へ漏れないことを担保する回帰テスト。
-    const stringDropRateCards = [
-      { id: 'card-1', name: 'Test Card', description: 'desc', image_url: null, rarity: 'common', drop_rate: '0.3000' as unknown as number },
-    ]
-    const cardsQuery = createCardsQuery(stringDropRateCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-1' },
-      error: null,
+  it('eventId未指定時はSQLへnullを渡し、接続断を非冪等リトライしない', async () => {
+    const connectionError = dbError('connection closed', 'CONNECTION_CLOSED')
+    const fixture = installDbFixture({
+      tables: { cards: [{ value: testCards }] },
+      transactions: [
+        { error: connectionError },
+        { value: { is_duplicate: false, history_id: 'must-not-run' } },
+      ],
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const result = await new GachaService().executeGacha('streamer-1', 'user-1', 'Viewer')
 
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+    expect(result.success).toBe(false)
+    expect(fixture.transactionCalls).toHaveLength(1)
+    expect(fixture.transactionCalls[0][0]).toBeNull()
+  })
+
+  it('DECIMAL文字列のdrop_rateをnumberへ正規化する', async () => {
+    installDbFixture({
+      tables: {
+        cards: [{ value: [{ ...testCards[0], drop_rate: '0.3000' }] }],
+      },
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-decimal',
+    )
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -435,1354 +222,862 @@ describe('GachaService.executeGacha', () => {
     }
   })
 
-  it('重複イベント: is_duplicate=true で Duplicate event エラーを返す', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => cardsQuery),
-      rpc: vi.fn().mockResolvedValue({
-        data: { is_duplicate: true },
-        error: null,
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-dup')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Duplicate event')
-    }
-  })
-
-  it('カード取得の一時的な502エラーをリトライして成功する', async () => {
-    const failingCardsQuery = createMockQueryBuilder()
-    ;(failingCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ data: null, error: { message: 'Database error: error code: 502', code: '502' } })
-      return failingCardsQuery
-    }
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-retry-cards' },
-      error: null,
-    })
-    const fromMock = vi.fn((table: string) => {
-      if (table === 'cards') {
-        return fromMock.mock.calls.filter(([name]) => name === 'cards').length === 1
-          ? failingCardsQuery
-          : cardsQuery
-      }
-      return createMockQueryBuilder()
+  it('重複イベントはカード付与成功として返さない', async () => {
+    installDbFixture({
+      tables: { cards: [{ value: testCards }] },
+      transactions: [{ value: { is_duplicate: true } }],
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: fromMock,
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-duplicate',
+    )
 
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-card-retry')
-
-    expect(result.success).toBe(true)
-    expect(fromMock).toHaveBeenCalledWith('cards')
-    expect(fromMock).toHaveBeenCalledTimes(2)
-    expect(mockRpc).toHaveBeenCalledTimes(1)
+    expect(result).toEqual({ success: false, error: 'Duplicate event' })
   })
 
-  it('RPCの一時的な502エラーをリトライして成功する', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn()
-      .mockResolvedValueOnce({
-        data: null,
-        error: { message: 'Gacha RPC failed: error code: 502', code: '502' },
-      })
-      .mockResolvedValueOnce({
-        data: { is_duplicate: false, history_id: 'h-retry-rpc' },
-        error: null,
-      })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => cardsQuery),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-rpc-retry')
-
-    expect(result.success).toBe(true)
-    expect(mockRpc).toHaveBeenCalledTimes(2)
-  })
-
-  it('RPC未デプロイ(42883): レガシーフォールバックで成功する', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    // フォールバック時のDB操作用モック（upsert → select → insert チェーン）
-    const legacyQuery = createMockQueryBuilder()
-    ;(legacyQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'user-1-uuid' }, error: null,
-    })
-    // insert (user_cards) のawait用thenable
-    const insertQuery = createMockQueryBuilder()
-    ;(insertQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ data: null, error: null })
-      return insertQuery
-    }
-    // upsert (gacha_history) のawait用thenable
-    const upsertQuery = createMockQueryBuilder()
-    ;(upsertQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ data: null, error: null })
-      return upsertQuery
-    }
-
-    const fromMock = vi.fn((table: string) => {
-      if (table === 'cards') return cardsQuery
-      if (table === 'gacha_history') return upsertQuery
-      if (table === 'users') return legacyQuery
-      if (table === 'user_cards') return insertQuery
-      return createMockQueryBuilder()
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: fromMock,
-      rpc: vi.fn().mockResolvedValue({
-        data: null,
-        error: { message: 'function execute_gacha_transaction does not exist', code: '42883' },
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-fallback')
-
-    // フォールバックが成功してカードが返る
-    expect(result.success).toBe(true)
-    if (result.success) {
-      expect(result.data.card.id).toBe('card-1')
-    }
-    // フォールバック時のDB操作が呼ばれている
-    expect(fromMock).toHaveBeenCalledWith('gacha_history')
-    expect(fromMock).toHaveBeenCalledWith('users')
-  })
-
-  it('RPCエラー(42883以外): reportErrorを呼びエラー結果を返す', async () => {
-    const { reportError } = await import('@/lib/sentry/error-handler')
-    const mockReportError = vi.mocked(reportError)
-    const cardsQuery = createCardsQuery(testCards)
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => cardsQuery),
-      rpc: vi.fn().mockResolvedValue({
-        data: null,
-        error: { message: 'connection refused', code: '08006' },
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-err')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toContain('connection refused')
-    }
-    expect(mockReportError).toHaveBeenCalled()
-  })
-
-  it('カード未登録: カードがない場合はエラーを返す', async () => {
-    const cardsQuery = createCardsQuery([])
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => cardsQuery),
-      rpc: vi.fn(),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toContain('No cards available')
-    }
-  })
-
-  it('発行上限に達したカードを抽選候補から除外する', async () => {
-    const cardsQuery = createCardsQuery([
-      { id: 'sold-out-card', name: 'Sold Out', description: 'desc', image_url: null, rarity: 'legendary', collection_name: 'standard', drop_rate: 100, max_issuance_count: 1 },
-      { id: 'available-card', name: 'Available', description: 'desc', image_url: null, rarity: 'common', collection_name: 'standard', drop_rate: 1, max_issuance_count: null },
-    ])
-    const mockRpc = createRpcMock({
-      issuedCounts: { 'sold-out-card': 1 },
-      transactionResponses: [{ data: { is_duplicate: false, limit_reached: false, history_id: 'h-1' }, error: null }],
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-limited')
-
-    expect(result.success).toBe(true)
-    expect(mockRpc).toHaveBeenCalledWith('execute_gacha_transaction', expect.objectContaining({
-      p_card_id: 'available-card',
-    }))
-  })
-
-  it('発行枚数チェックRPCは limitedCards のIDのみに絞り込む（無制限カードIDを含まない）', async () => {
-    const cardsQuery = createCardsQuery([
-      { id: 'unlimited-card', name: 'Unlimited', description: 'desc', image_url: null, rarity: 'common', collection_name: 'standard', drop_rate: 1, max_issuance_count: null },
-      { id: 'limited-card', name: 'Limited', description: 'desc', image_url: null, rarity: 'rare', collection_name: 'standard', drop_rate: 1, max_issuance_count: 5 },
-    ])
-    const mockRpc = createRpcMock({
-      transactionResponses: [{ data: { is_duplicate: false, history_id: 'h-1' }, error: null }],
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    await new GachaService().executeGacha('streamer-1', 'user-1', 'testuser', 'event-query-scope')
-
-    // get_issued_card_counts RPC は limitedCards の ID のみで呼ばれる(無制限カードIDを含まない)
-    expect(mockRpc).toHaveBeenCalledWith('get_issued_card_counts', { p_card_ids: ['limited-card'] })
-  })
-
-  it('全カードが発行上限に達している場合はエラーを返す', async () => {
-    const cardsQuery = createCardsQuery([
-      { id: 'sold-out-card', name: 'Sold Out', description: 'desc', image_url: null, rarity: 'legendary', collection_name: 'standard', drop_rate: 100, max_issuance_count: 1 },
-    ])
-    const mockRpc = createRpcMock({
-      issuedCounts: { 'sold-out-card': 1 },
-      transactionResponses: [],
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-sold-out')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toContain('発行可能枚数')
-    }
-    // 発行枚数チェックRPC (get_issued_card_counts) は呼ばれるが、全カード売り切れのため
-    // 抽選トランザクションRPC (execute_gacha_transaction) は呼ばれない
-    expect(mockRpc).not.toHaveBeenCalledWith('execute_gacha_transaction', expect.anything())
-  })
-
-  it('RPCが発行上限到達を返した場合はカード付与成功にしない', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, limit_reached: true },
-      error: null,
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => cardsQuery),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-race')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toContain('発行可能枚数')
-    }
-  })
-
-  it('RPC未デプロイ + limited カード選択時: legacy パスで発行を拒否する', async () => {
-    // limited カード (max_issuance_count あり) を含むカード集合で、
-    // RPC が未デプロイ (42883) でフォールバックが必要な状況をシミュレートする。
-    // selectWeightedCard が limited カードを選んだケースを再現するため、
-    // 抽選候補に未発行の limited カードのみを残す。
-    const limitedCards = [
-      { id: 'limited-card', name: 'Limited', description: 'desc', image_url: null, rarity: 'legendary', drop_rate: 100, max_issuance_count: 5 },
-    ]
-    const cardsQuery = createCardsQuery(limitedCards as unknown as typeof testCards)
-    // user_cards は未発行 (0/5) → limited カードが抽選対象に残る
-    const userCardsQuery = createMockQueryBuilder()
-    ;(userCardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({ data: [], error: null })
-      return userCardsQuery
-    }
-
-    const fromMock = vi.fn((table: string) => {
-      if (table === 'cards') return cardsQuery
-      if (table === 'user_cards') return userCardsQuery
-      return createMockQueryBuilder()
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: fromMock,
-      rpc: vi.fn().mockResolvedValue({
-        data: null,
-        error: { message: 'function execute_gacha_transaction does not exist', code: '42883' },
-      }),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-legacy-limited')
-
-    // Legacy パスでは atomic な発行枚数チェックができないため、
-    // 上限超過リスクを避けて拒否する。R2 (PR #450 follow-up): この拒否は
-    // 本物の soldOut とは別の異常系(RPC未デプロイ)なので、専用の
-    // limitUnavailable を返し、genuine soldOut の文字列とは区別される
-    // (eventsub route.ts のソフトフェイル抑止に巻き込まれずreportErrorが
-    // 発火することを別テストで検証する)。
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe(CARD_ISSUANCE_MESSAGES.limitUnavailable)
-      expect(result.error).not.toBe(CARD_ISSUANCE_MESSAGES.soldOut)
-    }
-    // gacha_history / user_cards INSERT は実行されていないことを確認
-    expect(fromMock).not.toHaveBeenCalledWith('gacha_history')
-    expect(fromMock).not.toHaveBeenCalledWith('users')
-  })
-
-  // R1 (PR #450 レビュー follow-up): limit_reached はプール全体の抽選失敗ではなく、
-  // 選ばれたカードだけを除外して残りプールから再抽選すべき。migration 00067 が
-  // gacha_history INSERT より前に limit_reached を返すことを利用し、同じ eventId
-  // でRPCを再実行しても副作用が無いことに依拠する(gacha.ts のコメント参照)。
-  describe('limit_reached 時の再抽選 (R1)', () => {
-    it('limit_reachedを受けたカードをプールから除外し、別カードで同じeventIdでRPCを再実行して成功する', async () => {
-      const cardsQuery = createCardsQuery([
-        { id: 'card-a', name: 'A', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: null },
-        { id: 'card-b', name: 'B', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: null },
-      ] as unknown as typeof testCards)
-      const mockRpc = vi.fn()
-        .mockResolvedValueOnce({ data: { is_duplicate: false, limit_reached: true }, error: null })
-        .mockResolvedValueOnce({ data: { is_duplicate: false, limit_reached: false, history_id: 'h-retry' }, error: null })
-
-      mockGetSupabaseAdmin.mockReturnValue({
-        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-        rpc: mockRpc,
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-retry')
-
-      expect(result.success).toBe(true)
-      expect(mockRpc).toHaveBeenCalledTimes(2)
-      const firstCardId = (mockRpc.mock.calls[0][1] as { p_card_id: string }).p_card_id
-      const secondCardId = (mockRpc.mock.calls[1][1] as { p_card_id: string }).p_card_id
-      // 2回目は1回目と別のカードが選ばれている(除外が効いている)
-      expect(secondCardId).not.toBe(firstCardId)
-      // 同じ eventId が両方の呼び出しに渡されている(副作用ゼロなので安全に同一eventIdで再試行できる)
-      expect((mockRpc.mock.calls[0][1] as { p_event_id: string }).p_event_id).toBe('event-retry')
-      expect((mockRpc.mock.calls[1][1] as { p_event_id: string }).p_event_id).toBe('event-retry')
-      if (result.success) {
-        expect(result.data.card.id).toBe(secondCardId)
-      }
-    })
-
-    it('パック内自動配分(effectiveWeight)でも limit_reached 後に残りプールから正しく再選択する', async () => {
-      // 発行上限付き(c1)+無制限(c2)の2枚パック。c1がまず選ばれてlimit_reachedに
-      // なっても、effectiveWeightの再計算を経てc2で成功することを確認する。
-      const packCards = [
-        { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0, max_issuance_count: 1 },
-        { id: 'c2', name: 'Common2', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0, max_issuance_count: null },
-      ]
-      const cardsQuery = createCardsQuery(packCards as unknown as typeof testCards)
-      // c1はまだ未発行(0/1)なので発行上限フィルタ後も初期プールに残る
-      const mockRpc = createRpcMock({
-        issuedCounts: {},
-        transactionResponses: [
-          { data: { is_duplicate: false, limit_reached: true }, error: null },
-          { data: { is_duplicate: false, limit_reached: false, history_id: 'h-effective-retry' }, error: null },
+  it('カードreadの一時的な接続断をリトライする', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [
+          { error: dbError('socket closed', 'CONNECTION_CLOSED') },
+          { value: testCards },
         ],
-      })
-
-      mockGetSupabaseAdmin.mockReturnValue({
-        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-        rpc: mockRpc,
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-effective-retry', 100, 'weapons', {
-        rarityWeightsScope: 'global',
-        rarityWeights: { common: 100 },
-        packRarityWeights: null,
-      })
-
-      expect(result.success).toBe(true)
-      // 発行枚数チェックRPCの1回 + 抽選トランザクションRPCの2回(1回目はlimit_reached)
-      const transactionCalls = mockRpc.mock.calls.filter(([fnName]) => fnName === 'execute_gacha_transaction')
-      expect(transactionCalls).toHaveLength(2)
-      const firstCardId = (transactionCalls[0][1] as { p_card_id: string }).p_card_id
-      const secondCardId = (transactionCalls[1][1] as { p_card_id: string }).p_card_id
-      expect(secondCardId).not.toBe(firstCardId)
-      if (result.success) {
-        expect(result.data.card.id).toBe(secondCardId)
-      }
+      },
     })
 
-    it('全カードでlimit_reachedが続く場合はプールを使い果たしてsoldOutを返す', async () => {
-      const cardsQuery = createCardsQuery([
-        { id: 'card-a', name: 'A', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: 1 },
-        { id: 'card-b', name: 'B', description: null, image_url: null, rarity: 'common', drop_rate: 0.5, max_issuance_count: 1 },
-      ] as unknown as typeof testCards)
-      // 両カードとも未発行として初期プールに残す
-      const mockRpc = createRpcMock({
-        issuedCounts: {},
-        transactionResponses: [{ data: { is_duplicate: false, limit_reached: true }, error: null }],
-      })
-
-      mockGetSupabaseAdmin.mockReturnValue({
-        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-        rpc: mockRpc,
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-exhausted')
-
-      expect(result.success).toBe(false)
-      if (!result.success) {
-        expect(result.error).toBe(CARD_ISSUANCE_MESSAGES.soldOut)
-      }
-      // 2枚のプールを2回で使い果たして打ち切られる(発行枚数チェックRPCは別カウント)
-      const transactionCalls = mockRpc.mock.calls.filter(([fnName]) => fnName === 'execute_gacha_transaction')
-      expect(transactionCalls).toHaveLength(2)
-    })
-
-    it('再試行回数の上限(5回)を超えたら、プールにまだカードが残っていてもsoldOutで打ち切る', async () => {
-      // 上限より多い6枚のプールを用意し、RPCが常にlimit_reachedを返す異常系でも
-      // 無制限にRPCを叩き続けないことを確認する。
-      const manyCards = Array.from({ length: 6 }, (_, index) => ({
-        id: `card-${index}`,
-        name: `Card ${index}`,
-        description: null,
-        image_url: null,
-        rarity: 'common',
-        drop_rate: 1,
-        max_issuance_count: null,
-      }))
-      const cardsQuery = createCardsQuery(manyCards as unknown as typeof testCards)
-      const mockRpc = vi.fn().mockResolvedValue({ data: { is_duplicate: false, limit_reached: true }, error: null })
-
-      mockGetSupabaseAdmin.mockReturnValue({
-        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-        rpc: mockRpc,
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-retry-cap')
-
-      expect(result.success).toBe(false)
-      if (!result.success) {
-        expect(result.error).toBe(CARD_ISSUANCE_MESSAGES.soldOut)
-      }
-      // 6枚のプールが残っていても再試行は5回で打ち切られる(無制限ループ防止)
-      expect(mockRpc).toHaveBeenCalledTimes(5)
-    })
-  })
-
-  it('eventId未指定: p_event_idにnullが渡される', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-2' },
-      error: null,
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn(() => cardsQuery),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    await service.executeGacha('streamer-1', 'user-1', 'testuser')
-
-    expect(mockRpc).toHaveBeenCalledWith('execute_gacha_transaction', expect.objectContaining({
-      p_event_id: null,
-    }))
-  })
-
-  // Issue #393: collection (card pack) scoping
-  it('collectionName指定時は対象パックのカードだけを抽選対象にする', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-collection' },
-      error: null,
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons')
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-read-retry',
+    )
 
     expect(result.success).toBe(true)
-    expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'weapons')
+    expect(fixture.select).toHaveBeenCalledTimes(2)
   })
 
-  // Issue #555: 「デフォルトパックのみ」= 未分類カード(collection_name IS NULL)
-  // だけを抽選対象にする。通常のパック名指定(.eq)とは逆に .is で絞り込む必要がある。
-  it('DEFAULT_PACK_SENTINEL指定時は未分類(collection_name IS NULL)のカードだけを抽選対象にする', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-default-pack' },
-      error: null,
+  it('eventIdがあるSQL書込みの一時的な接続断をリトライする', async () => {
+    const fixture = installDbFixture({
+      tables: { cards: [{ value: testCards }] },
+      transactions: [
+        { error: dbError('socket closed', 'CONNECTION_CLOSED') },
+        { value: { is_duplicate: false, history_id: 'history-after-retry' } },
+      ],
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, DEFAULT_PACK_SENTINEL)
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-write-retry',
+    )
 
     expect(result.success).toBe(true)
-    expect(cardsQuery.is).toHaveBeenCalledWith('collection_name', null)
-    // A literal .eq('collection_name', '__default__') would never match any real
-    // card, so the sentinel must never be passed to .eq.
-    expect(cardsQuery.eq).not.toHaveBeenCalledWith('collection_name', DEFAULT_PACK_SENTINEL)
+    expect(fixture.transactionCalls).toHaveLength(2)
   })
 
-  it('DEFAULT_PACK_SENTINEL指定+列未デプロイ(READ 42703)なら誤って全カード抽選せず拒否する', async () => {
-    const cardsQuery = createMockQueryBuilder()
-    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({
-        data: null,
-        error: { message: 'column cards.collection_name does not exist', code: '42703' },
-      })
-      return cardsQuery
-    }
-    const mockRpc = vi.fn()
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, DEFAULT_PACK_SENTINEL)
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Card collections are not deployed yet')
-    }
-    expect(mockRpc).not.toHaveBeenCalled()
-  })
-
-  it('collection指定なしではcollection_nameで絞り込まない', async () => {
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-all' },
-      error: null,
+  it('必須DB関数が未デプロイなら別providerへ逃がさずfail-closedする', async () => {
+    installDbFixture({
+      tables: { cards: [{ value: testCards }] },
+      transactions: [{ error: dbError('function does not exist', '42883') }],
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
-
-    const eqCalls = (cardsQuery.eq as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])
-    expect(eqCalls).not.toContain('collection_name')
-  })
-
-  it('collection未指定では未マイグレーション(42703)でも従来どおりDBエラーを返す(列を参照しない)', async () => {
-    // collection 未指定のクエリは collection_name を一切参照しないため、
-    // この機能を使わない配信者はデプロイ窓で巻き込まれない。万一別カラムの
-    // 読み取りエラー(42703)が来ても collection フォールバックは発火しない。
-    const cardsQuery = createMockQueryBuilder()
-    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({
-        data: null,
-        error: { message: 'column cards.some_other_column does not exist', code: '42703' },
-      })
-      return cardsQuery
-    }
-    const mockRpc = vi.fn()
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-function-missing',
+    )
 
     expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toContain('Database error')
-    }
-    expect(mockRpc).not.toHaveBeenCalled()
+    if (!result.success) expect(result.error).toContain('function does not exist')
+    expect(mockReportError).toHaveBeenCalledOnce()
   })
 
-  it('collection指定あり+列未デプロイ(READ 42703)なら誤って全カード抽選せず拒否する', async () => {
-    // 実 PostgREST は SELECT/フィルタの列欠落で 42703 ("does not exist") を返す。
-    // PGRST204 だけでなくこの読み取りエラー形でも検知できることを固定する(H1)。
-    const cardsQuery = createMockQueryBuilder()
-    ;(cardsQuery as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => void) => {
-      resolve({
-        data: null,
-        error: { message: 'column cards.collection_name does not exist', code: '42703' },
-      })
-      return cardsQuery
-    }
-    const mockRpc = vi.fn()
+  it('トランザクションのDBエラーを報告して呼出元へ返す', async () => {
+    installDbFixture({
+      tables: { cards: [{ value: testCards }] },
+      transactions: [{ error: dbError('permission denied', '42501') }],
+    })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons')
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-permission',
+    )
 
     expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Card collections are not deployed yet')
-    }
-    expect(mockRpc).not.toHaveBeenCalled()
+    if (!result.success) expect(result.error).toContain('permission denied')
+    expect(mockReportError).toHaveBeenCalledOnce()
   })
 
-  // Issue #579 (#576 フェーズ2): パック内レアリティ自動配分。
-  // Math.randomを固定し、実効重み(effectiveWeight)から導かれる境界どおりに
-  // 選択されることを決定的に検証する(統計的サンプリングは使わない)。
-  describe('パック内レアリティ自動配分 (effectiveWeight)', () => {
+  it('カードが0件ならSQL書込みを行わない', async () => {
+    const fixture = installDbFixture({ tables: { cards: [{ value: [] }] } })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-no-cards',
+    )
+
+    expect(result.success).toBe(false)
+    expect(fixture.transactionCalls).toHaveLength(0)
+  })
+
+  it('max_issuance_count列欠落時は列なしDrizzle readへフォールバックする', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [
+          { error: dbError('column max_issuance_count does not exist', '42703') },
+          { value: testCards.map(omitIssuanceLimit) },
+        ],
+      },
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-column-fallback',
+    )
+
+    expect(result.success).toBe(true)
+    expect(fixture.select).toHaveBeenCalledTimes(2)
+    expect(Object.keys(fixture.select.mock.calls[1][0])).not.toContain('max_issuance_count')
+  })
+
+  it('DrizzleQueryErrorのcauseにある列欠落もフォールバック対象にする', async () => {
+    const wrapped = Object.assign(new Error('Failed query'), {
+      cause: dbError('column max_issuance_count does not exist', '42703'),
+    })
+    const fixture = installDbFixture({
+      tables: {
+        cards: [
+          { error: wrapped },
+          { value: testCards.map(omitIssuanceLimit) },
+        ],
+      },
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-wrapped-column',
+    )
+
+    expect(result.success).toBe(true)
+    expect(fixture.select).toHaveBeenCalledTimes(2)
+  })
+
+  it('発行上限到達カードを候補から除外する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [{
+          value: [
+            { ...testCards[0], id: 'sold-out', max_issuance_count: 1, drop_rate: 100 },
+            { ...testCards[0], id: 'available', max_issuance_count: null, drop_rate: 1 },
+          ],
+        }],
+      },
+      issuedCounts: [{ value: { 'sold-out': 1 } }],
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-limited',
+    )
+
+    expect(result.success).toBe(true)
+    expect(fixture.issuedCountCalls[0][0]).toBe('sold-out')
+    expect(fixture.transactionCalls[0][3]).toBe('available')
+  })
+
+  it('全カードが発行上限ならsoldOutを返して書込まない', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [{ value: [{ ...testCards[0], id: 'sold-out', max_issuance_count: 1 }] }],
+      },
+      issuedCounts: [{ value: { 'sold-out': 1 } }],
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-sold-out',
+    )
+
+    expect(result).toEqual({ success: false, error: CARD_ISSUANCE_MESSAGES.soldOut })
+    expect(fixture.transactionCalls).toHaveLength(0)
+  })
+
+  it('発行数DB関数が未デプロイなら同じPlanetScaleのgroupBy集計を使う', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [{
+          value: [
+            { ...testCards[0], id: 'limited', max_issuance_count: 2 },
+            { ...testCards[0], id: 'available', max_issuance_count: null },
+          ],
+        }],
+        user_cards: [{ value: [{ cardId: 'limited', issuedCount: 2 }] }],
+      },
+      issuedCounts: [{ error: dbError('function missing', '42883') }],
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-count-fallback',
+    )
+
+    expect(result.success).toBe(true)
+    expect(fixture.tableCursors.get('user_cards')).toBe(1)
+    expect(fixture.transactionCalls[0][3]).toBe('available')
+  })
+
+  it('limit_reachedのカードを除外し同じeventIdで別カードを再抽選する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [{
+          value: [
+            { ...testCards[0], id: 'card-a', drop_rate: 1 },
+            { ...testCards[0], id: 'card-b', drop_rate: 1 },
+          ],
+        }],
+      },
+      transactions: [
+        { value: { limit_reached: true } },
+        { value: { is_duplicate: false, history_id: 'history-retry' } },
+      ],
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-limit-retry',
+    )
+
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls).toHaveLength(2)
+    expect(fixture.transactionCalls[1][3]).not.toBe(fixture.transactionCalls[0][3])
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
+      'event-limit-retry', 'event-limit-retry',
+    ])
+  })
+
+  it('limit_reachedが全候補で続けばsoldOutを返す', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [{
+          value: [
+            { ...testCards[0], id: 'card-a' },
+            { ...testCards[0], id: 'card-b' },
+          ],
+        }],
+      },
+      transactions: [{ value: { limit_reached: true } }],
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-exhausted',
+    )
+
+    expect(result).toEqual({ success: false, error: CARD_ISSUANCE_MESSAGES.soldOut })
+    expect(fixture.transactionCalls).toHaveLength(2)
+  })
+
+  it('limit_reachedの再試行を5回で打ち切る', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [{
+          value: Array.from({ length: 6 }, (_, index) => ({
+            ...testCards[0],
+            id: `card-${index}`,
+          })),
+        }],
+      },
+      transactions: [{ value: { limit_reached: true } }],
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-retry-cap',
+    )
+
+    expect(result).toEqual({ success: false, error: CARD_ISSUANCE_MESSAGES.soldOut })
+    expect(fixture.transactionCalls).toHaveLength(5)
+  })
+
+  it.each([
+    ['named pack', 'weapons'],
+    ['default pack', DEFAULT_PACK_SENTINEL],
+  ])('%sをDrizzle predicateで絞って抽選する', async (_label, collectionName) => {
+    const fixture = installDbFixture({ tables: { cards: [{ value: testCards }] } })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-pack', 100, collectionName,
+    )
+
+    expect(result.success).toBe(true)
+    expect(fixture.select).toHaveBeenCalledOnce()
+    expect(Object.keys(fixture.select.mock.calls[0][0])).toContain('intra_rarity_weight')
+  })
+
+  it('collection未指定ではcollection列を選択せず、別列の42703を通常DBエラーとして返す', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        cards: [{ error: dbError('column cards.some_other_column does not exist', '42703') }],
+      },
+    })
+
+    const result = await new GachaService().executeGacha(
+      'streamer-1', 'user-1', 'Viewer', 'event-unrelated-column',
+    )
+
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.error).toContain('Database error')
+    expect(Object.keys(fixture.select.mock.calls[0][0])).not.toContain('intra_rarity_weight')
+    expect(fixture.transactionCalls).toHaveLength(0)
+  })
+
+  it.each([DEFAULT_PACK_SENTINEL, 'weapons'])(
+    'collection列未デプロイ時は全カード抽選へ落とさず拒否する: %s',
+    async (collectionName) => {
+      const fixture = installDbFixture({
+        tables: {
+          cards: [{ error: dbError('column cards.collection_name does not exist', '42703') }],
+        },
+      })
+
+      const result = await new GachaService().executeGacha(
+        'streamer-1', 'user-1', 'Viewer', 'event-pack-missing', 100, collectionName,
+      )
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Card collections are not deployed yet',
+      })
+      expect(fixture.transactionCalls).toHaveLength(0)
+    },
+  )
+
+  describe('パック内レアリティ自動配分', () => {
     const packCards = [
-      { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
-      { id: 'c2', name: 'Common2', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
-      { id: 'r1', name: 'Rare1', description: null, image_url: null, rarity: 'rare', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
+      { ...testCards[0], id: 'common-1', rarity: 'common', intra_rarity_weight: 1 },
+      { ...testCards[0], id: 'common-2', rarity: 'common', intra_rarity_weight: 1 },
+      { ...testCards[0], id: 'rare-1', rarity: 'rare', intra_rarity_weight: 1 },
     ]
 
-    let randomSpy: ReturnType<typeof vi.spyOn> | null = null
+    it.each([
+      [0.35, 'common-2'],
+      [0.65, 'rare-1'],
+    ])('global重みの境界でカードを選ぶ: random=%s', async (random, expectedId) => {
+      installDbFixture({ tables: { cards: [{ value: packCards }] } })
+      vi.spyOn(Math, 'random').mockReturnValue(random)
 
-    afterEach(() => {
-      randomSpy?.mockRestore()
-      randomSpy = null
-    })
-
-    function setupCardsAndRpc<T extends Record<string, unknown>>(cards: T[]) {
-      const cardsQuery = createCardsQuery(cards)
-      const mockRpc = vi.fn().mockResolvedValue({ data: { is_duplicate: false }, error: null })
-      mockGetSupabaseAdmin.mockReturnValue({
-        from: vi.fn((table: string) => (table === 'cards' ? cardsQuery : createMockQueryBuilder())),
-        rpc: mockRpc,
-      } as unknown as ReturnType<typeof getSupabaseAdmin>)
-      return { cardsQuery, mockRpc }
-    }
-
-    it('自動モード: 実効重みの境界どおりにrareカードを選択する', async () => {
-      // c1: 60%*(1/2)=0.3, c2: 60%*(1/2)=0.3, r1: 40%*(1/1)=0.4
-      // 境界(x10000): c1=[0,3000) c2=[3000,6000) r1=[6000,10000)
-      setupCardsAndRpc(packCards)
-      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.65) // -> 6500 -> r1
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
-        rarityWeightsScope: 'global',
-        rarityWeights: { common: 60, rare: 40 },
-        packRarityWeights: null,
-      })
+      const result = await new GachaService().executeGacha(
+        'streamer-1',
+        'user-1',
+        'Viewer',
+        'event-auto-weight',
+        100,
+        'weapons',
+        {
+          rarityWeightsScope: 'global',
+          rarityWeights: { common: 60, rare: 40 },
+          packRarityWeights: null,
+        },
+      )
 
       expect(result.success).toBe(true)
       if (result.success) {
-        expect(result.data.card.id).toBe('r1')
-      }
-    })
-
-    it('自動モード: 実効重みの境界どおりにcommonカード(c2)を選択する', async () => {
-      setupCardsAndRpc(packCards)
-      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.35) // -> 3500 -> c2
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
-        rarityWeightsScope: 'global',
-        rarityWeights: { common: 60, rare: 40 },
-        packRarityWeights: null,
-      })
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.data.card.id).toBe('c2')
-      }
-    })
-
-    it('選択に使ったeffectiveWeightがselectedCardのdrop_rateやAPI応答に漏れない(元のdrop_rateのまま)', async () => {
-      setupCardsAndRpc(packCards)
-      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.65) // -> r1
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
-        rarityWeightsScope: 'global',
-        rarityWeights: { common: 60, rare: 40 },
-        packRarityWeights: null,
-      })
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        // effectiveWeight(0.4)ではなく元カードのdrop_rate(1.0)がそのまま返る
-        expect(result.data.card.drop_rate).toBe(1.0)
+        expect(result.data.card.id).toBe(expectedId)
         expect(result.data.card).not.toHaveProperty('intra_rarity_weight')
       }
     })
 
-    it('手動モード回帰: rarityWeights未設定ならdrop_rateベースの選択に戻る(effectiveWeightは無視)', async () => {
-      const manualCards = [
-        { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 0.5, intra_rarity_weight: 1.0 },
-        { id: 'c2', name: 'Common2', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 0.3, intra_rarity_weight: 1.0 },
-        { id: 'r1', name: 'Rare1', description: null, image_url: null, rarity: 'rare', collection_name: 'weapons', drop_rate: 0.2, intra_rarity_weight: 1.0 },
-      ]
-      // drop_rate境界(x10000): c1=[0,5000) c2=[5000,8000) r1=[8000,10000)
-      setupCardsAndRpc(manualCards)
-      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.85) // -> 8500 -> r1 (drop_rateベース)
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
-        rarityWeightsScope: 'global',
-        rarityWeights: null, // 手動モード
-        packRarityWeights: null,
+    it('手動モードはdrop_rateを使う', async () => {
+      installDbFixture({
+        tables: {
+          cards: [{
+            value: [
+              { ...packCards[0], id: 'common', drop_rate: 0.9 },
+              { ...packCards[2], id: 'rare', drop_rate: 0.1 },
+            ],
+          }],
+        },
       })
+      vi.spyOn(Math, 'random').mockReturnValue(0.92)
+
+      const result = await new GachaService().executeGacha(
+        'streamer-1', 'user-1', 'Viewer', 'event-manual', 100, 'weapons',
+        { rarityWeightsScope: 'global', rarityWeights: null, packRarityWeights: null },
+      )
 
       expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.data.card.id).toBe('r1')
-      }
+      if (result.success) expect(result.data.card.id).toBe('rare')
     })
 
-    it('無制限抽選(collectionName未指定)ではweightsConfigを無視しdrop_rateベースのまま選択する', async () => {
-      const unrestrictedPool = [
-        { id: 'a1', name: 'A', description: null, image_url: null, rarity: 'common', drop_rate: 0.9 },
-        { id: 'a2', name: 'B', description: null, image_url: null, rarity: 'rare', drop_rate: 0.1 },
-      ]
-      // drop_rate境界(x10000): a1=[0,9000) a2=[9000,10000)
-      // もしeffectiveWeight(common:95,rare:5→a1=[0,9500))が誤って使われるとa1が選ばれてしまう境界を選ぶ
-      setupCardsAndRpc(unrestrictedPool)
-      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.92) // -> 9200
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, null, {
-        rarityWeightsScope: 'global',
-        rarityWeights: { common: 95, rare: 5 },
-        packRarityWeights: null,
+    it('per_packは対象パックの上書きを優先する', async () => {
+      installDbFixture({
+        tables: {
+          cards: [{
+            value: [
+              { ...packCards[0], id: 'common' },
+              { ...packCards[2], id: 'rare' },
+            ],
+          }],
+        },
       })
+      vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+      const result = await new GachaService().executeGacha(
+        'streamer-1', 'user-1', 'Viewer', 'event-pack-weight', 100, DEFAULT_PACK_SENTINEL,
+        {
+          rarityWeightsScope: 'per_pack',
+          rarityWeights: { common: 70, rare: 30 },
+          packRarityWeights: {
+            [DEFAULT_PACK_SENTINEL]: { common: 20, rare: 80 },
+          },
+        },
+      )
 
       expect(result.success).toBe(true)
-      if (result.success) {
-        // drop_rateベースならa2、effectiveWeightが誤って使われればa1になる
-        expect(result.data.card.id).toBe('a2')
-      }
+      if (result.success) expect(result.data.card.id).toBe('rare')
     })
 
-    it('DEFAULT_PACK_SENTINEL + パック別重みの__default__エントリが優先される', async () => {
-      const defaultPackCards = [
-        { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: null, drop_rate: 1.0, intra_rarity_weight: 1.0 },
-        { id: 'r1', name: 'Rare1', description: null, image_url: null, rarity: 'rare', collection_name: null, drop_rate: 1.0, intra_rarity_weight: 1.0 },
-      ]
-      // __default__エントリ: common 20%, rare 80% → 境界(x10000): c1=[0,2000) r1=[2000,10000)
-      setupCardsAndRpc(defaultPackCards)
-      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5) // -> 5000 -> r1 (__default__エントリなら) / c1 (グローバルなら)
+    it('per_packに対象パックが無ければglobal重みを継承する', async () => {
+      installDbFixture({ tables: { cards: [{ value: packCards }] } })
+      vi.spyOn(Math, 'random').mockReturnValue(0.65)
 
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, DEFAULT_PACK_SENTINEL, {
-        rarityWeightsScope: 'per_pack',
-        rarityWeights: { common: 70, rare: 30 },
-        packRarityWeights: { [DEFAULT_PACK_SENTINEL]: { common: 20, rare: 80 } },
-      })
+      const result = await new GachaService().executeGacha(
+        'streamer-1', 'user-1', 'Viewer', 'event-inherited-weight', 100, 'weapons',
+        {
+          rarityWeightsScope: 'per_pack',
+          rarityWeights: { common: 60, rare: 40 },
+          packRarityWeights: { characters: { common: 10, rare: 90 } },
+        },
+      )
 
       expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.data.card.id).toBe('r1')
-      }
+      if (result.success) expect(result.data.card.id).toBe('rare-1')
     })
 
-    it('per_pack継承: パック別重みにエントリが無ければグローバル重みにフォールバックする', async () => {
-      // per_pack scopeだが 'weapons' にエントリが無い → グローバル(common:60,rare:40)を継承
-      setupCardsAndRpc(packCards)
-      randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.65) // -> 6500 -> r1 (グローバル境界どおり)
-
-      const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1', 100, 'weapons', {
-        rarityWeightsScope: 'per_pack',
-        rarityWeights: { common: 60, rare: 40 },
-        packRarityWeights: { characters: { common: 10, rare: 90 } }, // 'weapons'にエントリ無し
+    it('collection未指定ならweightsConfigを無視してdrop_rateで抽選する', async () => {
+      installDbFixture({
+        tables: {
+          cards: [{
+            value: [
+              { ...testCards[0], id: 'common', rarity: 'common', drop_rate: 0.9 },
+              { ...testCards[0], id: 'rare', rarity: 'rare', drop_rate: 0.1 },
+            ],
+          }],
+        },
       })
+      vi.spyOn(Math, 'random').mockReturnValue(0.92)
+
+      const result = await new GachaService().executeGacha(
+        'streamer-1', 'user-1', 'Viewer', 'event-unrestricted-weight', 100, null,
+        {
+          rarityWeightsScope: 'global',
+          rarityWeights: { common: 95, rare: 5 },
+          packRarityWeights: null,
+        },
+      )
 
       expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.data.card.id).toBe('r1')
-      }
+      if (result.success) expect(result.data.card.id).toBe('rare')
     })
   })
 })
 
 describe('GachaService.executeGachaForEventSub', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
+  it('streamer未登録を明示する', async () => {
+    installDbFixture({ tables: { streamers: [{ value: [] }] } })
+
+    const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-no-streamer')
+
+    expect(result).toEqual({ success: false, error: 'Streamer not found' })
   })
 
-  it('追加報酬のDBエラーをReward ID mismatchに潰さず返す', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
+  it('streamer readエラーを未登録扱いにしない', async () => {
+    installDbFixture({
+      tables: {
+        streamers: [{ error: dbError('permission denied', '42501') }],
       },
-      error: null,
-    })
-    const additionalRewardQuery = createMockQueryBuilder()
-    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: null,
-      error: { message: 'Database error: error code: 502', code: '502' },
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: vi.fn(),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-streamer-error')
 
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
+    expect(result).toEqual({
+      success: false,
+      error: 'Database error fetching streamer: permission denied',
+    })
+  })
+
+  it('メイン報酬をカードへ付与しstreamer情報を返す', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [{ ...baseStreamer, channel_point_collection_name: 'weapons' }] }],
+        cards: [{ value: testCards }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-main')
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.rewardId).toBe('main-reward')
+      expect(result.data.collectionName).toBe('weapons')
+      expect(result.data.streamer?.id).toBe('streamer-1')
+    }
+    expect(fixture.transactionCalls[0][6]).toBe('main-reward')
+  })
+
+  it('未設定報酬をReward ID mismatchとして拒否する', async () => {
+    installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{ value: [] }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'unknown-reward', cost: 100 },
+    }, 'event-mismatch')
+
+    expect(result).toEqual({ success: false, error: 'Reward ID mismatch' })
+  })
+
+  it('追加報酬readエラーをmismatchへ潰さず返す', async () => {
+    installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          error: dbError('permission denied', '42501'),
+        }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
       reward: { id: 'additional-reward', cost: 100 },
-    }, 'event-additional-db-error')
+    }, 'event-additional-error')
 
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Database error checking additional reward: Database error: error code: 502')
-    }
-  })
-
-  it('streamer未登録: Streamer not foundを返す', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: null,
-      error: null,
+    expect(result).toEqual({
+      success: false,
+      error: 'Database error checking additional reward: permission denied',
     })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: vi.fn(),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'missing-broadcaster',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'reward-1', cost: 100 },
-    }, 'event-missing-streamer')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Streamer not found')
-    }
   })
 
-  it('streamer取得DBエラー: 未登録扱いにせずDBエラーを返す', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: null,
-      error: { message: 'permission denied', code: '42501' },
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: vi.fn(),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'reward-1', cost: 100 },
-    }, 'event-streamer-db-error')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Database error fetching streamer: permission denied')
-    }
-  })
-
-  it('未設定のEventSub報酬はReward ID mismatchを返す', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
+  it('追加報酬のraid option列欠落時は1回ガチャへ縮退しない', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          error: dbError('column draw_count does not exist', '42703'),
+        }],
       },
-      error: null,
-    })
-    const additionalRewardQuery = createMockQueryBuilder()
-    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: null,
-      error: null,
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: vi.fn(),
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 100 },
+    }, 'event-options-missing')
 
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'stale-reward', cost: 100 },
-    }, 'event-stale-reward')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Reward ID mismatch')
-    }
+    expect(result).toEqual({
+      success: false,
+      error: 'Additional reward options unavailable',
+    })
+    expect(fixture.transactionCalls).toHaveLength(0)
   })
 
-  it('追加報酬のdraw_countに応じて同一EventSubから複数カードを付与する', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
+  it('raid限定追加報酬は受付期限外なら発行しない', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 2,
+            is_raid_limited: true,
+            collection_name: null,
+          }],
+        }],
       },
-      error: null,
-    })
-    const additionalRewardQuery = createMockQueryBuilder()
-    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'additional-1', draw_count: 3, is_raid_limited: true },
-      error: null,
-    })
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false },
-      error: null,
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 100 },
+    }, 'event-raid-inactive')
 
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'raid-reward', cost: 500 },
-    }, 'event-raid')
+    expect(result).toEqual({ success: false, error: 'Raid-limited reward inactive' })
+    expect(fixture.transactionCalls).toHaveLength(0)
+  })
+
+  it('raid限定追加報酬は受付期限内なら設定回数を発行する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{
+          value: [{
+            ...baseStreamer,
+            raid_gacha_active_until: '2999-01-01T00:00:00.000Z',
+          }],
+        }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-raid',
+            draw_count: 2,
+            is_raid_limited: true,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{ value: [] }],
+        cards: [{ value: testCards }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'raid-reward', cost: 200 },
+    }, 'event-raid-active')
+
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.cards).toHaveLength(2)
+    expect(fixture.transactionCalls).toHaveLength(2)
+  })
+
+  it('追加報酬のdraw_countだけN連し、reward costは先頭だけに保存する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 3,
+            is_raid_limited: false,
+            collection_name: 'characters',
+          }],
+        }],
+        gacha_history: [{ value: [] }],
+        cards: [{ value: testCards }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 300 },
+    }, 'event-multi')
 
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data.cards).toHaveLength(3)
+      expect(result.data.collectionName).toBe('characters')
     }
-    expect(mockRpc).toHaveBeenCalledTimes(3)
-    expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({
-      p_event_id: 'event-raid',
-      p_reward_cost: 500,
-      // Issue #591: reward_id は reward_cost と異なり「消費ポイント」ではなく
-      // 「起点になった報酬」というN連の全カード共通属性なので、1枚目以外も
-      // 同じ reward_id を持つ必要がある(下の2枚目・3枚目のアサーション参照)。
-      p_reward_id: 'raid-reward',
-    }))
-    expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({
-      p_event_id: 'event-raid:2',
-      p_reward_cost: null,
-      p_reward_id: 'raid-reward',
-    }))
-    expect(mockRpc).toHaveBeenNthCalledWith(3, 'execute_gacha_transaction', expect.objectContaining({
-      p_event_id: 'event-raid:3',
-      p_reward_cost: null,
-      p_reward_id: 'raid-reward',
-    }))
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
+      'event-multi', 'event-multi:2', 'event-multi:3',
+    ])
+    expect(fixture.transactionCalls.map((call) => call[5])).toEqual([300, null, null])
+    expect(fixture.transactionCalls.map((call) => call[6])).toEqual([
+      'additional-reward', 'additional-reward', 'additional-reward',
+    ])
   })
 
-  it('レイド限定の追加報酬はレイド受付期限がない通常時に発火しない', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        raid_gacha_active_until: null,
+  it('全件完了済みのEventSub再送はDuplicate eventを返す', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 2,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{
+          value: [{ event_id: 'event-done' }, { event_id: 'event-done:2' }],
+        }],
       },
-      error: null,
     })
-    const additionalRewardQuery = createMockQueryBuilder()
-    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'additional-1', draw_count: 3, is_raid_limited: true },
-      error: null,
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 200 },
+    }, 'event-done')
+
+    expect(result).toEqual({ success: false, error: 'Duplicate event' })
+    expect(fixture.transactionCalls).toHaveLength(0)
+  })
+
+  it('一部完了済みの再送は残りだけ再開しreward costを二重保存しない', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 3,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{ value: [{ event_id: 'event-resume' }] }],
+        cards: [{ value: testCards }],
+      },
     })
-    const mockRpc = vi.fn()
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 300 },
+    }, 'event-resume')
 
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'raid-reward', cost: 500 },
-    }, 'event-raid-inactive')
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
+      'event-resume:2', 'event-resume:3',
+    ])
+    expect(fixture.transactionCalls.map((call) => call[5])).toEqual([null, null])
+  })
+
+  it('履歴が歯抜けなら先頭連続分の次から再開する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 3,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{
+          value: [{ event_id: 'event-gap' }, { event_id: 'event-gap:3' }],
+        }],
+        cards: [{ value: testCards }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 300 },
+    }, 'event-gap')
+
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
+      'event-gap:2', 'event-gap:3',
+    ])
+  })
+
+  it('履歴readエラーならカード発行前に停止する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 2,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{ error: dbError('permission denied', '42501') }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 200 },
+    }, 'event-history-error')
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Database error: permission denied',
+    })
+    expect(fixture.transactionCalls).toHaveLength(0)
+  })
+
+  it('N連途中の非重複エラーは部分成功をokとして返さない', async () => {
+    installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 2,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{ value: [] }],
+        cards: [{ value: testCards }],
+      },
+      transactions: [
+        { value: { is_duplicate: false, history_id: 'first' } },
+        { error: dbError('write denied', '42501') },
+      ],
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      ...baseEvent,
+      reward: { id: 'additional-reward', cost: 200 },
+    }, 'event-partial')
 
     expect(result.success).toBe(false)
     if (!result.success) {
-      expect(result.error).toBe('Raid-limited reward inactive')
-    }
-    expect(mockRpc).not.toHaveBeenCalled()
-  })
-
-  it('追加報酬オプション未適用のschema cacheでは1回ガチャにフォールバックしない', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-      },
-      error: null,
-    })
-    const optionQuery = createMockQueryBuilder()
-    ;(optionQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: null,
-      error: { message: "Could not find the 'draw_count' column", code: 'PGRST204' },
-    })
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false },
-      error: null,
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return optionQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'legacy-reward', cost: 100 },
-    }, 'event-legacy')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Additional reward options unavailable')
-    }
-    expect(mockRpc).not.toHaveBeenCalled()
-  })
-
-  // Issue #393: main reward routes its bound pack into the card query
-  it('メイン報酬: channel_point_collection_nameでカードを絞り込む', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        channel_point_collection_name: 'weapons',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        chat_announcement_multi_template: null,
-        chat_announcement_multi_show_cards: true,
-        raid_gacha_active_until: null,
-      },
-      error: null,
-    })
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-main-collection' },
-      error: null,
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'main-reward', cost: 100 },
-    }, 'event-main-collection')
-
-    expect(result.success).toBe(true)
-    expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'weapons')
-    // Issue #591: メイン報酬一致時も event.reward.id がp_reward_idとしてRPCへ渡る
-    expect(mockRpc).toHaveBeenCalledWith('execute_gacha_transaction', expect.objectContaining({
-      p_reward_id: 'main-reward',
-    }))
-  })
-
-  // Issue #579 (#576 フェーズ2): executeGachaForEventSubが取得したstreamer行の
-  // rarity_weights_scope/rarity_weights/pack_rarity_weightsが、パック内自動配分の
-  // 実効重み計算までちゃんと流れ込むことを、乱数固定で決定的に検証する。
-  it('メイン報酬: streamerのper_packレアリティ重み設定が実効重み選択まで伝播する', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        channel_point_collection_name: 'weapons',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        chat_announcement_multi_template: null,
-        chat_announcement_multi_show_cards: true,
-        raid_gacha_active_until: null,
-        rarity_weights_scope: 'per_pack',
-        rarity_weights: { common: 70, rare: 30 },
-        pack_rarity_weights: { weapons: { common: 20, rare: 80 } },
-      },
-      error: null,
-    })
-    const weightedPackCards = [
-      { id: 'c1', name: 'Common1', description: null, image_url: null, rarity: 'common', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
-      { id: 'r1', name: 'Rare1', description: null, image_url: null, rarity: 'rare', collection_name: 'weapons', drop_rate: 1.0, intra_rarity_weight: 1.0 },
-    ]
-    const cardsQuery = createCardsQuery(weightedPackCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-per-pack-propagation' },
-      error: null,
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    // weapons専用重み(common:20%,rare:80%) → 境界(x10000): c1=[0,2000) r1=[2000,10000)
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9) // -> 9000 -> r1
-    try {
-      const service = new GachaService()
-      const result = await service.executeGachaForEventSub({
-        broadcaster_user_id: 'broadcaster-1',
-        user_id: 'user-1',
-        user_login: 'viewer',
-        user_name: 'Viewer',
-        reward: { id: 'main-reward', cost: 100 },
-      }, 'event-per-pack-propagation')
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.data.card.id).toBe('r1')
-      }
-    } finally {
-      randomSpy.mockRestore()
+      expect(result.error).toContain('Partial gacha completion: 1/2')
+      expect(result.error).toContain('write denied')
     }
   })
 
-  // Issue #393: additional reward routes its own pack into the card query
-  it('追加報酬: reward.collection_nameでカードを絞り込む', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        channel_point_collection_name: null,
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        chat_announcement_multi_template: null,
-        chat_announcement_multi_show_cards: true,
-        raid_gacha_active_until: null,
+  it('単発メイン報酬では完了履歴クエリを増やさない', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        cards: [{ value: testCards }],
       },
-      error: null,
-    })
-    const additionalRewardQuery = createMockQueryBuilder()
-    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'ar-1', draw_count: 1, is_raid_limited: false, collection_name: 'characters' },
-      error: null,
-    })
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-additional-collection' },
-      error: null,
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'additional-reward', cost: 100 },
-    }, 'event-additional-collection')
+    const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-single')
 
     expect(result.success).toBe(true)
-    expect(cardsQuery.eq).toHaveBeenCalledWith('collection_name', 'characters')
+    expect(fixture.tableCursors.has('gacha_history')).toBe(false)
   })
 
-  // Issue #393 (production review 2-B): when only channel_point_collection_name is
-  // missing in the deploy window, the targeted streamer fallback must preserve
-  // raid_gacha_active_until so a raid-limited reward still fires (not silently
-  // skipped after consuming channel points).
-  it('列未デプロイでも raid_gacha_active_until を保全し raid限定報酬が発火する', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>)
-      // primary select: channel_point_collection_name 列欠落 (READ 42703)
-      .mockResolvedValueOnce({
-        data: null,
-        error: {
-          code: '42703',
-          message: 'column streamers.channel_point_collection_name does not exist',
-        },
-      })
-      // targeted collection fallback: raid_gacha_active_until を含む完全な行
-      .mockResolvedValueOnce({
-        data: {
-          id: 'streamer-1',
-          channel_point_reward_id: 'main-reward',
-          chat_announcement_enabled: false,
-          chat_announcement_template: null,
-          chat_announcement_multi_template: null,
-          chat_announcement_multi_show_cards: true,
-          raid_gacha_active_until: '2099-01-01T00:00:00.000Z',
-        },
-        error: null,
-      })
-    const additionalRewardQuery = createMockQueryBuilder()
-    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'ar-1', draw_count: 1, is_raid_limited: true, collection_name: null },
-      error: null,
+  it('streamerのパック別レアリティ設定をメイン報酬の抽選へ伝播する', async () => {
+    installDbFixture({
+      tables: {
+        streamers: [{
+          value: [{
+            ...baseStreamer,
+            channel_point_collection_name: 'weapons',
+            rarity_weights_scope: 'global',
+            rarity_weights: { common: 20, rare: 80 },
+          }],
+        }],
+        cards: [{
+          value: [
+            { ...testCards[0], id: 'common', rarity: 'common', intra_rarity_weight: 1 },
+            { ...testCards[0], id: 'rare', rarity: 'rare', intra_rarity_weight: 1 },
+          ],
+        }],
+      },
     })
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false, history_id: 'h-raid-deploywindow' },
-      error: null,
-    })
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const result = await new GachaService().executeGachaForEventSub(
+      baseEvent,
+      'event-main-weight',
+    )
 
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'raid-reward', cost: 500 },
-    }, 'event-raid-deploywindow')
-
-    // raid_gacha_active_until が保全されているため raid限定報酬が発火する
     expect(result.success).toBe(true)
-    expect(mockRpc).toHaveBeenCalled()
+    if (result.success) expect(result.data.card.id).toBe('rare')
   })
 })
 
 describe('GachaService.executeGachaForRaidEvent', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
+  const raidEvent = {
+    to_broadcaster_user_id: 'broadcaster-1',
+    from_broadcaster_user_id: 'raider-1',
+    from_broadcaster_user_login: 'raider_login',
+    from_broadcaster_user_name: 'Raider',
+  }
 
-  it('incoming raid の送信者に設定回数分のガチャを付与する', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        raid_gacha_draw_count: 2,
+  it('設定回数分を送信者へ付与する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{
+          value: [{
+            id: 'streamer-1',
+            chat_announcement_enabled: true,
+            chat_announcement_template: 'single',
+            chat_announcement_multi_template: 'multi',
+            chat_announcement_multi_show_cards: true,
+            raid_gacha_draw_count: 2,
+          }],
+        }],
+        gacha_history: [{ value: [] }],
+        cards: [{ value: testCards }],
       },
-      error: null,
-    })
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({
-      data: { is_duplicate: false },
-      error: null,
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'cards') return cardsQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForRaidEvent({
-      to_broadcaster_user_id: 'broadcaster-1',
-      from_broadcaster_user_id: 'raider-1',
-      from_broadcaster_user_login: 'raider',
-      from_broadcaster_user_name: 'Raider',
-    }, 'raid-event-1')
+    const result = await new GachaService().executeGachaForRaidEvent(raidEvent, 'raid-event')
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -1790,309 +1085,42 @@ describe('GachaService.executeGachaForRaidEvent', () => {
       expect(result.data.userTwitchUsername).toBe('Raider')
       expect(result.data.streamer?.id).toBe('streamer-1')
     }
-    expect(streamerQuery.eq).toHaveBeenCalledWith('twitch_user_id', 'broadcaster-1')
-    expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({
-      p_event_id: 'raid-event-1',
-      p_user_twitch_id: 'raider-1',
-      p_reward_cost: null,
-      // Issue #591: raid gacha is not tied to a channel-point reward, always null
-      p_reward_id: null,
-    }))
-    expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({
-      p_event_id: 'raid-event-1:2',
-      p_user_twitch_id: 'raider-1',
-      p_reward_cost: null,
-      p_reward_id: null,
-    }))
-  })
-
-  it('レイド送信者プレゼントが0回ならガチャを実行しない', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        raid_gacha_draw_count: 0,
-      },
-      error: null,
-    })
-    const mockRpc = vi.fn()
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForRaidEvent({
-      to_broadcaster_user_id: 'broadcaster-1',
-      from_broadcaster_user_id: 'raider-1',
-      from_broadcaster_user_name: 'Raider',
-    }, 'raid-event-disabled')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Raid gacha disabled')
-    }
-    expect(mockRpc).not.toHaveBeenCalled()
-  })
-})
-
-// Issue #512: N連ドロー(executeGachaDraws)がバッチ途中の非重複エラーで
-// 部分的にしか完了しなかった場合に、旧実装は firstResult があれば
-// ok(部分的なcards配列)を返しており、呼び出し元(route.ts)からは要求どおり
-// 完了した成功と区別できなかった(視聴者はチャネルポイントを消費したのに
-// 一部カードしか受け取れず、エラーも報告されなかった)。
-// また、EventSub再送がバッチ途中までの完了を引き継いで残りを再開できず、
-// 1枚目が重複と判定された時点でバッチ全体を「再送は重複だから何もしない」
-// と誤って打ち切ってしまう問題もあった。
-// このdescribeブロックは、executeGachaForEventSub(追加報酬、drawCount>1)
-// を入口として、修正後の executeGachaDraws の挙動を検証する。
-describe('GachaService.executeGachaDraws 部分失敗・再送時の再開ロジック (Issue #512)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  /** N連(drawCount)の追加報酬に紐づくstreamer/additionalRewardの共通モック */
-  function mockStreamerWithAdditionalReward(drawCount: number) {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
-        raid_gacha_active_until: null,
-      },
-      error: null,
-    })
-    const additionalRewardQuery = createMockQueryBuilder()
-    ;(additionalRewardQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { id: 'additional-1', draw_count: drawCount, is_raid_limited: false },
-      error: null,
-    })
-    return { streamerQuery, additionalRewardQuery }
-  }
-
-  it('N連ドローがバッチ途中の非重複エラーで失敗したら、部分的なcards配列でok()にせずerr()を返す', async () => {
-    const { streamerQuery, additionalRewardQuery } = mockStreamerWithAdditionalReward(3)
-    const cardsQuery = createCardsQuery(testCards)
-    // 初回実行(再送ではない)なので完了済みは0件
-    const historyQuery = createCardsQuery<{ event_id: string }>([])
-    const mockRpc = createRpcMock({
-      transactionResponses: [
-        { data: { is_duplicate: false }, error: null }, // 1枚目: 成功
-        { data: null, error: { message: 'Database connection failed' } }, // 2枚目: 非重複の実エラー
-      ],
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        if (table === 'cards') return cardsQuery
-        if (table === 'gacha_history') return historyQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'multi-reward', cost: 300 },
-    }, 'evt-partial')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toContain('Partial gacha completion: 1/3')
-    }
-    // 3枚目は試行されない(2枚目の実エラーでバッチを打ち切る)
-    expect(mockRpc).toHaveBeenCalledTimes(2)
-  })
-
-  it('N連ドローが全件完了済みの再送は1枚も引かずDuplicate eventを返す(旧実装と観測可能な挙動を一致させる)', async () => {
-    const { streamerQuery, additionalRewardQuery } = mockStreamerWithAdditionalReward(3)
-    // 3件とも既に gacha_history に存在する = 完全な重複再送。cardsテーブルへは
-    // 到達しないはずなので意図的にモックしない(未設定のまま呼ばれたら
-    // createMockQueryBuilder の既定値[data:null]で選択に失敗し、後続の
-    // アサーション以前に result.success が想定と食い違って検知できる)。
-    const historyQuery = createCardsQuery<{ event_id: string }>([
-      { event_id: 'evt-full' },
-      { event_id: 'evt-full:2' },
-      { event_id: 'evt-full:3' },
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
+      'raid-event', 'raid-event:2',
     ])
-    const mockRpc = vi.fn()
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        if (table === 'gacha_history') return historyQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'multi-reward', cost: 300 },
-    }, 'evt-full')
-
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error).toBe('Duplicate event')
-    }
-    expect(mockRpc).not.toHaveBeenCalled()
   })
 
-  it('N連ドローが一部完了済みの再送は残りだけ再開し、reward_costを二重付与しない', async () => {
-    const { streamerQuery, additionalRewardQuery } = mockStreamerWithAdditionalReward(3)
-    const cardsQuery = createCardsQuery(testCards)
-    // 1,2枚目(evt-resume, evt-resume:2)は既に完了済み。3枚目だけ未完了。
-    const historyQuery = createCardsQuery<{ event_id: string }>([
-      { event_id: 'evt-resume' },
-      { event_id: 'evt-resume:2' },
-    ])
-    const mockRpc = createRpcMock({
-      transactionResponses: [
-        { data: { is_duplicate: false }, error: null }, // 3枚目のみ試行される
-      ],
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        if (table === 'cards') return cardsQuery
-        if (table === 'gacha_history') return historyQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'multi-reward', cost: 300 },
-    }, 'evt-resume')
-
-    expect(result.success).toBe(true)
-    if (result.success) {
-      // このinvocationで新たに引いた分のみ(1,2枚目は前回の呼び出しで確定済み
-      // のためここには含まれない)。通知のdrawCount表示がこの枚数を使う点は
-      // 既知の限界として報告済み(gacha_history上の付与自体は正しく完結する)。
-      expect(result.data.cards).toHaveLength(1)
-    }
-    expect(mockRpc).toHaveBeenCalledTimes(1)
-    expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({
-      p_event_id: 'evt-resume:3',
-      p_reward_id: 'multi-reward',
-      // グローバルindexが0でないため reward_cost は再付与しない(1枚目の行に
-      // 既に記録済み。ここで再付与すると集計上の消費ポイントが2重になる)。
-      p_reward_cost: null,
-    }))
-  })
-
-  it('gacha_historyの完了行が歯抜けの場合、先頭から連続する分だけを完了済みとして扱う', async () => {
-    const { streamerQuery, additionalRewardQuery } = mockStreamerWithAdditionalReward(4)
-    const cardsQuery = createCardsQuery(testCards)
-    // 1枚目(evt-gap)と3枚目(evt-gap:3)は存在するが2枚目(evt-gap:2)が存在しない
-    // 歯抜け状態(通常運用では起きない想定だが、安全側の挙動を保証する)。
-    // 「先頭から連続」でしか数えないため、2枚目の欠落で打ち切ってprefixCount=1
-    // となり、2枚目から再開するべき(3枚目が結果に含まれるからといって
-    // 4枚目まで一気に飛び越えてはならない)。
-    const historyQuery = createCardsQuery<{ event_id: string }>([
-      { event_id: 'evt-gap' },
-      { event_id: 'evt-gap:3' },
-    ])
-    const mockRpc = createRpcMock({
-      transactionResponses: [
-        { data: { is_duplicate: false }, error: null }, // 2枚目
-        { data: { is_duplicate: false }, error: null }, // 3枚目(結果はあったが再試行される)
-        { data: { is_duplicate: false }, error: null }, // 4枚目
-      ],
-    })
-
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'streamers') return streamerQuery
-        if (table === 'streamer_additional_gacha_rewards') return additionalRewardQuery
-        if (table === 'cards') return cardsQuery
-        if (table === 'gacha_history') return historyQuery
-        return createMockQueryBuilder()
-      }),
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
-
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'multi-reward', cost: 300 },
-    }, 'evt-gap')
-
-    expect(result.success).toBe(true)
-    if (result.success) {
-      expect(result.data.cards).toHaveLength(3)
-    }
-    expect(mockRpc).toHaveBeenCalledTimes(3)
-    expect(mockRpc).toHaveBeenNthCalledWith(1, 'execute_gacha_transaction', expect.objectContaining({ p_event_id: 'evt-gap:2' }))
-    expect(mockRpc).toHaveBeenNthCalledWith(2, 'execute_gacha_transaction', expect.objectContaining({ p_event_id: 'evt-gap:3' }))
-    expect(mockRpc).toHaveBeenNthCalledWith(3, 'execute_gacha_transaction', expect.objectContaining({ p_event_id: 'evt-gap:4' }))
-  })
-
-  it('単発ドロー(drawCount=1)ではgacha_historyの完了件数チェックを行わない(ホットパスに追加クエリを増やさない)', async () => {
-    const streamerQuery = createMockQueryBuilder()
-    ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: 'streamer-1',
-        channel_point_reward_id: 'main-reward',
-        chat_announcement_enabled: false,
-        chat_announcement_template: null,
+  it('0回設定ならカード発行しない', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{
+          value: [{
+            id: 'streamer-1',
+            chat_announcement_enabled: false,
+            chat_announcement_template: null,
+            chat_announcement_multi_template: null,
+            chat_announcement_multi_show_cards: true,
+            raid_gacha_draw_count: 0,
+          }],
+        }],
       },
-      error: null,
-    })
-    const cardsQuery = createCardsQuery(testCards)
-    const mockRpc = vi.fn().mockResolvedValue({ data: { is_duplicate: false }, error: null })
-    const fromMock = vi.fn((table: string) => {
-      if (table === 'streamers') return streamerQuery
-      if (table === 'cards') return cardsQuery
-      return createMockQueryBuilder()
     })
 
-    mockGetSupabaseAdmin.mockReturnValue({
-      from: fromMock,
-      rpc: mockRpc,
-    } as unknown as ReturnType<typeof getSupabaseAdmin>)
+    const result = await new GachaService().executeGachaForRaidEvent(raidEvent, 'raid-disabled')
 
-    const service = new GachaService()
-    const result = await service.executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'main-reward', cost: 100 },
-    }, 'evt-single')
+    expect(result).toEqual({ success: false, error: 'Raid gacha disabled' })
+    expect(fixture.transactionCalls).toHaveLength(0)
+  })
 
-    expect(result.success).toBe(true)
-    expect(fromMock).not.toHaveBeenCalledWith('gacha_history')
-    expect(mockRpc).toHaveBeenCalledTimes(1)
+  it('streamer readエラー・未登録は同じ安全なnot-found契約にする', async () => {
+    installDbFixture({
+      tables: {
+        streamers: [{ error: dbError('permission denied', '42501') }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForRaidEvent(raidEvent, 'raid-error')
+
+    expect(result).toEqual({ success: false, error: 'Streamer not found' })
   })
 })

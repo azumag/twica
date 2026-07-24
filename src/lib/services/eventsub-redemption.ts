@@ -22,19 +22,25 @@ import { GachaService } from "@/lib/services/gacha";
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
 import { handleApiError } from "@/lib/error-handler";
 import { publishCommittedGachaBatch } from "@/lib/overlay-realtime/publisher";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
-import { TwitchChatService, DEFAULT_CHAT_TEMPLATE, type ChatMessagePlaceholders } from "@/lib/twitch/chat-service";
+import {
+  TwitchChatService,
+  DEFAULT_CHAT_TEMPLATE,
+  type ChatMessagePlaceholders,
+} from "@/lib/twitch/chat-service";
 import { cancelRedemption } from "@/lib/twitch/channel-points";
-import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
+
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolvePackDisplayName } from "@/lib/collection-packs";
 import { runInBackground } from "@/lib/background-task";
+import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 export { runInBackground } from "@/lib/background-task";
-// #573/#803: チャット通知プレースホルダ、売り切れ設定取得ともPlanetScale固定。
-// 退役済みSupabase clientと旧driver secretの値には依存しない。
+// チャット通知プレースホルダと売り切れ設定を、ガチャ確定と同じPlanetScaleから
+// 読む。旧driver設定に関係なくこの単一経路を使う。
 import { getDb } from "@/lib/db/client";
+
 import { withDbRetry } from "@/lib/db/retry";
 import { eq } from "drizzle-orm";
 import { streamers as streamersTable } from "@/lib/db/schema";
@@ -48,7 +54,7 @@ export const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = '@{user} が{draws}連ガチャ�
  * Error reporter自体が停止していても、既に確定したカード付与・ポイント返還・
  * EventSub 2xxを巻き戻してはならない。reportErrorは通常内部で失敗を吸収するが、
  * テストdoubleや将来の実装変更がrejectしても通知境界から漏らさないため、ここで
- * 最終防御する。console warnはDBを使わずCloudflare Observabilityへ残る。
+ * 最終防御する。warnはDBを使わずCloudflare Observabilityへ残る。
  */
 async function reportNotificationError(
   error: unknown,
@@ -472,9 +478,8 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
   try {
     let streamer: { chat_announcement_enabled: boolean } | null = null;
     try {
-      // Sold-out redemptions use the same post-commit notification boundary as
-      // successful draws. Reading settings from PlanetScale here prevents the
-      // retired Supabase stub from also breaking point-refund notifications.
+      // Sold-out redemptionも成功時と同じpost-commit境界で扱う。設定読取を
+      // PlanetScaleへ固定し、退役Supabase経路がポイント返還通知を壊さないようにする。
       const rows = await withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -493,9 +498,8 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
         broadcasterTwitchUserId,
         error: error instanceof Error ? error.message : String(error),
       });
-      // Point refund has already been attempted, so monitoring failure must not
-      // turn the webhook into a retry storm. Persist the deployment/permission
-      // failure best-effort, then preserve the existing no-chat fallback.
+      // ポイント返還は既に試行済みなので、監視保存の失敗でWebhook retry stormを
+      // 起こさない。schema/接続障害をbest-effortで記録し、チャットだけ省略する。
       await reportNotificationError(error, {
         context: 'eventsub:postSoldOutNotify:streamerSettings',
         broadcasterTwitchUserId,
@@ -727,7 +731,7 @@ export async function handleRedemption(messageId: string, event: {
     };
   } catch (error) {
     // awaitしないとCloudflare Workersがレスポンス返却後にPromiseを打ち切り、
-    // Supabaseへのエラー記録が失われる
+    // PlanetScaleへのエラー記録が失われる
     await handleApiError(error, `EventSub redemption (messageId=${messageId})`);
     // 予期しない例外を握りつぶした結果のため、再試行価値ありとして扱う。
     // Unexpected exception was swallowed here - treat as retryable.
@@ -737,26 +741,17 @@ export async function handleRedemption(messageId: string, event: {
 
 /**
  * sendChatAnnouncement の {num}/{unique}/{newCards} 用 get_user_card_counts RPC の
- * pg 直結(postgres.js)実装 (#573/#803)。Supabase admin clientは現在fail-closed
- * stubのため、EventSub成功後の通知経路もPlanetScaleへ固定する。
+ * pg 直結(postgres.js)実装 (#573/#803)。EventSub成功後の通知経路も
+ * PlanetScaleへ固定し、退役Supabase clientや旧driver secretに依存しない。
  *
- * PostgREST .rpc() と同一の { data, error } 形状へ正規化して返すことで、呼び出し側の
- * 既存分岐（error → logger.warn + プレースホルダを未定義のまま空文字化 / data →
- * 行配列の集計）を両経路で完全に共有する（gacha.ts executeGachaTransactionRpcPg と
- * 同じ「分岐は RPC 実行の1箇所だけ」の設計）。
+ * { data, error } 形状へ正規化し、呼び出し側でDB障害時もプレースホルダを
+ * 空文字化してチャット本文自体は送れるようにする。
  *
- * キャッシュ非依存性: 既存経路がここで getSupabaseAdminNoCache（Cloudflare fetch
- * キャッシュを無効化したクライアント）を使うのは、直前のガチャで増えた所持数を
- * 通知に正確に反映するため。pg 直結は HTTP 層を介さず毎回 PostgreSQL へ直接
- * クエリする（キャッシュ層が存在しない）ため、NoCache クライアントと同じ
- * 「常に最新を読む」性質が構造的に保たれる。
+ * キャッシュ非依存性: pg直結はHTTP cacheを介さず毎回PostgreSQLへ問い合わせる
+ * ため、直前のガチャで増えた所持数を常に最新状態から読む。
  *
- * エラー処理: 既存 postgrest 経路のこの呼び出しには 42883（RPC 未デプロイ）
- * フォールバックが無い（エラー種別を問わず warn ログ + プレースホルダ空文字化）。
- * よって pg 版でも 42883 を特別扱いせず、あらゆるエラーを { data: null, error }
- * に正規化して既存と同じ外部挙動にする — 既存にない保護を勝手に増やさない
- * (#573 の方針)。通知はカウント無しでも必ず送信されるため、ここでの失敗が
- * チャット通知全体を落とすことはない。
+ * エラー処理: 42883を含む全DBエラーを { data: null, error } へ正規化し、
+ * 呼び出し側がerrorsテーブルへ記録してからカウント無しで通知を継続する。
  *
  * migration 00031: RETURNS JSONB（{ count, card, streamer } の行配列）。スカラー
  * SELECT + rows[0].result で PostgREST .rpc() の data と同一形状になる（jsonb →
@@ -794,13 +789,10 @@ export async function fetchUserCardCountsRpcPg(
 }
 
 /**
- * チャット通知の `{all}` 用に、PlanetScale上のアクティブカード総数を取得する。
- *
- * 旧実装は退役済みSupabase admin stubから `.from('cards')` を呼び、テンプレートが
- * `{all}` を含む本番ガチャだけを同期的に失敗させていた。通知はガチャ確定後の処理
- * なので、読み取り失敗は既存契約どおりerror値へ正規化し、カード付与自体や他の
- * 通知処理を巻き戻さない。接続取得をretry callback内に置くことで一時切断だけを
- * bounded retryする。
+ * チャット通知の `{all}` 用にPlanetScale上のアクティブカード総数を取得する。
+ * 通知はガチャ確定後の処理なので、読取失敗はerror値へ正規化し、カード付与や
+ * EventSub応答を巻き戻さない。接続取得をretry callback内に置くことで、
+ * request scope破棄後の一時切断だけをbounded retryする。
  */
 async function fetchActiveCardCountPg(
   streamerId: string,
@@ -932,9 +924,8 @@ export async function sendChatAnnouncement(
     // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
     // RPC does not filter by is_active, so we filter on the client.
     //
-    // Supabase admin clientはfail-closed stubなので、環境に残る旧driver secretを
-    // 参照してはならない。直前のガチャ確定と同じPlanetScaleを直接読むことで、
-    // `{num}` / `{unique}` / `{newCards}`へ最新の所持数を反映する。
+    // Supabase admin clientは削除済みなので、環境に残る旧driver secretを参照せず
+    // 直前のガチャ確定と同じPlanetScaleから最新の所持数を読む。
     const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo)
       ? fetchUserCardCountsRpcPg(userId, streamer.id)
       : null;

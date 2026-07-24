@@ -1,11 +1,9 @@
 /**
- * pg ドライバ用エラー判定ヘルパー (#570)
+ * PostgreSQL ドライバ用エラー判定ヘルパー (#570/#708)。
  *
- * 目的: 既存コードには PostgREST のエラーコード判定（PGRST204「列が見つからない」等を
- * 検知して、コードとマイグレーションのデプロイ順ズレの間だけ旧クエリへフォールバック
- * する「デプロイ窓フォールバック」）が各所にある。それに対応する pg ドライバ
- * (postgres.js) 版の判定ヘルパー。移行済みモジュールが列/関数のデプロイ窓
- * フォールバックを維持するために使う。
+ * アプリケーションは PlanetScale PostgreSQL へ直接接続するため、判定根拠は
+ * PostgreSQL が規定する5文字の SQLSTATE に統一する。コードと migration の
+ * デプロイ順が一時的に前後する場合だけ、安全な縮退クエリへ切り替えるために使う。
  *
  * postgres.js が throw するエラーは `code` プロパティに PostgreSQL の SQLSTATE
  * （5文字の文字列）を持つ。呼び出し元が catch した値は unknown なので、
@@ -86,10 +84,42 @@ export function getSqlState(e: unknown): string | null {
 
 /**
  * SQLSTATE 42703 undefined_column: 列が存在しない。
- * PostgREST の PGRST204 に相当（列追加マイグレーション前のコードデプロイ窓で発生）。
+ * 列追加 migration よりコードが先に展開されたデプロイ窓で発生する。
  */
 export function isPgMissingColumnError(e: unknown): boolean {
   return getSqlState(e) === '42703'
+}
+
+/**
+ * 42703 が指定列の欠落を示す場合だけ true を返す。
+ *
+ * DrizzleQueryError のトップレベル message は実行 SQL 全体を含むため、cause の
+ * 実エラーが別列の 42703 でも、SQL に指定列が登場しただけで誤検知しうる。
+ * そこで各 cause 階層について「同じ階層に code=42703 と対象列名の双方がある」
+ * ことを要求する。接続断・権限エラー・NOT NULL 違反を列欠落として握りつぶさず、
+ * postgres.js の生エラーと Drizzle のラップ済みエラーを同じ規則で扱える。
+ */
+export function isPgMissingNamedColumnError(
+  error: unknown,
+  columnNames: readonly string[],
+): boolean {
+  if (columnNames.length === 0) return false
+
+  return getErrorChain(error).some((layer) => {
+    if (typeof layer !== 'object' || layer === null) return false
+    const candidate = layer as {
+      code?: unknown
+      message?: unknown
+      details?: unknown
+      hint?: unknown
+    }
+    if (candidate.code !== '42703') return false
+
+    const text = [candidate.message, candidate.details, candidate.hint]
+      .map((value) => String(value ?? ''))
+      .join(' ')
+    return columnNames.some((columnName) => text.includes(columnName))
+  })
 }
 
 /**
@@ -110,9 +140,8 @@ export function isPgMissingTableError(e: unknown): boolean {
 
 /**
  * SQLSTATE 23505 unique_violation: 一意制約違反。
- * PostgREST 経路の { error: { code: '23505' } } 判定に相当
- * （dashboard-data.ts の insertCompletionRecord 等、重複挿入を無視する
- * 既存パターンを pg 直結でも再現するために使う）。
+ * dashboard-data.ts の insertCompletionRecord 等、重複挿入を無視する
+ * 既存パターンで使う。
  */
 export function isPgUniqueViolationError(e: unknown): boolean {
   return getSqlState(e) === '23505'

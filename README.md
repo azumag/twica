@@ -1,328 +1,107 @@
 # twica
 
-Twitch配信者向けチャネルポイント・カード引換システム
+Twitch 配信者向けのチャネルポイント・カード引換システムです。Next.js を
+Cloudflare Workers 上で動かし、カード・引換・配信設定の永続データは
+PlanetScale PostgreSQL を正本として扱います。
 
-## Project Status
-
-✅ **All Known Issues Resolved**
-
-All documented security vulnerabilities, bugs, and code quality issues have been addressed:
-- ✅ CSRF protection enhancements (CSRF_TOKEN_SALT validation, origin validation, SameSite='strict')
-- ✅ Console statements replaced with proper logging infrastructure
-- ✅ Input validation for API endpoints
-- ✅ Error handling improvements
-- ✅ Security hardening (CSP improvements, session validation)
-- ✅ Dependency vulnerability documentation (SECURITY.md)
-- ✅ Twitch login button credentials and error handling
-
-See [SECURITY.md](./SECURITY.md) for detailed security policies and known vulnerabilities.
-
-## Project Status
-
-✅ **Project Stable - All Production Issues Resolved**
-
-No open GitHub issues. All critical issues addressed.
-
-**Recently Completed:**
-- Issue #88: Add unit tests for CopyButton component (18 tests, 100% pass rate)
-- Issue #87: Improve testing infrastructure with Supabase mock utilities
-- Issue #91: CSRF_TOKEN_SALT missing in production - Documented fix
-- Issue #90: Next.js invariant error - Documented as framework issue
-- Issue #92: CSRF test failures - Partially investigated (1/2 tests now passing)
-- Issue #84: Fixed WebSocket connection error handling - distinguished normal closures from errors
-- Issue #83: Closed - E2E test results documented, WebSocket issue resolved
-- Issue #85: Added streamer settings API tests (100% coverage, 5/5 tests passing)
-- Issue #86: Closed - Streamer settings test failure resolved
-- Linting: Fixed @typescript-eslint/no-require-imports errors in start-dev.js
-
-**Testing Status:**
-- Test files: 12 (11 passing, 1 with minor issue)
-- Total tests: 146 (144 passing, 2 known issues)
-- Overall pass rate: 98.6%
-- Test framework: Vitest
-- Test infrastructure: Supabase mock utilities available
-
-**Known Issues (Non-blocking):**
-- CSRF test failure in test environment:
-  - Test: "should reject invalid referer header when origin is missing"
-  - Status: Test environment Request URL parsing behavior
-  - Impact: Does not affect production or application functionality
-  - Note: Requires dedicated time for test environment investigation
-
-## Production Issues
-
-All production issues have been documented and closed:
-
-### Issue #91: CSRF_TOKEN_SALT Missing ✅ Documented
-- **Status:** Documented - Requires production environment configuration
-- **Documentation:** See [PRODUCTION_FIX_CSRF_SALT.md](./docs/PRODUCTION_FIX_CSRF_SALT.md)
-- **Action:** Generate secure salt (32+ chars) and add to Vercel environment variables
-
-### Issue #90: Next.js Request ID Error ✅ Documented
-- **Status:** Documented - Known Next.js framework issue
-- **Impact:** No user impact, application functions correctly
-- **Documentation:** See [NEXTJS_INVARIANT_ERROR.md](./docs/NEXTJS_INVARIANT_ERROR.md)
-- **Note:** Framework-level invariant error, not application bug
-- **Action:** Configure Sentry to ignore this specific error
-
-## Production Issues
-
-All production issues have been documented and closed:
-
-### Issue #91: CSRF_TOKEN_SALT Missing ✅ Documented
-- **Status:** Documented - Requires production environment configuration
-- **Documentation:** See [PRODUCTION_FIX_CSRF_SALT.md](./docs/PRODUCTION_FIX_CSRF_SALT.md)
-- **Action:** Generate secure salt (32+ chars) and add to Vercel environment variables
-
-### Issue #90: Next.js Request ID Error ✅ Documented
-- **Status:** Documented - Known Next.js framework issue
-- **Impact:** No user impact, application functions correctly
-- **Documentation:** See [NEXTJS_INVARIANT_ERROR.md](./docs/NEXTJS_INVARIANT_ERROR.md)
-- **Note:** Framework-level invariant error, not application bug
-- **Action:** Configure Sentry to ignore this specific error
-
-**Testing Stats:**
-- Test files: 12 (11 unit + 1 integration)
-- Total tests: 149 (147 passing, 2 pre-existing failures)
-- Overall pass rate: 98.7%
-- Test framework: Vitest
-- New Supabase mock utilities for easier testing
-
-**Components without tests (smallest first):**
-- CopyButton.tsx (32 lines) - Issue #88 created
-- TwitchLoginRedirect.tsx (39 lines)
-- Header.tsx (48 lines)
-- Stats.tsx (48 lines)
-
-## Tech Stack
-
-| Component | Responsibility |
-| :--- | :--- |
- | **Next.js (App Router)** | UI framework, Server Components, API Routes |
- | **Vercel** | Hosting, serverless functions, CI/CD |
- | **Supabase (PostgreSQL)** | Persistent database for users, cards, gacha history |
- | **Supabase Auth** | Twitch OAuth authentication |
- | **Vercel Blob** | Card image storage |
- | **Twitch API / EventSub** | Channel rewards integration |
- | **Sentry** | Error tracking, session replay, and automatic GitHub issue creation |
- | **CSRF Protection** | Custom request header pattern for state-changing operations |
-
-## Architecture
+## 現行アーキテクチャ
 
 ```mermaid
-graph LR
-    User[User/Streamer] --> NextJS[Next.js App/Vercel]
-    NextJS --> SupabaseAuth[Supabase Auth]
-    NextJS --> SupabaseDB[Supabase DB]
-    NextJS --> VercelBlob[Vercel Blob]
-    NextJS --> Twitch[Twitch API]
-    NextJS --> Sentry[Sentry]
-    Sentry --> GitHub[GitHub Issues]
-
-    Subgraph[Data Flows]
-    AuthFlow[Auth: JWT-based]
-    UploadFlow[Upload: Client-side to Blob]
-    GachaFlow[Gacha: EventSub triggers]
-    ErrorTracking[Error: Sentry + GitHub Issues]
-    End
-
-    User --> AuthFlow
-    User --> UploadFlow
-    User --> GachaFlow
-    AuthFlow --> ErrorTracking
-    GachaFlow --> ErrorTracking
+flowchart LR
+  Viewer[視聴者 / 配信者] --> App[Next.js on Cloudflare Workers]
+  App --> DB[PlanetScale PostgreSQL via Hyperdrive]
+  App --> KV[Cloudflare KV]
+  App --> R2[Cloudflare R2]
+  App --> Twitch[Twitch API / EventSub]
+  App --> Sentry[Sentry]
+  Reporter[Error Reporter Cron Worker] --> DB
+  Reporter --> GitHub[GitHub Issues]
 ```
 
-## Project Structure
+| コンポーネント | 役割 |
+| --- | --- |
+| Next.js / OpenNext | UI と API Routes |
+| Cloudflare Workers Builds | 本体 Worker の production / preview デプロイ |
+| PlanetScale PostgreSQL | 永続データの唯一の正本 |
+| Cloudflare Hyperdrive | Worker から PlanetScale への接続 |
+| Cloudflare KV / R2 | レート制限・短期イベント / 画像・音声保存 |
+| Twitch API / EventSub | ログイン、チャネルポイント、配信イベント |
+| Sentry + Error Reporter | エラー記録と GitHub Issue 作成 |
 
-```
-src/
-├── lib/
-│   ├── constants.ts      # Application constants
-│   ├── env-validation.ts # Environment variable validation
-│   ├── gacha.ts          # Gacha algorithm implementation
-│   ├── session.ts        # Session management with expiry validation
-│   ├── supabase/         # Supabase client exports
-│   │   ├── index.ts      # Unified client exports
-│   │   └── admin.ts      # Admin client for server-side operations
-│   └── twitch/
-│       └── auth.ts       # Twitch OAuth utilities
-├── app/
-│   ├── api/auth/twitch/callback/route.ts  # OAuth callback handler
-│   └── ...
-```
+Supabase SDK・CLI・実行時接続・環境変数・Secrets は廃止済みです。新しい実装、CI 設定、
+運用手順に Supabase を再導入しないでください。
 
-## Environment Variables
-
-| Variable | Required | Description |
-| :--- | :--- | :--- |
-| `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase anonymous key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key |
-| `TWITCH_CLIENT_ID` | Yes | Twitch Application Client ID |
-| `TWITCH_CLIENT_SECRET` | Yes | Twitch Application Client Secret |
-| `NEXT_PUBLIC_TWITCH_CLIENT_ID` | Yes | Public Twitch Client ID |
-| `NEXT_PUBLIC_APP_URL` | Yes | Application URL |
-| `BLOB_READ_WRITE_TOKEN` | Yes | Vercel Blob storage token |
-| `TWITCH_EVENTSUB_SECRET` | Yes | Twitch EventSub webhook secret |
-| `NEXT_PUBLIC_SENTRY_DSN` | No | Sentry Data Source Name |
-| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | No | Sentry environment (production/development) |
-| `SENTRY_AUTH_TOKEN` | No | Sentry authentication token |
-| `SENTRY_ORG` | No | Sentry organization slug |
-| `SENTRY_PROJECT` | No | Sentry project slug |
-| `GACHA_COST` | No | Gacha cost in channel points (default: 100) |
-
-## Testing
-
-### Current Coverage
-
-- **Source files**: 89 TypeScript/TSX files
-- **Test files**: 11 test files
-- **Test framework**: Vitest
-- **Current coverage**: ~25%
-
-### Running Tests
+## ローカル開発
 
 ```bash
-# Run unit tests
-npm run test:unit
-
-# Run tests with UI
-npm run test:unit:ui
-
-# Run all tests (unit + integration)
-npm run test:all
-
-# Run integration tests only
-npm run test:integration
-```
-
-### Testing Guidelines
-
-When writing new tests, follow these conventions:
-
-1. **Test files location**: Place tests in `tests/unit/` for unit tests, `tests/integration/` for integration tests
-2. **File naming**: Name test files as `*.test.ts` and mirror the source file structure
-3. **Test structure**: Group related tests using `describe()` blocks
-4. **Test naming**: Use descriptive test names starting with "should" or the behavior being tested
-5. **Mock appropriately**: Mock external dependencies (Supabase, Sentry, etc.) in unit tests
-6. **Test edge cases**: Include tests for error conditions, null/undefined inputs, and boundary values
-
-### Coverage Goals
-
-Priority order for adding test coverage:
-
-1. **Critical security paths** (target: 100% coverage)
-   - CSRF token generation and validation (`src/lib/csrf.ts`)
-   - Session management (`src/lib/session.ts`)
-   - Authentication flows (`src/app/api/auth/*`)
-   - Rate limiting (`src/lib/rate-limit.ts`)
-
-2. **API routes** (target: 80% coverage)
-   - All POST/PUT/DELETE endpoints
-   - CSRF protection enforcement
-   - Input validation
-   - Error handling
-
-3. **Business logic** (target: 70% coverage)
-   - Gacha algorithm (`src/lib/gacha.ts`)
-   - Card operations
-
-4. **Integration tests**
-   - End-to-end user flows
-   - Database operations
-   - External API integrations
-
-### Critical Areas Needing Tests
-
-The following components currently have limited or no test coverage:
-
-- `src/lib/twitch/token-manager.ts` - No explicit tests
-- `src/app/api/cards/[id]/route.ts` - Limited coverage
-- `src/app/api/streamer/settings/route.ts` - Limited coverage
-- `src/lib/gacha.ts` - Needs comprehensive testing
-- Components in `src/components/` - No component tests
-
-### Before Committing
-
-Ensure all tests pass before pushing:
-
-```bash
-npm run test:unit
-npm run lint
-```
-
-### Adding Coverage Reports
-
-To generate coverage reports:
-
-```bash
-npm run test:unit -- --coverage
-```
-
-Coverage reports will be generated in the `coverage/` directory.
-
-## Getting Started
-
-```bash
+npm ci
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser.
+`wrangler dev` を使うため、ローカルでは `wrangler.toml` の
+`HYPERDRIVE_PLANETSCALE.localConnectionString`、またはプロジェクトのローカル設定で
+PlanetScale 接続先を与えます。本番用の認証情報を `.env` やソースコードに保存しません。
 
-## Supabase Setup
+主な設定値は以下です。Worker 実行時の機密値は Cloudflare の Secret として設定し、
+ビルド時に必要な公開値だけを Workers Builds / CI に設定します。
 
-1. Create a new Supabase project
-2. Run migrations in `supabase/migrations/`
-3. Enable Twitch Authentication in Supabase Dashboard
+| 変数 / binding | 用途 |
+| --- | --- |
+| `DATABASE_URL_PLANETSCALE` | CLI・ローカルの PlanetScale 直結接続文字列 |
+| `HYPERDRIVE_PLANETSCALE` | production / preview Worker の DB binding |
+| `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | Twitch OAuth |
+| `TWITCH_EVENTSUB_SECRET` | EventSub 署名検証 |
+| `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_TWITCH_CLIENT_ID` | 公開ビルド設定 |
+| `CSRF_TOKEN_SALT` | 状態変更 API の CSRF 保護 |
+| `SENTRY_*` | 任意のエラー報告設定 |
 
-## Deployment (Cloudflare Workers)
-
-TwiCa is deployed to Cloudflare Workers with OpenNext.
+## テストと品質確認
 
 ```bash
-npm run workers:build
-npm run workers:deploy
+npm run test:unit
+npm run typecheck
+npm run lint
+npm run check:supabase-shutdown
 ```
 
-Cloudflare Workers Builds is the preferred CI/CD path for the app Worker. See
-[docs/cloudflare-workers-builds.md](docs/cloudflare-workers-builds.md) for the
-production / preview build settings and the GitHub Actions cutover flag.
+`check:supabase-shutdown` は名称互換のため残っていますが、確認対象は
+「廃止済みの SDK・CLI・runtime 接続・設定が復活していないこと」です。DB を使うテストでは
+postgres.js / Drizzle / Hyperdrive 境界をモックし、廃止済みクライアントのモックを追加しません。
 
-### CI/CD
+## マイグレーション
 
-- GitHub Actions runs on push to main and pull requests
-- Build uses dummy environment variables for CI (no external API calls)
-- Cloudflare Workers Builds deploys the app Worker after cutover
-- GitHub Actions still deploys the production error-reporter Worker
+新しい migration は PlanetScale 向けに作成し、必ず provider を明示して実行します。
 
-## Security
-
-### CSRF Protection
-
-This application implements CSRF (Cross-Site Request Forgery) protection using the custom request header pattern:
-
-- **CSRF Token Generation**: Cryptographically secure tokens (256-bit) generated per session
-- **Token Distribution**: Tokens are retrieved via `/api/csrf-token` endpoint
-- **Token Validation**: All state-changing API routes (POST/PUT/DELETE) validate the `X-CSRF-Token` header
-- **Client Integration**: Use `fetchWithCSRF()` wrapper for protected requests
-
-```typescript
-// Example client-side usage
-import { fetchWithCSRF } from '@/lib/client/csrf'
-
-const response = await fetchWithCSRF('/api/gacha', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ streamerId: 'streamer-123' }),
-})
+```bash
+npm run db:migrate:status
+npm run db:migrate:plan
+npm run db:migrate:apply
+npm run db:migrate:verify
 ```
 
-### Security Measures
+各コマンドは `scripts/db-migrate.js --provider=planetscale` を使用し、接続文字列は
+`DATABASE_URL` からだけ読み取ります。`main` と `preview` への push では
+`.github/workflows/planetscale-migrate.yml` が対応する GitHub Environment の
+`PLANETSCALE_DATABASE_URL` で適用・検証します。加法的変更には expand/contract を用い、
+破壊的 DDL はこの自動経路で実行せず、デプロイ順序を管理した上で個別に実施してください。
 
-- Session-based authentication with HTTP-only cookies
-- CSRF token validation on all state-changing requests
-- Rate limiting on API endpoints
-- Content Security Policy (CSP) headers
-- Input validation and sanitization
-- Secure file upload with MIME type validation
+詳細と baseline の扱いは
+[docs/planetscale-schema-baseline.md](docs/planetscale-schema-baseline.md) を参照してください。
+
+## デプロイ
+
+本体 Worker は Cloudflare Workers Builds が所有します。
+
+- `main` → `twica`（production）
+- `preview` → `twica-preview`（preview）
+- GitHub Actions → PlanetScale migration と補助 Worker（overlay realtime / error reporter）
+
+Workers Builds の設定、ロールバック前の確認、補助 Worker の責務は
+[docs/cloudflare-workers-builds.md](docs/cloudflare-workers-builds.md) を参照してください。
+
+## セキュリティ
+
+- HTTP-only セッション Cookie と CSRF トークンを状態変更 API に適用する
+- Twitch / Cloudflare / DB の機密値をログ・Issue・ソースコードへ出力しない
+- DB 接続は Hyperdrive（runtime）または限定ロールの直結接続（migration / 管理）に限定する
+- エラー通知は本体処理の commit を巻き戻さない best-effort 処理として扱い、失敗は監視する

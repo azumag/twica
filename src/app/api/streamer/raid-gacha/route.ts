@@ -1,12 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
-import { logger } from "@/lib/logger";
+import { logger } from "@/lib/logger.server";
 // -----------------------------------------------------------------------------
 // #663 (#570 パイロット踏襲): pg 直結経路。
 // - getOwnedStreamer は読み取り専用のため isPgReadEnabled() で分岐する。
@@ -17,17 +17,16 @@ import { logger } from "@/lib/logger";
 // -----------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { isPgReadEnabled, isPgWriteEnabled } from "@/lib/db/flags";
+
 import { withDbRetry } from "@/lib/db/retry";
+import { isPgMissingNamedColumnError } from "@/lib/db/errors";
 import { streamers as streamersTable } from "@/lib/db/schema";
 
-type GenericDbError = { message?: string; code?: string } | null | undefined;
-
-function isRaidStateSchemaError(error: GenericDbError) {
-  const message = error?.message ?? "";
-  return error?.code === "PGRST204"
-    || message.includes("raid_gacha_active_until")
-    || message.includes("raid_gacha_draw_count");
+function isRaidStateSchemaError(error: unknown) {
+  return isPgMissingNamedColumnError(error, [
+    "raid_gacha_active_until",
+    "raid_gacha_draw_count",
+  ]);
 }
 
 function isActiveUntil(value: string | null | undefined): boolean {
@@ -54,10 +53,8 @@ interface GetOwnedStreamerResult {
  * - streamers を twitch_user_id で 1 行取得。twitch_user_id は UNIQUE
  *   （migration 00001）のため LIMIT 1 + rows[0] ?? null で .maybeSingle() と
  *   同じ外部挙動。
- * - isRaidStateSchemaError は既存の汎用テキスト判定（code === "PGRST204" || 列名を
- *   含む message）をそのまま再利用する。pg（postgres.js）の 42703 は code こそ
- *   異なるが、message に列名がそのまま含まれるため message.includes(...) 側で
- *   同じ条件式のまま判定できる（新規の pg 専用エラー整形ヘルパーは作らない）。
+ * - raid state 列の未配備は SQLSTATE 42703 と対象列名を同じエラー階層で確認し、
+ *   Drizzle のラップ SQL による過検知を防ぐ。
  * - 呼び出し元（GET/POST）は `{ streamer, error }` の形状に依存しているため、
  *   pg 版もスローされた例外をこの形状へ変換して返す。
  */
@@ -100,7 +97,7 @@ async function getOwnedStreamerPg(twitchUserId: string): Promise<GetOwnedStreame
     const rows = await selectFull();
     return { streamer: rows[0] ?? null, error: null };
   } catch (error) {
-    if (isRaidStateSchemaError(error as GenericDbError)) {
+    if (isRaidStateSchemaError(error)) {
       try {
         const rows = await selectFallback();
         const row = rows[0] ?? null;
@@ -119,30 +116,7 @@ async function getOwnedStreamerPg(twitchUserId: string): Promise<GetOwnedStreame
 async function getOwnedStreamer(twitchUserId: string): Promise<GetOwnedStreamerResult> {
   // #663: 読み取り専用の関数のため isPgReadEnabled() で分岐。
   // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
-  if (isPgReadEnabled()) {
-    return getOwnedStreamerPg(twitchUserId);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-  let { data: streamer, error } = await supabaseAdmin
-    .from("streamers")
-    .select("id, raid_gacha_active_until, raid_gacha_draw_count")
-    .eq("twitch_user_id", twitchUserId)
-    .maybeSingle();
-
-  if (isRaidStateSchemaError(error)) {
-    const fallbackResult = await supabaseAdmin
-      .from("streamers")
-      .select("id")
-      .eq("twitch_user_id", twitchUserId)
-      .maybeSingle();
-    streamer = fallbackResult.data
-      ? { ...fallbackResult.data, raid_gacha_active_until: null, raid_gacha_draw_count: 0 }
-      : fallbackResult.data;
-    error = fallbackResult.error;
-  }
-
-  return { streamer, error };
+  return getOwnedStreamerPg(twitchUserId);
 }
 
 interface UpdateRaidGachaDrawCountResult {
@@ -188,19 +162,7 @@ async function updateRaidGachaDrawCount(
   drawCount: number
 ): Promise<UpdateRaidGachaDrawCountResult> {
   // #663: 書き込みのみの関数のため isPgWriteEnabled() で分岐。
-  if (isPgWriteEnabled()) {
-    return updateRaidGachaDrawCountPg(streamerId, drawCount);
-  }
-
-  const supabaseAdmin = getSupabaseAdmin();
-  const { data, error } = await supabaseAdmin
-    .from("streamers")
-    .update({ raid_gacha_draw_count: drawCount })
-    .eq("id", streamerId)
-    .select("raid_gacha_active_until, raid_gacha_draw_count")
-    .maybeSingle();
-
-  return { data, error };
+  return updateRaidGachaDrawCountPg(streamerId, drawCount);
 }
 
 export async function GET(request: NextRequest) {

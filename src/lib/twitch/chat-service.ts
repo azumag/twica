@@ -1,7 +1,7 @@
 import { getEnvVar } from '@/lib/env-validation'
 import { getBotAccountForChat, getTwitchAccessToken, hasScope } from './token-manager'
 import { ADDITIONAL_SCOPES } from './scopes'
-import { logger } from '@/lib/logger'
+import { logger } from '@/lib/logger.server'
 import { reportApiError, reportError } from '@/lib/sentry/error-handler'
 import { countCharacters, truncateCharacters } from '@/lib/text-utils'
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from '@/lib/constants'
