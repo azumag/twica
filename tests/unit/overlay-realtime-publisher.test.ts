@@ -15,19 +15,12 @@ import { publishCommittedGachaBatch } from '@/lib/overlay-realtime/publisher'
 const STREAMER_ID = '123e4567-e89b-42d3-a456-426614174000'
 const ORIGINAL_ENV = { ...process.env }
 
-function configureCommittedRows() {
-  const rows = [
-    {
-      id: 'history-1',
-      eventId: 'batch-1',
-      redeemedAt: '2026-07-24T00:00:00.000Z',
-    },
-    {
-      id: 'history-2',
-      eventId: 'batch-1:2',
-      redeemedAt: '2026-07-24T00:00:00.000Z',
-    },
-  ]
+function configureCommittedRows(drawCount = 2) {
+  const rows = Array.from({ length: drawCount }, (_, index) => ({
+    id: `history-${index + 1}`,
+    eventId: index === 0 ? 'batch-1' : `batch-1:${index + 1}`,
+    redeemedAt: '2026-07-24T00:00:00.000Z',
+  }))
   const query = {
     from: vi.fn().mockReturnThis(),
     where: vi.fn().mockResolvedValue(rows),
@@ -36,6 +29,12 @@ function configureCommittedRows() {
     db: { select: vi.fn(() => query) },
     sql: {},
   } as never)
+}
+
+async function flushPromises(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve()
+  }
 }
 
 describe('publishCommittedGachaBatch', () => {
@@ -52,6 +51,8 @@ describe('publishCommittedGachaBatch', () => {
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV }
     vi.unstubAllGlobals()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   it('rebuilds stable draw identity from committed rows and signs the request', async () => {
@@ -165,6 +166,170 @@ describe('publishCommittedGachaBatch', () => {
       outcome: 'failed',
       attempts: 0,
       errorCode: 'unexpected',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('retries a transient 5xx once with a newly signed request', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    let firstAttemptStarted!: () => void
+    const firstAttempt = new Promise<void>((resolve) => {
+      firstAttemptStarted = resolve
+    })
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(async () => {
+        firstAttemptStarted()
+        return Response.json({}, { status: 503 })
+      })
+      .mockResolvedValueOnce(Response.json({ accepted: true }, { status: 202 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const resultPromise = publishCommittedGachaBatch(
+      STREAMER_ID,
+      {
+        card: {
+          id: 'card-1',
+          name: 'Card',
+          description: null,
+          image_url: null,
+          rarity: 'common',
+        },
+        userTwitchUsername: 'viewer',
+      },
+      { batchId: 'batch-1', maxRetries: 1, retryDelay: 50 }
+    )
+    await firstAttempt
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(50)
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'accepted',
+      attempts: 2,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const firstHeaders = fetchMock.mock.calls[0][1].headers as Record<string, string>
+    const retryHeaders = fetchMock.mock.calls[1][1].headers as Record<string, string>
+    expect(retryHeaders['x-twica-nonce']).not.toBe(
+      firstHeaders['x-twica-nonce']
+    )
+  })
+
+  it('does not retry a non-retryable 4xx response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({}, { status: 401 })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: {
+            id: 'card-1',
+            name: 'Card',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1', maxRetries: 2 }
+      )
+    ).resolves.toEqual({
+      outcome: 'failed',
+      attempts: 1,
+      errorCode: 'http-401',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts timed-out attempts and stops after the bounded retry', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    let firstAttemptStarted!: () => void
+    let secondAttemptStarted!: () => void
+    const firstAttempt = new Promise<void>((resolve) => {
+      firstAttemptStarted = resolve
+    })
+    const secondAttempt = new Promise<void>((resolve) => {
+      secondAttemptStarted = resolve
+    })
+    let attemptCount = 0
+    const fetchMock = vi.fn(
+      (_url: URL, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        attemptCount += 1
+        if (attemptCount === 1) {
+          firstAttemptStarted()
+        } else {
+          secondAttemptStarted()
+        }
+        init.signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'))
+        })
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const resultPromise = publishCommittedGachaBatch(
+      STREAMER_ID,
+      {
+        card: {
+          id: 'card-1',
+          name: 'Card',
+          description: null,
+          image_url: null,
+          rarity: 'common',
+        },
+        userTwitchUsername: 'viewer',
+      },
+      { batchId: 'batch-1', maxRetries: 1, retryDelay: 50 }
+    )
+
+    // Envelope rebuilding and WebCrypto signing are asynchronous and happen
+    // before the timeout is registered. Wait for each fetch attempt to start,
+    // then advance only that attempt's 1.5-second deadline. This avoids moving
+    // fake time before the code under test has installed its timer.
+    await firstAttempt
+    await vi.advanceTimersByTimeAsync(1_500)
+    await vi.advanceTimersByTimeAsync(50)
+    await secondAttempt
+    await vi.advanceTimersByTimeAsync(1_500)
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'failed',
+      attempts: 2,
+      errorCode: 'network',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips an escaped payload that exceeds the byte contract', async () => {
+    configureCommittedRows(15)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const cards = Array.from({ length: 15 }, (_, index) => ({
+      id: `card-${index + 1}`,
+      name: 'Card',
+      description: '\u0000'.repeat(1_024),
+      image_url: '\u0000'.repeat(2_048),
+      rarity: 'common',
+    }))
+
+    await expect(
+      publishCommittedGachaBatch(
+        STREAMER_ID,
+        {
+          card: cards[0],
+          cards,
+          userTwitchUsername: 'viewer',
+        },
+        { batchId: 'batch-1' }
+      )
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      attempts: 0,
+      errorCode: 'identity-unavailable',
     })
     expect(fetchMock).not.toHaveBeenCalled()
   })

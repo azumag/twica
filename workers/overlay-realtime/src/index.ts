@@ -1,5 +1,6 @@
 import {
   MAX_REALTIME_EVENT_BYTES,
+  isOverlayRealtimeStreamerEnabled,
   isValidStreamerId,
   validateGachaRealtimeEvent,
 } from '../../../src/lib/overlay-realtime/contract'
@@ -29,8 +30,11 @@ interface OverlayRoomNamespace {
 interface Env {
   OVERLAY_ROOMS: OverlayRoomNamespace
   OVERLAY_REALTIME_PUBLISH_SECRET: string
+  OVERLAY_REALTIME_MODE?: string
+  OVERLAY_REALTIME_STREAMER_ALLOWLIST?: string
   MAX_ROOM_CONNECTIONS?: string
   MAX_ROOM_CONNECTS_PER_MINUTE?: string
+  MAX_CLIENT_CONNECTS_PER_MINUTE?: string
   MAX_ROOM_PUBLISHES_PER_MINUTE?: string
 }
 
@@ -44,9 +48,20 @@ interface SocketAttachment {
 const AUTH_WINDOW_MS = 60_000
 const MAX_NONCE_RECORDS = 256
 const NONCE_LEDGER_KEY = 'nonce-ledger'
+const RATE_LIMIT_LEDGER_KEY = 'rate-limit-ledger'
+const DELIVERY_LEDGER_KEY = 'delivery-ledger'
+const MAX_DELIVERY_RECORDS = 512
+const DELIVERY_DEDUPE_TTL_MS = 24 * 60 * 60 * 1_000
 const MAX_CLIENT_MESSAGE_BYTES = 4 * 1024
 const MAX_SOCKET_BUFFER_BYTES = 1024 * 1024
 const CLIENT_MESSAGES_PER_MINUTE = 30
+
+interface RoomRateLimitLedger {
+  windowStartedAt: number
+  connectCount: number
+  publishCount: number
+  clientConnectCounts: Record<string, number>
+}
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, {
@@ -61,6 +76,28 @@ function json(body: unknown, status = 200): Response {
 function boundedInteger(value: string | undefined, fallback: number, maximum: number): number {
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback
+}
+
+function realtimeEnabled(env: Env, streamerId: string): boolean {
+  return isOverlayRealtimeStreamerEnabled(
+    env.OVERLAY_REALTIME_MODE,
+    env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
+    streamerId
+  )
+}
+
+async function clientRateLimitBucket(request: Request): Promise<string> {
+  const address = request.headers.get('cf-connecting-ip') ?? 'unknown'
+  // Store only a short-lived one-way bucket, never the client address. The
+  // value exists for one minute in a streamer-scoped DO and is used solely to
+  // stop one caller from consuming every OBS connection slot.
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(address)
+  )
+  return Array.from(new Uint8Array(digest).slice(0, 12))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
 }
 
 function roomPath(pathname: string, suffix: 'connect' | 'publish'): string | null {
@@ -157,6 +194,9 @@ const overlayRealtimeWorker = {
 
     const connectStreamerId = roomPath(url.pathname, 'connect')
     if (request.method === 'GET' && connectStreamerId) {
+      if (!realtimeEnabled(env, connectStreamerId)) {
+        return json({ error: 'Realtime transport disabled' }, 503)
+      }
       if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
         return json({ error: 'WebSocket upgrade required' }, 426)
       }
@@ -168,6 +208,9 @@ const overlayRealtimeWorker = {
 
     const publishStreamerId = roomPath(url.pathname, 'publish')
     if (request.method === 'POST' && publishStreamerId) {
+      if (!realtimeEnabled(env, publishStreamerId)) {
+        return json({ error: 'Realtime transport disabled' }, 503)
+      }
       const body = await readBoundedBody(request)
       if (body === null) return json({ error: 'Payload too large' }, 413)
       const auth = await authenticatedPublishRequest(request, env, url.pathname, body)
@@ -205,43 +248,80 @@ export default overlayRealtimeWorker
  * One hibernatable room per streamer.
  *
  * Cards and usernames are never written to Durable Object storage. Storage is
- * used only for bounded nonce replay suppression; socket metadata stays in the
+ * limited to bounded nonce, rate-limit, and event-delivery ledgers so security
+ * controls and idempotency survive hibernation. Socket metadata stays in the
  * runtime attachment (maximum 16 KiB, here under 200 bytes) and survives
  * hibernation without keeping the object billable while idle.
  */
 export class OverlayRoom {
   private readonly state: CloudflareDurableObjectState
   private readonly env: Env
-  private connectWindowStartedAt = 0
-  private connectCount = 0
-  private publishWindowStartedAt = 0
-  private publishCount = 0
-
   constructor(state: CloudflareDurableObjectState, env: Env) {
     this.state = state
     this.env = env
   }
 
-  private consumeRoomRateLimit(kind: 'connect' | 'publish'): boolean {
+  private async consumeRoomRateLimit(
+    kind: 'connect' | 'publish',
+    clientBucket?: string
+  ): Promise<boolean> {
     const now = Date.now()
-    const isConnect = kind === 'connect'
-    const windowStartedAt = isConnect ? this.connectWindowStartedAt : this.publishWindowStartedAt
-    if (now - windowStartedAt >= 60_000) {
-      if (isConnect) {
-        this.connectWindowStartedAt = now
-        this.connectCount = 0
-      } else {
-        this.publishWindowStartedAt = now
-        this.publishCount = 0
-      }
-    }
+    return this.state.storage.transaction(async (transaction) => {
+      const stored = await transaction.get<RoomRateLimitLedger>(
+        RATE_LIMIT_LEDGER_KEY
+      )
+      const ledger: RoomRateLimitLedger =
+        !stored
+        || !Number.isFinite(stored.windowStartedAt)
+        || now - stored.windowStartedAt >= 60_000
+          ? {
+              windowStartedAt: now,
+              connectCount: 0,
+              publishCount: 0,
+              clientConnectCounts: {},
+            }
+          : {
+              windowStartedAt: stored.windowStartedAt,
+              connectCount: Number(stored.connectCount) || 0,
+              publishCount: Number(stored.publishCount) || 0,
+              clientConnectCounts:
+                stored.clientConnectCounts
+                && typeof stored.clientConnectCounts === 'object'
+                  ? stored.clientConnectCounts
+                  : {},
+            }
 
-    if (isConnect) {
-      this.connectCount += 1
-      return this.connectCount <= boundedInteger(this.env.MAX_ROOM_CONNECTS_PER_MINUTE, 60, 600)
-    }
-    this.publishCount += 1
-    return this.publishCount <= boundedInteger(this.env.MAX_ROOM_PUBLISHES_PER_MINUTE, 120, 1_200)
+      let allowed: boolean
+      if (kind === 'connect') {
+        ledger.connectCount += 1
+        const bucket = clientBucket ?? 'unknown'
+        ledger.clientConnectCounts[bucket] =
+          (ledger.clientConnectCounts[bucket] ?? 0) + 1
+        allowed =
+          ledger.connectCount <= boundedInteger(
+            this.env.MAX_ROOM_CONNECTS_PER_MINUTE,
+            60,
+            600
+          )
+          && ledger.clientConnectCounts[bucket] <= boundedInteger(
+            this.env.MAX_CLIENT_CONNECTS_PER_MINUTE,
+            10,
+            60
+          )
+      } else {
+        ledger.publishCount += 1
+        allowed = ledger.publishCount <= boundedInteger(
+          this.env.MAX_ROOM_PUBLISHES_PER_MINUTE,
+          120,
+          1_200
+        )
+      }
+
+      // Persist even a rejected attempt. Hibernation/eviction cannot reset the
+      // window, and repeated rejected calls cannot remain free of accounting.
+      await transaction.put(RATE_LIMIT_LEDGER_KEY, ledger)
+      return allowed
+    })
   }
 
   private async consumeNonce(nonce: string, timestamp: number): Promise<boolean> {
@@ -272,10 +352,37 @@ export class OverlayRoom {
     })
   }
 
+  private async consumeEventId(eventId: string): Promise<boolean> {
+    return this.state.storage.transaction(async (transaction) => {
+      const stored =
+        await transaction.get<Array<[eventId: string, timestamp: number]>>(
+          DELIVERY_LEDGER_KEY
+        ) ?? []
+      const now = Date.now()
+      const cutoff = now - DELIVERY_DEDUPE_TTL_MS
+      const active = stored.filter(
+        ([storedEventId, storedAt]) =>
+          typeof storedEventId === 'string'
+          && Number.isFinite(storedAt)
+          && storedAt >= cutoff
+      )
+      if (active.some(([storedEventId]) => storedEventId === eventId)) {
+        return false
+      }
+      active.push([eventId, now])
+      await transaction.put(
+        DELIVERY_LEDGER_KEY,
+        active.slice(-MAX_DELIVERY_RECORDS)
+      )
+      return true
+    })
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (request.method === 'GET' && url.pathname.startsWith('/room/connect/')) {
-      if (!this.consumeRoomRateLimit('connect')) {
+      const bucket = await clientRateLimitBucket(request)
+      if (!await this.consumeRoomRateLimit('connect', bucket)) {
         return json({ error: 'Connection rate exceeded' }, 429)
       }
       const maximum = boundedInteger(this.env.MAX_ROOM_CONNECTIONS, 100, 1_000)
@@ -316,7 +423,7 @@ export class OverlayRoom {
     }
 
     if (request.method === 'POST' && url.pathname === '/publish') {
-      if (!this.consumeRoomRateLimit('publish')) {
+      if (!await this.consumeRoomRateLimit('publish')) {
         return json({ error: 'Publish rate exceeded' }, 429)
       }
       const streamerId = request.headers.get('x-internal-streamer-id') ?? ''
@@ -332,6 +439,19 @@ export class OverlayRoom {
       const event = await request.json()
       const validation = validateGachaRealtimeEvent(event, streamerId)
       if (!validation.ok) return json({ error: validation.error }, 400)
+      const eventId = (event as { eventId: string }).eventId
+      if (!await this.consumeEventId(eventId)) {
+        // A publisher retry may arrive after the first response was lost.
+        // Treat it as accepted but never fan out twice; PlanetScale polling
+        // remains the recovery path if a crash happened after this ledger
+        // commit and before the first socket send.
+        return json({
+          accepted: true,
+          duplicate: true,
+          fanoutCount: 0,
+          failedCount: 0,
+        }, 202)
+      }
       const message = JSON.stringify({ type: 'gacha_result', event })
 
       let fanoutCount = 0

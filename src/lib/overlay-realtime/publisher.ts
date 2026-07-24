@@ -8,10 +8,9 @@ import {
   OVERLAY_REALTIME_SCHEMA_VERSION,
   type GachaRealtimeEventV1,
   type OverlayRealtimeCard,
+  isOverlayRealtimeStreamerEnabled,
   normalizeOverlayRealtimeCard,
-  serializedEventSize,
   validateGachaRealtimeEvent,
-  MAX_REALTIME_EVENT_BYTES,
 } from '@/lib/overlay-realtime/contract'
 import { createPublishSignature } from '@/lib/overlay-realtime/signature'
 
@@ -33,13 +32,6 @@ export interface OverlayPublishResult {
   outcome: 'accepted' | 'skipped' | 'failed'
   attempts: number
   errorCode?: string
-}
-
-function isStreamerEnabled(streamerId: string): boolean {
-  const raw = process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST?.trim()
-  if (!raw) return false
-  if (raw === '*') return true
-  return raw.split(',').map((value) => value.trim()).includes(streamerId)
 }
 
 function drawEventId(batchId: string, index: number): string {
@@ -117,7 +109,6 @@ async function buildCommittedEnvelope(
   }
 
   if (!validateGachaRealtimeEvent(event, streamerId).ok) return null
-  if (serializedEventSize(event) > MAX_REALTIME_EVENT_BYTES) return null
   return event
 }
 
@@ -153,7 +144,11 @@ export async function publishCommittedGachaBatch(
   payload: OverlayPublishPayload,
   options: OverlayPublishOptions
 ): Promise<OverlayPublishResult> {
-  if (process.env.OVERLAY_REALTIME_MODE !== 'do-primary' || !isStreamerEnabled(streamerId)) {
+  if (!isOverlayRealtimeStreamerEnabled(
+    process.env.OVERLAY_REALTIME_MODE,
+    process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
+    streamerId
+  )) {
     return { outcome: 'skipped', attempts: 0, errorCode: 'mode-disabled' }
   }
 

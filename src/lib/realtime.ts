@@ -266,6 +266,7 @@ export function subscribeToGachaResults(
   let socket: WebSocket | null = null
   let socketGeneration = 0
   let reconnectAttempt = 0
+  let pollInFlight = false
   let currentConfig: OverlayRealtimeConfigV1 | null = null
   let historyCursor: PollingCursor = {
     redeemedAt: new Date().toISOString(),
@@ -303,7 +304,8 @@ export function subscribeToGachaResults(
   }
 
   const poll = async () => {
-    if (disposed) return
+    if (disposed || pollInFlight) return
+    pollInFlight = true
     options.onStatusChange?.('POLLING')
     try {
       const [historyResponse, demoResponse] = await Promise.all([
@@ -366,6 +368,8 @@ export function subscribeToGachaResults(
       }
       options.onStatusChange?.(`POLLING_RETRY:${retryCount}`)
       schedulePoll(Math.min(intervalMs * 2 ** Math.max(0, retryCount - 1), 30_000))
+    } finally {
+      pollInFlight = false
     }
   }
 
@@ -477,6 +481,15 @@ export function subscribeToGachaResults(
       const previousUrl = currentConfig?.webSocketUrl
       currentConfig = config
       options.onStatusChange?.(`CONFIG:${config.mode}:${config.configVersion}`)
+      if (
+        previousMode !== config.mode
+        || previousUrl !== config.webSocketUrl
+      ) {
+        // An operator mode/endpoint change starts a fresh connection policy.
+        // Retaining an old outage's high backoff would make kill-switch
+        // recovery needlessly slow after a valid config update.
+        reconnectAttempt = 0
+      }
       if (config.mode === 'do-primary') {
         if (previousMode !== config.mode || previousUrl !== config.webSocketUrl || !socket) {
           connectWebSocket()

@@ -31,6 +31,8 @@ import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolvePackDisplayName } from "@/lib/collection-packs";
+import { runInBackground } from "@/lib/background-task";
+export { runInBackground } from "@/lib/background-task";
 // #573: チャット通知プレースホルダ用 get_user_card_counts（読み取り専用 RPC）の
 // pg 直結分岐用。フラグ未設定時(既定 'postgrest')はこれらのモジュールの実行パスに
 // 一切入らないため、import が存在するだけでは挙動に影響しない(#570 の設計。
@@ -180,34 +182,6 @@ export function findNewCardNamesForCurrentDraw(
   }
 
   return newCardNames;
-}
-
-/**
- * Cloudflare Workers の waitUntil() でレスポンス返却後にバックグラウンド実行し、
- * ローカル開発等 waitUntil が使えない環境では同期フォールバックする共通ヘルパー。
- * ガチャ成功・レイド成功・売り切れ通知(Issue #544/#546)の3箇所で同一パターンが
- * 必要なため、重複を避けてここに集約する。
- *
- * `task` は呼び出し時点で既に開始済みの Promise を渡すこと（この関数自身は
- * 処理を起動しない）。waitUntil に登録できればそのまま非同期に流れ、登録できない
- * 環境（ローカル開発等）では task の完了を待ってから返る。
- *
- * Run `task` in the background via Cloudflare Workers' waitUntil() so it executes
- * after the response is returned. Falls back to awaiting synchronously when
- * waitUntil is unavailable (e.g. local dev). Shared across the 3 call sites that
- * need this exact pattern (gacha success, raid success, sold-out notification).
- */
-export async function runInBackground(label: string, task: Promise<void>): Promise<void> {
-  try {
-    const { getCloudflareContext } = await import('@opennextjs/cloudflare');
-    const { ctx } = await getCloudflareContext({ async: true });
-    ctx.waitUntil(task);
-  } catch (e) {
-    logger.warn(`[EventSub] waitUntil unavailable (${label}), falling back to sync`, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-    await task;
-  }
 }
 
 export async function handleRaidNotification(messageId: string, event: {

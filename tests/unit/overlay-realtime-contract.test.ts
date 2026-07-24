@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_REALTIME_DRAWS,
   buildPollingRealtimeEvents,
+  isOverlayRealtimeStreamerEnabled,
   serializedEventSize,
   validateGachaRealtimeEvent,
 } from '@/lib/overlay-realtime/contract'
@@ -130,5 +131,50 @@ describe('overlay realtime V1 contract', () => {
     }).error).toBe(
       'invalid card description'
     )
+  })
+
+  it('rejects JSON escaping that exceeds the 64 KiB wire limit', () => {
+    const rows = Array.from({ length: MAX_REALTIME_DRAWS }, (_, index) => ({
+      id: `history-${index + 1}`,
+      eventId: index === 0 ? 'escaped-batch' : `escaped-batch:${index + 1}`,
+      redeemedAt: '2026-07-24T00:00:00.000Z',
+      userTwitchUsername: 'viewer',
+      card: { ...CARD, id: `card-${index + 1}` },
+    }))
+    const [event] = buildPollingRealtimeEvents(STREAMER_ID, rows)
+    const escaped = {
+      ...event,
+      draws: event.draws.map((draw) => ({
+        ...draw,
+        card: {
+          ...draw.card,
+          description: '\u0000'.repeat(1_024),
+          image_url: '\u0000'.repeat(2_048),
+        },
+      })),
+    }
+
+    expect(validateGachaRealtimeEvent(escaped).error).toBe(
+      'event exceeds byte limit'
+    )
+  })
+
+  it('uses one rollout parser for mode, wildcard, and explicit allowlists', () => {
+    expect(
+      isOverlayRealtimeStreamerEnabled('polling-only', '*', STREAMER_ID)
+    ).toBe(false)
+    expect(
+      isOverlayRealtimeStreamerEnabled('do-primary', '*', STREAMER_ID)
+    ).toBe(true)
+    expect(
+      isOverlayRealtimeStreamerEnabled(
+        'do-primary',
+        `other, ${STREAMER_ID}`,
+        STREAMER_ID
+      )
+    ).toBe(true)
+    expect(
+      isOverlayRealtimeStreamerEnabled('do-primary', 'other', STREAMER_ID)
+    ).toBe(false)
   })
 })

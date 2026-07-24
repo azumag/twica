@@ -21,7 +21,8 @@ export interface OverlayRealtimeCard {
  *
  * Card columns are PostgreSQL `text`, so historical data can be larger than a
  * realtime frame even when current UI inputs are small. Truncating display-only
- * text/URLs keeps a 15-draw batch below the 64 KiB fanout limit; authoritative
+ * text/URLs keeps normal batches compact, while the final serialized-size
+ * validator enforces the 64 KiB fanout limit for every payload. Authoritative
  * card data in PlanetScale is never modified.
  */
 export function normalizeOverlayRealtimeCard(
@@ -137,6 +138,30 @@ export function isValidStreamerId(value: string): boolean {
 }
 
 /**
+ * Resolve the effective per-streamer rollout policy in every runtime.
+ *
+ * The Next.js config endpoint, commit publisher, and standalone Worker must
+ * share this exact parser. Duplicating it would let a future allowlist format
+ * change enable publish while the client is told to poll, or let the Worker
+ * accept connections after the operator has activated the kill switch.
+ */
+export function isOverlayRealtimeStreamerEnabled(
+  mode: string | undefined,
+  rawAllowlist: string | undefined,
+  streamerId: string
+): boolean {
+  if (mode !== 'do-primary' || !isValidStreamerId(streamerId)) return false
+  const allowlist = rawAllowlist?.trim()
+  if (!allowlist) return false
+  if (allowlist === '*') return true
+  return allowlist
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .includes(streamerId)
+}
+
+/**
  * Runtime validation is deliberately dependency-free so the exact same
  * contract runs in Next.js, the browser overlay, and the standalone Worker.
  * The checks bound every attacker-controlled string before an event is fanned
@@ -216,6 +241,16 @@ export function validateGachaRealtimeEvent(
   if (value.eventId !== (value.draws[0] as Record<string, unknown>).eventId) {
     return { ok: false, error: 'top-level eventId must match first draw' }
   }
+  // Field limits bound common amplification, while the serialized check also
+  // covers UTF-8 expansion and JSON escaping of quotes/control characters.
+  // Keeping it in the shared validator makes Next.js, polling, and the Worker
+  // enforce the same wire-size contract instead of relying on router order.
+  if (
+    serializedEventSize(value as unknown as GachaRealtimeEventV1)
+    > MAX_REALTIME_EVENT_BYTES
+  ) {
+    return { ok: false, error: 'event exceeds byte limit' }
+  }
   return { ok: true }
 }
 
@@ -248,8 +283,10 @@ function pollingDrawIndex(event: PollingContractEvent): number | null {
  * draw identities during a rolling deployment.
  *
  * The route orders rows by `(redeemed_at, id)` before calling this function.
- * Map insertion order therefore preserves commit order and guarantees that one
- * redemption remains one ordered visual/sound batch.
+ * Draw order is recovered from the committed event-ID suffix. If a large
+ * backlog splits a batch across cursor pages, the stable `soundGroupId` is
+ * intentionally preserved on both partial envelopes; the page-level bounded
+ * sound cache therefore plays it once while every unseen draw still renders.
  */
 export function buildPollingRealtimeEvents(
   streamerId: string,

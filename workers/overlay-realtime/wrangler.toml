@@ -14,6 +14,7 @@ enabled = true
 [vars]
 MAX_ROOM_CONNECTIONS = "100"
 MAX_ROOM_CONNECTS_PER_MINUTE = "60"
+MAX_CLIENT_CONNECTS_PER_MINUTE = "10"
 MAX_ROOM_PUBLISHES_PER_MINUTE = "120"
 
 [[durable_objects.bindings]]
@@ -24,8 +25,10 @@ class_name = "OverlayRoom"
 tag = "v1"
 new_sqlite_classes = ["OverlayRoom"]
 
-# Required secret (set with `wrangler secret put` and never commit):
+# Required secrets (set with `wrangler secret put` and never commit):
 # - OVERLAY_REALTIME_PUBLISH_SECRET
+# - OVERLAY_REALTIME_MODE
+# - OVERLAY_REALTIME_STREAMER_ALLOWLIST
 
 [env.preview]
 name = "twica-overlay-realtime-preview"
@@ -36,6 +39,7 @@ enabled = true
 [env.preview.vars]
 MAX_ROOM_CONNECTIONS = "100"
 MAX_ROOM_CONNECTS_PER_MINUTE = "60"
+MAX_CLIENT_CONNECTS_PER_MINUTE = "10"
 MAX_ROOM_PUBLISHES_PER_MINUTE = "120"
 
 [[env.preview.durable_objects.bindings]]

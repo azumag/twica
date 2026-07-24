@@ -2,18 +2,12 @@ import { NextResponse } from 'next/server'
 import {
   OVERLAY_REALTIME_PROTOCOL_VERSION,
   type OverlayRealtimeConfigV1,
+  isOverlayRealtimeStreamerEnabled,
   isValidStreamerId,
 } from '@/lib/overlay-realtime/contract'
 
 interface RouteParams {
   params: Promise<{ streamerId: string }>
-}
-
-function allowlisted(streamerId: string): boolean {
-  const raw = process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST?.trim()
-  if (!raw) return false
-  if (raw === '*') return true
-  return raw.split(',').map((entry) => entry.trim()).includes(streamerId)
 }
 
 function websocketBaseUrl(): string | null {
@@ -50,8 +44,11 @@ export async function GET(
 
   const baseUrl = websocketBaseUrl()
   const doEnabled =
-    process.env.OVERLAY_REALTIME_MODE === 'do-primary'
-    && allowlisted(streamerId)
+    isOverlayRealtimeStreamerEnabled(
+      process.env.OVERLAY_REALTIME_MODE,
+      process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
+      streamerId
+    )
     && baseUrl !== null
 
   const config: OverlayRealtimeConfigV1 = {

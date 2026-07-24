@@ -9,6 +9,7 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import type { GachaBroadcastPayload } from "@/lib/realtime";
 import { publishCommittedGachaBatch } from "@/lib/overlay-realtime/publisher";
+import { runInBackground } from "@/lib/background-task";
 import { logger } from "@/lib/logger";
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import type { GachaSuccessResponse, GachaErrorResponse, ApiRateLimitResponse } from "@/types/api";
@@ -167,9 +168,12 @@ export async function POST(request: NextRequest) {
 
     // DB commit後のevent_id/history_idを再読込してversioned envelopeを構築する。
     // 即時通知が失敗してもPlanetScale pollingが回収するため、ガチャ成否は変えない。
-    await publishCommittedGachaBatch(streamerId, payload, {
-      batchId: manualDrawEventId,
-    });
+    await runInBackground(
+      'manual gacha realtime publish',
+      publishCommittedGachaBatch(streamerId, payload, {
+        batchId: manualDrawEventId,
+      })
+    );
     logger.info(`Gacha result broadcast attempted for streamer ${streamerId}`);
 
     return NextResponse.json<GachaSuccessResponse>({
