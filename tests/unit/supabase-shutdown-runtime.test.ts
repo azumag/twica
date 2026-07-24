@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 const {
+  REQUIRED_AUX_WORKER_ARTIFACTS,
   REQUIRED_OPEN_NEXT_ARTIFACTS,
   findGeneratedBundleDependencies,
   findMissingRequiredFiles,
@@ -39,6 +40,10 @@ describe('full Supabase shutdown runtime', () => {
 
   it.each([
     'src/lib/supabase/admin.ts',
+    'src/lib/supabase/client.ts',
+    'src/lib/supabase/server.ts',
+    'src/lib/supabase/index.ts',
+    'src/lib/supabase/keys.ts',
     'src/lib/supabase/middleware.ts',
     'src/lib/supabase/retry.ts',
     'src/lib/db/flags.ts',
@@ -62,6 +67,15 @@ describe('full Supabase shutdown runtime', () => {
     expect(packages).not.toHaveProperty('@supabase/ssr')
     expect(packages).not.toHaveProperty('@supabase/supabase-js')
     expect(packages).not.toHaveProperty('supabase')
+  })
+
+  it('token-managerに削除済みdriver helperの説明が残らない', () => {
+    const source = readFileSync(
+      resolve(repositoryRoot, 'src/lib/twitch/token-manager.ts'),
+      'utf8',
+    )
+
+    expect(source).not.toMatch(/\b(?:isPgReadEnabled|isPgWriteEnabled|getGachaDbDriver)\b/)
   })
 
   it.each([
@@ -125,11 +139,29 @@ describe('full Supabase shutdown runtime', () => {
     }
   })
 
+  it('補助Workerのproduction/preview artifactが1件でも無ければ欠落として返す', () => {
+    const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'twica-shutdown-aux-artifacts-'))
+    try {
+      expect(findMissingRequiredFiles(fixtureRoot, REQUIRED_AUX_WORKER_ARTIFACTS))
+        .toEqual(REQUIRED_AUX_WORKER_ARTIFACTS)
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true })
+    }
+  })
+
   it.each([
     '@supabase/supabase-js',
     'NEXT_PUBLIC_SUPABASE_URL',
+    'SUPABASE_URL',
+    'SUPABASE_ANON_KEY',
+    'SUPABASE_PUBLISHABLE_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'SUPABASE_DB_URL',
     '/rest/v1/users',
     '/realtime/v1/websocket',
+    '/auth/v1/token',
+    '/storage/v1/object',
+    '/functions/v1/task',
     'event:"phx_join"',
     'type:"postgres_changes"',
   ])('生成bundleのretired provider痕跡をliteral scanで拒否する: %s', (marker) => {

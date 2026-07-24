@@ -34,6 +34,7 @@ describe('getDb (#570 client.ts)', () => {
   // （直接 mutation はテスト失敗時に他テストへ漏れるため）
   afterEach(() => {
     vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
   })
 
   it('Workers: HYPERDRIVE バインディングの接続文字列を最優先で使う', async () => {
@@ -84,6 +85,16 @@ describe('getDb (#570 client.ts)', () => {
     expect((first.sql as any).options.host).toEqual(['dev-host'])
     // Node ではモジュールシングルトン（同一ハンドル再利用）
     expect(second).toBe(first)
+  })
+
+  it('Workers: context取得失敗をNode fallbackへ流さずfail-closedにする', async () => {
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@must-not-use:5432/db')
+    vi.stubGlobal('navigator', { userAgent: 'Cloudflare-Workers' })
+    const contextError = new Error('AsyncLocalStorage context is unavailable')
+    mocks.getCloudflareContext.mockRejectedValue(contextError)
+
+    const { getDb } = await importClient()
+    await expect(getDb()).rejects.toBe(contextError)
   })
 
   it('接続先が未設定（HYPERDRIVE なし・DATABASE_URL_PLANETSCALE なし）なら文脈が分かるメッセージで throw する', async () => {

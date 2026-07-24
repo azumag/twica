@@ -49,7 +49,7 @@ type GenericDbError = { message?: string; code?: string; details?: string; hint?
  */
 function isRaidOptionsSchemaErrorPg(error: unknown): boolean {
   return getErrorChain(error).some((layer) => {
-                                     if (typeof layer !== "object" || layer === null) return false;
+    if (typeof layer !== "object" || layer === null) return false;
     const err = layer as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
     if (err.code !== "42703") return false;
     const text = [err.message, err.details, err.hint].map((value) => String(value ?? "")).join(" ");

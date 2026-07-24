@@ -298,7 +298,7 @@ export const rateLimits = {
   gacha: createRatelimit("gacha", 30, 60 * 1000),
   // Issue #783 fable review: /api/gacha/demo の broadcast&&streamerId 経路
   // （#783で認可チェックのみ追加済み）は、認証済みユーザーであればグローバル
-  // 制限(1000回/分/IP)までSupabase Realtimeブロードキャストを叩けてしまう。
+  // 制限（1000回/分/IP）までデモイベント配信を叩けてしまう。
   // /api/gacha (rateLimits.gacha) と同じ水準の専用制限を課す。
   gachaDemoBroadcast: createRatelimit("gachaDemoBroadcast", 30, 60 * 1000),
   authLogin: createRatelimit("authLogin", 5, 60 * 1000),
@@ -350,7 +350,7 @@ export const rateLimits = {
   // 再判定/有効化はTwitch APIへの実疎通(probeChannelPointsCapability)を伴うため、
   // 過剰な呼び出しを防ぐ専用の低めの制限をPOST/PUT共通で使う。
   accountChannelPointsProbe: createRatelimit("accountChannelPointsProbe", 10, 60 * 1000),
-  // Issue #693: DB接続先（Supabase/PlanetScale）health/diagnosticsエンドポイント。
+  // Issue #693/#803: PlanetScale health/diagnosticsエンドポイント。
   // 共有シークレット認証の運用エンドポイントだが、eventsubReplay（書き込みを伴う
   // リプレイ実行）より低リスクな読み取り専用のため、監視ツールからの定期ポーリング
   // （数分おき等）にも耐えられるようやや緩めの水準（分あたり20回）にする。

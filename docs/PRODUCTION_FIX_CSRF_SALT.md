@@ -1,110 +1,71 @@
-# Production Environment Configuration Issue Resolution
+# CSRF_TOKEN_SALT の本番設定
 
-## Issue #91: CSRF_TOKEN_SALT Not Set
+## 症状
 
-### Problem
-Production environment is crashing with error:
+本番 Worker の起動時に次のエラーが出る場合があります。
+
 ```
 Error: CSRF token salt validation failed: CSRF_TOKEN_SALT is not set
 ```
 
-### Root Cause
-The `CSRF_TOKEN_SALT` environment variable is not configured in the Vercel production environment. This variable is required for CSRF protection and must be at least 32 characters long.
+## 原因
 
-### Solution
+`CSRF_TOKEN_SALT` が対象の Cloudflare Worker に Secret として設定されていないか、32 文字未満です。これは状態変更 API の CSRF 保護に必要で、`src/lib/env-validation.ts` が実行時に検証します。
 
-#### Step 1: Generate a Secure CSRF Token Salt
+## 設定手順
 
-Generate a cryptographically secure random string (minimum 32 characters):
+### 1. Salt を生成する
+
+32 文字以上の暗号学的乱数を生成します。値は表示・コミット・Issue への転載をしません。
 
 ```bash
-# Using Node.js
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
-# Using OpenSSL
-openssl rand -hex 32
-
-# Example output (DO NOT use this - generate your own):
-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2
 ```
 
-#### Step 2: Add to Vercel Environment Variables
+### 2. Cloudflare Worker Secret として設定する
 
-1. Go to Vercel Dashboard: https://vercel.com/dashboard
-2. Select the `twica` project
-3. Go to **Settings** → **Environment Variables**
-4. Add the following variable:
-   - **Name:** `CSRF_TOKEN_SALT`
-   - **Value:** [Your generated secure salt]
-   - **Environments:** Select **Production** (and optionally Development, Preview)
-5. Click **Save**
-
-#### Step 3: Redeploy the Application
-
-After adding the environment variable:
-1. Go to **Deployments** in Vercel Dashboard
-2. Click **Redeploy** on the latest production deployment
-3. Wait for deployment to complete
-
-#### Step 4: Verify Fix
-
-1. Check Sentry for new errors related to CSRF_TOKEN_SALT
-2. Monitor application logs to ensure no validation errors
-3. Test the application to confirm it's working correctly
-
-### Environment Variables Reference
-
-Complete list of required environment variables for production:
-
-| Variable | Required | Description | Secure |
-|----------|-----------|-------------|----------|
-| `NEXT_PUBLIC_APP_URL` | Yes | Application URL | No |
-| `NEXT_PUBLIC_TWITCH_CLIENT_ID` | Yes | Twitch Client ID (public) | No |
-| `TWITCH_CLIENT_ID` | Yes | Twitch Client ID | Yes |
-| `TWITCH_CLIENT_SECRET` | Yes | Twitch Client Secret | Yes |
-| `TWITCH_EVENTSUB_SECRET` | Yes | Twitch EventSub webhook secret | Yes |
-| `HYPERDRIVE_PLANETSCALE` | Yes | PlanetScale database binding | Binding |
-| `BLOB_READ_WRITE_TOKEN` | Yes | Vercel Blob storage token | Yes |
-| **`CSRF_TOKEN_SALT`** | **Yes** | **CSRF protection salt (min 32 chars)** | **Yes** |
-| `CSRF_SIGNING_KEY` | Yes | CSRF token signing key | Yes |
-
-### Security Considerations
-
-1. **Generate Fresh Salt:** Always generate a new, random salt. Never reuse values from examples.
-2. **Keep It Secret:** The salt must be kept confidential and never committed to git.
-3. **Minimum Length:** The salt must be at least 32 characters for cryptographic security.
-4. **Unique Per Environment:** Use different salts for development, staging, and production.
-5. **Rotation:** Consider rotating the salt periodically for enhanced security.
-
-### Testing Locally
-
-To test with CSRF_TOKEN_SALT locally, add to `.env.local`:
+Cloudflare Dashboard の Worker ごとの **Settings → Variables and Secrets**、または Wrangler で設定します。
 
 ```bash
-# Generate a new salt for local development
-CSRF_TOKEN_SALT=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+# production Worker (twica)
+npx wrangler secret put CSRF_TOKEN_SALT --name twica
 
-# Or add manually (minimum 32 characters)
-CSRF_TOKEN_SALT=your-secure-salt-here-at-least-32-characters
+# preview Worker (twica-preview)
+npx wrangler secret put CSRF_TOKEN_SALT --name twica --env preview
 ```
 
-### Monitoring
+プロンプトで 1 で生成した値を入力します。production と preview には異なる Salt を設定します。Worker の Secret 変更は新しいデプロイを作るため、反映されたバージョンを確認してください。
 
-After fixing the issue:
-- Monitor Sentry for any remaining CSRF validation errors
-- Check application health and performance
-- Ensure all endpoints are responding correctly
-- Verify CSRF protection is working as expected
+### 3. R2 binding と実行時設定を確認する
 
-### Related Documentation
+画像・音声の保存は `R2_IMAGES` と `R2_SOUNDS` の R2 binding を使います。CSRF の設定に Blob 用トークンは不要です。必須の実行時設定は `src/lib/env-validation.ts`、binding は `wrangler.toml` を正本として確認してください。
+
+### 4. 反映を検証する
+
+1. Cloudflare のデプロイ完了後、Worker のログと Sentry に `CSRF_TOKEN_SALT` の検証エラーがないことを確認します。
+2. 認証済みセッションで、CSRF 保護される状態変更 API を正しい同一オリジン Cookie と Origin/Referer で実行します。
+3. CSRF Cookie の欠落、または不正な Origin/Referer のリクエストが拒否されることを確認します。
+
+## ローカル開発
+
+`.env.development.local`（Git 管理外）に開発専用値を設定します。production と同じ値をコピーしません。
+
+```bash
+CSRF_TOKEN_SALT=<32文字以上の開発専用乱数>
+DATABASE_URL_PLANETSCALE=<開発用 PlanetScale 接続文字列>
+```
+
+Next.js 開発は `npm run dev:next` を使います。Worker のローカル動作を検証する場合は `npm run workers:build` 後に `npm run workers:dev` を実行します。
+
+## セキュリティ上の注意
+
+- Salt は最低 32 文字、環境ごとに固有の値を使います。
+- Salt、Twitch Secret、DB 接続文字列を Git、ログ、Issue、チャットに書き込みません。
+- Salt をローテーションすると、既存の CSRF トークンは無効になります。影響を告知し、デプロイ後に上記の動作確認をします。
+
+## 関連資料
 
 - [SECURITY.md](../SECURITY.md) - Security policies and CSRF protection
-- [README.md](../README.md) - Environment variables reference
-- [env-validation.ts](../src/lib/env-validation.ts) - Environment validation code
-
-### Additional Notes
-
-- The `CSRF_TOKEN_SALT` is validated at module initialization
-- If the salt is missing or too short, the application fails to start
-- This is intentional to prevent running with insecure CSRF configuration
-- Test environments (`NODE_ENV=test` or `CI=true`) are exempt from this validation
+- [README.md](../README.md) - ローカル開発・実行時設定
+- [env-validation.ts](../src/lib/env-validation.ts) - 必須環境変数の検証
+- [wrangler.toml](../wrangler.toml) - Worker と R2 の binding

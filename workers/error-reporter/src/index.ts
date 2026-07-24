@@ -37,9 +37,8 @@ interface Env {
    * #711 C: errors/support_inquiries への直接クエリ用 Hyperdrive バインディング。
    * ルート wrangler.toml（メインアプリ）の [[hyperdrive]] binding = "HYPERDRIVE_PLANETSCALE"
    * と同じ Hyperdrive config ID を指す（このワーカーの wrangler.toml 参照）。
-   * 同じ config を共有するため、Phase2 cutover 時に config の向き先が
-   * Supabase → PlanetScale へ切り替わっても、このワーカーのコードは一切
-   * 変更不要（接続文字列の差し替えだけで追従する）。
+   * 同じconfigを共有することで、アプリとreporterが常に同じPlanetScale正本を参照し、
+   * 片側だけ別DBへ接続する構成ドリフトを防ぐ。
    *
    * optional にしている理由: RATE_LIMIT_KV と同じく、wrangler.toml の設定漏れを
    * 型レベルでも許容し、scheduled() の起動時バリデーションと
@@ -75,7 +74,7 @@ interface Env {
    * （EventSub 退避 backlog の自動ドレイン）で使う設定・secrets。
    *
    * prod/preview 両方を対象にする理由: errors/inquiries 監視（このワーカー自体）は
-   * 本番 Supabase のみを見る設計（`.github/workflows/deploy-cloudflare.yml` の
+   * 本番PlanetScaleのみを見る設計（`.github/workflows/deploy-cloudflare.yml` の
    * `legacy-app-deploy`/`auxiliary-workers` job コメント「Error Reporter Cron
    * Worker のデプロイ（本番のみ）」参照。このワーカー自体、preview 用の
    * デプロイ・secrets を持たない）。しかし EventSub 退避（KV への park）は
@@ -84,9 +83,9 @@ interface Env {
    * 別 KV namespace（root wrangler.toml の [[kv_namespaces]] と
    * [env.preview.kv_namespaces] で id が異なる）を使う。そのため preview 側で
    * maintenance mode を使った検証作業（実績: deploy-architecture メモ参照）を
-   * 行った場合、preview 側にも退避データが溜まりうる。errors/inquiries 監視が
-   * 本番のみで足りるのは「監視対象データ（Supabase）がそもそも本番用の
-   * secrets しか設定されていない」という別の理由によるものであり、
+   * 行った場合、preview 側にも退避データが溜まりうる。errors/inquiries監視が
+   * 本番のみで足りるのは、reporterのproduction Hyperdriveが
+   * 本番PlanetScaleだけを指すという別の理由によるものであり、
    * EventSub 退避には同じ理由が当てはまらないため、ここでは prod/preview
    * 両方を明示的にドレイン対象にする。
    */
@@ -149,9 +148,8 @@ interface HyperdriveBindingLike {
 // 共通ヘルパ: errors/support_inquiries への DB アクセス (#711 C)
 //
 // Hyperdrive バインディング経由で PostgreSQL に postgres.js で直結する。
-// メインアプリ（src/lib/db/client.ts）と同じ Hyperdrive config を指すため、
-// Phase2 cutover でその config の接続先が Supabase → PlanetScale に切り替わっても
-// このファイルは無修正で追従する。
+// メインアプリ（src/lib/db/client.ts）と同じPlanetScale Hyperdrive configを
+// 指すため、errors/support_inquiriesを別DBへ誤配線しない。
 //
 // メインアプリの getDb() との違い（意図的な簡略化。YAGNI）:
 //   - Drizzle は使わず raw SQL（postgres.js のタグ付きテンプレート）のみ。
@@ -182,11 +180,8 @@ interface HyperdriveBindingLike {
  * このファイルへ複製する理由: このワーカーは root とは別のデプロイ単位
  * （wrangler がこのディレクトリを直接バンドルする。EventSubParkKVNamespace
  * 節と同じ理由）であり、root の scripts/lib を import すると依存関係が
- * この Worker のバンドルへ暗黙に広がる。今日時点（Hyperdrive が Supabase を
- * 直接指す間）は sslrootcert が付与されないため実質 no-op だが、Phase2
- * cutover で config が PlanetScale へ向いた際に何もしなくても正しく動く
- * ようにするための先取り対応（cutover 時にこのファイルへ手を入れない、
- * というファイル冒頭コメントの約束を成立させるため）。
+   * この Worker のバンドルへ暗黙に広がる。PlanetScaleの接続文字列に含まれ得る
+   * sslrootcertをこのデプロイ単位でも同じ規則で除去し、TLS検証を維持する。
  *
  * export する理由: tests/unit/error-reporter-worker.test.ts の契約テストが、
  * 正本 scripts/lib/db-migrate-core.js の同名関数と代表的な入力で出力が
@@ -376,7 +371,7 @@ async function postIssueComment(env: Env, issueNumber: number, body: string): Pr
 // エラー処理（errors テーブル → GitHub Issue）
 // =============================================================================
 
-/** Supabase errors テーブルのレコード型 */
+/** PlanetScale errorsテーブルのレコード型。 */
 interface ErrorRecord {
   id: string
   error_type: string
@@ -617,7 +612,7 @@ export async function processErrors(env: Env): Promise<void> {
 // error 処理との違い: 問い合わせは1件ずつ一意なのでグループ化・再発コメント不要。
 // =============================================================================
 
-/** Supabase support_inquiries テーブルのレコード型（Issue 化に必要な列のみ） */
+/** PlanetScale support_inquiriesテーブルのレコード型（Issue化に必要な列のみ）。 */
 interface InquiryRecord {
   id: string
   twitch_user_id: string
@@ -1231,7 +1226,7 @@ const MAINTENANCE_STATUS_PATH = '/api/maintenance-status'
  * 完全一致する文字列を追加すること（片方だけ変更するとこの分岐が機能しなくなる）。
  * 既存の5分毎トリガー（errors/inquiries/backlog監視、wrangler.toml 1個目の
  * crons エントリ）とは意図的に別トリガーにしている。理由: 既存トリガーは
- * Supabase ポーリングが主目的で高頻度（5分毎）だが、自動ドレインは HTTP 経由で
+   * errors/inquiriesポーリングが主目的で高頻度（5分毎）だが、自動ドレインはHTTP経由で
  * アプリ本体の書き込み系 API（eventsub-replay）を叩く処理であり、同じ頻度で
  * 回す必要性が薄い（maintenance window は頻繁に発生しない）。Free プランは
  * 3トリガー/worker まで無料なので、2個目のトリガーを追加しても追加コストは無い。

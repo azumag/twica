@@ -27,10 +27,50 @@ interface DbResponse {
 function createDrizzleDbMock(config: {
   selects?: DbResponse[]
   updates?: DbResponse[]
+  refreshState?: Record<string, unknown>
+  refreshUpdateError?: unknown
 } = {}) {
   let selectIndex = 0
   let updateIndex = 0
   const updateValues: Array<Record<string, unknown>> = []
+  const refreshState: Record<string, unknown> = {
+    twitch_access_token: 'access-token',
+    twitch_refresh_token: 'refresh-token',
+    twitch_token_expires_at: pastIso(),
+    ...(config.refreshState ?? {}),
+  }
+  let refreshLockHeld = false
+  const makeTx = () => {
+    const tx: any = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?').replace(/\s+/g, ' ').trim()
+      if (query.includes('pg_try_advisory_xact_lock')) return [{ acquired: true }]
+      if (query.includes('select twitch_access_token') && query.includes('from users')) {
+        return [{
+          twitch_access_token: refreshState.twitch_access_token,
+          twitch_refresh_token: refreshState.twitch_refresh_token,
+          twitch_token_expires_at: refreshState.twitch_token_expires_at,
+        }]
+      }
+      if (query.startsWith('update users')) {
+        if (config.refreshUpdateError) throw config.refreshUpdateError
+        refreshState.twitch_access_token = values[0]
+        refreshState.twitch_refresh_token = values[1]
+        refreshState.twitch_token_expires_at = values[2]
+        refreshState.twitch_scopes = values[3]
+        return [{ twitch_access_token: refreshState.twitch_access_token }]
+      }
+      throw new Error(`Unexpected refresh SQL: ${query}`)
+    }
+    tx.array = (value: unknown) => value
+    return tx
+  }
+  const sql = {
+    begin: vi.fn(async (callback: (tx: any) => Promise<unknown>) => {
+      if (refreshLockHeld) return { acquired: false }
+      refreshLockHeld = true
+      try { return await callback(makeTx()) } finally { refreshLockHeld = false }
+    }),
+  }
 
   const db = {
     select: vi.fn((fields: Record<string, unknown>) => {
@@ -78,11 +118,11 @@ function createDrizzleDbMock(config: {
     }),
   }
 
-  return { db, updateValues }
+  return { db, sql, updateValues, refreshState }
 }
 
 function primeDb(mock: ReturnType<typeof createDrizzleDbMock>) {
-  vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
+  vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: mock.sql } as any)
 }
 
 const futureIso = () => new Date(Date.now() + 60 * 60 * 1000).toISOString()
@@ -159,8 +199,7 @@ describe('Twitch Token Manager: PlanetScale/Drizzle', () => {
       primeDb(fixture)
 
       await expect(getTwitchAccessToken('user-1')).resolves.toBe('new-token')
-      expect(fixture.updateValues).toHaveLength(1)
-      expect(fixture.updateValues[0]).toMatchObject({
+      expect(fixture.refreshState).toMatchObject({
         twitch_access_token: 'new-token',
         twitch_refresh_token: 'new-refresh-token',
         twitch_scopes: ['scope:new'],
@@ -177,14 +216,14 @@ describe('Twitch Token Manager: PlanetScale/Drizzle', () => {
       })
       const fixture = createDrizzleDbMock({
         selects: [{ rows: [tokenRow({ expiresAt: pastIso() })] }],
-        updates: [{ error: { code: '23505', message: 'CAS save failed' } }],
+        refreshUpdateError: { code: '23505', message: 'CAS save failed' },
       })
       primeDb(fixture)
 
       await expect(getTwitchAccessToken('user-1')).rejects.toMatchObject({
         code: 'REFRESH_FAILED',
       })
-      expect(fixture.updateValues).toHaveLength(1)
+      expect(fixture.refreshState.twitch_access_token).toBe('access-token')
     })
 
     it('空scopeも同じCAS UPDATEへ保存する', async () => {
@@ -201,8 +240,7 @@ describe('Twitch Token Manager: PlanetScale/Drizzle', () => {
       primeDb(fixture)
 
       await expect(getTwitchAccessToken('user-1')).resolves.toBe('new-token')
-      expect(fixture.updateValues).toHaveLength(1)
-      expect(fixture.updateValues[0]).toMatchObject({ twitch_scopes: [] })
+      expect(fixture.refreshState.twitch_scopes).toEqual([])
     })
   })
 

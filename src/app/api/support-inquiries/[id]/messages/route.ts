@@ -91,7 +91,7 @@ async function addInquiryMessagePg(
 
     // メッセージ追加
     const messageRows = await withDbRetry(async () => {
-                                            const { db } = await getDb()
+      const { db } = await getDb()
       return db
         .insert(supportInquiryMessagesTable)
         .values({

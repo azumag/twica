@@ -32,8 +32,8 @@ interface StreamerForBatchUpdate {
 }
 
 /**
- * Issue #794: 旧全体ドライバーフラグ=pg のとき、所有権確認も更新RPCと同じPlanetScaleで行う。
- * pg経路も取得失敗時はnullを返して外部挙動を揃える。
+ * Issue #794/#803: 所有権確認も更新RPCと同じPlanetScaleで行う。
+ * 取得失敗時はnullを返し、既存の外部挙動を維持する。
  */
 async function fetchStreamerForBatchUpdatePg(
   streamerId: string,
@@ -265,7 +265,7 @@ export async function POST(request: NextRequest) {
     // Cloudflare Workersのサブリクエスト上限（50回/リクエスト）を超過するため、
     // PostgreSQLストアドプロシージャで1リクエストに集約
     const rpcPayload = updates.map(u => {
-                                     const payload: Record<string, unknown> = { id: u.id, drop_rate: u.dropRate };
+      const payload: Record<string, unknown> = { id: u.id, drop_rate: u.dropRate };
       if (u.intraRarityWeight !== undefined) {
         payload.intra_rarity_weight = u.intraRarityWeight;
       }

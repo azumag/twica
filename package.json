@@ -20,6 +20,7 @@
     "workers:deploy": "npx opennextjs-cloudflare deploy",
     "workers:deploy:preview": "npx opennextjs-cloudflare deploy --env preview",
     "overlay-realtime:typecheck": "tsc -p workers/overlay-realtime/tsconfig.json",
+    "auxiliary-workers:build": "(cd workers/overlay-realtime && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js) && (cd workers/error-reporter && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js)",
     "overlay-realtime:deploy": "wrangler deploy --config workers/overlay-realtime/wrangler.toml",
     "overlay-realtime:deploy:preview": "wrangler deploy --config workers/overlay-realtime/wrangler.toml --env preview",
     "cloudflare:deploy:production": "bash scripts/cloudflare-workers-build-deploy.sh production deploy",

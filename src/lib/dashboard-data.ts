@@ -97,7 +97,7 @@ async function reportMissingDashboardRpc(
 }
 
 /**
- * getStreamerData の Drizzle（pg 直結）実装 (#571)
+ * getStreamerData の PlanetScale/Drizzle 実装 (#571)
  *
  * - `streamers.*, cards!cards_streamer_id_fkey(*)` の埋め込み1リクエストを、
  *   streamers LEFT JOIN cards の1クエリで置き換える（往復回数のパリティ）。
@@ -107,10 +107,10 @@ async function reportMissingDashboardRpc(
  * - streamers.twitch_user_id は UNIQUE（migration 00001）のため streamer は
  *   最大1行。JOIN の複数行はすべて同一 streamer で、カードだけが異なる。
  * - .maybeSingle() のエラー（およびクエリ失敗全般）は既存実装が分割代入で
- *   握り潰して null 扱いにしているため、pg 版も catch して null を返す
+ *   握り潰して null 扱いにしていたため、現行経路も catch して null を返す
  *   （外部挙動のパリティ。ログだけは切替検証のため残す）。
  *
- * 日付の表現形式（#688 で更新。パイロット announcements.ts と同様）: pg 直結・
+ * 日付の表現形式（#688 で更新。announcements.ts と同様）: DB ドライバーが以前
  * （'2026-03-10 12:00:00.123456+00'）で返していたが、src/lib/db/client.ts の
  * installIsoTimestampParsers() が接続確立時に ISO 8601 へ正規化するパーサへ
  * 差し替えている。本モジュールの消費側はすべて new Date() / Date.parse 経由で
@@ -160,7 +160,7 @@ async function getStreamerDataPg(
     );
 
     // 既存実装は `{ cards: _cardsNested, ...streamerData }` でネストを除いた
-    // streamer 列のみを返す。pg 版の streamer 行は最初からネストを含まない。
+    // streamer 列のみを返す。Drizzle の streamer 行は最初からネストを含まない。
     const streamer = rows[0].streamer as unknown as Streamer;
     return { streamer, cards };
   } catch (error) {
@@ -173,18 +173,17 @@ async function getStreamerDataPg(
 
 /**
  * Get streamer data with cards - cached per request
- * Single query using Supabase relations to reduce network round-trips
+ * Single Drizzle query with a JOIN to reduce database round-trips
  *
  * リクエストごとにキャッシュされる配信者データとカードの取得
- * Supabaseのリレーションを使用して1回のクエリで取得し、ネットワーク往復を削減
+ * PlanetScale 上のリレーションを Drizzle の JOIN で1回のクエリとして取得し、往復を削減
  */
 export const getStreamerData = cache(async (twitchUserId: string) => {
-  // #571: 旧全体ドライバーフラグ=pg-read/pg のときのみ Drizzle 直結経路へ切り替える。
-                                       return getStreamerDataPg(twitchUserId);
-})
+  return getStreamerDataPg(twitchUserId);
+});
 
 /**
- * getStreamerDataPaginated の Drizzle（pg 直結）実装 (#571)
+ * getStreamerDataPaginated の PlanetScale/Drizzle 実装 (#571)
  *
  * 1. streamers: .maybeSingle() 相当。twitch_user_id は UNIQUE のため LIMIT 1 で
  *    0行 → null / 1行 → その行、という同じ外部挙動になる。
@@ -305,8 +304,8 @@ export const getStreamerDataPaginated = cache(async (
   page: number = 1,
   perPage: number = 8
 ) => {
-                                                return getStreamerDataPaginatedPg(twitchUserId, page, perPage);
-})
+  return getStreamerDataPaginatedPg(twitchUserId, page, perPage);
+});
 
 /**
  * 形状へ正規化するための最小型 (#573)。postgres.js はエラーを throw するため、
@@ -443,17 +442,13 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
 
   // RPC: DB側でGROUP BY集計（ユニークカード種類数のみ返却、行数制限の影響なし）
   const startQuery = Date.now();
-  // #573: 旧全体ドライバーフラグ=pg-read/pg のときのみ RPC 実行を pg 直結へ切り替える。
-  // 直接クエリフォールバック）・その他エラー分岐（reportError + 同フォールバック）は
-  // まま残すのは gacha.ts getIssuedCounts と同じ判断: 異常時の最後の安全弁は
-  // 本番実績のある既存経路へ逃がし、直接クエリ集計ロジックの pg 複製
-  // （恒久的な重複コード）を避ける。
+  // RPC 実行とフォールバックは現行の PlanetScale/Drizzle 経路に統一している。
   // 引数リストは既存 .rpc() 呼び出しと同一（p_twitch_user_id のみ。p_streamer_id は
   // DEFAULT NULL に任せる）。text 引数は名前付き引数の関数解決で一意に強制される
   // ためキャスト不要（gacha.ts executeGachaTransactionRpcPg の doc コメント参照）。
   const { data: rpcResult, error: rpcError } = await executeDashboardRpcPg("get_user_card_counts(pg)", async (sql) => {
-        // migration 00031: RETURNS JSONB（{ count, card, streamer } オブジェクトの
-                                                                                                         const rows = await sql<{ result: unknown }[]>`
+    // migration 00031: RETURNS JSONB（{ count, card, streamer } オブジェクトの配列）。
+    const rows = await sql<{ result: unknown }[]>`
           select get_user_card_counts(
             p_twitch_user_id => ${twitchUserId}
           ) as result
@@ -498,7 +493,7 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
  * unstable_cacheでリクエスト間キャッシュを使用してデータベース負荷を軽減
  */
 export const getUserCards = cache(async (twitchUserId: string): Promise<CardWithDetails[]> => {
-                                    const start = Date.now();
+  const start = Date.now();
 
   // Use Next.js cache with 30 second revalidation
   // Next.jsキャッシュを使用（30秒で再検証）
@@ -955,14 +950,12 @@ export async function getGachaUsersForStreamer(
   const offset = (page - 1) * perPage;
 
   // RPC: DB側でGROUP BY集約 + ページネーション（件数制限なし）
-  // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」1箇所だけ
-  // （executeDashboardRpcPg の doc コメント参照）。成功時のパース・エラー時の
-  // ログ分岐（42883 → warn / その他 → reportError）は両経路で共有され、
-  // フォールバック集約のクエリ実行だけが下でもう1箇所分岐する。
+  // RPC 結果は { data, error } に正規化し、成功時のパース、エラー記録、
+  // フォールバック集約を同じ PlanetScale/Drizzle 経路で処理する。
   // uuid / integer 引数は明示キャストで型解決を固定する（gacha.ts と同じ規約）。
   const { data: rpcResult, error: rpcError } = await executeDashboardRpcPg("get_gacha_users_for_streamer(pg)", async (sql) => {
-        // migration 00032/00046: RETURNS JSONB ({ users: [...], total: n })。
-                                                                                                                 const rows = await sql<{ result: unknown }[]>`
+    // migration 00032/00046: RETURNS JSONB ({ users: [...], total: n })。
+      const rows = await sql<{ result: unknown }[]>`
           select get_gacha_users_for_streamer(
             p_streamer_id => ${streamerId}::uuid,
             p_limit => ${perPage}::integer,
@@ -978,7 +971,7 @@ export async function getGachaUsersForStreamer(
     const rpcData = rpcResult as { users: Array<{ user_twitch_id: string; username: string; draw_count: number; last_draw_at: string; unique_card_ids: string[] }>; total: number };
     const rpcUsers = rpcData.users || [];
     const users: GachaUserEntry[] = rpcUsers.map((u) => {
-                                                   const uniqueCardIds = normalizeUniqueCardIds(u.unique_card_ids);
+      const uniqueCardIds = normalizeUniqueCardIds(u.unique_card_ids);
       return {
         userTwitchId: u.user_twitch_id,
         username: u.username || "",
@@ -1546,7 +1539,7 @@ async function fetchGachaDropStatsFromHistory(
   );
 
   const cardStats = cards.map((card) => {
-                                const actualCount = drawCounts.get(card.id) || 0;
+      const actualCount = drawCounts.get(card.id) || 0;
     const allDrawers = Array.from(
       drawersByCard.get(card.id)?.values() || []
     ).sort(
@@ -1580,7 +1573,7 @@ async function fetchGachaDropStatsFromHistory(
     }
   }
   const rarityStats = FIXED_RARITIES.map((rarity) => {
-                                           const count = rarityCounts.get(rarity) || 0;
+      const count = rarityCounts.get(rarity) || 0;
     return {
       rarity,
       count,
@@ -1613,18 +1606,15 @@ export async function getGachaStats(
   // get_gacha_drop_stats が gacha_history からDB側で集計して返す。
   // 全期間の所持ユーザーは「カード別」タブ(getGachaCardOwnerStats)に分離。
   //
-  // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」2箇所だけ
-  // （executeDashboardRpcPg の doc コメント参照）。executeDashboardRpcPg は
-  // エラーを reject せず { data, error } に正規化するため、Promise.all が
-  // 同じ性質）。以降のパース・42883 警告・reportError・履歴集計フォールバック
-  // （fetchGachaDropStatsFromHistory / fetchChannelPointUsageStatsFromHistory は
-  // 引数リスト・値は既存 .rpc() 呼び出しと同一に揃え、uuid / timestamptz /
-  // integer は明示キャストで型解決を固定する（gacha.ts と同じ規約）。
+  // 2つの RPC は同じ PlanetScale/Drizzle 接続で並列実行する。
+  // executeDashboardRpcPg は例外を { data, error } に正規化するため、片方の
+  // RPC が失敗しても後続のパースと履歴集計フォールバックを共通で実行できる。
+  // uuid / timestamptz / integer は明示キャストで関数解決を固定する。
   const [dropStatsResult, channelPointResult] = await Promise.all([
-        executeDashboardRpcPg("get_gacha_drop_stats(pg)", async (sql) => {
+    executeDashboardRpcPg("get_gacha_drop_stats(pg)", async (sql) => {
           // migration 00038/00050/00052: RETURNS JSONB
           // ({ total_draws, card_stats: [...], rarity_stats: [...] })
-                                                            const rows = await sql<{ result: unknown }[]>`
+      const rows = await sql<{ result: unknown }[]>`
             select get_gacha_drop_stats(
               p_streamer_id => ${streamerId}::uuid,
               p_from_date => ${fromDateIso}::timestamptz
@@ -1632,9 +1622,9 @@ export async function getGachaStats(
           `;
           return rows[0]?.result ?? null;
         }),
-        executeDashboardRpcPg("get_channel_point_usage_stats(pg)", async (sql) => {
+    executeDashboardRpcPg("get_channel_point_usage_stats(pg)", async (sql) => {
           // migration 00036/00039: RETURNS JSONB ({ total_points, ranking: [...] })
-                                                                     const rows = await sql<{ result: unknown }[]>`
+      const rows = await sql<{ result: unknown }[]>`
             select get_channel_point_usage_stats(
               p_streamer_id => ${streamerId}::uuid,
               p_from_date => ${null}::timestamptz,
@@ -1704,14 +1694,13 @@ export async function getGachaStats(
 export async function getGachaCardOwnerStats(
   streamerId: string
 ): Promise<GachaCardOwnerStatsResult> {
-  // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」1箇所だけ
-  // （executeDashboardRpcPg の doc コメント参照）。以降のパース・42883 警告・
-  // reportError・user_cards 集計フォールバック（fetchCardOwnerStatsFromUserCards
+  // RPC の結果は { data, error } に正規化し、パース・42883 警告・reportError・
+  // user_cards 集計フォールバックを同じ現行経路で処理する。
   // 引数リストは既存 .rpc() 呼び出しと同一（p_streamer_id のみ。p_limit_per_card は
   // DEFAULT に任せる）。uuid 引数は明示キャストで型解決を固定する。
   const rpcResult = await executeDashboardRpcPg("get_card_owner_stats(pg)", async (sql) => {
-        // migration 00051: RETURNS JSONB ({ card_stats: [...] })
-                                                                              const rows = await sql<{ result: unknown }[]>`
+    // migration 00051: RETURNS JSONB ({ card_stats: [...] })
+    const rows = await sql<{ result: unknown }[]>`
           select get_card_owner_stats(
             p_streamer_id => ${streamerId}::uuid
           ) as result
@@ -1864,7 +1853,7 @@ async function fetchCardOwnerStatsFromUserCards(
 
   return {
     cardStats: cards.map((card) => {
-                           const owners = Array.from(
+      const owners = Array.from(
         ownersByCard.get(card.id)?.values() || []
       ).sort(
         (a, b) =>
@@ -1941,7 +1930,6 @@ async function fetchActiveCardsForStreamerFromDBPg(streamerId: string): Promise<
  * 内部関数: 特定配信者のアクティブカードをデータベースから取得
  */
 async function fetchActiveCardsForStreamerFromDB(streamerId: string): Promise<Card[]> {
-  // #571: PlanetScale 接続。unstable_cache の内側で分岐することでキャッシュ構造を
   return fetchActiveCardsForStreamerFromDBPg(streamerId);
 }
 
@@ -1952,7 +1940,7 @@ async function fetchActiveCardsForStreamerFromDB(streamerId: string): Promise<Ca
 export const getActiveCardsForStreamer = cache(async (
   streamerId: string
 ): Promise<Card[]> => {
-                                                 const start = Date.now();
+  const start = Date.now();
 
   const cachedFetch = unstable_cache(
     async () => fetchActiveCardsForStreamerFromDB(streamerId),
@@ -2065,12 +2053,12 @@ async function fetchUserCardsForStreamerFromDB(
 
   // RPC: DB側でGROUP BY集計 + streamer_idフィルタ
   const startQuery = Date.now();
-  // #573: pg 直結分岐は「RPC を実行して { data, error } を得る」1箇所だけ。
-  // フォールバックの共有方針は fetchUserCardsFromDB の分岐コメント参照。
+  // RPC 結果は { data, error } に正規化し、直接クエリフォールバックまで
+  // 同じ PlanetScale/Drizzle 経路で処理する。
   // uuid 引数（p_streamer_id）は明示キャストで型解決を固定する。
   const { data: rpcResult, error: rpcError } = await executeDashboardRpcPg("get_user_card_counts_for_streamer(pg)", async (sql) => {
         // migration 00031: RETURNS JSONB（{ count, card, streamer } の行配列）
-                                                                                                                      const rows = await sql<{ result: unknown }[]>`
+    const rows = await sql<{ result: unknown }[]>`
           select get_user_card_counts(
             p_twitch_user_id => ${twitchUserId},
             p_streamer_id => ${streamerId}::uuid
@@ -2120,7 +2108,7 @@ export const getUserCardsForStreamer = cache(async (
   twitchUserId: string,
   streamerId: string
 ): Promise<CardWithDetails[]> => {
-                                               const start = Date.now();
+  const start = Date.now();
 
   // Use Next.js cache with 30 second revalidation
   // Next.jsキャッシュを使用（30秒で再検証）
@@ -2169,7 +2157,7 @@ async function getStreamerByIdPg(streamerId: string): Promise<Streamer | null> {
  * 配信者IDから配信者情報を取得
  */
 export const getStreamerById = cache(async (streamerId: string): Promise<Streamer | null> => {
-                                       return getStreamerByIdPg(streamerId);
+  return getStreamerByIdPg(streamerId);
 });
 
 /**
@@ -2307,7 +2295,7 @@ export const getUserCardDetail = cache(async (
   streamerId: string,
   cardId: string
 ): Promise<CardWithDetails | null> => {
-                                         return getUserCardDetailPg(twitchUserId, streamerId, cardId);
+  return getUserCardDetailPg(twitchUserId, streamerId, cardId);
 });
 
 /**
@@ -2315,8 +2303,8 @@ export const getUserCardDetail = cache(async (
  * INSERT + ignore 23505 (already recorded — the expected steady-state case),
  * report anything else. Never throws: エラーでページ表示を壊さない。
  *
- * pg 直結分岐 (#663 Category A, 2026-07-11): このテーブルへの書き込みだけ
- * #571 で既に移行済み）。isPgUniqueViolationError /
+ * PlanetScale/Drizzle の書き込み経路 (#663 Category A, 2026-07-11) では
+ * isPgUniqueViolationError /
  * isPgMissingColumnError で SQLSTATE 23505 / 42703 を判定する
  * （getCollectionCompletionsPg と同じ方針）。
  * INSERT は非冪等な操作だが、対象テーブルの一意インデックス
@@ -2519,9 +2507,8 @@ export const getCollectionCompletions = cache(async (
   twitchUserId: string,
   streamerId: string,
 ): Promise<CollectionCompletionRecord[]> => {
-                                                const cachedFetch = unstable_cache(
+  const cachedFetch = unstable_cache(
     async (): Promise<CollectionCompletionRecord[]> => {
-      // #571: PlanetScale 接続。unstable_cache の内側で分岐することでキャッシュ
       return getCollectionCompletionsPg(twitchUserId, streamerId);
     },
     [`collection-completions-${twitchUserId}-${streamerId}`],

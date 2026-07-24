@@ -239,7 +239,7 @@ export async function POST(request: NextRequest) {
     // Prepare cards for insertion
     // 挿入用にカードを準備
     const cardsToInsert = cards.map((card) => {
-                                      const row: Record<string, unknown> = {
+      const row: Record<string, unknown> = {
         streamer_id: streamerId,
         name: card.name,
         description: card.description || "",

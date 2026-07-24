@@ -553,7 +553,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Set session cookie with user info only (no tokens - Supabase Auth handles tokens)
+    // Session cookieにはユーザー情報だけを保存し、Twitch tokenはサーバー側DBに隔離する。
     const sessionData = JSON.stringify({
       twitchUserId: twitchUser.id,
       twitchUsername: twitchUser.login,

@@ -28,8 +28,9 @@ import 'server-only'
  *   後続クエリが全滅する（waitUntil は Promise の「完了を待つ」だけで、実行開始を
  *   レスポンス後まで遅延させるものではない）。
  *
- * - Node 環境（next dev）フォールバック: getCloudflareContext() が throw した場合は
- *   モジュールレベルのシングルトンにフォールバックする。Node では TCP ソケットの
+ * - Node 環境（next dev）フォールバック: Workers runtime ではないことを
+ *   `navigator.userAgent` で確認できた場合だけ、モジュールレベルのシングルトンに
+ *   フォールバックする。Node では TCP ソケットの
  *   リクエスト跨ぎ再利用が安全であり、毎回の接続確立（こちらは Hyperdrive を
  *   経由しない実接続）を避けられる。idle_timeout で放置接続は自動クローズされる。
  *
@@ -332,8 +333,18 @@ export async function getDb(): Promise<DbHandle> {
     const { env, ctx } = await getCloudflareContext({ async: true })
     cfCtx = ctx as unknown as object
     cfEnv = env as unknown as Record<string, unknown>
-  } catch {
-    // Cloudflare Workers 環境ではない（next dev / Node）
+  } catch (error) {
+    // Cloudflare公式は global_navigator 有効時の userAgent='Cloudflare-Workers' を
+    // runtimeの信頼できる判定方法としている。本番でAsyncLocalStorage/context取得が
+    // 壊れた場合までNode扱いすると、module singletonのI/Oを別requestへ持ち越すため、
+    // Workersでは元のcontext errorを必ず再throwしてfail-closedにする。
+    // Node.jsのuserAgent（例: Node.js/22）やnavigator未定義だけをdev fallbackへ通す。
+    if (
+      typeof navigator !== 'undefined'
+      && navigator.userAgent === 'Cloudflare-Workers'
+    ) {
+      throw error
+    }
     cfCtx = null
     cfEnv = null
   }

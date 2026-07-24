@@ -62,11 +62,76 @@ interface UpdateCall {
 function createDrizzleDbMock(config: {
   selects?: DbResponse[]
   updates?: DbResponse[]
+  /** advisory lock 内の生データ。refresh のDB状態遷移をDrizzle builderと混ぜない。 */
+  refreshState?: Record<string, unknown>
 } = {}) {
   let selectIndex = 0
   let updateIndex = 0
   const selectCalls: SelectCall[] = []
   const updateCalls: UpdateCall[] = []
+  const refreshState: Record<string, unknown> = {
+    ...userTokenRow(pastIso()),
+    ...((config.selects ?? []).flatMap(response => response.rows ?? []).find(row => 'owner_type' in row) ?? {}),
+    ...(config.refreshState ?? {}),
+  }
+  let refreshLockHeld = false
+  // postgres.js の tagged template は query文字列をここへ渡す。実DBのadvisory
+  // transaction と同じく、winner の async refresh 中だけ lock を保持することで、
+  // request 内Promiseでは隠せない競合をテストできる。
+  const makeTx = () => {
+    const tx: any = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?').replace(/\s+/g, ' ').trim()
+      if (query.includes('pg_try_advisory_xact_lock')) {
+        return [{ acquired: true }]
+      }
+      if (query.includes('select twitch_access_token') && query.includes('from users')) {
+        return [{
+          twitch_access_token: refreshState.twitch_access_token ?? null,
+          twitch_refresh_token: refreshState.twitch_refresh_token ?? null,
+          twitch_token_expires_at: refreshState.twitch_token_expires_at ?? null,
+        }]
+      }
+      if (query.includes('select twitch_access_token') && query.includes('from twitch_bot_accounts')) {
+        return [{
+          twitch_access_token: refreshState.twitch_access_token ?? null,
+          twitch_refresh_token: refreshState.twitch_refresh_token ?? null,
+          twitch_token_expires_at: refreshState.twitch_token_expires_at ?? null,
+          status: refreshState.status ?? 'active',
+        }]
+      }
+      if (query.startsWith('update users') || query.startsWith('update twitch_bot_accounts')) {
+        if (query.includes('set status = \'error\'')) {
+          refreshState.status = 'error'
+          return []
+        }
+        const accessIndex = query.indexOf('set twitch_access_token') >= 0 ? 0 : -1
+        if (accessIndex >= 0) {
+          refreshState.twitch_access_token = values[accessIndex]
+          refreshState.twitch_refresh_token = values[accessIndex + 1]
+          refreshState.twitch_token_expires_at = values[accessIndex + 2]
+          refreshState.scopes = values[accessIndex + 3]
+          return [{ twitch_access_token: refreshState.twitch_access_token }]
+        }
+        refreshState.twitch_access_token = null
+        refreshState.twitch_refresh_token = null
+        return []
+      }
+      throw new Error(`Unexpected refresh SQL: ${query}`)
+    }
+    tx.array = (value: unknown) => value
+    return tx
+  }
+  const sql = {
+    begin: vi.fn(async (callback: (tx: any) => Promise<unknown>) => {
+      if (refreshLockHeld) return { acquired: false }
+      refreshLockHeld = true
+      try {
+        return await callback(makeTx())
+      } finally {
+        refreshLockHeld = false
+      }
+    }),
+  }
 
   const db = {
     select: vi.fn((fields: Record<string, unknown>) => {
@@ -135,11 +200,11 @@ function createDrizzleDbMock(config: {
     }),
   }
 
-  return { db, selectCalls, updateCalls }
+  return { db, sql, selectCalls, updateCalls, refreshState }
 }
 
 function primeDb(mock: ReturnType<typeof createDrizzleDbMock>) {
-  vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: {} } as any)
+  vi.mocked(getDb).mockResolvedValue({ db: mock.db, sql: mock.sql } as any)
 }
 
 const futureIso = () => new Date(Date.now() + 60 * 60 * 1000).toISOString()
@@ -225,7 +290,7 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       await expect(getTwitchAccessToken('user-1')).resolves.toBeNull()
     })
 
-    it('期限切れトークンを更新し、トークンと実スコープを users へ保存する', async () => {
+    it('期限切れトークンを更新し、トークンと実スコープを同一transactionへ保存する', async () => {
       vi.mocked(refreshTwitchToken).mockResolvedValue(refreshedTokens)
       const fixture = createDrizzleDbMock({
         selects: [{ rows: [userTokenRow(pastIso())] }],
@@ -235,51 +300,61 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       await expect(getTwitchAccessToken('user-1')).resolves.toBe('new-token')
       expect(refreshTwitchToken).toHaveBeenCalledWith('refresh-token')
       // token と scope は同じ旧 refresh token 条件の一回の CAS で保存する。
-      expect(fixture.updateCalls).toHaveLength(1)
-      expect(fixture.updateCalls[0]).toMatchObject({
-        table: usersTable,
-        set: {
-          twitch_access_token: 'new-token',
-          twitch_refresh_token: 'new-refresh-token',
-          twitch_token_expires_at: expect.any(String),
-          twitch_scopes: ['user:read:email'],
-        },
+      expect(fixture.refreshState).toMatchObject({
+        twitch_access_token: 'new-token',
+        twitch_refresh_token: 'new-refresh-token',
+        scopes: ['user:read:email'],
       })
-      expect(fixture.updateCalls[0].where).toEqual(and(
-        eq(usersTable.twitch_user_id, 'user-1'),
-        eq(usersTable.twitch_refresh_token, 'refresh-token'),
-      ))
     })
 
-    it('同じユーザーの並行refreshは両方ともendpointを呼び、CAS loserはwinnerを再読込する', async () => {
+    it('51並行user refreshはendpointを1回だけ呼び、全requestがwinner tokenを返す', async () => {
+      vi.mocked(refreshTwitchToken).mockResolvedValue({ ...refreshedTokens, access_token: 'winner', refresh_token: 'winner-refresh', scope: ['winner:scope'] })
+      const fixture = createDrizzleDbMock({
+        selects: Array.from({ length: 51 }, () => ({ rows: [userTokenRow(pastIso())] })),
+      })
+      primeDb(fixture)
+
+      await expect(Promise.all(Array.from({ length: 51 }, () => getTwitchAccessToken('user-1'))))
+        .resolves.toEqual(Array(51).fill('winner'))
+      expect(refreshTwitchToken).toHaveBeenCalledTimes(1)
+      expect(fixture.refreshState.scopes).toEqual(['winner:scope'])
+    })
+
+    it('400/401競合では失敗を確定する前にwinnerの保存結果を再読込する', async () => {
+      const fixture = createDrizzleDbMock({
+        selects: [{ rows: [userTokenRow(pastIso())] }],
+      })
+      vi.mocked(refreshTwitchToken).mockImplementation(async () => {
+        // OAuth callback/別request がlock取得前にcommitした競合を、endpoint失敗の直後に
+        // 表現する。実装は旧refresh tokenだけでcredential削除してはならない。
+        Object.assign(fixture.refreshState, {
+          twitch_access_token: 'callback-winner',
+          twitch_refresh_token: 'callback-refresh',
+          twitch_token_expires_at: futureIso(),
+        })
+        throw new TwitchTokenRefreshError(401)
+      })
+      primeDb(fixture)
+
+      await expect(getTwitchAccessToken('user-1')).resolves.toBe('callback-winner')
+      expect(fixture.refreshState.twitch_refresh_token).toBe('callback-refresh')
+    })
+
+    it('一時refresh失敗のwinnerはlockを解放し、次requestが取得して回復できる', async () => {
       vi.mocked(refreshTwitchToken)
-        .mockResolvedValueOnce({ ...refreshedTokens, access_token: 'winner', refresh_token: 'winner-refresh', scope: ['winner:scope'] })
-        .mockResolvedValueOnce({ ...refreshedTokens, access_token: 'loser', refresh_token: 'loser-refresh', scope: ['loser:scope'] })
+        .mockRejectedValueOnce(new TwitchTokenRefreshError(522))
+        .mockResolvedValueOnce(refreshedTokens)
       const fixture = createDrizzleDbMock({
         selects: [
           { rows: [userTokenRow(pastIso())] },
           { rows: [userTokenRow(pastIso())] },
-          { rows: [{ twitch_access_token: 'winner' }] },
         ],
-        updates: [{ rows: [{ twitch_access_token: 'winner' }] }, { rows: [] }],
       })
       primeDb(fixture)
 
-      await expect(Promise.all([
-        getTwitchAccessToken('user-1'),
-        getTwitchAccessToken('user-1'),
-      ])).resolves.toEqual(['winner', 'winner'])
-
+      await expect(getTwitchAccessToken('user-1')).rejects.toMatchObject({ code: 'REFRESH_FAILED' })
+      await expect(getTwitchAccessToken('user-1')).resolves.toBe('new-token')
       expect(refreshTwitchToken).toHaveBeenCalledTimes(2)
-      expect(fixture.updateCalls).toHaveLength(2)
-      for (const call of fixture.updateCalls) {
-        expect(call.where).toEqual(and(
-          eq(usersTable.twitch_user_id, 'user-1'),
-          eq(usersTable.twitch_refresh_token, 'refresh-token'),
-        ))
-      }
-      // loserのscopeだけを保存する第3 UPDATE は存在しない。
-      expect(fixture.updateCalls).toHaveLength(2)
     })
 
     it('未デプロイ列(42703)は監視ログを残してnull、それ以外のDB障害はDATABASE_ERRORにする', async () => {
@@ -521,27 +596,15 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       const result = await getBotAccountForChat('broadcaster-1')
 
       expect(result?.accessToken).toBe('new-token')
-      expect(fixture.updateCalls[0]).toMatchObject({
-        table: twitchBotAccountsTable,
-        set: {
-          twitch_access_token: 'new-token',
-          twitch_refresh_token: 'new-refresh-token',
-          twitch_token_expires_at: expect.any(String),
-          scopes: ['user:read:email'],
-          status: 'active',
-          last_error: null,
-        },
+      expect(fixture.refreshState).toMatchObject({
+        twitch_access_token: 'new-token',
+        twitch_refresh_token: 'new-refresh-token',
+        scopes: ['user:read:email'],
       })
-      expect(fixture.updateCalls[0].where).toEqual(and(
-        eq(twitchBotAccountsTable.id, 'bot-account-1'),
-        eq(twitchBotAccountsTable.twitch_refresh_token, 'bot-refresh-token'),
-      ))
     })
 
-    it('同じBOTの並行refreshはCAS loserがwinner tokenを再読込し、scopeを巻き戻さない', async () => {
-      vi.mocked(refreshTwitchToken)
-        .mockResolvedValueOnce({ ...refreshedTokens, access_token: 'winner-bot', refresh_token: 'winner-bot-refresh', scope: ['winner:scope'] })
-        .mockResolvedValueOnce({ ...refreshedTokens, access_token: 'loser-bot', refresh_token: 'loser-bot-refresh', scope: ['loser:scope'] })
+    it('同じBOTの並行refreshはendpointを1回だけ呼び、winner scopeを保持する', async () => {
+      vi.mocked(refreshTwitchToken).mockResolvedValue({ ...refreshedTokens, access_token: 'winner-bot', refresh_token: 'winner-bot-refresh', scope: ['winner:scope'] })
       const expired = botAccountRow(pastIso())
       const fixture = createDrizzleDbMock({
         selects: [
@@ -551,9 +614,7 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
           { rows: [{ sender_mode: 'custom_bot', custom_bot_account_id: 'bot-account-1' }] },
           { rows: [{ sender_mode: 'custom_bot', custom_bot_account_id: 'bot-account-1' }] },
           { rows: [expired] }, { rows: [expired] },
-          { rows: [{ twitch_access_token: 'winner-bot' }] },
         ],
-        updates: [{ rows: [{ twitch_access_token: 'winner-bot' }] }, { rows: [] }],
       })
       primeDb(fixture)
 
@@ -562,15 +623,9 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
         getBotAccountForChat('broadcaster-2'),
       ])
 
-      expect(refreshTwitchToken).toHaveBeenCalledTimes(2)
+      expect(refreshTwitchToken).toHaveBeenCalledTimes(1)
       expect(results.map(result => result?.accessToken)).toEqual(['winner-bot', 'winner-bot'])
-      expect(fixture.updateCalls).toHaveLength(2)
-      for (const call of fixture.updateCalls) {
-        expect(call.where).toEqual(and(
-          eq(twitchBotAccountsTable.id, 'bot-account-1'),
-          eq(twitchBotAccountsTable.twitch_refresh_token, 'bot-refresh-token'),
-        ))
-      }
+      expect(fixture.refreshState.scopes).toEqual(['winner:scope'])
     })
 
     it.each([400, 401])('BOTのHTTP %iだけを失効としてstatus=errorに記録する', async (status) => {
@@ -590,14 +645,7 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       primeDb(fixture)
 
       await expect(getBotAccountForChat('broadcaster-1')).resolves.toBeNull()
-      expect(fixture.updateCalls[0]).toMatchObject({
-        table: twitchBotAccountsTable,
-        set: { status: 'error', last_error: 'token_refresh_failed' },
-      })
-      expect(fixture.updateCalls[0].where).toEqual(and(
-        eq(twitchBotAccountsTable.id, 'bot-account-1'),
-        eq(twitchBotAccountsTable.twitch_refresh_token, 'bot-refresh-token'),
-      ))
+      expect(fixture.refreshState.status).toBe('error')
     })
 
     it.each([403, 404, 501, 522])('BOTのHTTP %iは失効と断定せずactiveを維持する', async (status) => {

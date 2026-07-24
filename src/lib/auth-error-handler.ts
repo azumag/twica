@@ -129,8 +129,8 @@ export async function handleAuthError(
       stack: error instanceof Error ? error.stack : undefined,
     })
 
-    // await: Cloudflare Workers ではレスポンス完了後に未完了の非同期タスクがキャンセルされるため
-    // Supabase へのエラーログ記録を確実に完了させる
+    // Cloudflare Workersではレスポンス完了後に未完了タスクがキャンセルされるため、
+    // PlanetScaleへのエラー記録をawaitして自動issue連携を確実にする。
     await reportAuthError(error, {
       provider: 'twitch',
       action: errorType.replace(/_/g, '-'),

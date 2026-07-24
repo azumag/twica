@@ -35,19 +35,32 @@ Supabase SDK・CLI・実行時接続・環境変数・Secrets は廃止済みで
 
 ```bash
 npm ci
-npm run dev
+# .env.development.local に DATABASE_URL_PLANETSCALE と開発用の機密値を設定する
+npm run dev:next
 ```
 
-`wrangler dev` を使うため、ローカルでは `wrangler.toml` の
-`HYPERDRIVE_PLANETSCALE.localConnectionString`、またはプロジェクトのローカル設定で
-PlanetScale 接続先を与えます。本番用の認証情報を `.env` やソースコードに保存しません。
+通常の Next.js 開発は `npm run dev:next` を使います。fresh clone では、実行時用の
+`DATABASE_URL_PLANETSCALE` と開発用の機密値を Git 管理外の
+`.env.development.local` に設定してください。本番用の認証情報を `.env` やソースコードに
+保存しません。
+
+Worker 実行をローカルで確認する場合は、先に OpenNext の成果物を生成してから起動します。
+
+```bash
+npm run workers:build
+npm run workers:dev
+```
+
+`wrangler dev` は `.open-next/worker.js` を実行するため、`workers:build` を省略すると
+最新のアプリケーション成果物を確認できません。`wrangler.toml` の
+`HYPERDRIVE_PLANETSCALE.localConnectionString` は Worker 側のローカル接続先です。
 
 主な設定値は以下です。Worker 実行時の機密値は Cloudflare の Secret として設定し、
 ビルド時に必要な公開値だけを Workers Builds / CI に設定します。
 
 | 変数 / binding | 用途 |
 | --- | --- |
-| `DATABASE_URL_PLANETSCALE` | CLI・ローカルの PlanetScale 直結接続文字列 |
+| `DATABASE_URL_PLANETSCALE` | `next dev` 用の PlanetScale 直結接続文字列（Git 管理外の `.env.development.local`） |
 | `HYPERDRIVE_PLANETSCALE` | production / preview Worker の DB binding |
 | `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | Twitch OAuth |
 | `TWITCH_EVENTSUB_SECRET` | EventSub 署名検証 |
@@ -80,7 +93,9 @@ npm run db:migrate:verify
 ```
 
 各コマンドは `scripts/db-migrate.js --provider=planetscale` を使用し、接続文字列は
-`DATABASE_URL` からだけ読み取ります。`main` と `preview` への push では
+`DATABASE_URL` からだけ読み取ります。これは runtime の
+`DATABASE_URL_PLANETSCALE` および Worker の `HYPERDRIVE_PLANETSCALE` とは別用途です。
+マイグレーションの接続文字列を runtime 設定へ流用・混在させないでください。`main` と `preview` への push では
 `.github/workflows/planetscale-migrate.yml` が対応する GitHub Environment の
 `PLANETSCALE_DATABASE_URL` で適用・検証します。加法的変更には expand/contract を用い、
 破壊的 DDL はこの自動経路で実行せず、デプロイ順序を管理した上で個別に実施してください。

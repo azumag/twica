@@ -72,7 +72,7 @@ async function activateSupportCodeRpcPg(params: {
   try {
     const data = await withDbRetry(async () => {
       // 規約: getDb() は queryFn の中で呼ぶ(src/lib/db/retry.ts 参照)
-                                     const { sql } = await getDb()
+      const { sql } = await getDb()
       const rows = await sql<{ result: unknown }[]>`
         select activate_support_code(
           p_code_hash => ${params.codeHash},

@@ -19,7 +19,7 @@ function matchesAnyErrorLayer(
   matcher: (layer: { text: string; code: unknown }) => boolean
 ): boolean {
   return getErrorChain(error).some((layer) => {
-                                     if (typeof layer !== "object" || layer === null) return false;
+    if (typeof layer !== "object" || layer === null) return false;
     const err = layer as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
     const text = [err.message, err.details, err.hint].map((value) => String(value ?? "")).join(" ");
     return matcher({ text, code: err.code });

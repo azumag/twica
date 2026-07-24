@@ -113,7 +113,7 @@ type RecalculationCard = Pick<
 >;
 
 /**
- * Issue #794: 旧全体ドライバーフラグ=pg では再計算対象も PlanetScale から取得する。
+ * Issue #794/#803: 再計算対象も PlanetScale から取得する。
  *
  * 以前は更新RPCだけが pg 直結で、前後の SELECT は Supabase のままだったため、
  * cutover後に PlanetScale へ追加されたカードが再計算対象から漏れていた。

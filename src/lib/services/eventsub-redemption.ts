@@ -197,10 +197,10 @@ export function findNewCardNamesForCurrentDraw(
 
     const currentDrawCount = drawnCounts.get(drawnCard.id) ?? 0;
     const previousCount = finalCount - currentDrawCount;
-    // legacy fallback で user_cards INSERT が失敗すると finalCount=0 のまま返り、
-    // previousCount が負値になって「初出」誤通知が発生する。
+    // 所持数の取得に失敗して finalCount=0 へ縮退すると、previousCount が負値になって
+    // 「初出」誤通知が発生し得る。
     // 「初出」と判定するには「いま実際に所持している（finalCount > 0）」必要がある。
-    // If legacy fallback INSERT fails, finalCount stays 0 while currentDrawCount > 0,
+    // If the count lookup falls back to zero, finalCount can be below currentDrawCount,
     // making previousCount negative. Treat as "new card" only when the user actually owns it.
     if (finalCount > 0 && previousCount <= 0) {
       newCardNames.push(drawnCard.name);
@@ -479,7 +479,7 @@ export async function postSoldOutNotify(data: SoldOutNotifyData): Promise<void> 
     let streamer: { chat_announcement_enabled: boolean } | null = null;
     try {
       // Sold-out redemptionも成功時と同じpost-commit境界で扱う。設定読取を
-      // PlanetScaleへ固定し、退役退役済み Supabase 経路がポイント返還通知を壊さないようにする。
+      // PlanetScaleへ固定し、退役済みSupabase経路がポイント返還通知を壊さないようにする。
       const rows = await withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -620,8 +620,8 @@ export async function handleRedemption(messageId: string, event: {
         });
         return { notify: null, retryable: false };
       }
-      // カード発行可能枚数の上限到達（本物のsoldOut）、またはRPC未デプロイに
-      // 起因するlegacyフォールバックの拒否(limitUnavailable、#594)。
+      // カード発行可能枚数の上限到達（本物のsoldOut）、または必須RPC未デプロイを
+      // fail-closedにした結果(limitUnavailable、#594)。
       // どちらの場合も視聴者は既にチャンネルポイントを消費済みでカードを
       // 受け取れていないため、Issue #544/#546 の返還・チャット通知は両方の
       // ケースで実施する。一方 limitUnavailable は「RPCが本来存在すべきなのに
@@ -918,10 +918,10 @@ export async function sendChatAnnouncement(
       : null;
 
     // {num} / {unique} は RPC `get_user_card_counts` で DB 側 GROUP BY 済みの
-    // ユーザー所持カード一覧を取得して求める（PostgREST の行数制限を根本的に回避）
+    // ユーザー所持カード一覧を取得して求める（DB側集約で固定行数制限を回避）
     // is_active フィルタは RPC が行わないため、ここでは JS 側で行う
     // {num} / {unique}: use RPC returning pre-aggregated per-card counts.
-    // The RPC handles GROUP BY server-side, avoiding PostgREST 1000-row cap.
+    // The RPC handles GROUP BY server-side, avoiding client-side row caps.
     // RPC does not filter by is_active, so we filter on the client.
     //
     // Supabase admin clientは削除済みなので、環境に残る旧driver secretを参照せず
@@ -932,9 +932,9 @@ export async function sendChatAnnouncement(
 
     // transient な transport / runtime 例外が throw されるとチャット通知全体が
     // 飛んでしまうため、Promise.all を try/catch で囲みフォールバック挙動を担保する。
-    // PostgREST の `error` payload は下の if で個別にハンドリングする。
+    // 正規化済みの `error` payload は下の if で個別にハンドリングする。
     // Wrap the Promise.all so transient transport/runtime rejections don't abort
-    // the whole chat announcement. PostgREST `error` payloads are still handled below.
+    // the whole chat announcement. Normalized DB error payloads are handled below.
     try {
       const [allCountResult, userCardCountsResult] = await Promise.all([
         allCountPromise,

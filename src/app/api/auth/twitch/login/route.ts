@@ -11,8 +11,6 @@ import { getSession, parseSession, verifySession } from '@/lib/session'
 
 import { logger } from '@/lib/logger.server'
 import { guardWriteRedirect } from '@/lib/maintenance/guard'
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 import { eq } from 'drizzle-orm'
 import { getDb } from '@/lib/db/client'
 
@@ -20,9 +18,9 @@ import { withDbRetry } from '@/lib/db/retry'
 import { users as usersTable } from '@/lib/db/schema'
 
 /**
- * ログイン時のスコープ復元読み取りの pg 直結実装 (#663)
- * （migration 00001）により最大 1 行のため、LIMIT 1 + rows[0] ?? null で同じ
- * 外部挙動。
+ * ログイン時のスコープをPlanetScaleから復元する。
+ * twitch_user_idのUNIQUE制約（migration 00001）により最大1行なので、
+ * LIMIT 1 + rows[0] ?? nullで存在しないユーザーも安全に扱う。
  */
 async function fetchScopeRestorationUserPg(
   twitchUserId: string

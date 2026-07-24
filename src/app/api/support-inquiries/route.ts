@@ -80,7 +80,7 @@ async function insertSupportInquiryPg(payload: {
   try {
     const rows = await withDbRetry(async () => {
       // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
-                                     const { db } = await getDb()
+      const { db } = await getDb()
       return db
         .insert(supportInquiriesTable)
         .values({

@@ -180,7 +180,7 @@ export async function POST(request: NextRequest) {
       card: result.data.card
     });
   } catch (error) {
-    // reportGachaError が [Gacha Error] タイプで Supabase 記録 + console.error を行う
+    // reportGachaErrorが[Gacha Error]としてPlanetScale記録とconsole出力を行う。
     if (session) {
       await reportGachaError(error, {
         streamerId: body && typeof body === 'object' && 'streamerId' in body ? String(body.streamerId) : undefined,

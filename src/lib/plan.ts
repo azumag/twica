@@ -8,7 +8,7 @@
  *
  * 注意: 定数・型は plan-constants.ts に定義。
  * クライアントコンポーネントからは plan-constants.ts を直接 import すること。
- * plan.ts はサーバー専用モジュール（Supabase, Twitch API）に依存するため、
+ * plan.tsはサーバー専用モジュール（PlanetScale、Twitch API）に依存するため、
  * クライアントバンドルに含めると env-validation のモジュール評価時バリデーションでクラッシュする。
  */
 
@@ -45,7 +45,7 @@ export { PLAN_STORAGE_BONUS, PLAN_MAX_IMAGE_WIDTH, PLAN_MAX_UPLOAD_SIZE, PLAN_AV
  * @returns 現在の有効プラン（ライセンスなしの場合は 'basic'）
  */
 export const getUserPlan = cache(async function getUserPlan(twitchUserId: string): Promise<PlanType> {
-                                   const startedAt = perfStart()
+  const startedAt = perfStart()
   try {
     // DBライセンス判定・Twitchサブスク判定を並列実行
     // hasTwitchSub は環境変数未設定時に即座に false を返すため、未設定環境でも安全
@@ -76,7 +76,7 @@ export const getUserPlan = cache(async function getUserPlan(twitchUserId: string
  * 外部Twitch APIへ再検証に行かず、DBに保存済みのライセンス/サブスク状態だけを見る。
  */
 export const getUserPlanSnapshot = cache(async function getUserPlanSnapshot(twitchUserId: string): Promise<PlanType> {
-                                           const startedAt = perfStart()
+  const startedAt = perfStart()
   try {
     const [licensePlan, cachedSubPlan] = await Promise.all([
       getLicensePlan(twitchUserId),

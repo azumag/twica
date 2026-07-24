@@ -527,7 +527,7 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // handleApiError 内部で await logger.error() → Supabase 記録を行う
+      // handleApiError内部でlogger.errorをawaitし、PlanetScaleへの記録を完了する。
       return handleApiError(error, `EventSub subscription failed: status=${subscribeResponse.status}, broadcaster=${session.twitchUserId}, rewardId=${rewardId}`);
     }
 

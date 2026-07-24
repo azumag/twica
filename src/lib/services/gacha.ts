@@ -111,10 +111,9 @@ interface GachaTransactionRpcResult {
 }
 
 /**
- * pg 直結経路のエラーを PostgREST .rpc() の error と同じ「code + message」形状へ
- * 正規化するための最小型(#573)。postgres.js は PostgrestError と異なりエラーを
- * throw するため、executeGacha 内の既存エラー分岐(42883→legacy フォールバック、
- * reportError + err())を両経路で共有するにはこの形への詰め替えが必要。
+ * PlanetScale RPCのthrowを「code + message」形状へ正規化するための最小型(#573)。
+ * executeGachaは42883を必須migration不足としてfail-closedにし、その他も
+ * reportError + err()へ統一して運用通知するため、この形へ詰め替える。
  * code を optional にしているのは、接続断系(CONNECTION_CLOSED 等)や
  * 非 Error オブジェクトが throw された場合に SQLSTATE が存在しないため。
  */
@@ -133,9 +132,9 @@ interface GachaReadDriverError {
    * 実際の SQLSTATE・メッセージ（Drizzle にラップされた場合は cause 側にしか
    * 無い）を見つける。以前の normalizePgReadError はトップレベルの code/message
    * だけをコピーして cause を捨てていたため、これらの判定関数に正規化後の
-   * エラーを渡すと常に false になり、旧ガチャドライバーフラグ=pg かつ本番未デプロイ列
-   * 欠落で #685 のデプロイ窓フォールバックが発動しない事故が起こりうる
-   * （getActiveCardsForStreamer (pg) と同型のバグ）。cause を保持することで
+   * エラーを渡すと常に false になり、本番未デプロイ列の欠落時に #685 の
+   * デプロイ窓フォールバックが発動しない事故が起こりうる
+   * （getActiveCardsForStreamer と同型のバグ）。cause を保持することで
    * getErrorChain(normalizedError) が元のチェーン全体を辿れるようにする。
    */
   cause?: unknown
@@ -244,16 +243,11 @@ export class GachaService {
       // query below, or the fallback would silently ignore the requested pack
       // and draw from ALL of the streamer's cards during that deploy window.
       //
-      // Issue #579 (#576 フェーズ2): intra_rarity_weight (migration 00026, 既存の
-      // 安定列) はパック内レアリティ自動配分の計算にのみ必要なので、パック指定時
-      // のみ SELECT に追加する。supabase-js は select() の *リテラル* 文字列から
-      // Row 型を推論するため(変数文字列や三項式を渡すと型が崩れる)、列リストが
-      // 異なる分岐ごとに select() 呼び出し自体を分ける。パック未指定クエリの
-      // 列リストは従来(main の #108 実装)と完全に同一のまま維持する。
-      // #718: ガチャの読み取りと書き込みは同じ 旧ガチャドライバーフラグ で切り替える。
-      // 旧全体ドライバーフラグ と分離すると、緊急ロールバック時に抽選プールだけ別 provider を
-      // 読み続ける split-brain が起きるため、課金系クリティカルパスを一つの
-      // rollback unit として扱う。PG 読み取りは冪等なので接続断リトライを許可する。
+      // Issue #579 (#576 フェーズ2): intra_rarity_weight (migration 00026) は
+      // パック内レアリティ自動配分の計算にのみ必要なので、パック指定時だけ取得する。
+      // #718/#803: 抽選プールの読み取りから課金トランザクションまでを同じ
+      // PlanetScale 接続先に揃え、異なる provider を参照する split-brain を防ぐ。
+      // この読み取りは冪等なので、接続断に限ってリトライを許可する。
       let cards: Array<{
         id: string
         name: string
@@ -353,7 +347,7 @@ export class GachaService {
         const issuedCounts = issuedCountsResult.data
 
         availableCards = cards.filter((card) => {
-                                        if (card.max_issuance_count === null || card.max_issuance_count === undefined) return true
+          if (card.max_issuance_count === null || card.max_issuance_count === undefined) return true
           return (issuedCounts.get(card.id) || 0) < card.max_issuance_count
         })
       }
@@ -426,12 +420,9 @@ export class GachaService {
         // PlanetScale の単一 RPC に閉じ込める。これにより履歴と発行済み数が別接続先へ
         // 分かれる中間状態を作らない。
         //
-        // 分岐は「RPC を実行して { data, error } を得る」部分だけに絞る。pg 側
-        // (executeGachaTransactionRpcPg)が PostgREST .rpc() と同一の { data, error }
-        // 形状へ正規化して返すため、この直後のエラー分岐(42883→executeGachaLegacy
-        // フォールバック、reportError + err())と is_duplicate / limit_reached の
-        // 後続処理(limit_reached 再抽選ループ含む)は両経路で完全に共有される —
-        // 経路によって外部挙動が変わる余地を分岐点1箇所に閉じ込めるための設計。
+        // RPC結果を { data, error } に正規化し、42883を含む失敗はfail-closed、
+        // 成功時だけ is_duplicate / limit_reached の後続処理へ進む。停止済みDBへ
+        // 逃がす非原子的な経路は持たず、課金結果の正本をPlanetScaleに固定する。
         const { data: rpcResult, error: rpcError } = await this.executeGachaTransactionRpcPg({
               eventId: eventId || null,
               userTwitchId,
@@ -485,11 +476,10 @@ export class GachaService {
   }
 
   /**
-   * execute_gacha_transaction RPC の pg 直結(postgres.js)実装 (#573)。
-   * 旧ガチャドライバーフラグ=pg (または 旧全体ドライバーフラグ=pg かつ 旧ガチャドライバーフラグ 未設定)のときのみ
-   * executeGacha から呼ばれる。PostgREST .rpc() と同一の { data, error } 形状を
-   * 返すことで、呼び出し側の後続分岐(42883 フォールバック・is_duplicate・
-   * limit_reached 再抽選)を両経路で共有する。
+   * execute_gacha_transaction RPC の PlanetScale 直結(postgres.js)実装 (#573)。
+   * executeGacha の単一路線として呼ばれ、既存の { data, error } 形状を維持することで、
+   * 呼び出し側の後続分岐(42883 fail-closed・is_duplicate・limit_reached 再抽選)
+   * を共有する。
    *
    * 名前付き引数(p_event_id => ...)で呼ぶ理由: 位置引数だと将来のパラメータ追加・
    * 並び替えで「隣の引数へズレたまま型だけ合ってしまう」取り違え事故(課金系では
@@ -598,12 +588,9 @@ export class GachaService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
 
-      // 42883 (undefined_function) = RPC 未デプロイのデプロイ窓。code:'42883' へ
-      // 正規化して返し、呼び出し側の既存分岐(rpcError.code === '42883' →
-      // executeGachaLegacy)にそのまま乗せる。executeGachaLegacy は postgrest 実装の
-      // まま変更しない: 異常時(マイグレーションとコードのデプロイ順ズレ)に頼る
-      // 最後の安全弁は、本番実績のある既存経路へ逃がすほうが「新経路の不具合が
-      // フォールバック先まで巻き込む」リスクを避けられるため(#573 の設計判断)。
+      // 42883 (undefined_function) = 必須RPC未デプロイ。code:'42883'へ正規化し、
+      // 呼び出し側で明示的にfail-closedにする。履歴・所持カードを分割更新する
+      // 非原子的経路へ逃がすとポイント消費との不整合を再導入するため禁止する。
       // isPgFunctionNotFoundError を明示的に使うのは、検知ロジックを
       // src/lib/db/errors.ts に一元化し、将来判定方法が変わっても正規化後の
       // code が '42883' で安定するようにするため。
@@ -809,8 +796,7 @@ export class GachaService {
       image_url: originalCard.image_url,
       rarity: originalCard.rarity,
       drop_rate: originalCard.drop_rate,
-      // Issue #108: legacy フォールバック(executeGachaLegacy)が発行上限の
-      // 再チェックに参照するため、再構築後も必ず引き継ぐ。
+      // Issue #108: 発行上限の再チェックに参照するため、再構築後も必ず引き継ぐ。
       max_issuance_count: originalCard.max_issuance_count ?? null,
     }
   }
@@ -839,7 +825,7 @@ export class GachaService {
     let error: GachaReadDriverError | null
     try {
       data = await withDbRetry(async () => {
-                                 const { db } = await getDb()
+        const { db } = await getDb()
         return db.select({ event_id: gachaHistory.event_id })
           .from(gachaHistory)
           .where(inArray(gachaHistory.event_id, candidateEventIds))
@@ -1030,7 +1016,7 @@ export class GachaService {
 
       try {
         const rows = await withDbRetry(async () => {
-                                         const { db } = await getDb()
+          const { db } = await getDb()
           return db.select({
             id: streamers.id,
             channel_point_reward_id: streamers.channel_point_reward_id,
@@ -1064,11 +1050,9 @@ export class GachaService {
       // 再取得する。欠落時は rarity_weights_scope=null
       // (resolveRarityWeightsForPool は null/undefined を 'global' として扱う)
       // / pack_rarity_weights=null (パック別上書きなし) を安全側デフォルトとする。
-      // PG フラグは必要 migration の適用確認後にだけ有効化する運用契約のため、
-      // PG 側で 42703 が出た場合に PostgREST へ跨いだ fallback は行わない。
-      // ここで旧経路へ混ぜると Phase 2 の provider 切替後に古い DB を読んで抽選する
-      // 危険がある。PG 経路はエラーとして停止し、旧ガチャドライバーフラグ 全体を戻す。
-
+      // PlanetScale 側で 42703 が出た場合も、停止予定の旧 provider へ跨いだ
+      // fallback は行わない。異なる DB の古い状態を読んで抽選する危険を避けるため、
+      // 現行経路のエラーとして停止し、migration 不足を明示的に修復する。
 
       // Issue #393: targeted fallback when ONLY channel_point_collection_name is
       // missing (00061 deploy window). Re-select WITHOUT that column but WITH all
@@ -1097,7 +1081,7 @@ export class GachaService {
         drawCount = 1,
         collectionName?: string | null
       ): Promise<Result<GachaResult>> => {
-                                         const result = await this.executeGachaDraws(
+        const result = await this.executeGachaDraws(
           streamer.id,
           event.user_id,
           event.user_name,
@@ -1151,7 +1135,7 @@ export class GachaService {
       let additionalError: GachaReadDriverError | null
       try {
         const rows = await withDbRetry(async () => {
-                                         const { db } = await getDb()
+          const { db } = await getDb()
           return db.select({
             id: streamerAdditionalGachaRewards.id,
             draw_count: streamerAdditionalGachaRewards.draw_count,
@@ -1236,7 +1220,7 @@ export class GachaService {
       let streamerError: GachaReadDriverError | null
       try {
         const rows = await withDbRetry(async () => {
-                                         const { db } = await getDb()
+          const { db } = await getDb()
           return db.select({
             id: streamers.id,
             chat_announcement_enabled: streamers.chat_announcement_enabled,

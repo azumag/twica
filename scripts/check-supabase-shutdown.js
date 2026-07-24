@@ -17,10 +17,17 @@ const ts = require('typescript')
 const ROOT = path.resolve(__dirname, '..')
 const failures = []
 const REQUIRE_OPEN_NEXT = process.argv.includes('--require-open-next')
+const REQUIRE_AUX_WORKERS = process.argv.includes('--require-aux-workers')
 const REQUIRED_OPEN_NEXT_ARTIFACTS = [
   '.open-next/worker.js',
   '.open-next/middleware/handler.mjs',
   '.open-next/server-functions/default/handler.mjs',
+]
+const REQUIRED_AUX_WORKER_ARTIFACTS = [
+  'workers/error-reporter/dist/production/index.js',
+  'workers/error-reporter/dist/preview/index.js',
+  'workers/overlay-realtime/dist/production/index.js',
+  'workers/overlay-realtime/dist/preview/index.js',
 ]
 
 function absolute(relativePath) {
@@ -102,6 +109,16 @@ function assertAbsent(relativePath, patterns) {
   const source = stripComments(read(relativePath))
   for (const label of findMatchingPatternLabels(source, patterns)) {
     fail(`${relativePath}: retired Supabase dependency reintroduced (${label})`)
+  }
+}
+
+function assertRawAbsent(relativePath, patterns) {
+  // 通常のruntime検査は歴史コメントを許容するためコメントを除去する。一方、移行済み
+  // module内に旧driver helper名が説明として残ると、保守者へ存在しない切替手順を示して
+  // しまう。対象を単一moduleへ限定したraw検査を併用し、一般ドキュメントは妨げない。
+  const source = read(relativePath)
+  for (const label of findMatchingPatternLabels(source, patterns)) {
+    fail(`${relativePath}: retired migration language remains (${label})`)
   }
 }
 
@@ -395,6 +412,19 @@ for (const file of runtimeSourceFiles) {
   assertAbsent(file, runtimePatterns)
 }
 
+assertRawAbsent('src/lib/twitch/token-manager.ts', [
+  [
+    'driver helper reference',
+    /\b(?:isPgReadEnabled|isPgWriteEnabled|getGachaDbDriver)\b/,
+  ],
+])
+assertRawAbsent('src/lib/services/gacha.ts', [
+  [
+    'retired gacha helper reference',
+    /\b(?:executeGachaLegacy|isPgReadEnabled|isPgWriteEnabled|getGachaDbDriver)\b/,
+  ],
+])
+
 // package scriptsから到達するroot-level runtime/deploy entry pointも検査する。
 // `scripts/`全体には移行履歴のexport utilityがあり、過去provider名の記録自体は
 // 正当なので、現在のproduction実行面だけを明示列挙する。
@@ -440,6 +470,11 @@ if (REQUIRE_OPEN_NEXT) {
     ])
   }
 }
+if (REQUIRE_AUX_WORKERS) {
+  // 各Wrangler設定のproduction/preview dry-run bundleを個別に要求する。
+  // ディレクトリwalkだけでは、build step削除やoutdir変更が0件scanのまま成功する。
+  for (const artifact of REQUIRED_AUX_WORKER_ARTIFACTS) assertRequiredFile(artifact)
+}
 
 // Test-only aliases and facades can hide a production import after its source
 // module is deleted. Reject those local compatibility entry points as well,
@@ -469,6 +504,10 @@ for (const configFile of ['tsconfig.json', 'vitest.config.ts']) {
 
 for (const retiredPath of [
   'src/lib/supabase/admin.ts',
+  'src/lib/supabase/client.ts',
+  'src/lib/supabase/server.ts',
+  'src/lib/supabase/index.ts',
+  'src/lib/supabase/keys.ts',
   'src/lib/supabase/retry.ts',
   'src/lib/supabase/middleware.ts',
   'src/lib/db/flags.ts',
@@ -481,6 +520,9 @@ for (const retiredPath of [
 }
 
 for (const workflow of walk('.github/workflows', /\.ya?ml$/)) {
+  // YAMLの実行可能な値へsource runtimeと同じ包括規則を適用する。これにより
+  // URL/key名だけでなくcurlのREST/Realtime/Auth等の直接endpointも拒否する。
+  assertAbsent(workflow, runtimePatterns)
   assertAbsent(workflow, [
     ['Supabase CLI action', /supabase\/setup-cli/],
     ['Supabase migration command', /supabase\s+db\s+push/],
@@ -490,12 +532,14 @@ for (const workflow of walk('.github/workflows', /\.ya?ml$/)) {
   ])
 }
 
-assertAbsent('wrangler.toml', [
-  ['retired application Hyperdrive binding', /HYPERDRIVE_SUPABASE/],
-])
-assertAbsent('workers/error-reporter/wrangler.toml', [
-  ['retired reporter Hyperdrive binding', /binding\s*=\s*['"]HYPERDRIVE_SUPABASE['"]/],
-])
+for (const configFile of [
+  'wrangler.toml',
+  'workers/error-reporter/wrangler.toml',
+  'workers/overlay-realtime/wrangler.toml',
+  '.env.local.example',
+]) {
+  assertAbsent(configFile, runtimePatterns)
+}
 assertPresent('wrangler.toml', [
   ['production PlanetScale binding', /binding\s*=\s*['"]HYPERDRIVE_PLANETSCALE['"]/],
   ['preview PlanetScale binding', /env\.preview\.hyperdrive/],
@@ -571,6 +615,7 @@ console.log('OK: runtime, dependencies, bindings, environment, and deploy paths 
 }
 
 module.exports = {
+  REQUIRED_AUX_WORKER_ARTIFACTS,
   REQUIRED_OPEN_NEXT_ARTIFACTS,
   findGeneratedBundleDependencies: (source) => (
     findMatchingPatternLabels(stripComments(source), generatedBundlePatterns)

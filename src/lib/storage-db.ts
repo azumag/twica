@@ -446,7 +446,7 @@ export async function hasStorageBonusByTwitchUserId(
  * @returns キャンペーンボタンを表示すべき場合true
  */
 export const shouldShowVoteCampaign = cache(async function shouldShowVoteCampaign(twitchUserId: string): Promise<boolean> {
-                                              const now = new Date();
+  const now = new Date();
   if (now < VOTE_CAMPAIGN_CONFIG.START_DATE || now > VOTE_CAMPAIGN_CONFIG.END_DATE) {
     return false;
   }

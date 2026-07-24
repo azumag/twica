@@ -28,19 +28,18 @@ export class TwitchTokenError extends Error {
   }
 }
 
-// Cloudflare Workers の fetch/DB I/O はリクエストコンテキストに所属するため、pending
-// Promise をmodule scopeへ保存して別リクエストからawaitしてはいけない。並行refreshは
-// token endpointまで各リクエスト内で完結させ、保存時に「交換に使用した旧refresh token」
-// を条件とするDB CASだけで競合を解決する。CAS loserはwinnerのaccess tokenを再読込するため
-// ローテーション済み資格情報を上書きしない。Durable Objectによる分散直列化は、現時点では
-// DB CASで整合性を満たせるためYAGNIとし、request-scoped I/O境界を優先する。
-
+// Workersのfetch/DB I/Oはrequest contextに所属するため、pending Promiseをmodule
+// scopeへ保存して別requestからawaitしてはいけない。各request内でTwitch refreshを
+// 完結させ、保存時に「交換へ使った旧refresh token」を条件とするDB CASで競合を解決する。
+// CAS loserはwinnerのaccess tokenを再読込するため、ローテーション済み資格情報を
+// 上書きしない。Cloudflare公式どおりtransactionへ外部APIを含めず、Hyperdrive接続を
+// provider待ちの間pinしない。
 function shouldDisableBotCredential(error: unknown): boolean {
   // Twitch が資格情報の失効を示す400/401だけを再認証対象にする。403/404/501等は
   // client設定・WAF・上流機能の問題でも起こるため、単にretry対象外という理由だけで
   // BOTを無効化してはいけない（retry方針とcredential失効判定は別の責務）。
-  // 522/network/壊れた2xx応答やDB保存障害で status='error' にすると、取得クエリの
-  // active filterから永久除外され、障害復旧後も自動再試行できなくなる。
+  // 522/network/壊れた2xx応答やDB保存障害でstatus='error'にすると、取得クエリの
+  // active filterから外れ、上流復旧後も自動再試行できなくなる。
   return error instanceof TwitchTokenRefreshError
     && error.kind === 'http'
     && (error.status === 400 || error.status === 401);
@@ -123,8 +122,7 @@ async function getTwitchAccessTokenPg(twitchUserId: string): Promise<string | nu
 }
 
 export async function getTwitchAccessToken(twitchUserId: string): Promise<string | null> {
-  // #572: この関数自体の DB アクセスは読み取りのみのため isPgReadEnabled() で分岐。
-  // フラグ未設定時（既定 'postgrest'）は素通りし、以下の既存実装が従来どおり動く。
+  // 読み取りから期限切れ時のCAS更新までPlanetScaleの単一経路で完結させる。
   return getTwitchAccessTokenPg(twitchUserId);
 }
 
@@ -150,30 +148,24 @@ interface BotAccountRow {
 
 
 
-/**
- * isMissingBotSchemaError の pg 直結版 (#572)
- * PostgreSQL が返す 42703 (undefined_column) / 42P01 (undefined_table) を判定する。
- */
+/** PostgreSQL が返す 42703 (undefined_column) / 42P01 (undefined_table) を判定する。 */
 function isMissingBotSchemaErrorPg(error: unknown): boolean {
   return isPgMissingColumnError(error) || isPgMissingTableError(error);
 }
 
 /**
- * getBotAccountForChat の pg 直結実装 (#572)
+ * getBotAccountForChat のPlanetScale実装。
  *
  * 読み取り（streamers / streamer_chat_sender_settings / twitch_bot_accounts）と
- * 書き込み（リフレッシュ後のトークン保存・エラーステータス保存）が混在する関数の
- * ため、呼び出し元は isPgWriteEnabled() で関数全体を分岐する（ファイル冒頭の
- * フラグ使い分け方針を参照）。
+ * 書き込み（リフレッシュ後のトークン保存・エラーステータス保存）を同じ
+ * PlanetScale接続へ固定し、認証情報が別DBへ分断されないようにする。
  *
- * PostgREST 実装との対応:
  * - 各 .maybeSingle() は一意条件（streamers.twitch_user_id UNIQUE /
  *   streamer_chat_sender_settings.streamer_id PK / twitch_bot_accounts.id PK）
- *   での取得のため LIMIT 1 + rows[0] ?? null で同じ外部挙動。official_bot の
- *   .order(created_at, ascending).limit(1) は orderBy(asc) + limit(1) が等価。
- * - isMissingBotSchemaError による「BOT スキーマ未デプロイ窓」フォールバックは
- *   isMissingBotSchemaErrorPg（42703/42P01）で再現。
- * - トークン値はログに出さない（既存のログ慣習どおり error オブジェクトのみ）。
+ *   で取得するため LIMIT 1 + rows[0] ?? null とする。official_bot は
+ *   created_at昇順の先頭を正本として選ぶ。
+ * - BOTスキーマ未配備はSQLSTATE 42703/42P01で検知し、安全側へ縮退する。
+ * - トークン値はログに出さない。
  */
 async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<BotChatAccount | null> {
   let streamer: { id: string } | null;
@@ -247,7 +239,7 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
     return null;
   }
 
-  // PostgREST 経路の select 文字列と同一の 8 列（両モード共通）
+  // 認証と送信に必要な8列だけを取得し、不要なcredential露出を避ける。
   const botAccountColumns = {
     id: twitchBotAccountsTable.id,
     owner_type: twitchBotAccountsTable.owner_type,
@@ -394,7 +386,7 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
             .returning({ twitch_access_token: twitchBotAccountsTable.twitch_access_token });
         },
         'getBotAccountForChat(save refreshed token)',
-        // 旧 refresh token 条件付きCASなので、isolate間競合・接続断後の再試行でも
+        // 旧refresh token条件付きCASなので、isolate間競合や接続断後の再試行でも
         // 後勝ちの古い資格情報が新しいローテーション結果を上書きしない。
         { idempotent: true },
       );
@@ -419,15 +411,13 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
       }
     } catch (error) {
       if (isMissingBotSchemaErrorPg(error)) {
-        // リフレッシュ済みtokenを保存できないまま返すと、次回リクエストは失効済み
-        // tokenを再度読み、Twitch API失敗を反復する。認証情報の書き込みには安全な
-        // fallbackが無いため、schema不整合をエラーとして外側へ伝播しnullへ縮退する。
+        // 保存できない一時tokenを返すと次回も失効済みcredentialを読み直す。安全な
+        // fallbackがないため、schema不整合を成功扱いせず外側でnullへ縮退する。
         logger.error('Twitch BOT schema is missing; refusing to return an unpersisted refreshed token', {
           broadcasterTwitchUserId,
           error,
         });
       }
-      // schema不整合やCAS winner読込失敗は成功扱いせず、外側でnullへ縮退する。
       throw error;
     }
 
@@ -462,7 +452,7 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
           { idempotent: true },
         );
       } catch {
-        // best-effort。エラー状態保存の失敗で chat 呼出しへ例外を追加しない。
+        // best-effort。状態保存失敗でchat呼び出しへ追加例外を持ち込まない。
       }
     }
     return null;
@@ -475,11 +465,9 @@ export async function getBotAccountForChat(broadcasterTwitchUserId: string): Pro
 }
 
 /**
- * getCustomBotAccountDisplayForStreamer の pg 直結実装 (#572)
+ * getCustomBotAccountDisplayForStreamer のPlanetScale実装。
  *
- * 読み取り専用の関数のため isPgReadEnabled() で分岐する。
- * 既存実装はエラーを分割代入で握りつぶして null を返す（settingsError / 2 本目は
- * error 自体を受け取らない）ため、pg 版も各クエリを catch して null に落とす。
+ * 表示補助はDB障害時に認証処理を止めない契約のため、各クエリをcatchしてnullへ落とす。
  */
 async function getCustomBotAccountDisplayForStreamerPg(
   streamerId: string
@@ -505,7 +493,7 @@ async function getCustomBotAccountDisplayForStreamerPg(
     );
     settings = rows[0] ?? null;
   } catch {
-    // 既存経路は settingsError 時に（ログなしで）null を返す。同じ外部挙動に合わせる。
+    // 表示補助の失敗は呼び出し元の設定画面を止めず、未設定表示へ縮退する。
     return null;
   }
 
@@ -541,7 +529,7 @@ async function getCustomBotAccountDisplayForStreamerPg(
     );
     botAccount = rows[0] ?? null;
   } catch {
-    // 既存経路は error を受け取らず data=null → null を返す。同じ外部挙動に合わせる。
+    // BOT表示名を取得できない場合は未設定表示へ縮退する。
     return null;
   }
 
@@ -558,7 +546,6 @@ async function getCustomBotAccountDisplayForStreamerPg(
 export async function getCustomBotAccountDisplayForStreamer(
   streamerId: string
 ): Promise<{ username: string | null; displayName: string | null } | null> {
-  // #572: 読み取り専用の関数のため isPgReadEnabled() で分岐。
   return getCustomBotAccountDisplayForStreamerPg(streamerId);
 }
 
@@ -574,13 +561,11 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
   try {
     const tokens = await refreshTwitchToken(refreshToken);
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-    let wonRefreshRace = false;
     let accessToken = tokens.access_token;
 
     try {
       const updated = await withDbRetry(
         async () => {
-          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
           const { db } = await getDb();
           return db
             .update(usersTable)
@@ -590,10 +575,8 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
               twitch_token_expires_at: expiresAt.toISOString(),
               twitch_scopes: tokens.scope ?? [],
             })
-            // requestを跨いだPromise共有はWorkersで禁止されるため、交換に使った旧
-            // refresh tokenがまだ現行値の場合だけtoken/scopeを原子的に保存する。
-            // 接続断後のDB retryでも
-            // 1回目が成功済みなら2回目は0件となり、winnerの値を再取得できる。
+            // 交換に使った旧refresh tokenがまだ現行値の場合だけtoken/scopeを保存する。
+            // DB retryで1回目が成功済みでも2回目は0件となり、winnerを再取得できる。
             .where(and(
               eq(usersTable.twitch_user_id, twitchUserId),
               eq(usersTable.twitch_refresh_token, refreshToken),
@@ -601,12 +584,11 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
             .returning({ twitch_access_token: usersTable.twitch_access_token });
         },
         'refreshTwitchAccessToken(save)',
-        // CAS は再実行時に旧値が一致しなくなるため、接続断後も安全にリトライ可能。
+        // CASは再実行時に旧値が一致しなくなるため、接続断後も安全に再試行できる。
         { idempotent: true },
       );
-      wonRefreshRace = updated.length > 0;
 
-      if (!wonRefreshRace) {
+      if (updated.length === 0) {
         const winner = await withDbRetry(
           async () => {
             const { db } = await getDb();
@@ -627,9 +609,8 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
       }
     } catch (error) {
       if (isPgMissingColumnError(error)) {
-        // OAuth refresh tokenはローテーションされる場合があり、DB保存前に新しい
-        // access tokenだけ返すと永続状態との整合を失う。認証情報の更新は成功扱い
-        // にせず、外側のREFRESH_FAILEDへ伝播して再認証へ誘導する。
+        // ローテーション後のtokenを保存せず返すと永続状態と不整合になるため、
+        // schema欠落は成功扱いせず再認証へ誘導する。
         logger.error('Twitch token columns are missing; refusing to return an unpersisted token', {
           twitchUserId,
           error,
@@ -655,8 +636,7 @@ async function refreshTwitchAccessToken(twitchUserId: string, refreshToken: stri
 }
 
 /**
- * saveTwitchTokens の pg 直結実装 (#572)
- * 書き込み（users の UPDATE）のみの関数のため isPgWriteEnabled() で分岐。
+ * saveTwitchTokens のPlanetScale実装。
  * 列未配備のデプロイ窓は 42703 (isPgMissingColumnError) で判定する。
  */
 async function saveTwitchTokensPg(twitchUserId: string, tokens: TwitchTokens): Promise<void> {
@@ -697,13 +677,11 @@ async function saveTwitchTokensPg(twitchUserId: string, tokens: TwitchTokens): P
 }
 
 export async function saveTwitchTokens(twitchUserId: string, tokens: TwitchTokens): Promise<void> {
-  // #572: 書き込みのみの関数のため isPgWriteEnabled() で分岐。
   return saveTwitchTokensPg(twitchUserId, tokens);
 }
 
 /**
- * deleteTwitchTokens の pg 直結実装 (#572)
- * 書き込み（users の UPDATE）のみの関数のため isPgWriteEnabled() で分岐。
+ * deleteTwitchTokens のPlanetScale実装。
  */
 async function deleteTwitchTokensPg(twitchUserId: string): Promise<void> {
   try {
@@ -742,7 +720,6 @@ async function deleteTwitchTokensPg(twitchUserId: string): Promise<void> {
 }
 
 export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
-  // #572: 書き込みのみの関数のため isPgWriteEnabled() で分岐。
   return deleteTwitchTokensPg(twitchUserId);
 }
 
@@ -754,9 +731,9 @@ export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
  * @returns スコープが付与されている場合はtrue
  */
 /**
- * hasScope の pg 直結実装 (#572)
- * 読み取り専用の関数のため isPgReadEnabled() で分岐。twitch_scopes は text[] 列
- * のため必ず Drizzle スキーマ経由で読む（fetch_types: false の生 SQL では配列が
+ * hasScope のPlanetScale実装。
+ * twitch_scopes は text[] 列のため必ずDrizzleスキーマ経由で読む
+ * （fetch_types: false の生SQLでは配列が
  * パースされない。src/lib/db/client.ts の注意書き参照）。
  */
 async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean> {
@@ -800,7 +777,6 @@ async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean>
 }
 
 export async function hasScope(twitchUserId: string, scope: string): Promise<boolean> {
-  // #572: 読み取り専用の関数のため isPgReadEnabled() で分岐。
   return hasScopePg(twitchUserId, scope);
 }
 
@@ -813,10 +789,10 @@ export async function hasScope(twitchUserId: string, scope: string): Promise<boo
  * @param scope - 削除するスコープ（例: 'user:write:chat'）
  */
 /**
- * removeScope の pg 直結実装 (#572)
+ * removeScope のPlanetScale実装。
  * 読み取り（現在のスコープ取得）と書き込み（除外後の全置換 UPDATE）が混在する
- * 関数のため、呼び出し元は isPgWriteEnabled() で関数全体を分岐する。
- * 既存実装はどのエラーでも throw せず静かに return するため、pg 版も同じ。
+ * ため、両方を同じDB接続へ固定する。一般DB障害は権限表示を安全側へ倒すため
+ * 静かにreturnし、schema欠落だけはデプロイ不整合として伝播する。
  */
 async function removeScopePg(twitchUserId: string, scope: string): Promise<void> {
   let user: { twitch_scopes: string[] | null } | null;
@@ -893,7 +869,6 @@ async function removeScopePg(twitchUserId: string, scope: string): Promise<void>
 }
 
 export async function removeScope(twitchUserId: string, scope: string): Promise<void> {
-  // #572: 読み取りと書き込みが混在する関数のため isPgWriteEnabled() で関数全体を分岐。
   return removeScopePg(twitchUserId, scope);
 }
 
@@ -908,8 +883,7 @@ export async function removeScope(twitchUserId: string, scope: string): Promise<
  * @param scopes - 保存するスコープの配列
  */
 /**
- * saveTwitchScopes の pg 直結実装 (#572)
- * 書き込み（users の UPDATE）のみの関数のため isPgWriteEnabled() で分岐。
+ * saveTwitchScopes のPlanetScale実装。
  */
 async function saveTwitchScopesPg(twitchUserId: string, scopes: string[]): Promise<void> {
   try {
@@ -945,7 +919,6 @@ async function saveTwitchScopesPg(twitchUserId: string, scopes: string[]): Promi
 }
 
 export async function saveTwitchScopes(twitchUserId: string, scopes: string[]): Promise<void> {
-  // #572: 書き込みのみの関数のため isPgWriteEnabled() で分岐。
   return saveTwitchScopesPg(twitchUserId, scopes);
 }
 
@@ -958,11 +931,10 @@ export async function saveTwitchScopes(twitchUserId: string, scopes: string[]): 
  * @returns スコープ配列、トークン無効時は空配列、判定不能時はnull
  */
 /**
- * validateTokenScopes の pg 直結実装 (#572)
+ * validateTokenScopes のPlanetScale実装。
  *
- * DB アクセスは読み取りのみ（リフレッシュも書き込みも行わない read-only 契約）の
- * 関数のため isPgReadEnabled() で分岐。DB 読み取り以降の Twitch /oauth2/validate
- * 呼び出しと判定ロジックは既存実装と同一（コメントの設計判断も同じ）。
+ * DBアクセスは読み取りのみで、リフレッシュも書き込みも行わない。
+ * ローカル期限を確認してからTwitch /oauth2/validateを呼び、不要な外部I/Oを避ける。
  */
 async function validateTokenScopesPg(twitchUserId: string): Promise<string[] | null> {
   try {
@@ -993,8 +965,7 @@ async function validateTokenScopesPg(twitchUserId: string): Promise<string[] | n
 
     if (!user?.twitch_access_token) return null;
 
-    // トークンがローカルで期限切れなら Twitch API を叩かず null を返す
-    // （設計判断の詳細は postgrest 経路の同箇所コメントを参照）
+    // ローカルで期限切れならTwitch APIを叩かず、判定不能としてnullを返す。
     if (user.twitch_token_expires_at) {
       const expiresAt = new Date(user.twitch_token_expires_at);
       if (!isNaN(expiresAt.getTime()) && expiresAt <= new Date()) {
@@ -1026,6 +997,5 @@ async function validateTokenScopesPg(twitchUserId: string): Promise<string[] | n
 }
 
 export async function validateTokenScopes(twitchUserId: string): Promise<string[] | null> {
-  // #572: DB アクセスは読み取りのみ（read-only 契約）の関数のため isPgReadEnabled() で分岐。
   return validateTokenScopesPg(twitchUserId);
 }

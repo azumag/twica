@@ -1,10 +1,10 @@
 // =============================================================================
-// Drizzle ORM スキーマ定義（既存 Supabase PostgreSQL スキーマへの型付け）
+// Drizzle ORM スキーマ定義（PlanetScale PostgreSQLスキーマへの型付け）
 // =============================================================================
 //
-// このファイルは既存 Supabase スキーマ（supabase/migrations が正）への型付けであり、
-// drizzle-kit による migration 生成には使用しない。
-// スキーマ変更は従来どおり supabase/migrations で行う。
+// このファイルは既存DBスキーマへの型付けであり、drizzle-kitによるmigration生成には
+// 使用しない。`supabase/migrations` は歴史的なディレクトリ名を維持した共通DDL正本で、
+// `scripts/db-migrate.js --provider=planetscale` がPlanetScaleへ適用する。
 //
 // 設計方針（実行時クエリの正確性 = 列名・PG 型・NULL 制約・デフォルト値 が唯一の品質基準）:
 // - 列プロパティ名は DB 列名そのまま（snake_case）。既存コードが PostgREST の

@@ -97,8 +97,7 @@ async function persistLinkedAccountPg(params: {
   // withDbRetry の queryFn（closure）から参照するため const に固定する
   const streamerId = streamer.id
 
-  // 既存 postgrest 経路の botAccountFields と同一内容（既存コード無変更の要件上、
-  // pg 経路側で独立に組み立てる）
+  // BOT資格情報を一つのオブジェクトへ固定し、作成・更新の両経路で列のずれを防ぐ。
   const botAccountFields = {
     twitch_user_id: botUser.id,
     twitch_username: botUser.login,

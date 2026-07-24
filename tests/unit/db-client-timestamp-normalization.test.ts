@@ -182,7 +182,9 @@ describe('installIsoTimestampParsers (#688): オブジェクト同一性', () =>
 // 正規化パーサを最終的に有効にしている。ここでは実際の getDb() の戻り値
 // （実装コードパスそのもの）に対してこれを検証する。
 //
-// DATABASE_URL にはダミーの postgres:// URL を使う。postgres.js は遅延接続
+// DATABASE_URL_PLANETSCALE にはダミーの postgres:// URL を使う。#803以降は
+// 汎用 DATABASE_URL を読まず、PlanetScale用の明示的な接続設定だけを許可する。
+// postgres.js は遅延接続
 // （初回クエリ発行まで実際の TCP 接続を張らない）ため、getDb() を呼ぶだけでは
 // 実接続は一切発生しない（db-client.test.ts の既存テストと同じ前提）。
 // ---------------------------------------------------------------------------
@@ -196,7 +198,7 @@ describe('getDb() (#688): drizzle() のパーサ上書きが正規化パーサ�
   })
 
   it('Node フォールバック経路で取得した sql.options.parsers[1184]/[1114] が ISO 8601 を返す', async () => {
-    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@dummy-host:5432/dummydb')
+    vi.stubEnv('DATABASE_URL_PLANETSCALE', 'postgres://user:pass@dummy-host:5432/dummydb')
     mocks.getCloudflareContext.mockRejectedValue(new Error('not in cloudflare context'))
 
     const { getDb } = await importClient()

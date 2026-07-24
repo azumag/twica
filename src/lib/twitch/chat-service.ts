@@ -250,8 +250,7 @@ export class TwitchChatService {
         })
       }
 
-      // Supabase に記録し、Cron Worker 経由で GitHub Issue を自動作成する
-      // Report to Supabase so the Cron Worker can create a GitHub Issue
+      // PlanetScaleへ記録し、Cron Worker経由でGitHub Issueを自動作成する。
       // try-catch で囲む: reportApiError の失敗が return false をブロックしないようにする
       // Wrapped in try-catch so reportApiError failure doesn't prevent return false
       try {

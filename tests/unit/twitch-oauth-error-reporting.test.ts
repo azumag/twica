@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { getDb } from '@/lib/db/client'
 
 const mocks = vi.hoisted(() => ({
   cookieGet: vi.fn(),
@@ -15,7 +16,6 @@ const mocks = vi.hoisted(() => ({
   canUseStreamerFeatures: vi.fn(),
   checkRateLimit: vi.fn(),
   getRateLimitIdentifier: vi.fn(),
-  getSupabaseAdmin: vi.fn(),
   reportAuthError: vi.fn(),
   logErrorFromLogger: vi.fn(),
 }))
@@ -23,7 +23,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock('next/headers', () => ({
   cookies: vi.fn(() => Promise.resolve({ get: mocks.cookieGet, set: mocks.cookieSet, delete: vi.fn() })),
 }))
-vi.mock('@/lib/supabase/admin', () => ({ getSupabaseAdmin: mocks.getSupabaseAdmin }))
 vi.mock('@/lib/session', () => ({
   getSession: mocks.getSession,
   canUseStreamerFeatures: mocks.canUseStreamerFeatures,
@@ -69,39 +68,38 @@ it('token-managerはrequest-scoped I/Oをmodule-scope Mapへ保持しない', ()
 const SECRET = 'SECRET_SENTINEL_TOKEN_ENDPOINT_BODY'
 const CODE = 'SECRET_SENTINEL_AUTHORIZATION_CODE'
 
-function userTokenQuery() {
-  const query: Record<string, ReturnType<typeof vi.fn>> = {
-    select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn(), from: vi.fn(), update: vi.fn(),
+/**
+ * #803後のrouteはSupabase builderではなくDrizzle getDb()を使う。選択列で応答を
+ * 分けることで、rewardsの期限切れtoken取得とbootstrapのscope/access-state確認を
+ * 同じ本番形状のfixtureで表す。どの読み取りが先に増えてもtoken refreshへの到達を
+ * 隠さないよう、呼出順キューには依存しない。
+ */
+function primeExpiredTokenDb() {
+  const expiredToken = {
+    twitch_access_token: 'expired-access-token',
+    twitch_refresh_token: 'expired-refresh-token',
+    twitch_token_expires_at: new Date(Date.now() - 60_000).toISOString(),
   }
-  query.select.mockReturnValue(query)
-  query.eq.mockReturnValue(query)
-  query.maybeSingle.mockResolvedValue({
-    data: {
-      twitch_access_token: 'expired-access-token',
-      twitch_refresh_token: 'expired-refresh-token',
-      twitch_token_expires_at: new Date(Date.now() - 60_000).toISOString(),
-    },
-    error: null,
-  })
-  return query
-}
+  const db = {
+    select: vi.fn((fields: Record<string, unknown>) => {
+      const keys = Object.keys(fields)
+      const row = keys.includes('twitch_scopes')
+        ? { twitch_scopes: ['channel:read:redemptions'] }
+        : keys.includes('capability')
+          ? { capability: 'available', checkedAt: null, enabled: true }
+          : expiredToken
+      const builder: any = {
+        from: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        limit: vi.fn(() => builder),
+        then: (onFulfilled: (value: unknown) => unknown, onRejected: (reason: unknown) => unknown) =>
+          Promise.resolve([row]).then(onFulfilled, onRejected),
+      }
+      return builder
+    }),
+  }
 
-function scopeThenExpiredTokenQuery() {
-  const query: Record<string, ReturnType<typeof vi.fn>> = {
-    select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn(), from: vi.fn(), update: vi.fn(),
-  }
-  query.select.mockImplementation((columns: string) => {
-    query.maybeSingle.mockResolvedValue(columns === 'twitch_scopes'
-      ? { data: { twitch_scopes: ['channel:read:redemptions'] }, error: null }
-      : { data: {
-        twitch_access_token: 'expired-access-token',
-        twitch_refresh_token: 'expired-refresh-token',
-        twitch_token_expires_at: new Date(Date.now() - 60_000).toISOString(),
-      }, error: null })
-    return query
-  })
-  query.eq.mockReturnValue(query)
-  return query
+  vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any)
 }
 
 function allPersistedArguments(): string {
@@ -175,8 +173,7 @@ describe('OAuth error reporting has exactly one durable writer', () => {
   it('期限切れ token の 522 refresh は rewards API 境界で一度だけ記録し、provider body を渡さない', async () => {
     mocks.getSession.mockResolvedValue({ twitchUserId: 'streamer-1' })
     mocks.canUseStreamerFeatures.mockReturnValue(true)
-    const query = userTokenQuery()
-    mocks.getSupabaseAdmin.mockReturnValue({ from: vi.fn(() => query) })
+    primeExpiredTokenDb()
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(SECRET, { status: 522 }))
     try {
       const response = await rewardsGet(new Request('http://localhost:3000/api/twitch/rewards'))
@@ -195,8 +192,7 @@ describe('OAuth error reporting has exactly one durable writer', () => {
     const malformedSecret = 'SECRET_MALFORMED_REFRESH_BODY'
     mocks.getSession.mockResolvedValue({ twitchUserId: 'streamer-1' })
     mocks.canUseStreamerFeatures.mockReturnValue(true)
-    const query = userTokenQuery()
-    mocks.getSupabaseAdmin.mockReturnValue({ from: vi.fn(() => query) })
+    primeExpiredTokenDb()
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(`{"refresh_token":"${malformedSecret}"`, { status: 200 })
     )
@@ -216,7 +212,7 @@ describe('OAuth error reporting has exactly one durable writer', () => {
   it('期限切れ token の 522 refresh は bootstrap API 境界でも一度だけ記録する', async () => {
     mocks.getSession.mockResolvedValue({ twitchUserId: 'streamer-1' })
     mocks.canUseStreamerFeatures.mockReturnValue(true)
-    mocks.getSupabaseAdmin.mockReturnValue({ from: vi.fn(() => scopeThenExpiredTokenQuery()) })
+    primeExpiredTokenDb()
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(SECRET, { status: 522 }))
     try {
       const response = await bootstrapGet(new NextRequest('http://localhost:3000/api/twitch/channel-point-bootstrap'))
