@@ -136,14 +136,16 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValueOnce({
-          data: {
-            twitch_access_token: 'expired-token',
-            twitch_refresh_token: 'refresh-token',
-            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
-          },
-          error: null,
-        }),
+        maybeSingle: vi.fn()
+          .mockResolvedValueOnce({
+            data: {
+              twitch_access_token: 'expired-token',
+              twitch_refresh_token: 'refresh-token',
+              twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+            },
+            error: null,
+          })
+          .mockResolvedValueOnce({ data: { twitch_access_token: 'new-token' }, error: null }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
       };
@@ -160,6 +162,80 @@ describe('Twitch Token Manager', () => {
       const token = await getTwitchAccessToken('123456789');
       expect(token).toBe('new-token');
       expect(refreshTwitchToken).toHaveBeenCalledWith('refresh-token');
+    });
+
+    it('refresh失敗後も次の呼び出しが再試行できる', async () => {
+      const expired = {
+        twitch_access_token: 'expired-token',
+        twitch_refresh_token: 'refresh-token',
+        twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+      };
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn()
+          .mockResolvedValueOnce({ data: expired, error: null })
+          .mockResolvedValueOnce({ data: expired, error: null })
+          .mockResolvedValueOnce({ data: { twitch_access_token: 'recovered-token' }, error: null }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+      vi.mocked(refreshTwitchToken)
+        .mockRejectedValueOnce(new Error('transient'))
+        .mockResolvedValueOnce({
+          access_token: 'recovered-token',
+          refresh_token: 'recovered-refresh',
+          expires_in: 3600,
+          token_type: 'bearer',
+          scope: [],
+        });
+
+      await expect(getTwitchAccessToken('flight-cleanup-user')).rejects.toMatchObject({
+        code: 'REFRESH_FAILED',
+      });
+      await expect(getTwitchAccessToken('flight-cleanup-user')).resolves.toBe('recovered-token');
+      expect(refreshTwitchToken).toHaveBeenCalledTimes(2);
+    });
+
+    it('異なるユーザーのrefreshは互いに待たず独立して実行する', async () => {
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn().mockReturnThis(),
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn()
+          .mockResolvedValueOnce({ data: {
+            twitch_access_token: 'expired-a',
+            twitch_refresh_token: 'refresh-a',
+            twitch_token_expires_at: new Date(0).toISOString(),
+          }, error: null })
+          .mockResolvedValueOnce({ data: {
+            twitch_access_token: 'expired-b',
+            twitch_refresh_token: 'refresh-b',
+            twitch_token_expires_at: new Date(0).toISOString(),
+          }, error: null })
+          .mockResolvedValueOnce({ data: { twitch_access_token: 'token-a' }, error: null })
+          .mockResolvedValueOnce({ data: { twitch_access_token: 'token-b' }, error: null }),
+        update: vi.fn().mockReturnThis(),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      vi.mocked(getSupabaseAdmin).mockReturnValue(mockSupabaseAdmin as never);
+      const resolvers = new Map<string, (tokens: {
+        access_token: string; refresh_token: string; expires_in: number; token_type: string; scope: string[];
+      }) => void>();
+      vi.mocked(refreshTwitchToken).mockImplementation(refreshToken => new Promise(resolve => {
+        resolvers.set(refreshToken, resolve);
+      }));
+
+      const first = getTwitchAccessToken('user-a');
+      const second = getTwitchAccessToken('user-b');
+      await vi.waitFor(() => expect(refreshTwitchToken).toHaveBeenCalledTimes(2));
+      resolvers.get('refresh-a')?.({ access_token: 'token-a', refresh_token: 'next-a', expires_in: 3600, token_type: 'bearer', scope: [] });
+      resolvers.get('refresh-b')?.({ access_token: 'token-b', refresh_token: 'next-b', expires_in: 3600, token_type: 'bearer', scope: [] });
+
+      await expect(Promise.all([first, second])).resolves.toEqual(['token-a', 'token-b']);
+      expect(refreshTwitchToken).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -663,19 +739,23 @@ describe('Twitch Token Manager', () => {
   });
 
   describe('refreshTwitchAccessToken - スコープ同期', () => {
-    it('リフレッシュ時にsaveTwitchScopesが呼ばれる', async () => {
+    it('リフレッシュ時にtokenとscopeを1回のCAS UPDATEで保存する', async () => {
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValue({
-          data: {
-            twitch_access_token: 'expired-token',
-            twitch_refresh_token: 'refresh-token',
-            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
-          },
-          error: null,
-        }),
+        maybeSingle: vi.fn()
+          // 初回は期限切れトークンの読み取り。
+          .mockResolvedValueOnce({
+            data: {
+              twitch_access_token: 'expired-token',
+              twitch_refresh_token: 'refresh-token',
+              twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+            },
+            error: null,
+          })
+          // CAS update が成功したときは、select で更新済み行が返る。
+          .mockResolvedValueOnce({ data: { twitch_access_token: 'new-token' }, error: null }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
       };
@@ -692,42 +772,42 @@ describe('Twitch Token Manager', () => {
       const token = await getTwitchAccessToken('123456789');
       expect(token).toBe('new-token');
 
-      // saveTwitchScopes が呼ばれることを確認（update が2回呼ばれる: トークン保存 + スコープ保存）
-      // from が 'users' テーブルに対して呼ばれている
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledTimes(1);
       expect(mockSupabaseAdmin.update).toHaveBeenCalledWith({
+        twitch_access_token: 'new-token',
+        twitch_refresh_token: 'new-refresh-token',
+        twitch_token_expires_at: expect.any(String),
         twitch_scopes: ['user:read:email', 'user:write:chat'],
       });
     });
 
-    it('saveTwitchScopes失敗時もトークンが正常に返る', async () => {
-      // 1回目のeqでトークン保存成功、2回目でスコープ保存失敗
-      let eqCallCount = 0;
-      const mockSupabaseAdmin: MockSupabaseAdmin = {
-        from: vi.fn().mockReturnThis(),
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockImplementation(() => {
-          eqCallCount++;
-          if (eqCallCount === 1) {
-            // getTwitchAccessToken の select チェーン
-            return {
-              maybeSingle: vi.fn().mockResolvedValue({
-                data: {
-                  twitch_access_token: 'expired-token',
-                  twitch_refresh_token: 'refresh-token',
-                  twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
-                },
-                error: null,
-              }),
-            };
-          }
-          if (eqCallCount === 2) {
-            // refreshTwitchAccessToken の update チェーン → 成功
-            return { error: null };
-          }
-          // saveTwitchScopes の update チェーン → 失敗
-          return { error: { code: 'PGRST000', message: 'Connection failed' } };
+    it('token/scopeのCAS保存失敗はrefresh失敗とし、無条件の後続scope UPDATEを行わない', async () => {
+      const expiredRow = {
+        twitch_access_token: 'expired-token',
+        twitch_refresh_token: 'refresh-token',
+        twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+      };
+      const readBuilder: any = {
+        select: vi.fn(() => readBuilder),
+        eq: vi.fn(() => readBuilder),
+        maybeSingle: vi.fn().mockResolvedValue({ data: expiredRow, error: null }),
+      };
+      const refreshBuilder: any = {
+        update: vi.fn(() => refreshBuilder),
+        eq: vi.fn(() => refreshBuilder),
+        select: vi.fn(() => refreshBuilder),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: null,
+          error: { code: 'PGRST000', message: 'Connection failed' },
         }),
-        update: vi.fn().mockReturnThis(),
+      };
+      const mockSupabaseAdmin: MockSupabaseAdmin = {
+        from: vi.fn()
+          .mockReturnValueOnce(readBuilder)
+          .mockReturnValueOnce(refreshBuilder),
+        select: vi.fn(),
+        eq: vi.fn(),
+        update: vi.fn(),
         insert: vi.fn().mockResolvedValue({ error: null }),
       };
 
@@ -740,9 +820,17 @@ describe('Twitch Token Manager', () => {
         scope: ['user:read:email', 'user:write:chat'],
       });
 
-      // saveTwitchScopes が失敗してもトークンは正常に返される
-      const token = await getTwitchAccessToken('123456789');
-      expect(token).toBe('new-token');
+      await expect(getTwitchAccessToken('123456789')).rejects.toMatchObject({
+        code: 'REFRESH_FAILED',
+      });
+      expect(mockSupabaseAdmin.from).toHaveBeenCalledTimes(2);
+      expect(refreshBuilder.update).toHaveBeenCalledTimes(1);
+      expect(refreshBuilder.update).toHaveBeenCalledWith({
+        twitch_access_token: 'new-token',
+        twitch_refresh_token: 'new-refresh-token',
+        twitch_token_expires_at: expect.any(String),
+        twitch_scopes: ['user:read:email', 'user:write:chat'],
+      });
     });
 
     it('リフレッシュレスポンスのスコープでDBが全置換される（マージではない）', async () => {
@@ -752,14 +840,16 @@ describe('Twitch Token Manager', () => {
         from: vi.fn().mockReturnThis(),
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValue({
-          data: {
-            twitch_access_token: 'expired-token',
-            twitch_refresh_token: 'refresh-token',
-            twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
-          },
-          error: null,
-        }),
+        maybeSingle: vi.fn()
+          .mockResolvedValueOnce({
+            data: {
+              twitch_access_token: 'expired-token',
+              twitch_refresh_token: 'refresh-token',
+              twitch_token_expires_at: new Date(Date.now() - 3600000).toISOString(),
+            },
+            error: null,
+          })
+          .mockResolvedValueOnce({ data: { twitch_access_token: 'new-token' }, error: null }),
         update: vi.fn().mockReturnThis(),
         insert: vi.fn().mockResolvedValue({ error: null }),
       };
@@ -777,13 +867,17 @@ describe('Twitch Token Manager', () => {
       const token = await getTwitchAccessToken('123456789');
       expect(token).toBe('new-token');
 
-      // 全置換: リフレッシュレスポンスのスコープのみ（DBの既存user:write:chatは含まれない）
+      // 全置換scopeもtokenと同じCASに含め、古いrefresh処理から後続UPDATEしない。
+      expect(mockSupabaseAdmin.update).toHaveBeenCalledTimes(1);
       expect(mockSupabaseAdmin.update).toHaveBeenCalledWith({
+        twitch_access_token: 'new-token',
+        twitch_refresh_token: 'new-refresh-token',
+        twitch_token_expires_at: expect.any(String),
         twitch_scopes: ['user:read:email', 'channel:read:redemptions'],
       });
     });
 
-    it('リフレッシュレスポンスにスコープがない場合、saveTwitchScopesは呼ばれない', async () => {
+    it('リフレッシュレスポンスのスコープが空なら同じCAS UPDATEへ空配列を保存する', async () => {
       const updateMock = vi.fn().mockReturnThis();
       const mockSupabaseAdmin: MockSupabaseAdmin = {
         from: vi.fn().mockReturnThis(),
@@ -812,11 +906,12 @@ describe('Twitch Token Manager', () => {
 
       await getTwitchAccessToken('123456789');
 
-      // update はトークン保存の1回だけ（スコープ保存は呼ばれない）
+      // scope が空でも別UPDATEへ分けず、tokenと同じCASでDB状態を全置換する。
       expect(updateMock).toHaveBeenCalledTimes(1);
       expect(updateMock).toHaveBeenCalledWith(
         expect.objectContaining({
           twitch_access_token: 'new-token',
+          twitch_scopes: [],
         })
       );
     });
