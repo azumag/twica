@@ -327,6 +327,18 @@ export function subscribeToGachaResults(
    */
   let lastSeq: number | null = null
   let livenessTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Config version that was in effect when the room reported itself disabled.
+   *
+   * The room is authoritative about whether it will serve this streamer, and
+   * the two allowlists (app Worker and standalone Worker) are separate secrets
+   * that can disagree mid-rollout. Without this marker a room that says
+   * "disabled" while the config endpoint still says `do-primary` sends the
+   * client into a reconnect-with-backoff loop against an endpoint that answers
+   * 503 — observed in preview during the kill-switch test. Reconnecting is
+   * allowed again as soon as the operator publishes a different config.
+   */
+  let disabledForConfigVersion: string | null = null
   let historyCursor: PollingCursor = {
     redeemedAt: new Date().toISOString(),
     historyId: '',
@@ -554,10 +566,16 @@ export function subscribeToGachaResults(
           if (parsed.type === 'server_notice') {
             options.onStatusChange?.(`DO_NOTICE:${parsed.code}`)
             if (parsed.code === TRANSPORT_DISABLED_NOTICE) {
-              // The room itself reports that the operator disabled it. This is
-              // authoritative, so it bypasses the version-mismatch floor and
-              // applies the kill switch immediately instead of waiting for the
-              // next history pass to notice.
+              // The room itself reports that the operator disabled it. Remember
+              // which config this applies to so a config endpoint that still
+              // advertises `do-primary` cannot immediately reconnect us into the
+              // room that just refused to serve.
+              disabledForConfigVersion = currentConfig?.configVersion ?? null
+              closeSocket()
+              if (pollTimer) clearTimeout(pollTimer)
+              schedulePoll(0)
+              // Authoritative signal, so it bypasses the version-mismatch floor
+              // instead of waiting for the next history pass to notice.
               void refreshConfig()
             }
             return
@@ -629,8 +647,27 @@ export function subscribeToGachaResults(
         // recovery needlessly slow after a valid config update.
         reconnectAttempt = 0
       }
+      // A new config supersedes whatever the room said about the old one.
+      if (
+        disabledForConfigVersion !== null
+        && config.configVersion !== disabledForConfigVersion
+      ) {
+        disabledForConfigVersion = null
+      }
+
       if (config.mode === 'do-primary') {
-        if (previousMode !== config.mode || previousUrl !== config.webSocketUrl || !socket) {
+        if (config.configVersion === disabledForConfigVersion) {
+          // The room refused this exact config. Stay on polling — which still
+          // delivers every committed event — rather than retrying a socket the
+          // server has already said it will not serve.
+          options.onStatusChange?.('DO_SUPPRESSED:room_disabled')
+          if (pollTimer) clearTimeout(pollTimer)
+          schedulePoll(0)
+        } else if (
+          previousMode !== config.mode
+          || previousUrl !== config.webSocketUrl
+          || !socket
+        ) {
           connectWebSocket()
         }
       } else {
