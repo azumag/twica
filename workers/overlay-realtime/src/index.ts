@@ -1,5 +1,7 @@
 import {
   MAX_REALTIME_EVENT_BYTES,
+  OVERLAY_REALTIME_HEARTBEAT,
+  OVERLAY_REALTIME_HEARTBEAT_MS,
   OVERLAY_REALTIME_TRANSPORT_DISABLED,
   isOverlayRealtimeStreamerEnabled,
   isValidStreamerId,
@@ -75,7 +77,16 @@ const ROOM_STREAMER_ID_KEY = 'room-streamer-id'
  * polling it replaces: a room with several OBS browser sources costs one wake,
  * not one request per source.
  */
-const KILL_SWITCH_CHECK_MS = 60_000
+const KILL_SWITCH_CHECK_MS = OVERLAY_REALTIME_HEARTBEAT_MS
+/**
+ * Monotonic fanout counter for this room.
+ *
+ * Clients use gaps in it to decide when a healthy socket still needs to reload
+ * history. It is deliberately per-room and not persisted anywhere else: it
+ * identifies *deliveries*, while `eventId` identifies *events*, and only the
+ * database is authoritative about the latter.
+ */
+const ROOM_SEQ_KEY = 'room-seq'
 
 interface RoomRateLimitLedger {
   windowStartedAt: number
@@ -390,6 +401,23 @@ export class OverlayRoom {
     })
   }
 
+  /**
+   * Take the next fanout number for this room.
+   *
+   * Allocated after replay/dedupe so a retried publish never burns a number,
+   * and before fanout so a send failure leaves a visible gap. A gap is the
+   * correct outcome there: the client reloads history and the database — not
+   * this counter — decides what it actually missed.
+   */
+  private async allocateSeq(): Promise<number> {
+    return this.state.storage.transaction(async (transaction) => {
+      const stored = await transaction.get<number>(ROOM_SEQ_KEY)
+      const next = (Number.isSafeInteger(stored) ? (stored as number) : 0) + 1
+      await transaction.put(ROOM_SEQ_KEY, next)
+      return next
+    })
+  }
+
   private async consumeEventId(eventId: string): Promise<boolean> {
     return this.state.storage.transaction(async (transaction) => {
       const stored =
@@ -438,6 +466,20 @@ export class OverlayRoom {
     // (polling still recovers every committed event) and retry on the next
     // alarm rather than disconnecting a healthy room on a storage miss.
     if (!streamerId || realtimeEnabled(this.env, streamerId)) {
+      // Still allowed: prove liveness on the same wake. Clients stopped polling
+      // history on a timer, so this is what distinguishes "no gacha happened"
+      // from "this socket died without a close frame".
+      const heartbeat = JSON.stringify({
+        type: 'server_notice',
+        code: OVERLAY_REALTIME_HEARTBEAT,
+      })
+      for (const socket of sockets) {
+        try {
+          socket.send(heartbeat)
+        } catch {
+          // A dead socket is exactly what the client-side deadline handles.
+        }
+      }
       await this.state.storage.setAlarm(Date.now() + KILL_SWITCH_CHECK_MS)
       return
     }
@@ -516,6 +558,9 @@ export class OverlayRoom {
         protocolVersion: 1,
         connectionId: attachment.connectionId,
         serverTime: new Date().toISOString(),
+        // Baseline so the first delivery after connecting is recognisably
+        // contiguous instead of looking like a missed one.
+        seq: await this.state.storage.get<number>(ROOM_SEQ_KEY) ?? 0,
       }))
       return new Response(null, {
         status: 101,
@@ -553,7 +598,8 @@ export class OverlayRoom {
           failedCount: 0,
         }, 202)
       }
-      const message = JSON.stringify({ type: 'gacha_result', event })
+      const seq = await this.allocateSeq()
+      const message = JSON.stringify({ type: 'gacha_result', seq, event })
 
       let fanoutCount = 0
       let failedCount = 0
