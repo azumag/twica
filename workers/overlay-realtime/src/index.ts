@@ -1,5 +1,6 @@
 import {
   MAX_REALTIME_EVENT_BYTES,
+  OVERLAY_REALTIME_TRANSPORT_DISABLED,
   isOverlayRealtimeStreamerEnabled,
   isValidStreamerId,
   validateGachaRealtimeEvent,
@@ -55,6 +56,26 @@ const DELIVERY_DEDUPE_TTL_MS = 24 * 60 * 60 * 1_000
 const MAX_CLIENT_MESSAGE_BYTES = 4 * 1024
 const MAX_SOCKET_BUFFER_BYTES = 1024 * 1024
 const CLIENT_MESSAGES_PER_MINUTE = 30
+
+/**
+ * Room identity, needed only so the kill-switch alarm can re-evaluate the
+ * allowlist. The Durable Object ID is derived from the streamer ID but is not
+ * reversible, and `alarm()` receives no request to read it from.
+ */
+const ROOM_STREAMER_ID_KEY = 'room-streamer-id'
+/**
+ * How often a room with live sockets re-checks whether it is still allowed.
+ *
+ * The operator kill switch is a Worker secret change, which existing
+ * hibernating sockets never observe on their own. Without this the client would
+ * hold a socket open against a disabled room and simply stop seeing gacha —
+ * exactly the user-visible failure #803 was about.
+ *
+ * One alarm per room per minute is far cheaper than the per-overlay config
+ * polling it replaces: a room with several OBS browser sources costs one wake,
+ * not one request per source.
+ */
+const KILL_SWITCH_CHECK_MS = 60_000
 
 interface RoomRateLimitLedger {
   windowStartedAt: number
@@ -395,6 +416,54 @@ export class OverlayRoom {
     })
   }
 
+  /**
+   * Disconnect every socket once the operator has removed this room from the
+   * allowlist, then stop rescheduling.
+   *
+   * Reads the allowlist from `this.env`, which the runtime supplies from the
+   * currently deployed Worker version, so a secret change takes effect on the
+   * next alarm without any client-side polling.
+   */
+  async alarm(): Promise<void> {
+    const sockets = this.state.getWebSockets('protocol-v1')
+    if (sockets.length === 0) {
+      // No listeners: let the object go fully idle instead of paying for a
+      // wake every minute for a room nobody is watching.
+      await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
+      return
+    }
+
+    const streamerId = await this.state.storage.get<string>(ROOM_STREAMER_ID_KEY)
+    // A room whose identity is missing cannot be re-evaluated. Keep the sockets
+    // (polling still recovers every committed event) and retry on the next
+    // alarm rather than disconnecting a healthy room on a storage miss.
+    if (!streamerId || realtimeEnabled(this.env, streamerId)) {
+      await this.state.storage.setAlarm(Date.now() + KILL_SWITCH_CHECK_MS)
+      return
+    }
+
+    const notice = JSON.stringify({
+      type: 'server_notice',
+      code: OVERLAY_REALTIME_TRANSPORT_DISABLED,
+    })
+    for (const socket of sockets) {
+      try {
+        socket.send(notice)
+      } catch {
+        // Best effort: the close below is what actually forces the fallback.
+      }
+      try {
+        // 1008 (policy violation) is in the client's no-reconnect list, so a
+        // disabled room does not turn into a reconnect storm against a Worker
+        // that would reject every attempt with 503 anyway.
+        socket.close(1008, 'Realtime transport disabled')
+      } catch {
+        // A failed close must never abort the rest of the room.
+      }
+    }
+    await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (request.method === 'GET' && url.pathname.startsWith('/room/connect/')) {
@@ -427,6 +496,21 @@ export class OverlayRoom {
       // attachment is then associated with that accepted socket and restored
       // after hibernation through deserializeAttachment().
       server.serializeAttachment(attachment)
+
+      // Arm the kill-switch alarm. `alarm()` gets no request, so the room's own
+      // identity has to be persisted here; the public router already rejected
+      // any malformed ID before routing to this object.
+      const roomStreamerId = decodeURIComponent(
+        url.pathname.slice('/room/connect/'.length)
+      )
+      if (isValidStreamerId(roomStreamerId)) {
+        await this.state.storage.put(ROOM_STREAMER_ID_KEY, roomStreamerId)
+      }
+      // Only arm when nothing is pending. Re-arming on every connect would push
+      // the check out indefinitely for a room that OBS reconnects frequently.
+      if (await this.state.storage.getAlarm() === null) {
+        await this.state.storage.setAlarm(Date.now() + KILL_SWITCH_CHECK_MS)
+      }
       server.send(JSON.stringify({
         type: 'welcome',
         protocolVersion: 1,

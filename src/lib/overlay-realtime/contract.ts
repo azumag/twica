@@ -1,5 +1,15 @@
 export const OVERLAY_REALTIME_SCHEMA_VERSION = 1 as const
 export const OVERLAY_REALTIME_PROTOCOL_VERSION = 1 as const
+
+/**
+ * `server_notice` code meaning the room is no longer allowlisted.
+ *
+ * Lives in the shared contract because the standalone Worker sends it and the
+ * browser client acts on it. Two independent literals would let a rename
+ * silently turn the operator kill switch into a no-op: the room would close its
+ * sockets while the client waited for a notice code it no longer recognised.
+ */
+export const OVERLAY_REALTIME_TRANSPORT_DISABLED = 'transport_disabled' as const
 export const MAX_REALTIME_DRAWS = 15
 export const MAX_REALTIME_EVENT_BYTES = 64 * 1024
 const MAX_PUBLIC_CARD_DESCRIPTION_LENGTH = 1_024

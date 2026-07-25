@@ -9,6 +9,7 @@
 
 import {
   OVERLAY_REALTIME_PROTOCOL_VERSION,
+  OVERLAY_REALTIME_TRANSPORT_DISABLED,
   buildPollingRealtimeEvents,
   type GachaRealtimeEventV1,
   type OverlayRealtimeConfigV1,
@@ -111,6 +112,12 @@ const SEEN_EVENT_TTL_MS = 24 * 60 * 60 * 1000
  * history polling itself is broken and can no longer carry the signal.
  */
 const CONFIG_SAFETY_REFRESH_MS = 5 * 60_000
+/**
+ * Room-reported kill switch. Imported from the shared contract rather than
+ * re-declared so a rename cannot leave the Worker sending a code the client
+ * silently ignores.
+ */
+const TRANSPORT_DISABLED_NOTICE = OVERLAY_REALTIME_TRANSPORT_DISABLED
 /**
  * Floor between config fetches triggered by a version mismatch.
  *
@@ -484,6 +491,17 @@ export function subscribeToGachaResults(
           if (parsed.type === 'welcome' && parsed.protocolVersion !== OVERLAY_REALTIME_PROTOCOL_VERSION) {
             options.onStatusChange?.('DO_PROTOCOL_MISMATCH')
             closeSocket()
+            return
+          }
+          if (parsed.type === 'server_notice') {
+            options.onStatusChange?.(`DO_NOTICE:${parsed.code}`)
+            if (parsed.code === TRANSPORT_DISABLED_NOTICE) {
+              // The room itself reports that the operator disabled it. This is
+              // authoritative, so it bypasses the version-mismatch floor and
+              // applies the kill switch immediately instead of waiting for the
+              // next history pass to notice.
+              void refreshConfig()
+            }
             return
           }
           if (parsed.type === 'gacha_result') ingest(parsed.event, 'durable-object')
