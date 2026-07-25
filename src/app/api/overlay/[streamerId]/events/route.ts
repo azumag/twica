@@ -19,6 +19,7 @@ import {
   buildPollingRealtimeEvents,
   isValidStreamerId,
 } from "@/lib/overlay-realtime/contract";
+import { resolveOverlayRealtimeConfigVersion } from "@/lib/overlay-realtime/resolve-config";
 import { getOverlayDemoEvent } from "@/lib/overlay/demo-event-store";
 
 // A redemption produces at most 15 rows. The larger bounded page keeps one
@@ -358,6 +359,19 @@ export async function GET(
         : null,
       ...(demoSince ? { demoEvent } : {}),
       overlayVersion: process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev",
+      // Rollout/rollback signal carried on a request the overlay already makes.
+      //
+      // Every overlay polls this endpoint: every ~3s in polling-only mode and
+      // every ~30s as gap recovery while the socket is healthy. Echoing the
+      // effective config version here lets the client drop its separate
+      // 30-second config poll, which was roughly half of all overlay traffic,
+      // without weakening the kill switch: an operator flipping the allowlist
+      // is now noticed on the next pass the client was making anyway (faster in
+      // polling-only mode, unchanged while DO-connected).
+      //
+      // Computed through the shared resolver so this value can never disagree
+      // with what the config endpoint would return.
+      realtimeConfigVersion: resolveOverlayRealtimeConfigVersion(streamerId),
     });
   } catch (error) {
     return handleApiError(error, "Overlay Events API");
