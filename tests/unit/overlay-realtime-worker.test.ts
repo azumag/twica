@@ -257,8 +257,24 @@ function createRoomHarness(socketCount = 0) {
     serializeAttachment: vi.fn(),
     deserializeAttachment: vi.fn(),
   }))
+  // The kill-switch alarm reads and writes storage directly rather than through
+  // a transaction, and schedules itself, so the harness models those too.
+  let alarmAt: number | null = null
   const state = {
-    storage: { transaction },
+    storage: {
+      transaction,
+      get: async <V>(key: string) => records.get(key) as V | undefined,
+      put: async (key: string, value: unknown) => {
+        records.set(key, structuredClone(value))
+      },
+      delete: async (key: string) => {
+        records.delete(key)
+      },
+      getAlarm: async () => alarmAt,
+      setAlarm: async (time: number) => {
+        alarmAt = time
+      },
+    },
     getWebSockets: vi.fn(() => sockets),
     acceptWebSocket: vi.fn(),
   }
@@ -275,6 +291,7 @@ function createRoomHarness(socketCount = 0) {
     sockets,
     state,
     env,
+    getAlarmAt: () => alarmAt,
     room: new OverlayRoom(
       state as unknown as ConstructorParameters<typeof OverlayRoom>[0],
       env as unknown as ConstructorParameters<typeof OverlayRoom>[1]
@@ -399,5 +416,101 @@ describe('OverlayRoom Durable Object', () => {
 
     harness.room.webSocketMessage(socket as never, '{')
     expect(socket.close).toHaveBeenCalledWith(1007, 'Invalid JSON')
+  })
+})
+
+/**
+ * Operator kill switch over the socket.
+ *
+ * The allowlist lives in a Worker secret, so a hibernating socket never learns
+ * that its room was disabled. Before this alarm existed the client would keep a
+ * healthy-looking socket open against a room that no longer receives publishes,
+ * and simply stop showing gacha — the user-visible failure #803 was about.
+ */
+describe('OverlayRoom kill switch alarm', () => {
+  const OTHER_STREAMER_ID = '223e4567-e89b-42d3-a456-426614174000'
+
+  it('arms the alarm and records room identity when a client connects', async () => {
+    // WebSocketPair is a Workers runtime global with no Node equivalent; the
+    // room only needs the pair's two ends and the accept/attach calls, which
+    // the harness already records.
+    const makeSocket = () => ({
+      readyState: 1,
+      send: vi.fn(),
+      close: vi.fn(),
+      serializeAttachment: vi.fn(),
+      deserializeAttachment: vi.fn(),
+    })
+    vi.stubGlobal('WebSocketPair', class {
+      0 = makeSocket()
+      1 = makeSocket()
+    })
+
+    const harness = createRoomHarness()
+    const response = await harness.room.fetch(
+      new Request(`https://room.internal/room/connect/${STREAMER_ID}`)
+    )
+
+    expect(response.status).toBe(101)
+    // alarm() receives no request, so the room must persist its own identity.
+    expect(harness.records.get('room-streamer-id')).toBe(STREAMER_ID)
+    expect(harness.getAlarmAt()).not.toBeNull()
+  })
+
+  it('keeps sockets and reschedules while the room is still allowlisted', async () => {
+    const harness = createRoomHarness(2)
+    harness.records.set('room-streamer-id', STREAMER_ID)
+
+    await harness.room.alarm()
+
+    for (const socket of harness.sockets) {
+      expect(socket.close).not.toHaveBeenCalled()
+    }
+    expect(harness.getAlarmAt()).not.toBeNull()
+  })
+
+  it('notifies and disconnects every socket once the room is removed', async () => {
+    const harness = createRoomHarness(2)
+    harness.records.set('room-streamer-id', STREAMER_ID)
+    // Operator kill switch: this streamer is no longer allowlisted.
+    harness.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST = OTHER_STREAMER_ID
+
+    await harness.room.alarm()
+
+    for (const socket of harness.sockets) {
+      const sent = socket.send.mock.calls.map((args) => JSON.parse(String(args[0])))
+      expect(sent).toContainEqual({
+        type: 'server_notice',
+        code: 'transport_disabled',
+      })
+      // 1008 is in the client's no-reconnect list, so a disabled room cannot
+      // turn into a reconnect storm against a Worker that would reject it.
+      expect(socket.close).toHaveBeenCalledWith(1008, 'Realtime transport disabled')
+    }
+    // Nothing left to police: the room must not keep paying for wakeups.
+    expect(harness.records.has('room-streamer-id')).toBe(false)
+  })
+
+  it('stops rescheduling once the room has no sockets left', async () => {
+    const harness = createRoomHarness(0)
+    harness.records.set('room-streamer-id', STREAMER_ID)
+
+    await harness.room.alarm()
+
+    expect(harness.getAlarmAt()).toBeNull()
+    expect(harness.records.has('room-streamer-id')).toBe(false)
+  })
+
+  it('never disconnects a healthy room just because its identity is missing', async () => {
+    // A storage miss must not be mistaken for "operator disabled this room".
+    // Polling still recovers every committed event, so retrying is strictly
+    // safer than dropping live sockets.
+    const harness = createRoomHarness(1)
+    harness.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST = OTHER_STREAMER_ID
+
+    await harness.room.alarm()
+
+    expect(harness.sockets[0].close).not.toHaveBeenCalled()
+    expect(harness.getAlarmAt()).not.toBeNull()
   })
 })

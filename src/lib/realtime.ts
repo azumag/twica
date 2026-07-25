@@ -8,7 +8,9 @@
  */
 
 import {
+  OVERLAY_REALTIME_HEARTBEAT_MS,
   OVERLAY_REALTIME_PROTOCOL_VERSION,
+  OVERLAY_REALTIME_TRANSPORT_DISABLED,
   buildPollingRealtimeEvents,
   type GachaRealtimeEventV1,
   type OverlayRealtimeConfigV1,
@@ -112,6 +114,12 @@ const SEEN_EVENT_TTL_MS = 24 * 60 * 60 * 1000
  */
 const CONFIG_SAFETY_REFRESH_MS = 5 * 60_000
 /**
+ * Room-reported kill switch. Imported from the shared contract rather than
+ * re-declared so a rename cannot leave the Worker sending a code the client
+ * silently ignores.
+ */
+const TRANSPORT_DISABLED_NOTICE = OVERLAY_REALTIME_TRANSPORT_DISABLED
+/**
  * Floor between config fetches triggered by a version mismatch.
  *
  * Without it, a config endpoint outage would make every 3-second polling pass
@@ -122,7 +130,19 @@ const CONFIG_SAFETY_REFRESH_MS = 5 * 60_000
  */
 const CONFIG_CHANGE_REFETCH_FLOOR_MS = 30_000
 const WS_CONNECT_TIMEOUT_MS = 10_000
-const CONNECTED_GAP_RECOVERY_MS = 30_000
+/**
+ * How long a healthy socket may stay silent before the client gives up on it.
+ *
+ * The room emits a heartbeat every `OVERLAY_REALTIME_HEARTBEAT_MS`, so missing
+ * more than two in a row means the socket is half-open: alive to the browser
+ * but delivering nothing. Two intervals of slack keeps a single delayed wake or
+ * a brief network stall from churning connections.
+ *
+ * This replaces the fixed 30-second history poll. A connected overlay now makes
+ * no periodic HTTP request at all; it reloads history only when it reconnects
+ * or when a sequence gap proves it missed a delivery.
+ */
+const SOCKET_LIVENESS_TIMEOUT_MS = OVERLAY_REALTIME_HEARTBEAT_MS * 2.5
 
 function eventUrl(
   streamerId: string,
@@ -300,6 +320,25 @@ export function subscribeToGachaResults(
   /** Guards the change-triggered refetch against a config endpoint outage. */
   let lastConfigAttemptAt = 0
   let configRefreshInFlight = false
+  /**
+   * Last per-room fanout number this socket observed. `null` until the room
+   * reports one, which keeps the client compatible with a room that has not
+   * been redeployed yet.
+   */
+  let lastSeq: number | null = null
+  let livenessTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Config version that was in effect when the room reported itself disabled.
+   *
+   * The room is authoritative about whether it will serve this streamer, and
+   * the two allowlists (app Worker and standalone Worker) are separate secrets
+   * that can disagree mid-rollout. Without this marker a room that says
+   * "disabled" while the config endpoint still says `do-primary` sends the
+   * client into a reconnect-with-backoff loop against an endpoint that answers
+   * 503 — observed in preview during the kill-switch test. Reconnecting is
+   * allowed again as soon as the operator publishes a different config.
+   */
+  let disabledForConfigVersion: string | null = null
   let historyCursor: PollingCursor = {
     redeemedAt: new Date().toISOString(),
     historyId: '',
@@ -377,17 +416,16 @@ export function subscribeToGachaResults(
       }
 
       retryCount = 0
-      // Once the low-latency socket is healthy, polling becomes a periodic
-      // reconciliation pass instead of a competing 3-second primary. A room
-      // outage immediately restores the normal interval through onclose, and
-      // reconnect always triggers an immediate pass before slowing down again.
-      const nextInterval =
+      // A healthy socket schedules no further pass at all. History is reloaded
+      // only on reconnect (onopen polls immediately), on a sequence gap, or if
+      // the room stops proving liveness — so a connected overlay makes no
+      // periodic HTTP request. A room outage restores normal polling through
+      // onclose, which is also what the liveness deadline triggers.
+      const socketHealthy =
         currentConfig?.mode === 'do-primary'
         && typeof WebSocket !== 'undefined'
         && socket?.readyState === WebSocket.OPEN
-          ? Math.max(intervalMs, CONNECTED_GAP_RECOVERY_MS)
-          : intervalMs
-      schedulePoll(nextInterval)
+      if (!socketHealthy) schedulePoll(intervalMs)
 
       // Rollout/rollback detection rides on this response instead of a separate
       // config poll. refreshConfig() owns the socket and poll timers, so it is
@@ -412,8 +450,37 @@ export function subscribeToGachaResults(
     }
   }
 
+  /**
+   * Restart the silence deadline for the current socket.
+   *
+   * Called for every server frame, gacha or heartbeat alike. If it ever fires,
+   * the socket is delivering nothing despite looking open, so it is closed
+   * deliberately: `onclose` then resumes history polling and reconnects, which
+   * is the same recovery path a clean disconnect takes.
+   */
+  const armLiveness = () => {
+    if (livenessTimer) clearTimeout(livenessTimer)
+    if (disposed) return
+    livenessTimer = setTimeout(() => {
+      if (disposed || !socket) return
+      options.onStatusChange?.('DO_LIVENESS_TIMEOUT')
+      try {
+        socket.close(1006, 'No server frames')
+      } catch {
+        // Falling through to closeSocket still restores polling.
+      }
+      closeSocket()
+      if (pollTimer) clearTimeout(pollTimer)
+      schedulePoll(0)
+      scheduleReconnect()
+    }, SOCKET_LIVENESS_TIMEOUT_MS)
+  }
+
   const closeSocket = () => {
     socketGeneration += 1
+    if (livenessTimer) clearTimeout(livenessTimer)
+    livenessTimer = null
+    lastSeq = null
     if (connectTimeout) clearTimeout(connectTimeout)
     connectTimeout = null
     if (reconnectTimer) clearTimeout(reconnectTimer)
@@ -486,7 +553,50 @@ export function subscribeToGachaResults(
             closeSocket()
             return
           }
-          if (parsed.type === 'gacha_result') ingest(parsed.event, 'durable-object')
+          // Any frame proves the socket is alive, including a heartbeat that
+          // carries no payload.
+          armLiveness()
+          if (parsed.type === 'welcome') {
+            // Baseline from the room so the next delivery is contiguous rather
+            // than looking like a miss. The immediate poll scheduled by onopen
+            // already covers whatever happened while disconnected.
+            lastSeq = typeof parsed.seq === 'number' ? parsed.seq : null
+            return
+          }
+          if (parsed.type === 'server_notice') {
+            options.onStatusChange?.(`DO_NOTICE:${parsed.code}`)
+            if (parsed.code === TRANSPORT_DISABLED_NOTICE) {
+              // The room itself reports that the operator disabled it. Remember
+              // which config this applies to so a config endpoint that still
+              // advertises `do-primary` cannot immediately reconnect us into the
+              // room that just refused to serve.
+              disabledForConfigVersion = currentConfig?.configVersion ?? null
+              closeSocket()
+              if (pollTimer) clearTimeout(pollTimer)
+              schedulePoll(0)
+              // Authoritative signal, so it bypasses the version-mismatch floor
+              // instead of waiting for the next history pass to notice.
+              void refreshConfig()
+            }
+            return
+          }
+          if (parsed.type === 'gacha_result') {
+            // A jump proves this socket missed a delivery. That is the only
+            // reason a healthy connection reloads history now that the fixed
+            // 30-second pass is gone; the database still decides what was
+            // actually missed, this only decides *when* to ask.
+            if (
+              typeof parsed.seq === 'number'
+              && lastSeq !== null
+              && parsed.seq > lastSeq + 1
+            ) {
+              options.onStatusChange?.(`DO_SEQ_GAP:${lastSeq}->${parsed.seq}`)
+              if (pollTimer) clearTimeout(pollTimer)
+              schedulePoll(0)
+            }
+            if (typeof parsed.seq === 'number') lastSeq = parsed.seq
+            ingest(parsed.event, 'durable-object')
+          }
         } catch {
           options.onStatusChange?.('DO_MESSAGE_INVALID')
         }
@@ -537,8 +647,27 @@ export function subscribeToGachaResults(
         // recovery needlessly slow after a valid config update.
         reconnectAttempt = 0
       }
+      // A new config supersedes whatever the room said about the old one.
+      if (
+        disabledForConfigVersion !== null
+        && config.configVersion !== disabledForConfigVersion
+      ) {
+        disabledForConfigVersion = null
+      }
+
       if (config.mode === 'do-primary') {
-        if (previousMode !== config.mode || previousUrl !== config.webSocketUrl || !socket) {
+        if (config.configVersion === disabledForConfigVersion) {
+          // The room refused this exact config. Stay on polling — which still
+          // delivers every committed event — rather than retrying a socket the
+          // server has already said it will not serve.
+          options.onStatusChange?.('DO_SUPPRESSED:room_disabled')
+          if (pollTimer) clearTimeout(pollTimer)
+          schedulePoll(0)
+        } else if (
+          previousMode !== config.mode
+          || previousUrl !== config.webSocketUrl
+          || !socket
+        ) {
           connectWebSocket()
         }
       } else {
@@ -620,6 +749,7 @@ export function subscribeToGachaResults(
     if (configTimer) clearTimeout(configTimer)
     if (reconnectTimer) clearTimeout(reconnectTimer)
     if (connectTimeout) clearTimeout(connectTimeout)
+    if (livenessTimer) clearTimeout(livenessTimer)
     closeSocket()
   }
 }
