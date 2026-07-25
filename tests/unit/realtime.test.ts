@@ -532,21 +532,21 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     }
     vi.stubGlobal('WebSocket', ControlledWebSocket)
 
-    // What the operator has currently rolled out. Both endpoints read it, the
-    // way the shared server-side resolver guarantees in production.
-    let serverVersion = 'test-v1'
+    // A streamer that has not been rolled out yet still polls history as its
+    // primary transport, so that is the pass which carries the enable signal.
+    // (The disable direction is covered by the room's server_notice below,
+    // because a connected overlay no longer polls on a timer at all.)
+    let serverVersion = 'polling-only-v1'
     let configCalls = 0
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes('/realtime-config')) {
         configCalls += 1
+        const enabled = serverVersion !== 'polling-only-v1'
         return jsonResponse({
           schemaVersion: 1,
-          mode: 'do-primary',
-          webSocketUrl:
-            serverVersion === 'test-v1'
-              ? 'https://realtime-a.example'
-              : 'https://realtime-b.example',
+          mode: enabled ? 'do-primary' : 'polling-only',
+          ...(enabled ? { webSocketUrl: 'https://realtime-b.example' } : {}),
           protocolVersion: 1,
           retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
           configVersion: serverVersion,
@@ -556,23 +556,183 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     }))
 
     const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
-      retryDelay: 1_000,
+      retryDelay: 3_000,
     })
     await flushPromises()
-    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(ControlledWebSocket.instances).toHaveLength(0)
     expect(configCalls).toBe(1)
 
-    // Operator flips the rollout. No config poll is scheduled for another five
-    // minutes, so only the history pass can carry this.
-    serverVersion = 'test-v2'
+    // Operator enables this streamer. No config poll is scheduled for another
+    // five minutes, so only the history pass can carry this.
+    serverVersion = 'do-primary-v1'
 
-    // Gap recovery while the socket is healthy runs every 30 seconds.
     await vi.advanceTimersByTimeAsync(30_000)
     await flushPromises()
 
     expect(configCalls).toBe(2)
-    expect(ControlledWebSocket.instances).toHaveLength(2)
-    expect(ControlledWebSocket.instances[1].url).toContain('realtime-b.example')
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(ControlledWebSocket.instances[0].url).toContain('realtime-b.example')
+    cleanup()
+  })
+
+  it('stops polling history while the socket is healthy and resumes on a gap', async () => {
+    // The point of the sequence number: a connected overlay makes no periodic
+    // HTTP request, and reloads history only when it can prove it missed a
+    // delivery.
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(event: unknown) {
+        this.onmessage?.({ data: JSON.stringify(event) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    let historyCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      historyCalls += 1
+      return jsonResponse({ events: [], realtimeConfigVersion: 'do-primary-v1' })
+    }))
+
+    const [event] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: 'history-seq-1',
+      eventId: 'batch-seq-1',
+      redeemedAt: '2026-07-24T00:00:02.000Z',
+      userTwitchUsername: 'viewer',
+      card: CARD_A,
+    }])
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      retryDelay: 3_000,
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({ type: 'welcome', protocolVersion: 1, connectionId: 'c1', serverTime: '', seq: 7 })
+    // Connecting deliberately reloads history once (onopen closes the gap left
+    // by the previous socket). Settle that before measuring the steady state.
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    const afterConnect = historyCalls
+
+    // Ten minutes of a room that is alive but has nothing to deliver. The
+    // heartbeat is what the real room emits on its kill-switch wake; without
+    // it the liveness deadline would (correctly) tear the socket down.
+    for (let minute = 0; minute < 10; minute += 1) {
+      await vi.advanceTimersByTimeAsync(60_000)
+      socket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    expect(historyCalls).toBe(afterConnect)
+
+    // seq 7 -> 9 skips one delivery, which is the only thing that should make a
+    // connected overlay reload history.
+    socket.emit({ type: 'gacha_result', seq: 9, event })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(historyCalls).toBeGreaterThan(afterConnect)
+    expect(statuses).toContain('DO_SEQ_GAP:7->9')
+    cleanup()
+  })
+
+  it('closes a socket that stops proving liveness and falls back to polling', async () => {
+    // A half-open socket looks open to the browser but delivers nothing. With
+    // the periodic history pass gone, this deadline is what keeps that from
+    // starving the overlay forever.
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(event: unknown) {
+        this.onmessage?.({ data: JSON.stringify(event) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    let historyCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      historyCalls += 1
+      return jsonResponse({ events: [], realtimeConfigVersion: 'do-primary-v1' })
+    }))
+
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      retryDelay: 3_000,
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({ type: 'welcome', protocolVersion: 1, connectionId: 'c1', serverTime: '', seq: 0 })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    const afterConnect = historyCalls
+
+    // Two heartbeats missed plus slack.
+    await vi.advanceTimersByTimeAsync(60_000 * 2.5 + 100)
+    await flushPromises()
+
+    expect(statuses).toContain('DO_LIVENESS_TIMEOUT')
+    expect(historyCalls).toBeGreaterThan(afterConnect)
     cleanup()
   })
 

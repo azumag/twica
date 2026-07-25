@@ -1,5 +1,8 @@
 import {
   MAX_REALTIME_EVENT_BYTES,
+  OVERLAY_REALTIME_HEARTBEAT,
+  OVERLAY_REALTIME_HEARTBEAT_MS,
+  OVERLAY_REALTIME_TRANSPORT_DISABLED,
   isOverlayRealtimeStreamerEnabled,
   isValidStreamerId,
   validateGachaRealtimeEvent,
@@ -55,6 +58,35 @@ const DELIVERY_DEDUPE_TTL_MS = 24 * 60 * 60 * 1_000
 const MAX_CLIENT_MESSAGE_BYTES = 4 * 1024
 const MAX_SOCKET_BUFFER_BYTES = 1024 * 1024
 const CLIENT_MESSAGES_PER_MINUTE = 30
+
+/**
+ * Room identity, needed only so the kill-switch alarm can re-evaluate the
+ * allowlist. The Durable Object ID is derived from the streamer ID but is not
+ * reversible, and `alarm()` receives no request to read it from.
+ */
+const ROOM_STREAMER_ID_KEY = 'room-streamer-id'
+/**
+ * How often a room with live sockets re-checks whether it is still allowed.
+ *
+ * The operator kill switch is a Worker secret change, which existing
+ * hibernating sockets never observe on their own. Without this the client would
+ * hold a socket open against a disabled room and simply stop seeing gacha —
+ * exactly the user-visible failure #803 was about.
+ *
+ * One alarm per room per minute is far cheaper than the per-overlay config
+ * polling it replaces: a room with several OBS browser sources costs one wake,
+ * not one request per source.
+ */
+const KILL_SWITCH_CHECK_MS = OVERLAY_REALTIME_HEARTBEAT_MS
+/**
+ * Monotonic fanout counter for this room.
+ *
+ * Clients use gaps in it to decide when a healthy socket still needs to reload
+ * history. It is deliberately per-room and not persisted anywhere else: it
+ * identifies *deliveries*, while `eventId` identifies *events*, and only the
+ * database is authoritative about the latter.
+ */
+const ROOM_SEQ_KEY = 'room-seq'
 
 interface RoomRateLimitLedger {
   windowStartedAt: number
@@ -369,6 +401,23 @@ export class OverlayRoom {
     })
   }
 
+  /**
+   * Take the next fanout number for this room.
+   *
+   * Allocated after replay/dedupe so a retried publish never burns a number,
+   * and before fanout so a send failure leaves a visible gap. A gap is the
+   * correct outcome there: the client reloads history and the database — not
+   * this counter — decides what it actually missed.
+   */
+  private async allocateSeq(): Promise<number> {
+    return this.state.storage.transaction(async (transaction) => {
+      const stored = await transaction.get<number>(ROOM_SEQ_KEY)
+      const next = (Number.isSafeInteger(stored) ? (stored as number) : 0) + 1
+      await transaction.put(ROOM_SEQ_KEY, next)
+      return next
+    })
+  }
+
   private async consumeEventId(eventId: string): Promise<boolean> {
     return this.state.storage.transaction(async (transaction) => {
       const stored =
@@ -393,6 +442,68 @@ export class OverlayRoom {
       )
       return true
     })
+  }
+
+  /**
+   * Disconnect every socket once the operator has removed this room from the
+   * allowlist, then stop rescheduling.
+   *
+   * Reads the allowlist from `this.env`, which the runtime supplies from the
+   * currently deployed Worker version, so a secret change takes effect on the
+   * next alarm without any client-side polling.
+   */
+  async alarm(): Promise<void> {
+    const sockets = this.state.getWebSockets('protocol-v1')
+    if (sockets.length === 0) {
+      // No listeners: let the object go fully idle instead of paying for a
+      // wake every minute for a room nobody is watching.
+      await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
+      return
+    }
+
+    const streamerId = await this.state.storage.get<string>(ROOM_STREAMER_ID_KEY)
+    // A room whose identity is missing cannot be re-evaluated. Keep the sockets
+    // (polling still recovers every committed event) and retry on the next
+    // alarm rather than disconnecting a healthy room on a storage miss.
+    if (!streamerId || realtimeEnabled(this.env, streamerId)) {
+      // Still allowed: prove liveness on the same wake. Clients stopped polling
+      // history on a timer, so this is what distinguishes "no gacha happened"
+      // from "this socket died without a close frame".
+      const heartbeat = JSON.stringify({
+        type: 'server_notice',
+        code: OVERLAY_REALTIME_HEARTBEAT,
+      })
+      for (const socket of sockets) {
+        try {
+          socket.send(heartbeat)
+        } catch {
+          // A dead socket is exactly what the client-side deadline handles.
+        }
+      }
+      await this.state.storage.setAlarm(Date.now() + KILL_SWITCH_CHECK_MS)
+      return
+    }
+
+    const notice = JSON.stringify({
+      type: 'server_notice',
+      code: OVERLAY_REALTIME_TRANSPORT_DISABLED,
+    })
+    for (const socket of sockets) {
+      try {
+        socket.send(notice)
+      } catch {
+        // Best effort: the close below is what actually forces the fallback.
+      }
+      try {
+        // 1008 (policy violation) is in the client's no-reconnect list, so a
+        // disabled room does not turn into a reconnect storm against a Worker
+        // that would reject every attempt with 503 anyway.
+        socket.close(1008, 'Realtime transport disabled')
+      } catch {
+        // A failed close must never abort the rest of the room.
+      }
+    }
+    await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -427,11 +538,29 @@ export class OverlayRoom {
       // attachment is then associated with that accepted socket and restored
       // after hibernation through deserializeAttachment().
       server.serializeAttachment(attachment)
+
+      // Arm the kill-switch alarm. `alarm()` gets no request, so the room's own
+      // identity has to be persisted here; the public router already rejected
+      // any malformed ID before routing to this object.
+      const roomStreamerId = decodeURIComponent(
+        url.pathname.slice('/room/connect/'.length)
+      )
+      if (isValidStreamerId(roomStreamerId)) {
+        await this.state.storage.put(ROOM_STREAMER_ID_KEY, roomStreamerId)
+      }
+      // Only arm when nothing is pending. Re-arming on every connect would push
+      // the check out indefinitely for a room that OBS reconnects frequently.
+      if (await this.state.storage.getAlarm() === null) {
+        await this.state.storage.setAlarm(Date.now() + KILL_SWITCH_CHECK_MS)
+      }
       server.send(JSON.stringify({
         type: 'welcome',
         protocolVersion: 1,
         connectionId: attachment.connectionId,
         serverTime: new Date().toISOString(),
+        // Baseline so the first delivery after connecting is recognisably
+        // contiguous instead of looking like a missed one.
+        seq: await this.state.storage.get<number>(ROOM_SEQ_KEY) ?? 0,
       }))
       return new Response(null, {
         status: 101,
@@ -469,7 +598,8 @@ export class OverlayRoom {
           failedCount: 0,
         }, 202)
       }
-      const message = JSON.stringify({ type: 'gacha_result', event })
+      const seq = await this.allocateSeq()
+      const message = JSON.stringify({ type: 'gacha_result', seq, event })
 
       let fanoutCount = 0
       let failedCount = 0

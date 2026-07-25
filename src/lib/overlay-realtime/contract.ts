@@ -1,5 +1,33 @@
 export const OVERLAY_REALTIME_SCHEMA_VERSION = 1 as const
 export const OVERLAY_REALTIME_PROTOCOL_VERSION = 1 as const
+
+/**
+ * `server_notice` code meaning the room is no longer allowlisted.
+ *
+ * Lives in the shared contract because the standalone Worker sends it and the
+ * browser client acts on it. Two independent literals would let a rename
+ * silently turn the operator kill switch into a no-op: the room would close its
+ * sockets while the client waited for a notice code it no longer recognised.
+ */
+export const OVERLAY_REALTIME_TRANSPORT_DISABLED = 'transport_disabled' as const
+
+/**
+ * `server_notice` code the room emits on its periodic check so a client can
+ * tell "nothing happened" apart from "this socket is dead".
+ *
+ * Once history polling stops running on a timer, a half-open socket — one that
+ * never delivers a close event — would silently starve the overlay forever.
+ * The room already wakes on that interval for the kill switch, so the liveness
+ * signal is free: it costs no extra wake and no HTTP request.
+ */
+export const OVERLAY_REALTIME_HEARTBEAT = 'heartbeat' as const
+
+/**
+ * How often a room with live sockets emits the heartbeat above. Shared so the
+ * client can derive its liveness deadline from the same number the Worker uses
+ * instead of two constants drifting apart.
+ */
+export const OVERLAY_REALTIME_HEARTBEAT_MS = 60_000
 export const MAX_REALTIME_DRAWS = 15
 export const MAX_REALTIME_EVENT_BYTES = 64 * 1024
 const MAX_PUBLIC_CARD_DESCRIPTION_LENGTH = 1_024
@@ -84,9 +112,26 @@ export type OverlayRealtimeServerMessage =
       protocolVersion: typeof OVERLAY_REALTIME_PROTOCOL_VERSION
       connectionId: string
       serverTime: string
+      /**
+       * Room fanout counter at connect time.
+       *
+       * Lets a client baseline itself so the next delivery is recognisably
+       * contiguous. Optional so a client served by a newer deployment keeps
+       * working against a room that has not been redeployed yet.
+       */
+      seq?: number
     }
   | {
       type: 'gacha_result'
+      /**
+       * Monotonic per-room fanout counter.
+       *
+       * A jump means this socket missed a delivery, which is the only reason a
+       * healthy connection needs to poll history at all. Carried beside the
+       * event rather than inside it so the authoritative envelope that polling
+       * rebuilds from the database stays byte-identical to the pushed one.
+       */
+      seq?: number
       event: GachaRealtimeEventV1
     }
   | {
