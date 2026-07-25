@@ -548,6 +548,10 @@ describe("GET /api/overlay/[streamerId]/events", () => {
       events: [],
       nextCursor: null,
       overlayVersion: "v-test",
+      // Rollout/rollback signal the overlay reads instead of polling the config
+      // endpoint on its own timer. Without any OVERLAY_REALTIME_* env stubbed,
+      // the shared resolver denies by default.
+      realtimeConfigVersion: "polling-only-v1",
     });
   });
 });

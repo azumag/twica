@@ -69,6 +69,13 @@ interface PollingResponse {
   realtimeEvents?: GachaRealtimeEventV1[]
   nextCursor?: PollingCursor | null
   demoEvent?: PollingEvent | null
+  /**
+   * Effective overlay transport version, echoed by the events endpoint so a
+   * connected overlay notices a rollout/rollback without polling the config
+   * endpoint on its own timer. Optional so an overlay served by an older
+   * deployment keeps working unchanged.
+   */
+  realtimeConfigVersion?: string
 }
 
 /**
@@ -97,7 +104,23 @@ export interface SubscribeOptions {
 
 const MAX_SEEN_EVENT_IDS = 512
 const SEEN_EVENT_TTL_MS = 24 * 60 * 60 * 1000
-const CONFIG_REFRESH_MS = 30_000
+/**
+ * Safety net only. Rollout/rollback is normally noticed through the
+ * `realtimeConfigVersion` echoed by the events endpoint on a request the
+ * overlay already makes, so this timer exists purely for the case where
+ * history polling itself is broken and can no longer carry the signal.
+ */
+const CONFIG_SAFETY_REFRESH_MS = 5 * 60_000
+/**
+ * Floor between config fetches triggered by a version mismatch.
+ *
+ * Without it, a config endpoint outage would make every 3-second polling pass
+ * refetch (the safe fallback version never matches the server's), which would
+ * be worse than the fixed timer this replaced. Thirty seconds keeps the
+ * degraded case identical to the previous fixed interval while leaving a real
+ * change to be picked up on the first pass that observes it.
+ */
+const CONFIG_CHANGE_REFETCH_FLOOR_MS = 30_000
 const WS_CONNECT_TIMEOUT_MS = 10_000
 const CONNECTED_GAP_RECOVERY_MS = 30_000
 
@@ -115,14 +138,21 @@ function eventUrl(
   return url.toString()
 }
 
-function configUrl(streamerId: string): string {
+function configUrl(streamerId: string, expectedVersion?: string): string {
   // The endpoint has a 15-second public cache TTL. Do not append the
   // millisecond cache-buster used by history polling: doing so would create an
   // unbounded set of edge cache keys and defeat inexpensive rollout config.
-  return new URL(
+  const url = new URL(
     `/api/overlay/${streamerId}/realtime-config`,
     window.location.origin
-  ).toString()
+  )
+  // When a refetch was triggered by a version change observed on the events
+  // endpoint, key the request by that version. This is bounded (one key per
+  // config version that has ever existed, not per millisecond) and guarantees
+  // the cache cannot answer a change-triggered refetch with the pre-change
+  // response it is still holding.
+  if (expectedVersion) url.searchParams.set('v', expectedVersion)
+  return url.toString()
 }
 
 function fetchJsonWithXhr<T>(url: string, fetchError: unknown): Promise<T> {
@@ -267,6 +297,9 @@ export function subscribeToGachaResults(
   let reconnectAttempt = 0
   let pollInFlight = false
   let currentConfig: OverlayRealtimeConfigV1 | null = null
+  /** Guards the change-triggered refetch against a config endpoint outage. */
+  let lastConfigAttemptAt = 0
+  let configRefreshInFlight = false
   let historyCursor: PollingCursor = {
     redeemedAt: new Date().toISOString(),
     historyId: '',
@@ -355,6 +388,11 @@ export function subscribeToGachaResults(
           ? Math.max(intervalMs, CONNECTED_GAP_RECOVERY_MS)
           : intervalMs
       schedulePoll(nextInterval)
+
+      // Rollout/rollback detection rides on this response instead of a separate
+      // config poll. refreshConfig() owns the socket and poll timers, so it is
+      // started after the next pass is scheduled and is allowed to override it.
+      maybeRefreshConfigFor(historyResponse.realtimeConfigVersion)
     } catch (error) {
       retryCount += 1
       const exhausted = Number.isFinite(maxRetries) && retryCount > maxRetries
@@ -473,10 +511,18 @@ export function subscribeToGachaResults(
     }
   }
 
-  const refreshConfig = async () => {
-    if (disposed) return
+  const refreshConfig = async (expectedVersion?: string) => {
+    if (disposed || configRefreshInFlight) return
+    configRefreshInFlight = true
+    lastConfigAttemptAt = Date.now()
+    // A change-triggered refetch must not race the safety-net timer into two
+    // concurrent config states; the timer is always re-armed in `finally`.
+    if (configTimer) clearTimeout(configTimer)
     try {
-      const config = await fetchJson<unknown>(configUrl(streamerId), 'default')
+      const config = await fetchJson<unknown>(
+        configUrl(streamerId, expectedVersion),
+        'default'
+      )
       if (!validConfig(config)) throw new Error('invalid config')
       const previousMode = currentConfig?.mode
       const previousUrl = currentConfig?.webSocketUrl
@@ -518,8 +564,34 @@ export function subscribeToGachaResults(
       }
       options.onStatusChange?.('CONFIG_FALLBACK:POLLING_ONLY')
     } finally {
-      if (!disposed) configTimer = setTimeout(() => void refreshConfig(), CONFIG_REFRESH_MS)
+      configRefreshInFlight = false
+      if (!disposed) {
+        configTimer = setTimeout(
+          () => void refreshConfig(),
+          CONFIG_SAFETY_REFRESH_MS
+        )
+      }
     }
+  }
+
+  /**
+   * Apply a config change that history polling reported.
+   *
+   * The events endpoint echoes the effective config version on every pass the
+   * overlay already makes, so an operator flipping the allowlist is noticed
+   * without a dedicated 30-second config poll per overlay. Detection is
+   * therefore faster in polling-only mode (~3s) and unchanged while
+   * DO-connected (~30s), while removing roughly half of all overlay requests.
+   *
+   * The floor keeps a config endpoint outage from turning every polling pass
+   * into a refetch: the safe fallback version never matches the server's, so an
+   * ungated comparison would loop.
+   */
+  const maybeRefreshConfigFor = (reportedVersion: string | undefined) => {
+    if (disposed || !reportedVersion) return
+    if (reportedVersion === currentConfig?.configVersion) return
+    if (Date.now() - lastConfigAttemptAt < CONFIG_CHANGE_REFETCH_FLOOR_MS) return
+    void refreshConfig(reportedVersion)
   }
 
   if (typeof window === 'undefined') {

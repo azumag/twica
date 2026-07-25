@@ -423,7 +423,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       constructor(readonly url: string) {
         ControlledWebSocket.instances.push(this)
         // Complete the connection before its 10-second timeout. The test is
-        // about the 30-second config refresh; leaving sockets CONNECTING would
+        // about the config refresh safety net; leaving sockets CONNECTING would
         // correctly exercise timeout/reconnect cycles and make the instance
         // count depend on unrelated backoff timing.
         queueMicrotask(() => {
@@ -480,7 +480,11 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     await flushPromises()
     expect(ControlledWebSocket.instances).toHaveLength(1)
 
-    await vi.advanceTimersByTimeAsync(30_000)
+    // Connected overlays no longer poll the config endpoint every 30 seconds;
+    // the change signal normally rides on history polling (covered by the test
+    // below). This case drives the five-minute safety-net refresh, which is the
+    // path that must still work when history polling cannot carry the signal.
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
     await flushPromises()
     expect(ControlledWebSocket.instances).toHaveLength(2)
 
@@ -493,6 +497,111 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     // A config endpoint change starts a fresh connection policy, so the next
     // outage uses the initial half-jitter delay (random is stubbed to zero).
     expect(statuses).toContain('DO_RECONNECT_WAIT:50')
+    cleanup()
+  })
+
+  it('applies a rollout change reported by history polling without a config timer', async () => {
+    // The overlay used to poll /realtime-config every 30 seconds purely to
+    // notice a rollout/rollback, which was roughly half of all overlay
+    // requests. The events endpoint now echoes the effective config version on
+    // a pass the overlay already makes, so this is the path that must keep the
+    // kill switch working.
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    // What the operator has currently rolled out. Both endpoints read it, the
+    // way the shared server-side resolver guarantees in production.
+    let serverVersion = 'test-v1'
+    let configCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/realtime-config')) {
+        configCalls += 1
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl:
+            serverVersion === 'test-v1'
+              ? 'https://realtime-a.example'
+              : 'https://realtime-b.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: serverVersion,
+        })
+      }
+      return jsonResponse({ events: [], realtimeConfigVersion: serverVersion })
+    }))
+
+    const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      retryDelay: 1_000,
+    })
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(configCalls).toBe(1)
+
+    // Operator flips the rollout. No config poll is scheduled for another five
+    // minutes, so only the history pass can carry this.
+    serverVersion = 'test-v2'
+
+    // Gap recovery while the socket is healthy runs every 30 seconds.
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+
+    expect(configCalls).toBe(2)
+    expect(ControlledWebSocket.instances).toHaveLength(2)
+    expect(ControlledWebSocket.instances[1].url).toContain('realtime-b.example')
+    cleanup()
+  })
+
+  it('does not refetch the config on every pass while the config endpoint is down', async () => {
+    // The safe fallback version never matches what the events endpoint reports,
+    // so an ungated comparison would turn every 3-second polling pass into a
+    // config refetch — worse than the fixed timer this replaced.
+    let configCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/realtime-config')) {
+        configCalls += 1
+        throw new Error('config endpoint down')
+      }
+      return jsonResponse({ events: [], realtimeConfigVersion: 'polling-only-v1' })
+    }))
+
+    const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      retryDelay: 3_000,
+    })
+    await flushPromises()
+    const afterStartup = configCalls
+
+    // Ten polling passes at three seconds each.
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+
+    // At most one additional attempt per 30-second floor, never one per pass.
+    expect(configCalls - afterStartup).toBeLessThanOrEqual(2)
     cleanup()
   })
 
