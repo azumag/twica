@@ -250,8 +250,11 @@ describe("streamer enablement documentation", () => {
     // ID だけではブラウザ標準のハッシュスクロールが効かないことを preview 実機で確認済み
     // （scrollY が 0 のまま）。自前スクロールを外すとリンクが機能しなくなるため固定する。
     expect(sectionSource).toContain("function useAnchorScroll(");
-    expect(sectionSource).toContain("useAnchorScroll(loading)");
+    expect(sectionSource).toContain("useAnchorScroll()");
     expect(sectionSource).toContain("scrollIntoView(");
+    // loading の解決を待つと実機で約12秒スクロールされず、その間の手動スクロールを奪う。
+    // マウント時に一度だけ実行する（依存配列は空）ことを固定する。
+    expect(sectionSource).toMatch(/scrollIntoView\(\{ block: "start" \}\);\s*\}, \[\]\);/);
     expect(readSource("src/app/page.tsx")).toContain('t("streamerInfo.description")');
   });
 

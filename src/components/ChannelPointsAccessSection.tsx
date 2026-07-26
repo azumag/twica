@@ -34,24 +34,28 @@ const sectionShellClass = "scroll-mt-8 rounded-xl bg-gray-800 p-6";
 /**
  * URL のハッシュがこのセクションを指している場合に、自前でスクロールさせる。
  *
- * ブラウザ／App Router のハッシュスクロールに任せられない理由: このセクションは
- * マウント後に /api/account/channel-points を叩いて表示を切り替えるため、初期HTML時点の
- * 高さと確定後の高さが違う。実機ではスクロール自体が発生しなかった（上記コメント参照）。
- * loading が解けてこのセクションの高さが確定した時点で一度だけスクロールする。
- * ref ガードにより、その後のユーザー操作によるスクロール位置は奪わない。
+ * ブラウザ／App Router のハッシュスクロールに任せられないことは preview 実機で確認済み
+ * （上記コメント参照）。マウント直後に一度だけスクロールし、loading の解決は待たない:
+ * このセクションの上にある3節（言語設定・支援・サブスク確認）はサーバーから受け取った
+ * propsで描画されマウント後に高さが変わらないため、アンカーのオフセットは確定している。
+ * 実測でもレイアウトシフトは観測されなかった（スクロール前後の rect.top の変化 1003→663 が
+ * スクロール量 340 と完全に一致した）。
+ *
+ * loading の解決を待つ実装は避ける。初回GET（staleなら続けて自動再判定POST）が終わるまで
+ * 実機で約12秒スクロールされず、その間にユーザーが手動スクロールしていると位置を奪う。
+ * block:'start' で自身の上端に合わせるため、このセクション自身の高さが後から変わっても
+ * 着地位置はずれない。
  */
-function useAnchorScroll(loading: boolean) {
+function useAnchorScroll() {
   const scrolledRef = useRef(false);
 
   useEffect(() => {
-    if (scrolledRef.current || loading) return;
+    if (scrolledRef.current) return;
     if (window.location.hash !== `#${SECTION_ANCHOR_ID}`) return;
 
     scrolledRef.current = true;
-    document
-      .getElementById(SECTION_ANCHOR_ID)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [loading]);
+    document.getElementById(SECTION_ANCHOR_ID)?.scrollIntoView({ block: "start" });
+  }, []);
 }
 
 interface AccessState {
@@ -101,7 +105,7 @@ export default function ChannelPointsAccessSection({
   const mountedRef = useRef(true);
 
   // #channel-points 付きで遷移してきた場合に、この節までスクロールさせる
-  useAnchorScroll(loading);
+  useAnchorScroll();
 
   useEffect(() => {
     mountedRef.current = true;
