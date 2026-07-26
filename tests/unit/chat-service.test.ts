@@ -258,6 +258,53 @@ describe('TwitchChatService', () => {
       });
       expect(global.fetch).toHaveBeenCalledTimes(1);
     });
+
+    // issue #842/#843: 同じ視聴者が同じカードを30秒以内に引くとテンプレート展開後の
+    // 本文が完全一致し、Twitchが msg_duplicate で抑止する。障害ではないため
+    // terminal（DLQ + エラー報告）と分けて分類する。
+    it('drop_reasonがmsg_duplicateならterminalではなくduplicateに分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{
+            message_id: '',
+            is_sent: false,
+            drop_reason: {
+              code: 'msg_duplicate',
+              message: 'Your message was not sent because it is identical to the previous one you sent, less than 30 seconds ago.',
+            },
+          }],
+        }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'duplicate',
+        reason: 'Your message was not sent because it is identical to the previous one you sent, less than 30 seconds ago.',
+      });
+      // 同一本文の再送はTwitchが再び抑止するため、無駄な再試行をしない
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('msg_duplicateはboolean契約のsendChatMessageでも失敗扱いにしない', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{
+            message_id: '',
+            is_sent: false,
+            drop_reason: { code: 'msg_duplicate', message: 'duplicate' },
+          }],
+        }),
+      } as Response);
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(true);
+    });
   });
 
   describe('buildMessage - multi-draw new card placeholders', () => {

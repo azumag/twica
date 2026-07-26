@@ -21,6 +21,19 @@ const CHAT_SEND_REQUEST_TIMEOUT_MS = 3_000
 // 250ms, 500ms。ジッターは付けない（並列度が低く herd 効果が小さいため）。
 const CHAT_SEND_RETRY_DELAYS_MS = [250, 500]
 /**
+ * Twitchが「30秒以内の同一本文」として送信を抑止したときの drop_reason.code。
+ *
+ * これは障害ではなくTwitch側の意図的な連投抑止であり、通常運用で発生する:
+ * チャット通知テンプレートは {user}/{card}/{rarity}/{unique}/{all} を展開するため、
+ * 同じ視聴者が同じカードを30秒以内に2回引くと（重複カードなら進捗も変わらないので）
+ * 本文が完全一致する。issue #842/#843 がこの経路で自動生成された。
+ *
+ * 他の drop_reason（AutoMod等）と違い時間依存なので「再送しても直らない」わけではないが、
+ * 同一本文は既にチャットへ出ており情報は失われないため、30秒待って古い通知を後から
+ * 流すよりも黙って落とすほうが自然（Twitchの抑止意図にも沿う）。
+ */
+const DUPLICATE_DROP_CODE = 'msg_duplicate'
+/**
  * Twitch/CDNの一時応答。408・429と全5xxを同じbounded retryへ統一する。
  * 個別の5xx列挙では522/523/524等のCloudflare障害が恒久失敗としてDLQ化され、
  * 回復後にも再送されないため、HTTPクラスで判定する。
@@ -112,6 +125,12 @@ interface TwitchChatSendResponse {
 
 export type ChatSendOutcome =
   | { outcome: 'sent' }
+  /**
+   * Twitchが同一本文の連投として意図的に抑止したケース（drop_reason=msg_duplicate）。
+   * 送信はされていないが障害ではないため、terminalと分けてDLQ・エラー報告の対象外にする。
+   * 詳細は下の DUPLICATE_DROP_CODE の解説を参照。
+   */
+  | { outcome: 'duplicate'; reason: string }
   | { outcome: 'terminal'; reason: string }
   | { outcome: 'retryable'; reason: string }
   | { outcome: 'aborted'; reason: string }
@@ -145,7 +164,9 @@ export class TwitchChatService {
    */
   async sendChatMessage(broadcasterTwitchUserId: string, message: string): Promise<boolean> {
     const result = await this.sendChatMessageDetailed(broadcasterTwitchUserId, message)
-    return result.outcome === 'sent'
+    // duplicate は障害ではない（DUPLICATE_DROP_CODE 参照）。false を返すと呼び出し側が
+    // 送信失敗として警告ログを出すため、成功と同じ扱いにする。
+    return result.outcome === 'sent' || result.outcome === 'duplicate'
   }
 
   /**
@@ -270,6 +291,22 @@ export class TwitchChatService {
           const dropCode = sentResult?.drop_reason?.code ?? 'invalid-success-response'
           const dropMessage = sentResult?.drop_reason?.message
             ?? 'Twitch returned 200 without is_sent=true'
+
+          // msg_duplicate は障害ではなくTwitchの連投抑止（issue #842/#843）。
+          // 同じ視聴者が同じカードを30秒以内に引くとテンプレート展開後の本文が
+          // 完全一致するため通常運用で発生する。同一本文は既にチャットへ出ており
+          // 情報は失われないので、DLQ・エラー報告には送らずackする。
+          // AutoMod等の他のdrop_reasonは本文自体が拒否されているためterminalのまま。
+          if (dropCode === DUPLICATE_DROP_CODE) {
+            logger.info('Chat message suppressed by Twitch as a duplicate', {
+              broadcasterTwitchUserId,
+              senderTwitchUserId,
+              usingBotAccount: Boolean(botAccount),
+              attempt,
+            })
+            return { outcome: 'duplicate', reason: dropMessage }
+          }
+
           lastResponse = response
           lastResponseErrorBody = {
             error: dropCode,

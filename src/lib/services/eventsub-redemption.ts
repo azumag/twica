@@ -1234,6 +1234,20 @@ export async function sendChatAnnouncement(
       drawCount: drawnCards.length,
       multiDraw: isMultiDraw,
     });
+  } else if (outcome.outcome === 'duplicate') {
+    // Twitchの連投抑止（issue #842/#843）。障害ではないので warn を出さず、
+    // 呼び出し側が outbox を ack できる 'skipped' へ写す。ここで写さないと
+    // 呼び出し側の if 連鎖（sent/skipped → ack、terminal → DLQ、それ以外 → retryable）で
+    // 未知の値が retryable に落ち、送れない本文を再試行し続けることになる。
+    logger.info('Chat announcement suppressed as duplicate by Twitch', {
+      broadcasterTwitchUserId,
+      streamerId: streamer.id,
+      cardName: card.name,
+      drawCount: drawnCards.length,
+      multiDraw: isMultiDraw,
+      reason: outcome.reason,
+    });
+    return { outcome: 'skipped' };
   } else {
     // sendChatMessage が false を返した場合のログ（API呼び出し失敗）
     // Log when sendChatMessage returns false (API call failure)

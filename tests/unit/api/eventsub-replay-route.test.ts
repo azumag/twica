@@ -347,6 +347,25 @@ describe('POST /api/admin/eventsub-replay', () => {
       expect(json.results[0].outcome).toBe('succeeded')
     })
 
+    // issue #842/#843: Twitchが同一本文を抑止した場合（msg_duplicate）は障害ではないため、
+    // sendChatAnnouncement が 'skipped' を返す。DLQ送りにもエラー報告にもせずackすること。
+    // ここが retryable へ落ちると、Twitchが必ず再拒否する本文を再試行し続ける。
+    it('Twitchが重複として抑止した場合はDLQに送らずackする', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'skipped' })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(claim)
+      expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
+      expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+      expect(json.results[0].outcome).toBe('skipped')
+    })
+
     it('外部送信開始期限内に開始済みなら、遅延成功をroute deadlineまで待って1回だけackする', async () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date(0))

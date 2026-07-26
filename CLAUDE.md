@@ -27,6 +27,12 @@
 - 実経路テストでは、各引き換えが順番にオーバーレイ表示され、対応するTwitchチャットが送信され、関連ログに再試行の滞留やエラーがないことを確認する。
 - 緊急本番修正で本番反映を先行した場合も、復旧後のフォローアップ完了前に同じpreview実経路テストを実施し、結果をPRまたは関連Issueへ記録する。
 
+#### 引き換えの手順
+- **チャネルポイント引き換えは配信者本人のアカウントでも、チャンネルがオフラインでも実行できる。** 配信を開始する必要はなく、別の視聴者アカウントを用意する必要もない。「配信中でないと引き換えられない」と思い込んで手を止めないこと。
+- 対象チャンネルは Twitch の**ログイン名**で開く（`twitch.tv/<twitch_username>`）。表示名（`twitch_display_name`）とログイン名は別物で、DBの `streamers.twitch_username` が正本。表示名から推測したURLを開くと**別人のチャンネル**を見ることになる。
+- preview と本番は別の Twitch client ID・別の報酬・別の callback を使う。EventSub 購読は `reward_id` 単位（`src/app/api/twitch/eventsub/subscribe/route.ts`）なので、preview 用の報酬を引き換えても本番側は発火しない。どの報酬がどちらの環境かは各環境DBの `streamers.channel_point_reward_id` / `channel_point_reward_name` で確認する。
+- 観測は引き換え前に用意しておく: `npx wrangler tail <worker名>`（worker名は**位置引数**。`--name` は使えない）でアプリ Worker と overlay-realtime Worker の両方、加えてオーバーレイURLをブラウザで開いておく。
+
 ### 実画面での検証（Chrome）
 - Chrome の既存セッションは twica にログイン済みで、claude-in-chrome の MCP ツールから実画面を確認できる。UI や文面の変更は「コードを読んだ」「テストが緑」で終わらせず、この経路で実画面を見て確認する。
 - ローカル変更は Chrome のセッションでは検証できない（セッション Cookie はデプロイ先ドメイン用で localhost には送られない）。実画面検証が必要な変更は preview へ反映してから確認する。
