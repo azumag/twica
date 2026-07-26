@@ -136,6 +136,12 @@ export default async function DashboardPage() {
 
       {/* Non-streamer info */}
       {/* 非配信者向け情報 */}
+      {/*
+        非Affiliateでも配信者機能を有効化できる（#788 子D #792）ため、条件の説明だけで
+        終わらせず有効化の導線を必ず添える。この枠は !isStreamer のときだけ出るので、
+        まさに有効化手順を知りたい相手に表示される。手順の詳細は /guide#streamer 側に
+        一元化し、ここでは実際の操作場所（ユーザー設定）へ直接飛ばす。
+      */}
       {!isStreamer && (
         <div className="mb-8 rounded-xl bg-gray-800 p-6">
           <h2 className="mb-2 text-lg font-semibold text-white">
@@ -144,6 +150,20 @@ export default async function DashboardPage() {
           <p className="text-gray-400">
             {t("overview.streamerInfoText")}
           </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Link
+              href="/dashboard/account#channel-points"
+              className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white transition-colors hover:bg-purple-700"
+            >
+              {t("overview.streamerInfoAccountLink")}
+            </Link>
+            <Link
+              href="/guide#streamer"
+              className="text-sm text-purple-400 hover:text-purple-300"
+            >
+              {t("overview.streamerInfoGuideLink")} →
+            </Link>
+          </div>
         </div>
       )}
 

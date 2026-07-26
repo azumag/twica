@@ -16,6 +16,17 @@ interface ChannelPointsAccessSectionProps {
 
 type Capability = "available" | "unavailable" | "reauth_required" | "unknown";
 
+/**
+ * このセクションへ直接リンクするためのアンカーID。
+ * /dashboard/account 内でこのセクションは末尾（支援・サブスク確認の後）にあるため、
+ * ダッシュボードの非配信者向け枠からは /dashboard/account#channel-points で参照する。
+ * loading / fetchFailed の早期returnにも同じIDを付けるのは、初回描画時点（fetch解決前）に
+ * アンカーが存在しないとブラウザがスクロール先を見つけられないため。同時に描画される
+ * のは常に1つだけなのでDOM上でIDが重複することはない。
+ */
+const SECTION_ANCHOR_ID = "channel-points";
+const sectionShellClass = "scroll-mt-8 rounded-xl bg-gray-800 p-6";
+
 interface AccessState {
   broadcasterType: string;
   capability: Capability;
@@ -230,7 +241,7 @@ export default function ChannelPointsAccessSection({
 
   if (loading) {
     return (
-      <div className="rounded-xl bg-gray-800 p-6">
+      <div id={SECTION_ANCHOR_ID} className={sectionShellClass}>
         <h2 className="mb-2 text-xl font-semibold text-white">{t("title")}</h2>
         <p className="text-sm text-gray-400">{t("loading")}</p>
       </div>
@@ -239,7 +250,7 @@ export default function ChannelPointsAccessSection({
 
   if (fetchFailed) {
     return (
-      <div className="rounded-xl bg-gray-800 p-6">
+      <div id={SECTION_ANCHOR_ID} className={sectionShellClass}>
         <h2 className="mb-2 text-xl font-semibold text-white">{t("title")}</h2>
         <p className="mb-4 text-sm text-red-300">{t("messages.genericError")}</p>
         <button
@@ -259,7 +270,7 @@ export default function ChannelPointsAccessSection({
     "rounded-lg bg-gray-600 px-4 py-2 text-sm text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
-    <div className="rounded-xl bg-gray-800 p-6">
+    <div id={SECTION_ANCHOR_ID} className={sectionShellClass}>
       <h2 className="mb-2 text-xl font-semibold text-white">{t("title")}</h2>
       <p className="mb-4 text-sm text-gray-400">{t("description")}</p>
 

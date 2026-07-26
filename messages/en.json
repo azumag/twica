@@ -409,7 +409,9 @@
       "collectionSummary": "Collection Summary",
       "viewAllCollection": "View Full Collection",
       "streamerInfo": "About Streamer Features",
-      "streamerInfoText": "You must be a Twitch Affiliate or Partner to use channel point redemptions and card management features.",
+      "streamerInfoText": "Channel point redemptions and card management are available to streamers who can use Twitch channel points. Affiliates and Partners are enabled automatically. Everyone else can use channel points once monetization onboarding and Channel Points are set up in the Twitch Creator Dashboard, and can then enable streamer features from \"Channel Points / Streamer Features\" in User Settings.",
+      "streamerInfoAccountLink": "Open User Settings",
+      "streamerInfoGuideLink": "See how to enable it",
       "quickLinks": "Quick Links",
       "storageOverLimit": "Storage limit exceeded",
       "storageOverLimitDescription": "Please upgrade your support benefits or delete unused images. New card creation and image uploads are currently restricted.",
@@ -824,7 +826,7 @@
     },
     "streamerInfo": {
       "title": "Streamer Features",
-      "description": "Twitch Affiliates and Partners can access the following features:",
+      "description": "Streamers who can use Twitch channel points get access to the following features (Affiliate or Partner status is not required — having Twitch channel points available is enough):",
       "feature1": "Create and manage original cards",
       "feature2": "Set up channel point redemption integration",
       "feature3": "Customize stream overlay"
@@ -855,24 +857,31 @@
     },
     "streamer": {
       "title": "For Streamers",
-      "requiresAffiliate": "* Requires Twitch Affiliate or Partner status.",
+      "requirement": "* Using streamer features requires that Twitch channel points are available on your channel. Thanks to Twitch's \"Monetization for All\", Affiliate or Partner status is not required — channel points become available once monetization onboarding and Channel Points are set up in your Twitch Creator Dashboard. In that case you can still use streamer features by enabling them with the steps below.",
       "step1": {
         "title": "Login with Twitch",
-        "description": "Log in to TwiCa with your Twitch account. If you're an Affiliate/Partner, streamer features are automatically enabled."
+        "description": "Log in to TwiCa with your Twitch account. Affiliate and Partner accounts have streamer features enabled automatically at login, so the next step is not needed."
       },
       "step2": {
+        "title": "Enable Streamer Features (Non-Affiliate/Partner)",
+        "description": "If you are not an Affiliate or Partner, enable streamer features with the steps below. Enabling this unlocks card management, overlays, and reward settings.",
+        "substep1": "Open \"User Settings\" from the gear icon at the top right and find the \"Channel Points / Streamer Features\" section.",
+        "substep2": "If additional permission is requested, click \"Re-link with Twitch to check\" and allow reading and managing channel point redemptions.",
+        "substep3": "Once it says \"We confirmed Channel Points are available on Twitch for your channel\", click \"Enable streamer features on twica\"."
+      },
+      "step3": {
         "title": "Create Cards",
         "description": "Create original cards from \"Card Management\" on your dashboard. Set card name, image, rarity, and drop rate."
       },
-      "step3": {
+      "step4": {
         "title": "Set Up Channel Point Redemption",
         "description": "Select or create a channel point redemption from \"Stream Settings\" on your dashboard. Click \"Save & Register EventSub\" to complete the Twitch integration."
       },
-      "step4": {
+      "step5": {
         "title": "Add Overlay to OBS",
         "description": "Copy the OBS browser source URL shown in \"Stream Settings\" and add it as a browser source in OBS. Recommended size is 800x600. Gacha results will then appear on your stream."
       },
-      "step5": {
+      "step6": {
         "title": "Start Streaming",
         "description": "Once you start streaming, viewers can draw card gacha using channel points. Acquired cards automatically appear on your stream."
       }
@@ -882,7 +891,9 @@
       "tip1": "Drop rates are set using \"weight\". The actual probability is the ratio of each card's weight to the total weight of all cards.",
       "tip2": "You can temporarily exclude cards from gacha by setting them to \"Paused\".",
       "tip3": "Uploaded images can be cropped to Square (800x800) or Portrait (800x1118). Images specified by URL are used as-is without cropping.",
-      "tip4": "Make sure EventSub status shows \"Connected\" before starting your stream."
+      "tip4": "Make sure EventSub status shows \"Connected\" before starting your stream.",
+      "tip5": "If you see \"Channel Points are not currently available on Twitch for this channel\", confirm that monetization onboarding and Channel Points are set up in your Twitch Creator Dashboard, then try \"Recheck\".",
+      "tip6": "If streamer menu items do not appear after you enable streamer features, log out and log back in to refresh your session."
     }
   },
   "aboutPage": {
@@ -928,7 +939,11 @@
       "title": "For Streamers",
       "affiliate": {
         "question": "Are there requirements for streamer features?",
-        "answer": "Channel point redemption integration requires Twitch Affiliate or Partner status. Log in with an eligible account to use streamer features."
+        "answer": "The requirement is that channel point redemptions are available on your Twitch channel. Thanks to Twitch's \"Monetization for All\", Affiliate or Partner status is not required — channel points become available once monetization onboarding and Channel Points are set up in the Twitch Creator Dashboard. Affiliate and Partner accounts are enabled automatically at login; everyone else can enable streamer features from User Settings."
+      },
+      "enableStreamer": {
+        "question": "I am not an Affiliate or Partner. How do I enable streamer features?",
+        "answer": "Open \"User Settings\" from the gear icon at the top right and find the \"Channel Points / Streamer Features\" section. If additional permission is requested, click \"Re-link with Twitch to check\" and allow reading and managing channel point redemptions. Once it is confirmed as available, click \"Enable streamer features on twica\" to unlock card management, overlays, and reward settings."
       },
       "setup": {
         "question": "What should I set up first?",
@@ -948,6 +963,14 @@
       "eventsub": {
         "question": "Gacha does not run after a channel point redemption",
         "answer": "Check the EventSub status in Stream Settings. If it is not connected, save and register it again. Also confirm that the channel point redemption is enabled on Twitch."
+      },
+      "channelPointsUnavailable": {
+        "question": "It says Channel Points are not available on Twitch",
+        "answer": "Channel points are not available on your Twitch channel yet. Complete monetization onboarding and turn on Channel Points in your Twitch Creator Dashboard, then try \"Recheck\" in User Settings."
+      },
+      "capabilityLost": {
+        "question": "Streamer features are enabled, but it says Channel Points actions require re-authorization or a recheck",
+        "answer": "This appears when your Twitch permissions or Channel Points status changed. If the additional permission was removed, open Stream Settings — a re-link button appears there so you can re-link with Twitch. If Channel Points became unavailable on Twitch, restore the settings in your Twitch Creator Dashboard, then reopen User Settings after 24 hours and it is rechecked automatically. Card management, Stream Settings and the rest of the streamer features remain available."
       },
       "imageUpload": {
         "question": "Image upload fails",

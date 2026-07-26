@@ -9,9 +9,16 @@ export const metadata: Metadata = {
   description: "Frequently asked questions about TwiCa for viewers and streamers.",
 };
 
+// 各配列の要素は messages の faqPage.<scope>.<key> と1対1で対応する（表示順もこの順）
 const viewerQuestions = ["login", "collection", "missingCards"] as const;
-const streamerQuestions = ["affiliate", "setup", "overlay", "cards"] as const;
-const troubleQuestions = ["eventsub", "imageUpload", "support"] as const;
+const streamerQuestions = ["affiliate", "enableStreamer", "setup", "overlay", "cards"] as const;
+const troubleQuestions = [
+  "eventsub",
+  "channelPointsUnavailable",
+  "capabilityLost",
+  "imageUpload",
+  "support",
+] as const;
 
 export default async function FaqPage() {
   const session = await getSession();
