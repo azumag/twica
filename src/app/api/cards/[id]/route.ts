@@ -545,10 +545,12 @@ export async function PUT(
     }
 
     // 旧画像のクリーンアップ (#830: 所有権検証は deleteOwnedStorageImage が担当)
-    // UPDATE 成功後に実行する。先に削除すると、card_number 重複(409)などで
-    // UPDATE が失敗したときにカードが旧URLを参照したまま実体だけが消える。
+    // UPDATE が実際に行を更新したあとに実行する。先に削除すると、card_number
+    // 重複(409)などで UPDATE が失敗したときにカードが旧URLを参照したまま実体
+    // だけが消える。updatedCard が null = 0行更新（並行削除など）も同様に
+    // 新しい image_url が永続化されていないため削除しない。
     // 削除失敗はカード更新を妨げない（ログのみ）。
-    if (isImageChanging && oldImageUrl) {
+    if (updatedCard && isImageChanging && oldImageUrl) {
       try {
         await deleteOwnedStorageImage(oldImageUrl, session.twitchUserId, "Cards API (update)");
       } catch (storageError) {

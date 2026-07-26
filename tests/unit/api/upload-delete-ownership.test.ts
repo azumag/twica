@@ -25,6 +25,16 @@ vi.mock('@/lib/r2-client', () => ({
   getR2PublicUrl: vi.fn(() => R2_PUBLIC_URL),
   deleteFromR2: vi.fn(),
 }));
+// 同ディレクトリの他ルートテストと同じ境界。500ケースで error-reporter の
+// 実経路が走らないようにする。
+vi.mock('@/lib/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+vi.mock('@/lib/sentry/error-handler', () => ({
+  reportError: vi.fn(),
+  reportApiError: vi.fn(),
+  logErrorFromLogger: vi.fn(),
+}));
 
 const R2_PUBLIC_URL = 'https://images.example.test';
 

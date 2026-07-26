@@ -24,6 +24,12 @@ import { getR2PublicUrl } from './r2-client';
  * `${publicUrl}/${fileName}` を組み立て、`getR2KeyFromUrl` が pathname を
  * そのままキーとして扱う）なので、origin 一致で必要十分。
  *
+ * 運用上の注意: 保存済みURLは組み立て時点の `R2_PUBLIC_URL` を含むため、
+ * ドメインを付け替える場合は `cards.image_url` / `blob_files.url` のデータ移行が
+ * 必須。移行しないと既存URLはすべて「ストレージ外」と判定され、カードの
+ * 差し替え・削除時のクリーンアップが警告も出さずスキップされる（R2オブジェクトと
+ * 使用量カウンタがリークする）。
+ *
  * @param url - チェックするURL
  * @returns R2のURLの場合はtrue
  */
@@ -106,6 +112,12 @@ export function getR2KeyFromUrl(url: string): string | null {
  * ファイル名（最後のパスセグメント）だけを見ると
  * `victim-dir/{自分のprefix}_x.png` のようなネストキーで
  * 「検証した対象」と「削除される対象」がずれるため。
+ *
+ * 既知の限界: プレフィックスは sha256 の先頭8hex（2^32空間）なので、ユーザー数が
+ * 十分に増えれば誕生日衝突でプレフィックスを共有するユーザー同士が現れうる。
+ * 攻撃者は自分の Twitch ID を選べないため能動的な衝突は作れず、効果音削除
+ * (`/api/upload/sound`) や `blob_files.user_prefix` も同じ前提で運用されている。
+ * 規模が変わったら `blob_files.user_prefix` の逆引きへ切り替えること。
  *
  * @param url - ストレージURL
  * @param twitchUserId - 所有者として検証するTwitchユーザーID

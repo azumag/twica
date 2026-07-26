@@ -508,6 +508,54 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(mockDeleteFromR2).toHaveBeenCalledWith(`${await sha256Prefix("user1")}_11111111.png`);
     });
 
+    // 旧画像の削除は UPDATE 成功後でなければならない。先に削除すると、
+    // card_number 重複(409)でUPDATEが失敗したときにカードが旧URLを参照した
+    // まま実体だけが消える。
+    it("PUT: UPDATEが409で失敗した場合は旧画像を削除しない", async () => {
+      const oldUrl = await ownUrl("11111111");
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...PUT_OWNERSHIP_ROW, image_url: oldUrl }] }],
+        updates: [
+          {
+            error: {
+              code: "23505",
+              message:
+                'duplicate key value violates unique constraint "cards_streamer_card_number_unique"',
+            },
+          },
+        ],
+      });
+      primePgDb(pg);
+
+      const res = await PUT(
+        createPutRequest({ imageUrl: await ownUrl("22222222"), cardNumber: 3 }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+
+      expect(res.status).toBe(409);
+      expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+      expect(mockDeleteFromR2).not.toHaveBeenCalled();
+    });
+
+    // 0行更新（並行削除など）では新しい image_url が永続化されていないため、
+    // 旧画像を消すとカードから参照されている実体を失う。
+    it("PUT: UPDATEが0行だった場合は旧画像を削除しない", async () => {
+      const oldUrl = await ownUrl("11111111");
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...PUT_OWNERSHIP_ROW, image_url: oldUrl }] }],
+        updates: [{ rows: [] }],
+      });
+      primePgDb(pg);
+
+      const res = await PUT(createPutRequest({ imageUrl: await ownUrl("22222222") }), {
+        params: Promise.resolve({ id: CARD_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+      expect(mockDeleteFromR2).not.toHaveBeenCalled();
+    });
+
     it("PUT: 旧画像が他人のURLの場合はクリーンアップせず更新は成功する", async () => {
       const foreignOldUrl = await victimUrl();
       const newUrl = await ownUrl();
