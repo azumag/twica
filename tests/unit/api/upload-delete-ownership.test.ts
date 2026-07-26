@@ -145,6 +145,16 @@ describe('POST /api/upload/delete: 所有権検証 (#830)', () => {
     expect(mockDeleteFromR2).not.toHaveBeenCalled();
   });
 
+  // キーを取り出せないストレージURL（パスなし）は fail-closed。
+  // 所有権を判定できない以上、削除には進ませない。
+  it('キーを持たないストレージURLは403で拒否し削除しない', async () => {
+    const response = await POST(createRequest(`${R2_PUBLIC_URL}/`));
+
+    expect(response.status).toBe(403);
+    expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+    expect(mockDeleteFromR2).not.toHaveBeenCalled();
+  });
+
   it('ストレージ外のURLは400で拒否する', async () => {
     const response = await POST(
       createRequest('https://static-cdn.jtvnw.net/emoticons/v2/1/static/light/3.0')
