@@ -5,10 +5,8 @@ import { validateContentType } from "@/lib/request-validation";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { handleApiError } from "@/lib/error-handler";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { deleteFromR2 } from "@/lib/r2-client";
-import { removeBlobFile } from "@/lib/storage-db";
-import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
-import { logger } from "@/lib/logger.server";
+import { deleteOwnedStorageImage } from "@/lib/storage-cleanup";
+import { isStorageUrl } from "@/lib/storage-utils";
 
 export async function POST(request: NextRequest) {
   try {
@@ -77,33 +75,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // DBからファイル情報を取得し、削除
-    // これにより使用量も自動的に減算される
-    try {
-      await removeBlobFile(url);
-    } catch (dbError) {
-      // DB操作に失敗しても、ストレージからの削除は続行
-      // 使用量が不整合になる可能性があるが、初期化スクリプトで修正可能
-      logger.warn('Failed to remove blob file from DB:', dbError);
-    }
+    // Ownership validation + deletion
+    // 所有権検証と削除 (#830)
+    // 検証と削除の対象キーがずれないよう、判定は削除処理と同じ場所に閉じている。
+    const outcome = await deleteOwnedStorageImage(url, session.twitchUserId, "Blob Delete API");
 
-    // ストレージから削除（R2のみ）
-    // Note: Vercel Blob deletion removed - only R2 is supported now
-    // 注意: Vercel Blob削除を削除 - R2のみサポート
-    if (isR2Url(url)) {
-      // R2から削除
-      const key = getR2KeyFromUrl(url);
-      if (key) {
-        await deleteFromR2(key);
-        logger.info(`Deleted R2 file: ${key}`);
-      } else {
-        logger.warn(`Could not extract key from R2 URL: ${url}`);
-      }
-    } else if (isVercelBlobUrl(url)) {
-      // Vercel Blob URLs are no longer actively deleted
-      // Migration to R2 should have moved these files
-      // Vercel Blob URLは削除しない（R2移行済みのはず）
-      logger.warn(`Vercel Blob URL found but deletion skipped: ${url}`);
+    if (outcome === "forbidden") {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.FORBIDDEN },
+        { status: 403 }
+      );
     }
 
     return NextResponse.json({ success: true });

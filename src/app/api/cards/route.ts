@@ -16,6 +16,7 @@ import { validateContentType } from "@/lib/request-validation";
 import { normalizeDropRate } from "@/lib/card-utils";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { sha256Prefix } from "@/lib/crypto-utils";
+import { isAssignableImageUrl } from "@/lib/storage-utils";
 import { logger } from "@/lib/logger.server";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
@@ -257,6 +258,16 @@ export async function POST(request: NextRequest) {
         { error: imageUrlValidation.error },
         { status: 400 }
       )
+    }
+
+    // #830: 他人のストレージURLをカードへ紐付けることを禁止する。
+    // 紐付けを許すと、以降の画像差し替え・カード削除のクリーンアップで
+    // 他人のオブジェクトが削除される。
+    if (!(await isAssignableImageUrl(imageUrl, session.twitchUserId))) {
+      logger.warn(
+        `Cards API: rejected foreign storage image URL on create by user ${session.twitchUserId}: ${imageUrl}`
+      );
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
     const rarityValidation = validateRarity(rarity)
