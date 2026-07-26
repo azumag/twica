@@ -221,6 +221,8 @@ export async function POST(request: NextRequest) {
 
       // #830: 他人のストレージURLをカードへ紐付けることを禁止する
       // （この経路は主にTwitchエモートの取り込みで、外部CDN URLは即座に許可される）
+      // 単体の POST/PUT は 403 を返すが、このバッチ経路は全カードの検証エラーを
+      // 集約して 400 で返す既存設計に合わせる。
       if (!(await isAssignableImageUrl(card.imageUrl, session.twitchUserId))) {
         logger.warn(
           `Cards Batch API: rejected foreign storage image URL by user ${session.twitchUserId}: ${card.imageUrl}`

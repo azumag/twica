@@ -55,7 +55,11 @@ export async function deleteOwnedStorageImage(
     return 'not-storage';
   }
 
-  if (!(await isOwnedStorageUrl(url, twitchUserId))) {
+  // 検証したキーと削除するキーが同一であることを構造的に保証するため、
+  // キーはここで1度だけ取り出して以降も同じ値を使う。
+  const key = getR2KeyFromUrl(url);
+
+  if (!key || !(await isOwnedStorageUrl(url, twitchUserId))) {
     // 「他人のオブジェクトへの削除要求」と「所有者を判定できないキー」を同じ
     // fail-closed で扱うため、ログ文言も断定しない。本番/preview の
     // cards.image_url は実測で 100% が `{prefix}_` 形式（#830 の調査）なので、
@@ -73,13 +77,8 @@ export async function deleteOwnedStorageImage(
   }
 
   if (isR2Url(url)) {
-    const key = getR2KeyFromUrl(url);
-    if (key) {
-      await deleteFromR2(key);
-      logger.info(`[${context}] Deleted R2 file: ${key}`);
-    } else {
-      logger.warn(`[${context}] Could not extract key from R2 URL: ${url}`);
-    }
+    await deleteFromR2(key);
+    logger.info(`[${context}] Deleted R2 file: ${key}`);
   } else if (isVercelBlobUrl(url)) {
     // Vercel Blob URLs are no longer actively deleted
     // Migration to R2 should have moved these files
