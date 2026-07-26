@@ -13,9 +13,8 @@ import { extractTwitchUserId } from "@/types/database";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { logger } from "@/lib/logger.server";
-import { deleteFromR2 } from "@/lib/r2-client";
-import { removeBlobFile } from "@/lib/storage-db";
-import { isR2Url, isVercelBlobUrl, isStorageUrl, getR2KeyFromUrl } from "@/lib/storage-utils";
+import { deleteOwnedStorageImage } from "@/lib/storage-cleanup";
+import { isAssignableImageUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
@@ -469,6 +468,23 @@ export async function PUT(
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
+    // Delete old image if imageUrl is being changed to a different URL
+    // imageUrlが異なるURLに変更される場合、古い画像を削除
+    const oldImageUrl = card.image_url;
+    const isImageChanging = imageUrl !== undefined && imageUrl !== oldImageUrl;
+
+    // #830: 他人のストレージURLを自分のカードへ紐付けることを禁止する。
+    // 紐付けを許すと、以降の差し替え・カード削除のクリーンアップで他人の
+    // オブジェクトが削除される。判定は「URLが実際に変わるとき」だけに限定する。
+    // 既存値の再送信（画像以外のフィールド編集）は判定対象外なので、所有権を
+    // 判定できないURLを持つ既存カードでも編集が止まらない。
+    if (isImageChanging && !(await isAssignableImageUrl(imageUrl, session.twitchUserId))) {
+      logger.warn(
+        `Cards API: rejected foreign storage image URL on update by user ${session.twitchUserId}: ${imageUrl}`
+      );
+      return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+    }
+
     // Issue #393再設計: パック紐付けの変更は、値が実際に変わる場合のみ
     // 事前登録済み(card_pack_names)であることを要求する(#269のプレミアム
     // ゲートは廃止。パック管理モーダルでの追加時のみゲートする設計に変更)。
@@ -516,41 +532,6 @@ export async function PUT(
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
     if (isActive !== undefined) updateData.is_active = isActive;
 
-    // Delete old image if imageUrl is being changed to a different URL
-    // imageUrlが異なるURLに変更される場合、古い画像を削除
-    const oldImageUrl = card.image_url;
-    const isImageChanging = imageUrl !== undefined && imageUrl !== oldImageUrl;
-
-    if (isImageChanging && oldImageUrl && isStorageUrl(oldImageUrl)) {
-      // Remove from DB and update usage
-      // DBから削除し使用量を更新
-      try {
-        await removeBlobFile(oldImageUrl);
-      } catch (dbError) {
-        logger.warn(`Failed to remove old image from DB: ${oldImageUrl}`, dbError);
-      }
-
-      // Delete from storage (R2)
-      // ストレージから削除（R2）
-      // Note: Vercel Blob deletion removed - only R2 is supported now
-      // 注意: Vercel Blob削除を削除 - R2のみサポート
-      try {
-        if (isR2Url(oldImageUrl)) {
-          const key = getR2KeyFromUrl(oldImageUrl);
-          if (key) {
-            await deleteFromR2(key);
-            logger.info(`Deleted old R2 image on update: ${oldImageUrl}`);
-          }
-        } else if (isVercelBlobUrl(oldImageUrl)) {
-          // Vercel Blob URLs are no longer actively deleted
-          // Migration to R2 should have moved these files
-          logger.warn(`Vercel Blob URL found but deletion skipped: ${oldImageUrl}`);
-        }
-      } catch (storageError) {
-        logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
-      }
-    }
-
     const { updatedCard, error } = await updateCardPg(id, updateData);
 
     if (error) {
@@ -561,6 +542,20 @@ export async function PUT(
         );
       }
       return handleDatabaseError(error, "Failed to update card");
+    }
+
+    // 旧画像のクリーンアップ (#830: 所有権検証は deleteOwnedStorageImage が担当)
+    // UPDATE が実際に行を更新したあとに実行する。先に削除すると、card_number
+    // 重複(409)などで UPDATE が失敗したときにカードが旧URLを参照したまま実体
+    // だけが消える。updatedCard が null = 0行更新（並行削除など）も同様に
+    // 新しい image_url が永続化されていないため削除しない。
+    // 削除失敗はカード更新を妨げない（ログのみ）。
+    if (updatedCard && isImageChanging && oldImageUrl) {
+      try {
+        await deleteOwnedStorageImage(oldImageUrl, session.twitchUserId, "Cards API (update)");
+      } catch (storageError) {
+        logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
+      }
     }
 
     // 再計算はベストエフォート: カード更新は成功しているため、
@@ -703,34 +698,14 @@ export async function DELETE(
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
-    // Delete image from storage if it exists (R2 or Vercel Blob)
-    // ストレージから画像を削除（存在する場合、R2またはVercel Blob）
-    if (card.image_url && isStorageUrl(card.image_url)) {
+    // Delete image from storage if it exists
+    // ストレージから画像を削除（#830: 所有権検証は deleteOwnedStorageImage が担当）
+    // Log but don't fail the card deletion if storage deletion fails
+    // ストレージ削除が失敗してもカード削除は続行（ログのみ記録）
+    if (card.image_url) {
       try {
-        // DBからファイル情報を削除し、使用量を減算
-        await removeBlobFile(card.image_url);
-      } catch (dbError) {
-        // DB操作に失敗しても続行
-        logger.warn(`Failed to remove blob file from DB: ${card.image_url}`, dbError);
-      }
-
-      try {
-        if (isR2Url(card.image_url)) {
-          // R2から削除
-          const key = getR2KeyFromUrl(card.image_url);
-          if (key) {
-            await deleteFromR2(key);
-            logger.info(`Deleted R2 image: ${card.image_url}`);
-          }
-        } else if (isVercelBlobUrl(card.image_url)) {
-          // Vercel Blob URLs are no longer actively deleted
-          // Migration to R2 should have moved these files
-          // Vercel Blob URLは削除しない（R2移行済みのはず）
-          logger.warn(`Vercel Blob URL found but deletion skipped: ${card.image_url}`);
-        }
+        await deleteOwnedStorageImage(card.image_url, session.twitchUserId, "Cards API (delete)");
       } catch (storageError) {
-        // Log but don't fail the card deletion if storage deletion fails
-        // ストレージ削除が失敗してもカード削除は続行（ログのみ記録）
         logger.warn(`Failed to delete storage image: ${card.image_url}`, storageError);
       }
     }

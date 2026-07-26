@@ -12,6 +12,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
+import { isAssignableImageUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 // -----------------------------------------------------------------------------
 // 一括カード作成の所有権確認と書き込みは PlanetScale の単一接続を使う。
@@ -215,6 +216,18 @@ export async function POST(request: NextRequest) {
       const imageUrlValidation = validateImageUrl(card.imageUrl);
       if (!imageUrlValidation.valid) {
         validationErrors.push(`カード${i + 1}: ${imageUrlValidation.error}`);
+        continue;
+      }
+
+      // #830: 他人のストレージURLをカードへ紐付けることを禁止する
+      // （この経路は主にTwitchエモートの取り込みで、外部CDN URLは即座に許可される）
+      // 単体の POST/PUT は 403 を返すが、このバッチ経路は全カードの検証エラーを
+      // 集約して 400 で返す既存設計に合わせる。
+      if (!(await isAssignableImageUrl(card.imageUrl, session.twitchUserId))) {
+        logger.warn(
+          `Cards Batch API: rejected foreign storage image URL by user ${session.twitchUserId}: ${card.imageUrl}`
+        );
+        validationErrors.push(`カード${i + 1}: ${ERROR_MESSAGES.FORBIDDEN}`);
         continue;
       }
 

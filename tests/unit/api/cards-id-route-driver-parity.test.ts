@@ -3,6 +3,10 @@
  *
  * 現行 Drizzle 実装の所有権・更新・削除・競合応答と、
  * 本番スキーマ移行中の安全な列フォールバックを検証する。
+ *
+ * #830: 画像URLの所有権検証（他人のストレージURLの紐付け拒否・
+ * 他人のオブジェクトを削除しないクリーンアップ）もここで検証する。
+ * 同じルートの PUT/DELETE を対象とし、Drizzle モックを共有するため。
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
@@ -12,12 +16,21 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getDb } from "@/lib/db/client";
 import { removeBlobFile } from "@/lib/storage-db";
+import { deleteFromR2 } from "@/lib/r2-client";
+import { sha256Prefix } from "@/lib/crypto-utils";
 import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
+
+// #830: 画像削除経路で参照される R2 の公開URL・削除操作を差し替える
+const R2_PUBLIC_URL = "https://images.example.test";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
 vi.mock("@/lib/storage-db");
+vi.mock("@/lib/r2-client", () => ({
+  getR2PublicUrl: vi.fn(() => R2_PUBLIC_URL),
+  deleteFromR2: vi.fn(),
+}));
 vi.mock("@/lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -32,6 +45,7 @@ const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken);
 const mockRemoveBlobFile = vi.mocked(removeBlobFile);
+const mockDeleteFromR2 = vi.mocked(deleteFromR2);
 
 const SESSION = {
   twitchUserId: "user1",
@@ -191,6 +205,7 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
     });
     mockValidateCSRFToken.mockResolvedValue({ valid: true });
     mockRemoveBlobFile.mockResolvedValue(null);
+    mockDeleteFromR2.mockResolvedValue(undefined);
   });
 
   describe("PUT /api/cards/[id]", () => {
@@ -406,5 +421,204 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(pgRes.status).toBe(403);
     });
 
+  });
+
+  // -------------------------------------------------------------------------
+  // #830: 画像URLの所有権検証
+  //
+  // 修正前は「他人のR2 URLを自分のカードに紐付ける」→「別URLへ差し替える」
+  // だけで、被害者のオブジェクトがR2から削除できた（復旧不能）。
+  // -------------------------------------------------------------------------
+  describe("画像URLの所有権検証 (#830)", () => {
+    const VICTIM_USER_ID = "victim-user-id";
+
+    const PUT_OWNERSHIP_ROW = {
+      streamer_id: "streamer-1",
+      image_url: null as string | null,
+      rarity: "common",
+      is_active: true,
+      intra_rarity_weight: 1,
+      collection_name: null,
+      twitch_user_id: "user1",
+      rarity_weights: null,
+      card_pack_names: [],
+    };
+
+    const UPDATED_ROW = {
+      id: CARD_ID,
+      streamer_id: "streamer-1",
+      name: "Card",
+      description: null,
+      image_url: null,
+      rarity: "common",
+      card_number: null,
+      max_issuance_count: null,
+      collection_name: null,
+      drop_rate: 0.5,
+      intra_rarity_weight: 1,
+      is_active: true,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-02T00:00:00Z",
+    };
+
+    const DELETE_OWNERSHIP_ROW = {
+      streamer_id: "streamer-1",
+      image_url: null as string | null,
+      twitch_user_id: "user1",
+      rarity_weights: null,
+    };
+
+    async function ownUrl(suffix = "deadbeef"): Promise<string> {
+      return `${R2_PUBLIC_URL}/${await sha256Prefix("user1")}_${suffix}.png`;
+    }
+
+    async function victimUrl(suffix = "cafebabe"): Promise<string> {
+      return `${R2_PUBLIC_URL}/${await sha256Prefix(VICTIM_USER_ID)}_${suffix}.png`;
+    }
+
+    it("PUT: 他人のストレージURLの紐付けは403で拒否しUPDATEしない", async () => {
+      const pg = createDrizzleDbMock({ selects: [{ rows: [PUT_OWNERSHIP_ROW] }] });
+      primePgDb(pg);
+
+      const res = await PUT(createPutRequest({ imageUrl: await victimUrl() }), {
+        params: Promise.resolve({ id: CARD_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(pg.updateCalls).toHaveLength(0);
+      expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+      expect(mockDeleteFromR2).not.toHaveBeenCalled();
+    });
+
+    it("PUT: 自分の画像への差し替えでは旧画像が従来どおり削除される", async () => {
+      const oldUrl = await ownUrl("11111111");
+      const newUrl = await ownUrl("22222222");
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...PUT_OWNERSHIP_ROW, image_url: oldUrl }] }],
+        updates: [{ rows: [{ ...UPDATED_ROW, image_url: newUrl }] }],
+      });
+      primePgDb(pg);
+
+      const res = await PUT(createPutRequest({ imageUrl: newUrl }), {
+        params: Promise.resolve({ id: CARD_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockRemoveBlobFile).toHaveBeenCalledWith(oldUrl);
+      expect(mockDeleteFromR2).toHaveBeenCalledWith(`${await sha256Prefix("user1")}_11111111.png`);
+    });
+
+    // 旧画像の削除は UPDATE 成功後でなければならない。先に削除すると、
+    // card_number 重複(409)でUPDATEが失敗したときにカードが旧URLを参照した
+    // まま実体だけが消える。
+    it("PUT: UPDATEが409で失敗した場合は旧画像を削除しない", async () => {
+      const oldUrl = await ownUrl("11111111");
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...PUT_OWNERSHIP_ROW, image_url: oldUrl }] }],
+        updates: [
+          {
+            error: {
+              code: "23505",
+              message:
+                'duplicate key value violates unique constraint "cards_streamer_card_number_unique"',
+            },
+          },
+        ],
+      });
+      primePgDb(pg);
+
+      const res = await PUT(
+        createPutRequest({ imageUrl: await ownUrl("22222222"), cardNumber: 3 }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+
+      expect(res.status).toBe(409);
+      expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+      expect(mockDeleteFromR2).not.toHaveBeenCalled();
+    });
+
+    // 0行更新（並行削除など）では新しい image_url が永続化されていないため、
+    // 旧画像を消すとカードから参照されている実体を失う。
+    it("PUT: UPDATEが0行だった場合は旧画像を削除しない", async () => {
+      const oldUrl = await ownUrl("11111111");
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...PUT_OWNERSHIP_ROW, image_url: oldUrl }] }],
+        updates: [{ rows: [] }],
+      });
+      primePgDb(pg);
+
+      const res = await PUT(createPutRequest({ imageUrl: await ownUrl("22222222") }), {
+        params: Promise.resolve({ id: CARD_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+      expect(mockDeleteFromR2).not.toHaveBeenCalled();
+    });
+
+    it("PUT: 旧画像が他人のURLの場合はクリーンアップせず更新は成功する", async () => {
+      const foreignOldUrl = await victimUrl();
+      const newUrl = await ownUrl();
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...PUT_OWNERSHIP_ROW, image_url: foreignOldUrl }] }],
+        updates: [{ rows: [{ ...UPDATED_ROW, image_url: newUrl }] }],
+      });
+      primePgDb(pg);
+
+      const res = await PUT(createPutRequest({ imageUrl: newUrl }), {
+        params: Promise.resolve({ id: CARD_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+      expect(mockDeleteFromR2).not.toHaveBeenCalled();
+    });
+
+    it("PUT: 画像URLを変更しない編集は所有権判定の対象外（所有者を判定できないURLでも編集が止まらない）", async () => {
+      // 命名規則に合致せず所有者を判定できないURLを持つ既存カードを模す
+      const legacyUrl = `${R2_PUBLIC_URL}/legacy-image.png`;
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...PUT_OWNERSHIP_ROW, image_url: legacyUrl }] }],
+        updates: [{ rows: [{ ...UPDATED_ROW, name: "Renamed", image_url: legacyUrl }] }],
+      });
+      primePgDb(pg);
+
+      const res = await PUT(createPutRequest({ name: "Renamed", imageUrl: legacyUrl }), {
+        params: Promise.resolve({ id: CARD_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockDeleteFromR2).not.toHaveBeenCalled();
+    });
+
+    it("DELETE: カード画像が自分のものなら従来どおり削除される", async () => {
+      const url = await ownUrl();
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...DELETE_OWNERSHIP_ROW, image_url: url }] }],
+        deletes: [{ rows: [{ id: CARD_ID }] }],
+      });
+      primePgDb(pg);
+
+      const res = await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
+
+      expect(res.status).toBe(200);
+      expect(mockRemoveBlobFile).toHaveBeenCalledWith(url);
+      expect(mockDeleteFromR2).toHaveBeenCalledWith(`${await sha256Prefix("user1")}_deadbeef.png`);
+    });
+
+    it("DELETE: カード画像が他人のものならR2削除せずカード削除だけ行う", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [{ ...DELETE_OWNERSHIP_ROW, image_url: await victimUrl() }] }],
+        deletes: [{ rows: [{ id: CARD_ID }] }],
+      });
+      primePgDb(pg);
+
+      const res = await DELETE(createDeleteRequest(), { params: Promise.resolve({ id: CARD_ID }) });
+
+      expect(res.status).toBe(200);
+      expect(pg.deleteCalls).toHaveLength(1);
+      expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+      expect(mockDeleteFromR2).not.toHaveBeenCalled();
+    });
   });
 });
