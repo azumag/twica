@@ -18,14 +18,41 @@ type Capability = "available" | "unavailable" | "reauth_required" | "unknown";
 
 /**
  * このセクションへ直接リンクするためのアンカーID。
- * /dashboard/account 内でこのセクションは末尾（支援・サブスク確認の後）にあるため、
- * ダッシュボードの非配信者向け枠からは /dashboard/account#channel-points で参照する。
- * loading / fetchFailed の早期returnにも同じIDを付けるのは、初回描画時点（fetch解決前）に
- * アンカーが存在しないとブラウザがスクロール先を見つけられないため。同時に描画される
- * のは常に1つだけなのでDOM上でIDが重複することはない。
+ * /dashboard/account 内でこのセクションは4番目（言語設定・支援・サブスク確認の後）で
+ * 初期表示に収まらないため、ダッシュボードの非配信者向け枠からは
+ * /dashboard/account#channel-points で参照する。
+ *
+ * loading / fetchFailed の早期returnにも同じIDを付ける（同時に描画されるのは常に1つ
+ * なのでDOM上で重複はしない）。ただし**ID があってもブラウザ標準のハッシュスクロールは
+ * 効かない**ことを preview 実機で確認済み: #channel-points 付きで開いても
+ * window.scrollY は 0 のままで、対象要素の rect.top は 1225px（viewport 841px）と
+ * 画面外に留まった。そのため下の useAnchorScroll で明示的にスクロールさせる。
  */
 const SECTION_ANCHOR_ID = "channel-points";
 const sectionShellClass = "scroll-mt-8 rounded-xl bg-gray-800 p-6";
+
+/**
+ * URL のハッシュがこのセクションを指している場合に、自前でスクロールさせる。
+ *
+ * ブラウザ／App Router のハッシュスクロールに任せられない理由: このセクションは
+ * マウント後に /api/account/channel-points を叩いて表示を切り替えるため、初期HTML時点の
+ * 高さと確定後の高さが違う。実機ではスクロール自体が発生しなかった（上記コメント参照）。
+ * loading が解けてこのセクションの高さが確定した時点で一度だけスクロールする。
+ * ref ガードにより、その後のユーザー操作によるスクロール位置は奪わない。
+ */
+function useAnchorScroll(loading: boolean) {
+  const scrolledRef = useRef(false);
+
+  useEffect(() => {
+    if (scrolledRef.current || loading) return;
+    if (window.location.hash !== `#${SECTION_ANCHOR_ID}`) return;
+
+    scrolledRef.current = true;
+    document
+      .getElementById(SECTION_ANCHOR_ID)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [loading]);
+}
 
 interface AccessState {
   broadcasterType: string;
@@ -72,6 +99,9 @@ export default function ChannelPointsAccessSection({
   // React Strict Modeでのeffect二重実行や再render等で自動probeを複数回発火しないためのガード
   const autoProbeStarted = useRef(false);
   const mountedRef = useRef(true);
+
+  // #channel-points 付きで遷移してきた場合に、この節までスクロールさせる
+  useAnchorScroll(loading);
 
   useEffect(() => {
     mountedRef.current = true;
