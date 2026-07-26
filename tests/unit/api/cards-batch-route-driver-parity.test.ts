@@ -11,11 +11,18 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getDb } from "@/lib/db/client";
+import { sha256Prefix } from "@/lib/crypto-utils";
 import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
+
+// #830: 画像URLの所有権判定は R2 の公開URLに依存するため、テストでは固定値を与える
+const R2_PUBLIC_URL = "https://images.example.test";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
+vi.mock("@/lib/r2-client", () => ({
+  getR2PublicUrl: vi.fn(() => R2_PUBLIC_URL),
+}));
 vi.mock("@/lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -311,6 +318,51 @@ describe("POST /api/cards/batch: PlanetScale契約 (#663)", () => {
     expect(pg.insertCalls[1].returningFields).toEqual(CARDS_SAFE_COLUMNS);
     expect(Object.keys(pg.insertCalls[1].returningFields ?? {})).not.toContain("card_number");
     expect(Object.keys(pg.insertCalls[1].returningFields ?? {})).not.toContain("hp");
+  });
+
+  // #830: 他人のストレージURLをカードへ紐付けると、以降のカード削除時の
+  // クリーンアップで他人のR2オブジェクトが消えるため、作成時点で拒否する。
+  it("他人のストレージURLを含むカードは400で拒否しINSERTしない (#830)", async () => {
+    const victimPrefix = await sha256Prefix("victim-user-id");
+    const pg = createDrizzleDbMock({ selects: [{ rows: [STREAMER_ROW] }] });
+    primePgDb(pg);
+
+    const pgRes = await POST(
+      createBatchRequest({
+        streamerId: "streamer-1",
+        cards: [
+          {
+            name: "Card A",
+            imageUrl: `${R2_PUBLIC_URL}/${victimPrefix}_deadbeef.png`,
+            rarity: "common",
+            dropRate: 0.5,
+          },
+        ],
+      })
+    );
+
+    expect(pgRes.status).toBe(400);
+    expect(pg.insertCalls).toHaveLength(0);
+  });
+
+  it("自分のストレージURLを含むカードは従来どおり作成できる (#830)", async () => {
+    const ownPrefix = await sha256Prefix("user1");
+    const imageUrl = `${R2_PUBLIC_URL}/${ownPrefix}_deadbeef.png`;
+    const pg = createDrizzleDbMock({
+      selects: [{ rows: [STREAMER_ROW] }],
+      inserts: [{ rows: [{ id: "card-1", streamer_id: "streamer-1", name: "Card A", image_url: imageUrl }] }],
+    });
+    primePgDb(pg);
+
+    const pgRes = await POST(
+      createBatchRequest({
+        streamerId: "streamer-1",
+        cards: [{ name: "Card A", imageUrl, rarity: "common", dropRate: 0.5 }],
+      })
+    );
+
+    expect(pgRes.status).toBe(200);
+    expect(pg.insertCalls).toHaveLength(1);
   });
 
 });

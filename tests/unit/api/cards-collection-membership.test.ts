@@ -15,12 +15,23 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { getDb } from "@/lib/db/client";
+import { sha256Prefix } from "@/lib/crypto-utils";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+
+// #830: 画像URLの所有権判定は R2 の公開URLに依存するため、テストでは固定値を与える
+const R2_PUBLIC_URL = "https://images.example.test";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
 vi.mock("@/lib/storage-usage");
+vi.mock("@/lib/r2-client", () => ({
+  getR2PublicUrl: vi.fn(() => R2_PUBLIC_URL),
+  deleteFromR2: vi.fn(),
+}));
+vi.mock("@/lib/storage-db", () => ({
+  removeBlobFile: vi.fn(),
+}));
 
 const mockGetSession = vi.mocked(getSession);
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
@@ -319,5 +330,57 @@ describe("PUT /api/cards/[id] card-pack membership validation", () => {
     expect((await response.json()).collectionNameSkippedDeployWindow).toBe(true);
     expect(db.updateCalls[0]).toEqual(expect.objectContaining({ name: "Renamed" }));
     expect(db.updateCalls[0]).not.toHaveProperty("collection_name");
+  });
+});
+
+// #830: 他人のストレージURLをカードへ紐付けると、以降の画像差し替え・カード削除の
+// クリーンアップで他人のR2オブジェクトが削除されるため、作成時点で拒否する。
+describe("POST /api/cards storage image ownership (#830)", () => {
+  it("rejects another streamer's storage URL (403) and does not insert", async () => {
+    const victimPrefix = await sha256Prefix("victim-user-id");
+    const db = createDbMock({ selects: [{ rows: [streamerRow([])] }] });
+
+    const response = await POST(
+      new NextRequest("http://localhost/api/cards", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          streamerId: "streamer1",
+          name: "Sword",
+          imageUrl: `${R2_PUBLIC_URL}/${victimPrefix}_deadbeef.png`,
+          rarity: "common",
+          dropRate: 0.5,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(db.insertCalls).toHaveLength(0);
+  });
+
+  it("accepts the requester's own storage URL", async () => {
+    const ownPrefix = await sha256Prefix(SESSION.twitchUserId);
+    const imageUrl = `${R2_PUBLIC_URL}/${ownPrefix}_deadbeef.png`;
+    const db = createDbMock({
+      selects: [{ rows: [streamerRow([])] }],
+      inserts: [{ rows: [{ id: "card1", image_url: imageUrl }] }],
+    });
+
+    const response = await POST(
+      new NextRequest("http://localhost/api/cards", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          streamerId: "streamer1",
+          name: "Sword",
+          imageUrl,
+          rarity: "common",
+          dropRate: 0.5,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.insertCalls[0]).toEqual(expect.objectContaining({ image_url: imageUrl }));
   });
 });
