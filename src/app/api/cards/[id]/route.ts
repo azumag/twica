@@ -475,8 +475,9 @@ export async function PUT(
 
     // #830: 他人のストレージURLを自分のカードへ紐付けることを禁止する。
     // 紐付けを許すと、以降の差し替え・カード削除のクリーンアップで他人の
-    // オブジェクトが削除される。判定は「実際に変わるとき」だけに限定し、
-    // プレフィックス命名以前の既存画像を持つカードの編集は妨げない。
+    // オブジェクトが削除される。判定は「URLが実際に変わるとき」だけに限定する。
+    // 既存値の再送信（画像以外のフィールド編集）は判定対象外なので、所有権を
+    // 判定できないURLを持つ既存カードでも編集が止まらない。
     if (isImageChanging && !(await isAssignableImageUrl(imageUrl, session.twitchUserId))) {
       logger.warn(
         `Cards API: rejected foreign storage image URL on update by user ${session.twitchUserId}: ${imageUrl}`
@@ -531,16 +532,6 @@ export async function PUT(
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
     if (isActive !== undefined) updateData.is_active = isActive;
 
-    // 旧画像のクリーンアップ (#830: 所有権検証は deleteOwnedStorageImage が担当)
-    // 削除失敗はカード更新を妨げない（ログのみ）
-    if (isImageChanging && oldImageUrl) {
-      try {
-        await deleteOwnedStorageImage(oldImageUrl, session.twitchUserId, "Cards API (update)");
-      } catch (storageError) {
-        logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
-      }
-    }
-
     const { updatedCard, error } = await updateCardPg(id, updateData);
 
     if (error) {
@@ -551,6 +542,18 @@ export async function PUT(
         );
       }
       return handleDatabaseError(error, "Failed to update card");
+    }
+
+    // 旧画像のクリーンアップ (#830: 所有権検証は deleteOwnedStorageImage が担当)
+    // UPDATE 成功後に実行する。先に削除すると、card_number 重複(409)などで
+    // UPDATE が失敗したときにカードが旧URLを参照したまま実体だけが消える。
+    // 削除失敗はカード更新を妨げない（ログのみ）。
+    if (isImageChanging && oldImageUrl) {
+      try {
+        await deleteOwnedStorageImage(oldImageUrl, session.twitchUserId, "Cards API (update)");
+      } catch (storageError) {
+        logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
+      }
     }
 
     // 再計算はベストエフォート: カード更新は成功しているため、

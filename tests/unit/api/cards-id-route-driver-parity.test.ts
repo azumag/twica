@@ -526,8 +526,8 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(mockDeleteFromR2).not.toHaveBeenCalled();
     });
 
-    it("PUT: 画像URLを変更しない編集は所有権判定の対象外（プレフィックス命名以前の画像も編集できる）", async () => {
-      // プレフィックス命名規則より前に保存された画像を持つ既存カードを模す
+    it("PUT: 画像URLを変更しない編集は所有権判定の対象外（所有者を判定できないURLでも編集が止まらない）", async () => {
+      // 命名規則に合致せず所有者を判定できないURLを持つ既存カードを模す
       const legacyUrl = `${R2_PUBLIC_URL}/legacy-image.png`;
       const pg = createDrizzleDbMock({
         selects: [{ rows: [{ ...PUT_OWNERSHIP_ROW, image_url: legacyUrl }] }],

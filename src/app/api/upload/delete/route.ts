@@ -6,7 +6,6 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { handleApiError } from "@/lib/error-handler";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { deleteOwnedStorageImage } from "@/lib/storage-cleanup";
-import { isStorageUrl } from "@/lib/storage-utils";
 
 export async function POST(request: NextRequest) {
   try {
@@ -66,19 +65,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Ownership validation + deletion
+    // ストレージURL判定・所有権検証・削除 (#830)
+    // 検証と削除の対象キーがずれないよう、判定はすべて削除処理と同じ場所に閉じている。
+    const outcome = await deleteOwnedStorageImage(url, session.twitchUserId, "Blob Delete API");
+
     // Validate that the URL is a storage URL (R2 or Vercel Blob)
     // URLがストレージURL（R2またはVercel Blob）であることを検証
-    if (!isStorageUrl(url)) {
+    if (outcome === "not-storage") {
       return NextResponse.json(
         { error: "Invalid storage URL" },
         { status: 400 }
       );
     }
-
-    // Ownership validation + deletion
-    // 所有権検証と削除 (#830)
-    // 検証と削除の対象キーがずれないよう、判定は削除処理と同じ場所に閉じている。
-    const outcome = await deleteOwnedStorageImage(url, session.twitchUserId, "Blob Delete API");
 
     if (outcome === "forbidden") {
       return NextResponse.json(

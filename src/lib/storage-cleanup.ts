@@ -56,7 +56,11 @@ export async function deleteOwnedStorageImage(
   }
 
   if (!(await isOwnedStorageUrl(url, twitchUserId))) {
-    logger.warn(`[${context}] Unauthorized delete attempt: ${url} by user ${twitchUserId}`);
+    // 「他人のオブジェクトへの削除要求」と「所有者を判定できないキー」を同じ
+    // fail-closed で扱うため、ログ文言も断定しない。本番/preview の
+    // cards.image_url は実測で 100% が `{prefix}_` 形式（#830 の調査）なので、
+    // 実際にここへ来るのは不正な削除要求だけの想定。
+    logger.warn(`[${context}] Storage ownership mismatch, delete skipped: ${url} (requested by user ${twitchUserId})`);
     return 'forbidden';
   }
 

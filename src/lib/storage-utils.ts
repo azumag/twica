@@ -76,17 +76,6 @@ export function isStorageUrl(url: string): boolean {
 }
 
 /**
- * ストレージの種類を判定
- * @param url - チェックするURL
- * @returns 'r2' | 'vercel' | null
- */
-export function getStorageType(url: string): 'r2' | 'vercel' | null {
-  if (isR2Url(url)) return 'r2';
-  if (isVercelBlobUrl(url)) return 'vercel';
-  return null;
-}
-
-/**
  * R2 URLからキー（ファイル名）を抽出
  * @param url - R2のURL
  * @returns ファイル名（キー）、または抽出できない場合はnull
@@ -101,24 +90,6 @@ export function getR2KeyFromUrl(url: string): string | null {
     return key || null;
   } catch {
     // URLのパースに失敗した場合
-    return null;
-  }
-}
-
-/**
- * Vercel Blob URLからパス名を抽出
- * @param url - Vercel BlobのURL
- * @returns パス名、または抽出できない場合はnull
- */
-export function getVercelBlobPathFromUrl(url: string): string | null {
-  if (!url) return null;
-
-  try {
-    const urlObj = new URL(url);
-    // パスから先頭の '/' を除去
-    const path = urlObj.pathname.slice(1);
-    return path || null;
-  } catch {
     return null;
   }
 }

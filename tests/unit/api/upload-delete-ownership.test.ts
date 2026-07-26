@@ -111,6 +111,40 @@ describe('POST /api/upload/delete: 所有権検証 (#830)', () => {
     expect(mockDeleteFromR2).not.toHaveBeenCalled();
   });
 
+  // R2削除の失敗は握りつぶさず500へ落とす（error-reporter が拾えるようにする）。
+  // 将来 deleteOwnedStorageImage 内で catch すると「削除できていないのに200」に
+  // なるため、その回帰をここで固定する。
+  it('R2削除が失敗した場合は500を返す（成功として握りつぶさない）', async () => {
+    const ownPrefix = await sha256Prefix(SESSION.twitchUserId);
+    mockDeleteFromR2.mockRejectedValue(new Error('R2 unavailable'));
+
+    const response = await POST(createRequest(`${R2_PUBLIC_URL}/${ownPrefix}_deadbeef.png`));
+
+    expect(response.status).toBe(500);
+  });
+
+  // Vercel Blob は R2 へ移行済みで実体削除しない。DB記録だけを削除する既存挙動を固定する。
+  it('自分のVercel Blob URLはDB記録のみ削除しR2削除は行わない', async () => {
+    const ownPrefix = await sha256Prefix(SESSION.twitchUserId);
+    const url = `https://abc.public.blob.vercel-storage.com/${ownPrefix}_deadbeef.png`;
+
+    const response = await POST(createRequest(url));
+
+    expect(response.status).toBe(200);
+    expect(mockRemoveBlobFile).toHaveBeenCalledWith(url);
+    expect(mockDeleteFromR2).not.toHaveBeenCalled();
+  });
+
+  it('ストレージ外のURLは400で拒否する', async () => {
+    const response = await POST(
+      createRequest('https://static-cdn.jtvnw.net/emoticons/v2/1/static/light/3.0')
+    );
+
+    expect(response.status).toBe(400);
+    expect(mockRemoveBlobFile).not.toHaveBeenCalled();
+    expect(mockDeleteFromR2).not.toHaveBeenCalled();
+  });
+
   it('配信者権限のないセッションは従来どおり401', async () => {
     mockCanUseStreamerFeatures.mockReturnValue(false);
     const ownPrefix = await sha256Prefix(SESSION.twitchUserId);
