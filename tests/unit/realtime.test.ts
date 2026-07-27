@@ -737,6 +737,96 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('clears the suppression after 5 minutes so a room that started accepting again gets reconnected (#844)', async () => {
+    // The app Worker's allowlist can be a wildcard (`*`) that never changes
+    // per-streamer, so an operator flipping the room-side allowlist back
+    // produces no new configVersion this client can see. Without a TTL the
+    // suppression above never clears and the client is stuck on polling
+    // until reloaded — observed in preview (issue #844). Matches
+    // SUPPRESSION_TTL_MS in src/lib/realtime.ts, which reuses the same
+    // 5-minute value as the safety-net config refresh so this piggybacks on
+    // a timer that already exists rather than needing a second one.
+    const SUPPRESSION_TTL_MS = 5 * 60_000
+
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(event: unknown) {
+        this.onmessage?.({ data: JSON.stringify(event) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    // The app Worker keeps advertising the same do-primary-v1 throughout —
+    // standing in for a wildcard allowlist that the operator's room-side
+    // flip does not change.
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      return jsonResponse({ events: [], realtimeConfigVersion: 'do-primary-v1' })
+    }))
+
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      retryDelay: 3_000,
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+
+    ControlledWebSocket.instances[0].emit({
+      type: 'server_notice',
+      code: 'transport_disabled',
+    })
+    // Let the transport_disabled handler's own refreshConfig() call settle
+    // before advancing the clock, so the TTL and the re-armed safety timer
+    // are both anchored to this same instant.
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(statuses).toContain('DO_SUPPRESSED:room_disabled')
+
+    // Just under the TTL: still suppressed, no reconnect attempt.
+    await vi.advanceTimersByTimeAsync(SUPPRESSION_TTL_MS - 1_000)
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+
+    // Crossing the TTL: the next safety-net config refresh clears the
+    // suppression and reconnects, standing in for "the operator flipped the
+    // room-side allowlist back and the room now accepts this socket".
+    await vi.advanceTimersByTimeAsync(2_000)
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(2)
+    cleanup()
+  })
+
   it('closes a socket that stops proving liveness and falls back to polling', async () => {
     // A half-open socket looks open to the browser but delivers nothing. With
     // the periodic history pass gone, this deadline is what keeps that from

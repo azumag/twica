@@ -114,6 +114,20 @@ const SEEN_EVENT_TTL_MS = 24 * 60 * 60 * 1000
  */
 const CONFIG_SAFETY_REFRESH_MS = 5 * 60_000
 /**
+ * Upper bound on how long DO reconnects stay suppressed after the room
+ * reports itself disabled (see `disabledForConfigVersion` below).
+ *
+ * The suppression normally clears when the config endpoint returns a
+ * different `configVersion`, but the app Worker's allowlist can be a
+ * wildcard (`*`) that never changes per-streamer, in which case the operator
+ * flipping the room-side allowlist back produces no new `configVersion` at
+ * all — the client would otherwise stay on polling forever until reloaded
+ * (issue #844). Reusing `CONFIG_SAFETY_REFRESH_MS` as the TTL means the
+ * bounded retry piggybacks on the safety-net timer that already exists
+ * instead of introducing a second one.
+ */
+const SUPPRESSION_TTL_MS = CONFIG_SAFETY_REFRESH_MS
+/**
  * Room-reported kill switch. Imported from the shared contract rather than
  * re-declared so a rename cannot leave the Worker sending a code the client
  * silently ignores.
@@ -328,17 +342,19 @@ export function subscribeToGachaResults(
   let lastSeq: number | null = null
   let livenessTimer: ReturnType<typeof setTimeout> | null = null
   /**
-   * Config version that was in effect when the room reported itself disabled.
-   *
-   * The room is authoritative about whether it will serve this streamer, and
-   * the two allowlists (app Worker and standalone Worker) are separate secrets
-   * that can disagree mid-rollout. Without this marker a room that says
-   * "disabled" while the config endpoint still says `do-primary` sends the
-   * client into a reconnect-with-backoff loop against an endpoint that answers
-   * 503 — observed in preview during the kill-switch test. Reconnecting is
-   * allowed again as soon as the operator publishes a different config.
+   * Config version that was in effect when the room reported itself disabled,
+   * and when that happened. The room is authoritative about whether it will
+   * serve this streamer, and the two allowlists (app Worker and standalone
+   * Worker) are separate secrets that can disagree mid-rollout. Without this
+   * marker a room that says "disabled" while the config endpoint still says
+   * `do-primary` sends the client into a reconnect-with-backoff loop against
+   * an endpoint that answers 503 — observed in preview during the kill-switch
+   * test. Reconnecting is allowed again as soon as the operator publishes a
+   * different config, or after SUPPRESSION_TTL_MS regardless of config
+   * version — see SUPPRESSION_TTL_MS for why the version alone is not enough.
    */
   let disabledForConfigVersion: string | null = null
+  let disabledAt = 0
   let historyCursor: PollingCursor = {
     redeemedAt: new Date().toISOString(),
     historyId: '',
@@ -571,6 +587,7 @@ export function subscribeToGachaResults(
               // advertises `do-primary` cannot immediately reconnect us into the
               // room that just refused to serve.
               disabledForConfigVersion = currentConfig?.configVersion ?? null
+              disabledAt = Date.now()
               closeSocket()
               if (pollTimer) clearTimeout(pollTimer)
               schedulePoll(0)
@@ -648,18 +665,27 @@ export function subscribeToGachaResults(
         reconnectAttempt = 0
       }
       // A new config supersedes whatever the room said about the old one.
+      // The app Worker's allowlist can be a wildcard that never changes
+      // per-streamer, so also expire the suppression after SUPPRESSION_TTL_MS
+      // regardless of config version — otherwise an operator flipping the
+      // room-side allowlist back produces no signal this client can see
+      // (issue #844) and it would stay on polling until reloaded.
       if (
         disabledForConfigVersion !== null
-        && config.configVersion !== disabledForConfigVersion
+        && (
+          config.configVersion !== disabledForConfigVersion
+          || Date.now() - disabledAt >= SUPPRESSION_TTL_MS
+        )
       ) {
         disabledForConfigVersion = null
       }
 
       if (config.mode === 'do-primary') {
         if (config.configVersion === disabledForConfigVersion) {
-          // The room refused this exact config. Stay on polling — which still
-          // delivers every committed event — rather than retrying a socket the
-          // server has already said it will not serve.
+          // The room refused this exact config, and the TTL above has not
+          // elapsed yet. Stay on polling — which still delivers every
+          // committed event — rather than retrying a socket the server has
+          // already said it will not serve.
           options.onStatusChange?.('DO_SUPPRESSED:room_disabled')
           if (pollTimer) clearTimeout(pollTimer)
           schedulePoll(0)
