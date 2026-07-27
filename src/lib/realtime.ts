@@ -125,8 +125,23 @@ const CONFIG_SAFETY_REFRESH_MS = 5 * 60_000
  * (issue #844). Reusing `CONFIG_SAFETY_REFRESH_MS` as the TTL means the
  * bounded retry piggybacks on the safety-net timer that already exists
  * instead of introducing a second one.
+ *
+ * This reuse is tighter than "share a number": the only thing that re-checks
+ * the TTL is `refreshConfig()`, and while suppressed the only thing that
+ * calls `refreshConfig()` on a timer is `configTimer`, armed for exactly
+ * `CONFIG_SAFETY_REFRESH_MS` in its own `finally` block. Changing
+ * SUPPRESSION_TTL_MS alone (e.g. to shorten it) would not shorten the actual
+ * wait, because the next `refreshConfig()` call — the only place that reads
+ * this constant — still would not happen until the unchanged safety timer
+ * fires. Change both together, or give the suppression its own timer.
  */
 const SUPPRESSION_TTL_MS = CONFIG_SAFETY_REFRESH_MS
+/**
+ * Straight WS-open failures (never reached `onopen`) before falling back to
+ * the slow TTL-gated retry instead of `scheduleReconnect`'s normal
+ * exponential backoff. See `consecutiveOpenFailures` for why this exists.
+ */
+const OPEN_FAILURE_SUPPRESSION_THRESHOLD = 3
 /**
  * Room-reported kill switch. Imported from the shared contract rather than
  * re-declared so a rename cannot leave the Worker sending a code the client
@@ -355,6 +370,23 @@ export function subscribeToGachaResults(
    */
   let disabledForConfigVersion: string | null = null
   let disabledAt = 0
+  /**
+   * Consecutive connection attempts that never reached `onopen`.
+   *
+   * A room that rejects the WS upgrade (edge Worker's `realtimeEnabled()`
+   * gate returning 503 — see `workers/overlay-realtime/src/index.ts`)
+   * produces the exact same `onerror` + `onclose(1006)` the browser fires for
+   * an ordinary transient drop; there is no way to tell them apart from the
+   * close event alone. Without this counter, a room disabled for longer than
+   * SUPPRESSION_TTL_MS reconnects every ~15-30s indefinitely via the normal
+   * exponential-backoff path in `scheduleReconnect` (this reoccurrence of the
+   * loop ec6852f fixed was found in review, not in the preview test — the
+   * preview run happened to have the room re-enabled before the gap showed).
+   * After OPEN_FAILURE_SUPPRESSION_THRESHOLD straight open failures, treat it
+   * like an explicit `transport_disabled` notice: fall back to the slower
+   * TTL-gated retry instead of hammering an endpoint that keeps 503ing.
+   */
+  let consecutiveOpenFailures = 0
   let historyCursor: PollingCursor = {
     redeemedAt: new Date().toISOString(),
     historyId: '',
@@ -533,6 +565,9 @@ export function subscribeToGachaResults(
 
     closeSocket()
     const generation = ++socketGeneration
+    // Distinguishes "the socket opened, then something else closed it" from
+    // "the upgrade itself was refused" — see consecutiveOpenFailures.
+    let hasOpened = false
     options.onStatusChange?.('DO_CONNECTING')
     try {
       const nextSocket = new WebSocket(target)
@@ -547,7 +582,9 @@ export function subscribeToGachaResults(
         if (disposed || generation !== socketGeneration) return
         if (connectTimeout) clearTimeout(connectTimeout)
         connectTimeout = null
+        hasOpened = true
         reconnectAttempt = 0
+        consecutiveOpenFailures = 0
         options.onStatusChange?.('DO_CONNECTED')
         nextSocket.send(JSON.stringify({
           type: 'hello',
@@ -630,7 +667,32 @@ export function subscribeToGachaResults(
         schedulePoll(0)
         // Policy/protocol violations require operator config correction. Keep
         // polling alive but avoid an infinite reconnect storm.
-        if (![1002, 1003, 1008, 1009].includes(event.code)) scheduleReconnect()
+        if ([1002, 1003, 1008, 1009].includes(event.code)) return
+
+        if (hasOpened) {
+          scheduleReconnect()
+          return
+        }
+
+        // The upgrade never completed. A room that 503s the connect request
+        // (edge Worker's realtimeEnabled() gate — see
+        // OPEN_FAILURE_SUPPRESSION_THRESHOLD) produces this same
+        // onerror+onclose(1006) as an ordinary transient drop, so a handful
+        // of attempts are given the benefit of the doubt via the normal
+        // backoff before concluding the room is refusing us.
+        consecutiveOpenFailures += 1
+        if (consecutiveOpenFailures < OPEN_FAILURE_SUPPRESSION_THRESHOLD) {
+          scheduleReconnect()
+          return
+        }
+        options.onStatusChange?.('DO_SUPPRESSED:open_failures')
+        disabledForConfigVersion = currentConfig?.configVersion ?? null
+        disabledAt = Date.now()
+        // Anchors the TTL to this moment (mirrors the transport_disabled
+        // path): re-arms the safety timer for SUPPRESSION_TTL_MS from now
+        // instead of leaving it on whatever schedule the last config fetch
+        // happened to set.
+        void refreshConfig()
       }
     } catch {
       options.onStatusChange?.('DO_CONSTRUCTOR_FAILED')

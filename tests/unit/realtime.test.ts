@@ -827,6 +827,115 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('falls back to the TTL-gated retry instead of an endless loop when the room keeps refusing the WS upgrade after the TTL fires (#844 review)', async () => {
+    // Found in review, not in the original preview run: a room that 503s the
+    // WS upgrade fires the browser's onerror+onclose(1006) — indistinguishable
+    // from an ordinary transient drop — so without this, once the TTL above
+    // clears the suppression, a room that is STILL disabled gets hammered
+    // every retryPolicy-backoff interval (~15-30s in production) forever,
+    // reproducing the exact reconnect-storm ec6852f fixed. After
+    // OPEN_FAILURE_SUPPRESSION_THRESHOLD (3) straight failed opens, the fix
+    // falls back to the slow TTL-gated retry the same way an explicit
+    // transport_disabled notice does.
+    const SUPPRESSION_TTL_MS = 5 * 60_000
+
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      // Consumed one per new instance: the next N connection attempts fail
+      // to open (onerror+onclose(1006)) instead of succeeding, standing in
+      // for a room that keeps 503ing the WS upgrade.
+      static failNextOpens = 0
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        if (ControlledWebSocket.failNextOpens > 0) {
+          ControlledWebSocket.failNextOpens -= 1
+          queueMicrotask(() => {
+            this.readyState = 3
+            this.onerror?.()
+            this.onclose?.({ code: 1006 })
+          })
+          return
+        }
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(event: unknown) {
+        this.onmessage?.({ data: JSON.stringify(event) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      return jsonResponse({ events: [], realtimeConfigVersion: 'do-primary-v1' })
+    }))
+
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      retryDelay: 3_000,
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+
+    ControlledWebSocket.instances[0].emit({ type: 'server_notice', code: 'transport_disabled' })
+    await flushPromises()
+    expect(statuses).toContain('DO_SUPPRESSED:room_disabled')
+
+    // The room is still disabled when the TTL fires: the next 3 connection
+    // attempts all fail to open.
+    ControlledWebSocket.failNextOpens = 3
+    await vi.advanceTimersByTimeAsync(SUPPRESSION_TTL_MS + 1_000)
+    await flushPromises()
+    // Let the exponential backoff between the 3 failed attempts play out
+    // (fast in this test: baseDelayMs 100 / maxDelayMs 1_000).
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+
+    // 1 initial connection + 3 failed retries after the TTL, then it stops.
+    expect(ControlledWebSocket.instances).toHaveLength(4)
+    expect(statuses).toContain('DO_SUPPRESSED:open_failures')
+
+    // Falls back to the slow TTL-gated retry: no new attempts across a
+    // stretch that would otherwise contain dozens of exponential-backoff
+    // retries (capped at maxDelayMs=1_000 in this test).
+    await vi.advanceTimersByTimeAsync(SUPPRESSION_TTL_MS - 2_000)
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(4)
+
+    // The room finally accepts: the next TTL-gated attempt succeeds.
+    await vi.advanceTimersByTimeAsync(3_000)
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(5)
+    expect(statuses).toContain('DO_CONNECTED')
+    cleanup()
+  })
+
   it('closes a socket that stops proving liveness and falls back to polling', async () => {
     // A half-open socket looks open to the browser but delivers nothing. With
     // the periodic history pass gone, this deadline is what keeps that from
