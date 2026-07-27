@@ -681,6 +681,16 @@ async function deleteAdditionalRewardByIdPg(streamerId: string, rewardId: string
  * - ?deleteAll=true: Delete all additional rewards for the streamer
  */
 export async function DELETE(request: NextRequest) {
+  // 状態変更 API のため CSRF 検証を最初に行う (#736)。POST には既に存在するが
+  // DELETE ハンドラだけ検証漏れがあった。
+  const csrfValidation = await validateCSRFToken(request);
+  if (!csrfValidation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    );
+  }
+
   const session = await getSession();
 
   const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
